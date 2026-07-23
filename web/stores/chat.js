@@ -2259,7 +2259,10 @@ export const useChatStore = defineStore('chat', {
         if (!targetSessionId) return true;
         return (message?.sessionId ?? message?.groupId ?? null) === targetSessionId;
       });
-      const targetIndex = scoped.findIndex(message => (message?.id || message?.messageId) === messageId);
+      const targetIndex = scoped.findIndex(message => (
+        (message?.id || message?.messageId) === messageId
+        || message?.persistedMessageId === messageId
+      ));
       if (targetIndex < 0) return false;
       const spans = buildYeaftMessageTurnSpans(scoped);
       const targetSpan = spans.findIndex(span => targetIndex >= span.start && targetIndex < span.end);
@@ -2291,15 +2294,33 @@ export const useChatStore = defineStore('chat', {
       };
       const conversationId = resolveYeaftConversationIdForSession(this, targetSessionId);
       const liveRows = conversationId ? (this.messagesMap[conversationId] || []) : [];
-      const outlineIdentity = row => row?.clientMessageId ? `client:${row.clientMessageId}` : `message:${row?.messageId || ''}`;
+      const outlineIdentity = row => {
+        if (row?.role === 'assistant' && row?.turnId) {
+          return `response:${row.turnId}:${row.speakerVpId || row.vpId || ''}`;
+        }
+        return row?.clientMessageId ? `client:${row.clientMessageId}` : `message:${row?.messageId || ''}`;
+      };
       const byId = new Map((base.results || []).map(result => [outlineIdentity(result), result]));
       let liveOnlyCount = 0;
       for (const row of liveRows) {
         if ((row?.sessionId ?? row?.groupId ?? null) !== targetSessionId) continue;
-        if (row.type !== 'user' && row.type !== 'assistant') continue;
         const messageId = row.messageId || row.id;
         if (!messageId) continue;
-        const identity = outlineIdentity({ messageId, clientMessageId: row.clientMessageId });
+        const optimisticUser = row.type === 'user'
+          && !!row.clientMessageId
+          && messageId === row.clientMessageId;
+        const inFlightAssistant = row.type === 'assistant' && row.isStreaming === true;
+        if (!optimisticUser && !inFlightAssistant) continue;
+        const role = row.type;
+        const turnId = row.turnId || row.threadId || messageId;
+        const speakerVpId = row.speakerVpId || row.vpId || null;
+        const identity = outlineIdentity({
+          role,
+          messageId,
+          clientMessageId: row.clientMessageId,
+          turnId,
+          speakerVpId,
+        });
         const existing = byId.get(identity);
         const raw = typeof row.content === 'string' ? row.content : '';
         const text = raw.replace(/\s+/g, ' ').trim();
@@ -2307,9 +2328,9 @@ export const useChatStore = defineStore('chat', {
           ...existing,
           messageId: Number.isFinite(existing?.seq) ? existing.messageId : messageId,
           ...(row.clientMessageId ? { clientMessageId: row.clientMessageId } : {}),
-          turnId: row.turnId || row.threadId || existing?.turnId || messageId,
-          role: row.type,
-          speakerVpId: row.speakerVpId || row.vpId || existing?.speakerVpId || null,
+          turnId,
+          role,
+          speakerVpId: speakerVpId || existing?.speakerVpId || null,
           timestamp: row.timestamp || row.ts || existing?.timestamp || null,
           snippet: text.length > 180 ? `${text.slice(0, 180).trimEnd()}…` : (text || existing?.snippet || ''),
         });
@@ -2395,7 +2416,12 @@ export const useChatStore = defineStore('chat', {
       delete nextTimeouts[key];
       this._yeaftHistoryOutlineTimeouts = nextTimeouts;
       const incoming = Array.isArray(msg.results) ? msg.results : [];
-      const outlineIdentity = result => result?.clientMessageId ? `client:${result.clientMessageId}` : `message:${result?.messageId || ''}`;
+      const outlineIdentity = result => {
+        if (result?.role === 'assistant' && result?.turnId) {
+          return `response:${result.turnId}:${result.speakerVpId || ''}`;
+        }
+        return result?.clientMessageId ? `client:${result.clientMessageId}` : `message:${result?.messageId || ''}`;
+      };
       const byId = new Map([...(state.results || []), ...incoming]
         .filter(result => result?.messageId)
         .map(result => [outlineIdentity(result), result]));

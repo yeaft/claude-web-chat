@@ -68,6 +68,23 @@ describe('persisted message search navigation', () => {
     });
   });
 
+  it('maps a tool-only persisted anchor to its derived tool-summary row', () => {
+    const block = messageBlock();
+    block.items[1] = assistantRow('turn_tool', []);
+    block.items[1].messages = [{
+      id: 'm101:tool-summary',
+      messageId: 'm101:tool-summary',
+      persistedMessageId: 'm101',
+      type: 'tool-summary',
+    }];
+
+    expect(persistedMessageIdsForRenderedItem(block.items[1])).toEqual(['m101']);
+    expect(resolvePersistedMessageTarget([block], 'm101')).toMatchObject({
+      blockId: 'turn_m100_0',
+      rowId: 'turn_tool',
+    });
+  });
+
   it('scrolls an off-screen block before locating and flashing its assistant row', async () => {
     let mounted = false;
     const block = messageBlock();

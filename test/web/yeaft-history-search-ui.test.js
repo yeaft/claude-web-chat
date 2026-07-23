@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { revealOutlineResult } from '../../web/utils/message-search-navigation.js';
 
 const read = path => readFileSync(new URL(`../../web/${path}`, import.meta.url), 'utf8');
 const page = read('components/YeaftPage.js');
@@ -66,13 +67,49 @@ describe('Yeaft conversation outline UI', () => {
   });
 
   it('uses the existing bounded history window to reveal and flash unloaded messages', () => {
-    expect(page).toContain('const loaded = await store.loadYeaftHistoryWindow(result)');
+    expect(page).toContain('loadWindow: candidate => store.loadYeaftHistoryWindow(candidate)');
     expect(store).toContain('buildYeaftMessageTurnSpans(scoped)');
     expect(list).toContain('navigateToPersistedMessage({');
     expect(list).toContain("virtualTranscriptRef.value?.scrollToKey?.(blockId, { align: 'center' })");
     expect(navigation).toContain('collapseStates[target.collapseKey] = false');
     expect(virtual).toContain('expose({ scrollToKey, scrollToIndex })');
     expect(css).toContain('@keyframes yeaft-history-search-flash');
+  });
+
+  it('closes the full-screen mobile outline only after a successful reveal', async () => {
+    const closeOutline = vi.fn();
+    const revealMessage = vi.fn().mockResolvedValue(true);
+
+    await expect(revealOutlineResult({
+      result: { messageId: 'm42' },
+      loadWindow: vi.fn().mockResolvedValue(true),
+      nextTick: vi.fn().mockResolvedValue(undefined),
+      revealMessage,
+      isMobile: true,
+      closeOutline,
+    })).resolves.toBe(true);
+
+    expect(revealMessage).toHaveBeenCalledWith('m42');
+    expect(closeOutline).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the outline open when reveal fails or on desktop', async () => {
+    const closeOutline = vi.fn();
+    await expect(revealOutlineResult({
+      result: { messageId: 'm42' },
+      loadWindow: vi.fn().mockResolvedValue(true),
+      revealMessage: vi.fn().mockResolvedValue(false),
+      isMobile: true,
+      closeOutline,
+    })).resolves.toBe(false);
+    await expect(revealOutlineResult({
+      result: { messageId: 'm42' },
+      loadWindow: vi.fn().mockResolvedValue(true),
+      revealMessage: vi.fn().mockResolvedValue(true),
+      isMobile: false,
+      closeOutline,
+    })).resolves.toBe(true);
+    expect(closeOutline).not.toHaveBeenCalled();
   });
 
   it('keeps search results ordered independently from outline rows', () => {

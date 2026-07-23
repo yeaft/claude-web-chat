@@ -1632,48 +1632,97 @@ export class ConversationStore {
     const seen = new Set();
     let hasMore = false;
 
-    for (const message of this.#iterateSessionRows(sessionId, { beforeSeq, desc: true })) {
-      if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) continue;
-      if (message.role !== 'user' && message.role !== 'assistant') continue;
-      if (!message.id || seen.has(message.id)) continue;
+    const outlineRow = (message) => {
+      if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) return null;
+      if (message.role !== 'user' && message.role !== 'assistant') return null;
+      if (!message.id || seen.has(message.id)) return null;
       seen.add(message.id);
       const seq = parseSeqFromId(message.id);
-      if (!Number.isFinite(seq)) continue;
+      if (!Number.isFinite(seq)) return null;
+      const text = this.#visibleSearchText(message.content);
+      const speakerVpId = message.speakerVpId || null;
+      return {
+        message,
+        seq,
+        text,
+        speakerVpId,
+        groupKey: message.role === 'assistant'
+          ? `assistant:${message.turnId || message.id}:${speakerVpId || ''}`
+          : `user:${message.id}`,
+      };
+    };
+    const startEntry = (row) => ({
+      groupKey: row.groupKey,
+      role: row.message.role,
+      turnId: row.message.turnId || row.message.id,
+      speakerVpId: row.speakerVpId,
+      oldestSeq: row.seq,
+      anchor: row,
+      anchorHasText: !!row.text,
+      textParts: row.text ? [row.text] : [],
+    });
+    const mergeRow = (entry, row) => {
+      entry.oldestSeq = Math.min(entry.oldestSeq, row.seq);
+      if (row.text) entry.textParts.unshift(row.text);
+      if (!entry.anchorHasText && row.text) {
+        entry.anchor = row;
+        entry.anchorHasText = true;
+      }
+    };
+    const projectEntry = (entry) => ({
+      messageId: entry.anchor.message.id,
+      ...(entry.anchor.message.clientMessageId ? { clientMessageId: entry.anchor.message.clientMessageId } : {}),
+      turnId: entry.turnId,
+      seq: entry.anchor.seq,
+      role: entry.role,
+      speakerVpId: entry.speakerVpId,
+      timestamp: entry.anchor.message.ts || entry.anchor.message.time || null,
+      snippet: this.#outlineSnippet(entry.textParts.join(' ')),
+      _outlineBeforeSeq: entry.oldestSeq,
+    });
+
+    let current = null;
+    for (const message of this.#iterateSessionRows(sessionId, { beforeSeq, desc: true })) {
+      const row = outlineRow(message);
+      if (!row) continue;
+      if (current && current.groupKey === row.groupKey) {
+        mergeRow(current, row);
+        continue;
+      }
+      if (current) newestFirst.push(projectEntry(current));
       if (newestFirst.length >= limit) {
         hasMore = true;
+        current = null;
         break;
       }
-      const text = this.#visibleSearchText(message.content);
-      newestFirst.push({
-        messageId: message.id,
-        ...(message.clientMessageId ? { clientMessageId: message.clientMessageId } : {}),
-        turnId: message.turnId || message.threadId || message.id,
-        seq,
-        role: message.role,
-        speakerVpId: message.speakerVpId || null,
-        timestamp: message.ts || message.time || null,
-        snippet: this.#outlineSnippet(text),
-      });
+      current = startEntry(row);
     }
+    if (current) newestFirst.push(projectEntry(current));
 
     let totalCount = null;
     if (opts.includeTotal !== false) {
       totalCount = 0;
       const counted = new Set();
+      let previousGroupKey = null;
       for (const message of this.#iterateSessionRows(sessionId, { desc: true })) {
         if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) continue;
         if (message.role !== 'user' && message.role !== 'assistant') continue;
         if (!message.id || counted.has(message.id)) continue;
         counted.add(message.id);
-        totalCount += 1;
+        const groupKey = message.role === 'assistant'
+          ? `assistant:${message.turnId || message.id}:${message.speakerVpId || ''}`
+          : `user:${message.id}`;
+        if (groupKey !== previousGroupKey) totalCount += 1;
+        previousGroupKey = groupKey;
       }
     }
 
-    const results = newestFirst.reverse();
+    const oldestEntry = newestFirst[newestFirst.length - 1] || null;
+    const results = newestFirst.reverse().map(({ _outlineBeforeSeq, ...entry }) => entry);
     return {
       results,
       hasMore,
-      nextBeforeSeq: hasMore && results.length > 0 ? results[0].seq : null,
+      nextBeforeSeq: hasMore && oldestEntry ? oldestEntry._outlineBeforeSeq : null,
       totalCount,
     };
   }

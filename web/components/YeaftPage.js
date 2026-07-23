@@ -24,6 +24,7 @@ import {
 import { shouldShowYeaftOnboardingGuide } from '../utils/yeaftOnboarding.js';
 import { hasUsableYeaftAgent, resolveActiveSessionIdForSettings } from '../utils/yeaftSessionSettings.js';
 import { shouldCloseLlmConfigAfterSave } from '../utils/llm-config-save.js';
+import { revealOutlineResult } from '../utils/message-search-navigation.js';
 
 function sessionTaskSortTime(task) {
   const raw = task?.updatedAt || task?.endedAt || task?.createdAt;
@@ -695,13 +696,14 @@ export default {
       );
     };
     const loadMoreHistorySearchResults = () => store.searchYeaftHistory(store.yeaftHistorySearchState.query, { append: true });
-    const selectHistorySearchResult = async (result) => {
-      if (!result) return;
-      const loaded = await store.loadYeaftHistoryWindow(result);
-      if (!loaded) return;
-      await Vue.nextTick();
-      await messageListRef.value?.revealMessage?.(result.messageId);
-    };
+    const selectHistorySearchResult = result => revealOutlineResult({
+      result,
+      loadWindow: candidate => store.loadYeaftHistoryWindow(candidate),
+      nextTick: () => Vue.nextTick(),
+      revealMessage: messageId => messageListRef.value?.revealMessage?.(messageId),
+      isMobile: isMobile.value,
+      closeOutline: closeHistorySearch,
+    });
 
     // Esc handling — close transient controls. Detail drill-down layers were
     // removed; the center pane always stays on the Session stream.

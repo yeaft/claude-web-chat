@@ -79,7 +79,7 @@ describe('Yeaft history outline state', () => {
   it('merges optimistic and persisted rows by clientMessageId', () => {
     const store = primeStore();
     store.messagesMap['conv-a'] = [{
-      id: 'local-1', clientMessageId: 'client-1', type: 'user', content: 'hello',
+      id: 'client-1', messageId: 'client-1', clientMessageId: 'client-1', type: 'user', content: 'hello',
       sessionId: 'same', timestamp: 100,
     }];
     store.yeaftHistoryOutlineBySession[yeaftHistoryIdentityKey('agent-a', 'same')] = {
@@ -90,6 +90,65 @@ describe('Yeaft history outline state', () => {
     const state = store.getYeaftHistoryOutlineState();
     expect(state.results).toHaveLength(1);
     expect(state.results[0].messageId).toBe('m1');
+    expect(state.totalCount).toBe(1);
+  });
+
+  it('keeps an authoritative 50-entry page bounded when older persisted rows are cached', () => {
+    const store = primeStore();
+    const authoritative = Array.from({ length: 50 }, (_, index) => ({
+      messageId: `m${index + 51}`,
+      seq: index + 51,
+      role: index % 2 ? 'assistant' : 'user',
+      ...(index % 2 ? { turnId: `response-${index}` } : {}),
+      snippet: `recent ${index}`,
+    }));
+    store.messagesMap['conv-a'] = [
+      { id: 'm1', messageId: 'm1', type: 'user', content: 'cached old user', sessionId: 'same', isHistory: true },
+      { id: 'm2', messageId: 'm2', type: 'assistant', content: 'cached old assistant', sessionId: 'same', isHistory: true, turnId: 'old-response' },
+      { id: 'client-new', messageId: 'client-new', clientMessageId: 'client-new', type: 'user', content: 'optimistic tail', sessionId: 'same' },
+    ];
+    store.yeaftHistoryOutlineBySession[yeaftHistoryIdentityKey('agent-a', 'same')] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: false,
+      results: authoritative, hasMore: true, nextBeforeSeq: 51, totalCount: 75, error: null,
+    };
+
+    const state = store.getYeaftHistoryOutlineState();
+
+    expect(state.results).toHaveLength(51);
+    expect(state.results.some(result => result.messageId === 'm1' || result.messageId === 'm2')).toBe(false);
+    expect(state.results.at(-1)).toMatchObject({ messageId: 'client-new', role: 'user' });
+    expect(state.totalCount).toBe(76);
+  });
+
+  it('reveals a tool-only response through its persisted anchor', () => {
+    const store = primeStore();
+    store.messagesMap['conv-a'] = [{
+      id: 'm42:tool-summary',
+      messageId: 'm42:tool-summary',
+      persistedMessageId: 'm42',
+      type: 'tool-summary',
+      sessionId: 'same',
+      turnId: 'response-tool-only',
+    }];
+
+    expect(store.revealYeaftMessage('same', 'm42')).toBe(true);
+  });
+
+  it('merges only one in-flight assistant response per turn', () => {
+    const store = primeStore();
+    store.messagesMap['conv-a'] = [
+      { id: 'live-a', messageId: 'live-a', type: 'assistant', content: 'working ', sessionId: 'same', turnId: 'response-live', speakerVpId: 'maker', isStreaming: true },
+      { id: 'live-b', messageId: 'live-b', type: 'assistant', content: 'done', sessionId: 'same', turnId: 'response-live', speakerVpId: 'maker', isStreaming: true },
+    ];
+    store.yeaftHistoryOutlineBySession[yeaftHistoryIdentityKey('agent-a', 'same')] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: false,
+      results: [], hasMore: false, nextBeforeSeq: null, totalCount: 0, error: null,
+    };
+
+    const state = store.getYeaftHistoryOutlineState();
+
+    expect(state.results).toHaveLength(1);
+    expect(state.results[0]).toMatchObject({ role: 'assistant', turnId: 'response-live' });
     expect(state.totalCount).toBe(1);
   });
 });
