@@ -192,6 +192,24 @@ describe('Work Center additive plan mutation', () => {
     } });
   });
 
+  it('supports an add-only replan after all prior business Actions completed', () => {
+    let detail = createGraph([plannedAction('discover', 'research')]);
+    const discover = store.claimReadyAction('boot', 5_000);
+    detail = controller.submit(discover.run.id, 'boot', discover.run.leaseEpoch, completed({
+      replanRequest: { proposalId: 'replan-add-only', basePlanRevision: 1, reason: 'Add follow-up work' },
+    }));
+    const replan = store.claimReadyAction('boot', 5_000);
+    const replanned = controller.submit(replan.run.id, 'boot', replan.run.leaseEpoch, completed({
+      replanMutation: { proposalId: 'add-only-result', basePlanRevision: 2,
+        retain: [], replace: [], remove: [], add: [plannedAction('verify', 'test', ['discover'])] },
+    }));
+    expect(replanned.status, replanned.runs[0]?.error).toBe('ready');
+    expect(replanned.workflowSnapshot.stages.map(stage => stage.id))
+      .toEqual(['triage', 'discover', 'verify']);
+    expect(replanned.actions.find(action => action.stageId === 'discover').status).toBe('completed');
+    expect(replanned.actions.find(action => action.stageId === 'verify').status).toBe('ready');
+  });
+
   it('records a stale replan mutation as an open conflict without changing topology', () => {
     let detail = createGraph();
     const implement = store.claimReadyAction('boot', 5_000);

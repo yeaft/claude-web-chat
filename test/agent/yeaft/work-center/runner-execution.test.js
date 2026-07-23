@@ -181,6 +181,23 @@ describe('Work Center Runner execution resolution', () => {
     });
   });
 
+  it('builds a valid add-only replan schema for an empty frozen candidate set', () => {
+    const tool = createSubmitWorkItemReplanTool({
+      vps: [{ id: 'linus', role: 'Systems Engineer' }],
+      workItem: { planRevision: 2 },
+      action: { id: 'replan-db', type: 'triage', stageId: 'replan-1', context: [{
+        type: 'replan-barrier', proposalId: 'request-1', basePlanRevision: 2,
+        candidateActionIds: [],
+      }] },
+      actions: [], collector: { value: null }, isRunActive: () => true,
+    });
+    expect(tool.parameters.properties.retain.maxItems).toBe(0);
+    expect(tool.parameters.properties.replace.maxItems).toBe(0);
+    expect(tool.parameters.properties.remove.maxItems).toBe(0);
+    expect(tool.parameters.properties.remove.items).toEqual({ type: 'string' });
+    expect(tool.parameters.properties.add.maxItems).toBe(8);
+  });
+
   it('keeps triage active after an invalid isolated-write plan so the AI can correct it', async () => {
     const collector = { value: null };
     const requestEndTurn = vi.fn();

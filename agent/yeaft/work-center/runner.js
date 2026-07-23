@@ -448,9 +448,13 @@ export function createSubmitWorkItemReplanTool({ vps, workItem, action, actions,
     const candidate = actionById.get(id);
     return `${id}/${candidate?.stageId || 'missing'} (${candidate?.type || 'unknown'})`;
   }).join('; ');
+  const candidateIdSchema = candidateIds.length > 0
+    ? { type: 'string', enum: candidateIds }
+    : { type: 'string' };
+  const candidateLimit = Math.min(8, candidateIds.length);
   const classification = { type: 'object', additionalProperties: false,
     required: ['actionId', 'action'], properties: {
-      actionId: { type: 'string', enum: candidateIds },
+      actionId: candidateIdSchema,
       action: plannedActionSchema(vpIds),
     } };
   return defineTool({
@@ -462,9 +466,9 @@ export function createSubmitWorkItemReplanTool({ vps, workItem, action, actions,
         ...terminalPlanningFields(),
         proposalId: { type: 'string', minLength: 1, maxLength: 128 },
         basePlanRevision: { type: 'integer', const: workItem.planRevision },
-        retain: { type: 'array', maxItems: 8, items: classification },
-        replace: { type: 'array', maxItems: 8, items: classification },
-        remove: { type: 'array', maxItems: 8, uniqueItems: true, items: { type: 'string', enum: candidateIds } },
+        retain: { type: 'array', maxItems: candidateLimit, items: classification },
+        replace: { type: 'array', maxItems: candidateLimit, items: classification },
+        remove: { type: 'array', maxItems: candidateLimit, uniqueItems: true, items: candidateIdSchema },
         add: { type: 'array', maxItems: 8, items: plannedActionSchema(vpIds) },
       } },
     async execute(input, ctx = {}) {
