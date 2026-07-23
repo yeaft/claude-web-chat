@@ -47,9 +47,10 @@ function stableRunOrder(left, right) {
 
 function runMatchesActionSpec(run, action) {
   const manifest = run?.executionManifest;
-  return manifest?.schemaVersion === 2
-    && manifest.actionGeneration === Math.max(1, count(action.generation) || 1)
-    && manifest.actionSpecHash === (action.specHash || '');
+  const generation = Math.max(1, count(action.generation) || 1);
+  const runGeneration = Math.max(1, count(run?.actionGeneration) || count(manifest?.actionGeneration) || 1);
+  const runSpecHash = run?.actionSpecHash || manifest?.actionSpecHash || '';
+  return runGeneration === generation && runSpecHash === (action.specHash || '');
 }
 
 function canonicalRun(action, runs) {

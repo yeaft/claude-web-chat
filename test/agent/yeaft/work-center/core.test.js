@@ -136,6 +136,32 @@ describe('Work Center core', () => {
     expect(store.listWorkItems({ vpId: 'current-vp' })).toEqual([]);
   });
 
+  it('persists immutable generation and monotonic attempt identity on every Run claim', () => {
+    const item = controller.create(createInput({ id: 'run-identity' }));
+    const first = store.claimReadyAction('boot-a', 5_000);
+    expect(first.run).toMatchObject({
+      actionGeneration: first.action.generation,
+      actionSpecHash: first.action.specHash,
+      actionAttempt: 1,
+    });
+
+    store.deferRun(first.run.id, 'boot-a', first.run.leaseEpoch, 'workspace busy');
+    const second = store.claimReadyAction('boot-a', 5_000);
+    expect(second.action).toMatchObject({ id: first.action.id, generation: first.action.generation });
+    expect(second.run).toMatchObject({
+      actionGeneration: first.action.generation,
+      actionSpecHash: first.action.specHash,
+      actionAttempt: 2,
+    });
+    expect(store.getRun(first.run.id)).toMatchObject({
+      actionGeneration: first.action.generation,
+      actionSpecHash: first.action.specHash,
+      actionAttempt: 1,
+    });
+    expect(store.getWorkItemDetail(item.id).events.find(event => event.type === 'run.claimed'))
+      .toMatchObject({ actionGeneration: first.action.generation });
+  });
+
   it('persists, filters, resolves, and deletes plan conflicts', () => {
     const item = controller.create(createInput());
     const action = store.getWorkItemDetail(item.id).actions[0];
