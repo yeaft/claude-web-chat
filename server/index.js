@@ -172,7 +172,7 @@ wss.on('connection', (ws, req) => {
   if (clientType === 'agent') {
     handleAgentConnection(ws, url);
   } else if (clientType === 'web') {
-    handleWebConnection(ws, url);
+    handleWebConnection(ws, url, req);
   } else {
     ws.close(1008, 'Invalid client type');
   }

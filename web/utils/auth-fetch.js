@@ -54,7 +54,7 @@ function getActiveToken() {
 }
 
 function applyFreshToken(token, requestToken) {
-  if (!token || !requestToken) return false;
+  if (!token) return false;
   const activeToken = getActiveToken();
   if (activeToken && activeToken !== requestToken) return false;
   try { localStorage.setItem('authToken', token); } catch {}
@@ -103,14 +103,12 @@ function withHeaders(init, headers) {
   return { ...(init || {}), headers };
 }
 
-function isSessionValidationEndpoint(url) {
-  return url?.pathname === '/api/user/profile';
-}
-
-function handleUnauthorized(requestToken) {
+function handleUnauthorized(response, requestToken) {
   if (!requestToken) return;
   const store = getAuthStore();
-  if (store && typeof store.handleAuthFailure === 'function') {
+  if (store && typeof store.handleAuthResponse === 'function') {
+    store.handleAuthResponse(response, requestToken);
+  } else if (store && typeof store.handleAuthFailure === 'function') {
     store.handleAuthFailure(undefined, requestToken);
   }
 }
@@ -124,7 +122,7 @@ export function installAuthFetch() {
   window.fetch = async function patchedFetch(input, init) {
     const url = toUrl(input);
     const shouldAuth = isSameOriginApi(url) && !isPublicAuthEndpoint(url);
-    let nextInit = init;
+    let nextInit = isSameOriginApi(url) ? { ...(init || {}), credentials: 'same-origin' } : init;
     let requestToken = null;
 
     if (shouldAuth) {
@@ -134,7 +132,7 @@ export function installAuthFetch() {
         requestToken = getActiveToken();
         if (requestToken) {
           headers.set('Authorization', `Bearer ${requestToken}`);
-          nextInit = withHeaders(init, headers);
+          nextInit = withHeaders(nextInit, headers);
         }
       }
     }
@@ -144,8 +142,8 @@ export function installAuthFetch() {
       const fresh = response.headers && response.headers.get && response.headers.get('X-New-Token');
       if (fresh) applyFreshToken(fresh, requestToken);
 
-      if (shouldAuth && isSessionValidationEndpoint(url) && response.status === 401) {
-        handleUnauthorized(requestToken);
+      if (shouldAuth && response.status === 401) {
+        handleUnauthorized(response, requestToken);
       }
     } catch {
       /* never let auth bookkeeping break fetch semantics */

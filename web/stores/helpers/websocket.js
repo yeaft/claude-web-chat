@@ -7,6 +7,11 @@ import { clearSessionLoading } from './session.js';
 // Pending ensureConnected resolvers — settled by onopen/timeout
 let _connectResolvers = [];
 
+function isAuthenticationClose(event) {
+  return event?.code === 1008
+    && String(event.reason || '').toLowerCase().includes('authentication');
+}
+
 function _settleConnectResolvers(success) {
   const resolvers = _connectResolvers;
   _connectResolvers = [];
@@ -184,7 +189,7 @@ export function connect(store) {
 
   socket.onclose = (event) => {
     if (socket !== store.ws) {
-      if (event.code === 1008) authStore.handleAuthFailure?.(undefined, authToken);
+      if (isAuthenticationClose(event)) authStore.handleAuthFailure?.(undefined, authToken);
       return;
     }
     console.log('[WS] Disconnected:', event.code, event.reason);
@@ -194,7 +199,7 @@ export function connect(store) {
     store.stopHeartbeat();
     clearSessionLoading(store);
 
-    if (event.code === 1008) {
+    if (isAuthenticationClose(event)) {
       console.log('[WS] Auth failure, clearing token and resetting auth state');
       authStore.handleAuthFailure?.(undefined, authToken);
       store.reconnectAttempts = 0;
