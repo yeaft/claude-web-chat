@@ -26,6 +26,7 @@
 import { createInterface } from 'readline';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { join } from 'path';
 import { loadConfig } from './config.js';
 import { DebugTrace } from './debug-trace.js';
@@ -36,11 +37,12 @@ import { searchMessages } from './conversation/search.js';
 import { ConversationStore } from './conversation/persist.js';
 import { snapshotSessions } from './sessions/session-crud.js';
 import { loadSessionConfig, resolveSessionConfig } from './sessions/session-config.js';
+import { validateSessionId } from './sessions/ids.js';
 import { createJsonlWriter, JsonlInput, runStreamTurn } from './stdio-protocol.js';
 
 // ─── Argument parsing ──────────────────────────────────────────
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = {
     debug: false,
     interactive: false,
@@ -60,6 +62,7 @@ function parseArgs(argv) {
     modelEffort: null,
     inputFormat: 'text',
     outputFormat: 'text',
+    print: false,
     prompt: null,
   };
 
@@ -104,7 +107,7 @@ function parseArgs(argv) {
         break;
       case '-p':
       case '--print':
-        args.prompt = rest[++i] || null;
+        args.print = true;
         break;
       case '--language':
         args.language = rest[++i] || null;
@@ -728,6 +731,10 @@ async function runREPL(config, args) {
 
 async function runStreamJson(config, args) {
   const sessionId = args.sessionId || `session_cli_${randomUUID()}`;
+  const validation = validateSessionId(sessionId);
+  if (!validation.ok) {
+    throw new Error(`Invalid --session-id (${validation.reason})`);
+  }
   const workDir = resolve(args.workDir || process.cwd());
   const persisted = args.sessionId ? loadSessionConfig(config.dir, sessionId) : {};
   const effectiveConfig = resolveSessionConfig(config, persisted);
@@ -739,8 +746,11 @@ async function runStreamJson(config, args) {
 
   const write = createJsonlWriter(process.stdout);
   const input = args.inputFormat === 'stream-json' ? new JsonlInput(process.stdin) : null;
-  const originalLog = console.log;
-  console.log = (...values) => console.error(...values);
+  const originalConsole = { log: console.log, info: console.info, debug: console.debug };
+  const writeDiagnostic = (...values) => console.error(...values);
+  console.log = writeDiagnostic;
+  console.info = writeDiagnostic;
+  console.debug = writeDiagnostic;
 
   const loaded = await loadSession({
     dir: config.dir,
@@ -786,7 +796,6 @@ async function runStreamJson(config, args) {
       workDir,
       model: loaded.config.model,
       modelEffort: loaded.config.modelEffort || null,
-      skillManager,
       input,
       write,
       getCurrentTodos: () => todoState.value.slice(),
@@ -812,7 +821,9 @@ async function runStreamJson(config, args) {
   } finally {
     input?.close();
     await loaded.shutdown();
-    console.log = originalLog;
+    console.log = originalConsole.log;
+    console.info = originalConsole.info;
+    console.debug = originalConsole.debug;
   }
   if (lastResult?.is_error) process.exitCode = 1;
 }
@@ -994,7 +1005,7 @@ async function main() {
   console.log('  -d, --debug           Enable debug tracing');
   console.log('  -i, --interactive     Start REPL');
   console.log('  -v, --verbose         Verbose output');
-  console.log('  -p, --print <prompt>  Run a non-interactive query');
+  console.log('  -p, --print           Run a non-interactive query');
   console.log('  --session-id <id>     Persist and resume a Yeaft Session');
   console.log('  --cwd <dir>           Set the working directory');
   console.log('  --model <name>         Override model');
@@ -1008,7 +1019,10 @@ async function main() {
   console.log('  --skip-skills         Skip skill loading');
 }
 
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+const isDirectRun = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isDirectRun) {
+  main().catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
+}

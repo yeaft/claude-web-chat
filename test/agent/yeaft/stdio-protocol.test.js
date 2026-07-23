@@ -5,7 +5,6 @@ import {
   extractPrompt,
   JsonlInput,
   runStreamTurn,
-  selectedSkills,
 } from '../../../agent/yeaft/stdio-protocol.js';
 
 function captureWriter() {
@@ -47,6 +46,23 @@ describe('Yeaft stdio stream-json protocol', () => {
     stdin.end();
   });
 
+  it('rejects duplicate AskUser request and response ids instead of overwriting correlation state', async () => {
+    const pendingInput = new PassThrough();
+    const pending = new JsonlInput(pendingInput);
+    const first = pending.waitForAnswer('req-duplicate');
+    await expect(pending.waitForAnswer('req-duplicate')).rejects.toThrow('Duplicate AskUser request_id');
+    pendingInput.write(`${JSON.stringify({ type: 'ask_user_response', request_id: 'req-duplicate', answer: 'yes' })}\n`);
+    await expect(first).resolves.toBe('yes');
+    pendingInput.end();
+
+    const earlyInput = new PassThrough();
+    const early = new JsonlInput(earlyInput);
+    const response = JSON.stringify({ type: 'ask_user_response', request_id: 'req-early', answer: 'yes' });
+    earlyInput.write(`${response}\n${response}\n`);
+    await expect(early.waitForAnswer('req-early')).rejects.toThrow('Duplicate AskUser response request_id');
+    earlyInput.end();
+  });
+
   it('rejects a pending prompt read when stdin contains invalid JSON', async () => {
     const stdin = new PassThrough();
     const input = new JsonlInput(stdin);
@@ -55,25 +71,13 @@ describe('Yeaft stdio stream-json protocol', () => {
     await expect(pending).rejects.toThrow('Invalid stream-json input');
   });
 
-  it('reports explicit and automatically matched skills', () => {
-    const rows = [{ name: 'review', description: 'Review code' }];
-    const manager = {
-      has: name => name === 'review',
-      list: () => rows,
-      findRelevant: () => [{ name: 'review', description: 'Review code', _tier: 'project' }],
-    };
-    expect(selectedSkills(manager, '/review now')).toEqual([{ ...rows[0], explicit: true }]);
-    expect(selectedSkills(manager, 'please inspect')).toEqual([
-      expect.objectContaining({ name: 'review', explicit: false, tier: 'project' }),
-    ]);
-  });
-
   it('maps text, TodoWrite, tools, usage and final result', async () => {
     const { events: output, write } = captureWriter();
     const engine = {
       query: () => events([
         { type: 'turn_open', turnId: 'turn-1', threadId: 'main', at: 10 },
         { type: 'text_delta', text: 'Working' },
+        { type: 'skill_loaded', skill: { name: 'review', explicit: true } },
         { type: 'tool_call', id: 'todo-1', name: 'TodoWrite', input: { todos: [{ content: 'Test', status: 'in_progress', activeForm: 'Testing' }] } },
         { type: 'tool_start', id: 'todo-1', name: 'TodoWrite', input: { todos: [] } },
         { type: 'tool_end', id: 'todo-1', name: 'TodoWrite', output: '{"success":true}', isError: false },
@@ -95,6 +99,7 @@ describe('Yeaft stdio stream-json protocol', () => {
 
     expect(output).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'assistant', subtype: 'text_delta', turn_id: 'turn-1' }),
+      expect.objectContaining({ type: 'skill', subtype: 'loaded', skill: { name: 'review', explicit: true } }),
       expect.objectContaining({ type: 'todo', subtype: 'update', tool_use_id: 'todo-1' }),
       expect.objectContaining({ type: 'tool', subtype: 'result', is_error: false }),
       expect.objectContaining({ type: 'usage', usage: expect.objectContaining({ total_tokens: 19 }) }),
@@ -106,6 +111,44 @@ describe('Yeaft stdio stream-json protocol', () => {
       result: 'Working',
       usage: { input_tokens: 10, output_tokens: 4, cache_read_input_tokens: 3, cache_creation_input_tokens: 2, total_input_tokens: 15, total_tokens: 19 },
     });
+  });
+
+  it('accumulates usage without double counting provider-included cache tokens', async () => {
+    const { write } = captureWriter();
+    const engine = {
+      query: () => events([
+        { type: 'turn_open', turnId: 'turn-usage' },
+        { type: 'usage', inputTokens: 10, outputTokens: 2, cacheReadTokens: 4, cacheWriteTokens: 1, cacheTokensAreIncludedInInput: true },
+        { type: 'usage', inputTokens: 3, outputTokens: 1, cacheReadTokens: 2, cacheWriteTokens: 0, cacheTokensAreIncludedInInput: false },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]),
+    };
+    const result = await runStreamTurn({ engine, prompt: 'count', sessionId: 'session-usage', write });
+    expect(result.usage).toEqual({
+      input_tokens: 13,
+      output_tokens: 3,
+      cache_read_input_tokens: 6,
+      cache_creation_input_tokens: 1,
+      total_input_tokens: 15,
+      total_tokens: 18,
+    });
+  });
+
+  it('maps authoritative missing-skill errors from the engine', async () => {
+    const { events: output, write } = captureWriter();
+    const engine = {
+      query: () => events([
+        { type: 'turn_open', turnId: 'turn-skill' },
+        { type: 'skill_error', skillName: 'missing', message: 'Requested skill "missing" was not found.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]),
+    };
+    await runStreamTurn({ engine, prompt: '/skill:missing inspect', sessionId: 'session-skill', write });
+    expect(output).toContainEqual(expect.objectContaining({
+      type: 'skill',
+      subtype: 'error',
+      skill_name: 'missing',
+    }));
   });
 
   it('round-trips AskUser through JSONL while the engine is running', async () => {

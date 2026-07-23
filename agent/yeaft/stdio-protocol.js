@@ -44,6 +44,7 @@ export class JsonlInput {
   #promptWaiters = [];
   #answers = new Map();
   #answerWaiters = new Map();
+  #answerRequestIds = new Set();
   #closed = false;
   #error = null;
 
@@ -73,7 +74,11 @@ export class JsonlInput {
       if (waiter) {
         this.#answerWaiters.delete(requestId);
         waiter.resolve(value);
+      } else if (this.#answerRequestIds.has(requestId)) {
+        this.#error = new Error(`Duplicate AskUser response request_id: ${requestId}`);
+        this.#close();
       } else {
+        this.#answerRequestIds.add(requestId);
         this.#answers.set(requestId, value);
       }
       return;
@@ -109,37 +114,27 @@ export class JsonlInput {
   }
 
   async waitForAnswer(requestId) {
+    if (!requestId || typeof requestId !== 'string') {
+      throw new Error('AskUser request_id must be a non-empty string');
+    }
+    if (this.#error) throw this.#error;
     if (this.#answers.has(requestId)) {
       const value = this.#answers.get(requestId);
       this.#answers.delete(requestId);
       return value;
     }
+    if (this.#answerRequestIds.has(requestId)) {
+      throw new Error(`Duplicate AskUser request_id: ${requestId}`);
+    }
     if (this.#error) throw this.#error;
     if (this.#closed) throw new Error('stdin closed before AskUser response');
+    this.#answerRequestIds.add(requestId);
     return new Promise((resolve, reject) => this.#answerWaiters.set(requestId, { resolve, reject }));
   }
 
   close() {
     this.#rl.close();
   }
-}
-
-export function selectedSkills(skillManager, prompt) {
-  if (!skillManager || !prompt) return [];
-  const explicit = prompt.match(/^\/(?:skill|yeaft-skills):([^\s]+)(?:\s+|$)/)
-    || prompt.match(/^\/([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\s+|$)/);
-  if (explicit && skillManager.has?.(explicit[1])) {
-    const skill = skillManager.list().find(item => item.name === explicit[1]);
-    return skill ? [{ ...skill, explicit: true }] : [];
-  }
-  return (skillManager.findRelevant?.(prompt) || []).map(skill => ({
-    name: skill.name,
-    description: skill.description || '',
-    trigger: skill.trigger || '',
-    category: skill.category,
-    tier: skill._tier,
-    explicit: false,
-  }));
 }
 
 export async function runStreamTurn({
@@ -150,7 +145,6 @@ export async function runStreamTurn({
   workDir = process.cwd(),
   model = null,
   modelEffort = null,
-  skillManager = null,
   input = null,
   write,
   getCurrentTodos = null,
@@ -162,10 +156,6 @@ export async function runStreamTurn({
   let stopReason = 'end_turn';
   let failed = null;
   const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheInputDeltaTokens: 0 };
-
-  for (const skill of selectedSkills(skillManager, prompt)) {
-    write({ type: 'skill', subtype: 'loaded', session_id: sessionId, turn_id: clientTurnId, skill });
-  }
 
   const askUser = async ({ question, options }) => {
     const requestId = randomUUID();
@@ -214,6 +204,12 @@ export async function runStreamTurn({
           break;
         case 'thinking_delta':
           write({ type: 'assistant', subtype: 'thinking_delta', session_id: sessionId, turn_id: turnId, delta: { type: 'thinking_delta', thinking: event.text || '' } });
+          break;
+        case 'skill_loaded':
+          write({ type: 'skill', subtype: 'loaded', session_id: sessionId, turn_id: turnId, skill: event.skill });
+          break;
+        case 'skill_error':
+          write({ type: 'skill', subtype: 'error', session_id: sessionId, turn_id: turnId, skill_name: event.skillName, error: event.message });
           break;
         case 'tool_call':
           write({ type: 'assistant', subtype: 'tool_use', session_id: sessionId, turn_id: turnId, content: [{ type: 'tool_use', id: event.id, name: event.name, input: event.input }] });
