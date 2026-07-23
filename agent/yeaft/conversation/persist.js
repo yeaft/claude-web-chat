@@ -698,61 +698,31 @@ class SegmentStore {
   readAll({ beforeSeq = Infinity, afterSeq = -Infinity, desc = false, includeCold = false } = {}) {
     if (!this.hasData()) return [];
     const idx = this.loadIndex();
-    const hasFoldedRows = Array.isArray(idx.foldedMessageIds) && idx.foldedMessageIds.length > 0;
     const segments = (idx.segments || [])
-      .filter(seg => hasFoldedRows || this.#segmentMayContain(seg, beforeSeq, afterSeq))
+      .filter(seg => this.#segmentMayContain(seg, beforeSeq, afterSeq))
       .slice()
       .sort((a, b) => desc ? (b.lastSeq || 0) - (a.lastSeq || 0) : (a.firstSeq || 0) - (b.firstSeq || 0));
     const out = [];
     for (const seg of segments) {
-      const rows = this.#readSegment(seg.file, {
-        beforeSeq: hasFoldedRows ? Infinity : beforeSeq,
-        afterSeq: hasFoldedRows ? -Infinity : afterSeq,
-        desc,
-        includeCold,
-      });
-      out.push(...rows);
+      const rows = this.#readSegment(seg.file, { beforeSeq, afterSeq, desc, includeCold });
+      out.push(...applyFoldedMessageTombstones(rows, idx.foldedMessageIds));
     }
-    const visibleRows = applyFoldedMessageTombstones(out, idx.foldedMessageIds)
-      .filter(row => {
-        const seq = parseSeqFromId(row?.id);
-        if (Number.isFinite(beforeSeq) && seq >= beforeSeq) return false;
-        if (Number.isFinite(afterSeq) && seq <= afterSeq) return false;
-        return true;
-      });
     return desc
-      ? visibleRows.sort((a, b) => parseSeqFromId(b.id) - parseSeqFromId(a.id))
-      : visibleRows.sort(compareMessagesBySeq);
+      ? out.sort((a, b) => parseSeqFromId(b.id) - parseSeqFromId(a.id))
+      : out.sort(compareMessagesBySeq);
   }
 
   *scan({ beforeSeq = Infinity, afterSeq = -Infinity, desc = false, includeCold = false } = {}) {
     if (!this.hasData()) return;
     const idx = this.loadIndex();
-    const hasFoldedRows = Array.isArray(idx.foldedMessageIds) && idx.foldedMessageIds.length > 0;
     const segments = (idx.segments || [])
-      .filter(seg => hasFoldedRows || this.#segmentMayContain(seg, beforeSeq, afterSeq))
+      .filter(seg => this.#segmentMayContain(seg, beforeSeq, afterSeq))
       .slice()
       .sort((a, b) => desc ? (b.lastSeq || 0) - (a.lastSeq || 0) : (a.firstSeq || 0) - (b.firstSeq || 0));
-    const rows = [];
     for (const seg of segments) {
-      rows.push(...this.#readSegment(seg.file, {
-        beforeSeq: hasFoldedRows ? Infinity : beforeSeq,
-        afterSeq: hasFoldedRows ? -Infinity : afterSeq,
-        desc,
-        includeCold,
-      }));
+      const rows = this.#readSegment(seg.file, { beforeSeq, afterSeq, desc, includeCold });
+      yield* applyFoldedMessageTombstones(rows, idx.foldedMessageIds);
     }
-    const visibleRows = applyFoldedMessageTombstones(rows, idx.foldedMessageIds)
-      .filter(row => {
-        const seq = parseSeqFromId(row?.id);
-        if (Number.isFinite(beforeSeq) && seq >= beforeSeq) return false;
-        if (Number.isFinite(afterSeq) && seq <= afterSeq) return false;
-        return true;
-      });
-    visibleRows.sort(desc
-      ? (a, b) => parseSeqFromId(b.id) - parseSeqFromId(a.id)
-      : compareMessagesBySeq);
-    yield* visibleRows;
   }
 
   count(kind = 'hot') {

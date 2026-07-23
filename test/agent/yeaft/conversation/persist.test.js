@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { ConversationStore, parseMessage, estimateTokens } from '../../../../agent/yeaft/conversation/persist.js';
@@ -213,6 +213,53 @@ Hello`;
       expect.objectContaining({ id: user.id }),
       expect.objectContaining({ id: reflection.id, _reflection: true }),
     ]);
+  });
+
+  it('keeps bounded recent reads lazy after folding across multiple segments', () => {
+    const store = new ConversationStore(TEST_DIR);
+    const sessionId = 'session_fold_bounded';
+    const foldedOld = store.append({
+      role: 'user',
+      content: `old arc ${'x'.repeat(1024 * 1024)}`,
+      sessionId,
+    });
+    store.append({ role: 'user', content: 'older boundary', sessionId });
+    store.append({
+      role: 'assistant',
+      content: `older response ${'y'.repeat(1024 * 1024)}`,
+      sessionId,
+    });
+    store.append({ role: 'user', content: 'previous turn', sessionId });
+    store.append({ role: 'assistant', content: 'previous response', sessionId });
+    const currentUser = store.append({ role: 'user', content: 'current turn', sessionId });
+    const currentAssistant = store.append({ role: 'assistant', content: 'current response', sessionId });
+    store.foldMessages([foldedOld], {
+      role: 'user',
+      content: 'The old arc has been folded.',
+      sessionId,
+      _reflection: true,
+    });
+
+    const conversationDir = join(TEST_DIR, 'sessions', sessionId, 'conversation');
+    const segmentDir = join(conversationDir, 'segments');
+    const segments = readdirSync(segmentDir).filter(file => file.endsWith('.jsonl')).sort();
+    expect(segments).toHaveLength(3);
+    expect(store.loadOlderBySession(sessionId, currentUser.seq, 10).messages.map(row => row.id))
+      .not.toContain(foldedOld.id);
+
+    // Keep the already-loaded index and matching file sizes, then make the
+    // oldest segment unreadable. A bounded newest-to-oldest scan must finish the
+    // recent turn window before opening this path. Eager materialization fails.
+    const oldestSegmentPath = join(segmentDir, segments[0]);
+    chmodSync(oldestSegmentPath, 0o000);
+    try {
+      expect(store.loadRecentBySession(sessionId, 1).map(row => row.id)).toEqual([
+        currentUser.id,
+        currentAssistant.id,
+      ]);
+    } finally {
+      chmodSync(oldestSegmentPath, 0o644);
+    }
   });
 
   it('should parse turnId for persisted Yeaft assistant rows', () => {
