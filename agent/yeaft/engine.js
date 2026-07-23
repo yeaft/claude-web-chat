@@ -1400,6 +1400,10 @@ export class Engine {
     if (Array.isArray(message.thinkingBlocks) && message.thinkingBlocks.length > 0) record.thinkingBlocks = message.thinkingBlocks;
     if (message.isError) record.isError = true;
     if (message.imageAssetAnchor) record.imageAssetAnchor = true;
+    if (message._reflection) record._reflection = true;
+    if (Array.isArray(message.foldedMessageIds) && message.foldedMessageIds.length > 0) {
+      record.foldedMessageIds = [...message.foldedMessageIds];
+    }
     if (turnId && (message.role === 'assistant' || message.role === 'tool')) record.turnId = turnId;
     if (this.#vpId && (message.role === 'assistant' || message.role === 'tool')) record.speakerVpId = this.#vpId;
     if (incomplete) record.incomplete = true;
@@ -1416,6 +1420,17 @@ export class Engine {
     const hasThinking = Array.isArray(message.thinkingBlocks) && message.thinkingBlocks.length > 0;
     if (!hasContent && !hasToolCalls && !hasThinking && message.role !== 'tool') return null;
     return this.#conversationStore.append(this.#conversationRecord(message, context));
+  }
+
+  #persistFoldedRange(messages, startIdx, endIdx, reflection, context = {}) {
+    if (!this.#canPersistConversation() || typeof this.#conversationStore?.foldMessages !== 'function') return null;
+    const persistedRows = (messages || []).slice(startIdx, endIdx + 1)
+      .map(message => message?._persistedMessageId || message?.id)
+      .filter(id => typeof id === 'string' && id)
+      .map(id => ({ id }));
+    if (persistedRows.length === 0) return null;
+    const record = this.#conversationRecord(reflection, context);
+    return this.#conversationStore.foldMessages(persistedRows, record);
   }
 
   /**
@@ -2182,7 +2197,10 @@ export class Engine {
     // reflection; only high context pressure (>=80% of model window)
     // enables the carry-forward rewrite.
     if (groupReflectionAllowed) {
-      yield* this.#applyPendingT2Reflections(conversationMessages, prompt);
+      yield* this.#applyPendingT2Reflections(conversationMessages, prompt, {
+        sessionId: runtimeSessionId,
+        model: this.#config.model,
+      });
     }
 
     // PR-L: track this query()'s tool-arc for reflection.
@@ -2340,6 +2358,18 @@ export class Engine {
       });
       let ttfbMs = null;  // Time to first token
       let responseText = '';
+      let incompleteAssistantPersisted = false;
+      const persistIncompleteAssistantOnce = (reason) => {
+        if (incompleteAssistantPersisted || !responseText) return null;
+        incompleteAssistantPersisted = true;
+        return this.#persistConversationMessage({ role: 'assistant', content: responseText }, {
+          sessionId: runtimeSessionId,
+          turnId: vpTurnId || queryTurnId,
+          model: currentModel,
+          incomplete: true,
+          stopReason: reason,
+        });
+      };
       const toolCalls = [];
       const thinkingBlocks = []; // task-327d: collected from adapter for round-trip
       let stopReason = 'end_turn';
@@ -2689,15 +2719,7 @@ export class Engine {
           || err?.name === 'LLMAbortError'
           || (signal?.aborted && /abort/i.test(err?.message || ''));
         if (earlyIsAbort || signal?.aborted) {
-          if (responseText) {
-            this.#persistConversationMessage({ role: 'assistant', content: responseText }, {
-              sessionId: runtimeSessionId,
-              turnId: vpTurnId || queryTurnId,
-              model: currentModel,
-              incomplete: true,
-              stopReason: 'aborted',
-            });
-          }
+          persistIncompleteAssistantOnce('aborted');
           traceRequest('llm.request_abort', {
             durationMs: perfNowMs() - requestPerfStart,
             ok: false,
@@ -2768,6 +2790,7 @@ export class Engine {
             };
             const slept = await sleepWithAbort(delayMs, signal);
             if (!slept || signal?.aborted) {
+              persistIncompleteAssistantOnce('aborted');
               yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
               yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
               break;
@@ -2788,15 +2811,7 @@ export class Engine {
           continue;
         }
 
-        if (responseText) {
-          this.#persistConversationMessage({ role: 'assistant', content: responseText }, {
-            sessionId: runtimeSessionId,
-            turnId: vpTurnId || queryTurnId,
-            model: currentModel,
-            incomplete: true,
-            stopReason: 'error',
-          });
-        }
+        persistIncompleteAssistantOnce('error');
 
         this.#trace.endTurn(turnId, {
           model: currentModel,
@@ -2950,19 +2965,25 @@ export class Engine {
             : '',
         });
       }
-      if (displayImageAnchorMessage) assistantMsg.imageAssetAnchor = true;
+      const previousImageAnchorMessage = displayImageAnchorMessage;
+      if (previousImageAnchorMessage && typeof this.#conversationStore?.update === 'function') {
+        const cleared = this.#conversationStore.update(previousImageAnchorMessage, { imageAssetAnchor: false });
+        if (cleared) displayImageAnchorMessage = null;
+      }
+      if (previousImageAnchorMessage && displayImageAnchorMessage === null) assistantMsg.imageAssetAnchor = true;
       const persistedAssistantMessage = this.#persistConversationMessage(assistantMsg, {
         sessionId: runtimeSessionId,
         turnId: vpTurnId || queryTurnId,
         model: currentModel,
       });
       if (persistedAssistantMessage) {
-        if (displayImageAnchorMessage && displayImageAnchorMessage.id !== persistedAssistantMessage.id
-            && typeof this.#conversationStore?.update === 'function') {
-          this.#conversationStore.update(displayImageAnchorMessage, { imageAssetAnchor: false });
-        }
+        assistantMsg._persistedMessageId = persistedAssistantMessage.id;
         if (assistantMsg.imageAssetAnchor) displayImageAnchorMessage = persistedAssistantMessage;
         lastPersistedAssistantMessage = persistedAssistantMessage;
+      }
+      if (previousImageAnchorMessage && displayImageAnchorMessage === null && !persistedAssistantMessage) {
+        const restored = this.#conversationStore.update(previousImageAnchorMessage, { imageAssetAnchor: true });
+        displayImageAnchorMessage = restored || null;
       }
 
       // Emit `loop` event for the debug panel.
@@ -3395,16 +3416,30 @@ export class Engine {
             if (displayImages.some(image => image.deliveryQueued === true)
                 && lastPersistedAssistantMessage
                 && typeof this.#conversationStore?.update === 'function') {
-              if (displayImageAnchorMessage
-                  && displayImageAnchorMessage.id !== lastPersistedAssistantMessage.id) {
-                this.#conversationStore.update(displayImageAnchorMessage, { imageAssetAnchor: false });
-              }
-              const anchored = this.#conversationStore.update(lastPersistedAssistantMessage, {
-                imageAssetAnchor: true,
-              });
-              if (anchored) {
-                displayImageAnchorMessage = anchored;
-                lastPersistedAssistantMessage = anchored;
+              const priorAnchor = displayImageAnchorMessage;
+              if (priorAnchor && priorAnchor.id !== lastPersistedAssistantMessage.id) {
+                const cleared = this.#conversationStore.update(priorAnchor, { imageAssetAnchor: false });
+                if (cleared) {
+                  const anchored = this.#conversationStore.update(lastPersistedAssistantMessage, {
+                    imageAssetAnchor: true,
+                  });
+                  if (anchored) {
+                    displayImageAnchorMessage = anchored;
+                    lastPersistedAssistantMessage = anchored;
+                  } else {
+                    displayImageAnchorMessage = this.#conversationStore.update(priorAnchor, {
+                      imageAssetAnchor: true,
+                    }) || null;
+                  }
+                }
+              } else if (!priorAnchor) {
+                const anchored = this.#conversationStore.update(lastPersistedAssistantMessage, {
+                  imageAssetAnchor: true,
+                });
+                if (anchored) {
+                  displayImageAnchorMessage = anchored;
+                  lastPersistedAssistantMessage = anchored;
+                }
               }
             }
           } catch (err) {
@@ -3479,7 +3514,10 @@ export class Engine {
           turnId: vpTurnId || queryTurnId,
           model: currentModel,
         });
-        if (persistedToolMessage) this.#persistedToolMessages.set(tc.id, persistedToolMessage);
+        if (persistedToolMessage) {
+          toolMessage._persistedMessageId = persistedToolMessage.id;
+          this.#persistedToolMessages.set(tc.id, persistedToolMessage);
+        }
 
         // PR-L: persist this execution to the exec-log for fallback-stub
         // and duplicate-call detection. Best-effort — disk failures are
@@ -3593,6 +3631,20 @@ export class Engine {
           const next = collapseRangeToReflection(
             conversationMessages, batchStart, batchEnd, content,
           );
+          const reflectionMessage = next[batchStart];
+          const durableRowsInRange = conversationMessages
+            .slice(batchStart, batchEnd + 1)
+            .some(message => message?._persistedMessageId || message?.id);
+          const persistedReflection = this.#persistFoldedRange(
+            conversationMessages,
+            batchStart,
+            batchEnd,
+            reflectionMessage,
+            { sessionId: runtimeSessionId, model: currentModel },
+          );
+          if (durableRowsInRange && !persistedReflection) {
+            throw new Error('T1 reflection could not publish its durable range replacement');
+          }
           conversationMessages.length = 0;
           for (const m of next) conversationMessages.push(m);
           // After collapse: the just-inserted reflection lives at
@@ -3726,8 +3778,9 @@ export class Engine {
    *
    * @param {Array} conversationMessages
    * @param {string} originalUserMsg
+   * @param {{sessionId?: string, model?: string}} context
    */
-  async *#applyPendingT2Reflections(conversationMessages, originalUserMsg) {
+  async *#applyPendingT2Reflections(conversationMessages, originalUserMsg, context = {}) {
     if (this.#pendingT2.size === 0) return;
     // Drain in insertion order (Map preserves it). We process all entries
     // because the user could send multiple prompts back-to-back before
@@ -3769,8 +3822,20 @@ export class Engine {
         continue;
       }
 
-      // Rewrite history.
+      // Rewrite history and publish the same logical replacement to disk.
       const next = collapseRangeToReflection(conversationMessages, startIdx, endIdx, content);
+      const reflectionMessage = next[startIdx];
+      const durableRowsInRange = conversationMessages
+        .slice(startIdx, endIdx + 1)
+        .some(message => message?._persistedMessageId || message?.id);
+      const persistedReflection = this.#persistFoldedRange(
+        conversationMessages,
+        startIdx,
+        endIdx,
+        reflectionMessage,
+        context,
+      );
+      if (durableRowsInRange && !persistedReflection) continue;
       // Mutate in place so caller's reference stays valid.
       conversationMessages.length = 0;
       for (const m of next) conversationMessages.push(m);

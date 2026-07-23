@@ -77,6 +77,7 @@ function emptySegmentIndex() {
     lastMessageId: null,
     activeSegment: SEGMENT_FIRST_NAME,
     segments: [],
+    foldedMessageIds: [],
   };
 }
 
@@ -90,6 +91,26 @@ function normalizeSegmentRecord(msg) {
   if (!Number.isFinite(seq)) return null;
   const out = { ...msg, seq, id: msg.id || seqId(seq) };
   return out;
+}
+
+function foldedMessageIdsFrom(rows) {
+  const ids = new Set();
+  for (const row of rows || []) {
+    if (!row?._reflection || !Array.isArray(row.foldedMessageIds)) continue;
+    for (const id of row.foldedMessageIds) {
+      if (typeof id === 'string' && id) ids.add(id);
+    }
+  }
+  return ids;
+}
+
+function applyFoldedMessageTombstones(rows, additionalIds = []) {
+  const foldedIds = foldedMessageIdsFrom(rows);
+  for (const id of additionalIds || []) {
+    if (typeof id === 'string' && id) foldedIds.add(id);
+  }
+  if (foldedIds.size === 0) return rows;
+  return rows.filter(row => !foldedIds.has(row?.id));
 }
 
 function segmentNameForNumber(n) {
@@ -626,8 +647,9 @@ class SegmentStore {
         idx = null;
       }
     }
-    this.index = this.#normalizeIndex(idx || this.#rebuildIndex());
-    if (!existsSync(this.indexPath) && this.hasData()) this.saveIndex();
+    const indexWasStale = idx && !this.#indexMatchesDisk(idx);
+    this.index = this.#normalizeIndex(!idx || indexWasStale ? this.#rebuildIndex() : idx);
+    if ((!existsSync(this.indexPath) || indexWasStale) && this.hasData()) this.saveIndex();
     return this.index;
   }
 
@@ -664,34 +686,73 @@ class SegmentStore {
     idx.totalMessages = (idx.totalMessages || 0) + 1;
     idx.lastMessageId = msg.id || null;
     idx.nextSeq = Math.max(Number(idx.nextSeq) || 1, seq + 1);
+    if (msg._reflection && Array.isArray(msg.foldedMessageIds)) {
+      idx.foldedMessageIds = Array.from(new Set([
+        ...(Array.isArray(idx.foldedMessageIds) ? idx.foldedMessageIds : []),
+        ...msg.foldedMessageIds.filter(id => typeof id === 'string' && id),
+      ]));
+    }
     this.saveIndex();
   }
 
   readAll({ beforeSeq = Infinity, afterSeq = -Infinity, desc = false, includeCold = false } = {}) {
     if (!this.hasData()) return [];
     const idx = this.loadIndex();
+    const hasFoldedRows = Array.isArray(idx.foldedMessageIds) && idx.foldedMessageIds.length > 0;
     const segments = (idx.segments || [])
-      .filter(seg => this.#segmentMayContain(seg, beforeSeq, afterSeq))
+      .filter(seg => hasFoldedRows || this.#segmentMayContain(seg, beforeSeq, afterSeq))
       .slice()
       .sort((a, b) => desc ? (b.lastSeq || 0) - (a.lastSeq || 0) : (a.firstSeq || 0) - (b.firstSeq || 0));
     const out = [];
     for (const seg of segments) {
-      const rows = this.#readSegment(seg.file, { beforeSeq, afterSeq, desc, includeCold });
+      const rows = this.#readSegment(seg.file, {
+        beforeSeq: hasFoldedRows ? Infinity : beforeSeq,
+        afterSeq: hasFoldedRows ? -Infinity : afterSeq,
+        desc,
+        includeCold,
+      });
       out.push(...rows);
     }
-    return desc ? out.sort((a, b) => parseSeqFromId(b.id) - parseSeqFromId(a.id)) : out.sort(compareMessagesBySeq);
+    const visibleRows = applyFoldedMessageTombstones(out, idx.foldedMessageIds)
+      .filter(row => {
+        const seq = parseSeqFromId(row?.id);
+        if (Number.isFinite(beforeSeq) && seq >= beforeSeq) return false;
+        if (Number.isFinite(afterSeq) && seq <= afterSeq) return false;
+        return true;
+      });
+    return desc
+      ? visibleRows.sort((a, b) => parseSeqFromId(b.id) - parseSeqFromId(a.id))
+      : visibleRows.sort(compareMessagesBySeq);
   }
 
   *scan({ beforeSeq = Infinity, afterSeq = -Infinity, desc = false, includeCold = false } = {}) {
     if (!this.hasData()) return;
     const idx = this.loadIndex();
+    const hasFoldedRows = Array.isArray(idx.foldedMessageIds) && idx.foldedMessageIds.length > 0;
     const segments = (idx.segments || [])
-      .filter(seg => this.#segmentMayContain(seg, beforeSeq, afterSeq))
+      .filter(seg => hasFoldedRows || this.#segmentMayContain(seg, beforeSeq, afterSeq))
       .slice()
       .sort((a, b) => desc ? (b.lastSeq || 0) - (a.lastSeq || 0) : (a.firstSeq || 0) - (b.firstSeq || 0));
+    const rows = [];
     for (const seg of segments) {
-      for (const row of this.#readSegment(seg.file, { beforeSeq, afterSeq, desc, includeCold })) yield row;
+      rows.push(...this.#readSegment(seg.file, {
+        beforeSeq: hasFoldedRows ? Infinity : beforeSeq,
+        afterSeq: hasFoldedRows ? -Infinity : afterSeq,
+        desc,
+        includeCold,
+      }));
     }
+    const visibleRows = applyFoldedMessageTombstones(rows, idx.foldedMessageIds)
+      .filter(row => {
+        const seq = parseSeqFromId(row?.id);
+        if (Number.isFinite(beforeSeq) && seq >= beforeSeq) return false;
+        if (Number.isFinite(afterSeq) && seq <= afterSeq) return false;
+        return true;
+      });
+    visibleRows.sort(desc
+      ? (a, b) => parseSeqFromId(b.id) - parseSeqFromId(a.id)
+      : compareMessagesBySeq);
+    yield* visibleRows;
   }
 
   count(kind = 'hot') {
@@ -755,6 +816,19 @@ class SegmentStore {
     this.index = emptySegmentIndex();
   }
 
+  #indexMatchesDisk(idx) {
+    if (!existsSync(this.segmentDir)) return !(idx?.segments?.length > 0);
+    const diskFiles = readdirSync(this.segmentDir).filter(file => file.endsWith('.jsonl')).sort();
+    const indexedSegments = Array.isArray(idx?.segments) ? idx.segments : [];
+    const indexedFiles = indexedSegments.map(segment => segment?.file).filter(Boolean).sort();
+    if (diskFiles.length !== indexedFiles.length
+        || diskFiles.some((file, index) => file !== indexedFiles[index])) return false;
+    return indexedSegments.every(segment => {
+      const path = join(this.segmentDir, segment.file);
+      return existsSync(path) && statSync(path).size === Number(segment.bytes);
+    });
+  }
+
   #normalizeIndex(idx) {
     const out = { ...emptySegmentIndex(), ...(idx || {}) };
     out.segments = Array.isArray(out.segments) ? out.segments.filter(s => s && s.file) : [];
@@ -763,6 +837,9 @@ class SegmentStore {
     out.nextSeq = Math.max(Number(out.nextSeq) || 1, maxSeq + 1);
     out.activeSegment = out.activeSegment || out.segments[out.segments.length - 1]?.file || SEGMENT_FIRST_NAME;
     out.totalMessages = Number(out.totalMessages) || out.segments.reduce((sum, seg) => sum + (Number(seg.count) || 0), 0);
+    out.foldedMessageIds = Array.isArray(out.foldedMessageIds)
+      ? Array.from(new Set(out.foldedMessageIds.filter(id => typeof id === 'string' && id)))
+      : [];
     return out;
   }
 
@@ -784,10 +861,12 @@ class SegmentStore {
       };
       idx.segments.push(seg);
       idx.totalMessages += rows.length;
+      idx.foldedMessageIds.push(...foldedMessageIdsFrom(rows));
       idx.lastMessageId = rows[rows.length - 1]?.id || idx.lastMessageId;
       idx.nextSeq = Math.max(idx.nextSeq, seg.lastSeq + 1);
       idx.activeSegment = file;
     }
+    idx.foldedMessageIds = Array.from(new Set(idx.foldedMessageIds));
     return idx;
   }
 
@@ -981,6 +1060,25 @@ export class ConversationStore {
       }
       throw err;
     }
+  }
+
+  /**
+   * Atomically publish a logical range replacement for tool folding.
+   *
+   * The original rows stay append-only on disk. A single reflection row owns
+   * their ids as tombstones, so readers either observe the complete old arc or
+   * the complete reflection — never a half-rewritten tool pair.
+   *
+   * @param {object[]} messages — persisted rows being folded
+   * @param {object} reflection — synthetic `_reflection` user row
+   * @returns {object|null}
+   */
+  foldMessages(messages, reflection) {
+    const foldedMessageIds = Array.from(new Set(
+      (messages || []).map(message => message?.id).filter(id => typeof id === 'string' && id),
+    ));
+    if (foldedMessageIds.length === 0 || !reflection || reflection._reflection !== true) return null;
+    return this.append({ ...reflection, foldedMessageIds });
   }
 
   /**
@@ -1316,11 +1414,12 @@ export class ConversationStore {
    * @param {number} [turnsLimit=DEFAULT_RECENT_TURNS]
    * @returns {object[]}
    */
-  loadRecentBySession(sessionId, turnsLimit = DEFAULT_RECENT_TURNS) {
+  loadRecentBySession(sessionId, turnsLimit = DEFAULT_RECENT_TURNS, { includeReflections = false } = {}) {
     if (!sessionId) return [];
     if (turnsLimit === Infinity || turnsLimit < 0) {
       const all = this.#loadSessionMessages(sessionId);
-      const filtered = all.filter(m => m && m.sessionId === sessionId && !isHiddenConversationRow(m));
+      const filtered = all.filter(m => m && m.sessionId === sessionId
+        && (!isHiddenConversationRow(m) || (includeReflections && m._reflection === true)));
       return pairSanitize(filtered);
     }
     if (!(turnsLimit > 0)) return [];
@@ -1328,6 +1427,7 @@ export class ConversationStore {
     const { messages, truncated } = this.#loadRecentSessionWindow(sessionId, turnsLimit, {
       roles: null,
       stripAssistantToolCalls: false,
+      includeReflections,
     });
     if (truncated) {
       const hasCompact = this.hasAnyCompactSummaryForSession(sessionId);
@@ -1376,9 +1476,14 @@ export class ConversationStore {
   loadSessionHistoryForVp(sessionId, vpId) {
     if (!sessionId || !vpId) return [];
     const all = this.#loadSessionMessages(sessionId);
+    const foldedIds = foldedMessageIdsFrom(all);
     const out = [];
     for (const m of all) {
-      if (!m || m.sessionId !== sessionId) continue;
+      if (!m || m.sessionId !== sessionId || foldedIds.has(m.id)) continue;
+      if (m._reflection === true) {
+        out.push(m);
+        continue;
+      }
       if (isHiddenConversationRow(m)) continue;
       if (m.role === 'user') {
         out.push(m);
@@ -2372,7 +2477,12 @@ export class ConversationStore {
     return parseMessage(readFileSync(path, 'utf8'));
   }
 
-  #loadRecentSessionWindow(sessionId, turnsLimit, { beforeSeq = Infinity, roles = null, stripAssistantToolCalls = false } = {}) {
+  #loadRecentSessionWindow(sessionId, turnsLimit, {
+    beforeSeq = Infinity,
+    roles = null,
+    stripAssistantToolCalls = false,
+    includeReflections = false,
+  } = {}) {
     const kept = [];
     const pendingBoundaryRows = [];
     let turnsFromEnd = 0;
@@ -2418,7 +2528,7 @@ export class ConversationStore {
       if (!m || m.sessionId !== sessionId) continue;
 
       const boundaryComplete = turnsFromEnd >= turnsLimit;
-      if (isHiddenConversationRow(m)) {
+      if (isHiddenConversationRow(m) && !(includeReflections && m._reflection === true)) {
         if (boundaryComplete) {
           truncated = true;
           break;

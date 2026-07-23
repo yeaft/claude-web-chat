@@ -157,6 +157,64 @@ Hello`;
     expect(loaded).not.toHaveProperty('images');
   });
 
+  it('publishes a folded range atomically and restores only its reflection', () => {
+    const store = new ConversationStore(TEST_DIR);
+    const user = store.append({ role: 'user', content: 'use tools', sessionId: 'session_fold' });
+    const assistant = store.append({
+      role: 'assistant',
+      content: '',
+      sessionId: 'session_fold',
+      turnId: 'turn_fold',
+      toolCalls: [{ id: 'call_fold', name: 'demo', input: {} }],
+    });
+    const tool = store.append({
+      role: 'tool',
+      content: 'raw tool result',
+      sessionId: 'session_fold',
+      turnId: 'turn_fold',
+      toolCallId: 'call_fold',
+    });
+
+    const reflection = store.foldMessages([assistant, tool], {
+      role: 'user',
+      content: 'The previous tool call has been folded.',
+      sessionId: 'session_fold',
+      _reflection: true,
+    });
+
+    expect(reflection).toMatchObject({
+      _reflection: true,
+      foldedMessageIds: [assistant.id, tool.id],
+    });
+    expect(store.loadRecentBySession('session_fold', Infinity)).toEqual([
+      expect.objectContaining({ id: user.id, role: 'user', content: 'use tools' }),
+    ]);
+    expect(store.loadRecentBySession('session_fold', Infinity, { includeReflections: true })).toEqual([
+      expect.objectContaining({ id: user.id, role: 'user', content: 'use tools' }),
+      expect.objectContaining({ id: reflection.id, role: 'user', _reflection: true }),
+    ]);
+
+    const restarted = new ConversationStore(TEST_DIR);
+    expect(restarted.loadRecentBySession('session_fold', Infinity, { includeReflections: true })).toEqual([
+      expect.objectContaining({ id: user.id }),
+      expect.objectContaining({ id: reflection.id, _reflection: true }),
+    ]);
+    expect(restarted.loadOlderBySession('session_fold', reflection.seq, 10).messages).toEqual([
+      expect.objectContaining({ id: user.id }),
+    ]);
+
+    const indexPath = join(TEST_DIR, 'sessions', 'session_fold', 'conversation', 'index.json');
+    const staleIndex = JSON.parse(readFileSync(indexPath, 'utf8'));
+    staleIndex.segments.at(-1).bytes -= 1;
+    staleIndex.foldedMessageIds = [];
+    writeFileSync(indexPath, `${JSON.stringify(staleIndex, null, 2)}\n`);
+    const recovered = new ConversationStore(TEST_DIR);
+    expect(recovered.loadRecentBySession('session_fold', Infinity, { includeReflections: true })).toEqual([
+      expect.objectContaining({ id: user.id }),
+      expect.objectContaining({ id: reflection.id, _reflection: true }),
+    ]);
+  });
+
   it('should parse turnId for persisted Yeaft assistant rows', () => {
     const raw = `---
 id: m0043
