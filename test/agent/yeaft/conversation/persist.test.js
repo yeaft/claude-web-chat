@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { ConversationStore, parseMessage, estimateTokens } from '../../../../agent/yeaft/conversation/persist.js';
@@ -155,6 +155,111 @@ Hello`;
       imageAssetAnchor: true,
     });
     expect(loaded).not.toHaveProperty('images');
+  });
+
+  it('publishes a folded range atomically and restores only its reflection', () => {
+    const store = new ConversationStore(TEST_DIR);
+    const user = store.append({ role: 'user', content: 'use tools', sessionId: 'session_fold' });
+    const assistant = store.append({
+      role: 'assistant',
+      content: '',
+      sessionId: 'session_fold',
+      turnId: 'turn_fold',
+      toolCalls: [{ id: 'call_fold', name: 'demo', input: {} }],
+    });
+    const tool = store.append({
+      role: 'tool',
+      content: 'raw tool result',
+      sessionId: 'session_fold',
+      turnId: 'turn_fold',
+      toolCallId: 'call_fold',
+    });
+
+    const reflection = store.foldMessages([assistant, tool], {
+      role: 'user',
+      content: 'The previous tool call has been folded.',
+      sessionId: 'session_fold',
+      _reflection: true,
+    });
+
+    expect(reflection).toMatchObject({
+      _reflection: true,
+      foldedMessageIds: [assistant.id, tool.id],
+    });
+    expect(store.loadRecentBySession('session_fold', Infinity)).toEqual([
+      expect.objectContaining({ id: user.id, role: 'user', content: 'use tools' }),
+    ]);
+    expect(store.loadRecentBySession('session_fold', Infinity, { includeReflections: true })).toEqual([
+      expect.objectContaining({ id: user.id, role: 'user', content: 'use tools' }),
+      expect.objectContaining({ id: reflection.id, role: 'user', _reflection: true }),
+    ]);
+
+    const restarted = new ConversationStore(TEST_DIR);
+    expect(restarted.loadRecentBySession('session_fold', Infinity, { includeReflections: true })).toEqual([
+      expect.objectContaining({ id: user.id }),
+      expect.objectContaining({ id: reflection.id, _reflection: true }),
+    ]);
+    expect(restarted.loadOlderBySession('session_fold', reflection.seq, 10).messages).toEqual([
+      expect.objectContaining({ id: user.id }),
+    ]);
+
+    const indexPath = join(TEST_DIR, 'sessions', 'session_fold', 'conversation', 'index.json');
+    const staleIndex = JSON.parse(readFileSync(indexPath, 'utf8'));
+    staleIndex.segments.at(-1).bytes -= 1;
+    staleIndex.foldedMessageIds = [];
+    writeFileSync(indexPath, `${JSON.stringify(staleIndex, null, 2)}\n`);
+    const recovered = new ConversationStore(TEST_DIR);
+    expect(recovered.loadRecentBySession('session_fold', Infinity, { includeReflections: true })).toEqual([
+      expect.objectContaining({ id: user.id }),
+      expect.objectContaining({ id: reflection.id, _reflection: true }),
+    ]);
+  });
+
+  it('keeps bounded recent reads lazy after folding across multiple segments', () => {
+    const store = new ConversationStore(TEST_DIR);
+    const sessionId = 'session_fold_bounded';
+    const foldedOld = store.append({
+      role: 'user',
+      content: `old arc ${'x'.repeat(1024 * 1024)}`,
+      sessionId,
+    });
+    store.append({ role: 'user', content: 'older boundary', sessionId });
+    store.append({
+      role: 'assistant',
+      content: `older response ${'y'.repeat(1024 * 1024)}`,
+      sessionId,
+    });
+    store.append({ role: 'user', content: 'previous turn', sessionId });
+    store.append({ role: 'assistant', content: 'previous response', sessionId });
+    const currentUser = store.append({ role: 'user', content: 'current turn', sessionId });
+    const currentAssistant = store.append({ role: 'assistant', content: 'current response', sessionId });
+    store.foldMessages([foldedOld], {
+      role: 'user',
+      content: 'The old arc has been folded.',
+      sessionId,
+      _reflection: true,
+    });
+
+    const conversationDir = join(TEST_DIR, 'sessions', sessionId, 'conversation');
+    const segmentDir = join(conversationDir, 'segments');
+    const segments = readdirSync(segmentDir).filter(file => file.endsWith('.jsonl')).sort();
+    expect(segments).toHaveLength(3);
+    expect(store.loadOlderBySession(sessionId, currentUser.seq, 10).messages.map(row => row.id))
+      .not.toContain(foldedOld.id);
+
+    // Keep the already-loaded index and matching file sizes, then make the
+    // oldest segment unreadable. A bounded newest-to-oldest scan must finish the
+    // recent turn window before opening this path. Eager materialization fails.
+    const oldestSegmentPath = join(segmentDir, segments[0]);
+    chmodSync(oldestSegmentPath, 0o000);
+    try {
+      expect(store.loadRecentBySession(sessionId, 1).map(row => row.id)).toEqual([
+        currentUser.id,
+        currentAssistant.id,
+      ]);
+    } finally {
+      chmodSync(oldestSegmentPath, 0o644);
+    }
   });
 
   it('should parse turnId for persisted Yeaft assistant rows', () => {
@@ -313,6 +418,64 @@ describe('ConversationStore', () => {
       expect(index.totalMessages).toBe(25);
       expect(index.nextSeq).toBe(26);
       expect(index.segments).toHaveLength(1);
+    });
+  });
+
+  describe('update', () => {
+    it('updates one durable row without changing neighboring messages or order', () => {
+      const user = store.append({
+        role: 'user',
+        content: 'run it',
+        sessionId: 'session_update',
+      });
+      const tool = store.append({
+        role: 'tool',
+        content: 'started',
+        sessionId: 'session_update',
+        toolCallId: 'call_update',
+      });
+      const assistant = store.append({
+        role: 'assistant',
+        content: 'waiting',
+        sessionId: 'session_update',
+      });
+
+      const conversationDir = join(TEST_DIR, 'sessions', 'session_update', 'conversation');
+      const untouchedIndex = readFileSync(join(conversationDir, 'index.json'), 'utf8');
+      const updated = store.update(tool, { content: 'started\n\nfinished' });
+
+      expect(updated).toMatchObject({
+        id: tool.id,
+        role: 'tool',
+        content: 'started\n\nfinished',
+        toolCallId: 'call_update',
+      });
+      const durableRows = readFileSync(
+        join(TEST_DIR, 'sessions', 'session_update', 'conversation', 'segments', '000001.jsonl'),
+        'utf8',
+      ).trim().split('\n').map(line => JSON.parse(line));
+      expect(durableRows.map(message => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+      }))).toEqual([
+        { id: user.id, role: 'user', content: 'run it' },
+        { id: tool.id, role: 'tool', content: 'started\n\nfinished' },
+        { id: assistant.id, role: 'assistant', content: 'waiting' },
+      ]);
+      const updatedIndex = JSON.parse(readFileSync(join(conversationDir, 'index.json'), 'utf8'));
+      const originalIndex = JSON.parse(untouchedIndex);
+      expect(updatedIndex).toMatchObject({
+        nextSeq: originalIndex.nextSeq,
+        totalMessages: originalIndex.totalMessages,
+        lastMessageId: originalIndex.lastMessageId,
+      });
+      expect(readdirSync(join(conversationDir, 'segments')).filter(name => name.includes('.tmp.'))).toEqual([]);
+      expect(store.append({
+        role: 'assistant',
+        content: 'done',
+        sessionId: 'session_update',
+      }).id).toBe('m0004');
     });
   });
 
