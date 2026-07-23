@@ -10,6 +10,16 @@ import { searchMessages } from '../conversation/search.js';
 
 const DEFAULT_RESULT_LIMIT = 10;
 const MAX_SNIPPET_CHARS = 1000;
+export const HISTORY_SEARCH_MAX_OUTPUT_BYTES = 32 * 1024;
+
+function truncateUtf8(text, maxBytes) {
+  if (maxBytes <= 0) return '';
+  const buffer = Buffer.from(String(text), 'utf8');
+  if (buffer.length <= maxBytes) return String(text);
+  let end = maxBytes;
+  while (end > 0 && (buffer[end] & 0xc0) === 0x80) end -= 1;
+  return buffer.subarray(0, end).toString('utf8');
+}
 
 function buildSnippet(content, keyword, maxChars = MAX_SNIPPET_CHARS) {
   const text = String(content || '');
@@ -22,6 +32,68 @@ function buildSnippet(content, keyword, maxChars = MAX_SNIPPET_CHARS) {
   const start = Math.max(0, Math.min(matchAt - Math.floor(maxChars / 3), text.length - maxChars));
   const end = Math.min(text.length, start + maxChars);
   return `${start > 0 ? '...' : ''}${text.slice(start, end)}${end < text.length ? '...' : ''}`;
+}
+
+export function serializeHistorySearchOutput(payload, maxBytes = HISTORY_SEARCH_MAX_OUTPUT_BYTES) {
+  const serialize = value => JSON.stringify(value, null, 2);
+  let output = serialize(payload);
+  if (Buffer.byteLength(output, 'utf8') <= maxBytes) return output;
+
+  const originalResultCount = payload.results.length;
+  const bounded = {
+    ...payload,
+    results: [],
+    truncated: true,
+    omittedResults: originalResultCount,
+  };
+
+  for (const result of payload.results) {
+    const candidate = {
+      ...bounded,
+      results: [...bounded.results, result],
+      omittedResults: originalResultCount - bounded.results.length - 1,
+    };
+    const candidateOutput = serialize(candidate);
+    if (Buffer.byteLength(candidateOutput, 'utf8') <= maxBytes) {
+      bounded.results.push(result);
+      bounded.omittedResults -= 1;
+      continue;
+    }
+
+    const emptyContentCandidate = {
+      ...candidate,
+      results: [...bounded.results, { ...result, content: '' }],
+    };
+    const emptyOutput = serialize(emptyContentCandidate);
+    if (Buffer.byteLength(emptyOutput, 'utf8') > maxBytes) break;
+
+    let low = 0;
+    let high = Buffer.byteLength(result.content || '', 'utf8');
+    let best = '';
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const content = truncateUtf8(result.content || '', mid);
+      const partialOutput = serialize({
+        ...candidate,
+        results: [...bounded.results, { ...result, content }],
+      });
+      if (Buffer.byteLength(partialOutput, 'utf8') <= maxBytes) {
+        best = content;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    bounded.results.push({ ...result, content: best });
+    bounded.omittedResults -= 1;
+    break;
+  }
+
+  output = serialize(bounded);
+  if (Buffer.byteLength(output, 'utf8') > maxBytes) {
+    throw new Error('History search output metadata exceeds the 32 KiB budget');
+  }
+  return output;
 }
 
 export default defineTool({
@@ -81,14 +153,14 @@ Results are returned newest-first with a bounded matching snippet and source met
       };
 
       if (results.length === 0) {
-        return JSON.stringify({
+        return serializeHistorySearchOutput({
           results: [],
           message: `No matches found for "${keyword}"`,
           telemetry: searchTelemetry,
         });
       }
 
-      return JSON.stringify({
+      return serializeHistorySearchOutput({
         results: results.map(msg => ({
           messageId: msg.id || null,
           sessionId: msg.sessionId || null,
@@ -101,7 +173,7 @@ Results are returned newest-first with a bounded matching snippet and source met
         totalResults: results.length,
         keyword,
         telemetry: searchTelemetry,
-      }, null, 2);
+      });
     } catch (err) {
       return JSON.stringify({ error: `History search failed: ${err.message}` });
     }

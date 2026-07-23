@@ -454,6 +454,56 @@ describe('HistorySearch tool', () => {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('keeps an exact-budget JSON payload intact and bounds budget+1', async () => {
+    const mod = await import(`${TOOLS_DIR}/history-search.js`);
+    const makePayload = content => ({
+      results: [{ messageId: 'm1', sessionId: 's1', role: 'assistant', content, time: null, source: 'session' }],
+      totalResults: 1,
+      keyword: 'needle',
+      telemetry: { resultCount: 1, scannedFiles: 1, scannedMessages: 1, scannedBytes: 1 },
+    });
+    const emptyBytes = Buffer.byteLength(JSON.stringify(makePayload(''), null, 2), 'utf8');
+    const exactContent = 'x'.repeat(mod.HISTORY_SEARCH_MAX_OUTPUT_BYTES - emptyBytes);
+
+    const exact = mod.serializeHistorySearchOutput(makePayload(exactContent));
+    expect(Buffer.byteLength(exact, 'utf8')).toBe(mod.HISTORY_SEARCH_MAX_OUTPUT_BYTES);
+    expect(JSON.parse(exact)).not.toHaveProperty('truncated');
+
+    const over = mod.serializeHistorySearchOutput(makePayload(`${exactContent}x`));
+    const parsed = JSON.parse(over);
+    expect(Buffer.byteLength(over, 'utf8')).toBeLessThanOrEqual(mod.HISTORY_SEARCH_MAX_OUTPUT_BYTES);
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.omittedResults).toBe(0);
+  });
+
+  it('bounds limit=100 multi-byte results in valid JSON at the execute boundary', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'yeaft-history-search-'));
+    try {
+      const { ConversationStore } = await import('../../agent/yeaft/conversation/persist.js');
+      const mod = await import(`${TOOLS_DIR}/history-search.js`);
+      const store = new ConversationStore(tmpDir);
+      for (let i = 0; i < 100; i += 1) {
+        store.append({
+          role: i % 2 === 0 ? 'assistant' : 'developer',
+          content: `命中词${'界'.repeat(2000)}`,
+          time: new Date(Date.UTC(2026, 6, 23, 0, 0, i)).toISOString(),
+          sessionId: 'session_search',
+        });
+      }
+
+      const output = await mod.default.execute({ keyword: '命中词', limit: 100 }, { yeaftDir: tmpDir });
+      const result = JSON.parse(output);
+      expect(Buffer.byteLength(output, 'utf8')).toBeLessThanOrEqual(mod.HISTORY_SEARCH_MAX_OUTPUT_BYTES);
+      expect(output).not.toContain('\ufffd');
+      expect(result.truncated).toBe(true);
+      expect(result.omittedResults).toBeGreaterThan(0);
+      expect(result.results.length + result.omittedResults).toBe(100);
+      expect(result.telemetry).toMatchObject({ resultCount: 100, scannedFiles: 1, scannedMessages: 100 });
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ──────────────────────────────────────────────
