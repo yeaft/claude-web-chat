@@ -12,6 +12,12 @@ import {
   trackOverlayPointerUp,
 } from '../utils/overlay-dismiss.js';
 
+function invalidateActionRunOpen(target) {
+  const generation = (Number(target?.actionRunOpenGeneration) || 0) + 1;
+  if (target) target.actionRunOpenGeneration = generation;
+  return generation;
+}
+
 export default {
   name: 'WorkCenterPage',
   components: { WorkCenterActionDetail, WorkCenterSettingsModal, LlmTab },
@@ -205,6 +211,7 @@ export default {
     agentId: {
       immediate: true,
       handler(id, previousId) {
+        invalidateActionRunOpen(this);
         this.createGeneration = (Number(this.createGeneration) || 0) + 1;
         this.saving = false;
         this.selectedId = null;
@@ -246,6 +253,7 @@ export default {
         if (!actions.some(action => action.id === this.selectedActionId)) {
           const nextActionId = detail.currentActionId || actions[0]?.id || null;
           if (nextActionId !== this.selectedActionId) {
+            invalidateActionRunOpen(this);
             this.resetActionComposer();
             this.previewingAttachmentId = null;
             this.attachmentPreviewError = '';
@@ -257,6 +265,7 @@ export default {
     },
   },
   beforeUnmount() {
+    invalidateActionRunOpen(this);
     if (this.boardQueryTimer) clearTimeout(this.boardQueryTimer);
   },
   mounted() {
@@ -367,6 +376,7 @@ export default {
       this.workItemMessageSending = false;
     },
     openWorkItem(itemId) {
+      invalidateActionRunOpen(this);
       this.selectedId = itemId;
       this.selectedActionId = null;
       this.narrowPane = 'actions';
@@ -396,6 +406,7 @@ export default {
     },
     selectAction(action) {
       if (this.selectedActionId !== action.id) {
+        invalidateActionRunOpen(this);
         this.resetActionComposer();
         this.previewingAttachmentId = null;
         this.attachmentPreviewError = '';
@@ -450,8 +461,7 @@ export default {
       ).catch(() => null);
     },
     async openActionRun(run, resolve) {
-      const openGeneration = (this.actionRunOpenGeneration || 0) + 1;
-      this.actionRunOpenGeneration = openGeneration;
+      const openGeneration = invalidateActionRunOpen(this);
       const scope = {
         agentId: this.agentId,
         workItemId: this.selected?.id,

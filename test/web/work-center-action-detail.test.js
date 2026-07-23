@@ -227,6 +227,20 @@ describe('Work Center Action detail tabs', () => {
     expect(wrapper.emitted('open-run')[0][0]).toEqual(expect.objectContaining({ id: 'run-2' }));
   });
 
+  it('does not clear the current expanded request when an old Run open resolves null', async () => {
+    const wrapper = mountDetail({
+      onOpenRun: (_run, resolve) => resolve(null),
+      requests: [{ id: 'request-current', runId: 'run-current' }],
+    });
+    wrapper.vm.activeTab = 'requests';
+    wrapper.vm.expandedRequestKey = 'run-current:request-current';
+
+    await wrapper.vm.openRun({ id: 'run-old' });
+
+    expect(wrapper.vm.activeTab).toBe('requests');
+    expect(wrapper.vm.expandedRequestKey).toBe('run-current:request-current');
+  });
+
   it('opens persisted message attachments with an accessible, loading-aware button', async () => {
     const attachment = { id: 'file-1', name: 'report.pdf', size: 2048, isImage: false };
     const wrapper = mountDetail({
