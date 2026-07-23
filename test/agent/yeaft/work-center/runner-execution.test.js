@@ -294,6 +294,17 @@ describe('Work Center Runner execution resolution', () => {
         title: 'V2 item', goal: 'Use Mainline', acceptanceCriteria: [], workDir, start: true,
         sessionContext: [{ role: 'user', content: 'controlled session fact' }],
       });
+      let v2Revision = v2Item.revision;
+      for (let index = 1; index <= 5; index += 1) {
+        const prefix = index === 5
+          ? 'Latest WorkItem message must reach the schema-v2 prompt:'
+          : `Older WorkItem message ${index}:`;
+        const updated = controller.message(v2Item.id, {
+          text: prefix.padEnd(7_900, String(index)),
+          revision: v2Revision,
+        });
+        v2Revision = updated.revision;
+      }
       const v2Claim = store.claimReadyAction('boot-v2', 5_000);
       const v2Result = await runner.run({
         workItem: store.getWorkItem(v2Item.id), action: v2Claim.action, run: v2Claim.run,
@@ -303,14 +314,19 @@ describe('Work Center Runner execution resolution', () => {
       const frozen = store.getRun(v2Claim.run.id);
       expect(v2Prompt).toContain('<work-center-mainline-context>');
       expect(v2Prompt.match(/controlled session fact/g)).toHaveLength(1);
-      expect(frozen.contextSnapshot).toBeTruthy();
+      expect(v2Prompt.match(/Latest WorkItem message must reach the schema-v2 prompt/g)).toHaveLength(1);
+      expect(v2Prompt).not.toContain('Older WorkItem message 1:');
+      expect(frozen.contextSnapshot.userContext.workItemMessages.at(-1)).toEqual(
+        expect.objectContaining({ text: expect.stringMatching(/^Latest WorkItem message must reach/) }),
+      );
+      expect(frozen.contextSnapshot.userContext.omittedCount).toBeGreaterThan(0);
       expect(Buffer.byteLength(v2Prompt, 'utf8')).toBeLessThanOrEqual(64 * 1024);
       expect(frozen.executionManifest.contextBytes).toBe(Buffer.byteLength(v2Prompt, 'utf8'));
       expect(frozen.executionManifest).toMatchObject({
         schemaVersion: 2,
         ledgerRevision: 0,
         planRevision: 0,
-        contractRevision: 1,
+        contractRevision: store.getWorkItem(v2Item.id).revision,
         actionGeneration: v2Claim.action.generation,
         actionSpecHash: v2Claim.action.specHash,
         contextBytes: expect.any(Number),

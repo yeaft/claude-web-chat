@@ -236,6 +236,34 @@ describe('handleYeaftHistoryChunk', () => {
     }
   });
 
+  it('keeps a tool-only persisted anchor on its derived summary row', () => {
+    const store = mkStore({ messagesMap: { 'yeaft-1': [] } });
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      messages: [{
+        id: 'm0042',
+        role: 'assistant',
+        content: '',
+        sessionId: 'g1',
+        turnId: 'turn-tool-only',
+        toolSummaryCount: 1,
+      }],
+      oldestSeq: 42,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['yeaft-1']).toEqual([
+      expect.objectContaining({
+        id: 'm0042:tool-summary',
+        messageId: 'm0042:tool-summary',
+        persistedMessageId: 'm0042',
+        type: 'tool-summary',
+        turnId: 'turn-tool-only',
+      }),
+    ]);
+  });
+
   it('hydrates persisted image assets into the assistant turn', () => {
     const store = mkStore({ messagesMap: { 'yeaft-1': [] } });
     handleYeaftHistoryChunk(store, {

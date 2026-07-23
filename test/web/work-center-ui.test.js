@@ -114,7 +114,7 @@ describe('Work Center UI contract', () => {
     expect(chat).toContain('<WorkbenchPanel v-if="canUseWorkbench && (!store.isSplitMode || store.workCenterOpen)"');
   });
 
-  it('uses a dedicated third Action pane with messages, lazy request detail, and input', () => {
+  it('uses progressive Work Item and Action workspaces with messages, lazy request detail, and input', () => {
     const page = read('web/components/WorkCenterPage.js');
     const detail = read('web/components/WorkCenterActionDetail.js');
     const store = read('web/stores/chat.js');
@@ -124,6 +124,7 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('WorkCenterActionDetail');
     expect(page).toContain('@click="selectAction(action)"');
     expect(page).toContain(':data-pane="narrowPane"');
+    expect(page).toContain('v-if="narrowPane === \'items\'" class="work-center-toolbar"');
     expect(detail).toContain('class="work-center-action-detail-pane"');
     expect(detail).toContain("activeTab === 'messages'");
     expect(detail).toContain("activeTab === 'requests'");
@@ -149,6 +150,13 @@ describe('Work Center UI contract', () => {
     expect(detail).toContain(':key="requestKey(request)"');
     expect(detail).toContain("tr('workCenter.rawRequest'");
     expect(detail).toContain('class="work-center-action-composer"');
+    expect(detail).toContain("tr('workCenter.retryAction'");
+    expect(detail).toContain("['ready', 'running', 'waiting', 'failed']");
+    expect(page).toContain('work-center-item-messages');
+    expect(page).toContain("tr('workCenter.workItemMessageScope'");
+    expect(page).toContain('@retry="retrySelectedAction"');
+    expect(store).toContain("workCenterRequest('work_item_message'");
+    expect(store).toContain("workCenterRequest('retry_action'");
     expect(detail).toContain('input-wrapper work-center-action-input-wrapper');
     expect(detail).toContain('class="attach-btn work-center-attachment-picker"');
     expect(detail).toContain('class="send-btn"');
@@ -161,10 +169,16 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('.work-center-action-transcript');
     expect(css).toContain('.work-center-request-card');
     expect(css).toContain('.work-center-action-composer');
-    expect(css).toContain('grid-template-columns: clamp(230px, 17cqw, 290px) clamp(330px, 25cqw, 430px) minmax(480px, 1fr)');
+    expect(css).toContain('grid-template-columns: minmax(0, 1fr)');
+    expect(css).not.toContain('clamp(230px, 17cqw, 290px) clamp(330px, 25cqw, 430px) minmax(480px, 1fr)');
+    expect(css).toContain('.work-center-body[data-pane="items"] .work-center-detail');
     expect(page).toContain('class="work-center-status" :data-status="action.status"');
     expect(css).toContain('.work-center-action-input-wrapper');
 
+    expect(page).toContain('class="work-center-card-content"');
+    expect(page).toContain('class="work-center-card-progress"');
+    expect(page).toContain('class="work-center-card-current-action"');
+    expect(page).toContain('itemActionProgress(item)');
     expect(page).toContain('class="work-center-action-card"');
     expect(page).toContain('class="work-center-action-content"');
     expect(page).toContain('class="work-center-action-primary"');
@@ -179,7 +193,7 @@ describe('Work Center UI contract', () => {
     expect(page).toContain("if (this.selectedId === item.id) this.detailError = error?.message || String(error)");
     expect(page).toContain('v-if="selected.failureReason"');
     expect(page).not.toContain('v-model="resumeAnswer"');
-    expect(page).not.toContain('retrySelected');
+    expect(page).toContain('retrySelectedAction');
     expect(page).not.toContain("selected.status === 'cancelled'\" class=\"btn-primary");
     expect(page).toContain("tr('workCenter.answerInActionDetail'");
     expect(page).toContain('this.selectedActionId = detail?.currentActionId || detail?.actions?.[0]?.id || null');
@@ -214,7 +228,7 @@ describe('Work Center UI contract', () => {
     expect(page).not.toContain('class="work-center-detail-empty-icon"');
     expect(page).toContain("tr('workCenter.createFirst'");
     expect(css).toContain('width: 100%');
-    expect(css).toContain('grid-template-columns: clamp(230px, 17cqw, 290px) clamp(330px, 25cqw, 430px) minmax(480px, 1fr)');
+    expect(css).toContain('grid-template-columns: minmax(0, 1fr)');
     expect(css).toContain('.work-center-body.is-empty .work-center-detail');
     expect(css).toContain('.work-center-body.is-empty .work-center-list');
     expect(css).not.toContain('.work-center-empty-icon');
@@ -281,9 +295,13 @@ describe('Work Center UI contract', () => {
   it('uses filter-specific list headings and empty states', () => {
     const page = read('web/components/WorkCenterPage.js');
 
-    expect(page).toContain("this.filter === 'all'");
+    expect(page).toContain("this.filter === 'attention'");
+    expect(page).toContain("this.filter === 'active'");
+    expect(page).toContain("filter === 'all'");
+    expect(page).toContain("tr('workCenter.attentionItems'");
     expect(page).toContain("tr('workCenter.allItems'");
-    expect(page).toContain("tr('workCenter.noOpenTitle'");
+    expect(page).toContain("tr('workCenter.noAttentionTitle'");
+    expect(page).toContain("tr('workCenter.noActiveTitle'");
     expect(page).toContain("tr('workCenter.noCompletedTitle'");
     expect(page).toContain('<span>{{ listHeading }}</span>');
     expect(page).toContain('<h2>{{ emptyState.title }}</h2>');
@@ -367,10 +385,14 @@ describe('Work Center UI contract', () => {
       'workCenter.newWorkItem',
       'workCenter.workItem',
       'workCenter.createFirst',
+      'workCenter.attentionItems',
       'workCenter.activeItems',
       'workCenter.allItems',
-      'workCenter.noOpenTitle',
+      'workCenter.noAttentionTitle',
+      'workCenter.noActiveTitle',
       'workCenter.noCompletedTitle',
+      'workCenter.actionProgress',
+      'workCenter.currentAction',
       'workCenter.settings.instructionHelp',
       'workCenter.settings.instructionReset',
       'workCenter.chooseFolder',

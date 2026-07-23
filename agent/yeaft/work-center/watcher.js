@@ -95,6 +95,13 @@ export class WorkItemWatcher {
     }
   }
 
+  notifyWorkItemInput(workItemId) {
+    for (const entry of this.activeRuns.values()) {
+      if (entry.workItemId !== workItemId) continue;
+      try { entry.wakeForPendingUserMessage?.(); } catch {}
+    }
+  }
+
   #recoverExpiredRuns() {
     const recovered = this.store.recoverInterruptedRuns?.(this.ownerBootId) || 0;
     if (recovered > 0) {

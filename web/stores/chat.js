@@ -193,6 +193,21 @@ function parseYeaftMessageSeq(id) {
   return Number.isFinite(n) ? n : null;
 }
 
+function parsePersistedMessageSeq(id) {
+  if (!id || typeof id !== 'string') return null;
+  const match = id.match(/^m(\d+)$/);
+  if (!match) return null;
+  const seq = Number(match[1]);
+  return Number.isFinite(seq) ? seq : null;
+}
+
+function outlineResultIdentity(row) {
+  if (row?.role === 'assistant' && row?.turnId) {
+    return `response:${row.turnId}:${row.speakerVpId || row.vpId || ''}`;
+  }
+  return row?.clientMessageId ? `client:${row.clientMessageId}` : `message:${row?.messageId || ''}`;
+}
+
 function taskUpdatedTime(task) {
   const raw = task?.updatedAt || task?.endedAt || task?.createdAt;
   const ms = raw ? Date.parse(raw) : NaN;
@@ -494,6 +509,11 @@ export const useChatStore = defineStore('chat', {
       nextBeforeSeq: null,
       error: null,
     },
+    // Lightweight Session outline pages live only for this browser page. They
+    // are keyed by agent + session so duplicate session ids cannot bleed across
+    // agents, and avoid creating a second persistent copy of conversation text.
+    yeaftHistoryOutlineBySession: {},
+    _yeaftHistoryOutlineTimeouts: {},
     _yeaftHistorySearchTimeout: null,
     _yeaftHistoryWindowPending: null,
     // One-shot marker: set true by the websocket onclose handler on a real
@@ -1580,6 +1600,24 @@ export const useChatStore = defineStore('chat', {
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
+    async sendWorkItemMessage(id, text, revision, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
+      const detail = await this.workCenterRequest('work_item_message', { id, text, revision }, target);
+      await this.listWorkItems(target);
+      this.commitWorkCenterDetail(target, detail, generation);
+      return detail;
+    },
+    async retryWorkItemAction(id, actionId, revision, actionGeneration, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
+      const detail = await this.workCenterRequest('retry_action', {
+        id, actionId, revision, generation: actionGeneration,
+      }, target);
+      await this.listWorkItems(target);
+      this.commitWorkCenterDetail(target, detail, generation);
+      return detail;
+    },
     async sendWorkItemActionInput(id, text, actionId, revision, actionGeneration, attachments = [], agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = Number(this._workCenterActionInputGenerationByAgent[target] || 0) + 1;
@@ -1592,9 +1630,11 @@ export const useChatStore = defineStore('chat', {
       }, target);
       await this.listWorkItems(target);
       const current = this.workCenterDetailByAgent[target];
+      const currentAction = current?.actions?.find(action => action?.id === actionId);
       const requestStillCurrent = current?.id === id
-        && current.currentActionId === actionId
-        && Number(current.revision) === Number(revision);
+        && Number(current.revision) === Number(revision)
+        && currentAction
+        && Number(currentAction.generation) === Number(actionGeneration);
       if (this._workCenterActionInputGenerationByAgent[target] === generation
         && requestStillCurrent
         && !isWorkItemDetailResponseStale(detail, current)) {
@@ -2254,7 +2294,10 @@ export const useChatStore = defineStore('chat', {
         if (!targetSessionId) return true;
         return (message?.sessionId ?? message?.groupId ?? null) === targetSessionId;
       });
-      const targetIndex = scoped.findIndex(message => (message?.id || message?.messageId) === messageId);
+      const targetIndex = scoped.findIndex(message => (
+        (message?.id || message?.messageId) === messageId
+        || message?.persistedMessageId === messageId
+      ));
       if (targetIndex < 0) return false;
       const spans = buildYeaftMessageTurnSpans(scoped);
       const targetSpan = spans.findIndex(span => targetIndex >= span.start && targetIndex < span.end);
@@ -2265,6 +2308,289 @@ export const useChatStore = defineStore('chat', {
         ...this.yeaftMessageWindowState,
         [sessionKey]: { visibleTurns },
       };
+      return true;
+    },
+
+    getYeaftHistoryOutlineState(sessionId = null, agentId = null) {
+      const targetSessionId = sessionId || this.yeaftActiveSessionFilter || null;
+      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
+      const key = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
+      const base = this.yeaftHistoryOutlineBySession[key] || {
+        requestId: null,
+        agentId: targetAgentId,
+        sessionId: targetSessionId,
+        loading: false,
+        results: [],
+        hasMore: false,
+        nextBeforeSeq: null,
+        totalCount: null,
+        loaded: false,
+        error: null,
+      };
+      const conversationId = resolveYeaftConversationIdForSession(this, targetSessionId);
+      const liveRows = conversationId ? (this.messagesMap[conversationId] || []) : [];
+      const byId = new Map((base.results || []).map(result => [outlineResultIdentity(result), result]));
+      let liveOnlyCount = 0;
+      for (const row of liveRows) {
+        if ((row?.sessionId ?? row?.groupId ?? null) !== targetSessionId) continue;
+        const messageId = row.messageId || row.id;
+        if (!messageId) continue;
+        const optimisticUser = row.type === 'user'
+          && !!row.clientMessageId
+          && messageId === row.clientMessageId;
+        const inFlightAssistant = row.type === 'assistant' && row.isStreaming === true;
+        if (!optimisticUser && !inFlightAssistant) continue;
+        const role = row.type;
+        const turnId = row.turnId || row.threadId || messageId;
+        const speakerVpId = row.speakerVpId || row.vpId || null;
+        const identity = outlineResultIdentity({
+          role,
+          messageId,
+          clientMessageId: row.clientMessageId,
+          turnId,
+          speakerVpId,
+        });
+        const existing = byId.get(identity);
+        const raw = typeof row.content === 'string' ? row.content : '';
+        const text = raw.replace(/\s+/g, ' ').trim();
+        byId.set(identity, {
+          ...existing,
+          messageId: Number.isFinite(existing?.seq) ? existing.messageId : messageId,
+          ...(row.clientMessageId ? { clientMessageId: row.clientMessageId } : {}),
+          turnId,
+          role,
+          speakerVpId: speakerVpId || existing?.speakerVpId || null,
+          timestamp: row.timestamp || row.ts || existing?.timestamp || null,
+          snippet: text.length > 180 ? `${text.slice(0, 180).trimEnd()}…` : (text || existing?.snippet || ''),
+        });
+        if (!existing) liveOnlyCount += 1;
+      }
+      const asTime = value => {
+        const parsed = typeof value === 'number' ? value : Date.parse(value || '');
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+      const results = Array.from(byId.values()).sort((a, b) => {
+        if (Number.isFinite(a.seq) && Number.isFinite(b.seq)) return a.seq - b.seq;
+        return asTime(a.timestamp) - asTime(b.timestamp);
+      });
+      return {
+        ...base,
+        results,
+        totalCount: Number.isFinite(base.totalCount) ? base.totalCount + liveOnlyCount : base.totalCount,
+      };
+    },
+
+    promoteYeaftHistoryOutlineRow(row) {
+      const sessionId = row?.sessionId ?? row?.groupId ?? null;
+      const agentId = resolveAgentIdForSession(this, sessionId);
+      const key = yeaftHistoryIdentityKey(agentId, sessionId);
+      const state = this.yeaftHistoryOutlineBySession[key];
+      if (!sessionId || !agentId || !state?.loaded || state.loading) return false;
+      const role = row?.type;
+      if (role !== 'user' && role !== 'assistant') return false;
+      const messageId = row.dbMessageId || row.messageId || row.id || null;
+      const seq = parsePersistedMessageSeq(messageId);
+      if (!messageId || !Number.isFinite(seq)) return false;
+      const turnId = row.turnId || row.threadId || messageId;
+      const speakerVpId = row.speakerVpId || row.vpId || null;
+      const raw = typeof row.content === 'string' ? row.content : '';
+      const text = raw.replace(/\s+/g, ' ').trim();
+      const identity = outlineResultIdentity({
+        role,
+        messageId,
+        clientMessageId: row.clientMessageId,
+        turnId,
+        speakerVpId,
+      });
+      const byId = new Map((state.results || []).map(result => [outlineResultIdentity(result), result]));
+      const existing = byId.get(identity);
+      byId.set(identity, {
+        ...existing,
+        messageId,
+        ...(row.clientMessageId ? { clientMessageId: row.clientMessageId } : {}),
+        turnId,
+        seq,
+        role,
+        speakerVpId,
+        timestamp: row.timestamp || row.ts || existing?.timestamp || null,
+        snippet: text.length > 180 ? `${text.slice(0, 180).trimEnd()}…` : (text || existing?.snippet || ''),
+      });
+      const limit = 50;
+      const ordered = Array.from(byId.values()).sort((a, b) => (a.seq || 0) - (b.seq || 0));
+      const overflowed = ordered.length > limit;
+      const results = ordered.slice(-limit);
+      this.yeaftHistoryOutlineBySession = {
+        ...this.yeaftHistoryOutlineBySession,
+        [key]: {
+          ...state,
+          results,
+          hasMore: state.hasMore || overflowed,
+          nextBeforeSeq: overflowed && Number.isFinite(results[0]?.seq)
+            ? results[0].seq
+            : state.nextBeforeSeq,
+          totalCount: Number.isFinite(state.totalCount) && !existing ? state.totalCount + 1 : state.totalCount,
+        },
+      };
+      return true;
+    },
+
+    promoteCompletedYeaftHistoryOutline(conversationId, turnId = null) {
+      const rows = this.messagesMap[conversationId] || [];
+      let anchor = null;
+      const textParts = [];
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const row = rows[i];
+        if (row?.type === 'user') break;
+        if (turnId && row?.turnId && row.turnId !== turnId) continue;
+        if (row?.type !== 'assistant') continue;
+        const text = typeof row.content === 'string' ? row.content.replace(/\s+/g, ' ').trim() : '';
+        if (!anchor) anchor = row;
+        else if (!String(anchor.content || '').trim() && text) anchor = row;
+        if (text) textParts.unshift(text);
+      }
+      if (!anchor) return false;
+      return this.promoteYeaftHistoryOutlineRow({ ...anchor, content: textParts.join(' ') });
+    },
+
+    invalidateYeaftHistoryOutline(sessionId) {
+      const agentId = resolveAgentIdForSession(this, sessionId);
+      const key = yeaftHistoryIdentityKey(agentId, sessionId);
+      const state = this.yeaftHistoryOutlineBySession[key];
+      if (!sessionId || !agentId || !state) return false;
+      if (state.loading) {
+        this.yeaftHistoryOutlineBySession = {
+          ...this.yeaftHistoryOutlineBySession,
+          [key]: { ...state, refreshPending: true },
+        };
+        return true;
+      }
+      this.yeaftHistoryOutlineBySession = {
+        ...this.yeaftHistoryOutlineBySession,
+        [key]: { ...state, loaded: false, refreshPending: false },
+      };
+      if (this.currentView === 'yeaft' && this.yeaftActiveSessionFilter === sessionId) {
+        return this.loadYeaftHistoryOutline({ force: true });
+      }
+      return true;
+    },
+
+    loadYeaftHistoryOutline({
+      append = false,
+      force = false,
+      targetSessionId = null,
+      targetAgentId = null,
+    } = {}) {
+      if (this.currentView !== 'yeaft' && !targetSessionId) return false;
+      const sessionId = targetSessionId || this.yeaftActiveSessionFilter || null;
+      const agentId = targetAgentId || resolveAgentIdForSession(this, sessionId);
+      if (!sessionId || !agentId) return false;
+      const key = yeaftHistoryIdentityKey(agentId, sessionId);
+      const previous = this.getYeaftHistoryOutlineState(sessionId, agentId);
+      if (!append && previous.loaded && !force) return true;
+      if (append && (!previous.hasMore || !Number.isFinite(previous.nextBeforeSeq))) return false;
+      if (previous.loading) return false;
+      if (!agentHasCapability(this, agentId, 'session_history_outline')) {
+        this.yeaftHistoryOutlineBySession = {
+          ...this.yeaftHistoryOutlineBySession,
+          [key]: { ...previous, error: 'unsupported', loading: false },
+        };
+        return false;
+      }
+
+      const requestId = `history_outline_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const nextState = {
+        ...previous,
+        requestId,
+        agentId,
+        sessionId,
+        loading: true,
+        requestAppend: append,
+        refreshPending: false,
+        error: null,
+      };
+      this.yeaftHistoryOutlineBySession = { ...this.yeaftHistoryOutlineBySession, [key]: nextState };
+      const previousTimeout = this._yeaftHistoryOutlineTimeouts[key];
+      if (previousTimeout) clearTimeout(previousTimeout);
+      const timeout = setTimeout(() => {
+        const current = this.yeaftHistoryOutlineBySession[key];
+        if (current?.requestId !== requestId) return;
+        const nextTimeouts = { ...this._yeaftHistoryOutlineTimeouts };
+        delete nextTimeouts[key];
+        this._yeaftHistoryOutlineTimeouts = nextTimeouts;
+        const refreshPending = current.refreshPending === true;
+        this.yeaftHistoryOutlineBySession = {
+          ...this.yeaftHistoryOutlineBySession,
+          [key]: {
+            ...current,
+            requestId: null,
+            loading: false,
+            requestAppend: false,
+            loaded: refreshPending ? false : current.loaded,
+            refreshPending: false,
+            error: refreshPending ? null : 'timeout',
+          },
+        };
+        if (refreshPending) {
+          this.loadYeaftHistoryOutline({
+            force: true,
+            targetSessionId: sessionId,
+            targetAgentId: agentId,
+          });
+        }
+      }, 10000);
+      this._yeaftHistoryOutlineTimeouts = { ...this._yeaftHistoryOutlineTimeouts, [key]: timeout };
+      this.sendWsMessage({
+        type: 'yeaft_load_history_outline',
+        agentId,
+        sessionId,
+        requestId,
+        limit: 50,
+        ...(append && Number.isFinite(previous.nextBeforeSeq) ? { beforeSeq: previous.nextBeforeSeq } : {}),
+        includeTotal: !previous.loaded,
+      });
+      return true;
+    },
+
+    handleYeaftHistoryOutline(msg) {
+      if (!msg?.agentId || !msg?.sessionId) return false;
+      const key = yeaftHistoryIdentityKey(msg.agentId, msg.sessionId);
+      const state = this.yeaftHistoryOutlineBySession[key];
+      if (!state || msg.requestId !== state.requestId) return false;
+      const timeout = this._yeaftHistoryOutlineTimeouts[key];
+      if (timeout) clearTimeout(timeout);
+      const nextTimeouts = { ...this._yeaftHistoryOutlineTimeouts };
+      delete nextTimeouts[key];
+      this._yeaftHistoryOutlineTimeouts = nextTimeouts;
+      const incoming = Array.isArray(msg.results) ? msg.results : [];
+      const sourceResults = state.requestAppend ? [...(state.results || []), ...incoming] : incoming;
+      const byId = new Map(sourceResults
+        .filter(result => result?.messageId)
+        .map(result => [outlineResultIdentity(result), result]));
+      const results = Array.from(byId.values()).sort((a, b) => (a.seq || 0) - (b.seq || 0));
+      const refreshPending = state.refreshPending === true;
+      this.yeaftHistoryOutlineBySession = {
+        ...this.yeaftHistoryOutlineBySession,
+        [key]: {
+          ...state,
+          requestId: null,
+          loading: false,
+          requestAppend: false,
+          refreshPending: false,
+          loaded: refreshPending ? false : !msg.error,
+          results,
+          hasMore: !!msg.hasMore,
+          nextBeforeSeq: Number.isFinite(msg.nextBeforeSeq) ? msg.nextBeforeSeq : null,
+          totalCount: Number.isFinite(msg.totalCount) ? msg.totalCount : state.totalCount,
+          error: refreshPending ? null : (msg.error || null),
+        },
+      };
+      if (refreshPending) {
+        this.loadYeaftHistoryOutline({
+          force: true,
+          targetSessionId: msg.sessionId,
+          targetAgentId: msg.agentId,
+        });
+      }
       return true;
     },
 

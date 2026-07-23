@@ -40,7 +40,7 @@ function makeContext() {
       id: 'wi-1', revision: 2, status: 'running', currentActionId: 'action-1',
       attachments: [], actions: [{ id: 'action-1' }, { id: 'action-2' }],
     },
-    selectedAction: { id: 'action-1', generation: 3 },
+    selectedAction: { id: 'action-1', status: 'running', generation: 3 },
     store: { sendWorkItemActionInput: vi.fn() },
     workItemAttachmentsSupported: true,
     tr: (_key, fallback) => fallback,
@@ -108,22 +108,18 @@ describe('Work Center Action composer scope', () => {
     expect(loadWorkItemActionMessages).not.toHaveBeenCalled();
   });
 
-  it('shows the composer for a selected blocked graph Action even when currentActionId points elsewhere', () => {
+  it('shows a scoped composer for every unfinished Action and retry only for failed Actions', () => {
     const canCompose = WorkCenterActionDetail.computed.canCompose;
-    expect(canCompose.call({
-      selected: {
-        status: 'needs_attention', currentActionId: 'action-2',
-        workflowSnapshot: { executionMode: 'graph' },
-      },
-      action: { id: 'action-1', status: 'failed' },
-    })).toBe(true);
-    expect(canCompose.call({
-      selected: {
-        status: 'ready', currentActionId: 'action-2',
-        workflowSnapshot: { executionMode: 'graph' },
-      },
-      action: { id: 'action-1', status: 'completed' },
-    })).toBe(false);
+    const canRetry = WorkCenterActionDetail.computed.canRetry;
+    for (const status of ['ready', 'running', 'waiting', 'failed']) {
+      expect(canCompose.call({
+        selected: { status: 'running', currentActionId: 'action-2' },
+        action: { id: 'action-1', status },
+      })).toBe(true);
+    }
+    expect(canCompose.call({ selected: { status: 'running' }, action: { status: 'completed' } })).toBe(false);
+    expect(canRetry.call({ action: { status: 'failed' }, uploading: false, sending: false })).toBe(true);
+    expect(canRetry.call({ action: { status: 'running' }, uploading: false, sending: false })).toBe(false);
   });
 
   it('matches the Session composer behavior for Enter, Shift+Enter, and disabled sends', () => {
@@ -158,6 +154,99 @@ describe('Work Center Action composer scope', () => {
     expect(target.style.height).toBe('120px');
   });
 
+  it('sends WorkItem-level messages through the separate revision-fenced operation', async () => {
+    const sendWorkItemMessage = vi.fn().mockResolvedValue({ id: 'wi-1', revision: 3 });
+    const context = {
+      selected: { id: 'wi-1', revision: 2 },
+      workItemMessage: 'Apply this everywhere',
+      workItemMessageSending: false,
+      workItemMessageError: '',
+      agentId: 'agent-1',
+      store: { sendWorkItemMessage },
+    };
+
+    await WorkCenterPage.methods.sendSelectedWorkItemMessage.call(context);
+
+    expect(sendWorkItemMessage).toHaveBeenCalledWith('wi-1', 'Apply this everywhere', 2, 'agent-1');
+    expect(context.workItemMessage).toBe('');
+    expect(context.workItemMessageError).toBe('');
+  });
+
+  it('resets the WorkItem composer when selecting another WorkItem', async () => {
+    const context = {
+      selectedId: 'wi-1',
+      selectedActionId: 'action-1',
+      narrowPane: 'action',
+      workItemComposerGeneration: 1,
+      workItemMessage: 'Draft for the first WorkItem',
+      workItemMessageSending: true,
+      workItemMessageError: 'old error',
+      expandedActions: {},
+      actionsExpanded: true,
+      detailError: '',
+      detailLoading: false,
+      store: { getWorkItem: vi.fn().mockResolvedValue({ id: 'wi-2', actions: [] }) },
+      resetActionComposer: vi.fn(),
+      resetWorkItemComposer: WorkCenterPage.methods.resetWorkItemComposer,
+      openWorkItem: WorkCenterPage.methods.openWorkItem,
+    };
+
+    await WorkCenterPage.methods.selectItem.call(context, { id: 'wi-2' });
+
+    expect(context.selectedId).toBe('wi-2');
+    expect(context.workItemMessage).toBe('');
+    expect(context.workItemMessageError).toBe('');
+    expect(context.workItemMessageSending).toBe(false);
+    expect(context.workItemComposerGeneration).toBe(2);
+  });
+
+  it.each(['resolve', 'reject'])('isolates an old WorkItem send when the user switches items before it %s', async outcome => {
+    const pending = deferred();
+    const context = {
+      agentId: 'agent-1',
+      selected: { id: 'wi-1', revision: 2 },
+      workItemComposerGeneration: 1,
+      workItemMessage: 'Message for the first WorkItem',
+      workItemMessageSending: false,
+      workItemMessageError: '',
+      store: { sendWorkItemMessage: vi.fn().mockReturnValue(pending.promise) },
+    };
+    Object.defineProperty(context, 'workItemComposerScope', {
+      get() { return `${this.agentId}:${this.selected.id}:${this.workItemComposerGeneration}`; },
+    });
+
+    const sending = WorkCenterPage.methods.sendSelectedWorkItemMessage.call(context);
+    context.selected = { id: 'wi-2', revision: 4 };
+    WorkCenterPage.methods.resetWorkItemComposer.call(context);
+    context.workItemMessage = 'Message for the second WorkItem';
+    if (outcome === 'resolve') pending.resolve({ id: 'wi-1', revision: 3 });
+    else pending.reject(new Error('old request failed'));
+    await sending;
+
+    expect(context.workItemMessage).toBe('Message for the second WorkItem');
+    expect(context.workItemMessageError).toBe('');
+    expect(context.workItemMessageSending).toBe(false);
+  });
+
+  it('retries the visible failed Action with its stable identity and revision', async () => {
+    const retryWorkItemAction = vi.fn().mockResolvedValue({ id: 'wi-1', revision: 3 });
+    const context = {
+      selected: { id: 'wi-1', revision: 2 },
+      selectedAction: { id: 'action-1', status: 'failed', generation: 4 },
+      actionInputSending: false,
+      actionInputError: '',
+      actionComposerScope: 'scope-1',
+      agentId: 'agent-1',
+      store: { retryWorkItemAction },
+    };
+
+    await WorkCenterPage.methods.retrySelectedAction.call(context);
+
+    expect(retryWorkItemAction).toHaveBeenCalledWith('wi-1', 'action-1', 2, 4, 'agent-1');
+    expect(context.actionInputError).toBe('');
+    expect(context.actionInputSending).toBe(false);
+  });
+
   it('submits the visible Action identity, revision, Agent, and attachments atomically', async () => {
     const context = makeContext();
     context.store.sendWorkItemActionInput.mockResolvedValue({ currentActionId: 'action-1' });
@@ -188,6 +277,26 @@ describe('Work Center Action composer scope', () => {
       [{ fileId: 'old-file', name: 'old.txt', mimeType: 'text/plain', size: 3 }],
       'agent-1',
     );
+  });
+
+  it('keeps a successfully updated sibling Action selected instead of following the display pointer', async () => {
+    const context = makeContext();
+    context.selected.currentActionId = 'action-2';
+    context.selectedActionId = 'action-1';
+    context.selectedAction = { id: 'action-1', status: 'running', generation: 3 };
+    context.store.sendWorkItemActionInput.mockResolvedValue({
+      currentActionId: 'action-2',
+      actions: [
+        { id: 'action-1', status: 'running', generation: 3 },
+        { id: 'action-2', status: 'waiting', generation: 1 },
+      ],
+    });
+
+    await WorkCenterPage.methods.guideSelectedAction.call(context);
+
+    expect(context.selectedActionId).toBe('action-1');
+    expect(context.actionGuidance).toBe('');
+    expect(context.guidanceAttachments).toEqual([]);
   });
 
   it('preserves blocked graph composer input when the send fails', async () => {

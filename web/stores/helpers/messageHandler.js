@@ -267,6 +267,10 @@ export function handleMessage(store, msg) {
       handleYeaftHistoryChunk(store, msg);
       break;
 
+    case 'yeaft_history_outline':
+      store.handleYeaftHistoryOutline(msg);
+      break;
+
     case 'yeaft_history_search_result':
       store.handleYeaftHistorySearchResult(msg);
       break;

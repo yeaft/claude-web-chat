@@ -25,13 +25,18 @@ export default {
       actionInputSending: false,
       actionInputError: '',
       actionComposerGeneration: 0,
+      workItemMessage: '',
+      workItemMessageSending: false,
+      workItemMessageError: '',
+      workItemComposerGeneration: 0,
       detailLoading: false,
       detailError: '',
       createOpen: false,
       settingsOpen: false,
       saving: false,
+      createGeneration: 0,
       llmConfigOpen: false,
-      filter: 'open',
+      filter: 'attention',
       search: '',
       actionGuidance: '',
       expandedActions: {},
@@ -103,6 +108,11 @@ export default {
         ? `${this.agentId}:${this.selected.id}:${this.selectedAction.id}:${this.actionComposerGeneration}`
         : '';
     },
+    workItemComposerScope() {
+      return this.selected?.id
+        ? `${this.agentId}:${this.selected.id}:${this.workItemComposerGeneration}`
+        : '';
+    },
     actionMessages() {
       const current = Array.isArray(this.selectedAction?.messages) ? this.selectedAction.messages : [];
       const earlier = this.store.workCenterActionMessages[this.actionRequestKey]?.messages || [];
@@ -154,7 +164,8 @@ export default {
     visibleItems() {
       const q = this.search.trim().toLowerCase();
       return this.items.filter(item => {
-        if (this.filter === 'open' && ['done', 'cancelled'].includes(item.status)) return false;
+        if (this.filter === 'attention' && !['waiting', 'needs_attention'].includes(item.status)) return false;
+        if (this.filter === 'active' && !['draft', 'ready', 'running'].includes(item.status)) return false;
         if (this.filter === 'done' && item.status !== 'done') return false;
         if (!q) return true;
         return String(item.title || '').toLowerCase().includes(q)
@@ -162,9 +173,10 @@ export default {
       });
     },
     listHeading() {
+      if (this.filter === 'attention') return this.tr('workCenter.attentionItems', 'Needs attention');
+      if (this.filter === 'active') return this.tr('workCenter.activeItems', 'Active work');
       if (this.filter === 'done') return this.tr('workCenter.completedItems', 'Completed');
-      if (this.filter === 'all') return this.tr('workCenter.allItems', 'All work items');
-      return this.tr('workCenter.activeItems', 'Active work');
+      return this.tr('workCenter.allItems', 'All work items');
     },
     emptyState() {
       if (this.search.trim()) {
@@ -181,10 +193,17 @@ export default {
           canCreate: false,
         };
       }
-      if (this.filter === 'open' && this.items.length > 0) {
+      if (this.filter === 'attention') {
         return {
-          title: this.tr('workCenter.noOpenTitle', 'No open work items'),
-          body: this.tr('workCenter.noOpenBody', 'Open work items will appear here.'),
+          title: this.tr('workCenter.noAttentionTitle', 'Nothing needs attention'),
+          body: this.tr('workCenter.noAttentionBody', 'Work Items waiting for you or needing recovery will appear here.'),
+          canCreate: this.items.length === 0,
+        };
+      }
+      if (this.filter === 'active') {
+        return {
+          title: this.tr('workCenter.noActiveTitle', 'No active work items'),
+          body: this.tr('workCenter.noActiveBody', 'Draft, ready, and running Work Items will appear here.'),
           canCreate: true,
         };
       }
@@ -199,9 +218,12 @@ export default {
     agentId: {
       immediate: true,
       handler(id, previousId) {
+        this.createGeneration = (Number(this.createGeneration) || 0) + 1;
+        this.saving = false;
         this.selectedId = null;
         this.selectedActionId = null;
         this.resetActionComposer?.();
+        this.resetWorkItemComposer?.();
         this.narrowPane = 'items';
         if (previousId && id !== previousId) {
           this.closeFolderPicker();
@@ -272,6 +294,11 @@ export default {
     actionLabel(type) {
       return this.tr(`workCenter.action.${type}`, type || '—');
     },
+    itemActionProgress(item) {
+      const total = Math.max(0, Number(item?.actionCount) || 0);
+      const completed = Math.min(total, Math.max(0, Number(item?.completedActionCount) || 0));
+      return this.$t('workCenter.actionProgress', { completed, total });
+    },
     time(value) {
       if (!value) return '';
       try { return new Date(Number(value)).toLocaleString(); } catch { return ''; }
@@ -287,14 +314,25 @@ export default {
       this.guidanceAttachmentsUploading = false;
       this.actionInputSending = false;
     },
-    async selectItem(item) {
-      this.selectedId = item.id;
+    resetWorkItemComposer() {
+      this.workItemComposerGeneration += 1;
+      this.workItemMessage = '';
+      this.workItemMessageError = '';
+      this.workItemMessageSending = false;
+    },
+    openWorkItem(itemId) {
+      this.selectedId = itemId;
       this.selectedActionId = null;
       this.narrowPane = 'actions';
       this.resetActionComposer();
+      this.resetWorkItemComposer();
       this.expandedActions = {};
       this.actionsExpanded = false;
       this.detailError = '';
+      this.detailLoading = false;
+    },
+    async selectItem(item) {
+      this.openWorkItem(item.id);
       this.detailLoading = true;
       try {
         const detail = await this.store.getWorkItem(item.id, this.agentId);
@@ -551,10 +589,13 @@ export default {
     },
     async submitCreate() {
       if (!this.form.title.trim() || !this.form.goal.trim() || !this.form.workDir.trim()) return;
+      const requestAgentId = this.agentId;
+      const requestGeneration = (Number(this.createGeneration) || 0) + 1;
+      this.createGeneration = requestGeneration;
       this.saving = true;
       try {
         const draft = this.store.workCenterCreateDraft;
-        const draftOwnedByAgent = draft?.sourceAgentId === this.agentId;
+        const draftOwnedByAgent = draft?.sourceAgentId === requestAgentId;
         const detail = await this.store.createWorkItem({
           title: this.form.title.trim(),
           goal: this.form.goal.trim(),
@@ -574,8 +615,10 @@ export default {
             : [],
           reuseMemory: this.form.reuseMemory,
           start: this.form.start,
-        }, this.agentId);
-        this.selectedId = detail.id;
+        }, requestAgentId);
+        if (this.agentId !== requestAgentId || this.createGeneration !== requestGeneration) return;
+        this.openWorkItem(detail.id);
+        this.selectedActionId = detail.currentActionId || detail.actions?.[0]?.id || null;
         this.form = {
           title: '',
           goal: '',
@@ -591,19 +634,54 @@ export default {
         this.startTouched = false;
         this.createOpen = false;
       } finally {
-        this.saving = false;
+        if (this.agentId === requestAgentId && this.createGeneration === requestGeneration) {
+          this.saving = false;
+        }
       }
     },
     async startSelected() {
       if (!this.selected) return;
       await this.store.startWorkItem(this.selected.id, this.agentId);
     },
+    async sendSelectedWorkItemMessage() {
+      if (!this.selected || !this.workItemMessage.trim() || this.workItemMessageSending) return;
+      const scope = this.workItemComposerScope;
+      const itemId = this.selected.id;
+      const revision = this.selected.revision;
+      const text = this.workItemMessage.trim();
+      this.workItemMessageSending = true;
+      this.workItemMessageError = '';
+      try {
+        await this.store.sendWorkItemMessage(itemId, text, revision, this.agentId);
+        if (this.workItemComposerScope === scope && this.workItemMessage.trim() === text) {
+          this.workItemMessage = '';
+        }
+      } catch (error) {
+        if (this.workItemComposerScope === scope) this.workItemMessageError = error?.message || String(error);
+      } finally {
+        if (this.workItemComposerScope === scope) this.workItemMessageSending = false;
+      }
+    },
+    async retrySelectedAction() {
+      if (!this.selected || this.selectedAction?.status !== 'failed' || this.actionInputSending) return;
+      const scope = this.actionComposerScope;
+      this.actionInputSending = true;
+      this.actionInputError = '';
+      try {
+        await this.store.retryWorkItemAction(
+          this.selected.id, this.selectedAction.id, this.selected.revision,
+          this.selectedAction.generation, this.agentId,
+        );
+      } catch (error) {
+        if (this.actionComposerScope === scope) this.actionInputError = error?.message || String(error);
+      } finally {
+        if (this.actionComposerScope === scope) this.actionInputSending = false;
+      }
+    },
     async guideSelectedAction() {
       if (!this.selected || !this.selectedAction
         || (!this.actionGuidance.trim() && this.guidanceAttachments.length === 0)) return;
-      const graphBlockedAction = this.selected.workflowSnapshot?.executionMode === 'graph'
-        && ['waiting', 'failed'].includes(this.selectedAction.status);
-      if (this.selected.currentActionId !== this.selectedAction.id && !graphBlockedAction) return;
+      if (!['ready', 'running', 'waiting', 'failed'].includes(this.selectedAction.status)) return;
       const scope = this.actionComposerScope;
       const itemId = this.selected.id;
       const actionId = this.selectedAction.id;
@@ -624,7 +702,8 @@ export default {
         if (this.actionComposerScope !== scope) return;
         this.actionGuidance = '';
         this.guidanceAttachments = [];
-        const nextActionId = next?.currentActionId || this.selectedActionId;
+        const targetStillExists = next?.actions?.some(action => action?.id === actionId);
+        const nextActionId = targetStillExists ? actionId : (next?.currentActionId || this.selectedActionId);
         if (nextActionId !== this.selectedActionId) this.resetActionComposer();
         this.selectedActionId = nextActionId;
       } catch (error) {
@@ -670,9 +749,10 @@ export default {
             </div>
           </header>
 
-          <div class="work-center-toolbar">
+          <div v-if="narrowPane === 'items'" class="work-center-toolbar">
             <div class="work-center-filter" role="group" :aria-label="tr('workCenter.filter', 'Filter')">
-              <button type="button" :class="{ active: filter === 'open' }" @click="filter = 'open'">{{ tr('workCenter.filterOpen', 'Open') }}</button>
+              <button type="button" :class="{ active: filter === 'attention' }" @click="filter = 'attention'">{{ tr('workCenter.filterAttention', 'Needs attention') }}</button>
+              <button type="button" :class="{ active: filter === 'active' }" @click="filter = 'active'">{{ tr('workCenter.filterActive', 'Active') }}</button>
               <button type="button" :class="{ active: filter === 'all' }" @click="filter = 'all'">{{ tr('workCenter.filterAll', 'All') }}</button>
               <button type="button" :class="{ active: filter === 'done' }" @click="filter = 'done'">{{ tr('workCenter.filterDone', 'Done') }}</button>
             </div>
@@ -699,15 +779,19 @@ export default {
                       class="work-center-card" :class="{ active: selectedId === item.id }"
                       :aria-label="item.title || tr('workCenter.workItem', 'Work item')"
                       @click="selectItem(item)">
-                <span class="work-center-card-topline">
-                  <span class="work-center-card-title">{{ item.title }}</span>
+                <span class="work-center-card-state">
                   <span class="work-center-status" :data-status="item.status"><span aria-hidden="true"></span>{{ statusLabel(item.status) }}</span>
                 </span>
-                <span class="work-center-card-goal">{{ item.goal }}</span>
-                <span class="work-center-card-meta">
-                  <span v-if="item.currentAction">{{ actionLabel(item.currentAction.type) }} · {{ item.currentAction.assignmentMode || tr('workCenter.assignment.auto', 'Auto') }}</span>
-                  <span>{{ time(item.updatedAt) || tr('workCenter.noTimestamp', 'No timestamp') }}</span>
+                <span class="work-center-card-content">
+                  <span class="work-center-card-title">{{ item.title }}</span>
+                  <span class="work-center-card-goal">{{ item.goal }}</span>
+                  <span v-if="item.currentAction" class="work-center-card-current-action">
+                    {{ tr('workCenter.currentAction', 'Current Action') }}: {{ item.currentAction.objective || actionLabel(item.currentAction.type) }}
+                  </span>
                 </span>
+                <span class="work-center-card-progress">{{ itemActionProgress(item) }}</span>
+                <span class="work-center-card-updated">{{ time(item.updatedAt) || tr('workCenter.noTimestamp', 'No timestamp') }}</span>
+                <span class="work-center-card-chevron" aria-hidden="true">›</span>
               </button>
               <div v-if="loading" class="work-center-loading">{{ tr('workCenter.loading', 'Loading work items…') }}</div>
               <div v-if="loaded && !loading && visibleItems.length === 0" class="work-center-empty-state">
@@ -767,6 +851,27 @@ export default {
                 <div class="work-center-section">
                   <h3>{{ tr('workCenter.goal', 'Goal') }}</h3>
                   <p>{{ selected.goal }}</p>
+                </div>
+                <div class="work-center-section work-center-item-messages">
+                  <div class="work-center-item-message-heading">
+                    <h3>{{ tr('workCenter.workItemMessages', 'Work Item messages') }}</h3>
+                    <small>{{ tr('workCenter.workItemMessageScope', 'Applies to every unfinished Action at its next safe boundary.') }}</small>
+                  </div>
+                  <div v-if="selected.messages?.length" class="work-center-item-message-list">
+                    <article v-for="message in selected.messages" :key="message.id">
+                      <p>{{ message.text }}</p><small>{{ time(message.createdAt) }}</small>
+                    </article>
+                  </div>
+                  <p v-if="workItemMessageError" class="work-center-error" role="alert">{{ workItemMessageError }}</p>
+                  <div class="input-wrapper work-center-item-message-input">
+                    <div class="textarea-wrapper">
+                      <textarea v-model="workItemMessage" rows="1" :placeholder="tr('workCenter.workItemMessagePlaceholder', 'Add direction for the whole Work Item')" @keydown.enter.exact.prevent="sendSelectedWorkItemMessage"></textarea>
+                    </div>
+                    <button class="send-btn" type="button" @click="sendSelectedWorkItemMessage" :disabled="workItemMessageSending || !workItemMessage.trim()" :title="tr('workCenter.sendWorkItemMessage', 'Send to Work Item')">
+                      <svg v-if="!workItemMessageSending" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                      <span v-else class="work-center-send-spinner" aria-hidden="true"></span>
+                    </button>
+                  </div>
                 </div>
                 <div class="work-center-section">
                   <h3>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}</h3>
@@ -859,6 +964,7 @@ export default {
               @attachment-input="onGuidanceAttachmentInput"
               @remove-attachment="removeGuidanceAttachment"
               @send="guideSelectedAction"
+              @retry="retrySelectedAction"
             />
           </div>
         </div>

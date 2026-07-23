@@ -210,6 +210,7 @@ Guidelines:
     },
     required: ['command'],
   },
+  errorOutput: null,
   isConcurrencySafe: () => false,
   isReadOnly: () => false,
   isDestructive: (input) => {
@@ -223,7 +224,7 @@ Guidelines:
   },
   async execute(input, ctx) {
     const { command, cwd: inputCwd, timeout_ms, background = false, taskTitle } = input;
-    if (!command) return JSON.stringify({ error: 'command is required' });
+    if (!command) throw new Error('command is required');
 
     // Resolve working directory
     const cwd = inputCwd
@@ -231,7 +232,7 @@ Guidelines:
       : (ctx?.cwd || process.cwd());
 
     if (!existsSync(cwd)) {
-      return JSON.stringify({ error: `Working directory does not exist: ${cwd}` });
+      throw new Error(`Working directory does not exist: ${cwd}`);
     }
 
     // Clamp timeout
@@ -240,7 +241,7 @@ Guidelines:
 
     if (background) {
       if (!ctx?.taskManager) {
-        return JSON.stringify({ error: 'background tasks are unavailable in this runtime' });
+        throw new Error('background tasks are unavailable in this runtime');
       }
       try {
         const task = ctx.taskManager.startShellTask({
@@ -263,7 +264,7 @@ Guidelines:
         try { ctx.registerAsyncTask?.(task.id, currentToolCall || {}); } catch { /* never block tool return on coord errors */ }
         return `Started background task ${task.id}.\nStatus: ${task.status}\nLog: ${task.log?.path || ''}\nUse ListTasks, ReadTaskLog, or CancelTask to inspect or control it.`;
       } catch (err) {
-        return JSON.stringify({ error: err?.message || String(err) });
+        throw new Error(err?.message || String(err));
       }
     }
 
@@ -287,7 +288,7 @@ Guidelines:
       }
       return output || '(no output)';
     } catch (err) {
-      return JSON.stringify({ error: err.message });
+      throw new Error(err.message);
     }
   },
 });

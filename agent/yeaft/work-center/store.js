@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
 
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -70,13 +70,23 @@ function mapWorkItem(row) {
     workflowSnapshot: parseJson(row.workflow_snapshot, null),
     status: row.status,
     currentActionId: row.current_action_id || null,
+    currentAction: row.current_action_type ? {
+      id: row.current_action_id,
+      type: row.current_action_type,
+      stageId: row.current_action_stage_id || row.current_action_type,
+      status: row.current_action_status || null,
+      brief: parseJson(row.current_action_brief, null),
+    } : null,
     currentRunId: row.current_run_id || null,
     workDir: row.work_dir || '',
     workspaceKey: row.workspace_key || '',
     reuseMemory: row.reuse_memory !== 0,
     origin: parseJson(row.origin, null),
     linkedSessionIds: parseJson(row.linked_session_ids, []),
+    actionCount: Math.max(0, Number(row.action_count) || 0),
+    completedActionCount: Math.max(0, Number(row.completed_action_count) || 0),
     sessionContext: parseJson(row.session_context, []),
+    messages: parseJson(row.messages, []),
     attachments: parseJson(row.attachments, []),
     executionStats: {
       llmRequestCount: Math.max(0, Number(row.usage_llm_request_count) || 0),
@@ -284,6 +294,7 @@ export class WorkItemStore {
         origin TEXT,
         linked_session_ids TEXT NOT NULL DEFAULT '[]',
         session_context TEXT NOT NULL DEFAULT '[]',
+        messages TEXT NOT NULL DEFAULT '[]',
         attachments TEXT NOT NULL DEFAULT '[]',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -421,6 +432,9 @@ export class WorkItemStore {
     if (!hasColumn(this.db, 'work_items', 'reuse_memory')) {
       this.db.exec('ALTER TABLE work_items ADD COLUMN reuse_memory INTEGER NOT NULL DEFAULT 1');
     }
+    if (!hasColumn(this.db, 'work_items', 'messages')) {
+      this.db.exec("ALTER TABLE work_items ADD COLUMN messages TEXT NOT NULL DEFAULT '[]'");
+    }
     if (!hasColumn(this.db, 'actions', 'brief')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN brief TEXT');
     }
@@ -555,13 +569,17 @@ export class WorkItemStore {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
-      if (!['ready', 'running'].includes(workItem.status)) {
+      const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
+      const inputStatuses = graphMode
+        ? ['ready', 'running', 'waiting', 'needs_attention']
+        : ['ready', 'running'];
+      if (!inputStatuses.includes(workItem.status)) {
         throw new Error(`WorkItem in ${workItem.status} cannot accept Action input`);
       }
       const action = this.getAction(expected.actionId);
-      const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
       const actionMatches = graphMode
-        ? action?.workItemId === id && ['ready', 'running'].includes(action.status)
+        ? action?.workItemId === id && action.generation === expected.generation
+          && ['ready', 'running'].includes(action.status)
         : action?.id === workItem.currentActionId && ['ready', 'running'].includes(action?.status);
       const activeRun = action?.currentRunId ? this.getRun(action.currentRunId) : null;
       if (!actionMatches || activeRun?.acceptingInput === false || workItem.revision !== expected.revision) {
@@ -1181,6 +1199,14 @@ export class WorkItemStore {
     }
     const limit = Math.min(Math.max(Number(filters.limit) || 100, 1), 500);
     const sql = `SELECT w.*,
+        current_action.type AS current_action_type,
+        current_action.stage_id AS current_action_stage_id,
+        current_action.status AS current_action_status,
+        current_action.brief AS current_action_brief,
+        (SELECT COUNT(*) FROM actions a WHERE a.work_item_id = w.id
+          AND a.status NOT IN ('superseded', 'cancelled')) AS action_count,
+        (SELECT COUNT(*) FROM actions a WHERE a.work_item_id = w.id
+          AND a.status = 'completed') AS completed_action_count,
         COALESCE(SUM(r.llm_request_count), 0) AS usage_llm_request_count,
         COALESCE(SUM(r.loop_count), 0) AS usage_loop_count,
         COALESCE(SUM(r.tool_count), 0) AS usage_tool_count,
@@ -1189,7 +1215,9 @@ export class WorkItemStore {
         COALESCE(SUM(r.cache_read_tokens), 0) AS usage_cache_read_tokens,
         COALESCE(SUM(r.cache_write_tokens), 0) AS usage_cache_write_tokens,
         COALESCE(SUM(r.total_tokens), 0) AS usage_total_tokens
-      FROM work_items w LEFT JOIN runs r ON r.work_item_id = w.id
+      FROM work_items w
+      LEFT JOIN actions current_action ON current_action.id = w.current_action_id
+      LEFT JOIN runs r ON r.work_item_id = w.id
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       GROUP BY w.id ORDER BY w.updated_at DESC LIMIT ?`;
     return this.db.prepare(sql).all(...values, limit).map(mapWorkItem).map(workItem => {
@@ -1215,6 +1243,63 @@ export class WorkItemStore {
 
   listActionEvents(actionId) {
     return this.db.prepare(`SELECT * FROM events WHERE action_id = ? ORDER BY id`).all(actionId).map(mapEvent);
+  }
+
+  addWorkItemMessage(id, text, expectedRevision, updateActionInstruction) {
+    return withTransaction(this.db, () => {
+      const workItem = this.getWorkItem(id);
+      if (!workItem) return null;
+      if (['done', 'cancelled'].includes(workItem.status)) {
+        throw new Error(`WorkItem in ${workItem.status} cannot accept messages`);
+      }
+      if (workItem.revision !== expectedRevision) {
+        throw new Error('WorkItem changed before the message was applied; refresh and try again');
+      }
+      const openActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
+        AND status IN ('ready', 'running') ORDER BY sequence`).all(id).map(mapAction);
+      for (const action of openActions.filter(candidate => candidate.status === 'running')) {
+        const run = action.currentRunId ? this.getRun(action.currentRunId) : null;
+        if (!run || run.status !== 'running' || run.acceptingInput === false) {
+          throw new Error('A running Action closed its input window before the WorkItem message was applied; refresh and try again');
+        }
+      }
+      const now = this.now();
+      const revision = workItem.revision + 1;
+      const message = { id: randomUUID(), text, createdAt: now };
+      const messages = [...(workItem.messages || []), message].slice(-100);
+      this.db.prepare(`UPDATE work_items SET messages = ?, revision = ?, updated_at = ? WHERE id = ?`)
+        .run(stringify(messages), revision, now, id);
+      const updatedWorkItem = { ...workItem, messages, revision };
+      for (const action of openActions) {
+        if (action.status === 'ready') {
+          const instruction = updateActionInstruction(updatedWorkItem, action);
+          this.db.prepare(`UPDATE actions SET instruction = ?, spec_hash = ?, updated_at = ?
+            WHERE id = ? AND status = 'ready'`).run(
+            instruction,
+            actionSpecHash({ ...action, instruction }),
+            now,
+            action.id,
+          );
+          continue;
+        }
+        const run = this.getRun(action.currentRunId);
+        const eventId = this.appendEvent(id, 'work_item.message_applied', { message }, {
+          actionId: action.id,
+          runId: action.currentRunId,
+        });
+        this.db.prepare(`INSERT INTO pending_action_inputs
+          (event_id, work_item_id, action_id, run_id, text, attachments, consumed_at)
+          VALUES (?, ?, ?, ?, ?, '[]', NULL)`).run(
+          eventId,
+          id,
+          action.id,
+          action.currentRunId,
+          `WorkItem-level message: ${text}`,
+        );
+      }
+      this.appendEvent(id, 'work_item.message_added', { message });
+      return this.getWorkItemDetail(id);
+    });
   }
 
   getReusableContext(workDir, excludeWorkItemId = null) {
@@ -1432,17 +1517,24 @@ export class WorkItemStore {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
-      if (!['waiting', 'needs_attention'].includes(workItem.status)) {
+      const graphMode = isGraphWorkItem(workItem);
+      const retryableWorkItemStatuses = graphMode
+        ? ['ready', 'running', 'waiting', 'needs_attention']
+        : ['waiting', 'needs_attention'];
+      if (!retryableWorkItemStatuses.includes(workItem.status)) {
         throw new Error(`WorkItem in ${workItem.status} does not need retry`);
       }
-      const graphMode = isGraphWorkItem(workItem);
       let previous = workItem.currentActionId ? this.getAction(workItem.currentActionId) : null;
       if (options.expected) {
         const expectedAction = this.getAction(options.expected.actionId);
+        const allowedExpectedStatuses = Array.isArray(options.expected.statuses)
+          ? options.expected.statuses
+          : ['waiting', 'failed'];
         const expectedMatches = graphMode
           ? expectedAction?.workItemId === id && expectedAction.generation === options.expected.generation
-            && ['waiting', 'failed'].includes(expectedAction.status)
-          : workItem.currentActionId === options.expected.actionId;
+            && allowedExpectedStatuses.includes(expectedAction.status)
+          : workItem.currentActionId === options.expected.actionId
+            && allowedExpectedStatuses.includes(expectedAction?.status);
         if (!expectedMatches || workItem.revision !== options.expected.revision) {
           throw new Error('Action changed before input was applied; refresh and try again');
         }
