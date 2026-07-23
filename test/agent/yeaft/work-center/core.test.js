@@ -136,6 +136,32 @@ describe('Work Center core', () => {
     expect(store.listWorkItems({ vpId: 'current-vp' })).toEqual([]);
   });
 
+  it('persists immutable generation and monotonic attempt identity on every Run claim', () => {
+    const item = controller.create(createInput({ id: 'run-identity' }));
+    const first = store.claimReadyAction('boot-a', 5_000);
+    expect(first.run).toMatchObject({
+      actionGeneration: first.action.generation,
+      actionSpecHash: first.action.specHash,
+      actionAttempt: 1,
+    });
+
+    store.deferRun(first.run.id, 'boot-a', first.run.leaseEpoch, 'workspace busy');
+    const second = store.claimReadyAction('boot-a', 5_000);
+    expect(second.action).toMatchObject({ id: first.action.id, generation: first.action.generation });
+    expect(second.run).toMatchObject({
+      actionGeneration: first.action.generation,
+      actionSpecHash: first.action.specHash,
+      actionAttempt: 2,
+    });
+    expect(store.getRun(first.run.id)).toMatchObject({
+      actionGeneration: first.action.generation,
+      actionSpecHash: first.action.specHash,
+      actionAttempt: 1,
+    });
+    expect(store.getWorkItemDetail(item.id).events.find(event => event.type === 'run.claimed'))
+      .toMatchObject({ actionGeneration: first.action.generation });
+  });
+
   it('persists, filters, resolves, and deletes plan conflicts', () => {
     const item = controller.create(createInput());
     const action = store.getWorkItemDetail(item.id).actions[0];
@@ -1839,6 +1865,57 @@ describe('Work Center core', () => {
     const unrelated = controller.create(createInput({ title: 'Unrelated item' }));
     expect(store.getActionResumeContext(unrelated.currentActionId, '')).toBeNull();
     expect(first.id).not.toBe(unrelated.id);
+  });
+
+  it('does not resume interrupted state with the current generation but a different spec hash', () => {
+    controller.create(createInput());
+    const firstClaim = store.claimReadyAction('boot-a', 5_000);
+    store.updateRunProgress(firstClaim.run.id, 'boot-a', firstClaim.run.leaseEpoch, {
+      response: 'WRONG SPEC STATE',
+      loopCount: 1,
+      toolCount: 1,
+      checkpoint: {
+        version: 1,
+        toolEvents: [{ name: 'FileEdit', status: 'completed', resource: 'wrong-spec.js' }],
+      },
+    });
+    expect(store.interruptRun(
+      firstClaim.run.id, 'boot-a', firstClaim.run.leaseEpoch, 'wrong spec interrupted',
+    )).toBe(true);
+    store.db.prepare('UPDATE runs SET action_spec_hash = ? WHERE id = ?')
+      .run('different-spec-hash', firstClaim.run.id);
+
+    const secondClaim = store.claimReadyAction('boot-a', 5_000);
+    expect(secondClaim.action.generation).toBe(firstClaim.action.generation);
+    expect(store.getActionResumeContext(firstClaim.action.id, secondClaim.run.id)).toBeNull();
+  });
+
+  it('does not resume interrupted state after the Action identity changes', () => {
+    controller.create(createInput());
+    const firstClaim = store.claimReadyAction('boot-a', 5_000);
+    store.updateRunProgress(firstClaim.run.id, 'boot-a', firstClaim.run.leaseEpoch, {
+      response: 'STALE OLD SPEC STATE',
+      loopCount: 1,
+      toolCount: 1,
+      checkpoint: {
+        version: 1,
+        toolEvents: [{ name: 'FileEdit', status: 'completed', resource: 'old.js' }],
+      },
+    });
+    expect(store.interruptRun(
+      firstClaim.run.id, 'boot-a', firstClaim.run.leaseEpoch, 'old generation interrupted',
+    )).toBe(true);
+
+    const changedAction = store.setActionWorkspace(firstClaim.action.id, null, 'read');
+    expect(changedAction).toMatchObject({ generation: 2, workspaceMode: 'read' });
+    expect(changedAction.specHash).not.toBe(firstClaim.action.specHash);
+    const secondClaim = store.claimReadyAction('boot-a', 5_000);
+    expect(secondClaim.action).toMatchObject({
+      id: firstClaim.action.id,
+      generation: changedAction.generation,
+      specHash: changedAction.specHash,
+    });
+    expect(store.getActionResumeContext(firstClaim.action.id, secondClaim.run.id)).toBeNull();
   });
 
   it('recovers only the currently fenced expired Run', () => {

@@ -1,6 +1,7 @@
 import { realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { runMatchesActionIdentity } from './action-identity.js';
 import { WorkItemStore } from './store.js';
 import { WorkflowController } from './controller.js';
 import { WorkItemWatcher } from './watcher.js';
@@ -142,7 +143,8 @@ export class WorkCenterService {
         const detail = this.#requiredItem(payload.id);
         const action = this.#requiredAction(detail, payload.actionId);
         const entries = [];
-        for (const run of detail.runs.filter(item => item.actionId === action.id)) {
+        for (const run of detail.runs.filter(item => item.actionId === action.id
+          && runMatchesActionIdentity(item, action))) {
           const history = await this.#debugHistory(run, { indexOnly: true });
           for (const turn of Array.isArray(history?.turns) ? history.turns : []) {
             entries.push({ run, turn });
@@ -154,7 +156,8 @@ export class WorkCenterService {
         const detail = this.#requiredItem(payload.id);
         const action = this.#requiredAction(detail, payload.actionId);
         const requestId = requiredString(payload.requestId, 'requestId');
-        const run = detail.runs.find(item => item.actionId === action.id && item.id === payload.runId);
+        const run = detail.runs.find(item => item.actionId === action.id
+          && item.id === payload.runId && runMatchesActionIdentity(item, action));
         if (!run) throw new Error('Action request not found');
         const history = await this.#debugHistory(run, { detailTurnId: requestId });
         const projected = projectActionRequestDetail(action, run, history);

@@ -5,6 +5,7 @@ import {
   sanitizeDebugValue,
   sanitizeDiagnosticText,
 } from './debug-projection.js';
+import { eventMatchesActionGeneration, runMatchesActionIdentity } from './action-identity.js';
 import { taskSpecificActionBrief } from './workflow.js';
 import { buildMainlineProjection } from './mainline-projection.js';
 
@@ -164,12 +165,15 @@ function normalizeProjectedMessage(message) {
     createdAt: count(message.createdAt),
     updatedAt: count(message.updatedAt || message.createdAt),
     ...(message.progressRevision == null ? {} : { progressRevision: count(message.progressRevision) }),
+    ...(message.generation == null ? {} : { generation: Math.max(1, count(message.generation) || 1) }),
+    ...(message.attempt == null ? {} : { attempt: Math.max(1, count(message.attempt) || 1) }),
   };
 }
 
 function actionInputMessages(action, events) {
   return (Array.isArray(events) ? events : [])
     .filter(event => event?.actionId === action?.id
+      && eventMatchesActionGeneration(event, action)
       && ['action.guidance_added', 'action.input_added'].includes(event.type))
     .map(event => normalizeProjectedMessage({
       id: `event:${event.id}`,
@@ -193,12 +197,17 @@ function runResponseMessage(run) {
     createdAt: count(run.startedAt),
     updatedAt: count(run.endedAt || run.startedAt),
     progressRevision: count(run.progressRevision),
+    generation: run.actionGeneration,
+    attempt: run.actionAttempt,
   });
 }
 
-function loopOutputMessages(action, events) {
+function loopOutputMessages(action, events, matchingRunIds) {
   return (Array.isArray(events) ? events : [])
-    .filter(event => event?.actionId === action?.id && event.type === 'run.loop_output')
+    .filter(event => event?.actionId === action?.id
+      && eventMatchesActionGeneration(event, action)
+      && matchingRunIds.has(event.runId)
+      && event.type === 'run.loop_output')
     .map(event => normalizeProjectedMessage({
       id: `event:${event.id}`,
       role: 'assistant',
@@ -206,18 +215,24 @@ function loopOutputMessages(action, events) {
       status: 'completed',
       text: event.data?.response || '',
       createdAt: event.createdAt,
+      generation: event.actionGeneration ?? event.data?.actionGeneration,
+      attempt: event.data?.actionAttempt,
     }))
     .filter(Boolean);
 }
 
 function actionMessages(action, runs, events) {
   const matchingRuns = Array.isArray(runs)
-    ? runs.filter(run => run?.actionId === action?.id)
+    ? runs.filter(run => run?.actionId === action?.id && runMatchesActionIdentity(run, action))
     : [];
+  const matchingRunIds = new Set(matchingRuns.map(run => run.id));
   const runsWithLoopOutput = new Set((Array.isArray(events) ? events : [])
-    .filter(event => event?.actionId === action?.id && event.type === 'run.loop_output' && event.runId)
+    .filter(event => event?.actionId === action?.id
+      && eventMatchesActionGeneration(event, action)
+      && matchingRunIds.has(event.runId)
+      && event.type === 'run.loop_output')
     .map(event => event.runId));
-  return [...actionInputMessages(action, events), ...loopOutputMessages(action, events), ...matchingRuns
+  return [...actionInputMessages(action, events), ...loopOutputMessages(action, events, matchingRunIds), ...matchingRuns
     .sort((left, right) => count(left.startedAt) - count(right.startedAt))
     .filter(run => !runsWithLoopOutput.has(run.id))
     .map(run => runResponseMessage(run))
@@ -282,11 +297,12 @@ function sanitizeFailureReason(value) {
 
 function actionExecution(action, runs, events, includeBody = true) {
   const matchingRuns = Array.isArray(runs)
-    ? runs.filter(run => run?.actionId === action?.id)
+    ? runs.filter(run => run?.actionId === action?.id && runMatchesActionIdentity(run, action))
     : [];
   if (matchingRuns.length === 0) {
     const inputMessageCount = Array.isArray(events) ? events.filter(event => (
       event?.actionId === action?.id
+        && eventMatchesActionGeneration(event, action)
         && ['action.guidance_added', 'action.input_added'].includes(event.type)
     )).length : 0;
     const messages = includeBody
@@ -334,6 +350,7 @@ function actionExecution(action, runs, events, includeBody = true) {
     ? 0
     : (Array.isArray(events) ? events : []).filter(event => (
         event?.actionId === action?.id
+          && eventMatchesActionGeneration(event, action)
           && ['action.guidance_added', 'action.input_added'].includes(event.type)
       )).length;
   const allMessages = includeBody ? actionMessages(action, matchingRuns, events) : [];
@@ -395,7 +412,9 @@ function projectAction(action, runs, events, includeBody = true) {
         key,
         truncateUtf8(value, includeBody ? MAX_CURRENT_BRIEF_BYTES : MAX_HISTORICAL_BRIEF_CHARS),
       ]));
-  const matchingRuns = Array.isArray(runs) ? runs.filter(run => run?.actionId === action.id) : [];
+  const matchingRuns = Array.isArray(runs)
+    ? runs.filter(run => run?.actionId === action.id && runMatchesActionIdentity(run, action))
+    : [];
   const latestRun = [...matchingRuns].sort((left, right) => (
     count(right.startedAt) - count(left.startedAt) || count(right.progressRevision) - count(left.progressRevision)
   ))[0];
@@ -418,6 +437,8 @@ function projectAction(action, runs, events, includeBody = true) {
     dependsOnStageIds: Array.isArray(action.dependsOnStageIds) ? action.dependsOnStageIds : [],
     workspaceMode: action.workspaceMode || 'shared',
     requiredRole: action.requiredRole || '',
+    generation: Math.max(1, count(action.generation) || 1),
+    replacesActionId: action.replacesActionId || null,
     brief: projectedBrief,
     status: action.status,
     assignedVp,
@@ -816,6 +837,7 @@ export function projectActionMessagePage(action, runs, events, options = {}) {
   const start = Math.max(0, end - limit);
   return {
     actionId: action.id,
+    generation: Math.max(1, count(action.generation) || 1),
     messages: messages.slice(start, end),
     nextCursor: start > 0 ? String(start) : null,
     total: messages.length,
@@ -825,9 +847,14 @@ export function projectActionMessagePage(action, runs, events, options = {}) {
 export function projectActionRequestIndex(action, entries) {
   return {
     actionId: action.id,
-    requests: (Array.isArray(entries) ? entries : []).map(({ run, turn }) => ({
+    generation: Math.max(1, count(action.generation) || 1),
+    requests: (Array.isArray(entries) ? entries : [])
+      .filter(({ run }) => runMatchesActionIdentity(run, action))
+      .map(({ run, turn }) => ({
       id: turn.turnId,
       runId: run.id,
+      generation: Math.max(1, count(run.actionGeneration) || 1),
+      attempt: Math.max(1, count(run.actionAttempt) || 1),
       status: run.status || 'running',
       model: run.modelSnapshot?.id || null,
       vp: run.vpSnapshot ? {
@@ -846,6 +873,7 @@ export function projectActionRequestIndex(action, entries) {
 }
 
 export function projectActionRequestDetail(action, run, history) {
+  if (!runMatchesActionIdentity(run, action)) return null;
   const turn = Array.isArray(history?.turns) ? history.turns[0] : null;
   if (!turn) return null;
   const sourceLoops = Array.isArray(history?.loops) ? history.loops : [];
