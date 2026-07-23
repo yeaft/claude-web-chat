@@ -18,7 +18,7 @@ function assistant(id, extra = {}) {
 
 const readWebFile = (path) => readFileSync(new URL(`../../web/${path}`, import.meta.url), 'utf8');
 
-describe('message turn response collapse', () => {
+describe('message turn response visibility', () => {
   it('keeps the newest two user turns expanded and collapses older responses by default', () => {
     const blocks = annotateMessageBlocksForResponseCollapse([
       { type: 'message-block', id: 'turn-1', messageId: 'u1', items: [user('u1'), assistant('a1')] },
@@ -95,24 +95,12 @@ describe('message turn response collapse', () => {
     expect(estimateCollapsedMessageBlockHeight(block, () => 100)).toBe(192);
   });
 
-  it('renders collapsed response controls in the preview header', () => {
-    const assistantTurnSource = readWebFile('components/AssistantTurn.js');
+  it('keeps every AI response visible in the active transcript path', () => {
     const messageListSource = readWebFile('components/MessageList.js');
-    const cssSource = readWebFile('styles/chat-messages.css');
 
-    expect(assistantTurnSource).toContain('class="response-collapse-btn"');
-    expect(assistantTurnSource).toContain("@click=\"$emit('toggle-response-collapse')\"");
-    expect(messageListSource).toContain(':response-collapsible="responseToggleBelongsToItem(block, item)"');
-    expect(messageListSource).toContain('class="vp-turn-block-main-header message-block-collapsed-preview-header"');
-    expect(messageListSource).toContain('class="response-collapse-btn message-block-collapse-header-btn"');
-    expect(messageListSource).toContain('class="message-block-collapsed-preview-body markdown-body"');
-    expect(messageListSource).toContain('collapsedResponsePreviewSpeaker(block).style');
-    expect(messageListSource).toContain('collapsedResponsePreviewLines(block)');
-    expect(messageListSource).not.toContain('message-block-collapse-footer');
-    expect(messageListSource).not.toContain('class="message-turn-collapse-toggle"');
-    expect(cssSource).not.toContain('.message-block-collapsed-response .message-block-collapse-footer');
-    expect(cssSource).toContain('.copy-full-btn,\n.response-collapse-btn');
-    expect(cssSource).not.toContain('.message-turn-collapse-toggle');
+    expect(messageListSource).toContain('return blocks;');
+    expect(messageListSource).not.toContain('return annotateMessageBlocksForResponseCollapse(blocks, messageTurnCollapseStates);');
+    expect(messageListSource).toContain('VirtualTranscript\n          :key="virtualTranscriptIdentity"');
   });
 
   it('keeps collapsed response preview typography aligned with normal turn text', () => {

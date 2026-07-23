@@ -32,6 +32,7 @@ globalThis.document = { addEventListener: vi.fn(), removeEventListener: vi.fn(),
 
 const { useChatStore } = await import('../../../web/stores/chat.js');
 const { handleAssistantOutputFrame } = await import('../../../web/stores/helpers/assistantOutput.js');
+const { handleYeaftHistoryWindow: mergeYeaftHistoryWindow } = await import('../../../web/stores/helpers/handlers/conversationHandler.js');
 const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
 
 function primeStore() {
@@ -75,6 +76,52 @@ describe('Yeaft history outline state', () => {
     expect(store._sent).toHaveLength(1);
     expect(store.loadYeaftHistoryOutline({ append: true })).toBe(true);
     expect(store._sent.at(-1)).toMatchObject({ beforeSeq: 50, includeTotal: false });
+  });
+
+  it('merges an old anchor into the authoritative conversation and expands its render window', async () => {
+    const store = primeStore();
+    store.currentAgentInfo.capabilities.push('session_history_search');
+    store.agents[0].capabilities.push('session_history_search');
+    store.messagesMap['conv-a'] = Array.from({ length: 12 }, (_, index) => ({
+      id: `m${index + 50}`,
+      messageId: `m${index + 50}`,
+      type: index % 2 ? 'assistant' : 'user',
+      content: `recent ${index}`,
+      sessionId: 'same',
+      timestamp: index + 50,
+    }));
+
+    const pending = store.loadYeaftHistoryWindow({ messageId: 'm42', seq: 42 });
+    const request = store._sent.at(-1);
+    const response = {
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: request.requestId,
+      messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
+    };
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+
+    expect(conversationId).toBe('conv-a');
+    expect(store.messagesMap['conv-a'].some(row => row.persistedMessageId === 'm42' || row.messageId === 'm42')).toBe(true);
+    expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
+    await expect(pending).resolves.toBe(true);
+    expect(store.yeaftMessageWindowState[store.getYeaftMessageWindowKey('same')].visibleTurns).toBeGreaterThan(5);
+  });
+
+  it('rejects a history window when the merged conversation lacks the requested anchor', async () => {
+    const store = primeStore();
+    const pending = store.loadYeaftHistoryWindow({ messageId: 'm42', seq: 42 });
+    const request = store._sent.at(-1);
+    const response = {
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: request.requestId,
+      messages: [{ id: 'm41', role: 'assistant', content: 'neighbor', createdAt: 41 }],
+    };
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+
+    expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(false);
+    await expect(pending).resolves.toBe(false);
   });
 
   it('merges optimistic and persisted rows by clientMessageId', () => {
