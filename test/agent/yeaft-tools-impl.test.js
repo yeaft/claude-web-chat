@@ -353,18 +353,78 @@ describe('HistorySearch tool', () => {
     expect(result.error).toBeTruthy();
   });
 
-  it('finds messages written to JSONL segments', async () => {
+  it('searches message content with AND terms and excludes tool messages', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'yeaft-history-search-'));
     try {
       const { ConversationStore } = await import('../../agent/yeaft/conversation/persist.js');
       const mod = await import(`${TOOLS_DIR}/history-search.js`);
       const tool = mod.default;
       const store = new ConversationStore(tmpDir);
-      store.append({ role: 'user', content: 'segment-only search needle', sessionId: 'session_search' });
+      store.append({ role: 'system', content: 'Alpha decision with beta details', sessionId: 'session_search' });
+      store.append({ role: 'assistant', content: 'alpha only', sessionId: 'session_search' });
+      store.append({ role: 'tool', content: 'alpha beta tool noise', sessionId: 'session_search' });
+      store.append({ role: 'user', content: 'unrelated', metadata: 'alpha beta', sessionId: 'session_search' });
 
-      const result = JSON.parse(await tool.execute({ keyword: 'needle' }, { yeaftDir: tmpDir }));
+      const result = JSON.parse(await tool.execute({ keyword: 'beta ALPHA' }, { yeaftDir: tmpDir }));
       expect(result.totalResults).toBe(1);
-      expect(result.results[0]).toMatchObject({ role: 'user', content: 'segment-only search needle' });
+      expect(result.results[0]).toMatchObject({
+        messageId: 'm0001',
+        sessionId: 'session_search',
+        role: 'system',
+        content: 'Alpha decision with beta details',
+        source: 'session',
+      });
+      expect(result.telemetry).toMatchObject({ resultCount: 1, scannedFiles: 1, scannedMessages: 4 });
+      expect(result.telemetry.scannedBytes).toBeGreaterThan(0);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not match legacy Markdown frontmatter', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'yeaft-history-search-'));
+    try {
+      const messagesDir = join(tmpDir, 'conversation', 'messages');
+      mkdirSync(messagesDir, { recursive: true });
+      writeFileSync(join(messagesDir, 'm0001.md'), [
+        '---',
+        'id: m0001',
+        'role: assistant',
+        'time: 2026-07-23T00:00:00.000Z',
+        'model: metadata-only-needle',
+        '---',
+        '',
+        'ordinary body',
+      ].join('\n'));
+      const mod = await import(`${TOOLS_DIR}/history-search.js`);
+      const result = JSON.parse(await mod.default.execute(
+        { keyword: 'metadata-only-needle' },
+        { yeaftDir: tmpDir }
+      ));
+
+      expect(result.results).toEqual([]);
+      expect(result.telemetry).toMatchObject({ resultCount: 0, scannedFiles: 1, scannedMessages: 1 });
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns a bounded snippet around the first matching term and normalizes time', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'yeaft-history-search-'));
+    try {
+      const { ConversationStore } = await import('../../agent/yeaft/conversation/persist.js');
+      const mod = await import(`${TOOLS_DIR}/history-search.js`);
+      const tool = mod.default;
+      const store = new ConversationStore(tmpDir);
+      const content = `${'x'.repeat(1400)} unique-needle ${'y'.repeat(1400)}`;
+      store.append({ role: 'assistant', content, time: '2026-07-23T00:00:00.000Z', sessionId: 'session_search' });
+
+      const result = JSON.parse(await tool.execute({ keyword: 'unique-needle' }, { yeaftDir: tmpDir }));
+      expect(result.results[0].content.length).toBeLessThanOrEqual(1006);
+      expect(result.results[0].content).toContain('unique-needle');
+      expect(result.results[0].content.startsWith('...')).toBe(true);
+      expect(result.results[0].content.endsWith('...')).toBe(true);
+      expect(result.results[0].time).toBe('2026-07-23T00:00:00.000Z');
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
