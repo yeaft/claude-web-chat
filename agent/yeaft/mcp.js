@@ -327,23 +327,27 @@ class MCPServerConnection extends EventEmitter {
    * Stop the MCP server process.
    */
   async stop() {
-    if (this.#process) {
-      this.#ready = false;
-      this.#process.kill('SIGTERM');
-      // Wait a bit then force kill. Test fakes do not emit close, so cap the
-      // wait at 2s and do not require a close event for cleanup to finish.
-      await Promise.race([
-        new Promise(resolve => {
-          if (this.#closed) return resolve();
-          this.#process.once('close', resolve);
-        }),
-        new Promise(resolve => setTimeout(resolve, 2000)),
-      ]);
-      if (this.#process && !this.#process.killed && !this.#closed) {
-        this.#process.kill('SIGKILL');
-      }
-      this.#process = null;
+    const child = this.#process;
+    if (!child) return;
+
+    this.#ready = false;
+    let closed = this.#closed;
+    if (!closed) {
+      child.kill('SIGTERM');
+      closed = await new Promise(resolve => {
+        let timer = null;
+        const finish = (didClose) => {
+          if (timer) clearTimeout(timer);
+          child.removeListener('close', onClose);
+          resolve(didClose);
+        };
+        const onClose = () => finish(true);
+        child.once('close', onClose);
+        timer = setTimeout(() => finish(false), 2000);
+      });
+      if (!closed) child.kill('SIGKILL');
     }
+    if (this.#process === child) this.#process = null;
   }
 }
 

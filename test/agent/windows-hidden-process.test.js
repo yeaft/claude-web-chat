@@ -32,8 +32,10 @@ vi.mock('child_process', () => ({
     child.stdin = new FakeWritable();
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
-    child.kill = vi.fn(() => {
-      queueMicrotask(() => child.emit('close', null));
+    child.kill = vi.fn((signal) => {
+      if (command !== 'never-ready' || signal === 'SIGKILL') {
+        queueMicrotask(() => child.emit('close', null));
+      }
       return true;
     });
     child.command = command;
@@ -191,11 +193,12 @@ describe('Windows hidden non-interactive process launches', () => {
         mcp_servers: [{ name: 'stuck', command: 'never-ready' }],
       });
       await vi.advanceTimersByTimeAsync(10000);
+      await vi.advanceTimersByTimeAsync(2000);
       const manager = await managerPromise;
 
       expect(manager.status()).toEqual([]);
       expect(spawns).toHaveLength(1);
-      expect(spawns[0].kill).toHaveBeenCalledWith('SIGTERM');
+      expect(spawns[0].kill.mock.calls).toEqual([['SIGTERM'], ['SIGKILL']]);
       expect(__mcpConnectionPoolSizeForTests()).toBe(0);
     } finally {
       vi.useRealTimers();
