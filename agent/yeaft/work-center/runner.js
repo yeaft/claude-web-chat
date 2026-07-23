@@ -437,6 +437,52 @@ export function createRequestWorkItemReplanTool({ workItem, collector, isRunActi
   });
 }
 
+export function createSubmitWorkItemReplanTool({ vps, workItem, action, actions, collector, isRunActive }) {
+  const vpCatalog = planningVpCatalog(vps);
+  const vpIds = vpCatalog.map(vp => vp.id);
+  const barrier = (Array.isArray(action.context) ? action.context : [])
+    .find(entry => entry?.type === 'replan-barrier');
+  const candidateIds = Array.isArray(barrier?.candidateActionIds) ? barrier.candidateActionIds : [];
+  const actionById = new Map(actions.map(candidate => [candidate.id, candidate]));
+  const candidateSummary = candidateIds.map(id => {
+    const candidate = actionById.get(id);
+    return `${id}/${candidate?.stageId || 'missing'} (${candidate?.type || 'unknown'})`;
+  }).join('; ');
+  const candidateIdSchema = candidateIds.length > 0
+    ? { type: 'string', enum: candidateIds }
+    : { type: 'string' };
+  const candidateLimit = Math.min(8, candidateIds.length);
+  const classification = { type: 'object', additionalProperties: false,
+    required: ['actionId', 'action'], properties: {
+      actionId: candidateIdSchema,
+      action: plannedActionSchema(vpIds),
+    } };
+  return defineTool({
+    name: 'SubmitWorkItemReplan',
+    description: `Submit the complete replacement topology after a replan barrier. Classify every frozen candidate exactly once as retain, replace, or remove. Retain keeps its database Action identity and stage id but requires the complete updated specification. Replace creates a new Action linked to the old database Action. Add is only for new work. Frozen candidates: ${candidateSummary}. Available VPs: ${vpCatalog.map(vp => vp.id).join(', ')}.`,
+    parameters: { type: 'object', additionalProperties: false,
+      required: ['summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'retain', 'replace', 'remove', 'add'],
+      properties: {
+        ...terminalPlanningFields(),
+        proposalId: { type: 'string', minLength: 1, maxLength: 128 },
+        basePlanRevision: { type: 'integer', const: workItem.planRevision },
+        retain: { type: 'array', maxItems: candidateLimit, items: classification },
+        replace: { type: 'array', maxItems: candidateLimit, items: classification },
+        remove: { type: 'array', maxItems: candidateLimit, uniqueItems: true, items: candidateIdSchema },
+        add: { type: 'array', maxItems: 8, items: plannedActionSchema(vpIds) },
+      } },
+    async execute(input, ctx = {}) {
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
+      if (collector.value) throw new Error('A WorkItem plan was already submitted for this Run');
+      collector.value = structuredClone(input);
+      ctx.requestEndTurn?.({ kind: 'work_item_replan_submitted', proposalId: input.proposalId });
+      return JSON.stringify({ submitted: true, proposalId: input.proposalId });
+    },
+    isConcurrencySafe: () => false,
+    isReadOnly: () => false,
+  });
+}
+
 export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRunActive, mcpTools = [], runTools = [] }) {
   const canonicalDir = canonicalWorkDir(path.resolve(workDir));
   const canonicalAttachmentFiles = attachmentFiles.map(file => ({
@@ -504,11 +550,15 @@ function completionContract(action, workItem) {
   const triageField = action.type === 'triage'
     ? ',\n  "contractPatch": { "goal": "optional refined goal", "acceptanceCriteria": ["optional refined criterion"] }'
     : '';
-  const planField = action.type === 'triage' && workItem?.workflowSnapshot?.planningMode === 'ai'
+  const planField = action.type === 'triage'
+    && !action.stageId?.startsWith('replan-')
+    && workItem?.workflowSnapshot?.planningMode === 'ai'
     ? ',\n  "plan": { "workItemType": "specific-lowercase-slug", "actions": [{ "id": "stable-id", "name": "User-facing name", "type": "extensible-lowercase-slug (built-ins include research|design|diagnose|implement|migrate|test|review|document|operate|deliver|integrate|write|custom)", "capability": "specific executor capability", "objective": "task-specific concrete work this Action must do", "approach": "task-specific repository-aware method the executor must follow", "expectedOutcome": "task-specific verifiable result this Action must produce", "dependsOnActionIds": ["earlier Action id; [] means concurrent root"], "workspaceMode": "read|isolated-write|integrate|shared", "separateFromActionTypes": ["optional prior Action type"], "changesRequestedActionId": "for review: optional earlier editable Action id; omit to use nearest", "maxAttempts": 2 }] }'
     : '';
-  const toolSubmission = action.type === 'triage' && workItem?.workflowSnapshot?.planningMode === 'ai'
-    ? '\nSubmit the initial plan with SubmitWorkItemPlan. The legacy terminal JSON plan below exists only for compatibility; do not use it when the tool is available.'
+  const toolSubmission = action.type === 'triage' && action.stageId?.startsWith('replan-')
+    ? '\nSubmit the replan only with SubmitWorkItemReplan. Classify every frozen candidate exactly once; do not emit terminal JSON after calling it.'
+    : action.type === 'triage' && workItem?.workflowSnapshot?.planningMode === 'ai'
+      ? '\nSubmit the initial plan with SubmitWorkItemPlan. The legacy terminal JSON plan below exists only for compatibility; do not use it when the tool is available.'
     : workItem?.workflowSnapshot?.executionMode === 'graph'
       ? '\nIf execution discovered strictly additive work, use ProposeWorkItemActions. If the contract or existing unfinished topology must change, use RequestWorkItemReplan. Both tools submit the completed Action and end the turn; do not emit terminal JSON after calling one.'
       : '';
@@ -901,19 +951,29 @@ export class WorkItemRunner {
     const mcpToolNames = workspaceRuntime.mcpTools.map(tool => tool.name);
     const planCollector = { value: null };
     const mutationCollector = { value: null };
+    const replanToolEnabled = executionAction.type === 'triage'
+      && executionAction.stageId?.startsWith('replan-');
     const planToolEnabled = executionAction.type === 'triage'
-      && workItem?.workflowSnapshot?.planningMode === 'ai';
+      && workItem?.workflowSnapshot?.planningMode === 'ai'
+      && !replanToolEnabled;
     const runTools = [];
     if (planToolEnabled) runTools.push(createSubmitWorkItemPlanTool({
       vps: this.registry.listVps(),
       workItem,
       collector: planCollector,
       isRunActive,
-      reservedStageIds: executionAction.stageId?.startsWith('replan-')
-        ? this.store.getWorkItemDetail(workItem.id).actions.map(item => item.stageId)
-        : [],
+      reservedStageIds: [],
     }));
-    if (!planToolEnabled && workItem?.workflowSnapshot?.executionMode === 'graph') {
+    if (replanToolEnabled) runTools.push(createSubmitWorkItemReplanTool({
+      vps: this.registry.listVps(),
+      workItem,
+      action: executionAction,
+      actions: this.store.getWorkItemDetail(workItem.id).actions,
+      collector: planCollector,
+      isRunActive,
+    }));
+    if (!planToolEnabled && !replanToolEnabled
+        && workItem?.workflowSnapshot?.executionMode === 'graph') {
       runTools.push(createProposeWorkItemActionsTool({
         vps: this.registry.listVps(), workItem,
         actions: this.store.getWorkItemDetail(workItem.id).actions,
@@ -1125,7 +1185,8 @@ export class WorkItemRunner {
     }
     const response = publicWorkItemResponse(text);
     reportProgress(true);
-    const submittedPlan = planCollector.value;
+    const submittedPlan = !replanToolEnabled ? planCollector.value : null;
+    const submittedReplanMutation = replanToolEnabled ? planCollector.value : null;
     const submittedExpansion = mutationCollector.value?.kind === 'expand'
       ? mutationCollector.value.input : null;
     const submittedReplan = mutationCollector.value?.kind === 'replan'
@@ -1137,6 +1198,19 @@ export class WorkItemRunner {
       contractPatch: submittedPlan.contractPatch || null,
       plan: { workItemType: submittedPlan.workItemType, actions: submittedPlan.actions },
       acceptanceChecks: submittedPlan.acceptanceChecks,
+    } : submittedReplanMutation ? {
+      outcome: 'completed',
+      summary: submittedReplanMutation.summary,
+      evidence: submittedReplanMutation.evidence,
+      acceptanceChecks: submittedReplanMutation.acceptanceChecks,
+      replanMutation: {
+        proposalId: submittedReplanMutation.proposalId,
+        basePlanRevision: submittedReplanMutation.basePlanRevision,
+        retain: submittedReplanMutation.retain,
+        replace: submittedReplanMutation.replace,
+        remove: submittedReplanMutation.remove,
+        add: submittedReplanMutation.add,
+      },
     } : submittedExpansion ? {
       outcome: 'completed', summary: submittedExpansion.summary,
       evidence: submittedExpansion.evidence, acceptanceChecks: submittedExpansion.acceptanceChecks,
