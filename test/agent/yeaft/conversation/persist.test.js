@@ -372,6 +372,61 @@ legacy session`, { encoding: 'utf8' });
       expect(page.hasMore).toBe(false);
     });
 
+    it('returns one canonical search result for a tool-using assistant response', () => {
+      store.append({ role: 'user', content: 'run it', sessionId: 'session_search_response' });
+      store.append({
+        role: 'assistant', content: 'Needle before tool', sessionId: 'session_search_response',
+        turnId: 'response-search', speakerVpId: 'maker',
+      });
+      const tool = store.append({
+        role: 'assistant', content: '', sessionId: 'session_search_response',
+        turnId: 'response-search', speakerVpId: 'maker', toolCalls: [{ id: 'call-1', name: 'Bash', input: {} }],
+      });
+      const final = store.append({
+        role: 'assistant', content: 'needle after tool', sessionId: 'session_search_response',
+        turnId: 'response-search', speakerVpId: 'maker',
+      });
+
+      const page = store.searchVisibleBySession('session_search_response', 'needle', { limit: 20 });
+
+      expect(page.results).toEqual([
+        expect.objectContaining({
+          messageId: final.id,
+          turnId: 'response-search',
+          role: 'assistant',
+          speakerVpId: 'maker',
+        }),
+      ]);
+      expect(page.results[0].messageId).not.toBe(tool.id);
+      expect(page.results[0].snippet).toContain('Needle before tool');
+    });
+
+    it('pages search results on response boundaries', () => {
+      for (let i = 0; i < 3; i += 1) {
+        store.append({ role: 'user', content: `question ${i}`, sessionId: 'session_search_pages' });
+        store.append({
+          role: 'assistant', content: `needle start ${i}`, sessionId: 'session_search_pages',
+          turnId: `response-${i}`, speakerVpId: 'maker',
+        });
+        store.append({
+          role: 'assistant', content: `needle final ${i}`, sessionId: 'session_search_pages',
+          turnId: `response-${i}`, speakerVpId: 'maker',
+        });
+      }
+
+      const firstPage = store.searchVisibleBySession('session_search_pages', 'needle', { limit: 1 });
+      const secondPage = store.searchVisibleBySession('session_search_pages', 'needle', {
+        limit: 1, beforeSeq: firstPage.nextBeforeSeq,
+      });
+
+      expect(firstPage.results).toHaveLength(1);
+      expect(firstPage.results[0].turnId).toBe('response-2');
+      expect(firstPage.hasMore).toBe(true);
+      expect(secondPage.results).toHaveLength(1);
+      expect(secondPage.results[0].turnId).toBe('response-1');
+      expect(secondPage.results[0].seq).toBeLessThan(firstPage.nextBeforeSeq);
+    });
+
     it('loads a bounded lightweight outline page with a stable total count', () => {
       const longText = `outline ${'x'.repeat(220)}`;
       const first = store.append({

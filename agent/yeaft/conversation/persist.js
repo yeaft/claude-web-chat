@@ -1577,40 +1577,27 @@ export class ConversationStore {
     const limit = Math.min(50, Math.max(1, Number.isFinite(opts.limit) ? Math.floor(opts.limit) : 20));
     const beforeSeq = Number.isFinite(opts.beforeSeq) ? opts.beforeSeq : Infinity;
     const results = [];
-    const seen = new Set();
     let hasMore = false;
 
-    for (const message of this.#iterateSessionRows(sessionId, { beforeSeq, desc: true })) {
-      if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) continue;
-      if (message.role !== 'user' && message.role !== 'assistant') continue;
-      if (!message.id || seen.has(message.id)) continue;
-      seen.add(message.id);
-
-      const text = this.#visibleSearchText(message.content);
+    for (const entry of this.#iterateVisibleResponseEntries(sessionId, { beforeSeq })) {
+      const text = entry.textParts.join(' ');
       const matchIndex = text.toLocaleLowerCase().indexOf(needle);
       if (matchIndex < 0) continue;
       if (results.length >= limit) {
         hasMore = true;
         break;
       }
-
-      const seq = parseSeqFromId(message.id);
-      if (!Number.isFinite(seq)) continue;
       results.push({
-        messageId: message.id,
-        turnId: message.turnId || message.threadId || message.id,
-        seq,
-        role: message.role,
-        speakerVpId: message.speakerVpId || null,
-        timestamp: message.ts || message.time || null,
+        ...this.#projectVisibleResponseEntry(entry),
         snippet: this.#searchSnippet(text, matchIndex, needle.length),
       });
     }
 
+    const lastResult = results[results.length - 1] || null;
     return {
-      results,
+      results: results.map(({ _beforeSeq, ...result }) => result),
       hasMore,
-      nextBeforeSeq: hasMore && results.length > 0 ? results[results.length - 1].seq : null,
+      nextBeforeSeq: hasMore && lastResult ? lastResult._beforeSeq : null,
     };
   }
 
@@ -1629,100 +1616,32 @@ export class ConversationStore {
     const limit = Math.min(100, Math.max(1, Number.isFinite(opts.limit) ? Math.floor(opts.limit) : 50));
     const beforeSeq = Number.isFinite(opts.beforeSeq) ? opts.beforeSeq : Infinity;
     const newestFirst = [];
-    const seen = new Set();
     let hasMore = false;
 
-    const outlineRow = (message) => {
-      if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) return null;
-      if (message.role !== 'user' && message.role !== 'assistant') return null;
-      if (!message.id || seen.has(message.id)) return null;
-      seen.add(message.id);
-      const seq = parseSeqFromId(message.id);
-      if (!Number.isFinite(seq)) return null;
-      const text = this.#visibleSearchText(message.content);
-      const speakerVpId = message.speakerVpId || null;
-      return {
-        message,
-        seq,
-        text,
-        speakerVpId,
-        groupKey: message.role === 'assistant'
-          ? `assistant:${message.turnId || message.id}:${speakerVpId || ''}`
-          : `user:${message.id}`,
-      };
-    };
-    const startEntry = (row) => ({
-      groupKey: row.groupKey,
-      role: row.message.role,
-      turnId: row.message.turnId || row.message.id,
-      speakerVpId: row.speakerVpId,
-      oldestSeq: row.seq,
-      anchor: row,
-      anchorHasText: !!row.text,
-      textParts: row.text ? [row.text] : [],
-    });
-    const mergeRow = (entry, row) => {
-      entry.oldestSeq = Math.min(entry.oldestSeq, row.seq);
-      if (row.text) entry.textParts.unshift(row.text);
-      if (!entry.anchorHasText && row.text) {
-        entry.anchor = row;
-        entry.anchorHasText = true;
-      }
-    };
-    const projectEntry = (entry) => ({
-      messageId: entry.anchor.message.id,
-      ...(entry.anchor.message.clientMessageId ? { clientMessageId: entry.anchor.message.clientMessageId } : {}),
-      turnId: entry.turnId,
-      seq: entry.anchor.seq,
-      role: entry.role,
-      speakerVpId: entry.speakerVpId,
-      timestamp: entry.anchor.message.ts || entry.anchor.message.time || null,
-      snippet: this.#outlineSnippet(entry.textParts.join(' ')),
-      _outlineBeforeSeq: entry.oldestSeq,
-    });
-
-    let current = null;
-    for (const message of this.#iterateSessionRows(sessionId, { beforeSeq, desc: true })) {
-      const row = outlineRow(message);
-      if (!row) continue;
-      if (current && current.groupKey === row.groupKey) {
-        mergeRow(current, row);
-        continue;
-      }
-      if (current) newestFirst.push(projectEntry(current));
+    for (const entry of this.#iterateVisibleResponseEntries(sessionId, { beforeSeq })) {
       if (newestFirst.length >= limit) {
         hasMore = true;
-        current = null;
         break;
       }
-      current = startEntry(row);
+      const projected = this.#projectVisibleResponseEntry(entry);
+      newestFirst.push({
+        ...projected,
+        snippet: this.#outlineSnippet(entry.textParts.join(' ')),
+      });
     }
-    if (current) newestFirst.push(projectEntry(current));
 
     let totalCount = null;
     if (opts.includeTotal !== false) {
       totalCount = 0;
-      const counted = new Set();
-      let previousGroupKey = null;
-      for (const message of this.#iterateSessionRows(sessionId, { desc: true })) {
-        if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) continue;
-        if (message.role !== 'user' && message.role !== 'assistant') continue;
-        if (!message.id || counted.has(message.id)) continue;
-        counted.add(message.id);
-        const groupKey = message.role === 'assistant'
-          ? `assistant:${message.turnId || message.id}:${message.speakerVpId || ''}`
-          : `user:${message.id}`;
-        if (groupKey !== previousGroupKey) totalCount += 1;
-        previousGroupKey = groupKey;
-      }
+      for (const _entry of this.#iterateVisibleResponseEntries(sessionId)) totalCount += 1;
     }
 
     const oldestEntry = newestFirst[newestFirst.length - 1] || null;
-    const results = newestFirst.reverse().map(({ _outlineBeforeSeq, ...entry }) => entry);
+    const results = newestFirst.reverse().map(({ _beforeSeq, ...entry }) => entry);
     return {
       results,
       hasMore,
-      nextBeforeSeq: hasMore && oldestEntry ? oldestEntry._outlineBeforeSeq : null,
+      nextBeforeSeq: hasMore && oldestEntry ? oldestEntry._beforeSeq : null,
       totalCount,
     };
   }
@@ -2491,6 +2410,75 @@ export class ConversationStore {
     return {
       messages: turnsFromEnd > 0 ? sliceLastNTurns(kept, turnsLimit) : kept,
       truncated,
+    };
+  }
+
+  *#iterateVisibleResponseEntries(sessionId, opts = {}) {
+    const beforeSeq = Number.isFinite(opts.beforeSeq) ? opts.beforeSeq : Infinity;
+    const seen = new Set();
+    let current = null;
+
+    const visibleRow = (message) => {
+      if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) return null;
+      if (message.role !== 'user' && message.role !== 'assistant') return null;
+      if (!message.id || seen.has(message.id)) return null;
+      seen.add(message.id);
+      const seq = parseSeqFromId(message.id);
+      if (!Number.isFinite(seq)) return null;
+      const text = this.#visibleSearchText(message.content);
+      const speakerVpId = message.speakerVpId || null;
+      return {
+        message,
+        seq,
+        text,
+        speakerVpId,
+        groupKey: message.role === 'assistant'
+          ? `assistant:${message.turnId || message.id}:${speakerVpId || ''}`
+          : `user:${message.id}`,
+      };
+    };
+    const startEntry = (row) => ({
+      groupKey: row.groupKey,
+      role: row.message.role,
+      turnId: row.message.turnId || row.message.threadId || row.message.id,
+      speakerVpId: row.speakerVpId,
+      oldestSeq: row.seq,
+      anchor: row,
+      anchorHasText: !!row.text,
+      textParts: row.text ? [row.text] : [],
+    });
+    const mergeRow = (entry, row) => {
+      entry.oldestSeq = Math.min(entry.oldestSeq, row.seq);
+      if (row.text) entry.textParts.unshift(row.text);
+      if (!entry.anchorHasText && row.text) {
+        entry.anchor = row;
+        entry.anchorHasText = true;
+      }
+    };
+
+    for (const message of this.#iterateSessionRows(sessionId, { beforeSeq, desc: true })) {
+      const row = visibleRow(message);
+      if (!row) continue;
+      if (current && current.groupKey === row.groupKey) {
+        mergeRow(current, row);
+        continue;
+      }
+      if (current) yield current;
+      current = startEntry(row);
+    }
+    if (current) yield current;
+  }
+
+  #projectVisibleResponseEntry(entry) {
+    return {
+      messageId: entry.anchor.message.id,
+      ...(entry.anchor.message.clientMessageId ? { clientMessageId: entry.anchor.message.clientMessageId } : {}),
+      turnId: entry.turnId,
+      seq: entry.anchor.seq,
+      role: entry.role,
+      speakerVpId: entry.speakerVpId,
+      timestamp: entry.anchor.message.ts || entry.anchor.message.time || null,
+      _beforeSeq: entry.oldestSeq,
     };
   }
 

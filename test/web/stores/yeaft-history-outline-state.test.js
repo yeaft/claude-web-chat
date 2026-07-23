@@ -31,6 +31,7 @@ globalThis.window = {
 globalThis.document = { addEventListener: vi.fn(), removeEventListener: vi.fn(), documentElement: { setAttribute() {}, classList: { toggle() {} } } };
 
 const { useChatStore } = await import('../../../web/stores/chat.js');
+const { handleAssistantOutputFrame } = await import('../../../web/stores/helpers/assistantOutput.js');
 const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
 
 function primeStore() {
@@ -132,6 +133,131 @@ describe('Yeaft history outline state', () => {
     }];
 
     expect(store.revealYeaftMessage('same', 'm42')).toBe(true);
+  });
+
+  it('promotes a completed assistant response into the loaded authoritative cache', () => {
+    const store = primeStore();
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    store.messagesMap['conv-a'] = [
+      {
+        id: 'm41', messageId: 'm41', type: 'assistant', content: 'first part',
+        sessionId: 'same', turnId: 'response-live', speakerVpId: 'maker', isStreaming: true, status: 'pending',
+      },
+      {
+        id: 'm42', messageId: 'm42', type: 'assistant', content: 'finished answer',
+        sessionId: 'same', turnId: 'response-live', speakerVpId: 'maker', isStreaming: true, status: 'pending',
+      },
+    ];
+    store.yeaftHistoryOutlineBySession[key] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: false,
+      results: [], hasMore: false, nextBeforeSeq: null, totalCount: 0, error: null,
+    };
+    store._currentYeaftSessionId = 'same';
+    store._currentYeaftTurnId = 'response-live';
+    store._currentYeaftVpId = 'maker';
+    store.processingConversations = { 'conv-a': true };
+    store.activeVpTurns = {};
+    store.executionStatusMap = {};
+    store.conversations = [];
+    store.vpStatuses = {};
+    store._turnCompletedConvs = new Set();
+
+    expect(store.getYeaftHistoryOutlineState().results).toHaveLength(1);
+    handleAssistantOutputFrame(store, 'conv-a', { type: 'result', result_text: '' });
+
+    expect(store.messagesMap['conv-a'][0].isStreaming).toBe(false);
+    expect(store.yeaftHistoryOutlineBySession[key].results).toEqual([
+      expect.objectContaining({
+        messageId: 'm42', seq: 42, role: 'assistant', turnId: 'response-live', snippet: 'first part finished answer',
+      }),
+    ]);
+    expect(store.getYeaftHistoryOutlineState().results).toHaveLength(1);
+    expect(store.loadYeaftHistoryOutline()).toBe(true);
+    expect(store._sent).toHaveLength(0);
+  });
+
+  it('force-refreshes a loaded visible outline when a completed response has no durable anchor yet', () => {
+    const store = primeStore();
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    store.messagesMap['conv-a'] = [{
+      id: 'local-answer', messageId: 'local-answer', type: 'assistant', content: 'finished answer',
+      sessionId: 'same', turnId: 'response-local', speakerVpId: 'maker', isStreaming: true, status: 'pending',
+    }];
+    store.yeaftHistoryOutlineBySession[key] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: false,
+      results: [], hasMore: false, nextBeforeSeq: null, totalCount: 0, error: null,
+    };
+    store._currentYeaftSessionId = 'same';
+    store._currentYeaftTurnId = 'response-local';
+    store._currentYeaftVpId = 'maker';
+    store.processingConversations = { 'conv-a': true };
+    store.activeVpTurns = {};
+    store.executionStatusMap = {};
+    store.conversations = [];
+    store.vpStatuses = {};
+    store._turnCompletedConvs = new Set();
+
+    handleAssistantOutputFrame(store, 'conv-a', { type: 'result', result_text: '' });
+
+    expect(store._sent).toHaveLength(1);
+    expect(store._sent[0]).toMatchObject({
+      type: 'yeaft_load_history_outline', agentId: 'agent-a', sessionId: 'same', includeTotal: true,
+    });
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({ loaded: false, loading: true });
+  });
+
+  it('keeps the promoted recent page bounded and exposes the displaced older cursor', () => {
+    const store = primeStore();
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    store.yeaftHistoryOutlineBySession[key] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: false,
+      results: Array.from({ length: 50 }, (_, index) => ({
+        messageId: `m${index + 1}`, seq: index + 1, role: 'user', snippet: `row ${index + 1}`,
+      })),
+      hasMore: false, nextBeforeSeq: null, totalCount: 50, error: null,
+    };
+
+    expect(store.promoteYeaftHistoryOutlineRow({
+      id: 'm51', messageId: 'm51', type: 'assistant', content: 'new response',
+      sessionId: 'same', turnId: 'response-51', speakerVpId: 'maker',
+    })).toBe(true);
+
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      hasMore: true, nextBeforeSeq: 2, totalCount: 51,
+    });
+    expect(store.yeaftHistoryOutlineBySession[key].results).toHaveLength(50);
+    expect(store.yeaftHistoryOutlineBySession[key].results[0].messageId).toBe('m2');
+    expect(store.yeaftHistoryOutlineBySession[key].results.at(-1).messageId).toBe('m51');
+  });
+
+  it('promotes a durable user echo over its optimistic overlay', () => {
+    const store = primeStore();
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    store.messagesMap['conv-a'] = [{
+      id: 'client-1', messageId: 'client-1', clientMessageId: 'client-1', type: 'user', content: 'hello',
+      sessionId: 'same', turnId: 'client-1', timestamp: 100,
+    }];
+    store.yeaftHistoryOutlineBySession[key] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: false,
+      results: [], hasMore: false, nextBeforeSeq: null, totalCount: 0, error: null,
+    };
+    store.executionStatusMap = {};
+    store.conversations = [];
+    store.processingConversations = {};
+
+    handleAssistantOutputFrame(store, 'conv-a', {
+      type: 'user',
+      message: { id: 'm43', clientMessageId: 'client-1', content: 'hello' },
+      dbMessageId: 'm43',
+      clientMessageId: 'client-1',
+      ts: '2026-07-23T00:00:00Z',
+    });
+
+    expect(store.yeaftHistoryOutlineBySession[key].results).toEqual([
+      expect.objectContaining({ messageId: 'm43', clientMessageId: 'client-1', seq: 43, role: 'user' }),
+    ]);
+    expect(store.getYeaftHistoryOutlineState().results).toHaveLength(1);
+    expect(store.getYeaftHistoryOutlineState().results[0].messageId).toBe('m43');
   });
 
   it('merges only one in-flight assistant response per turn', () => {
