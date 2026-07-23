@@ -6,6 +6,7 @@ import {
   mergeWorkItemSummary,
   workItemDetailNeedsRefresh,
 } from '../../../web/stores/helpers/work-center.js';
+import { projectWorkCenterEvent, projectWorkItemSummary } from '../../../agent/yeaft/work-center/projection.js';
 
 describe('Work Center summary state', () => {
   const detail = {
@@ -176,6 +177,45 @@ describe('Work Center summary state', () => {
       status: 'needs_attention', currentAction: { status: 'failed' }, failureReason: 'NEW failure',
     });
     expect(merged.actions[0]).toMatchObject({ status: 'failed', failureReason: 'NEW failure', progressRevision: 9 });
+  });
+
+  it('keeps the safe current Action objective after a live event replaces the list summary', () => {
+    const listDetail = {
+      id: 'wi-1', revision: 3, title: 'Verify recovery', goal: 'Keep recovery reliable',
+      status: 'running', currentActionId: 'action-1', actionCount: 1, completedActionCount: 0,
+      currentAction: {
+        id: 'action-1', type: 'test', stageId: 'verify', status: 'running',
+        brief: {
+          objective: 'Verify login recovery',
+          approach: 'Read private execution context',
+          expectedOutcome: 'Do not expose this result',
+        },
+      },
+      createdAt: 10, updatedAt: 30,
+    };
+    const eventDetail = {
+      ...listDetail,
+      updatedAt: 31,
+      actions: [{
+        ...listDetail.currentAction,
+        assignmentPolicy: { mode: 'auto', capability: 'test' },
+        context: [{ kind: 'private', value: 'secret context' }],
+      }],
+      runs: [],
+      events: [],
+    };
+
+    const initial = projectWorkItemSummary(listDetail);
+    const eventSummary = projectWorkCenterEvent({ type: 'run.progress', workItem: eventDetail }).workItem;
+    const updated = applyWorkItemSummary([initial], eventSummary)[0];
+
+    expect(updated.currentAction).toEqual({
+      id: 'action-1', type: 'test', stageId: 'verify', assignmentMode: 'auto',
+      status: 'running', objective: 'Verify login recovery',
+    });
+    expect(JSON.stringify(updated.currentAction)).not.toContain('private execution context');
+    expect(JSON.stringify(updated.currentAction)).not.toContain('Do not expose this result');
+    expect(JSON.stringify(eventSummary)).not.toContain('secret context');
   });
 
   it('does not let an out-of-order list event roll aggregate usage backwards', () => {
