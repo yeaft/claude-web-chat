@@ -494,6 +494,11 @@ export const useChatStore = defineStore('chat', {
       nextBeforeSeq: null,
       error: null,
     },
+    // Lightweight Session outline pages live only for this browser page. They
+    // are keyed by agent + session so duplicate session ids cannot bleed across
+    // agents, and avoid creating a second persistent copy of conversation text.
+    yeaftHistoryOutlineBySession: {},
+    _yeaftHistoryOutlineTimeouts: {},
     _yeaftHistorySearchTimeout: null,
     _yeaftHistoryWindowPending: null,
     // One-shot marker: set true by the websocket onclose handler on a real
@@ -2264,6 +2269,150 @@ export const useChatStore = defineStore('chat', {
       this.yeaftMessageWindowState = {
         ...this.yeaftMessageWindowState,
         [sessionKey]: { visibleTurns },
+      };
+      return true;
+    },
+
+    getYeaftHistoryOutlineState(sessionId = null, agentId = null) {
+      const targetSessionId = sessionId || this.yeaftActiveSessionFilter || null;
+      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
+      const key = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
+      const base = this.yeaftHistoryOutlineBySession[key] || {
+        requestId: null,
+        agentId: targetAgentId,
+        sessionId: targetSessionId,
+        loading: false,
+        results: [],
+        hasMore: false,
+        nextBeforeSeq: null,
+        totalCount: null,
+        loaded: false,
+        error: null,
+      };
+      const conversationId = resolveYeaftConversationIdForSession(this, targetSessionId);
+      const liveRows = conversationId ? (this.messagesMap[conversationId] || []) : [];
+      const outlineIdentity = row => row?.clientMessageId ? `client:${row.clientMessageId}` : `message:${row?.messageId || ''}`;
+      const byId = new Map((base.results || []).map(result => [outlineIdentity(result), result]));
+      let liveOnlyCount = 0;
+      for (const row of liveRows) {
+        if ((row?.sessionId ?? row?.groupId ?? null) !== targetSessionId) continue;
+        if (row.type !== 'user' && row.type !== 'assistant') continue;
+        const messageId = row.messageId || row.id;
+        if (!messageId) continue;
+        const identity = outlineIdentity({ messageId, clientMessageId: row.clientMessageId });
+        const existing = byId.get(identity);
+        const raw = typeof row.content === 'string' ? row.content : '';
+        const text = raw.replace(/\s+/g, ' ').trim();
+        byId.set(identity, {
+          ...existing,
+          messageId: Number.isFinite(existing?.seq) ? existing.messageId : messageId,
+          ...(row.clientMessageId ? { clientMessageId: row.clientMessageId } : {}),
+          turnId: row.turnId || row.threadId || existing?.turnId || messageId,
+          role: row.type,
+          speakerVpId: row.speakerVpId || row.vpId || existing?.speakerVpId || null,
+          timestamp: row.timestamp || row.ts || existing?.timestamp || null,
+          snippet: text.length > 180 ? `${text.slice(0, 180).trimEnd()}…` : (text || existing?.snippet || ''),
+        });
+        if (!existing) liveOnlyCount += 1;
+      }
+      const asTime = value => {
+        const parsed = typeof value === 'number' ? value : Date.parse(value || '');
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+      const results = Array.from(byId.values()).sort((a, b) => {
+        if (Number.isFinite(a.seq) && Number.isFinite(b.seq)) return a.seq - b.seq;
+        return asTime(a.timestamp) - asTime(b.timestamp);
+      });
+      return {
+        ...base,
+        results,
+        totalCount: Number.isFinite(base.totalCount) ? base.totalCount + liveOnlyCount : base.totalCount,
+      };
+    },
+
+    loadYeaftHistoryOutline({ append = false, force = false } = {}) {
+      if (this.currentView !== 'yeaft') return false;
+      const sessionId = this.yeaftActiveSessionFilter || null;
+      const agentId = resolveAgentIdForSession(this, sessionId);
+      if (!sessionId || !agentId) return false;
+      const key = yeaftHistoryIdentityKey(agentId, sessionId);
+      const previous = this.getYeaftHistoryOutlineState(sessionId, agentId);
+      if (!append && previous.loaded && !force) return true;
+      if (append && (!previous.hasMore || !Number.isFinite(previous.nextBeforeSeq))) return false;
+      if (previous.loading) return false;
+      if (!agentHasCapability(this, agentId, 'session_history_outline')) {
+        this.yeaftHistoryOutlineBySession = {
+          ...this.yeaftHistoryOutlineBySession,
+          [key]: { ...previous, error: 'unsupported', loading: false },
+        };
+        return false;
+      }
+
+      const requestId = `history_outline_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const nextState = {
+        ...previous,
+        requestId,
+        agentId,
+        sessionId,
+        loading: true,
+        error: null,
+      };
+      this.yeaftHistoryOutlineBySession = { ...this.yeaftHistoryOutlineBySession, [key]: nextState };
+      const previousTimeout = this._yeaftHistoryOutlineTimeouts[key];
+      if (previousTimeout) clearTimeout(previousTimeout);
+      const timeout = setTimeout(() => {
+        const current = this.yeaftHistoryOutlineBySession[key];
+        if (current?.requestId !== requestId) return;
+        const nextTimeouts = { ...this._yeaftHistoryOutlineTimeouts };
+        delete nextTimeouts[key];
+        this._yeaftHistoryOutlineTimeouts = nextTimeouts;
+        this.yeaftHistoryOutlineBySession = {
+          ...this.yeaftHistoryOutlineBySession,
+          [key]: { ...current, loading: false, error: 'timeout' },
+        };
+      }, 10000);
+      this._yeaftHistoryOutlineTimeouts = { ...this._yeaftHistoryOutlineTimeouts, [key]: timeout };
+      this.sendWsMessage({
+        type: 'yeaft_load_history_outline',
+        agentId,
+        sessionId,
+        requestId,
+        limit: 50,
+        ...(append && Number.isFinite(previous.nextBeforeSeq) ? { beforeSeq: previous.nextBeforeSeq } : {}),
+        includeTotal: !previous.loaded,
+      });
+      return true;
+    },
+
+    handleYeaftHistoryOutline(msg) {
+      if (!msg?.agentId || !msg?.sessionId) return false;
+      const key = yeaftHistoryIdentityKey(msg.agentId, msg.sessionId);
+      const state = this.yeaftHistoryOutlineBySession[key];
+      if (!state || msg.requestId !== state.requestId) return false;
+      const timeout = this._yeaftHistoryOutlineTimeouts[key];
+      if (timeout) clearTimeout(timeout);
+      const nextTimeouts = { ...this._yeaftHistoryOutlineTimeouts };
+      delete nextTimeouts[key];
+      this._yeaftHistoryOutlineTimeouts = nextTimeouts;
+      const incoming = Array.isArray(msg.results) ? msg.results : [];
+      const outlineIdentity = result => result?.clientMessageId ? `client:${result.clientMessageId}` : `message:${result?.messageId || ''}`;
+      const byId = new Map([...(state.results || []), ...incoming]
+        .filter(result => result?.messageId)
+        .map(result => [outlineIdentity(result), result]));
+      const results = Array.from(byId.values()).sort((a, b) => (a.seq || 0) - (b.seq || 0));
+      this.yeaftHistoryOutlineBySession = {
+        ...this.yeaftHistoryOutlineBySession,
+        [key]: {
+          ...state,
+          requestId: null,
+          loading: false,
+          loaded: !msg.error,
+          results,
+          hasMore: !!msg.hasMore,
+          nextBeforeSeq: Number.isFinite(msg.nextBeforeSeq) ? msg.nextBeforeSeq : null,
+          totalCount: Number.isFinite(msg.totalCount) ? msg.totalCount : state.totalCount,
+          error: msg.error || null,
+        },
       };
       return true;
     },

@@ -372,6 +372,36 @@ legacy session`, { encoding: 'utf8' });
       expect(page.hasMore).toBe(false);
     });
 
+    it('loads a bounded lightweight outline page with a stable total count', () => {
+      const longText = `outline ${'x'.repeat(220)}`;
+      const first = store.append({
+        role: 'user', content: longText, sessionId: 'session_outline', clientMessageId: 'client-1',
+        attachments: [{ name: 'secret.txt', data: 'do-not-project' }],
+      });
+      store.append({ role: 'assistant', content: 'first answer', sessionId: 'session_outline', speakerVpId: 'maker' });
+      store.append({ role: 'system', content: 'hidden row', sessionId: 'session_outline' });
+      store.append({ role: 'user', content: 'second question', sessionId: 'session_outline' });
+      const latest = store.append({ role: 'assistant', content: 'second answer', sessionId: 'session_outline' });
+
+      const firstPage = store.loadVisibleOutlineBySession('session_outline', { limit: 2 });
+      const olderPage = store.loadVisibleOutlineBySession('session_outline', {
+        limit: 2, beforeSeq: firstPage.nextBeforeSeq, includeTotal: false,
+      });
+
+      expect(firstPage.results.map(result => result.messageId)).toEqual([
+        expect.any(String), latest.id,
+      ]);
+      expect(firstPage).toMatchObject({ hasMore: true, totalCount: 4 });
+      expect(olderPage.results.map(result => result.messageId)).toContain(first.id);
+      expect(olderPage.totalCount).toBeNull();
+      expect(olderPage.results.find(result => result.messageId === first.id)).toMatchObject({
+        clientMessageId: 'client-1', role: 'user',
+      });
+      expect(olderPage.results.find(result => result.messageId === first.id).snippet.length).toBeLessThan(longText.length);
+      expect(JSON.stringify([...firstPage.results, ...olderPage.results])).not.toContain('do-not-project');
+      expect(JSON.stringify([...firstPage.results, ...olderPage.results])).not.toContain('attachments');
+    });
+
     it('supports an exclusive seq cursor and bounded anchor window', () => {
       const ids = [];
       for (let i = 0; i < 5; i += 1) {

@@ -1615,6 +1615,70 @@ export class ConversationStore {
   }
 
   /**
+   * Load a lightweight outline page for one Session. Only user and assistant
+   * text metadata is projected; tool payloads, attachments and full message
+   * bodies never leave the Agent through this API.
+   *
+   * @param {string} sessionId
+   * @param {{ limit?: number, beforeSeq?: number|null, includeTotal?: boolean }} [opts]
+   * @returns {{ results: object[], hasMore: boolean, nextBeforeSeq: number|null, totalCount: number|null }}
+   */
+  loadVisibleOutlineBySession(sessionId, opts = {}) {
+    if (!sessionId) return { results: [], hasMore: false, nextBeforeSeq: null, totalCount: 0 };
+
+    const limit = Math.min(100, Math.max(1, Number.isFinite(opts.limit) ? Math.floor(opts.limit) : 50));
+    const beforeSeq = Number.isFinite(opts.beforeSeq) ? opts.beforeSeq : Infinity;
+    const newestFirst = [];
+    const seen = new Set();
+    let hasMore = false;
+
+    for (const message of this.#iterateSessionRows(sessionId, { beforeSeq, desc: true })) {
+      if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) continue;
+      if (message.role !== 'user' && message.role !== 'assistant') continue;
+      if (!message.id || seen.has(message.id)) continue;
+      seen.add(message.id);
+      const seq = parseSeqFromId(message.id);
+      if (!Number.isFinite(seq)) continue;
+      if (newestFirst.length >= limit) {
+        hasMore = true;
+        break;
+      }
+      const text = this.#visibleSearchText(message.content);
+      newestFirst.push({
+        messageId: message.id,
+        ...(message.clientMessageId ? { clientMessageId: message.clientMessageId } : {}),
+        turnId: message.turnId || message.threadId || message.id,
+        seq,
+        role: message.role,
+        speakerVpId: message.speakerVpId || null,
+        timestamp: message.ts || message.time || null,
+        snippet: this.#outlineSnippet(text),
+      });
+    }
+
+    let totalCount = null;
+    if (opts.includeTotal !== false) {
+      totalCount = 0;
+      const counted = new Set();
+      for (const message of this.#iterateSessionRows(sessionId, { desc: true })) {
+        if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) continue;
+        if (message.role !== 'user' && message.role !== 'assistant') continue;
+        if (!message.id || counted.has(message.id)) continue;
+        counted.add(message.id);
+        totalCount += 1;
+      }
+    }
+
+    const results = newestFirst.reverse();
+    return {
+      results,
+      hasMore,
+      nextBeforeSeq: hasMore && results.length > 0 ? results[0].seq : null,
+      totalCount,
+    };
+  }
+
+  /**
    * Load a bounded visible window around a search hit. This deliberately does
    * not mutate normal older-history cursors: the web client merges the window
    * into its cache solely to mount and focus the requested virtual-list item.
@@ -2397,6 +2461,11 @@ export class ConversationStore {
     const start = Math.max(0, matchIndex - radius);
     const end = Math.min(text.length, matchIndex + needleLength + radius);
     return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
+  }
+
+  #outlineSnippet(text) {
+    const limit = 180;
+    return text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text;
   }
 
   #readSegmentRows(conversationDir, opts = {}) {

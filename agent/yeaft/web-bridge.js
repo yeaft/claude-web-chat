@@ -6537,18 +6537,50 @@ export async function handleYeaftLoadHistory(msg) {
 }
 
 /**
- * Handle a "load older messages" pagination request. Reads `turns` more
- * turns of history strictly older than `beforeSeq` for `sessionId`, and
- * emits them in a single `yeaft_history_chunk` envelope (NOT a
- * `yeaft_output` — that pipeline appends, but the frontend needs to
- * PREPEND these older messages above what it already has).
+ * Load one lightweight Conversation Outline page. The response contains only
+ * visible user/assistant metadata and bounded snippets; full message bodies and
+ * tool payloads stay on the Agent. `beforeSeq` is an exclusive older-page
+ * cursor, and `includeTotal` avoids recounting after the first page.
  *
- * Tool replay is NOT included in this PR — same projection as
- * `handleYeaftLoadHistory` (user / assistant text only). On any internal
- * failure we still emit an empty chunk so the spinner clears.
- *
- * @param {object} msg — { sessionId, beforeSeq, turns }
+ * @param {object} msg — { sessionId, beforeSeq, limit, includeTotal }
  */
+export async function handleYeaftLoadHistoryOutline(msg) {
+  const sessionId = typeof msg?.sessionId === 'string' ? msg.sessionId.trim() : '';
+  const requestId = typeof msg?.requestId === 'string' ? msg.requestId : null;
+  const beforeSeq = Number.isFinite(msg?.beforeSeq) ? msg.beforeSeq : null;
+  const limit = Math.min(100, Math.max(1, Number.isFinite(msg?.limit) ? Math.floor(msg.limit) : 50));
+  const response = {
+    type: 'yeaft_history_outline',
+    requestId,
+    sessionId: sessionId || null,
+    results: [],
+    hasMore: false,
+    nextBeforeSeq: null,
+    totalCount: null,
+    _requestClientId: msg?._requestClientId || null,
+  };
+
+  if (!sessionId) {
+    sendToServer({ ...response, error: 'invalid_session' });
+    return;
+  }
+
+  try {
+    const defaultYeaftDir = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
+    const storeDir = resolveSessionYeaftDir(defaultYeaftDir, sessionId);
+    const store = new ConversationStore(storeDir);
+    const result = store.loadVisibleOutlineBySession(sessionId, {
+      limit,
+      beforeSeq,
+      includeTotal: msg?.includeTotal !== false,
+    });
+    sendToServer({ ...response, ...result });
+  } catch (err) {
+    console.error('[Yeaft] Session history outline failed:', err?.message || err);
+    sendToServer({ ...response, error: 'outline_failed' });
+  }
+}
+
 export async function handleYeaftSearchHistory(msg) {
   const sessionId = typeof msg?.sessionId === 'string' ? msg.sessionId.trim() : '';
   const query = typeof msg?.query === 'string' ? msg.query.trim().slice(0, 500) : '';
