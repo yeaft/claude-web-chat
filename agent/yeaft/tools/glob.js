@@ -10,6 +10,13 @@ import { readdir, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve, join, relative } from 'path';
 
+const STAT_CONCURRENCY = 32;
+const SKIP_DIRS = new Set([
+  'node_modules', '.git', '__pycache__', '.next', '.nuxt',
+  'dist', 'build', '.cache', '.venv', 'venv', '.tox',
+  'vendor', 'target', '.gradle', '.idea', '.vscode',
+]);
+
 /**
  * Simple glob pattern matcher (supports * and **).
  * @param {string} pattern
@@ -44,19 +51,13 @@ async function* walkDir(dir, baseDir, maxDepth = 10, depth = 0) {
     return;
   }
 
-  // Skip common large/irrelevant directories
-  const SKIP = new Set([
-    'node_modules', '.git', '__pycache__', '.next', '.nuxt',
-    'dist', 'build', '.cache', '.venv', 'venv', '.tox',
-    'vendor', 'target', '.gradle', '.idea', '.vscode',
-  ]);
-
   for (const entry of entries) {
     const fullPath = join(dir, entry.name);
     const relPath = relative(baseDir, fullPath);
 
     if (entry.isDirectory()) {
-      if (SKIP.has(entry.name)) continue;
+      const normalized = relPath.replace(/\\/g, '/');
+      if (SKIP_DIRS.has(entry.name) || normalized === '.yeaft/worktrees' || normalized.startsWith('.yeaft/worktrees/')) continue;
       yield { path: relPath, isDir: true };
       yield* walkDir(fullPath, baseDir, maxDepth, depth + 1);
     } else {
@@ -129,29 +130,25 @@ Guidelines:
     }
 
     try {
-      const matches = [];
-
+      const paths = [];
       for await (const entry of walkDir(baseDir, baseDir)) {
-        if (matches.length >= limit * 2) break; // over-fetch for sorting
-
-        if (!entry.isDir && matchGlob(pattern, entry.path)) {
-          // Get mtime for sorting
-          try {
-            const fileStat = await stat(join(baseDir, entry.path));
-            matches.push({
-              path: entry.path,
-              mtime: fileStat.mtimeMs,
-            });
-          } catch {
-            matches.push({ path: entry.path, mtime: 0 });
-          }
-        }
+        if (!entry.isDir && matchGlob(pattern, entry.path)) paths.push(entry.path);
       }
 
-      // Sort by mtime (newest first)
+      // Exact newest-first semantics require every matching mtime. Batch the
+      // metadata reads instead of serializing one syscall per path.
+      const matches = [];
+      for (let i = 0; i < paths.length; i += STAT_CONCURRENCY) {
+        matches.push(...await Promise.all(paths.slice(i, i + STAT_CONCURRENCY).map(async (path) => {
+          try {
+            const fileStat = await stat(join(baseDir, path));
+            return { path, mtime: fileStat.mtimeMs };
+          } catch {
+            return { path, mtime: 0 };
+          }
+        })));
+      }
       matches.sort((a, b) => b.mtime - a.mtime);
-
-      // Trim to limit
       const trimmed = matches.slice(0, limit);
 
       return trimmed.map(m => m.path).join('\n') || '(no matches)';

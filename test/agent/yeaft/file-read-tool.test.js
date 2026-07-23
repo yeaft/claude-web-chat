@@ -53,4 +53,34 @@ describe('FileRead output budget', () => {
     expect(first + second).not.toContain('\ufffd');
   });
 
+  it.each([
+    ['ASCII', 'x'.repeat(40 * 1024) + 'END'],
+    ['multibyte', '界'.repeat(14 * 1024) + 'END'],
+  ])('terminates after consuming one oversized %s line without a trailing newline', async (_kind, line) => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-file-read-'));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, 'oversized.txt'), line);
+
+    let input = { file_path: 'oversized.txt' };
+    let previousCursor = null;
+    let result;
+    for (let reads = 0; reads < 10; reads += 1) {
+      result = await fileRead.execute(input, { cwd: dir });
+      const match = result.match(/Continue with offset=(\d+)(?:, column_offset=(\d+))?\./);
+      if (!match) break;
+      const cursor = `${match[1]}:${match[2] || 0}`;
+      expect(cursor).not.toBe(previousCursor);
+      previousCursor = cursor;
+      input = {
+        file_path: 'oversized.txt',
+        offset: Number(match[1]),
+        column_offset: Number(match[2] || 0),
+      };
+    }
+
+    expect(result).toContain('END');
+    expect(result).not.toContain('Continue with offset=');
+    expect(result).not.toContain('\ufffd');
+  });
+
 });

@@ -17,11 +17,15 @@ const MAX_LINES = 250;
 
 /** Hard cap before Grep output reaches history, debug events, or WebSocket. */
 const MAX_OUTPUT_BYTES = 512 * 1024;
+const SEARCH_RESULT_BYTES = 32 * 1024;
 const OUTPUT_TRUNCATED_MARKER = '\n\n[Output truncated]';
 const MAX_CAPTURE_BYTES = MAX_OUTPUT_BYTES - Buffer.byteLength(OUTPUT_TRUNCATED_MARKER, 'utf8');
 
 /** Keep one pathological source line from consuming the whole output budget. */
 const MAX_LINE_BYTES = 16 * 1024;
+const FALLBACK_CONCURRENCY = 8;
+const SKIP_DIRS = new Set(['node_modules', '.git', '__pycache__', '.next', 'dist', 'build', '.cache']);
+let ripgrepAvailability;
 
 /** Binary extensions to skip. */
 const BINARY_EXTS = new Set([
@@ -108,12 +112,22 @@ function createOutputCollector(maxBytes = MAX_OUTPUT_BYTES) {
 /**
  * Check if ripgrep is available.
  */
+export function setRipgrepAvailabilityForTests(value) {
+  ripgrepAvailability = value;
+}
+
 function hasRipgrep() {
-  return new Promise((resolve) => {
+  if (typeof ripgrepAvailability === 'boolean') return Promise.resolve(ripgrepAvailability);
+  if (ripgrepAvailability) return ripgrepAvailability;
+  ripgrepAvailability = new Promise((resolve) => {
     const proc = spawn('rg', ['--version'], { stdio: 'pipe', windowsHide: true });
     proc.on('close', (code) => resolve(code === 0));
     proc.on('error', () => resolve(false));
+  }).then((available) => {
+    ripgrepAvailability = available;
+    return available;
   });
+  return ripgrepAvailability;
 }
 
 /**
@@ -121,15 +135,9 @@ function hasRipgrep() {
  */
 export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
   return new Promise((resolve, reject) => {
-    const args = [
-      pattern,
-      searchPath,
-      '--no-heading',
-      '--line-number',
-      '--color', 'never',
-    ];
-
+    const args = [pattern, searchPath, '--no-heading', '--line-number', '--color', 'never'];
     if (options.caseInsensitive) args.push('-i');
+    if (options.fixedStrings) args.push('-F');
     if (options.glob) args.push('--glob', options.glob);
     if (options.type) args.push('--type', options.type);
     if (options.filesOnly) args.push('-l');
@@ -138,18 +146,32 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
     if (options.before) args.push('-B', String(options.before));
     if (options.after) args.push('-A', String(options.after));
     if (options.multiline) args.push('-U', '--multiline-dotall');
-    args.push('--max-count', String(options.maxResults || 500));
 
     const proc = spawnProcess('rg', args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     const stdoutChunks = [];
     const stderrChunks = [];
     let capturedBytes = 0;
     let truncatedStream = null;
+    let stdoutLines = 0;
     let settled = false;
 
     function capture(streamName, chunk, chunks) {
-      if (truncatedStream) return;
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (truncatedStream || (streamName === 'stdout' && stdoutLines >= (options.maxResults || 500))) return;
+      let buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (streamName === 'stdout') {
+        const maxResults = Math.max(1, options.maxResults || 500);
+        let cursor = 0;
+        while (stdoutLines < maxResults) {
+          const newline = buffer.indexOf(0x0a, cursor);
+          if (newline === -1) break;
+          stdoutLines += 1;
+          cursor = newline + 1;
+        }
+        if (stdoutLines >= maxResults) {
+          buffer = buffer.subarray(0, cursor);
+          try { proc.kill(); } catch {}
+        }
+      }
       const remaining = MAX_CAPTURE_BYTES - capturedBytes;
       if (buffer.length > remaining) {
         if (remaining > 0) chunks.push(buffer.subarray(0, remaining));
@@ -163,23 +185,20 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
     }
 
     function decodeCaptured(chunks, wasTruncated) {
-      // Buffer decoding normally expands each invalid byte to the three-byte
-      // U+FFFD replacement character. Use a one-byte replacement, then enforce
-      // the final encoded-byte boundary as a last line of defense.
       const marker = wasTruncated ? OUTPUT_TRUNCATED_MARKER : '';
       const maxTextBytes = MAX_OUTPUT_BYTES - Buffer.byteLength(marker, 'utf8');
       const decoded = Buffer.concat(chunks).toString('utf8').replaceAll('\ufffd', '?').replace(/\r/g, '');
       return truncateUtf8(decoded, maxTextBytes) + marker;
     }
 
-    proc.stdout.on('data', (chunk) => capture('stdout', chunk, stdoutChunks));
-    proc.stderr.on('data', (chunk) => capture('stderr', chunk, stderrChunks));
+    proc.stdout.on('data', chunk => capture('stdout', chunk, stdoutChunks));
+    proc.stderr.on('data', chunk => capture('stderr', chunk, stderrChunks));
     proc.on('close', (code) => {
       if (settled) return;
       settled = true;
       const stdout = decodeCaptured(stdoutChunks, truncatedStream === 'stdout');
       const stderr = decodeCaptured(stderrChunks, truncatedStream === 'stderr');
-      if (code === 0 || code === 1 || truncatedStream === 'stdout') resolve(stdout);
+      if (code === 0 || code === 1 || stdoutLines >= (options.maxResults || 500) || truncatedStream === 'stdout') resolve(stdout);
       else reject(new Error(stderr || `rg exited with code ${code}`));
     });
     proc.on('error', (err) => {
@@ -194,67 +213,94 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
  * Fallback: Node.js grep implementation.
  */
 export async function nodeGrep(pattern, searchPath, options) {
-  const regex = new RegExp(pattern, options.caseInsensitive ? 'gi' : 'g');
-  const output = createOutputCollector();
+  const regexSource = options.fixedStrings
+    ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    : pattern;
+  const regex = new RegExp(regexSource, options.caseInsensitive ? 'gi' : 'g');
+  const output = createOutputCollector(options.byteBudget || SEARCH_RESULT_BYTES);
+  const maxResults = Math.max(1, options.maxResults || 500);
   let resultCount = 0;
-  const SKIP = new Set(['node_modules', '.git', '__pycache__', '.next', 'dist', 'build', '.cache']);
+  let stopped = false;
 
-  async function searchDir(dir) {
-    if (resultCount >= (options.maxResults || 500)) return;
-    let entries;
-    try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+  function compileGlob(glob) {
+    const escaped = glob.replace(/\\/g, '/')
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*\*/g, '\0').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')
+      .replace(/\0/g, '.*');
+    return new RegExp(`^${escaped}$`);
+  }
+  const globMatcher = options.glob ? compileGlob(options.glob) : null;
+  const typeExtensions = {
+    js: ['.js', '.jsx', '.mjs', '.cjs'], ts: ['.ts', '.tsx', '.mts', '.cts'],
+    py: ['.py'], rust: ['.rs'], go: ['.go'], java: ['.java'],
+    json: ['.json'], yaml: ['.yaml', '.yml'], markdown: ['.md', '.markdown'],
+    html: ['.html', '.htm'], css: ['.css'], shell: ['.sh', '.bash', '.zsh'],
+  };
 
-    for (const entry of entries) {
-      if (resultCount >= (options.maxResults || 500)) return;
-      const fullPath = join(dir, entry.name);
+  function matchesFilters(fullPath) {
+    const relPath = relative(searchPath, fullPath).replace(/\\/g, '/');
+    if (globMatcher && !globMatcher.test(relPath) && !globMatcher.test(relPath.split('/').pop())) return false;
+    if (!options.type) return true;
+    const extensions = typeExtensions[options.type];
+    return Boolean(extensions?.includes(extname(fullPath).toLowerCase()));
+  }
 
-      if (entry.isDirectory()) {
-        if (SKIP.has(entry.name)) continue;
-        await searchDir(fullPath);
+  function addResult(value) {
+    resultCount += 1;
+    if (!output.add(value) || resultCount >= maxResults) stopped = true;
+  }
+
+  async function searchFile(fullPath) {
+    if (stopped || !matchesFilters(fullPath) || BINARY_EXTS.has(extname(fullPath).toLowerCase())) return;
+    try {
+      const fileStat = await stat(fullPath);
+      if (fileStat.size > 1024 * 1024 || stopped) return;
+      const content = decodeTextFile(await readFile(fullPath));
+      if (content == null) return;
+      const relPath = relative(searchPath, fullPath);
+      regex.lastIndex = 0;
+      if (options.filesOnly) {
+        if (regex.test(content)) addResult(relPath);
+      } else if (options.count) {
+        const matches = content.match(regex);
+        if (matches) addResult(`${relPath}:${matches.length}`);
       } else {
-        const ext = extname(entry.name).toLowerCase();
-        if (BINARY_EXTS.has(ext)) continue;
-
-        try {
-          const fileStat = await stat(fullPath);
-          if (fileStat.size > 1024 * 1024) continue; // skip files > 1MB
-
-          const buffer = await readFile(fullPath);
-          const content = decodeTextFile(buffer);
-          if (content == null) continue;
-          const relPath = relative(searchPath, fullPath);
-
-          if (options.filesOnly) {
-            if (regex.test(content)) {
-              resultCount += 1;
-              if (!output.add(relPath)) return;
-            }
-            regex.lastIndex = 0;
-          } else if (options.count) {
-            const matches = content.match(regex);
-            if (matches) {
-              resultCount += 1;
-              if (!output.add(`${relPath}:${matches.length}`)) return;
-            }
-          } else {
-            const lines = content.split('\n');
-            for (let i = 0; i < lines.length; i++) {
-              if (regex.test(lines[i])) {
-                resultCount += 1;
-                if (!output.add(`${relPath}:${i + 1}:${lines[i]}`)) return;
-              }
-              regex.lastIndex = 0;
-              if (resultCount >= (options.maxResults || 500)) return;
-            }
-          }
-        } catch {
-          // Skip unreadable files
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length && !stopped; i += 1) {
+          regex.lastIndex = 0;
+          if (regex.test(lines[i])) addResult(`${relPath}:${i + 1}:${lines[i]}`);
         }
       }
+    } catch {
+      // Skip unreadable files.
     }
   }
 
-  await searchDir(searchPath);
+  async function searchDir(dir) {
+    if (stopped) return;
+    let entries;
+    try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+    const files = [];
+    const directories = [];
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const relPath = relative(searchPath, fullPath).replace(/\\/g, '/');
+        if (!SKIP_DIRS.has(entry.name) && relPath !== '.yeaft/worktrees' && !relPath.startsWith('.yeaft/worktrees/')) directories.push(fullPath);
+      } else files.push(fullPath);
+    }
+    for (let i = 0; i < files.length && !stopped; i += FALLBACK_CONCURRENCY) {
+      await Promise.all(files.slice(i, i + FALLBACK_CONCURRENCY).map(searchFile));
+    }
+    for (const child of directories) {
+      if (stopped) break;
+      await searchDir(child);
+    }
+  }
+
+  const rootStat = await stat(searchPath);
+  if (rootStat.isDirectory()) await searchDir(searchPath);
+  else await searchFile(searchPath);
   return output.toString();
 }
 
@@ -336,6 +382,13 @@ Guidelines:
           zh: '不区分大小写搜索（默认 false）',
         },
       },
+      fixed_strings: {
+        type: 'boolean',
+        description: {
+          en: 'Treat the pattern as a literal string (default: false)',
+          zh: '将模式视为普通字符串而非正则表达式（默认 false）',
+        },
+      },
       context: {
         type: 'number',
         description: {
@@ -379,7 +432,7 @@ Guidelines:
   async execute(input, ctx) {
     const {
       pattern, path: searchPath, output_mode = 'files_with_matches',
-      glob: globFilter, type, case_insensitive = false,
+      glob: globFilter, type, case_insensitive = false, fixed_strings = false,
       context, before, after, multiline = false,
       head_limit = MAX_LINES,
     } = input;
@@ -397,13 +450,15 @@ Guidelines:
       caseInsensitive: case_insensitive,
       glob: globFilter,
       type,
+      fixedStrings: fixed_strings,
       filesOnly: output_mode === 'files_with_matches',
       count: output_mode === 'count',
       context,
       before,
       after,
       multiline,
-      maxResults: head_limit * 2,
+      maxResults: Math.max(1, Math.min(Number(head_limit) || MAX_LINES, 10000)),
+      byteBudget: SEARCH_RESULT_BYTES,
     };
 
     try {

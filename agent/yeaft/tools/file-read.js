@@ -180,12 +180,15 @@ Guidelines:
       const startColumn = Math.max(0, Number.isFinite(column_offset) ? Math.floor(column_offset) : 0);
       const { text: numbered, nextLine, nextColumn } = formatLinesWithinBudget(allLines, startLine, endLine, startColumn);
 
-      if (startLine > 0 || startColumn > 0 || nextLine < totalLines) {
-        const continuation = nextColumn > 0
-          ? `Continue with offset=${nextLine}, column_offset=${nextColumn}.`
-          : `Continue with offset=${nextLine}.`;
+      const hasMoreContent = nextColumn > 0 || nextLine < totalLines;
+      if (startLine > 0 || startColumn > 0 || hasMoreContent) {
+        const continuation = hasMoreContent
+          ? nextColumn > 0
+            ? ` Continue with offset=${nextLine}, column_offset=${nextColumn}.`
+            : ` Continue with offset=${nextLine}.`
+          : '';
         const shownEnd = nextColumn > 0 ? nextLine + 1 : nextLine;
-        return `${numbered}\n\n[Showing lines ${startLine + 1}-${shownEnd} of ${totalLines} total. ${continuation}]`;
+        return `${numbered}\n\n[Showing lines ${startLine + 1}-${shownEnd} of ${totalLines} total.${continuation}]`;
       }
 
       return numbered;
