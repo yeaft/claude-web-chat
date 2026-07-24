@@ -36,23 +36,10 @@ describe('Yeaft message history sender filter', () => {
 
     await wrapper.get('select').setValue('user');
     expect(wrapper.emitted('sender')?.at(-1)).toEqual(['user']);
-    wrapper.unmount();
-  });
-
-  it('emits when an active VP is removed from the sender options', async () => {
-    const wrapper = mount(YeaftConversationOutline, {
-      props: {
-        outlineState: { results: [], loading: false, hasMore: false, totalCount: 0 },
-        searchState: { query: '', senderKey: 'vp:linus', results: [], loading: false, hasMore: false, error: null },
-        senderOptions: [{ key: 'user', label: 'You' }, { key: 'vp:linus', label: 'Linus' }],
-        activeMessageId: null,
-      },
-      global: { mocks: { $t: key => key } },
-    });
 
     await wrapper.setProps({ senderOptions: [{ key: 'user', label: 'You' }] });
-
     expect(wrapper.emitted('sender-invalid')).toEqual([[]]);
+
     wrapper.unmount();
   });
 });
