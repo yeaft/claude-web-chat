@@ -7,11 +7,12 @@ import {
 } from '../../web/utils/session-message-quote.js';
 
 describe('Session message quotes', () => {
-  it('formats message timestamps with year, month, day, hour and minute', () => {
+  it('formats message timestamps without the year', () => {
     const formatted = formatSessionMessageDateTime(Date.UTC(2026, 6, 24, 3, 5));
-    expect(formatted).toContain('2026');
+    expect(formatted).not.toContain('2026');
     expect(formatted).toMatch(/07|7/);
     expect(formatted).toMatch(/24/);
+    expect(formatted).toMatch(/03|3/);
   });
 
   it('builds a user quote without mutating the source message', () => {

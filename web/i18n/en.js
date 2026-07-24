@@ -544,7 +544,7 @@ export default {
   'message.removeQuote': 'Remove quote',
   'message.replyingTo': 'Replying to {author}',
   'message.quotedFrom': 'Quoted from {author}',
-  'message.editAsNew': 'Edit as new input',
+  'message.editAsNew': 'New message',
   'message.you': 'You',
 
   // ============ Chat Input ============
