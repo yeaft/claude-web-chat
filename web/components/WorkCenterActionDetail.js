@@ -28,8 +28,11 @@ export default {
   emits: ['back', 'update:composerText', 'load-earlier-messages', 'select-request', 'refresh-requests', 'open-run', 'attachment-input', 'remove-attachment', 'open-attachment', 'send', 'retry'],
   data() {
     return {
+      activeView: 'conversation',
+      conversationScrollTop: 0,
       expandedRequestKey: null,
       expandedLoops: {},
+      expandedGenerations: {},
     };
   },
   computed: {
@@ -65,13 +68,24 @@ export default {
         messages: this.messages,
         runs: [],
       }];
-      return thread.map(entry => entry.canonical ? { ...entry, messages: this.messages } : entry);
+      return thread
+        .map(entry => entry.canonical ? { ...entry, messages: this.messages } : entry)
+        .sort((left, right) => {
+          if (!!left.canonical !== !!right.canonical) return left.canonical ? -1 : 1;
+          return (Number(right.generation) || 0) - (Number(left.generation) || 0);
+        });
+    },
+    hasThreadMessages() {
+      return this.actionThread.some(entry => Array.isArray(entry.messages) && entry.messages.length > 0);
     },
   },
   watch: {
     'action.id'() {
+      this.activeView = 'conversation';
+      this.conversationScrollTop = 0;
       this.expandedRequestKey = null;
       this.expandedLoops = {};
+      this.expandedGenerations = {};
       this.$emit('refresh-requests');
       this.$nextTick(() => renderMermaidIn(this.$el));
     },
@@ -146,8 +160,35 @@ export default {
       const generation = this.action?.generation;
       const request = await new Promise(resolve => this.$emit('open-run', run, resolve));
       if (!request || this.action?.id !== actionId || this.action?.generation !== generation) return;
+      this.activeView = 'execution';
       this.expandedRequestKey = this.requestKey(request);
-      this.$nextTick(() => this.$refs.requestsPanel?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }));
+      await this.$nextTick();
+      this.$refs.requestsPanel?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    },
+    setActiveView(view) {
+      if (view === this.activeView) return;
+      if (this.activeView === 'conversation') {
+        this.conversationScrollTop = this.$refs.conversationPanel?.scrollTop || 0;
+      }
+      this.activeView = view;
+      if (view === 'execution') this.refreshRequests();
+      this.$nextTick(() => {
+        if (view === 'conversation' && this.$refs.conversationPanel) {
+          this.$refs.conversationPanel.scrollTop = this.conversationScrollTop;
+        }
+        renderMermaidIn(this.$el);
+      });
+    },
+    toggleGeneration(generation) {
+      const key = String(generation?.generation || 'unknown');
+      this.expandedGenerations = {
+        ...this.expandedGenerations,
+        [key]: !this.expandedGenerations[key],
+      };
+    },
+    generationExpanded(generation) {
+      if (generation?.canonical) return true;
+      return !!this.expandedGenerations[String(generation?.generation || 'unknown')];
     },
     async toggleRequest(request) {
       const key = this.requestKey(request);
@@ -186,8 +227,11 @@ export default {
   template: `
     <section class="work-center-action-detail-pane" v-if="action">
       <header class="work-center-action-detail-header">
-        <div>
-          <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
+        <div class="work-center-action-header-copy">
+          <div class="work-center-action-header-meta">
+            <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
+            <span class="work-center-action-executor"><span class="work-center-action-vp-presence" :data-status="action.status" aria-hidden="true"></span>{{ executorName }}</span>
+          </div>
           <h2>{{ action.brief?.objective || tr('workCenter.actionDetails', 'Action details') }}</h2>
         </div>
         <button class="work-center-icon-button" type="button" @click="$emit('back')" :title="tr('common.close', 'Close')" :aria-label="tr('common.close', 'Close')">
@@ -195,16 +239,14 @@ export default {
         </button>
       </header>
 
-      <div class="work-center-action-conversation-heading">
-        <span class="work-center-action-vp-presence" :data-status="action.status" aria-hidden="true"></span>
-        <div>
-          <strong>{{ executorName }}</strong>
-          <span>{{ tr('workCenter.actionConversationWith', 'Action executor') }}</span>
-        </div>
-      </div>
+      <nav class="work-center-action-view-switch" role="tablist" :aria-label="tr('workCenter.actionViews', 'Action views')">
+        <button type="button" role="tab" :aria-selected="activeView === 'conversation' ? 'true' : 'false'" :class="{ active: activeView === 'conversation' }" @click="setActiveView('conversation')">{{ tr('workCenter.actionConversation', 'Conversation') }}</button>
+        <button type="button" role="tab" :aria-selected="activeView === 'context' ? 'true' : 'false'" :class="{ active: activeView === 'context' }" @click="setActiveView('context')">{{ tr('workCenter.actionContext', 'Context') }}</button>
+        <button type="button" role="tab" :aria-selected="activeView === 'execution' ? 'true' : 'false'" :class="{ active: activeView === 'execution' }" @click="setActiveView('execution')">{{ tr('workCenter.execution', 'Execution') }}</button>
+      </nav>
 
-      <div class="work-center-action-detail-scroll">
-        <div id="work-center-action-messages-panel" class="work-center-action-transcript" :aria-label="tr('workCenter.actionConversation', 'Action conversation')">
+      <div class="work-center-action-detail-scroll" :data-view="activeView">
+        <div v-show="activeView === 'conversation'" ref="conversationPanel" id="work-center-action-messages-panel" class="work-center-action-transcript" role="tabpanel" :aria-label="tr('workCenter.actionConversation', 'Action conversation')">
           <section v-if="action.failure" class="work-center-action-failure" role="alert">
             <strong>{{ tr('workCenter.actionFailedTitle', 'Why this Action failed') }}</strong>
             <p v-if="action.failure.error">{{ action.failure.error }}</p>
@@ -216,47 +258,42 @@ export default {
             {{ messagesLoading ? tr('workCenter.loadingEarlierMessages', 'Loading earlier messages…') : tr('workCenter.loadEarlierMessages', 'Load earlier messages') }}
           </button>
           <p v-if="messagesError" class="work-center-error">{{ messagesError }}</p>
-          <section v-for="generation in actionThread" :key="generation.generation" class="work-center-action-generation" :class="{ canonical: generation.canonical }">
-            <header v-if="!generation.canonical" class="work-center-action-generation-header">
-              <strong>{{ tr('workCenter.previousExecution', 'Previous execution') }}</strong>
-              <span>{{ tr('workCenter.generation', 'Generation') }} {{ generation.generation }}</span>
-            </header>
-            <article v-for="message in generation.messages" :key="message.id" class="work-center-action-message" :class="'role-' + message.role" :data-status="message.status">
-              <header>
-                <strong>{{ messageSpeaker(message) }}</strong>
-                <small>{{ time(message.updatedAt || message.createdAt) }}</small>
-              </header>
-              <div v-if="message.text" class="markdown-body" v-html="messageHtml(message.text)"></div>
-              <div v-if="message.attachments?.length" class="work-center-attachment-list">
-                <button v-for="attachment in message.attachments" :key="attachment.id" type="button"
-                        class="work-center-attachment-chip work-center-attachment-preview"
-                        :disabled="previewingAttachmentId === attachment.id"
-                        :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })"
-                        @click="$emit('open-attachment', attachment, $event.currentTarget)">
-                  <span>{{ attachment.name }}</span><small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
-                </button>
-              </div>
-            </article>
+          <section v-for="generation in actionThread" :key="generation.generation" class="work-center-action-generation" :class="{ canonical: generation.canonical, expanded: generationExpanded(generation) }">
+            <button v-if="!generation.canonical" class="work-center-action-generation-toggle" type="button" @click="toggleGeneration(generation)" :aria-expanded="generationExpanded(generation) ? 'true' : 'false'">
+              <span><span class="work-center-action-chevron" aria-hidden="true"></span><strong>{{ tr('workCenter.previousExecution', 'Previous execution') }}</strong></span>
+              <small>{{ $t('workCenter.generationMessageCount', { generation: generation.generation, count: generation.messages?.length || 0 }) }}</small>
+            </button>
+            <div v-if="generationExpanded(generation)" class="work-center-action-generation-messages">
+              <article v-for="message in generation.messages" :key="message.id" class="work-center-action-message" :class="'role-' + message.role" :data-status="message.status">
+                <header>
+                  <strong>{{ messageSpeaker(message) }}</strong>
+                  <small>{{ time(message.updatedAt || message.createdAt) }}</small>
+                </header>
+                <div v-if="message.text" class="markdown-body" v-html="messageHtml(message.text)"></div>
+                <div v-if="message.attachments?.length" class="work-center-attachment-list">
+                  <button v-for="attachment in message.attachments" :key="attachment.id" type="button"
+                          class="work-center-attachment-chip work-center-attachment-preview"
+                          :disabled="previewingAttachmentId === attachment.id"
+                          :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })"
+                          @click="$emit('open-attachment', attachment, $event.currentTarget)">
+                    <span>{{ attachment.name }}</span><small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
+                  </button>
+                </div>
+              </article>
+            </div>
           </section>
           <p v-if="attachmentError" class="work-center-error" role="alert">{{ attachmentError }}</p>
-          <p v-if="messages.length === 0" class="work-center-action-empty">{{ tr('workCenter.noActionMessages', 'No execution messages yet.') }}</p>
+          <p v-if="!hasThreadMessages" class="work-center-action-empty">{{ tr('workCenter.noActionMessages', 'No execution messages yet.') }}</p>
         </div>
 
-        <aside class="work-center-action-inspector" :aria-label="tr('workCenter.actionInformation', 'Action information')">
-          <section class="work-center-action-inspector-section work-center-action-owner">
-            <span class="work-center-action-vp-presence" :data-status="action.status" aria-hidden="true"></span>
-            <div><strong>{{ executorName }}</strong><small>{{ tr('workCenter.actionExecutor', 'Executor') }}</small></div>
-          </section>
-          <section v-if="action.brief" class="work-center-action-inspector-section">
-            <strong>{{ tr('workCenter.actionObjective', 'What to do') }}</strong>
-            <p>{{ action.brief.objective }}</p>
-            <dl class="work-center-action-inspector-list">
-              <div v-if="action.brief.approach"><dt>{{ tr('workCenter.actionApproach', 'How to do it') }}</dt><dd>{{ action.brief.approach }}</dd></div>
-              <div v-if="action.brief.expectedOutcome"><dt>{{ tr('workCenter.actionExpectedOutcome', 'Expected result') }}</dt><dd>{{ action.brief.expectedOutcome }}</dd></div>
-              <div v-if="action.dependsOnStageIds?.length"><dt>{{ tr('workCenter.dependencies', 'Dependencies') }}</dt><dd>{{ action.dependsOnStageIds.join(', ') }}</dd></div>
-            </dl>
-          </section>
-          <section v-if="action.canonicalResult" class="work-center-action-inspector-section">
+        <section v-show="activeView === 'context'" class="work-center-action-context" role="tabpanel" :aria-label="tr('workCenter.actionContext', 'Context')">
+          <dl v-if="action.brief" class="work-center-action-context-list">
+            <div><dt>{{ tr('workCenter.actionObjective', 'What to do') }}</dt><dd>{{ action.brief.objective }}</dd></div>
+            <div v-if="action.brief.approach"><dt>{{ tr('workCenter.actionApproach', 'How to do it') }}</dt><dd>{{ action.brief.approach }}</dd></div>
+            <div v-if="action.brief.expectedOutcome"><dt>{{ tr('workCenter.actionExpectedOutcome', 'Expected result') }}</dt><dd>{{ action.brief.expectedOutcome }}</dd></div>
+            <div v-if="action.dependsOnStageIds?.length"><dt>{{ tr('workCenter.dependencies', 'Dependencies') }}</dt><dd>{{ action.dependsOnStageIds.join(', ') }}</dd></div>
+          </dl>
+          <section v-if="action.canonicalResult" class="work-center-action-context-result">
             <strong>{{ tr('workCenter.actionResult', 'Latest result') }}</strong>
             <p v-if="action.canonicalResult.summary">{{ action.canonicalResult.summary }}</p>
             <p v-if="action.canonicalResult.waitingReason" class="work-center-muted">{{ action.canonicalResult.waitingReason }}</p>
@@ -264,19 +301,19 @@ export default {
               <li v-for="(evidence, index) in action.canonicalResult.evidence" :key="index">{{ typeof evidence === 'string' ? evidence : (evidence.label || evidence.ref || evidence.kind) }}</li>
             </ul>
           </section>
-          <section class="work-center-action-inspector-section">
-            <strong>{{ tr('workCenter.execution', 'Execution') }}</strong>
-            <dl class="work-center-action-metrics">
-              <div><dt>{{ tr('workCenter.statusLabel', 'Status') }}</dt><dd>{{ statusLabel(action.status) }}</dd></div>
-              <div><dt>{{ tr('workCenter.llmRequestsLabel', 'LLM requests') }}</dt><dd>{{ formatCount(action.executionStats?.llmRequestCount) }}</dd></div>
-              <div><dt>{{ tr('workCenter.loopsLabel', 'Loops') }}</dt><dd>{{ formatCount(action.executionStats?.loopCount) }}</dd></div>
-              <div><dt>{{ tr('workCenter.toolsLabel', 'Tools') }}</dt><dd>{{ formatCount(action.executionStats?.toolCount) }}</dd></div>
-              <div><dt>{{ tr('workCenter.tokensLabel', 'Tokens') }}</dt><dd>{{ formatTokens(action.executionStats?.totalTokens) }}</dd></div>
-            </dl>
-          </section>
-          <section ref="requestsPanel" class="work-center-action-inspector-section work-center-action-requests">
-            <header class="work-center-action-inspector-heading">
-              <strong>{{ tr('workCenter.requestDetails', 'Request details') }}</strong>
+        </section>
+
+        <section v-show="activeView === 'execution'" class="work-center-action-execution" role="tabpanel" :aria-label="tr('workCenter.execution', 'Execution')">
+          <dl class="work-center-action-metrics">
+            <div><dt>{{ tr('workCenter.statusLabel', 'Status') }}</dt><dd>{{ statusLabel(action.status) }}</dd></div>
+            <div><dt>{{ tr('workCenter.llmRequestsLabel', 'LLM requests') }}</dt><dd>{{ formatCount(action.executionStats?.llmRequestCount) }}</dd></div>
+            <div><dt>{{ tr('workCenter.loopsLabel', 'Loops') }}</dt><dd>{{ formatCount(action.executionStats?.loopCount) }}</dd></div>
+            <div><dt>{{ tr('workCenter.toolsLabel', 'Tools') }}</dt><dd>{{ formatCount(action.executionStats?.toolCount) }}</dd></div>
+            <div><dt>{{ tr('workCenter.tokensLabel', 'Tokens') }}</dt><dd>{{ formatTokens(action.executionStats?.totalTokens) }}</dd></div>
+          </dl>
+          <section ref="requestsPanel" class="work-center-action-requests">
+            <header class="work-center-action-section-heading">
+              <div><strong>{{ tr('workCenter.requestDetails', 'Request details') }}</strong><small>{{ tr('workCenter.requestDetailsHint', 'Inspect model, loop, and tool diagnostics only when needed.') }}</small></div>
               <button class="btn-ghost" type="button" @click="refreshRequests">{{ tr('workCenter.refresh', 'Refresh') }}</button>
             </header>
           <p v-if="requestsError" class="work-center-error">{{ requestsError }}</p>
@@ -313,14 +350,10 @@ export default {
             </div>
           </article>
           </section>
-        </aside>
+        </section>
       </div>
 
       <footer v-if="canCompose" class="work-center-action-composer">
-        <div class="work-center-action-composer-scope">
-          <strong>{{ $t('workCenter.messageExecutor', { name: executorName }) }}</strong>
-          <span>{{ tr('workCenter.actionMessageScope', 'Only this Action receives the message.') }}</span>
-        </div>
         <p v-if="composerError" class="work-center-error" role="alert">{{ composerError }}</p>
         <div v-if="composerAttachments.length" class="work-center-attachment-list">
           <span v-for="(attachment, index) in composerAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
@@ -342,7 +375,7 @@ export default {
           </button>
         </div>
         <div class="work-center-action-composer-footer">
-          <small class="work-center-action-composer-hint">{{ uploading ? tr('workCenter.attachmentsUploading', 'Uploading…') : composerHint }}</small>
+          <small class="work-center-action-composer-hint"><strong>{{ executorName }}</strong><span aria-hidden="true"> · </span>{{ uploading ? tr('workCenter.attachmentsUploading', 'Uploading…') : composerHint }}</small>
           <button v-if="canRetry" class="btn-secondary" type="button" @click="$emit('retry')">
             {{ tr('workCenter.retryAction', 'Retry Action') }}
           </button>

@@ -936,12 +936,6 @@ export default {
             <button type="button" @click="showItemsPane">{{ tr('workCenter.workItems', 'Work items') }}</button>
             <span aria-hidden="true">/</span>
             <button v-if="narrowPane === 'action'" type="button" @click="showActionsPane">{{ selected.title }}</button>
-            <span v-if="narrowPane === 'action'" aria-hidden="true">/</span>
-            <span v-if="narrowPane === 'action'" class="work-center-action-breadcrumb" aria-current="page"
-                  :title="$t('workCenter.actionBreadcrumb', { number: actionSequence(selectedAction), description: actionBreadcrumbDescription(selectedAction) })">
-              <strong>{{ $t('workCenter.actionNumber', { number: actionSequence(selectedAction) }) }}</strong>
-              <span>{{ actionBreadcrumbDescription(selectedAction) }}</span>
-            </span>
             <span v-else aria-current="page">{{ selected.title }}</span>
           </nav>
 

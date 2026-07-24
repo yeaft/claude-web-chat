@@ -65,17 +65,35 @@ describe('Work Center Action detail tabs', () => {
     expect(wrapper.get('.work-center-attachment-picker svg').attributes('aria-hidden')).toBe('true');
   });
 
-  it('keeps the conversation and Action inspector visible together', () => {
+  it('starts as one clean conversation surface and reveals context or diagnostics on demand', async () => {
     const wrapper = mountDetail({
       action: {
         id: 'action-1', status: 'running', assignedVp: { id: 'linus', name: 'Linus' },
+        brief: { objective: 'Ship a clear Action view', approach: 'Use one reading column' },
         executionStats: {}, messages: [],
       },
     });
 
     expect(wrapper.get('.work-center-action-transcript').isVisible()).toBe(true);
-    expect(wrapper.get('.work-center-action-inspector').isVisible()).toBe(true);
-    expect(wrapper.get('.work-center-action-conversation-heading').text()).toContain('Linus');
+    expect(wrapper.get('.work-center-action-context').isVisible()).toBe(false);
+    expect(wrapper.get('.work-center-action-execution').isVisible()).toBe(false);
+    expect(wrapper.get('.work-center-action-executor').text()).toContain('Linus');
+    expect(wrapper.find('.work-center-action-inspector').exists()).toBe(false);
+
+    const tabs = wrapper.findAll('[role="tab"]');
+    wrapper.get('.work-center-action-transcript').element.scrollTop = 160;
+    await tabs[1].trigger('click');
+    expect(wrapper.get('.work-center-action-transcript').isVisible()).toBe(false);
+    expect(wrapper.get('.work-center-action-context').isVisible()).toBe(true);
+    expect(wrapper.get('.work-center-action-context').text()).toContain('Use one reading column');
+
+    await tabs[0].trigger('click');
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get('.work-center-action-transcript').element.scrollTop).toBe(160);
+
+    await tabs[2].trigger('click');
+    expect(wrapper.get('.work-center-action-execution').isVisible()).toBe(true);
+    expect(wrapper.emitted('refresh-requests')).toHaveLength(1);
   });
 
   it('preserves the selected request and loop across same-Action progress updates', async () => {
@@ -242,13 +260,38 @@ describe('Work Center Action detail tabs', () => {
 
     const generations = wrapper.findAll('.work-center-action-generation');
     expect(generations).toHaveLength(2);
-    expect(generations[0].text()).toContain('Previous execution');
-    expect(generations[0].text()).toContain('Old attempt result');
-    expect(generations[1].text()).toContain('Current paged response');
-    expect(generations[1].text()).not.toContain('stale inline page');
+    expect(generations[0].text()).toContain('Current paged response');
+    expect(generations[0].text()).not.toContain('stale inline page');
+    expect(generations[1].text()).toContain('Previous execution');
+    expect(generations[1].text()).not.toContain('Old attempt result');
+    expect(generations[1].get('.work-center-action-generation-toggle').attributes('aria-expanded')).toBe('false');
+    await generations[1].get('.work-center-action-generation-toggle').trigger('click');
+    expect(generations[1].text()).toContain('Old attempt result');
     await wrapper.vm.openRun({ id: 'run-2' });
+    expect(wrapper.vm.activeView).toBe('execution');
+    expect(wrapper.get('.work-center-action-execution').isVisible()).toBe(true);
     expect(wrapper.vm.expandedRequestKey).toBe('run-2:request-2');
     expect(wrapper.emitted('open-run')[0][0]).toEqual(expect.objectContaining({ id: 'run-2' }));
+  });
+
+  it('orders the current conversation first and keeps older executions newest-first', () => {
+    const context = {
+      action: {
+        generation: 3,
+        thread: [
+          { generation: 1, canonical: false, messages: [{ id: 'oldest' }] },
+          { generation: 3, canonical: true, messages: [{ id: 'stale-current' }] },
+          { generation: 2, canonical: false, messages: [{ id: 'newer-history' }] },
+        ],
+      },
+      messages: [{ id: 'current' }],
+    };
+
+    expect(WorkCenterActionDetail.computed.actionThread.call(context)).toEqual([
+      expect.objectContaining({ generation: 3, canonical: true, messages: [{ id: 'current' }] }),
+      expect.objectContaining({ generation: 2, canonical: false }),
+      expect.objectContaining({ generation: 1, canonical: false }),
+    ]);
   });
 
   it('does not clear the current expanded request when an old Run open resolves null', async () => {
@@ -277,7 +320,7 @@ describe('Work Center Action detail tabs', () => {
 
     expect(wrapper.findAll('.work-center-action-message.role-assistant header strong').map(node => node.text()))
       .toEqual(['Martin', 'Linus']);
-    expect(wrapper.get('.work-center-action-owner strong').text()).toBe('Linus');
+    expect(wrapper.get('.work-center-action-executor').text()).toContain('Linus');
     expect(wrapper.text()).not.toContain('AI response');
   });
 
