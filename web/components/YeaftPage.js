@@ -32,6 +32,15 @@ function historySenderPreferenceId(agentId, sessionId) {
   return agentId && sessionId ? `${agentId}:${sessionId}` : '';
 }
 
+function resolveHistorySenderStorage(storage) {
+  if (storage !== undefined) return storage;
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return null;
+  }
+}
+
 function readHistorySenderPreferences(storage) {
   try {
     const value = JSON.parse(storage?.getItem(HISTORY_SENDER_PREFERENCES_KEY) || '{}');
@@ -41,25 +50,28 @@ function readHistorySenderPreferences(storage) {
   }
 }
 
-export function loadHistorySenderPreference({ agentId, sessionId, validKeys = [], storage = globalThis.localStorage } = {}) {
+export function loadHistorySenderPreference({ agentId, sessionId, validKeys = [], storage } = {}) {
   const id = historySenderPreferenceId(agentId, sessionId);
   if (!id) return '';
-  const preferences = readHistorySenderPreferences(storage);
+  const resolvedStorage = resolveHistorySenderStorage(storage);
+  const preferences = readHistorySenderPreferences(resolvedStorage);
   const senderKey = typeof preferences[id] === 'string' ? preferences[id] : '';
   if (!senderKey || validKeys.includes(senderKey)) return senderKey;
   delete preferences[id];
-  try { storage?.setItem(HISTORY_SENDER_PREFERENCES_KEY, JSON.stringify(preferences)); } catch { /* best effort */ }
+  try { resolvedStorage?.setItem(HISTORY_SENDER_PREFERENCES_KEY, JSON.stringify(preferences)); } catch { /* best effort */ }
   return '';
 }
 
-export function saveHistorySenderPreference({ agentId, sessionId, senderKey, storage = globalThis.localStorage } = {}) {
+export function saveHistorySenderPreference({ agentId, sessionId, senderKey, storage } = {}) {
   const id = historySenderPreferenceId(agentId, sessionId);
   if (!id) return false;
-  const preferences = readHistorySenderPreferences(storage);
+  const resolvedStorage = resolveHistorySenderStorage(storage);
+  if (!resolvedStorage) return false;
+  const preferences = readHistorySenderPreferences(resolvedStorage);
   if (senderKey) preferences[id] = senderKey;
   else delete preferences[id];
   try {
-    storage?.setItem(HISTORY_SENDER_PREFERENCES_KEY, JSON.stringify(preferences));
+    resolvedStorage.setItem(HISTORY_SENDER_PREFERENCES_KEY, JSON.stringify(preferences));
     return true;
   } catch {
     return false;
@@ -213,6 +225,7 @@ export default {
           :active-message-id="historySearchActiveMessageId"
           @query="onHistorySearchQuery"
           @sender="onHistorySenderChange"
+          @sender-invalid="onHistorySenderInvalid"
           @move="historySearchActiveMessageId = $event"
           @preview="previewHistorySearchResult"
           @select="selectHistorySearchResult"
@@ -799,6 +812,11 @@ export default {
       historySearchActiveMessageId.value = null;
       saveHistorySenderPreference({ ...historySearchIdentity(), senderKey });
       store.searchYeaftHistory(historySearchQuery.value, { senderKey });
+    };
+    const onHistorySenderInvalid = () => {
+      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey: '' });
+      historySearchActiveMessageId.value = null;
+      store.searchYeaftHistory(historySearchQuery.value, { senderKey: '' });
     };
     const loadOlderHistoryOutline = (scrollSnapshot) => {
       if (!store.loadYeaftHistoryOutline({ append: true })) return;
@@ -1505,6 +1523,7 @@ export default {
       closeHistorySearch,
       onHistorySearchQuery,
       onHistorySenderChange,
+      onHistorySenderInvalid,
       loadOlderHistoryOutline,
       loadMoreHistorySearchResults,
       previewHistorySearchResult,

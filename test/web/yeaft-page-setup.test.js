@@ -6,7 +6,7 @@ let YeaftPage;
 let loadHistorySenderPreference;
 let saveHistorySenderPreference;
 
-const sessionsStore = {
+const sessionsStore = Vue.reactive({
   activeSessionId: 'session-1',
   activeSession: { id: 'session-1', roster: ['omni'], defaultVpId: 'omni' },
   activeNeedsInvite: false,
@@ -14,9 +14,9 @@ const sessionsStore = {
   isEmpty: false,
   sessions: { 'session-1': { id: 'session-1', roster: ['omni'], defaultVpId: 'omni' } },
   sessionById: sessionId => sessionsStore.sessions[sessionId] || null,
-};
+});
 
-const chatStore = {
+const chatStore = Vue.reactive({
   currentAgent: 'agent-1',
   currentAgentInfo: { online: true },
   agents: [{ id: 'agent-1', online: true }],
@@ -34,7 +34,7 @@ const chatStore = {
   loadYeaftHistoryOutline: vi.fn(),
   yeaftHistorySearchState: { query: '', senderKey: '' },
   searchYeaftHistory: vi.fn(),
-};
+});
 
 beforeAll(async () => {
   globalThis.Vue = Vue;
@@ -51,6 +51,8 @@ beforeAll(async () => {
 
 beforeEach(() => {
   localStorage.clear();
+  sessionsStore.sessions = { 'session-1': { id: 'session-1', roster: ['omni'], defaultVpId: 'omni' } };
+  sessionsStore.activeSession = sessionsStore.sessions['session-1'];
   chatStore.yeaftHistorySearchState = { query: '', senderKey: '' };
   chatStore.loadYeaftHistoryOutline.mockReset();
   chatStore.searchYeaftHistory.mockReset();
@@ -124,5 +126,36 @@ describe('YeaftPage setup', () => {
       agentId: 'agent-1', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
     })).toBe('');
     expect(JSON.parse(localStorage.getItem('yeaft-history-sender-preferences'))).toEqual({});
+  });
+
+  it('survives a localStorage property getter that throws', () => {
+    const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() { throw new DOMException('blocked', 'SecurityError'); },
+    });
+    try {
+      expect(loadHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1' })).toBe('');
+      expect(saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1', senderKey: 'user' })).toBe(false);
+    } finally {
+      Object.defineProperty(globalThis, 'localStorage', originalDescriptor);
+    }
+  });
+
+  it('clears the active sender without touching another Session preference', () => {
+    const page = YeaftPage.setup();
+    page.onHistorySenderChange('vp:omni');
+    saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-2', senderKey: 'user' });
+    chatStore.searchYeaftHistory.mockClear();
+
+    page.onHistorySenderInvalid();
+
+    expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('', { senderKey: '' });
+    expect(loadHistorySenderPreference({
+      agentId: 'agent-1', sessionId: 'session-1', validKeys: ['user'],
+    })).toBe('');
+    expect(loadHistorySenderPreference({
+      agentId: 'agent-1', sessionId: 'session-2', validKeys: ['user'],
+    })).toBe('user');
   });
 });

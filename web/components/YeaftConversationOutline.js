@@ -39,7 +39,7 @@ export default {
     senderOptions: { type: Array, default: () => [] },
     activeMessageId: { type: String, default: null },
   },
-  emits: ['query', 'sender', 'select', 'move', 'preview', 'load-older', 'load-more-search', 'close'],
+  emits: ['query', 'sender', 'sender-invalid', 'select', 'move', 'preview', 'load-older', 'load-more-search', 'close'],
   template: `
     <section id="yeaft-conversation-outline" class="yeaft-conversation-outline" :aria-label="$t('yeaft.outline.label')">
       <div class="yeaft-conversation-outline-header">
@@ -121,6 +121,14 @@ export default {
     const inputRef = Vue.ref(null);
     const listRef = Vue.ref(null);
     const isSearching = Vue.computed(() => String(props.searchState.query || '').trim().length >= 2 || !!props.searchState.senderKey);
+    Vue.watch(
+      () => props.senderOptions.map(option => option.key),
+      validKeys => {
+        const senderKey = props.searchState.senderKey || '';
+        if (senderKey && !validKeys.includes(senderKey)) emit('sender-invalid');
+      },
+      { flush: 'sync' },
+    );
     const visibleResults = Vue.computed(() => sortHistoryResultsNewest(
       isSearching.value ? props.searchState.results : props.outlineState.results,
     ));
