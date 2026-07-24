@@ -184,6 +184,7 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('class="work-center-card-meta"');
     expect(page).toContain('class="work-center-card-current-action"');
     expect(page).toContain('class="work-center-card-delete"');
+    expect(css).toMatch(/\.work-center-card-open,\s*\n\.work-center-card-delete,[^{]*\{[^}]*border: 0;[^}]*background: transparent;[^}]*font: inherit;/s);
     expect(page).toContain("boardUpdatedRange: 'week'");
     expect(page).toContain('deleteWorkItem(item)');
     expect(store).toContain("workCenterRequest('delete'");
