@@ -30,6 +30,7 @@ import AssistantTurn from './AssistantTurn.js';
 import { useChatStore } from '../stores/chat.js';
 import { useVpStore } from '../stores/vp.js';
 import { formatElapsed } from '../stores/helpers/turn-timing.js';
+import { formatSessionMessageDateTime } from '../utils/session-message-quote.js';
 
 export default {
   name: 'VpTurnBlock',
@@ -42,7 +43,7 @@ export default {
     responseCollapsed: { type: Boolean, default: false },
     responseToggleLabel: { type: String, default: '' },
   },
-  emits: ['toggle-response-collapse'],
+  emits: ['toggle-response-collapse', 'quote'],
   template: `
     <div class="vp-turn-block"
          :class="{ 'vp-turn-block-streaming': turn.isStreaming }"
@@ -103,6 +104,9 @@ export default {
           :response-collapsible="responseCollapsible"
           :response-collapsed="responseCollapsed"
           :response-toggle-label="responseToggleLabel"
+          :session-actions="true"
+          :quote-author="displayName"
+          @quote="$emit('quote', $event)"
           @toggle-response-collapse="$emit('toggle-response-collapse')"
         />
       </div>
@@ -149,15 +153,7 @@ export default {
       () => !!(props.turn && props.turn.isStreaming && props.turn.turnId)
     );
 
-    const startedTimeText = Vue.computed(() => {
-      const ts = props.turn.speakerTimestamp;
-      if (!ts) return '';
-      const d = new Date(ts);
-      if (Number.isNaN(d.getTime())) return '';
-      return d.toLocaleTimeString(undefined, {
-        hour: '2-digit', minute: '2-digit',
-      });
-    });
+    const startedTimeText = Vue.computed(() => formatSessionMessageDateTime(props.turn.speakerTimestamp));
 
     const startedTimeFullText = Vue.computed(() => {
       const ts = props.turn.speakerTimestamp;

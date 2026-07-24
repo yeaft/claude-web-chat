@@ -18,6 +18,10 @@ export function persistedMessageIdsForRenderedItem(item) {
   return ids;
 }
 
+export function shouldDismissHistorySearch(target) {
+  return !target?.closest?.('.yeaft-conversation-outline, .yeaft-search-btn');
+}
+
 export async function revealOutlineResult({ result, revealWindow, nextTick, revealMessage, isMobile, closeOutline }) {
   if (!result) return false;
   const expanded = await revealWindow?.(result);

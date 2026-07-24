@@ -27,7 +27,20 @@ describe('ChatInput paste attachments', () => {
   it('maps upload results only to the files in the current paste batch', () => {
     expect(chatInputSource).toContain('const pendingAttachments = [];');
     expect(chatInputSource).toContain('pendingAttachments.push(attachment);');
-    expect(chatInputSource).toContain('for (const attachment of pendingAttachments)');
+    expect(chatInputSource).toContain('for (const [index, attachment] of pendingAttachments.entries())');
     expect(chatInputSource).not.toContain('for (const attachment of attachments.value) {\n          if (attachment.uploading && !attachment.fileId)');
+  });
+
+  it('keeps failed attachments visible and exposes an explicit retry path', () => {
+    expect(chatInputSource).toContain('attachment.uploadError = true;');
+    expect(chatInputSource).toContain('const retryAttachment = async (attachment) =>');
+    expect(chatInputSource).toContain('@click="retryAttachment(file)"');
+    expect(chatInputSource).not.toContain('attachments.value = attachments.value.filter(a => a.fileId)');
+  });
+
+  it('shows upload state, file size, and accessible attachment controls', () => {
+    expect(chatInputSource).toContain("file.uploading ? $t('chatInput.uploading')");
+    expect(chatInputSource).toContain('formatFileSize(file.size)');
+    expect(chatInputSource).toContain(":aria-label=\"$t('chatInput.removeAttachment')\"");
   });
 });

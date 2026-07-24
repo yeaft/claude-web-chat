@@ -1,6 +1,7 @@
 import { openImagePreview } from '../utils/imagePreview.js';
 import { getSelectionLabel } from '../utils/expert-roles.js';
 import { normalizeTerminalOutput } from '../utils/terminal-output.js';
+import { formatSessionMessageDateTime, quoteFromUserMessage } from '../utils/session-message-quote.js';
 
 export default {
   name: 'MessageItem',
@@ -8,8 +9,10 @@ export default {
     message: {
       type: Object,
       required: true
-    }
+    },
+    sessionActions: { type: Boolean, default: false }
   },
+  emits: ['quote', 'edit-as-new'],
   template: `
     <div :class="messageClass">
       <!-- User message -->
@@ -22,8 +25,23 @@ export default {
             class="expert-label"
           >{{ formatExpertLabel(sel) }}</span>
         </div>
+        <div v-if="message.quote" class="message-quoted-context">
+          <div class="message-quoted-author">{{ $t('message.quotedFrom', { author: message.quote.author }) }}</div>
+          <div v-if="message.quote.content" class="message-quoted-content">{{ message.quote.content }}</div>
+          <div v-if="message.quote.todos && message.quote.todos.length" class="message-quoted-todos">
+            <div v-for="todo in message.quote.todos" :key="todo.content" class="message-quoted-todo">
+              <span>{{ todoStatusSymbol(todo.status) }}</span>
+              <span>{{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}</span>
+            </div>
+          </div>
+        </div>
         <div class="message-content" v-if="message.content">{{ displayContent }}</div>
-        <span v-if="messageTime" class="message-time" :title="messageTimeFull">{{ messageTime }}</span>
+        <div v-if="sessionActions" class="message-user-footer">
+          <span v-if="messageTime" class="message-time" :title="messageTimeFull">{{ messageTime }}</span>
+          <button type="button" class="message-action-btn" @click="$emit('quote', userQuote)" :title="$t('message.quote')">{{ $t('message.quote') }}</button>
+          <button type="button" class="message-action-btn" @click="$emit('edit-as-new', displayContent)" :title="$t('message.editAsNew')">{{ $t('message.editAsNew') }}</button>
+        </div>
+        <span v-else-if="messageTime" class="message-time" :title="messageTimeFull">{{ messageTime }}</span>
         <!-- Attachments indicator -->
         <div class="user-attachments-indicator" v-if="message.attachments && message.attachments.length > 0">
           <span class="attachments-badge" @click="toggleAttachments">
@@ -86,13 +104,7 @@ export default {
       return null;
     };
 
-    const messageTime = Vue.computed(() => {
-      const ts = _timeSource();
-      if (!ts) return '';
-      try {
-        return new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-      } catch { return ''; }
-    });
+    const messageTime = Vue.computed(() => formatSessionMessageDateTime(_timeSource()));
 
     const messageTimeFull = Vue.computed(() => {
       const ts = _timeSource();
@@ -101,6 +113,7 @@ export default {
     });
 
     const displayContent = Vue.computed(() => normalizeTerminalOutput(props.message.content || ''));
+    const userQuote = Vue.computed(() => quoteFromUserMessage(props.message, t('message.you')));
 
     const toggleAttachments = () => {
       showAttachments.value = !showAttachments.value;
@@ -129,6 +142,12 @@ export default {
       return parts.join(t('common.comma'));
     };
 
+    const todoStatusSymbol = (status) => {
+      if (status === 'completed') return '✓';
+      if (status === 'in_progress') return '→';
+      return '○';
+    };
+
     const getFileIcon = (mimeType) => {
       if (!mimeType) return '\u{1F4C4}';
       if (mimeType.startsWith('image/')) return '\u{1F5BC}\uFE0F';
@@ -148,12 +167,14 @@ export default {
       messageTime,
       messageTimeFull,
       displayContent,
+      userQuote,
       showAttachments,
       toggleAttachments,
       previewAttachment,
       t,
       formatExpertLabel,
       getAttachmentsText,
+      todoStatusSymbol,
       getFileIcon
     };
   }

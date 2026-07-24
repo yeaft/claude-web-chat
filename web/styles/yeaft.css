@@ -1775,8 +1775,13 @@
   max-width: 90%;
 }
 
+.yeaft-page .input-quote-preview,
 .yeaft-page .attachments-preview {
   max-width: 90%;
+}
+
+.yeaft-page .turn-footer {
+  opacity: 1;
 }
 
 /* ── Mobile Sidebar Overlay ── */
@@ -1900,6 +1905,7 @@
     max-width: 100%;
   }
 
+  .yeaft-page .input-quote-preview,
   .yeaft-page .attachments-preview {
     max-width: 100%;
   }

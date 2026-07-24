@@ -1301,61 +1301,66 @@
   line-height: 1.3;
 }
 
-.work-center-action-detail-stats {
+.work-center-action-conversation-heading {
   display: flex;
   flex: 0 0 auto;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  padding: 0 20px 10px;
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
-.work-center-action-tabs {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 4px;
-  padding: 0 16px 8px;
-}
-
-.work-center-action-tabs button {
-  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
+  gap: 10px;
+  padding: 2px 20px 14px;
 }
 
-.work-center-action-tabs button:hover,
-.work-center-action-tabs button.active {
-  background: var(--session-active);
+.work-center-action-conversation-heading > div,
+.work-center-action-owner > div {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.work-center-action-conversation-heading strong,
+.work-center-action-owner strong {
   color: var(--text-primary);
+  font-size: 13px;
 }
 
-.work-center-action-tabs button span {
+.work-center-action-conversation-heading span:not(.work-center-action-vp-presence),
+.work-center-action-owner small {
   color: var(--text-muted);
   font-size: 10px;
 }
 
+.work-center-action-vp-presence {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.work-center-action-vp-presence[data-status="running"] {
+  background: var(--success);
+}
+
+.work-center-action-vp-presence[data-status="failed"],
+.work-center-action-vp-presence[data-status="waiting"] {
+  background: var(--error);
+}
+
 .work-center-action-detail-scroll {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 320px);
+  gap: 24px;
   flex: 1;
   min-height: 0;
-  padding: 8px 20px 18px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  padding: 0 20px 18px;
+  overflow: hidden;
 }
 
 .work-center-action-transcript,
 .work-center-action-requests,
 .work-center-request-tools {
   display: grid;
+  min-width: 0;
+  align-content: start;
   gap: 10px;
 }
 
@@ -1416,14 +1421,16 @@
 
 .work-center-action-generation {
   display: grid;
+  min-width: 0;
   gap: 10px;
-  padding: 12px;
-  border-radius: 12px;
-  background: var(--bg-input-wrapper);
+  padding: 14px 0;
 }
 
-.work-center-action-generation.canonical {
-  background: var(--bg-main);
+.work-center-action-generation:not(.canonical) {
+  margin-top: 8px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--bg-input-wrapper);
 }
 
 .work-center-action-generation-header,
@@ -1478,15 +1485,25 @@
 
 .work-center-action-message {
   display: grid;
+  max-width: min(760px, 88%);
   gap: 8px;
-  padding: 14px 16px;
-  border-radius: 12px;
-  background: var(--bg-sidebar);
+  padding: 2px 0 12px;
+  color: var(--text-primary);
 }
 
 .work-center-action-message.role-user {
-  margin-left: min(72px, 14%);
+  justify-self: end;
+  padding: 12px 14px;
+  border-radius: 14px 14px 4px 14px;
   background: var(--session-active);
+}
+
+.work-center-action-message.role-assistant {
+  justify-self: start;
+}
+
+.work-center-action-message.role-assistant header strong {
+  color: var(--text-primary);
 }
 
 .work-center-action-message header,
@@ -1525,6 +1542,96 @@
 
 .work-center-action-message .markdown-body > :last-child {
   margin-bottom: 0;
+}
+
+.work-center-action-transcript,
+.work-center-action-inspector {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.work-center-action-transcript {
+  padding-right: 8px;
+}
+
+.work-center-action-inspector {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 2px 4px 20px 0;
+}
+
+.work-center-action-inspector-section {
+  display: grid;
+  gap: 9px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--bg-sidebar);
+  color: var(--text-primary);
+}
+
+.work-center-action-inspector-section > strong,
+.work-center-action-inspector-heading > strong {
+  font-size: 12px;
+}
+
+.work-center-action-inspector-section p,
+.work-center-action-inspector-section ul {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.work-center-action-owner {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+.work-center-action-inspector-list,
+.work-center-action-metrics {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.work-center-action-inspector-list div,
+.work-center-action-metrics div {
+  display: grid;
+  gap: 2px;
+}
+
+.work-center-action-inspector-list dt,
+.work-center-action-metrics dt {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.work-center-action-inspector-list dd,
+.work-center-action-metrics dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.work-center-action-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.work-center-action-inspector-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.work-center-action-inspector-heading .btn-ghost {
+  min-height: 28px;
+  padding: 4px 7px;
+  font-size: 10px;
 }
 
 .work-center-action-empty {
@@ -2714,6 +2821,18 @@
   flex: 1;
 }
 
+@container work-center (max-width: 980px) {
+  .work-center-action-detail-scroll {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+
+  .work-center-action-transcript,
+  .work-center-action-inspector {
+    overflow: visible;
+  }
+}
+
 @container work-center (max-width: 1250px) {
   .work-center-shell {
     padding: 24px 20px 20px;
@@ -2881,18 +3000,17 @@
     padding: 18px 16px 10px;
   }
 
-  .work-center-action-detail-stats,
-  .work-center-action-tabs {
+  .work-center-action-conversation-heading {
     padding-right: 16px;
     padding-left: 16px;
   }
 
   .work-center-action-detail-scroll {
-    padding: 8px 16px 18px;
+    padding: 0 16px 18px;
   }
 
   .work-center-action-message.role-user {
-    margin-left: 24px;
+    margin-left: 0;
   }
 
   .work-center-request-summary {

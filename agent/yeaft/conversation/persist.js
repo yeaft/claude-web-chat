@@ -69,6 +69,27 @@ const SEGMENT_DIR = 'segments';
 const SEGMENT_TARGET_BYTES = 1024 * 1024;
 const SEGMENT_FIRST_NAME = '000001.jsonl';
 
+function latestTodoWriteSnapshot(toolCalls) {
+  if (!Array.isArray(toolCalls)) return null;
+  for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
+    const call = toolCalls[index];
+    if (call?.name === 'TodoWrite' && Array.isArray(call?.input?.todos)) return call.input.todos;
+  }
+  return null;
+}
+
+function projectAssistantToolsForVisibleHistory(message) {
+  const { toolCalls, ...rest } = message;
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) return rest;
+  const todos = latestTodoWriteSnapshot(toolCalls);
+  const toolSummaryCount = toolCalls.filter(call => call?.name !== 'TodoWrite').length;
+  return {
+    ...rest,
+    ...(todos ? { todos } : {}),
+    ...(toolSummaryCount > 0 ? { toolSummaryCount } : {}),
+  };
+}
+
 function emptySegmentIndex() {
   return {
     version: 1,
@@ -320,7 +341,7 @@ export function projectVisibleSessionMessages(messages) {
     if (!isVisibleConversationRow(row)) continue;
     if (row.role !== 'assistant' || !Array.isArray(row.toolCalls) || row.toolCalls.length === 0) {
       if (row.role === 'assistant' && !row.content && !row.attachments && !row.images
-          && !row.toolSummaryCount && !row.askUserResults) continue;
+          && !row.todos && !row.toolSummaryCount && !row.askUserResults) continue;
       visible.push(row);
       continue;
     }
@@ -328,19 +349,22 @@ export function projectVisibleSessionMessages(messages) {
     const askUserResults = [];
     let omittedToolCount = 0;
     for (const toolCall of row.toolCalls) {
+      if (toolCall?.name === 'TodoWrite') continue;
       const identity = askUserToolIdentity(row, toolCall?.id);
       const result = parseAskUserResult(toolCall, identity ? toolResults.get(identity) : null);
       if (result) askUserResults.push(result);
       else omittedToolCount += 1;
     }
     const { toolCalls, ...rest } = row;
+    const todos = latestTodoWriteSnapshot(toolCalls);
     const projected = {
       ...rest,
+      ...(todos ? { todos } : {}),
       ...(omittedToolCount > 0 ? { toolSummaryCount: omittedToolCount } : {}),
       ...(askUserResults.length > 0 ? { askUserResults } : {}),
     };
     if (!projected.content && !projected.attachments && !projected.images
-        && !projected.toolSummaryCount && !projected.askUserResults) continue;
+        && !projected.todos && !projected.toolSummaryCount && !projected.askUserResults) continue;
     visible.push(projected);
   }
   return visible;
@@ -394,6 +418,12 @@ function serializeMessage(msg) {
   // the speaker so the UI can render the message on the correct VP track.
   // For real user messages this is unset.
   if (msg.speakerVpId) fm.push(`speakerVpId: ${msg.speakerVpId}`);
+  if (msg.quote && typeof msg.quote === 'object') {
+    try {
+      const b64 = Buffer.from(JSON.stringify(msg.quote)).toString('base64');
+      fm.push(`quoteB64: ${b64}`);
+    } catch { /* best-effort: quote metadata is not engine-critical */ }
+  }
   if (Array.isArray(msg.attachments) && msg.attachments.length > 0) {
     try {
       const b64 = Buffer.from(JSON.stringify(msg.attachments)).toString('base64');
@@ -522,6 +552,12 @@ export function parseMessage(raw) {
       case 'incomplete': msg.incomplete = value === 'true'; break;
       case 'stopReason': msg.stopReason = value; break;
       case 'speakerVpId': msg.speakerVpId = value; break;
+      case 'quoteB64':
+        try {
+          const parsed = JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
+          if (parsed && typeof parsed === 'object') msg.quote = parsed;
+        } catch { /* best-effort: ignore malformed quote metadata */ }
+        break;
       case 'attachmentsB64':
         try {
           const parsed = JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
@@ -2471,10 +2507,9 @@ export class ConversationStore {
     const project = (m) => {
       if (roles && !roles.has(m.role)) return null;
       if (stripAssistantToolCalls && m.role === 'assistant') {
-        const { toolCalls, ...rest } = m;
-        if (!rest.content && !rest.attachments && (!Array.isArray(toolCalls) || toolCalls.length === 0)) return null;
-        if (Array.isArray(toolCalls) && toolCalls.length > 0) return { ...rest, toolSummaryCount: toolCalls.length };
-        return rest;
+        const projected = projectAssistantToolsForVisibleHistory(m);
+        if (!projected.content && !projected.attachments && !projected.todos && !projected.toolSummaryCount) return null;
+        return projected;
       }
       return m;
     };
