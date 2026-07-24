@@ -197,6 +197,22 @@ describe('Yeaft web bridge stream text batching', () => {
     ]);
   });
 
+  it('marks tool-result user-role frames as model-only', () => {
+    const hctx = makeHandlerCtx();
+
+    __testHandleEngineEvent({
+      type: 'tool_end', id: 'tool-1', name: 'Bash', output: 'done', displayImages: [],
+    }, hctx);
+
+    expect(sent.find(message => message.data?.tool_use_result)).toMatchObject({
+      data: {
+        type: 'user',
+        userAuthored: false,
+        tool_use_result: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'done' }],
+      },
+    });
+  });
+
   it('queues display image bytes durably before emitting the tool result', () => {
     const hctx = makeHandlerCtx();
     const image = {
