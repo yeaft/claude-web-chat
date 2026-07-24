@@ -169,8 +169,10 @@ export default {
           ref="historySearchRef"
           :outline-state="historyOutlineState"
           :search-state="store.yeaftHistorySearchState"
+          :sender-options="historySenderOptions"
           :active-message-id="historySearchActiveMessageId"
           @query="onHistorySearchQuery"
+          @sender="onHistorySenderChange"
           @move="historySearchActiveMessageId = $event"
           @preview="previewHistorySearchResult"
           @select="selectHistorySearchResult"
@@ -445,6 +447,17 @@ export default {
     const historySearchOpen = Vue.ref(false);
     const historySearchActiveMessageId = Vue.ref(null);
     const historyOutlineState = Vue.computed(() => store.getYeaftHistoryOutlineState());
+    const historySenderOptions = Vue.computed(() => {
+      const gs = sessionsStore();
+      const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
+      const session = sessionId ? resolveTimelineSession(gs, sessionId, store.currentAgent || null) : null;
+      const roster = Array.isArray(session?.roster) ? session.roster : [];
+      return [
+        { key: 'user', label: $t('yeaft.outline.you') },
+        ...roster.map(vpId => ({ key: `vp:${vpId}`, label: vpStore.vpLabel(vpId) })),
+      ];
+    });
+    const historySearchQuery = Vue.ref(store.yeaftHistorySearchState?.query || '');
     let historySearchTimer = null;
     const sessionsStore = () => {
       try {
@@ -684,7 +697,8 @@ export default {
         clearTimeout(historySearchTimer);
         historySearchTimer = null;
       }
-      store.searchYeaftHistory('');
+      historySearchQuery.value = '';
+      store.searchYeaftHistory('', { senderKey: '' });
       historySearchOpen.value = false;
       historySearchActiveMessageId.value = null;
     };
@@ -701,9 +715,19 @@ export default {
       if (historySearchOpen.value && shouldDismissHistorySearch(event.target)) closeHistorySearch();
     };
     const onHistorySearchQuery = (query) => {
+      historySearchQuery.value = query;
       if (historySearchTimer) clearTimeout(historySearchTimer);
       historySearchActiveMessageId.value = null;
-      historySearchTimer = setTimeout(() => store.searchYeaftHistory(query), 220);
+      historySearchTimer = setTimeout(() => {
+        historySearchTimer = null;
+        store.searchYeaftHistory(historySearchQuery.value, { senderKey: store.yeaftHistorySearchState.senderKey });
+      }, 220);
+    };
+    const onHistorySenderChange = (senderKey) => {
+      if (historySearchTimer) clearTimeout(historySearchTimer);
+      historySearchTimer = null;
+      historySearchActiveMessageId.value = null;
+      store.searchYeaftHistory(historySearchQuery.value, { senderKey });
     };
     const loadOlderHistoryOutline = (scrollSnapshot) => {
       if (!store.loadYeaftHistoryOutline({ append: true })) return;
@@ -716,7 +740,7 @@ export default {
         },
       );
     };
-    const loadMoreHistorySearchResults = () => store.searchYeaftHistory(store.yeaftHistorySearchState.query, { append: true });
+    const loadMoreHistorySearchResults = () => store.searchYeaftHistory(store.yeaftHistorySearchState.query, { append: true, senderKey: store.yeaftHistorySearchState.senderKey });
     const previewHistorySearchResult = result => {
       // Warm a bounded anchor window while the user points at a result. The
       // store de-duplicates this with the eventual click, so preview never
@@ -792,6 +816,7 @@ export default {
         agentId: null,
         sessionId: null,
         query: '',
+        senderKey: '',
         loading: false,
         results: [],
         hasMore: false,
@@ -1415,9 +1440,11 @@ export default {
       historySearchOpen,
       historySearchActiveMessageId,
       historyOutlineState,
+      historySenderOptions,
       toggleHistorySearch,
       closeHistorySearch,
       onHistorySearchQuery,
+      onHistorySenderChange,
       loadOlderHistoryOutline,
       loadMoreHistorySearchResults,
       previewHistorySearchResult,

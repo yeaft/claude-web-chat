@@ -6,6 +6,10 @@ const read = (path) => readFileSync(new URL(`../../web/${path}`, import.meta.url
 describe('MessageList virtualization wiring', () => {
 
 
+
+
+
+
   it('auto-loads more messages from the virtual scroll near-top event', () => {
     const source = read('components/MessageList.js');
 
@@ -19,5 +23,30 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain('{ allowContinuation: true },');
   });
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it('pauses bottom following before targeted history navigation', () => {
+    const messageList = read('components/MessageList.js');
+    const transcript = read('components/VirtualTranscript.js');
+
+    expect(messageList).toContain('const pauseAutoFollow = () => {');
+    expect(messageList).toContain('virtualTranscriptRef.value?.cancelPendingBottomFollow?.();');
+    expect(messageList).toContain('const revealMessage = async (messageId) => {\n      if (!messageId) return false;\n      pauseAutoFollow();');
+    expect(messageList).not.toContain('scrollToBlock: (blockId) => {\n          resumeAutoFollow();');
+    expect(transcript).toContain('function cancelPendingBottomFollow() {');
+    expect(transcript).toContain('pendingScrollToBottom = false;');
+    expect(transcript).toContain('expose({ scrollToKey, scrollToIndex, cancelPendingBottomFollow });');
+  });
 
 });

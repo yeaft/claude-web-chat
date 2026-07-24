@@ -6611,6 +6611,9 @@ export async function handleYeaftLoadHistoryOutline(msg) {
 export async function handleYeaftSearchHistory(msg) {
   const sessionId = typeof msg?.sessionId === 'string' ? msg.sessionId.trim() : '';
   const query = typeof msg?.query === 'string' ? msg.query.trim().slice(0, 500) : '';
+  const senderKey = typeof msg?.senderKey === 'string' && (msg.senderKey === 'user' || msg.senderKey.startsWith('vp:'))
+    ? msg.senderKey.slice(0, 103)
+    : '';
   const requestId = typeof msg?.requestId === 'string' ? msg.requestId : null;
   const beforeSeq = Number.isFinite(msg?.beforeSeq) ? msg.beforeSeq : null;
   const limit = Math.min(50, Math.max(1, Number.isFinite(msg?.limit) ? Math.floor(msg.limit) : 20));
@@ -6619,13 +6622,14 @@ export async function handleYeaftSearchHistory(msg) {
     requestId,
     sessionId: sessionId || null,
     query,
+    senderKey,
     results: [],
     hasMore: false,
     nextBeforeSeq: null,
     _requestClientId: msg?._requestClientId || null,
   };
 
-  if (!sessionId || query.length < 2) {
+  if (!sessionId || (query.length < 2 && !senderKey)) {
     sendToServer(response);
     return;
   }
@@ -6634,7 +6638,7 @@ export async function handleYeaftSearchHistory(msg) {
     const defaultYeaftDir = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
     const storeDir = resolveSessionYeaftDir(defaultYeaftDir, sessionId);
     const store = new ConversationStore(storeDir);
-    const result = store.searchVisibleBySession(sessionId, query, { limit, beforeSeq });
+    const result = store.searchVisibleBySession(sessionId, query, { limit, beforeSeq, senderKey });
     sendToServer({ ...response, ...result });
   } catch (err) {
     console.error('[Yeaft] Session history search failed:', err?.message || err);

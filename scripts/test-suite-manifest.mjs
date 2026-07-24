@@ -27,10 +27,12 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/server/upload-routes.test.js',
   'test/server/user-routes-agent-secret.test.js',
   'test/server/ws-plaintext-negotiation.test.js',
+  'test/server/yeaft-history-search-relay.test.js',
   'test/server/yeaft-asset-store.test.js',
   'test/server/yeaft-session-online-filter.test.js',
   'test/web/auth-bootstrap.test.js',
   'test/web/auth-fetch.test.js',
+  'test/web/history-sender-filter.test.js',
   'test/web/message-flow-regression.test.js',
   'test/web/message-virtualization-source.test.js',
   'test/web/session-message-quote-ui.test.js',
@@ -40,9 +42,11 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/web/stores/session-cookie-auth.test.js',
   'test/web/stores/websocket-auth-token-race.test.js',
   'test/web/stores/yeaft-history-outline-state.test.js',
+  'test/web/virtual-transcript-dom.test.js',
   'test/web/virtual-transcript.test.js',
   'test/web/yeaft-history-reveal-dom.test.js',
   'test/web/yeaft-history-search-ui.test.js',
+  'test/web/yeaft-page-setup.test.js',
 ]);
 
 export function normalizeTestPath(filePath) {

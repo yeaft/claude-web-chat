@@ -289,6 +289,8 @@ export default {
   'yeaft.historySearch.you': '你',
   'yeaft.historySearch.assistant': '助手',
   'yeaft.outline.label': '历史消息',
+  'yeaft.outline.sender': '发送者',
+  'yeaft.outline.allSenders': '全部发送者',
   'yeaft.outline.title': '历史消息',
   'yeaft.outline.placeholder': '搜索当前对话',
   'yeaft.outline.searching': '正在搜索…',
