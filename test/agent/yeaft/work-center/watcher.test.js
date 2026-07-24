@@ -22,7 +22,7 @@ describe('WorkItemWatcher', () => {
     const store = {
       claimReadyAction: vi.fn(() => claims.shift() || null),
       renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
-      isActiveRun: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
+      isActiveRun: vi.fn(() => true), closeRunInput: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
     };
     const controller = { submit: vi.fn(({ id } = {}) => ({ id, status: 'done' })) };
     const runner = { run: vi.fn((claim) => gates[Number(claim.run.id.slice(1)) - 1].promise) };
@@ -55,7 +55,7 @@ describe('WorkItemWatcher', () => {
       recoverInterruptedRuns: vi.fn(() => 0),
       claimReadyAction: vi.fn().mockReturnValueOnce(claim).mockReturnValue(null),
       renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
-      isActiveRun: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
+      isActiveRun: vi.fn(() => true), closeRunInput: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
     };
     const watcher = new WorkItemWatcher({ store, controller: { submit: vi.fn() }, runner, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000 });
     await watcher.tick();
@@ -71,12 +71,42 @@ describe('WorkItemWatcher', () => {
     const store = {
       recoverInterruptedRuns: vi.fn(() => 0),
       claimReadyAction: vi.fn().mockReturnValueOnce(claim).mockReturnValue(null),
-      renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true), isActiveRun: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
+      renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true), isActiveRun: vi.fn(() => true), closeRunInput: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
     };
     const controller = { submit: vi.fn(() => ({ id: 'w1' })) };
     const watcher = new WorkItemWatcher({ store, controller, runner: { run: vi.fn().mockRejectedValue(new Error('boom')), cleanup }, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000 });
     await watcher.tick();
     await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
+  });
+
+  it('defers resource-busy preparation without submitting retryable or hot-looping', async () => {
+    const claim = {
+      workItem: { id: 'w1' }, action: { id: 'a1', attempt: 1 },
+      run: { id: 'r1', leaseEpoch: 3 },
+    };
+    const error = new Error('workspace busy');
+    error.workItemPrepareDeferred = true;
+    const detail = { id: 'w1', status: 'ready' };
+    const store = {
+      recoverInterruptedRuns: vi.fn(() => 0),
+      claimReadyAction: vi.fn().mockReturnValue(claim),
+      deferRun: vi.fn(() => detail),
+      getWorkItemDetail: vi.fn(() => detail),
+    };
+    const controller = { submit: vi.fn() };
+    const runner = { prepare: vi.fn().mockRejectedValue(error), cleanup: vi.fn(), run: vi.fn() };
+    const onEvent = vi.fn();
+    const watcher = new WorkItemWatcher({
+      store, controller, runner, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000, onEvent,
+    });
+
+    await watcher.tick();
+
+    expect(store.claimReadyAction).toHaveBeenCalledTimes(1);
+    expect(store.deferRun).toHaveBeenCalledWith('r1', 'boot', 3, 'workspace busy');
+    expect(controller.submit).not.toHaveBeenCalled();
+    expect(runner.run).not.toHaveBeenCalled();
+    expect(onEvent).toHaveBeenCalledWith({ type: 'run.deferred', workItem: detail });
   });
 
   it('submits retryable when integration preparation retains recoverable ownership', async () => {
@@ -113,6 +143,35 @@ describe('WorkItemWatcher', () => {
     expect(runner.run).not.toHaveBeenCalled();
   });
 
+  it('wakes the running Action loop when new input is appended', async () => {
+    const claim = {
+      workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 3 },
+    };
+    const wake = vi.fn();
+    let resolveRun;
+    const runner = {
+      run: vi.fn(options => new Promise(resolve => {
+        resolveRun = resolve;
+        options.registerInputWake(wake);
+      })),
+    };
+    const store = {
+      claimReadyAction: vi.fn().mockReturnValueOnce(claim).mockReturnValue(null),
+      renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
+      isActiveRun: vi.fn(() => true), closeRunInput: vi.fn(() => true), getWorkItemDetail: vi.fn(() => ({ id: 'w1' })),
+    };
+    const watcher = new WorkItemWatcher({
+      store, controller: { submit: vi.fn(() => ({ id: 'w1' })) }, runner,
+      ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+    });
+
+    await watcher.tick();
+    watcher.notifyActionInput('w1', 'a1');
+    expect(wake).toHaveBeenCalledTimes(1);
+    resolveRun({ outcome: 'completed', response: 'Done', summary: 'Done', evidence: [] });
+    await watcher.activeRuns.get('r1').promise;
+  });
+
   it('persists and emits fenced live response progress', async () => {
     const claim = {
       workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 3 },
@@ -138,7 +197,7 @@ describe('WorkItemWatcher', () => {
     const store = {
       claimReadyAction: vi.fn().mockReturnValueOnce(claim).mockReturnValue(null),
       renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
-      isActiveRun: vi.fn(() => true), getWorkItemDetail: vi.fn(() => detail), updateRunProgress,
+      isActiveRun: vi.fn(() => true), closeRunInput: vi.fn(() => true), getWorkItemDetail: vi.fn(() => detail), updateRunProgress,
     };
     const watcher = new WorkItemWatcher({
       store, controller: { submit: vi.fn(() => detail) }, runner, onEvent,
@@ -170,7 +229,7 @@ describe('WorkItemWatcher', () => {
       recoverInterruptedRuns: vi.fn(() => 0),
       claimReadyAction: vi.fn(() => claims.shift() || null),
       renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
-      isActiveRun: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
+      isActiveRun: vi.fn(() => true), closeRunInput: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
     };
     const runner = { run: vi.fn(({ signal }) => new Promise(resolve => {
       signal.addEventListener('abort', () => {
@@ -200,7 +259,7 @@ describe('WorkItemWatcher', () => {
       recoverInterruptedRuns: vi.fn(() => 0),
       claimReadyAction: vi.fn().mockReturnValueOnce(claim).mockReturnValue(null),
       renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
-      isActiveRun: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
+      isActiveRun: vi.fn(() => true), closeRunInput: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
     };
     const runner = {
       prepare: vi.fn(() => prepareGate.promise), cleanup, run: vi.fn(),
@@ -234,7 +293,7 @@ describe('WorkItemWatcher', () => {
     const store = {
       recoverInterruptedRuns: vi.fn(() => 0), claimReadyAction: vi.fn(() => claims.shift() || null),
       renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
-      isActiveRun: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
+      isActiveRun: vi.fn(() => true), closeRunInput: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
     };
     const runner = {
       prepare: vi.fn(claim => claim.run.id === 'r2' ? prepareGate.promise : claim),
@@ -484,7 +543,7 @@ describe('WorkItemWatcher', () => {
       }),
       claimReadyAction: vi.fn().mockReturnValueOnce(claim).mockReturnValue(null),
       renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
-      isActiveRun: vi.fn(() => active), getWorkItemDetail: vi.fn(id => ({ id })),
+      isActiveRun: vi.fn(() => active), closeRunInput: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
     };
     const cleanup = vi.fn();
     const runner = { cleanup, run: vi.fn(({ signal }) => new Promise(resolve => {

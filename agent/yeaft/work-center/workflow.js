@@ -62,6 +62,13 @@ function defaultActionBrief(type) {
   return { objective, approach, expectedOutcome };
 }
 
+function hasCompleteActionBrief(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && ['objective', 'approach', 'expectedOutcome'].every(key => (
+      typeof value[key] === 'string' && value[key].trim()
+    ));
+}
+
 export function normalizeActionBrief(value, type) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const defaults = defaultActionBrief(type);
@@ -71,6 +78,13 @@ export function normalizeActionBrief(value, type) {
       ? source[key].trim().slice(0, 2_000)
       : defaults[key],
   ]));
+}
+
+export function taskSpecificActionBrief(value, type) {
+  if (!hasCompleteActionBrief(value)) return null;
+  const brief = normalizeActionBrief(value, type);
+  const defaults = defaultActionBrief(type);
+  return Object.keys(defaults).every(key => brief[key] !== defaults[key]) ? brief : null;
 }
 
 const DEFAULT_SOFTWARE_CHANGE_STAGES = Object.freeze([
@@ -353,18 +367,13 @@ export function resolvePlanningWorkflowSnapshot(settings, requestedWorkItemType 
     ...workflow,
     workItemType: workflow.workItemType || workflow.id,
   }));
-  const matchingTemplate = requestedType
-    ? actionTemplates.find(template => template.workItemType === requestedType)
-    : null;
-  if (matchingTemplate) return matchingTemplate;
-
   const catalog = actionTemplates
     .map(template => `${template.workItemType}: ${template.name} (${template.stages.map(stage => stage.type).join(' -> ')})`)
     .join('\n');
   const typeInstruction = requestedType
     ? `The user explicitly selected workItemType "${requestedType}". Keep that exact type.`
     : 'Infer one specific workItemType from the contract.';
-  const triageInstruction = `${normalized.actionInstructions.triage}\n\n${typeInstruction}\nReusable Action templates:\n${catalog || '(none)'}\nIf the final type matches a reusable template, return its workItemType and omit actions so Work Center can apply that frozen template. Otherwise generate the smallest reliable graph of 1 to 8 Actions. Split independent work into separate Actions and declare dependsOnActionIds. Use workspaceMode read for analysis, isolated-write for independent Git changes, integrate for an integrate Action that combines isolated-write dependencies, and shared for serial side effects. Non-Git or dirty workspaces are serialized automatically. Every generated Action must state objective, approach, expectedOutcome, capability, dependencies, and workspaceMode. The objective, approach, and expectedOutcome must be specific to this WorkItem and that Action: describe the concrete work, the repository-aware execution method, and the verifiable result that will guide the executor. Generic Action-type boilerplate is invalid. Add only Actions required by this task. Do not copy a generic workflow.`;
+  const triageInstruction = `${normalized.actionInstructions.triage}\n\n${typeInstruction}\nReference workflow catalog:\n${catalog || '(none)'}\nUse the catalog only to understand established task categories and sequencing patterns. Always submit the smallest reliable graph of 1 to 8 task-specific Actions; never omit Actions or copy template brief text. The scheduler can run up to ${normalized.maxConcurrentActions} Actions concurrently. Before submitting, compare each pair of Actions and add a dependency only when one consumes a concrete result or side effect of the other; ordering by narrative, phase name, or list position is not a dependency. Split independent analysis, verification, and repository changes into sibling Actions so the scheduler can use that concurrency. Use workspaceMode read only for Actions guaranteed not to mutate files, Git state, services, or external systems; use isolated-write for independent Git changes, integrate for an integrate Action that combines isolated-write dependencies, and shared for serial side effects. If any Action uses isolated-write, add exactly one Action with type integrate and workspaceMode integrate; it must depend directly on every isolated-write Action, and all later Actions must depend on the integration result rather than an isolated-write Action. Non-Git or dirty workspaces are serialized automatically; do not fake parallelism by marking a mutating Action as read. Every generated Action must state objective, approach, expectedOutcome, capability, dependencies, and workspaceMode. The objective, approach, and expectedOutcome must be specific to this WorkItem and that Action: describe the concrete work, the repository-aware execution method, and the verifiable result that will guide the executor. Generic Action-type boilerplate is invalid. Add only Actions required by this task. Do not copy a generic workflow.`;
   return normalizeWorkflowDefinition({
     id: 'ai-planned',
     name: 'AI planned',
@@ -434,25 +443,8 @@ export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
   }
   const reservedStageIds = new Set((options.reservedStageIds || [])
     .map(id => String(id || '').trim()).filter(Boolean));
-  const reusableTemplate = source.actionTemplates.find(template => template.workItemType === workItemType);
-  if (reusableTemplate) {
-    const templateActions = reusableTemplate.stages.filter(stage => stage.type !== 'triage');
-    if (templateActions.length === 0) {
-      throw new Error(`Reusable Action template "${workItemType}" has no executable Actions`);
-    }
-    const reusedStageId = templateActions.find(stage => reservedStageIds.has(stage.id))?.id;
-    if (reusedStageId) {
-      throw new Error(`AI-planned Action id reuses historical stage identity: ${reusedStageId}`);
-    }
-    return normalizeWorkflowDefinition({
-      ...source,
-      workItemType,
-      actionTemplates: [],
-      stages: [source.stages[0], ...templateActions],
-    });
-  }
   if (!Array.isArray(rawPlan.actions) || rawPlan.actions.length < 1 || rawPlan.actions.length > 8) {
-    throw new Error('AI-planned triage requires between 1 and 8 Actions when no reusable template exists');
+    throw new Error('AI-planned triage requires between 1 and 8 task-specific Actions');
   }
   const availableVpIds = Array.isArray(options.availableVpIds)
     ? new Set(options.availableVpIds.map(id => String(id || '').trim()).filter(Boolean))
@@ -683,7 +675,10 @@ function renderContext(context = []) {
 
 export function actionInstruction(stage, workItem, context = [], sessionContextBlock = renderSessionContextSnapshot(workItem?.sessionContext)) {
   const criteria = (workItem.acceptanceCriteria || []).map(item => `- ${item}`).join('\n') || '- No explicit criteria';
-  const common = `WorkItem: ${workItem.title}\nGoal: ${workItem.goal}\nAcceptance criteria:\n${criteria}${sessionContextBlock}${renderContext(context)}`;
+  const workItemMessages = Array.isArray(workItem.messages) && workItem.messages.length > 0
+    ? `\n\nWorkItem-level user messages (apply to every unfinished Action):\n${workItem.messages.map(message => `- ${message.text}`).join('\n')}`
+    : '';
+  const common = `WorkItem: ${workItem.title}\nGoal: ${workItem.goal}\nAcceptance criteria:\n${criteria}${sessionContextBlock}${workItemMessages}${renderContext(context)}`;
   const policy = stage.instruction || defaultWorkCenterStageInstruction(stage.type);
   const brief = normalizeActionBrief(stage.brief || stage, stage.type);
   const contract = `Action type: ${stage.type}\nWhat to do:\n${brief.objective}\n\nHow to do it:\n${brief.approach}\n\nExpected result:\n${brief.expectedOutcome}`;

@@ -58,11 +58,19 @@ export async function loadNodePty() {
   }
 }
 
+function terminalRoutingFields(source) {
+  return {
+    ...(source?._requestUserId ? { _requestUserId: source._requestUserId } : {}),
+    ...(source?._requestClientId ? { _requestClientId: source._requestClientId } : {}),
+  };
+}
+
 export async function handleTerminalCreate(msg) {
   const { conversationId, cols, rows } = msg;
   const terminalId = msg.terminalId || conversationId;
   const conv = ctx.conversations.get(conversationId);
   const workDir = conv?.workDir || ctx.CONFIG.workDir;
+  const routingFields = terminalRoutingFields(msg);
 
   // 如果已存在终端，先关闭
   if (ctx.terminals.has(terminalId)) {
@@ -80,7 +88,8 @@ export async function handleTerminalCreate(msg) {
       type: 'terminal_error',
       conversationId,
       terminalId,
-      message: 'Terminal backend is not installed. Run: npm install'
+      message: 'Terminal backend is not installed. Run: npm install',
+      ...routingFields,
     });
     return;
   }
@@ -123,7 +132,8 @@ export async function handleTerminalCreate(msg) {
             type: 'terminal_output',
             conversationId,
             terminalId,
-            data: buffer
+            data: buffer,
+            ...routingFields,
           });
           buffer = '';
           timer = null;
@@ -138,7 +148,8 @@ export async function handleTerminalCreate(msg) {
           type: 'terminal_output',
           conversationId,
           terminalId,
-          data: buffer
+          data: buffer,
+          ...routingFields,
         });
         buffer = '';
       }
@@ -149,7 +160,8 @@ export async function handleTerminalCreate(msg) {
       ctx.sendToServer({
         type: 'terminal_closed',
         conversationId,
-        terminalId
+        terminalId,
+        ...routingFields,
       });
     });
 
@@ -159,7 +171,8 @@ export async function handleTerminalCreate(msg) {
       cols: cols || 80,
       rows: rows || 24,
       buffer: '',
-      timer: null
+      timer: null,
+      ...routingFields,
     });
 
     console.log(`[PTY] Created terminal ${terminalId} for ${conversationId} in ${workDir}`);
@@ -167,7 +180,8 @@ export async function handleTerminalCreate(msg) {
       type: 'terminal_created',
       conversationId,
       terminalId,
-      success: true
+      success: true,
+      ...routingFields,
     });
   } catch (e) {
     console.error(`[PTY] Failed to create terminal:`, e.message);
@@ -175,7 +189,8 @@ export async function handleTerminalCreate(msg) {
       type: 'terminal_error',
       conversationId,
       terminalId,
-      message: `Failed to create terminal: ${e.message}`
+      message: `Failed to create terminal: ${e.message}`,
+      ...routingFields,
     });
   }
 }
@@ -220,7 +235,8 @@ export function handleTerminalClose(msg) {
     ctx.sendToServer({
       type: 'terminal_closed',
       conversationId: term.conversationId || msg.conversationId,
-      terminalId
+      terminalId,
+      ...terminalRoutingFields(term),
     });
   }
 }

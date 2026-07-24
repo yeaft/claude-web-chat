@@ -4,7 +4,7 @@
  */
 
 import { platform, homedir } from 'os';
-import { join, dirname } from 'path';
+import { join, win32 } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { execSync } from 'child_process';
 
@@ -153,41 +153,47 @@ export function isWindows() {
 }
 
 /**
+ * Resolve a Windows npm .cmd shim to the real Claude entrypoint.
+ *
+ * Earlier Claude Code releases exposed a JavaScript CLI. Current releases expose
+ * a native `bin/claude.exe`. Calling the generated PowerShell shim is unsafe for
+ * our long-lived stream-json stdin: the shim pipes `$input` and waits for EOF
+ * before starting Claude, so the first user message never reaches the CLI.
+ */
+export function resolveWindowsClaudeCommand(execPath, {
+  readFile = path => readFileSync(path, 'utf-8'),
+  fileExists = existsSync,
+  nodeExecutable = process.execPath,
+} = {}) {
+  let cmdContent;
+  try {
+    cmdContent = readFile(execPath);
+  } catch (error) {
+    throw new Error(`Failed to read Claude Code command shim at ${execPath}: ${error.message}`);
+  }
+
+  const targetPaths = [...cmdContent.matchAll(/%dp0%\\([^"\r\n]+?\.(?:exe|js))(?=["\s])/gi)]
+    .map(match => win32.resolve(win32.dirname(execPath), match[1]));
+  const targetPath = targetPaths.find(path => path.toLowerCase().endsWith('.js') && fileExists(path))
+    || targetPaths.find(path => win32.basename(path).toLowerCase() === 'claude.exe' && fileExists(path));
+  if (!targetPath) {
+    throw new Error(`Claude Code command shim at ${execPath} could not resolve the executable target`);
+  }
+
+  if (targetPath.toLowerCase().endsWith('.js')) {
+    return { command: nodeExecutable, prefixArgs: [targetPath], spawnOpts: {} };
+  }
+  return { command: targetPath, prefixArgs: [], spawnOpts: {} };
+}
+
+/**
  * Resolve Claude executable into { command, prefixArgs, spawnOpts } for spawn().
- * On Windows (npm install): parses .cmd wrapper to find cli.js, then calls node directly.
- * This avoids cmd.exe flash and PowerShell script execution policy issues.
  */
 export function resolveClaudeCommand() {
   const execPath = getDefaultClaudeCodePath();
 
   if (isWindows() && execPath.toLowerCase().endsWith('.cmd')) {
-    // npm 生成的 .cmd 内容固定格式，核心行是:
-    //   "%_prog%" "%dp0%\node_modules\@anthropic-ai\claude-code\cli.js" %*
-    // 解析出 cli.js 的相对路径，拼成绝对路径后用 node 直接调用
-    try {
-      const cmdContent = readFileSync(execPath, 'utf-8');
-      const match = cmdContent.match(/%dp0%\\(.+?\.js)"/i) ||
-                    cmdContent.match(/%dp0%\\(.+?\.js)/i);
-      if (match) {
-        const cliJsPath = join(dirname(execPath), match[1]);
-        if (existsSync(cliJsPath)) {
-          return {
-            command: process.execPath, // node
-            prefixArgs: [cliJsPath],
-            spawnOpts: {},
-          };
-        }
-      }
-    } catch {}
-    // 解析失败时 fallback: 用 powershell 执行 .ps1
-    const ps1Path = execPath.slice(0, -4) + '.ps1';
-    if (existsSync(ps1Path)) {
-      return {
-        command: 'powershell.exe',
-        prefixArgs: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1Path],
-        spawnOpts: {},
-      };
-    }
+    return resolveWindowsClaudeCommand(execPath);
   }
 
   return { command: execPath, prefixArgs: [], spawnOpts: {} };

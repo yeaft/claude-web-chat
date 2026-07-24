@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { shouldCloseLlmConfigAfterSave } from '../../web/utils/llm-config-save.js';
 
 const read = (path) => readFileSync(new URL(`../../web/${path}`, import.meta.url), 'utf8');
 
 const pageSource = read('components/YeaftPage.js');
+const llmTabSource = read('components/LlmTab.js');
 const chatStoreSource = read('stores/chat.js');
 const sessionActionsSource = read('components/YeaftSessionActions.js');
 const debugSource = read('components/YeaftDebugPanel.js');
@@ -17,6 +19,12 @@ const enI18n = read('i18n/en.js');
 const zhI18n = read('i18n/zh-CN.js');
 
 describe('Yeaft UI action polish', () => {
+  it('keeps the LLM modal open when a saved config has a live refresh warning', () => {
+    expect(shouldCloseLlmConfigAfterSave({ warning: 'runtime refresh failed' })).toBe(false);
+    expect(shouldCloseLlmConfigAfterSave({ warning: null })).toBe(true);
+    expect(llmTabSource).toContain("this.$emit('saved', { warning: this.saveRefreshWarning })");
+  });
+
   it('keeps header action icons visually consistent', () => {
     expect(yeaftCss).toContain('.yeaft-topbar-right :where(');
     expect(yeaftCss).toContain('width: 32px;');

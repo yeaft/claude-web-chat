@@ -6,6 +6,7 @@ import {
   mergeWorkItemSummary,
   workItemDetailNeedsRefresh,
 } from '../../../web/stores/helpers/work-center.js';
+import { projectWorkCenterEvent, projectWorkItemSummary } from '../../../agent/yeaft/work-center/projection.js';
 
 describe('Work Center summary state', () => {
   const detail = {
@@ -22,6 +23,16 @@ describe('Work Center summary state', () => {
       response: 'Reading files', progressRevision: 2,
     }],
   };
+
+  it('projects deletion events as minimal tombstones', () => {
+    expect(projectWorkCenterEvent({
+      type: 'work_item.deleted',
+      workItem: { id: 'wi-delete', revision: 9, title: 'must not leak', workDir: '/private' },
+    })).toEqual({
+      type: 'work_item.deleted',
+      workItem: { id: 'wi-delete', revision: 9 },
+    });
+  });
 
   it('merges a redacted summary without dropping loaded detail data', () => {
     const merged = mergeWorkItemSummary(detail, {
@@ -176,6 +187,65 @@ describe('Work Center summary state', () => {
       status: 'needs_attention', currentAction: { status: 'failed' }, failureReason: 'NEW failure',
     });
     expect(merged.actions[0]).toMatchObject({ status: 'failed', failureReason: 'NEW failure', progressRevision: 9 });
+  });
+
+  it('keeps the safe current Action objective after a live event replaces the list summary', () => {
+    const listDetail = {
+      id: 'wi-1', revision: 3, title: 'Verify recovery', goal: 'Keep recovery reliable',
+      status: 'running', currentActionId: 'action-1', actionCount: 1, completedActionCount: 0,
+      currentAction: {
+        id: 'action-1', type: 'test', stageId: 'verify', status: 'running',
+        brief: {
+          objective: 'Verify login recovery',
+          approach: 'Read private execution context',
+          expectedOutcome: 'Do not expose this result',
+        },
+      },
+      createdAt: 10, updatedAt: 30,
+    };
+    const eventDetail = {
+      ...listDetail,
+      updatedAt: 31,
+      actions: [{
+        ...listDetail.currentAction,
+        assignmentPolicy: { mode: 'auto', capability: 'test' },
+        context: [{ kind: 'private', value: 'secret context' }],
+      }],
+      runs: [],
+      events: [],
+    };
+
+    const initial = projectWorkItemSummary(listDetail);
+    const eventSummary = projectWorkCenterEvent({ type: 'run.progress', workItem: eventDetail }).workItem;
+    const updated = applyWorkItemSummary([initial], eventSummary)[0];
+
+    expect(updated.currentAction).toEqual({
+      id: 'action-1', type: 'test', stageId: 'verify', assignmentMode: 'auto',
+      status: 'running', objective: 'Verify login recovery',
+    });
+    expect(JSON.stringify(updated.currentAction)).not.toContain('private execution context');
+    expect(JSON.stringify(updated.currentAction)).not.toContain('Do not expose this result');
+    expect(JSON.stringify(eventSummary)).not.toContain('secret context');
+  });
+
+  it('preserves backend Board fields through a live event summary merge', () => {
+    const current = {
+      id: 'wi-1', revision: 3, updatedAt: 30, boardLane: 'active',
+      actionCounts: { completed: 0, running: 1, ready: 0, waiting: 0, failed: 0 },
+      activeAction: { id: 'action-1', status: 'running' }, executors: [{ id: 'linus', name: 'Linus' }],
+    };
+    const event = {
+      ...current, revision: 4, updatedAt: 31, boardLane: 'needs_attention',
+      actionCounts: { completed: 0, running: 1, ready: 0, waiting: 0, failed: 1 },
+      attentionAction: { id: 'action-2', status: 'failed' },
+    };
+
+    expect(applyWorkItemSummary([current], event)[0]).toMatchObject({
+      boardLane: 'needs_attention',
+      attentionAction: { id: 'action-2', status: 'failed' },
+      executors: [{ id: 'linus', name: 'Linus' }],
+    });
+    expect(applyWorkItemSummary([event], current)[0].boardLane).toBe('needs_attention');
   });
 
   it('does not let an out-of-order list event roll aggregate usage backwards', () => {

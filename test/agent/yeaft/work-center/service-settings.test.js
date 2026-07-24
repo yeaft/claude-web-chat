@@ -58,6 +58,77 @@ describe('Work Center settings service', () => {
     });
   });
 
+  it('returns stable cursor pages without duplicates when timestamps tie', async () => {
+    const service = await createService();
+    for (const id of ['wi-a', 'wi-b', 'wi-c']) {
+      service.controller.create({
+        id, title: id, goal: `Goal for ${id}`, acceptanceCriteria: [],
+        workflowTemplate: 'software-change', workDir: '/tmp', start: false,
+      });
+    }
+    service.store.db.prepare('UPDATE work_items SET updated_at = 5000').run();
+
+    const first = await service.handle('list', { limit: 2 });
+    const second = await service.handle('list', { limit: 2, cursor: first.nextCursor });
+    expect(first.items.map(item => item.id)).toEqual(['wi-c', 'wi-b']);
+    expect(second.items.map(item => item.id)).toEqual(['wi-a']);
+    expect(second.nextCursor).toBeNull();
+    expect(new Set([...first.items, ...second.items].map(item => item.id)).size).toBe(3);
+  });
+
+  it('filters the cursor-paginated board by updated time', async () => {
+    const service = await createService();
+    for (const id of ['wi-old', 'wi-recent']) {
+      service.controller.create({
+        id, title: id, goal: `Goal for ${id}`, acceptanceCriteria: [],
+        workflowTemplate: 'software-change', workDir: '/tmp', start: false,
+      });
+    }
+    service.store.db.prepare('UPDATE work_items SET updated_at = ? WHERE id = ?').run(1_000, 'wi-old');
+    service.store.db.prepare('UPDATE work_items SET updated_at = ? WHERE id = ?').run(9_000, 'wi-recent');
+
+    const page = await service.handle('list', { updatedFrom: 5_000, limit: 10 });
+
+    expect(page.items.map(item => item.id)).toEqual(['wi-recent']);
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it('deletes stopped WorkItems and their persisted attachment directory', async () => {
+    const service = await createService();
+    const detail = await service.handle('create', {
+      title: 'Delete stopped item', goal: 'Remove stored execution data', workDir: '/tmp', start: false,
+      files: [{
+        name: 'evidence.txt', mimeType: 'text/plain', data: Buffer.from('evidence').toString('base64'),
+      }],
+    });
+    const itemDirectory = join(service.attachmentRoot, detail.id);
+    expect(existsSync(itemDirectory)).toBe(true);
+
+    const result = await service.handle('delete', { id: detail.id, revision: detail.revision });
+
+    expect(result).toEqual({ id: detail.id, deleted: true, cleanupWarning: null });
+    expect(service.store.getWorkItem(detail.id)).toBeNull();
+    expect(service.store.db.prepare('SELECT COUNT(*) AS count FROM actions WHERE work_item_id = ?').get(detail.id).count).toBe(0);
+    expect(existsSync(itemDirectory)).toBe(false);
+  });
+
+  it('rejects stale and running WorkItem deletion without side effects', async () => {
+    const service = await createService();
+    const draft = await service.handle('create', {
+      title: 'Keep draft', goal: 'Reject stale delete', workDir: '/tmp', start: false,
+    });
+    await expect(service.handle('delete', { id: draft.id, revision: draft.revision - 1 }))
+      .rejects.toThrow(/changed before deletion/);
+    expect(service.store.getWorkItem(draft.id)).not.toBeNull();
+
+    const running = await service.handle('create', {
+      title: 'Keep running', goal: 'Reject active delete', workDir: '/tmp', start: true,
+    });
+    await expect(service.handle('delete', { id: running.id, revision: running.revision }))
+      .rejects.toThrow(/Stop this WorkItem/);
+    expect(service.store.getWorkItem(running.id)).not.toBeNull();
+  });
+
   it('persists WorkItem attachments with the item and returns only safe browser metadata', async () => {
     const service = await createService();
     const detail = await service.handle('create', {
@@ -104,6 +175,29 @@ describe('Work Center settings service', () => {
     expect(preview).toMatchObject({
       attachment: { name: 'screen.png', isImage: true },
       previewData: { data: Buffer.from('image bytes').toString('base64'), mimeType: 'image/png' },
+    });
+  });
+
+  it('reserves retry_action for failed Actions instead of bypassing waiting input requirements', async () => {
+    const service = await createService();
+    const created = await service.handle('create', {
+      title: 'Wait for input', goal: 'Require a user choice', workDir: '/tmp', start: true,
+    });
+    const claim = service.store.claimReadyAction('boot-a', 5_000);
+    service.controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, {
+      outcome: 'waiting', response: 'Need a choice', summary: 'Waiting', evidence: [],
+      waitingReason: 'Choose A or B', acceptanceChecks: [],
+    });
+    const waiting = service.store.getWorkItemDetail(created.id);
+
+    await expect(service.handle('retry_action', {
+      id: created.id,
+      actionId: waiting.currentActionId,
+      generation: waiting.actions.find(action => action.id === waiting.currentActionId).generation,
+      revision: waiting.revision,
+    })).rejects.toThrow(/Action changed/);
+    expect(service.store.getWorkItemDetail(created.id)).toMatchObject({
+      status: 'waiting', currentActionId: waiting.currentActionId, revision: waiting.revision,
     });
   });
 
@@ -277,6 +371,28 @@ describe('Work Center settings service', () => {
     await expect(service.handle('get_action_request', {
       id: item.id, actionId: 'missing', runId: claim.run.id, requestId: 'request-1',
     })).rejects.toThrow(/Action not found/);
+
+    service.store.db.prepare("UPDATE actions SET generation = 2, spec_hash = 'current-v2' WHERE id = ?")
+      .run(claim.action.id);
+    const historicalIndex = await service.handle('get_action_requests', {
+      id: item.id, actionId: claim.action.id,
+    });
+    expect(historicalIndex).toMatchObject({
+      generation: 2,
+      requests: [expect.objectContaining({ runId: claim.run.id, generation: 1 })],
+    });
+    await expect(service.handle('get_action_request', {
+      id: item.id, actionId: claim.action.id, runId: claim.run.id, requestId: 'request-1',
+    })).resolves.toMatchObject({ request: { runId: claim.run.id } });
+
+    service.store.db.prepare("UPDATE runs SET action_generation = 2, action_spec_hash = 'wrong-v2' WHERE id = ?")
+      .run(claim.run.id);
+    await expect(service.handle('get_action_requests', {
+      id: item.id, actionId: claim.action.id,
+    })).resolves.toMatchObject({ generation: 2, requests: [] });
+    await expect(service.handle('get_action_request', {
+      id: item.id, actionId: claim.action.id, runId: claim.run.id, requestId: 'request-1',
+    })).rejects.toThrow(/Action request detail is no longer available/);
   });
 
   it('keeps the real get operation internal so the bridge projects it exactly once', async () => {
@@ -320,19 +436,18 @@ describe('Work Center settings service', () => {
     expect(JSON.stringify(item.workflowSnapshot)).not.toContain('caller/model');
   });
 
-  it('uses an explicit reusable Work Item type without running LLM triage', async () => {
+  it('uses an explicit Work Item type as a category while keeping AI planning', async () => {
     const service = await createService();
     const item = await service.handle('create', {
-      title: 'Typed change', goal: 'Use the reusable software change template',
+      title: 'Typed change', goal: 'Plan the concrete software change',
       workItemType: 'software-change', workDir: '/tmp', start: false,
     });
 
     expect(item).toMatchObject({ workflowTemplate: 'ai-planned', status: 'draft' });
     expect(item.workflowSnapshot).toMatchObject({
-      id: 'software-change', workItemType: 'software-change', planningMode: 'static',
+      id: 'ai-planned', workItemType: 'software-change', planningMode: 'ai',
     });
-    expect(item.workflowSnapshot.stages.map(stage => stage.type))
-      .toEqual(['triage', 'implement', 'review', 'deliver']);
+    expect(item.workflowSnapshot.stages.map(stage => stage.type)).toEqual(['triage']);
   });
 
   it('freezes an explicit custom Work Item type for LLM planning', async () => {

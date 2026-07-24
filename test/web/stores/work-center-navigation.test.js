@@ -117,6 +117,173 @@ describe('Work Center navigation', () => {
     expect(store.workCenterCreateDraft.linkedSessionIds).toEqual(['session-1']);
   });
 
+  it('keeps only the latest Board query response for the selected Agent', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterAgentId = 'agent-1';
+    store.listWorkItems = useChatStore().listWorkItems;
+    const pending = [];
+    store.workCenterRequest = vi.fn((_op, payload, agentId) => {
+      const request = deferred();
+      pending.push({ payload, agentId, request });
+      return request.promise;
+    });
+
+    const first = store.listWorkItems('agent-1', { keyword: 'old' });
+    const second = store.listWorkItems('agent-1', { keyword: 'new' });
+    pending[1].request.resolve({ items: [{ id: 'new', boardLane: 'active' }], nextCursor: 'next' });
+    await second;
+    pending[0].request.resolve({ items: [{ id: 'old', boardLane: 'closed' }] });
+    await first;
+
+    expect(store.workCenterItemsByAgent['agent-1']).toEqual([{ id: 'new', boardLane: 'active' }]);
+    expect(store.workCenterListPageByAgent['agent-1']).toMatchObject({ nextCursor: 'next' });
+    expect(store.workCenterLoadingByAgent['agent-1']).toBe(false);
+  });
+
+  it('keeps a deleted WorkItem tombstoned across late list and detail responses', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterAgentId = 'agent-1';
+    store.workCenterItemsByAgent['agent-1'] = [{ id: 'wi-delete', revision: 3 }];
+    store.workCenterDetailByAgent['agent-1'] = { id: 'wi-delete', revision: 3, actions: [] };
+    const list = deferred();
+    const detail = deferred();
+    store.workCenterRequest = vi.fn((op) => op === 'list' ? list.promise : detail.promise);
+
+    const listing = useChatStore().listWorkItems.call(store, 'agent-1', {});
+    const loadingDetail = store.getWorkItem('wi-delete', 'agent-1');
+    store.removeWorkItemState('agent-1', 'wi-delete');
+    list.resolve({ items: [{ id: 'wi-delete', revision: 3, boardLane: 'closed' }], nextCursor: null });
+    detail.resolve({ id: 'wi-delete', revision: 3, actions: [] });
+    await Promise.all([listing, loadingDetail]);
+
+    expect(store.workCenterItemsByAgent['agent-1']).toEqual([]);
+    expect(store.workCenterDetailByAgent['agent-1']).toBeNull();
+  });
+
+  it('appends a stable Board page without duplicating Work Items', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterAgentId = 'agent-1';
+    store.workCenterItemsByAgent['agent-1'] = [{ id: 'wi-1' }, { id: 'wi-2', title: 'old' }];
+    store.workCenterListPageByAgent['agent-1'] = { nextCursor: 'cursor-1', queryKey: 'query-1' };
+    store._workCenterListQueryByAgent['agent-1'] = 'query-1';
+    store._workCenterListGenerationByAgent['agent-1'] = 4;
+    store._workCenterListFiltersByAgent['agent-1'] = { keyword: '' };
+    store.workCenterRequest = vi.fn().mockResolvedValue({
+      items: [{ id: 'wi-2', title: 'fresh' }, { id: 'wi-3' }], nextCursor: null,
+    });
+
+    await store.loadMoreWorkItems('agent-1');
+    expect(store.workCenterItemsByAgent['agent-1']).toEqual([
+      { id: 'wi-1' }, { id: 'wi-2', title: 'fresh' }, { id: 'wi-3' },
+    ]);
+    expect(store.workCenterListPageByAgent['agent-1'].nextCursor).toBeNull();
+  });
+
+  it('deduplicates a pending Board page and fences a stale cursor response', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterAgentId = 'agent-1';
+    store.workCenterItemsByAgent['agent-1'] = [{ id: 'wi-1', revision: 1 }];
+    store.workCenterListPageByAgent['agent-1'] = { nextCursor: 'cursor-1', queryKey: 'query-1' };
+    store._workCenterListQueryByAgent['agent-1'] = 'query-1';
+    store._workCenterListGenerationByAgent['agent-1'] = 4;
+    store._workCenterListFiltersByAgent['agent-1'] = { keyword: '' };
+    const page = deferred();
+    store.workCenterRequest = vi.fn(() => page.promise);
+
+    const first = store.loadMoreWorkItems('agent-1');
+    const duplicate = store.loadMoreWorkItems('agent-1');
+    expect(store.workCenterRequest).toHaveBeenCalledTimes(1);
+    expect(store.workCenterListMoreLoadingByAgent['agent-1']).toBe(true);
+    store.workCenterListPageByAgent['agent-1'] = { nextCursor: 'cursor-2', queryKey: 'query-1' };
+    page.resolve({ items: [{ id: 'stale-page', revision: 1 }], nextCursor: null });
+    await Promise.all([first, duplicate]);
+
+    expect(store.workCenterItemsByAgent['agent-1']).toEqual([{ id: 'wi-1', revision: 1 }]);
+    expect(store.workCenterListPageByAgent['agent-1'].nextCursor).toBe('cursor-2');
+    expect(store.workCenterListMoreLoadingByAgent['agent-1']).toBe(false);
+  });
+
+  it('keeps a live Board event when the initial list or a page returns stale data', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterAgentId = 'agent-1';
+    store.listWorkItems = useChatStore().listWorkItems;
+    const list = deferred();
+    store.workCenterRequest = vi.fn(() => list.promise);
+
+    const pending = store.listWorkItems('agent-1', {});
+    store.applyWorkCenterEvent('agent-1', {
+      workItem: { id: 'wi-1', revision: 2, updatedAt: 20, status: 'running', boardLane: 'active' },
+    });
+    list.resolve({ items: [{ id: 'wi-1', revision: 1, updatedAt: 10, status: 'ready', boardLane: 'active' }] });
+    await pending;
+    expect(store.workCenterItemsByAgent['agent-1'][0]).toMatchObject({ revision: 2, status: 'running' });
+
+    store.workCenterListPageByAgent['agent-1'] = { nextCursor: 'cursor-1', queryKey: store._workCenterListQueryByAgent['agent-1'] };
+    store.workCenterRequest = vi.fn().mockResolvedValue({
+      items: [{ id: 'wi-1', revision: 1, updatedAt: 10, status: 'ready', boardLane: 'active' }],
+      nextCursor: null,
+    });
+    await store.loadMoreWorkItems('agent-1');
+    expect(store.workCenterItemsByAgent['agent-1'][0]).toMatchObject({ revision: 2, status: 'running' });
+  });
+
+  it('does not let a stale Board page insert an unloaded card removed by a live event', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterAgentId = 'agent-1';
+    const filters = { keyword: 'release' };
+    const queryKey = JSON.stringify(filters);
+    store.workCenterListPageByAgent['agent-1'] = { nextCursor: 'cursor-1', queryKey };
+    store._workCenterListQueryByAgent['agent-1'] = queryKey;
+    store._workCenterListGenerationByAgent['agent-1'] = 4;
+    store._workCenterListFiltersByAgent['agent-1'] = filters;
+    const page = deferred();
+    store.workCenterRequest = vi.fn(() => page.promise);
+
+    const pending = store.loadMoreWorkItems('agent-1');
+    store.applyWorkCenterEvent('agent-1', {
+      workItem: { id: 'wi-page', title: 'Renamed', goal: 'No longer matches', revision: 2 },
+    });
+    page.resolve({
+      items: [{ id: 'wi-page', title: 'Release build', revision: 1 }],
+      nextCursor: null,
+    });
+    await pending;
+
+    expect(store.workCenterItemsByAgent['agent-1'] || []).toEqual([]);
+  });
+
+  it('keeps filtered Board events out and removes cards that leave the query', () => {
+    const store = makeStore('yeaft');
+    store.workCenterAgentId = 'agent-1';
+    store._workCenterListFiltersByAgent['agent-1'] = { keyword: 'release', vpId: 'linus' };
+    store.workCenterItemsByAgent['agent-1'] = [{
+      id: 'wi-1', title: 'Release build', goal: 'Ship', executors: [{ id: 'linus' }], revision: 1,
+    }];
+
+    store.applyWorkCenterEvent('agent-1', {
+      workItem: { id: 'wi-2', title: 'Unrelated', goal: 'Ignore', executors: [{ id: 'linus' }] },
+    });
+    expect(store.workCenterItemsByAgent['agent-1'].map(item => item.id)).toEqual(['wi-1']);
+    store.applyWorkCenterEvent('agent-1', {
+      workItem: { id: 'wi-1', title: 'Renamed', goal: 'Ignore', executors: [{ id: 'martin' }], revision: 2 },
+    });
+    expect(store.workCenterItemsByAgent['agent-1']).toEqual([]);
+  });
+
+  it('rejects a late Board response after switching Agents', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterAgentId = 'agent-1';
+    store.listWorkItems = useChatStore().listWorkItems;
+    const request = deferred();
+    store.workCenterRequest = vi.fn(() => request.promise);
+    const pending = store.listWorkItems('agent-1', { keyword: 'agent one' });
+    store.workCenterAgentId = 'agent-2';
+    request.resolve({ items: [{ id: 'wrong-agent' }] });
+    await pending;
+
+    expect(store.workCenterItemsByAgent['agent-1']).toBeUndefined();
+  });
+
   it('keeps only the latest explicit WorkItem detail request', async () => {
     const store = makeStore('yeaft');
     const pending = {};
@@ -226,6 +393,54 @@ describe('Work Center navigation', () => {
     await Promise.all([first, second]);
   });
 
+  it('commits a successful input response for a non-pointer sibling Action', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterDetailByAgent = {
+      'agent-1': {
+        id: 'wi-1', revision: 5, currentActionId: 'action-waiting',
+        actions: [
+          { id: 'action-waiting', status: 'waiting', generation: 1 },
+          { id: 'action-running', status: 'running', generation: 3 },
+        ],
+      },
+    };
+    store.workCenterRequest = vi.fn().mockResolvedValue({
+      id: 'wi-1', revision: 6, currentActionId: 'action-waiting',
+      actions: [
+        { id: 'action-waiting', status: 'waiting', generation: 1 },
+        { id: 'action-running', status: 'running', generation: 3 },
+      ],
+    });
+
+    const result = await store.sendWorkItemActionInput(
+      'wi-1', 'Update only the running sibling', 'action-running', 5, 3, [], 'agent-1',
+    );
+
+    expect(result).toMatchObject({ revision: 6, currentActionId: 'action-waiting' });
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({
+      revision: 6, currentActionId: 'action-waiting',
+    });
+  });
+
+  it('preserves the active Board filters after Action input', async () => {
+    const store = makeStore('yeaft');
+    const filters = { keyword: 'release', vpId: 'linus', workItemType: 'bug-fix', updatedFrom: 100 };
+    store._workCenterListFiltersByAgent['agent-1'] = filters;
+    store.workCenterDetailByAgent['agent-1'] = {
+      id: 'wi-1', revision: 5, currentActionId: 'action-1',
+      actions: [{ id: 'action-1', status: 'waiting', generation: 2 }],
+    };
+    store.workCenterRequest = vi.fn().mockResolvedValue({
+      id: 'wi-1', revision: 6, currentActionId: 'action-1',
+      actions: [{ id: 'action-1', status: 'running', generation: 2 }],
+    });
+    store.listWorkItems = vi.fn().mockResolvedValue([]);
+
+    await store.sendWorkItemActionInput('wi-1', 'Continue', 'action-1', 5, 2, [], 'agent-1');
+
+    expect(store.listWorkItems).toHaveBeenCalledWith('agent-1', filters);
+  });
+
   it('does not let an old Action input response overwrite a newer Action in the same Work Item', async () => {
     const store = makeStore('yeaft');
     store.workCenterDetailByAgent = {
@@ -241,7 +456,7 @@ describe('Work Center navigation', () => {
     });
 
     const input = store.sendWorkItemActionInput(
-      'wi-1', 'Keep the public API unchanged', 'action-1', 1, [], 'agent-1',
+      'wi-1', 'Keep the public API unchanged', 'action-1', 1, 1, [], 'agent-1',
     );
     store.workCenterDetailByAgent = {
       'agent-1': {

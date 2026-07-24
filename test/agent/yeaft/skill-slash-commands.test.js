@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Engine } from '../../../agent/yeaft/engine.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { createSkillManager } from '../../../agent/yeaft/skills.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import ctx from '../../../agent/context.js';
 import { buildMergedSkillSlashCommands, buildSkillSlashCommands, __testDrainVpDrivers, __testGetOrCreateVpEngine, __testResetVpState, __testHooks } from '../../../agent/yeaft/web-bridge.js';
@@ -106,6 +107,53 @@ describe('Yeaft skill slash commands', () => {
     expect(descriptions['yeaft-skills:review-code']).toBe('Project review');
   });
 
+  it('hot reloads the active manager and broadcasts added and removed commands', () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-hot-skills-'));
+    const yeaftDir = join(root, 'yeaft');
+    const workDir = join(root, 'project');
+    const bundledDir = join(root, 'bundled');
+    mkdirSync(yeaftDir, { recursive: true });
+    mkdirSync(workDir, { recursive: true });
+    mkdirSync(bundledDir, { recursive: true });
+    const previousBundledDir = process.env.YEAFT_SKILLS_BUNDLED_DIR;
+    process.env.YEAFT_SKILLS_BUNDLED_DIR = bundledDir;
+
+    try {
+      const skillManager = createSkillManager(yeaftDir, workDir);
+      __testHooks.setSessionForTest({
+        skillManager,
+        status: { skills: 0, mcpServers: [], mcpFailed: [], tools: 0 },
+      });
+      __testHooks.ensureYeaftConversationIdForTest();
+      ctx.messageBuffer = [];
+
+      const skillDir = join(workDir, '.yeaft', 'skills', 'hot-review');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: hot-review\ndescription: Hot review\n---\n\nReview now.\n');
+      expect(__testHooks.reloadActiveSkillsForTest()).toMatchObject({ changed: true, loaded: 1 });
+      expect(skillManager.has('hot-review')).toBe(true);
+      expect(ctx.messageBuffer.findLast(message => message.type === 'slash_commands_update')).toMatchObject({
+        type: 'slash_commands_update',
+        commandSet: 'yeaft',
+        slashCommands: ['hot-review'],
+      });
+
+      rmSync(skillDir, { recursive: true, force: true });
+      expect(__testHooks.reloadActiveSkillsForTest()).toMatchObject({ changed: true, loaded: 0 });
+      expect(skillManager.has('hot-review')).toBe(false);
+      expect(ctx.messageBuffer.findLast(message => message.type === 'slash_commands_update')).toMatchObject({
+        type: 'slash_commands_update',
+        commandSet: 'yeaft',
+        slashCommands: [],
+        slashCommandDescriptions: {},
+      });
+    } finally {
+      if (previousBundledDir === undefined) delete process.env.YEAFT_SKILLS_BUNDLED_DIR;
+      else process.env.YEAFT_SKILLS_BUNDLED_DIR = previousBundledDir;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(['/review-code please review this', '/yeaft-skills:review-code please review this', '/skill:review-code please review this'])('injects an explicitly selected skill and strips %s before streaming', async (prompt) => {
     const adapter = new RecordingAdapter();
     const skillManager = {
@@ -132,6 +180,10 @@ describe('Yeaft skill slash commands', () => {
     }
 
     expect(events.some(event => event.type === 'turn_end')).toBe(true);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'skill_loaded',
+      skill: expect.objectContaining({ name: 'review-code', explicit: true }),
+    }));
     expect(adapter.calls).toHaveLength(1);
     expect(adapter.calls[0].system).toContain('## Skill: review-code');
     expect(adapter.calls[0].system).toContain('Review instructions');
@@ -139,6 +191,29 @@ describe('Yeaft skill slash commands', () => {
       role: 'user',
       content: 'please review this',
     });
+  });
+
+  it('emits an authoritative error for a missing explicit skill', async () => {
+    const adapter = new RecordingAdapter();
+    const skillManager = {
+      has: () => false,
+      list: () => [],
+      getPromptContent: () => '',
+      findRelevant: () => [],
+    };
+    const engine = new Engine({
+      adapter,
+      trace: new NullTrace(),
+      config: { model: 'test-model', maxOutputTokens: 1024, language: 'en' },
+      skillManager,
+    });
+    const events = [];
+    for await (const event of engine.query({ prompt: '/skill:missing inspect this' })) events.push(event);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'skill_error',
+      skillName: 'missing',
+    }));
+    expect(adapter.calls[0].system).toContain('Requested skill "missing" was not found.');
   });
 
   it('reactivates cached project MCP tools on A-B-A workDir switches', async () => {
@@ -210,9 +285,11 @@ describe('Yeaft skill slash commands', () => {
 
     await registry.execute('mcp__baseServer__base', { value: 2 }, {});
     expect(calls).toEqual([{ fullName: 'baseServer__base', input: { value: 2 } }]);
-    expect(ctx.slashCommands).toContain('yeaft-skills:base-skill');
-    expect(ctx.slashCommands).not.toContain('project-skill');
-    expect(ctx.slashCommands).not.toContain('skill:base-skill');
+    expect(ctx.messageBuffer.findLast(message => message.type === 'slash_commands_update')).toMatchObject({
+      type: 'slash_commands_update',
+      commandSet: 'yeaft',
+      slashCommands: ['yeaft-skills:base-skill'],
+    });
   });
 
   it('does not block a VP turn on slow project MCP startup', async () => {

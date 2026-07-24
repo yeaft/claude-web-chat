@@ -9,6 +9,7 @@ import { maxDbMessageId } from '../messages.js';
 import { summarizeHistoricalToolMessages } from '../tool-window.js';
 import { t } from '../../../utils/i18n.js';
 import { recordPerfTrace, measureNextPaint } from '../perfTrace.js';
+import { yeaftHistoryIdentityKey } from '../yeaft-history-identity.js';
 
 /** Filter out empty user messages — tool_result artifacts stored as empty user records in DB */
 function filterEmptyUserMessages(messages) {
@@ -159,6 +160,8 @@ function replaceYeaftRecentHistoryRows(existingRows, incomingRows, sessionId) {
     if (!row) return false;
     if (sessionId != null && rowSessionId(row) !== sessionId) return true;
     if (row.isStreaming) return true;
+    if (row.type === 'tool-use' && row.toolName === 'AskUserQuestion'
+        && (row.askAnswered || row.askPending || row.askExpired)) return true;
     // A recent-history reply can race a just-sent optimistic user row. Do not
     // delete that accepted input merely because the persisted window has not
     // flushed it yet or the server clock is ahead of the browser clock.
@@ -582,14 +585,59 @@ export function handleSyncMessagesResult(store, msg) {
 export function handleYeaftHistoryWindow(store, msg) {
   const sessionId = msg.sessionId ?? null;
   const sessionAgentId = msg.agentId || (sessionId && store.yeaftSessionAgentById?.[sessionId]) || null;
-  const convId = msg.conversationId
+  const conversationId = msg.conversationId
     || (sessionAgentId && store.yeaftConversationIdsByAgent?.[sessionAgentId])
     || store.yeaftConversationId;
-  if (!convId || !sessionId || !Array.isArray(msg.messages)) return 0;
-  if (!store.messagesMap[convId]) store.messagesMap[convId] = [];
+  if (!conversationId || !sessionId || !Array.isArray(msg.messages)) return null;
+  if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
 
-  const { formatted } = formatYeaftHistoryMessages(msg.messages, sessionId, 'window', store.messagesMap[convId]);
-  return upsertYeaftHistoryRows(store.messagesMap[convId], formatted);
+  const { formatted } = formatYeaftHistoryMessages(msg.messages, sessionId, 'window', store.messagesMap[conversationId]);
+  upsertYeaftHistoryRows(store.messagesMap[conversationId], formatted);
+  return conversationId;
+}
+
+function askUserHistoryIdentity(row) {
+  if (!row?.toolId) return null;
+  return [
+    rowSessionId(row) ?? '',
+    row.vpId || row.speakerVpId || '',
+    row.turnId || '',
+    row.threadId || 'main',
+    row.toolId,
+  ].join('\u0000');
+}
+
+function applyAskUserHistoryResult(row, result, questions) {
+  row.toolName = 'AskUserQuestion';
+  row.toolId = result.toolCallId;
+  row.toolInput = { questions };
+  row.askQuestions = questions;
+  row.askRequestId = null;
+  row.askPending = false;
+  row.pendingAnswers = null;
+  row.askSubmitGeneration = null;
+  row.hasResult = true;
+  row.isHistory = true;
+  if (result.status === 'answered') {
+    row.askAnswered = true;
+    row.selectedAnswers = result.answers;
+    row.askExpired = false;
+  } else {
+    row.askAnswered = false;
+    row.selectedAnswers = null;
+    row.askExpired = true;
+  }
+  return row;
+}
+
+function existingAskUserRow(existingRows, scope) {
+  return (existingRows || []).find(row => row?.type === 'tool-use'
+    && (row.toolName === 'AskUser' || row.toolName === 'AskUserQuestion')
+    && row.toolId === scope.toolCallId
+    && rowSessionId(row) === scope.sessionId
+    && (row.vpId || row.speakerVpId || '') === (scope.vpId || '')
+    && (row.turnId || '') === (scope.turnId || '')
+    && (row.threadId || 'main') === (scope.threadId || 'main')) || null;
 }
 
 function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existingRows) {
@@ -675,10 +723,45 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           isStreaming: false, isHistory: true,
         });
       }
+      for (const result of Array.isArray(m.askUserResults) ? m.askUserResults : []) {
+        if (!result?.toolCallId || (result.status !== 'answered' && result.status !== 'expired')) continue;
+        const questions = [{
+          question: typeof result.question === 'string' ? result.question : '',
+          options: (Array.isArray(result.options) ? result.options : [])
+            .filter(label => typeof label === 'string')
+            .map(label => ({ label, description: '' })),
+          multiSelect: false,
+        }];
+        const scope = {
+          toolCallId: result.toolCallId,
+          sessionId: rowSessionId,
+          vpId: speakerVpId || '',
+          turnId: turnId || '',
+          threadId: m.threadId || 'main',
+        };
+        const existing = existingAskUserRow(existingRows, scope);
+        if (existing) {
+          applyAskUserHistoryResult(existing, result, questions);
+          continue;
+        }
+        const askRow = applyAskUserHistoryResult({
+          id: `${stableId || messageId || turnId}:ask:${result.toolCallId}`,
+          messageId: `${stableId || messageId || turnId}:ask:${result.toolCallId}`,
+          type: 'tool-use',
+          timestamp,
+          sessionId: rowSessionId,
+          turnId,
+          threadId: scope.threadId,
+          ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
+          isStreaming: false,
+        }, result, questions);
+        const identity = askUserHistoryIdentity(askRow);
+        if (!identity || !formatted.some(row => askUserHistoryIdentity(row) === identity)) formatted.push(askRow);
+      }
       const toolSummaryCount = visibleToolSummaryCount(m);
       if (toolSummaryCount > 0) {
         formatted.push({
-          ...(stableId ? { id: `${stableId}:tool-summary`, messageId: `${stableId}:tool-summary` } : {}),
+          ...(stableId ? { id: `${stableId}:tool-summary`, messageId: `${stableId}:tool-summary`, persistedMessageId: stableId } : {}),
           type: 'tool-summary',
           count: toolSummaryCount,
           omittedCount: toolSummaryCount,
@@ -712,9 +795,9 @@ export function handleYeaftHistoryChunk(store, msg) {
       detail: { mode, rawCount: incomingMessages.length },
     });
   }
-  const sessionAgentId = msgSessionId && store.yeaftSessionAgentById
+  const sessionAgentId = msg.agentId || (msgSessionId && store.yeaftSessionAgentById
     ? store.yeaftSessionAgentById[msgSessionId]
-    : null;
+    : null);
   const agentConversationId = sessionAgentId && store.yeaftConversationIdsByAgent
     ? store.yeaftConversationIdsByAgent[sessionAgentId]
     : null;
@@ -755,7 +838,7 @@ export function handleYeaftHistoryChunk(store, msg) {
     }
   }
 
-  const sessionKey = msgSessionId ?? '__all__';
+  const sessionKey = yeaftHistoryIdentityKey(msg.agentId || null, msgSessionId);
   const prevState = store.yeaftSessionHistoryState?.[sessionKey] || {};
   const nextLatest = (typeof msg.latestSeq === 'number') ? msg.latestSeq : (prevState.latestSeq ?? null);
   const nextState = mode === 'delta'
@@ -782,7 +865,8 @@ export function handleYeaftHistoryChunk(store, msg) {
       [sessionKey]: nextState,
     };
   }
-  const activeKey = store.yeaftActiveSessionFilter ?? '__all__';
+  const activeSessionId = store.yeaftActiveSessionFilter ?? null;
+  const activeKey = yeaftHistoryIdentityKey(msg.agentId ? store.currentAgent : null, activeSessionId);
   if (msg.perfTraceId) {
     recordPerfTrace(store, {
       traceId: msg.perfTraceId,

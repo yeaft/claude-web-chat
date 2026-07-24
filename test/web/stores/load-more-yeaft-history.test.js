@@ -33,6 +33,7 @@ globalThis.Pinia = globalThis.Pinia || {
 };
 
 const { handleYeaftHistoryChunk } = await import('../../../web/stores/helpers/handlers/conversationHandler.js');
+const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
 const {
   getDefaultYeaftVisibleTurns,
   getYeaftWindowLoadStepTurns,
@@ -233,6 +234,34 @@ describe('handleYeaftHistoryChunk', () => {
     } finally {
       globalThis.window = oldWindow;
     }
+  });
+
+  it('keeps a tool-only persisted anchor on its derived summary row', () => {
+    const store = mkStore({ messagesMap: { 'yeaft-1': [] } });
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      messages: [{
+        id: 'm0042',
+        role: 'assistant',
+        content: '',
+        sessionId: 'g1',
+        turnId: 'turn-tool-only',
+        toolSummaryCount: 1,
+      }],
+      oldestSeq: 42,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['yeaft-1']).toEqual([
+      expect.objectContaining({
+        id: 'm0042:tool-summary',
+        messageId: 'm0042:tool-summary',
+        persistedMessageId: 'm0042',
+        type: 'tool-summary',
+        turnId: 'turn-tool-only',
+      }),
+    ]);
   });
 
   it('hydrates persisted image assets into the assistant turn', () => {
@@ -472,6 +501,186 @@ describe('handleYeaftHistoryChunk', () => {
       expect.objectContaining({ id: 'm0200:tool-summary', type: 'tool-summary', count: 3, omittedCount: 3, source: 'history', speakerVpId: 'vp-linus' }),
     ]);
     expect(store.yeaftSessionHistoryState.g1).toEqual(expect.objectContaining({ count: 1 }));
+  });
+
+  it('restores a persisted AskUser answer as a read-only card', () => {
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'g1',
+      messagesMap: { 'yeaft-1': [] },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      mode: 'recent',
+      messages: [{
+        id: 'm0210',
+        role: 'assistant',
+        content: '',
+        sessionId: 'g1',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        askUserResults: [{
+          toolCallId: 'ask_1',
+          status: 'answered',
+          question: 'Continue?',
+          options: ['Yes', 'No'],
+          answers: { 'Continue?': 'Yes' },
+        }],
+        ts: '2026-05-01T10:00:00.000Z',
+      }],
+      oldestSeq: 210,
+      latestSeq: 211,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['yeaft-1']).toEqual([
+      expect.objectContaining({
+        id: 'm0210:ask:ask_1',
+        type: 'tool-use',
+        toolId: 'ask_1',
+        toolName: 'AskUserQuestion',
+        askRequestId: null,
+        askAnswered: true,
+        selectedAnswers: { 'Continue?': 'Yes' },
+        isHistory: true,
+        hasResult: true,
+        sessionId: 'g1',
+        vpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+      }),
+    ]);
+  });
+
+  it('keeps the submitted AskUser card during a recent refresh before the result is persisted', () => {
+    const pendingCard = {
+      id: 'live-pending-ask',
+      type: 'tool-use',
+      toolId: 'ask_pending',
+      toolName: 'AskUserQuestion',
+      askRequestId: 'request-pending',
+      askPending: true,
+      pendingAnswers: { 'Continue?': 'Yes' },
+      sessionId: 'g1',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+      isHistory: false,
+    };
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'g1',
+      messagesMap: { 'yeaft-1': [pendingCard] },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      mode: 'recent',
+      messages: [{ id: 'm0209', role: 'user', content: 'question', sessionId: 'g1' }],
+      oldestSeq: 209,
+      latestSeq: 209,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['yeaft-1']).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'live-pending-ask',
+        askPending: true,
+        pendingAnswers: { 'Continue?': 'Yes' },
+        askRequestId: 'request-pending',
+      }),
+    ]));
+  });
+
+  it('keeps an expired AskUser terminal state during a recent refresh', () => {
+    const expiredCard = {
+      id: 'live-expired-ask',
+      type: 'tool-use',
+      toolId: 'ask_expired',
+      toolName: 'AskUserQuestion',
+      askRequestId: null,
+      askExpired: true,
+      sessionId: 'g1',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+      isHistory: true,
+    };
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'g1',
+      messagesMap: { 'yeaft-1': [expiredCard] },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      mode: 'recent',
+      messages: [{ id: 'm0209', role: 'user', content: 'question', sessionId: 'g1' }],
+      oldestSeq: 209,
+      latestSeq: 209,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['yeaft-1']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'live-expired-ask', askExpired: true, askRequestId: null }),
+    ]));
+  });
+
+  it('settles the existing live AskUser card when answer history arrives as a delta', () => {
+    const liveCard = {
+      id: 'live-ask',
+      type: 'tool-use',
+      toolId: 'ask_1',
+      toolName: 'AskUserQuestion',
+      askRequestId: 'request-1',
+      sessionId: 'g1',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+      isHistory: false,
+    };
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'g1',
+      yeaftSessionHistoryState: {
+        g1: { loaded: true, loading: false, latestSeq: 209, count: 1 },
+      },
+      messagesMap: { 'yeaft-1': [liveCard] },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      mode: 'delta',
+      messages: [{
+        id: 'm0210',
+        role: 'assistant',
+        content: '',
+        sessionId: 'g1',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        askUserResults: [{
+          toolCallId: 'ask_1',
+          status: 'answered',
+          question: 'Continue?',
+          options: ['Yes'],
+          answers: { 'Continue?': 'Yes' },
+        }],
+      }],
+      latestSeq: 211,
+    });
+
+    const cards = store.messagesMap['yeaft-1'].filter(row => row.toolName === 'AskUserQuestion');
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      toolId: 'ask_1',
+      askRequestId: null,
+      askAnswered: true,
+      selectedAnswers: { 'Continue?': 'Yes' },
+      isHistory: true,
+    });
   });
 
   it('appends delta chunks without clobbering older-history cursors', () => {
@@ -1110,6 +1319,52 @@ describe('handleYeaftHistoryChunk', () => {
     expect(store.yeaftLoadingMoreHistory).toBe(false);
     // Active cursor not corrupted by session A's data.
     expect(store.yeaftOldestLoadedSeq).toBe(100);
+  });
+
+  it('keeps the active Agent cursor intact when a same-id Session chunk arrives late from another Agent', () => {
+    const sessionId = 'session_default';
+    const agentAKey = yeaftHistoryIdentityKey('agent-a', sessionId);
+    const agentBKey = yeaftHistoryIdentityKey('agent-b', sessionId);
+    const store = mkStore({
+      currentAgent: 'agent-b',
+      yeaftActiveSessionFilter: sessionId,
+      yeaftConversationId: 'conv-b',
+      yeaftConversationIdsByAgent: { 'agent-a': 'conv-a', 'agent-b': 'conv-b' },
+      yeaftLoadingMoreHistory: true,
+      yeaftHasMoreHistory: true,
+      yeaftOldestLoadedSeq: 10,
+      yeaftSessionHistoryState: {
+        [agentAKey]: { loaded: true, loading: true, latestSeq: 7, hasMore: true, oldestSeq: 3 },
+        [agentBKey]: { loaded: true, loading: true, latestSeq: 20, hasMore: true, oldestSeq: 10 },
+      },
+      messagesMap: { 'conv-a': [], 'conv-b': [{ type: 'user', content: 'B', sessionId }] },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      sessionId,
+      mode: 'recent',
+      messages: [{ id: '000001-a', role: 'user', content: 'A', sessionId }],
+      latestSeq: 1,
+      oldestSeq: 1,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['conv-a']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: 'A', sessionId }),
+    ]));
+    expect(store.messagesMap['conv-b']).toEqual([expect.objectContaining({ content: 'B' })]);
+    expect(store.yeaftSessionHistoryState[agentAKey]).toEqual(expect.objectContaining({
+      loading: false, latestSeq: 1, hasMore: false, oldestSeq: 1,
+    }));
+    expect(store.yeaftSessionHistoryState[agentBKey]).toEqual({
+      loaded: true, loading: true, latestSeq: 20, hasMore: true, oldestSeq: 10,
+    });
+    expect(store.yeaftHasMoreHistory).toBe(true);
+    expect(store.yeaftOldestLoadedSeq).toBe(10);
+    expect(store.yeaftLoadingMoreHistory).toBe(true);
   });
 
   it('accepts inactive empty-string sessionId chunks without treating them as active unscoped history', () => {

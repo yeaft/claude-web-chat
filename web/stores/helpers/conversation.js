@@ -8,6 +8,17 @@ import { maxDbMessageId } from './messages.js';
 import { t } from '../../utils/i18n.js';
 import { EXPERT_ROLES, buildClientExpertMessage } from '../../utils/expert-roles.js';
 
+const YEAFT_ASK_SUBMIT_TIMEOUT_MS = 10_000;
+let yeaftAskSubmitGeneration = 0;
+
+function agentIdsForYeaftConversation(store, conversationId) {
+  if (!conversationId || !store?.yeaftConversationIdsByAgent) return [];
+  return Object.entries(store.yeaftConversationIdsByAgent)
+    .filter(([, candidateConversationId]) => candidateConversationId === conversationId)
+    .map(([agentId]) => agentId)
+    .filter(Boolean);
+}
+
 /**
  * fix-usermsg-dup: opaque client-side id stamped on optimistic user
  * messages and forwarded to the server in the `chat` payload. The
@@ -511,13 +522,35 @@ export function answerUserQuestion(store, requestId, answers, conversationId) {
     m.type === 'tool-use' && m.toolName === 'AskUserQuestion' && m.askRequestId === requestId
   );
   const isYeaftPrompt = store.currentView === 'yeaft' || !!chatMsg?.sessionId;
-  store.sendWsMessage(isYeaftPrompt ? {
+  if (isYeaftPrompt && chatMsg?.askPending) return;
+  const sessionId = chatMsg?.sessionId || store.yeaftActiveSessionFilter || null;
+  const cardAgentId = typeof chatMsg?.agentId === 'string' && chatMsg.agentId
+    ? chatMsg.agentId
+    : null;
+  const conversationAgentIds = isYeaftPrompt
+    ? agentIdsForYeaftConversation(store, convId)
+    : [];
+  const conversationAgentId = conversationAgentIds.length === 1
+    ? conversationAgentIds[0]
+    : null;
+  // The card identity came from the Agent event that created the prompt. Do
+  // not replace it with a Session resolver that can fall back to the page's
+  // current Agent while ownership is still hydrating. A unique conversation
+  // mapping is also authoritative; if it conflicts with the card, fail closed
+  // before mutating local state. Ambiguous mappings cannot disprove the card.
+  if (cardAgentId && conversationAgentId && cardAgentId !== conversationAgentId) return false;
+  const legacyOwnerAgentId = isYeaftPrompt && !cardAgentId && !conversationAgentId
+    && typeof store.agentIdForSession === 'function'
+    ? store.agentIdForSession(sessionId)
+    : null;
+  const sent = store.sendWsMessage(isYeaftPrompt ? {
     type: 'yeaft_ask_user_answer',
-    agentId: store.yeaftAgentId || store.currentAgent || null,
+    agentId: cardAgentId || conversationAgentId || legacyOwnerAgentId || store.yeaftAgentId || store.currentAgent || null,
     conversationId: convId,
     requestId,
+    toolCallId: chatMsg?.toolId || null,
     answers,
-    sessionId: chatMsg?.sessionId || store.yeaftActiveSessionFilter || null,
+    sessionId,
     vpId: chatMsg?.vpId || chatMsg?.speakerVpId || null,
     turnId: chatMsg?.turnId || null,
     threadId: chatMsg?.threadId || 'main',
@@ -527,17 +560,29 @@ export function answerUserQuestion(store, requestId, answers, conversationId) {
     requestId,
     answers
   });
-  // Yeaft prompts are shared across devices. Keep the card interactive until
-  // the agent broadcasts ask_user_answered; another device may have won the
-  // first-answer race or the request may already be expired. Chat-provider
-  // prompts retain their historical optimistic collapse behavior.
+  // Yeaft prompts are shared across devices. Record a submitted answer on the
+  // message row so a component/session remount cannot reopen the card, but wait
+  // for the agent event or persisted tool result before marking it confirmed.
+  // Chat-provider prompts retain their historical optimistic collapse behavior.
   if (chatMsg && !isYeaftPrompt) {
     chatMsg.askAnswered = true;
     chatMsg.selectedAnswers = answers;
+  } else if (chatMsg && sent !== false) {
+    const submitGeneration = ++yeaftAskSubmitGeneration;
+    chatMsg.askPending = true;
+    chatMsg.pendingAnswers = answers;
+    chatMsg.askSubmitGeneration = submitGeneration;
+    const timer = setTimeout(() => {
+      if (chatMsg.askSubmitGeneration !== submitGeneration || chatMsg.askPending !== true) return;
+      chatMsg.askPending = false;
+      chatMsg.pendingAnswers = null;
+      chatMsg.askSubmitGeneration = null;
+    }, YEAFT_ASK_SUBMIT_TIMEOUT_MS);
+    if (typeof timer?.unref === 'function') timer.unref();
   }
 
   // 立刻进入 processing 状态，显示"思考中"指示器
-  if (convId && !store.processingConversations[convId]) {
+  if (sent !== false && convId && !store.processingConversations[convId]) {
     store.processingConversations[convId] = true;
     if (store._closedAt?.[convId]) {
       delete store._closedAt[convId];

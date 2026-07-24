@@ -8,61 +8,8 @@ import {
 } from './workflow.js';
 import { renderSessionContextSnapshot } from './session-context.js';
 import { normalizeEvidence } from './evidence.js';
-import { applyAdditivePlanProposal } from './plan-mutation.js';
-
-function normalizeCriteria(value) {
-  if (!Array.isArray(value)) return null;
-  return value.map(item => String(item).trim()).filter(Boolean);
-}
-
-function normalizeContractPatch(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const patch = {};
-  if (typeof value.goal === 'string' && value.goal.trim()) patch.goal = value.goal.trim();
-  if (Object.prototype.hasOwnProperty.call(value, 'acceptanceCriteria')) {
-    const criteria = normalizeCriteria(value.acceptanceCriteria);
-    if (!criteria) throw new Error('contractPatch.acceptanceCriteria must be an array');
-    patch.acceptanceCriteria = criteria;
-  }
-  return Object.keys(patch).length > 0 ? patch : null;
-}
-
-function normalizeAcceptanceChecks(value, criteria) {
-  if (!Array.isArray(value) || value.length !== criteria.length) return null;
-  const checks = value.map((raw, index) => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-    const criterion = typeof raw.criterion === 'string' ? raw.criterion.trim() : '';
-    const status = ['passed', 'deferred', 'not_applicable'].includes(raw.status) ? raw.status : '';
-    const evidence = typeof raw.evidence === 'string' ? raw.evidence.trim().slice(0, 1_000) : '';
-    if (criterion !== criteria[index] || !status || !evidence) return null;
-    return { criterion, status, evidence };
-  });
-  return checks.every(Boolean) ? checks : null;
-}
-
-function validateCompletedResult(result, action, workItem) {
-  if (result.outcome !== 'completed') return;
-  if (result.evidence.length === 0) {
-    result.outcome = 'failed';
-    result.error = 'Completed Action requires at least one concrete evidence item';
-    return;
-  }
-  const criteria = result.contractPatch?.acceptanceCriteria
-    ?? (Array.isArray(workItem.acceptanceCriteria) ? workItem.acceptanceCriteria : []);
-  const checks = normalizeAcceptanceChecks(result.acceptanceChecks, criteria);
-  if (!checks) {
-    result.outcome = 'failed';
-    result.error = 'Completed Action requires one ordered acceptance check with evidence for every acceptance criterion';
-    return;
-  }
-  const mustVerify = action.type === 'test'
-    || action.type === 'deliver'
-    || (action.type === 'review' && result.reviewDecision === 'approved');
-  if (mustVerify && checks.some(check => check.status !== 'passed')) {
-    result.outcome = 'failed';
-    result.error = `${action.type} Action requires every acceptance check to pass`;
-  }
-}
+import { applyAdditivePlanProposal, applyReplanMutation } from './plan-mutation.js';
+import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
 
 function normalizeTerminalResult(result, action) {
   if (!result || !RUN_OUTCOMES.includes(result.outcome)) {
@@ -75,6 +22,8 @@ function normalizeTerminalResult(result, action) {
     evidence: normalizeEvidence(result.evidence),
     waitingReason: result.waitingReason ? String(result.waitingReason) : null,
     error: result.error ? String(result.error) : null,
+    failureKind: result.failureKind === 'system_blocked' ? 'system_blocked' : null,
+    failureCode: typeof result.failureCode === 'string' ? result.failureCode.slice(0, 128) : null,
     reviewDecision: ['approved', 'changes_requested'].includes(result.reviewDecision)
       ? result.reviewDecision
       : null,
@@ -97,6 +46,8 @@ function normalizeTerminalResult(result, action) {
       && !Array.isArray(result.planProposal) ? result.planProposal : null,
     replanRequest: result.replanRequest && typeof result.replanRequest === 'object'
       && !Array.isArray(result.replanRequest) ? result.replanRequest : null,
+    replanMutation: result.replanMutation && typeof result.replanMutation === 'object'
+      && !Array.isArray(result.replanMutation) ? result.replanMutation : null,
   };
   if (normalized.outcome === 'waiting' && !normalized.waitingReason) {
     throw new Error('waiting outcome requires waitingReason');
@@ -109,12 +60,14 @@ function normalizeTerminalResult(result, action) {
   if (normalized.outcome !== 'completed') {
     normalized.planProposal = null;
     normalized.replanRequest = null;
+    normalized.replanMutation = null;
   }
-  if (normalized.planProposal && normalized.replanRequest) {
+  if ([normalized.planProposal, normalized.replanRequest, normalized.replanMutation].filter(Boolean).length > 1) {
     normalized.outcome = 'failed';
-    normalized.error = 'An Action cannot expand and replan the WorkItem in the same completion';
+    normalized.error = 'An Action cannot submit more than one WorkItem plan mutation';
     normalized.planProposal = null;
     normalized.replanRequest = null;
+    normalized.replanMutation = null;
   }
   if (action.type === 'review' && normalized.outcome === 'completed' && !normalized.reviewDecision) {
     normalized.outcome = 'failed';
@@ -202,10 +155,14 @@ export class WorkflowController {
     const guidanceSummary = guidance || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`;
     const expected = {
       actionId: typeof input.actionId === 'string' ? input.actionId : '',
+      generation: Number(input.generation),
       revision: Number(input.revision),
     };
-    if (!expected.actionId || !Number.isInteger(expected.revision)) {
-      throw new Error('actionId and revision are required for guidance');
+    const current = this.store.getWorkItem(id);
+    const graphMode = current?.workflowSnapshot?.executionMode === 'graph';
+    if (!expected.actionId || !Number.isInteger(expected.revision)
+        || (graphMode && !Number.isInteger(expected.generation))) {
+      throw new Error(`actionId, revision${graphMode ? ', and generation' : ''} are required for guidance`);
     }
     const detail = this.store.addActionGuidance(id, guidanceSummary, expected, (workItem, previous) => {
       const context = [...(previous.context || []), {
@@ -236,40 +193,69 @@ export class WorkflowController {
     return detail;
   }
 
+  message(id, input = {}) {
+    const text = typeof input.text === 'string' ? input.text.trim().slice(0, 8_000) : '';
+    if (!text) throw new Error('WorkItem message is required');
+    const revision = Number(input.revision);
+    if (!Number.isInteger(revision)) throw new Error('revision is required for WorkItem messages');
+    const detail = this.store.addWorkItemMessage(id, text, revision, (workItem, action) => (
+      actionInstruction(action, workItem, action.context || [], renderSessionContextSnapshot(workItem.sessionContext))
+    ));
+    if (!detail) throw new Error(`WorkItem not found: ${id}`);
+    return detail;
+  }
+
   input(id, input = {}) {
     const text = typeof input.text === 'string' ? input.text.trim().slice(0, 8_000) : '';
     const addedAttachmentCount = Math.max(0, Number(input.addedAttachmentCount) || 0);
     if (!text && addedAttachmentCount === 0) throw new Error('Action input or attachments are required');
     const workItem = this.store.getWorkItem(id);
     if (!workItem) throw new Error(`WorkItem not found: ${id}`);
-    if (['ready', 'running'].includes(workItem.status)) {
-      if (workItem.currentActionId !== input.actionId || workItem.revision !== input.revision) {
-        throw new Error('Action changed before input was applied; refresh and try again');
-      }
-      return this.guide(id, {
-        guidance: text,
-        actionId: input.actionId,
-        revision: input.revision,
-        addedAttachmentCount,
-        addedAttachments: input.addedAttachments,
-        attachments: input.attachments,
-      });
-    }
-    if (!['waiting', 'needs_attention'].includes(workItem.status)) {
-      throw new Error(`WorkItem in ${workItem.status} cannot accept Action input`);
-    }
     const targetAction = this.store.getAction(input.actionId);
     const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
     const targetMatches = graphMode
-      ? targetAction?.workItemId === id && ['waiting', 'failed'].includes(targetAction.status)
+      ? targetAction?.workItemId === id && targetAction.generation === input.generation
       : workItem.currentActionId === input.actionId;
     if (!targetMatches || workItem.revision !== input.revision) {
       throw new Error('Action changed before input was applied; refresh and try again');
     }
+    if (['ready', 'running'].includes(targetAction.status)) {
+      if (targetAction.status === 'running' && addedAttachmentCount > 0) {
+        throw new Error('Files cannot be added while an Action is running; send text now or wait for the next Action boundary');
+      }
+      const inputSummary = text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`;
+      return this.store.addActionInput(id, inputSummary, {
+        actionId: input.actionId,
+        generation: input.generation,
+        revision: input.revision,
+      }, (current, currentAction) => {
+        const context = [...(currentAction.context || []), {
+          type: 'input', role: 'user', summary: inputSummary, evidence: [],
+        }];
+        const step = {
+          type: currentAction.type,
+          stageId: currentAction.stageId || currentAction.type,
+          assignmentPolicy: currentAction.assignmentPolicy,
+          modelPolicy: currentAction.modelPolicy,
+          requiredRole: currentAction.requiredRole,
+          dependsOnStageIds: currentAction.dependsOnStageIds,
+          workspaceMode: currentAction.workspaceMode,
+          changesRequestedStageId: currentAction.changesRequestedStageId,
+          brief: currentAction.brief,
+        };
+        return {
+          context,
+          instruction: actionInstruction(step, current, context, renderSessionContextSnapshot(current.sessionContext)),
+        };
+      }, input.attachments, input.addedAttachments);
+    }
+    if (!['waiting', 'failed'].includes(targetAction.status)) {
+      throw new Error(`Action in ${targetAction.status} cannot accept input`);
+    }
     return this.retry(id, {
       answer: text,
       addedAttachmentCount,
-      expected: { actionId: input.actionId, revision: input.revision },
+      expected: { actionId: input.actionId, generation: input.generation, revision: input.revision },
       attachments: input.attachments,
       inputEvent: {
         text: text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`,
@@ -282,8 +268,8 @@ export class WorkflowController {
     const answer = typeof input.answer === 'string' ? input.answer.trim().slice(0, 8_000) : '';
     const addedAttachmentCount = Math.max(0, Number(input.addedAttachmentCount) || 0);
     const detail = this.store.retryWorkItemAtomic(id, (workItem, previous, previousRun) => {
-      if (workItem.status === 'waiting' && !answer && addedAttachmentCount === 0) {
-        throw new Error('answer or attachments are required to resume a waiting WorkItem');
+      if (previous?.status === 'waiting' && !answer && addedAttachmentCount === 0) {
+        throw new Error('answer or attachments are required to resume a waiting Action');
       }
       const step = previous
         ? {
@@ -333,17 +319,32 @@ export class WorkflowController {
     const activeAction = activeRun ? this.store.getAction(activeRun.actionId) : null;
     if (!activeRun || !activeAction) throw new Error('Run is stale, cancelled, or already finished');
     const activeWorkItem = this.store.getWorkItem(activeRun.workItemId);
+    if (activeRun.acceptingInput !== false
+        && !this.store.closeRunInput(runId, ownerBootId, leaseEpoch)) {
+      if (!this.store.isActiveRun(runId, ownerBootId, leaseEpoch)) {
+        throw new Error('Run is stale, cancelled, expired, or already finished');
+      }
+      throw new Error('Run has unconsumed Action input and cannot finish yet');
+    }
     const result = normalizeTerminalResult(rawResult, activeAction);
+    if (result.outcome === 'completed'
+        && activeAction.stageId?.startsWith('replan-')
+        && !result.replanMutation) {
+      result.outcome = 'failed';
+      result.error = 'Work Center replan triage must submit SubmitWorkItemReplan';
+    }
     validateCompletedResult(result, activeAction, activeWorkItem);
     let validatedGeneratedWorkflow = null;
     if (result.outcome === 'completed'
         && activeAction.type === 'triage'
+        && !activeAction.stageId?.startsWith('replan-')
         && activeRun
         && this.store.getWorkItem(activeRun.workItemId)?.workflowSnapshot?.planningMode === 'ai') {
       const current = this.store.getWorkItem(activeRun.workItemId);
       const effective = result.contractPatch
         ? {
             ...current,
+            title: result.contractPatch.title ?? current.title,
             goal: result.contractPatch.goal ?? current.goal,
             acceptanceCriteria: result.contractPatch.acceptanceCriteria ?? current.acceptanceCriteria,
           }
@@ -373,6 +374,27 @@ export class WorkflowController {
       } catch (error) {
         result.outcome = 'failed';
         result.error = error?.message || String(error);
+      }
+    }
+    let validatedReplanMutation = null;
+    let staleReplanMutation = null;
+    if (result.outcome === 'completed' && result.replanMutation) {
+      const currentWorkItem = this.store.getWorkItem(activeWorkItem.id);
+      if (Number(result.replanMutation.basePlanRevision) !== currentWorkItem.planRevision) {
+        staleReplanMutation = result.replanMutation;
+      } else {
+        try {
+          validatedReplanMutation = applyReplanMutation({
+            workItem: currentWorkItem,
+            action: activeAction,
+            actions: this.store.getWorkItemDetail(activeWorkItem.id).actions,
+            proposal: result.replanMutation,
+            availableVpIds: this.listAvailableVpIds?.(),
+          });
+        } catch (error) {
+          result.outcome = 'failed';
+          result.error = error?.message || String(error);
+        }
       }
     }
     if (result.outcome === 'completed' && result.replanRequest) {
@@ -426,9 +448,13 @@ export class WorkflowController {
             actionStatus: 'failed',
             workItemStatus: 'needs_attention',
             keepCurrentAction: true,
-            eventType: 'action.failed',
+            eventType: result.failureKind === 'system_blocked' ? 'action.system_blocked' : 'action.failed',
             graphAdvance: workItem.workflowSnapshot?.executionMode === 'graph',
-            eventData: { error: result.error },
+            eventData: {
+              error: result.error,
+              failureKind: result.failureKind,
+              failureCode: result.failureCode,
+            },
           };
         }
 
@@ -436,6 +462,7 @@ export class WorkflowController {
         const effectiveWorkItem = contractPatch
           ? {
               ...workItem,
+              title: contractPatch.title ?? workItem.title,
               goal: contractPatch.goal ?? workItem.goal,
               acceptanceCriteria: contractPatch.acceptanceCriteria ?? workItem.acceptanceCriteria,
               revision: workItem.revision + 1,
@@ -458,6 +485,36 @@ export class WorkflowController {
             : effectiveWorkItem;
         const context = [...(action.context || []), contextEntry(action, result, activeRun)];
         if (plannedWorkItem.workflowSnapshot?.executionMode === 'graph') {
+          if (staleReplanMutation) {
+            return {
+              actionStatus: 'completed', workItemStatus: 'needs_attention', graphAdvance: false,
+              keepCurrentAction: true,
+              planConflict: {
+                kind: 'plan_revision',
+                proposalId: staleReplanMutation.proposalId,
+                expectedPlanRevision: staleReplanMutation.basePlanRevision,
+                actualPlanRevision: workItem.planRevision,
+              },
+              eventType: 'workflow.plan_conflict',
+              eventData: { proposalId: staleReplanMutation.proposalId },
+            };
+          }
+          if (validatedReplanMutation) {
+            return {
+              actionStatus: 'completed', workItemStatus: 'ready', graphAdvance: true,
+              workflowSnapshot: validatedReplanMutation.workflowSnapshot,
+              expectedPlanRevision: validatedReplanMutation.basePlanRevision,
+              proposalId: validatedReplanMutation.proposalId,
+              replanMutation: validatedReplanMutation,
+              eventType: 'workflow.replanned',
+              eventData: {
+                retainedActionCount: validatedReplanMutation.retain.length,
+                replacedActionCount: validatedReplanMutation.replace.length,
+                removedActionCount: validatedReplanMutation.remove.length,
+                addedActionCount: validatedReplanMutation.add.length,
+              },
+            };
+          }
           if (result.replanRequest) {
             const replanStage = {
               ...plannedWorkItem.workflowSnapshot.stages[0],

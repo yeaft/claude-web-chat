@@ -7,6 +7,11 @@ import { clearSessionLoading } from './session.js';
 // Pending ensureConnected resolvers — settled by onopen/timeout
 let _connectResolvers = [];
 
+function isAuthenticationClose(event) {
+  return event?.code === 1008
+    && String(event.reason || '').toLowerCase().includes('authentication');
+}
+
 function _settleConnectResolvers(success) {
   const resolvers = _connectResolvers;
   _connectResolvers = [];
@@ -120,8 +125,10 @@ export function connect(store) {
   }
 
   const authToken = authStore.getActiveToken?.() || authStore.token || null;
+  const authGeneration = authStore.authGeneration;
 
-  if (store.ws && store.ws.readyState === WebSocket.CONNECTING && store._wsAuthToken === authToken) {
+  if (store.ws && store.ws.readyState === WebSocket.CONNECTING
+      && store._wsAuthToken === authToken && store._wsAuthGeneration === authGeneration) {
     console.log('[WS] Already connecting, skip');
     return;
   }
@@ -138,6 +145,7 @@ export function connect(store) {
   console.log(`[WS] Connecting... (attempt ${store.reconnectAttempts + 1})`);
 
   store._wsAuthToken = authToken;
+  store._wsAuthGeneration = authGeneration;
   let wsUrl = `${protocol}//${location.host}?type=web`;
   if (authToken) {
     wsUrl += `&token=${encodeURIComponent(authToken)}`;
@@ -176,7 +184,7 @@ export function connect(store) {
     const msg = store.parseWsMessage(event.data);
     if (msg) {
       if (msg.type === 'file_content') console.log('[WS.onmessage] Received file_content, path:', msg.filePath, 'contentLen:', msg.content?.length);
-      store.handleMessage({ ...msg, _wsAuthToken: authToken });
+      store.handleMessage({ ...msg, _wsAuthToken: authToken, _wsAuthGeneration: authGeneration });
     } else {
       console.warn('[WS.onmessage] parseWsMessage returned null, raw data length:', event.data?.length);
     }
@@ -184,7 +192,7 @@ export function connect(store) {
 
   socket.onclose = (event) => {
     if (socket !== store.ws) {
-      if (event.code === 1008) authStore.handleAuthFailure?.(undefined, authToken);
+      if (isAuthenticationClose(event)) authStore.handleAuthFailure?.(undefined, authToken, authGeneration);
       return;
     }
     console.log('[WS] Disconnected:', event.code, event.reason);
@@ -194,9 +202,9 @@ export function connect(store) {
     store.stopHeartbeat();
     clearSessionLoading(store);
 
-    if (event.code === 1008) {
+    if (isAuthenticationClose(event)) {
       console.log('[WS] Auth failure, clearing token and resetting auth state');
-      authStore.handleAuthFailure?.(undefined, authToken);
+      authStore.handleAuthFailure?.(undefined, authToken, authGeneration);
       store.reconnectAttempts = 0;
       _settleConnectResolvers(false);
       return;

@@ -3,11 +3,13 @@ import { existsSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { ActiveMemorySet } from '../../../agent/yeaft/memory/ams.js';
-import { Engine, buildResidentEntries } from '../../../agent/yeaft/engine.js';
+import { filterMemoryPromptTextForPrompt } from '../../../agent/yeaft/memory/prompt-cleanup.js';
+import { Engine, buildResidentEntries, selectResidentTopicScopes } from '../../../agent/yeaft/engine.js';
 import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
 import { writeSummary } from '../../../agent/yeaft/memory/store.js';
 import { NullTrace, DebugTrace } from '../../../agent/yeaft/debug-trace.js';
+import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
 
 // ─── Mock Adapter ─────────────────────────────────────────────
 
@@ -135,6 +137,112 @@ describe('Engine memory prompt hygiene', () => {
     expect(snap.resident.map(entry => entry.summary)).toEqual([summary]);
     expect(snap.onDemand.map(seg => seg.body)).toEqual([detail]);
   });
+
+  it('drops unrelated transient work-item state from the prompt snapshot', () => {
+    const ams = new ActiveMemorySet({
+      budget: { total: 1000, resident: 500, recent: 200, onDemand: 300 },
+    });
+    ams.setResident([
+      {
+        scope: 'sessions/s1',
+        summary: [
+          'Reusable Dream memory rule: topic recall must stay precise.',
+          '',
+          'Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
+        ].join('\n'),
+      },
+    ]);
+    ams.setOnDemand([
+      {
+        id: 'billing-work-item',
+        scope: 'sessions/s1/topic/billing',
+        body: 'Work Item #884: billing dashboard export is in progress and awaiting review.',
+        kind: 'context',
+        tags: [],
+        sourceMessages: [],
+      },
+      {
+        id: 'dream-rule',
+        scope: 'sessions/s1/topic/dream',
+        body: 'Dream memory relevance should keep stable topic recall facts available.',
+        kind: 'context',
+        tags: [],
+        sourceMessages: [],
+      },
+    ]);
+
+    const snap = ams.snapshot({ userMsg: '优化 Dream memory relevance，减少无关状态' });
+
+    expect(snap.resident.map(entry => entry.summary)).toEqual([
+      'Reusable Dream memory rule: topic recall must stay precise.',
+    ]);
+    expect(snap.onDemand.map(seg => seg.body)).toEqual([
+      'Dream memory relevance should keep stable topic recall facts available.',
+    ]);
+  });
+
+  it('keeps transient work-item state when the user asks about the same task', () => {
+    const ams = new ActiveMemorySet({
+      budget: { total: 1000, resident: 500, recent: 200, onDemand: 300 },
+    });
+    ams.setOnDemand([
+      {
+        id: 'billing-work-item',
+        scope: 'sessions/s1/topic/billing',
+        body: 'Work Item #884: billing dashboard export is in progress and awaiting review.',
+        kind: 'context',
+        tags: [],
+        sourceMessages: [],
+      },
+    ]);
+
+    const snap = ams.snapshot({ userMsg: '继续 billing dashboard export 的 work item' });
+
+    expect(snap.onDemand.map(seg => seg.body)).toEqual([
+      'Work Item #884: billing dashboard export is in progress and awaiting review.',
+    ]);
+  });
+
+  it('keeps stable markdown bullets when a sibling transient bullet is unrelated', () => {
+    const filtered = filterMemoryPromptTextForPrompt(
+      [
+        '- Stable preference: user wants Dream memory topic labels compact.',
+        '- Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
+      ].join('\n'),
+      '优化 Dream memory relevance，减少无关状态',
+    );
+
+    expect(filtered).toBe('- Stable preference: user wants Dream memory topic labels compact.');
+  });
+
+  it('keeps related transient markdown bullets alongside stable bullets', () => {
+    const filtered = filterMemoryPromptTextForPrompt(
+      [
+        '- Stable preference: user wants Dream memory topic labels compact.',
+        '- Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
+      ].join('\n'),
+      '继续 billing dashboard export 的 work item',
+    );
+
+    expect(filtered).toBe([
+      '- Stable preference: user wants Dream memory topic labels compact.',
+      '- Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
+    ].join('\n'));
+  });
+
+  it('loads resident topic summaries only for topics recalled or named this turn', () => {
+    expect(selectResidentTopicScopes([
+      'sessions/s1/topic/dream/relevance',
+      'sessions/s1/topic/dream/recall',
+      'sessions/s1/topic/billing/export',
+    ], [
+      { scope: 'sessions/s1/topic/dream/relevance', body: 'Relevant Dream memory.' },
+      { scope: 'sessions/s1', body: 'Session memory.' },
+    ], 'please inspect dream recall')).toEqual([
+      'sessions/s1/topic/dream/relevance',
+      'sessions/s1/topic/dream/recall',
+    ]);
+  });
 });
 
 describe('Engine', () => {
@@ -147,6 +255,18 @@ describe('Engine', () => {
       });
       expect(engine.traceId).toBeTruthy();
       expect(typeof engine.traceId).toBe('string');
+    });
+
+    it('refreshes the fast-model config without rebuilding the engine', () => {
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'old-primary', fastModelId: 'old-fast', maxOutputTokens: 1024 },
+      });
+
+      engine.refreshConfig({ model: 'new-primary', fastModelId: 'new-fast', maxOutputTokens: 2048 });
+
+      expect(engine.fastConfig).toMatchObject({ model: 'new-fast', maxOutputTokens: 2048 });
     });
   });
 
@@ -324,6 +444,397 @@ describe('Engine', () => {
       expect(turnEnd.turnNumber).toBe(1);
     });
 
+    it('persists the user row before starting the LLM request', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-user-prewrite-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const adapter = {
+          async *stream() {
+            const persisted = conversationStore.loadRecentBySession('session-prewrite', 10);
+            expect(persisted).toHaveLength(1);
+            expect(persisted[0]).toMatchObject({
+              role: 'user',
+              content: 'persist before request',
+              sessionId: 'session-prewrite',
+              threadId: 'main',
+              userAuthored: true,
+            });
+            throw new Error('provider failed before replying');
+          },
+        };
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'persist before request',
+          sessionId: 'session-prewrite',
+        })) events.push(event);
+
+        expect(events.find(event => event.type === 'error')).toBeTruthy();
+        expect(conversationStore.loadRecentBySession('session-prewrite', 10)).toHaveLength(1);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists partial assistant text when the provider fails mid-stream', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-partial-persist-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const adapter = {
+          async *stream() {
+            yield { type: 'text_delta', text: 'partial reply' };
+            throw new Error('stream disconnected');
+          },
+        };
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+          vpId: 'vp-linus',
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'hello',
+          sessionId: 'session-partial',
+          vpTurnId: 'vp-turn-partial',
+        })) {
+          // consume
+        }
+
+        expect(conversationStore.loadRecentBySession('session-partial', 10)).toEqual([
+          expect.objectContaining({ role: 'user', content: 'hello' }),
+          expect.objectContaining({
+            role: 'assistant',
+            content: 'partial reply',
+            turnId: 'vp-turn-partial',
+            speakerVpId: 'vp-linus',
+            incomplete: true,
+            stopReason: 'error',
+          }),
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists partial assistant text when the user aborts mid-stream', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-partial-abort-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const controller = new AbortController();
+        const adapter = {
+          async *stream() {
+            yield { type: 'text_delta', text: 'partial before stop' };
+            controller.abort('user');
+          },
+        };
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+          vpId: 'vp-linus',
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'stop this',
+          signal: controller.signal,
+          sessionId: 'session-partial-abort',
+          vpTurnId: 'vp-turn-abort',
+        })) events.push(event);
+
+        expect(events.filter(event => event.type === 'aborted')).toHaveLength(1);
+        expect(conversationStore.loadRecentBySession('session-partial-abort', 10)).toEqual([
+          expect.objectContaining({ role: 'user', content: 'stop this' }),
+          expect.objectContaining({
+            role: 'assistant',
+            content: 'partial before stop',
+            turnId: 'vp-turn-abort',
+            speakerVpId: 'vp-linus',
+            incomplete: true,
+            stopReason: 'aborted',
+          }),
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists completed assistant and tool records before a later LLM loop fails', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-tool-incremental-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'call_incremental', name: 'durable_tool', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'error', error: new Error('second request failed'), retryable: false },
+        ]);
+        const rawToolOutput = 'tool output that must survive';
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+          vpId: 'vp-linus',
+        });
+        engine.registerTool({
+          name: 'durable_tool',
+          description: 'returns durable output',
+          parameters: { type: 'object', properties: {} },
+          execute: async () => rawToolOutput,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'use the tool',
+          sessionId: 'session-tool-incremental',
+          vpTurnId: 'vp-turn-tool',
+        })) {
+          // consume
+        }
+
+        const persisted = conversationStore.loadRecentBySession('session-tool-incremental', 10);
+        expect(persisted.map(message => message.role)).toEqual(['user', 'assistant', 'tool']);
+        expect(persisted[1]).toMatchObject({
+          toolCalls: [expect.objectContaining({ id: 'call_incremental', name: 'durable_tool' })],
+          turnId: 'vp-turn-tool',
+        });
+        expect(persisted[2]).toMatchObject({
+          toolCallId: 'call_incremental',
+          content: rawToolOutput,
+          turnId: 'vp-turn-tool',
+          speakerVpId: 'vp-linus',
+        });
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists a T1 folding reflection and hides the original tool arc after restart', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-t1-fold-persist-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const adapter = new MockAdapter();
+        adapter.call = async () => ({
+          text: 'durable reflection summary',
+          usage: { inputTokens: 10, outputTokens: 5 },
+        });
+        adapter.pushResponse([
+          ...Array.from({ length: 30 }, (_, index) => ({
+            type: 'tool_call',
+            id: `call_fold_${index}`,
+            name: 'fold_tool',
+            input: { index },
+          })),
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'finished after fold' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 1000 },
+          conversationStore,
+          yeaftDir,
+        });
+        engine.registerTool({
+          name: 'fold_tool',
+          description: 'returns one result',
+          parameters: { type: 'object', properties: { index: { type: 'number' } } },
+          execute: async ({ index }) => `result ${index}`,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'run thirty tools',
+          sessionId: 'session-t1-fold',
+        })) {
+          // consume
+        }
+
+        const restarted = new ConversationStore(yeaftDir);
+        const durable = restarted.loadRecentBySession(
+          'session-t1-fold',
+          Infinity,
+          { includeReflections: true },
+        );
+        expect(durable.filter(message => message._reflection)).toEqual([
+          expect.objectContaining({ content: expect.stringContaining('durable reflection summary') }),
+        ]);
+        expect(durable.some(message => message.role === 'tool')).toBe(false);
+        expect(durable.some(message => Array.isArray(message.toolCalls) && message.toolCalls.length > 0)).toBe(false);
+        expect(durable.at(-1)).toMatchObject({ role: 'assistant', content: 'finished after fold' });
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists a T2 carry-forward reflection and hides the original tool arc after restart', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-t2-fold-persist-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const adapter = new MockAdapter();
+        adapter.call = async () => ({
+          text: 'durable t2 reflection summary',
+          usage: { inputTokens: 10, outputTokens: 5 },
+        });
+        adapter.pushResponse([
+          ...Array.from({ length: 9 }, (_, index) => ({
+            type: 'tool_call',
+            id: `call_t2_fold_${index}`,
+            name: 't2_fold_tool',
+            input: { index },
+          })),
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'first turn finished' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'second turn finished' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 1000 },
+          conversationStore,
+          yeaftDir,
+        });
+        engine.registerTool({
+          name: 't2_fold_tool',
+          description: 'returns one result',
+          parameters: { type: 'object', properties: { index: { type: 'number' } } },
+          execute: async ({ index }) => `result ${index}`,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'run nine tools',
+          sessionId: 'session-t2-fold',
+        })) {
+          // consume
+        }
+        await Promise.resolve();
+        const firstTurn = conversationStore.loadRecentBySession('session-t2-fold', Infinity);
+        for await (const _event of engine.query({
+          prompt: 'continue after t2',
+          messages: firstTurn,
+          sessionId: 'session-t2-fold',
+        })) {
+          // consume
+        }
+
+        const restarted = new ConversationStore(yeaftDir);
+        const durable = restarted.loadRecentBySession(
+          'session-t2-fold',
+          Infinity,
+          { includeReflections: true },
+        );
+        expect(durable.filter(message => message._reflection)).toEqual([
+          expect.objectContaining({ content: expect.stringContaining('durable t2 reflection summary') }),
+        ]);
+        expect(durable.some(message => message.role === 'tool')).toBe(false);
+        expect(durable.some(message => Array.isArray(message.toolCalls) && message.toolCalls.length > 0)).toBe(false);
+        expect(durable.at(-1)).toMatchObject({ role: 'assistant', content: 'second turn finished' });
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists a normal turn once without end-of-turn duplicates', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-no-persist-duplicates-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'one reply' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'one prompt',
+          sessionId: 'session-no-duplicates',
+        })) {
+          // consume
+        }
+
+        expect(conversationStore.loadRecentBySession('session-no-duplicates', 10).map(message => ({
+          role: message.role,
+          content: message.content,
+        }))).toEqual([
+          { role: 'user', content: 'one prompt' },
+          { role: 'assistant', content: 'one reply' },
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists the max-token continuation boundary before the next request fails', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-continue-persist-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'first part' },
+          { type: 'stop', stopReason: 'max_tokens' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'error', error: new Error('continuation request failed'), retryable: false },
+        ]);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'write a long answer',
+          sessionId: 'session-continue-persist',
+        })) {
+          // consume
+        }
+
+        expect(conversationStore.loadRecentBySession('session-continue-persist', 10).map(message => ({
+          role: message.role,
+          content: message.content,
+          userAuthored: message.userAuthored,
+        }))).toEqual([
+          { role: 'user', content: 'write a long answer', userAuthored: true },
+          { role: 'assistant', content: 'first part', userAuthored: undefined },
+          { role: 'user', content: 'Continue', userAuthored: false },
+        ]);
+        expect(conversationStore.loadVisibleBySession('session-continue-persist', null, 10).messages).toEqual([
+          expect.objectContaining({ role: 'user', content: 'write a long answer', userAuthored: true }),
+          expect.objectContaining({ role: 'assistant', content: 'first part' }),
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
     it('persists assistant rows with the caller-provided VP turn id', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-vp-turn-id-'));
       try {
@@ -407,7 +918,7 @@ describe('Engine', () => {
 
       const events = [];
       for await (const event of engine.query({
-        prompt: 'test',
+        prompt: 'dream recall test',
         sessionId: 'g1',
         vpPersona: { vpId: 'vp1', name: 'VP One' },
       })) {
@@ -540,6 +1051,127 @@ describe('Engine', () => {
       expect(secondCall.messages[1].toolCalls).toHaveLength(1);
       expect(secondCall.messages[2].role).toBe('tool');
       expect(secondCall.messages[2].toolCallId).toBe('call_1');
+    });
+
+    it('passes the active tool call identity to interactive AskUser hosts', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_ask', name: 'ask_test', input: { question: 'Continue?' } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'Continuing.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const askUser = async (_input, toolCall) => JSON.stringify(toolCall);
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+      engine.registerTool({
+        name: 'ask_test',
+        description: 'Ask through the host',
+        parameters: {},
+        execute: async (input, ctx) => ctx.askUser(input),
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'ask me', askUser })) events.push(event);
+
+      const toolEnd = events.find(event => event.type === 'tool_end');
+      expect(JSON.parse(toolEnd.output)).toMatchObject({
+        id: 'call_ask',
+        name: 'ask_test',
+      });
+    });
+
+    it('marks structured tool error envelopes as failed executions', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_structured_error', name: 'structured_error_tool', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'The tool returned an error.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const records = [];
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolStats: { record: entry => records.push(entry) },
+      });
+      engine.registerTool({
+        name: 'structured_error_tool',
+        description: 'Returns a structured failure',
+        parameters: {},
+        errorOutput: 'json-error-envelope',
+        execute: async () => JSON.stringify({ error: 'Path not found' }),
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'use the tool' })) events.push(event);
+
+      expect(events.find(event => event.type === 'tool_end')).toMatchObject({ isError: true });
+      expect(events.find(event => event.type === 'tool_exec')).toMatchObject({ isError: true });
+      expect(mockAdapter.callLog[1].messages.find(message => message.role === 'tool')).toMatchObject({ isError: true });
+      expect(records).toEqual([
+        expect.objectContaining({ name: 'structured_error_tool', isError: true, errorMessage: '{"error":"Path not found"}' }),
+      ]);
+    });
+
+    it('propagates resolved MCP isError results through events, model messages, and stats', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_mcp_error', name: 'mcp__secure__read', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'The MCP tool failed.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const records = [];
+      const mcpManager = {
+        listTools: () => [{
+          name: 'secure__read',
+          server: 'secure',
+          description: 'Read protected data',
+          inputSchema: { type: 'object', properties: {} },
+        }],
+        callTool: async () => ({
+          isError: true,
+          content: [{ type: 'text', text: 'permission denied' }],
+        }),
+      };
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolStats: { record: entry => records.push(entry) },
+      });
+      for (const tool of buildMcpFlattenedTools(mcpManager)) engine.registerTool(tool);
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'read protected data' })) events.push(event);
+
+      expect(events.find(event => event.type === 'tool_end')).toMatchObject({
+        output: 'Error: permission denied',
+        isError: true,
+      });
+      expect(events.find(event => event.type === 'tool_exec')).toMatchObject({ isError: true });
+      expect(mockAdapter.callLog[1].messages.find(message => message.role === 'tool')).toMatchObject({
+        content: 'Error: permission denied',
+        isError: true,
+      });
+      expect(records).toEqual([
+        expect.objectContaining({
+          name: 'mcp__secure__read',
+          isError: true,
+          errorMessage: 'Error: permission denied',
+        }),
+      ]);
     });
 
     it('should handle tool execution errors gracefully', async () => {
@@ -1078,36 +1710,58 @@ describe('Engine', () => {
       expect(events).not.toContainEqual(expect.objectContaining({ type: 'turn_end', stopReason: 'end_turn' }));
     });
 
-    it('stops retrying when aborted mid-backoff', async () => {
-      const { LLMRateLimitError } = await import('../../../agent/yeaft/llm/adapter.js');
-      const controller = new AbortController();
-      let attempts = 0;
-      const engine = new Engine({
-        adapter: {
-          async *stream() {
-            attempts += 1;
-            throw new LLMRateLimitError('slow down', 429, 5_000);
+    it('stops retrying when aborted mid-backoff and persists visible partial text once', async () => {
+      const { LLMServerError } = await import('../../../agent/yeaft/llm/adapter.js');
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-retry-abort-partial-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const controller = new AbortController();
+        let attempts = 0;
+        const engine = new Engine({
+          adapter: {
+            async *stream() {
+              attempts += 1;
+              yield { type: 'text_delta', text: 'visible partial before retry' };
+              throw new LLMServerError('temporary upstream failure', 503);
+            },
           },
-        },
-        trace,
-        config: {
-          model: 'test-model',
-          maxOutputTokens: 1024,
-          llmRetry: { maxRetries: 3, baseDelayMs: 10, maxDelayMs: 5_000, jitterRatio: 0 },
-        },
-      });
+          trace,
+          conversationStore,
+          yeaftDir,
+          config: {
+            model: 'test-model',
+            maxOutputTokens: 1024,
+            llmRetry: { maxRetries: 3, baseDelayMs: 5_000, maxDelayMs: 5_000, jitterRatio: 0 },
+          },
+        });
 
-      // Abort right after the first retry event lands.
-      setTimeout(() => controller.abort('test'), 20);
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'hi',
+          signal: controller.signal,
+          sessionId: 'session-retry-abort',
+          vpTurnId: 'turn-retry-abort',
+        })) {
+          events.push(event);
+          if (event.type === 'llm_retry') controller.abort('test');
+        }
 
-      const events = [];
-      for await (const event of engine.query({ prompt: 'hi', signal: controller.signal })) {
-        events.push(event);
+        expect(attempts).toBe(1);
+        expect(events.some(e => e.type === 'llm_retry')).toBe(true);
+        expect(events.some(e => e.type === 'aborted')).toBe(true);
+        expect(conversationStore.loadRecentBySession('session-retry-abort', Infinity)).toEqual([
+          expect.objectContaining({ role: 'user', content: 'hi' }),
+          expect.objectContaining({
+            role: 'assistant',
+            content: 'visible partial before retry',
+            incomplete: true,
+            stopReason: 'aborted',
+            turnId: 'turn-retry-abort',
+          }),
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
       }
-
-      expect(attempts).toBe(1);
-      expect(events.some(e => e.type === 'llm_retry')).toBe(true);
-      expect(events.some(e => e.type === 'aborted')).toBe(true);
     });
   });
 

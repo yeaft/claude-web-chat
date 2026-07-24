@@ -5,6 +5,7 @@ import {
   projectActionRequestIndex,
   projectWorkCenterEvent,
   projectWorkItemDetail,
+  projectWorkItemSummary,
   MAX_WORK_ITEM_BROWSER_DTO_BYTES,
 } from '../../../../agent/yeaft/work-center/projection.js';
 import {
@@ -64,6 +65,61 @@ function internalDetail() {
 }
 
 describe('Work Center event projection', () => {
+  it('projects mutually exclusive Board lanes with mixed Action counts and real executors', () => {
+    const detail = internalDetail();
+    detail.status = 'running';
+    detail.actions = [{
+      id: 'running-action', sequence: 1, type: 'implement', stageId: 'implement', status: 'running',
+      brief: { objective: 'Implement the fix' },
+    }, {
+      id: 'failed-action', sequence: 2, type: 'test', stageId: 'test', status: 'failed',
+      brief: { objective: 'Verify the fix' },
+    }];
+    detail.runs = [{
+      id: 'run-active', actionId: 'running-action', workItemId: detail.id, status: 'running', startedAt: 10,
+      vpSnapshot: { id: 'linus', name: 'Linus', private: 'omit' },
+    }, {
+      id: 'run-failed', actionId: 'failed-action', workItemId: detail.id, status: 'failed', startedAt: 11,
+      vpSnapshot: { id: 'martin', name: 'Martin', private: 'omit' },
+    }];
+
+    expect(projectWorkItemSummary(detail)).toMatchObject({
+      boardLane: 'needs_attention',
+      actionCounts: { completed: 0, running: 1, ready: 0, waiting: 0, failed: 1 },
+      attentionAction: { id: 'failed-action', status: 'failed', assignedVp: { id: 'martin', name: 'Martin' } },
+      activeAction: { id: 'running-action', status: 'running', assignedVp: { id: 'linus', name: 'Linus' } },
+      executors: [{ id: 'linus', name: 'Linus' }, { id: 'martin', name: 'Martin' }],
+    });
+    expect(JSON.stringify(projectWorkItemSummary(detail))).not.toContain('private');
+    expect(projectWorkItemSummary({ ...detail, status: 'done' }).boardLane).toBe('closed');
+    expect(projectWorkItemSummary({ ...detail, status: 'ready', actions: [detail.actions[0]] }).boardLane).toBe('active');
+  });
+
+  it('projects identical Board fields for list summaries and live events', () => {
+    const detail = internalDetail();
+    const summary = projectWorkItemSummary(detail);
+    const eventSummary = projectWorkCenterEvent({ type: 'work_item.updated', workItem: detail }).workItem;
+    for (const key of ['boardLane', 'actionCounts', 'attentionAction', 'activeAction', 'executors']) {
+      expect(eventSummary[key]).toEqual(summary[key]);
+    }
+  });
+
+  it('projects list Action progress without exposing execution detail', () => {
+    const detail = internalDetail();
+    detail.actions.push({
+      id: 'a-2', workItemId: 'wi-1', sequence: 2, type: 'implement', stageId: 'implement',
+      status: 'running', createdAt: 2, updatedAt: 3,
+    });
+    detail.currentActionId = 'a-2';
+
+    expect(projectWorkItemSummary(detail)).toMatchObject({
+      id: 'wi-1',
+      actionCount: 2,
+      completedActionCount: 1,
+      currentAction: { id: 'a-2', type: 'implement', status: 'running' },
+    });
+  });
+
   it('broadcasts list state plus safe live Action response and aggregate counts', () => {
     const detail = internalDetail();
     const projected = projectWorkCenterEvent({ type: 'run.finished', workItem: detail });
@@ -73,6 +129,8 @@ describe('Work Center event projection', () => {
     });
     expect(projected.workItem.actionStats).toEqual([{
       id: 'a-1', status: 'completed',
+      assignedVp: { id: 'martin', name: 'Martin' },
+      contentSummary: 'Reviewed the change and found one compatibility decision.',
       executionStats: {
         llmRequestCount: 5, loopCount: 3, toolCount: 8,
         inputTokens: 300, outputTokens: 75, cacheReadTokens: 30, cacheWriteTokens: 15,
@@ -116,6 +174,8 @@ describe('Work Center event projection', () => {
         id: 'a-1', sequence: 1, type: 'review', stageId: 'review',
         assignmentPolicy: { mode: 'auto', capability: 'review', fixedVpId: null },
         status: 'completed',
+        assignedVp: { id: 'martin', name: 'Martin' },
+        contentSummary: 'Reviewed the change and found one compatibility decision.',
         executionStats: {
           llmRequestCount: 5, loopCount: 3, toolCount: 8,
           inputTokens: 300, outputTokens: 75, cacheReadTokens: 30, cacheWriteTokens: 15,
@@ -138,6 +198,102 @@ describe('Work Center event projection', () => {
     ]) {
       expect(wire).not.toContain(secret);
     }
+  });
+
+  it('projects a bounded Mainline browser view without execution internals', () => {
+    const detail = internalDetail();
+    Object.assign(detail, {
+      executionSchemaVersion: 2,
+      lifecycle: 'active',
+      attentionState: 'waiting',
+      activeActionIds: [],
+      attentionActionIds: ['a-1'],
+      planRevision: 4,
+      ledgerRevision: 9,
+    });
+    Object.assign(detail.actions[0], {
+      generation: 3,
+      specHash: 'review-v3',
+      dependsOnStageIds: ['implement'],
+      status: 'waiting',
+      resultRunId: 'r-2',
+      contextSnapshot: { secret: 'large internal snapshot' },
+    });
+    Object.assign(detail.runs[0], {
+      actionGeneration: 3,
+      actionSpecHash: 'review-v3',
+      executionManifest: { schemaVersion: 2, actionGeneration: 3, actionSpecHash: 'review-v3' },
+      reviewDecision: 'changes_requested',
+      evidence: [{ kind: 'test', label: 'Focused tests', ref: 'projection.test.js', stdout: 'raw output' }],
+      debug: { secret: true },
+      path: '/private/result',
+    });
+
+    const projected = projectWorkItemDetail(detail);
+    expect(projected.mainline).toEqual({
+      contract: { title: 'Fix', goal: 'Goal', acceptanceCriteria: ['Safe detail'] },
+      progress: {
+        lifecycle: 'active', attentionState: 'waiting', activeActionIds: [],
+        attentionActionIds: ['a-1'], frontierActionIds: [],
+        counts: { completed: 0, running: 0, ready: 0, waiting: 1, failed: 0 },
+      },
+      actions: [{
+        id: 'a-1', stageId: 'review', type: 'review', status: 'waiting', generation: 3,
+        brief: detail.actions[0].brief, dependencies: ['implement'],
+        canonicalResult: {
+          status: 'waiting', summary: 'Review needs a compatibility choice',
+          evidence: [{ kind: 'test', label: 'Focused tests', ref: 'projection.test.js' }],
+          waitingReason: 'Choose the compatibility behavior', reviewDecision: 'changes_requested',
+        },
+      }],
+    });
+    expect(projected.actions[0]).toMatchObject(projected.mainline.actions[0]);
+    const wire = JSON.stringify(projected.mainline);
+    for (const forbidden of ['runs', 'events', 'debug', 'path', 'contextSnapshot', 'raw output', '/private/result', 'runId']) {
+      expect(wire).not.toContain(forbidden);
+    }
+  });
+
+  it('redacts canonical Mainline result diagnostics before browser projection', () => {
+    const detail = internalDetail();
+    detail.executionSchemaVersion = 2;
+    Object.assign(detail.actions[0], { generation: 1, specHash: 'review-v1', resultRunId: 'r-2' });
+    Object.assign(detail.runs[0], {
+      status: 'completed',
+      summary: 'Saved /home/user/private.txt and \\\\server\\private share and \\\\?\\C:\\secret dir and file://server/private/path with token=secret-value',
+      evidence: [{ kind: 'file://server/private/kind', label: '\\\\server\\private\\label api_key=secret', ref: 'file://server/private/ref', status: '\\\\?\\C:\\private\\status' }],
+      executionManifest: { schemaVersion: 2, actionGeneration: 1, actionSpecHash: 'review-v1' },
+    });
+
+    const wire = JSON.stringify(projectWorkItemDetail(detail).mainline);
+    for (const secret of ['/home/user/private.txt', 'secret-value', 'api_key=secret', '\\\\server\\private', '\\\\?\\C:\\private', 'file://server/private']) {
+      expect(wire).not.toContain(secret);
+    }
+    expect(wire).toContain('[path redacted]');
+  });
+
+  it('does not project generic Action-type fallback text as AI planning', () => {
+    const detail = internalDetail();
+    detail.actions[0].type = 'triage';
+    detail.actions[0].brief = {
+      objective: 'Turn the request into a precise, executable Work Item contract and plan.',
+      approach: 'Inspect the relevant facts, resolve scope and risks, then select the smallest reliable Action sequence.',
+      expectedOutcome: 'A frozen Work Item type, validated contract, and executable Action plan.',
+    };
+
+    expect(projectWorkItemDetail(detail).actions[0].brief).toBeNull();
+  });
+
+  it('does not project a partially generic brief as AI planning', () => {
+    const detail = internalDetail();
+    detail.actions[0].type = 'review';
+    detail.actions[0].brief = {
+      objective: 'Review this exact Work Center picker change',
+      approach: 'Prioritize correctness, security, data loss, compatibility, and missing tests over style preferences.',
+      expectedOutcome: 'A task-specific decision for the picker change',
+    };
+
+    expect(projectWorkItemDetail(detail).actions[0].brief).toBeNull();
   });
 
   it('projects a bounded, redacted failure diagnostic without exposing other Run internals', () => {
@@ -206,6 +362,123 @@ describe('Work Center event projection', () => {
     });
   });
 
+  it('isolates Action transcript and execution stats to the current generation', () => {
+    const detail = internalDetail();
+    detail.actions[0].generation = 2;
+    detail.actions[0].specHash = 'review-v2';
+    detail.actions[0].identityHistory = [
+      { generation: 1, specHash: 'review-v1' },
+      { generation: 2, specHash: 'review-v2' },
+    ];
+    detail.runs = [{
+      ...detail.runs[0], id: 'current-run', actionGeneration: 2, actionSpecHash: 'review-v2', actionAttempt: 1,
+      response: 'Current generation response', loopCount: 2, toolCount: 3,
+    }, {
+      ...detail.runs[1], id: 'wrong-spec-run', actionGeneration: 2, actionSpecHash: 'review-other', actionAttempt: 2,
+      response: 'Wrong spec response', loopCount: 40, toolCount: 45,
+    }, {
+      ...detail.runs[1], id: 'old-run', actionGeneration: 1, actionSpecHash: 'review-v1', actionAttempt: 4,
+      response: 'Old generation response', loopCount: 50, toolCount: 60,
+    }];
+    detail.events = [{
+      id: 1, actionId: 'a-1', actionGeneration: 1, type: 'action.input_added',
+      data: { text: 'Old generation input' }, createdAt: 1,
+    }, {
+      id: 2, actionId: 'a-1', actionGeneration: 2, type: 'action.input_added',
+      data: { text: 'Current generation input' }, createdAt: 2,
+    }];
+
+    const projected = projectWorkItemDetail(detail).actions[0];
+    expect(projected).toMatchObject({
+      generation: 2,
+      response: 'Current generation response',
+      executionStats: { loopCount: 2, toolCount: 3 },
+    });
+    expect(projected.messages.map(message => message.text))
+      .toEqual(['Current generation input', 'Current generation response']);
+    expect(JSON.stringify(projected)).not.toContain('Wrong spec response');
+    expect(projectActionMessagePage(detail.actions[0], detail.runs, detail.events).messages
+      .map(message => message.text)).toEqual(['Current generation input', 'Current generation response']);
+    detail.currentActionId = 'other-action';
+    detail.actions.push({
+      id: 'other-action', sequence: 2, type: 'test', stageId: 'test', status: 'ready',
+      generation: 1, brief: { objective: 'Keep the tested Action historical' },
+    });
+    expect(projectWorkItemDetail(detail).actions[0]).toMatchObject({
+      messageCount: 2,
+      messageCursor: '2',
+    });
+
+    detail.runs = [];
+    expect(projectWorkItemDetail(detail).actions[0]).toMatchObject({
+      messageCount: 1,
+      messageCursor: '1',
+    });
+  });
+
+  it('projects the complete Action thread by generation while keeping only the current result canonical', () => {
+    const detail = internalDetail();
+    detail.actions[0].generation = 2;
+    detail.actions[0].specHash = 'review-v2';
+    detail.actions[0].identityHistory = [
+      { generation: 1, specHash: 'review-v1' },
+      { generation: 2, specHash: 'review-v2' },
+    ];
+    detail.runs = [{
+      ...detail.runs[0], id: 'current-run', status: 'running', actionGeneration: 2,
+      actionSpecHash: 'review-v2', actionAttempt: 1, response: 'Current response', startedAt: 20,
+    }, {
+      ...detail.runs[1], id: 'old-run', status: 'failed', actionGeneration: 1,
+      actionSpecHash: 'review-v1', actionAttempt: 2, response: 'Old response', startedAt: 10, endedAt: 15,
+    }, {
+      ...detail.runs[1], id: 'wrong-spec-run', actionGeneration: 2,
+      actionSpecHash: 'wrong-spec', actionAttempt: 3, response: 'Wrong spec response', startedAt: 30,
+    }];
+    detail.events = [{
+      id: 1, actionId: 'a-1', actionGeneration: 1, type: 'action.input_added',
+      data: { text: 'Old input' }, createdAt: 5,
+    }, {
+      id: 2, actionId: 'a-1', actionGeneration: 2, type: 'action.input_added',
+      data: { text: 'Current input' }, createdAt: 18,
+    }, {
+      id: 3, actionId: 'a-1', actionGeneration: 1, runId: 'old-run', type: 'run.loop_output',
+      data: { response: 'Old loop output', actionAttempt: 2 }, createdAt: 12,
+    }];
+
+    const projected = projectWorkItemDetail(detail).actions[0];
+    expect(projected.thread).toEqual([
+      expect.objectContaining({
+        generation: 1, canonical: false,
+        messages: [
+          expect.objectContaining({ text: 'Old input', generation: 1 }),
+          expect.objectContaining({ text: 'Old loop output', generation: 1, runId: 'old-run' }),
+        ],
+        runs: [expect.objectContaining({ id: 'old-run', attempt: 2, status: 'failed' })],
+      }),
+      expect.objectContaining({
+        generation: 2, canonical: true,
+        messages: [],
+        runs: [expect.objectContaining({ id: 'current-run', attempt: 1, status: 'running' })],
+      }),
+    ]);
+    expect(JSON.stringify(projected.thread)).not.toContain('Wrong spec response');
+    expect(projected.response).toBe('Current response');
+
+    detail.runs[1] = {
+      ...detail.runs[1], actionAttempt: 99, startedAt: 999,
+    };
+    detail.runs.push({
+      ...detail.runs[1], id: 'wrong-old-spec', actionSpecHash: 'evil-v1',
+      response: 'Newest wrong historical response', actionAttempt: 100, startedAt: 1000,
+    });
+    const fenced = projectWorkItemDetail(detail).actions[0];
+    expect(fenced.thread[0].runs.map(run => run.id)).toEqual(['old-run']);
+    expect(JSON.stringify(fenced.thread)).not.toContain('Newest wrong historical response');
+    expect(projectActionRequestIndex(detail.actions[0], detail.runs.map(run => ({
+      run, turn: { turnId: `request-${run.id}`, startedAt: run.startedAt, endedAt: run.endedAt },
+    }))).requests.map(request => request.runId)).toEqual(['old-run', 'current-run']);
+  });
+
   it('merges user Action input and assistant Run responses without exposing event data generally', () => {
     const detail = internalDetail();
     detail.events = [{
@@ -234,6 +507,25 @@ describe('Work Center event projection', () => {
     expect(JSON.stringify(messages)).not.toContain('secret');
   });
 
+  it('projects every persisted Loop response as a durable Action transcript message', () => {
+    const detail = internalDetail();
+    detail.events.push({
+      id: 11, workItemId: 'wi-1', actionId: 'a-1', runId: 'r-2',
+      type: 'run.loop_output', data: { loopNumber: 1, response: 'Inspected the controller path.' }, createdAt: 3,
+    }, {
+      id: 12, workItemId: 'wi-1', actionId: 'a-1', runId: 'r-2',
+      type: 'run.loop_output', data: { loopNumber: 2, response: 'Implemented the continuation fence.' }, createdAt: 4,
+    });
+
+    const messages = projectWorkItemDetail(detail).actions[0].messages;
+    expect(messages.filter(message => message.role === 'assistant')).toEqual([
+      expect.objectContaining({ id: 'run:r-1', text: 'Earlier retry response' }),
+      expect.objectContaining({ id: 'event:11', text: 'Inspected the controller path.' }),
+      expect.objectContaining({ id: 'event:12', text: 'Implemented the continuation fence.' }),
+    ]);
+    expect(messages).not.toContainEqual(expect.objectContaining({ id: 'run:r-2' }));
+  });
+
   it('projects request indexes and explicit request details with secrets and binary bodies removed', () => {
     const detail = internalDetail();
     const action = detail.actions[0];
@@ -243,9 +535,10 @@ describe('Work Center event projection', () => {
       totalMs: 100, totalTokens: 20, summaryInputTokens: 12, summaryOutputTokens: 8,
     };
     expect(projectActionRequestIndex(action, [{ run, turn }])).toEqual({
-      actionId: 'a-1',
+      actionId: 'a-1', generation: 1,
       requests: [{
-        id: 'request-1', runId: 'r-2', status: 'waiting', model: 'provider/review',
+        id: 'request-1', runId: 'r-2', generation: 1, attempt: 1,
+        status: 'waiting', model: 'provider/review',
         vp: { id: 'martin', name: 'Martin' }, openedAt: 100, closedAt: 200,
         loopCount: 1, totalMs: 100, inputTokens: 12, outputTokens: 8, totalTokens: 20,
       }],
@@ -271,6 +564,38 @@ describe('Work Center event projection', () => {
     expect(wire).not.toContain('Bearer secret');
     expect(wire).not.toContain('secret-image');
     expect(wire).toContain('binary data omitted');
+
+    const wrongSpecRun = { ...run, actionGeneration: 1, actionSpecHash: 'wrong-spec' };
+    const strictAction = { ...action, generation: 1, specHash: 'current-spec' };
+    expect(projectActionRequestIndex(strictAction, [{ run: wrongSpecRun, turn }]).requests).toEqual([]);
+    expect(projectActionRequestDetail(strictAction, wrongSpecRun, {
+      turns: [{ ...turn, tools: [] }], loops: [],
+    })).toBeNull();
+
+    const currentAction = {
+      ...strictAction,
+      generation: 2,
+      specHash: 'current-v2',
+      identityHistory: [
+        { generation: 1, specHash: 'current-spec' },
+        { generation: 2, specHash: 'current-v2' },
+      ],
+    };
+    const historicalRun = { ...run, actionGeneration: 1, actionSpecHash: 'current-spec' };
+    expect(projectActionRequestIndex(currentAction, [{ run: historicalRun, turn }]).requests)
+      .toEqual([expect.objectContaining({ runId: historicalRun.id, generation: 1 })]);
+    expect(projectActionRequestDetail(currentAction, historicalRun, {
+      turns: [{ ...turn, tools: [] }], loops: [],
+    })).toMatchObject({ request: { runId: historicalRun.id } });
+
+    const wrongHistoricalSpec = { ...historicalRun, id: 'wrong-history', actionSpecHash: 'wrong-v1' };
+    expect(projectActionRequestIndex(currentAction, [
+      { run: historicalRun, turn },
+      { run: wrongHistoricalSpec, turn: { ...turn, turnId: 'wrong-request' } },
+    ]).requests).toEqual([expect.objectContaining({ runId: historicalRun.id })]);
+    expect(projectActionRequestDetail(currentAction, wrongHistoricalSpec, {
+      turns: [{ ...turn, tools: [] }], loops: [],
+    }, [historicalRun, wrongHistoricalSpec])).toBeNull();
   });
 
   it('redacts complete sensitive header values across browser DTO header shapes', () => {
@@ -1020,6 +1345,7 @@ describe('Work Center event projection', () => {
     expect(projected.request.truncated).toBe(true);
 
     action.id = hugeUnicode;
+    run.actionId = hugeUnicode;
     run.id = hugeUnicode;
     run.status = hugeUnicode;
     run.modelSnapshot.id = hugeUnicode;

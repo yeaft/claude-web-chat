@@ -44,6 +44,44 @@ function requiredWorkDir(value) {
   return canonical;
 }
 
+function boardCursor(item) {
+  return Buffer.from(JSON.stringify([Number(item.updatedAt) || 0, String(item.id || '')]), 'utf8')
+    .toString('base64url');
+}
+
+function parseBoardCursor(value) {
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+    if (!Array.isArray(parsed) || parsed.length !== 2 || !Number.isFinite(Number(parsed[0]))) return null;
+    return [Number(parsed[0]), String(parsed[1] || '')];
+  } catch {
+    return null;
+  }
+}
+
+function listBoardItems(store, payload) {
+  const limit = Math.min(Math.max(Number(payload.limit) || 100, 1), 200);
+  const cursor = parseBoardCursor(payload.cursor);
+  const lane = ['needs_attention', 'active', 'closed'].includes(payload.lane) ? payload.lane : null;
+  const vpId = typeof payload.vpId === 'string' ? payload.vpId.trim() : '';
+  const workItemType = typeof payload.workItemType === 'string' ? payload.workItemType.trim() : '';
+  const projected = store.listWorkItems({
+    ...payload,
+    lane,
+    vpId,
+    workItemType,
+    cursorUpdatedAt: cursor?.[0],
+    cursorId: cursor?.[1],
+    limit: limit + 1,
+  }).map(projectWorkItemSummary);
+  const items = projected.slice(0, limit);
+  return {
+    items,
+    nextCursor: projected.length > limit && items.length > 0 ? boardCursor(items.at(-1)) : null,
+  };
+}
+
 export class WorkCenterService {
   constructor(options) {
     const yeaftDir = requiredString(options?.yeaftDir, 'yeaftDir');
@@ -83,17 +121,19 @@ export class WorkCenterService {
 
   async handle(op, payload = {}, requestContext = {}) {
     switch (op) {
-      case 'list':
+      case 'list': {
+        const page = listBoardItems(this.store, payload);
         return {
-          items: this.store.listWorkItems(payload).map(projectWorkItemSummary),
+          ...page,
           watcher: this.watcher.status(),
         };
+      }
       case 'get':
         return this.#requiredItem(payload.id);
       case 'get_action_messages': {
         const detail = this.#requiredItem(payload.id);
         const action = this.#requiredAction(detail, payload.actionId);
-        return projectActionMessagePage(action, detail.runs, detail.events, {
+        return projectActionMessagePage(action, detail.runs, this.store.listActionEvents(action.id), {
           cursor: payload.cursor,
           limit: payload.limit,
         });
@@ -117,7 +157,7 @@ export class WorkCenterService {
         const run = detail.runs.find(item => item.actionId === action.id && item.id === payload.runId);
         if (!run) throw new Error('Action request not found');
         const history = await this.#debugHistory(run, { detailTurnId: requestId });
-        const projected = projectActionRequestDetail(action, run, history);
+        const projected = projectActionRequestDetail(action, run, history, detail.runs);
         if (!projected) throw new Error('Action request detail is no longer available');
         return projected;
       }
@@ -207,6 +247,44 @@ export class WorkCenterService {
         this.#emit({ type: 'work_item.cancelled', workItem: detail });
         return detail;
       }
+      case 'delete': {
+        const id = requiredString(payload.id, 'id');
+        const deleted = this.store.deleteWorkItemAtomic(id, Number(payload.revision));
+        if (!deleted) throw new Error(`WorkItem not found: ${id}`);
+        for (const action of deleted.actions || []) {
+          try { this.watcher.runner?.cleanup?.(action); } catch {}
+        }
+        let cleanupWarning = null;
+        try { removeWorkItemAttachments(this.attachmentRoot, id); } catch {
+          cleanupWarning = 'WorkItem data was deleted, but attachment cleanup needs maintenance';
+        }
+        this.#emit({ type: 'work_item.deleted', workItem: { id, revision: deleted.revision } });
+        return { id, deleted: true, cleanupWarning };
+      }
+      case 'work_item_message': {
+        const id = requiredString(payload.id, 'id');
+        const detail = this.controller.message(id, {
+          text: typeof payload.text === 'string' ? payload.text : '',
+          revision: payload.revision,
+        });
+        this.watcher.notifyWorkItemInput(id);
+        this.#emit({ type: 'work_item.message_added', workItem: detail });
+        return detail;
+      }
+      case 'retry_action': {
+        const id = requiredString(payload.id, 'id');
+        const detail = this.controller.retry(id, {
+          expected: {
+            actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
+            revision: payload.revision,
+            generation: payload.generation,
+            statuses: ['failed'],
+          },
+        });
+        this.watcher.abortInvalidWorkItemRuns(id);
+        this.#emit({ type: 'action.retried', workItem: detail });
+        return detail;
+      }
       case 'action_input': {
         const id = requiredString(payload.id, 'id');
         const workItem = this.#requiredItem(id);
@@ -221,6 +299,7 @@ export class WorkCenterService {
             text: typeof payload.text === 'string' ? payload.text : '',
             actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
             revision: payload.revision,
+            generation: payload.generation,
             addedAttachmentCount: addedAttachments.length,
             addedAttachments,
             attachments: [...(workItem.attachments || []), ...addedAttachments],
@@ -236,6 +315,7 @@ export class WorkCenterService {
           throw error;
         }
         this.watcher.abortInvalidWorkItemRuns(id);
+        this.watcher.notifyActionInput(id, payload.actionId);
         this.#emit({ type: 'action.input_added', workItem: detail });
         return detail;
       }
@@ -253,6 +333,7 @@ export class WorkCenterService {
             guidance: typeof payload.guidance === 'string' ? payload.guidance : '',
             actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
             revision: payload.revision,
+            generation: payload.generation,
             addedAttachmentCount: addedAttachments.length,
             addedAttachments,
             attachments: [...(workItem.attachments || []), ...addedAttachments],

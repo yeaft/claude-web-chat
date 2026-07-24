@@ -32,7 +32,7 @@
  * @property {number} [contextWindow] — current model's context window in
  *   tokens (used by ToolRegistry.execute to cap a single tool result at a
  *   fraction of the window so one runaway grep can't blow the wire).
- * @property {(input: {question:string, options?:string[]}) => Promise<object>} [askUser]
+ * @property {(input: {question:string, options?:string[]}, toolCall?: {id?:string, name?:string}|null) => Promise<object>} [askUser]
  *   — host-provided interactive prompt. Resolves only after the user answers.
  * @property {(reason?: string|object) => void} [requestEndTurn]
  *   — tool-callable signal that the current engine turn should end after
@@ -62,6 +62,7 @@
  * @property {(input?: object) => boolean} [isConcurrencySafe] — can run in parallel?
  * @property {(input?: object) => boolean} [isReadOnly] — read-only operation?
  * @property {(input?: object) => boolean} [isDestructive] — destructive operation?
+ * @property {'json-error-envelope' | null} [errorOutput] — explicit returned-output error contract; null means only thrown errors fail
  */
 
 /**
@@ -75,6 +76,7 @@
  *   isConcurrencySafe?: (input?: object) => boolean,
  *   isReadOnly?: (input?: object) => boolean,
  *   isDestructive?: (input?: object) => boolean,
+ *   errorOutput?: 'json-error-envelope' | null,
  *   timeoutMs?: number,
  * }} def
  * @returns {ToolDef}
@@ -88,6 +90,7 @@ export function defineTool({
   isConcurrencySafe = () => false,
   isReadOnly = () => false,
   isDestructive = () => false,
+  errorOutput = 'json-error-envelope',
   timeoutMs,
 }) {
   if (!name) throw new Error('Tool must have a name');
@@ -101,6 +104,7 @@ export function defineTool({
     isConcurrencySafe,
     isReadOnly,
     isDestructive,
+    errorOutput,
   };
   // Legacy tool-name aliases. Registered as extra lookup keys so old
   // jsonl tool_calls (e.g. `SendMessage` → `PromptAgent`) keep resolving,

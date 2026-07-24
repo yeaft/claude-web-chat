@@ -10,7 +10,10 @@ const sendToWebClient = vi.fn(async (client, msg) => {
 vi.mock('../../server/ws-utils.js', () => ({
   sendToWebClient,
   sendToAgent: vi.fn(async (agent, msg) => { (agent.sent ||= []).push(msg); }),
+  forwardToAgent: vi.fn(),
   broadcastAgentList: vi.fn(),
+  verifyConversationOwnership: vi.fn(() => true),
+  verifyAgentOwnership: vi.fn(() => true),
   forwardToClients: vi.fn(async (_agentId, _conversationId, msg) => {
     for (const [, client] of webClients) {
       if (client.authenticated) await sendToWebClient(client, msg);
@@ -19,7 +22,9 @@ vi.mock('../../server/ws-utils.js', () => ({
 }));
 
 vi.mock('../../server/database.js', () => ({
+  sessionDb: { get: vi.fn(() => null) },
   messageDb: {},
+  userDb: {},
   yeaftSessionDb: {
     reconcileFromSnapshot: vi.fn(),
     getByAgent: vi.fn(() => []),
@@ -30,10 +35,11 @@ vi.mock('../../server/database.js', () => ({
 }));
 
 const { CONFIG } = await import('../../server/config.js');
-const { webClients } = await import('../../server/context.js');
+const { agents, webClients } = await import('../../server/context.js');
 const { yeaftSessionDb } = await import('../../server/database.js');
 const { yeaftAssetStore } = await import('../../server/yeaft-asset-store.js');
 const { handleAgentOutput } = await import('../../server/handlers/agent-output.js');
+const { handleClientConversation } = await import('../../server/handlers/client-conversation.js');
 const { ConversationStore } = await import('../../agent/yeaft/conversation/persist.js');
 const { __testHooks: webBridgeTestHooks } = await import('../../agent/yeaft/web-bridge.js');
 
@@ -41,6 +47,7 @@ const originalSkipAuth = CONFIG.skipAuth;
 
 afterEach(() => {
   CONFIG.skipAuth = originalSkipAuth;
+  agents.clear();
   webClients.clear();
   sendToWebClient.mockClear();
   vi.restoreAllMocks();
@@ -73,6 +80,48 @@ describe('Yeaft Session output relay aliases', () => {
       data,
       event: undefined,
     }]);
+  });
+
+  it('persists nested Session archive results so removed rows stay out of DB hydration', async () => {
+    CONFIG.skipAuth = false;
+    webClients.set('owner-client', { authenticated: true, userId: 'owner-1', sent: [] });
+
+    await handleAgentOutput('agent-1', { ownerId: 'owner-1' }, {
+      type: 'yeaft_output',
+      conversationId: 'yeaft-1',
+      event: {
+        type: 'session_crud_result',
+        op: 'archive',
+        ok: true,
+        requestId: 'archive-1',
+        sessionId: 'sess-1',
+      },
+    });
+
+    expect(yeaftSessionDb.setArchivedForAgent).toHaveBeenCalledWith('owner-1', 'agent-1', 'sess-1', true);
+    expect(webClients.get('owner-client').sent).toEqual([expect.objectContaining({
+      type: 'yeaft_output',
+      agentId: 'agent-1',
+      event: expect.objectContaining({ type: 'session_crud_result', op: 'archive', sessionId: 'sess-1' }),
+    })]);
+  });
+
+  it('reconciles and decorates nested Session snapshots before relaying them', async () => {
+    CONFIG.skipAuth = false;
+    webClients.set('owner-client', { authenticated: true, userId: 'owner-1', sent: [] });
+    yeaftSessionDb.getByAgent.mockReturnValueOnce([{ id: 'sess-1', isPinned: true, sortOrder: 3 }]);
+    const sessions = [{ id: 'sess-1', name: 'Session 1' }];
+
+    await handleAgentOutput('agent-1', { ownerId: 'owner-1' }, {
+      type: 'yeaft_output',
+      conversationId: 'yeaft-1',
+      event: { type: 'session_list_updated', sessions },
+    });
+
+    expect(yeaftSessionDb.reconcileFromSnapshot).toHaveBeenCalledWith('owner-1', 'agent-1', sessions);
+    expect(webClients.get('owner-client').sent[0].event.sessions).toEqual([
+      expect.objectContaining({ id: 'sess-1', pinned: true, isPinned: true, sortOrder: 3 }),
+    ]);
   });
 
   it('stores a Session image and relays only stable asset metadata', async () => {
@@ -155,6 +204,17 @@ describe('Yeaft Session output relay aliases', () => {
     ]);
 
     await handleAgentOutput('agent-1', agent, {
+      type: 'yeaft_history_outline', _requestClientId: 'owner-client', requestId: 'outline-1',
+      sessionId, results: [{ messageId: 'm1', role: 'assistant', snippet: 'Here is the image.', seq: 1 }],
+      totalCount: 1, hasMore: false,
+    });
+    expect(client.sent.at(-1)).toMatchObject({
+      type: 'yeaft_history_outline', agentId: 'agent-1', sessionId, requestId: 'outline-1',
+      totalCount: 1, results: [{ messageId: 'm1', role: 'assistant', snippet: 'Here is the image.', seq: 1 }],
+    });
+    expect(client.sent.at(-1).results[0]).not.toHaveProperty('images');
+
+    await handleAgentOutput('agent-1', agent, {
       type: 'yeaft_history_window', _requestClientId: 'owner-client', requestId: 'window-1',
       sessionId, messages: [...projectedToolPage, ...projectedFinalPage],
     });
@@ -193,6 +253,12 @@ describe('Yeaft Session output relay aliases', () => {
     expect(batchLookup).toHaveBeenCalledWith({
       ownerId: 'owner-1', agentId: 'agent-1', sessionId, turnIds: ['turn-1'],
     });
+    expect(client.sent[0]).toMatchObject({
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-1',
+      conversationId: 'yeaft-1',
+      sessionId,
+    });
     expect(client.sent[0].messages).toHaveLength(1);
     expect(client.sent[0].messages[0].images).toEqual([
       expect.objectContaining({ mimeType: 'image/png', src: expect.stringMatching(/^\/api\/yeaft\/assets\//) }),
@@ -225,7 +291,7 @@ describe('Yeaft Session output relay aliases', () => {
     expect(cleanup).not.toHaveBeenCalled();
   });
 
-  it('stamps agentId on per-conversation slash command updates', async () => {
+  it('preserves authoritative Yeaft preload snapshots without overwriting the Claude cache', async () => {
     CONFIG.skipAuth = false;
     webClients.set('owner-client', {
       authenticated: true,
@@ -236,18 +302,96 @@ describe('Yeaft Session output relay aliases', () => {
 
     await handleAgentOutput('agent-1', agent, {
       type: 'slash_commands_update',
-      conversationId: 'yeaft-1',
-      slashCommands: ['yeaft-skills:code-review'],
-      slashCommandDescriptions: { 'yeaft-skills:code-review': 'Code review' },
+      conversationId: '__preload__',
+      slashCommands: ['/compact'],
+      slashCommandDescriptions: { '/compact': 'Compact context' },
+    });
+    await handleAgentOutput('agent-1', agent, {
+      type: 'slash_commands_update',
+      commandSet: 'yeaft',
+      conversationId: '__preload__',
+      slashCommands: ['project-review'],
+      slashCommandDescriptions: { 'project-review': 'Review this project' },
+    });
+    await handleAgentOutput('agent-1', agent, {
+      type: 'slash_commands_update',
+      commandSet: 'yeaft',
+      conversationId: '__preload__',
+      slashCommands: [],
+      slashCommandDescriptions: {},
     });
 
-    expect(agent.slashCommands).toEqual(['yeaft-skills:code-review']);
+    expect(agent.slashCommands).toEqual(['/compact']);
+    expect(agent.slashCommandDescriptions).toEqual({ '/compact': 'Compact context' });
+    expect(agent.yeaftSlashCommands).toEqual([]);
+    expect(agent.yeaftSlashCommandDescriptions).toEqual({});
+
+    const client = webClients.get('owner-client');
+    const [claudeUpdate, yeaftUpdate, emptyYeaftUpdate] = client.sent;
+    expect(claudeUpdate).toEqual({
+      type: 'slash_commands_update',
+      agentId: 'agent-1',
+      slashCommands: ['/compact'],
+      slashCommandDescriptions: { '/compact': 'Compact context' },
+    });
+    expect(claudeUpdate).not.toHaveProperty('commandSet');
+    expect(yeaftUpdate).toEqual({
+      type: 'slash_commands_update',
+      agentId: 'agent-1',
+      commandSet: 'yeaft',
+      slashCommands: ['project-review'],
+      slashCommandDescriptions: { 'project-review': 'Review this project' },
+    });
+    expect(emptyYeaftUpdate).toEqual({
+      type: 'slash_commands_update',
+      agentId: 'agent-1',
+      commandSet: 'yeaft',
+      slashCommands: [],
+      slashCommandDescriptions: {},
+    });
+
+    agents.set('agent-1', {
+      ...agent,
+      ws: { readyState: 1 },
+      name: 'Agent 1',
+      workDir: '/work',
+      conversations: new Map(),
+    });
+    await handleClientConversation('owner-client', client, {
+      type: 'select_agent',
+      agentId: 'agent-1',
+    }, async () => true);
+    expect(client.sent.at(-1)).toMatchObject({
+      type: 'agent_selected',
+      slashCommands: ['/compact'],
+      slashCommandDescriptions: { '/compact': 'Compact context' },
+    });
+  });
+
+  it('preserves commandSet on per-conversation Yeaft slash command updates', async () => {
+    CONFIG.skipAuth = false;
+    webClients.set('owner-client', {
+      authenticated: true,
+      userId: 'owner-1',
+      sent: [],
+    });
+    const agent = { ownerId: 'owner-1', slashCommandDescriptions: {} };
+
+    await handleAgentOutput('agent-1', agent, {
+      type: 'slash_commands_update',
+      commandSet: 'yeaft',
+      conversationId: 'yeaft-1',
+      slashCommands: ['code-review'],
+      slashCommandDescriptions: { 'code-review': 'Code review' },
+    });
+
     expect(webClients.get('owner-client').sent).toEqual([{
       type: 'slash_commands_update',
       agentId: 'agent-1',
       conversationId: 'yeaft-1',
-      slashCommands: ['yeaft-skills:code-review'],
-      slashCommandDescriptions: { 'yeaft-skills:code-review': 'Code review' },
+      commandSet: 'yeaft',
+      slashCommands: ['code-review'],
+      slashCommandDescriptions: { 'code-review': 'Code review' },
     }]);
   });
 });

@@ -144,7 +144,7 @@ export function handleMessage(store, msg) {
           type: 'error',
           content: msg.error || t('login.error.loginFailed')
         });
-        authStore.handleAuthFailure?.(undefined, msg._wsAuthToken);
+        authStore.handleAuthFailure?.(undefined, msg._wsAuthToken, msg._wsAuthGeneration);
       }
       break;
 
@@ -267,14 +267,19 @@ export function handleMessage(store, msg) {
       handleYeaftHistoryChunk(store, msg);
       break;
 
+    case 'yeaft_history_outline':
+      store.handleYeaftHistoryOutline(msg);
+      break;
+
     case 'yeaft_history_search_result':
       store.handleYeaftHistorySearchResult(msg);
       break;
 
-    case 'yeaft_history_window':
-      handleYeaftHistoryWindow(store, msg);
-      store.handleYeaftHistoryWindow(msg);
+    case 'yeaft_history_window': {
+      const conversationId = handleYeaftHistoryWindow(store, msg);
+      store.handleYeaftHistoryWindow(msg, conversationId);
       break;
+    }
 
     // 2026-05-16: tool-usage stats reply from the agent. The agent
     // emits this as a BARE top-level message (see
@@ -641,22 +646,46 @@ export function handleMessage(store, msg) {
       break;
 
     case 'slash_commands_update':
-      if (msg.slashCommands && msg.slashCommands.length > 0) {
+      if (Array.isArray(msg.slashCommands)) {
         const slashCommands = [...new Set(msg.slashCommands)];
-        if (msg.conversationId) {
-          store.slashCommandsMap[msg.conversationId] = slashCommands;
-          if (store.currentView === 'yeaft' && store.yeaftConversationId) {
-            store.slashCommandsMap[store.yeaftConversationId] = slashCommands;
+        if (msg.commandSet === 'yeaft') {
+          // Route an authoritative Yeaft snapshot only to the sending Agent's
+          // canonical conversation. `__preload__` is shared transport state,
+          // not a cache key: using it or the global visible pointer lets Agent B
+          // overwrite (or clear) Agent A's autocomplete catalogue.
+          const frameConversationId = msg.conversationId && msg.conversationId !== '__preload__'
+            ? msg.conversationId
+            : null;
+          const agentConversationId = msg.agentId
+            ? store.yeaftConversationIdsByAgent?.[msg.agentId] || null
+            : null;
+          const canonicalConversationId = frameConversationId || agentConversationId;
+          if (canonicalConversationId) {
+            store.slashCommandsMap[canonicalConversationId] = slashCommands;
           }
-        }
-        if (msg.agentId) {
-          store.slashCommandsMap[`agent:${msg.agentId}`] = slashCommands;
-          if (store.currentView === 'yeaft' && store.yeaftConversationId) {
-            store.slashCommandsMap[store.yeaftConversationId] = slashCommands;
+
+          const visibleConversationId = store.yeaftConversationId || null;
+          const visibleBelongsToSender = msg.agentId
+            ? store.currentAgent === msg.agentId
+              && (agentConversationId === visibleConversationId || frameConversationId === visibleConversationId)
+            : frameConversationId === visibleConversationId;
+          if (visibleConversationId && visibleBelongsToSender) {
+            store.slashCommandsMap[visibleConversationId] = slashCommands;
+          }
+        } else {
+          if (msg.conversationId) {
+            store.slashCommandsMap[msg.conversationId] = slashCommands;
+          }
+          if (msg.agentId) {
+            // Claude Chat commands remain an agent-level fallback, but must not
+            // overwrite Yeaft's isolated command catalogue while that view is open.
+            store.slashCommandsMap[`agent:${msg.agentId}`] = slashCommands;
           }
         }
       }
-      // Merge command descriptions (cumulative — new descriptions extend existing)
+      // Descriptions are harmless when their command is not in the active list;
+      // keep the shared cache cumulative so switching back to Chat does not lose
+      // Claude command help after a Yeaft skill refresh.
       if (msg.slashCommandDescriptions) {
         store.slashCommandDescriptions = { ...store.slashCommandDescriptions, ...msg.slashCommandDescriptions };
       }
@@ -847,6 +876,8 @@ export function handleMessage(store, msg) {
           needsSetup: msg.needsSetup ?? effectiveConfig.needsSetup ?? false,
           agentConfig,
           effectiveConfig,
+          requestId: msg.requestId || null,
+          statusRefreshError: msg.statusRefreshError || null,
           error: msg.error || null,
           loaded: true
         };

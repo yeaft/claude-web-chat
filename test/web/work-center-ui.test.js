@@ -67,7 +67,7 @@ describe('Work Center UI contract', () => {
     expect(store).not.toContain('workCenterActiveTasksBySession');
   });
 
-  it('offers Session-to-WorkItem creation and renders aggregate Action execution counts', () => {
+  it('offers Session-to-WorkItem creation and keeps execution counts out of the Action list', () => {
     const input = read('web/components/ChatInput.js');
     const page = read('web/components/YeaftPage.js');
     const workCenter = read('web/components/WorkCenterPage.js');
@@ -76,10 +76,12 @@ describe('Work Center UI contract', () => {
     expect(page).toContain(':work-item-fn="openWorkItemDraft"');
     expect(store).toContain('enterWorkCenterFromSession');
     expect(workCenter).toContain('class="work-center-action-card"');
-    expect(workCenter).toContain("$t('workCenter.llmRequestCount', { count: formatCount(executionStats(action).llmRequestCount) })");
-    expect(workCenter).toContain("$t('workCenter.loopCount', { count: formatCount(executionStats(action).loopCount) })");
-    expect(workCenter).toContain("$t('workCenter.toolCount', { count: formatCount(executionStats(action).toolCount) })");
-    expect(workCenter).toContain("$t('workCenter.tokenCount', { count: formatTokens(executionStats(action).totalTokens) })");
+    expect(workCenter).toContain('{{ actionExecutor(action) }}');
+    expect(workCenter).toContain('{{ actionContentSummary(action) }}');
+    expect(workCenter).not.toContain("formatCount(executionStats(action).llmRequestCount)");
+    expect(workCenter).not.toContain("formatCount(executionStats(action).loopCount)");
+    expect(workCenter).not.toContain("formatCount(executionStats(action).toolCount)");
+    expect(workCenter).not.toContain("formatTokens(executionStats(action).totalTokens)");
     expect(workCenter).not.toContain('runsForAction(action.id)');
     expect(workCenter).not.toContain('run.evidence');
     expect(workCenter).not.toContain('selected.events');
@@ -96,7 +98,7 @@ describe('Work Center UI contract', () => {
     expect(sidebar).toContain("agent.capabilities.includes('work_center')");
     expect(page).toContain("agent.capabilities.includes('work_center')");
     expect(page).toContain("'is-empty': loaded && !loading");
-    expect(page).toContain('v-if="loaded && !loading && visibleItems.length === 0"');
+    expect(page).toContain('v-if="loaded && !loading && items.length === 0"');
     expect(css).toMatch(/\.sidebar-work-center-trigger:hover\s*\{[^}]*color: var\(--text-secondary\)/s);
     expect(css).toMatch(/\.sidebar-work-center-agent:hover\s*\{[^}]*color: var\(--text-secondary\)/s);
     expect(page).toContain('<main class="work-center-main"');
@@ -112,7 +114,7 @@ describe('Work Center UI contract', () => {
     expect(chat).toContain('<WorkbenchPanel v-if="canUseWorkbench && (!store.isSplitMode || store.workCenterOpen)"');
   });
 
-  it('uses a dedicated third Action pane with messages, lazy request detail, and input', () => {
+  it('uses progressive Work Item and Action workspaces with messages, lazy request detail, and input', () => {
     const page = read('web/components/WorkCenterPage.js');
     const detail = read('web/components/WorkCenterActionDetail.js');
     const store = read('web/stores/chat.js');
@@ -122,10 +124,13 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('WorkCenterActionDetail');
     expect(page).toContain('@click="selectAction(action)"');
     expect(page).toContain(':data-pane="narrowPane"');
+    expect(page).toContain('v-if="narrowPane === \'items\'" class="work-center-toolbar"');
     expect(detail).toContain('class="work-center-action-detail-pane"');
     expect(detail).toContain("activeTab === 'messages'");
     expect(detail).toContain("activeTab === 'requests'");
-    expect(detail).toContain('v-for="message in messages"');
+    expect(detail).toContain('v-for="generation in actionThread"');
+    expect(detail).toContain('v-for="message in generation.messages"');
+    expect(detail).toContain('class="work-center-action-run"');
     expect(detail).toContain("$emit('load-earlier-messages')");
     expect(store).toContain("workCenterRequest('get_action_messages'");
     expect(page).toContain(':messages-next-cursor="actionMessagesNextCursor"');
@@ -141,10 +146,21 @@ describe('Work Center UI contract', () => {
     expect(detail).toContain("event.key === 'End'");
     expect(detail).toContain('v-if="composerError"');
     expect(detail).toContain("tr('workCenter.requestDetailUnavailable'");
+    expect(detail).toContain("tr('workCenter.actionInputContinueHint'");
+    expect(detail).not.toContain('actionInputRestartHint');
     expect(page).toContain('workCenterRequestKey(request)');
     expect(detail).toContain(':key="requestKey(request)"');
     expect(detail).toContain("tr('workCenter.rawRequest'");
     expect(detail).toContain('class="work-center-action-composer"');
+    expect(detail).toContain("tr('workCenter.retryAction'");
+    expect(detail).toContain("tr('workCenter.actionMessageScopeTitle'");
+    expect(detail).toContain("tr('workCenter.sendAndRetryAction'");
+    expect(detail).toContain("['ready', 'running', 'waiting', 'failed']");
+    expect(page).toContain('work-center-item-messages');
+    expect(page).toContain("tr('workCenter.workItemMessageScope'");
+    expect(page).toContain('@retry="retrySelectedAction"');
+    expect(store).toContain("workCenterRequest('work_item_message'");
+    expect(store).toContain("workCenterRequest('retry_action'");
     expect(detail).toContain('input-wrapper work-center-action-input-wrapper');
     expect(detail).toContain('class="attach-btn work-center-attachment-picker"');
     expect(detail).toContain('class="send-btn"');
@@ -157,15 +173,29 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('.work-center-action-transcript');
     expect(css).toContain('.work-center-request-card');
     expect(css).toContain('.work-center-action-composer');
-    expect(css).toContain('grid-template-columns: clamp(230px, 17cqw, 290px) clamp(330px, 25cqw, 430px) minmax(480px, 1fr)');
+    expect(css).toContain('grid-template-columns: minmax(0, 1fr)');
+    expect(css).not.toContain('clamp(230px, 17cqw, 290px) clamp(330px, 25cqw, 430px) minmax(480px, 1fr)');
+    expect(css).toContain('.work-center-body[data-pane="items"] .work-center-detail');
     expect(page).toContain('class="work-center-status" :data-status="action.status"');
     expect(css).toContain('.work-center-action-input-wrapper');
 
+    expect(page).toContain('class="work-center-list work-center-board"');
+    expect(page).toContain('class="work-center-board-lane"');
+    expect(page).toContain('class="work-center-card-meta"');
+    expect(page).toContain('class="work-center-card-current-action"');
+    expect(page).toContain('class="work-center-card-delete"');
+    expect(css).toMatch(/\.work-center-card-open,\s*\n\.work-center-card-delete,[^{]*\{[^}]*border: 0;[^}]*background: transparent;[^}]*font: inherit;/s);
+    expect(page).toContain("boardUpdatedRange: 'week'");
+    expect(page).toContain('deleteWorkItem(item)');
+    expect(store).toContain("workCenterRequest('delete'");
+    expect(page).toContain('boardActionCountLabel(item)');
     expect(page).toContain('class="work-center-action-card"');
     expect(page).toContain('class="work-center-action-content"');
     expect(page).toContain('class="work-center-action-primary"');
     expect(page).toContain('class="work-center-action-secondary"');
-    expect(page).toContain('class="work-center-action-stats"');
+    expect(page).toContain('class="work-center-action-vp"');
+    expect(page).toContain('class="work-center-action-content-summary"');
+    expect(page).not.toContain('class="work-center-action-stats"');
     expect(page).toContain('this.loadLatestActionMessages(action)');
     expect(css).toMatch(/\.work-center-action-summary\s*\{[^}]*grid-template-columns: 26px minmax\(0, 1fr\) 14px/s);
     expect(page).toContain('v-if="detailLoading"');
@@ -173,7 +203,7 @@ describe('Work Center UI contract', () => {
     expect(page).toContain("if (this.selectedId === item.id) this.detailError = error?.message || String(error)");
     expect(page).toContain('v-if="selected.failureReason"');
     expect(page).not.toContain('v-model="resumeAnswer"');
-    expect(page).not.toContain('retrySelected');
+    expect(page).toContain('retrySelectedAction');
     expect(page).not.toContain("selected.status === 'cancelled'\" class=\"btn-primary");
     expect(page).toContain("tr('workCenter.answerInActionDetail'");
     expect(page).toContain('this.selectedActionId = detail?.currentActionId || detail?.actions?.[0]?.id || null');
@@ -183,17 +213,52 @@ describe('Work Center UI contract', () => {
 
   });
 
-  it('creates Work Items with Auto or a reusable type and keeps Action creation out of the UI', () => {
+  it('creates Work Items from one requirement and leaves contract planning to triage', () => {
     const page = read('web/components/WorkCenterPage.js');
-    expect(page).toContain('v-model="form.workItemType"');
-    expect(page).toContain('<option value="auto">');
-    expect(page).toContain('v-for="type in workItemTypes"');
-    expect(page).toContain("workItemType: this.form.workItemType || 'auto'");
-    expect(page).toContain("$t('workCenter.actionCount'");
+    expect(page).toContain('v-model="form.requirement"');
+    expect(page).toContain('requirement,');
+    expect(page).toContain("workItemType: 'auto'");
+    expect(page).toContain('acceptanceCriteria: []');
+    expect(page).not.toContain('v-model="form.workItemType"');
+    expect(page).not.toContain('v-model="form.acceptanceCriteriaText"');
     expect(page).toContain('class="work-center-action-list"');
     expect(page).toContain('@click="selectAction(action)"');
     expect(page).not.toContain('addAction');
     expect(page).not.toContain('createAction');
+  });
+
+  it('uses breadcrumbs, close semantics, and active-first Action projection', () => {
+    const page = read('web/components/WorkCenterPage.js');
+    const detail = read('web/components/WorkCenterActionDetail.js');
+    const css = read('web/styles/work-center.css');
+
+    expect(page).toContain('class="work-center-breadcrumbs"');
+    expect(page).toContain('@click="showItemsPane"');
+    expect(page).toContain('@click="showActionsPane"');
+    expect(page).not.toContain('class="work-center-pane-back btn-ghost"');
+    expect(page).toContain("@click=\"showItemsPane\" :title=\"tr('workCenter.closeWorkItem'");
+    expect(page).not.toContain('@click="cancelSelected" :title="tr(\'workCenter.closeWorkItem\'');
+    expect(page).toContain('class="work-center-action-breadcrumb"');
+    expect(page).toContain("$t('workCenter.actionNumber', { number: actionSequence(selectedAction) })");
+    expect(page).toContain('actionBreadcrumbDescription(selectedAction)');
+    expect(page).not.toContain("selectedAction?.brief?.objective || actionLabel(selectedAction?.type)");
+    expect(page).toContain('class="work-center-section work-center-danger-zone"');
+    expect(page).toContain('class="btn-secondary work-center-danger-action" type="button" @click="cancelSelected"');
+    const detailHeading = page.slice(page.indexOf('class="work-center-detail-heading"'), page.indexOf('class="work-center-detail-meta"'));
+    expect(detailHeading).not.toContain('cancelSelected');
+    expect(page).toContain("tr('workCenter.cancelWorkItem'");
+    expect(page).toContain("tr('workCenter.cancelWorkItemHint'");
+    expect(page).toContain("tr('workCenter.cancelConfirm'");
+    expect(detail).toContain("tr('common.close'");
+    expect(page).toContain('orderedActions()');
+    expect(page).toContain('v-for="action in orderedActions"');
+    expect(page).toContain('const priority = { running: 0, waiting: 1, failed: 2, ready: 3');
+    expect(page).toContain('actions.map((action, index) => ({ action, index })).sort');
+    expect(css).toContain('.work-center-breadcrumbs');
+    expect(css).toContain('.work-center-action-breadcrumb');
+    expect(css).toContain('.work-center-detail-meta');
+    expect(css).toContain('.work-center-danger-zone');
+    expect(css).toContain('border-color: var(--error)');
   });
 
   it('uses a compact header and flat empty state instead of a dashboard hero', () => {
@@ -207,7 +272,7 @@ describe('Work Center UI contract', () => {
     expect(page).not.toContain('class="work-center-detail-empty-icon"');
     expect(page).toContain("tr('workCenter.createFirst'");
     expect(css).toContain('width: 100%');
-    expect(css).toContain('grid-template-columns: clamp(230px, 17cqw, 290px) clamp(330px, 25cqw, 430px) minmax(480px, 1fr)');
+    expect(css).toContain('grid-template-columns: minmax(0, 1fr)');
     expect(css).toContain('.work-center-body.is-empty .work-center-detail');
     expect(css).toContain('.work-center-body.is-empty .work-center-list');
     expect(css).not.toContain('.work-center-empty-icon');
@@ -233,7 +298,16 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('@media (max-width: 768px)');
     expect(css).not.toContain('@media (max-width: 760px)');
     expect(css).toContain('.work-center-header-create span');
-    expect(css).toContain('flex-direction: column-reverse');
+    expect(css).toContain('grid-template-columns: 1fr 1fr');
+    expect(css).toContain('grid-template-columns: repeat(3, minmax(250px, 1fr))');
+    expect(css).toContain('.work-center-board-lane-tabs');
+    expect(css).toMatch(/@media \(max-width: 768px\)[\s\S]*?\.work-center-board\s*\{[^}]*display: flex;[^}]*flex-direction: column;[^}]*overflow-x: hidden/s);
+    expect(css).toMatch(/@media \(max-width: 768px\)[\s\S]*?\.work-center-board-lane-tabs\s*\{[^}]*flex: 0 0 auto/s);
+    expect(css).toMatch(/@media \(max-width: 768px\)[\s\S]*?\.work-center-toolbar > select:last-of-type\s*\{[^}]*grid-column: 1 \/ -1/s);
+    expect(css).toMatch(/\.work-center-board-lane\.mobile-active\s*\{[^}]*display: flex/s);
+    expect(page).toContain('role="tablist"');
+    expect(page).toContain('mobileBoardLane === lane.id');
+    expect(page).toContain(':disabled="boardLoadingMore"');
     expect(page).toContain(':aria-label="tr(\'workCenter.newWorkItem\'');
   });
 
@@ -246,36 +320,46 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('class="modal-close"');
     expect(page).toContain('class="work-center-modal-footer"');
     expect(page).toContain('class="work-center-create-options"');
-    expect(page).toContain("tr('workCenter.titleHint'");
+    expect(page).toContain("tr('workCenter.requirementHint'");
     expect(page).toContain("tr('workCenter.startImmediatelyHint'");
     expect(page).toContain("mixins: [folderPickerMixin]");
     expect(page).toContain('class="work-center-workdir-picker"');
-    expect(page).toContain('v-model="form.workDir" type="text" required readonly');
+    expect(page).toContain('v-model="form.workDir" type="text" required @input="onCreateWorkDirInput"');
+    expect(page).not.toContain('v-model="form.workDir" type="text" required readonly');
     expect(page).toContain('@click="openFolderPicker"');
-    expect(page).toContain('class="folder-picker-dialog"');
+    expect(page).toContain('class="work-center-directory-dialog"');
+    expect(page).toContain('class="work-center-directory-item"');
+    expect(page).not.toContain('class="tree-item tree-dir folder-picker-item"');
+    expect(page).toContain('chat() { return this.store; }');
     expect(page).toContain('folderPickerSetWorkDir(path)');
-    expect(page).not.toContain('@input="onCreateWorkDirInput"');
-    expect(css).toMatch(/\.work-center-modal\s*\{[^}]*height: min\(660px, 86vh\)[^}]*overflow: hidden/s);
+    expect(page).toContain('onCreateWorkDirInput()');
+    expect(css).toMatch(/\.work-center-modal\s*\{[^}]*height: min\(620px, 86vh\)[^}]*overflow: hidden/s);
     expect(css).toMatch(/\.work-center-modal-body\s*\{[^}]*overflow-y: auto/s);
     expect(css).toContain('.work-center-modal .btn-primary');
     expect(css).toContain('.work-center-modal .btn-secondary');
-    expect(css).toContain('.work-center-modal .folder-picker-dialog');
+    expect(css).toContain('.work-center-directory-dialog');
+    expect(css).toContain('.work-center-directory-item.selected');
     expect(css).toContain('background: var(--modal-overlay-bg)');
-    expect(css).toContain('background: var(--session-active) !important');
+    expect(css).toContain('background: var(--session-active)');
     expect(css).toContain('width: calc(100vw - 16px)');
     expect(css).toContain('height: calc(100dvh - 16px)');
   });
 
-  it('uses filter-specific list headings and empty states', () => {
+  it('uses backend-projected Board lanes and query filters', () => {
     const page = read('web/components/WorkCenterPage.js');
+    const store = read('web/stores/chat.js');
 
-    expect(page).toContain("this.filter === 'all'");
-    expect(page).toContain("tr('workCenter.allItems'");
-    expect(page).toContain("tr('workCenter.noOpenTitle'");
-    expect(page).toContain("tr('workCenter.noCompletedTitle'");
-    expect(page).toContain('<span>{{ listHeading }}</span>');
+    expect(page).toContain("{ id: 'active'");
+    expect(page).toContain("{ id: 'needs_attention'");
+    expect(page).toContain("{ id: 'closed'");
+    expect(page).toContain('item.boardLane === lane.id');
+    expect(page).toContain('v-model="boardVpId"');
+    expect(page).toContain('v-model="boardWorkItemType"');
+    expect(page).toContain('v-model="boardUpdatedRange"');
     expect(page).toContain('<h2>{{ emptyState.title }}</h2>');
     expect(page).toContain('v-if="emptyState.canCreate"');
+    expect(store).toContain('_workCenterListGenerationByAgent');
+    expect(store).toContain('_workCenterListQueryByAgent');
   });
 
   it('lets AI plan WorkItems while settings define reusable prompts, model, and effort', () => {
@@ -331,8 +415,11 @@ describe('Work Center UI contract', () => {
     expect(read('web/components/WorkCenterActionDetail.js')).toContain('v-if="attachmentsSupported" class="attach-btn work-center-attachment-picker"');
     expect(page).toContain('@attachment-input="onGuidanceAttachmentInput"');
     expect(page).toContain('guidanceAttachments.map(attachment => ({');
-    expect(page).toContain('@click="previewAttachment(attachment)"');
-    expect(page).toContain('previewWorkItemAttachment(this.selected.id, attachment.id, this.agentId)');
+    expect(page).toContain('@click="previewAttachment(attachment, $event.currentTarget)"');
+    expect(page).toContain('previewWorkItemAttachment(workItemId, attachment.id, agentId)');
+    expect(page).toContain("const scope = `${agentId}:${workItemId}:${actionId}`");
+    expect(page).toContain("alt: attachment.name || this.tr('workCenter.previewAttachment', 'Open attachment')");
+    expect(page).toContain("closeLabel: this.tr('common.close', 'Close')");
     expect(page).toContain("tr('workCenter.attachmentsUnsupported'");
     expect(page).toContain('attachments: this.workItemAttachmentsSupported');
   });
@@ -355,10 +442,14 @@ describe('Work Center UI contract', () => {
       'workCenter.newWorkItem',
       'workCenter.workItem',
       'workCenter.createFirst',
+      'workCenter.attentionItems',
       'workCenter.activeItems',
       'workCenter.allItems',
-      'workCenter.noOpenTitle',
+      'workCenter.noAttentionTitle',
+      'workCenter.noActiveTitle',
       'workCenter.noCompletedTitle',
+      'workCenter.actionProgress',
+      'workCenter.currentAction',
       'workCenter.settings.instructionHelp',
       'workCenter.settings.instructionReset',
       'workCenter.chooseFolder',

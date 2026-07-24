@@ -54,24 +54,26 @@ export default {
         </div>
         <!-- Expanded attachments preview -->
         <div class="user-attachments" v-if="message.attachments && message.attachments.length > 0 && showAttachments">
-          <div
-            v-for="(attachment, index) in message.attachments"
-            :key="index"
-            class="user-attachment-item"
-            :class="{ 'is-image': attachment.isImage }"
-          >
-            <img
+          <template v-for="(attachment, index) in message.attachments" :key="index">
+            <button
               v-if="attachment.isImage && attachment.preview"
-              :src="attachment.preview"
-              :alt="attachment.name"
-              class="user-attachment-image"
-              @click="openImagePreview(attachment.preview)"
-            />
-            <div v-else class="user-attachment-file">
-              <span class="file-icon">{{ getFileIcon(attachment.mimeType) }}</span>
-              <span class="file-name">{{ attachment.name }}</span>
+              type="button"
+              class="user-attachment-item is-image"
+              @click="previewAttachment(attachment, $event.currentTarget)"
+            >
+              <img
+                :src="attachment.preview"
+                :alt="attachment.name || t('message.imagePreview')"
+                class="user-attachment-image"
+              />
+            </button>
+            <div v-else class="user-attachment-item">
+              <div class="user-attachment-file">
+                <span class="file-icon">{{ getFileIcon(attachment.mimeType) }}</span>
+                <span class="file-name">{{ attachment.name }}</span>
+              </div>
             </div>
-          </div>
+          </template>
         </div>
       </template>
 
@@ -117,6 +119,15 @@ export default {
       showAttachments.value = !showAttachments.value;
     };
 
+    const previewAttachment = (attachment, trigger) => {
+      if (!attachment?.preview) return;
+      openImagePreview(attachment.preview, {
+        alt: attachment.name || t('message.imagePreview'),
+        closeLabel: t('common.close'),
+        trigger,
+      });
+    };
+
     const formatExpertLabel = (sel) => {
       return getSelectionLabel(sel, store.customExpertRoles);
     };
@@ -159,11 +170,12 @@ export default {
       userQuote,
       showAttachments,
       toggleAttachments,
+      previewAttachment,
+      t,
       formatExpertLabel,
       getAttachmentsText,
       todoStatusSymbol,
-      getFileIcon,
-      openImagePreview
+      getFileIcon
     };
   }
 };

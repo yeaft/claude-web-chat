@@ -46,8 +46,8 @@ export default {
           </button>
         </section>
 
-        <div v-if="modelDiscoveryWarning || modelDiscoveryError" class="llm-inline-status" :class="modelDiscoveryError ? 'is-error' : 'is-warning'">
-          {{ modelDiscoveryError || modelDiscoveryWarning }}
+        <div v-if="modelDiscoveryWarning || modelDiscoveryError || saveRefreshWarning" class="llm-inline-status" :class="modelDiscoveryError ? 'is-error' : 'is-warning'">
+          {{ modelDiscoveryError || modelDiscoveryWarning || saveRefreshWarning }}
         </div>
 
         <!-- Providers Section -->
@@ -244,6 +244,7 @@ export default {
       discoveringModels: false,
       modelDiscoveryWarning: null,
       modelDiscoveryError: null,
+      saveRefreshWarning: null,
     };
   },
   computed: {
@@ -288,7 +289,25 @@ export default {
   },
   watch: {
     effectiveAgentId: {
-      handler(agentId) {
+      handler(agentId, previousAgentId) {
+        if (agentId !== previousAgentId) {
+          this.cancelPendingDiscovery();
+          this.cancelPendingSave();
+          if (this._loadTimeout) {
+            clearTimeout(this._loadTimeout);
+            this._loadTimeout = null;
+          }
+          this.loading = false;
+          this.loadError = null;
+          this.localProviders = [];
+          this.providerModelsText = [];
+          this.localPrimaryModel = null;
+          this.localFastModel = null;
+          this.isDirty = false;
+          this.modelDiscoveryWarning = null;
+          this.modelDiscoveryError = null;
+          this.saveRefreshWarning = null;
+        }
         if (agentId) this.requestConfig();
       },
       immediate: true
@@ -321,10 +340,12 @@ export default {
     async useGitHubCopilotPreset() {
       const agentId = this.effectiveAgentId;
       if (!agentId || !this.agentOnline) return;
+      this.cancelPendingDiscovery();
       this.discoveringModels = true;
       this.modelDiscoveryWarning = null;
       this.modelDiscoveryError = null;
       const requestId = `llm-discovery-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      this._pendingDiscovery = { agentId, requestId };
       this.chatStore.sendWsMessage({
         type: 'discover_llm_models',
         agentId,
@@ -332,6 +353,10 @@ export default {
         providerType: 'github-copilot'
       });
       const result = await this.waitForModelDiscovery(agentId, requestId);
+      if (this._pendingDiscovery?.agentId !== agentId
+        || this._pendingDiscovery?.requestId !== requestId
+        || this.effectiveAgentId !== agentId) return;
+      this._pendingDiscovery = null;
       this.discoveringModels = false;
       if (result.error) {
         this.modelDiscoveryError = result.error;
@@ -344,19 +369,47 @@ export default {
     waitForModelDiscovery(agentId, requestId) {
       return new Promise(resolve => {
         const started = Date.now();
-        const timer = setInterval(() => {
+        const settle = (result) => {
+          if (this._discoveryTimer) clearInterval(this._discoveryTimer);
+          this._discoveryTimer = null;
+          this._resolvePendingDiscovery = null;
+          resolve(result);
+        };
+        this._resolvePendingDiscovery = settle;
+        this._discoveryTimer = setInterval(() => {
           const result = this.chatStore.llmModelDiscovery?.[agentId];
           if (result?.requestId === requestId) {
-            clearInterval(timer);
-            resolve(result);
+            settle(result);
             return;
           }
           if (Date.now() - started > 10000) {
-            clearInterval(timer);
-            resolve({ error: 'Timed out while refreshing provider models.' });
+            settle({ error: 'Timed out while refreshing provider models.' });
           }
         }, 100);
       });
+    },
+
+    cancelPendingDiscovery() {
+      const resolvePending = this._resolvePendingDiscovery;
+      if (this._discoveryTimer) clearInterval(this._discoveryTimer);
+      this._discoveryTimer = null;
+      this._resolvePendingDiscovery = null;
+      this._pendingDiscovery = null;
+      this.discoveringModels = false;
+      if (resolvePending) resolvePending({ cancelled: true });
+    },
+
+    cancelPendingSave() {
+      if (this._saveTimeout) {
+        clearTimeout(this._saveTimeout);
+        this._saveTimeout = null;
+      }
+      if (this._saveUnwatch) {
+        this._saveUnwatch();
+        this._saveUnwatch = null;
+      }
+      this._pendingSave = null;
+      this.saving = false;
     },
 
     applyDiscoveredProvider(result) {
@@ -374,8 +427,17 @@ export default {
       else providers.push(provider);
       this.localProviders = providers;
       this.refreshProviderModelsText();
-      const firstModel = this.parseModelsFromProvider(provider)[0];
-      if (firstModel && !this.localPrimaryModel) this.localPrimaryModel = `${provider.name}/${firstModel}`;
+      const modelRefs = new Set(this.parseModelsFromProvider(provider)
+        .map(modelId => `${provider.name}/${modelId}`));
+      const firstModelRef = modelRefs.values().next().value || null;
+      if (firstModelRef && !modelRefs.has(this.localPrimaryModel)) {
+        this.localPrimaryModel = firstModelRef;
+      }
+      if (firstModelRef
+        && this.localFastModel?.startsWith(`${provider.name}/`)
+        && !modelRefs.has(this.localFastModel)) {
+        this.localFastModel = firstModelRef;
+      }
       this.markDirty();
     },
 
@@ -609,6 +671,7 @@ export default {
       if (!agentId || this.saving) return;
 
       this.saving = true;
+      this.saveRefreshWarning = null;
 
       // Build providers for saving (clean up empty entries)
       const providers = this.editableProviders
@@ -668,44 +731,50 @@ export default {
         llmConfig.fastModel = this.localFastModel || null;
       }
 
+      const requestId = `llm-save-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      this.cancelPendingSave();
+      this.saving = true;
+      this._pendingSave = { agentId, requestId };
       this.chatStore.sendWsMessage({
         type: 'update_llm_config',
         agentId,
+        requestId,
         config: llmConfig
       });
 
-      // Wait for llm_config_updated response (handled by watcher on currentConfig)
-      // Use a timeout as fallback
+      // Wait for the acknowledgement that belongs to this exact Agent/request.
       this._saveTimeout = setTimeout(() => {
-        this.saving = false;
+        if (this._pendingSave?.agentId !== agentId || this._pendingSave?.requestId !== requestId) return;
+        this.cancelPendingSave();
         this.$emit('message', this.$t('settings.llm.saveFailed'), true);
       }, 10000);
 
-      // Watch for update
-      const unwatch = this.$watch('currentConfig', (config) => {
-        if (config && config.loaded) {
-          if (this._saveTimeout) {
-            clearTimeout(this._saveTimeout);
-            this._saveTimeout = null;
-          }
-          this.saving = false;
-          if (config.error) {
-            this.$emit('message', config.error, true);
-          } else {
-            this.isDirty = false;
-            this.$emit('message', this.$t('settings.llm.saved'), false);
-            // task-343: notify host (e.g. YeaftSettings) to dispatch
-            // yeaft_reset so the Engine picks up new provider config.
-            this.$emit('saved');
-          }
-          unwatch();
+      this._saveUnwatch = this.$watch('currentConfig', (config) => {
+        if (!config?.loaded
+          || config.requestId !== requestId
+          || this.effectiveAgentId !== agentId
+          || this._pendingSave?.agentId !== agentId
+          || this._pendingSave?.requestId !== requestId) return;
+        this.cancelPendingSave();
+        if (config.error) {
+          this.$emit('message', config.error, true);
+          return;
         }
+        this.isDirty = false;
+        this.saveRefreshWarning = config.statusRefreshError
+          ? this.$t('settings.llm.savedRefreshWarning', { error: config.statusRefreshError })
+          : null;
+        this.$emit('message', this.saveRefreshWarning || this.$t('settings.llm.saved'), !!config.statusRefreshError);
+        // A warning is a partial success. Tell the host to keep the modal open
+        // so the user can actually read it instead of closing immediately.
+        this.$emit('saved', { warning: this.saveRefreshWarning });
       }, { deep: true });
     }
   },
 
   beforeUnmount() {
     if (this._loadTimeout) clearTimeout(this._loadTimeout);
-    if (this._saveTimeout) clearTimeout(this._saveTimeout);
+    this.cancelPendingDiscovery();
+    this.cancelPendingSave();
   }
 };

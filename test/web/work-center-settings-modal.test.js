@@ -12,6 +12,58 @@ import {
   normalizeWorkCenterSettings,
 } from '../../agent/yeaft/work-center/workflow.js';
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function createPageVm(createWorkItem, overrides = {}) {
+  return {
+    agentId: 'agent-a',
+    createGeneration: 0,
+    saving: false,
+    selectedId: 'item-a',
+    selectedActionId: 'action-a',
+    narrowPane: 'items',
+    expandedActions: {},
+    actionsExpanded: false,
+    detailError: '',
+    detailLoading: false,
+    settings: { startImmediately: true },
+    createDefaultWorkDir: '/workspace/a',
+    createDefaultStart: true,
+    workDirTouched: true,
+    startTouched: true,
+    createOpen: true,
+    workItemAttachmentsSupported: false,
+    createAttachments: [],
+    resetActionComposer: vi.fn(),
+    resetWorkItemComposer: vi.fn(),
+    closeFolderPicker: vi.fn(),
+    openWorkItem: WorkCenterPage.methods.openWorkItem,
+    applyCreateDefaults: WorkCenterPage.methods.applyCreateDefaults,
+    resetCreateExecutionContext: WorkCenterPage.methods.resetCreateExecutionContext,
+    form: {
+      requirement: 'Remain scoped to Agent A',
+      workDir: '/workspace/a',
+      reuseMemory: true,
+      start: true,
+    },
+    store: {
+      workCenterCreateDraft: null,
+      createWorkItem,
+      listWorkItems: vi.fn().mockResolvedValue([]),
+      loadWorkCenterSettings: vi.fn().mockResolvedValue({}),
+    },
+    ...overrides,
+  };
+}
+
 function modalVm(overrides = {}) {
   return {
     agentId: 'agent-a',
@@ -33,6 +85,50 @@ function modalVm(overrides = {}) {
     ...overrides,
   };
 }
+
+describe('Work Center detail actions', () => {
+  it('builds the Action breadcrumb from its stable sequence and concise objective', () => {
+    const vm = {
+      selected: {
+        actions: [
+          { id: 'inspect' },
+          { id: 'implement', sequence: 7, brief: { objective: '  Implement   the focused fix  ' } },
+        ],
+      },
+      tr: (_key, fallback) => fallback,
+      actionContentSummary: WorkCenterPage.methods.actionContentSummary,
+    };
+
+    expect(WorkCenterPage.methods.actionSequence.call(vm, vm.selected.actions[1])).toBe(7);
+    expect(WorkCenterPage.methods.actionSequence.call(vm, vm.selected.actions[0])).toBe(1);
+    expect(WorkCenterPage.methods.actionBreadcrumbDescription.call(vm, vm.selected.actions[1]))
+      .toBe('Implement the focused fix');
+    expect(WorkCenterPage.methods.actionBreadcrumbDescription.call(vm, { id: 'empty' }))
+      .toBe('Untitled Action');
+  });
+
+  it('confirms explicit cancellation before mutating the Work Item', async () => {
+    const cancelWorkItem = vi.fn().mockResolvedValue(undefined);
+    const vm = {
+      selected: { id: 'item-a' },
+      agentId: 'agent-a',
+      store: { cancelWorkItem },
+      tr: (_key, fallback) => fallback,
+    };
+    const confirm = vi.fn()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    vi.stubGlobal('confirm', confirm);
+
+    await WorkCenterPage.methods.cancelSelected.call(vm);
+    expect(confirm).toHaveBeenCalledWith('Cancel this work item and stop its unfinished Actions?');
+    expect(cancelWorkItem).not.toHaveBeenCalled();
+
+    await WorkCenterPage.methods.cancelSelected.call(vm);
+    expect(cancelWorkItem).toHaveBeenCalledWith('item-a', 'agent-a');
+    vi.unstubAllGlobals();
+  });
+});
 
 describe('Work Center settings modal ownership', () => {
   afterEach(() => {
@@ -434,6 +530,25 @@ describe('Work Center settings modal ownership', () => {
     expect(vm.form.workDir).toBe('/workspace/chosen');
   });
 
+  it('preserves a manually entered work directory when delayed defaults arrive', () => {
+    const vm = {
+      createOpen: true,
+      workDirTouched: false,
+      startTouched: false,
+      createDefaultWorkDir: '',
+      createDefaultStart: true,
+      form: { workDir: '/workspace/manual', start: true },
+    };
+    vm.applyCreateDefaults = WorkCenterPage.methods.applyCreateDefaults.bind(vm);
+
+    WorkCenterPage.methods.onCreateWorkDirInput.call(vm);
+    vm.createDefaultWorkDir = '/workspace/default';
+    WorkCenterPage.watch.createDefaultWorkDir.call(vm);
+
+    expect(vm.workDirTouched).toBe(true);
+    expect(vm.form.workDir).toBe('/workspace/manual');
+  });
+
   it('waits for the new Agent defaults before replacing untouched execution input', async () => {
     const vm = {
       createOpen: true,
@@ -442,14 +557,16 @@ describe('Work Center settings modal ownership', () => {
       createDefaultWorkDir: '',
       createDefaultStart: true,
       form: {
-        workDir: '/workspace/a', start: false, title: 'Keep title', goal: 'Keep goal',
-        acceptanceCriteriaText: '', reuseMemory: true,
+        workDir: '/workspace/a', start: false, requirement: 'Keep goal', reuseMemory: true,
       },
       selectedId: 'item-a',
       agentId: 'agent-b',
       saving: false,
       settings: { startImmediately: true },
       closeFolderPicker: vi.fn(),
+      resetActionComposer: vi.fn(),
+      resetWorkItemComposer: vi.fn(),
+      openWorkItem: WorkCenterPage.methods.openWorkItem,
       store: {
         workCenterCreateDraft: {
           sourceAgentId: 'agent-a',
@@ -470,7 +587,7 @@ describe('Work Center settings modal ownership', () => {
 
     expect(vm.createOpen).toBe(true);
     expect(vm.form).toMatchObject({
-      workDir: '', start: true, title: 'Keep title', goal: 'Keep goal',
+      workDir: '', start: true, requirement: 'Keep goal',
     });
     expect(vm.store.workCenterCreateDraft).toMatchObject({
       sourceAgentId: 'agent-b', origin: null, linkedSessionIds: [],
@@ -484,7 +601,7 @@ describe('Work Center settings modal ownership', () => {
     WorkCenterPage.watch.createDefaultStart.call(vm);
 
     expect(vm.form).toMatchObject({
-      workDir: '/workspace/b', start: false, title: 'Keep title', goal: 'Keep goal',
+      workDir: '/workspace/b', start: false, requirement: 'Keep goal',
     });
 
     await WorkCenterPage.methods.submitCreate.call(vm);
@@ -504,7 +621,7 @@ describe('Work Center settings modal ownership', () => {
       startTouched: false,
       createDefaultWorkDir: '/workspace/b',
       createDefaultStart: false,
-      form: { workDir: '/workspace/custom-a', start: true, title: 'Keep title', goal: 'Keep goal' },
+      form: { workDir: '/workspace/custom-a', start: true, requirement: 'Keep goal' },
       closeFolderPicker: vi.fn(),
       selectedId: 'item-a',
       store: {
@@ -525,7 +642,7 @@ describe('Work Center settings modal ownership', () => {
     WorkCenterPage.watch.agentId.handler.call(vm, 'agent-b', 'agent-a');
 
     expect(vm.createOpen).toBe(false);
-    expect(vm.form).toMatchObject({ workDir: '', start: true, title: 'Keep title', goal: 'Keep goal' });
+    expect(vm.form).toMatchObject({ workDir: '', start: true, requirement: 'Keep goal' });
     expect(vm.store.workCenterCreateDraft).toMatchObject({
       sourceAgentId: 'agent-b', origin: null, linkedSessionIds: [],
     });
@@ -537,6 +654,157 @@ describe('Work Center settings modal ownership', () => {
     expect(vm.store.workCenterCreateDraft.linkedSessionIds).toEqual([]);
   });
 
+  it.each([
+    {
+      name: 'started Work Item',
+      start: true,
+      detail: {
+        id: 'item-running',
+        currentActionId: 'action-current',
+        actions: [{ id: 'action-first' }, { id: 'action-current' }],
+      },
+      expectedActionId: 'action-current',
+    },
+    {
+      name: 'draft Work Item with a planned Action',
+      start: false,
+      detail: {
+        id: 'item-draft',
+        currentActionId: null,
+        actions: [{ id: 'action-planned' }],
+      },
+      expectedActionId: 'action-planned',
+    },
+    {
+      name: 'draft Work Item without Actions',
+      start: false,
+      detail: { id: 'item-empty-draft', currentActionId: null, actions: [] },
+      expectedActionId: null,
+    },
+  ])('opens the Action canvas after creating a $name', async ({ start, detail, expectedActionId }) => {
+    const resetActionComposer = vi.fn();
+    const resetWorkItemComposer = vi.fn();
+    const createWorkItem = vi.fn().mockResolvedValue(detail);
+    const vm = {
+      agentId: 'agent-a',
+      saving: false,
+      selectedId: 'item-old',
+      selectedActionId: 'action-old',
+      narrowPane: 'items',
+      expandedActions: { 'action-old': true },
+      actionsExpanded: true,
+      detailError: 'old error',
+      detailLoading: true,
+      settings: { startImmediately: true },
+      workDirTouched: true,
+      startTouched: true,
+      createOpen: true,
+      workItemAttachmentsSupported: false,
+      createAttachments: [],
+      resetActionComposer,
+      resetWorkItemComposer,
+      openWorkItem: WorkCenterPage.methods.openWorkItem,
+      form: {
+        requirement: 'Open the created Work Item',
+        workDir: '/workspace/project',
+        reuseMemory: true,
+        start,
+      },
+      store: { workCenterCreateDraft: null, createWorkItem },
+    };
+
+    await WorkCenterPage.methods.submitCreate.call(vm);
+
+    expect(createWorkItem).toHaveBeenCalledWith(expect.objectContaining({ start }), 'agent-a');
+    expect(vm.selectedId).toBe(detail.id);
+    expect(vm.selectedActionId).toBe(expectedActionId);
+    expect(vm.narrowPane).toBe('actions');
+    expect(vm.createOpen).toBe(false);
+    expect(vm.expandedActions).toEqual({});
+    expect(vm.actionsExpanded).toBe(false);
+    expect(vm.detailError).toBe('');
+    expect(vm.detailLoading).toBe(false);
+    expect(resetActionComposer).toHaveBeenCalledOnce();
+    expect(resetWorkItemComposer).toHaveBeenCalledOnce();
+  });
+
+  it.each(['resolve', 'reject'])('ignores an Agent A create that settles after switching to Agent B (%s)', async outcome => {
+    const pending = deferred();
+    const vm = createPageVm(vi.fn().mockReturnValue(pending.promise));
+    const submission = WorkCenterPage.methods.submitCreate.call(vm);
+
+    vm.agentId = 'agent-b';
+    WorkCenterPage.watch.agentId.handler.call(vm, 'agent-b', 'agent-a');
+    vm.form = {
+      requirement: 'Keep Agent B state',
+      workDir: '/workspace/b',
+      reuseMemory: false,
+      start: false,
+    };
+    vm.createOpen = true;
+    vm.selectedId = 'item-b';
+    vm.selectedActionId = 'action-b';
+    vm.narrowPane = 'action';
+    vm.saving = true;
+
+    if (outcome === 'resolve') {
+      pending.resolve({
+        id: 'item-from-a',
+        currentActionId: 'action-from-a',
+        actions: [{ id: 'action-from-a' }],
+      });
+      await submission;
+    } else {
+      pending.reject(new Error('Agent A create failed'));
+      await expect(submission).rejects.toThrow('Agent A create failed');
+    }
+
+    expect(vm.selectedId).toBe('item-b');
+    expect(vm.selectedActionId).toBe('action-b');
+    expect(vm.narrowPane).toBe('action');
+    expect(vm.createOpen).toBe(true);
+    expect(vm.form).toMatchObject({
+      requirement: 'Keep Agent B state', workDir: '/workspace/b', start: false,
+    });
+    expect(vm.saving).toBe(true);
+  });
+
+  it('rejects a stale Agent A create after switching A to B and back to A', async () => {
+    const pending = deferred();
+    const vm = createPageVm(vi.fn().mockReturnValue(pending.promise));
+    const submission = WorkCenterPage.methods.submitCreate.call(vm);
+
+    vm.agentId = 'agent-b';
+    WorkCenterPage.watch.agentId.handler.call(vm, 'agent-b', 'agent-a');
+    vm.agentId = 'agent-a';
+    WorkCenterPage.watch.agentId.handler.call(vm, 'agent-a', 'agent-b');
+    vm.form = {
+      requirement: 'Do not overwrite after identity returns',
+      workDir: '/workspace/new-a',
+      reuseMemory: true,
+      start: false,
+    };
+    vm.createOpen = true;
+    vm.selectedId = 'new-item-a';
+    vm.selectedActionId = null;
+    vm.narrowPane = 'items';
+    vm.saving = true;
+
+    pending.resolve({
+      id: 'old-item-a',
+      currentActionId: 'old-action-a',
+      actions: [{ id: 'old-action-a' }],
+    });
+    await submission;
+
+    expect(vm.selectedId).toBe('new-item-a');
+    expect(vm.selectedActionId).toBeNull();
+    expect(vm.narrowPane).toBe('items');
+    expect(vm.createOpen).toBe(true);
+    expect(vm.form).toMatchObject({ requirement: 'Do not overwrite after identity returns', workDir: '/workspace/new-a' });
+    expect(vm.saving).toBe(true);
+  });
+
   it('drops provenance when a stale draft bypasses the Agent watcher', async () => {
     const vm = {
       agentId: 'agent-b',
@@ -544,12 +812,15 @@ describe('Work Center settings modal ownership', () => {
       selectedId: null,
       settings: { startImmediately: true },
       workDirTouched: false,
+      resetActionComposer: vi.fn(),
+      resetWorkItemComposer: vi.fn(),
+      openWorkItem: WorkCenterPage.methods.openWorkItem,
       startTouched: false,
       createOpen: true,
       workItemAttachmentsSupported: false,
       createAttachments: [{ fileId: 'stale-file', name: 'stale.txt', mimeType: 'text/plain', size: 5 }],
       form: {
-        title: 'Keep title', goal: 'Keep goal', acceptanceCriteriaText: '',
+        requirement: 'Keep goal',
         workDir: '/workspace/b', reuseMemory: true, start: false,
       },
       store: {

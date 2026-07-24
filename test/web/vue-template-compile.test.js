@@ -21,8 +21,9 @@ const compileCoveredComponents = [
   'AssistantTurn.js',
   'YeaftDebugPanel.js',
   'YeaftSessionActions.js',
-  'YeaftTranscriptSearch.js',
+  'YeaftConversationOutline.js',
   'WorkCenterPage.js',
+  'WorkCenterActionDetail.js',
   'WorkCenterSettingsModal.js',
 ];
 

@@ -3,6 +3,7 @@ import {
   adjustedScrollTopForMeasuredHeight,
   buildVirtualOffsets,
   computeVirtualWindow,
+  computeVirtualWindowFromLayout,
   estimateVirtualItemHeight,
   getVirtualItemKey,
   isTranscriptScrollbarPointer,
@@ -72,6 +73,27 @@ describe('virtual transcript range calculation', () => {
     expect(window.items.map((entry) => entry.key)).toEqual(['turn-499', 'turn-500', 'turn-501', 'turn-502', 'turn-503']);
     expect(window.topSpacerHeight).toBe(49900);
     expect(window.bottomSpacerHeight).toBe(49600);
+  });
+
+  it('reuses precomputed offsets across scroll window updates', () => {
+    const items = turns(1000);
+    let estimateCalls = 0;
+    const estimateHeight = () => {
+      estimateCalls += 1;
+      return 100;
+    };
+    const layout = buildVirtualOffsets(items, {}, { itemGap: 0, estimateHeight });
+
+    for (let scrollTop = 0; scrollTop < 50000; scrollTop += 500) {
+      const window = computeVirtualWindowFromLayout(items, layout, {
+        scrollTop,
+        viewportHeight: 300,
+        overscan: 1,
+      });
+      expect(window.items.length).toBeLessThan(8);
+    }
+
+    expect(estimateCalls).toBe(items.length);
   });
 
   it('keeps Yeaft message-block children together as one virtual item', () => {

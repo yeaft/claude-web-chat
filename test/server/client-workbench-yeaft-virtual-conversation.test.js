@@ -44,6 +44,8 @@ describe('client workbench with yeaft virtual conversation ids', () => {
       type: 'terminal_create',
       conversationId: 'yeaft-1752541234567',
       terminalId: 'term-1',
+      _requestUserId: 'user-a',
+      _requestClientId: 'client-a',
     }));
     // The virtual id has no DB row / in-memory conversation — the handler
     // must not consult verifyConversationOwnership at all.

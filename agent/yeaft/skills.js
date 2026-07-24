@@ -458,6 +458,9 @@ export class SkillManager {
   /** @type {Map<string, { workspaceRoot: string, relativeRoot: string }>} */
   #secureWorkspaceByDir;
 
+  /** Hash of the effective loaded skill set, including prompt content. */
+  #snapshotHash = '';
+
   /**
    * @param {string | string[]} dirs — single directory (back-compat) or array of
    *   directories in priority order (lowest → highest). Falsy entries are
@@ -526,14 +529,16 @@ export class SkillManager {
    * tagged with `_tier` (from the constructor's `tierByDir` map, or the dir
    * basename as fallback) so consumers can show provenance.
    *
-   * @returns {{ loaded: number, errors: string[] }}
+   * @returns {{ loaded: number, errors: string[], changed: boolean }}
    */
   load() {
+    const previousHash = this.#snapshotHash;
     this.#skills.clear();
     const allErrors = [];
 
     if (this.#skillsDirs.length === 0) {
-      return { loaded: 0, errors: [] };
+      this.#snapshotHash = this.#computeSnapshotHash();
+      return { loaded: 0, errors: [], changed: this.#snapshotHash !== previousHash };
     }
 
     for (const dir of this.#skillsDirs) {
@@ -554,7 +559,33 @@ export class SkillManager {
       allErrors.push(...errors);
     }
 
-    return { loaded: this.#skills.size, errors: allErrors };
+    this.#snapshotHash = this.#computeSnapshotHash();
+    return {
+      loaded: this.#skills.size,
+      errors: allErrors,
+      changed: this.#snapshotHash !== previousHash,
+    };
+  }
+
+  #computeSnapshotHash() {
+    const records = [...this.#skills.values()]
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+      .map(skill => ({
+        name: skill.name || '',
+        description: skill.description || '',
+        trigger: skill.trigger || '',
+        mode: skill.mode || 'both',
+        category: skill.category || '',
+        platforms: skill.platforms || [],
+        keywords: skill.keywords || [],
+        content: skill.content || '',
+        source: skill._source || '',
+        path: skill._path || '',
+        tier: skill._tier || '',
+        references: skill._references || [],
+        templates: skill._templates || [],
+      }));
+    return JSON.stringify(records);
   }
 
   /**
@@ -746,6 +777,7 @@ export class SkillManager {
       _path: filePath,
       _tier: userTier,
     });
+    this.#snapshotHash = this.#computeSnapshotHash();
 
     return filename;
   }
@@ -783,6 +815,7 @@ export class SkillManager {
     }
 
     this.#skills.delete(name);
+    this.#snapshotHash = this.#computeSnapshotHash();
     return true;
   }
 

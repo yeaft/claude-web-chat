@@ -88,6 +88,20 @@ export class WorkItemWatcher {
     }
   }
 
+  notifyActionInput(workItemId, actionId) {
+    for (const entry of this.activeRuns.values()) {
+      if (entry.workItemId !== workItemId || entry.actionId !== actionId) continue;
+      try { entry.wakeForPendingUserMessage?.(); } catch {}
+    }
+  }
+
+  notifyWorkItemInput(workItemId) {
+    for (const entry of this.activeRuns.values()) {
+      if (entry.workItemId !== workItemId) continue;
+      try { entry.wakeForPendingUserMessage?.(); } catch {}
+    }
+  }
+
   #recoverExpiredRuns() {
     const recovered = this.store.recoverInterruptedRuns?.(this.ownerBootId) || 0;
     if (recovered > 0) {
@@ -136,6 +150,17 @@ export class WorkItemWatcher {
               );
               break;
             }
+            if (error?.workItemPrepareDeferred) {
+              const detail = this.store.deferRun(
+                claim.run.id,
+                this.ownerBootId,
+                claim.run.leaseEpoch,
+                error.message,
+              );
+              if (!detail) throw new Error('Work Center deferred preparation lost its Run lease');
+              this.onEvent({ type: 'run.deferred', workItem: detail });
+              break;
+            }
             this.controller.submit(claim.run.id, this.ownerBootId, claim.run.leaseEpoch, {
               outcome: error?.workItemPrepareRetryable ? 'retryable' : 'failed',
               response: '', summary: '', evidence: [],
@@ -172,11 +197,15 @@ export class WorkItemWatcher {
       readFinalProgress: null,
       interrupted: false,
       workItemId: claim.workItem.id,
+      actionId: claim.action.id,
       runId: claim.run.id,
       leaseEpoch: claim.run.leaseEpoch,
+      wakeForPendingUserMessage: null,
     };
     entry.promise = this.#execute(claim, abortController.signal, readProgress => {
       entry.readFinalProgress = readProgress;
+    }, wake => {
+      entry.wakeForPendingUserMessage = wake;
     }).finally(() => {
       clearInterval(renewal);
       this.activeRuns.delete(key);
@@ -186,7 +215,7 @@ export class WorkItemWatcher {
     this.onEvent({ type: 'run.started', workItem: this.store.getWorkItemDetail(claim.workItem.id) });
   }
 
-  async #execute(claim, signal, registerProgressReader) {
+  async #execute(claim, signal, registerProgressReader, registerInputWake) {
     try {
       let result;
       try {
@@ -195,6 +224,7 @@ export class WorkItemWatcher {
           signal,
           ownerBootId: this.ownerBootId,
           registerProgressReader,
+          registerInputWake,
           onProgress: progress => {
             const detail = this.store.updateRunProgress(
               claim.run.id,
@@ -214,6 +244,8 @@ export class WorkItemWatcher {
           summary: '',
           evidence: [],
           error: err?.message || String(err),
+          failureKind: err?.workItemFailureKind || null,
+          failureCode: err?.workItemFailureCode || null,
           loopCount: err?.workItemExecutionStats?.loopCount || 0,
           toolCount: err?.workItemExecutionStats?.toolCount || 0,
           llmRequestCount: err?.workItemExecutionStats?.llmRequestCount || 0,

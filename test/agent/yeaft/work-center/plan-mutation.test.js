@@ -145,27 +145,117 @@ describe('Work Center additive plan mutation', () => {
     } });
   });
 
-  it('rejects replan Actions that reuse any historical stage identity', () => {
-    let detail = createGraph();
-    const implement = store.claimReadyAction('boot', 5_000);
-    detail = controller.submit(implement.run.id, 'boot', implement.run.leaseEpoch, completed({
+  it('atomically retains, replaces, removes, and adds explicit replan Actions', () => {
+    let detail = createGraph([
+      plannedAction('discover', 'research'),
+      plannedAction('implement', 'implement', ['discover']),
+      plannedAction('review', 'review', ['implement']),
+      plannedAction('document', 'document', ['review']),
+    ]);
+    const discover = store.claimReadyAction('boot', 5_000);
+    detail = controller.submit(discover.run.id, 'boot', discover.run.leaseEpoch, completed({
       replanRequest: {
-        proposalId: 'replan-reuse', basePlanRevision: 1,
+        proposalId: 'replan-explicit', basePlanRevision: 1,
         reason: 'Replace unfinished work without rewriting completed history',
       },
     }));
+    const implementBefore = detail.actions.find(action => action.stageId === 'implement');
+    const reviewBefore = detail.actions.find(action => action.stageId === 'review');
+    const documentBefore = detail.actions.find(action => action.stageId === 'document');
+    const replan = store.claimReadyAction('boot', 5_000);
+    const replanned = controller.submit(replan.run.id, 'boot', replan.run.leaseEpoch, completed({
+      replanMutation: {
+        proposalId: 'replan-result', basePlanRevision: 2,
+        retain: [{ actionId: implementBefore.id,
+          action: plannedAction('implement', 'implement', ['discover']) }],
+        replace: [{ actionId: reviewBefore.id,
+          action: plannedAction('verify', 'test', ['implement']) }],
+        remove: [documentBefore.id],
+        add: [{ ...plannedAction('review-next', 'review', ['verify']), changesRequestedActionId: 'verify' }],
+      },
+    }));
+    expect(replanned.status, replanned.runs[0]?.error).toBe('ready');
+    expect(replanned.planRevision).toBe(3);
+    expect(replanned.workflowSnapshot.stages.map(stage => stage.id))
+      .toEqual(['triage', 'discover', 'implement', 'verify', 'review-next']);
+    expect(replanned.actions.find(action => action.id === implementBefore.id)).toMatchObject({
+      stageId: 'implement', status: 'ready', generation: implementBefore.generation + 1,
+      identityHistory: [
+        { generation: implementBefore.generation, specHash: implementBefore.specHash },
+        { generation: implementBefore.generation + 1,
+          specHash: replanned.actions.find(action => action.id === implementBefore.id).specHash },
+      ],
+    });
+    expect(replanned.actions.find(action => action.stageId === 'verify')).toMatchObject({
+      status: 'ready', replacesActionId: reviewBefore.id,
+    });
+    expect(replanned.actions.find(action => action.id === documentBefore.id).status).toBe('superseded');
+    expect(replanned.actions.find(action => action.stageId === 'review-next').status).toBe('ready');
+    expect(replanned.actions.find(action => action.stageId === 'discover').status).toBe('completed');
+    expect(replanned.events[0]).toMatchObject({ type: 'workflow.replanned', data: {
+      proposalId: 'replan-result', previousPlanRevision: 2, planRevision: 3,
+    } });
+  });
+
+  it('supports an add-only replan after all prior business Actions completed', () => {
+    let detail = createGraph([plannedAction('discover', 'research')]);
+    const discover = store.claimReadyAction('boot', 5_000);
+    detail = controller.submit(discover.run.id, 'boot', discover.run.leaseEpoch, completed({
+      replanRequest: { proposalId: 'replan-add-only', basePlanRevision: 1, reason: 'Add follow-up work' },
+    }));
+    const replan = store.claimReadyAction('boot', 5_000);
+    const replanned = controller.submit(replan.run.id, 'boot', replan.run.leaseEpoch, completed({
+      replanMutation: { proposalId: 'add-only-result', basePlanRevision: 2,
+        retain: [], replace: [], remove: [], add: [plannedAction('verify', 'test', ['discover'])] },
+    }));
+    expect(replanned.status, replanned.runs[0]?.error).toBe('ready');
+    expect(replanned.workflowSnapshot.stages.map(stage => stage.id))
+      .toEqual(['triage', 'discover', 'verify']);
+    expect(replanned.actions.find(action => action.stageId === 'discover').status).toBe('completed');
+    expect(replanned.actions.find(action => action.stageId === 'verify').status).toBe('ready');
+  });
+
+  it('records a stale replan mutation as an open conflict without changing topology', () => {
+    let detail = createGraph();
+    const implement = store.claimReadyAction('boot', 5_000);
+    detail = controller.submit(implement.run.id, 'boot', implement.run.leaseEpoch, completed({
+      replanRequest: { proposalId: 'replan-stale', basePlanRevision: 1, reason: 'Change future work' },
+    }));
+    const reviewBefore = detail.actions.find(action => action.stageId === 'review');
+    const replan = store.claimReadyAction('boot', 5_000);
+    const conflicted = controller.submit(replan.run.id, 'boot', replan.run.leaseEpoch, completed({
+      replanMutation: { proposalId: 'stale-result', basePlanRevision: 1,
+        retain: [], replace: [], remove: [reviewBefore.id], add: [] },
+    }));
+    expect(conflicted.status).toBe('needs_attention');
+    expect(conflicted.planRevision).toBe(2);
+    expect(conflicted.actions.find(action => action.id === reviewBefore.id).status).toBe('superseded');
+    expect(conflicted.planConflicts).toHaveLength(1);
+    expect(conflicted.planConflicts[0]).toMatchObject({
+      actionId: replan.action.id, generation: replan.action.generation,
+      kind: 'plan_revision', status: 'open',
+      details: { proposalId: 'stale-result', expectedPlanRevision: 1, actualPlanRevision: 2 },
+    });
+    expect(store.db.prepare('SELECT COUNT(*) AS count FROM plan_audits WHERE proposal_id = ?')
+      .get('stale-result').count).toBe(0);
+  });
+
+  it('rejects a replan that does not classify every frozen Action', () => {
+    let detail = createGraph();
+    const implement = store.claimReadyAction('boot', 5_000);
+    detail = controller.submit(implement.run.id, 'boot', implement.run.leaseEpoch, completed({
+      replanRequest: { proposalId: 'replan-incomplete', basePlanRevision: 1, reason: 'Change future work' },
+    }));
     const replan = store.claimReadyAction('boot', 5_000);
     const rejected = controller.submit(replan.run.id, 'boot', replan.run.leaseEpoch, completed({
-      plan: { workItemType: 'bug-fix', actions: [
-        plannedAction('implement', 'implement'),
-        plannedAction('review-next', 'review', ['implement']),
-      ] },
+      replanMutation: { proposalId: 'missing-classification', basePlanRevision: 2,
+        retain: [], replace: [], remove: [], add: [plannedAction('verify', 'test')] },
     }));
     expect(rejected.status).toBe('needs_attention');
-    expect(rejected.runs[0].error).toMatch(/reuses historical stage identity: implement/);
-    expect(rejected.actions.find(action => action.stageId === 'implement').status).toBe('completed');
-    expect(rejected.actions.filter(action => action.stageId === 'implement')).toHaveLength(1);
-    expect(detail.actions.find(action => action.stageId === 'implement').status).toBe('completed');
+    expect(rejected.runs[0].error).toMatch(/must classify every frozen candidate/);
+    expect(rejected.planRevision).toBe(2);
+    expect(rejected.actions.some(action => action.stageId === 'verify')).toBe(false);
+    expect(detail.actions.find(action => action.stageId === 'review').status).toBe('superseded');
   });
 
   it('canonicalizes additive Action identities before persistence and dependency matching', () => {

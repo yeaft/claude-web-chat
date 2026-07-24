@@ -818,30 +818,56 @@
   color: var(--text-primary);
 }
 
-.yeaft-transcript-search {
+.yeaft-conversation-outline {
   position: absolute;
   top: 44px;
-  left: 50%;
-  width: min(720px, calc(100% - 32px));
-  max-height: min(520px, 60vh);
+  right: 12px;
+  width: min(420px, calc(100% - 24px));
+  height: min(640px, calc(100% - 72px));
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border-color);
   border-radius: 12px;
   background: var(--bg-main);
   box-shadow: var(--modal-shadow);
   overflow: hidden;
   z-index: 20;
-  transform: translateX(-50%);
 }
 
-.yeaft-transcript-search-bar {
+.yeaft-conversation-outline-header,
+.yeaft-conversation-outline-search {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  color: var(--text-muted);
 }
 
-.yeaft-transcript-search-bar input {
+.yeaft-conversation-outline-header {
+  justify-content: space-between;
+  color: var(--text-primary);
+}
+
+.yeaft-conversation-outline-count {
+  margin-left: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.yeaft-conversation-outline-search {
+  margin: 0 10px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  color: var(--text-muted);
+  background: var(--bg-input);
+}
+
+.yeaft-conversation-outline-search:focus-within {
+  border-color: var(--accent-blue);
+}
+
+.yeaft-conversation-outline-search input {
   min-width: 0;
   flex: 1;
   border: none;
@@ -851,13 +877,13 @@
   box-shadow: none;
 }
 
-.yeaft-transcript-search-status {
-  font-size: 12px;
+.yeaft-conversation-outline-status {
   color: var(--text-muted);
+  font-size: 12px;
   white-space: nowrap;
 }
 
-.yeaft-transcript-search-close {
+.yeaft-conversation-outline-close {
   width: 28px;
   height: 28px;
   border: none;
@@ -869,39 +895,40 @@
   line-height: 1;
 }
 
-.yeaft-transcript-search-close:hover,
-.yeaft-transcript-search-result:hover,
-.yeaft-transcript-search-result.active,
-.yeaft-transcript-search-more:hover {
-  background: var(--sidebar-hover);
-  color: var(--text-primary);
-}
-
-.yeaft-transcript-search-results {
-  max-height: min(440px, 52vh);
+.yeaft-conversation-outline-list {
+  min-height: 0;
+  flex: 1;
   overflow-y: auto;
-  padding: 4px 8px 8px;
+  padding: 0 8px 8px;
 }
 
-.yeaft-transcript-search-result,
-.yeaft-transcript-search-more {
+.yeaft-conversation-outline-item,
+.yeaft-conversation-outline-more {
   width: 100%;
   border: none;
   border-radius: 10px;
   background: transparent;
   color: var(--text-primary);
   cursor: pointer;
-  text-align: left;
 }
 
-.yeaft-transcript-search-result {
+.yeaft-conversation-outline-item {
   display: flex;
   flex-direction: column;
   gap: 5px;
   padding: 10px 12px;
+  text-align: left;
 }
 
-.yeaft-transcript-search-result-meta {
+.yeaft-conversation-outline-close:hover,
+.yeaft-conversation-outline-item:hover,
+.yeaft-conversation-outline-item.active,
+.yeaft-conversation-outline-more:hover:not(:disabled) {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+.yeaft-conversation-outline-meta {
   display: flex;
   justify-content: space-between;
   gap: 12px;
@@ -909,11 +936,11 @@
   font-size: 12px;
 }
 
-.yeaft-transcript-search-result-meta time {
+.yeaft-conversation-outline-meta time {
   color: var(--text-muted);
 }
 
-.yeaft-transcript-search-result-snippet {
+.yeaft-conversation-outline-snippet {
   display: -webkit-box;
   overflow: hidden;
   color: var(--text-primary);
@@ -923,20 +950,25 @@
   -webkit-line-clamp: 2;
 }
 
-.yeaft-transcript-search-more {
+.yeaft-conversation-outline-more {
   padding: 9px 12px;
   color: var(--text-secondary);
   text-align: center;
 }
 
-.yeaft-transcript-search-empty {
+.yeaft-conversation-outline-more:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.yeaft-conversation-outline-empty {
   padding: 18px 20px;
   color: var(--text-muted);
   text-align: center;
   font-size: 13px;
 }
 
-.yeaft-transcript-search-empty.is-error {
+.yeaft-conversation-outline-empty.is-error {
   color: var(--error);
 }
 
@@ -1847,6 +1879,17 @@
   font-weight: 600;
 }
 @media (max-width: 768px) {
+  .yeaft-conversation-outline {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100dvh;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    z-index: 108;
+  }
+
   /* Yeaft conversation: narrower padding on mobile */
   .yeaft-page .messages {
     max-width: 100%;

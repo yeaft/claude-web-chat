@@ -192,7 +192,7 @@ describe('Work Center lifecycle bridge', () => {
     });
   });
 
-  it.each(['get', 'create', 'update', 'start', 'cancel', 'guide'])(
+  it.each(['get', 'create', 'update', 'start', 'cancel', 'work_item_message', 'action_input', 'retry_action', 'guide'])(
     'projects the %s browser response through the safe detail DTO',
     async (op) => {
       const raw = internalDetail();
@@ -228,7 +228,7 @@ describe('Work Center lifecycle bridge', () => {
       for (const secret of [
         '/private/project', '/private/canonical', 'workflowSnapshot', 'private-message',
         'private prompt', 'private context', 'private persona', 'private-hash',
-        'Contract prepared', 'modelSnapshot', 'provider/model', 'runs', 'events',
+        'Contract prepared', 'modelSnapshot', 'provider/model', 'events',
         'toolPolicySnapshot', 'allowedToolNames', '/private/read', '/private/write', '/private/cwd',
         'private event data',
       ]) {
@@ -236,6 +236,25 @@ describe('Work Center lifecycle bridge', () => {
       }
     },
   );
+
+  it('whitelists revision-fenced WorkItem deletion and returns the opaque result', async () => {
+    const service = {
+      start: vi.fn(), shutdown: vi.fn(),
+      handle: vi.fn().mockResolvedValue({ id: 'wi-delete', deleted: true, cleanupWarning: null }),
+    };
+    __testSetWorkCenterService(service);
+
+    await handleWorkCenterRequest({
+      requestId: 'delete-item', op: 'delete',
+      payload: { id: 'wi-delete', revision: 7, ignored: 'private' }, _requestUserId: 'user-1',
+    });
+
+    expect(service.handle).toHaveBeenCalledWith('delete', { id: 'wi-delete', revision: 7 });
+    expect(sendToServer.mock.calls.at(-1)[0]).toMatchObject({
+      type: 'work_center_response', requestId: 'delete-item', op: 'delete', ok: true,
+      data: { id: 'wi-delete', deleted: true },
+    });
+  });
 
   it('whitelists Action message pagination before reaching the service', async () => {
     const service = {

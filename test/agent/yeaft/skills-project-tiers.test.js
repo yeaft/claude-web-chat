@@ -109,6 +109,24 @@ describe('createSkillManager — project .claude/skills tier', () => {
     expect(manager.list().find(s => s.name === 'playwright-cli')).toBeFalsy();
   });
 
+  it('reports effective skill additions, updates, and removals on reload', () => {
+    const manager = createSkillManager(yeaftDir, workDir);
+    expect(manager.load().changed).toBe(false);
+
+    writeSkill(workDir, '.yeaft/skills', 'hot-skill', 'Initial instructions.');
+    expect(manager.load()).toMatchObject({ changed: true, loaded: 1 });
+    expect(manager.get('hot-skill')?.description).toBe('Initial instructions.');
+    expect(manager.load().changed).toBe(false);
+
+    writeSkill(workDir, '.yeaft/skills', 'hot-skill', 'Updated instructions.');
+    expect(manager.load().changed).toBe(true);
+    expect(manager.get('hot-skill')?.description).toBe('Updated instructions.');
+
+    rmSync(join(workDir, '.yeaft/skills/hot-skill'), { recursive: true, force: true });
+    expect(manager.load()).toMatchObject({ changed: true, loaded: 0 });
+    expect(manager.has('hot-skill')).toBe(false);
+  });
+
   it('loads .yeaft/skills, .claude/skills, and .agents/skills simultaneously', () => {
     writeSkill(workDir, '.claude/skills', 'claude-only', 'From claude assets.');
     writeSkill(workDir, '.agents/skills', 'codex-only', 'From Codex assets.');

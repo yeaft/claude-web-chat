@@ -24,6 +24,7 @@ import {
 } from './helpers/work-center.js';
 import { createPerfTraceId, recordPerfTrace, measureNextPaint } from './helpers/perfTrace.js';
 import { normalizeSessionMessageQuote } from '../utils/session-message-quote.js';
+import { yeaftHistoryIdentityKey } from './helpers/yeaft-history-identity.js';
 import {
   getDefaultYeaftVisibleTurns,
   getYeaftWindowLoadStepTurns,
@@ -53,6 +54,134 @@ const YEAFT_RECENT_TURNS = 5;
 const YEAFT_RECENT_TERMINAL_TASK_LIMIT = 8;
 const YEAFT_TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'orphaned']);
 const YEAFT_RUNNING_VP_STATES = new Set(['typing', 'thinking', 'streaming', 'tool']);
+const YEAFT_CATALOG_STATUS_FIELDS = Object.freeze([
+  'model',
+  'availableModels',
+  'refreshedAt',
+  'catalogRefreshedAt',
+  'catalogEpoch',
+  'catalogRevision',
+  'catalogDigest',
+  'refreshStartedAt',
+  'refreshReason',
+  'refreshError',
+  'refreshing',
+]);
+const YEAFT_RETIRED_CATALOG_EPOCH_LIMIT = 8;
+const YEAFT_ASK_TERMINAL_CACHE_LIMIT = 64;
+
+function askUserEventIdentity(msg, event, conversationId) {
+  return {
+    conversationId: conversationId || null,
+    agentId: msg?.agentId || event?.agentId || null,
+    requestId: event?.requestId || null,
+    toolCallId: event?.toolCallId || null,
+    sessionId: msg?.sessionId || event?.sessionId || null,
+    vpId: msg?.vpId || event?.vpId || null,
+    turnId: msg?.turnId || event?.turnId || null,
+    threadId: msg?.threadId || event?.threadId || null,
+  };
+}
+
+function askUserRowIdentity(row, conversationId) {
+  return {
+    conversationId: conversationId || null,
+    agentId: row?.agentId || null,
+    requestId: row?.askRequestId || null,
+    toolCallId: row?.toolId || null,
+    sessionId: row?.sessionId || row?.groupId || null,
+    vpId: row?.vpId || row?.speakerVpId || null,
+    turnId: row?.turnId || null,
+    threadId: row?.threadId || null,
+  };
+}
+
+const ASK_USER_IDENTITY_FIELDS = Object.freeze([
+  'conversationId',
+  'agentId',
+  'requestId',
+  'toolCallId',
+  'sessionId',
+  'vpId',
+  'turnId',
+  'threadId',
+]);
+
+function exactAskUserIdentity(candidate, expected) {
+  return ASK_USER_IDENTITY_FIELDS.every(field => !expected[field] || candidate[field] === expected[field]);
+}
+
+function compatibleAskUserIdentity(candidate, expected) {
+  return ASK_USER_IDENTITY_FIELDS.every(field => !candidate[field] || !expected[field] || candidate[field] === expected[field]);
+}
+
+function findAskUserRow(messages, identity, conversationId) {
+  const candidates = (messages || []).filter(row => row?.type === 'tool-use'
+    && (row.toolName === 'AskUser' || row.toolName === 'AskUserQuestion')
+    && (!identity.requestId || !row.askRequestId || row.askRequestId === identity.requestId)
+    && (!identity.toolCallId || !row.toolId || row.toolId === identity.toolCallId));
+  const exact = candidates.filter(row => exactAskUserIdentity(askUserRowIdentity(row, conversationId), identity));
+  if (exact.length === 1) return exact[0];
+  const compatible = candidates.filter(row => compatibleAskUserIdentity(askUserRowIdentity(row, conversationId), identity));
+  return compatible.length === 1 ? compatible[0] : null;
+}
+
+function askUserTerminalKey(identity) {
+  return ASK_USER_IDENTITY_FIELDS.map(field => identity[field] || '').join('\u0000');
+}
+
+function rememberAskUserTerminal(state, identity, event) {
+  const key = askUserTerminalKey(identity);
+  const entries = {
+    ...(state._yeaftAskTerminalEvents || {}),
+    [key]: { identity, event, receivedAt: Date.now() },
+  };
+  const keys = Object.keys(entries);
+  if (keys.length > YEAFT_ASK_TERMINAL_CACHE_LIMIT) {
+    keys.sort((a, b) => entries[a].receivedAt - entries[b].receivedAt);
+    for (const staleKey of keys.slice(0, keys.length - YEAFT_ASK_TERMINAL_CACHE_LIMIT)) delete entries[staleKey];
+  }
+  state._yeaftAskTerminalEvents = entries;
+}
+
+function takeAskUserTerminal(state, identity) {
+  const entries = state._yeaftAskTerminalEvents || {};
+  const exactKey = askUserTerminalKey(identity);
+  let key = entries[exactKey] ? exactKey : null;
+  if (!key) {
+    const compatible = Object.entries(entries)
+      .filter(([, entry]) => compatibleAskUserIdentity(entry.identity || {}, identity));
+    if (compatible.length === 1) key = compatible[0][0];
+  }
+  if (!key) return null;
+  const terminal = entries[key];
+  const { [key]: _removed, ...rest } = entries;
+  state._yeaftAskTerminalEvents = rest;
+  return terminal?.event || null;
+}
+
+function hasPendingToolCall(state, conversationId, sessionId) {
+  return (state.messagesMap?.[conversationId] || []).some(row => row?.type === 'tool-use'
+    && row.sessionId === sessionId
+    && row.hasResult === false);
+}
+
+function applyAskUserTerminal(row, event) {
+  if (event.type === 'ask_user_answered') {
+    row.askAnswered = true;
+    row.selectedAnswers = event.answers || {};
+    row.askExpired = false;
+  } else {
+    row.isHistory = true;
+    row.askExpired = true;
+    row.askAnswered = false;
+    row.selectedAnswers = null;
+  }
+  row.askPending = false;
+  row.pendingAnswers = null;
+  row.askSubmitGeneration = null;
+  row.askRequestId = null;
+}
 
 // Yeaft message ids are `NNNNNN-…` where NNNNNN is the zero-padded seq.
 // Pull the seq out so the store can stamp / advance its delta cursor on
@@ -63,6 +192,21 @@ function parseYeaftMessageSeq(id) {
   if (!m) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) ? n : null;
+}
+
+function parsePersistedMessageSeq(id) {
+  if (!id || typeof id !== 'string') return null;
+  const match = id.match(/^m(\d+)$/);
+  if (!match) return null;
+  const seq = Number(match[1]);
+  return Number.isFinite(seq) ? seq : null;
+}
+
+function outlineResultIdentity(row) {
+  if (row?.role === 'assistant' && row?.turnId) {
+    return `response:${row.turnId}:${row.speakerVpId || row.vpId || ''}`;
+  }
+  return row?.clientMessageId ? `client:${row.clientMessageId}` : `message:${row?.messageId || ''}`;
 }
 
 function taskUpdatedTime(task) {
@@ -366,6 +510,11 @@ export const useChatStore = defineStore('chat', {
       nextBeforeSeq: null,
       error: null,
     },
+    // Lightweight Session outline pages live only for this browser page. They
+    // are keyed by agent + session so duplicate session ids cannot bleed across
+    // agents, and avoid creating a second persistent copy of conversation text.
+    yeaftHistoryOutlineBySession: {},
+    _yeaftHistoryOutlineTimeouts: {},
     _yeaftHistorySearchTimeout: null,
     _yeaftHistoryWindowPending: null,
     // One-shot marker: set true by the websocket onclose handler on a real
@@ -486,6 +635,15 @@ export const useChatStore = defineStore('chat', {
     workCenterOpen: false,
     workCenterAgentId: null,
     workCenterItemsByAgent: {},
+    workCenterListPageByAgent: {},
+    workCenterListMoreLoadingByAgent: {},
+    _workCenterListGenerationByAgent: {},
+    _workCenterListQueryByAgent: {},
+    _workCenterListFiltersByAgent: {},
+    _workCenterListMoreRequestsByAgent: {},
+    _workCenterListEventGenerationByAgent: {},
+    _workCenterListEventsByAgent: {},
+    _workCenterDeletedIdsByAgent: {},
     workCenterDetailByAgent: {},
     workCenterActionMessages: {},
     workCenterActionMessagesLoading: {},
@@ -523,6 +681,7 @@ export const useChatStore = defineStore('chat', {
     yeaftStatus: null,            // { skills, mcpServers, tools } 从 session_ready 获取
     yeaftAvailableModels: [],     // 可用模型列表 [{ id, provider, label }]
     yeaftStatusByAgent: {},       // { [agentId]: cached yeaft_status/session_ready payload }
+    _yeaftRetiredCatalogEpochsByAgent: {}, // { [agentId]: string[] }, bounded restart fence
     yeaftModelsRefreshing: false, // 当前 agent 的 model/status 后台刷新状态
     yeaftModelRefreshError: null, // 当前 agent 最近一次 refresh 错误（保留旧模型列表）
     yeaftYeaftDir: null,          // agent 的 ~/.yeaft 绝对路径（session_ready 携带）— Yeaft workbench 的默认 workDir
@@ -638,6 +797,9 @@ export const useChatStore = defineStore('chat', {
     _currentYeaftVpId: null,
     _currentYeaftTurnId: null,
     _currentYeaftThreadId: null,
+    // Terminal AskUser events can beat their tool-use row during reconnect.
+    // Keep a small bounded cache and apply the event when the row replays.
+    _yeaftAskTerminalEvents: {},
     // Feature system fully removed 2026-05-13; per-VP turns are folded
     // by VpTurnBlock keyed off vpId + message id.
 
@@ -1145,10 +1307,10 @@ export const useChatStore = defineStore('chat', {
     enterWorkCenterFromSession(session, seedGoal = '') {
       if (!session?.id) return;
       const agentId = session.agentId || resolveAgentIdForSession(this, session.id);
+      const requirement = String(seedGoal || session.title || session.name || '').trim();
       this.workCenterCreateDraft = {
         sourceAgentId: agentId,
-        title: String(session.title || session.name || '').trim(),
-        goal: String(seedGoal || '').trim(),
+        requirement,
         workDir: String(session.workDir || '').trim(),
         origin: { sessionId: session.id, messageId: null, createdBy: 'user' },
         linkedSessionIds: [session.id],
@@ -1168,23 +1330,168 @@ export const useChatStore = defineStore('chat', {
         this.sendWsMessage({ type: 'work_center_request', agentId: target, requestId, op, payload });
       });
     },
+    workItemMatchesBoardQuery(item, filters = {}) {
+      if (!item) return false;
+      if (filters.lane && item.boardLane !== filters.lane) return false;
+      if (filters.vpId && !(item.executors || []).some(executor => executor?.id === filters.vpId)) return false;
+      if (filters.workItemType && item.workItemType !== filters.workItemType) return false;
+      if (filters.updatedFrom && Number(item.updatedAt) < Number(filters.updatedFrom)) return false;
+      if (filters.updatedTo && Number(item.updatedAt) > Number(filters.updatedTo)) return false;
+      const keyword = String(filters.keyword || '').trim().toLowerCase();
+      return !keyword || String(item.title || '').toLowerCase().includes(keyword)
+        || String(item.goal || '').toLowerCase().includes(keyword);
+    },
     async listWorkItems(agentId = null, filters = {}) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       if (!target) return [];
+      const normalizedFilters = {
+        lane: ['needs_attention', 'active', 'closed'].includes(filters.lane) ? filters.lane : null,
+        keyword: String(filters.keyword || filters.search || '').trim(),
+        vpId: String(filters.vpId || '').trim(),
+        workItemType: String(filters.workItemType || '').trim(),
+        createdFrom: Number(filters.createdFrom) || null,
+        createdTo: Number(filters.createdTo) || null,
+        updatedFrom: Number(filters.updatedFrom) || null,
+        updatedTo: Number(filters.updatedTo) || null,
+        limit: Math.min(Math.max(Number(filters.limit) || 100, 1), 200),
+      };
+      const queryKey = JSON.stringify(normalizedFilters);
+      const generation = Number(this._workCenterListGenerationByAgent[target] || 0) + 1;
+      const eventGeneration = Number(this._workCenterListEventGenerationByAgent[target] || 0);
+      this._workCenterListGenerationByAgent = { ...this._workCenterListGenerationByAgent, [target]: generation };
+      this._workCenterListQueryByAgent = { ...this._workCenterListQueryByAgent, [target]: queryKey };
+      this._workCenterListFiltersByAgent = { ...this._workCenterListFiltersByAgent, [target]: normalizedFilters };
       this.workCenterLoadingByAgent = { ...this.workCenterLoadingByAgent, [target]: true };
       this.workCenterErrorByAgent = { ...this.workCenterErrorByAgent, [target]: null };
       try {
-        const data = await this.workCenterRequest('list', filters, target);
-        const items = Array.isArray(data?.items) ? data.items : [];
-        this.workCenterItemsByAgent = { ...this.workCenterItemsByAgent, [target]: items };
-        this.workCenterWatcherByAgent = { ...this.workCenterWatcherByAgent, [target]: data?.watcher || null };
-        this.workCenterLoadedByAgent = { ...this.workCenterLoadedByAgent, [target]: true };
+        const data = await this.workCenterRequest('list', normalizedFilters, target);
+        const items = (Array.isArray(data?.items) ? data.items : [])
+          .filter(item => !this.workItemDeleted(target, item?.id));
+        const requestStillCurrent = this._workCenterListGenerationByAgent[target] === generation
+          && this._workCenterListQueryByAgent[target] === queryKey
+          && this.workCenterAgentId === target;
+        if (requestStillCurrent) {
+          let mergedItems = items;
+          const events = this._workCenterListEventsByAgent[target] || {};
+          for (const entry of Object.values(events)) {
+            if (Number(entry?.generation) <= eventGeneration || entry?.queryKey !== queryKey) continue;
+            mergedItems = entry.matches
+              ? applyWorkItemSummary(mergedItems, entry.summary)
+              : mergedItems.filter(item => item.id !== entry.summary?.id);
+          }
+          this.workCenterItemsByAgent = { ...this.workCenterItemsByAgent, [target]: mergedItems };
+          this.workCenterListPageByAgent = {
+            ...this.workCenterListPageByAgent,
+            [target]: { nextCursor: data?.nextCursor || null, queryKey },
+          };
+          this.workCenterWatcherByAgent = { ...this.workCenterWatcherByAgent, [target]: data?.watcher || null };
+          this.workCenterLoadedByAgent = { ...this.workCenterLoadedByAgent, [target]: true };
+        }
         return items;
       } catch (err) {
-        this.workCenterErrorByAgent = { ...this.workCenterErrorByAgent, [target]: err?.message || String(err) };
+        if (this._workCenterListGenerationByAgent[target] === generation
+            && this._workCenterListQueryByAgent[target] === queryKey) {
+          this.workCenterErrorByAgent = { ...this.workCenterErrorByAgent, [target]: err?.message || String(err) };
+        }
         throw err;
       } finally {
-        this.workCenterLoadingByAgent = { ...this.workCenterLoadingByAgent, [target]: false };
+        if (this._workCenterListGenerationByAgent[target] === generation
+            && this._workCenterListQueryByAgent[target] === queryKey) {
+          this.workCenterLoadingByAgent = { ...this.workCenterLoadingByAgent, [target]: false };
+        }
+      }
+    },
+    async loadMoreWorkItems(agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const page = this.workCenterListPageByAgent[target];
+      const filters = this._workCenterListFiltersByAgent[target];
+      if (!target || !page?.nextCursor || !filters) return [];
+      const queryKey = page.queryKey;
+      const generation = this._workCenterListGenerationByAgent[target];
+      const eventGeneration = Number(this._workCenterListEventGenerationByAgent[target] || 0);
+      const cursor = page.nextCursor;
+      const requestKey = `${generation}:${queryKey}:${cursor}`;
+      if (this._workCenterListMoreRequestsByAgent[target]?.key === requestKey) {
+        return this._workCenterListMoreRequestsByAgent[target].request;
+      }
+      this.workCenterListMoreLoadingByAgent = {
+        ...this.workCenterListMoreLoadingByAgent, [target]: true,
+      };
+      const request = (async () => {
+        try {
+          const data = await this.workCenterRequest('list', { ...filters, cursor }, target);
+          const currentPage = this.workCenterListPageByAgent[target];
+          if (this._workCenterListGenerationByAgent[target] !== generation
+              || this._workCenterListQueryByAgent[target] !== queryKey
+              || currentPage?.queryKey !== queryKey
+              || currentPage?.nextCursor !== cursor
+              || this.workCenterAgentId !== target) return [];
+          let merged = [...(this.workCenterItemsByAgent[target] || [])];
+          for (const item of Array.isArray(data?.items) ? data.items : []) {
+            if (this.workItemDeleted(target, item?.id)) continue;
+            const index = merged.findIndex(current => current.id === item.id);
+            if (index < 0) merged.push(item);
+            else merged[index] = applyWorkItemSummary([merged[index]], item)[0];
+          }
+          const events = this._workCenterListEventsByAgent[target] || {};
+          for (const entry of Object.values(events)) {
+            if (Number(entry?.generation) <= eventGeneration || entry?.queryKey !== queryKey) continue;
+            merged = entry.matches
+              ? applyWorkItemSummary(merged, entry.summary)
+              : merged.filter(item => item.id !== entry.summary?.id);
+          }
+          this.workCenterItemsByAgent = { ...this.workCenterItemsByAgent, [target]: merged };
+          this.workCenterListPageByAgent = {
+            ...this.workCenterListPageByAgent,
+            [target]: { nextCursor: data?.nextCursor || null, queryKey },
+          };
+          return data?.items || [];
+        } finally {
+          if (this._workCenterListMoreRequestsByAgent[target]?.key === requestKey) {
+            const pending = { ...this._workCenterListMoreRequestsByAgent };
+            delete pending[target];
+            this._workCenterListMoreRequestsByAgent = pending;
+            this.workCenterListMoreLoadingByAgent = {
+              ...this.workCenterListMoreLoadingByAgent, [target]: false,
+            };
+          }
+        }
+      })();
+      this._workCenterListMoreRequestsByAgent = {
+        ...this._workCenterListMoreRequestsByAgent,
+        [target]: { key: requestKey, request },
+      };
+      return request;
+    },
+    workItemDeleted(agentId, id) {
+      return !!this._workCenterDeletedIdsByAgent[agentId]?.[id];
+    },
+    removeWorkItemState(agentId, id) {
+      this._workCenterDeletedIdsByAgent = {
+        ...this._workCenterDeletedIdsByAgent,
+        [agentId]: { ...(this._workCenterDeletedIdsByAgent[agentId] || {}), [id]: true },
+      };
+      this.beginWorkCenterDetailWrite(agentId);
+      this.workCenterItemsByAgent = {
+        ...this.workCenterItemsByAgent,
+        [agentId]: (this.workCenterItemsByAgent[agentId] || []).filter(item => item.id !== id),
+      };
+      if (this.workCenterDetailByAgent[agentId]?.id === id) {
+        this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [agentId]: null };
+      }
+      const prefix = `${agentId}:${id}:`;
+      for (const field of [
+        'workCenterActionMessages', 'workCenterActionMessagesLoading', 'workCenterActionMessagesError',
+        'workCenterActionRequests', 'workCenterActionRequestsLoading', 'workCenterActionRequestsError',
+        'workCenterActionRequestDetails', 'workCenterActionRequestDetailsLoading', 'workCenterActionRequestDetailsError',
+        '_workCenterActionMessageRequests', '_workCenterActionRequestsGeneration',
+        '_workCenterActionRequestDetailsGeneration',
+      ]) {
+        const next = {};
+        for (const [key, value] of Object.entries(this[field] || {})) {
+          if (!key.startsWith(prefix)) next[key] = value;
+        }
+        this[field] = next;
       }
     },
     beginWorkCenterDetailWrite(agentId) {
@@ -1196,6 +1503,7 @@ export const useChatStore = defineStore('chat', {
       return generation;
     },
     commitWorkCenterDetail(agentId, detail, generation) {
+      if (detail?.id && this.workItemDeleted(agentId, detail.id)) return false;
       if (generation != null
           && Number(this._workCenterDetailRequestGenerationByAgent[agentId] || 0) !== generation) return false;
       const current = this.workCenterDetailByAgent[agentId];
@@ -1222,6 +1530,7 @@ export const useChatStore = defineStore('chat', {
           const data = await this.workCenterRequest('get_action_messages', {
             id, actionId, cursor, limit: 20,
           }, target);
+          if (this.workItemDeleted(target, id)) return data;
           const current = this.workCenterActionMessages[key]?.messages || [];
           const messages = mergeActionMessages(current, data?.messages || []);
           const existingPage = this.workCenterActionMessages[key];
@@ -1272,7 +1581,8 @@ export const useChatStore = defineStore('chat', {
       this.workCenterActionRequestsError = { ...this.workCenterActionRequestsError, [key]: null };
       try {
         const data = await this.workCenterRequest('get_action_requests', { id, actionId }, target);
-        if (this._workCenterActionRequestsGeneration[key] === generation) {
+        if (!this.workItemDeleted(target, id)
+            && this._workCenterActionRequestsGeneration[key] === generation) {
           this.workCenterActionRequests = { ...this.workCenterActionRequests, [key]: data?.requests || [] };
         }
         return data?.requests || [];
@@ -1310,7 +1620,8 @@ export const useChatStore = defineStore('chat', {
         const data = await this.workCenterRequest('get_action_request', {
           id, actionId, runId, requestId,
         }, target);
-        if (this._workCenterActionRequestDetailsGeneration[key] === generation) {
+        if (!this.workItemDeleted(target, id)
+            && this._workCenterActionRequestDetailsGeneration[key] === generation) {
           this.workCenterActionRequestDetails = {
             ...this.workCenterActionRequestDetails,
             [key]: data?.request || null,
@@ -1420,7 +1731,7 @@ export const useChatStore = defineStore('chat', {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('create', payload, target);
-      await this.listWorkItems(target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
@@ -1428,7 +1739,7 @@ export const useChatStore = defineStore('chat', {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('update', { id, patch }, target);
-      await this.listWorkItems(target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
@@ -1436,7 +1747,7 @@ export const useChatStore = defineStore('chat', {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('start', { id }, target);
-      await this.listWorkItems(target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
@@ -1444,11 +1755,35 @@ export const useChatStore = defineStore('chat', {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('cancel', { id }, target);
-      await this.listWorkItems(target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
-    async sendWorkItemActionInput(id, text, actionId, revision, attachments = [], agentId = null) {
+    async deleteWorkItem(id, revision, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const result = await this.workCenterRequest('delete', { id, revision }, target);
+      this.removeWorkItemState(target, id);
+      return result;
+    },
+    async sendWorkItemMessage(id, text, revision, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
+      const detail = await this.workCenterRequest('work_item_message', { id, text, revision }, target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
+      this.commitWorkCenterDetail(target, detail, generation);
+      return detail;
+    },
+    async retryWorkItemAction(id, actionId, revision, actionGeneration, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
+      const detail = await this.workCenterRequest('retry_action', {
+        id, actionId, revision, generation: actionGeneration,
+      }, target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
+      this.commitWorkCenterDetail(target, detail, generation);
+      return detail;
+    },
+    async sendWorkItemActionInput(id, text, actionId, revision, actionGeneration, attachments = [], agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = Number(this._workCenterActionInputGenerationByAgent[target] || 0) + 1;
       this._workCenterActionInputGenerationByAgent = {
@@ -1456,13 +1791,15 @@ export const useChatStore = defineStore('chat', {
         [target]: generation,
       };
       const detail = await this.workCenterRequest('action_input', {
-        id, text, actionId, revision, attachments,
+        id, text, actionId, revision, generation: actionGeneration, attachments,
       }, target);
-      await this.listWorkItems(target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       const current = this.workCenterDetailByAgent[target];
+      const currentAction = current?.actions?.find(action => action?.id === actionId);
       const requestStillCurrent = current?.id === id
-        && current.currentActionId === actionId
-        && Number(current.revision) === Number(revision);
+        && Number(current.revision) === Number(revision)
+        && currentAction
+        && Number(currentAction.generation) === Number(actionGeneration);
       if (this._workCenterActionInputGenerationByAgent[target] === generation
         && requestStillCurrent
         && !isWorkItemDetailResponseStale(detail, current)) {
@@ -1471,13 +1808,13 @@ export const useChatStore = defineStore('chat', {
       }
       return current?.id === id ? current : detail;
     },
-    async guideWorkItemAction(id, guidance, actionId, revision, attachments = [], agentId = null) {
+    async guideWorkItemAction(id, guidance, actionId, revision, actionGeneration, attachments = [], agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('guide', {
-        id, guidance, actionId, revision, attachments,
+        id, guidance, actionId, revision, generation: actionGeneration, attachments,
       }, target);
-      await this.listWorkItems(target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
@@ -1489,9 +1826,35 @@ export const useChatStore = defineStore('chat', {
       if (!agentId || !event?.workItem) return;
       const summary = event.workItem;
       const current = this.workCenterItemsByAgent[agentId] || [];
+      if (event.type === 'work_item.deleted') {
+        this.removeWorkItemState(agentId, summary.id);
+        return;
+      }
+      if (this.workItemDeleted(agentId, summary.id)) return;
+      const filters = this._workCenterListFiltersByAgent[agentId] || {};
+      const matches = this.workItemMatchesBoardQuery(summary, filters);
+      const eventGeneration = Number(this._workCenterListEventGenerationByAgent[agentId] || 0) + 1;
+      this._workCenterListEventGenerationByAgent = {
+        ...this._workCenterListEventGenerationByAgent, [agentId]: eventGeneration,
+      };
+      this._workCenterListEventsByAgent = {
+        ...this._workCenterListEventsByAgent,
+        [agentId]: {
+          ...(this._workCenterListEventsByAgent[agentId] || {}),
+          [summary.id]: {
+            generation: eventGeneration,
+            queryKey: this._workCenterListQueryByAgent[agentId] || null,
+            summary,
+            matches,
+          },
+        },
+      };
+      const nextItems = matches
+        ? applyWorkItemSummary(current, summary)
+        : current.filter(item => item.id !== summary.id);
       this.workCenterItemsByAgent = {
         ...this.workCenterItemsByAgent,
-        [agentId]: applyWorkItemSummary(current, summary),
+        [agentId]: nextItems,
       };
       const selected = this.workCenterDetailByAgent[agentId];
       if (selected?.id === summary.id) {
@@ -1533,30 +1896,74 @@ export const useChatStore = defineStore('chat', {
     // =====================
     // Yeaft 页面
     // =====================
-    cacheYeaftAgentStatus(agentId, status) {
+    cacheYeaftAgentStatus(agentId, status, { allowBootstrapCatalog = false } = {}) {
       if (!agentId || !status) return;
       const previous = this.yeaftStatusByAgent[agentId] || {};
-      const availableModels = Array.isArray(status.availableModels)
-        ? status.availableModels
-        : (previous.availableModels || []);
-      const next = {
-        ...previous,
-        ...status,
-        availableModels,
-      };
-      this.yeaftStatusByAgent = { ...this.yeaftStatusByAgent, [agentId]: next };
-      if (this.currentAgent === agentId) {
-        this.applyCachedYeaftStatus(agentId);
+      const previousRevision = Number(previous.catalogRevision) || 0;
+      const incomingRevision = Number(status.catalogRevision) || 0;
+      const previousEpoch = typeof previous.catalogEpoch === 'string' ? previous.catalogEpoch : '';
+      const incomingEpoch = typeof status.catalogEpoch === 'string' ? status.catalogEpoch : '';
+      const previousCatalogAt = Number(previous.catalogRefreshedAt) || 0;
+      const incomingCatalogAt = Number(status.catalogRefreshedAt) || 0;
+      const statusHasCatalog = Array.isArray(status.availableModels);
+      const statusIsConfigCatalog = status.type === 'yeaft_status'
+        && statusHasCatalog
+        && (incomingRevision > 0 || incomingCatalogAt > 0);
+      const retiredEpochs = Array.isArray(this._yeaftRetiredCatalogEpochsByAgent?.[agentId])
+        ? this._yeaftRetiredCatalogEpochsByAgent[agentId]
+        : [];
+      const incomingEpochRetired = !!incomingEpoch && retiredEpochs.includes(incomingEpoch);
+      const sameEpoch = !!incomingEpoch && incomingEpoch === previousEpoch;
+      const sameVersion = incomingRevision > 0
+        ? sameEpoch && incomingRevision === previousRevision
+        : incomingCatalogAt > 0 && incomingCatalogAt === previousCatalogAt;
+      const newerVersion = incomingRevision > 0
+        ? (!!incomingEpoch && (incomingEpoch !== previousEpoch || incomingRevision > previousRevision))
+        : previousRevision === 0 && incomingCatalogAt > previousCatalogAt;
+      const sameDigest = incomingRevision > 0
+        ? !!status.catalogDigest && !!previous.catalogDigest && status.catalogDigest === previous.catalogDigest
+        : status.catalogDigest === previous.catalogDigest;
+      const acceptConfigCatalog = statusIsConfigCatalog
+        && !incomingEpochRetired
+        && (newerVersion || (sameVersion && sameDigest));
+      const acceptBootstrapCatalog = allowBootstrapCatalog
+        && previousRevision === 0
+        && previousCatalogAt === 0
+        && !statusIsConfigCatalog
+        && statusHasCatalog;
+      const acceptedCatalog = acceptConfigCatalog || acceptBootstrapCatalog;
+      const nextStatus = { ...status };
+      if (!acceptedCatalog) {
+        for (const field of YEAFT_CATALOG_STATUS_FIELDS) delete nextStatus[field];
       }
+      const next = { ...previous, ...nextStatus };
+      if (acceptedCatalog) {
+        if (acceptConfigCatalog && previousEpoch && incomingEpoch && previousEpoch !== incomingEpoch) {
+          const nextRetiredEpochs = [...retiredEpochs.filter(epoch => epoch !== previousEpoch), previousEpoch]
+            .slice(-YEAFT_RETIRED_CATALOG_EPOCH_LIMIT);
+          this._yeaftRetiredCatalogEpochsByAgent = {
+            ...(this._yeaftRetiredCatalogEpochsByAgent || {}),
+            [agentId]: nextRetiredEpochs,
+          };
+        }
+        next.availableModels = status.availableModels;
+        next.catalogRefreshedAt = acceptConfigCatalog ? incomingCatalogAt : null;
+        next.catalogEpoch = acceptConfigCatalog ? incomingEpoch || null : null;
+        next.catalogRevision = acceptConfigCatalog ? incomingRevision || null : null;
+        next.catalogDigest = acceptConfigCatalog ? status.catalogDigest || null : null;
+      }
+      this.yeaftStatusByAgent = { ...this.yeaftStatusByAgent, [agentId]: next };
+      if (this.currentAgent === agentId) this.applyCachedYeaftStatus(agentId);
     },
     applyCachedYeaftStatus(agentId = this.currentAgent) {
       const cached = agentId ? this.yeaftStatusByAgent[agentId] : null;
       if (!cached) return false;
-      if (cached.model) this.yeaftModel = cached.model;
-      if (Array.isArray(cached.availableModels)) this.yeaftAvailableModels = cached.availableModels;
+      this.yeaftModel = cached.model || null;
+      this.yeaftModelEffort = cached.modelEffort || null;
+      this.yeaftAvailableModels = Array.isArray(cached.availableModels) ? cached.availableModels : [];
       this.yeaftModelsRefreshing = !!cached.refreshing;
       this.yeaftModelRefreshError = cached.refreshError || null;
-      if (cached.yeaftDir) this.yeaftYeaftDir = cached.yeaftDir;
+      this.yeaftYeaftDir = cached.yeaftDir || null;
       this.yeaftStatus = {
         skills: cached.skills,
         mcpServers: cached.mcpServers,
@@ -1564,6 +1971,26 @@ export const useChatStore = defineStore('chat', {
         multiVp: !!cached.multiVp,
       };
       return true;
+    },
+    activateYeaftAgentCatalog(targetAgentId, previousAgentId = this.currentAgent) {
+      const cached = targetAgentId ? this.yeaftStatusByAgent[targetAgentId] : null;
+      if (cached) this.applyCachedYeaftStatus(targetAgentId);
+      if (Array.isArray(cached?.availableModels)) return true;
+      this.yeaftModel = null;
+      this.yeaftModelEffort = null;
+      this.yeaftAvailableModels = [];
+      if (!cached) this.yeaftStatus = null;
+      this.yeaftModelsRefreshing = !!targetAgentId && !cached?.refreshError;
+      this.yeaftModelRefreshError = cached?.refreshError || null;
+      if (previousAgentId !== targetAgentId) this.yeaftYeaftDir = null;
+      return false;
+    },
+    activateYeaftAgent(agentId, agentInfo = null) {
+      if (!agentId) return false;
+      const previousAgentId = this.currentAgent;
+      this.currentAgent = agentId;
+      if (agentInfo) this.currentAgentInfo = agentInfo;
+      return this.activateYeaftAgentCatalog(agentId, previousAgentId);
     },
     enterYeaft(agentId = null) {
       const previousAgentId = this.currentAgent;
@@ -1692,8 +2119,12 @@ export const useChatStore = defineStore('chat', {
     requestYeaftSessionBootstrap({ forceSessionReady = false, catchUpHistory = false, forceHistoryReplay = false } = {}) {
       if (!this.currentAgent) return;
       const activeSessionId = resolveActiveYeaftSessionId(this);
+      const targetAgentId = activeSessionId
+        ? resolveAgentIdForSession(this, activeSessionId)
+        : this.currentAgent;
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, activeSessionId);
       const sessionState = activeSessionId
-        ? this.yeaftSessionHistoryState[activeSessionId]
+        ? this.yeaftSessionHistoryState[sessionKey]
         : null;
       const needSessionReady = forceSessionReady || !this.yeaftSessionReady || !this.yeaftModel || !this.yeaftStatus;
       const latestSeq = Number.isFinite(sessionState?.latestSeq) ? sessionState.latestSeq : null;
@@ -1717,9 +2148,6 @@ export const useChatStore = defineStore('chat', {
       // the authoritative sessionById lookup, so in the cold/cross-agent window
       // it could ship yeaft_load_history to an agent that doesn't own the
       // session — the exact misroute this refactor removes.
-      const targetAgentId = activeSessionId
-        ? resolveAgentIdForSession(this, activeSessionId)
-        : this.currentAgent;
       const metaKey = `${targetAgentId}:${activeSessionId || '__none__'}`;
       const metadataOnly = needSessionReady && !needHistoryReplay && !needHistoryCatchUp;
       if (metadataOnly && this.yeaftBootstrapMetaLoadingKey === metaKey) return false;
@@ -1727,13 +2155,13 @@ export const useChatStore = defineStore('chat', {
       if (activeSessionId && needHistoryReplay) {
         this.yeaftSessionHistoryState = {
           ...this.yeaftSessionHistoryState,
-          [activeSessionId]: { loaded: false, loading: true, hasMore: false, oldestSeq: null, count: 0 },
+          [sessionKey]: { loaded: false, loading: true, hasMore: false, oldestSeq: null, count: 0 },
         };
         this.yeaftLoadingMoreHistory = true;
       } else if (activeSessionId && hasCachedSessionRows && !sessionState?.loaded) {
         this.yeaftSessionHistoryState = {
           ...this.yeaftSessionHistoryState,
-          [activeSessionId]: {
+          [sessionKey]: {
             ...(sessionState || {}),
             loaded: true,
             loading: false,
@@ -1747,7 +2175,7 @@ export const useChatStore = defineStore('chat', {
       } else if (activeSessionId && needHistoryCatchUp) {
         this.yeaftSessionHistoryState = {
           ...this.yeaftSessionHistoryState,
-          [activeSessionId]: { ...sessionState, loaded: true, loading: true, latestSeq },
+          [sessionKey]: { ...sessionState, loaded: true, loading: true, latestSeq },
         };
         this.yeaftLoadingMoreHistory = true;
       }
@@ -1764,7 +2192,7 @@ export const useChatStore = defineStore('chat', {
       if (activeSessionId) {
         this.yeaftHistoryPerfTraceBySession = {
           ...(this.yeaftHistoryPerfTraceBySession || {}),
-          [activeSessionId]: perfTraceId,
+          [sessionKey]: perfTraceId,
         };
       }
       recordPerfTrace(this, {
@@ -2054,15 +2482,18 @@ export const useChatStore = defineStore('chat', {
       };
     },
 
-    revealYeaftMessage(sessionId, messageId) {
+    revealYeaftMessage(sessionId, messageId, conversationId = null) {
       const targetSessionId = sessionId || this.yeaftActiveSessionFilter || null;
-      const convId = resolveYeaftConversationIdForSession(this);
-      if (!convId || !messageId) return false;
-      const scoped = (this.messagesMap[convId] || []).filter((message) => {
+      const targetConversationId = conversationId || resolveYeaftConversationIdForSession(this, targetSessionId);
+      if (!targetConversationId || !messageId) return false;
+      const scoped = (this.messagesMap[targetConversationId] || []).filter((message) => {
         if (!targetSessionId) return true;
         return (message?.sessionId ?? message?.groupId ?? null) === targetSessionId;
       });
-      const targetIndex = scoped.findIndex(message => (message?.id || message?.messageId) === messageId);
+      const targetIndex = scoped.findIndex(message => (
+        (message?.id || message?.messageId) === messageId
+        || message?.persistedMessageId === messageId
+      ));
       if (targetIndex < 0) return false;
       const spans = buildYeaftMessageTurnSpans(scoped);
       const targetSpan = spans.findIndex(span => targetIndex >= span.start && targetIndex < span.end);
@@ -2073,6 +2504,289 @@ export const useChatStore = defineStore('chat', {
         ...this.yeaftMessageWindowState,
         [sessionKey]: { visibleTurns },
       };
+      return true;
+    },
+
+    getYeaftHistoryOutlineState(sessionId = null, agentId = null) {
+      const targetSessionId = sessionId || this.yeaftActiveSessionFilter || null;
+      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
+      const key = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
+      const base = this.yeaftHistoryOutlineBySession[key] || {
+        requestId: null,
+        agentId: targetAgentId,
+        sessionId: targetSessionId,
+        loading: false,
+        results: [],
+        hasMore: false,
+        nextBeforeSeq: null,
+        totalCount: null,
+        loaded: false,
+        error: null,
+      };
+      const conversationId = resolveYeaftConversationIdForSession(this, targetSessionId);
+      const liveRows = conversationId ? (this.messagesMap[conversationId] || []) : [];
+      const byId = new Map((base.results || []).map(result => [outlineResultIdentity(result), result]));
+      let liveOnlyCount = 0;
+      for (const row of liveRows) {
+        if ((row?.sessionId ?? row?.groupId ?? null) !== targetSessionId) continue;
+        const messageId = row.messageId || row.id;
+        if (!messageId) continue;
+        const optimisticUser = row.type === 'user'
+          && !!row.clientMessageId
+          && messageId === row.clientMessageId;
+        const inFlightAssistant = row.type === 'assistant' && row.isStreaming === true;
+        if (!optimisticUser && !inFlightAssistant) continue;
+        const role = row.type;
+        const turnId = row.turnId || row.threadId || messageId;
+        const speakerVpId = row.speakerVpId || row.vpId || null;
+        const identity = outlineResultIdentity({
+          role,
+          messageId,
+          clientMessageId: row.clientMessageId,
+          turnId,
+          speakerVpId,
+        });
+        const existing = byId.get(identity);
+        const raw = typeof row.content === 'string' ? row.content : '';
+        const text = raw.replace(/\s+/g, ' ').trim();
+        byId.set(identity, {
+          ...existing,
+          messageId: Number.isFinite(existing?.seq) ? existing.messageId : messageId,
+          ...(row.clientMessageId ? { clientMessageId: row.clientMessageId } : {}),
+          turnId,
+          role,
+          speakerVpId: speakerVpId || existing?.speakerVpId || null,
+          timestamp: row.timestamp || row.ts || existing?.timestamp || null,
+          snippet: text.length > 180 ? `${text.slice(0, 180).trimEnd()}…` : (text || existing?.snippet || ''),
+        });
+        if (!existing) liveOnlyCount += 1;
+      }
+      const asTime = value => {
+        const parsed = typeof value === 'number' ? value : Date.parse(value || '');
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+      const results = Array.from(byId.values()).sort((a, b) => {
+        if (Number.isFinite(a.seq) && Number.isFinite(b.seq)) return a.seq - b.seq;
+        return asTime(a.timestamp) - asTime(b.timestamp);
+      });
+      return {
+        ...base,
+        results,
+        totalCount: Number.isFinite(base.totalCount) ? base.totalCount + liveOnlyCount : base.totalCount,
+      };
+    },
+
+    promoteYeaftHistoryOutlineRow(row) {
+      const sessionId = row?.sessionId ?? row?.groupId ?? null;
+      const agentId = resolveAgentIdForSession(this, sessionId);
+      const key = yeaftHistoryIdentityKey(agentId, sessionId);
+      const state = this.yeaftHistoryOutlineBySession[key];
+      if (!sessionId || !agentId || !state?.loaded || state.loading) return false;
+      const role = row?.type;
+      if (role !== 'user' && role !== 'assistant') return false;
+      const messageId = row.dbMessageId || row.messageId || row.id || null;
+      const seq = parsePersistedMessageSeq(messageId);
+      if (!messageId || !Number.isFinite(seq)) return false;
+      const turnId = row.turnId || row.threadId || messageId;
+      const speakerVpId = row.speakerVpId || row.vpId || null;
+      const raw = typeof row.content === 'string' ? row.content : '';
+      const text = raw.replace(/\s+/g, ' ').trim();
+      const identity = outlineResultIdentity({
+        role,
+        messageId,
+        clientMessageId: row.clientMessageId,
+        turnId,
+        speakerVpId,
+      });
+      const byId = new Map((state.results || []).map(result => [outlineResultIdentity(result), result]));
+      const existing = byId.get(identity);
+      byId.set(identity, {
+        ...existing,
+        messageId,
+        ...(row.clientMessageId ? { clientMessageId: row.clientMessageId } : {}),
+        turnId,
+        seq,
+        role,
+        speakerVpId,
+        timestamp: row.timestamp || row.ts || existing?.timestamp || null,
+        snippet: text.length > 180 ? `${text.slice(0, 180).trimEnd()}…` : (text || existing?.snippet || ''),
+      });
+      const limit = 50;
+      const ordered = Array.from(byId.values()).sort((a, b) => (a.seq || 0) - (b.seq || 0));
+      const overflowed = ordered.length > limit;
+      const results = ordered.slice(-limit);
+      this.yeaftHistoryOutlineBySession = {
+        ...this.yeaftHistoryOutlineBySession,
+        [key]: {
+          ...state,
+          results,
+          hasMore: state.hasMore || overflowed,
+          nextBeforeSeq: overflowed && Number.isFinite(results[0]?.seq)
+            ? results[0].seq
+            : state.nextBeforeSeq,
+          totalCount: Number.isFinite(state.totalCount) && !existing ? state.totalCount + 1 : state.totalCount,
+        },
+      };
+      return true;
+    },
+
+    promoteCompletedYeaftHistoryOutline(conversationId, turnId = null) {
+      const rows = this.messagesMap[conversationId] || [];
+      let anchor = null;
+      const textParts = [];
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const row = rows[i];
+        if (row?.type === 'user') break;
+        if (turnId && row?.turnId && row.turnId !== turnId) continue;
+        if (row?.type !== 'assistant') continue;
+        const text = typeof row.content === 'string' ? row.content.replace(/\s+/g, ' ').trim() : '';
+        if (!anchor) anchor = row;
+        else if (!String(anchor.content || '').trim() && text) anchor = row;
+        if (text) textParts.unshift(text);
+      }
+      if (!anchor) return false;
+      return this.promoteYeaftHistoryOutlineRow({ ...anchor, content: textParts.join(' ') });
+    },
+
+    invalidateYeaftHistoryOutline(sessionId) {
+      const agentId = resolveAgentIdForSession(this, sessionId);
+      const key = yeaftHistoryIdentityKey(agentId, sessionId);
+      const state = this.yeaftHistoryOutlineBySession[key];
+      if (!sessionId || !agentId || !state) return false;
+      if (state.loading) {
+        this.yeaftHistoryOutlineBySession = {
+          ...this.yeaftHistoryOutlineBySession,
+          [key]: { ...state, refreshPending: true },
+        };
+        return true;
+      }
+      this.yeaftHistoryOutlineBySession = {
+        ...this.yeaftHistoryOutlineBySession,
+        [key]: { ...state, loaded: false, refreshPending: false },
+      };
+      if (this.currentView === 'yeaft' && this.yeaftActiveSessionFilter === sessionId) {
+        return this.loadYeaftHistoryOutline({ force: true });
+      }
+      return true;
+    },
+
+    loadYeaftHistoryOutline({
+      append = false,
+      force = false,
+      targetSessionId = null,
+      targetAgentId = null,
+    } = {}) {
+      if (this.currentView !== 'yeaft' && !targetSessionId) return false;
+      const sessionId = targetSessionId || this.yeaftActiveSessionFilter || null;
+      const agentId = targetAgentId || resolveAgentIdForSession(this, sessionId);
+      if (!sessionId || !agentId) return false;
+      const key = yeaftHistoryIdentityKey(agentId, sessionId);
+      const previous = this.getYeaftHistoryOutlineState(sessionId, agentId);
+      if (!append && previous.loaded && !force) return true;
+      if (append && (!previous.hasMore || !Number.isFinite(previous.nextBeforeSeq))) return false;
+      if (previous.loading) return false;
+      if (!agentHasCapability(this, agentId, 'session_history_outline')) {
+        this.yeaftHistoryOutlineBySession = {
+          ...this.yeaftHistoryOutlineBySession,
+          [key]: { ...previous, error: 'unsupported', loading: false },
+        };
+        return false;
+      }
+
+      const requestId = `history_outline_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const nextState = {
+        ...previous,
+        requestId,
+        agentId,
+        sessionId,
+        loading: true,
+        requestAppend: append,
+        refreshPending: false,
+        error: null,
+      };
+      this.yeaftHistoryOutlineBySession = { ...this.yeaftHistoryOutlineBySession, [key]: nextState };
+      const previousTimeout = this._yeaftHistoryOutlineTimeouts[key];
+      if (previousTimeout) clearTimeout(previousTimeout);
+      const timeout = setTimeout(() => {
+        const current = this.yeaftHistoryOutlineBySession[key];
+        if (current?.requestId !== requestId) return;
+        const nextTimeouts = { ...this._yeaftHistoryOutlineTimeouts };
+        delete nextTimeouts[key];
+        this._yeaftHistoryOutlineTimeouts = nextTimeouts;
+        const refreshPending = current.refreshPending === true;
+        this.yeaftHistoryOutlineBySession = {
+          ...this.yeaftHistoryOutlineBySession,
+          [key]: {
+            ...current,
+            requestId: null,
+            loading: false,
+            requestAppend: false,
+            loaded: refreshPending ? false : current.loaded,
+            refreshPending: false,
+            error: refreshPending ? null : 'timeout',
+          },
+        };
+        if (refreshPending) {
+          this.loadYeaftHistoryOutline({
+            force: true,
+            targetSessionId: sessionId,
+            targetAgentId: agentId,
+          });
+        }
+      }, 10000);
+      this._yeaftHistoryOutlineTimeouts = { ...this._yeaftHistoryOutlineTimeouts, [key]: timeout };
+      this.sendWsMessage({
+        type: 'yeaft_load_history_outline',
+        agentId,
+        sessionId,
+        requestId,
+        limit: 50,
+        ...(append && Number.isFinite(previous.nextBeforeSeq) ? { beforeSeq: previous.nextBeforeSeq } : {}),
+        includeTotal: !previous.loaded,
+      });
+      return true;
+    },
+
+    handleYeaftHistoryOutline(msg) {
+      if (!msg?.agentId || !msg?.sessionId) return false;
+      const key = yeaftHistoryIdentityKey(msg.agentId, msg.sessionId);
+      const state = this.yeaftHistoryOutlineBySession[key];
+      if (!state || msg.requestId !== state.requestId) return false;
+      const timeout = this._yeaftHistoryOutlineTimeouts[key];
+      if (timeout) clearTimeout(timeout);
+      const nextTimeouts = { ...this._yeaftHistoryOutlineTimeouts };
+      delete nextTimeouts[key];
+      this._yeaftHistoryOutlineTimeouts = nextTimeouts;
+      const incoming = Array.isArray(msg.results) ? msg.results : [];
+      const sourceResults = state.requestAppend ? [...(state.results || []), ...incoming] : incoming;
+      const byId = new Map(sourceResults
+        .filter(result => result?.messageId)
+        .map(result => [outlineResultIdentity(result), result]));
+      const results = Array.from(byId.values()).sort((a, b) => (a.seq || 0) - (b.seq || 0));
+      const refreshPending = state.refreshPending === true;
+      this.yeaftHistoryOutlineBySession = {
+        ...this.yeaftHistoryOutlineBySession,
+        [key]: {
+          ...state,
+          requestId: null,
+          loading: false,
+          requestAppend: false,
+          refreshPending: false,
+          loaded: refreshPending ? false : !msg.error,
+          results,
+          hasMore: !!msg.hasMore,
+          nextBeforeSeq: Number.isFinite(msg.nextBeforeSeq) ? msg.nextBeforeSeq : null,
+          totalCount: Number.isFinite(msg.totalCount) ? msg.totalCount : state.totalCount,
+          error: refreshPending ? null : (msg.error || null),
+        },
+      };
+      if (refreshPending) {
+        this.loadYeaftHistoryOutline({
+          force: true,
+          targetSessionId: msg.sessionId,
+          targetAgentId: msg.agentId,
+        });
+      }
       return true;
     },
 
@@ -2202,15 +2916,20 @@ export const useChatStore = defineStore('chat', {
       });
     },
 
-    handleYeaftHistoryWindow(msg) {
+    handleYeaftHistoryWindow(msg, conversationId = null) {
       const pending = this._yeaftHistoryWindowPending;
       if (!pending || msg?.requestId !== pending.requestId) return false;
       if (msg.agentId !== pending.agentId || msg.sessionId !== pending.sessionId) return false;
       clearTimeout(pending.timeout);
       this._yeaftHistoryWindowPending = null;
-      const revealed = !msg.error && this.revealYeaftMessage(pending.sessionId, pending.messageId);
-      pending.resolve(!!revealed);
-      return !!revealed;
+      // The merge handler passes the exact conversation it updated. Search and
+      // expand that same store window so agent/session switches cannot make a
+      // successful wire response look navigable in the wrong transcript.
+      const loaded = !msg.error
+        && !!conversationId
+        && this.revealYeaftMessage(pending.sessionId, pending.messageId, conversationId);
+      pending.resolve(!!loaded);
+      return !!loaded;
     },
 
     // ─── Yeaft Session creation ────────────────────────────────
@@ -2347,21 +3066,30 @@ export const useChatStore = defineStore('chat', {
                 messageType: msg.data?.type || null,
               });
             }
-            // Advance the delta cursor on every live user/assistant
-            // message arrival so the next re-entry of this session can
-            // request afterSeq instead of replaying the recent window.
-            // Cheap: only inspects the id and the prev cursor.
+            // Advance the delta cursor only for rows that the Web can restore
+            // independently. A tool-use row is not durable UI state until its
+            // matching result has also been persisted/projected; advancing here
+            // could skip that result after a Session switch.
             const data = msg.data;
             const liveId = data?.message?.id || data?.id || null;
             const seq = parseYeaftMessageSeq(liveId);
-            if (seq !== null && msgSessionId) {
-              const sessionKey = msgSessionId;
+            const contentBlocks = Array.isArray(data?.message?.content) ? data.message.content : [];
+            const hasToolUse = contentBlocks.some(block => block?.type === 'tool_use');
+            const hasToolResult = !!data?.tool_use_result
+              || contentBlocks.some(block => block?.type === 'tool_result');
+            if (msgSessionId) {
+              const candidateSeq = !hasToolResult
+                && !hasPendingToolCall(this, conversationId, msgSessionId)
+                && (data?.type === 'user' || (data?.type === 'assistant' && !hasToolUse))
+                ? seq
+                : null;
+              const sessionKey = yeaftHistoryIdentityKey(msg.agentId || null, msgSessionId);
               const prevState = this.yeaftSessionHistoryState[sessionKey] || {};
               const prevLatest = Number.isFinite(prevState.latestSeq) ? prevState.latestSeq : -1;
-              if (seq > prevLatest) {
+              if (candidateSeq !== null && candidateSeq > prevLatest) {
                 this.yeaftSessionHistoryState = {
                   ...this.yeaftSessionHistoryState,
-                  [sessionKey]: { ...prevState, latestSeq: seq },
+                  [sessionKey]: { ...prevState, latestSeq: candidateSeq },
                 };
               }
             }
@@ -2382,51 +3110,55 @@ export const useChatStore = defineStore('chat', {
       switch (event.type) {
         case 'ask_user_question': {
           const conversationId = msg.conversationId || this.yeaftConversationId;
-          if (!conversationId) break;
-          const expected = {
-            sessionId: msg.sessionId || event.sessionId || null,
-            vpId: msg.vpId || event.vpId || null,
-            turnId: msg.turnId || event.turnId || null,
-            threadId: msg.threadId || event.threadId || 'main',
-          };
-          const matches = row => row?.type === 'tool-use'
-            && (row.toolName === 'AskUser' || row.toolName === 'AskUserQuestion')
-            && (!row.askRequestId || row.askRequestId === event.requestId)
-            && (!expected.sessionId || row.sessionId === expected.sessionId)
-            && (!expected.vpId || (row.vpId || row.speakerVpId) === expected.vpId)
-            && (!expected.turnId || row.turnId === expected.turnId)
-            && (!expected.threadId || (row.threadId || 'main') === expected.threadId);
+          if (!conversationId || !event.requestId) break;
+          const identity = askUserEventIdentity(msg, event, conversationId);
           const linkPrompt = () => {
             const messages = this.messagesMap[conversationId] || [];
-            for (let i = messages.length - 1; i >= 0; i--) {
-              if (!matches(messages[i])) continue;
-              messages[i].toolName = 'AskUserQuestion';
-              messages[i].askRequestId = event.requestId;
-              messages[i].askQuestions = event.questions || [];
-              messages[i].askCreatedAt = event.createdAt || null;
-              messages[i].askExpiresAt = event.expiresAt || null;
-              messages[i].isHistory = false;
+            const existingRow = findAskUserRow(messages, identity, conversationId);
+            if (existingRow) {
+              if (existingRow.askAnswered || existingRow.askExpired) return true;
+              existingRow.toolName = 'AskUserQuestion';
+              if (event.toolCallId && !existingRow.toolId) existingRow.toolId = event.toolCallId;
+              existingRow.agentId = identity.agentId || existingRow.agentId || null;
+              existingRow.askRequestId = event.requestId;
+              existingRow.askQuestions = event.questions || [];
+              existingRow.askCreatedAt = event.createdAt || null;
+              existingRow.askExpiresAt = event.expiresAt || null;
+              if (event.replay) {
+                existingRow.askPending = false;
+                existingRow.pendingAnswers = null;
+                existingRow.askSubmitGeneration = null;
+              }
+              existingRow.isHistory = false;
+              const terminal = takeAskUserTerminal(this, identity);
+              if (terminal) applyAskUserTerminal(existingRow, terminal);
+              this.messagesMap = { ...this.messagesMap, [conversationId]: messages.slice() };
               return true;
             }
             if (!event.replay) return false;
-            messages.push({
+            const promptRow = {
               id: `ask-card-${event.requestId}`,
               type: 'tool-use',
               toolName: 'AskUserQuestion',
+              toolId: event.toolCallId || null,
               toolInput: { questions: event.questions || [] },
               askRequestId: event.requestId,
               askQuestions: event.questions || [],
               askCreatedAt: event.createdAt || null,
               askExpiresAt: event.expiresAt || null,
-              sessionId: expected.sessionId,
-              vpId: expected.vpId,
-              speakerVpId: expected.vpId,
-              turnId: expected.turnId,
-              threadId: expected.threadId,
+              agentId: identity.agentId,
+              sessionId: identity.sessionId,
+              vpId: identity.vpId,
+              speakerVpId: identity.vpId,
+              turnId: identity.turnId,
+              threadId: identity.threadId || 'main',
               hasResult: false,
               isHistory: false,
               timestamp: event.createdAt || Date.now(),
-            });
+            };
+            const terminal = takeAskUserTerminal(this, identity);
+            if (terminal) applyAskUserTerminal(promptRow, terminal);
+            messages.push(promptRow);
             this.messagesMap = { ...this.messagesMap, [conversationId]: messages.slice() };
             return true;
           };
@@ -2443,17 +3175,15 @@ export const useChatStore = defineStore('chat', {
         case 'ask_user_answered':
         case 'ask_user_expired': {
           const conversationId = msg.conversationId || this.yeaftConversationId;
-          const messages = conversationId ? (this.messagesMap[conversationId] || []) : [];
-          const askMsg = messages.find(row => row?.askRequestId === event.requestId);
-          if (!askMsg) break;
-          if (event.type === 'ask_user_answered') {
-            askMsg.askAnswered = true;
-            askMsg.selectedAnswers = event.answers || {};
-          } else {
-            askMsg.isHistory = true;
-            askMsg.askExpired = true;
+          if (!conversationId || !event.requestId) break;
+          const messages = this.messagesMap[conversationId] || [];
+          const identity = askUserEventIdentity(msg, event, conversationId);
+          const askMsg = findAskUserRow(messages, identity, conversationId);
+          if (!askMsg) {
+            rememberAskUserTerminal(this, identity, event);
+            break;
           }
-          askMsg.askRequestId = null;
+          applyAskUserTerminal(askMsg, event);
           this.messagesMap = { ...this.messagesMap, [conversationId]: messages.slice() };
           break;
         }
@@ -2511,13 +3241,16 @@ export const useChatStore = defineStore('chat', {
               ...(this.yeaftConversationIdsByAgent || {}),
               [statusAgentId]: agentConvId,
             };
-            this.cacheYeaftAgentStatus(statusAgentId, event);
+            this.cacheYeaftAgentStatus(statusAgentId, event, { allowBootstrapCatalog: readyIsVisible });
           }
-          this.yeaftModel = event.model;
-          this.yeaftModelEffort = event.modelEffort || null;
-          this.yeaftSessionReady = true;
-          this.yeaftBootstrapMetaLoadingKey = null;
-          this.yeaftAvailableModels = event.availableModels || [];
+          if (readyIsVisible) {
+            this.yeaftModel = event.model;
+            this.yeaftModelEffort = event.modelEffort || null;
+            this.yeaftSessionReady = true;
+            this.yeaftBootstrapMetaLoadingKey = null;
+            if (statusAgentId) this.applyCachedYeaftStatus(statusAgentId);
+            else this.yeaftAvailableModels = event.availableModels || [];
+          }
           const readyTasks = Array.isArray(event.tasks) ? event.tasks : [];
           const nextTasks = {};
           for (const task of readyTasks) {
@@ -2525,20 +3258,21 @@ export const useChatStore = defineStore('chat', {
             nextTasks[task.sessionId] = { ...(nextTasks[task.sessionId] || {}), [task.id]: task };
           }
           this.yeaftActiveTasksBySession = nextTasks;
-          // Surface agent's yeaft home dir so Yeaft workbench (Files/Git tabs)
-          // can default to a sensible folder instead of leaking through
-          // currentAgentInfo.workDir (which is Chat's cwd, not the group's).
-          if (event.yeaftDir) this.yeaftYeaftDir = event.yeaftDir;
-          this.yeaftStatus = {
-            skills: event.skills,
-            mcpServers: event.mcpServers,
-            tools: event.tools,
-            // task-334-ui-b: expose multi-VP feature flag surface so
-            // MessageList can decide whether to render VP speaker headers.
-            // Agent side (334c + feature-flag.js) determines the boolean;
-            // web just mirrors it. Absent → falsy → legacy 1:1 UI.
-            multiVp: !!event.multiVp,
-          };
+          // Background Session replay only updates its own cached metadata.
+          // The visible Session owns page-level runtime status and workbench root.
+          if (readyIsVisible) {
+            if (event.yeaftDir) this.yeaftYeaftDir = event.yeaftDir;
+            this.yeaftStatus = {
+              skills: event.skills,
+              mcpServers: event.mcpServers,
+              tools: event.tools,
+              // task-334-ui-b: expose multi-VP feature flag surface so
+              // MessageList can decide whether to render VP speaker headers.
+              // Agent side (334c + feature-flag.js) determines the boolean;
+              // web just mirrors it. Absent → falsy → legacy 1:1 UI.
+              multiVp: !!event.multiVp,
+            };
+          }
 
           if (readyIsVisible || !this.yeaftConversationId) {
             this.yeaftConversationId = agentConvId;
@@ -2975,8 +3709,12 @@ export const useChatStore = defineStore('chat', {
         }
 
         case 'history_loaded':
-          if (msg.perfTraceId || (event.sessionId && this.yeaftHistoryPerfTraceBySession?.[event.sessionId])) {
-            const traceId = msg.perfTraceId || this.yeaftHistoryPerfTraceBySession[event.sessionId];
+          {
+            const responseAgentId = msg.agentId || null;
+            const responseSessionId = event.sessionId ?? null;
+            const sessionKey = yeaftHistoryIdentityKey(responseAgentId, responseSessionId);
+            const traceId = msg.perfTraceId || this.yeaftHistoryPerfTraceBySession?.[sessionKey];
+            if (traceId) {
             recordPerfTrace(this, {
               traceId,
               phase: 'history.loaded_event',
@@ -2985,7 +3723,7 @@ export const useChatStore = defineStore('chat', {
               messageType: event.type,
               detail: { mode: event.mode || 'recent', count: event.count || 0, hasMore: !!event.hasMore },
             });
-          }
+            }
           // History messages already rendered via assistant output frame data path.
           // This event just signals completion + carries cursors:
           //   mode:'recent' (default) — full pane replay; stamp oldestSeq /
@@ -2994,8 +3732,6 @@ export const useChatStore = defineStore('chat', {
           //   mode:'delta' — incremental append; only latestSeq is meaningful.
           //     Don't touch hasMore / oldestSeq (those describe the older
           //     end and don't change on a delta tail-load).
-          {
-            const sessionKey = event.sessionId || '__all__';
             const mode = event.mode === 'delta' ? 'delta' : 'recent';
             const prevState = this.yeaftSessionHistoryState[sessionKey] || {};
             const nextLatest = (Number.isFinite(event.latestSeq) ? event.latestSeq
@@ -3022,13 +3758,19 @@ export const useChatStore = defineStore('chat', {
               ...this.yeaftSessionHistoryState,
               [sessionKey]: nextState,
             };
-            const activeKey = this.yeaftActiveSessionFilter || '__all__';
+            const activeKey = yeaftHistoryIdentityKey(
+              responseAgentId ? this.currentAgent : null,
+              this.yeaftActiveSessionFilter ?? null,
+            );
             if (sessionKey === activeKey) {
               if (mode === 'recent') {
                 this.yeaftHasMoreHistory = nextState.hasMore;
                 this.yeaftOldestLoadedSeq = nextState.oldestSeq;
               }
               this.yeaftLoadingMoreHistory = false;
+            } else if (this.yeaftLoadingMoreHistory) {
+              const activeState = this.yeaftSessionHistoryState[activeKey] || null;
+              this.yeaftLoadingMoreHistory = !!activeState?.loading;
             }
           }
           break;
@@ -3101,8 +3843,11 @@ export const useChatStore = defineStore('chat', {
           // initial history load (which happened with groupId:null), so
           // reload history for the correct group when activeGroupId changes.
           if (this.currentView === 'yeaft' && newGroupId) {
-            const sessionState = this.yeaftSessionHistoryState[newGroupId] || null;
+            const targetAgentId = resolveAgentIdForSession(this, newGroupId, msg.agentId || null);
+            const sessionKey = yeaftHistoryIdentityKey(targetAgentId, newGroupId);
+            const sessionState = this.yeaftSessionHistoryState[sessionKey] || null;
             this.setActiveSessionFilter(newGroupId, {
+              agentId: targetAgentId,
               force: msgHelpers.shouldForceHydrateActiveYeaftSession(newGroupId, prevGroupId, sessionState),
             });
           }
@@ -3839,7 +4584,12 @@ export const useChatStore = defineStore('chat', {
     setActiveSessionFilter(groupId, opts = {}) {
       const prev = this.yeaftActiveSessionFilter || null;
       const next = groupId || null;
-      const force = !!opts.force;
+      const targetAgentId = next
+        ? resolveAgentIdForSession(this, next, opts.agentId || null)
+        : this.currentAgent;
+      const ownerChanged = !!next && next === prev && !!targetAgentId
+        && !!this.currentAgent && targetAgentId !== this.currentAgent;
+      const force = !!opts.force || ownerChanged;
       this.yeaftActiveSessionFilter = next;
       // fix-yeaft-session-server-persistence: remember the
       // last-viewed yeaft session so reload + cross-agent switch
@@ -3851,9 +4601,20 @@ export const useChatStore = defineStore('chat', {
         if (next) localStorage.setItem('lastViewedYeaftSession', next);
         else localStorage.removeItem('lastViewedYeaftSession');
       } catch (_) {}
+
+      // Agent selection and catalog projection are one operation. Do this
+      // before every history early-return so an already-loaded Session cannot
+      // keep rendering the previous Agent's model catalog.
+      if (targetAgentId && next && this.currentAgent !== targetAgentId) {
+        this.selectAgent(targetAgentId);
+        const info = this.agents.find(a => a.id === targetAgentId);
+        this.activateYeaftAgent(targetAgentId, info || null);
+      } else if (targetAgentId && next) {
+        this.activateYeaftAgent(targetAgentId);
+      }
       if (!force && next === prev) return;
 
-      const sessionKey = next || '__all__';
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, next);
       const savedState = this.yeaftSessionHistoryState[sessionKey] || null;
       this.yeaftHasMoreHistory = !!savedState?.hasMore;
       this.yeaftLoadingMoreHistory = !!savedState?.loading;
@@ -3891,13 +4652,6 @@ export const useChatStore = defineStore('chat', {
       // round-trip while currentAgent is still old so its same-agent guard
       // doesn't swallow the frame; the assignment then makes same-tick reads
       // see the new owner).
-      const targetAgentId = next ? resolveAgentIdForSession(this, next) : this.currentAgent;
-      if (targetAgentId && next && this.currentAgent !== targetAgentId) {
-        this.selectAgent(targetAgentId);
-        this.currentAgent = targetAgentId;
-        const info = this.agents.find(a => a.id === targetAgentId);
-        if (info) this.currentAgentInfo = info;
-      }
       if (targetAgentId && next) {
         this.yeaftSessionAgentById = {
           ...(this.yeaftSessionAgentById || {}),
@@ -4215,6 +4969,7 @@ export const useChatStore = defineStore('chat', {
       this.yeaftModel = null;
       this.yeaftAvailableModels = [];
       this.yeaftStatus = null;
+      this._yeaftAskTerminalEvents = {};
       // feat-6af5f9f1 PR B: clear new Turn-grouped debug shape.
       this.yeaftDebugLoops = [];
       this.yeaftDebugTurnsById = {};
@@ -4842,7 +5597,7 @@ export const useChatStore = defineStore('chat', {
       const sessionId = resolveActiveYeaftSessionId(this);
       const targetAgentId = resolveAgentIdForSession(this, sessionId);
       if (!targetAgentId) return false;
-      const sessionKey = sessionId || '__all__';
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, sessionId);
       const convId = this.yeaftConversationId;
 
       // Manual reload means "show me the persisted pane again", not a delta.
@@ -4897,7 +5652,7 @@ export const useChatStore = defineStore('chat', {
       if (!targetAgentId) return;
 
       this.yeaftLoadingMoreHistory = true;
-      const sessionKey = sessionId || '__all__';
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, sessionId);
       this.yeaftSessionHistoryState = {
         ...this.yeaftSessionHistoryState,
         [sessionKey]: {
@@ -5223,6 +5978,8 @@ export const useChatStore = defineStore('chat', {
       this.agents = [];
       this.currentAgent = null;
       this.currentAgentInfo = null;
+      this.yeaftStatusByAgent = {};
+      this._yeaftRetiredCatalogEpochsByAgent = {};
       this.conversations = [];
       this.activeConversations = [];
       this.messagesMap = {};

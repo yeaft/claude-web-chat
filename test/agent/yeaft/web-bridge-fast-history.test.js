@@ -45,13 +45,14 @@ describe('Yeaft load-history first paint', () => {
     ctx.CONFIG = null;
   });
 
-  it('filters legacy internal-control rows in the visible-history fallback path', () => {
+  it('filters internal and model-only user-role rows in the visible-history fallback path', () => {
     const rows = [
       { id: 'm0001', role: 'user', content: 'visible q', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0002', role: 'user', content: '<task-result id="task_1" kind="shell" status="succeeded">\nPASS\n</task-result>', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0003', role: 'user', content: '[system note] You have called ListAgents with the same arguments 3 times. Previous result: {...}', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0004', role: 'assistant', content: 'visible a', sessionId: 'session-fast', threadId: 'main', speakerVpId: 'vp-linus' },
       { id: 'm0005', role: 'user', content: 'In docs, <task-result> is just prose', sessionId: 'session-fast', threadId: 'main' },
+      { id: 'm0006', role: 'user', content: 'model-only continuation', sessionId: 'session-fast', threadId: 'main', userAuthored: false },
     ];
     const page = __testHooks.loadVisibleGroupHistoryPage({
       loadOlderBySession() {
@@ -97,6 +98,38 @@ describe('Yeaft load-history first paint', () => {
     });
   });
 
+  it('preserves TodoWrite through the real store page and history wire projection', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-todo-history-'));
+    try {
+      const store = new ConversationStore(dir);
+      store.append({ role: 'user', content: 'status?', sessionId: 'session-fast' });
+      store.append({
+        role: 'assistant',
+        content: 'Progress',
+        sessionId: 'session-fast',
+        speakerVpId: 'vp-linus',
+        toolCalls: [
+          { id: 'todo', name: 'TodoWrite', input: { todos: [{ content: 'Verify', status: 'completed' }] } },
+          { id: 'bash', name: 'Bash', input: { command: 'true' } },
+        ],
+      });
+
+      const page = __testHooks.loadVisibleGroupHistoryPage(store, 'session-fast', 1);
+      const projected = __testHooks.projectVisibleHistoryChunkMessages(page.messages);
+
+      expect(page.messages[1]).toMatchObject({
+        todos: [{ content: 'Verify', status: 'completed' }],
+        toolSummaryCount: 1,
+      });
+      expect(projected[1]).toMatchObject({
+        todos: [{ content: 'Verify', status: 'completed' }],
+        toolSummaryCount: 1,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('preserves the canonical image asset anchor in the history wire projection', () => {
     const projected = __testHooks.projectVisibleHistoryChunkMessages([
       { id: 'm0001', role: 'assistant', content: 'tool progress', sessionId: 'session-fast', turnId: 'turn-image' },
@@ -109,6 +142,46 @@ describe('Yeaft load-history first paint', () => {
       turnId: 'turn-image',
       imageAssetAnchor: true,
     });
+  });
+
+  it('projects a persisted AskUser answer as terminal history metadata', () => {
+    const projected = __testHooks.projectVisibleHistoryChunkMessages([
+      {
+        id: 'm0100',
+        role: 'assistant',
+        content: '',
+        sessionId: 'session-fast',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [{ id: 'ask_1', name: 'AskUser', input: { question: 'Continue?', options: ['Yes', 'No'] } }],
+      },
+      {
+        id: 'm0101',
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'session-fast',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'ask_1',
+      },
+    ]);
+
+    expect(projected).toEqual([
+      expect.objectContaining({
+        id: 'm0100',
+        role: 'assistant',
+        askUserResults: [{
+          toolCallId: 'ask_1',
+          status: 'answered',
+          question: 'Continue?',
+          options: ['Yes', 'No'],
+          answers: { 'Continue?': 'Yes' },
+        }],
+      }),
+    ]);
+    expect(projected[0].toolSummaryCount).toBeUndefined();
   });
 
   it('replays the recent message window before full session boot resolves', async () => {
@@ -368,6 +441,7 @@ describe('Yeaft load-history first paint', () => {
         role: 'user',
         content: 'hello at the real send time',
         time: '2026-06-20T01:02:03.456Z',
+        userAuthored: true,
       });
     } finally {
       __testSetSession(null);
@@ -458,7 +532,7 @@ describe('Yeaft load-history first paint', () => {
     }
   });
 
-  it('does not emit an empty delta chunk when no rows changed after the cursor', async () => {
+  it('emits an empty delta acknowledgement when no visible rows changed after the cursor', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-empty-delta-'));
     try {
       ctx.CONFIG = { yeaftDir: dir };
@@ -479,7 +553,12 @@ describe('Yeaft load-history first paint', () => {
       const pending = handleYeaftLoadHistory({ sessionId: 'session-fast', afterSeq: Number(anchor.id.slice(1)) });
       await flushMicrotasks();
 
-      expect(sent.some(m => m.type === 'yeaft_history_chunk' && m.mode === 'delta')).toBe(false);
+      expect(sent.find(m => m.type === 'yeaft_history_chunk' && m.mode === 'delta')).toMatchObject({
+        sessionId: 'session-fast',
+        messages: [],
+        latestSeq: Number(hidden.id.slice(1)),
+        afterSeq: Number(anchor.id.slice(1)),
+      });
       const event = sent.find(m => m.event?.type === 'history_loaded')?.event;
       expect(event).toMatchObject({
         mode: 'delta',
