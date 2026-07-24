@@ -133,7 +133,10 @@ export default {
       const persisted = mergeActionMessages(earlier, current);
       const live = this.selectedAction?.liveMessage;
       const visibleLive = live?.status === 'running'
-        && !persisted.some(message => message.role === 'assistant' && message.text === live.text)
+        && !persisted.some(message => message.role === 'assistant'
+          && message.runId != null
+          && message.runId === live.runId
+          && message.text === live.text)
         ? live : null;
       return mergeActionMessages(persisted, visibleLive);
     },

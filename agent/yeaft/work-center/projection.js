@@ -181,6 +181,13 @@ function threadRuns(action, runs) {
   });
 }
 
+function projectVpSpeaker(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  const id = typeof snapshot.id === 'string' && snapshot.id ? snapshot.id : null;
+  const name = typeof snapshot.name === 'string' && snapshot.name ? snapshot.name : id;
+  return id || name ? { id, name } : null;
+}
+
 function normalizeProjectedMessage(message) {
   if (!message || typeof message !== 'object') return null;
   const text = typeof message.text === 'string'
@@ -188,6 +195,7 @@ function normalizeProjectedMessage(message) {
     : '';
   const attachments = projectAttachments(message.attachments);
   if (!text && attachments.length === 0) return null;
+  const speaker = message.role === 'user' ? null : projectVpSpeaker(message.speaker);
   return {
     id: String(message.id || ''),
     role: message.role === 'user' ? 'user' : 'assistant',
@@ -201,6 +209,7 @@ function normalizeProjectedMessage(message) {
     ...(message.generation == null ? {} : { generation: Math.max(1, count(message.generation) || 1) }),
     ...(message.attempt == null ? {} : { attempt: Math.max(1, count(message.attempt) || 1) }),
     ...(message.runId == null ? {} : { runId: String(message.runId) }),
+    ...(speaker ? { speaker } : {}),
   };
 }
 
@@ -232,22 +241,33 @@ function runResponseMessage(run, includeThreadIdentity = false) {
     createdAt: count(run.startedAt),
     updatedAt: count(run.endedAt || run.startedAt),
     progressRevision: count(run.progressRevision),
-    ...(includeThreadIdentity ? {
-      generation: runGeneration(run),
-      attempt: run.actionAttempt,
-      runId: run.id,
-    } : {}),
+    generation: includeThreadIdentity ? runGeneration(run) : null,
+    attempt: includeThreadIdentity ? run.actionAttempt : null,
+    runId: run.id,
+    speaker: run.vpSnapshot,
   });
 }
 
-function loopOutputMessages(action, events, matchingRunIds, generation = actionGeneration(action?.generation), includeThreadIdentity = false) {
+function loopOutputMessages(action, events, matchingRuns, generation = actionGeneration(action?.generation), includeThreadIdentity = false) {
+  const runById = new Map(matchingRuns.map(run => [run.id, run]));
   const projected = [];
-  const lastResponseByRun = new Map();
-  for (const event of Array.isArray(events) ? events : []) {
-    if (event?.actionId !== action?.id
-      || actionGeneration(event.actionGeneration ?? event.data?.actionGeneration) !== generation
-      || !matchingRunIds.has(event.runId)
-      || event.type !== 'run.loop_output') continue;
+  let previousTranscriptEvent = null;
+  const timeline = (Array.isArray(events) ? events : [])
+    .filter(event => event?.actionId === action?.id
+      && actionGeneration(event.actionGeneration ?? event.data?.actionGeneration) === generation)
+    .sort((left, right) => count(left.createdAt) - count(right.createdAt)
+      || String(left.id || '').localeCompare(String(right.id || '')));
+  for (const event of timeline) {
+    if (['action.guidance_added', 'action.input_added'].includes(event.type)) {
+      previousTranscriptEvent = { type: 'input' };
+      continue;
+    }
+    if (event.type !== 'run.loop_output') continue;
+    if (!runById.has(event.runId)) {
+      previousTranscriptEvent = { type: 'other_loop_output' };
+      continue;
+    }
+    const run = runById.get(event.runId);
     const message = normalizeProjectedMessage({
       id: `event:${event.id}`,
       role: 'assistant',
@@ -255,16 +275,16 @@ function loopOutputMessages(action, events, matchingRunIds, generation = actionG
       status: 'completed',
       text: event.data?.response || '',
       createdAt: event.createdAt,
-      ...(includeThreadIdentity ? {
-        generation: event.actionGeneration ?? event.data?.actionGeneration,
-        attempt: event.data?.actionAttempt,
-        runId: event.runId,
-      } : {}),
+      generation: includeThreadIdentity ? event.actionGeneration ?? event.data?.actionGeneration : null,
+      attempt: includeThreadIdentity ? event.data?.actionAttempt : null,
+      runId: event.runId,
+      speaker: run.vpSnapshot,
     });
     if (!message) continue;
-    const previous = lastResponseByRun.get(event.runId);
-    if (previous === message.text) continue;
-    lastResponseByRun.set(event.runId, message.text);
+    if (previousTranscriptEvent?.type === 'loop_output'
+      && previousTranscriptEvent.runId === message.runId
+      && previousTranscriptEvent.text === message.text) continue;
+    previousTranscriptEvent = { type: 'loop_output', runId: message.runId, text: message.text };
     projected.push(message);
   }
   return projected;
@@ -281,7 +301,7 @@ function messagesForGeneration(action, runs, events, generation, includeThreadId
     .map(event => event.runId));
   return [
     ...actionInputMessages(action, events, generation, includeThreadIdentity),
-    ...loopOutputMessages(action, events, matchingRunIds, generation, includeThreadIdentity),
+    ...loopOutputMessages(action, events, matchingRuns, generation, includeThreadIdentity),
     ...matchingRuns
     .sort((left, right) => count(left.startedAt) - count(right.startedAt))
     .filter(run => !runsWithLoopOutput.has(run.id))

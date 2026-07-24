@@ -219,16 +219,21 @@ describe('Work Center Action detail tabs', () => {
     expect(wrapper.vm.expandedRequestKey).toBe('run-current:request-current');
   });
 
-  it('renders the assigned VP as the assistant speaker instead of a generic AI label', () => {
+  it('renders each assistant message with its Run VP while keeping the latest executor as owner', () => {
     const wrapper = mountDetail({
       action: {
         id: 'action-1', status: 'running', assignedVp: { id: 'linus', name: 'Linus' },
         executionStats: {}, messages: [],
       },
-      messages: [{ id: 'response-1', role: 'assistant', text: 'I verified the fix.', createdAt: 1 }],
+      messages: [
+        { id: 'response-1', role: 'assistant', text: 'Earlier review.', createdAt: 1, speaker: { id: 'martin', name: 'Martin' } },
+        { id: 'response-2', role: 'assistant', text: 'I verified the fix.', createdAt: 2, speaker: { id: 'linus', name: 'Linus' } },
+      ],
     });
 
-    expect(wrapper.get('.work-center-action-message.role-assistant header strong').text()).toBe('Linus');
+    expect(wrapper.findAll('.work-center-action-message.role-assistant header strong').map(node => node.text()))
+      .toEqual(['Martin', 'Linus']);
+    expect(wrapper.get('.work-center-action-owner strong').text()).toBe('Linus');
     expect(wrapper.text()).not.toContain('AI response');
   });
 
@@ -248,18 +253,49 @@ describe('Work Center Action detail tabs', () => {
     expect(messages[0].id).toBe('event:1');
   });
 
-  it('keeps a running live snapshot until a durable response replaces it', () => {
+  it('keeps a running live snapshot until the same Run durable response replaces it', () => {
     const context = {
       selectedAction: {
         messages: [],
-        liveMessage: { id: 'run:1', role: 'assistant', text: 'Still working', status: 'running', createdAt: 1 },
+        liveMessage: { id: 'run:1', runId: 'run-1', role: 'assistant', text: 'Still working', status: 'running', createdAt: 1 },
       },
       actionRequestKey: 'agent:work:action',
       store: { workCenterActionMessages: {} },
     };
 
     expect(WorkCenterPage.computed.actionMessages.call(context)).toEqual([
-      expect.objectContaining({ id: 'run:1', text: 'Still working' }),
+      expect.objectContaining({ id: 'run:1', runId: 'run-1', text: 'Still working' }),
+    ]);
+  });
+
+  it('keeps a new Run live response when an older Run persisted the same text', () => {
+    const context = {
+      selectedAction: {
+        messages: [{ id: 'event:old', runId: 'run-old', role: 'assistant', text: 'Same answer', status: 'completed', createdAt: 1 }],
+        liveMessage: { id: 'run:new', runId: 'run-new', role: 'assistant', text: 'Same answer', status: 'running', createdAt: 2 },
+      },
+      actionRequestKey: 'agent:work:action',
+      store: { workCenterActionMessages: {} },
+    };
+
+    expect(WorkCenterPage.computed.actionMessages.call(context)).toEqual([
+      expect.objectContaining({ id: 'event:old', runId: 'run-old' }),
+      expect.objectContaining({ id: 'run:new', runId: 'run-new' }),
+    ]);
+  });
+
+  it('hides a running live response only after the same Run response is durable', () => {
+    const context = {
+      selectedAction: {
+        messages: [{ id: 'event:new', runId: 'run-new', role: 'assistant', text: 'Same answer', status: 'completed', createdAt: 1 }],
+        liveMessage: { id: 'run:new', runId: 'run-new', role: 'assistant', text: 'Same answer', status: 'running', createdAt: 2 },
+      },
+      actionRequestKey: 'agent:work:action',
+      store: { workCenterActionMessages: {} },
+    };
+
+    expect(WorkCenterPage.computed.actionMessages.call(context)).toEqual([
+      expect.objectContaining({ id: 'event:new', runId: 'run-new' }),
     ]);
   });
 

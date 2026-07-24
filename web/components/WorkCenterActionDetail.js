@@ -95,6 +95,10 @@ export default {
     statusLabel(status) {
       return this.tr(`workCenter.status.${status}`, String(status || '').replace('_', ' '));
     },
+    messageSpeaker(message) {
+      if (message?.role === 'user') return this.tr('workCenter.you', 'You');
+      return message?.speaker?.name || message?.speaker?.id || this.executorName;
+    },
     time(value) {
       if (!value) return '';
       try { return new Date(Number(value)).toLocaleString(); } catch { return ''; }
@@ -219,7 +223,7 @@ export default {
             </header>
             <article v-for="message in generation.messages" :key="message.id" class="work-center-action-message" :class="'role-' + message.role" :data-status="message.status">
               <header>
-                <strong>{{ message.role === 'user' ? tr('workCenter.you', 'You') : executorName }}</strong>
+                <strong>{{ messageSpeaker(message) }}</strong>
                 <small>{{ time(message.updatedAt || message.createdAt) }}</small>
               </header>
               <div v-if="message.text" class="markdown-body" v-html="messageHtml(message.text)"></div>

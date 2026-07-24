@@ -143,7 +143,8 @@ describe('Work Center event projection', () => {
       liveMessage: {
         id: 'run:r-2', role: 'assistant', kind: 'response', status: 'waiting',
         text: 'Reviewed the change and found one compatibility decision.', attachments: [],
-        createdAt: 2, updatedAt: 2, progressRevision: 4,
+        createdAt: 2, updatedAt: 2, progressRevision: 4, runId: 'r-2',
+        speaker: { id: 'martin', name: 'Martin' },
       },
     }]);
     const wire = JSON.stringify(projected);
@@ -507,7 +508,7 @@ describe('Work Center event projection', () => {
     expect(JSON.stringify(messages)).not.toContain('secret');
   });
 
-  it('projects durable Loop responses once when the engine repeats the final response', () => {
+  it('deduplicates only adjacent same-Run Loop responses and preserves the same answer after user input', () => {
     const detail = internalDetail();
     detail.events.push({
       id: 11, workItemId: 'wi-1', actionId: 'a-1', runId: 'r-2',
@@ -518,21 +519,46 @@ describe('Work Center event projection', () => {
     }, {
       id: 13, workItemId: 'wi-1', actionId: 'a-1', runId: 'r-2',
       type: 'run.loop_output', data: { loopNumber: 3, response: 'Implemented the continuation fence.' }, createdAt: 5,
+    }, {
+      id: 14, workItemId: 'wi-1', actionId: 'a-1',
+      type: 'action.input_added', data: { text: 'Please confirm that answer again.' }, createdAt: 6,
+    }, {
+      id: 15, workItemId: 'wi-1', actionId: 'a-1', runId: 'r-2',
+      type: 'run.loop_output', data: { loopNumber: 4, response: 'Implemented the continuation fence.' }, createdAt: 7,
     });
     detail.runs.find(run => run.id === 'r-2').response = 'Implemented the continuation fence.';
 
     const action = projectWorkItemDetail(detail).actions[0];
     const messages = action.messages;
     expect(messages.filter(message => message.role === 'assistant')).toEqual([
-      expect.objectContaining({ id: 'run:r-1', text: 'Earlier retry response' }),
-      expect.objectContaining({ id: 'event:11', text: 'Inspected the controller path.' }),
-      expect.objectContaining({ id: 'event:12', text: 'Implemented the continuation fence.' }),
+      expect.objectContaining({ id: 'run:r-1', text: 'Earlier retry response', runId: 'r-1' }),
+      expect.objectContaining({ id: 'event:11', text: 'Inspected the controller path.', runId: 'r-2' }),
+      expect.objectContaining({ id: 'event:12', text: 'Implemented the continuation fence.', runId: 'r-2' }),
+      expect.objectContaining({ id: 'event:15', text: 'Implemented the continuation fence.', runId: 'r-2' }),
     ]);
     expect(messages).not.toContainEqual(expect.objectContaining({ id: 'event:13' }));
     expect(messages).not.toContainEqual(expect.objectContaining({ id: 'run:r-2' }));
     expect(action.liveMessage).toMatchObject({
-      id: 'run:r-2', text: 'Implemented the continuation fence.',
+      id: 'run:r-2', text: 'Implemented the continuation fence.', runId: 'r-2',
+      speaker: { id: 'martin', name: 'Martin' },
     });
+  });
+
+  it('attributes assistant messages to the VP snapshot of their own Run', () => {
+    const detail = internalDetail();
+    detail.runs[1].vpSnapshot = { id: 'ada', name: 'Ada', persona: 'private' };
+    detail.events.push({
+      id: 11, workItemId: 'wi-1', actionId: 'a-1', runId: 'r-2',
+      type: 'run.loop_output', data: { response: 'Current review' }, createdAt: 3,
+    });
+
+    const action = projectWorkItemDetail(detail).actions[0];
+    expect(action.assignedVp).toEqual({ id: 'martin', name: 'Martin' });
+    expect(action.messages.filter(message => message.role === 'assistant')).toEqual([
+      expect.objectContaining({ id: 'run:r-1', runId: 'r-1', speaker: { id: 'ada', name: 'Ada' } }),
+      expect.objectContaining({ id: 'event:11', runId: 'r-2', speaker: { id: 'martin', name: 'Martin' } }),
+    ]);
+    expect(JSON.stringify(action.messages)).not.toContain('private');
   });
 
   it('projects request indexes and explicit request details with secrets and binary bodies removed', () => {
@@ -1474,7 +1500,7 @@ describe('Work Center event projection', () => {
     expect(live.workItem.actionStats[0].liveMessage).toEqual({
       id: 'run:run-live', role: 'assistant', kind: 'response', status: 'running',
       text: 'Reading the relevant files', attachments: [], createdAt: 10, updatedAt: 10,
-      progressRevision: 12,
+      progressRevision: 12, runId: 'run-live',
     });
 
     detail.runs[0] = {
