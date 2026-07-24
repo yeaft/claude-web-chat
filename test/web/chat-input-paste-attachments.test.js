@@ -18,12 +18,10 @@ describe('ChatInput paste attachments', () => {
     expect(chatInputSource).not.toContain("formData.append('files', file);");
   });
 
-  it('clears stale auth instead of silently swallowing unauthorized uploads', () => {
-    expect(chatInputSource).toContain('if (response.status === 401 || response.status === 403)');
-    expect(chatInputSource).toContain('authStore.handleAuthFailure?.(undefined, requestToken);');
-    expect(chatInputSource.indexOf('authStore.handleAuthFailure?.(undefined, requestToken);')).toBeLessThan(
-      chatInputSource.indexOf("throw new Error('Upload failed: authentication required')"),
-    );
+  it('leaves upload authentication state to the shared fetch policy', () => {
+    expect(chatInputSource).not.toContain('if (response.status === 401 || response.status === 403)');
+    expect(chatInputSource).not.toContain('authStore.handleAuthFailure?.(undefined, requestToken);');
+    expect(chatInputSource).toContain("throw new Error('Upload failed')");
   });
 
   it('maps upload results only to the files in the current paste batch', () => {

@@ -586,9 +586,6 @@ export default {
         const token = authStore.getActiveToken?.() || authStore.token || null;
         const headers = token ? { Authorization: `Bearer ${token}` } : {};
         const response = await fetch('/api/upload', { method: 'POST', headers, body: formData });
-        if (response.status === 401 || response.status === 403) {
-          authStore.handleAuthFailure?.(undefined, token);
-        }
         if (!response.ok) throw new Error(this.tr('workCenter.attachmentsUploadFailed', 'Attachment upload failed'));
         const result = await response.json();
         this.createAttachments = [
@@ -625,9 +622,6 @@ export default {
         const token = authStore.getActiveToken?.() || authStore.token || null;
         const headers = token ? { Authorization: `Bearer ${token}` } : {};
         const response = await fetch('/api/upload', { method: 'POST', headers, body: formData });
-        if (response.status === 401 || response.status === 403) {
-          authStore.handleAuthFailure?.(undefined, token);
-        }
         if (!response.ok) throw new Error(this.tr('workCenter.attachmentsUploadFailed', 'Attachment upload failed'));
         const result = await response.json();
         if (this.actionComposerScope !== scope) return;

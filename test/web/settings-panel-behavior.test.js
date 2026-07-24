@@ -191,13 +191,10 @@ describe('SettingsPanel Agent secret behavior', () => {
     expect(loadInvitations).toHaveBeenCalledOnce();
   });
 
-  it('clears stale auth when settings profile or secret requests are unauthorized', async () => {
+  it('leaves unauthorized settings responses to the shared auth fetch policy', async () => {
     const component = await loadComponent();
     const fetch = vi.fn(async url => {
-      if (url === '/api/user/profile') {
-        return { ok: false, status: 401, json: async () => ({ error: 'expired' }) };
-      }
-      if (url === '/api/user/agent-secret') {
+      if (url === '/api/user/profile' || url === '/api/user/agent-secret') {
         return { ok: false, status: 401, json: async () => ({ error: 'expired' }) };
       }
       throw new Error(`Unexpected fetch ${url}`);
@@ -208,8 +205,8 @@ describe('SettingsPanel Agent secret behavior', () => {
 
     await instance.loadData();
 
-    expect(authStore.handleAuthFailure).toHaveBeenCalledWith('auth.sessionExpired', 'expired-token');
-    expect(authStore.loadIdentities).not.toHaveBeenCalled();
+    expect(authStore.handleAuthFailure).not.toHaveBeenCalled();
+    expect(authStore.loadIdentities).toHaveBeenCalledOnce();
     expect(instance.profile).toBe(null);
   });
 

@@ -2,7 +2,8 @@ import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { CONFIG } from './config.js';
-import { verifyToken, maybeRenewToken } from './auth.js';
+import { maybeRenewToken } from './auth.js';
+import { authenticateRequest, setSessionCookie } from './auth/request-auth.js';
 import { registerAuthRoutes } from './routes/auth-routes.js';
 import { registerInvitationRoutes } from './routes/invitation-routes.js';
 import { registerUserRoutes } from './routes/user-routes.js';
@@ -44,27 +45,29 @@ function requireAuth(req, res, next) {
     return next();
   }
 
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Authentication required' });
-  }
-
-  const token = authHeader.replace('Bearer ', '');
-  const result = verifyToken(token);
-
-  if (!result.valid) {
-    return res.status(401).json({ error: 'Invalid or expired token' });
+  const result = authenticateRequest({
+    authorizationHeader: req.headers.authorization,
+    cookieHeader: req.headers.cookie,
+  });
+  if (!result) {
+    const hasCredential = !!req.headers.authorization || !!req.headers.cookie;
+    return res.status(401).json({
+      error: hasCredential ? 'Invalid or expired token' : 'Authentication required',
+    });
   }
 
   // Sliding renewal: if the token is in the last `jwtRenewThresholdMs` of its
-  // life, mint a fresh one and surface it to the client via X-New-Token. The
-  // browser fetch wrapper picks this up and swaps localStorage transparently.
+  // life, mint a fresh one and update both browser auth channels.
   // Skip renewal for non-session tokens (temp/totp/totp-setup) — those have
   // their own short-lived semantics and must not be promoted to full sessions.
   if (!result.type) {
-    const fresh = maybeRenewToken(token, result.exp, result.username);
+    const fresh = maybeRenewToken(result.token, result.exp, result.username);
     if (fresh) {
-      res.setHeader('X-New-Token', fresh);
+      setSessionCookie(req, res, fresh);
+      if (result.source !== 'cookie') res.setHeader('X-New-Token', fresh);
+    } else if (result.source !== 'cookie') {
+      // Repair the cookie for existing bearer-only sessions after deployment.
+      setSessionCookie(req, res, result.token);
     }
   }
 

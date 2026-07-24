@@ -60,6 +60,7 @@ describe('auth fetch interceptor', () => {
     await fetch('/api/user/profile');
 
     expect(originalFetch).toHaveBeenCalledWith('/api/user/profile', {
+      credentials: 'same-origin',
       headers: expect.any(Headers),
     });
     const headers = originalFetch.mock.calls[0][1].headers;
@@ -92,7 +93,10 @@ describe('auth fetch interceptor', () => {
 
     await fetch('/api/auth/login', { method: 'POST' });
 
-    expect(originalFetch).toHaveBeenCalledWith('/api/auth/login', { method: 'POST' });
+    expect(originalFetch).toHaveBeenCalledWith('/api/auth/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+    });
   });
 
   it('syncs renewed tokens from response headers into storage and auth store', async () => {
@@ -130,10 +134,13 @@ describe('auth fetch interceptor', () => {
     expect(globalThis.localStorage.setItem).not.toHaveBeenCalledWith('authToken', 'renewed-old-token');
   });
 
-  it('reports session validation 401 failures against the token used for that request', async () => {
+  it('reports protected API 401 failures through the shared auth policy', async () => {
     const authStore = {
-      token: 'new-token',
+      token: 'old-token',
+      authGeneration: 3,
+      isAuthenticated: true,
       getActiveToken: vi.fn(() => 'old-token'),
+      handleAuthResponse: vi.fn(),
       handleAuthFailure: vi.fn(),
     };
     const originalFetch = vi.fn(async () => response({ status: 401 }));
@@ -141,29 +148,47 @@ describe('auth fetch interceptor', () => {
 
     await fetch('/api/user/profile');
 
-    expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token');
+    expect(authStore.handleAuthResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 401 }),
+      'old-token',
+      3,
+      true,
+    );
+    expect(authStore.handleAuthFailure).not.toHaveBeenCalled();
   });
 
-  it('does not clear the login session when a non-session API returns 401', async () => {
+  it('routes a file upload 401 through the same auth policy', async () => {
     const authStore = {
       token: 'store-token',
+      authGeneration: 5,
+      isAuthenticated: true,
       getActiveToken: vi.fn(() => 'store-token'),
+      handleAuthResponse: vi.fn(),
       handleAuthFailure: vi.fn(),
     };
     const originalFetch = vi.fn(async () => response({ status: 401 }));
     const fetch = await loadInstaller({ authStore, fetchImpl: originalFetch });
 
-    await fetch('/api/invitations');
+    await fetch('/api/upload', { method: 'POST', body: 'file-data' });
 
-    const headers = originalFetch.mock.calls[0][1].headers;
-    expect(headers.get('Authorization')).toBe('Bearer store-token');
-    expect(authStore.handleAuthFailure).not.toHaveBeenCalled();
+    const request = originalFetch.mock.calls[0][1];
+    expect(request.credentials).toBe('same-origin');
+    expect(request.headers.get('Authorization')).toBe('Bearer store-token');
+    expect(authStore.handleAuthResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 401 }),
+      'store-token',
+      5,
+      true,
+    );
   });
 
   it('does not clear a newer login when an old no-token request later returns 401', async () => {
     const authStore = {
       token: null,
+      authGeneration: 1,
+      isAuthenticated: false,
       getActiveToken: vi.fn(() => null),
+      handleAuthResponse: vi.fn(),
       handleAuthFailure: vi.fn(),
     };
     globalThis.localStorage = createLocalStorage();
@@ -177,7 +202,8 @@ describe('auth fetch interceptor', () => {
 
     await fetch('/api/user/profile');
 
-    expect(originalFetch.mock.calls[0][1]).toBeUndefined();
+    expect(originalFetch.mock.calls[0][1]).toEqual({ credentials: 'same-origin' });
+    expect(authStore.handleAuthResponse).toHaveBeenCalledWith(expect.anything(), null, 1, false);
     expect(authStore.handleAuthFailure).not.toHaveBeenCalled();
     expect(authStore.token).toBe('new-token');
     expect(globalThis.localStorage.getItem('authToken')).toBe('new-token');

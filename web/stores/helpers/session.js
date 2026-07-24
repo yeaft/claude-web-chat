@@ -355,15 +355,11 @@ export function listHistorySessionsForAgent(store, agentId, workDir, provider) {
 
 export async function loadGlobalSessions(store, limit = 20) {
   const authStore = useAuthStore();
-  if (!authStore.token) return;
+  if (!authStore.isAuthenticated) return;
 
   store.globalSessionsLoading = true;
   try {
-    const response = await fetch(`/api/sessions?limit=${limit}`, {
-      headers: {
-        'Authorization': `Bearer ${authStore.token}`
-      }
-    });
+    const response = await fetch(`/api/sessions?limit=${limit}`);
     if (response.ok) {
       const data = await response.json();
       store.globalSessions = data.sessions || [];
@@ -377,14 +373,11 @@ export async function loadGlobalSessions(store, limit = 20) {
 
 export async function deleteGlobalSession(store, sessionId) {
   const authStore = useAuthStore();
-  if (!authStore.token) return false;
+  if (!authStore.isAuthenticated) return false;
 
   try {
     const response = await fetch(`/api/sessions/${sessionId}`, {
-      method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${authStore.token}`
-      }
+      method: 'DELETE'
     });
     if (response.ok) {
       store.globalSessions = store.globalSessions.filter(s => s.id !== sessionId);
