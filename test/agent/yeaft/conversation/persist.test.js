@@ -113,6 +113,27 @@ Hello`;
     expect(msg.content).toBe('Hello');
   });
 
+  it('round-trips model-only user provenance while legacy rows remain unmarked', () => {
+    const store = new ConversationStore(TEST_DIR);
+    const legacy = store.append({ role: 'user', content: 'legacy user', sessionId: 'session_provenance' });
+    const synthetic = store.append({
+      role: 'user',
+      content: 'Continue',
+      sessionId: 'session_provenance',
+      userAuthored: false,
+    });
+
+    const restarted = new ConversationStore(TEST_DIR);
+    const rows = restarted.loadAllBySession('session_provenance');
+    expect(rows).toEqual([
+      expect.objectContaining({ id: legacy.id }),
+      expect.objectContaining({ id: synthetic.id, userAuthored: false }),
+    ]);
+    expect(Object.hasOwn(rows[0], 'userAuthored')).toBe(false);
+    expect(restarted.loadVisibleBySession('session_provenance', null, 10).messages)
+      .toEqual([expect.objectContaining({ id: legacy.id, content: 'legacy user' })]);
+  });
+
   it('round-trips image asset metadata without embedding image bytes', () => {
     const store = new ConversationStore(TEST_DIR);
     const written = store.append({
@@ -598,6 +619,7 @@ legacy session`, { encoding: 'utf8' });
       });
       store.append({ role: 'assistant', content: 'first answer', sessionId: 'session_outline', speakerVpId: 'maker' });
       store.append({ role: 'system', content: 'hidden row', sessionId: 'session_outline' });
+      store.append({ role: 'user', content: 'engine reflection', sessionId: 'session_outline', userAuthored: false });
       store.append({ role: 'user', content: 'second question', sessionId: 'session_outline' });
       const latest = store.append({ role: 'assistant', content: 'second answer', sessionId: 'session_outline' });
 
@@ -610,6 +632,8 @@ legacy session`, { encoding: 'utf8' });
         expect.any(String), latest.id,
       ]);
       expect(firstPage).toMatchObject({ hasMore: true, totalCount: 4 });
+      expect([...firstPage.results, ...olderPage.results].map(result => result.snippet))
+        .not.toContain('engine reflection');
       expect(olderPage.results.map(result => result.messageId)).toContain(first.id);
       expect(olderPage.totalCount).toBeNull();
       expect(olderPage.results.find(result => result.messageId === first.id)).toMatchObject({
@@ -888,7 +912,7 @@ legacy session`, { encoding: 'utf8' });
       expect(store.loadRecentBySession('grp_a', 2).map(m => m.content)).toEqual(['A2', 'A3']);
     });
 
-    it('loadAfterSeqByGroup skips internal route_forward handoff rows', () => {
+    it('loadAfterSeqByGroup skips internal and model-only user-role rows', () => {
       const first = store.append({ role: 'user', content: 'real user', sessionId: 'grp_a' });
       store.append({
         role: 'assistant',
@@ -897,6 +921,7 @@ legacy session`, { encoding: 'utf8' });
         speakerVpId: 'vp-linus',
         internal: true,
       });
+      store.append({ role: 'user', content: 'Continue', sessionId: 'grp_a', userAuthored: false });
       store.append({ role: 'assistant', content: 'target response', sessionId: 'grp_a', speakerVpId: 'vp-martin' });
 
       const page = store.loadAfterSeqByGroup('grp_a', Number(first.id.replace(/^m/, '')));

@@ -23,7 +23,7 @@ import { isPermissionError } from '../init.js';
 import { writeAtomic } from '../storage/atomic.js';
 import { pairSanitize } from '../pair-sanitize.js';
 import { sliceLastNTurns, stripVpMentionPrefix } from '../turn-utils.js';
-import { isHiddenConversationRow } from './internal-control.js';
+import { isHiddenConversationRow, isVisibleConversationRow } from './internal-control.js';
 
 /**
  * Default cold-start "recent window" size, expressed in TURNS (not raw
@@ -317,6 +317,7 @@ export function projectVisibleSessionMessages(messages) {
   const visible = [];
   for (const row of rows) {
     if (!row || (row.role !== 'user' && row.role !== 'assistant')) continue;
+    if (!isVisibleConversationRow(row)) continue;
     if (row.role !== 'assistant' || !Array.isArray(row.toolCalls) || row.toolCalls.length === 0) {
       if (row.role === 'assistant' && !row.content && !row.attachments && !row.images
           && !row.toolSummaryCount && !row.askUserResults) continue;
@@ -385,6 +386,7 @@ function serializeMessage(msg) {
   if (msg.sessionId) fm.push(`sessionId: ${msg.sessionId}`);
   if (msg.chatId) fm.push(`chatId: ${msg.chatId}`);
   if (msg.clientMessageId) fm.push(`clientMessageId: ${msg.clientMessageId}`);
+  if (typeof msg.userAuthored === 'boolean') fm.push(`userAuthored: ${msg.userAuthored}`);
   if (msg.incomplete) fm.push('incomplete: true');
   if (msg.stopReason) fm.push(`stopReason: ${msg.stopReason}`);
   // Session attribution: when a VP authors an assistant turn (either
@@ -516,6 +518,7 @@ export function parseMessage(raw) {
       case 'sessionId': msg.sessionId = value; break;
       case 'chatId': msg.chatId = value; break;
       case 'clientMessageId': msg.clientMessageId = value; break;
+      case 'userAuthored': msg.userAuthored = value === 'true'; break;
       case 'incomplete': msg.incomplete = value === 'true'; break;
       case 'stopReason': msg.stopReason = value; break;
       case 'speakerVpId': msg.speakerVpId = value; break;
@@ -1524,7 +1527,7 @@ export class ConversationStore {
     if (!sessionId) return { messages: [], oldestSeq: null, hasMore: false };
     const cutoff = Number.isFinite(beforeSeq) ? beforeSeq : Infinity;
     const prefix = this.#readSessionRows(sessionId, { beforeSeq: cutoff })
-      .filter(m => m && m.sessionId === sessionId && !isHiddenConversationRow(m));
+      .filter(m => m && m.sessionId === sessionId && isVisibleConversationRow(m));
     if (prefix.length === 0) return { messages: [], oldestSeq: null, hasMore: false };
     const sliced = pairSanitize(sliceLastNTurns(prefix, turnsLimit));
     // Turn-based hasMore: there's an EARLIER turn boundary we didn't keep.
@@ -1563,6 +1566,7 @@ export class ConversationStore {
       beforeSeq: cutoff,
       roles: null,
       stripAssistantToolCalls: false,
+      visibleOnly: true,
     });
     const messages = projectVisibleSessionMessages(page.messages);
     if (messages.length === 0) return { messages: [], oldestSeq: null, hasMore: page.truncated };
@@ -1638,7 +1642,7 @@ export class ConversationStore {
     for (const m of this.#iterateSessionRows(sessionId, { afterSeq: cutoff, desc: false })) {
       if (!m || m.sessionId !== sessionId) continue;
       const seq = parseSeqFromId(m.id);
-      const hidden = isHiddenConversationRow(m);
+      const hidden = !isVisibleConversationRow(m);
       if (!hidden) {
         // Keep every outstanding call open across interleaved VP rows. Session
         // persistence is globally sequenced, so a sibling VP may append visible
@@ -1794,13 +1798,14 @@ export class ConversationStore {
       beforeSeq: anchorSeq + 1,
       roles: null,
       stripAssistantToolCalls: false,
+      visibleOnly: true,
     });
     const messages = beforeRaw.messages.slice();
     const seen = new Set(messages.map(message => message?.id).filter(Boolean));
     let followingUserTurns = 0;
 
     for (const message of this.#iterateSessionRows(sessionId, { afterSeq: anchorSeq, desc: false })) {
-      if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) continue;
+      if (!message || message.sessionId !== sessionId || !isVisibleConversationRow(message)) continue;
       if (message.role === 'user') {
         followingUserTurns += 1;
         if (followingUserTurns > afterTurns) break;
@@ -2452,6 +2457,7 @@ export class ConversationStore {
     roles = null,
     stripAssistantToolCalls = false,
     includeReflections = false,
+    visibleOnly = false,
   } = {}) {
     const kept = [];
     const pendingBoundaryRows = [];
@@ -2498,7 +2504,9 @@ export class ConversationStore {
       if (!m || m.sessionId !== sessionId) continue;
 
       const boundaryComplete = turnsFromEnd >= turnsLimit;
-      if (isHiddenConversationRow(m) && !(includeReflections && m._reflection === true)) {
+      const hidden = isHiddenConversationRow(m)
+        || (visibleOnly && !isVisibleConversationRow(m));
+      if (hidden && !(includeReflections && m._reflection === true)) {
         if (boundaryComplete) {
           truncated = true;
           break;
@@ -2551,7 +2559,7 @@ export class ConversationStore {
     let current = null;
 
     const visibleRow = (message) => {
-      if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) return null;
+      if (!message || message.sessionId !== sessionId || !isVisibleConversationRow(message)) return null;
       if (message.role !== 'user' && message.role !== 'assistant') return null;
       if (!message.id || seen.has(message.id)) return null;
       seen.add(message.id);

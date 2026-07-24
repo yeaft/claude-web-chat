@@ -794,6 +794,7 @@ describe('per-session running state', () => {
       turnId: 'turn-a',
       data: {
         type: 'user',
+        userAuthored: false,
         tool_use_result: [{ type: 'tool_result', tool_use_id: 'spawn-1', content: 'Started background task task-1.' }],
       },
     });
@@ -804,6 +805,7 @@ describe('per-session running state', () => {
       turnId: 'turn-a',
       data: {
         type: 'user',
+        userAuthored: false,
         tool_use_result: [{ type: 'tool_result', tool_use_id: 'spawn-1', content: '<task-result id="task-1">done</task-result>', is_update: true }],
       },
     });
@@ -813,6 +815,25 @@ describe('per-session running state', () => {
     expect(tools[0]).toMatchObject({ toolId: 'spawn-1', toolName: 'SpawnAgent', hasResult: true });
     expect(tools[0].toolResult).toContain('Started background task task-1.');
     expect(tools[0].toolResult).toContain('<task-result id="task-1">done</task-result>');
+    expect(store.messagesMap['yeaft-conv'].filter(msg => msg.type === 'user')).toEqual([]);
+  });
+
+  it('never renders a model-only user-role frame as a user message', () => {
+    const store = freshStore();
+    store.yeaftConversationId = 'yeaft-conv';
+    store.currentView = 'yeaft';
+
+    store.handleYeaftOutput({
+      conversationId: 'yeaft-conv',
+      sessionId: 'session-a',
+      data: {
+        type: 'user',
+        userAuthored: false,
+        message: { content: 'synthetic reflection content' },
+      },
+    });
+
+    expect(store.messagesMap['yeaft-conv']).toEqual([]);
   });
 
   it('sorts running tasks before recent terminal task snapshots', () => {

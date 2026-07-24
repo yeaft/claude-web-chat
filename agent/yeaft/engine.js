@@ -1401,6 +1401,8 @@ export class Engine {
     if (message.isError) record.isError = true;
     if (message.imageAssetAnchor) record.imageAssetAnchor = true;
     if (message._reflection) record._reflection = true;
+    if (message.role === 'user') record.userAuthored = message.userAuthored === true;
+    if (message.internal === true) record.internal = true;
     if (Array.isArray(message.foldedMessageIds) && message.foldedMessageIds.length > 0) {
       record.foldedMessageIds = [...message.foldedMessageIds];
     }
@@ -1702,7 +1704,11 @@ export class Engine {
 
   #persistAppendedUserMessage(item, sessionId) {
     if (!item || item.persisted || item.internal) return;
-    this.#persistConversationMessage({ role: 'user', content: item.content }, { sessionId });
+    this.#persistConversationMessage({
+      role: 'user',
+      content: item.content,
+      userAuthored: true,
+    }, { sessionId });
     item.persisted = true;
   }
 
@@ -1912,7 +1918,7 @@ export class Engine {
     // already writes one shared user row before multi-VP fan-out, so those
     // callers set userAlreadyPersisted and every VP skips this append.
     if (!userAlreadyPersisted) {
-      this.#persistConversationMessage({ role: 'user', content: prompt }, {
+      this.#persistConversationMessage({ role: 'user', content: prompt, userAuthored: true }, {
         sessionId: runtimeSessionId,
       });
     }

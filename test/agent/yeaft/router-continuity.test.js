@@ -3,7 +3,7 @@ import { stripMetaForWire } from '../../../agent/yeaft/router/continuity.js';
 
 describe('router continuity metadata', () => {
   it('strips engine-private metadata before provider wire payloads', () => {
-    const clean = { role: 'user', content: 'hello' };
+    const clean = { role: 'user', content: 'hello', userAuthored: true };
     const dirty = {
       role: 'assistant',
       content: 'tool result kept',
@@ -17,7 +17,8 @@ describe('router continuity metadata', () => {
     const out = stripMetaForWire(messages);
 
     expect(out).not.toBe(messages);
-    expect(out[0]).toBe(clean);
+    expect(out[0]).toEqual({ role: 'user', content: 'hello' });
+    expect(out[0]).not.toBe(clean);
     expect(out[1]).toEqual({
       role: 'assistant',
       content: 'tool result kept',
