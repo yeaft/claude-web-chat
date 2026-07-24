@@ -6,8 +6,6 @@
  * Pure presentational: emits `update:modelValue` like v-model. Closes on
  * outside-click / Escape. Falls back gracefully to keyboard arrow navigation.
  */
-const { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } = Vue;
-
 export default {
   name: 'ModernSelect',
   props: {
@@ -18,18 +16,19 @@ export default {
     disabled: { type: Boolean, default: false },
     loading: { type: Boolean, default: false },
     emptyText: { type: String, default: '—' },
+    ariaLabel: { type: String, default: '' },
   },
   emits: ['update:modelValue', 'change'],
   setup(props, { emit }) {
-    const open = ref(false);
-    const search = ref('');
-    const triggerEl = ref(null);
-    const menuEl = ref(null);
-    const searchEl = ref(null);
-    const activeIdx = ref(-1);
+    const open = Vue.ref(false);
+    const search = Vue.ref('');
+    const triggerEl = Vue.ref(null);
+    const menuEl = Vue.ref(null);
+    const searchEl = Vue.ref(null);
+    const activeIdx = Vue.ref(-1);
 
-    const selected = computed(() => props.options.find(o => o.value === props.modelValue) || null);
-    const filtered = computed(() => {
+    const selected = Vue.computed(() => props.options.find(o => o.value === props.modelValue) || null);
+    const filtered = Vue.computed(() => {
       if (!props.searchable || !search.value.trim()) return props.options;
       const q = search.value.trim().toLowerCase();
       return props.options.filter(o =>
@@ -45,7 +44,7 @@ export default {
       if (open.value) {
         search.value = '';
         activeIdx.value = filtered.value.findIndex(o => o.value === props.modelValue);
-        nextTick(() => {
+        Vue.nextTick(() => {
           if (props.searchable && searchEl.value && searchEl.value.focus) searchEl.value.focus();
           if (menuEl.value) {
             const el = menuEl.value.querySelector('.modern-select-option.is-active');
@@ -80,9 +79,9 @@ export default {
       if (menuEl.value && menuEl.value.contains(e.target)) return;
       close();
     }
-    onMounted(() => document.addEventListener('mousedown', onDocClick));
-    onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick));
-    watch(() => props.modelValue, () => { /* re-sync handled by computed */ });
+    Vue.onMounted(() => document.addEventListener('mousedown', onDocClick));
+    Vue.onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick));
+    Vue.watch(() => props.modelValue, () => { /* re-sync handled by computed */ });
 
     return { open, search, triggerEl, menuEl, searchEl, activeIdx, selected, filtered, toggle, close, pick, onKey };
   },
@@ -93,6 +92,9 @@ export default {
         class="modern-select-trigger"
         ref="triggerEl"
         :disabled="disabled"
+        :aria-label="ariaLabel || undefined"
+        aria-haspopup="listbox"
+        :aria-expanded="open ? 'true' : 'false'"
         @click="toggle"
         @keydown="onKey"
       >
@@ -125,6 +127,7 @@ export default {
               class="modern-select-option"
               :class="{ 'is-active': i === activeIdx, 'is-selected': opt.value === modelValue }"
               role="option"
+              :aria-selected="opt.value === modelValue ? 'true' : 'false'"
               @mouseenter="activeIdx = i"
               @click="pick(opt)"
             >

@@ -890,13 +890,27 @@
   width: auto;
   min-width: 112px;
   max-width: 148px;
-  height: 40px;
   flex: 0 1 auto;
-  padding-block: 0;
-  padding-inline: 10px 28px;
-  color: var(--text-secondary);
   font-size: 12px;
-  text-overflow: ellipsis;
+}
+
+.yeaft-conversation-outline-sender .modern-select-trigger {
+  height: 40px;
+  min-height: 40px;
+  padding: 0 8px 0 10px;
+  color: var(--text-secondary);
+}
+
+.yeaft-conversation-outline-sender .modern-select-menu {
+  right: 0;
+  left: auto;
+  width: max(100%, 180px);
+  box-shadow: var(--modal-shadow);
+}
+
+.yeaft-conversation-outline-sender .modern-select-option {
+  min-height: 34px;
+  padding: 8px 30px 8px 10px;
 }
 
 .yeaft-conversation-outline-status {

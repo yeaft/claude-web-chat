@@ -1,3 +1,5 @@
+import ModernSelect from './ModernSelect.js';
+
 function parseHistoryTime(value) {
   const timestamp = typeof value === 'number' ? value : Date.parse(value || '');
   return Number.isFinite(timestamp) ? timestamp : null;
@@ -33,6 +35,7 @@ export function sortHistoryResultsNewest(results) {
 
 export default {
   name: 'YeaftConversationOutline',
+  components: { ModernSelect },
   props: {
     outlineState: { type: Object, required: true },
     searchState: { type: Object, required: true },
@@ -40,6 +43,14 @@ export default {
     activeMessageId: { type: String, default: null },
   },
   emits: ['query', 'sender', 'sender-invalid', 'select', 'move', 'preview', 'load-older', 'load-more-search', 'close'],
+  computed: {
+    senderSelectOptions() {
+      return [
+        { value: '', label: this.$t('yeaft.outline.allSenders') },
+        ...this.senderOptions.map(option => ({ value: option.key, label: option.label })),
+      ];
+    },
+  },
   template: `
     <section id="yeaft-conversation-outline" class="yeaft-conversation-outline" :aria-label="$t('yeaft.outline.label')">
       <div class="yeaft-conversation-outline-header">
@@ -63,15 +74,13 @@ export default {
           />
           <span v-if="searchState.loading" class="yeaft-conversation-outline-status">{{ $t('yeaft.outline.searching') }}</span>
         </div>
-        <select
+        <ModernSelect
           class="yeaft-conversation-outline-sender"
-          :value="searchState.senderKey || ''"
+          :model-value="searchState.senderKey || ''"
+          :options="senderSelectOptions"
           :aria-label="$t('yeaft.outline.sender')"
-          @change="$emit('sender', $event.target.value)"
-        >
-          <option value="">{{ $t('yeaft.outline.allSenders') }}</option>
-          <option v-for="option in senderOptions" :key="option.key" :value="option.key">{{ option.label }}</option>
-        </select>
+          @change="$emit('sender', $event)"
+        />
       </div>
       <div
         ref="listRef"
