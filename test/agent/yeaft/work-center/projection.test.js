@@ -1330,6 +1330,32 @@ describe('Work Center event projection', () => {
     expect(elapsedMs).toBeLessThan(1_000);
   });
 
+  it.each([
+    ['model', loop => { loop.model = 'm'.repeat(MAX_ACTION_REQUEST_DETAIL_BYTES + 1); }],
+    ['usage key', loop => { loop.usage = { ['u'.repeat(MAX_ACTION_REQUEST_DETAIL_BYTES + 1)]: 1 }; }],
+    ['tool name', loop => { loop.toolCalls = [{ id: 'tool-1', name: 't'.repeat(MAX_ACTION_REQUEST_DETAIL_BYTES + 1) }]; }],
+  ])('keeps a bounded latest Loop summary when %s metadata exceeds the request budget', (_label, mutate) => {
+    const detail = internalDetail();
+    const loop = {
+      loopInstanceId: 'loop-extreme', loopNumber: 9, model: 'provider/review',
+      messages: [{ role: 'user', content: 'x'.repeat(MAX_ACTION_REQUEST_DETAIL_BYTES + 1) }],
+      response: 'diagnostic response', usage: { totalTokens: 42 }, latencyMs: 250,
+      stopReason: 'tool_use', toolCalls: [],
+    };
+    mutate(loop);
+    const projected = projectActionRequestDetail(detail.actions[0], detail.runs[0], {
+      turns: [{ turnId: 'request-extreme-metadata', tools: [] }], loops: [loop],
+    });
+
+    expect(projected.request).toMatchObject({
+      loopCount: 1, truncated: true, omittedLoopCount: 0, summarizedLoopCount: 1,
+    });
+    expect(projected.request.loops).toHaveLength(1);
+    expect(projected.request.loops[0]).toMatchObject({ loopNumber: 9, detailTruncated: true });
+    expect(Buffer.byteLength(JSON.stringify(projected), 'utf8'))
+      .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
+  });
+
   it('keeps diagnostic Loop summaries when cumulative message history exceeds the request budget', () => {
     const detail = internalDetail();
     const action = detail.actions[0];

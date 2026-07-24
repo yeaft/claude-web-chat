@@ -189,6 +189,25 @@ describe('Work Center Action detail tabs', () => {
     expect(wrapper.get('.work-center-request-detail').text()).toContain('This request has no retained loop details.');
   });
 
+  it('explains when every Loop was omitted by the detail budget', async () => {
+    const request = { id: 'request-omitted', runId: 'run-1', model: 'model-1' };
+    const wrapper = mountDetail({
+      requests: [request],
+      requestDetails: {
+        'run-1:request-omitted': { request: {
+          id: 'request-omitted', runId: 'run-1', truncated: true,
+          summarizedLoopCount: 0, omittedLoopCount: 1, loops: [],
+        } },
+      },
+    });
+
+    await wrapper.get('#work-center-action-requests-tab').trigger('click');
+    await wrapper.get('.work-center-request-summary').trigger('click');
+    expect(wrapper.get('.work-center-request-detail > .work-center-action-notice').text())
+      .toBe('workCenter.requestDetailTruncated');
+    expect(wrapper.find('.work-center-action-empty').exists()).toBe(false);
+  });
+
   it('renders retained Loop summaries with explicit truncation notices', async () => {
     const request = { id: 'request-large', runId: 'run-1', model: 'model-1' };
     const wrapper = mountDetail({

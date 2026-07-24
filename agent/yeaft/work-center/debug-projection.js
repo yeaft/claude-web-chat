@@ -260,21 +260,59 @@ function boundedDebugInputBytes(value, maxBytes) {
   return bytes > maxBytes ? maxBytes + 1 : bytes;
 }
 
+const MAX_ACTION_REQUEST_SUMMARY_ID_BYTES = 256;
+const MAX_ACTION_REQUEST_SUMMARY_NAME_BYTES = 512;
+const MAX_ACTION_REQUEST_SUMMARY_MODEL_BYTES = 1_024;
+const MAX_ACTION_REQUEST_SUMMARY_STOP_REASON_BYTES = 256;
+
+function summaryString(value, maxBytes, fallback = null) {
+  if (typeof value !== 'string' || !value) return fallback;
+  return truncateUtf8(value, maxBytes);
+}
+
+function summaryUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  return {
+    inputTokens: Math.max(0, Number(usage.inputTokens) || 0),
+    outputTokens: Math.max(0, Number(usage.outputTokens) || 0),
+    cacheReadTokens: Math.max(0, Number(usage.cacheReadTokens) || 0),
+    cacheWriteTokens: Math.max(0, Number(usage.cacheWriteTokens) || 0),
+    totalInputTokens: Math.max(0, Number(usage.totalInputTokens) || 0),
+    totalTokens: Math.max(0, Number(usage.totalTokens) || 0),
+  };
+}
+
+function minimalActionRequestLoopSummary(loop) {
+  return {
+    loopInstanceId: null,
+    loopNumber: Number(loop?.loopNumber) || 0,
+    model: null,
+    response: '',
+    usage: null,
+    latencyMs: 0,
+    ttfbMs: null,
+    stopReason: null,
+    at: 0,
+    toolCalls: [],
+    detailTruncated: true,
+  };
+}
+
 function actionRequestLoopSummary(loop) {
   const toolCalls = Array.isArray(loop?.toolCalls) ? loop.toolCalls : [];
   return {
-    loopInstanceId: loop?.loopInstanceId || null,
+    loopInstanceId: summaryString(loop?.loopInstanceId, MAX_ACTION_REQUEST_SUMMARY_ID_BYTES),
     loopNumber: Number(loop?.loopNumber) || 0,
-    model: loop?.model || null,
+    model: summaryString(loop?.model, MAX_ACTION_REQUEST_SUMMARY_MODEL_BYTES),
     response: typeof loop?.response === 'string' ? truncateUtf8(loop.response, 8 * 1024) : '',
-    usage: loop?.usage || null,
-    latencyMs: Number(loop?.latencyMs) || 0,
-    ttfbMs: loop?.ttfbMs == null ? null : Number(loop.ttfbMs) || 0,
-    stopReason: loop?.stopReason || null,
-    at: Number(loop?.at) || 0,
+    usage: summaryUsage(loop?.usage),
+    latencyMs: Math.max(0, Number(loop?.latencyMs) || 0),
+    ttfbMs: loop?.ttfbMs == null ? null : Math.max(0, Number(loop.ttfbMs) || 0),
+    stopReason: summaryString(loop?.stopReason, MAX_ACTION_REQUEST_SUMMARY_STOP_REASON_BYTES),
+    at: Math.max(0, Number(loop?.at) || 0),
     toolCalls: toolCalls.slice(0, MAX_DEBUG_ARRAY_ITEMS).map(call => ({
-      id: call?.id || null,
-      name: call?.name || '?',
+      id: summaryString(call?.id, MAX_ACTION_REQUEST_SUMMARY_ID_BYTES),
+      name: summaryString(call?.name, MAX_ACTION_REQUEST_SUMMARY_NAME_BYTES, '?'),
       input: null,
     })),
     detailTruncated: true,
@@ -284,9 +322,9 @@ function actionRequestLoopSummary(loop) {
 function actionRequestToolSummary(tool) {
   return {
     loopNumber: Number(tool?.loopNumber) || 0,
-    callId: tool?.callId || null,
-    name: tool?.name || '?',
-    durationMs: Number(tool?.durationMs) || 0,
+    callId: summaryString(tool?.callId, MAX_ACTION_REQUEST_SUMMARY_ID_BYTES),
+    name: summaryString(tool?.name, MAX_ACTION_REQUEST_SUMMARY_NAME_BYTES, '?'),
+    durationMs: Math.max(0, Number(tool?.durationMs) || 0),
     isError: tool?.isError === true,
     toolOutput: null,
   };
@@ -320,6 +358,11 @@ export function limitActionRequestDebugInput(loopValues, toolValues) {
       loop = actionRequestLoopSummary(sourceLoop);
       loopTools = sourceLoopTools.map(actionRequestToolSummary);
       inputBytes = boundedDebugInputBytes({ loop, tools: loopTools }, remainingBytes);
+      if (inputBytes > remainingBytes && loops.length === 0) {
+        loop = minimalActionRequestLoopSummary(sourceLoop);
+        loopTools = [];
+        inputBytes = boundedDebugInputBytes({ loop, tools: loopTools }, remainingBytes);
+      }
       if (inputBytes > remainingBytes) continue;
       summarizedLoopCount += 1;
     }
