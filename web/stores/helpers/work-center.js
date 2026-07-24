@@ -24,6 +24,11 @@ function numberOrNull(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function positiveIntegerOrNull(value) {
+  const number = numberOrNull(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
 const TERMINAL_ACTION_MESSAGE_STATUSES = new Set([
   'completed',
   'failed',
@@ -69,6 +74,15 @@ export function mergeActionMessages(...sources) {
     || String(left.id || '').localeCompare(String(right.id || '')));
 }
 
+export function normalizeWorkCenterActionGeneration(value) {
+  const generation = Number(value);
+  return Number.isInteger(generation) && generation > 0 ? generation : 1;
+}
+
+export function workCenterActionMessageKey(agentId, workItemId, actionId, generation) {
+  return `${agentId}:${workItemId}:${actionId}:${normalizeWorkCenterActionGeneration(generation)}`;
+}
+
 export function isWorkItemSummaryStale(summary, current) {
   if (!summary || !current || summary.id !== current.id) return false;
   const summaryRevision = numberOrNull(summary.revision);
@@ -100,8 +114,15 @@ function isActionProgressStale(currentStats, nextStats) {
 
 export function workItemDetailNeedsRefresh(current, summary) {
   if (!current || current.id !== summary?.id || !summary.currentActionId) return false;
-  return !Array.isArray(current.actions)
-    || !current.actions.some(action => action?.id === summary.currentActionId);
+  if (!Array.isArray(current.actions)) return true;
+  const currentAction = current.actions.find(action => action?.id === summary.currentActionId);
+  if (!currentAction) return true;
+  const summaryAction = (Array.isArray(summary.actionStats) ? summary.actionStats : [])
+    .find(action => action?.id === summary.currentActionId) || summary.currentAction;
+  const currentGeneration = positiveIntegerOrNull(currentAction.generation);
+  const summaryGeneration = positiveIntegerOrNull(summaryAction?.generation);
+  return currentGeneration != null && summaryGeneration != null
+    && summaryGeneration > currentGeneration;
 }
 
 const PROGRESS_BOUND_SUMMARY_FIELDS = new Set([
@@ -136,6 +157,26 @@ export function mergeWorkItemSummary(current, summary) {
       if (isActionProgressStale(action, stats)) {
         aggregateAccepted = false;
         return action;
+      }
+      const currentGeneration = positiveIntegerOrNull(action?.generation);
+      const nextGeneration = positiveIntegerOrNull(stats?.generation);
+      if (currentGeneration != null && nextGeneration != null && nextGeneration < currentGeneration) {
+        aggregateAccepted = false;
+        return action;
+      }
+      if (currentGeneration != null && nextGeneration != null && nextGeneration > currentGeneration) {
+        const {
+          messages: _messages,
+          thread: _thread,
+          liveMessage: _liveMessage,
+          response: _response,
+          failure: _failure,
+          messageCursor: _messageCursor,
+          messageCount: _messageCount,
+          failureReason: _failureReason,
+          ...generationIndependent
+        } = action;
+        return { ...generationIndependent, ...stats };
       }
       return { ...action, ...stats };
     });

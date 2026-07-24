@@ -50,6 +50,7 @@ function projectCurrentActionSummary(action, projectedAction = action) {
     id: projectedAction.id,
     type: projectedAction.type,
     stageId: projectedAction.stageId,
+    generation: actionGeneration(projectedAction.generation),
     assignmentMode: projectedAction.assignmentPolicy?.mode || (projectedAction.requiredRole ? 'fixed' : null),
     status: projectedAction.status,
     objective: truncateUtf8(action?.brief?.objective, 1_000) || null,
@@ -652,6 +653,7 @@ function projectActionStats(detail) {
     );
     const stats = {
       id: projected.id,
+      generation: actionGeneration(projected.generation),
       status: projected.status,
       assignedVp: projected.assignedVp,
       contentSummary: projected.contentSummary,

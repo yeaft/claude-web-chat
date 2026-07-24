@@ -10,6 +10,7 @@ import { resolvePlanningWorkflowSnapshot } from '../../../../agent/yeaft/work-ce
 import {
   projectActionRequestDetail,
   projectActionRequestIndex,
+  projectWorkCenterEvent,
   projectWorkItemDetail,
 } from '../../../../agent/yeaft/work-center/projection.js';
 
@@ -127,9 +128,9 @@ describe('Work Center core', () => {
     expect(store.getWorkItem(item.id).status).toBe('running');
   });
 
-  it('keeps a graph failed while another Action submits late success', () => {
+  it('keeps a graph failed while another Action submits late success and exposes retry generation in browser events', () => {
     const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
-    controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const item = controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
     const triage = store.claimReadyAction('boot-a', 5_000);
     controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
       plan: { workItemType: 'parallel-failure', actions: [
@@ -149,6 +150,25 @@ describe('Work Center core', () => {
     expect(progressed.actions.find(action => action.stageId === 'right')).toMatchObject({ status: 'completed' });
     expect(store.getWorkItem(failed.id)).toMatchObject({
       status: 'needs_attention', lifecycle: 'active', attentionState: 'failed',
+    });
+
+    const failedAction = failed.actions.find(action => action.id === left.action.id);
+    const retried = controller.retry(item.id, {
+      expected: {
+        actionId: failedAction.id,
+        generation: failedAction.generation,
+        revision: failed.revision,
+        statuses: ['failed'],
+      },
+    });
+    const retriedAction = retried.actions.find(action => action.id === failedAction.id);
+    const event = projectWorkCenterEvent({ type: 'action.retried', workItem: retried });
+    expect(retriedAction.generation).toBe(failedAction.generation + 1);
+    expect(event.workItem.currentAction).toMatchObject({
+      id: failedAction.id, generation: retriedAction.generation,
+    });
+    expect(event.workItem.actionStats.find(action => action.id === failedAction.id)).toMatchObject({
+      generation: retriedAction.generation,
     });
   });
 

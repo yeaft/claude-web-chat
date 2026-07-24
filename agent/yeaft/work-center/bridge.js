@@ -33,7 +33,7 @@ const BROWSER_FILE_FIELDS = Object.freeze({
   retry_action: ['id', 'actionId', 'revision', 'generation'],
   delete: ['id', 'revision'],
   guide: ['id', 'guidance', 'actionId', 'revision', 'generation', 'files'],
-  get_action_messages: ['id', 'actionId', 'cursor', 'limit'],
+  get_action_messages: ['id', 'actionId', 'generation', 'cursor', 'limit'],
   get_action_requests: ['id', 'actionId'],
   get_action_request: ['id', 'actionId', 'runId', 'requestId'],
 });

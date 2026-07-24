@@ -3,7 +3,7 @@ import WorkCenterSettingsModal from './WorkCenterSettingsModal.js';
 import LlmTab from './LlmTab.js';
 import folderPickerMixin from './mixins/folder-picker-mixin.js';
 import { openImagePreview } from '../utils/imagePreview.js';
-import { mergeActionMessages } from '../stores/helpers/work-center.js';
+import { mergeActionMessages, workCenterActionMessageKey } from '../stores/helpers/work-center.js';
 import { workCenterRequestKey } from '../utils/work-center-request-key.js';
 import {
   clearOverlayPointerGesture,
@@ -117,6 +117,16 @@ export default {
         ? `${this.agentId}:${this.selected.id}:${this.selectedAction.id}`
         : '';
     },
+    actionMessageKey() {
+      return this.selected?.id && this.selectedAction?.id
+        ? workCenterActionMessageKey(
+          this.agentId,
+          this.selected.id,
+          this.selectedAction.id,
+          this.selectedAction.generation,
+        )
+        : '';
+    },
     actionComposerScope() {
       return this.selected?.id && this.selectedAction?.id
         ? `${this.agentId}:${this.selected.id}:${this.selectedAction.id}:${this.actionComposerGeneration}`
@@ -129,7 +139,7 @@ export default {
     },
     actionMessages() {
       const current = Array.isArray(this.selectedAction?.messages) ? this.selectedAction.messages : [];
-      const earlier = this.store.workCenterActionMessages[this.actionRequestKey]?.messages || [];
+      const earlier = this.store.workCenterActionMessages[this.actionMessageKey]?.messages || [];
       const persisted = mergeActionMessages(earlier, current);
       const live = this.selectedAction?.liveMessage;
       const visibleLive = live?.status === 'running'
@@ -141,14 +151,14 @@ export default {
       return mergeActionMessages(persisted, visibleLive);
     },
     actionMessagesNextCursor() {
-      const page = this.store.workCenterActionMessages[this.actionRequestKey];
+      const page = this.store.workCenterActionMessages[this.actionMessageKey];
       return page ? page.nextCursor : this.selectedAction?.messageCursor;
     },
     actionMessagesLoading() {
-      return !!this.store.workCenterActionMessagesLoading[this.actionRequestKey];
+      return !!this.store.workCenterActionMessagesLoading[this.actionMessageKey];
     },
     actionMessagesError() {
-      return this.store.workCenterActionMessagesError[this.actionRequestKey] || '';
+      return this.store.workCenterActionMessagesError[this.actionMessageKey] || '';
     },
     orderedActions() {
       const actions = Array.isArray(this.selected?.actions) ? this.selected.actions : [];
@@ -450,11 +460,17 @@ export default {
     },
     loadLatestActionMessages(action = this.selectedAction) {
       if (!this.selected?.id || !action?.id || Array.isArray(action.messages)) return null;
-      const key = `${this.agentId}:${this.selected.id}:${action.id}`;
+      const key = workCenterActionMessageKey(
+        this.agentId,
+        this.selected.id,
+        action.id,
+        action.generation,
+      );
       if (this.store.workCenterActionMessages[key]) return null;
       return this.store.loadWorkItemActionMessages(
         this.selected.id,
         action.id,
+        action.generation,
         null,
         this.agentId,
       ).catch(() => null);
@@ -470,6 +486,7 @@ export default {
       return this.store.loadWorkItemActionMessages(
         this.selected.id,
         this.selectedAction.id,
+        this.selectedAction.generation,
         this.actionMessagesNextCursor,
         this.agentId,
       ).catch(() => null);
@@ -936,12 +953,6 @@ export default {
             <button type="button" @click="showItemsPane">{{ tr('workCenter.workItems', 'Work items') }}</button>
             <span aria-hidden="true">/</span>
             <button v-if="narrowPane === 'action'" type="button" @click="showActionsPane">{{ selected.title }}</button>
-            <span v-if="narrowPane === 'action'" aria-hidden="true">/</span>
-            <span v-if="narrowPane === 'action'" class="work-center-action-breadcrumb" aria-current="page"
-                  :title="$t('workCenter.actionBreadcrumb', { number: actionSequence(selectedAction), description: actionBreadcrumbDescription(selectedAction) })">
-              <strong>{{ $t('workCenter.actionNumber', { number: actionSequence(selectedAction) }) }}</strong>
-              <span>{{ actionBreadcrumbDescription(selectedAction) }}</span>
-            </span>
             <span v-else aria-current="page">{{ selected.title }}</span>
           </nav>
 
@@ -1182,6 +1193,7 @@ export default {
               :action="selectedAction"
               :selected="selected"
               :messages="actionMessages"
+              :messages-generation="selectedAction?.generation"
               :messages-next-cursor="actionMessagesNextCursor"
               :messages-loading="actionMessagesLoading"
               :messages-error="actionMessagesError"
