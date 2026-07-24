@@ -510,7 +510,7 @@ export default {
   'message.removeQuote': '删除引用',
   'message.replyingTo': '正在回复 {author}',
   'message.quotedFrom': '引用自 {author}',
-  'message.editAsNew': '新消息',
+  'message.editAsNew': '编辑',
   'message.you': '你',
 
   // ============ Chat Input ============
