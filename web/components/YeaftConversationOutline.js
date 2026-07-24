@@ -1,7 +1,31 @@
-function formatOutlineTime(value) {
+function parseHistoryTime(value) {
   const timestamp = typeof value === 'number' ? value : Date.parse(value || '');
-  if (!Number.isFinite(timestamp)) return '';
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function formatOutlineTime(value) {
+  const timestamp = parseHistoryTime(value);
+  if (timestamp === null) return '';
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp));
+}
+
+export function sortHistoryResultsNewest(results) {
+  return (Array.isArray(results) ? results : [])
+    .map((result, index) => ({ result, index }))
+    .sort((a, b) => {
+      const aTime = parseHistoryTime(a.result?.timestamp);
+      const bTime = parseHistoryTime(b.result?.timestamp);
+      if (aTime !== null && bTime !== null && aTime !== bTime) return bTime - aTime;
+      const aSeq = Number.isFinite(a.result?.seq) ? a.result.seq : null;
+      const bSeq = Number.isFinite(b.result?.seq) ? b.result.seq : null;
+      if (aSeq !== null && bSeq !== null && aSeq !== bSeq) return bSeq - aSeq;
+      if (aTime !== null && bTime === null) return -1;
+      if (aTime === null && bTime !== null) return 1;
+      if (aSeq !== null && bSeq === null) return -1;
+      if (aSeq === null && bSeq !== null) return 1;
+      return a.index - b.index;
+    })
+    .map(({ result }) => result);
 }
 
 export default {
@@ -40,13 +64,6 @@ export default {
         role="listbox"
         @scroll="onScroll"
       >
-        <button
-          v-if="!isSearching && outlineState.hasMore"
-          type="button"
-          class="yeaft-conversation-outline-more"
-          :disabled="outlineState.loading"
-          @click="loadOlder"
-        >{{ outlineState.loading ? $t('yeaft.outline.loading') : $t('yeaft.outline.older') }}</button>
         <div v-if="errorKey" class="yeaft-conversation-outline-empty is-error">{{ $t(errorKey) }}</div>
         <div v-else-if="searchState.query.length === 1" class="yeaft-conversation-outline-empty">{{ $t('yeaft.outline.minChars') }}</div>
         <div v-else-if="!visibleResults.length && !isLoading" class="yeaft-conversation-outline-empty">{{ $t(isSearching ? 'yeaft.outline.noMatches' : 'yeaft.outline.empty') }}</div>
@@ -68,6 +85,13 @@ export default {
           <span class="yeaft-conversation-outline-snippet">{{ result.snippet || $t('yeaft.outline.nonText') }}</span>
         </button>
         <button
+          v-if="!isSearching && outlineState.hasMore"
+          type="button"
+          class="yeaft-conversation-outline-more"
+          :disabled="outlineState.loading"
+          @click="loadOlder"
+        >{{ outlineState.loading ? $t('yeaft.outline.loading') : $t('yeaft.outline.older') }}</button>
+        <button
           v-if="isSearching && searchState.hasMore"
           type="button"
           class="yeaft-conversation-outline-more"
@@ -81,7 +105,9 @@ export default {
     const inputRef = Vue.ref(null);
     const listRef = Vue.ref(null);
     const isSearching = Vue.computed(() => String(props.searchState.query || '').trim().length >= 2);
-    const visibleResults = Vue.computed(() => isSearching.value ? props.searchState.results : props.outlineState.results);
+    const visibleResults = Vue.computed(() => sortHistoryResultsNewest(
+      isSearching.value ? props.searchState.results : props.outlineState.results,
+    ));
     const isLoading = Vue.computed(() => isSearching.value ? props.searchState.loading : props.outlineState.loading);
     const countLabel = Vue.computed(() => {
       if (isSearching.value) return `${props.searchState.results.length}${props.searchState.hasMore ? '+' : ''}`;
@@ -95,7 +121,7 @@ export default {
     });
     const focus = () => Vue.nextTick(() => {
       inputRef.value?.focus?.();
-      if (!isSearching.value && listRef.value) listRef.value.scrollTop = listRef.value.scrollHeight;
+      if (listRef.value) listRef.value.scrollTop = 0;
     });
     const loadOlder = () => {
       const list = listRef.value;
@@ -106,7 +132,8 @@ export default {
     };
     const onScroll = () => {
       if (isSearching.value || props.outlineState.loading || !props.outlineState.hasMore) return;
-      if ((listRef.value?.scrollTop || 0) <= 40) loadOlder();
+      const list = listRef.value;
+      if (list && list.scrollHeight - list.scrollTop - list.clientHeight <= 40) loadOlder();
     };
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
@@ -123,15 +150,8 @@ export default {
         emit('select', visibleResults.value[props.activeIndex] || visibleResults.value[0]);
       }
     };
-    Vue.watch(() => props.outlineState.results.length, (next, previous) => {
-      if (previous !== 0 || next === 0 || isSearching.value) return;
-      Vue.nextTick(() => {
-        if (listRef.value) listRef.value.scrollTop = listRef.value.scrollHeight;
-      });
-    });
-    const restoreOlderScroll = ({ scrollHeight = 0, scrollTop = 0 } = {}) => Vue.nextTick(() => {
-      if (!listRef.value) return;
-      listRef.value.scrollTop = scrollTop + Math.max(0, listRef.value.scrollHeight - scrollHeight);
+    const restoreOlderScroll = ({ scrollTop = 0 } = {}) => Vue.nextTick(() => {
+      if (listRef.value) listRef.value.scrollTop = scrollTop;
     });
     expose({ focus, restoreOlderScroll });
     Vue.onMounted(focus);

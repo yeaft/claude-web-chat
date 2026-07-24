@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { revealOutlineResult } from '../../web/utils/message-search-navigation.js';
+import { sortHistoryResultsNewest } from '../../web/components/YeaftConversationOutline.js';
 
 const read = path => readFileSync(new URL(`../../web/${path}`, import.meta.url), 'utf8');
 const page = read('components/YeaftPage.js');
@@ -14,6 +15,8 @@ const css = read('styles/yeaft.css');
 const agent = read('../agent/index.js');
 const relay = read('../server/handlers/client-conversation.js');
 const agentHandler = read('stores/helpers/handlers/agentHandler.js');
+const en = read('i18n/en.js');
+const zhCN = read('i18n/zh-CN.js');
 
 const indexOf = (haystack, needle) => haystack.indexOf(needle);
 
@@ -42,12 +45,15 @@ describe('Yeaft conversation outline UI', () => {
     expect(store).not.toContain("localStorage.setItem('yeaft-history-outline");
   });
 
-  it('renders a fixed scrollable outline with count, search and automatic older-page loading', () => {
+  it('renders fixed scrollable message history with count, search and bottom paging', () => {
     expect(css).toMatch(/\.yeaft-conversation-outline\s*\{[\s\S]*?position: absolute;[\s\S]*?height: min\(/);
     expect(css).toMatch(/\.yeaft-conversation-outline-list\s*\{[\s\S]*?overflow-y: auto;/);
     expect(panel).toContain("$t('yeaft.outline.title')");
+    expect(en).toContain("'yeaft.outline.title': 'Message history'");
+    expect(zhCN).toContain("'yeaft.outline.title': '历史消息'");
     expect(panel).toContain('outlineState.totalCount');
-    expect(panel).toContain("if ((listRef.value?.scrollTop || 0) <= 40) loadOlder()");
+    expect(panel).toContain('list.scrollHeight - list.scrollTop - list.clientHeight <= 40');
+    expect(indexOf(panel, 'v-for="(result, index) in visibleResults"')).toBeLessThan(indexOf(panel, 'v-if="!isSearching && outlineState.hasMore"'));
     expect(panel).toContain('restoreOlderScroll');
     expect(panel).toContain("$t('yeaft.outline.placeholder')");
   });
@@ -118,7 +124,16 @@ describe('Yeaft conversation outline UI', () => {
     expect(closeOutline).not.toHaveBeenCalled();
   });
 
-  it('keeps search results ordered independently from outline rows', () => {
-    expect(indexOf(panel, 'isSearching.value ? props.searchState.results : props.outlineState.results')).toBeGreaterThan(-1);
+  it('orders history and search results newest first by timestamp with seq fallback', () => {
+    const older = { messageId: 'm10', seq: 10, timestamp: '2026-07-22T10:00:00Z' };
+    const newer = { messageId: 'm11', seq: 11, timestamp: '2026-07-23T10:00:00Z' };
+    const latestBySeq = { messageId: 'm13', seq: 13 };
+    const earlierBySeq = { messageId: 'm12', seq: 12 };
+
+    expect(sortHistoryResultsNewest([older, newer])).toEqual([newer, older]);
+    expect(sortHistoryResultsNewest([earlierBySeq, latestBySeq])).toEqual([latestBySeq, earlierBySeq]);
+    expect(sortHistoryResultsNewest([older, latestBySeq])).toEqual([latestBySeq, older]);
+    expect(panel).toContain('sortHistoryResultsNewest(');
+    expect(panel).toContain('isSearching.value ? props.searchState.results : props.outlineState.results');
   });
 });
