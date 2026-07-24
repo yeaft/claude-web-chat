@@ -1377,11 +1377,192 @@ describe('Work Center event projection', () => {
 
     expect(projected.request.loopCount).toBe(128);
     expect(projected.request.truncated).toBe(true);
-    expect(projected.request.omittedLoopCount).toBeGreaterThanOrEqual(124);
-    expect(projected.request.loops.length).toBeLessThanOrEqual(4);
+    expect(projected.request.omittedLoopCount).toBe(112);
+    expect(projected.request.summarizedLoopCount).toBeGreaterThan(0);
+    expect(projected.request.loops).toHaveLength(16);
+    expect(projected.request.loops.filter(loop => loop.detailTruncated))
+      .toHaveLength(projected.request.summarizedLoopCount);
+    expect(projected.request.loops.at(-1)).toMatchObject({ loopNumber: 128 });
     expect(Buffer.byteLength(JSON.stringify(projected), 'utf8'))
       .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
     expect(elapsedMs).toBeLessThan(1_000);
+  });
+
+  it.each([
+    ['model', loop => { loop.model = 'm'.repeat(MAX_ACTION_REQUEST_DETAIL_BYTES + 1); }],
+    ['usage key', loop => { loop.usage = { ['u'.repeat(MAX_ACTION_REQUEST_DETAIL_BYTES + 1)]: 1 }; }],
+    ['tool name', loop => { loop.toolCalls = [{ id: 'tool-1', name: 't'.repeat(MAX_ACTION_REQUEST_DETAIL_BYTES + 1) }]; }],
+  ])('keeps a bounded latest Loop summary when %s metadata exceeds the request budget', (_label, mutate) => {
+    const detail = internalDetail();
+    const loop = {
+      loopInstanceId: 'loop-extreme', loopNumber: 9, model: 'provider/review',
+      messages: [{ role: 'user', content: 'x'.repeat(MAX_ACTION_REQUEST_DETAIL_BYTES + 1) }],
+      response: 'diagnostic response', usage: { totalTokens: 42 }, latencyMs: 250,
+      stopReason: 'tool_use', toolCalls: [],
+    };
+    mutate(loop);
+    const projected = projectActionRequestDetail(detail.actions[0], detail.runs[0], {
+      turns: [{ turnId: 'request-extreme-metadata', tools: [] }], loops: [loop],
+    });
+
+    expect(projected.request).toMatchObject({
+      loopCount: 1, truncated: true, omittedLoopCount: 0, summarizedLoopCount: 1,
+    });
+    expect(projected.request.loops).toHaveLength(1);
+    expect(projected.request.loops[0]).toMatchObject({ loopNumber: 9, detailTruncated: true });
+    expect(Buffer.byteLength(JSON.stringify(projected), 'utf8'))
+      .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
+  });
+
+  it.each([
+    ['run model fallback', ({ run, hugeUnicode }) => { run.modelSnapshot.id = hugeUnicode; }],
+    ['computed Loop id fallback', ({ turn, hugeUnicode }) => { turn.turnId = hugeUnicode; }],
+  ])('keeps the latest Loop when %s exceeds the final DTO budget', (_label, mutate) => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const hugeUnicode = '界'.repeat(MAX_ACTION_REQUEST_DETAIL_BYTES);
+    const turn = { turnId: 'request-fallback', tools: [] };
+    const loop = {
+      loopInstanceId: null, loopNumber: 9, model: null,
+      messages: [{ role: 'user', content: hugeUnicode }],
+      response: 'diagnostic response', toolCalls: [],
+    };
+    mutate({ action, run, turn, loop, hugeUnicode });
+    const projected = projectActionRequestDetail(action, run, { turns: [turn], loops: [loop] });
+
+    expect(projected.request).toMatchObject({
+      loopCount: 1, truncated: true, omittedLoopCount: 0, summarizedLoopCount: 1,
+    });
+    expect(projected.request.loops).toHaveLength(1);
+    expect(projected.request.loops[0]).toMatchObject({ loopNumber: 9, detailTruncated: true });
+    expect(Buffer.byteLength(projected.request.loops[0].id || '', 'utf8')).toBeLessThanOrEqual(256);
+    expect(Buffer.byteLength(projected.request.loops[0].model || '', 'utf8')).toBeLessThanOrEqual(1_024);
+    expect(Buffer.byteLength(JSON.stringify(projected), 'utf8'))
+      .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
+  });
+
+  it('keeps bounded Loop and tool identities distinct and marks every metadata truncation', () => {
+    const detail = internalDetail();
+    const sharedLoopPrefix = 'l'.repeat(256);
+    const sharedToolPrefix = 't'.repeat(256);
+    const projected = projectActionRequestDetail(detail.actions[0], detail.runs[0], {
+      turns: [{ turnId: 'request-collision', tools: [] }],
+      loops: ['A', 'B'].map((suffix, index) => ({
+        loopInstanceId: `${sharedLoopPrefix}${suffix}`,
+        loopNumber: index + 1,
+        model: 'm'.repeat(1_025),
+        stopReason: 's'.repeat(257),
+        messages: [],
+        toolCalls: [{
+          id: `${sharedToolPrefix}${suffix}`,
+          name: 'n'.repeat(513),
+          input: null,
+        }],
+      })),
+    });
+
+    expect(projected.request).toMatchObject({
+      loopCount: 2, truncated: true, omittedLoopCount: 0, summarizedLoopCount: 2,
+    });
+    expect(projected.request.loops).toHaveLength(2);
+    expect(new Set(projected.request.loops.map(loop => loop.id))).toHaveProperty('size', 2);
+    expect(new Set(projected.request.loops.flatMap(loop => loop.tools.map(tool => tool.id))))
+      .toHaveProperty('size', 2);
+    for (const loop of projected.request.loops) {
+      expect(loop.detailTruncated).toBe(true);
+      expect(Buffer.byteLength(loop.id, 'utf8')).toBeLessThanOrEqual(256);
+      expect(Buffer.byteLength(loop.model, 'utf8')).toBeLessThanOrEqual(1_024);
+      expect(Buffer.byteLength(loop.stopReason, 'utf8')).toBeLessThanOrEqual(256);
+      expect(Buffer.byteLength(loop.tools[0].id, 'utf8')).toBeLessThanOrEqual(256);
+      expect(Buffer.byteLength(loop.tools[0].name, 'utf8')).toBeLessThanOrEqual(512);
+    }
+    expect(Buffer.byteLength(JSON.stringify(projected), 'utf8'))
+      .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
+
+    const hugeLoopPrefix = 'x'.repeat(300_000);
+    const hugeToolPrefix = 'y'.repeat(300_000);
+    const prefiltered = projectActionRequestDetail(detail.actions[0], detail.runs[0], {
+      turns: [{
+        turnId: 'request-prefilter-collision',
+        tools: ['A', 'B'].map((suffix, index) => ({
+          loopNumber: index + 1,
+          callId: `${hugeToolPrefix}${suffix}`,
+          name: 'FileRead',
+          toolOutput: 'result',
+        })),
+      }],
+      loops: ['A', 'B'].map((suffix, index) => ({
+        loopInstanceId: `${hugeLoopPrefix}${suffix}`,
+        loopNumber: index + 1,
+        messages: [{ role: 'user', content: 'z'.repeat(MAX_ACTION_REQUEST_DETAIL_BYTES + 1) }],
+        toolCalls: [{ id: `${hugeToolPrefix}${suffix}`, name: 'FileRead' }],
+      })),
+    });
+    expect(prefiltered.request).toMatchObject({
+      loopCount: 2, truncated: true, omittedLoopCount: 0, summarizedLoopCount: 2,
+    });
+    expect(new Set(prefiltered.request.loops.map(loop => loop.id))).toHaveProperty('size', 2);
+    expect(new Set(prefiltered.request.loops.flatMap(loop => loop.tools.map(tool => tool.id))))
+      .toHaveProperty('size', 2);
+    expect(prefiltered.request.loops.map(loop => loop.tools[0].output))
+      .toEqual([null, null]);
+    for (const loop of prefiltered.request.loops) {
+      expect(loop.detailTruncated).toBe(true);
+      expect(Buffer.byteLength(loop.id, 'utf8')).toBeLessThanOrEqual(256);
+      expect(Buffer.byteLength(loop.tools[0].id, 'utf8')).toBeLessThanOrEqual(256);
+    }
+
+    const missingToolIds = projectActionRequestDetail(detail.actions[0], detail.runs[0], {
+      turns: [{ turnId: 'request-missing-tool-ids', tools: [] }],
+      loops: [{
+        loopInstanceId: 'loop-missing-tool-ids', loopNumber: 1,
+        messages: [], toolCalls: [{ name: 'FileRead' }, { name: 'FileRead' }],
+      }],
+    });
+    expect(missingToolIds.request.loops[0].tools.map(tool => tool.id))
+      .toEqual(expect.arrayContaining([
+        'loop-missing-tool-ids:tool:0',
+        'loop-missing-tool-ids:tool:1',
+      ]));
+  });
+
+  it('keeps diagnostic Loop summaries when cumulative message history exceeds the request budget', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const cumulativeMessages = Array.from({ length: 80 }, (_, index) => ({
+      role: index % 2 ? 'assistant' : 'user', content: `message-${index}-${'x'.repeat(8_192)}`,
+    }));
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-cumulative', tools: [] }],
+      loops: Array.from({ length: 60 }, (_, index) => ({
+        loopInstanceId: `cumulative-loop-${index + 1}`,
+        loopNumber: index + 1,
+        model: 'provider/review',
+        messages: cumulativeMessages.slice(0, index + 20),
+        response: `Loop ${index + 1} completed`,
+        usage: { inputTokens: 100 + index, outputTokens: 20, totalTokens: 120 + index },
+        latencyMs: 250 + index,
+        stopReason: index === 59 ? 'end_turn' : 'tool_use',
+        toolCalls: [{ id: `tool-${index + 1}`, name: 'FileRead', input: { file_path: 'large.js' } }],
+      })),
+    });
+
+    expect(projected.request).toMatchObject({
+      loopCount: 60, truncated: true, omittedLoopCount: 44, summarizedLoopCount: 16,
+    });
+    expect(projected.request.loops).toHaveLength(16);
+    expect(projected.request.loops[0]).toMatchObject({
+      loopNumber: 45, response: 'Loop 45 completed', detailTruncated: true,
+      usage: { totalTokens: 164 },
+      tools: [{ name: 'FileRead', input: null, output: null }],
+    });
+    expect(projected.request.loops.at(-1)).toMatchObject({
+      loopNumber: 60, stopReason: 'end_turn', detailTruncated: true,
+    });
+    expect(Buffer.byteLength(JSON.stringify(projected), 'utf8'))
+      .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
   });
 
   it('enforces one UTF-8 byte budget for the complete Action request detail DTO', () => {
