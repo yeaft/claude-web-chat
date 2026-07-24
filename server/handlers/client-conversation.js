@@ -943,6 +943,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         sessionId: searchSessionId,
         requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
         query: typeof msg.query === 'string' ? msg.query.slice(0, 500) : '',
+        senderKey: typeof msg.senderKey === 'string' ? msg.senderKey.slice(0, 103) : '',
         limit: typeof msg.limit === 'number' ? msg.limit : 20,
         beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
         _requestClientId: clientId,

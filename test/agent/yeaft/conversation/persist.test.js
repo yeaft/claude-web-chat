@@ -581,6 +581,34 @@ legacy session`, { encoding: 'utf8' });
       expect(page.hasMore).toBe(false);
     });
 
+    it('filters the full visible history by user or VP with and without a query', () => {
+      const user = store.append({ role: 'user', content: 'user needle', sessionId: 'session_sender' });
+      store.append({ role: 'assistant', content: 'linus needle', sessionId: 'session_sender', speakerVpId: 'linus' });
+      const martin = store.append({ role: 'assistant', content: 'martin answer', sessionId: 'session_sender', speakerVpId: 'martin' });
+      store.append({ role: 'user', content: 'engine-only', sessionId: 'session_sender', userAuthored: false });
+
+      expect(store.searchVisibleBySession('session_sender', '', { senderKey: 'user' }).results)
+        .toEqual([expect.objectContaining({ messageId: user.id, role: 'user' })]);
+      expect(store.searchVisibleBySession('session_sender', '', { senderKey: 'vp:martin' }).results)
+        .toEqual([expect.objectContaining({ messageId: martin.id, speakerVpId: 'martin' })]);
+      expect(store.searchVisibleBySession('session_sender', 'needle', { senderKey: 'vp:martin' }).results)
+        .toEqual([]);
+    });
+
+    it('pages sender-only results on visible response boundaries', () => {
+      for (let i = 0; i < 3; i += 1) {
+        store.append({ role: 'assistant', content: `answer ${i}`, sessionId: 'session_sender_pages', speakerVpId: 'linus' });
+      }
+      const first = store.searchVisibleBySession('session_sender_pages', '', { senderKey: 'vp:linus', limit: 1 });
+      const second = store.searchVisibleBySession('session_sender_pages', '', {
+        senderKey: 'vp:linus', limit: 1, beforeSeq: first.nextBeforeSeq,
+      });
+      expect(first.results).toHaveLength(1);
+      expect(first.hasMore).toBe(true);
+      expect(second.results).toHaveLength(1);
+      expect(second.results[0].seq).toBeLessThan(first.results[0].seq);
+    });
+
     it('returns one canonical search result for a tool-using assistant response', () => {
       store.append({ role: 'user', content: 'run it', sessionId: 'session_search_response' });
       store.append({

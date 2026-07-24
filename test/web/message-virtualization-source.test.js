@@ -89,7 +89,7 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain('if (key) scheduleMeasureElement(key, index, entry.target);');
     expect(source).toContain('const HEIGHT_CHANGE_THRESHOLD = 2;');
     expect(source).toContain('const windowStart = virtualWindow.value.visibleStart;');
-    expect(source).toContain('function scheduleScrollAdjustment({ delta = 0, toBottom = false } = {}) {');
+    expect(source).toContain('function scheduleScrollAdjustment({ delta = 0, toBottom = false } = {}, generation = scrollAdjustmentGeneration) {');
     expect(source).not.toContain('if (key) measureElement(key, index, entry.target);');
   });
 
@@ -130,6 +130,19 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain('() => [store.activeConversationId, activeYeaftSessionId.value]');
     expect(source).not.toContain('() => [store.currentConversation, activeYeaftSessionId.value]');
     expect(source).toContain('resumeAutoFollow();');
+  });
+
+  it('pauses bottom following before targeted history navigation', () => {
+    const messageList = read('components/MessageList.js');
+    const transcript = read('components/VirtualTranscript.js');
+
+    expect(messageList).toContain('const pauseAutoFollow = () => {');
+    expect(messageList).toContain('virtualTranscriptRef.value?.cancelPendingBottomFollow?.();');
+    expect(messageList).toContain('const revealMessage = async (messageId) => {\n      if (!messageId) return false;\n      pauseAutoFollow();');
+    expect(messageList).not.toContain('scrollToBlock: (blockId) => {\n          resumeAutoFollow();');
+    expect(transcript).toContain('function cancelPendingBottomFollow() {');
+    expect(transcript).toContain('pendingScrollToBottom = false;');
+    expect(transcript).toContain('expose({ scrollToKey, scrollToIndex, cancelPendingBottomFollow });');
   });
 
 });

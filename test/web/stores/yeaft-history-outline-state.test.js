@@ -79,6 +79,28 @@ describe('Yeaft history outline state', () => {
     expect(store._sent.at(-1)).toMatchObject({ beforeSeq: 50, includeTotal: false });
   });
 
+  it('sends sender-only searches and rejects stale sender responses', () => {
+    const store = primeStore();
+    store.currentAgentInfo.capabilities.push('session_history_search');
+    store.agents[0].capabilities.push('session_history_search');
+
+    expect(store.searchYeaftHistory('', { senderKey: 'vp:linus' })).toBe(true);
+    const first = store._sent.at(-1);
+    expect(first).toMatchObject({
+      type: 'yeaft_search_history', query: '', senderKey: 'vp:linus', sessionId: 'same',
+    });
+
+    store.yeaftHistorySearchState.nextBeforeSeq = 40;
+    expect(store.searchYeaftHistory('', { senderKey: 'user', append: true })).toBe(true);
+    const second = store._sent.at(-1);
+    expect(second).toMatchObject({ query: '', senderKey: 'user' });
+    expect(second).not.toHaveProperty('beforeSeq');
+    expect(store.handleYeaftHistorySearchResult({
+      agentId: 'agent-a', sessionId: 'same', requestId: second.requestId,
+      query: '', senderKey: 'vp:linus', results: [],
+    })).toBe(false);
+  });
+
   it('loads and expands an uncached old anchor through the click action', async () => {
     const store = primeStore();
     store.currentAgentInfo.capabilities.push('session_history_search', 'session_history_window_prefetch');

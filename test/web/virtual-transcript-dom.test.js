@@ -174,6 +174,70 @@ describe('VirtualTranscript DOM windowing', () => {
     wrapper.unmount();
   });
 
+  it('invalidates a queued near-bottom adjustment and lets a new generation follow again', async () => {
+    const scroller = createScroller({ viewportHeight: 300, scrollHeight: 10000 });
+    scroller.scrollTop = 9700;
+    let rowHeight = 90;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBoundingClientRect() {
+      if (this.classList?.contains('virtual-transcript-item')) {
+        return { x: 0, y: 0, top: 0, right: 100, bottom: rowHeight, left: 0, width: 100, height: rowHeight, toJSON: () => ({}) };
+      }
+      return { x: 0, y: 0, top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0, toJSON: () => ({}) };
+    });
+
+    const rafCallbacks = new Map();
+    let nextRafId = 0;
+    vi.stubGlobal('requestAnimationFrame', (callback) => {
+      const id = ++nextRafId;
+      rafCallbacks.set(id, callback);
+      return id;
+    });
+    vi.stubGlobal('cancelAnimationFrame', id => rafCallbacks.delete(id));
+    let resizeCallback;
+    vi.stubGlobal('ResizeObserver', class ResizeObserver {
+      constructor(callback) { resizeCallback = callback; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    const flushRafs = async () => {
+      const callbacks = Array.from(rafCallbacks.values());
+      rafCallbacks.clear();
+      callbacks.forEach(callback => callback(performance.now()));
+      await Vue.nextTick();
+    };
+
+    const wrapper = mount(VirtualTranscript, {
+      props: { items: turns(20), estimateHeight: () => 90, initialAlign: 'end', itemGap: 0, overscan: 1 },
+      slots: { default: ({ item }) => Vue.h('div', { 'data-turn-id': item.id }, item.id) },
+      attachTo: scroller,
+    });
+    await Vue.nextTick();
+    await flushRafs();
+    await flushRafs();
+
+    const row = wrapper.get('.virtual-transcript-item').element;
+    rowHeight = 120;
+    resizeCallback([{ target: row }]);
+    const queuedMeasurement = Array.from(rafCallbacks.values()).at(-1);
+    rafCallbacks.clear();
+    queuedMeasurement(performance.now());
+    wrapper.vm.cancelPendingBottomFollow();
+    scroller.scrollTop = 3000;
+    await Vue.nextTick();
+    await flushRafs();
+    expect(scroller.scrollTop).toBe(3000);
+
+    scroller.scrollTop = 9700;
+    rowHeight = 150;
+    resizeCallback([{ target: row }]);
+    await flushRafs();
+    await Vue.nextTick();
+    await flushRafs();
+    expect(scroller.scrollTop).toBe(10000);
+    wrapper.unmount();
+  });
+
   it('keeps start alignment as the default for other consumers', async () => {
     const scroller = createScroller({ scrollHeight: 10000 });
     const wrapper = mount(VirtualTranscript, {
