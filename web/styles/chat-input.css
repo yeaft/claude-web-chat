@@ -43,9 +43,14 @@
   gap: 8px;
   padding: 6px 10px;
   background: var(--bg-input-wrapper);
+  border: 1px solid transparent;
   border-radius: 8px;
   font-size: 13px;
-  max-width: 200px;
+  max-width: 260px;
+}
+
+.attachment-item.has-error {
+  border-color: var(--error);
 }
 
 .attachment-thumb {
@@ -59,12 +64,42 @@
   font-size: 16px;
 }
 
-.attachment-name {
+.attachment-details {
+  display: flex;
   flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.attachment-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-primary);
+}
+
+.attachment-status {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.attachment-item.has-error .attachment-status {
+  color: var(--error);
+}
+
+.attachment-retry {
+  border: none;
+  background: transparent;
+  color: var(--accent-blue);
+  cursor: pointer;
+  padding: 2px;
+  font: inherit;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.attachment-retry:hover {
+  color: var(--accent-blue-hover);
 }
 
 .attachment-remove {
@@ -130,6 +165,7 @@
   font-size: 16px;
   resize: none;
   max-height: 120px;
+  overflow-y: hidden;
   line-height: 1.5;
   font-family: inherit;
   /* 移动端浏览器兼容性修复 */
@@ -328,20 +364,12 @@
 
 /* Stop Button */
 .send-btn.stop-btn {
-  background: #c45c5c;
+  background: var(--error);
   position: relative;
 }
 
 .send-btn.stop-btn:hover {
-  background: #d44a4a;
-}
-
-[data-theme="dark"] .send-btn.stop-btn {
-  background: #8c5555;
-}
-
-[data-theme="dark"] .send-btn.stop-btn:hover {
-  background: #a05050;
+  opacity: 0.8;
 }
 
 .send-btn.stop-btn svg {
