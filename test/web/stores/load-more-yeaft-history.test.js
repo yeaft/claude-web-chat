@@ -438,6 +438,41 @@ describe('handleYeaftHistoryChunk', () => {
     expect(store.yeaftLoadingMoreHistory).toBe(false);
   });
 
+  it('restores quote metadata and the latest TodoWrite snapshot from Session history', () => {
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'g1',
+      messagesMap: { 'yeaft-1': [] },
+    });
+    const quote = { id: 'm1', role: 'assistant', author: 'Linus', content: 'Earlier answer' };
+
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      mode: 'recent',
+      messages: [
+        { id: 'm0200', role: 'user', content: 'Follow up', sessionId: 'g1', quote },
+        {
+          id: 'm0201', role: 'assistant', content: 'Done', sessionId: 'g1', speakerVpId: 'vp-linus',
+          toolCalls: [
+            { name: 'TodoWrite', input: { todos: [{ content: 'Old', status: 'pending' }] } },
+            { name: 'Bash', input: { command: 'true' } },
+            { name: 'TodoWrite', input: { todos: [{ content: 'Latest', status: 'completed' }] } },
+          ],
+        },
+      ],
+      oldestSeq: 200,
+      latestSeq: 201,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['yeaft-1']).toEqual([
+      expect.objectContaining({ id: 'm0200', type: 'user', quote }),
+      expect.objectContaining({ id: 'm0201', type: 'assistant', content: 'Done' }),
+      expect.objectContaining({ id: 'm0201:todos', type: 'tool-use', toolName: 'TodoWrite', toolInput: { todos: [{ content: 'Latest', status: 'completed' }] } }),
+      expect.objectContaining({ id: 'm0201:tool-summary', type: 'tool-summary', count: 1 }),
+    ]);
+  });
+
   it('synthesizes only a tool-summary row for tool-only assistant history', () => {
     const store = mkStore({
       yeaftActiveSessionFilter: 'g1',

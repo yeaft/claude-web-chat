@@ -540,6 +540,12 @@ export default {
   'message.imageUnavailable': 'Image unavailable',
   'message.attachFiles': '{count} file(s)',
   'message.fileCount': '{count} file(s)',
+  'message.quote': 'Quote',
+  'message.removeQuote': 'Remove quote',
+  'message.replyingTo': 'Replying to {author}',
+  'message.quotedFrom': 'Quoted from {author}',
+  'message.editAsNew': 'Edit as new input',
+  'message.you': 'You',
 
   // ============ Chat Input ============
   'input.upload': 'Upload file',

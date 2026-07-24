@@ -28,6 +28,80 @@
   opacity: 0.8;
 }
 
+/* Structured Session quote above the composer. */
+.input-quote-preview {
+  max-width: 60%;
+  margin: 0 auto 10px;
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-input-wrapper);
+  color: var(--text-primary);
+}
+
+.input-quote-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.input-quote-meta {
+  margin-bottom: 3px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.input-quote-content {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.input-quote-todos {
+  margin-top: 6px;
+  display: grid;
+  gap: 2px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.input-quote-todo {
+  display: flex;
+  gap: 6px;
+}
+
+.input-quote-todo-status {
+  flex: 0 0 auto;
+}
+
+.input-quote-remove {
+  align-self: flex-start;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.input-quote-remove:hover,
+.input-quote-remove:focus-visible {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+  outline: none;
+}
+
 /* Attachments Preview */
 .attachments-preview {
   max-width: 60%;
@@ -355,6 +429,7 @@
     padding-bottom: calc(32px + env(safe-area-inset-bottom, 0px));
   }
   .attachments-preview,
+  .input-quote-preview,
   .input-hints,
   .input-wrapper {
     max-width: 90%;
