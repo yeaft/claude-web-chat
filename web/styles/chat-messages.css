@@ -1700,10 +1700,6 @@
 
 /* User Message Attachments - ChatGPT Style */
 /* Attachments indicator (Claude Code style) */
-.user-attachments-indicator {
-  margin-top: 8px;
-}
-
 .attachments-badge {
   display: inline-flex;
   align-items: center;
@@ -1713,6 +1709,7 @@
   border: 1px solid var(--border-color);
   border-radius: 16px;
   font-size: 12px;
+  font-family: inherit;
   color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.15s ease;

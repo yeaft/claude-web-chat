@@ -51,6 +51,17 @@ describe('Session message quote UI wiring', () => {
     expect(user).toContain('aria-hidden="true"');
   });
 
+  it('keeps the attachment badge last in the user action footer', () => {
+    const user = read('components/MessageItem.js');
+    const footerStart = user.indexOf('class="message-user-footer"');
+    const footerEnd = user.indexOf('<!-- Expanded attachments preview -->');
+    const footer = user.slice(footerStart, footerEnd);
+
+    expect(footer).toContain('class="attachments-badge"');
+    expect(footer.indexOf("$emit('edit-as-new'")).toBeLessThan(footer.indexOf('class="attachments-badge"'));
+    expect(user).not.toContain('class="user-attachments-indicator"');
+  });
+
   it('keeps VP timestamps in the speaker header and adds quote icons to response actions', () => {
     const assistant = read('components/AssistantTurn.js');
     const vpTurn = read('components/VpTurnBlock.js');
@@ -61,8 +72,8 @@ describe('Session message quote UI wiring', () => {
     expect(vpTurn).toContain('class="vp-turn-block-time"');
   });
 
-  it('uses concise localized new-message labels', () => {
-    expect(read('i18n/en.js')).toContain("'message.editAsNew': 'New message'");
-    expect(read('i18n/zh-CN.js')).toContain("'message.editAsNew': '新消息'");
+  it('uses concise localized edit labels', () => {
+    expect(read('i18n/en.js')).toContain("'message.editAsNew': 'Edit'");
+    expect(read('i18n/zh-CN.js')).toContain("'message.editAsNew': '编辑'");
   });
 });
