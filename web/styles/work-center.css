@@ -16,9 +16,11 @@
 .work-center-back-button,
 .work-center-icon-button,
 .work-center-filter button,
-.work-center-card,
+.work-center-card-open,
+.work-center-card-delete,
 .work-center-empty-create {
   border: 0;
+  background: transparent;
   font: inherit;
   cursor: pointer;
 }

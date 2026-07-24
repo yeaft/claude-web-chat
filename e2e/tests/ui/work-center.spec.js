@@ -586,6 +586,51 @@ test.describe('Work Center responsive UI', () => {
     await expect(card).toContainText('Tool calls');
   });
 
+  test('keeps Work Item card controls transparent in light and dark themes', async ({ page }) => {
+    await page.goto('about:blank');
+    await page.setContent(`
+      <article class="work-center-card">
+        <button class="work-center-card-open" type="button">Open Work Item</button>
+        <button class="work-center-card-delete" type="button">Delete</button>
+      </article>
+    `);
+    await page.addStyleTag({ path: `${process.cwd()}/web/styles/variables.css` });
+    await page.addStyleTag({ path: `${process.cwd()}/web/styles/work-center.css` });
+
+    const themeColors = {};
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+      await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+      themeColors[theme] = await page.locator('.work-center-card').evaluate(card => {
+        const open = card.querySelector('.work-center-card-open');
+        const remove = card.querySelector('.work-center-card-delete');
+        const cardStyle = getComputedStyle(card);
+        const openStyle = getComputedStyle(open);
+        const removeStyle = getComputedStyle(remove);
+        return {
+          cardBackground: cardStyle.backgroundColor,
+          cardText: cardStyle.color,
+          openBackground: openStyle.backgroundColor,
+          openBorderWidth: openStyle.borderTopWidth,
+          openText: openStyle.color,
+          deleteBackground: removeStyle.backgroundColor,
+          deleteBorderWidth: removeStyle.borderTopWidth,
+        };
+      });
+
+      expect(themeColors[theme].cardBackground).not.toBe('rgba(0, 0, 0, 0)');
+      expect(themeColors[theme].cardText).not.toBe(themeColors[theme].cardBackground);
+      expect(themeColors[theme].openBackground).toBe('rgba(0, 0, 0, 0)');
+      expect(themeColors[theme].openBorderWidth).toBe('0px');
+      expect(themeColors[theme].openText).toBe(themeColors[theme].cardText);
+      expect(themeColors[theme].deleteBackground).toBe('rgba(0, 0, 0, 0)');
+      expect(themeColors[theme].deleteBorderWidth).toBe('0px');
+    }
+
+    expect(themeColors.dark.cardBackground).not.toBe(themeColors.light.cardBackground);
+    expect(themeColors.dark.cardText).not.toBe(themeColors.light.cardText);
+  });
+
   test('keeps Action guidance visible without overflow in dark theme', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     const select = chatPage.locator('.work-center-card').click();
