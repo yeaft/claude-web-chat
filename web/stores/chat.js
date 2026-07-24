@@ -2934,6 +2934,26 @@ export const useChatStore = defineStore('chat', {
       return promise;
     },
 
+    async revealYeaftHistoryResult(result) {
+      const sessionId = this.yeaftActiveSessionFilter || null;
+      const agentId = resolveAgentIdForSession(this, sessionId);
+      const conversationId = resolveYeaftConversationIdForSession(this, sessionId);
+      if (!sessionId || !agentId || !conversationId || !result?.messageId) return false;
+
+      const loaded = await this.loadYeaftHistoryWindow(result);
+      if (!loaded) return false;
+      // A window response can settle after the reader changes Agent or Session.
+      // Keep the click bound to the transcript that initiated it rather than
+      // expanding an unrelated current view with the same Session id.
+      if (this.currentView !== 'yeaft'
+        || this.yeaftActiveSessionFilter !== sessionId
+        || resolveAgentIdForSession(this, sessionId) !== agentId
+        || resolveYeaftConversationIdForSession(this, sessionId) !== conversationId) {
+        return false;
+      }
+      return this.revealYeaftMessage(sessionId, result.messageId, conversationId);
+    },
+
     handleYeaftHistoryWindow(msg, conversationId = null) {
       const pendingEntries = Object.entries(this._yeaftHistoryWindowPendingByKey || {});
       const match = pendingEntries.find(([, pending]) => pending?.requestId === msg?.requestId);

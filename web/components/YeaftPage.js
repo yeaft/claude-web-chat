@@ -169,9 +169,9 @@ export default {
           ref="historySearchRef"
           :outline-state="historyOutlineState"
           :search-state="store.yeaftHistorySearchState"
-          :active-index="historySearchActiveIndex"
+          :active-message-id="historySearchActiveMessageId"
           @query="onHistorySearchQuery"
-          @move="historySearchActiveIndex = $event"
+          @move="historySearchActiveMessageId = $event"
           @preview="previewHistorySearchResult"
           @select="selectHistorySearchResult"
           @load-older="loadOlderHistoryOutline"
@@ -434,7 +434,7 @@ export default {
     const messageListRef = Vue.ref(null);
     const historySearchRef = Vue.ref(null);
     const historySearchOpen = Vue.ref(false);
-    const historySearchActiveIndex = Vue.ref(0);
+    const historySearchActiveMessageId = Vue.ref(null);
     const historyOutlineState = Vue.computed(() => store.getYeaftHistoryOutlineState());
     let historySearchTimer = null;
     const yeaftInputDraftKey = Vue.computed(() => {
@@ -669,7 +669,7 @@ export default {
       }
       store.searchYeaftHistory('');
       historySearchOpen.value = false;
-      historySearchActiveIndex.value = 0;
+      historySearchActiveMessageId.value = null;
     };
     const openHistorySearch = () => {
       historySearchOpen.value = true;
@@ -682,7 +682,7 @@ export default {
     };
     const onHistorySearchQuery = (query) => {
       if (historySearchTimer) clearTimeout(historySearchTimer);
-      historySearchActiveIndex.value = 0;
+      historySearchActiveMessageId.value = null;
       historySearchTimer = setTimeout(() => store.searchYeaftHistory(query), 220);
     };
     const loadOlderHistoryOutline = (scrollSnapshot) => {
@@ -707,7 +707,7 @@ export default {
     };
     const selectHistorySearchResult = result => revealOutlineResult({
       result,
-      loadWindow: candidate => store.loadYeaftHistoryWindow(candidate),
+      revealWindow: candidate => store.revealYeaftHistoryResult(candidate),
       nextTick: () => Vue.nextTick(),
       revealMessage: messageId => messageListRef.value?.revealMessage?.(messageId),
       isMobile: isMobile.value,
@@ -1384,7 +1384,7 @@ export default {
       messageListRef,
       historySearchRef,
       historySearchOpen,
-      historySearchActiveIndex,
+      historySearchActiveMessageId,
       historyOutlineState,
       toggleHistorySearch,
       closeHistorySearch,
