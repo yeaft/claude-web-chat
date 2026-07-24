@@ -11,19 +11,22 @@ function formatOutlineTime(value) {
 
 export function sortHistoryResultsNewest(results) {
   return (Array.isArray(results) ? results : [])
-    .map((result, index) => ({ result, index }))
+    .map((result, index) => ({
+      result,
+      index,
+      time: parseHistoryTime(result?.timestamp),
+      seq: Number.isFinite(result?.seq) ? result.seq : null,
+      messageId: String(result?.messageId || ''),
+    }))
     .sort((a, b) => {
-      const aTime = parseHistoryTime(a.result?.timestamp);
-      const bTime = parseHistoryTime(b.result?.timestamp);
-      if (aTime !== null && bTime !== null && aTime !== bTime) return bTime - aTime;
-      const aSeq = Number.isFinite(a.result?.seq) ? a.result.seq : null;
-      const bSeq = Number.isFinite(b.result?.seq) ? b.result.seq : null;
-      if (aSeq !== null && bSeq !== null && aSeq !== bSeq) return bSeq - aSeq;
-      if (aTime !== null && bTime === null) return -1;
-      if (aTime === null && bTime !== null) return 1;
-      if (aSeq !== null && bSeq === null) return -1;
-      if (aSeq === null && bSeq !== null) return 1;
-      return a.index - b.index;
+      if (a.time !== null && b.time === null) return -1;
+      if (a.time === null && b.time !== null) return 1;
+      if (a.time !== null && a.time !== b.time) return b.time - a.time;
+      if (a.seq !== null && b.seq === null) return -1;
+      if (a.seq === null && b.seq !== null) return 1;
+      if (a.seq !== null && a.seq !== b.seq) return b.seq - a.seq;
+      const idComparison = b.messageId.localeCompare(a.messageId);
+      return idComparison || a.index - b.index;
     })
     .map(({ result }) => result);
 }

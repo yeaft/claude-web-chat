@@ -124,16 +124,58 @@ describe('Yeaft conversation outline UI', () => {
     expect(closeOutline).not.toHaveBeenCalled();
   });
 
-  it('orders history and search results newest first by timestamp with seq fallback', () => {
-    const older = { messageId: 'm10', seq: 10, timestamp: '2026-07-22T10:00:00Z' };
-    const newer = { messageId: 'm11', seq: 11, timestamp: '2026-07-23T10:00:00Z' };
-    const latestBySeq = { messageId: 'm13', seq: 13 };
-    const earlierBySeq = { messageId: 'm12', seq: 12 };
+  it('orders mixed history rows with one transitive newest-first key', () => {
+    const rows = [
+      { messageId: 'm1', seq: 1, timestamp: '2026-07-24T10:00:00Z' },
+      { messageId: 'm3', seq: 3, timestamp: '2026-07-23T10:00:00Z' },
+      { messageId: 'm2', seq: 2 },
+    ];
+    const permutations = [
+      rows,
+      [rows[0], rows[2], rows[1]],
+      [rows[1], rows[0], rows[2]],
+      [rows[1], rows[2], rows[0]],
+      [rows[2], rows[0], rows[1]],
+      [rows[2], rows[1], rows[0]],
+    ];
 
-    expect(sortHistoryResultsNewest([older, newer])).toEqual([newer, older]);
-    expect(sortHistoryResultsNewest([earlierBySeq, latestBySeq])).toEqual([latestBySeq, earlierBySeq]);
-    expect(sortHistoryResultsNewest([older, latestBySeq])).toEqual([latestBySeq, older]);
+    for (const input of permutations) {
+      expect(sortHistoryResultsNewest(input).map(row => row.messageId)).toEqual(['m1', 'm3', 'm2']);
+    }
     expect(panel).toContain('sortHistoryResultsNewest(');
     expect(panel).toContain('isSearching.value ? props.searchState.results : props.outlineState.results');
+  });
+
+  it('uses deterministic fallbacks for missing, invalid and tied timestamps', () => {
+    const rows = [
+      { messageId: 'm4', seq: 4, timestamp: 'invalid' },
+      { messageId: 'm5', seq: 5 },
+      { messageId: 'm7', seq: 7, timestamp: '2026-07-24T10:00:00Z' },
+      { messageId: 'm6', seq: 6, timestamp: '2026-07-24T10:00:00Z' },
+      { messageId: 'm8', seq: 8, timestamp: '2026-07-23T10:00:00Z' },
+    ];
+
+    expect(sortHistoryResultsNewest(rows).map(row => row.messageId)).toEqual(['m7', 'm6', 'm8', 'm5', 'm4']);
+    expect(sortHistoryResultsNewest([
+      { messageId: 'm9', seq: 9 },
+      { messageId: 'm10', seq: 9 },
+    ]).map(row => row.messageId)).toEqual(['m9', 'm10']);
+  });
+
+  it('keeps existing rows stable when an older page is appended', () => {
+    const recent = [
+      { messageId: 'm12', seq: 12, timestamp: '2026-07-24T12:00:00Z' },
+      { messageId: 'm11', seq: 11, timestamp: '2026-07-24T11:00:00Z' },
+    ];
+    const before = sortHistoryResultsNewest(recent).map(row => row.messageId);
+    const after = sortHistoryResultsNewest([
+      ...recent,
+      { messageId: 'm10', seq: 10, timestamp: '2026-07-24T10:00:00Z' },
+      { messageId: 'm9', seq: 9, timestamp: 'invalid' },
+    ]).map(row => row.messageId);
+
+    expect(before).toEqual(['m12', 'm11']);
+    expect(after).toEqual(['m12', 'm11', 'm10', 'm9']);
+    expect(after.slice(0, before.length)).toEqual(before);
   });
 });
