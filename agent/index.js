@@ -128,7 +128,7 @@ async function detectCapabilities() {
   // agent build can speak plaintext WS frames. New servers see this and
   // flip `agent.encryptOutbound = false`, stopping outbound encryption
   // to this peer. Old servers ignore the unknown capability token.
-  const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center', 'session_history_search', 'session_history_outline'];
+  const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center', 'session_history_search', 'session_history_outline', 'session_history_window_prefetch'];
   if (process.platform === 'linux') capabilities.push('work_item_attachments');
   const pty = await loadNodePty();
   if (pty) capabilities.push('terminal');
