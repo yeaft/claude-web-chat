@@ -1872,7 +1872,13 @@ export const useChatStore = defineStore('chat', {
       }
     },
     async refreshWorkItemDetailAfterActionChange(agentId, summary) {
-      const key = `${summary.id}:${summary.currentActionId}`;
+      const summaryAction = (Array.isArray(summary.actionStats) ? summary.actionStats : [])
+        .find(action => action?.id === summary.currentActionId) || summary.currentAction;
+      const summaryGeneration = Number(summaryAction?.generation);
+      const expectedGeneration = Number.isInteger(summaryGeneration) && summaryGeneration > 0
+        ? summaryGeneration
+        : null;
+      const key = `${summary.id}:${summary.currentActionId}${expectedGeneration == null ? '' : `:${expectedGeneration}`}`;
       if (this._workCenterDetailEventRefreshByAgent[agentId] === key) return;
       const generation = Number(this._workCenterDetailRequestGenerationByAgent[agentId] || 0);
       this._workCenterDetailEventRefreshByAgent = {
@@ -1882,9 +1888,17 @@ export const useChatStore = defineStore('chat', {
       try {
         const detail = await this.workCenterRequest('get', { id: summary.id }, agentId);
         const selected = this.workCenterDetailByAgent[agentId];
+        const selectedAction = selected?.actions?.find(action => action?.id === summary.currentActionId);
+        const detailAction = detail?.actions?.find(action => action?.id === summary.currentActionId);
+        const selectedGenerationMatches = expectedGeneration == null
+          || normalizeWorkCenterActionGeneration(selectedAction?.generation) === expectedGeneration;
+        const detailGenerationMatches = expectedGeneration == null
+          || normalizeWorkCenterActionGeneration(detailAction?.generation) >= expectedGeneration;
         if (selected?.id === summary.id
             && selected.currentActionId === summary.currentActionId
-            && detail?.currentActionId === summary.currentActionId) {
+            && selectedGenerationMatches
+            && detail?.currentActionId === summary.currentActionId
+            && detailGenerationMatches) {
           this.commitWorkCenterDetail(agentId, detail, generation);
         }
       } catch {

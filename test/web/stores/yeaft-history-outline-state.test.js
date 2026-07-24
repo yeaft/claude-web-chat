@@ -33,6 +33,7 @@ globalThis.document = { addEventListener: vi.fn(), removeEventListener: vi.fn(),
 const { useChatStore } = await import('../../../web/stores/chat.js');
 const { handleAssistantOutputFrame } = await import('../../../web/stores/helpers/assistantOutput.js');
 const { handleYeaftHistoryWindow: mergeYeaftHistoryWindow } = await import('../../../web/stores/helpers/handlers/conversationHandler.js');
+const { workCenterActionMessageKey } = await import('../../../web/stores/helpers/work-center.js');
 const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
 const { revealOutlineResult } = await import('../../../web/utils/message-search-navigation.js');
 
@@ -386,7 +387,7 @@ describe('Yeaft history outline state', () => {
 
 
 
-  it('merges only one in-flight assistant response per turn', () => {
+  it('merges one in-flight response and advances another client to a retried Action generation', async () => {
     const store = primeStore();
     store.messagesMap['conv-a'] = [
       { id: 'live-a', messageId: 'live-a', type: 'assistant', content: 'working ', sessionId: 'same', turnId: 'response-live', speakerVpId: 'maker', isStreaming: true },
@@ -398,9 +399,74 @@ describe('Yeaft history outline state', () => {
     };
 
     const state = store.getYeaftHistoryOutlineState();
-
     expect(state.results).toHaveLength(1);
     expect(state.results[0]).toMatchObject({ role: 'assistant', turnId: 'response-live' });
     expect(state.totalCount).toBe(1);
+
+    store.workCenterItemsByAgent = { 'agent-a': [] };
+    store.workCenterDetailByAgent = {
+      'agent-a': {
+        id: 'wi-1', revision: 4, updatedAt: 10, currentActionId: 'action-1',
+        actions: [{
+          id: 'action-1', generation: 1, status: 'failed', progressRevision: 2,
+          messages: [{ id: 'old-inline', text: 'Old failure' }],
+          thread: [{ generation: 1, canonical: true, messages: [] }],
+          liveMessage: { id: 'old-live', text: 'Old live failure' },
+          response: 'Old failure', failure: { error: 'Old failure' }, messageCursor: '1', messageCount: 1,
+        }],
+      },
+    };
+    store.workCenterActionMessages = {
+      'agent-a:wi-1:action-1:1': {
+        generation: 1, messages: [{ id: 'old-cache', text: 'Old failure' }], nextCursor: null, total: 1,
+      },
+    };
+    const pendingRequests = [];
+    store.workCenterRequest = vi.fn(operation => new Promise(resolve => {
+      pendingRequests.push({ operation, resolve });
+    }));
+    const eventSummary = {
+      id: 'wi-1', revision: 5, updatedAt: 20, currentActionId: 'action-1',
+      currentAction: { id: 'action-1', generation: 2, status: 'ready' },
+      actionStats: [{ id: 'action-1', generation: 2, status: 'ready', progressRevision: 3 }],
+    };
+
+    store.applyWorkCenterEvent('agent-a', { type: 'action.retried', workItem: eventSummary });
+
+    const advanced = store.workCenterDetailByAgent['agent-a'].actions[0];
+    expect(advanced).toMatchObject({ id: 'action-1', generation: 2, status: 'ready' });
+    expect(advanced).not.toHaveProperty('messages');
+    expect(advanced).not.toHaveProperty('thread');
+    expect(advanced).not.toHaveProperty('liveMessage');
+    expect(advanced).not.toHaveProperty('response');
+    const oldKey = workCenterActionMessageKey('agent-a', 'wi-1', 'action-1', 1);
+    const currentKey = workCenterActionMessageKey(
+      'agent-a', 'wi-1', 'action-1', advanced.generation,
+    );
+    expect(currentKey).toBe('agent-a:wi-1:action-1:2');
+    expect(store.workCenterActionMessages[oldKey].messages)
+      .toEqual([expect.objectContaining({ id: 'old-cache' })]);
+    expect(store.workCenterActionMessages[currentKey]).toBeUndefined();
+    expect(store._workCenterDetailEventRefreshByAgent['agent-a']).toBe('wi-1:action-1:2');
+
+    const staleMessagePage = store.loadWorkItemActionMessages(
+      'wi-1', 'action-1', advanced.generation, null, 'agent-a',
+    );
+    pendingRequests.find(request => request.operation === 'get_action_messages').resolve({
+      actionId: 'action-1', generation: 1,
+      messages: [{ id: 'late-old', text: 'Late old failure' }], nextCursor: null, total: 1,
+    });
+    await staleMessagePage;
+    expect(store.workCenterActionMessages[currentKey]).toBeUndefined();
+
+    pendingRequests.find(request => request.operation === 'get').resolve({
+      ...eventSummary,
+      actions: [{ id: 'action-1', generation: 2, status: 'ready', progressRevision: 3, messages: [] }],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.workCenterDetailByAgent['agent-a'].actions[0]).toMatchObject({
+      id: 'action-1', generation: 2, messages: [],
+    });
   });
 });
