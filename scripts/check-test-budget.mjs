@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, relative, resolve } from 'node:path';
 import process from 'node:process';
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { CORE_TEST_FILES, isTestFile, normalizeTestPath } from './test-suite-manifest.mjs';
 
 export const TEST_CASE_LIMIT = 500;
@@ -42,6 +43,10 @@ export function collectTestCaseCount({ rootDir = process.cwd() } = {}) {
   }
 }
 
+export function isMainModule(moduleUrl, entryPath = process.argv[1]) {
+  return Boolean(entryPath) && moduleUrl === pathToFileURL(resolve(entryPath)).href;
+}
+
 function main() {
   const result = validateCoreTestFiles();
   if (result.missing.length) console.error(`Missing core test files:\n- ${result.missing.join('\n- ')}`);
@@ -60,4 +65,4 @@ function main() {
   console.log(`Core suite: ${result.count} files, ${caseCount} test cases (< ${TEST_CASE_LIMIT})`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (isMainModule(import.meta.url)) main();
