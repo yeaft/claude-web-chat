@@ -507,7 +507,7 @@ describe('Work Center event projection', () => {
     expect(JSON.stringify(messages)).not.toContain('secret');
   });
 
-  it('projects every persisted Loop response as a durable Action transcript message', () => {
+  it('projects durable Loop responses once when the engine repeats the final response', () => {
     const detail = internalDetail();
     detail.events.push({
       id: 11, workItemId: 'wi-1', actionId: 'a-1', runId: 'r-2',
@@ -515,15 +515,24 @@ describe('Work Center event projection', () => {
     }, {
       id: 12, workItemId: 'wi-1', actionId: 'a-1', runId: 'r-2',
       type: 'run.loop_output', data: { loopNumber: 2, response: 'Implemented the continuation fence.' }, createdAt: 4,
+    }, {
+      id: 13, workItemId: 'wi-1', actionId: 'a-1', runId: 'r-2',
+      type: 'run.loop_output', data: { loopNumber: 3, response: 'Implemented the continuation fence.' }, createdAt: 5,
     });
+    detail.runs.find(run => run.id === 'r-2').response = 'Implemented the continuation fence.';
 
-    const messages = projectWorkItemDetail(detail).actions[0].messages;
+    const action = projectWorkItemDetail(detail).actions[0];
+    const messages = action.messages;
     expect(messages.filter(message => message.role === 'assistant')).toEqual([
       expect.objectContaining({ id: 'run:r-1', text: 'Earlier retry response' }),
       expect.objectContaining({ id: 'event:11', text: 'Inspected the controller path.' }),
       expect.objectContaining({ id: 'event:12', text: 'Implemented the continuation fence.' }),
     ]);
+    expect(messages).not.toContainEqual(expect.objectContaining({ id: 'event:13' }));
     expect(messages).not.toContainEqual(expect.objectContaining({ id: 'run:r-2' }));
+    expect(action.liveMessage).toMatchObject({
+      id: 'run:r-2', text: 'Implemented the continuation fence.',
+    });
   });
 
   it('projects request indexes and explicit request details with secrets and binary bodies removed', () => {
@@ -1477,7 +1486,11 @@ describe('Work Center event projection', () => {
       id: 'run:run-live', status: 'completed', text: 'Implemented and verified the fix',
       progressRevision: 13,
     });
-    expect(terminal.messages.filter(message => message.id === terminal.liveMessage.id)).toHaveLength(1);
+    expect(terminal.messages.filter(message => message.id === 'run:run-live')).toEqual([
+      expect.objectContaining({
+        status: 'completed', text: 'Implemented and verified the fix', progressRevision: 13,
+      }),
+    ]);
   });
 
   it('projects a bounded, sanitized failure reason for failed Work Item and Action detail', () => {

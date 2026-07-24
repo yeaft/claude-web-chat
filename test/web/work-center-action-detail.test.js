@@ -65,27 +65,20 @@ describe('Work Center Action detail tabs', () => {
     expect(wrapper.get('.work-center-attachment-picker svg').attributes('aria-hidden')).toBe('true');
   });
 
-  it('supports roving focus with arrow, Home, and End keys', async () => {
-    const wrapper = mountDetail();
-    const messages = wrapper.get('#work-center-action-messages-tab');
-    const requests = wrapper.get('#work-center-action-requests-tab');
+  it('keeps the conversation and Action inspector visible together', () => {
+    const wrapper = mountDetail({
+      action: {
+        id: 'action-1', status: 'running', assignedVp: { id: 'linus', name: 'Linus' },
+        executionStats: {}, messages: [],
+      },
+    });
 
-    await messages.trigger('keydown', { key: 'ArrowRight' });
-    expect(wrapper.vm.activeTab).toBe('requests');
-    expect(document.activeElement).toBe(requests.element);
-    expect(requests.attributes('tabindex')).toBe('0');
-    expect(messages.attributes('tabindex')).toBe('-1');
-
-    await requests.trigger('keydown', { key: 'Home' });
-    expect(wrapper.vm.activeTab).toBe('messages');
-    expect(document.activeElement).toBe(messages.element);
-
-    await messages.trigger('keydown', { key: 'End' });
-    expect(wrapper.vm.activeTab).toBe('requests');
-    expect(document.activeElement).toBe(requests.element);
+    expect(wrapper.get('.work-center-action-transcript').isVisible()).toBe(true);
+    expect(wrapper.get('.work-center-action-inspector').isVisible()).toBe(true);
+    expect(wrapper.get('.work-center-action-conversation-heading').text()).toContain('Linus');
   });
 
-  it('preserves the selected tab, request, and loop across same-Action progress updates', async () => {
+  it('preserves the selected request and loop across same-Action progress updates', async () => {
     const request = { id: 'shared', runId: 'run-1', model: 'model-1' };
     const wrapper = mountDetail({
       requests: [request],
@@ -94,10 +87,8 @@ describe('Work Center Action detail tabs', () => {
       },
     });
 
-    await wrapper.get('#work-center-action-requests-tab').trigger('click');
     await wrapper.get('.work-center-request-summary').trigger('click');
     await wrapper.get('.work-center-request-loop > button').trigger('click');
-    expect(wrapper.vm.activeTab).toBe('requests');
     expect(wrapper.vm.expandedRequestKey).toBe('run-1:shared');
     expect(wrapper.vm.expandedLoops['run-1:shared:loop-1']).toBe(true);
 
@@ -108,7 +99,6 @@ describe('Work Center Action detail tabs', () => {
       },
     });
 
-    expect(wrapper.vm.activeTab).toBe('requests');
     expect(wrapper.vm.expandedRequestKey).toBe('run-1:shared');
     expect(wrapper.vm.expandedLoops['run-1:shared:loop-1']).toBe(true);
     expect(wrapper.get('.work-center-request-loop-body').text()).toContain('first');
@@ -116,7 +106,6 @@ describe('Work Center Action detail tabs', () => {
     await wrapper.setProps({
       action: { id: 'action-2', type: 'review', status: 'ready', executionStats: {}, messages: [] },
     });
-    expect(wrapper.vm.activeTab).toBe('messages');
     expect(wrapper.vm.expandedRequestKey).toBeNull();
     expect(wrapper.vm.expandedLoops).toEqual({});
   });
@@ -136,7 +125,6 @@ describe('Work Center Action detail tabs', () => {
       requestDetailsLoading: { 'run-2:shared': true },
     });
 
-    await wrapper.get('#work-center-action-requests-tab').trigger('click');
     const summaries = wrapper.findAll('.work-center-request-summary');
     await summaries[0].trigger('click');
     expect(wrapper.findAll('.work-center-request-card.expanded')).toHaveLength(1);
@@ -167,7 +155,6 @@ describe('Work Center Action detail tabs', () => {
       },
     });
 
-    await wrapper.get('#work-center-action-requests-tab').trigger('click');
     await wrapper.get('.work-center-request-summary').trigger('click');
 
     expect(wrapper.findAll('.work-center-request-loop')).toHaveLength(1);
@@ -183,7 +170,6 @@ describe('Work Center Action detail tabs', () => {
       },
     });
 
-    await wrapper.get('#work-center-action-requests-tab').trigger('click');
     await wrapper.get('.work-center-request-summary').trigger('click');
 
     expect(wrapper.get('.work-center-request-detail').text()).toContain('This request has no retained loop details.');
@@ -212,17 +198,11 @@ describe('Work Center Action detail tabs', () => {
 
     const generations = wrapper.findAll('.work-center-action-generation');
     expect(generations).toHaveLength(2);
-    expect(generations[0].text()).toContain('Generation 1');
     expect(generations[0].text()).toContain('Previous execution');
     expect(generations[0].text()).toContain('Old attempt result');
-    expect(generations[1].text()).toContain('Current execution');
     expect(generations[1].text()).toContain('Current paged response');
     expect(generations[1].text()).not.toContain('stale inline page');
-    expect(generations[1].text()).toContain('4 loops');
-    expect(generations[1].text()).toContain('5 tools');
-
-    await generations[1].get('.work-center-action-run').trigger('click');
-    expect(wrapper.vm.activeTab).toBe('requests');
+    await wrapper.vm.openRun({ id: 'run-2' });
     expect(wrapper.vm.expandedRequestKey).toBe('run-2:request-2');
     expect(wrapper.emitted('open-run')[0][0]).toEqual(expect.objectContaining({ id: 'run-2' }));
   });
@@ -232,13 +212,55 @@ describe('Work Center Action detail tabs', () => {
       onOpenRun: (_run, resolve) => resolve(null),
       requests: [{ id: 'request-current', runId: 'run-current' }],
     });
-    wrapper.vm.activeTab = 'requests';
     wrapper.vm.expandedRequestKey = 'run-current:request-current';
 
     await wrapper.vm.openRun({ id: 'run-old' });
 
-    expect(wrapper.vm.activeTab).toBe('requests');
     expect(wrapper.vm.expandedRequestKey).toBe('run-current:request-current');
+  });
+
+  it('renders the assigned VP as the assistant speaker instead of a generic AI label', () => {
+    const wrapper = mountDetail({
+      action: {
+        id: 'action-1', status: 'running', assignedVp: { id: 'linus', name: 'Linus' },
+        executionStats: {}, messages: [],
+      },
+      messages: [{ id: 'response-1', role: 'assistant', text: 'I verified the fix.', createdAt: 1 }],
+    });
+
+    expect(wrapper.get('.work-center-action-message.role-assistant header strong').text()).toBe('Linus');
+    expect(wrapper.text()).not.toContain('AI response');
+  });
+
+  it('hides a terminal live snapshot when the durable transcript already contains it', () => {
+    const action = {
+      messages: [{ id: 'event:1', role: 'assistant', text: 'Final answer', status: 'completed', createdAt: 1 }],
+      liveMessage: { id: 'run:1', role: 'assistant', text: 'Final answer', status: 'completed', createdAt: 1 },
+    };
+    const context = {
+      selectedAction: action,
+      actionRequestKey: 'agent:work:action',
+      store: { workCenterActionMessages: {} },
+    };
+
+    const messages = WorkCenterPage.computed.actionMessages.call(context);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].id).toBe('event:1');
+  });
+
+  it('keeps a running live snapshot until a durable response replaces it', () => {
+    const context = {
+      selectedAction: {
+        messages: [],
+        liveMessage: { id: 'run:1', role: 'assistant', text: 'Still working', status: 'running', createdAt: 1 },
+      },
+      actionRequestKey: 'agent:work:action',
+      store: { workCenterActionMessages: {} },
+    };
+
+    expect(WorkCenterPage.computed.actionMessages.call(context)).toEqual([
+      expect.objectContaining({ id: 'run:1', text: 'Still working' }),
+    ]);
   });
 
   it('opens persisted message attachments with an accessible, loading-aware button', async () => {

@@ -241,12 +241,14 @@ function runResponseMessage(run, includeThreadIdentity = false) {
 }
 
 function loopOutputMessages(action, events, matchingRunIds, generation = actionGeneration(action?.generation), includeThreadIdentity = false) {
-  return (Array.isArray(events) ? events : [])
-    .filter(event => event?.actionId === action?.id
-      && actionGeneration(event.actionGeneration ?? event.data?.actionGeneration) === generation
-      && matchingRunIds.has(event.runId)
-      && event.type === 'run.loop_output')
-    .map(event => normalizeProjectedMessage({
+  const projected = [];
+  const lastResponseByRun = new Map();
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.actionId !== action?.id
+      || actionGeneration(event.actionGeneration ?? event.data?.actionGeneration) !== generation
+      || !matchingRunIds.has(event.runId)
+      || event.type !== 'run.loop_output') continue;
+    const message = normalizeProjectedMessage({
       id: `event:${event.id}`,
       role: 'assistant',
       kind: 'response',
@@ -258,8 +260,14 @@ function loopOutputMessages(action, events, matchingRunIds, generation = actionG
         attempt: event.data?.actionAttempt,
         runId: event.runId,
       } : {}),
-    }))
-    .filter(Boolean);
+    });
+    if (!message) continue;
+    const previous = lastResponseByRun.get(event.runId);
+    if (previous === message.text) continue;
+    lastResponseByRun.set(event.runId, message.text);
+    projected.push(message);
+  }
+  return projected;
 }
 
 function messagesForGeneration(action, runs, events, generation, includeThreadIdentity = false) {
