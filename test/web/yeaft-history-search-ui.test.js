@@ -12,6 +12,7 @@ const virtual = read('components/VirtualTranscript.js');
 const navigation = read('utils/message-search-navigation.js');
 const store = read('stores/chat.js');
 const css = read('styles/yeaft.css');
+const modalCss = read('styles/chat-modals.css');
 const agent = read('../agent/index.js');
 const relay = read('../server/handlers/client-conversation.js');
 const agentHandler = read('stores/helpers/handlers/agentHandler.js');
@@ -59,6 +60,12 @@ describe('Yeaft conversation outline UI', () => {
     expect(indexOf(panel, 'v-for="(result, index) in visibleResults"')).toBeLessThan(indexOf(panel, 'v-if="!isSearching && outlineState.hasMore"'));
     expect(panel).toContain('restoreOlderScroll');
     expect(panel).toContain("$t('yeaft.outline.placeholder')");
+    expect(css).toMatch(/\.yeaft-conversation-outline-toolbar\s*\{[\s\S]*?display: flex;[\s\S]*?align-items: center;/);
+    expect(css).toMatch(/\.yeaft-conversation-outline-sender\s*\{[\s\S]*?min-width: 112px;[\s\S]*?max-width: 148px;/);
+    expect(panel).toContain(':menu-min-width="180"');
+    expect(modalCss).toContain('select.modern-select {');
+    expect(modalCss).toContain('select.modern-select:focus {');
+    expect(modalCss).not.toMatch(/(^|\n)\.modern-select\s*\{/);
   });
 
   it('negotiates outline and search support and fails closed for old Agents', () => {
