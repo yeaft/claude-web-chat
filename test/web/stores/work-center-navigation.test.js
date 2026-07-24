@@ -366,31 +366,75 @@ describe('Work Center navigation', () => {
       pending.push({ payload, resolve });
     }));
 
-    const page40 = store.loadWorkItemActionMessages('wi-1', 'action-1', '40', 'agent-1');
-    const page20 = store.loadWorkItemActionMessages('wi-1', 'action-1', '20', 'agent-1');
-    pending[1].resolve({ messages: [{ id: 'm-1', createdAt: 1 }], nextCursor: null, total: 3 });
+    const page40 = store.loadWorkItemActionMessages('wi-1', 'action-1', 2, '40', 'agent-1');
+    const page20 = store.loadWorkItemActionMessages('wi-1', 'action-1', 2, '20', 'agent-1');
+    pending[1].resolve({ generation: 2, messages: [{ id: 'm-1', createdAt: 1 }], nextCursor: null, total: 3 });
     await page20;
-    pending[0].resolve({ messages: [{ id: 'm-2', createdAt: 2 }], nextCursor: '20', total: 3 });
+    pending[0].resolve({ generation: 2, messages: [{ id: 'm-2', createdAt: 2 }], nextCursor: '20', total: 3 });
     await page40;
 
-    expect(store.workCenterActionMessages['agent-1:wi-1:action-1']).toEqual({
+    expect(store.workCenterActionMessages['agent-1:wi-1:action-1:2']).toEqual({
+      generation: 2,
       messages: [{ id: 'm-1', createdAt: 1 }, { id: 'm-2', createdAt: 2 }],
       nextCursor: null,
       total: 3,
     });
-    expect(store.workCenterActionMessagesLoading['agent-1:wi-1:action-1']).toBe(false);
+    expect(store.workCenterActionMessagesLoading['agent-1:wi-1:action-1:2']).toBe(false);
   });
 
-  it('deduplicates identical Action message page requests while one is pending', async () => {
+  it('deduplicates identical Action message page requests within one generation', async () => {
     const store = makeStore('yeaft');
     let resolvePage;
     store.workCenterRequest = vi.fn(() => new Promise(resolve => { resolvePage = resolve; }));
 
-    const first = store.loadWorkItemActionMessages('wi-1', 'action-1', '20', 'agent-1');
-    const second = store.loadWorkItemActionMessages('wi-1', 'action-1', '20', 'agent-1');
+    const first = store.loadWorkItemActionMessages('wi-1', 'action-1', 2, '20', 'agent-1');
+    const second = store.loadWorkItemActionMessages('wi-1', 'action-1', 2, '20', 'agent-1');
     expect(store.workCenterRequest).toHaveBeenCalledTimes(1);
-    resolvePage({ messages: [], nextCursor: null, total: 0 });
+    resolvePage({ generation: 2, messages: [], nextCursor: null, total: 0 });
     await Promise.all([first, second]);
+  });
+
+  it('keeps an old generation response out of the current Action cache when it resolves late', async () => {
+    const store = makeStore('yeaft');
+    const pending = [];
+    store.workCenterRequest = vi.fn((_op, payload) => new Promise(resolve => {
+      pending.push({ payload, resolve });
+    }));
+
+    const oldPage = store.loadWorkItemActionMessages('wi-1', 'action-1', 1, null, 'agent-1');
+    const currentPage = store.loadWorkItemActionMessages('wi-1', 'action-1', 2, null, 'agent-1');
+    pending[1].resolve({
+      actionId: 'action-1', generation: 2,
+      messages: [{ id: 'current', text: 'Current execution', createdAt: 2 }],
+      nextCursor: null, total: 1,
+    });
+    await currentPage;
+    pending[0].resolve({
+      actionId: 'action-1', generation: 1,
+      messages: [{ id: 'old', text: 'Old execution', createdAt: 1 }],
+      nextCursor: null, total: 1,
+    });
+    await oldPage;
+
+    expect(store.workCenterActionMessages['agent-1:wi-1:action-1:2']?.messages)
+      .toEqual([expect.objectContaining({ id: 'current' })]);
+    expect(store.workCenterActionMessages['agent-1:wi-1:action-1:2']?.messages)
+      .not.toContainEqual(expect.objectContaining({ id: 'old' }));
+    expect(store.workCenterActionMessages['agent-1:wi-1:action-1:1']?.messages)
+      .toEqual([expect.objectContaining({ id: 'old' })]);
+  });
+
+  it('rejects a message page whose response generation does not match its request identity', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterRequest = vi.fn().mockResolvedValue({
+      actionId: 'action-1', generation: 1,
+      messages: [{ id: 'old', text: 'Old execution', createdAt: 1 }],
+      nextCursor: null, total: 1,
+    });
+
+    await store.loadWorkItemActionMessages('wi-1', 'action-1', 2, null, 'agent-1');
+
+    expect(store.workCenterActionMessages['agent-1:wi-1:action-1:2']).toBeUndefined();
   });
 
   it('commits a successful input response for a non-pointer sibling Action', async () => {

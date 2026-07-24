@@ -133,6 +133,15 @@ export class WorkCenterService {
       case 'get_action_messages': {
         const detail = this.#requiredItem(payload.id);
         const action = this.#requiredAction(detail, payload.actionId);
+        const expectedGeneration = payload.generation == null
+          ? Number(action.generation)
+          : Number(payload.generation);
+        if (!Number.isInteger(expectedGeneration) || expectedGeneration < 1) {
+          throw new Error('generation must be a positive integer');
+        }
+        if (Number(action.generation) !== expectedGeneration) {
+          throw new Error('Action generation changed before messages were loaded');
+        }
         return projectActionMessagePage(action, detail.runs, this.store.listActionEvents(action.id), {
           cursor: payload.cursor,
           limit: payload.limit,

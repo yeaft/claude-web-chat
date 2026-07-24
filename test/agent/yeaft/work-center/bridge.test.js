@@ -265,11 +265,11 @@ describe('Work Center lifecycle bridge', () => {
 
     await handleWorkCenterRequest({
       requestId: 'message-page', op: 'get_action_messages',
-      payload: { id: 'wi-1', actionId: 'a-1', cursor: '80', limit: 20, injected: true },
+      payload: { id: 'wi-1', actionId: 'a-1', generation: 3, cursor: '80', limit: 20, injected: true },
     });
 
     expect(service.handle).toHaveBeenCalledWith('get_action_messages', {
-      id: 'wi-1', actionId: 'a-1', cursor: '80', limit: 20,
+      id: 'wi-1', actionId: 'a-1', generation: 3, cursor: '80', limit: 20,
     });
   });
 

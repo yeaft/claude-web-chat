@@ -314,6 +314,35 @@ describe('Work Center settings service', () => {
     expect(emitted).toEqual([]);
   });
 
+  it('fences Action message pages to the requested generation', async () => {
+    const service = await createService();
+    const item = await service.handle('create', {
+      title: 'Message history', goal: 'Keep generation identity stable', workDir: '/tmp', start: true,
+    });
+    const action = item.actions.find(candidate => candidate.id === item.currentActionId);
+
+    await expect(service.handle('get_action_messages', {
+      id: item.id, actionId: action.id,
+    })).resolves.toMatchObject({
+      actionId: action.id,
+      generation: action.generation,
+      messages: [],
+    });
+    await expect(service.handle('get_action_messages', {
+      id: item.id, actionId: action.id, generation: 0,
+    })).rejects.toThrow(/positive integer/);
+    await expect(service.handle('get_action_messages', {
+      id: item.id, actionId: action.id, generation: action.generation + 1,
+    })).rejects.toThrow(/generation changed/);
+    await expect(service.handle('get_action_messages', {
+      id: item.id, actionId: action.id, generation: action.generation,
+    })).resolves.toMatchObject({
+      actionId: action.id,
+      generation: action.generation,
+      messages: [],
+    });
+  });
+
   it('loads Action request indexes and details only through the owning WorkItem and Action', async () => {
     const trace = {
       fetchRecentDebugHistory: async options => {

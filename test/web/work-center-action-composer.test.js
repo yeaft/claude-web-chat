@@ -124,14 +124,14 @@ describe('Work Center Action composer scope', () => {
       loadLatestActionMessages: WorkCenterPage.methods.loadLatestActionMessages,
     };
 
-    WorkCenterPage.methods.selectAction.call(context, { id: 'action-2' });
+    WorkCenterPage.methods.selectAction.call(context, { id: 'action-2', generation: 1 });
     await Promise.resolve();
 
     expect(context.selectedActionId).toBe('action-2');
     expect(context.narrowPane).toBe('action');
     expect(context.previewingAttachmentId).toBeNull();
     expect(context.attachmentPreviewError).toBe('');
-    expect(loadWorkItemActionMessages).toHaveBeenCalledWith('wi-1', 'action-2', null, 'agent-1');
+    expect(loadWorkItemActionMessages).toHaveBeenCalledWith('wi-1', 'action-2', 1, null, 'agent-1');
   });
 
   it('loads and opens Run diagnostics only while the full Action scope remains current', async () => {
@@ -242,21 +242,32 @@ describe('Work Center Action composer scope', () => {
     }
   }
 
-  it('does not refetch a cached Action message page', () => {
-    const loadWorkItemActionMessages = vi.fn();
+  it('reuses only the cached Action message page for the selected generation', () => {
+    const loadWorkItemActionMessages = vi.fn().mockResolvedValue({ messages: [] });
     const context = {
       selected: { id: 'wi-1' },
       agentId: 'agent-1',
       store: {
-        workCenterActionMessages: { 'agent-1:wi-1:action-1': { messages: [] } },
+        workCenterActionMessages: {
+          'agent-1:wi-1:action-1:1': { generation: 1, messages: [{ id: 'old' }] },
+        },
         loadWorkItemActionMessages,
       },
     };
 
-    const result = WorkCenterPage.methods.loadLatestActionMessages.call(context, { id: 'action-1' });
+    const cached = WorkCenterPage.methods.loadLatestActionMessages.call(context, {
+      id: 'action-1', generation: 1,
+    });
+    const current = WorkCenterPage.methods.loadLatestActionMessages.call(context, {
+      id: 'action-1', generation: 2,
+    });
 
-    expect(result).toBeNull();
-    expect(loadWorkItemActionMessages).not.toHaveBeenCalled();
+    expect(cached).toBeNull();
+    expect(current).toBeInstanceOf(Promise);
+    expect(loadWorkItemActionMessages).toHaveBeenCalledOnce();
+    expect(loadWorkItemActionMessages).toHaveBeenCalledWith(
+      'wi-1', 'action-1', 2, null, 'agent-1',
+    );
   });
 
   it('uses the embedded current Action messages without issuing another request', () => {

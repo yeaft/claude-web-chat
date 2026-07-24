@@ -7,6 +7,7 @@ export default {
     action: { type: Object, default: null },
     selected: { type: Object, default: null },
     messages: { type: Array, default: () => [] },
+    messagesGeneration: { type: Number, default: 1 },
     messagesNextCursor: { type: [String, Number], default: null },
     messagesLoading: { type: Boolean, default: false },
     messagesError: { type: String, default: '' },
@@ -61,15 +62,17 @@ export default {
         && (!!this.composerText.trim() || this.composerAttachments.length > 0);
     },
     actionThread() {
+      const currentGeneration = Math.max(1, Number(this.action?.generation) || 1);
+      const currentMessages = Number(this.messagesGeneration) === currentGeneration ? this.messages : [];
       const thread = Array.isArray(this.action?.thread) ? this.action.thread : [];
       if (thread.length === 0) return [{
-        generation: Math.max(1, Number(this.action?.generation) || 1),
+        generation: currentGeneration,
         canonical: true,
-        messages: this.messages,
+        messages: currentMessages,
         runs: [],
       }];
       return thread
-        .map(entry => entry.canonical ? { ...entry, messages: this.messages } : entry)
+        .map(entry => entry.canonical ? { ...entry, messages: currentMessages } : entry)
         .sort((left, right) => {
           if (!!left.canonical !== !!right.canonical) return left.canonical ? -1 : 1;
           return (Number(right.generation) || 0) - (Number(left.generation) || 0);
@@ -81,13 +84,12 @@ export default {
   },
   watch: {
     'action.id'() {
-      this.activeView = 'conversation';
-      this.conversationScrollTop = 0;
-      this.expandedRequestKey = null;
-      this.expandedLoops = {};
-      this.expandedGenerations = {};
-      this.$emit('refresh-requests');
-      this.$nextTick(() => renderMermaidIn(this.$el));
+      this.resetActionView();
+    },
+    'action.generation'(generation, previousGeneration) {
+      const current = Math.max(1, Number(generation) || 1);
+      const previous = Math.max(1, Number(previousGeneration) || 1);
+      if (current !== previous) this.resetActionView();
     },
     composerText(value) {
       if (value) return;
@@ -154,6 +156,38 @@ export default {
     requestDetail(request) {
       const detail = this.requestDetails[this.requestKey(request)] || null;
       return detail?.request || detail;
+    },
+    resetActionView() {
+      this.activeView = 'conversation';
+      this.conversationScrollTop = 0;
+      this.expandedRequestKey = null;
+      this.expandedLoops = {};
+      this.expandedGenerations = {};
+      this.$nextTick(() => {
+        if (this.$refs.conversationPanel) this.$refs.conversationPanel.scrollTop = 0;
+        renderMermaidIn(this.$el);
+      });
+    },
+    tabId(view) {
+      return `work-center-action-${view}-tab`;
+    },
+    panelId(view) {
+      return `work-center-action-${view}-panel`;
+    },
+    onTabKeydown(event, view) {
+      const views = ['conversation', 'context', 'execution'];
+      const index = views.indexOf(view);
+      if (index < 0) return;
+      let nextIndex;
+      if (event.key === 'ArrowRight') nextIndex = (index + 1) % views.length;
+      else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + views.length) % views.length;
+      else if (event.key === 'Home') nextIndex = 0;
+      else if (event.key === 'End') nextIndex = views.length - 1;
+      else return;
+      event.preventDefault();
+      const nextView = views[nextIndex];
+      this.setActiveView(nextView);
+      this.$nextTick(() => this.$refs[`${nextView}Tab`]?.focus());
     },
     async openRun(run) {
       const actionId = this.action?.id;
@@ -240,13 +274,28 @@ export default {
       </header>
 
       <nav class="work-center-action-view-switch" role="tablist" :aria-label="tr('workCenter.actionViews', 'Action views')">
-        <button type="button" role="tab" :aria-selected="activeView === 'conversation' ? 'true' : 'false'" :class="{ active: activeView === 'conversation' }" @click="setActiveView('conversation')">{{ tr('workCenter.actionConversation', 'Conversation') }}</button>
-        <button type="button" role="tab" :aria-selected="activeView === 'context' ? 'true' : 'false'" :class="{ active: activeView === 'context' }" @click="setActiveView('context')">{{ tr('workCenter.actionContext', 'Context') }}</button>
-        <button type="button" role="tab" :aria-selected="activeView === 'execution' ? 'true' : 'false'" :class="{ active: activeView === 'execution' }" @click="setActiveView('execution')">{{ tr('workCenter.execution', 'Execution') }}</button>
+        <button ref="conversationTab" :id="tabId('conversation')" type="button" role="tab"
+                :tabindex="activeView === 'conversation' ? 0 : -1"
+                :aria-selected="activeView === 'conversation' ? 'true' : 'false'"
+                :aria-controls="panelId('conversation')"
+                :class="{ active: activeView === 'conversation' }"
+                @click="setActiveView('conversation')" @keydown="onTabKeydown($event, 'conversation')">{{ tr('workCenter.actionConversation', 'Conversation') }}</button>
+        <button ref="contextTab" :id="tabId('context')" type="button" role="tab"
+                :tabindex="activeView === 'context' ? 0 : -1"
+                :aria-selected="activeView === 'context' ? 'true' : 'false'"
+                :aria-controls="panelId('context')"
+                :class="{ active: activeView === 'context' }"
+                @click="setActiveView('context')" @keydown="onTabKeydown($event, 'context')">{{ tr('workCenter.actionContext', 'Context') }}</button>
+        <button ref="executionTab" :id="tabId('execution')" type="button" role="tab"
+                :tabindex="activeView === 'execution' ? 0 : -1"
+                :aria-selected="activeView === 'execution' ? 'true' : 'false'"
+                :aria-controls="panelId('execution')"
+                :class="{ active: activeView === 'execution' }"
+                @click="setActiveView('execution')" @keydown="onTabKeydown($event, 'execution')">{{ tr('workCenter.execution', 'Execution') }}</button>
       </nav>
 
       <div class="work-center-action-detail-scroll" :data-view="activeView">
-        <div v-show="activeView === 'conversation'" ref="conversationPanel" id="work-center-action-messages-panel" class="work-center-action-transcript" role="tabpanel" :aria-label="tr('workCenter.actionConversation', 'Action conversation')">
+        <div v-show="activeView === 'conversation'" ref="conversationPanel" :id="panelId('conversation')" class="work-center-action-transcript" role="tabpanel" :aria-labelledby="tabId('conversation')">
           <section v-if="action.failure" class="work-center-action-failure" role="alert">
             <strong>{{ tr('workCenter.actionFailedTitle', 'Why this Action failed') }}</strong>
             <p v-if="action.failure.error">{{ action.failure.error }}</p>
@@ -286,7 +335,7 @@ export default {
           <p v-if="!hasThreadMessages" class="work-center-action-empty">{{ tr('workCenter.noActionMessages', 'No execution messages yet.') }}</p>
         </div>
 
-        <section v-show="activeView === 'context'" class="work-center-action-context" role="tabpanel" :aria-label="tr('workCenter.actionContext', 'Context')">
+        <section v-show="activeView === 'context'" :id="panelId('context')" class="work-center-action-context" role="tabpanel" :aria-labelledby="tabId('context')">
           <dl v-if="action.brief" class="work-center-action-context-list">
             <div><dt>{{ tr('workCenter.actionObjective', 'What to do') }}</dt><dd>{{ action.brief.objective }}</dd></div>
             <div v-if="action.brief.approach"><dt>{{ tr('workCenter.actionApproach', 'How to do it') }}</dt><dd>{{ action.brief.approach }}</dd></div>
@@ -303,7 +352,7 @@ export default {
           </section>
         </section>
 
-        <section v-show="activeView === 'execution'" class="work-center-action-execution" role="tabpanel" :aria-label="tr('workCenter.execution', 'Execution')">
+        <section v-show="activeView === 'execution'" :id="panelId('execution')" class="work-center-action-execution" role="tabpanel" :aria-labelledby="tabId('execution')">
           <dl class="work-center-action-metrics">
             <div><dt>{{ tr('workCenter.statusLabel', 'Status') }}</dt><dd>{{ statusLabel(action.status) }}</dd></div>
             <div><dt>{{ tr('workCenter.llmRequestsLabel', 'LLM requests') }}</dt><dd>{{ formatCount(action.executionStats?.llmRequestCount) }}</dd></div>

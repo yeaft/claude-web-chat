@@ -9,11 +9,12 @@ function mountDetail(props = {}) {
     attachTo: document.body,
     props: {
       action: {
-        id: 'action-1', type: 'implement', status: 'running',
+        id: 'action-1', type: 'implement', status: 'running', generation: 1,
         executionStats: {}, messages: [],
       },
       selected: { id: 'wi-1', status: 'running', currentActionId: 'action-1' },
       messages: [],
+      messagesGeneration: props.action?.generation || 1,
       ...props,
     },
     global: {
@@ -94,6 +95,80 @@ describe('Work Center Action detail tabs', () => {
     await tabs[2].trigger('click');
     expect(wrapper.get('.work-center-action-execution').isVisible()).toBe(true);
     expect(wrapper.emitted('refresh-requests')).toHaveLength(1);
+  });
+
+  it('implements roving focus, keyboard navigation, and linked tab panels', async () => {
+    const wrapper = mountDetail();
+    let tabs = wrapper.findAll('[role="tab"]');
+    const panels = wrapper.findAll('[role="tabpanel"]');
+
+    expect(tabs.map(tab => tab.attributes('tabindex'))).toEqual(['0', '-1', '-1']);
+    expect(tabs.map(tab => tab.attributes('aria-controls')))
+      .toEqual(panels.map(panel => panel.attributes('id')));
+    expect(panels.map(panel => panel.attributes('aria-labelledby')))
+      .toEqual(tabs.map(tab => tab.attributes('id')));
+
+    await tabs[0].trigger('keydown', { key: 'ArrowRight' });
+    tabs = wrapper.findAll('[role="tab"]');
+    expect(wrapper.vm.activeView).toBe('context');
+    expect(tabs.map(tab => tab.attributes('tabindex'))).toEqual(['-1', '0', '-1']);
+    expect(document.activeElement).toBe(tabs[1].element);
+
+    await tabs[1].trigger('keydown', { key: 'End' });
+    tabs = wrapper.findAll('[role="tab"]');
+    expect(wrapper.vm.activeView).toBe('execution');
+    expect(document.activeElement).toBe(tabs[2].element);
+    expect(wrapper.emitted('refresh-requests')).toHaveLength(1);
+
+    await tabs[2].trigger('keydown', { key: 'ArrowRight' });
+    tabs = wrapper.findAll('[role="tab"]');
+    expect(wrapper.vm.activeView).toBe('conversation');
+    expect(document.activeElement).toBe(tabs[0].element);
+
+    await tabs[0].trigger('keydown', { key: 'ArrowLeft' });
+    tabs = wrapper.findAll('[role="tab"]');
+    expect(wrapper.vm.activeView).toBe('execution');
+    expect(document.activeElement).toBe(tabs[2].element);
+
+    await tabs[2].trigger('keydown', { key: 'Home' });
+    expect(wrapper.vm.activeView).toBe('conversation');
+    expect(document.activeElement).toBe(wrapper.findAll('[role="tab"]')[0].element);
+  });
+
+  it('resets the reused conversation DOM scroll position when the Action changes', async () => {
+    const wrapper = mountDetail();
+    const panel = wrapper.get('.work-center-action-transcript').element;
+    panel.scrollTop = 160;
+
+    await wrapper.setProps({
+      action: {
+        id: 'action-2', type: 'review', status: 'running', generation: 1,
+        executionStats: {}, messages: [],
+      },
+      selected: { id: 'wi-1', status: 'running', currentActionId: 'action-2' },
+    });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.vm.conversationScrollTop).toBe(0);
+    expect(wrapper.get('.work-center-action-transcript').element.scrollTop).toBe(0);
+  });
+
+  it('resets the current transcript when the same Action advances generation', async () => {
+    const wrapper = mountDetail();
+    const panel = wrapper.get('.work-center-action-transcript').element;
+    panel.scrollTop = 120;
+
+    await wrapper.setProps({
+      action: {
+        id: 'action-1', type: 'implement', status: 'running', generation: 2,
+        executionStats: {}, messages: [],
+      },
+      messagesGeneration: 2,
+    });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.vm.conversationScrollTop).toBe(0);
+    expect(wrapper.get('.work-center-action-transcript').element.scrollTop).toBe(0);
   });
 
   it('preserves the selected request and loop across same-Action progress updates', async () => {
@@ -285,12 +360,32 @@ describe('Work Center Action detail tabs', () => {
         ],
       },
       messages: [{ id: 'current' }],
+      messagesGeneration: 3,
     };
 
     expect(WorkCenterActionDetail.computed.actionThread.call(context)).toEqual([
       expect.objectContaining({ generation: 3, canonical: true, messages: [{ id: 'current' }] }),
       expect.objectContaining({ generation: 2, canonical: false }),
       expect.objectContaining({ generation: 1, canonical: false }),
+    ]);
+  });
+
+  it('does not replace the current conversation with messages from another generation', () => {
+    const context = {
+      action: {
+        generation: 2,
+        thread: [
+          { generation: 1, canonical: false, messages: [{ id: 'old', text: 'Old execution' }] },
+          { generation: 2, canonical: true, messages: [] },
+        ],
+      },
+      messages: [{ id: 'stale', text: 'Stale cache entry' }],
+      messagesGeneration: 1,
+    };
+
+    expect(WorkCenterActionDetail.computed.actionThread.call(context)).toEqual([
+      expect.objectContaining({ generation: 2, canonical: true, messages: [] }),
+      expect.objectContaining({ generation: 1, canonical: false, messages: [expect.objectContaining({ id: 'old' })] }),
     ]);
   });
 

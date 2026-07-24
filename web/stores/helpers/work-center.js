@@ -69,6 +69,15 @@ export function mergeActionMessages(...sources) {
     || String(left.id || '').localeCompare(String(right.id || '')));
 }
 
+export function normalizeWorkCenterActionGeneration(value) {
+  const generation = Number(value);
+  return Number.isInteger(generation) && generation > 0 ? generation : 1;
+}
+
+export function workCenterActionMessageKey(agentId, workItemId, actionId, generation) {
+  return `${agentId}:${workItemId}:${actionId}:${normalizeWorkCenterActionGeneration(generation)}`;
+}
+
 export function isWorkItemSummaryStale(summary, current) {
   if (!summary || !current || summary.id !== current.id) return false;
   const summaryRevision = numberOrNull(summary.revision);

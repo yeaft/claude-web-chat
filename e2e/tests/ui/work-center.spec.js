@@ -524,6 +524,7 @@ test.describe('Work Center responsive UI', () => {
 
     const messagesResponse = respondToWorkCenterOp(mockAgent, 'get_action_messages', {
       actionId: detail.actions[0].id,
+      generation: detail.actions[0].generation,
       messages: [{
         id: 'run:historical-run', role: 'assistant', kind: 'response', status: 'completed',
         text: 'Historical AI response loaded on selection.', attachments: [],
@@ -536,7 +537,8 @@ test.describe('Work Center responsive UI', () => {
     const request = await messagesResponse;
 
     expect(request.payload).toEqual({
-      id: OPEN_ITEM.id, actionId: detail.actions[0].id, cursor: null, limit: 20,
+      id: OPEN_ITEM.id, actionId: detail.actions[0].id,
+      generation: detail.actions[0].generation, cursor: null, limit: 20,
     });
     await expect(chatPage.locator('.work-center-action-message')).toContainText('Historical AI response loaded on selection.');
   });
