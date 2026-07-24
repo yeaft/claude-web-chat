@@ -1415,6 +1415,26 @@ export class WorkItemStore {
     return graphExecutionState(detail, detail.actions);
   }
 
+  deleteWorkItemAtomic(id, expectedRevision) {
+    return withTransaction(this.db, () => {
+      const detail = this.getWorkItemDetail(id);
+      if (!detail) return null;
+      if (!Number.isInteger(expectedRevision) || detail.revision !== expectedRevision) {
+        throw new Error('WorkItem changed before deletion; refresh and try again');
+      }
+      const activeRun = detail.runs.find(run => run.status === 'running');
+      if (activeRun || !['done', 'cancelled', 'draft', 'needs_attention'].includes(detail.status)) {
+        throw new Error('Stop this WorkItem before deleting it');
+      }
+      const result = this.db.prepare('DELETE FROM work_items WHERE id = ? AND revision = ?')
+        .run(id, expectedRevision);
+      if (Number(result.changes) !== 1) {
+        throw new Error('WorkItem changed before deletion; refresh and try again');
+      }
+      return detail;
+    });
+  }
+
   listActionEvents(actionId) {
     return this.db.prepare(`SELECT * FROM events WHERE action_id = ? ORDER BY id`).all(actionId).map(mapEvent);
   }
