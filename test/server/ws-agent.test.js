@@ -1079,7 +1079,8 @@ describe('CONV_EXEMPT_TYPES — workbench responses must bypass conversation-id 
     'directory_listing', 'folders_list', 'yeaft_output', 'yeaft_session_output', 'session_output',
     'yeaft_history_chunk', 'slash_commands_update',
     'file_content', 'file_saved', 'file_op_result', 'file_search_result',
-    'git_status_result', 'git_diff_result', 'git_op_result'
+    'git_status_result', 'git_diff_result', 'git_op_result',
+    'terminal_created', 'terminal_output', 'terminal_closed', 'terminal_error'
   ]);
 
   function isDropped(agent, msg) {
@@ -1091,6 +1092,20 @@ describe('CONV_EXEMPT_TYPES — workbench responses must bypass conversation-id 
     }
     return false;
   }
+
+  it('passes terminal responses through for an unknown Yeaft virtual conversationId', () => {
+    const agent = createMockAgent();
+    const cid = 'yeaft-1762400000000';
+    for (const type of ['terminal_created', 'terminal_output', 'terminal_closed', 'terminal_error']) {
+      expect(isDropped(agent, {
+        type,
+        conversationId: cid,
+        terminalId: 'term-1',
+        _requestUserId: 'u1',
+        _requestClientId: 'client-1',
+      })).toBe(false);
+    }
+  });
 
   it('passes file_content through for an unknown (Yeaft-style) conversationId', () => {
     const agent = createMockAgent(); // empty conversations Map
