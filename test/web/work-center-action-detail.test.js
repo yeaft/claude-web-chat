@@ -187,11 +187,10 @@ describe('Work Center Action detail tabs', () => {
       },
     });
 
-    await wrapper.get('#work-center-action-requests-tab').trigger('click');
     await wrapper.get('.work-center-request-summary').trigger('click');
     expect(wrapper.get('.work-center-request-detail > .work-center-action-notice').text())
       .toBe('workCenter.requestDetailTruncated');
-    expect(wrapper.find('.work-center-action-empty').exists()).toBe(false);
+    expect(wrapper.find('.work-center-request-detail .work-center-action-empty').exists()).toBe(false);
   });
 
   it('renders retained Loop summaries with explicit truncation notices', async () => {
@@ -210,7 +209,6 @@ describe('Work Center Action detail tabs', () => {
       },
     });
 
-    await wrapper.get('#work-center-action-requests-tab').trigger('click');
     await wrapper.get('.work-center-request-summary').trigger('click');
     expect(wrapper.get('.work-center-request-detail > .work-center-action-notice').text())
       .toBe('workCenter.requestDetailTruncated');
