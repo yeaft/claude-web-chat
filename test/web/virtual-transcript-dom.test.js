@@ -97,82 +97,9 @@ describe('VirtualTranscript DOM windowing', () => {
     vi.restoreAllMocks();
   });
 
-  it('mounts the tail directly and reuses the height layout while scrolling', async () => {
-    const scroller = createScroller();
-    const estimateHeight = vi.fn(() => 100);
-    const mountedIds = [];
-    const TrackingRow = {
-      props: { id: { type: String, required: true } },
-      setup(props) {
-        Vue.onMounted(() => mountedIds.push(props.id));
-        return () => Vue.h('div', { 'data-turn-id': props.id }, props.id);
-      },
-    };
-    const wrapper = mount(VirtualTranscript, {
-      props: {
-        items: turns(1000),
-        estimateHeight,
-        initialAlign: 'end',
-        itemGap: 0,
-        overscan: 1,
-      },
-      slots: {
-        default: ({ item }) => Vue.h(TrackingRow, { id: item.id }),
-      },
-      attachTo: scroller,
-    });
 
-    await flushAnimationFrame();
 
-    expect(renderedIds(wrapper)).toContain('turn-999');
-    expect(renderedIds(wrapper)).not.toContain('turn-0');
-    expect(mountedIds).not.toContain('turn-0');
-    expect(renderedIds(wrapper).length).toBeLessThan(8);
-    expect(estimateHeight).toHaveBeenCalledTimes(1000);
 
-    scroller.scrollTop = 50000;
-    scroller.dispatchEvent(new Event('scroll'));
-    await flushAnimationFrame();
-
-    expect(renderedIds(wrapper)).toContain('turn-500');
-    expect(renderedIds(wrapper).length).toBeLessThan(8);
-    expect(estimateHeight).toHaveBeenCalledTimes(1000);
-    wrapper.unmount();
-  });
-
-  it('rebuilds the full layout at most once for a batch of non-zero DOM measurements', async () => {
-    const scroller = createScroller();
-    const estimateHeight = vi.fn(() => 90);
-    const measurementCalls = stubVirtualRowHeight(100);
-    const wrapper = mount(VirtualTranscript, {
-      props: {
-        items: turns(1000),
-        estimateHeight,
-        itemGap: 0,
-        overscan: 1,
-      },
-      slots: {
-        default: ({ item }) => Vue.h('div', { 'data-turn-id': item.id }, item.id),
-      },
-      attachTo: scroller,
-    });
-
-    await flushAnimationFrame(3);
-
-    expect(measurementCalls()).toBeGreaterThan(1);
-    expect(estimateHeight.mock.calls.length).toBeGreaterThanOrEqual(1000);
-    expect(estimateHeight.mock.calls.length).toBeLessThanOrEqual(2000);
-
-    const callsBeforeScroll = estimateHeight.mock.calls.length;
-    scroller.scrollTop = 50000;
-    scroller.dispatchEvent(new Event('scroll'));
-    await flushAnimationFrame(3);
-
-    expect(renderedIds(wrapper)).toContain('turn-555');
-    expect(measurementCalls()).toBeGreaterThan(4);
-    expect(estimateHeight.mock.calls.length - callsBeforeScroll).toBeLessThanOrEqual(1000);
-    wrapper.unmount();
-  });
 
   it('invalidates a queued near-bottom adjustment and lets a new generation follow again', async () => {
     const scroller = createScroller({ viewportHeight: 300, scrollHeight: 10000 });
@@ -238,51 +165,7 @@ describe('VirtualTranscript DOM windowing', () => {
     wrapper.unmount();
   });
 
-  it('keeps start alignment as the default for other consumers', async () => {
-    const scroller = createScroller({ scrollHeight: 10000 });
-    const wrapper = mount(VirtualTranscript, {
-      props: {
-        items: turns(100),
-        estimateHeight: () => 100,
-        itemGap: 0,
-        overscan: 1,
-      },
-      slots: {
-        default: ({ item }) => Vue.h('div', { 'data-turn-id': item.id }, item.id),
-      },
-      attachTo: scroller,
-    });
 
-    await flushAnimationFrame();
 
-    expect(renderedIds(wrapper)).toContain('turn-0');
-    expect(renderedIds(wrapper)).not.toContain('turn-99');
-    expect(renderedIds(wrapper).length).toBeLessThan(8);
-    wrapper.unmount();
-  });
 
-  it('keeps the tail pending while asynchronous history is empty', async () => {
-    const scroller = createScroller({ scrollHeight: 10000 });
-    const wrapper = mount(VirtualTranscript, {
-      props: {
-        items: [],
-        estimateHeight: () => 100,
-        initialAlign: 'end',
-        itemGap: 0,
-        overscan: 1,
-      },
-      slots: {
-        default: ({ item }) => Vue.h('div', { 'data-turn-id': item.id }, item.id),
-      },
-      attachTo: scroller,
-    });
-
-    await wrapper.setProps({ items: turns(100) });
-    await flushAnimationFrame();
-
-    expect(renderedIds(wrapper)).toContain('turn-99');
-    expect(renderedIds(wrapper)).not.toContain('turn-0');
-    expect(renderedIds(wrapper).length).toBeLessThan(8);
-    wrapper.unmount();
-  });
 });

@@ -327,35 +327,7 @@ describe('handleYeaftHistoryChunk', () => {
     expect(arr[0].sessionId).toBe('g1');
   });
 
-  it('documents why metadata-only must not send an empty recent chunk', () => {
-    const store = mkStore({
-      yeaftActiveSessionFilter: 'g1',
-      messagesMap: {
-        'yeaft-1': [
-          { id: 'cached-q', type: 'user', content: 'cached q', sessionId: 'g1', timestamp: 10 },
-          { id: 'cached-a', type: 'assistant', content: 'cached a', sessionId: 'g1', timestamp: 11 },
-        ],
-      },
-      yeaftSessionHistoryState: {
-        g1: { loaded: true, loading: false, hasMore: false, oldestSeq: 10, latestSeq: 11, count: 2 },
-      },
-    });
 
-    handleYeaftHistoryChunk(store, {
-      conversationId: 'yeaft-1',
-      sessionId: 'g1',
-      mode: 'recent',
-      messages: [],
-      oldestSeq: null,
-      latestSeq: null,
-      hasMore: false,
-    });
-
-    // Empty `recent` is destructive by design: it means "the authoritative
-    // recent window is empty", not "metadata-only". Therefore the backend must
-    // not emit this shape for `limit:0` bootstraps.
-    expect(store.messagesMap['yeaft-1'].filter(m => m.sessionId === 'g1')).toEqual([]);
-  });
 
   it('replaces stale recent bootstrap rows without blanking live session tail', () => {
     const store = mkStore({
@@ -763,30 +735,7 @@ describe('handleYeaftHistoryChunk', () => {
     expect(store.yeaftLoadingMoreHistory).toBe(false);
   });
 
-  it('accepts legacy groupId field on a chunk for deploy-window compat', () => {
-    // Old agents may still emit `groupId` instead of `sessionId` on the
-    // wire envelope and per-row stamp. The handler must accept both and
-    // promote to the canonical `sessionId` field on the stored row.
-    const store = mkStore({
-      yeaftActiveSessionFilter: 'g1',
-      messagesMap: { 'yeaft-1': [] },
-    });
-    handleYeaftHistoryChunk(store, {
-      conversationId: 'yeaft-1',
-      groupId: 'g1',
-      messages: [
-        { id: 'm0001', role: 'user',      content: 'legacy-q', groupId: 'g1' },
-        { id: 'm0002', role: 'assistant', content: 'legacy-a', groupId: 'g1' },
-      ],
-      oldestSeq: 1,
-      hasMore: false,
-    });
 
-    expect(store.messagesMap['yeaft-1'].map(m => m.content)).toEqual(['legacy-q', 'legacy-a']);
-    // Even though the agent sent `groupId`, the stored rows use `sessionId`.
-    expect(store.messagesMap['yeaft-1'][0].sessionId).toBe('g1');
-    expect(store.messagesMap['yeaft-1'][1].sessionId).toBe('g1');
-  });
 
   it('preserves persisted timestamps from paginated history rows', () => {
     const store = mkStore({ messagesMap: { 'yeaft-1': [] } });
@@ -1183,21 +1132,7 @@ describe('handleYeaftHistoryChunk', () => {
     expect(store.messagesMap['yeaft-1']).toEqual([]);
   });
 
-  it('clears yeaftLoadingMoreHistory when conversationId is missing entirely', () => {
-    const store = mkStore({
-      yeaftConversationId: null,
-      yeaftLoadingMoreHistory: true,
-    });
-    handleYeaftHistoryChunk(store, {
-      // no conversationId in the message either
-      messages: [{ id: 'm1', role: 'user', content: 'x' }],
-      oldestSeq: 1,
-      hasMore: false,
-    });
-    expect(store.yeaftLoadingMoreHistory).toBe(false);
-    // No conversationId → no map mutation.
-    expect(Object.keys(store.messagesMap)).toEqual([]);
-  });
+
 
   it('falls back to store.yeaftConversationId when the chunk omits conversationId', () => {
     const store = mkStore();

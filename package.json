@@ -9,7 +9,9 @@
     "agent"
   ],
   "scripts": {
-    "test": "vitest run --exclude '**/.claude/worktrees/**' --exclude '**/.worktrees/**' --exclude '**/.yeaft/worktrees/**'",
+    "test": "npm run test:budget && vitest run --exclude '**/.claude/worktrees/**' --exclude '**/.worktrees/**' --exclude '**/.yeaft/worktrees/**'",
+    "test:budget": "node scripts/check-test-budget.mjs",
+    "test:focus": "vitest run --config vitest.focus.config.js",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test --config e2e/playwright.config.js",

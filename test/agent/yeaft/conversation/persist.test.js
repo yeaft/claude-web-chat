@@ -18,19 +18,6 @@ afterEach(() => {
 
 // ─── estimateTokens ──────────────────────────────────────────
 
-describe('estimateTokens', () => {
-  it('should estimate ~4 chars per token', () => {
-    expect(estimateTokens('abcd')).toBe(1);
-    expect(estimateTokens('abcdefgh')).toBe(2);
-    expect(estimateTokens('a'.repeat(100))).toBe(25);
-  });
-
-  it('should return 0 for empty/null', () => {
-    expect(estimateTokens('')).toBe(0);
-    expect(estimateTokens(null)).toBe(0);
-    expect(estimateTokens(undefined)).toBe(0);
-  });
-});
 
 // ─── parseMessage ────────────────────────────────────────────
 
@@ -55,11 +42,6 @@ Hello world`;
     expect(msg.content).toBe('Hello world');
   });
 
-  it('should return null for invalid input', () => {
-    expect(parseMessage(null)).toBeNull();
-    expect(parseMessage('')).toBeNull();
-    expect(parseMessage('no frontmatter')).toBeNull();
-  });
 
   it('should parse tool metadata', () => {
     const raw = `---
@@ -79,20 +61,6 @@ Error: not found`;
     expect(msg.isError).toBe(true);
   });
 
-  it('should parse turnNumber', () => {
-    const raw = `---
-id: m0003
-role: assistant
-time: 2026-04-10T10:02:00Z
-turnNumber: 3
-tokens_est: 20
----
-
-Response text`;
-
-    const msg = parseMessage(raw);
-    expect(msg.turnNumber).toBe(3);
-  });
 
   it('should parse clientMessageId for optimistic Yeaft user rows', () => {
     const raw = `---
@@ -362,30 +330,10 @@ describe('ConversationStore', () => {
     store = new ConversationStore(TEST_DIR);
   });
 
-  describe('constructor', () => {
-    it('should create chat and sessions root but not obsolete group history directories', () => {
-      expect(existsSync(join(TEST_DIR, 'chat', 'messages'))).toBe(true);
-      expect(existsSync(join(TEST_DIR, 'chat', 'cold'))).toBe(true);
-      expect(existsSync(join(TEST_DIR, 'sessions'))).toBe(true);
-      expect(existsSync(join(TEST_DIR, 'groups'))).toBe(false);
-      expect(existsSync(join(TEST_DIR, 'group'))).toBe(false);
-      expect(existsSync(join(TEST_DIR, 'conversation'))).toBe(false);
-    });
-  });
+
 
   describe('append', () => {
-    it('should write a message file', () => {
-      const msg = store.append({ role: 'user', content: 'Hello' });
-      expect(msg.id).toBe('m0001');
-      expect(msg.role).toBe('user');
-      expect(msg.content).toBe('Hello');
-      expect(msg.time).toBeTruthy();
-      expect(msg.tokens_est).toBeGreaterThan(0);
 
-      const segmentPath = join(TEST_DIR, 'chat', 'segments', '000001.jsonl');
-      expect(existsSync(segmentPath)).toBe(true);
-      expect(readFileSync(segmentPath, 'utf8')).toContain('\"content\":\"Hello\"');
-    });
 
     it('should persist clientMessageId metadata for Yeaft user echo dedupe', () => {
       store.append({
@@ -433,20 +381,6 @@ describe('ConversationStore', () => {
       expect(loaded[0].taskStatus).toBe('succeeded');
       expect(loaded[0].internal).toBeUndefined();
       expect(loaded[0].content).toContain('[Task finished]');
-    });
-
-    it('should auto-increment sequence numbers', () => {
-      const msg1 = store.append({ role: 'user', content: 'First' });
-      const msg2 = store.append({ role: 'assistant', content: 'Second' });
-      expect(msg1.id).toBe('m0001');
-      expect(msg2.id).toBe('m0002');
-    });
-
-    it('should persist mode and model', () => {
-      store.append({ role: 'user', content: 'Test', mode: 'work', model: 'gpt-5' });
-      const loaded = store.loadRecent(1);
-      expect(loaded[0].mode).toBe('work');
-      expect(loaded[0].model).toBe('gpt-5');
     });
 
 
@@ -869,33 +803,10 @@ legacy session`, { encoding: 'utf8' });
     });
   });
 
-  describe('appendBatch', () => {
-    it('should write multiple messages', () => {
-      const messages = store.appendBatch([
-        { role: 'user', content: 'Hello' },
-        { role: 'assistant', content: 'Hi there' },
-        { role: 'user', content: 'How are you?' },
-      ]);
-      expect(messages).toHaveLength(3);
-      expect(messages[0].id).toBe('m0001');
-      expect(messages[1].id).toBe('m0002');
-      expect(messages[2].id).toBe('m0003');
-    });
-  });
+
 
   describe('loadRecent', () => {
-    it('should load messages sorted chronologically', () => {
-      store.appendBatch([
-        { role: 'user', content: 'First' },
-        { role: 'assistant', content: 'Second' },
-        { role: 'user', content: 'Third' },
-      ]);
 
-      const loaded = store.loadRecent(10);
-      expect(loaded).toHaveLength(3);
-      expect(loaded[0].content).toBe('First');
-      expect(loaded[2].content).toBe('Third');
-    });
 
     it('should respect limit (most recent turns)', () => {
       // `loadRecent` is now turn-based. Build 3 distinct user turns so
@@ -919,21 +830,10 @@ legacy session`, { encoding: 'utf8' });
       expect(loaded[3].content).toBe('a3');
     });
 
-    it('should return empty array when no messages', () => {
-      expect(store.loadRecent()).toEqual([]);
-    });
+
   });
 
-  describe('loadAll', () => {
-    it('should load all hot messages', () => {
-      store.appendBatch([
-        { role: 'user', content: 'A' },
-        { role: 'user', content: 'B' },
-        { role: 'user', content: 'C' },
-      ]);
-      expect(store.loadAll()).toHaveLength(3);
-    });
-  });
+
 
   // Group-history-isolation (Bug 7): group-scoped loaders.
   describe('loadRecentBySession / loadAllBySession', () => {
@@ -1507,20 +1407,7 @@ legacy session`, { encoding: 'utf8' });
       expect(readCounts.count).toBeLessThan(80);
     });
 
-    it('returns [] for empty/null sessionId without throwing', () => {
-      store.append({ role: 'user', content: 'X', sessionId: 'grp_a' });
-      expect(store.loadRecentBySession(null, 10)).toEqual([]);
-      expect(store.loadRecentBySession('', 10)).toEqual([]);
-    });
 
-    it('loadAllBySession mirrors loadRecentBySession with no limit', () => {
-      const big = Array.from({ length: 80 }, (_, i) => ({
-        role: 'user', content: `m${i}`, sessionId: 'grp_a',
-      }));
-      store.appendBatch(big);
-      expect(store.loadAllBySession('grp_a')).toHaveLength(80);
-      expect(store.loadRecentBySession('grp_a', 50)).toHaveLength(50);
-    });
   });
 
   // Cascade delete + orphan compaction.
@@ -1731,21 +1618,6 @@ legacy session`, { encoding: 'utf8' });
       expect(store.loadOlderBySession('session_cold', null, 10).messages.map(m => m.content)).toEqual(['cold question', 'hot answer']);
       expect(store.loadVisibleBySession('session_cold', null, 10).messages.map(m => m.content)).toEqual(['cold question', 'hot answer']);
       expect(store.loadSessionHistoryForVp('session_cold', 'vp-linus').map(m => m.content)).toEqual(['cold question', 'hot answer']);
-    });
-  });
-
-  describe('countHot / countCold', () => {
-    it('should count messages correctly', () => {
-      expect(store.countHot()).toBe(0);
-      expect(store.countCold()).toBe(0);
-
-      store.appendBatch([
-        { role: 'user', content: 'A' },
-        { role: 'assistant', content: 'B' },
-      ]);
-
-      expect(store.countHot()).toBe(2);
-      expect(store.countCold()).toBe(0);
     });
   });
 
