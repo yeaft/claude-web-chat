@@ -1965,7 +1965,6 @@ export default {
       return [
         store.activeConversationId || '',
         activeYeaftSessionId.value || '',
-        blocks.length,
         autoScrollItemIdentity(blocks[blocks.length - 1]),
       ].join('|');
     });
