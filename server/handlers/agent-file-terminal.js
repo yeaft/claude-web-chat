@@ -25,7 +25,8 @@ export async function handleAgentFileTerminal(agentId, agent, msg) {
         await sendToWebClient(targetClient, cleanMsg);
         break;
       }
-      await forwardToClients(agentId, msg.conversationId, msg);
+      const { _requestClientId, ...fallbackMsg } = msg;
+      await forwardToClients(agentId, msg.conversationId, fallbackMsg);
       break;
     }
 

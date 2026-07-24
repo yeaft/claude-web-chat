@@ -63,6 +63,12 @@ describe('Agent terminal response routing', () => {
     await handleAgentFileTerminal('agent-a', {}, msg);
 
     expect(mocks.sendToWebClient).not.toHaveBeenCalled();
-    expect(mocks.forwardToClients).toHaveBeenCalledWith('agent-a', 'yeaft-123', msg);
+    expect(mocks.forwardToClients).toHaveBeenCalledWith('agent-a', 'yeaft-123', {
+      type: 'terminal_created',
+      conversationId: 'yeaft-123',
+      terminalId: 'term-1',
+      success: true,
+      _requestUserId: 'user-a',
+    });
   });
 });
