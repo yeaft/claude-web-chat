@@ -36,7 +36,7 @@ export default {
   props: {
     outlineState: { type: Object, required: true },
     searchState: { type: Object, required: true },
-    activeIndex: { type: Number, default: 0 },
+    activeMessageId: { type: String, default: null },
   },
   emits: ['query', 'select', 'move', 'load-older', 'load-more-search', 'close'],
   template: `
@@ -78,7 +78,7 @@ export default {
           :class="{ active: index === activeIndex }"
           role="option"
           :aria-selected="index === activeIndex ? 'true' : 'false'"
-          @mouseenter="$emit('move', index)"
+          @mouseenter="$emit('move', result.messageId)"
           @click="$emit('select', result)"
         >
           <span class="yeaft-conversation-outline-meta">
@@ -111,6 +111,10 @@ export default {
     const visibleResults = Vue.computed(() => sortHistoryResultsNewest(
       isSearching.value ? props.searchState.results : props.outlineState.results,
     ));
+    const activeIndex = Vue.computed(() => {
+      const index = visibleResults.value.findIndex(result => result?.messageId === props.activeMessageId);
+      return index >= 0 ? index : 0;
+    });
     const isLoading = Vue.computed(() => isSearching.value ? props.searchState.loading : props.outlineState.loading);
     const countLabel = Vue.computed(() => {
       if (isSearching.value) return `${props.searchState.results.length}${props.searchState.hasMore ? '+' : ''}`;
@@ -142,22 +146,28 @@ export default {
       if (event.key === 'Escape') {
         event.preventDefault();
         emit('close');
-      } else if (event.key === 'ArrowDown') {
+      } else if (event.key === 'ArrowDown' && visibleResults.value.length) {
         event.preventDefault();
-        emit('move', Math.min(visibleResults.value.length - 1, props.activeIndex + 1));
-      } else if (event.key === 'ArrowUp') {
+        const index = Math.min(visibleResults.value.length - 1, activeIndex.value + 1);
+        emit('move', visibleResults.value[index]?.messageId || null);
+      } else if (event.key === 'ArrowUp' && visibleResults.value.length) {
         event.preventDefault();
-        emit('move', Math.max(0, props.activeIndex - 1));
+        const index = Math.max(0, activeIndex.value - 1);
+        emit('move', visibleResults.value[index]?.messageId || null);
       } else if (event.key === 'Enter' && visibleResults.value.length) {
         event.preventDefault();
-        emit('select', visibleResults.value[props.activeIndex] || visibleResults.value[0]);
+        emit('select', visibleResults.value[activeIndex.value] || visibleResults.value[0]);
       }
     };
+    Vue.watch([visibleResults, () => props.activeMessageId], ([results, activeMessageId]) => {
+      if (results.some(result => result?.messageId === activeMessageId)) return;
+      emit('move', results[0]?.messageId || null);
+    }, { immediate: true });
     const restoreOlderScroll = ({ scrollTop = 0 } = {}) => Vue.nextTick(() => {
       if (listRef.value) listRef.value.scrollTop = scrollTop;
     });
     expose({ focus, restoreOlderScroll });
     Vue.onMounted(focus);
-    return { inputRef, listRef, isSearching, visibleResults, isLoading, countLabel, errorKey, focus, loadOlder, onScroll, onKeyDown, formatOutlineTime };
+    return { inputRef, listRef, isSearching, visibleResults, activeIndex, isLoading, countLabel, errorKey, focus, loadOlder, onScroll, onKeyDown, formatOutlineTime };
   },
 };
