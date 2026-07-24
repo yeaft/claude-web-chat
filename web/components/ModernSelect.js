@@ -6,6 +6,8 @@
  * Pure presentational: emits `update:modelValue` like v-model. Closes on
  * outside-click / Escape. Falls back gracefully to keyboard arrow navigation.
  */
+let modernSelectId = 0;
+
 export default {
   name: 'ModernSelect',
   props: {
@@ -17,6 +19,8 @@ export default {
     loading: { type: Boolean, default: false },
     emptyText: { type: String, default: '—' },
     ariaLabel: { type: String, default: '' },
+    menuMinWidth: { type: Number, default: 0 },
+    menuClass: { type: String, default: '' },
   },
   emits: ['update:modelValue', 'change'],
   setup(props, { emit }) {
@@ -26,6 +30,9 @@ export default {
     const menuEl = Vue.ref(null);
     const searchEl = Vue.ref(null);
     const activeIdx = Vue.ref(-1);
+    const instanceId = `modern-select-${++modernSelectId}`;
+    const menuId = `${instanceId}-menu`;
+    const menuStyle = Vue.ref({});
 
     const selected = Vue.computed(() => props.options.find(o => o.value === props.modelValue) || null);
     const filtered = Vue.computed(() => {
@@ -37,6 +44,44 @@ export default {
         String(o.value || '').toLowerCase().includes(q)
       );
     });
+    const optionId = index => `${instanceId}-option-${index}`;
+    const activeOptionId = Vue.computed(() => (
+      open.value && activeIdx.value >= 0 && activeIdx.value < filtered.value.length
+        ? optionId(activeIdx.value)
+        : undefined
+    ));
+
+    function positionMenu() {
+      const trigger = triggerEl.value;
+      const menu = menuEl.value;
+      if (!trigger || !menu) return;
+      const gap = 6;
+      const viewportPadding = 8;
+      const triggerRect = trigger.getBoundingClientRect();
+      const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+      const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+      const menuWidth = Math.min(
+        Math.max(triggerRect.width, props.menuMinWidth),
+        Math.max(0, viewportWidth - viewportPadding * 2),
+      );
+      const desiredHeight = Math.min(menu.scrollHeight, 304);
+      const below = Math.max(0, viewportHeight - triggerRect.bottom - gap - viewportPadding);
+      const above = Math.max(0, triggerRect.top - gap - viewportPadding);
+      const placeAbove = below < desiredHeight && above > below;
+      const maxHeight = Math.max(48, Math.min(desiredHeight, placeAbove ? above : below));
+      const naturalLeft = triggerRect.right - menuWidth;
+      const left = Math.min(
+        Math.max(viewportPadding, naturalLeft),
+        Math.max(viewportPadding, viewportWidth - viewportPadding - menuWidth),
+      );
+      menuStyle.value = {
+        top: `${placeAbove ? triggerRect.top - gap - maxHeight : triggerRect.bottom + gap}px`,
+        left: `${left}px`,
+        width: `${menuWidth}px`,
+        maxHeight: `${maxHeight}px`,
+        '--modern-select-list-max-height': `${Math.max(36, maxHeight - (props.searchable ? 58 : 12))}px`,
+      };
+    }
 
     function toggle() {
       if (props.disabled) return;
@@ -45,11 +90,10 @@ export default {
         search.value = '';
         activeIdx.value = filtered.value.findIndex(o => o.value === props.modelValue);
         Vue.nextTick(() => {
-          if (props.searchable && searchEl.value && searchEl.value.focus) searchEl.value.focus();
-          if (menuEl.value) {
-            const el = menuEl.value.querySelector('.modern-select-option.is-active');
-            if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
-          }
+          positionMenu();
+          if (props.searchable && searchEl.value?.focus) searchEl.value.focus();
+          const activeOption = menuEl.value?.querySelector('.modern-select-option.is-active');
+          if (activeOption?.scrollIntoView) activeOption.scrollIntoView({ block: 'nearest' });
         });
       }
     }
@@ -75,15 +119,27 @@ export default {
     }
     function onDocClick(e) {
       if (!open.value) return;
-      if (triggerEl.value && triggerEl.value.contains(e.target)) return;
-      if (menuEl.value && menuEl.value.contains(e.target)) return;
+      if (triggerEl.value?.contains(e.target)) return;
+      if (menuEl.value?.contains(e.target)) return;
       close();
     }
-    Vue.onMounted(() => document.addEventListener('mousedown', onDocClick));
-    Vue.onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick));
+    const onViewportChange = () => { if (open.value) positionMenu(); };
+    Vue.onMounted(() => {
+      document.addEventListener('mousedown', onDocClick);
+      window.addEventListener('resize', onViewportChange);
+      window.addEventListener('scroll', onViewportChange, true);
+    });
+    Vue.onBeforeUnmount(() => {
+      document.removeEventListener('mousedown', onDocClick);
+      window.removeEventListener('resize', onViewportChange);
+      window.removeEventListener('scroll', onViewportChange, true);
+    });
     Vue.watch(() => props.modelValue, () => { /* re-sync handled by computed */ });
 
-    return { open, search, triggerEl, menuEl, searchEl, activeIdx, selected, filtered, toggle, close, pick, onKey };
+    return {
+      open, search, triggerEl, menuEl, searchEl, activeIdx, selected, filtered,
+      menuId, menuStyle, optionId, activeOptionId, toggle, close, pick, onKey,
+    };
   },
   template: `
     <div class="modern-select" :class="{ 'is-open': open, 'is-disabled': disabled }">
@@ -95,6 +151,8 @@ export default {
         :aria-label="ariaLabel || undefined"
         aria-haspopup="listbox"
         :aria-expanded="open ? 'true' : 'false'"
+        :aria-controls="menuId"
+        :aria-activedescendant="activeOptionId"
         @click="toggle"
         @keydown="onKey"
       >
@@ -107,42 +165,53 @@ export default {
           <path fill="currentColor" d="M5.25 7.5l4.75 4.75L14.75 7.5z"/>
         </svg>
       </button>
-      <transition name="ms-pop">
-        <div v-if="open" class="modern-select-menu" ref="menuEl" role="listbox">
-          <div v-if="searchable" class="modern-select-search">
-            <input
-              type="text"
-              v-model="search"
-              ref="searchEl"
-              :placeholder="$t ? $t('common.search') || 'Search…' : 'Search…'"
-              @keydown="onKey"
-            >
-          </div>
-          <div class="modern-select-list">
-            <div v-if="loading" class="modern-select-empty">…</div>
-            <div v-else-if="!filtered.length" class="modern-select-empty">{{ emptyText }}</div>
-            <div
-              v-for="(opt, i) in filtered"
-              :key="opt.value"
-              class="modern-select-option"
-              :class="{ 'is-active': i === activeIdx, 'is-selected': opt.value === modelValue }"
-              role="option"
-              :aria-selected="opt.value === modelValue ? 'true' : 'false'"
-              @mouseenter="activeIdx = i"
-              @click="pick(opt)"
-            >
-              <div class="modern-select-option-main">
-                <span class="modern-select-option-label">{{ opt.label }}</span>
-                <span v-if="opt.badge" class="modern-select-badge">{{ opt.badge }}</span>
+      <Teleport to="body">
+        <transition name="ms-pop">
+          <div
+            v-if="open"
+            :id="menuId"
+            class="modern-select-menu"
+            :class="menuClass"
+            :style="menuStyle"
+            ref="menuEl"
+            role="listbox"
+          >
+            <div v-if="searchable" class="modern-select-search">
+              <input
+                type="text"
+                v-model="search"
+                ref="searchEl"
+                :placeholder="$t ? $t('common.search') || 'Search…' : 'Search…'"
+                @keydown="onKey"
+              >
+            </div>
+            <div class="modern-select-list">
+              <div v-if="loading" class="modern-select-empty">…</div>
+              <div v-else-if="!filtered.length" class="modern-select-empty">{{ emptyText }}</div>
+              <div
+                v-for="(opt, i) in filtered"
+                :key="opt.value"
+                class="modern-select-option"
+                :class="{ 'is-active': i === activeIdx, 'is-selected': opt.value === modelValue }"
+                role="option"
+                :id="optionId(i)"
+                :aria-selected="opt.value === modelValue ? 'true' : 'false'"
+                @mouseenter="activeIdx = i"
+                @click="pick(opt)"
+              >
+                <div class="modern-select-option-main">
+                  <span class="modern-select-option-label">{{ opt.label }}</span>
+                  <span v-if="opt.badge" class="modern-select-badge">{{ opt.badge }}</span>
+                </div>
+                <div v-if="opt.sublabel" class="modern-select-option-sub">{{ opt.sublabel }}</div>
+                <svg v-if="opt.value === modelValue" class="modern-select-check" viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
+                  <path fill="currentColor" d="M7.629 13.514L3.886 9.77 2.471 11.186l5.158 5.158L17.385 6.586l-1.414-1.414z"/>
+                </svg>
               </div>
-              <div v-if="opt.sublabel" class="modern-select-option-sub">{{ opt.sublabel }}</div>
-              <svg v-if="opt.value === modelValue" class="modern-select-check" viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
-                <path fill="currentColor" d="M7.629 13.514L3.886 9.77 2.471 11.186l5.158 5.158L17.385 6.586l-1.414-1.414z"/>
-              </svg>
             </div>
           </div>
-        </div>
-      </transition>
+        </transition>
+      </Teleport>
     </div>
   `,
 };

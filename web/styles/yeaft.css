@@ -901,14 +901,11 @@
   color: var(--text-secondary);
 }
 
-.yeaft-conversation-outline-sender .modern-select-menu {
-  right: 0;
-  left: auto;
-  width: max(100%, 180px);
+.yeaft-conversation-outline-sender-menu {
   box-shadow: var(--modal-shadow);
 }
 
-.yeaft-conversation-outline-sender .modern-select-option {
+.yeaft-conversation-outline-sender-menu .modern-select-option {
   min-height: 34px;
   padding: 8px 30px 8px 10px;
 }

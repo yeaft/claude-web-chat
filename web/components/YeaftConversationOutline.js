@@ -79,6 +79,8 @@ export default {
           :model-value="searchState.senderKey || ''"
           :options="senderSelectOptions"
           :aria-label="$t('yeaft.outline.sender')"
+          :menu-min-width="180"
+          menu-class="yeaft-conversation-outline-sender-menu"
           @change="$emit('sender', $event)"
         />
       </div>
