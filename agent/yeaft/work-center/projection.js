@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { reconstructDebugRawRequest } from '../debug-trace.js';
 import {
   enforceActionRequestDetailBudget,
@@ -16,6 +17,7 @@ const MAX_ACTION_REQUEST_TOOL_CALLS = 128;
 const MAX_ACTION_REQUEST_ID_BYTES = 256;
 const MAX_ACTION_REQUEST_NAME_BYTES = 512;
 const MAX_ACTION_REQUEST_MODEL_BYTES = 1_024;
+const MAX_ACTION_REQUEST_STOP_REASON_BYTES = 256;
 const MAX_ACTION_REQUEST_METADATA_BYTES = 4 * 1_024;
 const MAX_HISTORICAL_BRIEF_CHARS = 256;
 const MAX_CURRENT_BRIEF_BYTES = 8 * 1024;
@@ -35,6 +37,14 @@ function truncateUtf8(value, maxBytes) {
 
 function exceedsUtf8Bytes(value, maxBytes) {
   return Buffer.byteLength(String(value || ''), 'utf8') > maxBytes;
+}
+
+function boundedIdentity(value, maxBytes) {
+  const text = String(value || '');
+  if (!text || !exceedsUtf8Bytes(text, maxBytes)) return text;
+  const digest = createHash('sha256').update(text, 'utf8').digest('hex');
+  const suffix = `~${digest}`;
+  return `${truncateUtf8(text, maxBytes - Buffer.byteLength(suffix, 'utf8'))}${suffix}`;
 }
 
 function currentAction(detail) {
@@ -996,47 +1006,62 @@ export function projectActionRequestDetail(action, run, history, runs = [run]) {
     || exceedsUtf8Bytes(requestModel, MAX_ACTION_REQUEST_MODEL_BYTES)
     || exceedsUtf8Bytes(run.vpSnapshot?.id, MAX_ACTION_REQUEST_METADATA_BYTES)
     || exceedsUtf8Bytes(run.vpSnapshot?.name || run.vpSnapshot?.id, MAX_ACTION_REQUEST_METADATA_BYTES);
-  const loops = limited.loops.map(loop => ({
-    id: truncateUtf8(loop.loopInstanceId || `${turn.turnId}:${loop.loopNumber}`, MAX_ACTION_REQUEST_ID_BYTES) || null,
-    loopNumber: count(loop.loopNumber),
-    model: truncateUtf8(loop.model || run.modelSnapshot?.id, MAX_ACTION_REQUEST_MODEL_BYTES) || null,
-    systemPrompt: sanitizeDebugValue(typeof loop.systemPrompt === 'string' ? loop.systemPrompt : ''),
-    messages: sanitizeDebugValue(Array.isArray(loop.messages) ? loop.messages : []),
-    response: sanitizeDebugValue(typeof loop.response === 'string' ? loop.response : ''),
-    usage: projectDebugUsage(loop.usage),
-    latencyMs: count(loop.latencyMs),
-    ttfbMs: loop.ttfbMs == null ? null : count(loop.ttfbMs),
-    stopReason: loop.stopReason || null,
-    at: count(loop.at),
-    detailTruncated: loop.detailTruncated === true,
-    tools: (Array.isArray(loop.toolCalls) ? loop.toolCalls : [])
-      .slice(0, MAX_ACTION_REQUEST_TOOL_CALLS)
-      .map(call => {
-        const result = toolsByCall.get(`${count(loop.loopNumber)}:${call.id}`);
-        return {
-          id: truncateUtf8(call.id, MAX_ACTION_REQUEST_ID_BYTES) || null,
-          name: truncateUtf8(call.name || result?.name || '?', MAX_ACTION_REQUEST_NAME_BYTES) || '?',
-          input: sanitizeDebugValue(call.input),
-          output: sanitizeDebugValue(result?.toolOutput ?? null),
-          durationMs: count(result?.durationMs),
-          isError: result?.isError === true,
-        };
-      }),
-    rawRequest: sanitizeDebugValue(reconstructDebugRawRequest(
-      loop.rawRequestBase ?? loop.requestBase?.rawRequest ?? null,
-      loop.requestDelta || null,
-    )),
-    rawResponse: sanitizeDebugValue(loop.rawResponse ?? null),
-  }));
+  const loops = limited.loops.map(loop => {
+    const sourceId = loop.loopInstanceId || `${turn.turnId}:${loop.loopNumber}`;
+    const sourceModel = loop.model || run.modelSnapshot?.id || '';
+    const sourceCalls = Array.isArray(loop.toolCalls) ? loop.toolCalls : [];
+    let detailTruncated = loop.detailTruncated === true
+      || exceedsUtf8Bytes(sourceId, MAX_ACTION_REQUEST_ID_BYTES)
+      || exceedsUtf8Bytes(sourceModel, MAX_ACTION_REQUEST_MODEL_BYTES)
+      || exceedsUtf8Bytes(loop.stopReason, MAX_ACTION_REQUEST_STOP_REASON_BYTES)
+      || sourceCalls.length > MAX_ACTION_REQUEST_TOOL_CALLS;
+    const projectedTools = sourceCalls.slice(0, MAX_ACTION_REQUEST_TOOL_CALLS).map((call, index) => {
+      const result = toolsByCall.get(`${count(loop.loopNumber)}:${call.id}`);
+      const sourceCallId = call.id || `${sourceId}:tool:${index}`;
+      const sourceName = call.name || result?.name || '?';
+      if (exceedsUtf8Bytes(sourceCallId, MAX_ACTION_REQUEST_ID_BYTES)
+        || exceedsUtf8Bytes(sourceName, MAX_ACTION_REQUEST_NAME_BYTES)) {
+        detailTruncated = true;
+      }
+      return {
+        id: boundedIdentity(sourceCallId, MAX_ACTION_REQUEST_ID_BYTES),
+        name: truncateUtf8(sourceName, MAX_ACTION_REQUEST_NAME_BYTES) || '?',
+        input: sanitizeDebugValue(call.input),
+        output: sanitizeDebugValue(result?.toolOutput ?? null),
+        durationMs: count(result?.durationMs),
+        isError: result?.isError === true,
+      };
+    });
+    return {
+      id: boundedIdentity(sourceId, MAX_ACTION_REQUEST_ID_BYTES) || null,
+      loopNumber: count(loop.loopNumber),
+      model: truncateUtf8(sourceModel, MAX_ACTION_REQUEST_MODEL_BYTES) || null,
+      systemPrompt: sanitizeDebugValue(typeof loop.systemPrompt === 'string' ? loop.systemPrompt : ''),
+      messages: sanitizeDebugValue(Array.isArray(loop.messages) ? loop.messages : []),
+      response: sanitizeDebugValue(typeof loop.response === 'string' ? loop.response : ''),
+      usage: projectDebugUsage(loop.usage),
+      latencyMs: count(loop.latencyMs),
+      ttfbMs: loop.ttfbMs == null ? null : count(loop.ttfbMs),
+      stopReason: truncateUtf8(loop.stopReason, MAX_ACTION_REQUEST_STOP_REASON_BYTES) || null,
+      at: count(loop.at),
+      detailTruncated,
+      tools: projectedTools,
+      rawRequest: sanitizeDebugValue(reconstructDebugRawRequest(
+        loop.rawRequestBase ?? loop.requestBase?.rawRequest ?? null,
+        loop.requestDelta || null,
+      )),
+      rawResponse: sanitizeDebugValue(loop.rawResponse ?? null),
+    };
+  });
   return enforceActionRequestDetailBudget({
-    actionId: truncateUtf8(action.id, MAX_ACTION_REQUEST_METADATA_BYTES),
+    actionId: boundedIdentity(action.id, MAX_ACTION_REQUEST_METADATA_BYTES),
     request: {
-      id: truncateUtf8(turn.turnId, MAX_ACTION_REQUEST_METADATA_BYTES),
-      runId: truncateUtf8(run.id, MAX_ACTION_REQUEST_METADATA_BYTES),
+      id: boundedIdentity(turn.turnId, MAX_ACTION_REQUEST_METADATA_BYTES),
+      runId: boundedIdentity(run.id, MAX_ACTION_REQUEST_METADATA_BYTES),
       status: truncateUtf8(run.status || 'running', MAX_ACTION_REQUEST_METADATA_BYTES),
       model: truncateUtf8(requestModel, MAX_ACTION_REQUEST_MODEL_BYTES) || null,
       vp: run.vpSnapshot ? {
-        id: truncateUtf8(run.vpSnapshot.id, MAX_ACTION_REQUEST_METADATA_BYTES) || null,
+        id: boundedIdentity(run.vpSnapshot.id, MAX_ACTION_REQUEST_METADATA_BYTES) || null,
         name: truncateUtf8(run.vpSnapshot.name || run.vpSnapshot.id, MAX_ACTION_REQUEST_METADATA_BYTES) || null,
       } : null,
       openedAt: count(turn.openedAt || run.startedAt),

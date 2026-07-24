@@ -1384,6 +1384,58 @@ describe('Work Center event projection', () => {
       .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
   });
 
+  it('keeps bounded Loop and tool identities distinct and marks every metadata truncation', () => {
+    const detail = internalDetail();
+    const sharedLoopPrefix = 'l'.repeat(256);
+    const sharedToolPrefix = 't'.repeat(256);
+    const projected = projectActionRequestDetail(detail.actions[0], detail.runs[0], {
+      turns: [{ turnId: 'request-collision', tools: [] }],
+      loops: ['A', 'B'].map((suffix, index) => ({
+        loopInstanceId: `${sharedLoopPrefix}${suffix}`,
+        loopNumber: index + 1,
+        model: 'm'.repeat(1_025),
+        stopReason: 's'.repeat(257),
+        messages: [],
+        toolCalls: [{
+          id: `${sharedToolPrefix}${suffix}`,
+          name: 'n'.repeat(513),
+          input: null,
+        }],
+      })),
+    });
+
+    expect(projected.request).toMatchObject({
+      loopCount: 2, truncated: true, omittedLoopCount: 0, summarizedLoopCount: 2,
+    });
+    expect(projected.request.loops).toHaveLength(2);
+    expect(new Set(projected.request.loops.map(loop => loop.id))).toHaveProperty('size', 2);
+    expect(new Set(projected.request.loops.flatMap(loop => loop.tools.map(tool => tool.id))))
+      .toHaveProperty('size', 2);
+    for (const loop of projected.request.loops) {
+      expect(loop.detailTruncated).toBe(true);
+      expect(Buffer.byteLength(loop.id, 'utf8')).toBeLessThanOrEqual(256);
+      expect(Buffer.byteLength(loop.model, 'utf8')).toBeLessThanOrEqual(1_024);
+      expect(Buffer.byteLength(loop.stopReason, 'utf8')).toBeLessThanOrEqual(256);
+      expect(Buffer.byteLength(loop.tools[0].id, 'utf8')).toBeLessThanOrEqual(256);
+      expect(Buffer.byteLength(loop.tools[0].name, 'utf8')).toBeLessThanOrEqual(512);
+    }
+    expect(Buffer.byteLength(JSON.stringify(projected), 'utf8'))
+      .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
+
+    const missingToolIds = projectActionRequestDetail(detail.actions[0], detail.runs[0], {
+      turns: [{ turnId: 'request-missing-tool-ids', tools: [] }],
+      loops: [{
+        loopInstanceId: 'loop-missing-tool-ids', loopNumber: 1,
+        messages: [], toolCalls: [{ name: 'FileRead' }, { name: 'FileRead' }],
+      }],
+    });
+    expect(missingToolIds.request.loops[0].tools.map(tool => tool.id))
+      .toEqual(expect.arrayContaining([
+        'loop-missing-tool-ids:tool:0',
+        'loop-missing-tool-ids:tool:1',
+      ]));
+  });
+
   it('keeps diagnostic Loop summaries when cumulative message history exceeds the request budget', () => {
     const detail = internalDetail();
     const action = detail.actions[0];
