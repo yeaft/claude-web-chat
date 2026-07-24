@@ -504,6 +504,7 @@ export const useChatStore = defineStore('chat', {
       agentId: null,
       sessionId: null,
       query: '',
+      senderKey: '',
       loading: false,
       results: [],
       hasMore: false,
@@ -2800,21 +2801,25 @@ export const useChatStore = defineStore('chat', {
       return true;
     },
 
-    searchYeaftHistory(query, { append = false } = {}) {
+    searchYeaftHistory(query, { append = false, senderKey = '' } = {}) {
       if (this.currentView !== 'yeaft') return false;
       const normalized = typeof query === 'string' ? query.trim() : '';
+      const normalizedSenderKey = typeof senderKey === 'string' && (senderKey === 'user' || senderKey.startsWith('vp:'))
+        ? senderKey.slice(0, 103)
+        : '';
       const sessionId = this.yeaftActiveSessionFilter || null;
       const agentId = resolveAgentIdForSession(this, sessionId);
       if (this._yeaftHistorySearchTimeout) {
         clearTimeout(this._yeaftHistorySearchTimeout);
         this._yeaftHistorySearchTimeout = null;
       }
-      if (!sessionId || !agentId || normalized.length < 2) {
+      if (!sessionId || !agentId || (normalized.length < 2 && !normalizedSenderKey)) {
         this.yeaftHistorySearchState = {
           requestId: null,
           agentId,
           sessionId,
           query: normalized,
+          senderKey: normalizedSenderKey,
           loading: false,
           results: [],
           hasMore: false,
@@ -2831,6 +2836,7 @@ export const useChatStore = defineStore('chat', {
           agentId,
           sessionId,
           query: normalized,
+          senderKey: normalizedSenderKey,
           loading: false,
           results: [],
           hasMore: false,
@@ -2846,10 +2852,13 @@ export const useChatStore = defineStore('chat', {
         agentId,
         sessionId,
         query: normalized,
+        senderKey: normalizedSenderKey,
         loading: true,
-        results: append && previous.query === normalized ? previous.results : [],
+        results: append && previous.query === normalized && previous.senderKey === normalizedSenderKey ? previous.results : [],
         hasMore: false,
-        nextBeforeSeq: append && previous.query === normalized ? previous.nextBeforeSeq : null,
+        nextBeforeSeq: append && previous.query === normalized && previous.senderKey === normalizedSenderKey
+          ? previous.nextBeforeSeq
+          : null,
         error: null,
       };
       this._yeaftHistorySearchTimeout = setTimeout(() => {
@@ -2867,8 +2876,14 @@ export const useChatStore = defineStore('chat', {
         sessionId,
         requestId,
         query: normalized,
+        senderKey: normalizedSenderKey,
         limit: 20,
-        ...(append && Number.isFinite(previous.nextBeforeSeq) ? { beforeSeq: previous.nextBeforeSeq } : {}),
+        ...(append
+          && previous.query === normalized
+          && previous.senderKey === normalizedSenderKey
+          && Number.isFinite(previous.nextBeforeSeq)
+          ? { beforeSeq: previous.nextBeforeSeq }
+          : {}),
       });
       return true;
     },
@@ -2876,7 +2891,7 @@ export const useChatStore = defineStore('chat', {
     handleYeaftHistorySearchResult(msg) {
       const state = this.yeaftHistorySearchState || {};
       if (!msg || msg.requestId !== state.requestId) return false;
-      if (msg.agentId !== state.agentId || msg.sessionId !== state.sessionId || msg.query !== state.query) return false;
+      if (msg.agentId !== state.agentId || msg.sessionId !== state.sessionId || msg.query !== state.query || (msg.senderKey || '') !== state.senderKey) return false;
       if (this._yeaftHistorySearchTimeout) {
         clearTimeout(this._yeaftHistorySearchTimeout);
         this._yeaftHistorySearchTimeout = null;

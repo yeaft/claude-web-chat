@@ -63,6 +63,7 @@ describe('Yeaft Session history search relay', () => {
       sessionId: 'sess-1',
       requestId: 'req-1',
       query: 'needle',
+      senderKey: 'vp:linus',
       beforeSeq: 42,
     }, allow);
 
@@ -72,6 +73,7 @@ describe('Yeaft Session history search relay', () => {
       sessionId: 'sess-1',
       requestId: 'req-1',
       query: 'needle',
+      senderKey: 'vp:linus',
       beforeSeq: 42,
       _requestClientId: 'client-1',
     }));

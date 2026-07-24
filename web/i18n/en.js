@@ -289,6 +289,8 @@ export default {
   'yeaft.historySearch.you': 'You',
   'yeaft.historySearch.assistant': 'Assistant',
   'yeaft.outline.label': 'Message history',
+  'yeaft.outline.sender': 'Sender',
+  'yeaft.outline.allSenders': 'All senders',
   'yeaft.outline.title': 'Message history',
   'yeaft.outline.placeholder': 'Search this conversation',
   'yeaft.outline.searching': 'Searching…',
@@ -544,7 +546,7 @@ export default {
   'message.removeQuote': 'Remove quote',
   'message.replyingTo': 'Replying to {author}',
   'message.quotedFrom': 'Quoted from {author}',
-  'message.editAsNew': 'New message',
+  'message.editAsNew': 'Edit',
   'message.you': 'You',
 
   // ============ Chat Input ============

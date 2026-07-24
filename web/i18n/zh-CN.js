@@ -289,6 +289,8 @@ export default {
   'yeaft.historySearch.you': '你',
   'yeaft.historySearch.assistant': '助手',
   'yeaft.outline.label': '历史消息',
+  'yeaft.outline.sender': '发送者',
+  'yeaft.outline.allSenders': '全部发送者',
   'yeaft.outline.title': '历史消息',
   'yeaft.outline.placeholder': '搜索当前对话',
   'yeaft.outline.searching': '正在搜索…',
@@ -508,7 +510,7 @@ export default {
   'message.removeQuote': '删除引用',
   'message.replyingTo': '正在回复 {author}',
   'message.quotedFrom': '引用自 {author}',
-  'message.editAsNew': '新消息',
+  'message.editAsNew': '编辑',
   'message.you': '你',
 
   // ============ Chat Input ============
