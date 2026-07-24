@@ -39,7 +39,7 @@ export default {
     senderOptions: { type: Array, default: () => [] },
     activeMessageId: { type: String, default: null },
   },
-  emits: ['query', 'sender', 'select', 'move', 'preview', 'load-older', 'load-more-search', 'close'],
+  emits: ['query', 'sender', 'sender-invalid', 'select', 'move', 'preview', 'load-older', 'load-more-search', 'close'],
   template: `
     <section id="yeaft-conversation-outline" class="yeaft-conversation-outline" :aria-label="$t('yeaft.outline.label')">
       <div class="yeaft-conversation-outline-header">
@@ -49,18 +49,20 @@ export default {
         </div>
         <button type="button" class="yeaft-conversation-outline-close" @click="$emit('close')" :aria-label="$t('common.close')">×</button>
       </div>
-      <div class="yeaft-conversation-outline-search">
-        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-        <input
-          ref="inputRef"
-          type="search"
-          :value="searchState.query"
-          :placeholder="$t('yeaft.outline.placeholder')"
-          :aria-label="$t('yeaft.outline.placeholder')"
-          @input="$emit('query', $event.target.value)"
-          @keydown="onKeyDown"
-        />
-        <span v-if="searchState.loading" class="yeaft-conversation-outline-status">{{ $t('yeaft.outline.searching') }}</span>
+      <div class="yeaft-conversation-outline-toolbar">
+        <div class="yeaft-conversation-outline-search">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input
+            ref="inputRef"
+            type="search"
+            :value="searchState.query"
+            :placeholder="$t('yeaft.outline.placeholder')"
+            :aria-label="$t('yeaft.outline.placeholder')"
+            @input="$emit('query', $event.target.value)"
+            @keydown="onKeyDown"
+          />
+          <span v-if="searchState.loading" class="yeaft-conversation-outline-status">{{ $t('yeaft.outline.searching') }}</span>
+        </div>
         <select
           class="yeaft-conversation-outline-sender"
           :value="searchState.senderKey || ''"
@@ -119,6 +121,14 @@ export default {
     const inputRef = Vue.ref(null);
     const listRef = Vue.ref(null);
     const isSearching = Vue.computed(() => String(props.searchState.query || '').trim().length >= 2 || !!props.searchState.senderKey);
+    Vue.watch(
+      () => props.senderOptions.map(option => option.key),
+      validKeys => {
+        const senderKey = props.searchState.senderKey || '';
+        if (senderKey && !validKeys.includes(senderKey)) emit('sender-invalid');
+      },
+      { flush: 'sync' },
+    );
     const visibleResults = Vue.computed(() => sortHistoryResultsNewest(
       isSearching.value ? props.searchState.results : props.outlineState.results,
     ));
