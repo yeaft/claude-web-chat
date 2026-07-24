@@ -87,6 +87,26 @@ function modalVm(overrides = {}) {
 }
 
 describe('Work Center detail actions', () => {
+  it('builds the Action breadcrumb from its stable sequence and concise objective', () => {
+    const vm = {
+      selected: {
+        actions: [
+          { id: 'inspect' },
+          { id: 'implement', sequence: 7, brief: { objective: '  Implement   the focused fix  ' } },
+        ],
+      },
+      tr: (_key, fallback) => fallback,
+      actionContentSummary: WorkCenterPage.methods.actionContentSummary,
+    };
+
+    expect(WorkCenterPage.methods.actionSequence.call(vm, vm.selected.actions[1])).toBe(7);
+    expect(WorkCenterPage.methods.actionSequence.call(vm, vm.selected.actions[0])).toBe(1);
+    expect(WorkCenterPage.methods.actionBreadcrumbDescription.call(vm, vm.selected.actions[1]))
+      .toBe('Implement the focused fix');
+    expect(WorkCenterPage.methods.actionBreadcrumbDescription.call(vm, { id: 'empty' }))
+      .toBe('Untitled Action');
+  });
+
   it('confirms explicit cancellation before mutating the Work Item', async () => {
     const cancelWorkItem = vi.fn().mockResolvedValue(undefined);
     const vm = {

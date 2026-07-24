@@ -231,7 +231,16 @@ describe('Work Center UI contract', () => {
     expect(page).not.toContain('class="work-center-pane-back btn-ghost"');
     expect(page).toContain("@click=\"showItemsPane\" :title=\"tr('workCenter.closeWorkItem'");
     expect(page).not.toContain('@click="cancelSelected" :title="tr(\'workCenter.closeWorkItem\'');
+    expect(page).toContain('class="work-center-action-breadcrumb"');
+    expect(page).toContain("$t('workCenter.actionNumber', { number: actionSequence(selectedAction) })");
+    expect(page).toContain('actionBreadcrumbDescription(selectedAction)');
+    expect(page).not.toContain("selectedAction?.brief?.objective || actionLabel(selectedAction?.type)");
+    expect(page).toContain('class="work-center-section work-center-danger-zone"');
+    expect(page).toContain('class="btn-secondary work-center-danger-action" type="button" @click="cancelSelected"');
+    const detailHeading = page.slice(page.indexOf('class="work-center-detail-heading"'), page.indexOf('class="work-center-detail-meta"'));
+    expect(detailHeading).not.toContain('cancelSelected');
     expect(page).toContain("tr('workCenter.cancelWorkItem'");
+    expect(page).toContain("tr('workCenter.cancelWorkItemHint'");
     expect(page).toContain("tr('workCenter.cancelConfirm'");
     expect(detail).toContain("tr('common.close'");
     expect(page).toContain('orderedActions()');
@@ -239,7 +248,10 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('const priority = { running: 0, waiting: 1, failed: 2, ready: 3');
     expect(page).toContain('actions.map((action, index) => ({ action, index })).sort');
     expect(css).toContain('.work-center-breadcrumbs');
+    expect(css).toContain('.work-center-action-breadcrumb');
     expect(css).toContain('.work-center-detail-meta');
+    expect(css).toContain('.work-center-danger-zone');
+    expect(css).toContain('border-color: var(--error)');
   });
 
   it('uses a compact header and flat empty state instead of a dashboard hero', () => {
