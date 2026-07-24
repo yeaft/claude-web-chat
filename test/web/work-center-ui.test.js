@@ -153,6 +153,8 @@ describe('Work Center UI contract', () => {
     expect(detail).toContain("tr('workCenter.rawRequest'");
     expect(detail).toContain('class="work-center-action-composer"');
     expect(detail).toContain("tr('workCenter.retryAction'");
+    expect(detail).toContain("tr('workCenter.actionMessageScopeTitle'");
+    expect(detail).toContain("tr('workCenter.sendAndRetryAction'");
     expect(detail).toContain("['ready', 'running', 'waiting', 'failed']");
     expect(page).toContain('work-center-item-messages');
     expect(page).toContain("tr('workCenter.workItemMessageScope'");
@@ -181,6 +183,10 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('class="work-center-board-lane"');
     expect(page).toContain('class="work-center-card-meta"');
     expect(page).toContain('class="work-center-card-current-action"');
+    expect(page).toContain('class="work-center-card-delete"');
+    expect(page).toContain("boardUpdatedRange: 'week'");
+    expect(page).toContain('deleteWorkItem(item)');
+    expect(store).toContain("workCenterRequest('delete'");
     expect(page).toContain('boardActionCountLabel(item)');
     expect(page).toContain('class="work-center-action-card"');
     expect(page).toContain('class="work-center-action-content"');

@@ -24,6 +24,16 @@ describe('Work Center summary state', () => {
     }],
   };
 
+  it('projects deletion events as minimal tombstones', () => {
+    expect(projectWorkCenterEvent({
+      type: 'work_item.deleted',
+      workItem: { id: 'wi-delete', revision: 9, title: 'must not leak', workDir: '/private' },
+    })).toEqual({
+      type: 'work_item.deleted',
+      workItem: { id: 'wi-delete', revision: 9 },
+    });
+  });
+
   it('merges a redacted summary without dropping loaded detail data', () => {
     const merged = mergeWorkItemSummary(detail, {
       id: 'wi-1', revision: 3, title: 'Updated title', status: 'waiting', updatedAt: 31,
