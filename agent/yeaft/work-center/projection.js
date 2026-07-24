@@ -887,9 +887,19 @@ export function projectWorkItemSummary(detail) {
 }
 
 export function projectWorkCenterEvent(event) {
+  const type = truncateUtf8(event?.type || 'work_item.updated', 256);
+  if (type === 'work_item.deleted') {
+    return {
+      type,
+      workItem: {
+        id: String(event?.workItem?.id || ''),
+        revision: count(event?.workItem?.revision),
+      },
+    };
+  }
   const liveActionId = bodyActionId(event?.workItem);
   return enforceWorkItemBrowserDtoBudget({
-    type: truncateUtf8(event?.type || 'work_item.updated', 256),
+    type,
     workItem: {
       ...projectWorkItemSummary(event?.workItem),
       actionStats: projectActionStats(event?.workItem),

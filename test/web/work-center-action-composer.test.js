@@ -321,6 +321,17 @@ describe('Work Center Action composer scope', () => {
     expect(target.style.height).toBe('120px');
   });
 
+  it('defaults the board query to the last seven days and keeps cursor pagination server-side', () => {
+    const context = { boardUpdatedRange: 'week', search: '', boardVpId: '', boardWorkItemType: '' };
+    const before = Date.now();
+
+    const filters = WorkCenterPage.methods.boardFilters.call(context);
+
+    expect(filters.limit).toBe(200);
+    expect(filters.updatedFrom).toBeGreaterThanOrEqual(before - 7 * 24 * 60 * 60 * 1000);
+    expect(filters.updatedFrom).toBeLessThanOrEqual(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  });
+
   it('sends WorkItem-level messages through the separate revision-fenced operation', async () => {
     const sendWorkItemMessage = vi.fn().mockResolvedValue({ id: 'wi-1', revision: 3 });
     const context = {
@@ -393,6 +404,42 @@ describe('Work Center Action composer scope', () => {
     expect(context.workItemMessage).toBe('Message for the second WorkItem');
     expect(context.workItemMessageError).toBe('');
     expect(context.workItemMessageSending).toBe(false);
+  });
+
+  it('deletes an eligible WorkItem with its revision and closes selected detail', async () => {
+    const deleteWorkItem = vi.fn().mockResolvedValue({ id: 'wi-1', deleted: true });
+    const context = {
+      agentId: 'agent-1', selectedId: 'wi-1', selectedActionId: 'action-1', narrowPane: 'actions',
+      deletingWorkItemIds: {}, deleteWorkItemError: '',
+      store: { deleteWorkItem },
+      tr: (_key, fallback) => fallback,
+      workItemDeleting: WorkCenterPage.methods.workItemDeleting,
+      resetActionComposer: vi.fn(), resetWorkItemComposer: vi.fn(),
+    };
+    const originalConfirm = globalThis.confirm;
+    globalThis.confirm = vi.fn(() => true);
+    try {
+      await WorkCenterPage.methods.deleteWorkItem.call(context, { id: 'wi-1', revision: 8, status: 'done' });
+    } finally {
+      globalThis.confirm = originalConfirm;
+    }
+
+    expect(deleteWorkItem).toHaveBeenCalledWith('wi-1', 8, 'agent-1');
+    expect(context.selectedId).toBeNull();
+    expect(context.selectedActionId).toBeNull();
+    expect(context.narrowPane).toBe('items');
+    expect(context.deleteWorkItemError).toBe('');
+  });
+
+  it('keeps deletion disabled while a WorkItem can still execute', () => {
+    const canDelete = WorkCenterPage.methods.workItemCanDelete;
+    expect(canDelete({ status: 'running' })).toBe(false);
+    expect(canDelete({ status: 'ready' })).toBe(false);
+    expect(canDelete({ status: 'waiting' })).toBe(false);
+    expect(canDelete({ status: 'done' })).toBe(true);
+    expect(canDelete({ status: 'cancelled' })).toBe(true);
+    expect(canDelete({ status: 'draft' })).toBe(true);
+    expect(canDelete({ status: 'needs_attention' })).toBe(true);
   });
 
   it('retries the visible failed Action with its stable identity and revision', async () => {

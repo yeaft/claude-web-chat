@@ -42,13 +42,13 @@ export default {
       return this.action?.status === 'failed' && !this.uploading && !this.sending;
     },
     composerHint() {
-      if (this.selected?.status === 'waiting') {
+      if (this.action?.status === 'waiting') {
         return this.tr('workCenter.actionInputResumeHint', 'Your input resumes this Action with the additional context.');
       }
-      if (this.selected?.status === 'needs_attention') {
-        return this.tr('workCenter.actionInputRetryHint', 'Add instructions or files, then rerun this Action with the new context.');
+      if (this.action?.status === 'failed') {
+        return this.tr('workCenter.actionInputRetryHint', 'Send corrected instructions or files to rerun this Action, or retry unchanged.');
       }
-      return this.tr('workCenter.actionInputContinueHint', 'New input joins this Action and is applied at the next safe execution loop.');
+      return this.tr('workCenter.actionInputContinueHint', 'This message applies only to this Action at its next safe execution loop.');
     },
     canSend() {
       return !this.uploading && !this.sending
@@ -315,6 +315,10 @@ export default {
       </div>
 
       <footer v-if="canCompose" class="work-center-action-composer">
+        <div class="work-center-action-composer-scope">
+          <strong>{{ tr('workCenter.actionMessageScopeTitle', 'Message this Action') }}</strong>
+          <span>{{ tr('workCenter.actionMessageScope', 'Only this Action receives the message.') }}</span>
+        </div>
         <p v-if="composerError" class="work-center-error" role="alert">{{ composerError }}</p>
         <div v-if="composerAttachments.length" class="work-center-attachment-list">
           <span v-for="(attachment, index) in composerAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
@@ -330,7 +334,7 @@ export default {
           <div class="textarea-wrapper">
             <textarea ref="composerInput" :value="composerText" rows="1" :placeholder="tr('workCenter.actionInputPlaceholder', 'Add context, answer a question, or redirect this Action')" @input="onComposerInput" @keydown="onComposerKeydown"></textarea>
           </div>
-          <button class="send-btn" type="button" @click="$emit('send')" :disabled="!canSend" :title="sending ? tr('workCenter.sendingInput', 'Sending…') : tr('workCenter.sendInput', 'Send input')">
+          <button class="send-btn" type="button" @click="$emit('send')" :disabled="!canSend" :title="sending ? tr('workCenter.sendingInput', 'Sending…') : (action.status === 'failed' ? tr('workCenter.sendAndRetryAction', 'Send and retry Action') : tr('workCenter.sendInput', 'Send input'))">
             <svg v-if="!sending" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
             <span v-else class="work-center-send-spinner" aria-hidden="true"></span>
           </button>

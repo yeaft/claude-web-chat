@@ -642,6 +642,7 @@ export const useChatStore = defineStore('chat', {
     _workCenterListMoreRequestsByAgent: {},
     _workCenterListEventGenerationByAgent: {},
     _workCenterListEventsByAgent: {},
+    _workCenterDeletedIdsByAgent: {},
     workCenterDetailByAgent: {},
     workCenterActionMessages: {},
     workCenterActionMessagesLoading: {},
@@ -1363,7 +1364,8 @@ export const useChatStore = defineStore('chat', {
       this.workCenterErrorByAgent = { ...this.workCenterErrorByAgent, [target]: null };
       try {
         const data = await this.workCenterRequest('list', normalizedFilters, target);
-        const items = Array.isArray(data?.items) ? data.items : [];
+        const items = (Array.isArray(data?.items) ? data.items : [])
+          .filter(item => !this.workItemDeleted(target, item?.id));
         const requestStillCurrent = this._workCenterListGenerationByAgent[target] === generation
           && this._workCenterListQueryByAgent[target] === queryKey
           && this.workCenterAgentId === target;
@@ -1425,6 +1427,7 @@ export const useChatStore = defineStore('chat', {
               || this.workCenterAgentId !== target) return [];
           let merged = [...(this.workCenterItemsByAgent[target] || [])];
           for (const item of Array.isArray(data?.items) ? data.items : []) {
+            if (this.workItemDeleted(target, item?.id)) continue;
             const index = merged.findIndex(current => current.id === item.id);
             if (index < 0) merged.push(item);
             else merged[index] = applyWorkItemSummary([merged[index]], item)[0];
@@ -1459,6 +1462,37 @@ export const useChatStore = defineStore('chat', {
       };
       return request;
     },
+    workItemDeleted(agentId, id) {
+      return !!this._workCenterDeletedIdsByAgent[agentId]?.[id];
+    },
+    removeWorkItemState(agentId, id) {
+      this._workCenterDeletedIdsByAgent = {
+        ...this._workCenterDeletedIdsByAgent,
+        [agentId]: { ...(this._workCenterDeletedIdsByAgent[agentId] || {}), [id]: true },
+      };
+      this.beginWorkCenterDetailWrite(agentId);
+      this.workCenterItemsByAgent = {
+        ...this.workCenterItemsByAgent,
+        [agentId]: (this.workCenterItemsByAgent[agentId] || []).filter(item => item.id !== id),
+      };
+      if (this.workCenterDetailByAgent[agentId]?.id === id) {
+        this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [agentId]: null };
+      }
+      const prefix = `${agentId}:${id}:`;
+      for (const field of [
+        'workCenterActionMessages', 'workCenterActionMessagesLoading', 'workCenterActionMessagesError',
+        'workCenterActionRequests', 'workCenterActionRequestsLoading', 'workCenterActionRequestsError',
+        'workCenterActionRequestDetails', 'workCenterActionRequestDetailsLoading', 'workCenterActionRequestDetailsError',
+        '_workCenterActionMessageRequests', '_workCenterActionRequestsGeneration',
+        '_workCenterActionRequestDetailsGeneration',
+      ]) {
+        const next = {};
+        for (const [key, value] of Object.entries(this[field] || {})) {
+          if (!key.startsWith(prefix)) next[key] = value;
+        }
+        this[field] = next;
+      }
+    },
     beginWorkCenterDetailWrite(agentId) {
       const generation = Number(this._workCenterDetailRequestGenerationByAgent[agentId] || 0) + 1;
       this._workCenterDetailRequestGenerationByAgent = {
@@ -1468,6 +1502,7 @@ export const useChatStore = defineStore('chat', {
       return generation;
     },
     commitWorkCenterDetail(agentId, detail, generation) {
+      if (detail?.id && this.workItemDeleted(agentId, detail.id)) return false;
       if (generation != null
           && Number(this._workCenterDetailRequestGenerationByAgent[agentId] || 0) !== generation) return false;
       const current = this.workCenterDetailByAgent[agentId];
@@ -1494,6 +1529,7 @@ export const useChatStore = defineStore('chat', {
           const data = await this.workCenterRequest('get_action_messages', {
             id, actionId, cursor, limit: 20,
           }, target);
+          if (this.workItemDeleted(target, id)) return data;
           const current = this.workCenterActionMessages[key]?.messages || [];
           const messages = mergeActionMessages(current, data?.messages || []);
           const existingPage = this.workCenterActionMessages[key];
@@ -1544,7 +1580,8 @@ export const useChatStore = defineStore('chat', {
       this.workCenterActionRequestsError = { ...this.workCenterActionRequestsError, [key]: null };
       try {
         const data = await this.workCenterRequest('get_action_requests', { id, actionId }, target);
-        if (this._workCenterActionRequestsGeneration[key] === generation) {
+        if (!this.workItemDeleted(target, id)
+            && this._workCenterActionRequestsGeneration[key] === generation) {
           this.workCenterActionRequests = { ...this.workCenterActionRequests, [key]: data?.requests || [] };
         }
         return data?.requests || [];
@@ -1582,7 +1619,8 @@ export const useChatStore = defineStore('chat', {
         const data = await this.workCenterRequest('get_action_request', {
           id, actionId, runId, requestId,
         }, target);
-        if (this._workCenterActionRequestDetailsGeneration[key] === generation) {
+        if (!this.workItemDeleted(target, id)
+            && this._workCenterActionRequestDetailsGeneration[key] === generation) {
           this.workCenterActionRequestDetails = {
             ...this.workCenterActionRequestDetails,
             [key]: data?.request || null,
@@ -1720,6 +1758,12 @@ export const useChatStore = defineStore('chat', {
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
+    async deleteWorkItem(id, revision, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const result = await this.workCenterRequest('delete', { id, revision }, target);
+      this.removeWorkItemState(target, id);
+      return result;
+    },
     async sendWorkItemMessage(id, text, revision, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = this.beginWorkCenterDetailWrite(target);
@@ -1781,6 +1825,11 @@ export const useChatStore = defineStore('chat', {
       if (!agentId || !event?.workItem) return;
       const summary = event.workItem;
       const current = this.workCenterItemsByAgent[agentId] || [];
+      if (event.type === 'work_item.deleted') {
+        this.removeWorkItemState(agentId, summary.id);
+        return;
+      }
+      if (this.workItemDeleted(agentId, summary.id)) return;
       const filters = this._workCenterListFiltersByAgent[agentId] || {};
       const matches = this.workItemMatchesBoardQuery(summary, filters);
       const eventGeneration = Number(this._workCenterListEventGenerationByAgent[agentId] || 0) + 1;

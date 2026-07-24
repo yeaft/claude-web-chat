@@ -153,6 +153,8 @@ describe('Work Center UI contract', () => {
     expect(detail).toContain("tr('workCenter.rawRequest'");
     expect(detail).toContain('class="work-center-action-composer"');
     expect(detail).toContain("tr('workCenter.retryAction'");
+    expect(detail).toContain("tr('workCenter.actionMessageScopeTitle'");
+    expect(detail).toContain("tr('workCenter.sendAndRetryAction'");
     expect(detail).toContain("['ready', 'running', 'waiting', 'failed']");
     expect(page).toContain('work-center-item-messages');
     expect(page).toContain("tr('workCenter.workItemMessageScope'");
@@ -181,6 +183,10 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('class="work-center-board-lane"');
     expect(page).toContain('class="work-center-card-meta"');
     expect(page).toContain('class="work-center-card-current-action"');
+    expect(page).toContain('class="work-center-card-delete"');
+    expect(page).toContain("boardUpdatedRange: 'week'");
+    expect(page).toContain('deleteWorkItem(item)');
+    expect(store).toContain("workCenterRequest('delete'");
     expect(page).toContain('boardActionCountLabel(item)');
     expect(page).toContain('class="work-center-action-card"');
     expect(page).toContain('class="work-center-action-content"');
@@ -294,7 +300,9 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('grid-template-columns: 1fr 1fr');
     expect(css).toContain('grid-template-columns: repeat(3, minmax(250px, 1fr))');
     expect(css).toContain('.work-center-board-lane-tabs');
-    expect(css).toMatch(/@media \(max-width: 768px\)[\s\S]*?\.work-center-board\s*\{[^}]*display: flex;[^}]*overflow-x: hidden/s);
+    expect(css).toMatch(/@media \(max-width: 768px\)[\s\S]*?\.work-center-board\s*\{[^}]*display: flex;[^}]*flex-direction: column;[^}]*overflow-x: hidden/s);
+    expect(css).toMatch(/@media \(max-width: 768px\)[\s\S]*?\.work-center-board-lane-tabs\s*\{[^}]*flex: 0 0 auto/s);
+    expect(css).toMatch(/@media \(max-width: 768px\)[\s\S]*?\.work-center-toolbar > select:last-of-type\s*\{[^}]*grid-column: 1 \/ -1/s);
     expect(css).toMatch(/\.work-center-board-lane\.mobile-active\s*\{[^}]*display: flex/s);
     expect(page).toContain('role="tablist"');
     expect(page).toContain('mobileBoardLane === lane.id');

@@ -247,6 +247,20 @@ export class WorkCenterService {
         this.#emit({ type: 'work_item.cancelled', workItem: detail });
         return detail;
       }
+      case 'delete': {
+        const id = requiredString(payload.id, 'id');
+        const deleted = this.store.deleteWorkItemAtomic(id, Number(payload.revision));
+        if (!deleted) throw new Error(`WorkItem not found: ${id}`);
+        for (const action of deleted.actions || []) {
+          try { this.watcher.runner?.cleanup?.(action); } catch {}
+        }
+        let cleanupWarning = null;
+        try { removeWorkItemAttachments(this.attachmentRoot, id); } catch {
+          cleanupWarning = 'WorkItem data was deleted, but attachment cleanup needs maintenance';
+        }
+        this.#emit({ type: 'work_item.deleted', workItem: { id, revision: deleted.revision } });
+        return { id, deleted: true, cleanupWarning };
+      }
       case 'work_item_message': {
         const id = requiredString(payload.id, 'id');
         const detail = this.controller.message(id, {
