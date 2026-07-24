@@ -26,6 +26,46 @@ import { hasUsableYeaftAgent, resolveActiveSessionIdForSettings } from '../utils
 import { shouldCloseLlmConfigAfterSave } from '../utils/llm-config-save.js';
 import { revealOutlineResult, shouldDismissHistorySearch } from '../utils/message-search-navigation.js';
 
+const HISTORY_SENDER_PREFERENCES_KEY = 'yeaft-history-sender-preferences';
+
+function historySenderPreferenceId(agentId, sessionId) {
+  return agentId && sessionId ? `${agentId}:${sessionId}` : '';
+}
+
+function readHistorySenderPreferences(storage) {
+  try {
+    const value = JSON.parse(storage?.getItem(HISTORY_SENDER_PREFERENCES_KEY) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+export function loadHistorySenderPreference({ agentId, sessionId, validKeys = [], storage = globalThis.localStorage } = {}) {
+  const id = historySenderPreferenceId(agentId, sessionId);
+  if (!id) return '';
+  const preferences = readHistorySenderPreferences(storage);
+  const senderKey = typeof preferences[id] === 'string' ? preferences[id] : '';
+  if (!senderKey || validKeys.includes(senderKey)) return senderKey;
+  delete preferences[id];
+  try { storage?.setItem(HISTORY_SENDER_PREFERENCES_KEY, JSON.stringify(preferences)); } catch { /* best effort */ }
+  return '';
+}
+
+export function saveHistorySenderPreference({ agentId, sessionId, senderKey, storage = globalThis.localStorage } = {}) {
+  const id = historySenderPreferenceId(agentId, sessionId);
+  if (!id) return false;
+  const preferences = readHistorySenderPreferences(storage);
+  if (senderKey) preferences[id] = senderKey;
+  else delete preferences[id];
+  try {
+    storage?.setItem(HISTORY_SENDER_PREFERENCES_KEY, JSON.stringify(preferences));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function sessionTaskSortTime(task) {
   const raw = task?.updatedAt || task?.endedAt || task?.createdAt;
   const ms = raw ? Date.parse(raw) : NaN;
@@ -464,6 +504,32 @@ export default {
         return window.Pinia?.useSessionsStore?.() || null;
       } catch { return null; }
     };
+    const historySearchIdentity = () => {
+      const gs = sessionsStore();
+      return {
+        agentId: store.currentAgent || null,
+        sessionId: store.yeaftActiveSessionFilter || gs?.activeSessionId || null,
+      };
+    };
+    const rememberedHistorySender = () => loadHistorySenderPreference({
+      ...historySearchIdentity(),
+      validKeys: historySenderOptions.value.map(option => option.key),
+    });
+    const resetHistorySearchState = (senderKey = '') => {
+      const { agentId, sessionId } = historySearchIdentity();
+      store.yeaftHistorySearchState = {
+        requestId: null,
+        agentId,
+        sessionId,
+        query: '',
+        senderKey,
+        loading: false,
+        results: [],
+        hasMore: false,
+        nextBeforeSeq: null,
+        error: null,
+      };
+    };
     const yeaftInputDraftKey = Vue.computed(() => {
       const agentId = store.currentAgent || 'agent';
       const gs = sessionsStore();
@@ -698,13 +764,17 @@ export default {
         historySearchTimer = null;
       }
       historySearchQuery.value = '';
-      store.searchYeaftHistory('', { senderKey: '' });
+      resetHistorySearchState(rememberedHistorySender());
       historySearchOpen.value = false;
       historySearchActiveMessageId.value = null;
     };
     const openHistorySearch = () => {
+      const senderKey = rememberedHistorySender();
+      historySearchQuery.value = '';
+      resetHistorySearchState(senderKey);
       historySearchOpen.value = true;
       store.loadYeaftHistoryOutline();
+      if (senderKey) store.searchYeaftHistory('', { senderKey });
       Vue.nextTick(() => historySearchRef.value?.focus?.());
     };
     const toggleHistorySearch = () => {
@@ -727,6 +797,7 @@ export default {
       if (historySearchTimer) clearTimeout(historySearchTimer);
       historySearchTimer = null;
       historySearchActiveMessageId.value = null;
+      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey });
       store.searchYeaftHistory(historySearchQuery.value, { senderKey });
     };
     const loadOlderHistoryOutline = (scrollSnapshot) => {
@@ -811,18 +882,7 @@ export default {
     });
     Vue.watch(() => [store.currentAgent, store.yeaftActiveSessionFilter], () => {
       closeHistorySearch();
-      store.yeaftHistorySearchState = {
-        requestId: null,
-        agentId: null,
-        sessionId: null,
-        query: '',
-        senderKey: '',
-        loading: false,
-        results: [],
-        hasMore: false,
-        nextBeforeSeq: null,
-        error: null,
-      };
+      resetHistorySearchState(rememberedHistorySender());
     });
 
     const goBack = () => {

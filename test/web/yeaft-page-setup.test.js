@@ -3,6 +3,8 @@ import * as Vue from 'vue';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let YeaftPage;
+let loadHistorySenderPreference;
+let saveHistorySenderPreference;
 
 const sessionsStore = {
   activeSessionId: 'session-1',
@@ -10,8 +12,8 @@ const sessionsStore = {
   activeNeedsInvite: false,
   hasLoadedSnapshot: true,
   isEmpty: false,
-  sessions: {},
-  sessionById: () => null,
+  sessions: { 'session-1': { id: 'session-1', roster: ['omni'], defaultVpId: 'omni' } },
+  sessionById: sessionId => sessionsStore.sessions[sessionId] || null,
 };
 
 const chatStore = {
@@ -29,6 +31,7 @@ const chatStore = {
   inputDrafts: {},
   hasCapability: () => false,
   getYeaftHistoryOutlineState: () => ({ results: [], loading: false, hasMore: false, totalCount: 0 }),
+  loadYeaftHistoryOutline: vi.fn(),
   yeaftHistorySearchState: { query: '', senderKey: '' },
   searchYeaftHistory: vi.fn(),
 };
@@ -39,16 +42,17 @@ beforeAll(async () => {
     defineStore: () => () => ({}),
     useChatStore: () => chatStore,
     useAuthStore: () => ({}),
-    useVpStore: () => ({ vpList: [] }),
+    useVpStore: () => ({ vpList: [], vpLabel: vpId => vpId }),
     useSessionsStore: () => sessionsStore,
   };
   window.Pinia = globalThis.Pinia;
-  ({ default: YeaftPage } = await import('../../web/components/YeaftPage.js'));
+  ({ default: YeaftPage, loadHistorySenderPreference, saveHistorySenderPreference } = await import('../../web/components/YeaftPage.js'));
 });
 
 beforeEach(() => {
   localStorage.clear();
   chatStore.yeaftHistorySearchState = { query: '', senderKey: '' };
+  chatStore.loadYeaftHistoryOutline.mockReset();
   chatStore.searchYeaftHistory.mockReset();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
@@ -84,5 +88,41 @@ describe('YeaftPage setup', () => {
 
     expect(chatStore.searchYeaftHistory).toHaveBeenCalledTimes(1);
     expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('', { senderKey: 'user' });
+  });
+
+  it('restores the selected sender when history search is reopened', async () => {
+    const page = YeaftPage.setup();
+
+    page.onHistorySenderChange('vp:omni');
+    page.toggleHistorySearch();
+    page.toggleHistorySearch();
+    await Vue.nextTick();
+
+    expect(chatStore.yeaftHistorySearchState.senderKey).toBe('vp:omni');
+    expect(chatStore.searchYeaftHistory).toHaveBeenLastCalledWith('', { senderKey: 'vp:omni' });
+  });
+
+  it('remembers sender selection per agent and Session', () => {
+    expect(saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1', senderKey: 'vp:omni' })).toBe(true);
+    expect(saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-2', senderKey: 'user' })).toBe(true);
+
+    expect(loadHistorySenderPreference({
+      agentId: 'agent-1', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
+    })).toBe('vp:omni');
+    expect(loadHistorySenderPreference({
+      agentId: 'agent-1', sessionId: 'session-2', validKeys: ['user', 'vp:omni'],
+    })).toBe('user');
+    expect(loadHistorySenderPreference({
+      agentId: 'agent-2', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
+    })).toBe('');
+  });
+
+  it('drops a remembered VP that is no longer in the Session roster', () => {
+    saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1', senderKey: 'vp:removed' });
+
+    expect(loadHistorySenderPreference({
+      agentId: 'agent-1', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
+    })).toBe('');
+    expect(JSON.parse(localStorage.getItem('yeaft-history-sender-preferences'))).toEqual({});
   });
 });
