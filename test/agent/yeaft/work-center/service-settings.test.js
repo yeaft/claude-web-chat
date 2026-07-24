@@ -76,6 +76,59 @@ describe('Work Center settings service', () => {
     expect(new Set([...first.items, ...second.items].map(item => item.id)).size).toBe(3);
   });
 
+  it('filters the cursor-paginated board by updated time', async () => {
+    const service = await createService();
+    for (const id of ['wi-old', 'wi-recent']) {
+      service.controller.create({
+        id, title: id, goal: `Goal for ${id}`, acceptanceCriteria: [],
+        workflowTemplate: 'software-change', workDir: '/tmp', start: false,
+      });
+    }
+    service.store.db.prepare('UPDATE work_items SET updated_at = ? WHERE id = ?').run(1_000, 'wi-old');
+    service.store.db.prepare('UPDATE work_items SET updated_at = ? WHERE id = ?').run(9_000, 'wi-recent');
+
+    const page = await service.handle('list', { updatedFrom: 5_000, limit: 10 });
+
+    expect(page.items.map(item => item.id)).toEqual(['wi-recent']);
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it('deletes stopped WorkItems and their persisted attachment directory', async () => {
+    const service = await createService();
+    const detail = await service.handle('create', {
+      title: 'Delete stopped item', goal: 'Remove stored execution data', workDir: '/tmp', start: false,
+      files: [{
+        name: 'evidence.txt', mimeType: 'text/plain', data: Buffer.from('evidence').toString('base64'),
+      }],
+    });
+    const itemDirectory = join(service.attachmentRoot, detail.id);
+    expect(existsSync(itemDirectory)).toBe(true);
+
+    const result = await service.handle('delete', { id: detail.id, revision: detail.revision });
+
+    expect(result).toEqual({ id: detail.id, deleted: true, cleanupWarning: null });
+    expect(service.store.getWorkItem(detail.id)).toBeNull();
+    expect(service.store.db.prepare('SELECT COUNT(*) AS count FROM actions WHERE work_item_id = ?').get(detail.id).count).toBe(0);
+    expect(existsSync(itemDirectory)).toBe(false);
+  });
+
+  it('rejects stale and running WorkItem deletion without side effects', async () => {
+    const service = await createService();
+    const draft = await service.handle('create', {
+      title: 'Keep draft', goal: 'Reject stale delete', workDir: '/tmp', start: false,
+    });
+    await expect(service.handle('delete', { id: draft.id, revision: draft.revision - 1 }))
+      .rejects.toThrow(/changed before deletion/);
+    expect(service.store.getWorkItem(draft.id)).not.toBeNull();
+
+    const running = await service.handle('create', {
+      title: 'Keep running', goal: 'Reject active delete', workDir: '/tmp', start: true,
+    });
+    await expect(service.handle('delete', { id: running.id, revision: running.revision }))
+      .rejects.toThrow(/Stop this WorkItem/);
+    expect(service.store.getWorkItem(running.id)).not.toBeNull();
+  });
+
   it('persists WorkItem attachments with the item and returns only safe browser metadata', async () => {
     const service = await createService();
     const detail = await service.handle('create', {

@@ -620,16 +620,14 @@
 }
 
 .work-center-card {
+  position: relative;
   display: grid;
   width: 100%;
   min-width: 0;
-  padding: 12px;
-  gap: 7px;
   border: 1px solid var(--border-light);
   border-radius: 10px;
   background: var(--bg-main);
   color: var(--text-primary);
-  text-align: left;
 }
 
 .work-center-card:hover {
@@ -640,6 +638,43 @@
 .work-center-card.active {
   border-color: var(--accent-blue);
   background: var(--session-active);
+}
+
+.work-center-card-open {
+  display: grid;
+  min-width: 0;
+  padding: 12px 42px 12px 12px;
+  gap: 7px;
+  color: inherit;
+  text-align: left;
+}
+
+.work-center-card-delete {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  opacity: 0.72;
+}
+
+.work-center-card:hover .work-center-card-delete,
+.work-center-card:focus-within .work-center-card-delete {
+  opacity: 1;
+}
+
+.work-center-card-delete:hover:not(:disabled) {
+  background: var(--sidebar-hover);
+  color: var(--error);
+}
+
+.work-center-card-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
 }
 
 .work-center-card-head,
@@ -1642,6 +1677,23 @@
   padding: 10px 20px 14px;
   background: var(--bg-main);
   overflow-y: auto;
+}
+
+.work-center-action-composer-scope {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 10px;
+}
+
+.work-center-action-composer-scope strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.work-center-action-composer-scope span {
+  color: var(--text-muted);
+  font-size: 10px;
 }
 
 .work-center-action-input-wrapper {

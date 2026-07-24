@@ -46,8 +46,10 @@ export default {
       search: '',
       boardVpId: '',
       boardWorkItemType: '',
-      boardUpdatedRange: '',
+      boardUpdatedRange: 'week',
       mobileBoardLane: 'active',
+      deletingWorkItemIds: {},
+      deleteWorkItemError: '',
       boardQueryTimer: null,
       actionGuidance: '',
       expandedActions: {},
@@ -853,6 +855,37 @@ export default {
         if (this.actionComposerScope === scope) this.actionInputSending = false;
       }
     },
+    workItemCanDelete(item) {
+      return ['done', 'cancelled', 'draft', 'needs_attention'].includes(item?.status);
+    },
+    workItemDeleting(item) {
+      return !!this.deletingWorkItemIds[item?.id];
+    },
+    async deleteWorkItem(item) {
+      if (!item || this.workItemDeleting(item)) return;
+      const prompt = this.tr('workCenter.deleteConfirm', 'Permanently delete this Work Item, its execution history, and attachments?');
+      if (typeof confirm === 'function' && !confirm(prompt)) return;
+      this.deleteWorkItemError = '';
+      this.deletingWorkItemIds = { ...this.deletingWorkItemIds, [item.id]: true };
+      try {
+        const result = await this.store.deleteWorkItem(item.id, item.revision, this.agentId);
+        if (result?.cleanupWarning) this.deleteWorkItemError = result.cleanupWarning;
+        if (this.selectedId === item.id) {
+          invalidateActionRunOpen(this);
+          this.selectedId = null;
+          this.selectedActionId = null;
+          this.narrowPane = 'items';
+          this.resetActionComposer();
+          this.resetWorkItemComposer();
+        }
+      } catch (error) {
+        this.deleteWorkItemError = error?.message || String(error);
+      } finally {
+        const deleting = { ...this.deletingWorkItemIds };
+        delete deleting[item.id];
+        this.deletingWorkItemIds = deleting;
+      }
+    },
     async cancelSelected() {
       if (!this.selected) return;
       const prompt = this.tr('workCenter.cancelConfirm', 'Cancel this work item and stop its unfinished Actions?');
@@ -932,6 +965,7 @@ export default {
             {{ tr('workCenter.noAvailableAgents', 'No compatible online Agents') }}
           </p>
           <p v-if="error" class="work-center-error">{{ error }}</p>
+          <p v-if="deleteWorkItemError" class="work-center-error" role="alert">{{ deleteWorkItemError }}</p>
           <div class="work-center-body" :class="{ 'is-empty': loaded && !loading && items.length === 0 }" :data-pane="narrowPane">
             <section class="work-center-list work-center-board" :aria-busy="loading || boardLoadingMore ? 'true' : 'false'">
               <div class="work-center-board-lane-tabs" role="tablist" :aria-label="tr('workCenter.board.lanes', 'Work item lanes')">
@@ -949,28 +983,36 @@ export default {
                   <span>{{ lane.items.length }}</span>
                 </header>
                 <div class="work-center-board-cards">
-                  <button v-for="item in lane.items" :key="item.id" type="button"
-                          class="work-center-card" :class="{ active: selectedId === item.id }"
-                          :aria-label="item.title || tr('workCenter.workItem', 'Work item')"
-                          @click="selectItem(item)">
-                    <span class="work-center-card-head">
-                      <span class="work-center-status" :data-status="boardAction(item)?.status || item.status"><span aria-hidden="true"></span>{{ statusLabel(boardAction(item)?.status || item.status) }}</span>
-                      <span class="work-center-card-updated">{{ time(item.updatedAt) }}</span>
-                    </span>
-                    <span class="work-center-card-title">{{ item.title }}</span>
-                    <span class="work-center-card-goal">{{ item.goal }}</span>
-                    <span v-if="boardAction(item)" class="work-center-card-current-action">
-                      {{ boardAction(item).objective || actionLabel(boardAction(item).type) }}
-                    </span>
-                    <span class="work-center-card-meta">
-                      <span>{{ boardExecutorLabel(item) }}</span>
-                      <span>{{ boardActionCountLabel(item) }}</span>
-                    </span>
-                    <span class="work-center-card-foot">
-                      <span>{{ tr('workCenter.created', 'Created') }} {{ time(item.createdAt) }}</span>
-                      <span v-if="item.attachmentCount">{{ item.attachmentCount }} {{ tr('workCenter.files', 'files') }}</span>
-                    </span>
-                  </button>
+                  <article v-for="item in lane.items" :key="item.id"
+                           class="work-center-card" :class="{ active: selectedId === item.id }">
+                    <button class="work-center-card-open" type="button"
+                            :aria-label="item.title || tr('workCenter.workItem', 'Work item')"
+                            @click="selectItem(item)">
+                      <span class="work-center-card-head">
+                        <span class="work-center-status" :data-status="boardAction(item)?.status || item.status"><span aria-hidden="true"></span>{{ statusLabel(boardAction(item)?.status || item.status) }}</span>
+                        <span class="work-center-card-updated">{{ time(item.updatedAt) }}</span>
+                      </span>
+                      <span class="work-center-card-title">{{ item.title }}</span>
+                      <span class="work-center-card-goal">{{ item.goal }}</span>
+                      <span v-if="boardAction(item)" class="work-center-card-current-action">
+                        {{ boardAction(item).objective || actionLabel(boardAction(item).type) }}
+                      </span>
+                      <span class="work-center-card-meta">
+                        <span>{{ boardExecutorLabel(item) }}</span>
+                        <span>{{ boardActionCountLabel(item) }}</span>
+                      </span>
+                      <span class="work-center-card-foot">
+                        <span>{{ tr('workCenter.created', 'Created') }} {{ time(item.createdAt) }}</span>
+                        <span v-if="item.attachmentCount">{{ item.attachmentCount }} {{ tr('workCenter.files', 'files') }}</span>
+                      </span>
+                    </button>
+                    <button class="work-center-card-delete" type="button" @click.stop="deleteWorkItem(item)"
+                            :disabled="!workItemCanDelete(item) || workItemDeleting(item)"
+                            :title="workItemCanDelete(item) ? tr('workCenter.deleteWorkItem', 'Delete Work Item') : tr('workCenter.deleteRequiresStop', 'Stop this Work Item before deleting it')"
+                            :aria-label="tr('workCenter.deleteWorkItem', 'Delete Work Item')">
+                      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12Zm3.46-7.12 1.41-1.41L12 11.59l1.12-1.12 1.41 1.41L13.41 13l1.12 1.12-1.41 1.41L12 14.41l-1.12 1.12-1.41-1.41L10.59 13l-1.13-1.12ZM15.5 4l-1-1h-5l-1 1H5v2h14V4h-3.5Z"/></svg>
+                    </button>
+                  </article>
                   <p v-if="!loading && lane.items.length === 0" class="work-center-board-empty">{{ tr('workCenter.board.emptyLane', 'No work items') }}</p>
                 </div>
               </section>

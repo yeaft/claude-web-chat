@@ -140,6 +140,26 @@ describe('Work Center navigation', () => {
     expect(store.workCenterLoadingByAgent['agent-1']).toBe(false);
   });
 
+  it('keeps a deleted WorkItem tombstoned across late list and detail responses', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterAgentId = 'agent-1';
+    store.workCenterItemsByAgent['agent-1'] = [{ id: 'wi-delete', revision: 3 }];
+    store.workCenterDetailByAgent['agent-1'] = { id: 'wi-delete', revision: 3, actions: [] };
+    const list = deferred();
+    const detail = deferred();
+    store.workCenterRequest = vi.fn((op) => op === 'list' ? list.promise : detail.promise);
+
+    const listing = useChatStore().listWorkItems.call(store, 'agent-1', {});
+    const loadingDetail = store.getWorkItem('wi-delete', 'agent-1');
+    store.removeWorkItemState('agent-1', 'wi-delete');
+    list.resolve({ items: [{ id: 'wi-delete', revision: 3, boardLane: 'closed' }], nextCursor: null });
+    detail.resolve({ id: 'wi-delete', revision: 3, actions: [] });
+    await Promise.all([listing, loadingDetail]);
+
+    expect(store.workCenterItemsByAgent['agent-1']).toEqual([]);
+    expect(store.workCenterDetailByAgent['agent-1']).toBeNull();
+  });
+
   it('appends a stable Board page without duplicating Work Items', async () => {
     const store = makeStore('yeaft');
     store.workCenterAgentId = 'agent-1';

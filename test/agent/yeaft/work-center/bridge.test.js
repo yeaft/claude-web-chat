@@ -237,6 +237,25 @@ describe('Work Center lifecycle bridge', () => {
     },
   );
 
+  it('whitelists revision-fenced WorkItem deletion and returns the opaque result', async () => {
+    const service = {
+      start: vi.fn(), shutdown: vi.fn(),
+      handle: vi.fn().mockResolvedValue({ id: 'wi-delete', deleted: true, cleanupWarning: null }),
+    };
+    __testSetWorkCenterService(service);
+
+    await handleWorkCenterRequest({
+      requestId: 'delete-item', op: 'delete',
+      payload: { id: 'wi-delete', revision: 7, ignored: 'private' }, _requestUserId: 'user-1',
+    });
+
+    expect(service.handle).toHaveBeenCalledWith('delete', { id: 'wi-delete', revision: 7 });
+    expect(sendToServer.mock.calls.at(-1)[0]).toMatchObject({
+      type: 'work_center_response', requestId: 'delete-item', op: 'delete', ok: true,
+      data: { id: 'wi-delete', deleted: true },
+    });
+  });
+
   it('whitelists Action message pagination before reaching the service', async () => {
     const service = {
       start: vi.fn(), shutdown: vi.fn(),
