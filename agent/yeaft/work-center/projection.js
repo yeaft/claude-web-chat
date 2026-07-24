@@ -982,6 +982,7 @@ export function projectActionRequestDetail(action, run, history, runs = [run]) {
     ttfbMs: loop.ttfbMs == null ? null : count(loop.ttfbMs),
     stopReason: loop.stopReason || null,
     at: count(loop.at),
+    detailTruncated: loop.detailTruncated === true,
     tools: (Array.isArray(loop.toolCalls) ? loop.toolCalls : [])
       .slice(0, MAX_ACTION_REQUEST_TOOL_CALLS)
       .map(call => {
@@ -1018,6 +1019,9 @@ export function projectActionRequestDetail(action, run, history, runs = [run]) {
       totalMs: count(turn.totalMs),
       totalTokens: count(turn.totalTokens),
       loops,
+      truncated: limited.omittedLoopCount > 0 || limited.summarizedLoopCount > 0,
+      omittedLoopCount: limited.omittedLoopCount,
+      summarizedLoopCount: limited.summarizedLoopCount,
     },
   }, limited.omittedLoopCount);
 }

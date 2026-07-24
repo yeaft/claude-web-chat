@@ -1497,6 +1497,16 @@
   text-align: center;
 }
 
+.work-center-action-notice {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .work-center-request-card,
 .work-center-request-loop {
   overflow: hidden;

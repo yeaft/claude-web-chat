@@ -1319,11 +1319,53 @@ describe('Work Center event projection', () => {
 
     expect(projected.request.loopCount).toBe(128);
     expect(projected.request.truncated).toBe(true);
-    expect(projected.request.omittedLoopCount).toBeGreaterThanOrEqual(124);
-    expect(projected.request.loops.length).toBeLessThanOrEqual(4);
+    expect(projected.request.omittedLoopCount).toBe(112);
+    expect(projected.request.summarizedLoopCount).toBeGreaterThan(0);
+    expect(projected.request.loops).toHaveLength(16);
+    expect(projected.request.loops.filter(loop => loop.detailTruncated))
+      .toHaveLength(projected.request.summarizedLoopCount);
+    expect(projected.request.loops.at(-1)).toMatchObject({ loopNumber: 128 });
     expect(Buffer.byteLength(JSON.stringify(projected), 'utf8'))
       .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
     expect(elapsedMs).toBeLessThan(1_000);
+  });
+
+  it('keeps diagnostic Loop summaries when cumulative message history exceeds the request budget', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const cumulativeMessages = Array.from({ length: 80 }, (_, index) => ({
+      role: index % 2 ? 'assistant' : 'user', content: `message-${index}-${'x'.repeat(8_192)}`,
+    }));
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-cumulative', tools: [] }],
+      loops: Array.from({ length: 60 }, (_, index) => ({
+        loopInstanceId: `cumulative-loop-${index + 1}`,
+        loopNumber: index + 1,
+        model: 'provider/review',
+        messages: cumulativeMessages.slice(0, index + 20),
+        response: `Loop ${index + 1} completed`,
+        usage: { inputTokens: 100 + index, outputTokens: 20, totalTokens: 120 + index },
+        latencyMs: 250 + index,
+        stopReason: index === 59 ? 'end_turn' : 'tool_use',
+        toolCalls: [{ id: `tool-${index + 1}`, name: 'FileRead', input: { file_path: 'large.js' } }],
+      })),
+    });
+
+    expect(projected.request).toMatchObject({
+      loopCount: 60, truncated: true, omittedLoopCount: 44, summarizedLoopCount: 16,
+    });
+    expect(projected.request.loops).toHaveLength(16);
+    expect(projected.request.loops[0]).toMatchObject({
+      loopNumber: 45, response: 'Loop 45 completed', detailTruncated: true,
+      usage: { totalTokens: 164 },
+      tools: [{ name: 'FileRead', input: null, output: null }],
+    });
+    expect(projected.request.loops.at(-1)).toMatchObject({
+      loopNumber: 60, stopReason: 'end_turn', detailTruncated: true,
+    });
+    expect(Buffer.byteLength(JSON.stringify(projected), 'utf8'))
+      .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
   });
 
   it('enforces one UTF-8 byte budget for the complete Action request detail DTO', () => {
