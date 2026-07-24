@@ -529,6 +529,21 @@ legacy session`, { encoding: 'utf8' });
         .toEqual([]);
     });
 
+    it('resolves senders from Session and route-forward persisted shapes', () => {
+      const direct = store.append({
+        role: 'assistant', content: 'direct response', sessionId: 'session_sender_shapes', from: 'linus',
+      });
+      const forwarded = store.append({
+        role: 'assistant', content: 'forwarded response', sessionId: 'session_sender_shapes', from: 'martin',
+        meta: { senderVpId: 'martin', injectedBy: 'route_forward' },
+      });
+
+      expect(store.searchVisibleBySession('session_sender_shapes', '', { senderKey: 'vp:linus' }).results)
+        .toEqual([expect.objectContaining({ messageId: direct.id, speakerVpId: 'linus' })]);
+      expect(store.searchVisibleBySession('session_sender_shapes', '', { senderKey: 'vp:martin' }).results)
+        .toEqual([expect.objectContaining({ messageId: forwarded.id, speakerVpId: 'martin' })]);
+    });
+
     it('pages sender-only results on visible response boundaries', () => {
       for (let i = 0; i < 3; i += 1) {
         store.append({ role: 'assistant', content: `answer ${i}`, sessionId: 'session_sender_pages', speakerVpId: 'linus' });
