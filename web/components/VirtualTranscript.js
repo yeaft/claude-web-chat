@@ -64,6 +64,7 @@ export default {
     let scrollAdjustRafId = null;
     let pendingScrollDelta = 0;
     let pendingScrollToBottom = false;
+    let scrollAdjustmentGeneration = 0;
 
     // Item offsets only change when the items, estimates, or measured heights
     // change. Keep them out of the scroll-dependent computed so wheel/touch
@@ -137,12 +138,15 @@ export default {
       });
     }
 
-    function scheduleScrollAdjustment({ delta = 0, toBottom = false } = {}) {
+    function scheduleScrollAdjustment({ delta = 0, toBottom = false } = {}, generation = scrollAdjustmentGeneration) {
+      if (generation !== scrollAdjustmentGeneration) return;
       if (Math.abs(delta) >= HEIGHT_CHANGE_THRESHOLD) pendingScrollDelta += delta;
       if (toBottom) pendingScrollToBottom = true;
       if (scrollAdjustRafId) return;
+      const scheduledGeneration = generation;
       scrollAdjustRafId = requestAnimationFrame(() => {
         scrollAdjustRafId = null;
+        if (scheduledGeneration !== scrollAdjustmentGeneration) return;
         const scroller = scrollEl.value;
         if (!scroller) {
           pendingScrollDelta = 0;
@@ -161,8 +165,11 @@ export default {
     }
 
     function cancelPendingBottomFollow() {
+      scrollAdjustmentGeneration += 1;
       pendingScrollToBottom = false;
       pendingScrollDelta = 0;
+      if (scrollAdjustRafId) cancelAnimationFrame(scrollAdjustRafId);
+      scrollAdjustRafId = null;
     }
 
     function scheduleMeasureElement(key, index, el) {
@@ -229,10 +236,11 @@ export default {
       const hasAnchorAdjustment = Math.abs(anchorDelta) >= HEIGHT_CHANGE_THRESHOLD;
       if (!hasAnchorAdjustment && !shouldScrollToBottom) return;
       const adjustment = { delta: anchorDelta, toBottom: shouldScrollToBottom };
+      const adjustmentGeneration = scrollAdjustmentGeneration;
       if (shouldScrollToBottom) {
-        Vue.nextTick(() => scheduleScrollAdjustment(adjustment));
+        Vue.nextTick(() => scheduleScrollAdjustment(adjustment, adjustmentGeneration));
       } else {
-        scheduleScrollAdjustment(adjustment);
+        scheduleScrollAdjustment(adjustment, adjustmentGeneration);
       }
     }
 
