@@ -1549,6 +1549,8 @@ export default {
   'workCenter.loadingRequestDetail': 'Loading request detail…',
   'workCenter.requestDetailUnavailable': 'Request detail is unavailable. Try again.',
   'workCenter.noRequestLoops': 'This request has no retained loop details.',
+  'workCenter.requestDetailTruncated': 'Large request: {summarized} loops are summarized and {omitted} older loops are omitted.',
+  'workCenter.loopDetailTruncated': 'Large Loop: showing a diagnostic summary.',
   'workCenter.loadEarlierMessages': 'Load earlier messages',
   'workCenter.loadingEarlierMessages': 'Loading earlier messages…',
   'workCenter.unknownModel': 'Unknown model',

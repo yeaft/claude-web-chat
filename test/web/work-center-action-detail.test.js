@@ -175,6 +175,50 @@ describe('Work Center Action detail tabs', () => {
     expect(wrapper.get('.work-center-request-detail').text()).toContain('This request has no retained loop details.');
   });
 
+  it('explains when every Loop was omitted by the detail budget', async () => {
+    const request = { id: 'request-omitted', runId: 'run-1', model: 'model-1' };
+    const wrapper = mountDetail({
+      requests: [request],
+      requestDetails: {
+        'run-1:request-omitted': { request: {
+          id: 'request-omitted', runId: 'run-1', truncated: true,
+          summarizedLoopCount: 0, omittedLoopCount: 1, loops: [],
+        } },
+      },
+    });
+
+    await wrapper.get('.work-center-request-summary').trigger('click');
+    expect(wrapper.get('.work-center-request-detail > .work-center-action-notice').text())
+      .toBe('workCenter.requestDetailTruncated');
+    expect(wrapper.find('.work-center-request-detail .work-center-action-empty').exists()).toBe(false);
+  });
+
+  it('renders retained Loop summaries with explicit truncation notices', async () => {
+    const request = { id: 'request-large', runId: 'run-1', model: 'model-1' };
+    const wrapper = mountDetail({
+      requests: [request],
+      requestDetails: {
+        'run-1:request-large': { request: {
+          id: 'request-large', runId: 'run-1', truncated: true,
+          summarizedLoopCount: 1, omittedLoopCount: 44,
+          loops: [{
+            id: 'loop-45', loopNumber: 45, model: 'model-1', response: 'diagnostic response',
+            detailTruncated: true, usage: { totalTokens: 120 }, latencyMs: 250,
+          }],
+        } },
+      },
+    });
+
+    await wrapper.get('.work-center-request-summary').trigger('click');
+    expect(wrapper.get('.work-center-request-detail > .work-center-action-notice').text())
+      .toBe('workCenter.requestDetailTruncated');
+
+    await wrapper.get('.work-center-request-loop > button').trigger('click');
+    expect(wrapper.get('.work-center-request-loop-body .work-center-action-notice').text())
+      .toBe('Large Loop: showing a diagnostic summary.');
+    expect(wrapper.get('.work-center-request-loop-body').text()).toContain('diagnostic response');
+  });
+
   it('renders generation history as one Action thread and opens run diagnostics lazily', async () => {
     const request = { id: 'request-2', runId: 'run-2', model: 'model-2' };
     const wrapper = mountDetail({
