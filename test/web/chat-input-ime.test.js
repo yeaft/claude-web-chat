@@ -24,9 +24,9 @@ function createStore() {
   });
 }
 
-function mountInput(sendFn = vi.fn()) {
+function mountInput(sendFn = vi.fn(), props = {}) {
   const wrapper = mount(ChatInput, {
-    props: { sendFn },
+    props: { sendFn, ...props },
     global: {
       mocks: {
         $t: key => key,
@@ -118,6 +118,23 @@ describe('ChatInput IME keyboard handling', () => {
     expect(enter.preventDefault).toHaveBeenCalledOnce();
     expect(sendFn).toHaveBeenCalledWith('ready', undefined);
     expect(wrapper.get('textarea').element.value).toBe('');
+    wrapper.unmount();
+  });
+
+  it('does not send with Enter while the stop control is active', async () => {
+    const { wrapper, sendFn } = mountInput(vi.fn(), { showStop: true });
+    await wrapper.get('textarea').setValue('second message');
+    const enter = enterEvent();
+
+    expect(wrapper.find('.stop-btn').exists()).toBe(true);
+    expect(wrapper.find('.send-btn:not(.stop-btn)').exists()).toBe(false);
+
+    wrapper.vm.handleKeydown(enter);
+    await Vue.nextTick();
+
+    expect(enter.preventDefault).toHaveBeenCalledOnce();
+    expect(sendFn).not.toHaveBeenCalled();
+    expect(wrapper.get('textarea').element.value).toBe('second message');
     wrapper.unmount();
   });
 });

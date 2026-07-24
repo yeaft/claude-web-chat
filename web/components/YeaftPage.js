@@ -24,7 +24,7 @@ import {
 import { shouldShowYeaftOnboardingGuide } from '../utils/yeaftOnboarding.js';
 import { hasUsableYeaftAgent, resolveActiveSessionIdForSettings } from '../utils/yeaftSessionSettings.js';
 import { shouldCloseLlmConfigAfterSave } from '../utils/llm-config-save.js';
-import { revealOutlineResult } from '../utils/message-search-navigation.js';
+import { revealOutlineResult, shouldDismissHistorySearch } from '../utils/message-search-navigation.js';
 
 function sessionTaskSortTime(task) {
   const raw = task?.updatedAt || task?.endedAt || task?.createdAt;
@@ -457,6 +457,11 @@ export default {
       ];
     });
     let historySearchTimer = null;
+    const sessionsStore = () => {
+      try {
+        return window.Pinia?.useSessionsStore?.() || null;
+      } catch { return null; }
+    };
     const yeaftInputDraftKey = Vue.computed(() => {
       const agentId = store.currentAgent || 'agent';
       const gs = sessionsStore();
@@ -703,6 +708,9 @@ export default {
       if (historySearchOpen.value) closeHistorySearch();
       else openHistorySearch();
     };
+    const closeHistorySearchOutside = (event) => {
+      if (historySearchOpen.value && shouldDismissHistorySearch(event.target)) closeHistorySearch();
+    };
     const onHistorySearchQuery = (query) => {
       if (historySearchTimer) clearTimeout(historySearchTimer);
       historySearchActiveMessageId.value = null;
@@ -762,6 +770,7 @@ export default {
       window.visualViewport?.addEventListener('resize', scheduleMobileViewportRecovery);
       window.visualViewport?.addEventListener('scroll', scheduleMobileViewportRecovery);
       document.addEventListener('click', closeModelDropdownOutside);
+      document.addEventListener('click', closeHistorySearchOutside);
       document.addEventListener('keydown', onKeyDown);
       scheduleMobileViewportSync();
     });
@@ -772,6 +781,7 @@ export default {
       window.visualViewport?.removeEventListener('resize', scheduleMobileViewportRecovery);
       window.visualViewport?.removeEventListener('scroll', scheduleMobileViewportRecovery);
       document.removeEventListener('click', closeModelDropdownOutside);
+      document.removeEventListener('click', closeHistorySearchOutside);
       document.removeEventListener('keydown', onKeyDown);
       if (mobileViewportRaf != null) cancelAnimationFrame(mobileViewportRaf);
       if (mobileViewportRecoverTimer) clearTimeout(mobileViewportRecoverTimer);
@@ -881,11 +891,6 @@ export default {
       window.location.reload();
     };
 
-    const sessionsStore = () => {
-      try {
-        return window.Pinia?.useSessionsStore?.() || null;
-      } catch { return null; }
-    };
     const isProcessing = Vue.computed(() => {
       const gs = sessionsStore();
       const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
