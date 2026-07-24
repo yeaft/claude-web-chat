@@ -572,7 +572,9 @@ function finalizeActionRequestDetail(detail) {
   const loops = Array.isArray(detail.request.loops) ? detail.request.loops : [];
   detail.request.summarizedLoopCount = loops.filter(loop => loop?.detailTruncated === true).length;
   detail.request.omittedLoopCount = Math.max(0, Number(detail.request.omittedLoopCount) || 0);
-  detail.request.truncated = detail.request.summarizedLoopCount > 0 || detail.request.omittedLoopCount > 0;
+  detail.request.truncated = detail.request.truncated === true
+    || detail.request.summarizedLoopCount > 0
+    || detail.request.omittedLoopCount > 0;
   return detail;
 }
 

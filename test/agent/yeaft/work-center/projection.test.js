@@ -1356,6 +1356,34 @@ describe('Work Center event projection', () => {
       .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
   });
 
+  it.each([
+    ['run model fallback', ({ run, hugeUnicode }) => { run.modelSnapshot.id = hugeUnicode; }],
+    ['computed Loop id fallback', ({ turn, hugeUnicode }) => { turn.turnId = hugeUnicode; }],
+  ])('keeps the latest Loop when %s exceeds the final DTO budget', (_label, mutate) => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const hugeUnicode = '界'.repeat(MAX_ACTION_REQUEST_DETAIL_BYTES);
+    const turn = { turnId: 'request-fallback', tools: [] };
+    const loop = {
+      loopInstanceId: null, loopNumber: 9, model: null,
+      messages: [{ role: 'user', content: hugeUnicode }],
+      response: 'diagnostic response', toolCalls: [],
+    };
+    mutate({ action, run, turn, loop, hugeUnicode });
+    const projected = projectActionRequestDetail(action, run, { turns: [turn], loops: [loop] });
+
+    expect(projected.request).toMatchObject({
+      loopCount: 1, truncated: true, omittedLoopCount: 0, summarizedLoopCount: 1,
+    });
+    expect(projected.request.loops).toHaveLength(1);
+    expect(projected.request.loops[0]).toMatchObject({ loopNumber: 9, detailTruncated: true });
+    expect(Buffer.byteLength(projected.request.loops[0].id || '', 'utf8')).toBeLessThanOrEqual(256);
+    expect(Buffer.byteLength(projected.request.loops[0].model || '', 'utf8')).toBeLessThanOrEqual(1_024);
+    expect(Buffer.byteLength(JSON.stringify(projected), 'utf8'))
+      .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
+  });
+
   it('keeps diagnostic Loop summaries when cumulative message history exceeds the request budget', () => {
     const detail = internalDetail();
     const action = detail.actions[0];

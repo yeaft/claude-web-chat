@@ -13,6 +13,10 @@ const MAX_ACTION_MESSAGE_CHARS = 16_000;
 const MAX_ACTION_DIAGNOSTIC_CHARS = 8_000;
 const MAX_ACTION_MESSAGES = 20;
 const MAX_ACTION_REQUEST_TOOL_CALLS = 128;
+const MAX_ACTION_REQUEST_ID_BYTES = 256;
+const MAX_ACTION_REQUEST_NAME_BYTES = 512;
+const MAX_ACTION_REQUEST_MODEL_BYTES = 1_024;
+const MAX_ACTION_REQUEST_METADATA_BYTES = 4 * 1_024;
 const MAX_HISTORICAL_BRIEF_CHARS = 256;
 const MAX_CURRENT_BRIEF_BYTES = 8 * 1024;
 export const MAX_WORK_ITEM_BROWSER_DTO_BYTES = 512 * 1024;
@@ -27,6 +31,10 @@ function truncateUtf8(value, maxBytes) {
   let end = Math.min(maxBytes, bytes.length);
   while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
   return bytes.subarray(0, end).toString('utf8');
+}
+
+function exceedsUtf8Bytes(value, maxBytes) {
+  return Buffer.byteLength(String(value || ''), 'utf8') > maxBytes;
 }
 
 function currentAction(detail) {
@@ -980,10 +988,18 @@ export function projectActionRequestDetail(action, run, history, runs = [run]) {
     `${count(tool.loopNumber)}:${tool.callId}`,
     tool,
   ]));
+  const requestModel = run.modelSnapshot?.id || limited.loops[0]?.model || null;
+  const metadataTruncated = exceedsUtf8Bytes(action.id, MAX_ACTION_REQUEST_METADATA_BYTES)
+    || exceedsUtf8Bytes(turn.turnId, MAX_ACTION_REQUEST_METADATA_BYTES)
+    || exceedsUtf8Bytes(run.id, MAX_ACTION_REQUEST_METADATA_BYTES)
+    || exceedsUtf8Bytes(run.status || 'running', MAX_ACTION_REQUEST_METADATA_BYTES)
+    || exceedsUtf8Bytes(requestModel, MAX_ACTION_REQUEST_MODEL_BYTES)
+    || exceedsUtf8Bytes(run.vpSnapshot?.id, MAX_ACTION_REQUEST_METADATA_BYTES)
+    || exceedsUtf8Bytes(run.vpSnapshot?.name || run.vpSnapshot?.id, MAX_ACTION_REQUEST_METADATA_BYTES);
   const loops = limited.loops.map(loop => ({
-    id: loop.loopInstanceId || `${turn.turnId}:${loop.loopNumber}`,
+    id: truncateUtf8(loop.loopInstanceId || `${turn.turnId}:${loop.loopNumber}`, MAX_ACTION_REQUEST_ID_BYTES) || null,
     loopNumber: count(loop.loopNumber),
-    model: loop.model || run.modelSnapshot?.id || null,
+    model: truncateUtf8(loop.model || run.modelSnapshot?.id, MAX_ACTION_REQUEST_MODEL_BYTES) || null,
     systemPrompt: sanitizeDebugValue(typeof loop.systemPrompt === 'string' ? loop.systemPrompt : ''),
     messages: sanitizeDebugValue(Array.isArray(loop.messages) ? loop.messages : []),
     response: sanitizeDebugValue(typeof loop.response === 'string' ? loop.response : ''),
@@ -998,8 +1014,8 @@ export function projectActionRequestDetail(action, run, history, runs = [run]) {
       .map(call => {
         const result = toolsByCall.get(`${count(loop.loopNumber)}:${call.id}`);
         return {
-          id: call.id || null,
-          name: call.name || result?.name || '?',
+          id: truncateUtf8(call.id, MAX_ACTION_REQUEST_ID_BYTES) || null,
+          name: truncateUtf8(call.name || result?.name || '?', MAX_ACTION_REQUEST_NAME_BYTES) || '?',
           input: sanitizeDebugValue(call.input),
           output: sanitizeDebugValue(result?.toolOutput ?? null),
           durationMs: count(result?.durationMs),
@@ -1013,15 +1029,15 @@ export function projectActionRequestDetail(action, run, history, runs = [run]) {
     rawResponse: sanitizeDebugValue(loop.rawResponse ?? null),
   }));
   return enforceActionRequestDetailBudget({
-    actionId: action.id,
+    actionId: truncateUtf8(action.id, MAX_ACTION_REQUEST_METADATA_BYTES),
     request: {
-      id: turn.turnId,
-      runId: run.id,
-      status: run.status || 'running',
-      model: run.modelSnapshot?.id || loops[0]?.model || null,
+      id: truncateUtf8(turn.turnId, MAX_ACTION_REQUEST_METADATA_BYTES),
+      runId: truncateUtf8(run.id, MAX_ACTION_REQUEST_METADATA_BYTES),
+      status: truncateUtf8(run.status || 'running', MAX_ACTION_REQUEST_METADATA_BYTES),
+      model: truncateUtf8(requestModel, MAX_ACTION_REQUEST_MODEL_BYTES) || null,
       vp: run.vpSnapshot ? {
-        id: run.vpSnapshot.id || null,
-        name: run.vpSnapshot.name || run.vpSnapshot.id || null,
+        id: truncateUtf8(run.vpSnapshot.id, MAX_ACTION_REQUEST_METADATA_BYTES) || null,
+        name: truncateUtf8(run.vpSnapshot.name || run.vpSnapshot.id, MAX_ACTION_REQUEST_METADATA_BYTES) || null,
       } : null,
       openedAt: count(turn.openedAt || run.startedAt),
       closedAt: count(turn.closedAt || run.endedAt),
@@ -1029,7 +1045,7 @@ export function projectActionRequestDetail(action, run, history, runs = [run]) {
       totalMs: count(turn.totalMs),
       totalTokens: count(turn.totalTokens),
       loops,
-      truncated: limited.omittedLoopCount > 0 || limited.summarizedLoopCount > 0,
+      truncated: metadataTruncated || limited.omittedLoopCount > 0 || limited.summarizedLoopCount > 0,
       omittedLoopCount: limited.omittedLoopCount,
       summarizedLoopCount: limited.summarizedLoopCount,
     },
