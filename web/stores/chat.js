@@ -634,6 +634,14 @@ export const useChatStore = defineStore('chat', {
     workCenterOpen: false,
     workCenterAgentId: null,
     workCenterItemsByAgent: {},
+    workCenterListPageByAgent: {},
+    workCenterListMoreLoadingByAgent: {},
+    _workCenterListGenerationByAgent: {},
+    _workCenterListQueryByAgent: {},
+    _workCenterListFiltersByAgent: {},
+    _workCenterListMoreRequestsByAgent: {},
+    _workCenterListEventGenerationByAgent: {},
+    _workCenterListEventsByAgent: {},
     workCenterDetailByAgent: {},
     workCenterActionMessages: {},
     workCenterActionMessagesLoading: {},
@@ -1297,10 +1305,10 @@ export const useChatStore = defineStore('chat', {
     enterWorkCenterFromSession(session, seedGoal = '') {
       if (!session?.id) return;
       const agentId = session.agentId || resolveAgentIdForSession(this, session.id);
+      const requirement = String(seedGoal || session.title || session.name || '').trim();
       this.workCenterCreateDraft = {
         sourceAgentId: agentId,
-        title: String(session.title || session.name || '').trim(),
-        goal: String(seedGoal || '').trim(),
+        requirement,
         workDir: String(session.workDir || '').trim(),
         origin: { sessionId: session.id, messageId: null, createdBy: 'user' },
         linkedSessionIds: [session.id],
@@ -1320,24 +1328,136 @@ export const useChatStore = defineStore('chat', {
         this.sendWsMessage({ type: 'work_center_request', agentId: target, requestId, op, payload });
       });
     },
+    workItemMatchesBoardQuery(item, filters = {}) {
+      if (!item) return false;
+      if (filters.lane && item.boardLane !== filters.lane) return false;
+      if (filters.vpId && !(item.executors || []).some(executor => executor?.id === filters.vpId)) return false;
+      if (filters.workItemType && item.workItemType !== filters.workItemType) return false;
+      if (filters.updatedFrom && Number(item.updatedAt) < Number(filters.updatedFrom)) return false;
+      if (filters.updatedTo && Number(item.updatedAt) > Number(filters.updatedTo)) return false;
+      const keyword = String(filters.keyword || '').trim().toLowerCase();
+      return !keyword || String(item.title || '').toLowerCase().includes(keyword)
+        || String(item.goal || '').toLowerCase().includes(keyword);
+    },
     async listWorkItems(agentId = null, filters = {}) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       if (!target) return [];
+      const normalizedFilters = {
+        lane: ['needs_attention', 'active', 'closed'].includes(filters.lane) ? filters.lane : null,
+        keyword: String(filters.keyword || filters.search || '').trim(),
+        vpId: String(filters.vpId || '').trim(),
+        workItemType: String(filters.workItemType || '').trim(),
+        createdFrom: Number(filters.createdFrom) || null,
+        createdTo: Number(filters.createdTo) || null,
+        updatedFrom: Number(filters.updatedFrom) || null,
+        updatedTo: Number(filters.updatedTo) || null,
+        limit: Math.min(Math.max(Number(filters.limit) || 100, 1), 200),
+      };
+      const queryKey = JSON.stringify(normalizedFilters);
+      const generation = Number(this._workCenterListGenerationByAgent[target] || 0) + 1;
+      const eventGeneration = Number(this._workCenterListEventGenerationByAgent[target] || 0);
+      this._workCenterListGenerationByAgent = { ...this._workCenterListGenerationByAgent, [target]: generation };
+      this._workCenterListQueryByAgent = { ...this._workCenterListQueryByAgent, [target]: queryKey };
+      this._workCenterListFiltersByAgent = { ...this._workCenterListFiltersByAgent, [target]: normalizedFilters };
       this.workCenterLoadingByAgent = { ...this.workCenterLoadingByAgent, [target]: true };
       this.workCenterErrorByAgent = { ...this.workCenterErrorByAgent, [target]: null };
       try {
-        const data = await this.workCenterRequest('list', filters, target);
+        const data = await this.workCenterRequest('list', normalizedFilters, target);
         const items = Array.isArray(data?.items) ? data.items : [];
-        this.workCenterItemsByAgent = { ...this.workCenterItemsByAgent, [target]: items };
-        this.workCenterWatcherByAgent = { ...this.workCenterWatcherByAgent, [target]: data?.watcher || null };
-        this.workCenterLoadedByAgent = { ...this.workCenterLoadedByAgent, [target]: true };
+        const requestStillCurrent = this._workCenterListGenerationByAgent[target] === generation
+          && this._workCenterListQueryByAgent[target] === queryKey
+          && this.workCenterAgentId === target;
+        if (requestStillCurrent) {
+          let mergedItems = items;
+          const events = this._workCenterListEventsByAgent[target] || {};
+          for (const entry of Object.values(events)) {
+            if (Number(entry?.generation) <= eventGeneration || entry?.queryKey !== queryKey) continue;
+            mergedItems = entry.matches
+              ? applyWorkItemSummary(mergedItems, entry.summary)
+              : mergedItems.filter(item => item.id !== entry.summary?.id);
+          }
+          this.workCenterItemsByAgent = { ...this.workCenterItemsByAgent, [target]: mergedItems };
+          this.workCenterListPageByAgent = {
+            ...this.workCenterListPageByAgent,
+            [target]: { nextCursor: data?.nextCursor || null, queryKey },
+          };
+          this.workCenterWatcherByAgent = { ...this.workCenterWatcherByAgent, [target]: data?.watcher || null };
+          this.workCenterLoadedByAgent = { ...this.workCenterLoadedByAgent, [target]: true };
+        }
         return items;
       } catch (err) {
-        this.workCenterErrorByAgent = { ...this.workCenterErrorByAgent, [target]: err?.message || String(err) };
+        if (this._workCenterListGenerationByAgent[target] === generation
+            && this._workCenterListQueryByAgent[target] === queryKey) {
+          this.workCenterErrorByAgent = { ...this.workCenterErrorByAgent, [target]: err?.message || String(err) };
+        }
         throw err;
       } finally {
-        this.workCenterLoadingByAgent = { ...this.workCenterLoadingByAgent, [target]: false };
+        if (this._workCenterListGenerationByAgent[target] === generation
+            && this._workCenterListQueryByAgent[target] === queryKey) {
+          this.workCenterLoadingByAgent = { ...this.workCenterLoadingByAgent, [target]: false };
+        }
       }
+    },
+    async loadMoreWorkItems(agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const page = this.workCenterListPageByAgent[target];
+      const filters = this._workCenterListFiltersByAgent[target];
+      if (!target || !page?.nextCursor || !filters) return [];
+      const queryKey = page.queryKey;
+      const generation = this._workCenterListGenerationByAgent[target];
+      const eventGeneration = Number(this._workCenterListEventGenerationByAgent[target] || 0);
+      const cursor = page.nextCursor;
+      const requestKey = `${generation}:${queryKey}:${cursor}`;
+      if (this._workCenterListMoreRequestsByAgent[target]?.key === requestKey) {
+        return this._workCenterListMoreRequestsByAgent[target].request;
+      }
+      this.workCenterListMoreLoadingByAgent = {
+        ...this.workCenterListMoreLoadingByAgent, [target]: true,
+      };
+      const request = (async () => {
+        try {
+          const data = await this.workCenterRequest('list', { ...filters, cursor }, target);
+          const currentPage = this.workCenterListPageByAgent[target];
+          if (this._workCenterListGenerationByAgent[target] !== generation
+              || this._workCenterListQueryByAgent[target] !== queryKey
+              || currentPage?.queryKey !== queryKey
+              || currentPage?.nextCursor !== cursor
+              || this.workCenterAgentId !== target) return [];
+          let merged = [...(this.workCenterItemsByAgent[target] || [])];
+          for (const item of Array.isArray(data?.items) ? data.items : []) {
+            const index = merged.findIndex(current => current.id === item.id);
+            if (index < 0) merged.push(item);
+            else merged[index] = applyWorkItemSummary([merged[index]], item)[0];
+          }
+          const events = this._workCenterListEventsByAgent[target] || {};
+          for (const entry of Object.values(events)) {
+            if (Number(entry?.generation) <= eventGeneration || entry?.queryKey !== queryKey) continue;
+            merged = entry.matches
+              ? applyWorkItemSummary(merged, entry.summary)
+              : merged.filter(item => item.id !== entry.summary?.id);
+          }
+          this.workCenterItemsByAgent = { ...this.workCenterItemsByAgent, [target]: merged };
+          this.workCenterListPageByAgent = {
+            ...this.workCenterListPageByAgent,
+            [target]: { nextCursor: data?.nextCursor || null, queryKey },
+          };
+          return data?.items || [];
+        } finally {
+          if (this._workCenterListMoreRequestsByAgent[target]?.key === requestKey) {
+            const pending = { ...this._workCenterListMoreRequestsByAgent };
+            delete pending[target];
+            this._workCenterListMoreRequestsByAgent = pending;
+            this.workCenterListMoreLoadingByAgent = {
+              ...this.workCenterListMoreLoadingByAgent, [target]: false,
+            };
+          }
+        }
+      })();
+      this._workCenterListMoreRequestsByAgent = {
+        ...this._workCenterListMoreRequestsByAgent,
+        [target]: { key: requestKey, request },
+      };
+      return request;
     },
     beginWorkCenterDetailWrite(agentId) {
       const generation = Number(this._workCenterDetailRequestGenerationByAgent[agentId] || 0) + 1;
@@ -1572,7 +1692,7 @@ export const useChatStore = defineStore('chat', {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('create', payload, target);
-      await this.listWorkItems(target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
@@ -1580,7 +1700,7 @@ export const useChatStore = defineStore('chat', {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('update', { id, patch }, target);
-      await this.listWorkItems(target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
@@ -1588,7 +1708,7 @@ export const useChatStore = defineStore('chat', {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('start', { id }, target);
-      await this.listWorkItems(target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
@@ -1596,7 +1716,7 @@ export const useChatStore = defineStore('chat', {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('cancel', { id }, target);
-      await this.listWorkItems(target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
@@ -1604,7 +1724,7 @@ export const useChatStore = defineStore('chat', {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('work_item_message', { id, text, revision }, target);
-      await this.listWorkItems(target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
@@ -1614,7 +1734,7 @@ export const useChatStore = defineStore('chat', {
       const detail = await this.workCenterRequest('retry_action', {
         id, actionId, revision, generation: actionGeneration,
       }, target);
-      await this.listWorkItems(target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
@@ -1628,7 +1748,7 @@ export const useChatStore = defineStore('chat', {
       const detail = await this.workCenterRequest('action_input', {
         id, text, actionId, revision, generation: actionGeneration, attachments,
       }, target);
-      await this.listWorkItems(target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       const current = this.workCenterDetailByAgent[target];
       const currentAction = current?.actions?.find(action => action?.id === actionId);
       const requestStillCurrent = current?.id === id
@@ -1649,7 +1769,7 @@ export const useChatStore = defineStore('chat', {
       const detail = await this.workCenterRequest('guide', {
         id, guidance, actionId, revision, generation: actionGeneration, attachments,
       }, target);
-      await this.listWorkItems(target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
@@ -1661,9 +1781,30 @@ export const useChatStore = defineStore('chat', {
       if (!agentId || !event?.workItem) return;
       const summary = event.workItem;
       const current = this.workCenterItemsByAgent[agentId] || [];
+      const filters = this._workCenterListFiltersByAgent[agentId] || {};
+      const matches = this.workItemMatchesBoardQuery(summary, filters);
+      const eventGeneration = Number(this._workCenterListEventGenerationByAgent[agentId] || 0) + 1;
+      this._workCenterListEventGenerationByAgent = {
+        ...this._workCenterListEventGenerationByAgent, [agentId]: eventGeneration,
+      };
+      this._workCenterListEventsByAgent = {
+        ...this._workCenterListEventsByAgent,
+        [agentId]: {
+          ...(this._workCenterListEventsByAgent[agentId] || {}),
+          [summary.id]: {
+            generation: eventGeneration,
+            queryKey: this._workCenterListQueryByAgent[agentId] || null,
+            summary,
+            matches,
+          },
+        },
+      };
+      const nextItems = matches
+        ? applyWorkItemSummary(current, summary)
+        : current.filter(item => item.id !== summary.id);
       this.workCenterItemsByAgent = {
         ...this.workCenterItemsByAgent,
-        [agentId]: applyWorkItemSummary(current, summary),
+        [agentId]: nextItems,
       };
       const selected = this.workCenterDetailByAgent[agentId];
       if (selected?.id === summary.id) {
@@ -2286,11 +2427,11 @@ export const useChatStore = defineStore('chat', {
       };
     },
 
-    revealYeaftMessage(sessionId, messageId) {
+    revealYeaftMessage(sessionId, messageId, conversationId = null) {
       const targetSessionId = sessionId || this.yeaftActiveSessionFilter || null;
-      const convId = resolveYeaftConversationIdForSession(this);
-      if (!convId || !messageId) return false;
-      const scoped = (this.messagesMap[convId] || []).filter((message) => {
+      const targetConversationId = conversationId || resolveYeaftConversationIdForSession(this, targetSessionId);
+      if (!targetConversationId || !messageId) return false;
+      const scoped = (this.messagesMap[targetConversationId] || []).filter((message) => {
         if (!targetSessionId) return true;
         return (message?.sessionId ?? message?.groupId ?? null) === targetSessionId;
       });
@@ -2720,15 +2861,20 @@ export const useChatStore = defineStore('chat', {
       });
     },
 
-    handleYeaftHistoryWindow(msg) {
+    handleYeaftHistoryWindow(msg, conversationId = null) {
       const pending = this._yeaftHistoryWindowPending;
       if (!pending || msg?.requestId !== pending.requestId) return false;
       if (msg.agentId !== pending.agentId || msg.sessionId !== pending.sessionId) return false;
       clearTimeout(pending.timeout);
       this._yeaftHistoryWindowPending = null;
-      const revealed = !msg.error && this.revealYeaftMessage(pending.sessionId, pending.messageId);
-      pending.resolve(!!revealed);
-      return !!revealed;
+      // The merge handler passes the exact conversation it updated. Search and
+      // expand that same store window so agent/session switches cannot make a
+      // successful wire response look navigable in the wrong transcript.
+      const loaded = !msg.error
+        && !!conversationId
+        && this.revealYeaftMessage(pending.sessionId, pending.messageId, conversationId);
+      pending.resolve(!!loaded);
+      return !!loaded;
     },
 
     // ─── Yeaft Session creation ────────────────────────────────

@@ -12,6 +12,12 @@ import {
   trackOverlayPointerUp,
 } from '../utils/overlay-dismiss.js';
 
+function invalidateActionRunOpen(target) {
+  const generation = (Number(target?.actionRunOpenGeneration) || 0) + 1;
+  if (target) target.actionRunOpenGeneration = generation;
+  return generation;
+}
+
 export default {
   name: 'WorkCenterPage',
   components: { WorkCenterActionDetail, WorkCenterSettingsModal, LlmTab },
@@ -25,6 +31,7 @@ export default {
       actionInputSending: false,
       actionInputError: '',
       actionComposerGeneration: 0,
+      actionRunOpenGeneration: 0,
       workItemMessage: '',
       workItemMessageSending: false,
       workItemMessageError: '',
@@ -36,8 +43,12 @@ export default {
       saving: false,
       createGeneration: 0,
       llmConfigOpen: false,
-      filter: 'attention',
       search: '',
+      boardVpId: '',
+      boardWorkItemType: '',
+      boardUpdatedRange: '',
+      mobileBoardLane: 'active',
+      boardQueryTimer: null,
       actionGuidance: '',
       expandedActions: {},
       actionsExpanded: false,
@@ -48,11 +59,10 @@ export default {
       attachmentsUploading: false,
       guidanceAttachmentsUploading: false,
       previewingAttachmentId: null,
+      attachmentPreviewError: '',
+      attachmentPreviewGeneration: 0,
       form: {
-        title: '',
-        goal: '',
-        acceptanceCriteriaText: '',
-        workItemType: 'auto',
+        requirement: '',
         workDir: '',
         reuseMemory: true,
         start: true,
@@ -69,6 +79,8 @@ export default {
         && Array.isArray(agent.capabilities) && agent.capabilities.includes('work_center'));
     },
     watcher() { return this.store.workCenterWatcherByAgent[this.agentId] || null; },
+    boardNextCursor() { return this.store.workCenterListPageByAgent[this.agentId]?.nextCursor || null; },
+    boardLoadingMore() { return !!this.store.workCenterListMoreLoadingByAgent[this.agentId]; },
     settings() { return this.store.workCenterSettingsByAgent[this.agentId] || null; },
     runtime() { return this.store.workCenterRuntimeByAgent[this.agentId] || null; },
     workItemTypes() { return Array.isArray(this.runtime?.workItemTypes) ? this.runtime.workItemTypes : []; },
@@ -128,6 +140,21 @@ export default {
     actionMessagesError() {
       return this.store.workCenterActionMessagesError[this.actionRequestKey] || '';
     },
+    orderedActions() {
+      const actions = Array.isArray(this.selected?.actions) ? this.selected.actions : [];
+      const priority = { running: 0, waiting: 1, failed: 2, ready: 3, completed: 4, done: 4, superseded: 5, cancelled: 6 };
+      return actions.map((action, index) => ({ action, index })).sort((left, right) => {
+        const leftPriority = priority[left.action?.status] ?? 7;
+        const rightPriority = priority[right.action?.status] ?? 7;
+        if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+        const leftSequence = Number(left.action?.sequence);
+        const rightSequence = Number(right.action?.sequence);
+        if (Number.isFinite(leftSequence) && Number.isFinite(rightSequence) && leftSequence !== rightSequence) {
+          return leftSequence - rightSequence;
+        }
+        return left.index - right.index;
+      }).map(entry => entry.action);
+    },
     actionRequests() {
       return this.store.workCenterActionRequests[this.actionRequestKey] || [];
     },
@@ -161,56 +188,34 @@ export default {
     actionRequestsError() {
       return this.store.workCenterActionRequestsError[this.actionRequestKey] || '';
     },
-    visibleItems() {
-      const q = this.search.trim().toLowerCase();
-      return this.items.filter(item => {
-        if (this.filter === 'attention' && !['waiting', 'needs_attention'].includes(item.status)) return false;
-        if (this.filter === 'active' && !['draft', 'ready', 'running'].includes(item.status)) return false;
-        if (this.filter === 'done' && item.status !== 'done') return false;
-        if (!q) return true;
-        return String(item.title || '').toLowerCase().includes(q)
-          || String(item.goal || '').toLowerCase().includes(q);
-      });
+    boardLanes() {
+      return [
+        { id: 'active', title: this.tr('workCenter.board.active', 'Active') },
+        { id: 'needs_attention', title: this.tr('workCenter.board.needsAttention', 'Needs attention') },
+        { id: 'closed', title: this.tr('workCenter.board.closed', 'Closed') },
+      ].map(lane => ({ ...lane, items: this.items.filter(item => item.boardLane === lane.id) }));
     },
-    listHeading() {
-      if (this.filter === 'attention') return this.tr('workCenter.attentionItems', 'Needs attention');
-      if (this.filter === 'active') return this.tr('workCenter.activeItems', 'Active work');
-      if (this.filter === 'done') return this.tr('workCenter.completedItems', 'Completed');
-      return this.tr('workCenter.allItems', 'All work items');
+    boardExecutorOptions() {
+      const options = new Map();
+      for (const item of this.items) {
+        for (const executor of Array.isArray(item.executors) ? item.executors : []) {
+          if (executor?.id) options.set(executor.id, executor.name || executor.id);
+        }
+      }
+      return [...options.entries()].map(([id, name]) => ({ id, name }));
+    },
+    boardTypeOptions() {
+      return [...new Set(this.items.map(item => item.workItemType).filter(Boolean))].sort();
     },
     emptyState() {
-      if (this.search.trim()) {
-        return {
-          title: this.tr('workCenter.noMatchesTitle', 'No matching work items'),
-          body: this.tr('workCenter.noMatchesBody', 'Try a different search or filter.'),
-          canCreate: false,
-        };
-      }
-      if (this.filter === 'done') {
-        return {
-          title: this.tr('workCenter.noCompletedTitle', 'No completed work items'),
-          body: this.tr('workCenter.noCompletedBody', 'Completed work items will appear here.'),
-          canCreate: false,
-        };
-      }
-      if (this.filter === 'attention') {
-        return {
-          title: this.tr('workCenter.noAttentionTitle', 'Nothing needs attention'),
-          body: this.tr('workCenter.noAttentionBody', 'Work Items waiting for you or needing recovery will appear here.'),
-          canCreate: this.items.length === 0,
-        };
-      }
-      if (this.filter === 'active') {
-        return {
-          title: this.tr('workCenter.noActiveTitle', 'No active work items'),
-          body: this.tr('workCenter.noActiveBody', 'Draft, ready, and running Work Items will appear here.'),
-          canCreate: true,
-        };
-      }
       return {
-        title: this.tr('workCenter.emptyTitle', 'No work items yet'),
-        body: this.tr('workCenter.emptyBody', 'Create a persistent task when work must continue beyond one conversation turn.'),
-        canCreate: true,
+        title: this.search.trim()
+          ? this.tr('workCenter.noMatchesTitle', 'No matching work items')
+          : this.tr('workCenter.emptyTitle', 'No work items yet'),
+        body: this.search.trim()
+          ? this.tr('workCenter.noMatchesBody', 'Try a different search or filter.')
+          : this.tr('workCenter.emptyBody', 'Create a persistent task when work must continue beyond one conversation turn.'),
+        canCreate: !this.search.trim(),
       };
     },
   },
@@ -218,6 +223,7 @@ export default {
     agentId: {
       immediate: true,
       handler(id, previousId) {
+        invalidateActionRunOpen(this);
         this.createGeneration = (Number(this.createGeneration) || 0) + 1;
         this.saving = false;
         this.selectedId = null;
@@ -225,12 +231,18 @@ export default {
         this.resetActionComposer?.();
         this.resetWorkItemComposer?.();
         this.narrowPane = 'items';
+        this.previewingAttachmentId = null;
+        this.attachmentPreviewError = '';
+        this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
         if (previousId && id !== previousId) {
           this.closeFolderPicker();
           this.resetCreateExecutionContext(id);
         }
         if (id) {
-          this.store.listWorkItems(id).catch(() => {});
+          const listRequest = typeof this.boardFilters === 'function'
+            ? this.store.listWorkItems(id, this.boardFilters())
+            : this.store.listWorkItems(id);
+          listRequest.catch(() => {});
           this.store.loadWorkCenterSettings(id).catch(() => {});
         }
       },
@@ -241,6 +253,10 @@ export default {
     createDefaultStart() {
       this.applyCreateDefaults();
     },
+    search() { this.scheduleBoardQuery(); },
+    boardVpId() { this.scheduleBoardQuery(); },
+    boardWorkItemType() { this.scheduleBoardQuery(); },
+    boardUpdatedRange() { this.scheduleBoardQuery(); },
     detail: {
       deep: true,
       handler(detail) {
@@ -248,20 +264,27 @@ export default {
         const actions = Array.isArray(detail.actions) ? detail.actions : [];
         if (!actions.some(action => action.id === this.selectedActionId)) {
           const nextActionId = detail.currentActionId || actions[0]?.id || null;
-          if (nextActionId !== this.selectedActionId) this.resetActionComposer();
+          if (nextActionId !== this.selectedActionId) {
+            invalidateActionRunOpen(this);
+            this.resetActionComposer();
+            this.previewingAttachmentId = null;
+            this.attachmentPreviewError = '';
+            this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
+          }
           this.selectedActionId = nextActionId;
         }
       },
     },
   },
+  beforeUnmount() {
+    invalidateActionRunOpen(this);
+    if (this.boardQueryTimer) clearTimeout(this.boardQueryTimer);
+  },
   mounted() {
     const draft = this.store.workCenterCreateDraft;
     if (!draft) return;
     this.form = {
-      title: draft.title || '',
-      goal: draft.goal || '',
-      acceptanceCriteriaText: '',
-      workItemType: 'auto',
+      requirement: draft.requirement || draft.goal || draft.title || '',
       workDir: draft.workDir || '',
       reuseMemory: true,
       start: this.settings?.startImmediately !== false,
@@ -303,8 +326,49 @@ export default {
       if (!value) return '';
       try { return new Date(Number(value)).toLocaleString(); } catch { return ''; }
     },
+    boardFilters() {
+      const now = Date.now();
+      const updatedFrom = this.boardUpdatedRange === 'day' ? now - 24 * 60 * 60 * 1000
+        : this.boardUpdatedRange === 'week' ? now - 7 * 24 * 60 * 60 * 1000
+          : this.boardUpdatedRange === 'month' ? now - 30 * 24 * 60 * 60 * 1000 : null;
+      return {
+        keyword: this.search.trim(),
+        vpId: this.boardVpId,
+        workItemType: this.boardWorkItemType,
+        updatedFrom,
+        limit: 200,
+      };
+    },
+    scheduleBoardQuery() {
+      if (this.boardQueryTimer) clearTimeout(this.boardQueryTimer);
+      this.boardQueryTimer = setTimeout(() => {
+        this.boardQueryTimer = null;
+        if (this.agentId) this.refresh();
+      }, 180);
+    },
     refresh() {
-      return this.store.listWorkItems(this.agentId).catch(() => {});
+      return this.store.listWorkItems(this.agentId, this.boardFilters()).catch(() => {});
+    },
+    loadMoreBoardItems() {
+      return this.store.loadMoreWorkItems(this.agentId).catch(() => {});
+    },
+    boardAction(item) {
+      return item.attentionAction || item.activeAction || item.currentAction || null;
+    },
+    boardActionCountLabel(item) {
+      const counts = item.actionCounts || {};
+      const parts = [];
+      for (const status of ['running', 'failed', 'waiting', 'ready']) {
+        if (Number(counts[status]) > 0) parts.push(`${counts[status]} ${this.statusLabel(status)}`);
+      }
+      return parts.join(' · ') || this.itemActionProgress(item);
+    },
+    boardExecutorLabel(item) {
+      const executors = Array.isArray(item.executors) ? item.executors : [];
+      if (executors.length > 0) return executors.map(executor => executor.name || executor.id).join(', ');
+      const action = this.boardAction(item);
+      return action?.assignedVp?.name || action?.assignedVp?.id
+        || this.tr('workCenter.assignment.planned', 'Planned assignment');
     },
     resetActionComposer() {
       this.actionComposerGeneration += 1;
@@ -321,6 +385,7 @@ export default {
       this.workItemMessageSending = false;
     },
     openWorkItem(itemId) {
+      invalidateActionRunOpen(this);
       this.selectedId = itemId;
       this.selectedActionId = null;
       this.narrowPane = 'actions';
@@ -330,6 +395,9 @@ export default {
       this.actionsExpanded = false;
       this.detailError = '';
       this.detailLoading = false;
+      this.previewingAttachmentId = null;
+      this.attachmentPreviewError = '';
+      this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
     },
     async selectItem(item) {
       this.openWorkItem(item.id);
@@ -346,7 +414,13 @@ export default {
       }
     },
     selectAction(action) {
-      if (this.selectedActionId !== action.id) this.resetActionComposer();
+      if (this.selectedActionId !== action.id) {
+        invalidateActionRunOpen(this);
+        this.resetActionComposer();
+        this.previewingAttachmentId = null;
+        this.attachmentPreviewError = '';
+        this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
+      }
       this.selectedActionId = action.id;
       this.narrowPane = 'action';
       this.loadLatestActionMessages(action);
@@ -395,6 +469,38 @@ export default {
         this.agentId,
       ).catch(() => null);
     },
+    async openActionRun(run, resolve) {
+      const openGeneration = invalidateActionRunOpen(this);
+      const scope = {
+        agentId: this.agentId,
+        workItemId: this.selected?.id,
+        actionId: this.selectedAction?.id,
+        generation: this.selectedAction?.generation,
+        runId: run?.id,
+      };
+      const scopeIsCurrent = () => this.actionRunOpenGeneration === openGeneration
+        && this.agentId === scope.agentId && this.selected?.id === scope.workItemId
+        && this.selectedAction?.id === scope.actionId
+        && this.selectedAction?.generation === scope.generation;
+      if (!scope.workItemId || !scope.actionId || !scope.runId) return resolve?.(null);
+      const requests = await this.store.loadWorkItemActionRequests(
+        scope.workItemId,
+        scope.actionId,
+        scope.agentId,
+      ).catch(() => []);
+      if (!scopeIsCurrent()) return resolve?.(null);
+      const request = requests.find(candidate => candidate.runId === scope.runId) || null;
+      if (!request) return resolve?.(null);
+      const detail = await this.store.loadWorkItemActionRequest(
+        scope.workItemId,
+        scope.actionId,
+        request.runId,
+        request.id,
+        scope.agentId,
+      ).catch(() => null);
+      if (!detail || !scopeIsCurrent()) return resolve?.(null);
+      return resolve?.(request);
+    },
     actionHasDetail(action) {
       return !!action?.brief || (Array.isArray(action?.messages) && action.messages.length > 0)
         || !!String(action?.response || '').trim() || !!String(action?.failureReason || '').trim();
@@ -438,8 +544,7 @@ export default {
       if (draft) {
         this.store.workCenterCreateDraft = {
           sourceAgentId: agentId || null,
-          title: draft.title || '',
-          goal: draft.goal || '',
+          requirement: draft.requirement || draft.goal || draft.title || '',
           workDir: '',
           origin: null,
           linkedSessionIds: [],
@@ -489,9 +594,6 @@ export default {
         const token = authStore.getActiveToken?.() || authStore.token || null;
         const headers = token ? { Authorization: `Bearer ${token}` } : {};
         const response = await fetch('/api/upload', { method: 'POST', headers, body: formData });
-        if (response.status === 401 || response.status === 403) {
-          authStore.handleAuthFailure?.(undefined, token);
-        }
         if (!response.ok) throw new Error(this.tr('workCenter.attachmentsUploadFailed', 'Attachment upload failed'));
         const result = await response.json();
         this.createAttachments = [
@@ -528,9 +630,6 @@ export default {
         const token = authStore.getActiveToken?.() || authStore.token || null;
         const headers = token ? { Authorization: `Bearer ${token}` } : {};
         const response = await fetch('/api/upload', { method: 'POST', headers, body: formData });
-        if (response.status === 401 || response.status === 403) {
-          authStore.handleAuthFailure?.(undefined, token);
-        }
         if (!response.ok) throw new Error(this.tr('workCenter.attachmentsUploadFailed', 'Attachment upload failed'));
         const result = await response.json();
         if (this.actionComposerScope !== scope) return;
@@ -547,21 +646,47 @@ export default {
     removeGuidanceAttachment(index) {
       this.guidanceAttachments = this.guidanceAttachments.filter((_attachment, itemIndex) => itemIndex !== index);
     },
-    async previewAttachment(attachment) {
+    async previewAttachment(attachment, trigger = null) {
       if (!this.selected?.id || !attachment?.id || this.previewingAttachmentId) return;
+      const agentId = this.agentId;
+      const workItemId = this.selected.id;
+      const actionId = this.selectedActionId || '';
+      const scope = `${agentId}:${workItemId}:${actionId}`;
+      const requestGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
+      this.attachmentPreviewGeneration = requestGeneration;
+      const requestIsCurrent = () => this.attachmentPreviewGeneration === requestGeneration
+        && `${this.agentId}:${this.selected?.id || ''}:${this.selectedActionId || ''}` === scope;
       const previewWindow = attachment.isImage ? null : window.open('', '_blank');
+      if (!attachment.isImage && !previewWindow) {
+        this.attachmentPreviewError = this.tr('workCenter.attachmentOpenBlocked', 'The browser blocked the attachment window. Allow pop-ups and try again.');
+        return;
+      }
       if (previewWindow) previewWindow.opener = null;
       this.previewingAttachmentId = attachment.id;
+      this.attachmentPreviewError = '';
       try {
-        const data = await this.store.previewWorkItemAttachment(this.selected.id, attachment.id, this.agentId);
-        if (data?.preview && data.attachment?.isImage) openImagePreview(data.preview);
+        const data = await this.store.previewWorkItemAttachment(workItemId, attachment.id, agentId);
+        if (!requestIsCurrent()) {
+          previewWindow?.close();
+          return;
+        }
+        if (data?.preview && data.attachment?.isImage) {
+          openImagePreview(data.preview, {
+            alt: attachment.name || this.tr('workCenter.previewAttachment', 'Open attachment'),
+            closeLabel: this.tr('common.close', 'Close'),
+            trigger,
+          });
+        }
         else if (data?.preview && previewWindow) previewWindow.location.replace(data.preview);
         else previewWindow?.close();
       } catch (error) {
         previewWindow?.close();
-        throw error;
+        if (requestIsCurrent()) {
+          this.attachmentPreviewError = error?.message
+            || this.tr('workCenter.attachmentPreviewFailed', 'Could not open the attachment. Try again.');
+        }
       } finally {
-        this.previewingAttachmentId = null;
+        if (requestIsCurrent()) this.previewingAttachmentId = null;
       }
     },
     formatAttachmentSize(value) {
@@ -588,7 +713,8 @@ export default {
       return this.store.refreshWorkCenterRuntime(agentId).catch(() => {});
     },
     async submitCreate() {
-      if (!this.form.title.trim() || !this.form.goal.trim() || !this.form.workDir.trim()) return;
+      const requirement = String(this.form.requirement || this.form.goal || this.form.title || '').trim();
+      if (!requirement || !this.form.workDir.trim()) return;
       const requestAgentId = this.agentId;
       const requestGeneration = (Number(this.createGeneration) || 0) + 1;
       this.createGeneration = requestGeneration;
@@ -597,11 +723,11 @@ export default {
         const draft = this.store.workCenterCreateDraft;
         const draftOwnedByAgent = draft?.sourceAgentId === requestAgentId;
         const detail = await this.store.createWorkItem({
-          title: this.form.title.trim(),
-          goal: this.form.goal.trim(),
-          acceptanceCriteria: this.form.acceptanceCriteriaText
-            .split('\n').map(value => value.trim()).filter(Boolean),
-          workItemType: this.form.workItemType || 'auto',
+          requirement,
+          title: requirement,
+          goal: requirement,
+          acceptanceCriteria: [],
+          workItemType: 'auto',
           workDir: this.form.workDir.trim(),
           origin: draftOwnedByAgent ? (draft.origin || null) : null,
           linkedSessionIds: draftOwnedByAgent ? (draft.linkedSessionIds || []) : [],
@@ -620,10 +746,7 @@ export default {
         this.openWorkItem(detail.id);
         this.selectedActionId = detail.currentActionId || detail.actions?.[0]?.id || null;
         this.form = {
-          title: '',
-          goal: '',
-          acceptanceCriteriaText: '',
-          workItemType: 'auto',
+          requirement: '',
           workDir: '',
           reuseMemory: true,
           start: this.settings?.startImmediately !== false,
@@ -704,7 +827,12 @@ export default {
         this.guidanceAttachments = [];
         const targetStillExists = next?.actions?.some(action => action?.id === actionId);
         const nextActionId = targetStillExists ? actionId : (next?.currentActionId || this.selectedActionId);
-        if (nextActionId !== this.selectedActionId) this.resetActionComposer();
+        if (nextActionId !== this.selectedActionId) {
+          this.resetActionComposer();
+          this.previewingAttachmentId = null;
+          this.attachmentPreviewError = '';
+          this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
+        }
         this.selectedActionId = nextActionId;
       } catch (error) {
         if (this.actionComposerScope === scope) this.actionInputError = error?.message || String(error);
@@ -714,6 +842,8 @@ export default {
     },
     async cancelSelected() {
       if (!this.selected) return;
+      const prompt = this.tr('workCenter.cancelConfirm', 'Cancel this work item and stop its unfinished Actions?');
+      if (typeof confirm === 'function' && !confirm(prompt)) return;
       await this.store.cancelWorkItem(this.selected.id, this.agentId);
     },
   },
@@ -741,25 +871,40 @@ export default {
                       :title="tr('workCenter.refresh', 'Refresh')" :aria-label="tr('workCenter.refresh', 'Refresh')">
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08A6 6 0 1 1 16.22 7.78L13 11h7V4l-2.35 2.35Z"/></svg>
               </button>
-              <button class="btn-primary work-center-header-create" type="button" @click="openCreate" :disabled="onlineAgents.length === 0"
+              <button class="work-center-icon-button work-center-header-create" type="button" @click="openCreate" :disabled="onlineAgents.length === 0"
                       :title="tr('workCenter.newWorkItem', 'New work item')" :aria-label="tr('workCenter.newWorkItem', 'New work item')">
-                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z"/></svg>
-                <span>{{ tr('workCenter.new', 'New') }}</span>
+                <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z"/></svg>
               </button>
             </div>
           </header>
 
+          <nav v-if="narrowPane !== 'items' && selected" class="work-center-breadcrumbs" :aria-label="tr('workCenter.breadcrumbs', 'Work Center navigation')">
+            <button type="button" @click="showItemsPane">{{ tr('workCenter.workItems', 'Work items') }}</button>
+            <span aria-hidden="true">/</span>
+            <button v-if="narrowPane === 'action'" type="button" @click="showActionsPane">{{ selected.title }}</button>
+            <span v-if="narrowPane === 'action'" aria-hidden="true">/</span>
+            <span aria-current="page">{{ narrowPane === 'action' ? (selectedAction?.brief?.objective || actionLabel(selectedAction?.type)) : selected.title }}</span>
+          </nav>
+
           <div v-if="narrowPane === 'items'" class="work-center-toolbar">
-            <div class="work-center-filter" role="group" :aria-label="tr('workCenter.filter', 'Filter')">
-              <button type="button" :class="{ active: filter === 'attention' }" @click="filter = 'attention'">{{ tr('workCenter.filterAttention', 'Needs attention') }}</button>
-              <button type="button" :class="{ active: filter === 'active' }" @click="filter = 'active'">{{ tr('workCenter.filterActive', 'Active') }}</button>
-              <button type="button" :class="{ active: filter === 'all' }" @click="filter = 'all'">{{ tr('workCenter.filterAll', 'All') }}</button>
-              <button type="button" :class="{ active: filter === 'done' }" @click="filter = 'done'">{{ tr('workCenter.filterDone', 'Done') }}</button>
-            </div>
             <label class="work-center-search">
               <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M9.5 3a6.5 6.5 0 1 0 4.02 11.61L19.91 21 21 19.91l-6.39-6.39A6.5 6.5 0 0 0 9.5 3Zm0 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Z"/></svg>
               <input v-model="search" type="search" :placeholder="tr('workCenter.search', 'Search work items')">
             </label>
+            <select v-model="boardVpId" :aria-label="tr('workCenter.filterVp', 'Filter by VP')">
+              <option value="">{{ tr('workCenter.allVps', 'All VPs') }}</option>
+              <option v-for="executor in boardExecutorOptions" :key="executor.id" :value="executor.id">{{ executor.name }}</option>
+            </select>
+            <select v-model="boardWorkItemType" :aria-label="tr('workCenter.filterType', 'Filter by type')">
+              <option value="">{{ tr('workCenter.allTypes', 'All types') }}</option>
+              <option v-for="type in boardTypeOptions" :key="type" :value="type">{{ type }}</option>
+            </select>
+            <select v-model="boardUpdatedRange" :aria-label="tr('workCenter.filterUpdated', 'Filter by update time')">
+              <option value="">{{ tr('workCenter.anyTime', 'Any time') }}</option>
+              <option value="day">{{ tr('workCenter.lastDay', 'Last 24 hours') }}</option>
+              <option value="week">{{ tr('workCenter.lastWeek', 'Last 7 days') }}</option>
+              <option value="month">{{ tr('workCenter.lastMonth', 'Last 30 days') }}</option>
+            </select>
             <span v-if="watcher && watcher.enabled" class="work-center-watcher active">
               <span aria-hidden="true"></span>{{ tr('workCenter.watcherActive', 'Watcher active') }}
             </span>
@@ -769,32 +914,54 @@ export default {
             {{ tr('workCenter.noAvailableAgents', 'No compatible online Agents') }}
           </p>
           <p v-if="error" class="work-center-error">{{ error }}</p>
-          <div class="work-center-body" :class="{ 'is-empty': loaded && !loading && visibleItems.length === 0 }" :data-pane="narrowPane">
-            <section class="work-center-list" :aria-busy="loading ? 'true' : 'false'">
-              <div v-if="visibleItems.length > 0" class="work-center-list-heading">
-                <span>{{ listHeading }}</span>
-                <small>{{ visibleItems.length }}</small>
+          <div class="work-center-body" :class="{ 'is-empty': loaded && !loading && items.length === 0 }" :data-pane="narrowPane">
+            <section class="work-center-list work-center-board" :aria-busy="loading || boardLoadingMore ? 'true' : 'false'">
+              <div class="work-center-board-lane-tabs" role="tablist" :aria-label="tr('workCenter.board.lanes', 'Work item lanes')">
+                <button v-for="lane in boardLanes" :key="lane.id" type="button" role="tab"
+                        :aria-selected="mobileBoardLane === lane.id ? 'true' : 'false'"
+                        :class="{ active: mobileBoardLane === lane.id }" @click="mobileBoardLane = lane.id">
+                  <span>{{ lane.title }}</span><small>{{ lane.items.length }}</small>
+                </button>
               </div>
-              <button v-for="item in visibleItems" :key="item.id" type="button"
-                      class="work-center-card" :class="{ active: selectedId === item.id }"
-                      :aria-label="item.title || tr('workCenter.workItem', 'Work item')"
-                      @click="selectItem(item)">
-                <span class="work-center-card-state">
-                  <span class="work-center-status" :data-status="item.status"><span aria-hidden="true"></span>{{ statusLabel(item.status) }}</span>
-                </span>
-                <span class="work-center-card-content">
-                  <span class="work-center-card-title">{{ item.title }}</span>
-                  <span class="work-center-card-goal">{{ item.goal }}</span>
-                  <span v-if="item.currentAction" class="work-center-card-current-action">
-                    {{ tr('workCenter.currentAction', 'Current Action') }}: {{ item.currentAction.objective || actionLabel(item.currentAction.type) }}
-                  </span>
-                </span>
-                <span class="work-center-card-progress">{{ itemActionProgress(item) }}</span>
-                <span class="work-center-card-updated">{{ time(item.updatedAt) || tr('workCenter.noTimestamp', 'No timestamp') }}</span>
-                <span class="work-center-card-chevron" aria-hidden="true">›</span>
-              </button>
+              <section v-for="lane in boardLanes" :key="lane.id" class="work-center-board-lane"
+                       :class="{ 'mobile-active': mobileBoardLane === lane.id }"
+                       :data-lane="lane.id" :aria-labelledby="'work-center-lane-' + lane.id">
+                <header class="work-center-board-lane-header">
+                  <h2 :id="'work-center-lane-' + lane.id">{{ lane.title }}</h2>
+                  <span>{{ lane.items.length }}</span>
+                </header>
+                <div class="work-center-board-cards">
+                  <button v-for="item in lane.items" :key="item.id" type="button"
+                          class="work-center-card" :class="{ active: selectedId === item.id }"
+                          :aria-label="item.title || tr('workCenter.workItem', 'Work item')"
+                          @click="selectItem(item)">
+                    <span class="work-center-card-head">
+                      <span class="work-center-status" :data-status="boardAction(item)?.status || item.status"><span aria-hidden="true"></span>{{ statusLabel(boardAction(item)?.status || item.status) }}</span>
+                      <span class="work-center-card-updated">{{ time(item.updatedAt) }}</span>
+                    </span>
+                    <span class="work-center-card-title">{{ item.title }}</span>
+                    <span class="work-center-card-goal">{{ item.goal }}</span>
+                    <span v-if="boardAction(item)" class="work-center-card-current-action">
+                      {{ boardAction(item).objective || actionLabel(boardAction(item).type) }}
+                    </span>
+                    <span class="work-center-card-meta">
+                      <span>{{ boardExecutorLabel(item) }}</span>
+                      <span>{{ boardActionCountLabel(item) }}</span>
+                    </span>
+                    <span class="work-center-card-foot">
+                      <span>{{ tr('workCenter.created', 'Created') }} {{ time(item.createdAt) }}</span>
+                      <span v-if="item.attachmentCount">{{ item.attachmentCount }} {{ tr('workCenter.files', 'files') }}</span>
+                    </span>
+                  </button>
+                  <p v-if="!loading && lane.items.length === 0" class="work-center-board-empty">{{ tr('workCenter.board.emptyLane', 'No work items') }}</p>
+                </div>
+              </section>
               <div v-if="loading" class="work-center-loading">{{ tr('workCenter.loading', 'Loading work items…') }}</div>
-              <div v-if="loaded && !loading && visibleItems.length === 0" class="work-center-empty-state">
+              <button v-if="boardNextCursor && !loading" class="btn-secondary work-center-board-more" type="button"
+                      @click="loadMoreBoardItems" :disabled="boardLoadingMore">
+                {{ boardLoadingMore ? tr('workCenter.loading', 'Loading work items…') : tr('workCenter.loadMore', 'Load more') }}
+              </button>
+              <div v-if="loaded && !loading && items.length === 0" class="work-center-empty-state">
                 <h2>{{ emptyState.title }}</h2>
                 <p>{{ emptyState.body }}</p>
                 <button v-if="emptyState.canCreate" class="btn-ghost work-center-empty-create" type="button" @click="openCreate" :disabled="onlineAgents.length === 0">
@@ -806,9 +973,6 @@ export default {
 
             <section class="work-center-detail">
               <template v-if="selected">
-                <button class="work-center-pane-back btn-ghost" type="button" @click="showItemsPane">
-                  <span aria-hidden="true">‹</span>{{ tr('workCenter.backToWorkItems', 'Work items') }}
-                </button>
                 <div v-if="detailLoading" class="work-center-detail-notice" aria-live="polite">{{ tr('workCenter.detailLoading', 'Loading full details…') }}</div>
                 <div v-else-if="detailError" class="work-center-detail-notice work-center-detail-error" role="alert">
                   <strong>{{ tr('workCenter.detailLoadFailed', 'Could not load full details') }}</strong>
@@ -821,7 +985,10 @@ export default {
                   </div>
                   <div class="work-center-detail-actions">
                     <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
-                    <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">{{ tr('workCenter.cancel', 'Cancel') }}</button>
+                    <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">{{ tr('workCenter.cancelWorkItem', 'Cancel work item') }}</button>
+                    <button class="work-center-icon-button" type="button" @click="showItemsPane" :title="tr('workCenter.closeWorkItem', 'Close details')" :aria-label="tr('workCenter.closeWorkItem', 'Close details')">
+                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4l-6.3 6.31-1.42-1.42L9.17 12l-6.3-6.29 1.42-1.42 6.3 6.31 6.3-6.31 1.41 1.42Z"/></svg>
+                    </button>
                   </div>
                 </div>
                 <dl class="work-center-detail-meta">
@@ -848,9 +1015,28 @@ export default {
                   <small class="work-center-muted">{{ tr('workCenter.answerInActionDetail', 'Open the current Action and respond in the input below.') }}</small>
                 </div>
 
-                <div class="work-center-section">
-                  <h3>{{ tr('workCenter.goal', 'Goal') }}</h3>
+                <div class="work-center-section work-center-description">
+                  <h3>{{ tr('workCenter.description', 'Description') }}</h3>
                   <p>{{ selected.goal }}</p>
+                </div>
+                <div v-if="selected.acceptanceCriteria?.length" class="work-center-section work-center-acceptance">
+                  <h3>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}</h3>
+                  <ul>
+                    <li v-for="criterion in selected.acceptanceCriteria" :key="criterion">{{ criterion }}</li>
+                  </ul>
+                </div>
+                <div v-if="selected.attachments?.length" class="work-center-section work-center-attachments">
+                  <h3>{{ tr('workCenter.attachments', 'Attachments') }}</h3>
+                  <div class="work-center-attachment-list">
+                    <button v-for="attachment in selected.attachments" :key="attachment.id" type="button"
+                            class="work-center-attachment-chip work-center-attachment-preview"
+                            @click="previewAttachment(attachment, $event.currentTarget)" :disabled="previewingAttachmentId === attachment.id"
+                            :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })">
+                      <span>{{ attachment.name }}</span>
+                      <small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
+                    </button>
+                  </div>
+                  <p v-if="attachmentPreviewError" class="work-center-error" role="alert">{{ attachmentPreviewError }}</p>
                 </div>
                 <div class="work-center-section work-center-item-messages">
                   <div class="work-center-item-message-heading">
@@ -873,25 +1059,6 @@ export default {
                     </button>
                   </div>
                 </div>
-                <div class="work-center-section">
-                  <h3>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}</h3>
-                  <ul v-if="selected.acceptanceCriteria?.length">
-                    <li v-for="criterion in selected.acceptanceCriteria" :key="criterion">{{ criterion }}</li>
-                  </ul>
-                  <p v-else class="work-center-muted">{{ tr('workCenter.noCriteria', 'No criteria provided') }}</p>
-                </div>
-                <div v-if="selected.attachments?.length" class="work-center-section">
-                  <h3>{{ tr('workCenter.attachments', 'Attachments') }}</h3>
-                  <div class="work-center-attachment-list">
-                    <button v-for="attachment in selected.attachments" :key="attachment.id" type="button"
-                            class="work-center-attachment-chip work-center-attachment-preview"
-                            @click="previewAttachment(attachment)" :disabled="previewingAttachmentId === attachment.id"
-                            :title="tr('workCenter.previewAttachment', 'Preview attachment')">
-                      <span>{{ attachment.name }}</span>
-                      <small>{{ formatAttachmentSize(attachment.size) }}</small>
-                    </button>
-                  </div>
-                </div>
                 <div class="work-center-section work-center-workflow" v-if="selected.actions?.length">
                   <div v-if="selected.mainline?.progress" class="work-center-mainline-progress" :data-attention="selected.mainline.progress.attentionState">
                     <strong>{{ tr('workCenter.currentProgress', 'Current progress') }}</strong>
@@ -908,7 +1075,7 @@ export default {
                     <small>{{ selected.actionSummary }}</small>
                   </div>
                   <div class="work-center-action-list">
-                    <article v-for="action in selected.actions" :key="action.id" class="work-center-action-card" :data-status="action.status" :class="{ active: selectedActionId === action.id }">
+                    <article v-for="action in orderedActions" :key="action.id" class="work-center-action-card" :data-status="action.status" :class="{ active: selectedActionId === action.id }">
                       <button class="work-center-action-summary" type="button" @click="selectAction(action)"
                               :aria-current="selectedActionId === action.id ? 'true' : undefined">
                         <span class="work-center-action-index">{{ action.sequence }}</span>
@@ -956,13 +1123,17 @@ export default {
               :sending="actionInputSending"
               :composer-error="actionInputError"
               :attachments-supported="workItemAttachmentsSupported"
+              :previewing-attachment-id="previewingAttachmentId"
+              :attachment-error="attachmentPreviewError"
               @back="showActionsPane"
               @update:composer-text="actionGuidance = $event"
               @load-earlier-messages="loadEarlierActionMessages"
               @refresh-requests="refreshActionRequests"
               @select-request="loadActionRequest"
+              @open-run="openActionRun"
               @attachment-input="onGuidanceAttachmentInput"
               @remove-attachment="removeGuidanceAttachment"
+              @open-attachment="previewAttachment"
               @send="guideSelectedAction"
               @retry="retrySelectedAction"
             />
@@ -995,21 +1166,15 @@ export default {
           <header class="work-center-modal-header">
             <div>
               <h2 id="work-center-create-title">{{ tr('workCenter.newWorkItem', 'New work item') }}</h2>
-              <p>{{ tr('workCenter.createHint', 'Define a stable goal before the Agent starts execution.') }}</p>
+              <p>{{ tr('workCenter.createHint', 'Describe what you need. Triage will turn it into a goal, acceptance criteria, and Actions.') }}</p>
             </div>
             <button class="modal-close" type="button" @click="closeCreate" :disabled="saving" :aria-label="tr('common.close', 'Close')">×</button>
           </header>
           <div class="work-center-modal-body">
-            <section class="work-center-form-section">
-              <label>{{ tr('workCenter.titleField', 'Title') }}<input v-model="form.title" type="text" required autofocus :placeholder="tr('workCenter.titleHint', 'A short, specific outcome')"></label>
-              <label>{{ tr('workCenter.goal', 'Goal') }}<textarea v-model="form.goal" rows="3" required :placeholder="tr('workCenter.goalHint', 'Describe the result the Agent must deliver')"></textarea></label>
-              <label>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}<textarea v-model="form.acceptanceCriteriaText" rows="3" :placeholder="tr('workCenter.criteriaHint', 'One criterion per line')"></textarea></label>
-              <label>{{ tr('workCenter.workItemType', 'Type') }}
-                <select v-model="form.workItemType">
-                  <option value="auto">{{ tr('workCenter.typeAuto', 'Auto — let the LLM infer') }}</option>
-                  <option v-for="type in workItemTypes" :key="type.id" :value="type.id">{{ type.name }}</option>
-                </select>
-                <small class="work-center-field-help">{{ tr('workCenter.typeHelp', 'Choose a task category, or use Auto for AI inference. AI still plans the concrete Actions.') }}</small>
+            <section class="work-center-form-section work-center-requirement-section">
+              <label>{{ tr('workCenter.requirement', 'Requirement') }}
+                <textarea v-model="form.requirement" rows="8" required autofocus :placeholder="tr('workCenter.requirementHint', 'Describe the problem, desired outcome, and any constraints in your own words')"></textarea>
+                <small class="work-center-field-help">{{ tr('workCenter.requirementHelp', 'Triage will generate the title, goal, acceptance criteria, type, and execution plan.') }}</small>
               </label>
             </section>
             <section class="work-center-form-section work-center-create-attachments">
@@ -1026,7 +1191,7 @@ export default {
                 <span v-for="(attachment, index) in createAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
                   <span>{{ attachment.name }}</span>
                   <small>{{ formatAttachmentSize(attachment.size) }}</small>
-                  <button type="button" @click="removeCreateAttachment(index)" :aria-label="tr('workCenter.removeAttachment', 'Remove attachment')">×</button>
+                  <button type="button" @click="removeCreateAttachment(index)" :aria-label="tr('workCenter.removeAttachment', 'Remove from draft')">×</button>
                 </span>
               </div>
             </section>
@@ -1059,7 +1224,7 @@ export default {
           </div>
           <footer class="work-center-modal-footer">
             <button class="btn-secondary" type="button" @click="closeCreate">{{ tr('common.cancel', 'Cancel') }}</button>
-            <button class="btn-primary" type="submit" :disabled="saving || attachmentsUploading || !form.title.trim() || !form.goal.trim() || !form.workDir.trim()">
+            <button class="btn-primary" type="submit" :disabled="saving || attachmentsUploading || !form.requirement.trim() || !form.workDir.trim()">
               {{ saving ? tr('workCenter.creating', 'Creating…') : tr('workCenter.create', 'Create') }}
             </button>
           </footer>

@@ -1176,12 +1176,15 @@ function isPersistedInternalMessage(m) {
  * @param {object} m — record from conversationStore.loadRecent*()
  * @returns {object|null} history-shape entry, or null to skip
  */
-function projectPersistedToHistoryEntry(m) {
+function projectPersistedToHistoryEntry(m, { includeReflections = false } = {}) {
   if (!m) return null;
   if (m.role !== 'user' && m.role !== 'assistant' && m.role !== 'tool') return null;
-  if (isPersistedInternalMessage(m)) return null;
+  if (isPersistedInternalMessage(m) && !(includeReflections && m._reflection === true)) return null;
   const entry = { role: m.role, content: m.role === 'tool' ? m.content : __testNormalizePersistedVisibleContent(m.content) };
-  if (m.id) entry.id = m.id;
+  if (m.id) {
+    entry.id = m.id;
+    entry._persistedMessageId = m.id;
+  }
   entry.threadId = m.threadId || m.turnId || 'main';
   if (m.turnId) entry.turnId = m.turnId;
   if (m.imageAssetAnchor) entry.imageAssetAnchor = true;
@@ -1441,14 +1444,18 @@ function hydrateGroupHistory(sessionId) {
   if (!session?.conversationStore || !sessionId) return [];
   let recent;
   try {
-    recent = session.conversationStore.loadRecentBySession(sessionId);
+    recent = session.conversationStore.loadRecentBySession(
+      sessionId,
+      undefined,
+      { includeReflections: true },
+    );
   } catch (err) {
     console.warn('[Yeaft] hydrateGroupHistory failed (sessionId=%s):', sessionId, err?.message || err);
     return [];
   }
   const out = [];
   for (const m of recent || []) {
-    const entry = projectPersistedToHistoryEntry(m);
+    const entry = projectPersistedToHistoryEntry(m, { includeReflections: true });
     if (entry) out.push(entry);
   }
   return out;
@@ -5079,7 +5086,7 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         vpTurnId: turnId,
         drainPendingUserMessages: () => {
           if (!thread || !Array.isArray(thread.pendingQueries) || thread.pendingQueries.length === 0) return [];
-          return thread.pendingQueries.splice(0);
+          return thread.pendingQueries.splice(0).map(item => ({ ...item, persisted: true }));
         },
         ...queryOpts,
       })) {

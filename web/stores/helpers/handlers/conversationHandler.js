@@ -569,14 +569,15 @@ export function handleSyncMessagesResult(store, msg) {
 export function handleYeaftHistoryWindow(store, msg) {
   const sessionId = msg.sessionId ?? null;
   const sessionAgentId = msg.agentId || (sessionId && store.yeaftSessionAgentById?.[sessionId]) || null;
-  const convId = msg.conversationId
+  const conversationId = msg.conversationId
     || (sessionAgentId && store.yeaftConversationIdsByAgent?.[sessionAgentId])
     || store.yeaftConversationId;
-  if (!convId || !sessionId || !Array.isArray(msg.messages)) return 0;
-  if (!store.messagesMap[convId]) store.messagesMap[convId] = [];
+  if (!conversationId || !sessionId || !Array.isArray(msg.messages)) return null;
+  if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
 
-  const { formatted } = formatYeaftHistoryMessages(msg.messages, sessionId, 'window', store.messagesMap[convId]);
-  return upsertYeaftHistoryRows(store.messagesMap[convId], formatted);
+  const { formatted } = formatYeaftHistoryMessages(msg.messages, sessionId, 'window', store.messagesMap[conversationId]);
+  upsertYeaftHistoryRows(store.messagesMap[conversationId], formatted);
+  return conversationId;
 }
 
 function askUserHistoryIdentity(row) {

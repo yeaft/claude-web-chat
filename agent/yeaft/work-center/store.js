@@ -4,8 +4,9 @@ import { dirname, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
+import { runMatchesActionIdentity } from './action-identity.js';
 
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -157,15 +158,30 @@ function mapAction(row) {
     contractRevision: row.contract_revision,
     generation: Math.max(1, Number(row.generation) || 1),
     specHash: row.spec_hash || '',
+    identityHistory: parseJson(row.identity_history, []),
     resultRunId: row.result_run_id || null,
     status: row.status,
     attempt: row.attempt,
     maxAttempts: row.max_attempts,
     currentRunId: row.current_run_id || null,
     leaseEpoch: row.lease_epoch,
+    replacesActionId: row.replaces_action_id || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function actionIdentityHistory(action, generation = action?.generation, specHash = action?.specHash) {
+  const byGeneration = new Map();
+  for (const identity of Array.isArray(action?.identityHistory) ? action.identityHistory : []) {
+    const value = Math.max(1, Number(identity?.generation) || 1);
+    if (typeof identity?.specHash === 'string' && identity.specHash) {
+      byGeneration.set(value, { generation: value, specHash: identity.specHash });
+    }
+  }
+  const value = Math.max(1, Number(generation) || 1);
+  if (typeof specHash === 'string' && specHash) byGeneration.set(value, { generation: value, specHash });
+  return [...byGeneration.values()].sort((left, right) => left.generation - right.generation).slice(-100);
 }
 
 function mapRun(row) {
@@ -206,6 +222,9 @@ function mapRun(row) {
     progressRevision: Math.max(0, Number(row.progress_revision) || 0),
     checkpoint: normalizeActionCheckpoint(parseJson(row.checkpoint, null)),
     acceptingInput: row.accepting_input !== 0,
+    actionGeneration: Math.max(1, Number(row.action_generation) || 1),
+    actionSpecHash: row.action_spec_hash || parseJson(row.execution_manifest, null)?.actionSpecHash || '',
+    actionAttempt: Math.max(1, Number(row.action_attempt) || 1),
   };
 }
 
@@ -232,6 +251,7 @@ function mapEvent(row) {
     workItemId: row.work_item_id,
     actionId: row.action_id || null,
     runId: row.run_id || null,
+    actionGeneration: row.action_generation == null ? null : Math.max(1, Number(row.action_generation) || 1),
     type: row.type,
     data: parseJson(row.data, {}),
     createdAt: row.created_at,
@@ -318,12 +338,14 @@ export class WorkItemStore {
         contract_revision INTEGER NOT NULL DEFAULT 1,
         generation INTEGER NOT NULL DEFAULT 1,
         spec_hash TEXT NOT NULL DEFAULT '',
+        identity_history TEXT NOT NULL DEFAULT '[]',
         result_run_id TEXT,
         status TEXT NOT NULL,
         attempt INTEGER NOT NULL DEFAULT 0,
         max_attempts INTEGER NOT NULL DEFAULT 2,
         current_run_id TEXT,
         lease_epoch INTEGER NOT NULL DEFAULT 0,
+        replaces_action_id TEXT REFERENCES actions(id) ON DELETE SET NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         UNIQUE(work_item_id, sequence)
@@ -363,13 +385,17 @@ export class WorkItemStore {
         total_tokens INTEGER NOT NULL DEFAULT 0,
         progress_revision INTEGER NOT NULL DEFAULT 0,
         checkpoint TEXT,
-        accepting_input INTEGER NOT NULL DEFAULT 1
+        accepting_input INTEGER NOT NULL DEFAULT 1,
+        action_generation INTEGER NOT NULL DEFAULT 1,
+        action_spec_hash TEXT NOT NULL DEFAULT '',
+        action_attempt INTEGER NOT NULL DEFAULT 1
       );
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
         action_id TEXT,
         run_id TEXT,
+        action_generation INTEGER,
         type TEXT NOT NULL,
         data TEXT NOT NULL,
         created_at INTEGER NOT NULL
@@ -416,6 +442,10 @@ export class WorkItemStore {
       CREATE INDEX IF NOT EXISTS idx_pending_action_inputs_action
         ON pending_action_inputs(action_id, consumed_at, event_id);
     `);
+
+    const storedSchemaVersion = Number(
+      this.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get()?.value,
+    ) || 0;
 
     // The feature shipped first as an unmerged PR, but keep the store tolerant
     // of databases created by review builds.
@@ -534,14 +564,60 @@ export class WorkItemStore {
     if (!hasColumn(this.db, 'actions', 'spec_hash')) {
       this.db.exec("ALTER TABLE actions ADD COLUMN spec_hash TEXT NOT NULL DEFAULT ''");
     }
+    if (!hasColumn(this.db, 'actions', 'identity_history')) {
+      this.db.exec("ALTER TABLE actions ADD COLUMN identity_history TEXT NOT NULL DEFAULT '[]'");
+      const seedIdentity = this.db.prepare('UPDATE actions SET identity_history = ? WHERE id = ?');
+      for (const row of this.db.prepare('SELECT id, generation, spec_hash FROM actions').all()) {
+        seedIdentity.run(stringify(actionIdentityHistory({
+          generation: row.generation,
+          specHash: row.spec_hash,
+        })), row.id);
+      }
+    }
     if (!hasColumn(this.db, 'actions', 'result_run_id')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN result_run_id TEXT');
+    }
+    if (!hasColumn(this.db, 'actions', 'replaces_action_id')) {
+      this.db.exec('ALTER TABLE actions ADD COLUMN replaces_action_id TEXT REFERENCES actions(id) ON DELETE SET NULL');
+    }
+    if (!hasColumn(this.db, 'runs', 'action_generation')) {
+      this.db.exec('ALTER TABLE runs ADD COLUMN action_generation INTEGER NOT NULL DEFAULT 1');
+    }
+    if (!hasColumn(this.db, 'runs', 'action_spec_hash')) {
+      this.db.exec("ALTER TABLE runs ADD COLUMN action_spec_hash TEXT NOT NULL DEFAULT ''");
+    }
+    if (!hasColumn(this.db, 'runs', 'action_attempt')) {
+      this.db.exec('ALTER TABLE runs ADD COLUMN action_attempt INTEGER NOT NULL DEFAULT 1');
+    }
+    if (!hasColumn(this.db, 'events', 'action_generation')) {
+      this.db.exec('ALTER TABLE events ADD COLUMN action_generation INTEGER');
     }
     if (!hasColumn(this.db, 'runs', 'context_snapshot')) {
       this.db.exec('ALTER TABLE runs ADD COLUMN context_snapshot TEXT');
     }
     if (!hasColumn(this.db, 'runs', 'execution_manifest')) {
       this.db.exec('ALTER TABLE runs ADD COLUMN execution_manifest TEXT');
+    }
+    if (storedSchemaVersion < SCHEMA_VERSION) {
+      withTransaction(this.db, () => {
+        const updateIdentity = this.db.prepare(`UPDATE runs SET action_generation = ?,
+          action_spec_hash = ?, action_attempt = ? WHERE id = ?`);
+        const attempts = new Map();
+        for (const row of this.db.prepare(`SELECT id, action_id, action_generation, action_spec_hash,
+          execution_manifest, started_at FROM runs ORDER BY action_id, started_at, id`).all()) {
+          const manifest = parseJson(row.execution_manifest, null);
+          const generation = Math.max(1, Number(manifest?.actionGeneration) || Number(row.action_generation) || 1);
+          const key = `${row.action_id}\u0000${generation}`;
+          const attempt = (attempts.get(key) || 0) + 1;
+          attempts.set(key, attempt);
+          updateIdentity.run(
+            generation,
+            manifest?.actionSpecHash || row.action_spec_hash || '',
+            attempt,
+            row.id,
+          );
+        }
+      });
     }
     this.db.prepare(`INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
@@ -552,12 +628,16 @@ export class WorkItemStore {
   }
 
   appendEvent(workItemId, type, data = {}, refs = {}) {
+    const actionGeneration = refs.actionGeneration
+      ?? (refs.actionId ? this.getAction(refs.actionId)?.generation : null)
+      ?? null;
     const result = this.db.prepare(`INSERT INTO events
-      (work_item_id, action_id, run_id, type, data, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)`).run(
+      (work_item_id, action_id, run_id, action_generation, type, data, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
       workItemId,
       refs.actionId || null,
       refs.runId || null,
+      actionGeneration,
       type,
       stringify(data),
       this.now(),
@@ -778,15 +858,18 @@ export class WorkItemStore {
       maxAttempts: Number.isInteger(input.maxAttempts) ? input.maxAttempts : 2,
       currentRunId: null,
       leaseEpoch: 0,
+      replacesActionId: input.replacesActionId || null,
       createdAt: now,
       updatedAt: now,
     };
     action.specHash = actionSpecHash(action);
+    action.identityHistory = actionIdentityHistory(action);
     this.db.prepare(`INSERT INTO actions
       (id, work_item_id, sequence, type, required_role, stage_id, assignment_policy, model_policy,
        depends_on_stage_ids, workspace_mode, changes_requested_stage_id, workspace, instruction, brief, context, contract_revision,
-       generation, spec_hash, result_run_id, status, attempt, max_attempts, current_run_id, lease_epoch, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`).run(
+       generation, spec_hash, identity_history, result_run_id, status, attempt, max_attempts, current_run_id, lease_epoch,
+       replaces_action_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?)`).run(
       action.id,
       workItemId,
       action.sequence,
@@ -805,10 +888,12 @@ export class WorkItemStore {
       action.contractRevision,
       action.generation,
       action.specHash,
+      stringify(action.identityHistory),
       action.resultRunId,
       action.status,
       action.attempt,
       action.maxAttempts,
+      action.replacesActionId,
       now,
       now,
     );
@@ -868,10 +953,13 @@ export class WorkItemStore {
         const nextAction = action.id === target.id && replacement
           ? { ...action, ...replacement, generation: action.generation + 1 }
           : { ...action, generation: action.generation + 1 };
+        const nextSpecHash = actionSpecHash(nextAction);
         this.db.prepare(`UPDATE actions SET status = 'ready', attempt = 0, current_run_id = NULL,
-          lease_epoch = ?, generation = generation + 1, spec_hash = ?, result_run_id = NULL,
+          lease_epoch = ?, generation = generation + 1, spec_hash = ?, identity_history = ?, result_run_id = NULL,
           workspace = ?, updated_at = ? WHERE id = ?`).run(
-          nextEpoch.get(action.id), actionSpecHash(nextAction), stringify(workspace), now, action.id,
+          nextEpoch.get(action.id), nextSpecHash,
+          stringify(actionIdentityHistory(action, nextAction.generation, nextSpecHash)),
+          stringify(workspace), now, action.id,
         );
       }
     }
@@ -918,13 +1006,18 @@ export class WorkItemStore {
       const nextWorkspaceMode = workspaceMode || action.workspaceMode;
       const specChanged = nextWorkspaceMode !== action.workspaceMode;
       const nextAction = { ...action, workspaceMode: nextWorkspaceMode };
+      const nextSpecHash = specChanged ? actionSpecHash(nextAction) : action.specHash;
       const changed = this.db.prepare(`UPDATE actions SET workspace = ?, workspace_mode = ?,
-        generation = generation + ?, spec_hash = ?, result_run_id = CASE WHEN ? = 1 THEN NULL ELSE result_run_id END,
+        generation = generation + ?, spec_hash = ?, identity_history = ?,
+        result_run_id = CASE WHEN ? = 1 THEN NULL ELSE result_run_id END,
         updated_at = ? WHERE id = ? AND generation = ?`).run(
         stringify(workspace),
         nextWorkspaceMode,
         specChanged ? 1 : 0,
-        specChanged ? actionSpecHash(nextAction) : action.specHash,
+        nextSpecHash,
+        stringify(specChanged
+          ? actionIdentityHistory(action, action.generation + 1, nextSpecHash)
+          : action.identityHistory),
         specChanged ? 1 : 0,
         this.now(),
         actionId,
@@ -951,6 +1044,8 @@ export class WorkItemStore {
       const nextWorkspaceMode = workspaceMode || action.workspaceMode;
       const specChanged = nextWorkspaceMode !== action.workspaceMode;
       const nextAction = { ...action, workspaceMode: nextWorkspaceMode };
+      const nextGeneration = action.generation + (specChanged ? 1 : 0);
+      const nextSpecHash = specChanged ? actionSpecHash(nextAction) : action.specHash;
       const now = this.now();
       if (action.workspaceMode === 'isolated-write' && nextWorkspaceMode === 'shared') {
         const workItem = this.getWorkItem(action.workItemId);
@@ -967,13 +1062,17 @@ export class WorkItemStore {
         }
       }
       const changed = this.db.prepare(`UPDATE actions SET workspace = ?, workspace_mode = ?,
-        generation = generation + ?, spec_hash = ?, result_run_id = CASE WHEN ? = 1 THEN NULL ELSE result_run_id END,
+        generation = generation + ?, spec_hash = ?, identity_history = ?,
+        result_run_id = CASE WHEN ? = 1 THEN NULL ELSE result_run_id END,
         updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ?
         AND lease_epoch = ? AND generation = ?`).run(
         stringify(workspace),
         nextWorkspaceMode,
         specChanged ? 1 : 0,
-        specChanged ? actionSpecHash(nextAction) : action.specHash,
+        nextSpecHash,
+        stringify(specChanged
+          ? actionIdentityHistory(action, nextGeneration, nextSpecHash)
+          : action.identityHistory),
         specChanged ? 1 : 0,
         now,
         actionId,
@@ -982,6 +1081,23 @@ export class WorkItemStore {
         expectedGeneration,
       );
       if (Number(changed.changes) !== 1) return null;
+      if (specChanged) {
+        const rebound = this.db.prepare(`UPDATE runs SET action_generation = ?, action_spec_hash = ?
+          WHERE id = ? AND action_id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'
+          AND action_generation = ? AND action_spec_hash = ?`).run(
+          nextGeneration,
+          nextSpecHash,
+          runId,
+          actionId,
+          ownerBootId,
+          leaseEpoch,
+          action.generation,
+          action.specHash,
+        );
+        if (Number(rebound.changes) !== 1) {
+          throw new Error('Work Center could not rebind the owned Run after workspace fallback');
+        }
+      }
 
       if (action.workspaceMode === 'isolated-write' && nextWorkspaceMode === 'shared') {
         const pendingRows = this.db.prepare(`SELECT * FROM actions
@@ -990,11 +1106,13 @@ export class WorkItemStore {
         for (const row of pendingRows) {
           const pending = mapAction(row);
           const fallback = { ...pending, workspaceMode: 'shared', workspace: null };
+          const fallbackSpecHash = actionSpecHash(fallback);
           const repaired = this.db.prepare(`UPDATE actions SET workspace = NULL, workspace_mode = 'shared',
-            generation = generation + 1, spec_hash = ?, result_run_id = NULL, updated_at = ?
+            generation = generation + 1, spec_hash = ?, identity_history = ?, result_run_id = NULL, updated_at = ?
             WHERE id = ? AND status = 'ready' AND current_run_id IS NULL
             AND generation = ? AND workspace_mode = ?`).run(
-            actionSpecHash(fallback),
+            fallbackSpecHash,
+            stringify(actionIdentityHistory(pending, pending.generation + 1, fallbackSpecHash)),
             now,
             pending.id,
             pending.generation,
@@ -1192,10 +1310,54 @@ export class WorkItemStore {
       where.push('(instr(w.origin, ?) > 0 OR instr(w.linked_session_ids, ?) > 0)');
       values.push(`\"sessionId\":${JSON.stringify(sessionId)}`, JSON.stringify(sessionId));
     }
-    if (typeof filters.search === 'string' && filters.search.trim()) {
+    const keyword = typeof filters.keyword === 'string' ? filters.keyword.trim()
+      : typeof filters.search === 'string' ? filters.search.trim() : '';
+    if (keyword) {
       where.push('(w.title LIKE ? OR w.goal LIKE ?)');
-      const query = `%${filters.search.trim()}%`;
+      const query = `%${keyword}%`;
       values.push(query, query);
+    }
+    const createdFrom = Number(filters.createdFrom);
+    const createdTo = Number(filters.createdTo);
+    const updatedFrom = Number(filters.updatedFrom);
+    const updatedTo = Number(filters.updatedTo);
+    if (Number.isFinite(createdFrom) && createdFrom > 0) { where.push('w.created_at >= ?'); values.push(createdFrom); }
+    if (Number.isFinite(createdTo) && createdTo > 0) { where.push('w.created_at <= ?'); values.push(createdTo); }
+    if (Number.isFinite(updatedFrom) && updatedFrom > 0) { where.push('w.updated_at >= ?'); values.push(updatedFrom); }
+    if (Number.isFinite(updatedTo) && updatedTo > 0) { where.push('w.updated_at <= ?'); values.push(updatedTo); }
+    if (typeof filters.workItemType === 'string' && filters.workItemType.trim()) {
+      where.push('instr(w.workflow_snapshot, ?) > 0');
+      values.push(`\"workItemType\":${JSON.stringify(filters.workItemType.trim())}`);
+    }
+    if (typeof filters.vpId === 'string' && filters.vpId.trim()) {
+      where.push(`EXISTS (SELECT 1 FROM actions executor_action
+        JOIN runs executor_run ON executor_run.id = (
+          SELECT latest_executor_run.id FROM runs latest_executor_run
+          WHERE latest_executor_run.action_id = executor_action.id
+          ORDER BY latest_executor_run.started_at DESC, latest_executor_run.progress_revision DESC
+          LIMIT 1)
+        WHERE executor_action.work_item_id = w.id
+          AND executor_action.status NOT IN ('superseded', 'cancelled')
+          AND instr(executor_run.vp_snapshot, ?) > 0)`);
+      values.push(`\"id\":${JSON.stringify(filters.vpId.trim())}`);
+    }
+    if (filters.lane === 'closed') {
+      where.push("w.status IN ('done', 'cancelled')");
+    } else if (filters.lane === 'needs_attention') {
+      where.push(`w.status NOT IN ('done', 'cancelled') AND (
+        w.status IN ('draft', 'waiting', 'needs_attention') OR EXISTS (
+          SELECT 1 FROM actions attention_action WHERE attention_action.work_item_id = w.id
+            AND attention_action.status IN ('waiting', 'failed')))`);
+    } else if (filters.lane === 'active') {
+      where.push(`w.status NOT IN ('done', 'cancelled', 'draft', 'waiting', 'needs_attention')
+        AND NOT EXISTS (SELECT 1 FROM actions attention_action WHERE attention_action.work_item_id = w.id
+          AND attention_action.status IN ('waiting', 'failed'))`);
+    }
+    const cursorUpdatedAt = Number(filters.cursorUpdatedAt);
+    const cursorId = typeof filters.cursorId === 'string' ? filters.cursorId : '';
+    if (Number.isFinite(cursorUpdatedAt) && cursorUpdatedAt >= 0 && cursorId) {
+      where.push('(w.updated_at < ? OR (w.updated_at = ? AND w.id < ?))');
+      values.push(cursorUpdatedAt, cursorUpdatedAt, cursorId);
     }
     const limit = Math.min(Math.max(Number(filters.limit) || 100, 1), 500);
     const sql = `SELECT w.*,
@@ -1219,12 +1381,24 @@ export class WorkItemStore {
       LEFT JOIN actions current_action ON current_action.id = w.current_action_id
       LEFT JOIN runs r ON r.work_item_id = w.id
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      GROUP BY w.id ORDER BY w.updated_at DESC LIMIT ?`;
-    return this.db.prepare(sql).all(...values, limit).map(mapWorkItem).map(workItem => {
-      if (!isGraphWorkItem(workItem)) return workItem;
-      const actions = this.db.prepare('SELECT * FROM actions WHERE work_item_id = ? ORDER BY sequence')
-        .all(workItem.id).map(mapAction);
-      return graphExecutionState(workItem, actions);
+      GROUP BY w.id ORDER BY w.updated_at DESC, w.id DESC LIMIT ?`;
+    const workItems = this.db.prepare(sql).all(...values, limit).map(mapWorkItem);
+    if (workItems.length === 0) return [];
+    const placeholders = workItems.map(() => '?').join(',');
+    const ids = workItems.map(item => item.id);
+    const actionsByWorkItem = new Map(ids.map(id => [id, []]));
+    for (const row of this.db.prepare(`SELECT * FROM actions WHERE work_item_id IN (${placeholders})
+      ORDER BY work_item_id, sequence`).all(...ids)) {
+      actionsByWorkItem.get(row.work_item_id).push(mapAction(row));
+    }
+    const runsByWorkItem = new Map(ids.map(id => [id, []]));
+    for (const row of this.db.prepare(`SELECT * FROM runs WHERE work_item_id IN (${placeholders})
+      ORDER BY work_item_id, started_at DESC`).all(...ids)) {
+      runsByWorkItem.get(row.work_item_id).push(mapRun(row));
+    }
+    return workItems.map(workItem => {
+      const actions = actionsByWorkItem.get(workItem.id) || [];
+      return graphExecutionState({ ...workItem, actions, runs: runsByWorkItem.get(workItem.id) || [] }, actions);
     });
   }
 
@@ -1273,12 +1447,18 @@ export class WorkItemStore {
       for (const action of openActions) {
         if (action.status === 'ready') {
           const instruction = updateActionInstruction(updatedWorkItem, action);
-          this.db.prepare(`UPDATE actions SET instruction = ?, spec_hash = ?, updated_at = ?
-            WHERE id = ? AND status = 'ready'`).run(
+          const nextGeneration = action.generation + 1;
+          const nextSpecHash = actionSpecHash({ ...action, instruction, generation: nextGeneration });
+          this.db.prepare(`UPDATE actions SET instruction = ?, generation = ?, spec_hash = ?,
+            identity_history = ?, result_run_id = NULL, updated_at = ?
+            WHERE id = ? AND status = 'ready' AND generation = ?`).run(
             instruction,
-            actionSpecHash({ ...action, instruction }),
+            nextGeneration,
+            nextSpecHash,
+            stringify(actionIdentityHistory(action, nextGeneration, nextSpecHash)),
             now,
             action.id,
+            action.generation,
           );
           continue;
         }
@@ -1649,6 +1829,10 @@ export class WorkItemStore {
       const priorProgress = this.db.prepare(`SELECT MAX(progress_revision) AS value FROM runs
         WHERE action_id = ?`).get(row.id);
       const progressRevision = Math.max(0, Number(priorProgress?.value) || 0) + 1;
+      const actionGeneration = Math.max(1, Number(row.generation) || 1);
+      const priorAttempt = this.db.prepare(`SELECT MAX(action_attempt) AS value FROM runs
+        WHERE action_id = ? AND action_generation = ?`).get(row.id, actionGeneration);
+      const actionAttempt = Math.max(0, Number(priorAttempt?.value) || 0) + 1;
       const changedAction = this.db.prepare(`UPDATE actions SET status = 'running', attempt = attempt + 1,
         current_run_id = ?, lease_epoch = ?, updated_at = ?
         WHERE id = ? AND status = 'ready' AND current_run_id IS NULL`).run(
@@ -1670,9 +1854,19 @@ export class WorkItemStore {
       if (Number(changedWorkItem.changes) !== 1) throw new Error('WorkItem claim lost its Action fence');
       this.db.prepare(`INSERT INTO runs
         (id, action_id, work_item_id, owner_boot_id, lease_epoch, status, started_at,
-         expires_at, evidence, progress_revision)
-        VALUES (?, ?, ?, ?, ?, 'running', ?, ?, '[]', ?)`).run(
-        runId, row.id, row.work_item_id, ownerBootId, leaseEpoch, now, now + leaseMs, progressRevision,
+         expires_at, evidence, progress_revision, action_generation, action_spec_hash, action_attempt)
+        VALUES (?, ?, ?, ?, ?, 'running', ?, ?, '[]', ?, ?, ?, ?)`).run(
+        runId,
+        row.id,
+        row.work_item_id,
+        ownerBootId,
+        leaseEpoch,
+        now,
+        now + leaseMs,
+        progressRevision,
+        actionGeneration,
+        row.spec_hash || '',
+        actionAttempt,
       );
       this.appendEvent(row.work_item_id, 'run.claimed', { ownerBootId, leaseEpoch }, {
         actionId: row.id, runId,
@@ -1847,9 +2041,13 @@ export class WorkItemStore {
   }
 
   getActionResumeContext(actionId, excludeRunId = null) {
+    const action = this.getAction(actionId);
+    if (!action) return null;
     const runs = this.db.prepare(`SELECT * FROM runs
       WHERE action_id = ? AND id != ? AND status IN ('interrupted', 'retryable')
-      ORDER BY ended_at DESC, started_at DESC`).all(actionId, excludeRunId || '').map(mapRun);
+      ORDER BY ended_at DESC, started_at DESC`).all(actionId, excludeRunId || '')
+      .map(mapRun)
+      .filter(run => runMatchesActionIdentity(run, action));
     if (runs.length === 0) return null;
     const latest = runs[0];
     const response = runs.find(run => run.response)?.response || '';
@@ -1943,13 +2141,24 @@ export class WorkItemStore {
         throw new Error('Work Center terminal transition lost the current Action fence');
       }
 
+      if (transition.planConflict) {
+        this.db.prepare(`INSERT INTO plan_conflicts
+          (id, work_item_id, action_id, generation, kind, status, details, created_at, updated_at, resolved_at)
+          VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, NULL)`).run(
+          randomUUID(), workItem.id, action.id, action.generation,
+          transition.planConflict.kind || 'plan', stringify(transition.planConflict), now, now,
+        );
+      }
+
       let nextWorkItem = workItem;
       if (transition.contractPatch) {
         const patch = transition.contractPatch;
+        const title = patch.title ?? workItem.title;
         const goal = patch.goal ?? workItem.goal;
         const criteria = patch.acceptanceCriteria ?? workItem.acceptanceCriteria;
-        this.db.prepare(`UPDATE work_items SET goal = ?, acceptance_criteria = ?,
+        this.db.prepare(`UPDATE work_items SET title = ?, goal = ?, acceptance_criteria = ?,
           revision = revision + 1, updated_at = ? WHERE id = ?`).run(
+          title,
           goal,
           stringify(criteria),
           now,
@@ -2024,9 +2233,67 @@ export class WorkItemStore {
         nextWorkItem = this.getWorkItem(workItem.id);
         nextAction = this.#insertAction(workItem.id, {
           ...barrier.action,
+          context: [
+            ...(Array.isArray(barrier.action.context) ? barrier.action.context : []),
+            {
+              type: 'replan-barrier',
+              proposalId: barrier.proposalId,
+              basePlanRevision: nextWorkItem.planRevision,
+              candidateActionIds: unfinished.map(candidate => candidate.id),
+            },
+          ],
           contractRevision: nextWorkItem.revision,
           status: 'ready',
         }, this.#nextSequence(workItem.id), now);
+      }
+      if (transition.replanMutation) {
+        for (const retained of transition.replanMutation.retain) {
+          const prior = retained.action;
+          const candidate = {
+            ...prior,
+            ...retained.nextAction,
+            status: 'ready',
+            generation: prior.generation + 1,
+            attempt: 0,
+            currentRunId: null,
+            resultRunId: null,
+            contractRevision: nextWorkItem.revision,
+          };
+          const candidateSpecHash = actionSpecHash(candidate);
+          const changed = this.db.prepare(`UPDATE actions SET type = ?, required_role = ?, stage_id = ?,
+            assignment_policy = ?, model_policy = ?, depends_on_stage_ids = ?, workspace_mode = ?,
+            changes_requested_stage_id = ?, workspace = NULL, instruction = ?, brief = ?, context = ?,
+            contract_revision = ?, generation = ?, spec_hash = ?, identity_history = ?, result_run_id = NULL, status = 'ready',
+            attempt = 0, max_attempts = ?, current_run_id = NULL, lease_epoch = lease_epoch + 1,
+            updated_at = ? WHERE id = ? AND work_item_id = ? AND status = 'superseded' AND generation = ?`).run(
+            candidate.type, candidate.requiredRole || '', candidate.stageId,
+            stringify(candidate.assignmentPolicy || null), stringify(candidate.modelPolicy || null),
+            stringify(candidate.dependsOnStageIds || []), candidate.workspaceMode || 'shared',
+            candidate.changesRequestedStageId || null, candidate.instruction || '', stringify(candidate.brief || null),
+            stringify(candidate.context || []), candidate.contractRevision, candidate.generation,
+            candidateSpecHash, stringify(actionIdentityHistory(prior, candidate.generation, candidateSpecHash)),
+            candidate.maxAttempts || 2, now,
+            prior.id, workItem.id, prior.generation,
+          );
+          if (Number(changed.changes) !== 1) throw new Error('Work Center retained Action lost its superseded identity fence');
+          if (!nextAction) nextAction = this.getAction(prior.id);
+        }
+        for (const replacement of transition.replanMutation.replace) {
+          const inserted = this.#insertAction(workItem.id, {
+            ...replacement.nextAction,
+            contractRevision: nextWorkItem.revision,
+            status: 'ready',
+          }, this.#nextSequence(workItem.id), now);
+          if (!nextAction) nextAction = inserted;
+        }
+        for (const added of transition.replanMutation.add) {
+          const inserted = this.#insertAction(workItem.id, {
+            ...added,
+            contractRevision: nextWorkItem.revision,
+            status: 'ready',
+          }, this.#nextSequence(workItem.id), now);
+          if (!nextAction) nextAction = inserted;
+        }
       }
       if (transition.graphResetStageId) {
         nextAction = this.#resetGraphFromStage(
@@ -2054,7 +2321,13 @@ export class WorkItemStore {
       let workItemStatus = transition.workItemStatus;
       let currentActionId = nextAction?.id ?? (transition.keepCurrentAction ? action.id : null);
       let changedWorkItem;
-      if (transition.graphAdvance) {
+      if (transition.planConflict) {
+        changedWorkItem = this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
+          current_run_id = NULL, ledger_revision = ledger_revision + ?, updated_at = ?
+          WHERE id = ? AND status IN ('ready', 'running', 'waiting', 'needs_attention') AND revision = ?`).run(
+          workItemStatus, currentActionId, ledgerIncrement, now, workItem.id, nextWorkItem.revision,
+        );
+      } else if (transition.graphAdvance) {
         const graphState = this.#graphWorkItemState(workItem.id);
         workItemStatus = graphState.status;
         currentActionId = graphState.currentActionId;
@@ -2082,7 +2355,9 @@ export class WorkItemStore {
             (work_item_id, proposal_id, base_plan_revision, plan_revision, kind, action_id, run_id, data, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
             workItem.id, proposalId, workItem.planRevision, nextWorkItem.planRevision,
-            transition.replanBarrier ? 'replan' : (workItem.planRevision === 0 ? 'initial' : 'expand'),
+            (transition.replanBarrier || transition.replanMutation)
+              ? 'replan'
+              : (workItem.planRevision === 0 ? 'initial' : 'expand'),
             action.id, runId, stringify(transition.eventData || {}), now,
           );
         } catch (error) {

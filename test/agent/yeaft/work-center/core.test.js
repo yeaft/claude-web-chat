@@ -7,6 +7,11 @@ import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 import { WorkItemRunner } from '../../../../agent/yeaft/work-center/runner.js';
 import { resolvePlanningWorkflowSnapshot } from '../../../../agent/yeaft/work-center/workflow.js';
+import {
+  projectActionRequestDetail,
+  projectActionRequestIndex,
+  projectWorkItemDetail,
+} from '../../../../agent/yeaft/work-center/projection.js';
 
 function createInput(overrides = {}) {
   return {
@@ -93,6 +98,73 @@ describe('Work Center core', () => {
         brief: detail.actions[0].brief,
       },
     });
+  });
+
+  it('filters and orders Board query inputs deterministically', () => {
+    const first = controller.create(createInput({ id: 'wi-a', title: 'Alpha task', goal: 'First goal' }));
+    now = 2_000;
+    const second = controller.create(createInput({ id: 'wi-b', title: 'Beta task', goal: 'Second searchable goal' }));
+    store.db.prepare('UPDATE work_items SET updated_at = ? WHERE id IN (?, ?)').run(3_000, first.id, second.id);
+
+    expect(store.listWorkItems({ keyword: 'searchable' }).map(item => item.id)).toEqual([second.id]);
+    expect(store.listWorkItems({ search: 'Alpha' }).map(item => item.id)).toEqual([first.id]);
+    expect(store.listWorkItems({ createdFrom: 2_000, createdTo: 2_000 }).map(item => item.id)).toEqual([second.id]);
+    expect(store.listWorkItems({ updatedFrom: 3_000, updatedTo: 3_000 }).map(item => item.id))
+      .toEqual(['wi-b', 'wi-a']);
+    expect(store.listWorkItems({ lane: 'active' }).map(item => item.id)).toEqual(['wi-b', 'wi-a']);
+    expect(store.listWorkItems({ lane: 'closed' })).toEqual([]);
+
+    store.db.prepare("UPDATE work_items SET status = 'done' WHERE id = ?").run(first.id);
+    store.db.prepare("UPDATE actions SET status = 'failed' WHERE work_item_id = ?").run(first.id);
+    expect(store.listWorkItems({ lane: 'closed' }).map(item => item.id)).toEqual([first.id]);
+    expect(store.listWorkItems({ lane: 'needs_attention' }).map(item => item.id)).not.toContain(first.id);
+  });
+
+  it('filters Board executors by the latest Run of effective Actions only', () => {
+    const item = controller.create(createInput({ id: 'wi-executors' }));
+    const action = store.getWorkItemDetail(item.id).actions[0];
+    const firstRun = store.claimReadyAction('boot-a', 5_000).run;
+    store.db.prepare('UPDATE runs SET vp_snapshot = ? WHERE id = ?')
+      .run(JSON.stringify({ id: 'old-vp', name: 'Old VP' }), firstRun.id);
+    store.db.prepare("UPDATE runs SET status = 'failed', ended_at = ? WHERE id = ?").run(now, firstRun.id);
+    store.db.prepare("UPDATE actions SET status = 'ready', current_run_id = NULL WHERE id = ?").run(action.id);
+    store.db.prepare("UPDATE work_items SET status = 'ready', current_run_id = NULL WHERE id = ?").run(item.id);
+    now += 1;
+    const latestRun = store.claimReadyAction('boot-b', 5_000).run;
+    store.db.prepare('UPDATE runs SET vp_snapshot = ? WHERE id = ?')
+      .run(JSON.stringify({ id: 'current-vp', name: 'Current VP' }), latestRun.id);
+
+    expect(store.listWorkItems({ vpId: 'old-vp' })).toEqual([]);
+    expect(store.listWorkItems({ vpId: 'current-vp' }).map(workItem => workItem.id)).toEqual([item.id]);
+
+    store.db.prepare("UPDATE actions SET status = 'superseded' WHERE id = ?").run(action.id);
+    expect(store.listWorkItems({ vpId: 'current-vp' })).toEqual([]);
+  });
+
+  it('persists immutable generation and monotonic attempt identity on every Run claim', () => {
+    const item = controller.create(createInput({ id: 'run-identity' }));
+    const first = store.claimReadyAction('boot-a', 5_000);
+    expect(first.run).toMatchObject({
+      actionGeneration: first.action.generation,
+      actionSpecHash: first.action.specHash,
+      actionAttempt: 1,
+    });
+
+    store.deferRun(first.run.id, 'boot-a', first.run.leaseEpoch, 'workspace busy');
+    const second = store.claimReadyAction('boot-a', 5_000);
+    expect(second.action).toMatchObject({ id: first.action.id, generation: first.action.generation });
+    expect(second.run).toMatchObject({
+      actionGeneration: first.action.generation,
+      actionSpecHash: first.action.specHash,
+      actionAttempt: 2,
+    });
+    expect(store.getRun(first.run.id)).toMatchObject({
+      actionGeneration: first.action.generation,
+      actionSpecHash: first.action.specHash,
+      actionAttempt: 1,
+    });
+    expect(store.getWorkItemDetail(item.id).events.find(event => event.type === 'run.claimed'))
+      .toMatchObject({ actionGeneration: first.action.generation });
   });
 
   it('persists, filters, resolves, and deletes plan conflicts', () => {
@@ -1046,6 +1118,7 @@ describe('Work Center core', () => {
     }));
     const running = store.claimReadyAction('boot-a', 5_000);
     const before = store.getWorkItem(item.id);
+    const readyBefore = store.getWorkItemDetail(item.id).actions.find(action => action.status === 'ready');
 
     const updated = controller.message(item.id, { text: 'Keep compatibility for every Action', revision: before.revision });
 
@@ -1057,6 +1130,13 @@ describe('Work Center core', () => {
     const ready = updated.actions.find(action => action.status === 'ready');
     expect(ready.instruction).toContain('WorkItem-level user messages');
     expect(ready.instruction).toContain('Keep compatibility for every Action');
+    expect(ready).toMatchObject({
+      generation: readyBefore.generation + 1,
+      identityHistory: [
+        { generation: readyBefore.generation, specHash: readyBefore.specHash },
+        { generation: readyBefore.generation + 1, specHash: ready.specHash },
+      ],
+    });
     expect(() => controller.message(item.id, { text: 'replay', revision: before.revision }))
       .toThrow(/WorkItem changed/);
   });
@@ -1562,12 +1642,13 @@ describe('Work Center core', () => {
     const item = controller.create(createInput());
     const triage = store.claimReadyAction('boot-a', 5_000);
     const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
-      contractPatch: { goal: 'Refined goal', acceptanceCriteria: ['Refined criterion'] },
+      contractPatch: { title: 'Refined title', goal: 'Refined goal', acceptanceCriteria: ['Refined criterion'] },
       acceptanceChecks: [{
         criterion: 'Refined criterion', status: 'deferred', evidence: 'scheduled for implementation',
       }],
     }));
     expect(detail.revision).toBe(2);
+    expect(detail.title).toBe('Refined title');
     expect(detail.goal).toBe('Refined goal');
     expect(detail.actions.at(-1).instruction).toContain('Refined criterion');
     expect(store.getWorkItem(item.id).status).toBe('ready');
@@ -1798,6 +1879,110 @@ describe('Work Center core', () => {
     const unrelated = controller.create(createInput({ title: 'Unrelated item' }));
     expect(store.getActionResumeContext(unrelated.currentActionId, '')).toBeNull();
     expect(first.id).not.toBe(unrelated.id);
+  });
+
+  it('does not resume interrupted state with the current generation but a different spec hash', () => {
+    controller.create(createInput());
+    const firstClaim = store.claimReadyAction('boot-a', 5_000);
+    store.updateRunProgress(firstClaim.run.id, 'boot-a', firstClaim.run.leaseEpoch, {
+      response: 'WRONG SPEC STATE',
+      loopCount: 1,
+      toolCount: 1,
+      checkpoint: {
+        version: 1,
+        toolEvents: [{ name: 'FileEdit', status: 'completed', resource: 'wrong-spec.js' }],
+      },
+    });
+    expect(store.interruptRun(
+      firstClaim.run.id, 'boot-a', firstClaim.run.leaseEpoch, 'wrong spec interrupted',
+    )).toBe(true);
+    store.db.prepare('UPDATE runs SET action_spec_hash = ? WHERE id = ?')
+      .run('different-spec-hash', firstClaim.run.id);
+
+    const secondClaim = store.claimReadyAction('boot-a', 5_000);
+    expect(secondClaim.action.generation).toBe(firstClaim.action.generation);
+    expect(store.getActionResumeContext(firstClaim.action.id, secondClaim.run.id)).toBeNull();
+  });
+
+  it('keeps every interrupted spec visible after a WorkItem message and later generation bump', () => {
+    const item = controller.create(createInput());
+    const runA = store.claimReadyAction('boot-a', 5_000);
+    store.updateRunProgress(runA.run.id, 'boot-a', runA.run.leaseEpoch, {
+      response: 'OLD-A', loopCount: 1, toolCount: 0,
+    });
+    expect(store.interruptRun(runA.run.id, 'boot-a', runA.run.leaseEpoch, 'retry A')).toBe(true);
+
+    const beforeMessage = store.getWorkItem(item.id);
+    const afterMessage = controller.message(item.id, {
+      text: 'Use the updated specification', revision: beforeMessage.revision,
+    });
+    const identityB = afterMessage.actions[0];
+    expect(identityB.generation).toBe(runA.action.generation + 1);
+    const runB = store.claimReadyAction('boot-b', 5_000);
+    store.updateRunProgress(runB.run.id, 'boot-b', runB.run.leaseEpoch, {
+      response: 'NEW-B', loopCount: 1, toolCount: 0,
+    });
+    expect(store.interruptRun(runB.run.id, 'boot-b', runB.run.leaseEpoch, 'retry B')).toBe(true);
+
+    const identityC = store.setActionWorkspace(runB.action.id, null, 'read');
+    expect(identityC).toMatchObject({
+      generation: identityB.generation + 1,
+      identityHistory: [
+        { generation: runA.action.generation, specHash: runA.action.specHash },
+        { generation: identityB.generation, specHash: identityB.specHash },
+        { generation: identityB.generation + 1, specHash: identityC.specHash },
+      ],
+    });
+
+    const detail = store.getWorkItemDetail(item.id);
+    const projectedAction = projectWorkItemDetail(detail).actions[0];
+    expect(JSON.stringify(projectedAction.thread)).toContain('OLD-A');
+    expect(JSON.stringify(projectedAction.thread)).toContain('NEW-B');
+    const turns = detail.runs.map(run => ({
+      run,
+      turn: { turnId: `request-${run.id}`, openedAt: run.startedAt, loopCount: 1 },
+    }));
+    expect(projectActionRequestIndex(detail.actions[0], turns).requests.map(request => request.runId))
+      .toEqual(expect.arrayContaining([runA.run.id, runB.run.id]));
+    expect(projectActionRequestDetail(detail.actions[0], detail.runs.find(run => run.id === runB.run.id), {
+      turns: [{ turnId: `request-${runB.run.id}`, openedAt: runB.run.startedAt, tools: [] }],
+      loops: [],
+    }, detail.runs)).toMatchObject({ request: { runId: runB.run.id } });
+  });
+
+  it('does not resume interrupted state after the Action identity changes', () => {
+    controller.create(createInput());
+    const firstClaim = store.claimReadyAction('boot-a', 5_000);
+    store.updateRunProgress(firstClaim.run.id, 'boot-a', firstClaim.run.leaseEpoch, {
+      response: 'STALE OLD SPEC STATE',
+      loopCount: 1,
+      toolCount: 1,
+      checkpoint: {
+        version: 1,
+        toolEvents: [{ name: 'FileEdit', status: 'completed', resource: 'old.js' }],
+      },
+    });
+    expect(store.interruptRun(
+      firstClaim.run.id, 'boot-a', firstClaim.run.leaseEpoch, 'old generation interrupted',
+    )).toBe(true);
+
+    const changedAction = store.setActionWorkspace(firstClaim.action.id, null, 'read');
+    expect(changedAction).toMatchObject({
+      generation: 2,
+      workspaceMode: 'read',
+      identityHistory: [
+        { generation: 1, specHash: firstClaim.action.specHash },
+        { generation: 2, specHash: changedAction.specHash },
+      ],
+    });
+    expect(changedAction.specHash).not.toBe(firstClaim.action.specHash);
+    const secondClaim = store.claimReadyAction('boot-a', 5_000);
+    expect(secondClaim.action).toMatchObject({
+      id: firstClaim.action.id,
+      generation: changedAction.generation,
+      specHash: changedAction.specHash,
+    });
+    expect(store.getActionResumeContext(firstClaim.action.id, secondClaim.run.id)).toBeNull();
   });
 
   it('recovers only the currently fenced expired Run', () => {

@@ -152,7 +152,7 @@ export default {
       <!-- 4. Images from Claude response (screenshots, etc.) -->
       <div v-if="turn.imageMsgs && turn.imageMsgs.length > 0" class="turn-images">
         <button v-for="img in turn.imageMsgs" :key="img.assetId || img.id" type="button"
-                class="turn-image-item" @click="imageSrc(img) && openImagePreview(imageSrc(img))">
+                class="turn-image-item" @click="previewImage(img, $event.currentTarget)">
           <img v-if="imageSrc(img) && !failedImages.has(img.assetId || img.id)"
                :src="imageSrc(img)" :alt="img.filename || $t('message.imagePreview')"
                class="chat-screenshot" loading="lazy" decoding="async"
@@ -523,6 +523,15 @@ export default {
       failedImages.add(image?.assetId || image?.id);
     };
 
+    const previewImage = (image, trigger) => {
+      const src = imageSrc(image);
+      if (!src) return;
+      openImagePreview(src, {
+        alt: image?.filename || t('message.imagePreview'),
+        closeLabel: t('common.close'),
+        trigger,
+      });
+    };
 
     const onStopTurn = (turnId) => {
       if (!turnId) return;
@@ -587,7 +596,7 @@ export default {
       imageSrc,
       failedImages,
       handleImageError,
-      openImagePreview,
+      previewImage,
       displayedTodos
     };
   }

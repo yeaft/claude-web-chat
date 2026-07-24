@@ -5,6 +5,7 @@ import {
   sanitizeDebugValue,
   sanitizeDiagnosticText,
 } from './debug-projection.js';
+import { eventMatchesActionGeneration, runMatchesActionIdentity } from './action-identity.js';
 import { taskSpecificActionBrief } from './workflow.js';
 import { buildMainlineProjection } from './mainline-projection.js';
 
@@ -42,6 +43,77 @@ function projectCurrentActionSummary(action, projectedAction = action) {
     assignmentMode: projectedAction.assignmentPolicy?.mode || (projectedAction.requiredRole ? 'fixed' : null),
     status: projectedAction.status,
     objective: truncateUtf8(action?.brief?.objective, 1_000) || null,
+    ...(projectedAction.assignedVp ? { assignedVp: projectedAction.assignedVp } : {}),
+  };
+}
+
+const BOARD_ACTION_STATUSES = ['completed', 'running', 'ready', 'waiting', 'failed'];
+
+function boardActionCounts(actions) {
+  const counts = Object.fromEntries(BOARD_ACTION_STATUSES.map(status => [status, 0]));
+  for (const action of Array.isArray(actions) ? actions : []) {
+    if (Object.hasOwn(counts, action?.status)) counts[action.status] += 1;
+  }
+  return counts;
+}
+
+export function workItemBoardLane(detail) {
+  const actions = (Array.isArray(detail?.actions) ? detail.actions : [])
+    .filter(action => !['superseded', 'cancelled'].includes(action?.status));
+  if (['done', 'cancelled'].includes(detail?.status)) return 'closed';
+  if (['draft', 'waiting', 'needs_attention'].includes(detail?.status)
+      || actions.some(action => ['waiting', 'failed'].includes(action?.status))) {
+    return 'needs_attention';
+  }
+  return 'active';
+}
+
+function boardActionSummary(action, runs, events) {
+  if (!action) return null;
+  const projected = projectAction(action, runs, events, false);
+  return {
+    id: projected.id,
+    type: projected.type,
+    stageId: projected.stageId,
+    status: projected.status,
+    objective: truncateUtf8(action?.brief?.objective, 1_000) || null,
+    assignedVp: projected.assignedVp || null,
+  };
+}
+
+function boardFields(detail) {
+  const actions = (Array.isArray(detail?.actions) ? detail.actions : [])
+    .filter(action => !['superseded', 'cancelled'].includes(action?.status));
+  const runs = Array.isArray(detail?.runs) ? detail.runs : [];
+  const events = Array.isArray(detail?.events) ? detail.events : [];
+  const bySequence = (left, right) => count(left?.sequence) - count(right?.sequence)
+    || String(left?.id || '').localeCompare(String(right?.id || ''));
+  const attentionAction = [...actions]
+    .filter(action => ['waiting', 'failed'].includes(action?.status))
+    .sort((left, right) => {
+      const priority = { waiting: 0, failed: 1 };
+      return priority[left.status] - priority[right.status] || bySequence(left, right);
+    })[0] || null;
+  const activeAction = [...actions]
+    .filter(action => ['running', 'ready'].includes(action?.status))
+    .sort((left, right) => {
+      const priority = { running: 0, ready: 1 };
+      return priority[left.status] - priority[right.status] || bySequence(left, right);
+    })[0] || null;
+  const executors = [];
+  const seenExecutors = new Set();
+  for (const action of actions) {
+    const assignedVp = projectAction(action, runs, events, false).assignedVp;
+    if (!assignedVp?.id || seenExecutors.has(assignedVp.id)) continue;
+    seenExecutors.add(assignedVp.id);
+    executors.push(assignedVp);
+  }
+  return {
+    boardLane: workItemBoardLane({ ...detail, actions }),
+    actionCounts: boardActionCounts(actions),
+    attentionAction: boardActionSummary(attentionAction, runs, events),
+    activeAction: boardActionSummary(activeAction, runs, events),
+    executors,
   };
 }
 
@@ -76,6 +148,39 @@ function sumExecutionStats(values) {
   }, emptyExecutionStats());
 }
 
+function actionGeneration(value) {
+  return Math.max(1, count(value) || 1);
+}
+
+function runGeneration(run) {
+  return actionGeneration(run?.actionGeneration ?? run?.executionManifest?.actionGeneration);
+}
+
+function runSpecHash(run) {
+  return typeof run?.actionSpecHash === 'string' && run.actionSpecHash
+    ? run.actionSpecHash
+    : typeof run?.executionManifest?.actionSpecHash === 'string'
+      ? run.executionManifest.actionSpecHash
+      : '';
+}
+
+function threadRuns(action, runs) {
+  const source = (Array.isArray(runs) ? runs : []).filter(run => run?.actionId === action?.id);
+  const selectedSpecByGeneration = new Map((Array.isArray(action?.identityHistory) ? action.identityHistory : [])
+    .filter(identity => typeof identity?.specHash === 'string' && identity.specHash)
+    .map(identity => [actionGeneration(identity.generation), identity.specHash]));
+  const currentGeneration = actionGeneration(action?.generation);
+  if (typeof action?.specHash === 'string' && action.specHash) {
+    selectedSpecByGeneration.set(currentGeneration, action.specHash);
+  }
+  return source.filter(run => {
+    const generation = runGeneration(run);
+    const selectedSpec = selectedSpecByGeneration.get(generation) || '';
+    const spec = runSpecHash(run);
+    return selectedSpec ? spec === selectedSpec : generation === 1 && !spec;
+  });
+}
+
 function normalizeProjectedMessage(message) {
   if (!message || typeof message !== 'object') return null;
   const text = typeof message.text === 'string'
@@ -93,12 +198,16 @@ function normalizeProjectedMessage(message) {
     createdAt: count(message.createdAt),
     updatedAt: count(message.updatedAt || message.createdAt),
     ...(message.progressRevision == null ? {} : { progressRevision: count(message.progressRevision) }),
+    ...(message.generation == null ? {} : { generation: Math.max(1, count(message.generation) || 1) }),
+    ...(message.attempt == null ? {} : { attempt: Math.max(1, count(message.attempt) || 1) }),
+    ...(message.runId == null ? {} : { runId: String(message.runId) }),
   };
 }
 
-function actionInputMessages(action, events) {
+function actionInputMessages(action, events, generation = actionGeneration(action?.generation), includeThreadIdentity = false) {
   return (Array.isArray(events) ? events : [])
     .filter(event => event?.actionId === action?.id
+      && actionGeneration(event.actionGeneration) === generation
       && ['action.guidance_added', 'action.input_added'].includes(event.type))
     .map(event => normalizeProjectedMessage({
       id: `event:${event.id}`,
@@ -108,11 +217,12 @@ function actionInputMessages(action, events) {
       text: event.data?.text || event.data?.guidance || '',
       attachments: event.data?.attachments,
       createdAt: event.createdAt,
+      ...(includeThreadIdentity ? { generation } : {}),
     }))
     .filter(Boolean);
 }
 
-function runResponseMessage(run) {
+function runResponseMessage(run, includeThreadIdentity = false) {
   return normalizeProjectedMessage({
     id: `run:${run.id}`,
     role: 'assistant',
@@ -122,12 +232,20 @@ function runResponseMessage(run) {
     createdAt: count(run.startedAt),
     updatedAt: count(run.endedAt || run.startedAt),
     progressRevision: count(run.progressRevision),
+    ...(includeThreadIdentity ? {
+      generation: runGeneration(run),
+      attempt: run.actionAttempt,
+      runId: run.id,
+    } : {}),
   });
 }
 
-function loopOutputMessages(action, events) {
+function loopOutputMessages(action, events, matchingRunIds, generation = actionGeneration(action?.generation), includeThreadIdentity = false) {
   return (Array.isArray(events) ? events : [])
-    .filter(event => event?.actionId === action?.id && event.type === 'run.loop_output')
+    .filter(event => event?.actionId === action?.id
+      && actionGeneration(event.actionGeneration ?? event.data?.actionGeneration) === generation
+      && matchingRunIds.has(event.runId)
+      && event.type === 'run.loop_output')
     .map(event => normalizeProjectedMessage({
       id: `event:${event.id}`,
       role: 'assistant',
@@ -135,25 +253,71 @@ function loopOutputMessages(action, events) {
       status: 'completed',
       text: event.data?.response || '',
       createdAt: event.createdAt,
+      ...(includeThreadIdentity ? {
+        generation: event.actionGeneration ?? event.data?.actionGeneration,
+        attempt: event.data?.actionAttempt,
+        runId: event.runId,
+      } : {}),
     }))
     .filter(Boolean);
 }
 
-function actionMessages(action, runs, events) {
-  const matchingRuns = Array.isArray(runs)
-    ? runs.filter(run => run?.actionId === action?.id)
-    : [];
+function messagesForGeneration(action, runs, events, generation, includeThreadIdentity = false) {
+  const matchingRuns = threadRuns(action, runs).filter(run => runGeneration(run) === generation);
+  const matchingRunIds = new Set(matchingRuns.map(run => run.id));
   const runsWithLoopOutput = new Set((Array.isArray(events) ? events : [])
-    .filter(event => event?.actionId === action?.id && event.type === 'run.loop_output' && event.runId)
+    .filter(event => event?.actionId === action?.id
+      && actionGeneration(event.actionGeneration ?? event.data?.actionGeneration) === generation
+      && matchingRunIds.has(event.runId)
+      && event.type === 'run.loop_output')
     .map(event => event.runId));
-  return [...actionInputMessages(action, events), ...loopOutputMessages(action, events), ...matchingRuns
+  return [
+    ...actionInputMessages(action, events, generation, includeThreadIdentity),
+    ...loopOutputMessages(action, events, matchingRunIds, generation, includeThreadIdentity),
+    ...matchingRuns
     .sort((left, right) => count(left.startedAt) - count(right.startedAt))
     .filter(run => !runsWithLoopOutput.has(run.id))
-    .map(run => runResponseMessage(run))
+    .map(run => runResponseMessage(run, includeThreadIdentity))
     .filter(Boolean)]
     .sort((left, right) => left.createdAt - right.createdAt
       || (left.role === 'user' ? -1 : 1)
       || left.id.localeCompare(right.id));
+}
+
+function actionMessages(action, runs, events) {
+  return messagesForGeneration(action, runs, events, actionGeneration(action?.generation));
+}
+
+function projectActionThread(action, runs, events) {
+  const allRuns = threadRuns(action, runs);
+  const generations = new Set([
+    actionGeneration(action?.generation),
+    ...allRuns.map(runGeneration),
+    ...(Array.isArray(events) ? events : [])
+      .filter(event => event?.actionId === action?.id
+        && ['action.guidance_added', 'action.input_added', 'run.loop_output'].includes(event.type))
+      .map(event => actionGeneration(event.actionGeneration ?? event.data?.actionGeneration)),
+  ]);
+  return [...generations].sort((left, right) => left - right).map(generation => {
+    const canonical = generation === actionGeneration(action?.generation);
+    return {
+      generation,
+      canonical,
+      messages: canonical ? [] : messagesForGeneration(action, allRuns, events, generation, true).slice(-MAX_ACTION_MESSAGES),
+      runs: allRuns.filter(run => runGeneration(run) === generation)
+        .sort((left, right) => count(left.startedAt) - count(right.startedAt) || String(left.id).localeCompare(String(right.id)))
+        .map(run => ({
+          id: run.id,
+          attempt: Math.max(1, count(run.actionAttempt) || 1),
+          status: run.status || 'running',
+          startedAt: count(run.startedAt),
+          endedAt: count(run.endedAt),
+          progressRevision: count(run.progressRevision),
+          loopCount: count(run.loopCount),
+          toolCount: count(run.toolCount),
+        })),
+    };
+  }).filter(entry => entry.messages.length > 0 || entry.runs.length > 0 || entry.canonical);
 }
 
 
@@ -211,11 +375,12 @@ function sanitizeFailureReason(value) {
 
 function actionExecution(action, runs, events, includeBody = true) {
   const matchingRuns = Array.isArray(runs)
-    ? runs.filter(run => run?.actionId === action?.id)
+    ? runs.filter(run => run?.actionId === action?.id && runMatchesActionIdentity(run, action))
     : [];
   if (matchingRuns.length === 0) {
     const inputMessageCount = Array.isArray(events) ? events.filter(event => (
       event?.actionId === action?.id
+        && eventMatchesActionGeneration(event, action)
         && ['action.guidance_added', 'action.input_added'].includes(event.type)
     )).length : 0;
     const messages = includeBody
@@ -263,6 +428,7 @@ function actionExecution(action, runs, events, includeBody = true) {
     ? 0
     : (Array.isArray(events) ? events : []).filter(event => (
         event?.actionId === action?.id
+          && eventMatchesActionGeneration(event, action)
           && ['action.guidance_added', 'action.input_added'].includes(event.type)
       )).length;
   const allMessages = includeBody ? actionMessages(action, matchingRuns, events) : [];
@@ -324,7 +490,9 @@ function projectAction(action, runs, events, includeBody = true) {
         key,
         truncateUtf8(value, includeBody ? MAX_CURRENT_BRIEF_BYTES : MAX_HISTORICAL_BRIEF_CHARS),
       ]));
-  const matchingRuns = Array.isArray(runs) ? runs.filter(run => run?.actionId === action.id) : [];
+  const matchingRuns = Array.isArray(runs)
+    ? runs.filter(run => run?.actionId === action.id && runMatchesActionIdentity(run, action))
+    : [];
   const latestRun = [...matchingRuns].sort((left, right) => (
     count(right.startedAt) - count(left.startedAt) || count(right.progressRevision) - count(left.progressRevision)
   ))[0];
@@ -347,6 +515,8 @@ function projectAction(action, runs, events, includeBody = true) {
     dependsOnStageIds: Array.isArray(action.dependsOnStageIds) ? action.dependsOnStageIds : [],
     workspaceMode: action.workspaceMode || 'shared',
     requiredRole: action.requiredRole || '',
+    generation: Math.max(1, count(action.generation) || 1),
+    replacesActionId: action.replacesActionId || null,
     brief: projectedBrief,
     status: action.status,
     assignedVp,
@@ -365,6 +535,7 @@ function projectAction(action, runs, events, includeBody = true) {
       response: execution.response,
       failure: execution.failure,
       messages: execution.messages,
+      thread: Array.isArray(runs) ? projectActionThread(action, runs, events) : (action.thread || []),
       liveMessage: execution.liveMessage,
     } : {}),
   };
@@ -386,6 +557,7 @@ function stripActionBody(action, keepFailure = false) {
   const projected = { ...action };
   delete projected.response;
   delete projected.messages;
+  delete projected.thread;
   delete projected.liveMessage;
   if (!keepFailure) delete projected.failure;
   if (projected.brief) {
@@ -447,6 +619,7 @@ function enforceWorkItemBrowserDtoBudget(value, options = {}) {
   if (keep) {
     delete keep.response;
     delete keep.messages;
+    delete keep.thread;
     delete keep.liveMessage;
   }
   if (jsonByteLength(dto) <= MAX_WORK_ITEM_BROWSER_DTO_BYTES) return dto;
@@ -673,6 +846,11 @@ export function projectWorkItemSummary(detail) {
       attachmentCount: Array.isArray(detail.attachments) ? detail.attachments.length : 0,
       createdAt: detail.createdAt,
       updatedAt: detail.updatedAt,
+      boardLane: detail.boardLane || workItemBoardLane(detail),
+      actionCounts: detail.actionCounts || boardActionCounts([]),
+      attentionAction: detail.attentionAction || null,
+      activeAction: detail.activeAction || null,
+      executors: Array.isArray(detail.executors) ? detail.executors : [],
     };
   }
   const action = currentAction(detail);
@@ -704,6 +882,7 @@ export function projectWorkItemSummary(detail) {
     attachmentCount: Array.isArray(detail.attachments) ? detail.attachments.length : 0,
     createdAt: detail.createdAt,
     updatedAt: detail.updatedAt,
+    ...boardFields(detail),
   };
 }
 
@@ -739,18 +918,30 @@ export function projectActionMessagePage(action, runs, events, options = {}) {
   const start = Math.max(0, end - limit);
   return {
     actionId: action.id,
+    generation: Math.max(1, count(action.generation) || 1),
     messages: messages.slice(start, end),
     nextCursor: start > 0 ? String(start) : null,
     total: messages.length,
   };
 }
 
+export function actionThreadIncludesRun(action, runs, runId) {
+  return threadRuns(action, runs).some(run => run.id === runId);
+}
+
 export function projectActionRequestIndex(action, entries) {
+  const source = Array.isArray(entries) ? entries : [];
+  const allowedRunIds = new Set(threadRuns(action, source.map(({ run }) => run)).map(run => run.id));
   return {
     actionId: action.id,
-    requests: (Array.isArray(entries) ? entries : []).map(({ run, turn }) => ({
+    generation: Math.max(1, count(action.generation) || 1),
+    requests: source
+      .filter(({ run }) => allowedRunIds.has(run?.id))
+      .map(({ run, turn }) => ({
       id: turn.turnId,
       runId: run.id,
+      generation: Math.max(1, count(run.actionGeneration) || 1),
+      attempt: Math.max(1, count(run.actionAttempt) || 1),
       status: run.status || 'running',
       model: run.modelSnapshot?.id || null,
       vp: run.vpSnapshot ? {
@@ -768,7 +959,8 @@ export function projectActionRequestIndex(action, entries) {
   };
 }
 
-export function projectActionRequestDetail(action, run, history) {
+export function projectActionRequestDetail(action, run, history, runs = [run]) {
+  if (!actionThreadIncludesRun(action, runs, run?.id)) return null;
   const turn = Array.isArray(history?.turns) ? history.turns[0] : null;
   if (!turn) return null;
   const sourceLoops = Array.isArray(history?.loops) ? history.loops : [];
