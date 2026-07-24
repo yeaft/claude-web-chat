@@ -22,6 +22,9 @@ describe('Yeaft message history sender filter', () => {
       global: { mocks: { $t: key => key } },
     });
 
+    expect(wrapper.find('.yeaft-conversation-outline-search > select').exists()).toBe(true);
+    expect(wrapper.find('label.yeaft-conversation-outline-sender').exists()).toBe(false);
+    expect(wrapper.get('select').attributes('aria-label')).toBe('yeaft.outline.sender');
     expect(wrapper.findAll('select option').map(option => option.text())).toEqual([
       'yeaft.outline.allSenders', 'You', 'Linus',
     ]);
