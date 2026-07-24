@@ -30,6 +30,7 @@ describe('Yeaft message history sender filter', () => {
     expect(wrapper.find('select').exists()).toBe(false);
     const senderTrigger = wrapper.get('.yeaft-conversation-outline-sender .modern-select-trigger');
     expect(senderTrigger.attributes()).toMatchObject({
+      role: 'combobox',
       'aria-label': 'yeaft.outline.sender',
       'aria-haspopup': 'listbox',
       'aria-expanded': 'false',

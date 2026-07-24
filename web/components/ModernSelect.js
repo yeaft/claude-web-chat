@@ -149,6 +149,7 @@ export default {
         ref="triggerEl"
         :disabled="disabled"
         :aria-label="ariaLabel || undefined"
+        role="combobox"
         aria-haspopup="listbox"
         :aria-expanded="open ? 'true' : 'false'"
         :aria-controls="menuId"
