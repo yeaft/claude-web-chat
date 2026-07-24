@@ -33,9 +33,36 @@ describe('Session message quote UI wiring', () => {
     expect(user).toContain("quoteFromUserMessage");
   });
 
-  it('uses complete date-time formatting across user and assistant Session messages', () => {
+  it('uses the shared short date-time formatting across Session messages', () => {
     for (const file of ['MessageItem.js', 'AssistantTurn.js', 'VpTurnBlock.js', 'VpSpeakerHeader.js']) {
       expect(read(`components/${file}`)).toContain('formatSessionMessageDateTime');
     }
+  });
+
+  it('renders the user timestamp above content and keeps actions below it', () => {
+    const user = read('components/MessageItem.js');
+    const timestamp = user.indexOf('class="message-user-meta"');
+    const content = user.indexOf('class="message-content"');
+    const footer = user.indexOf('class="message-user-footer"');
+
+    expect(timestamp).toBeGreaterThan(-1);
+    expect(timestamp).toBeLessThan(content);
+    expect(content).toBeLessThan(footer);
+    expect(user).toContain('aria-hidden="true"');
+  });
+
+  it('keeps VP timestamps in the speaker header and adds quote icons to response actions', () => {
+    const assistant = read('components/AssistantTurn.js');
+    const vpTurn = read('components/VpTurnBlock.js');
+
+    expect(assistant).toContain('v-if="turnTime && !turn.speakerVpId"');
+    expect(assistant).toContain('@click="$emit(\'quote\', assistantQuote)"');
+    expect(assistant).toContain('<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">');
+    expect(vpTurn).toContain('class="vp-turn-block-time"');
+  });
+
+  it('uses concise localized new-message labels', () => {
+    expect(read('i18n/en.js')).toContain("'message.editAsNew': 'New message'");
+    expect(read('i18n/zh-CN.js')).toContain("'message.editAsNew': '新消息'");
   });
 });
