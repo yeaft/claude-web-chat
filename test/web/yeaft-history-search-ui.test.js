@@ -33,7 +33,8 @@ describe('Yeaft conversation outline UI', () => {
     expect(store).toContain("type: 'yeaft_load_history_outline'");
     expect(store).toContain('limit: 50');
     expect(store).toContain('if (!append && previous.loaded && !force) return true');
-    expect(page).toContain("setTimeout(() => store.searchYeaftHistory(query, { senderKey: store.yeaftHistorySearchState.senderKey }), 220)");
+    expect(page).toContain('historySearchQuery.value = query');
+    expect(page).toContain('store.searchYeaftHistory(historySearchQuery.value, { senderKey: store.yeaftHistorySearchState.senderKey })');
     expect(page).toMatch(/store\.yeaftHistorySearchState = \{[\s\S]*?query: '',[\s\S]*?senderKey: '',/);
     expect(store).toContain("type: 'yeaft_search_history'");
   });

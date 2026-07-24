@@ -457,6 +457,7 @@ export default {
         ...roster.map(vpId => ({ key: `vp:${vpId}`, label: vpStore.vpLabel(vpId) })),
       ];
     });
+    const historySearchQuery = Vue.ref(store.yeaftHistorySearchState?.query || '');
     let historySearchTimer = null;
     const sessionsStore = () => {
       try {
@@ -696,6 +697,7 @@ export default {
         clearTimeout(historySearchTimer);
         historySearchTimer = null;
       }
+      historySearchQuery.value = '';
       store.searchYeaftHistory('', { senderKey: '' });
       historySearchOpen.value = false;
       historySearchActiveMessageId.value = null;
@@ -713,15 +715,19 @@ export default {
       if (historySearchOpen.value && shouldDismissHistorySearch(event.target)) closeHistorySearch();
     };
     const onHistorySearchQuery = (query) => {
+      historySearchQuery.value = query;
       if (historySearchTimer) clearTimeout(historySearchTimer);
       historySearchActiveMessageId.value = null;
-      historySearchTimer = setTimeout(() => store.searchYeaftHistory(query, { senderKey: store.yeaftHistorySearchState.senderKey }), 220);
+      historySearchTimer = setTimeout(() => {
+        historySearchTimer = null;
+        store.searchYeaftHistory(historySearchQuery.value, { senderKey: store.yeaftHistorySearchState.senderKey });
+      }, 220);
     };
     const onHistorySenderChange = (senderKey) => {
       if (historySearchTimer) clearTimeout(historySearchTimer);
       historySearchTimer = null;
       historySearchActiveMessageId.value = null;
-      store.searchYeaftHistory(store.yeaftHistorySearchState.query, { senderKey });
+      store.searchYeaftHistory(historySearchQuery.value, { senderKey });
     };
     const loadOlderHistoryOutline = (scrollSnapshot) => {
       if (!store.loadYeaftHistoryOutline({ append: true })) return;
