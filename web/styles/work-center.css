@@ -2731,6 +2731,10 @@
     min-width: 0;
   }
 
+  .work-center-toolbar > select:last-of-type {
+    grid-column: 1 / -1;
+  }
+
   .work-center-search {
     grid-column: 1 / -1;
     width: 100%;
@@ -2739,12 +2743,14 @@
 
   .work-center-board {
     display: flex;
+    flex-direction: column;
     overflow-x: hidden;
   }
 
   .work-center-board-lane-tabs {
     display: grid;
     width: 100%;
+    flex: 0 0 auto;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 4px;
     padding: 4px;
