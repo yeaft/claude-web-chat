@@ -22,10 +22,10 @@ export function shouldDismissHistorySearch(target) {
   return !target?.closest?.('.yeaft-conversation-outline, .yeaft-search-btn');
 }
 
-export async function revealOutlineResult({ result, loadWindow, nextTick, revealMessage, isMobile, closeOutline }) {
+export async function revealOutlineResult({ result, revealWindow, nextTick, revealMessage, isMobile, closeOutline }) {
   if (!result) return false;
-  const loaded = await loadWindow?.(result);
-  if (!loaded) return false;
+  const expanded = await revealWindow?.(result);
+  if (!expanded) return false;
   await nextTick?.();
   const revealed = await revealMessage?.(result.messageId);
   if (revealed && isMobile) closeOutline?.();

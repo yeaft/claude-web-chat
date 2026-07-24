@@ -6,6 +6,7 @@ import {
   computeVirtualWindowFromLayout,
   estimateVirtualItemHeight,
   getVirtualItemKey,
+  historyPrefetchThreshold,
   isTranscriptScrollbarPointer,
   isTranscriptScrollKey,
   resolveTranscriptBottomFollow,
@@ -159,6 +160,13 @@ describe('virtual transcript range calculation', () => {
 
     expect(estimateVirtualItemHeight(longTurn)).toBeGreaterThan(estimateVirtualItemHeight(shortTurn));
     expect(getVirtualItemKey(longTurn, 0)).toBe('long');
+  });
+
+  it('prefetches history before the viewport reaches the loaded boundary', () => {
+    expect(virtualTranscriptDefaults.historyPrefetchViewports).toBe(2);
+    expect(virtualTranscriptDefaults.historyPrefetchMinPx).toBe(600);
+    expect(historyPrefetchThreshold(720)).toBe(1440);
+    expect(historyPrefetchThreshold(200)).toBe(600);
   });
 
   it('distinguishes bottom-follow from reading history', () => {

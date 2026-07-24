@@ -16,6 +16,7 @@ import VirtualTranscript from './VirtualTranscript.js';
 import { shouldCloseYeaftVpTurn } from '../stores/helpers/yeaft-turn-boundary.js';
 import {
   estimateVirtualItemHeight,
+  historyPrefetchThreshold,
   isTranscriptScrollbarPointer,
   resolveTranscriptBottomFollow,
   shouldFollowTranscriptBottom,
@@ -1313,7 +1314,6 @@ export default {
     const isAtBottom = Vue.ref(true);
     const autoFollowPaused = Vue.ref(false);
     const SCROLL_THRESHOLD = virtualTranscriptDefaults.bottomThreshold;
-    const LOAD_MORE_TOP_THRESHOLD = 100;
     let loadMoreArmed = true;
 
     const hasStreamingMessage = Vue.computed(() => {
@@ -1706,8 +1706,8 @@ export default {
       return shouldFollowTranscriptBottom({ scrollTop, scrollHeight, clientHeight, threshold: SCROLL_THRESHOLD });
     };
 
-    const maybeLoadMoreNearTop = (scrollTop, { allowContinuation = false } = {}) => {
-      if (scrollTop > LOAD_MORE_TOP_THRESHOLD) {
+    const maybeLoadMoreNearTop = (scrollTop, clientHeight = 0, { allowContinuation = false } = {}) => {
+      if (scrollTop > historyPrefetchThreshold(clientHeight)) {
         loadMoreArmed = true;
         return;
       }
@@ -1755,7 +1755,11 @@ export default {
         if (!containerRef.value) return;
         const afterSnapshot = getLoadMoreProgressSnapshot();
         if (!hasLoadMoreProgress(beforeSnapshot, afterSnapshot)) return;
-        maybeLoadMoreNearTop(containerRef.value.scrollTop || 0, { allowContinuation: true });
+        maybeLoadMoreNearTop(
+          containerRef.value.scrollTop || 0,
+          containerRef.value.clientHeight || 0,
+          { allowContinuation: true },
+        );
       });
     };
 
@@ -1786,7 +1790,7 @@ export default {
         atBottom,
       });
       autoFollowPaused.value = !isAtBottom.value;
-      maybeLoadMoreNearTop(scrollTop || 0);
+      maybeLoadMoreNearTop(scrollTop || 0, clientHeight || 0);
     };
 
     const preserveScrollAnchorDuringLoad = (loadFn, loadingRef) => {
@@ -1911,7 +1915,12 @@ export default {
       if (isAtBottom.value) pruneYeaftWindowNearBottom();
       if (userScrollInteractionActive) scheduleUserScrollInteractionEnd();
 
-      if (containerRef.value) maybeLoadMoreNearTop(containerRef.value.scrollTop || 0);
+      if (containerRef.value) {
+        maybeLoadMoreNearTop(
+          containerRef.value.scrollTop || 0,
+          containerRef.value.clientHeight || 0,
+        );
+      }
     };
 
     const pruneYeaftWindowNearBottom = () => {
@@ -1967,7 +1976,6 @@ export default {
       return [
         store.activeConversationId || '',
         activeYeaftSessionId.value || '',
-        blocks.length,
         autoScrollItemIdentity(blocks[blocks.length - 1]),
       ].join('|');
     });

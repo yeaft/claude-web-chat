@@ -172,6 +172,7 @@ export default {
           :active-message-id="historySearchActiveMessageId"
           @query="onHistorySearchQuery"
           @move="historySearchActiveMessageId = $event"
+          @preview="previewHistorySearchResult"
           @select="selectHistorySearchResult"
           @load-older="loadOlderHistoryOutline"
           @load-more-search="loadMoreHistorySearchResults"
@@ -716,9 +717,17 @@ export default {
       );
     };
     const loadMoreHistorySearchResults = () => store.searchYeaftHistory(store.yeaftHistorySearchState.query, { append: true });
+    const previewHistorySearchResult = result => {
+      // Warm a bounded anchor window while the user points at a result. The
+      // store de-duplicates this with the eventual click, so preview never
+      // creates parallel reads and clicking an already-cached turn is instant.
+      if (store.hasCapability('session_history_window_prefetch')) {
+        store.loadYeaftHistoryWindow(result);
+      }
+    };
     const selectHistorySearchResult = result => revealOutlineResult({
       result,
-      loadWindow: candidate => store.loadYeaftHistoryWindow(candidate),
+      revealWindow: candidate => store.revealYeaftHistoryResult(candidate),
       nextTick: () => Vue.nextTick(),
       revealMessage: messageId => messageListRef.value?.revealMessage?.(messageId),
       isMobile: isMobile.value,
@@ -1411,6 +1420,7 @@ export default {
       onHistorySearchQuery,
       loadOlderHistoryOutline,
       loadMoreHistorySearchResults,
+      previewHistorySearchResult,
       selectHistorySearchResult,
       yeaftInputDraftKey,
       openSettings,
