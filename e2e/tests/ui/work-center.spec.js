@@ -554,23 +554,19 @@ test.describe('Work Center responsive UI', () => {
     await expect(actionDetail.locator('.work-center-action-composer')).toContainText('rerun this Action');
   });
 
-  test('loads request debug lazily from the Action detail tab', async ({ chatPage, mockAgent }) => {
+  test('loads request debug lazily from the Action inspector', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     const select = chatPage.locator('.work-center-card').click();
     await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
     await select;
-    await chatPage.locator('.work-center-action-summary').click();
 
     const indexResponse = respondToWorkCenterOp(mockAgent, 'get_action_requests', ACTION_REQUEST_INDEX);
-    const messagesTab = chatPage.getByRole('tab', { name: 'Messages' });
-    await messagesTab.focus();
-    await messagesTab.press('ArrowRight');
-    const requestsTab = chatPage.getByRole('tab', { name: 'Request details' });
-    await expect(requestsTab).toHaveAttribute('aria-selected', 'true');
-    await expect(requestsTab).toBeFocused();
+    await chatPage.locator('.work-center-action-summary').click();
+    const inspector = chatPage.locator('.work-center-action-inspector');
+    await expect(inspector).toBeVisible();
     const indexRequest = await indexResponse;
     expect(indexRequest.payload).toEqual({ id: OPEN_ITEM.id, actionId: 'action-1' });
-    const card = chatPage.locator('.work-center-request-card');
+    const card = inspector.locator('.work-center-request-card');
     await expect(card).toContainText('provider/primary');
     await expect(card).toContainText('1.5k tok');
 
@@ -584,6 +580,39 @@ test.describe('Work Center responsive UI', () => {
     await expect(card).toContainText('System prompt');
     await expect(card).toContainText('Raw request');
     await expect(card).toContainText('Tool calls');
+  });
+
+  test('renders the Action conversation and inspector responsively in both themes', async ({ page }) => {
+    await page.goto('about:blank');
+    await page.setContent(`
+      <main class="work-center-main"><section class="work-center-action-detail-pane">
+        <div class="work-center-action-conversation-heading"><span class="work-center-action-vp-presence" data-status="running"></span><div><strong>Linus</strong><span>Action executor</span></div></div>
+        <div class="work-center-action-detail-scroll">
+          <div class="work-center-action-transcript"><article class="work-center-action-message role-assistant"><header><strong>Linus</strong></header><div class="markdown-body">Verified the fix.</div></article></div>
+          <aside class="work-center-action-inspector"><section class="work-center-action-inspector-section work-center-action-owner"><span class="work-center-action-vp-presence" data-status="running"></span><div><strong>Linus</strong><small>Executor</small></div></section></aside>
+        </div>
+      </section></main>
+    `);
+    await page.addStyleTag({ path: `${process.cwd()}/web/styles/variables.css` });
+    await page.addStyleTag({ path: `${process.cwd()}/web/styles/work-center.css` });
+
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+      const colors = await page.locator('.work-center-action-detail-pane').evaluate(root => {
+        const message = getComputedStyle(root.querySelector('.work-center-action-message'));
+        const inspector = getComputedStyle(root.querySelector('.work-center-action-inspector-section'));
+        return { messageText: message.color, inspectorText: inspector.color, inspectorBackground: inspector.backgroundColor };
+      });
+      expect(colors.messageText).not.toBe(colors.inspectorBackground);
+      expect(colors.inspectorText).not.toBe(colors.inspectorBackground);
+    }
+
+    await page.setViewportSize({ width: 1200, height: 720 });
+    await expect(page.locator('.work-center-action-detail-scroll')).toHaveCSS('grid-template-columns', /.+ .+/);
+    await page.setViewportSize({ width: 760, height: 720 });
+    const mobileColumns = await page.locator('.work-center-action-detail-scroll').evaluate(element => getComputedStyle(element).gridTemplateColumns);
+    expect(mobileColumns.trim().split(/\s+/)).toHaveLength(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(760);
   });
 
   test('keeps Work Item card controls transparent in light and dark themes', async ({ page }) => {
