@@ -1305,10 +1305,10 @@ export const useChatStore = defineStore('chat', {
     enterWorkCenterFromSession(session, seedGoal = '') {
       if (!session?.id) return;
       const agentId = session.agentId || resolveAgentIdForSession(this, session.id);
+      const requirement = String(seedGoal || session.title || session.name || '').trim();
       this.workCenterCreateDraft = {
         sourceAgentId: agentId,
-        title: String(session.title || session.name || '').trim(),
-        goal: String(seedGoal || '').trim(),
+        requirement,
         workDir: String(session.workDir || '').trim(),
         origin: { sessionId: session.id, messageId: null, createdBy: 'user' },
         linkedSessionIds: [session.id],

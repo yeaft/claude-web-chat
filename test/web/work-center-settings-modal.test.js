@@ -49,10 +49,7 @@ function createPageVm(createWorkItem, overrides = {}) {
     applyCreateDefaults: WorkCenterPage.methods.applyCreateDefaults,
     resetCreateExecutionContext: WorkCenterPage.methods.resetCreateExecutionContext,
     form: {
-      title: 'Agent A Work Item',
-      goal: 'Remain scoped to Agent A',
-      acceptanceCriteriaText: '',
-      workItemType: 'auto',
+      requirement: 'Remain scoped to Agent A',
       workDir: '/workspace/a',
       reuseMemory: true,
       start: true,
@@ -516,8 +513,7 @@ describe('Work Center settings modal ownership', () => {
       createDefaultWorkDir: '',
       createDefaultStart: true,
       form: {
-        workDir: '/workspace/a', start: false, title: 'Keep title', goal: 'Keep goal',
-        acceptanceCriteriaText: '', reuseMemory: true,
+        workDir: '/workspace/a', start: false, requirement: 'Keep goal', reuseMemory: true,
       },
       selectedId: 'item-a',
       agentId: 'agent-b',
@@ -547,7 +543,7 @@ describe('Work Center settings modal ownership', () => {
 
     expect(vm.createOpen).toBe(true);
     expect(vm.form).toMatchObject({
-      workDir: '', start: true, title: 'Keep title', goal: 'Keep goal',
+      workDir: '', start: true, requirement: 'Keep goal',
     });
     expect(vm.store.workCenterCreateDraft).toMatchObject({
       sourceAgentId: 'agent-b', origin: null, linkedSessionIds: [],
@@ -561,7 +557,7 @@ describe('Work Center settings modal ownership', () => {
     WorkCenterPage.watch.createDefaultStart.call(vm);
 
     expect(vm.form).toMatchObject({
-      workDir: '/workspace/b', start: false, title: 'Keep title', goal: 'Keep goal',
+      workDir: '/workspace/b', start: false, requirement: 'Keep goal',
     });
 
     await WorkCenterPage.methods.submitCreate.call(vm);
@@ -581,7 +577,7 @@ describe('Work Center settings modal ownership', () => {
       startTouched: false,
       createDefaultWorkDir: '/workspace/b',
       createDefaultStart: false,
-      form: { workDir: '/workspace/custom-a', start: true, title: 'Keep title', goal: 'Keep goal' },
+      form: { workDir: '/workspace/custom-a', start: true, requirement: 'Keep goal' },
       closeFolderPicker: vi.fn(),
       selectedId: 'item-a',
       store: {
@@ -602,7 +598,7 @@ describe('Work Center settings modal ownership', () => {
     WorkCenterPage.watch.agentId.handler.call(vm, 'agent-b', 'agent-a');
 
     expect(vm.createOpen).toBe(false);
-    expect(vm.form).toMatchObject({ workDir: '', start: true, title: 'Keep title', goal: 'Keep goal' });
+    expect(vm.form).toMatchObject({ workDir: '', start: true, requirement: 'Keep goal' });
     expect(vm.store.workCenterCreateDraft).toMatchObject({
       sourceAgentId: 'agent-b', origin: null, linkedSessionIds: [],
     });
@@ -665,10 +661,7 @@ describe('Work Center settings modal ownership', () => {
       resetWorkItemComposer,
       openWorkItem: WorkCenterPage.methods.openWorkItem,
       form: {
-        title: 'Create navigation',
-        goal: 'Open the created Work Item',
-        acceptanceCriteriaText: '',
-        workItemType: 'auto',
+        requirement: 'Open the created Work Item',
         workDir: '/workspace/project',
         reuseMemory: true,
         start,
@@ -699,10 +692,7 @@ describe('Work Center settings modal ownership', () => {
     vm.agentId = 'agent-b';
     WorkCenterPage.watch.agentId.handler.call(vm, 'agent-b', 'agent-a');
     vm.form = {
-      title: 'Agent B draft',
-      goal: 'Keep Agent B state',
-      acceptanceCriteriaText: 'B criterion',
-      workItemType: 'auto',
+      requirement: 'Keep Agent B state',
       workDir: '/workspace/b',
       reuseMemory: false,
       start: false,
@@ -730,7 +720,7 @@ describe('Work Center settings modal ownership', () => {
     expect(vm.narrowPane).toBe('action');
     expect(vm.createOpen).toBe(true);
     expect(vm.form).toMatchObject({
-      title: 'Agent B draft', goal: 'Keep Agent B state', workDir: '/workspace/b', start: false,
+      requirement: 'Keep Agent B state', workDir: '/workspace/b', start: false,
     });
     expect(vm.saving).toBe(true);
   });
@@ -745,10 +735,7 @@ describe('Work Center settings modal ownership', () => {
     vm.agentId = 'agent-a';
     WorkCenterPage.watch.agentId.handler.call(vm, 'agent-a', 'agent-b');
     vm.form = {
-      title: 'New Agent A draft',
-      goal: 'Do not overwrite after identity returns',
-      acceptanceCriteriaText: '',
-      workItemType: 'auto',
+      requirement: 'Do not overwrite after identity returns',
       workDir: '/workspace/new-a',
       reuseMemory: true,
       start: false,
@@ -770,7 +757,7 @@ describe('Work Center settings modal ownership', () => {
     expect(vm.selectedActionId).toBeNull();
     expect(vm.narrowPane).toBe('items');
     expect(vm.createOpen).toBe(true);
-    expect(vm.form).toMatchObject({ title: 'New Agent A draft', workDir: '/workspace/new-a' });
+    expect(vm.form).toMatchObject({ requirement: 'Do not overwrite after identity returns', workDir: '/workspace/new-a' });
     expect(vm.saving).toBe(true);
   });
 
@@ -789,7 +776,7 @@ describe('Work Center settings modal ownership', () => {
       workItemAttachmentsSupported: false,
       createAttachments: [{ fileId: 'stale-file', name: 'stale.txt', mimeType: 'text/plain', size: 5 }],
       form: {
-        title: 'Keep title', goal: 'Keep goal', acceptanceCriteriaText: '',
+        requirement: 'Keep goal',
         workDir: '/workspace/b', reuseMemory: true, start: false,
       },
       store: {
