@@ -4,6 +4,8 @@ const DEFAULT_OVERSCAN = 1;
 const DEFAULT_ITEM_GAP = 18;
 const MAX_ESTIMATED_HEIGHT = 1400;
 const DEFAULT_BOTTOM_THRESHOLD = 80;
+const DEFAULT_HISTORY_PREFETCH_VIEWPORTS = 2;
+const DEFAULT_HISTORY_PREFETCH_MIN_PX = 600;
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -167,6 +169,15 @@ export function shouldFollowTranscriptBottom({ scrollTop = 0, scrollHeight = 0, 
   return Math.max(0, Number(scrollHeight) - Number(scrollTop) - Number(clientHeight)) <= Math.max(0, Number(threshold));
 }
 
+export function historyPrefetchThreshold(clientHeight = 0, {
+  viewports = DEFAULT_HISTORY_PREFETCH_VIEWPORTS,
+  minPx = DEFAULT_HISTORY_PREFETCH_MIN_PX,
+} = {}) {
+  const safeHeight = Math.max(0, Number(clientHeight) || 0);
+  const safeViewports = Math.max(0, Number(viewports) || 0);
+  return Math.max(0, Number(minPx) || 0, safeHeight * safeViewports);
+}
+
 export function resolveTranscriptBottomFollow({ following = true, atBottom = false, userScroll = false } = {}) {
   if (userScroll) return !!atBottom;
   return !!following && !!atBottom;
@@ -220,4 +231,6 @@ export const virtualTranscriptDefaults = Object.freeze({
   overscan: DEFAULT_OVERSCAN,
   itemGap: DEFAULT_ITEM_GAP,
   bottomThreshold: DEFAULT_BOTTOM_THRESHOLD,
+  historyPrefetchViewports: DEFAULT_HISTORY_PREFETCH_VIEWPORTS,
+  historyPrefetchMinPx: DEFAULT_HISTORY_PREFETCH_MIN_PX,
 });

@@ -73,10 +73,14 @@ describe('Yeaft conversation outline UI', () => {
 
   it('uses the existing bounded history window to reveal and flash unloaded messages', () => {
     expect(page).toContain('loadWindow: candidate => store.loadYeaftHistoryWindow(candidate)');
+    expect(page).toContain("store.hasCapability('session_history_window_prefetch')");
+    expect(panel).toContain("emit('preview', result)");
+    expect(store).toContain('_yeaftHistoryWindowPendingByKey');
+    expect(store).toContain('if (pendingByKey[pendingKey]?.promise) return pendingByKey[pendingKey].promise');
     expect(store).toContain('buildYeaftMessageTurnSpans(scoped)');
     expect(list).toContain('navigateToPersistedMessage({');
     expect(list).toContain("virtualTranscriptRef.value?.scrollToKey?.(blockId, { align: 'center' })");
-    expect(store).toContain('this.revealYeaftMessage(pending.sessionId, pending.messageId, conversationId)');
+    expect(store).toContain('this.isYeaftMessageCached(pending.sessionId, pending.messageId, conversationId)');
     expect(store).not.toContain('containsAnchor || revealedInStore');
     expect(virtual).toContain('expose({ scrollToKey, scrollToIndex })');
     expect(css).toContain('@keyframes yeaft-history-search-flash');

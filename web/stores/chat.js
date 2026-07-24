@@ -515,7 +515,7 @@ export const useChatStore = defineStore('chat', {
     yeaftHistoryOutlineBySession: {},
     _yeaftHistoryOutlineTimeouts: {},
     _yeaftHistorySearchTimeout: null,
-    _yeaftHistoryWindowPending: null,
+    _yeaftHistoryWindowPendingByKey: {},
     // One-shot marker: set true by the websocket onclose handler on a real
     // disconnect, consumed by handleAgentList to run a single Yeaft history
     // catch-up after the socket comes back. Without this gate the catch-up
@@ -2476,6 +2476,16 @@ export const useChatStore = defineStore('chat', {
       };
     },
 
+    isYeaftMessageCached(sessionId, messageId, conversationId = null) {
+      const targetSessionId = sessionId || this.yeaftActiveSessionFilter || null;
+      const targetConversationId = conversationId || resolveYeaftConversationIdForSession(this, targetSessionId);
+      if (!targetConversationId || !messageId) return false;
+      return (this.messagesMap[targetConversationId] || []).some(message => (
+        (!targetSessionId || (message?.sessionId ?? message?.groupId ?? null) === targetSessionId)
+        && ((message?.id || message?.messageId) === messageId || message?.persistedMessageId === messageId)
+      ));
+    },
+
     revealYeaftMessage(sessionId, messageId, conversationId = null) {
       const targetSessionId = sessionId || this.yeaftActiveSessionFilter || null;
       const targetConversationId = conversationId || resolveYeaftConversationIdForSession(this, targetSessionId);
@@ -2883,45 +2893,63 @@ export const useChatStore = defineStore('chat', {
       const sessionId = this.yeaftActiveSessionFilter || null;
       const agentId = resolveAgentIdForSession(this, sessionId);
       if (!sessionId || !agentId || !result?.messageId || !Number.isFinite(result.seq)) return Promise.resolve(false);
-      if (this.revealYeaftMessage(sessionId, result.messageId)) return Promise.resolve(true);
+      if (this.isYeaftMessageCached(sessionId, result.messageId)) return Promise.resolve(true);
+
+      const pendingKey = yeaftHistoryIdentityKey(agentId, `${sessionId}:${result.messageId}`);
+      const pendingByKey = this._yeaftHistoryWindowPendingByKey || {};
+      if (pendingByKey[pendingKey]?.promise) return pendingByKey[pendingKey].promise;
+
       const requestId = `history_window_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const previousPending = this._yeaftHistoryWindowPending;
-      if (previousPending) {
-        clearTimeout(previousPending.timeout);
-        previousPending.resolve(false);
-        this._yeaftHistoryWindowPending = null;
-      }
-      return new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          if (this._yeaftHistoryWindowPending?.requestId === requestId) this._yeaftHistoryWindowPending = null;
-          resolve(false);
-        }, 10000);
-        this._yeaftHistoryWindowPending = { requestId, agentId, sessionId, messageId: result.messageId, resolve, timeout };
-        this.sendWsMessage({
-          type: 'yeaft_load_history_window',
+      let resolvePending = null;
+      const promise = new Promise((resolve) => { resolvePending = resolve; });
+      const timeout = setTimeout(() => {
+        const current = this._yeaftHistoryWindowPendingByKey?.[pendingKey];
+        if (current?.requestId !== requestId) return;
+        const { [pendingKey]: _expired, ...rest } = this._yeaftHistoryWindowPendingByKey;
+        this._yeaftHistoryWindowPendingByKey = rest;
+        resolvePending(false);
+      }, 10000);
+      this._yeaftHistoryWindowPendingByKey = {
+        ...pendingByKey,
+        [pendingKey]: {
+          requestId,
           agentId,
           sessionId,
-          requestId,
-          anchorMessageId: result.messageId,
-          anchorSeq: result.seq,
-          beforeTurns: 3,
-          afterTurns: 3,
-        });
+          messageId: result.messageId,
+          resolve: resolvePending,
+          timeout,
+          promise,
+        },
+      };
+      this.sendWsMessage({
+        type: 'yeaft_load_history_window',
+        agentId,
+        sessionId,
+        requestId,
+        anchorMessageId: result.messageId,
+        anchorSeq: result.seq,
+        beforeTurns: 5,
+        afterTurns: 5,
       });
+      return promise;
     },
 
     handleYeaftHistoryWindow(msg, conversationId = null) {
-      const pending = this._yeaftHistoryWindowPending;
-      if (!pending || msg?.requestId !== pending.requestId) return false;
+      const pendingEntries = Object.entries(this._yeaftHistoryWindowPendingByKey || {});
+      const match = pendingEntries.find(([, pending]) => pending?.requestId === msg?.requestId);
+      if (!match) return false;
+      const [pendingKey, pending] = match;
       if (msg.agentId !== pending.agentId || msg.sessionId !== pending.sessionId) return false;
       clearTimeout(pending.timeout);
-      this._yeaftHistoryWindowPending = null;
-      // The merge handler passes the exact conversation it updated. Search and
-      // expand that same store window so agent/session switches cannot make a
-      // successful wire response look navigable in the wrong transcript.
+      const { [pendingKey]: _settled, ...rest } = this._yeaftHistoryWindowPendingByKey;
+      this._yeaftHistoryWindowPendingByKey = rest;
+      // The merge handler passes the exact conversation it updated. Validate
+      // that same cache so agent/session switches cannot make a successful wire
+      // response look navigable in the wrong transcript. Rendering expands only
+      // on click; hover prefetch must not move the reader's current position.
       const loaded = !msg.error
         && !!conversationId
-        && this.revealYeaftMessage(pending.sessionId, pending.messageId, conversationId);
+        && this.isYeaftMessageCached(pending.sessionId, pending.messageId, conversationId);
       pending.resolve(!!loaded);
       return !!loaded;
     },
@@ -5636,7 +5664,7 @@ export const useChatStore = defineStore('chat', {
       return true;
     },
 
-    loadMoreYeaftHistory() {
+    loadMoreYeaftHistory(turns = getYeaftWindowLoadStepTurns()) {
       if (this.currentView !== 'yeaft') return;
       if (this.yeaftLoadingMoreHistory || !this.yeaftHasMoreHistory) return;
       if (this.yeaftOldestLoadedSeq == null) return;
@@ -5644,6 +5672,9 @@ export const useChatStore = defineStore('chat', {
       const sessionId = resolveActiveYeaftSessionId(this);
       const targetAgentId = resolveAgentIdForSession(this, sessionId);
       if (!targetAgentId) return;
+      const requestedTurns = Math.min(50, Math.max(1, Number.isFinite(turns)
+        ? Math.floor(turns)
+        : getYeaftWindowLoadStepTurns()));
 
       this.yeaftLoadingMoreHistory = true;
       const sessionKey = yeaftHistoryIdentityKey(targetAgentId, sessionId);
@@ -5664,7 +5695,7 @@ export const useChatStore = defineStore('chat', {
         agentId: targetAgentId,
         sessionId,
         beforeSeq: this.yeaftOldestLoadedSeq,
-        turns: 10,
+        turns: requestedTurns,
         perfTraceId,
       };
       recordPerfTrace(this, {

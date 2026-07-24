@@ -11,7 +11,7 @@ export default {
     searchState: { type: Object, required: true },
     activeIndex: { type: Number, default: 0 },
   },
-  emits: ['query', 'select', 'move', 'load-older', 'load-more-search', 'close'],
+  emits: ['query', 'select', 'move', 'preview', 'load-older', 'load-more-search', 'close'],
   template: `
     <section id="yeaft-conversation-outline" class="yeaft-conversation-outline" :aria-label="$t('yeaft.outline.label')">
       <div class="yeaft-conversation-outline-header">
@@ -58,7 +58,8 @@ export default {
           :class="{ active: index === activeIndex }"
           role="option"
           :aria-selected="index === activeIndex ? 'true' : 'false'"
-          @mouseenter="$emit('move', index)"
+          @mouseenter="previewResult(result, index)"
+          @focus="previewResult(result, index)"
           @click="$emit('select', result)"
         >
           <span class="yeaft-conversation-outline-meta">
@@ -108,16 +109,26 @@ export default {
       if (isSearching.value || props.outlineState.loading || !props.outlineState.hasMore) return;
       if ((listRef.value?.scrollTop || 0) <= 40) loadOlder();
     };
+    const previewResult = (result, index) => {
+      emit('move', index);
+      emit('preview', result);
+    };
+    const moveActive = (index) => {
+      const nextIndex = Math.max(0, Math.min(visibleResults.value.length - 1, index));
+      emit('move', nextIndex);
+      const result = visibleResults.value[nextIndex];
+      if (result) emit('preview', result);
+    };
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
         event.preventDefault();
         emit('close');
       } else if (event.key === 'ArrowDown') {
         event.preventDefault();
-        emit('move', Math.min(visibleResults.value.length - 1, props.activeIndex + 1));
+        moveActive(props.activeIndex + 1);
       } else if (event.key === 'ArrowUp') {
         event.preventDefault();
-        emit('move', Math.max(0, props.activeIndex - 1));
+        moveActive(props.activeIndex - 1);
       } else if (event.key === 'Enter' && visibleResults.value.length) {
         event.preventDefault();
         emit('select', visibleResults.value[props.activeIndex] || visibleResults.value[0]);
@@ -135,6 +146,6 @@ export default {
     });
     expose({ focus, restoreOlderScroll });
     Vue.onMounted(focus);
-    return { inputRef, listRef, isSearching, visibleResults, isLoading, countLabel, errorKey, focus, loadOlder, onScroll, onKeyDown, formatOutlineTime };
+    return { inputRef, listRef, isSearching, visibleResults, isLoading, countLabel, errorKey, focus, loadOlder, onScroll, onKeyDown, previewResult, formatOutlineTime };
   },
 };

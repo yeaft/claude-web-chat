@@ -22,7 +22,7 @@ vi.mock('../../../agent/yeaft/status-cache.js', () => ({
 
 const ctx = (await import('../../../agent/context.js')).default;
 const { ConversationStore } = await import('../../../agent/yeaft/conversation/persist.js');
-const { handleYeaftLoadHistory, __testSetSession, __testHooks } = await import('../../../agent/yeaft/web-bridge.js');
+const { handleYeaftLoadHistory, handleYeaftLoadMoreHistory, __testSetSession, __testHooks } = await import('../../../agent/yeaft/web-bridge.js');
 
 function flushMicrotasks() {
   return new Promise(resolve => setImmediate(resolve));
@@ -119,6 +119,33 @@ describe('Yeaft load-history first paint', () => {
       }),
     ]);
     expect(projected[0].toolSummaryCount).toBeUndefined();
+  });
+
+  it('loads older pages from persisted history before runtime boot resolves', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-fast-older-history-'));
+    try {
+      ctx.CONFIG = { yeaftDir: dir };
+      const store = new ConversationStore(dir);
+      const appended = store.appendBatch(Array.from({ length: 24 }, (_, index) => ({
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        content: `history ${index + 1}`,
+        sessionId: 'session-fast-older',
+        ...(index % 2 === 0 ? {} : { speakerVpId: 'vp-linus' }),
+      })));
+
+      await handleYeaftLoadMoreHistory({
+        sessionId: 'session-fast-older',
+        beforeSeq: store.getMessageSeqById(appended.at(-1).id) + 1,
+        turns: 20,
+      });
+
+      expect(loadSession).not.toHaveBeenCalled();
+      const chunk = sent.find(message => message.type === 'yeaft_history_chunk' && message.mode === 'older');
+      expect(chunk).toMatchObject({ sessionId: 'session-fast-older', turns: 20 });
+      expect(chunk.messages).toHaveLength(24);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('replays the recent message window before full session boot resolves', async () => {

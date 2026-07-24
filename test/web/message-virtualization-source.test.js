@@ -51,13 +51,14 @@ describe('MessageList virtualization wiring', () => {
   it('auto-loads more messages from the virtual scroll near-top event', () => {
     const source = read('components/MessageList.js');
 
-    expect(source).toContain('const LOAD_MORE_TOP_THRESHOLD = 100;');
-    expect(source).toContain('const maybeLoadMoreNearTop = (scrollTop, { allowContinuation = false } = {}) => {');
-    expect(source).toContain('if (scrollTop > LOAD_MORE_TOP_THRESHOLD) {');
+    expect(source).toContain('historyPrefetchThreshold,');
+    expect(source).toContain('const maybeLoadMoreNearTop = (scrollTop, clientHeight = 0, { allowContinuation = false } = {}) => {');
+    expect(source).toContain('if (scrollTop > historyPrefetchThreshold(clientHeight)) {');
     expect(source).toContain('onClickLoadMore();');
-    expect(source).toContain('maybeLoadMoreNearTop(scrollTop || 0);');
+    expect(source).toContain('maybeLoadMoreNearTop(scrollTop || 0, clientHeight || 0);');
     expect(source).toContain('const continueLoadMoreIfStillNearTop = (beforeSnapshot) => {');
-    expect(source).toContain('maybeLoadMoreNearTop(containerRef.value.scrollTop || 0, { allowContinuation: true });');
+    expect(source).toContain('containerRef.value.clientHeight || 0,');
+    expect(source).toContain('{ allowContinuation: true },');
   });
 
   it('does not let virtual layout updates re-enable bottom following while reading history', () => {
