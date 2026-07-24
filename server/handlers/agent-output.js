@@ -636,6 +636,7 @@ export async function handleAgentOutput(agentId, agent, msg) {
           requestId: msg.requestId ?? null,
           sessionId: msg.sessionId ?? null,
           query: msg.query || '',
+          senderKey: msg.senderKey || '',
           results: Array.isArray(msg.results) ? msg.results : [],
           hasMore: !!msg.hasMore,
           nextBeforeSeq: msg.nextBeforeSeq ?? null,

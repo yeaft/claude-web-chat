@@ -36,9 +36,10 @@ export default {
   props: {
     outlineState: { type: Object, required: true },
     searchState: { type: Object, required: true },
+    senderOptions: { type: Array, default: () => [] },
     activeMessageId: { type: String, default: null },
   },
-  emits: ['query', 'select', 'move', 'load-older', 'load-more-search', 'close'],
+  emits: ['query', 'sender', 'select', 'move', 'load-older', 'load-more-search', 'close'],
   template: `
     <section id="yeaft-conversation-outline" class="yeaft-conversation-outline" :aria-label="$t('yeaft.outline.label')">
       <div class="yeaft-conversation-outline-header">
@@ -61,6 +62,13 @@ export default {
         />
         <span v-if="searchState.loading" class="yeaft-conversation-outline-status">{{ $t('yeaft.outline.searching') }}</span>
       </div>
+      <label class="yeaft-conversation-outline-sender">
+        <span>{{ $t('yeaft.outline.sender') }}</span>
+        <select :value="searchState.senderKey || ''" :aria-label="$t('yeaft.outline.sender')" @change="$emit('sender', $event.target.value)">
+          <option value="">{{ $t('yeaft.outline.allSenders') }}</option>
+          <option v-for="option in senderOptions" :key="option.key" :value="option.key">{{ option.label }}</option>
+        </select>
+      </label>
       <div
         ref="listRef"
         class="yeaft-conversation-outline-list"
@@ -107,7 +115,7 @@ export default {
   setup(props, { emit, expose }) {
     const inputRef = Vue.ref(null);
     const listRef = Vue.ref(null);
-    const isSearching = Vue.computed(() => String(props.searchState.query || '').trim().length >= 2);
+    const isSearching = Vue.computed(() => String(props.searchState.query || '').trim().length >= 2 || !!props.searchState.senderKey);
     const visibleResults = Vue.computed(() => sortHistoryResultsNewest(
       isSearching.value ? props.searchState.results : props.outlineState.results,
     ));

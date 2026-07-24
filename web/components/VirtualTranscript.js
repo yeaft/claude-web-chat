@@ -160,6 +160,11 @@ export default {
       });
     }
 
+    function cancelPendingBottomFollow() {
+      pendingScrollToBottom = false;
+      pendingScrollDelta = 0;
+    }
+
     function scheduleMeasureElement(key, index, el) {
       if (!key || !el) return;
       pendingMeasurements.set(key, { index, el });
@@ -254,6 +259,7 @@ export default {
       const safeIndex = Number.isFinite(index) ? Math.floor(index) : -1;
       const scroller = scrollEl.value;
       if (!scroller || safeIndex < 0 || safeIndex >= props.items.length) return false;
+      cancelPendingBottomFollow();
       const key = getVirtualItemKey(props.items[safeIndex], safeIndex);
       scroller.scrollTop = virtualScrollTopForIndex(props.items, safeIndex, heightCache, {
         itemGap: props.itemGap,
@@ -274,7 +280,7 @@ export default {
       return Number.isFinite(index) ? scrollToIndex(index, options) : Promise.resolve(false);
     }
 
-    expose({ scrollToKey, scrollToIndex });
+    expose({ scrollToKey, scrollToIndex, cancelPendingBottomFollow });
 
     Vue.watch(
       () => props.items.map((item, index) => getVirtualItemKey(item, index)).join('\n'),

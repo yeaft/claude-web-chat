@@ -33,7 +33,7 @@ describe('Yeaft conversation outline UI', () => {
     expect(store).toContain("type: 'yeaft_load_history_outline'");
     expect(store).toContain('limit: 50');
     expect(store).toContain('if (!append && previous.loaded && !force) return true');
-    expect(page).toContain('setTimeout(() => store.searchYeaftHistory(query), 220)');
+    expect(page).toContain("setTimeout(() => store.searchYeaftHistory(query, { senderKey: store.yeaftHistorySearchState.senderKey }), 220)");
     expect(store).toContain("type: 'yeaft_search_history'");
   });
 
@@ -84,7 +84,7 @@ describe('Yeaft conversation outline UI', () => {
     expect(list).toContain("virtualTranscriptRef.value?.scrollToKey?.(blockId, { align: 'center' })");
     expect(store).toContain('this.revealYeaftMessage(pending.sessionId, pending.messageId, conversationId)');
     expect(store).not.toContain('containsAnchor || revealedInStore');
-    expect(virtual).toContain('expose({ scrollToKey, scrollToIndex })');
+    expect(virtual).toContain('expose({ scrollToKey, scrollToIndex, cancelPendingBottomFollow })');
     expect(css).toContain('@keyframes yeaft-history-search-flash');
   });
 

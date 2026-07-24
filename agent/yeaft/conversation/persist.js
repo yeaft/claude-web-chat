@@ -1734,12 +1734,13 @@ export class ConversationStore {
    *
    * @param {string} sessionId
    * @param {string} query
-   * @param {{ limit?: number, beforeSeq?: number|null }} [opts]
+   * @param {{ limit?: number, beforeSeq?: number|null, senderKey?: string }} [opts]
    * @returns {{ results: object[], hasMore: boolean, nextBeforeSeq: number|null }}
    */
   searchVisibleBySession(sessionId, query, opts = {}) {
     const needle = typeof query === 'string' ? query.trim().toLocaleLowerCase() : '';
-    if (!sessionId || needle.length < 2) return { results: [], hasMore: false, nextBeforeSeq: null };
+    const senderKey = typeof opts.senderKey === 'string' ? opts.senderKey : '';
+    if (!sessionId || (needle.length < 2 && !senderKey)) return { results: [], hasMore: false, nextBeforeSeq: null };
 
     const limit = Math.min(50, Math.max(1, Number.isFinite(opts.limit) ? Math.floor(opts.limit) : 20));
     const beforeSeq = Number.isFinite(opts.beforeSeq) ? opts.beforeSeq : Infinity;
@@ -1747,8 +1748,14 @@ export class ConversationStore {
     let hasMore = false;
 
     for (const entry of this.#iterateVisibleResponseEntries(sessionId, { beforeSeq })) {
+      const senderMatches = senderKey === 'user'
+        ? entry.role === 'user'
+        : (senderKey.startsWith('vp:')
+          ? entry.role === 'assistant' && entry.speakerVpId === senderKey.slice(3)
+          : true);
+      if (!senderMatches) continue;
       const text = entry.textParts.join(' ');
-      const matchIndex = text.toLocaleLowerCase().indexOf(needle);
+      const matchIndex = needle ? text.toLocaleLowerCase().indexOf(needle) : 0;
       if (matchIndex < 0) continue;
       if (results.length >= limit) {
         hasMore = true;
@@ -1756,7 +1763,9 @@ export class ConversationStore {
       }
       results.push({
         ...this.#projectVisibleResponseEntry(entry),
-        snippet: this.#searchSnippet(text, matchIndex, needle.length),
+        snippet: needle
+          ? this.#searchSnippet(text, matchIndex, needle.length)
+          : this.#outlineSnippet(text),
       });
     }
 

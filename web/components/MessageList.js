@@ -1771,6 +1771,12 @@ export default {
       isAtBottom.value = true;
     };
 
+    const pauseAutoFollow = () => {
+      autoFollowPaused.value = true;
+      isAtBottom.value = false;
+      virtualTranscriptRef.value?.cancelPendingBottomFollow?.();
+    };
+
     const onVirtualTranscriptScrollState = ({ scrollTop, scrollHeight, clientHeight }) => {
       const atBottom = shouldFollowTranscriptBottom({
         scrollTop: scrollTop || 0,
@@ -2003,15 +2009,14 @@ export default {
 
     const revealMessage = async (messageId) => {
       if (!messageId) return false;
+      pauseAutoFollow();
       const revealed = await navigateToPersistedMessage({
         blocks: messageBlocks.value,
         messageId,
         collapseStates: messageTurnCollapseStates,
         nextTick: Vue.nextTick,
         scrollToBlock: (blockId) => {
-          resumeAutoFollow();
-          autoFollowPaused.value = true;
-          isAtBottom.value = false;
+          pauseAutoFollow();
           return virtualTranscriptRef.value?.scrollToKey?.(blockId, { align: 'center' });
         },
         findRow: (rowId) => {

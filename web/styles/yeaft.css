@@ -877,6 +877,17 @@
   box-shadow: none;
 }
 
+.yeaft-conversation-outline-sender {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.yeaft-conversation-outline-sender select { min-width: 0; flex: 1; }
+
 .yeaft-conversation-outline-status {
   color: var(--text-muted);
   font-size: 12px;
