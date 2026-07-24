@@ -63,7 +63,7 @@ describe('ChatInput attachment retry', () => {
       .mockResolvedValueOnce({ ok: false })
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ files: [{ fileId: 'file-1' }] }),
+        json: async () => ({ files: [{ fileId: ' file-1 ' }] }),
       });
     const wrapper = mountInput();
     const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
@@ -84,6 +84,27 @@ describe('ChatInput attachment retry', () => {
     expect(wrapper.get('.attachment-status').text()).toBe('5 B');
     expect(wrapper.find('.attachment-retry').exists()).toBe(false);
     expect(wrapper.get('.send-btn').attributes('disabled')).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it.each([
+    ['an object', {}],
+    ['an empty string', '   '],
+  ])('keeps the attachment retryable when the server returns %s fileId', async (_label, fileId) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ files: [{ fileId }] }),
+    });
+    const wrapper = mountInput();
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+
+    await wrapper.vm.handleFileSelect({ target: { files: [file], value: 'notes.txt' } });
+    await Vue.nextTick();
+
+    expect(wrapper.get('.attachment-item').classes()).toContain('has-error');
+    expect(wrapper.get('.attachment-status').text()).toBe('chatInput.uploadFailed');
+    expect(wrapper.get('.attachment-retry').exists()).toBe(true);
+    expect(wrapper.get('.send-btn').attributes('disabled')).toBeDefined();
     wrapper.unmount();
   });
 });

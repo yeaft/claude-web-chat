@@ -443,14 +443,18 @@ export default {
         && store.compactStatus?.conversationId === effectiveConversationId.value;
     });
 
+    const hasValidFileId = (attachment) => (
+      typeof attachment?.fileId === 'string' && attachment.fileId.trim().length > 0
+    );
+
     const canSend = Vue.computed(() => {
-      if (isCompacting.value) return false;
+      if (isCompacting.value || isStopVisible.value) return false;
       const hasText = !!inputText.value.trim();
       const hasAttachments = attachments.value.length > 0;
 
       // Custom send mode (e.g. Yeaft page): simplified check — no conversation needed
       if (isCustomSend.value) {
-        const notUploading = !uploading.value && attachments.value.every(a => a.fileId);
+        const notUploading = !uploading.value && attachments.value.every(hasValidFileId);
         return (hasText || hasAttachments) && notUploading;
       }
 
@@ -458,7 +462,7 @@ export default {
       // Can send if: (text OR attachments OR (experts with action — pure role needs text))
       const hasActionExpert = expertSelections.value.some(s => s.action);
       const hasContent = hasText || hasAttachments || (hasExperts && (hasText || hasActionExpert));
-      const notUploading = !uploading.value && attachments.value.every(a => a.fileId);
+      const notUploading = !uploading.value && attachments.value.every(hasValidFileId);
       return hasContent && store.currentAgent && store.currentConversation && notUploading;
     });
 
@@ -621,8 +625,9 @@ export default {
 
         for (const [index, attachment] of pendingAttachments.entries()) {
           const uploaded = uploadedFiles[index];
-          if (!uploaded?.fileId) throw new Error('Upload response is incomplete');
-          attachment.fileId = uploaded.fileId;
+          const fileId = typeof uploaded?.fileId === 'string' ? uploaded.fileId.trim() : '';
+          if (!fileId) throw new Error('Upload response is incomplete');
+          attachment.fileId = fileId;
           attachment.uploading = false;
           delete attachment.uploadName;
         }
@@ -684,7 +689,7 @@ export default {
     };
 
     const send = () => {
-      if (!canSend.value) return;
+      if (isStopVisible.value || !canSend.value) return;
 
       showAutocomplete.value = false;
       showExpertAutocomplete.value = false;
@@ -695,7 +700,7 @@ export default {
       // Custom send mode: delegate to provided function
       if (props.sendFn) {
         const attachmentInfos = attachments.value
-          .filter(a => a.fileId)
+          .filter(hasValidFileId)
           .map(a => ({
             fileId: a.fileId,
             name: a.name,
@@ -740,7 +745,7 @@ export default {
       // forward them; we just need to make sure the array is available
       // before the dispatch.
       const attachmentInfos = attachments.value
-        .filter(a => a.fileId)
+        .filter(hasValidFileId)
         .map(a => ({
           fileId: a.fileId,
           name: a.name,

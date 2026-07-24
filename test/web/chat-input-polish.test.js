@@ -14,6 +14,7 @@ describe('ChatInput interaction polish', () => {
     expect(component).toContain('v-else\n          type="button"\n          class="send-btn"');
     expect(component).toContain(":aria-label=\"$t('chatInput.stop')\"");
     expect(component).toContain(":aria-label=\"$t('chatInput.send')\"");
+    expect(component).toContain('if (isStopVisible.value || !canSend.value) return;');
   });
 
   it('only enables internal scrolling after the textarea reaches its height cap', () => {
