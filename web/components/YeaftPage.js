@@ -169,9 +169,9 @@ export default {
           ref="historySearchRef"
           :outline-state="historyOutlineState"
           :search-state="store.yeaftHistorySearchState"
-          :active-index="historySearchActiveIndex"
+          :active-message-id="historySearchActiveMessageId"
           @query="onHistorySearchQuery"
-          @move="historySearchActiveIndex = $event"
+          @move="historySearchActiveMessageId = $event"
           @select="selectHistorySearchResult"
           @load-older="loadOlderHistoryOutline"
           @load-more-search="loadMoreHistorySearchResults"
@@ -433,7 +433,7 @@ export default {
     const messageListRef = Vue.ref(null);
     const historySearchRef = Vue.ref(null);
     const historySearchOpen = Vue.ref(false);
-    const historySearchActiveIndex = Vue.ref(0);
+    const historySearchActiveMessageId = Vue.ref(null);
     const historyOutlineState = Vue.computed(() => store.getYeaftHistoryOutlineState());
     let historySearchTimer = null;
     const yeaftInputDraftKey = Vue.computed(() => {
@@ -668,7 +668,7 @@ export default {
       }
       store.searchYeaftHistory('');
       historySearchOpen.value = false;
-      historySearchActiveIndex.value = 0;
+      historySearchActiveMessageId.value = null;
     };
     const openHistorySearch = () => {
       historySearchOpen.value = true;
@@ -681,7 +681,7 @@ export default {
     };
     const onHistorySearchQuery = (query) => {
       if (historySearchTimer) clearTimeout(historySearchTimer);
-      historySearchActiveIndex.value = 0;
+      historySearchActiveMessageId.value = null;
       historySearchTimer = setTimeout(() => store.searchYeaftHistory(query), 220);
     };
     const loadOlderHistoryOutline = (scrollSnapshot) => {
@@ -1375,7 +1375,7 @@ export default {
       messageListRef,
       historySearchRef,
       historySearchOpen,
-      historySearchActiveIndex,
+      historySearchActiveMessageId,
       historyOutlineState,
       toggleHistorySearch,
       closeHistorySearch,
