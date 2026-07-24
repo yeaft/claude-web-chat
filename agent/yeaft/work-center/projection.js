@@ -188,6 +188,42 @@ function projectVpSpeaker(snapshot) {
   return id || name ? { id, name } : null;
 }
 
+function compareEventIds(leftId, rightId) {
+  const left = String(leftId ?? '');
+  const right = String(rightId ?? '');
+  if (/^\d+$/.test(left) && /^\d+$/.test(right)) {
+    const leftNumber = BigInt(left);
+    const rightNumber = BigInt(right);
+    if (leftNumber < rightNumber) return -1;
+    if (leftNumber > rightNumber) return 1;
+    return 0;
+  }
+  return left.localeCompare(right);
+}
+
+function compareStoredEvents(left, right) {
+  return count(left?.createdAt) - count(right?.createdAt)
+    || compareEventIds(left?.id, right?.id);
+}
+
+function projectedEventId(message) {
+  return typeof message?.id === 'string' && message.id.startsWith('event:')
+    ? message.id.slice('event:'.length)
+    : null;
+}
+
+function compareProjectedMessages(left, right) {
+  const timeOrder = count(left?.createdAt) - count(right?.createdAt);
+  if (timeOrder) return timeOrder;
+  const leftEventId = projectedEventId(left);
+  const rightEventId = projectedEventId(right);
+  if (leftEventId != null && rightEventId != null) {
+    return compareEventIds(leftEventId, rightEventId);
+  }
+  return (left?.role === 'user' ? -1 : 1)
+    || String(left?.id || '').localeCompare(String(right?.id || ''));
+}
+
 function normalizeProjectedMessage(message) {
   if (!message || typeof message !== 'object') return null;
   const text = typeof message.text === 'string'
@@ -255,8 +291,7 @@ function loopOutputMessages(action, events, matchingRuns, generation = actionGen
   const timeline = (Array.isArray(events) ? events : [])
     .filter(event => event?.actionId === action?.id
       && actionGeneration(event.actionGeneration ?? event.data?.actionGeneration) === generation)
-    .sort((left, right) => count(left.createdAt) - count(right.createdAt)
-      || String(left.id || '').localeCompare(String(right.id || '')));
+    .sort(compareStoredEvents);
   for (const event of timeline) {
     if (['action.guidance_added', 'action.input_added'].includes(event.type)) {
       previousTranscriptEvent = { type: 'input' };
@@ -307,9 +342,7 @@ function messagesForGeneration(action, runs, events, generation, includeThreadId
     .filter(run => !runsWithLoopOutput.has(run.id))
     .map(run => runResponseMessage(run, includeThreadIdentity))
     .filter(Boolean)]
-    .sort((left, right) => left.createdAt - right.createdAt
-      || (left.role === 'user' ? -1 : 1)
-      || left.id.localeCompare(right.id));
+    .sort(compareProjectedMessages);
 }
 
 function actionMessages(action, runs, events) {

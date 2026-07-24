@@ -544,6 +544,29 @@ describe('Work Center event projection', () => {
     });
   });
 
+  it('uses numeric event append order to deduplicate same-millisecond Loop responses', () => {
+    const detail = internalDetail();
+    detail.events = [{
+      id: 9, workItemId: 'wi-1', actionId: 'a-1', runId: 'r-2',
+      type: 'run.loop_output', data: { response: 'Same response' }, createdAt: 100,
+    }, {
+      id: 10, workItemId: 'wi-1', actionId: 'a-1', runId: 'r-2',
+      type: 'run.loop_output', data: { response: 'Same response' }, createdAt: 100,
+    }, {
+      id: 11, workItemId: 'wi-1', actionId: 'a-1',
+      type: 'action.input_added', data: { text: 'Again' }, createdAt: 100,
+    }, {
+      id: 12, workItemId: 'wi-1', actionId: 'a-1', runId: 'r-2',
+      type: 'run.loop_output', data: { response: 'Same response' }, createdAt: 100,
+    }];
+
+    const messages = projectWorkItemDetail(detail).actions[0].messages;
+    expect(messages.filter(message => message.id.startsWith('event:')).map(message => message.id))
+      .toEqual(['event:9', 'event:11', 'event:12']);
+    expect(messages.filter(message => message.runId === 'r-2').map(message => message.text))
+      .toEqual(['Same response', 'Same response']);
+  });
+
   it('attributes assistant messages to the VP snapshot of their own Run', () => {
     const detail = internalDetail();
     detail.runs[1].vpSnapshot = { id: 'ada', name: 'Ada', persona: 'private' };
