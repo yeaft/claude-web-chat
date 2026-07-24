@@ -801,6 +801,7 @@ export default {
         agentId: null,
         sessionId: null,
         query: '',
+        senderKey: '',
         loading: false,
         results: [],
         hasMore: false,
