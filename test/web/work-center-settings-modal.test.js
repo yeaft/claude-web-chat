@@ -86,6 +86,30 @@ function modalVm(overrides = {}) {
   };
 }
 
+describe('Work Center detail actions', () => {
+  it('confirms explicit cancellation before mutating the Work Item', async () => {
+    const cancelWorkItem = vi.fn().mockResolvedValue(undefined);
+    const vm = {
+      selected: { id: 'item-a' },
+      agentId: 'agent-a',
+      store: { cancelWorkItem },
+      tr: (_key, fallback) => fallback,
+    };
+    const confirm = vi.fn()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    vi.stubGlobal('confirm', confirm);
+
+    await WorkCenterPage.methods.cancelSelected.call(vm);
+    expect(confirm).toHaveBeenCalledWith('Cancel this work item and stop its unfinished Actions?');
+    expect(cancelWorkItem).not.toHaveBeenCalled();
+
+    await WorkCenterPage.methods.cancelSelected.call(vm);
+    expect(cancelWorkItem).toHaveBeenCalledWith('item-a', 'agent-a');
+    vi.unstubAllGlobals();
+  });
+});
+
 describe('Work Center settings modal ownership', () => {
   afterEach(() => {
     delete globalThis.Pinia;

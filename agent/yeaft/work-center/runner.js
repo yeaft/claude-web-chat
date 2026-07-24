@@ -319,7 +319,7 @@ export function createSubmitWorkItemPlanTool({
     parameters: {
       type: 'object',
       additionalProperties: false,
-      required: ['summary', 'evidence', 'acceptanceChecks', 'workItemType', 'actions'],
+      required: ['summary', 'evidence', 'acceptanceChecks', 'contractPatch', 'workItemType', 'actions'],
       properties: {
         summary: { type: 'string', minLength: 1, maxLength: 2_000 },
         evidence: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 1_000 } },
@@ -340,6 +340,9 @@ export function createSubmitWorkItemPlanTool({
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('WorkItem plan was already submitted for this Run');
       const contractPatch = normalizeContractPatch(input.contractPatch);
+      if (!contractPatch?.title || !contractPatch?.goal || !contractPatch?.acceptanceCriteria?.length) {
+        throw new Error('Initial WorkItem plan requires title, goal, and acceptanceCriteria');
+      }
       const proposedResult = {
         outcome: 'completed',
         evidence: normalizeEvidence(input.evidence),

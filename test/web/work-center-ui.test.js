@@ -227,7 +227,10 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('@click="showItemsPane"');
     expect(page).toContain('@click="showActionsPane"');
     expect(page).not.toContain('class="work-center-pane-back btn-ghost"');
-    expect(page).toContain("tr('workCenter.closeWorkItem'");
+    expect(page).toContain("@click=\"showItemsPane\" :title=\"tr('workCenter.closeWorkItem'");
+    expect(page).not.toContain('@click="cancelSelected" :title="tr(\'workCenter.closeWorkItem\'');
+    expect(page).toContain("tr('workCenter.cancelWorkItem'");
+    expect(page).toContain("tr('workCenter.cancelConfirm'");
     expect(detail).toContain("tr('common.close'");
     expect(page).toContain('orderedActions()');
     expect(page).toContain('v-for="action in orderedActions"');

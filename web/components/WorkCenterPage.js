@@ -804,6 +804,8 @@ export default {
     },
     async cancelSelected() {
       if (!this.selected) return;
+      const prompt = this.tr('workCenter.cancelConfirm', 'Cancel this work item and stop its unfinished Actions?');
+      if (typeof confirm === 'function' && !confirm(prompt)) return;
       await this.store.cancelWorkItem(this.selected.id, this.agentId);
     },
   },
@@ -945,7 +947,8 @@ export default {
                   </div>
                   <div class="work-center-detail-actions">
                     <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
-                    <button v-if="!['done','cancelled'].includes(selected.status)" class="work-center-icon-button" type="button" @click="cancelSelected" :title="tr('workCenter.closeWorkItem', 'Close work item')" :aria-label="tr('workCenter.closeWorkItem', 'Close work item')">
+                    <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">{{ tr('workCenter.cancelWorkItem', 'Cancel work item') }}</button>
+                    <button class="work-center-icon-button" type="button" @click="showItemsPane" :title="tr('workCenter.closeWorkItem', 'Close details')" :aria-label="tr('workCenter.closeWorkItem', 'Close details')">
                       <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4l-6.3 6.31-1.42-1.42L9.17 12l-6.3-6.29 1.42-1.42 6.3 6.31 6.3-6.31 1.41 1.42Z"/></svg>
                     </button>
                   </div>
