@@ -63,7 +63,7 @@ function resolveAgentIdForSession(state, sessionId) {
 // Re-implement the action body 1:1 here so we can drive it without booting
 // Pinia. Keeping it in lock-step with the production version is what the
 // review will scan against.
-function loadMoreYeaftHistory() {
+function loadMoreYeaftHistory(turns = getYeaftWindowLoadStepTurns()) {
   if (this.currentView !== 'yeaft') return;
   if (this.yeaftLoadingMoreHistory || !this.yeaftHasMoreHistory) return;
   if (this.yeaftOldestLoadedSeq == null) return;
@@ -82,6 +82,10 @@ function loadMoreYeaftHistory() {
   const targetAgentId = resolveAgentIdForSession(this, sessionId);
   if (!targetAgentId) return;
 
+  const requestedTurns = Math.min(50, Math.max(1, Number.isFinite(turns)
+    ? Math.floor(turns)
+    : getYeaftWindowLoadStepTurns()));
+
   this.yeaftLoadingMoreHistory = true;
   const sessionKey = sessionId || '__all__';
   this.yeaftSessionHistoryState = {
@@ -96,7 +100,7 @@ function loadMoreYeaftHistory() {
     agentId: targetAgentId,
     sessionId,
     beforeSeq: this.yeaftOldestLoadedSeq,
-    turns: 10,
+    turns: requestedTurns,
   });
 }
 
@@ -1516,8 +1520,16 @@ describe('loadMoreYeaftHistory — action gates', () => {
       agentId: 'agent-1',
       sessionId: null,
       beforeSeq: 42,
-      turns: 10,
+      turns: 20,
     });
+  });
+
+  it('clamps an explicit prefetch page size', () => {
+    const store = mkStore({ yeaftOldestLoadedSeq: 42 });
+
+    loadMoreYeaftHistory.call(store, 500);
+
+    expect(store._sent[0]).toMatchObject({ turns: 50, beforeSeq: 42 });
   });
 
   it('forwards activeSessionId from window.Pinia.useSessionsStore', () => {

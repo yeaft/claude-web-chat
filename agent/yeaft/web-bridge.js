@@ -6698,19 +6698,22 @@ export async function handleYeaftLoadMoreHistory(msg) {
   };
   const traceDuration = (phase, start, extra = {}) => tracePerf(phase, { durationMs: perfNowMs() - start, ...extra });
   tracePerf('history_more.received');
-  if (!session || !sessionId) {
+  if (!sessionId) {
     emitHistoryChunk({ sessionId, messages: [], mode: 'older', oldestSeq: null, hasMore: false, perfTraceId });
-    traceDuration('history_more.handler_total', perfStart, { ok: false, detail: { missingSession: !session, missingSessionId: !sessionId } });
+    traceDuration('history_more.handler_total', perfStart, { ok: false, detail: { missingSessionId: true } });
     return;
   }
 
   const beforeSeq = (typeof msg.beforeSeq === 'number') ? msg.beforeSeq : null;
-  const turns = (typeof msg.turns === 'number' && msg.turns > 0) ? msg.turns : 10;
+  const turns = Math.min(50, (typeof msg.turns === 'number' && msg.turns > 0) ? Math.floor(msg.turns) : 20);
 
   let result;
   try {
     const loadStart = perfNowMs();
-    result = loadVisibleGroupHistoryPage(session.conversationStore, sessionId, turns, beforeSeq);
+    const store = session?.conversationStore || new ConversationStore(
+      resolveSessionYeaftDir(ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR, sessionId),
+    );
+    result = loadVisibleGroupHistoryPage(store, sessionId, turns, beforeSeq);
     traceDuration('history_more.store_load', loadStart, { detail: { count: result.messages?.length || 0, beforeSeq, turns } });
   } catch (err) {
     console.error('[Yeaft] loadOlderBySession failed:', err.message);

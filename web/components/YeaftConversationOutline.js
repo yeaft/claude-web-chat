@@ -39,7 +39,7 @@ export default {
     senderOptions: { type: Array, default: () => [] },
     activeMessageId: { type: String, default: null },
   },
-  emits: ['query', 'sender', 'select', 'move', 'load-older', 'load-more-search', 'close'],
+  emits: ['query', 'sender', 'select', 'move', 'preview', 'load-older', 'load-more-search', 'close'],
   template: `
     <section id="yeaft-conversation-outline" class="yeaft-conversation-outline" :aria-label="$t('yeaft.outline.label')">
       <div class="yeaft-conversation-outline-header">
@@ -86,7 +86,8 @@ export default {
           :class="{ active: index === activeIndex }"
           role="option"
           :aria-selected="index === activeIndex ? 'true' : 'false'"
-          @mouseenter="$emit('move', result.messageId)"
+          @mouseenter="previewResult(result)"
+          @focus="previewResult(result)"
           @click="$emit('select', result)"
         >
           <span class="yeaft-conversation-outline-meta">
@@ -150,18 +151,26 @@ export default {
       const list = listRef.value;
       if (list && list.scrollHeight - list.scrollTop - list.clientHeight <= 40) loadOlder();
     };
+    const previewResult = (result) => {
+      emit('move', result?.messageId || null);
+      emit('preview', result);
+    };
+    const moveActive = (index) => {
+      const nextIndex = Math.max(0, Math.min(visibleResults.value.length - 1, index));
+      const result = visibleResults.value[nextIndex];
+      emit('move', result?.messageId || null);
+      if (result) emit('preview', result);
+    };
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
         event.preventDefault();
         emit('close');
       } else if (event.key === 'ArrowDown' && visibleResults.value.length) {
         event.preventDefault();
-        const index = Math.min(visibleResults.value.length - 1, activeIndex.value + 1);
-        emit('move', visibleResults.value[index]?.messageId || null);
+        moveActive(activeIndex.value + 1);
       } else if (event.key === 'ArrowUp' && visibleResults.value.length) {
         event.preventDefault();
-        const index = Math.max(0, activeIndex.value - 1);
-        emit('move', visibleResults.value[index]?.messageId || null);
+        moveActive(activeIndex.value - 1);
       } else if (event.key === 'Enter' && visibleResults.value.length) {
         event.preventDefault();
         emit('select', visibleResults.value[activeIndex.value] || visibleResults.value[0]);
@@ -176,6 +185,6 @@ export default {
     });
     expose({ focus, restoreOlderScroll });
     Vue.onMounted(focus);
-    return { inputRef, listRef, isSearching, visibleResults, activeIndex, isLoading, countLabel, errorKey, focus, loadOlder, onScroll, onKeyDown, formatOutlineTime };
+    return { inputRef, listRef, isSearching, visibleResults, activeIndex, isLoading, countLabel, errorKey, focus, loadOlder, onScroll, onKeyDown, previewResult, formatOutlineTime };
   },
 };

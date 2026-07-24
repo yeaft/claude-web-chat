@@ -34,6 +34,7 @@ const { useChatStore } = await import('../../../web/stores/chat.js');
 const { handleAssistantOutputFrame } = await import('../../../web/stores/helpers/assistantOutput.js');
 const { handleYeaftHistoryWindow: mergeYeaftHistoryWindow } = await import('../../../web/stores/helpers/handlers/conversationHandler.js');
 const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
+const { revealOutlineResult } = await import('../../../web/utils/message-search-navigation.js');
 
 function primeStore() {
   const store = useChatStore();
@@ -100,10 +101,10 @@ describe('Yeaft history outline state', () => {
     })).toBe(false);
   });
 
-  it('merges an old anchor into the authoritative conversation and expands its render window', async () => {
+  it('loads and expands an uncached old anchor through the click action', async () => {
     const store = primeStore();
-    store.currentAgentInfo.capabilities.push('session_history_search');
-    store.agents[0].capabilities.push('session_history_search');
+    store.currentAgentInfo.capabilities.push('session_history_search', 'session_history_window_prefetch');
+    store.agents[0].capabilities.push('session_history_search', 'session_history_window_prefetch');
     store.messagesMap['conv-a'] = Array.from({ length: 12 }, (_, index) => ({
       id: `m${index + 50}`,
       messageId: `m${index + 50}`,
@@ -112,8 +113,16 @@ describe('Yeaft history outline state', () => {
       sessionId: 'same',
       timestamp: index + 50,
     }));
+    store.yeaftMessageWindowState = { same: { visibleTurns: 5 } };
 
-    const pending = store.loadYeaftHistoryWindow({ messageId: 'm42', seq: 42 });
+    const renderedReveal = vi.fn(() => store.yeaftMessageWindowState.same.visibleTurns > 5);
+    const clicked = revealOutlineResult({
+      result: { messageId: 'm42', seq: 42 },
+      revealWindow: candidate => store.revealYeaftHistoryResult(candidate),
+      nextTick: vi.fn().mockResolvedValue(undefined),
+      revealMessage: renderedReveal,
+      isMobile: false,
+    });
     const request = store._sent.at(-1);
     const response = {
       agentId: 'agent-a',
@@ -126,8 +135,153 @@ describe('Yeaft history outline state', () => {
     expect(conversationId).toBe('conv-a');
     expect(store.messagesMap['conv-a'].some(row => row.persistedMessageId === 'm42' || row.messageId === 'm42')).toBe(true);
     expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
-    await expect(pending).resolves.toBe(true);
-    expect(store.yeaftMessageWindowState[store.getYeaftMessageWindowKey('same')].visibleTurns).toBeGreaterThan(5);
+    await expect(clicked).resolves.toBe(true);
+    expect(renderedReveal).toHaveBeenCalledWith('m42');
+    expect(store.isYeaftMessageCached('same', 'm42')).toBe(true);
+    expect(store.yeaftMessageWindowState.same.visibleTurns).toBeGreaterThan(5);
+  });
+
+  it('reuses one bounded history-window request across hover prefetch and click', async () => {
+    const store = primeStore();
+    const result = { messageId: 'm42', seq: 42 };
+
+    const prefetched = store.loadYeaftHistoryWindow(result);
+    const clicked = store.loadYeaftHistoryWindow(result);
+
+    expect(clicked).toBe(prefetched);
+    expect(store._sent).toHaveLength(1);
+    const request = store._sent[0];
+    expect(request).toMatchObject({ beforeTurns: 5, afterTurns: 5 });
+
+    const response = {
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: request.requestId,
+      messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
+    };
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
+    await expect(prefetched).resolves.toBe(true);
+    expect(store._yeaftHistoryWindowPendingByKey).toEqual({});
+  });
+
+  it('keeps prefetch cache-only, then expands an already-prefetched anchor on click', async () => {
+    const store = primeStore();
+    store.messagesMap['conv-a'] = Array.from({ length: 12 }, (_, index) => ({
+      id: `m${index + 50}`,
+      messageId: `m${index + 50}`,
+      type: index % 2 ? 'assistant' : 'user',
+      content: `recent ${index}`,
+      sessionId: 'same',
+      timestamp: index + 50,
+    }));
+    const initialWindow = { visibleTurns: 5 };
+    store.yeaftMessageWindowState = { same: initialWindow };
+
+    const prefetched = store.loadYeaftHistoryWindow({ messageId: 'm42', seq: 42 });
+    const request = store._sent.at(-1);
+    const response = {
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: request.requestId,
+      messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
+    };
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
+    await expect(prefetched).resolves.toBe(true);
+
+    expect(store.yeaftMessageWindowState.same).toBe(initialWindow);
+    expect(store.isYeaftMessageCached('same', 'm42')).toBe(true);
+    const renderedReveal = vi.fn(() => store.yeaftMessageWindowState.same.visibleTurns > 5);
+    await expect(revealOutlineResult({
+      result: { messageId: 'm42', seq: 42 },
+      revealWindow: candidate => store.revealYeaftHistoryResult(candidate),
+      nextTick: vi.fn().mockResolvedValue(undefined),
+      revealMessage: renderedReveal,
+      isMobile: false,
+    })).resolves.toBe(true);
+    expect(renderedReveal).toHaveBeenCalledWith('m42');
+    expect(store._sent).toHaveLength(1);
+    expect(store.yeaftMessageWindowState.same.visibleTurns).toBeGreaterThan(5);
+  });
+
+  it('does not expand or render after the active Session changes while a window is pending', async () => {
+    const store = primeStore();
+    store.messagesMap['conv-a'] = Array.from({ length: 12 }, (_, index) => ({
+      id: `m${index + 50}`,
+      messageId: `m${index + 50}`,
+      type: 'user',
+      content: `recent ${index}`,
+      sessionId: 'same',
+      timestamp: index + 50,
+    }));
+    store.yeaftMessageWindowState = { same: { visibleTurns: 5 }, other: { visibleTurns: 5 } };
+    const renderedReveal = vi.fn();
+
+    const clicked = revealOutlineResult({
+      result: { messageId: 'm42', seq: 42 },
+      revealWindow: candidate => store.revealYeaftHistoryResult(candidate),
+      nextTick: vi.fn().mockResolvedValue(undefined),
+      revealMessage: renderedReveal,
+      isMobile: false,
+    });
+    const request = store._sent.at(-1);
+    store.yeaftActiveSessionFilter = 'other';
+    store.yeaftSessionAgentById.other = 'agent-a';
+
+    const response = {
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: request.requestId,
+      messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
+    };
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
+
+    await expect(clicked).resolves.toBe(false);
+    expect(store.yeaftMessageWindowState.same.visibleTurns).toBe(5);
+    expect(store.yeaftMessageWindowState.other.visibleTurns).toBe(5);
+    expect(renderedReveal).not.toHaveBeenCalled();
+  });
+
+  it('does not expand or render after the same Session migrates conversation while a window is pending', async () => {
+    const store = primeStore();
+    store.messagesMap['conv-a'] = Array.from({ length: 12 }, (_, index) => ({
+      id: `m${index + 50}`,
+      messageId: `m${index + 50}`,
+      type: 'user',
+      content: `recent ${index}`,
+      sessionId: 'same',
+      timestamp: index + 50,
+    }));
+    store.messagesMap['conv-b'] = [];
+    store.yeaftMessageWindowState = { same: { visibleTurns: 5 } };
+    const renderedReveal = vi.fn();
+
+    const clicked = revealOutlineResult({
+      result: { messageId: 'm42', seq: 42 },
+      revealWindow: candidate => store.revealYeaftHistoryResult(candidate),
+      nextTick: vi.fn().mockResolvedValue(undefined),
+      revealMessage: renderedReveal,
+      isMobile: false,
+    });
+    const request = store._sent.at(-1);
+    store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-b' };
+    store.yeaftConversationId = 'conv-b';
+
+    const response = {
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: request.requestId,
+      messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
+    };
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    expect(conversationId).toBe('conv-b');
+    expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
+
+    await expect(clicked).resolves.toBe(false);
+    expect(store.yeaftMessageWindowState.same.visibleTurns).toBe(5);
+    expect(renderedReveal).not.toHaveBeenCalled();
   });
 
   it('rejects a history window when the merged conversation lacks the requested anchor', async () => {

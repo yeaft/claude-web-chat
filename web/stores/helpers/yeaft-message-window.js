@@ -1,5 +1,5 @@
 const DEFAULT_VISIBLE_TURNS = 5;
-const LOAD_STEP_TURNS = 5;
+const LOAD_STEP_TURNS = 20;
 
 function isNonEmptyUserMessage(msg) {
   return msg?.type === 'user' && typeof msg.content === 'string' && msg.content.trim();
