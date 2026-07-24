@@ -130,7 +130,15 @@ export default {
     actionMessages() {
       const current = Array.isArray(this.selectedAction?.messages) ? this.selectedAction.messages : [];
       const earlier = this.store.workCenterActionMessages[this.actionRequestKey]?.messages || [];
-      return mergeActionMessages(earlier, current, this.selectedAction?.liveMessage);
+      const persisted = mergeActionMessages(earlier, current);
+      const live = this.selectedAction?.liveMessage;
+      const visibleLive = live?.status === 'running'
+        && !persisted.some(message => message.role === 'assistant'
+          && message.runId != null
+          && message.runId === live.runId
+          && message.text === live.text)
+        ? live : null;
+      return mergeActionMessages(persisted, visibleLive);
     },
     actionMessagesNextCursor() {
       const page = this.store.workCenterActionMessages[this.actionRequestKey];

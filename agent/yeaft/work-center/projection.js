@@ -191,6 +191,49 @@ function threadRuns(action, runs) {
   });
 }
 
+function projectVpSpeaker(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  const id = typeof snapshot.id === 'string' && snapshot.id ? snapshot.id : null;
+  const name = typeof snapshot.name === 'string' && snapshot.name ? snapshot.name : id;
+  return id || name ? { id, name } : null;
+}
+
+function compareEventIds(leftId, rightId) {
+  const left = String(leftId ?? '');
+  const right = String(rightId ?? '');
+  if (/^\d+$/.test(left) && /^\d+$/.test(right)) {
+    const leftNumber = BigInt(left);
+    const rightNumber = BigInt(right);
+    if (leftNumber < rightNumber) return -1;
+    if (leftNumber > rightNumber) return 1;
+    return 0;
+  }
+  return left.localeCompare(right);
+}
+
+function compareStoredEvents(left, right) {
+  return count(left?.createdAt) - count(right?.createdAt)
+    || compareEventIds(left?.id, right?.id);
+}
+
+function projectedEventId(message) {
+  return typeof message?.id === 'string' && message.id.startsWith('event:')
+    ? message.id.slice('event:'.length)
+    : null;
+}
+
+function compareProjectedMessages(left, right) {
+  const timeOrder = count(left?.createdAt) - count(right?.createdAt);
+  if (timeOrder) return timeOrder;
+  const leftEventId = projectedEventId(left);
+  const rightEventId = projectedEventId(right);
+  if (leftEventId != null && rightEventId != null) {
+    return compareEventIds(leftEventId, rightEventId);
+  }
+  return (left?.role === 'user' ? -1 : 1)
+    || String(left?.id || '').localeCompare(String(right?.id || ''));
+}
+
 function normalizeProjectedMessage(message) {
   if (!message || typeof message !== 'object') return null;
   const text = typeof message.text === 'string'
@@ -198,6 +241,7 @@ function normalizeProjectedMessage(message) {
     : '';
   const attachments = projectAttachments(message.attachments);
   if (!text && attachments.length === 0) return null;
+  const speaker = message.role === 'user' ? null : projectVpSpeaker(message.speaker);
   return {
     id: String(message.id || ''),
     role: message.role === 'user' ? 'user' : 'assistant',
@@ -211,6 +255,7 @@ function normalizeProjectedMessage(message) {
     ...(message.generation == null ? {} : { generation: Math.max(1, count(message.generation) || 1) }),
     ...(message.attempt == null ? {} : { attempt: Math.max(1, count(message.attempt) || 1) }),
     ...(message.runId == null ? {} : { runId: String(message.runId) }),
+    ...(speaker ? { speaker } : {}),
   };
 }
 
@@ -242,34 +287,52 @@ function runResponseMessage(run, includeThreadIdentity = false) {
     createdAt: count(run.startedAt),
     updatedAt: count(run.endedAt || run.startedAt),
     progressRevision: count(run.progressRevision),
-    ...(includeThreadIdentity ? {
-      generation: runGeneration(run),
-      attempt: run.actionAttempt,
-      runId: run.id,
-    } : {}),
+    generation: includeThreadIdentity ? runGeneration(run) : null,
+    attempt: includeThreadIdentity ? run.actionAttempt : null,
+    runId: run.id,
+    speaker: run.vpSnapshot,
   });
 }
 
-function loopOutputMessages(action, events, matchingRunIds, generation = actionGeneration(action?.generation), includeThreadIdentity = false) {
-  return (Array.isArray(events) ? events : [])
+function loopOutputMessages(action, events, matchingRuns, generation = actionGeneration(action?.generation), includeThreadIdentity = false) {
+  const runById = new Map(matchingRuns.map(run => [run.id, run]));
+  const projected = [];
+  let previousTranscriptEvent = null;
+  const timeline = (Array.isArray(events) ? events : [])
     .filter(event => event?.actionId === action?.id
-      && actionGeneration(event.actionGeneration ?? event.data?.actionGeneration) === generation
-      && matchingRunIds.has(event.runId)
-      && event.type === 'run.loop_output')
-    .map(event => normalizeProjectedMessage({
+      && actionGeneration(event.actionGeneration ?? event.data?.actionGeneration) === generation)
+    .sort(compareStoredEvents);
+  for (const event of timeline) {
+    if (['action.guidance_added', 'action.input_added'].includes(event.type)) {
+      previousTranscriptEvent = { type: 'input' };
+      continue;
+    }
+    if (event.type !== 'run.loop_output') continue;
+    if (!runById.has(event.runId)) {
+      previousTranscriptEvent = { type: 'other_loop_output' };
+      continue;
+    }
+    const run = runById.get(event.runId);
+    const message = normalizeProjectedMessage({
       id: `event:${event.id}`,
       role: 'assistant',
       kind: 'response',
       status: 'completed',
       text: event.data?.response || '',
       createdAt: event.createdAt,
-      ...(includeThreadIdentity ? {
-        generation: event.actionGeneration ?? event.data?.actionGeneration,
-        attempt: event.data?.actionAttempt,
-        runId: event.runId,
-      } : {}),
-    }))
-    .filter(Boolean);
+      generation: includeThreadIdentity ? event.actionGeneration ?? event.data?.actionGeneration : null,
+      attempt: includeThreadIdentity ? event.data?.actionAttempt : null,
+      runId: event.runId,
+      speaker: run.vpSnapshot,
+    });
+    if (!message) continue;
+    if (previousTranscriptEvent?.type === 'loop_output'
+      && previousTranscriptEvent.runId === message.runId
+      && previousTranscriptEvent.text === message.text) continue;
+    previousTranscriptEvent = { type: 'loop_output', runId: message.runId, text: message.text };
+    projected.push(message);
+  }
+  return projected;
 }
 
 function messagesForGeneration(action, runs, events, generation, includeThreadIdentity = false) {
@@ -283,15 +346,13 @@ function messagesForGeneration(action, runs, events, generation, includeThreadId
     .map(event => event.runId));
   return [
     ...actionInputMessages(action, events, generation, includeThreadIdentity),
-    ...loopOutputMessages(action, events, matchingRunIds, generation, includeThreadIdentity),
+    ...loopOutputMessages(action, events, matchingRuns, generation, includeThreadIdentity),
     ...matchingRuns
     .sort((left, right) => count(left.startedAt) - count(right.startedAt))
     .filter(run => !runsWithLoopOutput.has(run.id))
     .map(run => runResponseMessage(run, includeThreadIdentity))
     .filter(Boolean)]
-    .sort((left, right) => left.createdAt - right.createdAt
-      || (left.role === 'user' ? -1 : 1)
-      || left.id.localeCompare(right.id));
+    .sort(compareProjectedMessages);
 }
 
 function actionMessages(action, runs, events) {
