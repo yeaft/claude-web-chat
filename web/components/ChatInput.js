@@ -663,7 +663,9 @@ export default {
             mimeType: a.file?.type || ''
           }));
 
-        props.sendFn(trimmed, attachmentInfos.length > 0 ? attachmentInfos : undefined, props.quote || undefined);
+        const attachmentPayload = attachmentInfos.length > 0 ? attachmentInfos : undefined;
+        if (props.quote) props.sendFn(trimmed, attachmentPayload, props.quote);
+        else props.sendFn(trimmed, attachmentPayload);
 
         attachments.value = [];
         if (props.quote) emit('quote-consumed');

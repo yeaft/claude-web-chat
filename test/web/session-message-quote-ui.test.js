@@ -12,7 +12,8 @@ describe('Session message quote UI wiring', () => {
 
     expect(source).toContain('class="input-quote-preview"');
     expect(source).toContain("emits: ['remove-quote', 'quote-consumed']");
-    expect(source).toContain('props.sendFn(trimmed, attachmentInfos.length > 0 ? attachmentInfos : undefined, props.quote || undefined)');
+    expect(source).toContain('if (props.quote) props.sendFn(trimmed, attachmentPayload, props.quote)');
+    expect(source).toContain('else props.sendFn(trimmed, attachmentPayload)');
     expect(source).toContain("if (props.quote) emit('quote-consumed')");
     expect(source).toContain('const replaceDraft = (text) =>');
   });
