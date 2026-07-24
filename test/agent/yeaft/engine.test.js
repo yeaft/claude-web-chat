@@ -457,6 +457,7 @@ describe('Engine', () => {
               content: 'persist before request',
               sessionId: 'session-prewrite',
               threadId: 'main',
+              userAuthored: true,
             });
             throw new Error('provider failed before replying');
           },
@@ -819,10 +820,15 @@ describe('Engine', () => {
         expect(conversationStore.loadRecentBySession('session-continue-persist', 10).map(message => ({
           role: message.role,
           content: message.content,
+          userAuthored: message.userAuthored,
         }))).toEqual([
-          { role: 'user', content: 'write a long answer' },
-          { role: 'assistant', content: 'first part' },
-          { role: 'user', content: 'Continue' },
+          { role: 'user', content: 'write a long answer', userAuthored: true },
+          { role: 'assistant', content: 'first part', userAuthored: undefined },
+          { role: 'user', content: 'Continue', userAuthored: false },
+        ]);
+        expect(conversationStore.loadVisibleBySession('session-continue-persist', null, 10).messages).toEqual([
+          expect.objectContaining({ role: 'user', content: 'write a long answer', userAuthored: true }),
+          expect.objectContaining({ role: 'assistant', content: 'first part' }),
         ]);
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });

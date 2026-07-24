@@ -45,13 +45,14 @@ describe('Yeaft load-history first paint', () => {
     ctx.CONFIG = null;
   });
 
-  it('filters legacy internal-control rows in the visible-history fallback path', () => {
+  it('filters internal and model-only user-role rows in the visible-history fallback path', () => {
     const rows = [
       { id: 'm0001', role: 'user', content: 'visible q', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0002', role: 'user', content: '<task-result id="task_1" kind="shell" status="succeeded">\nPASS\n</task-result>', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0003', role: 'user', content: '[system note] You have called ListAgents with the same arguments 3 times. Previous result: {...}', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0004', role: 'assistant', content: 'visible a', sessionId: 'session-fast', threadId: 'main', speakerVpId: 'vp-linus' },
       { id: 'm0005', role: 'user', content: 'In docs, <task-result> is just prose', sessionId: 'session-fast', threadId: 'main' },
+      { id: 'm0006', role: 'user', content: 'model-only continuation', sessionId: 'session-fast', threadId: 'main', userAuthored: false },
     ];
     const page = __testHooks.loadVisibleGroupHistoryPage({
       loadOlderBySession() {
@@ -377,6 +378,7 @@ describe('Yeaft load-history first paint', () => {
         role: 'user',
         content: 'hello at the real send time',
         time: '2026-06-20T01:02:03.456Z',
+        userAuthored: true,
       });
     } finally {
       __testSetSession(null);

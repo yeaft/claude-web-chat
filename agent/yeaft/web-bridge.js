@@ -62,7 +62,7 @@ import {
 } from './history-compact.js';
 import { persistYeaftAttachments, attachmentsForPersistence, persistedAttachmentPreviewPayload } from './attachments.js';
 import { ConversationStore, parseSeqFromId, projectVisibleSessionMessages } from './conversation/persist.js';
-import { isHiddenConversationRow } from './conversation/internal-control.js';
+import { isHiddenConversationRow, isVisibleConversationRow } from './conversation/internal-control.js';
 import { imageMetadataForPersistence } from './image-assets.js';
 import { sliceLastNTurns } from './turn-utils.js';
 import { pairSanitize } from './pair-sanitize.js';
@@ -1215,6 +1215,7 @@ function projectPersistedToHistoryEntry(m, { includeReflections = false } = {}) 
 }
 
 function projectPersistedToVisibleHistoryEntry(m) {
+  if (!isVisibleConversationRow(m)) return null;
   const entry = projectPersistedToHistoryEntry(m);
   return entry && (entry.role === 'user' || entry.role === 'assistant') ? entry : null;
 }
@@ -3703,6 +3704,7 @@ function handleEngineEvent(event, hctx) {
       }
       sendSessionOutputFrame({
         type: 'user',
+        userAuthored: false,
         tool_use_result: [{
           type: 'tool_result',
           tool_use_id: event.id,
@@ -3735,6 +3737,7 @@ function handleEngineEvent(event, hctx) {
       }
       sendSessionOutputFrame({
         type: 'user',
+        userAuthored: false,
         tool_use_result: [{
           type: 'tool_result',
           tool_use_id: event.toolCallId,
@@ -5461,8 +5464,11 @@ function persistInboundMessageOnceByMsgId({ msgId, text, sessionId, threadId = '
       threadId: threadId || 'main',
     };
     if (sessionId) record.sessionId = sessionId;
-    if (persistRole === 'user' && clientMessageId && typeof clientMessageId === 'string') {
-      record.clientMessageId = clientMessageId;
+    if (persistRole === 'user') {
+      record.userAuthored = true;
+      if (clientMessageId && typeof clientMessageId === 'string') {
+        record.clientMessageId = clientMessageId;
+      }
     }
     // Stamp speakerVpId so the UI's loadHistory replay can route the row
     // to the correct VP block. Only meaningful when role='assistant'; for
