@@ -317,6 +317,19 @@ export default {
     actionLabel(type) {
       return this.tr(`workCenter.action.${type}`, type || '—');
     },
+    actionSequence(action) {
+      const sequence = Number(action?.sequence);
+      if (Number.isFinite(sequence) && sequence > 0) return sequence;
+      const actions = Array.isArray(this.selected?.actions) ? this.selected.actions : [];
+      const index = actions.findIndex(candidate => candidate?.id === action?.id);
+      return index >= 0 ? index + 1 : 1;
+    },
+    actionBreadcrumbDescription(action) {
+      const description = String(
+        action?.brief?.objective || action?.objective || this.actionContentSummary(action) || '',
+      ).trim().replace(/\s+/g, ' ');
+      return description || this.tr('workCenter.untitledAction', 'Untitled Action');
+    },
     itemActionProgress(item) {
       const total = Math.max(0, Number(item?.actionCount) || 0);
       const completed = Math.min(total, Math.max(0, Number(item?.completedActionCount) || 0));
@@ -883,7 +896,12 @@ export default {
             <span aria-hidden="true">/</span>
             <button v-if="narrowPane === 'action'" type="button" @click="showActionsPane">{{ selected.title }}</button>
             <span v-if="narrowPane === 'action'" aria-hidden="true">/</span>
-            <span aria-current="page">{{ narrowPane === 'action' ? (selectedAction?.brief?.objective || actionLabel(selectedAction?.type)) : selected.title }}</span>
+            <span v-if="narrowPane === 'action'" class="work-center-action-breadcrumb" aria-current="page"
+                  :title="$t('workCenter.actionBreadcrumb', { number: actionSequence(selectedAction), description: actionBreadcrumbDescription(selectedAction) })">
+              <strong>{{ $t('workCenter.actionNumber', { number: actionSequence(selectedAction) }) }}</strong>
+              <span>{{ actionBreadcrumbDescription(selectedAction) }}</span>
+            </span>
+            <span v-else aria-current="page">{{ selected.title }}</span>
           </nav>
 
           <div v-if="narrowPane === 'items'" class="work-center-toolbar">
@@ -985,7 +1003,6 @@ export default {
                   </div>
                   <div class="work-center-detail-actions">
                     <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
-                    <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">{{ tr('workCenter.cancelWorkItem', 'Cancel work item') }}</button>
                     <button class="work-center-icon-button" type="button" @click="showItemsPane" :title="tr('workCenter.closeWorkItem', 'Close details')" :aria-label="tr('workCenter.closeWorkItem', 'Close details')">
                       <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4l-6.3 6.31-1.42-1.42L9.17 12l-6.3-6.29 1.42-1.42 6.3 6.31 6.3-6.31 1.41 1.42Z"/></svg>
                     </button>
@@ -1097,6 +1114,13 @@ export default {
 
                     </article>
                   </div>
+                </div>
+                <div v-if="!['done','cancelled'].includes(selected.status)" class="work-center-section work-center-danger-zone">
+                  <div>
+                    <h3>{{ tr('workCenter.cancelWorkItem', 'Cancel work item') }}</h3>
+                    <p>{{ tr('workCenter.cancelWorkItemHint', 'Stop this Work Item and all unfinished Actions. This cannot be undone.') }}</p>
+                  </div>
+                  <button class="btn-secondary work-center-danger-action" type="button" @click="cancelSelected">{{ tr('workCenter.cancelWorkItem', 'Cancel work item') }}</button>
                 </div>
               </template>
               <div v-else class="work-center-detail-empty">

@@ -467,6 +467,23 @@
   white-space: nowrap;
 }
 
+.work-center-action-breadcrumb {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.work-center-action-breadcrumb strong {
+  flex: 0 0 auto;
+  font-weight: 650;
+}
+
+.work-center-action-breadcrumb span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .work-center-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -844,6 +861,35 @@
 .work-center-acceptance li {
   color: var(--text-primary);
   font-size: 14px;
+}
+
+.work-center-danger-zone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--error-bg);
+}
+
+.work-center-danger-zone h3 {
+  color: var(--error);
+}
+
+.work-center-danger-zone p {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.work-center-main .work-center-danger-action {
+  flex: 0 0 auto;
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.work-center-main .work-center-danger-action:hover:not(:disabled) {
+  background: var(--error-bg);
 }
 
 .work-center-failure,
@@ -2764,6 +2810,11 @@
 
   .work-center-detail-meta {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .work-center-danger-zone {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .work-center-action-detail-header {
