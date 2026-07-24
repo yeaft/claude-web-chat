@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { revealOutlineResult } from '../../web/utils/message-search-navigation.js';
+import { revealOutlineResult, shouldDismissHistorySearch } from '../../web/utils/message-search-navigation.js';
 import { sortHistoryResultsNewest } from '../../web/components/YeaftConversationOutline.js';
 
 const read = path => readFileSync(new URL(`../../web/${path}`, import.meta.url), 'utf8');
@@ -75,6 +75,17 @@ describe('Yeaft conversation outline UI', () => {
     expect(panel).toContain("event.key === 'ArrowDown'");
     expect(panel).toContain("event.key === 'Enter'");
     expect(panel).toContain("event.key === 'Escape'");
+  });
+
+  it('dismisses the history dropdown only when a click lands outside the panel and trigger', () => {
+    const targetIn = selector => ({ closest: vi.fn().mockReturnValue(selector ? {} : null) });
+
+    expect(shouldDismissHistorySearch(targetIn('.yeaft-conversation-outline'))).toBe(false);
+    expect(shouldDismissHistorySearch(targetIn('.yeaft-search-btn'))).toBe(false);
+    expect(shouldDismissHistorySearch(targetIn(''))).toBe(true);
+    expect(shouldDismissHistorySearch(null)).toBe(true);
+    expect(page).toContain("document.addEventListener('click', closeHistorySearchOutside)");
+    expect(page).toContain("document.removeEventListener('click', closeHistorySearchOutside)");
   });
 
   it('uses the existing bounded history window to reveal and flash unloaded messages', () => {
