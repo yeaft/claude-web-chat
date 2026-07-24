@@ -286,6 +286,7 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
           content: userContent,
           // Preserve attachment metadata from agent history replay
           ...(data.message?.attachments ? { attachments: data.message.attachments } : {}),
+          ...(data.message?.quote ? { quote: data.message.quote } : {}),
           // Stamp the echo id on the freshly-added message so any future
           // dedup pass (e.g. sync_messages_result merge) still matches.
           ...(echoClientMsgId ? { clientMessageId: echoClientMsgId } : {}),

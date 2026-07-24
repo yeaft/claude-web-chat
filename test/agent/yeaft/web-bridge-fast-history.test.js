@@ -66,6 +66,37 @@ describe('Yeaft load-history first paint', () => {
     ]);
   });
 
+  it('preserves Session message quotes in the history wire projection', () => {
+    const quote = {
+      id: 'm0001', role: 'assistant', author: 'Linus', content: 'Prior answer',
+      todos: [{ content: 'Verify', status: 'completed' }],
+    };
+    const projected = __testHooks.projectVisibleHistoryChunkMessages([
+      { id: 'm0002', role: 'user', content: 'Follow up', sessionId: 'session-fast', quote },
+    ]);
+
+    expect(projected[0]).toMatchObject({ id: 'm0002', quote });
+  });
+
+  it('projects the latest TodoWrite snapshot without counting it as a generic tool summary', () => {
+    const projected = __testHooks.projectVisibleHistoryChunkMessages([{
+      id: 'm0003',
+      role: 'assistant',
+      content: 'Progress',
+      sessionId: 'session-fast',
+      toolCalls: [
+        { id: 'todo-old', name: 'TodoWrite', input: { todos: [{ content: 'Old', status: 'pending' }] } },
+        { id: 'bash', name: 'Bash', input: { command: 'true' } },
+        { id: 'todo-new', name: 'TodoWrite', input: { todos: [{ content: 'New', status: 'completed' }] } },
+      ],
+    }]);
+
+    expect(projected[0]).toMatchObject({
+      todos: [{ content: 'New', status: 'completed' }],
+      toolSummaryCount: 1,
+    });
+  });
+
   it('preserves the canonical image asset anchor in the history wire projection', () => {
     const projected = __testHooks.projectVisibleHistoryChunkMessages([
       { id: 'm0001', role: 'assistant', content: 'tool progress', sessionId: 'session-fast', turnId: 'turn-image' },

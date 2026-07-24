@@ -488,6 +488,12 @@ export default {
   'message.imageUnavailable': '图片无法加载',
   'message.attachFiles': '{count} 个文件',
   'message.fileCount': '{count} 个文件',
+  'message.quote': '引用',
+  'message.removeQuote': '删除引用',
+  'message.replyingTo': '正在回复 {author}',
+  'message.quotedFrom': '引用自 {author}',
+  'message.editAsNew': '作为新输入编辑',
+  'message.you': '你',
 
   // ============ Chat Input ============
   'input.upload': '上传文件',

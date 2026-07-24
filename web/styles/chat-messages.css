@@ -1453,6 +1453,7 @@
 /* Turn: copy full response footer */
 .turn-footer {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   padding: 2px 8px 4px;
   opacity: 0;
@@ -1522,6 +1523,7 @@
   flex-shrink: 0;
 }
 
+.turn-footer .message-action-btn,
 .copy-full-btn,
 .response-collapse-btn {
   display: flex;
@@ -1537,6 +1539,8 @@
   transition: background 0.15s, color 0.15s;
 }
 
+.turn-footer .message-action-btn:hover,
+.turn-footer .message-action-btn:focus-visible,
 .copy-full-btn:hover,
 .response-collapse-btn:hover,
 .response-collapse-btn:focus-visible {

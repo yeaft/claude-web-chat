@@ -29,6 +29,22 @@ function normalizeHistoryTimestamp(m) {
   return null;
 }
 
+function latestTodoSnapshot(toolCalls) {
+  if (!Array.isArray(toolCalls)) return null;
+  for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
+    const call = toolCalls[index];
+    if (call?.name === 'TodoWrite' && Array.isArray(call?.input?.todos)) return call.input.todos;
+  }
+  return null;
+}
+
+function visibleToolSummaryCount(message) {
+  if (Array.isArray(message?.toolCalls)) {
+    return message.toolCalls.filter(call => call?.name !== 'TodoWrite').length;
+  }
+  return Number(message?.toolSummaryCount || 0) || 0;
+}
+
 function resolveGroupDefaultVpId(groupId) {
   if (!groupId || typeof window === 'undefined') return null;
   try {
@@ -607,6 +623,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
         turnId: m.turnId || messageId,
         ...(clientMessageId ? { clientMessageId } : {}),
         ...(Array.isArray(m.attachments) && m.attachments.length > 0 ? { attachments: m.attachments } : {}),
+        ...(m.quote ? { quote: m.quote } : {}),
         isStreaming: false,
       });
     } else if (m.role === 'assistant') {
@@ -618,6 +635,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
       const hasPersistedTurnId = !!m.turnId;
       const turnId = m.turnId || messageId;
       const assistantContent = typeof m.content === 'string' ? m.content : (m.content || '');
+      const todos = Array.isArray(m.todos) ? m.todos : latestTodoSnapshot(m.toolCalls);
       if (typeof assistantContent !== 'string' || assistantContent.trim()) {
         formatted.push({
           ...(stableId ? { id: stableId, messageId: stableId } : {}),
@@ -632,6 +650,21 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           isHistory: true,
         });
       }
+      if (Array.isArray(todos) && todos.length > 0) {
+        formatted.push({
+          ...(stableId ? { id: `${stableId}:todos`, messageId: `${stableId}:todos` } : {}),
+          type: 'tool-use',
+          toolName: 'TodoWrite',
+          toolInput: { todos },
+          timestamp,
+          sessionId: rowSessionId,
+          turnId,
+          ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
+          isStreaming: false,
+          isHistory: true,
+          hasResult: true,
+        });
+      }
       for (const image of Array.isArray(m.images) ? m.images : []) {
         if (!image?.assetId) continue;
         formatted.push({
@@ -642,7 +675,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           isStreaming: false, isHistory: true,
         });
       }
-      const toolSummaryCount = Number(m.toolSummaryCount || m.toolCalls?.length || 0) || 0;
+      const toolSummaryCount = visibleToolSummaryCount(m);
       if (toolSummaryCount > 0) {
         formatted.push({
           ...(stableId ? { id: `${stableId}:tool-summary`, messageId: `${stableId}:tool-summary` } : {}),

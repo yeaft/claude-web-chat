@@ -278,7 +278,12 @@ export default {
             {{ $t('yeaft.session.empty.cta') }}
           </button>
         </div>
-        <MessageList ref="messageListRef" v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty" />
+        <MessageList
+          ref="messageListRef"
+          v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty"
+          @quote-message="setMessageQuote"
+          @edit-message-as-new="editMessageAsNew"
+        />
         </div>
 
         <div
@@ -307,10 +312,13 @@ export default {
           :conversation-id="store.yeaftConversationId"
           :draft-key="yeaftInputDraftKey"
           :send-fn="sendMessage"
+          :quote="messageQuote"
           :cancel-fn="cancelYeaft"
           :show-stop="isProcessing"
           :work-item-fn="openWorkItemDraft"
           placeholder-key="yeaft.placeholder"
+          @remove-quote="messageQuote = null"
+          @quote-consumed="messageQuote = null"
         />
         </div><!-- /.yeaft-main-center -->
       </div>
@@ -425,6 +433,7 @@ export default {
     // pane emits a VP mention request. Keeps the Yeaft-specific @-syntax out
     // of ChatInput (review fix — Fowler C2, PR #763).
     const chatInputRef = Vue.ref(null);
+    const messageQuote = Vue.ref(null);
     const pageRef = Vue.ref(null);
     const messageListRef = Vue.ref(null);
     const historySearchRef = Vue.ref(null);
@@ -436,6 +445,9 @@ export default {
       const gs = sessionsStore();
       const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || 'session';
       return `yeaft:${agentId}:${sessionId}`;
+    });
+    Vue.watch(yeaftInputDraftKey, () => {
+      messageQuote.value = null;
     });
     let mobileViewportRaf = null;
     let mobileViewportRecoverTimer = null;
@@ -755,7 +767,7 @@ export default {
       store.leaveYeaft();
     };
 
-    const sendMessage = (text, attachmentInfos) => {
+    const sendMessage = (text, attachmentInfos, quote) => {
       // task-334m: Pre-check `no_default_vp` before the WS round-trip.
       // If the active group has no roster + no defaultVpId, surface the
       // invite modal instead of sending a message that would round-trip
@@ -778,7 +790,18 @@ export default {
       // store helper strips `fileId` shape for the wire and keeps the
       // preview/name/mimeType on the local message render.
       const attachments = Array.isArray(attachmentInfos) ? attachmentInfos : undefined;
-      store.sendYeaftSessionMessage({ groupId, text, mentions, attachments });
+      store.sendYeaftSessionMessage({ groupId, text, mentions, attachments, quote });
+    };
+
+    const setMessageQuote = (quote) => {
+      if (!quote) return;
+      messageQuote.value = quote;
+      chatInputRef.value?.focusInput?.();
+    };
+
+    const editMessageAsNew = (text) => {
+      messageQuote.value = null;
+      chatInputRef.value?.replaceDraft?.(text || '');
     };
 
     // Yeaft stop is session-scoped. The virtual Yeaft conversation can have
@@ -1354,6 +1377,7 @@ export default {
       settingsInitialTab,
       settingsInitialEditVpId,
       chatInputRef,
+      messageQuote,
       messageListRef,
       historySearchRef,
       historySearchOpen,
@@ -1374,6 +1398,8 @@ export default {
       isProcessing,
       goBack,
       sendMessage,
+      setMessageQuote,
+      editMessageAsNew,
       cancelYeaft,
       openWorkItemDraft,
       toggleSidebar,

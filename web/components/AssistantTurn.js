@@ -6,6 +6,7 @@ import { normalizeRouteForwardDisplay } from '../utils/route-forward-display.js'
 import { getTodoDisplayState } from '../utils/todo-display-state.js';
 import { renderMermaidIn } from '../utils/markdown.js';
 import { openImagePreview } from '../utils/imagePreview.js';
+import { formatSessionMessageDateTime, quoteFromAssistantTurn } from '../utils/session-message-quote.js';
 
 export default {
   name: 'AssistantTurn',
@@ -51,9 +52,11 @@ export default {
     responseToggleLabel: {
       type: String,
       default: ''
-    }
+    },
+    sessionActions: { type: Boolean, default: false },
+    quoteAuthor: { type: String, default: '' }
   },
-  emits: ['update-actions-expanded', 'update-tool-expanded', 'toggle-response-collapse'],
+  emits: ['update-actions-expanded', 'update-tool-expanded', 'toggle-response-collapse', 'quote'],
   template: `
     <div class="assistant-turn" ref="turnRef" :class="{ streaming: turn.isStreaming, 'has-vp-speaker': !!turn.speakerVpId }">
       <!-- 0. task-334-ui-b: VP speaker header — only when a speakerVpId is
@@ -172,13 +175,14 @@ export default {
       </div>
 
       <!-- 6. Response footer actions (visible on hover) -->
-      <div class="turn-footer" v-if="(turn.textContent || responseCollapsible) && !turn.isStreaming">
+      <div class="turn-footer" v-if="(turn.textContent || responseCollapsible || (sessionActions && (turn.todoMsg || turn.toolMsgs?.length || turn.toolSummaryCount))) && !turn.isStreaming">
         <span
           v-if="turnTime"
           class="turn-time"
           :title="turnTimeFull"
           :aria-label="$t('yeaft.message.timeAria', { time: turnTimeFull })"
         >{{ turnTime }}</span>
+        <button v-if="sessionActions" type="button" class="message-action-btn" @click="$emit('quote', assistantQuote)" :title="$t('message.quote')">{{ $t('message.quote') }}</button>
         <button v-if="turn.textContent" class="screenshot-btn" @click="screenshotContent" :title="screenshotting ? $t('message.screenshotting') : $t('message.screenshot')">
           <svg v-if="!screenshotting" viewBox="0 0 24 24" width="14" height="14">
             <path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/>
@@ -546,23 +550,22 @@ export default {
       if (typeof t.speakerTimestamp === 'number' && t.speakerTimestamp > 0) return t.speakerTimestamp;
       return null;
     };
-    const turnTime = Vue.computed(() => {
-      const ts = _turnTimeSource();
-      if (!ts) return '';
-      try {
-        return new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-      } catch { return ''; }
-    });
+    const turnTime = Vue.computed(() => formatSessionMessageDateTime(_turnTimeSource()));
     const turnTimeFull = Vue.computed(() => {
       const ts = _turnTimeSource();
       if (!ts) return '';
       try { return new Date(ts).toLocaleString(); } catch { return ''; }
     });
+    const assistantQuote = Vue.computed(() => quoteFromAssistantTurn(
+      props.turn,
+      props.quoteAuthor || t('message.assistant')
+    ));
 
     return {
       onStopTurn,
       turnTime,
       turnTimeFull,
+      assistantQuote,
       copied,
       fullCopied,
       expanded,
