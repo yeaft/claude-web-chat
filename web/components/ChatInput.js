@@ -26,11 +26,27 @@ export default {
     /** Explicit draft scope. Use this when one conversation contains multiple logical inputs. */
     draftKey: { type: String, default: null },
     /** Optional Session-only action that opens a Work Center creation draft. */
-    workItemFn: { type: Function, default: null }
+    workItemFn: { type: Function, default: null },
+    /** Structured Session message quote shown above the composer. */
+    quote: { type: Object, default: null }
   },
+  emits: ['remove-quote', 'quote-consumed'],
   template: `
     <footer class="input-area" ref="inputAreaRef">
       <!-- Expert chips bar (above attachments) — hidden in custom send mode and btw mode -->
+      <div v-if="quote" class="input-quote-preview">
+        <div class="input-quote-main">
+          <div class="input-quote-meta">{{ $t('message.replyingTo', { author: quote.author }) }}</div>
+          <div v-if="quote.content" class="input-quote-content">{{ quote.content }}</div>
+          <div v-if="quote.todos && quote.todos.length" class="input-quote-todos">
+            <div v-for="todo in quote.todos" :key="todo.content" class="input-quote-todo">
+              <span class="input-quote-todo-status">{{ todoStatusSymbol(todo.status) }}</span>
+              <span>{{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}</span>
+            </div>
+          </div>
+        </div>
+        <button type="button" class="input-quote-remove" @click="$emit('remove-quote')" :title="$t('message.removeQuote')" :aria-label="$t('message.removeQuote')">×</button>
+      </div>
       <div class="expert-chips-bar" v-if="!sendFn && !store.btwMode && expertSelections.length > 0">
         <span
           v-for="(sel, index) in expertSelections"
@@ -156,7 +172,7 @@ export default {
       </div>
     </footer>
   `,
-  setup(props) {
+  setup(props, { emit }) {
     const store = Pinia.useChatStore();
     const authStore = Pinia.useAuthStore();
     const vpStore = Pinia.useVpStore();
@@ -236,6 +252,11 @@ export default {
     };
 
     const getExpertLabel = (sel) => getSelectionLabel(sel, store.customExpertRoles);
+    const todoStatusSymbol = (status) => {
+      if (status === 'completed') return '✓';
+      if (status === 'in_progress') return '→';
+      return '○';
+    };
 
     // ★ task-334j: VP @ autocomplete state (mutually exclusive with expert autocomplete).
     // Gating: show VP autocomplete when in Yeaft multi-VP context; otherwise expert.
@@ -642,9 +663,12 @@ export default {
             mimeType: a.file?.type || ''
           }));
 
-        props.sendFn(trimmed, attachmentInfos.length > 0 ? attachmentInfos : undefined);
+        const attachmentPayload = attachmentInfos.length > 0 ? attachmentInfos : undefined;
+        if (props.quote) props.sendFn(trimmed, attachmentPayload, props.quote);
+        else props.sendFn(trimmed, attachmentPayload);
 
         attachments.value = [];
+        if (props.quote) emit('quote-consumed');
         inputText.value = '';
         if (effectiveDraftKey.value) delete store.inputDrafts[effectiveDraftKey.value];
         if (inputRef.value) inputRef.value.style.height = 'auto';
@@ -826,6 +850,18 @@ export default {
       }
     };
 
+    const replaceDraft = (text) => {
+      inputText.value = typeof text === 'string' ? text : '';
+      Vue.nextTick(() => {
+        autoResize();
+        inputRef.value?.focus();
+        const length = inputText.value.length;
+        inputRef.value?.setSelectionRange(length, length);
+      });
+    };
+
+    const focusInput = () => Vue.nextTick(() => inputRef.value?.focus());
+
     return {
       store,
       inputText,
@@ -856,6 +892,7 @@ export default {
       selectExpertItem,
       removeExpertSelection,
       getExpertLabel,
+      todoStatusSymbol,
       // Methods
       autoResize,
       handleInput,
@@ -882,6 +919,8 @@ export default {
       // to append an `@<vpId> ` token to the draft. Exposed via the
       // setup return so it shows up on the template ref.
       appendMention,
+      replaceDraft,
+      focusInput,
     };
   }
 };

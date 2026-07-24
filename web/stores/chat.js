@@ -23,6 +23,7 @@ import {
   workItemDetailNeedsRefresh,
 } from './helpers/work-center.js';
 import { createPerfTraceId, recordPerfTrace, measureNextPaint } from './helpers/perfTrace.js';
+import { normalizeSessionMessageQuote } from '../utils/session-message-quote.js';
 import { yeaftHistoryIdentityKey } from './helpers/yeaft-history-identity.js';
 import {
   getDefaultYeaftVisibleTurns,
@@ -2321,9 +2322,10 @@ export const useChatStore = defineStore('chat', {
      *
      * @param {{groupId:string, text:string, mentions?:string[],
      *           attachments?:Array<{fileId:string,name:string,preview?:string,
-     *                               isImage?:boolean,mimeType?:string}>}} payload
+     *                               isImage?:boolean,mimeType?:string}>,
+     *           quote?:object}} payload
      */
-    sendYeaftSessionMessage({ groupId, text, mentions, attachments }) {
+    sendYeaftSessionMessage({ groupId, text, mentions, attachments, quote }) {
       // Route by the session's owning agent, not a page-level pointer. A
       // cross-agent click or a late session_ready replay used to leave the
       // old `yeaftAgentId` pointing at a different agent, so the send hit an
@@ -2333,6 +2335,7 @@ export const useChatStore = defineStore('chat', {
       const safeAttachments = Array.isArray(attachments)
         ? attachments.filter((a) => a && a.fileId)
         : [];
+      const safeQuote = normalizeSessionMessageQuote(quote);
       // PR #721: image-only send guard. The previous early-return on
       // `!text?.trim()` silently dropped sends where the user attached
       // a file with no text. When attachments are present we synthesize
@@ -2357,6 +2360,7 @@ export const useChatStore = defineStore('chat', {
         detail: {
           mentionCount: Array.isArray(mentions) ? mentions.length : 0,
           attachmentCount: safeAttachments.length,
+          quoted: !!safeQuote,
         },
       });
       const activeYeaftConvId = resolveYeaftConversationIdForSession(this, groupId);
@@ -2371,6 +2375,7 @@ export const useChatStore = defineStore('chat', {
           // Use the client message id as the optimistic local turn id so
           // the row has a stable message-block key until server frames arrive.
           turnId: clientMessageId,
+          ...(safeQuote ? { quote: safeQuote } : {}),
         };
         if (safeAttachments.length > 0) {
           // Local-render shape mirrors what `MessageItem` already
@@ -2409,6 +2414,7 @@ export const useChatStore = defineStore('chat', {
         text: effectiveText,
         mentions: Array.isArray(mentions) ? mentions : [],
         perfTraceId,
+        ...(safeQuote ? { quote: safeQuote } : {}),
       };
       if (safeAttachments.length > 0) {
         // Wire-side: only the fields the server resolver needs. The

@@ -15,7 +15,10 @@ describe('UserTurnBlock', () => {
     expect(source).not.toContain("import UserAvatar from './UserAvatar.js'");
     expect(source).not.toContain('UserAvatar');
     expect(source).not.toContain('user-turn-block-avatar');
-    expect(source).toContain('<MessageItem :message="message" />');
+    expect(source).toContain(':message="message"');
+    expect(source).toContain(':session-actions="true"');
+    expect(source).toContain('@quote="$emit(\'quote\', $event)"');
+    expect(source).toContain('@edit-as-new="$emit(\'edit-as-new\', $event)"');
 
     expect(css).toContain('.user-turn-block {\n  position: relative;\n  margin: 12px 0;\n  padding: 0;\n  display: flex;\n  justify-content: flex-end;\n}');
     expect(css).not.toContain('grid-template-columns: 1fr 36px');

@@ -30,6 +30,7 @@ import {
   visibleItemsForMessageBlock,
 } from '../utils/message-turn-collapse.js';
 import { navigateToPersistedMessage } from '../utils/message-search-navigation.js';
+import { formatSessionMessageDateTime } from '../utils/session-message-quote.js';
 // task-757: appendTypingPlaceholders removed from the pipeline.
 // The standalone typing card it produced (at the bottom of the
 // conversation) showed "[VP] is typing…" in a separate row that
@@ -209,6 +210,8 @@ export default {
                 <UserTurnBlock
                   v-if="item.type === 'user' && useImStyleForUser"
                   :message="item.message"
+                  @quote="$emit('quote-message', $event)"
+                  @edit-as-new="$emit('edit-message-as-new', $event)"
                 />
                 <!-- User / system / error messages: rendered by MessageItem -->
                 <MessageItem v-else-if="item.type === 'user' || item.type === 'system' || item.type === 'error'" :message="item.message" />
@@ -227,6 +230,7 @@ export default {
                   :response-collapsible="responseToggleBelongsToItem(block, item)"
                   :response-collapsed="block.responseCollapsed"
                   :response-toggle-label="responseCollapseLabel(block)"
+                  @quote="$emit('quote-message', $event)"
                   @toggle-response-collapse="toggleMessageTurnResponse(block)"
                 />
                 <AssistantTurn
@@ -235,11 +239,13 @@ export default {
                   :actions-expanded="assistantTurnActionsExpandedFor(item)"
                   :tool-expand-states="toolExpandStates"
                   :tool-state-prefix="turnUiKey(item)"
+                  :session-actions="useImStyleForUser"
                   :response-collapsible="responseToggleBelongsToItem(block, item)"
                   :response-collapsed="block.responseCollapsed"
                   :response-toggle-label="responseCollapseLabel(block)"
                   @update-actions-expanded="value => setAssistantTurnActionsExpanded(item, value)"
                   @update-tool-expanded="setToolExpanded"
+                  @quote="$emit('quote-message', $event)"
                   @toggle-response-collapse="toggleMessageTurnResponse(block)"
                 />
               </div>
@@ -309,12 +315,15 @@ export default {
               <UserTurnBlock
                 v-if="block.type === 'user' && useImStyleForUser"
                 :message="block.message"
+                @quote="$emit('quote-message', $event)"
+                @edit-as-new="$emit('edit-message-as-new', $event)"
               />
               <MessageItem v-else-if="block.type === 'user' || block.type === 'system' || block.type === 'error'" :message="block.message" />
               <VpTurnBlock
                 v-else-if="block.type === 'assistant-turn' && block.speakerVpId"
                 :turn="block"
                 :now-ms="nowMs"
+                @quote="$emit('quote-message', $event)"
               />
               <AssistantTurn
                 v-else-if="block.type === 'assistant-turn'"
@@ -322,8 +331,10 @@ export default {
                 :actions-expanded="assistantTurnActionsExpandedFor(block)"
                 :tool-expand-states="toolExpandStates"
                 :tool-state-prefix="turnUiKey(block)"
+                :session-actions="useImStyleForUser"
                 @update-actions-expanded="value => setAssistantTurnActionsExpanded(block, value)"
                 @update-tool-expanded="setToolExpanded"
+                @quote="$emit('quote-message', $event)"
               />
             </div>
             <SubAgentCard
@@ -660,7 +671,7 @@ export default {
       </button>
     </main>
   `,
-  emits: ['new-conversation', 'resume-conversation', 'open-settings'],
+  emits: ['new-conversation', 'resume-conversation', 'open-settings', 'quote-message', 'edit-message-as-new'],
   setup(_props, { expose }) {
     const store = Pinia.useChatStore();
     const authStore = useAuthStore();
@@ -734,7 +745,7 @@ export default {
         try {
           const d = new Date(ts);
           if (!Number.isNaN(d.getTime())) {
-            timeText = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+            timeText = formatSessionMessageDateTime(ts);
             fullTimeText = d.toLocaleString();
           }
         } catch (_) {}

@@ -113,6 +113,31 @@ Hello`;
     expect(msg.content).toBe('Hello');
   });
 
+  it('round-trips Session message quote metadata', () => {
+    const store = new ConversationStore(TEST_DIR);
+    store.append({
+      role: 'user',
+      content: 'Follow up',
+      sessionId: 'session_quote',
+      quote: {
+        id: 'm0001',
+        role: 'assistant',
+        author: 'Linus',
+        content: 'Previous answer',
+        todos: [{ content: 'Test', status: 'completed' }],
+      },
+    });
+
+    const [loaded] = store.loadAllBySession('session_quote');
+    expect(loaded.quote).toEqual({
+      id: 'm0001',
+      role: 'assistant',
+      author: 'Linus',
+      content: 'Previous answer',
+      todos: [{ content: 'Test', status: 'completed' }],
+    });
+  });
+
   it('round-trips model-only user provenance while legacy rows remain unmarked', () => {
     const store = new ConversationStore(TEST_DIR);
     const legacy = store.append({ role: 'user', content: 'legacy user', sessionId: 'session_provenance' });
@@ -1146,6 +1171,28 @@ legacy session`, { encoding: 'utf8' });
       const older = store.loadVisibleBySession('grp_a', page.oldestSeq, 1);
       expect(older.messages.map(m => m.content)).toEqual(['old q', 'old a']);
       expect(older.hasMore).toBe(false);
+    });
+
+    it('loadVisibleBySession keeps the latest TodoWrite snapshot and counts only other tools', () => {
+      store.append({ role: 'user', content: 'status?', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: 'working',
+        sessionId: 'grp_a',
+        toolCalls: [
+          { id: 'todo-old', name: 'TodoWrite', input: { todos: [{ content: 'Old', status: 'pending' }] } },
+          { id: 'bash', name: 'Bash', input: { command: 'true' } },
+          { id: 'todo-new', name: 'TodoWrite', input: { todos: [{ content: 'Latest', status: 'completed' }] } },
+        ],
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+      expect(page.messages[1]).toMatchObject({
+        content: 'working',
+        todos: [{ content: 'Latest', status: 'completed' }],
+        toolSummaryCount: 1,
+      });
+      expect(page.messages[1]).not.toHaveProperty('toolCalls');
     });
 
     it('loadVisibleBySession keeps interleaved multi-VP rows for the boundary turn', () => {

@@ -61,6 +61,7 @@ import {
   trimSnapshotForBudget,
 } from './history-compact.js';
 import { persistYeaftAttachments, attachmentsForPersistence, persistedAttachmentPreviewPayload } from './attachments.js';
+import { normalizeSessionMessageQuote, sessionMessageQuotePrompt } from './session-message-quote.js';
 import { ConversationStore, parseSeqFromId, projectVisibleSessionMessages } from './conversation/persist.js';
 import { isHiddenConversationRow, isVisibleConversationRow } from './conversation/internal-control.js';
 import { imageMetadataForPersistence } from './image-assets.js';
@@ -863,7 +864,7 @@ function registerRoutePromise(msgId, promise) {
 
 function buildVpPromptPayload(vpId, envelope) {
   const text = envelope?.msg?.text || '';
-  const inboundSuffix = envelope?._promptSuffix || '';
+  const inboundSuffix = `${envelope?._promptSuffix || ''}${sessionMessageQuotePrompt(envelope?.msg?.meta?.quote)}`;
   const inboundParts = Array.isArray(envelope?._promptParts) ? envelope._promptParts : [];
   const prompt = `@vp-${vpId} ${text}${inboundSuffix}`;
   const promptParts = inboundParts.length > 0
@@ -1210,7 +1211,9 @@ function projectPersistedToHistoryEntry(m, { includeReflections = false } = {}) 
   else if (m.time) entry.ts = m.time;
   if (Array.isArray(m.images) && m.images.length > 0) entry.images = m.images;
   if (Array.isArray(m.attachments) && m.attachments.length > 0) entry.attachments = m.attachments;
-  if ((entry.role === 'user' || entry.role === 'assistant') && !entry.content && !entry.attachments && !entry.images && !entry.toolCalls && !entry.toolSummaryCount && !entry.askUserResults) return null;
+  if (m.quote && typeof m.quote === 'object') entry.quote = m.quote;
+  if (Array.isArray(m.todos)) entry.todos = m.todos;
+  if ((entry.role === 'user' || entry.role === 'assistant') && !entry.content && !entry.attachments && !entry.images && !entry.toolCalls && !entry.todos && !entry.toolSummaryCount && !entry.askUserResults) return null;
   return entry;
 }
 
@@ -1302,8 +1305,10 @@ function projectVisibleHistoryChunkMessages(messages = []) {
       ...(m.turnId ? { turnId: m.turnId } : {}),
       ...(m.imageAssetAnchor === true ? { imageAssetAnchor: true } : {}),
       ...(Array.isArray(m.attachments) && m.attachments.length > 0 ? { attachments: hydrateHistoryAttachmentPreviews(m.attachments) } : {}),
+      ...(m.quote ? { quote: m.quote } : {}),
       ...(Array.isArray(m.images) && m.images.length > 0 ? { images: m.images } : {}),
       ...(m.speakerVpId ? { speakerVpId: m.speakerVpId } : {}),
+      ...(Array.isArray(m.todos) ? { todos: m.todos } : {}),
       ...(Array.isArray(m.askUserResults) && m.askUserResults.length > 0 ? { askUserResults: m.askUserResults } : {}),
       ...(Number.isFinite(m.toolSummaryCount) && m.toolSummaryCount > 0
         ? { toolSummaryCount: m.toolSummaryCount }
@@ -1341,6 +1346,7 @@ function emitLegacyHistoryOutputFrames(replayEntries) {
           content: entry.content,
           id: entry.id || null,
           ...(Array.isArray(entry.attachments) && entry.attachments.length > 0 ? { attachments: hydrateHistoryAttachmentPreviews(entry.attachments) } : {}),
+          ...(entry.quote ? { quote: entry.quote } : {}),
         },
         ts: entry.ts || null,
       }, { sessionId: entry.sessionId || null, threadId: entry.threadId || 'main', turnId: entry.turnId || entry.threadId || 'main' });
@@ -1980,6 +1986,7 @@ async function routeEnvelopeToVpThread(sessionId, vpId, envelope) {
         role: isInternalAppend ? 'assistant' : 'user',
         speakerVpId: envelope?.msg?.meta?.senderVpId || envelope?.msg?.from || null,
         attachments: Array.isArray(envelope?.msg?.meta?.attachments) ? envelope.msg.meta.attachments : [],
+        quote: envelope?.msg?.meta?.quote || null,
         internal: isInternalAppend,
         ts: envelope?.msg?.ts || null,
         clientMessageId: envelope?.msg?.meta?.clientMessageId || null,
@@ -2079,6 +2086,7 @@ function ensureDriverRunning(sessionId, vpId, threadId = 'main') {
             role: isInternal ? 'assistant' : 'user',
             speakerVpId: senderVpId,
             attachments: Array.isArray(meta.attachments) ? meta.attachments : [],
+            quote: meta.quote || null,
             internal: isInternal,
             ts: envelope?.msg?.ts || null,
             clientMessageId: meta.clientMessageId || null,
@@ -4097,6 +4105,7 @@ async function runYeaftSessionSend(msg) {
   const hasFiles = Array.isArray(msg.files) && msg.files.length > 0;
   if (!text?.trim() && !hasFiles) return;
   const mentions = Array.isArray(msg.mentions) ? msg.mentions : [];
+  const quote = normalizeSessionMessageQuote(msg.quote);
   const sessionId = (typeof msg.sessionId === 'string' && msg.sessionId.trim())
     ? msg.sessionId.trim()
     : 'grp_default';
@@ -4315,6 +4324,7 @@ async function runYeaftSessionSend(msg) {
         mentions,
         // Persisted form (no base64) — safe for jsonl-log.
         attachments: persistedAttachments,
+        ...(quote ? { quote } : {}),
         clientMessageId: typeof msg.id === 'string' && msg.id ? msg.id : null,
       },
       // Live form — adapters need the base64 image blocks; runVpTurn
@@ -5416,11 +5426,11 @@ function appendTurnToSessionHistory(sessionId, threadId, vpId, prompts, assistan
  * refresh replay can render chips without leaking image source data into
  * the message body.
  *
- * @param {{ msgId:string, text:string, sessionId:string, role?:string, speakerVpId?:string|null, attachments?:Array<object>, internal?:boolean, ts?:string|null, clientMessageId?:string|null }} args
+ * @param {{ msgId:string, text:string, sessionId:string, role?:string, speakerVpId?:string|null, attachments?:Array<object>, quote?:object|null, internal?:boolean, ts?:string|null, clientMessageId?:string|null }} args
  * @returns {boolean} true if this call wrote the row, false if a prior
  *   call already wrote it (dedup hit).
  */
-function persistInboundMessageOnceByMsgId({ msgId, text, sessionId, threadId = 'main', role, speakerVpId, attachments, internal = false, ts = null, clientMessageId = null }) {
+function persistInboundMessageOnceByMsgId({ msgId, text, sessionId, threadId = 'main', role, speakerVpId, attachments, quote, internal = false, ts = null, clientMessageId = null }) {
   if (!session?.conversationStore) return false;
   // No msgId means no dedup key — caller is responsible for guarding.
   // Both call sites already do (`if (envMsgId && text)` and
@@ -5480,6 +5490,10 @@ function persistInboundMessageOnceByMsgId({ msgId, text, sessionId, threadId = '
     if (internal) record.internal = true;
     if (persistRole === 'user' && Array.isArray(attachments) && attachments.length > 0) {
       record.attachments = attachments;
+    }
+    if (persistRole === 'user') {
+      const normalizedQuote = normalizeSessionMessageQuote(quote);
+      if (normalizedQuote) record.quote = normalizedQuote;
     }
     if (ts && typeof ts === 'string') {
       record.time = ts;
