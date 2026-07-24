@@ -508,7 +508,7 @@ export default {
   'message.removeQuote': '删除引用',
   'message.replyingTo': '正在回复 {author}',
   'message.quotedFrom': '引用自 {author}',
-  'message.editAsNew': '作为新输入编辑',
+  'message.editAsNew': '新消息',
   'message.you': '你',
 
   // ============ Chat Input ============
