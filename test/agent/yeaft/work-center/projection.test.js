@@ -1422,6 +1422,39 @@ describe('Work Center event projection', () => {
     expect(Buffer.byteLength(JSON.stringify(projected), 'utf8'))
       .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
 
+    const hugeLoopPrefix = 'x'.repeat(300_000);
+    const hugeToolPrefix = 'y'.repeat(300_000);
+    const prefiltered = projectActionRequestDetail(detail.actions[0], detail.runs[0], {
+      turns: [{
+        turnId: 'request-prefilter-collision',
+        tools: ['A', 'B'].map((suffix, index) => ({
+          loopNumber: index + 1,
+          callId: `${hugeToolPrefix}${suffix}`,
+          name: 'FileRead',
+          toolOutput: 'result',
+        })),
+      }],
+      loops: ['A', 'B'].map((suffix, index) => ({
+        loopInstanceId: `${hugeLoopPrefix}${suffix}`,
+        loopNumber: index + 1,
+        messages: [{ role: 'user', content: 'z'.repeat(MAX_ACTION_REQUEST_DETAIL_BYTES + 1) }],
+        toolCalls: [{ id: `${hugeToolPrefix}${suffix}`, name: 'FileRead' }],
+      })),
+    });
+    expect(prefiltered.request).toMatchObject({
+      loopCount: 2, truncated: true, omittedLoopCount: 0, summarizedLoopCount: 2,
+    });
+    expect(new Set(prefiltered.request.loops.map(loop => loop.id))).toHaveProperty('size', 2);
+    expect(new Set(prefiltered.request.loops.flatMap(loop => loop.tools.map(tool => tool.id))))
+      .toHaveProperty('size', 2);
+    expect(prefiltered.request.loops.map(loop => loop.tools[0].output))
+      .toEqual([null, null]);
+    for (const loop of prefiltered.request.loops) {
+      expect(loop.detailTruncated).toBe(true);
+      expect(Buffer.byteLength(loop.id, 'utf8')).toBeLessThanOrEqual(256);
+      expect(Buffer.byteLength(loop.tools[0].id, 'utf8')).toBeLessThanOrEqual(256);
+    }
+
     const missingToolIds = projectActionRequestDetail(detail.actions[0], detail.runs[0], {
       turns: [{ turnId: 'request-missing-tool-ids', tools: [] }],
       loops: [{

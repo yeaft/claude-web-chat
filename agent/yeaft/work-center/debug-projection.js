@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 const MAX_DEBUG_STRING_BYTES = 64 * 1024;
 export const MAX_ACTION_REQUEST_DETAIL_BYTES = 256 * 1024;
 const MAX_ACTION_REQUEST_INPUT_BYTES = MAX_ACTION_REQUEST_DETAIL_BYTES;
@@ -31,6 +33,17 @@ function truncateUtf8(value, maxBytes = MAX_DEBUG_STRING_BYTES) {
   let end = Math.min(contentBytes, bytes.length);
   while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
   return `${bytes.subarray(0, end).toString('utf8')}${marker}`;
+}
+
+export function boundedDebugIdentity(value, maxBytes) {
+  const text = String(value || '');
+  if (!text || byteLength(text) <= maxBytes) return text;
+  const digest = createHash('sha256').update(text, 'utf8').digest('hex');
+  const suffix = `~${digest}`;
+  const bytes = Buffer.from(text, 'utf8');
+  let end = Math.max(0, maxBytes - byteLength(suffix));
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return `${bytes.subarray(0, end).toString('utf8')}${suffix}`;
 }
 
 function normalizeSensitiveName(name) {
@@ -301,7 +314,7 @@ function minimalActionRequestLoopSummary(loop) {
 function actionRequestLoopSummary(loop) {
   const toolCalls = Array.isArray(loop?.toolCalls) ? loop.toolCalls : [];
   return {
-    loopInstanceId: summaryString(loop?.loopInstanceId, MAX_ACTION_REQUEST_SUMMARY_ID_BYTES),
+    loopInstanceId: boundedDebugIdentity(loop?.loopInstanceId, MAX_ACTION_REQUEST_SUMMARY_ID_BYTES) || null,
     loopNumber: Number(loop?.loopNumber) || 0,
     model: summaryString(loop?.model, MAX_ACTION_REQUEST_SUMMARY_MODEL_BYTES),
     response: typeof loop?.response === 'string' ? truncateUtf8(loop.response, 8 * 1024) : '',
@@ -311,7 +324,7 @@ function actionRequestLoopSummary(loop) {
     stopReason: summaryString(loop?.stopReason, MAX_ACTION_REQUEST_SUMMARY_STOP_REASON_BYTES),
     at: Math.max(0, Number(loop?.at) || 0),
     toolCalls: toolCalls.slice(0, MAX_DEBUG_ARRAY_ITEMS).map(call => ({
-      id: summaryString(call?.id, MAX_ACTION_REQUEST_SUMMARY_ID_BYTES),
+      id: boundedDebugIdentity(call?.id, MAX_ACTION_REQUEST_SUMMARY_ID_BYTES) || null,
       name: summaryString(call?.name, MAX_ACTION_REQUEST_SUMMARY_NAME_BYTES, '?'),
       input: null,
     })),
@@ -322,7 +335,7 @@ function actionRequestLoopSummary(loop) {
 function actionRequestToolSummary(tool) {
   return {
     loopNumber: Number(tool?.loopNumber) || 0,
-    callId: summaryString(tool?.callId, MAX_ACTION_REQUEST_SUMMARY_ID_BYTES),
+    callId: boundedDebugIdentity(tool?.callId, MAX_ACTION_REQUEST_SUMMARY_ID_BYTES) || null,
     name: summaryString(tool?.name, MAX_ACTION_REQUEST_SUMMARY_NAME_BYTES, '?'),
     durationMs: Math.max(0, Number(tool?.durationMs) || 0),
     isError: tool?.isError === true,
