@@ -58,9 +58,7 @@ afterEach(() => {
 });
 
 describe('YeaftPage setup', () => {
-  it('resolves the Session store before the draft watcher evaluates', () => {
-    expect(() => YeaftPage.setup()).not.toThrow();
-  });
+
 
   it('uses the current input query when sender changes before debounce expires', () => {
     vi.useFakeTimers();

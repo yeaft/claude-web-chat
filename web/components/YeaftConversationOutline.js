@@ -61,14 +61,16 @@ export default {
           @keydown="onKeyDown"
         />
         <span v-if="searchState.loading" class="yeaft-conversation-outline-status">{{ $t('yeaft.outline.searching') }}</span>
-      </div>
-      <label class="yeaft-conversation-outline-sender">
-        <span>{{ $t('yeaft.outline.sender') }}</span>
-        <select :value="searchState.senderKey || ''" :aria-label="$t('yeaft.outline.sender')" @change="$emit('sender', $event.target.value)">
+        <select
+          class="yeaft-conversation-outline-sender"
+          :value="searchState.senderKey || ''"
+          :aria-label="$t('yeaft.outline.sender')"
+          @change="$emit('sender', $event.target.value)"
+        >
           <option value="">{{ $t('yeaft.outline.allSenders') }}</option>
           <option v-for="option in senderOptions" :key="option.key" :value="option.key">{{ option.label }}</option>
         </select>
-      </label>
+      </div>
       <div
         ref="listRef"
         class="yeaft-conversation-outline-list"

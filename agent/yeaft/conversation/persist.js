@@ -2610,7 +2610,11 @@ export class ConversationStore {
       const seq = parseSeqFromId(message.id);
       if (!Number.isFinite(seq)) return null;
       const text = this.#visibleSearchText(message.content);
-      const speakerVpId = message.speakerVpId || null;
+      // Session logs have used three sender shapes over time. Resolve them at
+      // the read boundary so existing data works without a disk migration.
+      const speakerVpId = message.speakerVpId || message.meta?.senderVpId
+        || (message.role === 'assistant' && message.from && message.from !== 'user'
+          ? message.from : null);
       return {
         message,
         seq,
