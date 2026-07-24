@@ -42,11 +42,9 @@ mkdirSync(outDir, { recursive: true });
 //
 // The illustrated-avatar roster is intentionally a subset of DEFAULT_VPS.
 // VPs not listed here fall back to the letter render, which avoids 404s.
-// These three places must stay in lockstep (test/web/vp-avatar-image.test.js
-// guards two of them):
-//   1. this ENTRIES array (generated SVG files)
-//   2. web/components/VpAvatar.js#KNOWN_AVATAR_IDS (frontend gate)
-//   3. test/web/vp-avatar-image.test.js#KNOWN (test gate)
+// Keep this list in lockstep with
+// web/components/VpAvatar.js#KNOWN_AVATAR_IDS so generated files and the
+// frontend gate stay aligned.
 const ENTRIES = [
   // Core engineering / design / science / security / business roster.
   { id: 'ada' },
