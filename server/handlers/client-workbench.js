@@ -42,7 +42,12 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
       }
-      await forwardToAgent(termAgentId, { ...msg, conversationId: termConvId });
+      await forwardToAgent(termAgentId, {
+        ...msg,
+        conversationId: termConvId,
+        _requestUserId: client.userId,
+        _requestClientId: clientId,
+      });
       break;
     }
 

@@ -17,9 +17,17 @@ export async function handleAgentFileTerminal(agentId, agent, msg) {
     case 'terminal_created':
     case 'terminal_output':
     case 'terminal_closed':
-    case 'terminal_error':
+    case 'terminal_error': {
+      const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
+      const targetMatchesUser = !msg._requestUserId || targetClient?.userId === msg._requestUserId;
+      if (targetClient?.authenticated && targetMatchesUser) {
+        const { _requestClientId, _requestUserId, ...cleanMsg } = msg;
+        await sendToWebClient(targetClient, cleanMsg);
+        break;
+      }
       await forwardToClients(agentId, msg.conversationId, msg);
       break;
+    }
 
     // File operation messages
     case 'file_content':
