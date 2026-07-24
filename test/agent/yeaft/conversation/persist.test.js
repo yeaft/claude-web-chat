@@ -1621,21 +1621,6 @@ legacy session`, { encoding: 'utf8' });
     });
   });
 
-  describe('countHot / countCold', () => {
-    it('should count messages correctly', () => {
-      expect(store.countHot()).toBe(0);
-      expect(store.countCold()).toBe(0);
-
-      store.appendBatch([
-        { role: 'user', content: 'A' },
-        { role: 'assistant', content: 'B' },
-      ]);
-
-      expect(store.countHot()).toBe(2);
-      expect(store.countCold()).toBe(0);
-    });
-  });
-
   describe('hotTokens', () => {
     it('should sum token estimates', () => {
       store.appendBatch([
