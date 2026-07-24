@@ -19,13 +19,23 @@ function runtime(overrides = {}) {
       if (!exists) throw Object.assign(new Error('no such container'), { code: 125, stderr: 'no such container' });
       return { stdout: JSON.stringify([{
         ImageDigest: 'sha256:fixed',
-        Config: { Image: 'sha256:fixed' },
+        Config: { Image: 'sha256:fixed', User: '10001' },
         HostConfig: {
           NanoCpus: 500_000_000,
           Memory: 1024 * 1024 * 1024,
           PidsLimit: 128,
-          BlkioWeight: 100
-        }
+          BlkioWeight: 100,
+          ReadonlyRootfs: true,
+          CapDrop: ['ALL'],
+          SecurityOpt: ['no-new-privileges'],
+          UsernsMode: 'auto',
+          NetworkMode: 'yeaft-sandbox'
+        },
+        Mounts: [
+          { Type: 'bind', Source: join(root, 'sandbox-1', 'home') },
+          { Type: 'bind', Source: join(root, 'sandbox-1', 'workspace') },
+          { Type: 'bind', Source: join(root, 'sandbox-1', 'bootstrap.json') }
+        ]
       }]) };
     }
     if (command === '/usr/bin/podman' && args[0] === 'create') exists = true;
@@ -90,7 +100,7 @@ afterEach(() => {
 
 describe('managed Sandbox dedicated Host runtime executor', () => {
   it('creates a fixed-digest isolated container and proves resource, quota, and network enforcement', async () => {
-    const { instance, calls } = runtime();
+    const { instance, calls, root } = runtime();
 
     const result = await instance.execute(operation());
 
@@ -114,6 +124,13 @@ describe('managed Sandbox dedicated Host runtime executor', () => {
     expect(create.join(' ')).not.toContain('docker.sock');
     expect(calls.some(([command, args]) => command === '/usr/sbin/xfs_quota' && args.join(' ').includes('bhard=10g'))).toBe(true);
     expect(calls.some(([command, args]) => command === '/usr/sbin/nft' && args[0] === '-c')).toBe(true);
+    const policyPath = calls.find(([, args]) => args[0] === '-f')[1][1];
+    const policy = await import('node:fs/promises').then(fs => fs.readFile(policyPath, 'utf8'));
+    expect(policy).toContain('ip6 daddr fc00::/7 reject');
+    expect(policy).toContain('ip6 daddr fe80::/10 reject');
+    expect(policy).toContain('ip6 daddr ::1/128 reject');
+    await expect(import('node:fs/promises').then(fs => fs.access(join(root, 'sandbox-1', 'bootstrap.json'))))
+      .rejects.toThrow();
   });
 
   it('preserves home and workspace across Stop/Start and returns complete absence only after Remove inspection', async () => {
@@ -141,7 +158,21 @@ describe('managed Sandbox dedicated Host runtime executor', () => {
 
     await expect(instance.execute(operation('create', { sandboxId: '../escape' })))
       .rejects.toThrow('invalid Sandbox identity');
-    expect(run).not.toHaveBeenCalled();
     expect(sandboxName('sandbox-1')).toMatch(/^yeaft-sandbox-[a-f0-9]{24}$/);
+  });
+
+  it('fails closed when runtime inspect does not prove isolation settings', async () => {
+    const { instance, run } = runtime();
+    const original = run.getMockImplementation();
+    run.mockImplementation(async (command, args) => {
+      const result = await original(command, args);
+      if (command === '/usr/bin/podman' && args[0] === 'inspect' && result.stdout) {
+        const inspect = JSON.parse(result.stdout);
+        inspect[0].HostConfig.ReadonlyRootfs = false;
+        return { stdout: JSON.stringify(inspect) };
+      }
+      return result;
+    });
+    await expect(instance.execute(operation())).rejects.toThrow('runtime isolation inspection failed');
   });
 });

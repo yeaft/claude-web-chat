@@ -14,6 +14,7 @@ import { DEFAULT_INSTANCE_ID, getDefaultYeaftDir, validateInstanceId, getConfigP
 import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
+import { getManagedSandboxIdentity } from './managed-sandbox/identity-store.js';
 
 const execAsync = promisify(exec);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -26,10 +27,7 @@ ctx.pkgName = pkg.name;
 // 配置文件路径（向后兼容：先查当前目录 .claude-agent.json）
 const LOCAL_CONFIG_FILE = join(process.cwd(), '.claude-agent.json');
 const IS_LOCAL_RUN = process.env.YEAFT_LOCAL_RUN === 'true';
-const MANAGED_SANDBOX_IDENTITY = (() => {
-  if (!process.env.YEAFT_MANAGED_SANDBOX_IDENTITY) return null;
-  try { return JSON.parse(process.env.YEAFT_MANAGED_SANDBOX_IDENTITY); } catch { return null; }
-})();
+const MANAGED_SANDBOX_IDENTITY = getManagedSandboxIdentity();
 
 // 加载或创建配置
 function loadConfig() {

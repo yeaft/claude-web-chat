@@ -1,5 +1,6 @@
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { setManagedSandboxIdentity } from './identity-store.js';
 
 function assertIdentity(value) {
   const claims = value?.claims;
@@ -51,6 +52,7 @@ export async function loadManagedSandboxIdentity({ bootstrapFile, credentialFile
   const identity = { ...bootstrap, token: undefined, ...credential };
   if (!identity.credentialId || !identity.secret) throw new Error('Managed Sandbox Agent bootstrap returned no credential');
   await persistCredential(credentialFile, identity);
+  await unlink(bootstrapFile);
   return identity;
 }
 
@@ -62,7 +64,7 @@ export async function runManagedSandboxAgent(args, options = {}) {
   const bootstrapFile = args[bootstrapIndex + 1];
   const credentialFile = options.credentialFile || '/home/yeaft/.yeaft/managed-agent-credential';
   const identity = await loadManagedSandboxIdentity({ bootstrapFile, credentialFile, fetchImpl: options.fetchImpl });
-  process.env.YEAFT_MANAGED_SANDBOX_IDENTITY = JSON.stringify(identity);
+  setManagedSandboxIdentity(identity);
   process.env.SERVER_URL = identity.serverUrl;
   process.env.AGENT_NAME = identity.claims.sandboxId;
   process.env.YEAFT_AGENT_INSTANCE = identity.claims.instanceId;

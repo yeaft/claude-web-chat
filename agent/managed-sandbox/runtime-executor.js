@@ -3,10 +3,13 @@ import { spawn } from 'node:child_process';
 import { lstat, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 const SANDBOX_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
-const PRIVATE_DESTINATIONS = [
+const PRIVATE_IPV4_DESTINATIONS = [
   '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
   '169.254.0.0/16', '172.16.0.0/12', '192.0.0.0/24', '192.168.0.0/16',
   '198.18.0.0/15', '224.0.0.0/4', '240.0.0.0/4'
+];
+const PRIVATE_IPV6_DESTINATIONS = [
+  '::/128', '::1/128', 'fc00::/7', 'fe80::/10', 'ff00::/8', '2001:db8::/32', '2001:10::/28'
 ];
 
 function commandRunner(command, args, options = {}) {
@@ -150,10 +153,13 @@ export function createSandboxRuntimeExecutor({ config, run = commandRunner }) {
   function networkPolicy(operation, name) {
     const marker = `yeaft:${operation.sandboxId}:${operation.generation}`;
     const table = networkTable(operation);
-    const blocked = PRIVATE_DESTINATIONS
+    const blockedIpv4 = PRIVATE_IPV4_DESTINATIONS
       .map(cidr => `  iifname \"${config.networkBridge}\" ip daddr ${cidr} reject comment \"${marker}\"`)
       .join('\n');
-    return `table inet ${table} {\n chain forward { type filter hook forward priority -10; policy accept;\n  iifname \"${config.networkBridge}\" ct state established,related accept\n${blocked}\n  iifname \"${config.networkBridge}\" oifname \"${config.networkBridge}\" reject comment \"${marker}\"\n  oifname \"${config.networkBridge}\" ct state new reject comment \"${marker}\"\n }\n}\n# ${name}\n`;
+    const blockedIpv6 = PRIVATE_IPV6_DESTINATIONS
+      .map(cidr => `  iifname \"${config.networkBridge}\" ip6 daddr ${cidr} reject comment \"${marker}\"`)
+      .join('\n');
+    return `table inet ${table} {\n chain forward { type filter hook forward priority -10; policy accept;\n  iifname \"${config.networkBridge}\" ct state established,related accept\n${blockedIpv4}\n${blockedIpv6}\n  iifname \"${config.networkBridge}\" oifname \"${config.networkBridge}\" reject comment \"${marker}\"\n  oifname \"${config.networkBridge}\" ct state new reject comment \"${marker}\"\n }\n}\n# ${name}\n`;
   }
 
   async function inspectNetwork(operation) {
@@ -217,20 +223,33 @@ export function createSandboxRuntimeExecutor({ config, run = commandRunner }) {
     }
     if (!inspect || !exactImage(inspect, config.imageDigest)) throw new Error('Sandbox fixed image inspection failed');
     await run(config.runtimeBinary, ['start', name]);
-    return runtimeProof(operation, inspect);
+    const proof = await runtimeProof(operation, inspect);
+    await rm(join(target.root, 'bootstrap.json'), { force: true });
+    return proof;
   }
 
   async function runtimeProof(operation, inspect) {
     const host = inspect.HostConfig || {};
+    const container = inspect.Config || {};
     const cpuMillis = Math.round(Number(host.NanoCpus || 0) / 1_000_000);
     const memoryMiB = Math.round(Number(host.Memory || 0) / 1024 / 1024);
     const pidsLimit = Number(host.PidsLimit || 0);
     const ioWeight = Number(host.BlkioWeight || 0);
+    const capDrop = host.CapDrop || [];
+    const securityOpt = host.SecurityOpt || [];
+    const mounts = inspect.Mounts || [];
     const valid = exactImage(inspect, config.imageDigest)
       && cpuMillis === operation.resources.cpuMillis
       && memoryMiB === operation.resources.memoryMiB
-      && pidsLimit === config.pidsLimit && ioWeight === config.ioWeight;
-    if (!valid) throw new Error('Sandbox cgroup resource inspection failed');
+      && pidsLimit === config.pidsLimit && ioWeight === config.ioWeight
+      && host.ReadonlyRootfs === true && capDrop.includes('ALL')
+      && securityOpt.some(value => String(value).includes('no-new-privileges'))
+      && String(host.UsernsMode || '').startsWith('auto')
+      && String(container.User || '') === String(config.containerUid || 10001)
+      && host.NetworkMode === config.networkName
+      && mounts.length >= 3
+      && mounts.every(mount => mount.Type === 'bind' && within(dataRoot, mount.Source));
+    if (!valid) throw new Error('Sandbox runtime isolation inspection failed');
     await inspectQuota(operation);
     await inspectNetwork(operation);
     return {
