@@ -194,13 +194,13 @@ export default {
   template: `
     <section class="work-center-action-detail-pane" v-if="action">
       <header class="work-center-action-detail-header">
-        <button class="work-center-pane-back btn-ghost" type="button" @click="$emit('back')">
-          <span aria-hidden="true">‹</span>{{ tr('workCenter.backToActions', 'Actions') }}
-        </button>
         <div>
           <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
-          <h2>{{ tr('workCenter.actionDetails', 'Action details') }} · {{ tr('workCenter.action.' + action.type, action.type) }}</h2>
+          <h2>{{ action.brief?.objective || tr('workCenter.actionDetails', 'Action details') }}</h2>
         </div>
+        <button class="work-center-icon-button" type="button" @click="$emit('back')" :title="tr('common.close', 'Close')" :aria-label="tr('common.close', 'Close')">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4l-6.3 6.31-1.42-1.42L9.17 12l-6.3-6.29 1.42-1.42 6.3 6.31 6.3-6.31 1.41 1.42Z"/></svg>
+        </button>
       </header>
 
       <div class="work-center-action-detail-stats">

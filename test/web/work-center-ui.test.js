@@ -206,18 +206,40 @@ describe('Work Center UI contract', () => {
 
   });
 
-  it('creates Work Items with Auto or a task category and keeps Action creation out of the UI', () => {
+  it('creates Work Items from one requirement and leaves contract planning to triage', () => {
     const page = read('web/components/WorkCenterPage.js');
-    expect(page).toContain('v-model="form.workItemType"');
-    expect(page).toContain('<option value="auto">');
-    expect(page).toContain('v-for="type in workItemTypes"');
-    expect(page).toContain("workItemType: this.form.workItemType || 'auto'");
-    expect(page).toContain('<option v-for="type in workItemTypes" :key="type.id" :value="type.id">{{ type.name }}</option>');
-    expect(page).not.toContain("type.name }} · {{ $t('workCenter.actionCount'");
+    expect(page).toContain('v-model="form.requirement"');
+    expect(page).toContain('requirement,');
+    expect(page).toContain("workItemType: 'auto'");
+    expect(page).toContain('acceptanceCriteria: []');
+    expect(page).not.toContain('v-model="form.workItemType"');
+    expect(page).not.toContain('v-model="form.acceptanceCriteriaText"');
     expect(page).toContain('class="work-center-action-list"');
     expect(page).toContain('@click="selectAction(action)"');
     expect(page).not.toContain('addAction');
     expect(page).not.toContain('createAction');
+  });
+
+  it('uses breadcrumbs, close semantics, and active-first Action projection', () => {
+    const page = read('web/components/WorkCenterPage.js');
+    const detail = read('web/components/WorkCenterActionDetail.js');
+    const css = read('web/styles/work-center.css');
+
+    expect(page).toContain('class="work-center-breadcrumbs"');
+    expect(page).toContain('@click="showItemsPane"');
+    expect(page).toContain('@click="showActionsPane"');
+    expect(page).not.toContain('class="work-center-pane-back btn-ghost"');
+    expect(page).toContain("@click=\"showItemsPane\" :title=\"tr('workCenter.closeWorkItem'");
+    expect(page).not.toContain('@click="cancelSelected" :title="tr(\'workCenter.closeWorkItem\'');
+    expect(page).toContain("tr('workCenter.cancelWorkItem'");
+    expect(page).toContain("tr('workCenter.cancelConfirm'");
+    expect(detail).toContain("tr('common.close'");
+    expect(page).toContain('orderedActions()');
+    expect(page).toContain('v-for="action in orderedActions"');
+    expect(page).toContain('const priority = { running: 0, waiting: 1, failed: 2, ready: 3');
+    expect(page).toContain('actions.map((action, index) => ({ action, index })).sort');
+    expect(css).toContain('.work-center-breadcrumbs');
+    expect(css).toContain('.work-center-detail-meta');
   });
 
   it('uses a compact header and flat empty state instead of a dashboard hero', () => {
@@ -277,7 +299,7 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('class="modal-close"');
     expect(page).toContain('class="work-center-modal-footer"');
     expect(page).toContain('class="work-center-create-options"');
-    expect(page).toContain("tr('workCenter.titleHint'");
+    expect(page).toContain("tr('workCenter.requirementHint'");
     expect(page).toContain("tr('workCenter.startImmediatelyHint'");
     expect(page).toContain("mixins: [folderPickerMixin]");
     expect(page).toContain('class="work-center-workdir-picker"');
@@ -290,7 +312,7 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('chat() { return this.store; }');
     expect(page).toContain('folderPickerSetWorkDir(path)');
     expect(page).toContain('onCreateWorkDirInput()');
-    expect(css).toMatch(/\.work-center-modal\s*\{[^}]*height: min\(660px, 86vh\)[^}]*overflow: hidden/s);
+    expect(css).toMatch(/\.work-center-modal\s*\{[^}]*height: min\(620px, 86vh\)[^}]*overflow: hidden/s);
     expect(css).toMatch(/\.work-center-modal-body\s*\{[^}]*overflow-y: auto/s);
     expect(css).toContain('.work-center-modal .btn-primary');
     expect(css).toContain('.work-center-modal .btn-secondary');

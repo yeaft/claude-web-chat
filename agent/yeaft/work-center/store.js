@@ -2153,10 +2153,12 @@ export class WorkItemStore {
       let nextWorkItem = workItem;
       if (transition.contractPatch) {
         const patch = transition.contractPatch;
+        const title = patch.title ?? workItem.title;
         const goal = patch.goal ?? workItem.goal;
         const criteria = patch.acceptanceCriteria ?? workItem.acceptanceCriteria;
-        this.db.prepare(`UPDATE work_items SET goal = ?, acceptance_criteria = ?,
+        this.db.prepare(`UPDATE work_items SET title = ?, goal = ?, acceptance_criteria = ?,
           revision = revision + 1, updated_at = ? WHERE id = ?`).run(
+          title,
           goal,
           stringify(criteria),
           now,

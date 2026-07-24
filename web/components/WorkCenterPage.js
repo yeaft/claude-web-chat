@@ -62,10 +62,7 @@ export default {
       attachmentPreviewError: '',
       attachmentPreviewGeneration: 0,
       form: {
-        title: '',
-        goal: '',
-        acceptanceCriteriaText: '',
-        workItemType: 'auto',
+        requirement: '',
         workDir: '',
         reuseMemory: true,
         start: true,
@@ -142,6 +139,21 @@ export default {
     },
     actionMessagesError() {
       return this.store.workCenterActionMessagesError[this.actionRequestKey] || '';
+    },
+    orderedActions() {
+      const actions = Array.isArray(this.selected?.actions) ? this.selected.actions : [];
+      const priority = { running: 0, waiting: 1, failed: 2, ready: 3, completed: 4, done: 4, superseded: 5, cancelled: 6 };
+      return actions.map((action, index) => ({ action, index })).sort((left, right) => {
+        const leftPriority = priority[left.action?.status] ?? 7;
+        const rightPriority = priority[right.action?.status] ?? 7;
+        if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+        const leftSequence = Number(left.action?.sequence);
+        const rightSequence = Number(right.action?.sequence);
+        if (Number.isFinite(leftSequence) && Number.isFinite(rightSequence) && leftSequence !== rightSequence) {
+          return leftSequence - rightSequence;
+        }
+        return left.index - right.index;
+      }).map(entry => entry.action);
     },
     actionRequests() {
       return this.store.workCenterActionRequests[this.actionRequestKey] || [];
@@ -272,10 +284,7 @@ export default {
     const draft = this.store.workCenterCreateDraft;
     if (!draft) return;
     this.form = {
-      title: draft.title || '',
-      goal: draft.goal || '',
-      acceptanceCriteriaText: '',
-      workItemType: 'auto',
+      requirement: draft.requirement || draft.goal || draft.title || '',
       workDir: draft.workDir || '',
       reuseMemory: true,
       start: this.settings?.startImmediately !== false,
@@ -535,8 +544,7 @@ export default {
       if (draft) {
         this.store.workCenterCreateDraft = {
           sourceAgentId: agentId || null,
-          title: draft.title || '',
-          goal: draft.goal || '',
+          requirement: draft.requirement || draft.goal || draft.title || '',
           workDir: '',
           origin: null,
           linkedSessionIds: [],
@@ -705,7 +713,8 @@ export default {
       return this.store.refreshWorkCenterRuntime(agentId).catch(() => {});
     },
     async submitCreate() {
-      if (!this.form.title.trim() || !this.form.goal.trim() || !this.form.workDir.trim()) return;
+      const requirement = String(this.form.requirement || this.form.goal || this.form.title || '').trim();
+      if (!requirement || !this.form.workDir.trim()) return;
       const requestAgentId = this.agentId;
       const requestGeneration = (Number(this.createGeneration) || 0) + 1;
       this.createGeneration = requestGeneration;
@@ -714,11 +723,11 @@ export default {
         const draft = this.store.workCenterCreateDraft;
         const draftOwnedByAgent = draft?.sourceAgentId === requestAgentId;
         const detail = await this.store.createWorkItem({
-          title: this.form.title.trim(),
-          goal: this.form.goal.trim(),
-          acceptanceCriteria: this.form.acceptanceCriteriaText
-            .split('\n').map(value => value.trim()).filter(Boolean),
-          workItemType: this.form.workItemType || 'auto',
+          requirement,
+          title: requirement,
+          goal: requirement,
+          acceptanceCriteria: [],
+          workItemType: 'auto',
           workDir: this.form.workDir.trim(),
           origin: draftOwnedByAgent ? (draft.origin || null) : null,
           linkedSessionIds: draftOwnedByAgent ? (draft.linkedSessionIds || []) : [],
@@ -737,10 +746,7 @@ export default {
         this.openWorkItem(detail.id);
         this.selectedActionId = detail.currentActionId || detail.actions?.[0]?.id || null;
         this.form = {
-          title: '',
-          goal: '',
-          acceptanceCriteriaText: '',
-          workItemType: 'auto',
+          requirement: '',
           workDir: '',
           reuseMemory: true,
           start: this.settings?.startImmediately !== false,
@@ -836,6 +842,8 @@ export default {
     },
     async cancelSelected() {
       if (!this.selected) return;
+      const prompt = this.tr('workCenter.cancelConfirm', 'Cancel this work item and stop its unfinished Actions?');
+      if (typeof confirm === 'function' && !confirm(prompt)) return;
       await this.store.cancelWorkItem(this.selected.id, this.agentId);
     },
   },
@@ -863,13 +871,20 @@ export default {
                       :title="tr('workCenter.refresh', 'Refresh')" :aria-label="tr('workCenter.refresh', 'Refresh')">
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08A6 6 0 1 1 16.22 7.78L13 11h7V4l-2.35 2.35Z"/></svg>
               </button>
-              <button class="btn-primary work-center-header-create" type="button" @click="openCreate" :disabled="onlineAgents.length === 0"
+              <button class="work-center-icon-button work-center-header-create" type="button" @click="openCreate" :disabled="onlineAgents.length === 0"
                       :title="tr('workCenter.newWorkItem', 'New work item')" :aria-label="tr('workCenter.newWorkItem', 'New work item')">
-                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z"/></svg>
-                <span>{{ tr('workCenter.new', 'New') }}</span>
+                <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z"/></svg>
               </button>
             </div>
           </header>
+
+          <nav v-if="narrowPane !== 'items' && selected" class="work-center-breadcrumbs" :aria-label="tr('workCenter.breadcrumbs', 'Work Center navigation')">
+            <button type="button" @click="showItemsPane">{{ tr('workCenter.workItems', 'Work items') }}</button>
+            <span aria-hidden="true">/</span>
+            <button v-if="narrowPane === 'action'" type="button" @click="showActionsPane">{{ selected.title }}</button>
+            <span v-if="narrowPane === 'action'" aria-hidden="true">/</span>
+            <span aria-current="page">{{ narrowPane === 'action' ? (selectedAction?.brief?.objective || actionLabel(selectedAction?.type)) : selected.title }}</span>
+          </nav>
 
           <div v-if="narrowPane === 'items'" class="work-center-toolbar">
             <label class="work-center-search">
@@ -958,9 +973,6 @@ export default {
 
             <section class="work-center-detail">
               <template v-if="selected">
-                <button class="work-center-pane-back btn-ghost" type="button" @click="showItemsPane">
-                  <span aria-hidden="true">‹</span>{{ tr('workCenter.backToWorkItems', 'Work items') }}
-                </button>
                 <div v-if="detailLoading" class="work-center-detail-notice" aria-live="polite">{{ tr('workCenter.detailLoading', 'Loading full details…') }}</div>
                 <div v-else-if="detailError" class="work-center-detail-notice work-center-detail-error" role="alert">
                   <strong>{{ tr('workCenter.detailLoadFailed', 'Could not load full details') }}</strong>
@@ -973,7 +985,10 @@ export default {
                   </div>
                   <div class="work-center-detail-actions">
                     <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
-                    <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">{{ tr('workCenter.cancel', 'Cancel') }}</button>
+                    <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">{{ tr('workCenter.cancelWorkItem', 'Cancel work item') }}</button>
+                    <button class="work-center-icon-button" type="button" @click="showItemsPane" :title="tr('workCenter.closeWorkItem', 'Close details')" :aria-label="tr('workCenter.closeWorkItem', 'Close details')">
+                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4l-6.3 6.31-1.42-1.42L9.17 12l-6.3-6.29 1.42-1.42 6.3 6.31 6.3-6.31 1.41 1.42Z"/></svg>
+                    </button>
                   </div>
                 </div>
                 <dl class="work-center-detail-meta">
@@ -1000,9 +1015,28 @@ export default {
                   <small class="work-center-muted">{{ tr('workCenter.answerInActionDetail', 'Open the current Action and respond in the input below.') }}</small>
                 </div>
 
-                <div class="work-center-section">
-                  <h3>{{ tr('workCenter.goal', 'Goal') }}</h3>
+                <div class="work-center-section work-center-description">
+                  <h3>{{ tr('workCenter.description', 'Description') }}</h3>
                   <p>{{ selected.goal }}</p>
+                </div>
+                <div v-if="selected.acceptanceCriteria?.length" class="work-center-section work-center-acceptance">
+                  <h3>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}</h3>
+                  <ul>
+                    <li v-for="criterion in selected.acceptanceCriteria" :key="criterion">{{ criterion }}</li>
+                  </ul>
+                </div>
+                <div v-if="selected.attachments?.length" class="work-center-section work-center-attachments">
+                  <h3>{{ tr('workCenter.attachments', 'Attachments') }}</h3>
+                  <div class="work-center-attachment-list">
+                    <button v-for="attachment in selected.attachments" :key="attachment.id" type="button"
+                            class="work-center-attachment-chip work-center-attachment-preview"
+                            @click="previewAttachment(attachment, $event.currentTarget)" :disabled="previewingAttachmentId === attachment.id"
+                            :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })">
+                      <span>{{ attachment.name }}</span>
+                      <small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
+                    </button>
+                  </div>
+                  <p v-if="attachmentPreviewError" class="work-center-error" role="alert">{{ attachmentPreviewError }}</p>
                 </div>
                 <div class="work-center-section work-center-item-messages">
                   <div class="work-center-item-message-heading">
@@ -1025,26 +1059,6 @@ export default {
                     </button>
                   </div>
                 </div>
-                <div class="work-center-section">
-                  <h3>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}</h3>
-                  <ul v-if="selected.acceptanceCriteria?.length">
-                    <li v-for="criterion in selected.acceptanceCriteria" :key="criterion">{{ criterion }}</li>
-                  </ul>
-                  <p v-else class="work-center-muted">{{ tr('workCenter.noCriteria', 'No criteria provided') }}</p>
-                </div>
-                <div v-if="selected.attachments?.length" class="work-center-section">
-                  <h3>{{ tr('workCenter.attachments', 'Attachments') }}</h3>
-                  <div class="work-center-attachment-list">
-                    <button v-for="attachment in selected.attachments" :key="attachment.id" type="button"
-                            class="work-center-attachment-chip work-center-attachment-preview"
-                            @click="previewAttachment(attachment, $event.currentTarget)" :disabled="previewingAttachmentId === attachment.id"
-                            :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })">
-                      <span>{{ attachment.name }}</span>
-                      <small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
-                    </button>
-                  </div>
-                  <p v-if="attachmentPreviewError" class="work-center-error" role="alert">{{ attachmentPreviewError }}</p>
-                </div>
                 <div class="work-center-section work-center-workflow" v-if="selected.actions?.length">
                   <div v-if="selected.mainline?.progress" class="work-center-mainline-progress" :data-attention="selected.mainline.progress.attentionState">
                     <strong>{{ tr('workCenter.currentProgress', 'Current progress') }}</strong>
@@ -1061,7 +1075,7 @@ export default {
                     <small>{{ selected.actionSummary }}</small>
                   </div>
                   <div class="work-center-action-list">
-                    <article v-for="action in selected.actions" :key="action.id" class="work-center-action-card" :data-status="action.status" :class="{ active: selectedActionId === action.id }">
+                    <article v-for="action in orderedActions" :key="action.id" class="work-center-action-card" :data-status="action.status" :class="{ active: selectedActionId === action.id }">
                       <button class="work-center-action-summary" type="button" @click="selectAction(action)"
                               :aria-current="selectedActionId === action.id ? 'true' : undefined">
                         <span class="work-center-action-index">{{ action.sequence }}</span>
@@ -1152,21 +1166,15 @@ export default {
           <header class="work-center-modal-header">
             <div>
               <h2 id="work-center-create-title">{{ tr('workCenter.newWorkItem', 'New work item') }}</h2>
-              <p>{{ tr('workCenter.createHint', 'Define a stable goal before the Agent starts execution.') }}</p>
+              <p>{{ tr('workCenter.createHint', 'Describe what you need. Triage will turn it into a goal, acceptance criteria, and Actions.') }}</p>
             </div>
             <button class="modal-close" type="button" @click="closeCreate" :disabled="saving" :aria-label="tr('common.close', 'Close')">×</button>
           </header>
           <div class="work-center-modal-body">
-            <section class="work-center-form-section">
-              <label>{{ tr('workCenter.titleField', 'Title') }}<input v-model="form.title" type="text" required autofocus :placeholder="tr('workCenter.titleHint', 'A short, specific outcome')"></label>
-              <label>{{ tr('workCenter.goal', 'Goal') }}<textarea v-model="form.goal" rows="3" required :placeholder="tr('workCenter.goalHint', 'Describe the result the Agent must deliver')"></textarea></label>
-              <label>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}<textarea v-model="form.acceptanceCriteriaText" rows="3" :placeholder="tr('workCenter.criteriaHint', 'One criterion per line')"></textarea></label>
-              <label>{{ tr('workCenter.workItemType', 'Type') }}
-                <select v-model="form.workItemType">
-                  <option value="auto">{{ tr('workCenter.typeAuto', 'Auto — let the LLM infer') }}</option>
-                  <option v-for="type in workItemTypes" :key="type.id" :value="type.id">{{ type.name }}</option>
-                </select>
-                <small class="work-center-field-help">{{ tr('workCenter.typeHelp', 'Choose a task category, or use Auto for AI inference. AI still plans the concrete Actions.') }}</small>
+            <section class="work-center-form-section work-center-requirement-section">
+              <label>{{ tr('workCenter.requirement', 'Requirement') }}
+                <textarea v-model="form.requirement" rows="8" required autofocus :placeholder="tr('workCenter.requirementHint', 'Describe the problem, desired outcome, and any constraints in your own words')"></textarea>
+                <small class="work-center-field-help">{{ tr('workCenter.requirementHelp', 'Triage will generate the title, goal, acceptance criteria, type, and execution plan.') }}</small>
               </label>
             </section>
             <section class="work-center-form-section work-center-create-attachments">
@@ -1216,7 +1224,7 @@ export default {
           </div>
           <footer class="work-center-modal-footer">
             <button class="btn-secondary" type="button" @click="closeCreate">{{ tr('common.cancel', 'Cancel') }}</button>
-            <button class="btn-primary" type="submit" :disabled="saving || attachmentsUploading || !form.title.trim() || !form.goal.trim() || !form.workDir.trim()">
+            <button class="btn-primary" type="submit" :disabled="saving || attachmentsUploading || !form.requirement.trim() || !form.workDir.trim()">
               {{ saving ? tr('workCenter.creating', 'Creating…') : tr('workCenter.create', 'Create') }}
             </button>
           </footer>

@@ -134,7 +134,17 @@ describe('Work Center Runner execution resolution', () => {
     expect(planningInstruction).toContain('do not fake parallelism by marking a mutating Action as read');
 
     const input = {
-      summary: 'Planned the work', evidence: ['Inspected the current implementation'], acceptanceChecks: [],
+      summary: 'Planned the work', evidence: ['Inspected the current implementation'],
+      acceptanceChecks: [{
+        criterion: 'The requested behavior works and focused regression tests pass',
+        status: 'deferred',
+        evidence: 'The generated Action DAG assigns implementation and focused verification work.',
+      }],
+      contractPatch: {
+        title: 'Implement requested fix',
+        goal: 'Implement the requested fix and verify the production path',
+        acceptanceCriteria: ['The requested behavior works and focused regression tests pass'],
+      },
       workItemType: 'software-change', actions: [{
         id: 'implement-fix', name: 'Implement fix', type: 'implement',
         objective: 'Implement the concrete fix', approach: 'Modify the existing path and add tests',
@@ -142,6 +152,14 @@ describe('Work Center Runner execution resolution', () => {
         assignmentReason: 'Best implementation fit', dependsOnActionIds: [], workspaceMode: 'shared',
       }],
     };
+    expect(tool.parameters.required).toContain('contractPatch');
+    const { contractPatch, ...missingContract } = input;
+    await expect(tool.execute(missingContract, { requestEndTurn })).rejects.toThrow(
+      /requires title, goal, and acceptanceCriteria/,
+    );
+    expect(collector.value).toBeNull();
+    expect(requestEndTurn).not.toHaveBeenCalled();
+
     await expect(tool.execute(input, { requestEndTurn })).resolves.toContain('"submitted":true');
     expect(collector.value).toEqual(input);
     expect(requestEndTurn).toHaveBeenCalledWith({ kind: 'work_item_plan_submitted' });
@@ -230,7 +248,11 @@ describe('Work Center Runner execution resolution', () => {
         status: 'deferred',
         evidence: 'The test Action will verify this criterion after integration',
       }],
-      contractPatch: { acceptanceCriteria: ['Focused regression tests pass'] },
+      contractPatch: {
+        title: 'Implement and verify the requested change',
+        goal: 'Implement the requested repository change and verify it after integration',
+        acceptanceCriteria: ['Focused regression tests pass'],
+      },
       workItemType: 'software-change', actions: [implementAction],
     };
 

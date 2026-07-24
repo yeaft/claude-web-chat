@@ -319,12 +319,12 @@ export function createSubmitWorkItemPlanTool({
     parameters: {
       type: 'object',
       additionalProperties: false,
-      required: ['summary', 'evidence', 'acceptanceChecks', 'workItemType', 'actions'],
+      required: ['summary', 'evidence', 'acceptanceChecks', 'contractPatch', 'workItemType', 'actions'],
       properties: {
         summary: { type: 'string', minLength: 1, maxLength: 2_000 },
         evidence: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 1_000 } },
         acceptanceChecks: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['criterion', 'status', 'evidence'], properties: { criterion: { type: 'string' }, status: { type: 'string', enum: ['passed', 'deferred', 'not_applicable'] }, evidence: { type: 'string', minLength: 1, maxLength: 1_000 } } } },
-        contractPatch: { type: 'object', additionalProperties: false, properties: { goal: { type: 'string', minLength: 1, maxLength: 8_000 }, acceptanceCriteria: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 2_000 } } } },
+        contractPatch: { type: 'object', additionalProperties: false, required: ['title', 'goal', 'acceptanceCriteria'], properties: { title: { type: 'string', minLength: 1, maxLength: 200 }, goal: { type: 'string', minLength: 1, maxLength: 8_000 }, acceptanceCriteria: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1, maxLength: 2_000 } } } },
         workItemType: { type: 'string', minLength: 1, maxLength: 64 },
         actions: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'object', additionalProperties: false, required: ['id', 'name', 'type', 'objective', 'approach', 'expectedOutcome', 'candidateVpIds', 'assignmentReason', 'dependsOnActionIds', 'workspaceMode'], properties: {
           id: { type: 'string', minLength: 1, maxLength: 64 }, name: { type: 'string', minLength: 1, maxLength: 120 },
@@ -340,6 +340,9 @@ export function createSubmitWorkItemPlanTool({
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('WorkItem plan was already submitted for this Run');
       const contractPatch = normalizeContractPatch(input.contractPatch);
+      if (!contractPatch?.title || !contractPatch?.goal || !contractPatch?.acceptanceCriteria?.length) {
+        throw new Error('Initial WorkItem plan requires title, goal, and acceptanceCriteria');
+      }
       const proposedResult = {
         outcome: 'completed',
         evidence: normalizeEvidence(input.evidence),
@@ -350,6 +353,7 @@ export function createSubmitWorkItemPlanTool({
       if (proposedResult.outcome !== 'completed') throw new Error(proposedResult.error);
       const effectiveWorkItem = contractPatch ? {
         ...workItem,
+        title: contractPatch.title ?? workItem.title,
         goal: contractPatch.goal ?? workItem.goal,
         acceptanceCriteria: contractPatch.acceptanceCriteria ?? workItem.acceptanceCriteria,
       } : workItem;
@@ -548,7 +552,7 @@ function completionContract(action, workItem) {
     ? ',\n  "reviewDecision": "approved|changes_requested"'
     : '';
   const triageField = action.type === 'triage'
-    ? ',\n  "contractPatch": { "goal": "optional refined goal", "acceptanceCriteria": ["optional refined criterion"] }'
+    ? ',\n  "contractPatch": { "title": "concise AI-generated title", "goal": "precise AI-generated goal", "acceptanceCriteria": ["verifiable AI-generated criterion"] }'
     : '';
   const planField = action.type === 'triage'
     && !action.stageId?.startsWith('replan-')

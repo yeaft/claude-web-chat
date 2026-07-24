@@ -6,6 +6,7 @@ function normalizeCriteria(value) {
 export function normalizeContractPatch(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const patch = {};
+  if (typeof value.title === 'string' && value.title.trim()) patch.title = value.title.trim().slice(0, 200);
   if (typeof value.goal === 'string' && value.goal.trim()) patch.goal = value.goal.trim();
   if (Object.hasOwn(value, 'acceptanceCriteria')) {
     const criteria = normalizeCriteria(value.acceptanceCriteria);

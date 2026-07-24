@@ -1642,12 +1642,13 @@ describe('Work Center core', () => {
     const item = controller.create(createInput());
     const triage = store.claimReadyAction('boot-a', 5_000);
     const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
-      contractPatch: { goal: 'Refined goal', acceptanceCriteria: ['Refined criterion'] },
+      contractPatch: { title: 'Refined title', goal: 'Refined goal', acceptanceCriteria: ['Refined criterion'] },
       acceptanceChecks: [{
         criterion: 'Refined criterion', status: 'deferred', evidence: 'scheduled for implementation',
       }],
     }));
     expect(detail.revision).toBe(2);
+    expect(detail.title).toBe('Refined title');
     expect(detail.goal).toBe('Refined goal');
     expect(detail.actions.at(-1).instruction).toContain('Refined criterion');
     expect(store.getWorkItem(item.id).status).toBe('ready');

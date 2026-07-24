@@ -344,6 +344,7 @@ export class WorkflowController {
       const effective = result.contractPatch
         ? {
             ...current,
+            title: result.contractPatch.title ?? current.title,
             goal: result.contractPatch.goal ?? current.goal,
             acceptanceCriteria: result.contractPatch.acceptanceCriteria ?? current.acceptanceCriteria,
           }
@@ -461,6 +462,7 @@ export class WorkflowController {
         const effectiveWorkItem = contractPatch
           ? {
               ...workItem,
+              title: contractPatch.title ?? workItem.title,
               goal: contractPatch.goal ?? workItem.goal,
               acceptanceCriteria: contractPatch.acceptanceCriteria ?? workItem.acceptanceCriteria,
               revision: workItem.revision + 1,
