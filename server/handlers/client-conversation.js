@@ -574,8 +574,10 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (convInfo) convInfo.processing = true;
       trackUserTurn(client.userId, Buffer.byteLength(JSON.stringify(msg)));
 
-      // 暂存 expertSelections 供 agent-output 保存 user 消息时使用
-      if (msg.expertSelections?.length > 0 && convInfo) {
+      // Claude Code does not echo client metadata, so preserve its legacy
+      // single-turn stash. Native providers round-trip identity on each echo.
+      const usesNativeProviderIdentity = !!resolvedProvider && resolvedProvider !== 'claude-code';
+      if (!usesNativeProviderIdentity && msg.expertSelections?.length > 0 && convInfo) {
         convInfo._pendingExperts = msg.expertSelections;
       }
 
@@ -593,8 +595,11 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       // able to inject 10 MB strings or SQL-looking payloads. The
       // dedup gate falls back to content-equality cleanly if we drop
       // an invalid id, so failed validation degrades gracefully.
-      if (msg.clientMessageId && convInfo && isValidClientMessageId(msg.clientMessageId)) {
-        convInfo._pendingClientMessageId = msg.clientMessageId;
+      const clientMessageId = isValidClientMessageId(msg.clientMessageId)
+        ? msg.clientMessageId
+        : null;
+      if (!usesNativeProviderIdentity && clientMessageId && convInfo) {
+        convInfo._pendingClientMessageId = clientMessageId;
       }
 
       // 用用户输入的 prompt 更新会话标题（跳过用户自定义标题的会话）
@@ -615,7 +620,8 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           ...(resolvedProvider ? { provider: resolvedProvider } : {}),
           targetRole: msg.targetRole || null,
           expertSelections: msg.expertSelections || null,
-          expertMessage: msg.expertMessage || null
+          expertMessage: msg.expertMessage || null,
+          ...(clientMessageId ? { clientMessageId } : {})
         });
       } else {
         await forwardToAgent(chatAgentId, {
@@ -627,7 +633,8 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           ...(resolvedProvider ? { provider: resolvedProvider } : {}),
           targetRole: msg.targetRole || null,
           expertSelections: msg.expertSelections || null,
-          expertMessage: msg.expertMessage || null
+          expertMessage: msg.expertMessage || null,
+          ...(clientMessageId ? { clientMessageId } : {})
         });
       }
       break;

@@ -63,6 +63,7 @@ export async function start(opts) {
 
   const state = {
     providerName: name,
+    providerGeneration: randomUUID(),
     conversationId,
     query: null,
     inputStream: null,
@@ -120,6 +121,7 @@ export async function start(opts) {
 }
 
 function _emitBootError(state, err) {
+  if (!_isCurrentState(state)) return;
   sendOutput(state.conversationId, {
     type: 'result',
     subtype: 'error',
@@ -158,6 +160,13 @@ async function _ensureBooted(state, resumeSessionId) {
   return p;
 }
 
+function _isCurrentState(state) {
+  const current = ctx.conversations.get(state?.conversationId);
+  return current === state
+    && current?.providerGeneration === state?.providerGeneration
+    && state?.chatProviderRetired !== true;
+}
+
 async function _bootAcp(state, resumeSessionId) {
   const args = ['--acp'];
   if (Array.isArray(state.providerOptions?.addDirs)) {
@@ -180,7 +189,7 @@ async function _bootAcp(state, resumeSessionId) {
   child.on('error', (err) => {
     const message = `copilot process error: ${err?.message || err}`;
     childError = new Error(message);
-    if (state.turnActive) _sendTurnError(state, message);
+    if (state.turnActive) _sendTurnError(state, message, () => _isCurrentState(state));
     if (client) client.close(message);
   });
   child.on('close', (code) => {
@@ -190,8 +199,10 @@ async function _bootAcp(state, resumeSessionId) {
     if (state.copilotChild !== child) return;
     if (state.turnActive) {
       const tail = stderrBuf.trim().slice(-2000);
-      _sendTurnError(state, tail || `copilot exited mid-turn (code ${code})`);
-      _completeTurn(state);
+      _sendTurnError(state, tail || `copilot exited mid-turn (code ${code})`,
+        () => _isCurrentState(state));
+      _completeTurn(state, state.conversationId, state.abortController,
+        () => _isCurrentState(state));
     }
     if (state.acpClient) {
       try { state.acpClient.close(`copilot exited (code ${code})`); } catch { /* noop */ }
@@ -265,6 +276,7 @@ async function _bootAcp(state, resumeSessionId) {
   // Copilot's built-in toolset is not enumerated over ACP today; advertise the
   // well-known core set so the panel isn't empty.
   state.tools = _knownCopilotTools();
+  if (!_isCurrentState(state)) return;
   sendOutput(state.conversationId, {
     type: 'system',
     subtype: 'init',
@@ -278,6 +290,7 @@ async function _bootAcp(state, resumeSessionId) {
 
 export async function sendInput(state, prompt, opts = {}) {
   const conversationId = opts.conversationId || state.conversationId;
+  const isCurrentTurn = opts.isCurrentTurn || (() => true);
   if (!conversationId) throw new Error('copilot: conversationId required');
 
   // Ensure ACP child + session are up; reboot if a prior crash dropped them.
@@ -289,15 +302,15 @@ export async function sendInput(state, prompt, opts = {}) {
     try {
       await _ensureBooted(state, state.sessionId || null);
     } catch (err) {
-      _sendTurnError(state, `copilot ACP reinit failed: ${err?.message || err}`);
-      _completeTurn(state, conversationId);
+      _sendTurnError(state, `copilot ACP reinit failed: ${err?.message || err}`, isCurrentTurn);
+      _completeTurn(state, conversationId, state.abortController, isCurrentTurn);
       return;
     }
   }
 
   if (state.cancelled) {
-    _sendTurnError(state, 'copilot prompt cancelled before dispatch');
-    _completeTurn(state, conversationId);
+    _sendTurnError(state, 'copilot prompt cancelled before dispatch', isCurrentTurn);
+    _completeTurn(state, conversationId, state.abortController, isCurrentTurn);
     return;
   }
 
@@ -339,6 +352,7 @@ export async function sendInput(state, prompt, opts = {}) {
     });
     const stopReason = resp?.stopReason || 'end_turn';
     const isErr = stopReason === 'refusal' || stopReason === 'error';
+    if (!isCurrentTurn()) return;
     sendOutput(conversationId, {
       type: 'result',
       subtype: isErr ? 'error' : 'success',
@@ -349,9 +363,9 @@ export async function sendInput(state, prompt, opts = {}) {
       hasQueuedFollowUp: state.hasQueuedChatProviderFollowUp?.() === true,
     });
   } catch (err) {
-    _sendTurnError(state, err?.message || String(err));
+    _sendTurnError(state, err?.message || String(err), isCurrentTurn);
   } finally {
-    _completeTurn(state, conversationId, abortController);
+    _completeTurn(state, conversationId, abortController, isCurrentTurn);
   }
 }
 
@@ -369,10 +383,12 @@ export function abort(state) {
   // SIGTERM the child after a grace period — the close handler will then
   // synthesize the result envelope + turn_completed.
   if (state?.copilotChild && !state._abortKillTimer) {
+    const cancelledOwner = state.abortController;
+    const cancelledChild = state.copilotChild;
     state._abortKillTimer = setTimeout(() => {
       state._abortKillTimer = null;
-      if (state.turnActive && state.copilotChild) {
-        try { state.copilotChild.kill('SIGTERM'); } catch { /* noop */ }
+      if (cancelledOwner?.signal.aborted && state.copilotChild === cancelledChild) {
+        try { cancelledChild.kill('SIGTERM'); } catch { /* noop */ }
       }
     }, 10000);
     state._abortKillTimer.unref?.();
@@ -381,6 +397,7 @@ export function abort(state) {
 
 export function dispose(state, reason = 'disposed') {
   if (!state) return;
+  state.chatProviderRetired = true;
   if (state.abortController) {
     try { state.abortController.abort(); } catch { /* noop */ }
     state.abortController = null;
@@ -428,6 +445,7 @@ export async function clear(state) {
     state.sessionId = r?.sessionId || randomUUID();
     state.claudeSessionId = state.sessionId;
     _sendSessionIdUpdate(state);
+    if (!_isCurrentState(state)) return;
     sendOutput(state.conversationId, {
       type: 'system',
       subtype: 'init',
@@ -450,7 +468,7 @@ function sendOutput(conversationId, data) {
 }
 
 function _sendSessionIdUpdate(state) {
-  if (!state?.conversationId || !state.sessionId) return;
+  if (!_isCurrentState(state) || !state?.conversationId || !state.sessionId) return;
   ctx.sendToServer({
     type: 'session_id_update',
     conversationId: state.conversationId,
@@ -459,8 +477,8 @@ function _sendSessionIdUpdate(state) {
   });
 }
 
-function _sendTurnError(state, error) {
-  if (!state || state.turnErrorEmitted) return;
+function _sendTurnError(state, error, isCurrentTurn = () => true) {
+  if (!state || !isCurrentTurn() || state.turnErrorEmitted) return;
   state.turnErrorEmitted = true;
   sendOutput(state.conversationId, {
     type: 'result',
@@ -472,8 +490,13 @@ function _sendTurnError(state, error) {
   });
 }
 
-function _completeTurn(state, conversationId = state?.conversationId, abortOwner = state?.abortController) {
-  if (!state) return;
+function _completeTurn(
+  state,
+  conversationId = state?.conversationId,
+  abortOwner = state?.abortController,
+  isCurrentTurn = () => true,
+) {
+  if (!state || !isCurrentTurn()) return;
   if (state.abortController === abortOwner) state.abortController = null;
   if (state._abortKillTimer) {
     clearTimeout(state._abortKillTimer);
@@ -510,6 +533,7 @@ async function _handleAcpRequest(state, method, params) {
 }
 
 function _handleSessionUpdate(state, params) {
+  if (!_isCurrentState(state)) return;
   if (!params || !params.sessionId || params.sessionId !== state.sessionId) {
     // Stale update from a prior session; ignore.
     return;
@@ -588,6 +612,9 @@ function _handleSessionUpdate(state, params) {
 }
 
 async function _handlePermissionRequest(state, params) {
+  if (!_isCurrentState(state)) {
+    return { outcome: { outcome: 'cancelled' } };
+  }
   const opt = Array.isArray(params?.options) ? params.options : [];
   // Defensive: ACP forbids empty options but if a buggy server sends one,
   // reject the request rather than fabricating an optionId Copilot won't

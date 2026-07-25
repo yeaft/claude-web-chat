@@ -356,15 +356,21 @@ function enqueueChatProviderTask(conversationId, task) {
   return run;
 }
 
+function isCurrentChatProviderQueue(conversationId, queue) {
+  return !queue.cancelled && chatProviderInputQueues.get(conversationId) === queue;
+}
+
 function cancelChatProviderInputQueue(conversationId) {
   const queue = chatProviderInputQueues.get(conversationId);
   if (!queue) return;
   queue.cancelled = true;
+  const state = ctx.conversations.get(conversationId);
+  if (state?.chatProviderQueue === queue) state.chatProviderRetired = true;
   chatProviderInputQueues.delete(conversationId);
 }
 
-function completeChatProviderTurn(state, conversationId, hasQueuedFollowUp = false) {
-  if (state?.turnCompletedEmitted) return;
+function completeChatProviderTurn(state, conversationId, hasQueuedFollowUp = false, isCurrent = () => true) {
+  if (!isCurrent() || state?.turnCompletedEmitted) return;
   if (state) state.turnCompletedEmitted = true;
   ctx.sendToServer({
     type: 'turn_completed',
@@ -390,11 +396,18 @@ export function enqueueChatProviderInput({
   claudeSessionId,
   userId,
   username,
+  clientMessageId,
+  expertSelections,
+  expertMessage,
 }) {
   return enqueueChatProviderTask(conversationId, async (queue) => {
     let state = ctx.conversations.get(conversationId);
     const effectiveProviderName = state?.providerName || providerName;
     const driver = getProvider(effectiveProviderName);
+    const isCurrent = () => isCurrentChatProviderQueue(conversationId, queue)
+      && ctx.conversations.get(conversationId) === state
+      && state?.chatProviderQueue === queue
+      && state?.chatProviderRetired !== true;
     const effectiveWorkDir = workDir || state?.workDir || ctx.CONFIG.workDir;
 
     if (!state) {
@@ -407,7 +420,8 @@ export function enqueueChatProviderInput({
           username,
         });
       } catch (err) {
-        const hasQueuedFollowUp = !queue.cancelled && queue.pending > 1;
+        if (!isCurrentChatProviderQueue(conversationId, queue)) return;
+        const hasQueuedFollowUp = queue.pending > 1;
         sendOutput(conversationId, {
           type: 'result',
           subtype: 'error',
@@ -415,19 +429,29 @@ export function enqueueChatProviderInput({
           error: `${effectiveProviderName} provider failed to start: ${err?.message || err}`,
           hasQueuedFollowUp,
         });
-        completeChatProviderTurn(null, conversationId, hasQueuedFollowUp);
+        completeChatProviderTurn(null, conversationId, hasQueuedFollowUp,
+          () => isCurrentChatProviderQueue(conversationId, queue));
         return;
       }
     }
 
     // A delete/resume can retire this queue while a provider is booting. Do not
     // let stale queued work mutate or resurrect the replacement conversation.
-    if (queue.cancelled || ctx.conversations.get(conversationId) !== state) return;
+    if (queue.cancelled || ctx.conversations.get(conversationId) !== state) {
+      if (ctx.conversations.get(conversationId) === state) {
+        try { driver.dispose?.(state, 'retired before dispatch'); } catch { /* noop */ }
+        ctx.conversations.delete(conversationId);
+      }
+      return;
+    }
+    state.chatProviderQueue = queue;
+    state.chatProviderRetired = false;
     if (workDir) state.workDir = workDir;
 
     const turnOwner = {};
     state.activeChatProviderTurn = turnOwner;
-    state.hasQueuedChatProviderFollowUp = () => !queue.cancelled && queue.pending > 1;
+    state.hasQueuedChatProviderFollowUp = () => isCurrent() && queue.pending > 1;
+    state.isCurrentChatProviderTurn = () => isCurrent() && state.activeChatProviderTurn === turnOwner;
     state.cancelled = false;
     state.turnActive = true;
     state.turnCompletedEmitted = false;
@@ -439,14 +463,25 @@ export function enqueueChatProviderInput({
       if (raw?.prompt?.trim() === '/clear' && driver.capabilities?.clear) {
         await driver.clear(state);
       } else {
-        await driver.sendInput(state, prompt, {
+        let effectivePrompt = expertMessage || prompt;
+        if (!expertMessage && expertSelections?.length > 0) {
+          const { buildExpertMessage } = await import('./expert-roles.js');
+          effectivePrompt = buildExpertMessage(
+            expertSelections,
+            prompt,
+            raw?.language || 'zh-CN',
+          ).effectivePrompt;
+        }
+        await driver.sendInput(state, effectivePrompt, {
           conversationId,
           raw,
+          clientMessageId,
+          isCurrentTurn: state.isCurrentChatProviderTurn,
           ...(attachments === undefined ? {} : { attachments }),
         });
       }
     } catch (err) {
-      if (!state.turnErrorEmitted) {
+      if (isCurrent() && !state.turnErrorEmitted) {
         state.turnErrorEmitted = true;
         sendOutput(conversationId, {
           type: 'result',
@@ -458,11 +493,14 @@ export function enqueueChatProviderInput({
         });
       }
     } finally {
-      const hasQueuedFollowUp = !queue.cancelled && queue.pending > 1;
-      completeChatProviderTurn(state, conversationId, hasQueuedFollowUp);
-      if (state.activeChatProviderTurn === turnOwner) {
+      const currentTurn = isCurrent();
+      const hasQueuedFollowUp = currentTurn && queue.pending > 1;
+      completeChatProviderTurn(state, conversationId, hasQueuedFollowUp,
+        () => currentTurn && isCurrent());
+      if (currentTurn && state.activeChatProviderTurn === turnOwner) {
         state.activeChatProviderTurn = null;
         state.hasQueuedChatProviderFollowUp = null;
+        state.isCurrentChatProviderTurn = null;
         state.abortController = null;
         if (state._abortKillTimer) {
           clearTimeout(state._abortKillTimer);
@@ -918,7 +956,12 @@ export async function handleUserInput(msg) {
   const providerName = state?.providerName
     || (isValidProvider(msg.provider) ? msg.provider : DEFAULT_PROVIDER);
   if (providerName !== 'claude-code') {
-    sendOutput(conversationId, { type: 'user', message: { role: 'user', content: prompt } });
+    sendOutput(conversationId, {
+      type: 'user',
+      message: { role: 'user', content: prompt },
+      clientMessageId: msg.clientMessageId,
+      expertSelections: msg.expertSelections,
+    });
     await enqueueChatProviderInput({
       conversationId,
       providerName,
@@ -928,6 +971,9 @@ export async function handleUserInput(msg) {
       claudeSessionId,
       userId: msg.userId,
       username: msg.username,
+      clientMessageId: msg.clientMessageId,
+      expertSelections: msg.expertSelections,
+      expertMessage: msg.expertMessage,
     });
     return;
   }

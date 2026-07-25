@@ -101,7 +101,12 @@ export async function handleTransferFiles(msg) {
     // survives a page refresh instead of vanishing. Matches the frontend's
     // own attachment-only placeholder (web/stores/chat.js).
     const echoContent = prompt && prompt.trim() ? prompt : '(attached files)';
-    sendOutput(conversationId, { type: 'user', message: { role: 'user', content: echoContent } });
+    sendOutput(conversationId, {
+      type: 'user',
+      message: { role: 'user', content: echoContent },
+      clientMessageId: msg.clientMessageId,
+      expertSelections: msg.expertSelections,
+    });
     await enqueueChatProviderInput({
       conversationId,
       providerName,
@@ -112,6 +117,9 @@ export async function handleTransferFiles(msg) {
       claudeSessionId,
       userId: msg.userId,
       username: msg.username,
+      clientMessageId: msg.clientMessageId,
+      expertSelections: msg.expertSelections,
+      expertMessage: msg.expertMessage,
     });
     return;
   }

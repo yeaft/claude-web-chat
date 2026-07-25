@@ -172,6 +172,7 @@ describe('message flow regressions', () => {
     const attachmentPrompt = deferred();
     const promptCalls = [];
     const cancelNotifications = [];
+    const copilotChild = { kill: vi.fn() };
     const sent = [];
     const workDir = mkdtempSync(join(tmpdir(), 'yeaft-copilot-follow-up-'));
     const state = {
@@ -183,6 +184,7 @@ describe('message flow regressions', () => {
       initialized: true,
       turnActive: false,
       abortController: null,
+      copilotChild,
       pendingPermissions: new Map(),
       acpClient: {
         request(method, params) {
@@ -209,13 +211,15 @@ describe('message flow regressions', () => {
         type: 'execute',
         conversationId: state.conversationId,
         provider: 'copilot',
-        prompt: 'first',
+        prompt: 'same',
+        clientMessageId: 'cm_first',
       });
       const secondRun = handleMessage({
         type: 'execute',
         conversationId: state.conversationId,
         provider: 'copilot',
-        prompt: 'second',
+        prompt: 'same',
+        clientMessageId: 'cm_second',
       });
       const attachmentRun = handleMessage({
         type: 'transfer_files',
@@ -227,7 +231,9 @@ describe('message flow regressions', () => {
       });
 
       await vi.waitFor(() => expect(promptCalls).toHaveLength(1));
-      expect(promptCalls[0]).toEqual([{ type: 'text', text: 'first' }]);
+      expect(promptCalls[0]).toEqual([{ type: 'text', text: 'same' }]);
+      expect(sent.filter(message => message.data?.type === 'user').map(message => message.data.clientMessageId))
+        .toEqual(['cm_first', 'cm_second', undefined]);
       const activeAbortController = state.abortController;
       expect(activeAbortController).toBeInstanceOf(AbortController);
       expect(state.turnActive).toBe(true);
@@ -237,11 +243,18 @@ describe('message flow regressions', () => {
         conversationId: state.conversationId,
       });
       expect(activeAbortController.signal.aborted).toBe(true);
+      const fallbackTimer = state._abortKillTimer;
+      expect(fallbackTimer).toBeTruthy();
+      const fallbackCallback = fallbackTimer._onTimeout;
+      clearTimeout(fallbackTimer);
       expect(cancelNotifications).toEqual([
         { method: 'session/cancel', params: { sessionId: 'copilot-session' } },
       ]);
       expect(promptCalls).toHaveLength(1);
       expect(sent.find(message => message.type === 'execution_cancelled')?.hasQueuedFollowUp).toBe(true);
+      state.turnActive = false;
+      fallbackCallback();
+      expect(copilotChild.kill).toHaveBeenCalledWith('SIGTERM');
 
       firstPrompt.reject(new Error('cancelled'));
       await vi.waitFor(() => expect(promptCalls).toHaveLength(2));
@@ -268,7 +281,7 @@ describe('message flow regressions', () => {
       keepQueuedFollowUpProcessing(webStore, state.conversationId, firstCompletion.hasQueuedFollowUp);
       expect(webStore.processingConversations[state.conversationId]).toBe(true);
       expect(webStore._turnCompletedConvs.has(state.conversationId)).toBe(false);
-      expect(promptCalls[1]).toEqual([{ type: 'text', text: 'second' }]);
+      expect(promptCalls[1]).toEqual([{ type: 'text', text: 'same' }]);
       expect(state.abortController).not.toBe(activeAbortController);
       expect(state.turnActive).toBe(true);
 
@@ -290,13 +303,39 @@ describe('message flow regressions', () => {
       const completions = sent.filter(message => message.type === 'turn_completed');
       expect(completions).toHaveLength(3);
       expect(completions.map(message => message.hasQueuedFollowUp)).toEqual([true, true, false]);
+
+      const terminalCount = resultFrames.length + completions.length;
+      const stalePrompt = deferred();
+      state.acpClient.request = () => stalePrompt.promise;
+      const staleRun = handleMessage({
+        type: 'execute',
+        conversationId: state.conversationId,
+        provider: 'copilot',
+        prompt: 'stale',
+      });
+      await vi.waitFor(() => expect(state.turnActive).toBe(true));
+      await handleMessage({
+        type: 'resume_conversation',
+        conversationId: state.conversationId,
+        provider: 'copilot',
+        claudeSessionId: 'replacement-session',
+        workDir,
+      });
+      const replacementState = ctx.conversations.get(state.conversationId);
+      expect(replacementState).not.toBe(state);
+      replacementState.turnActive = true;
+      stalePrompt.resolve({ stopReason: 'end_turn' });
+      await staleRun;
+      expect(sent.filter(message => message.data?.type === 'result'
+        || message.type === 'turn_completed')).toHaveLength(terminalCount);
+
       delete webStore.processingConversations[state.conversationId];
       webStore._turnCompletedConvs.add(state.conversationId);
       keepQueuedFollowUpProcessing(webStore, state.conversationId, completions[2].hasQueuedFollowUp);
       expect(webStore.processingConversations[state.conversationId]).toBeUndefined();
       expect(webStore._turnCompletedConvs.has(state.conversationId)).toBe(true);
-      expect(state.turnActive).toBe(false);
-      expect(state.abortController).toBeNull();
+      expect(state.chatProviderRetired).toBe(true);
+      expect(replacementState.turnActive).toBe(true);
       for (const timer of Object.values(webStore._processingWatchdogs)) clearTimeout(timer);
     } finally {
       ctx.CONFIG = previousConfig;
