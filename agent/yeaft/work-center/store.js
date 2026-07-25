@@ -550,6 +550,7 @@ function repairReviewBuildActionInputIdentity(db, now) {
     const currentEventIds = currentActionInputEventIds(events, action);
     const history = new Set(actionIdentityHistory(action)
       .map(identity => `${identity.generation}\u0000${identity.specHash}`));
+    const currentCanonicalRows = [];
     const eligible = inputRows.all(action.id).flatMap(row => {
       const event = mapEvent({
         id: row.event_id,
@@ -570,11 +571,23 @@ function repairReviewBuildActionInputIdentity(db, now) {
         ));
       const sourceRunStopped = !row.run_id || (row.run_status && row.run_status !== 'running');
       const eventText = event.data?.text || '';
-      if (!sameOwner || !sourceRunStopped || (row.text || '') !== eventText
-          || existingInputIds.has(String(eventInputId))) return [];
+      if (!sameOwner || !sourceRunStopped || (row.text || '') !== eventText) return [];
       const alreadyCurrent = currentEventIds.has(String(event.id))
         && Math.max(1, Number(row.action_generation) || 1) === action.generation
         && (row.action_spec_hash || '') === action.specHash;
+      if (existingInputIds.has(String(eventInputId))) {
+        if (alreadyCurrent) {
+          currentCanonicalRows.push({
+            ...row,
+            sourceGeneration: action.generation,
+            sourceSpecHash: action.specHash,
+            skipReboundAudit: true,
+            canonicalInputId: String(eventInputId),
+            eventText,
+          });
+        }
+        return [];
+      }
       const runGeneration = Math.max(1, Number(row.run_generation) || 1);
       const runSpecHash = row.run_spec_hash || '';
       const malformedCurrentConsumed = row.consumed_at != null
@@ -582,6 +595,15 @@ function repairReviewBuildActionInputIdentity(db, now) {
         && row.run_status === 'interrupted'
         && runGeneration === action.generation
         && runSpecHash === action.specHash
+        && Math.max(1, Number(row.event_generation) || 1) === runGeneration
+        && Math.max(1, Number(row.action_generation) || 1) === runGeneration
+        && !row.action_spec_hash;
+      const historicalInterruptedConsumed = row.consumed_at != null
+        && row.run_id
+        && row.run_status === 'interrupted'
+        && runGeneration < action.generation
+        && runSpecHash
+        && history.has(`${runGeneration}\u0000${runSpecHash}`)
         && Math.max(1, Number(row.event_generation) || 1) === runGeneration
         && Math.max(1, Number(row.action_generation) || 1) === runGeneration
         && !row.action_spec_hash;
@@ -595,7 +617,8 @@ function repairReviewBuildActionInputIdentity(db, now) {
         && Math.max(1, Number(row.event_generation) || 1) === runGeneration
         && Math.max(1, Number(row.action_generation) || 1) === runGeneration
         && !row.action_spec_hash;
-      if (!alreadyCurrent && !malformedCurrentConsumed && !repairedConsumed) return [];
+      if (!alreadyCurrent && !malformedCurrentConsumed
+          && !historicalInterruptedConsumed && !repairedConsumed) return [];
       return [{
         ...row,
         sourceGeneration: alreadyCurrent ? action.generation : runGeneration,
@@ -613,7 +636,28 @@ function repairReviewBuildActionInputIdentity(db, now) {
       matched.push(remaining.splice(index, 1)[0]);
     }
     if (matched.length !== missingInputs.length || remaining.length !== 0) continue;
-    promoteReadyActionInputs(db, action, matched, now, 'schema21_review_build_repair');
+    const repairRows = [...matched, ...currentCanonicalRows]
+      .sort((left, right) => Number(left.event_id) - Number(right.event_id));
+    const currentCanonicalInputIds = new Set(currentCanonicalRows.map(row => row.canonicalInputId));
+    const repairAction = currentCanonicalInputIds.size === 0
+      ? action
+      : {
+          ...action,
+          context: action.context.map(entry => {
+            if (entry?.type !== 'input' || !currentCanonicalInputIds.has(String(entry.inputId || ''))) {
+              return entry;
+            }
+            const { inputId: ignoredInputId, ...inputSlot } = entry;
+            return { ...inputSlot, attachments: [] };
+          }),
+        };
+    promoteReadyActionInputs(
+      db,
+      repairAction,
+      repairRows,
+      now,
+      'schema21_review_build_repair',
+    );
   }
 }
 

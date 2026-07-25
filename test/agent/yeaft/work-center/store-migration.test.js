@@ -787,6 +787,7 @@ describe('Work Center store migration', () => {
       JSON.stringify([
         ...reviewRepairCurrent.context.filter(entry => entry.type !== 'input'),
         { type: 'input', role: 'user', summary: reviewRepairSentinel, attachments: [], evidence: [] },
+        { type: 'guidance', role: 'user', summary: 'SCHEMA20 CONTEXT ORDER MARKER', evidence: [] },
         { type: 'input', role: 'user', summary: reviewRepairSentinel, attachments: [], evidence: [] },
       ]),
       reviewRepairCurrent.id,
@@ -796,9 +797,21 @@ describe('Work Center store migration', () => {
       actionGeneration: reviewRepairTargetGeneration,
       actionSpecHash: reviewRepairTargetSpecHash,
     });
-    for (const event of reviewRepairSourceEvents) {
+    const reviewRepairAttachmentNames = ['schema20-first.txt', 'schema20-second.txt'];
+    for (const [index, event] of reviewRepairSourceEvents.entries()) {
+      const attachment = {
+        id: `schema20-review-${index + 1}`,
+        name: reviewRepairAttachmentNames[index],
+        mimeType: 'text/plain',
+        size: index + 1,
+        isImage: false,
+      };
       store.db.prepare('UPDATE events SET data = ? WHERE id = ?').run(
-        JSON.stringify({ text: reviewRepairSentinel, attachments: [] }),
+        JSON.stringify({ text: reviewRepairSentinel, attachments: [attachment] }),
+        event.id,
+      );
+      store.db.prepare('UPDATE pending_action_inputs SET attachments = ? WHERE event_id = ?').run(
+        JSON.stringify([attachment]),
         event.id,
       );
     }
@@ -825,6 +838,48 @@ describe('Work Center store migration', () => {
       actionGeneration: reviewRepairTargetGeneration,
     });
     store.db.prepare("UPDATE schema_meta SET value = '20' WHERE key = 'schema_version'").run();
+    const reviewRepairParentClaim = store.claimReadyAction('schema20-review-boot', 60_000);
+    expect(reviewRepairParentClaim.action).toMatchObject({
+      generation: reviewRepairTargetGeneration + 1,
+    });
+    const reviewRepairParentInputs = reviewRepairParentClaim.action.context
+      .filter(entry => entry.type === 'input');
+    expect(reviewRepairParentInputs).toHaveLength(2);
+    expect(reviewRepairParentInputs.filter(entry => entry.inputId).map(entry => entry.inputId))
+      .toEqual([`legacy-event:${reviewRepairSourceEvents[1].id}`]);
+    expect(reviewRepairParentInputs.filter(entry => !entry.inputId)).toHaveLength(1);
+    expect(store.interruptRun(
+      reviewRepairParentClaim.run.id,
+      'schema20-review-boot',
+      reviewRepairParentClaim.run.leaseEpoch,
+      'simulate parent claim before schema 21 repair',
+    )).toBe(true);
+    const reviewRepairParentAction = store.getAction(reviewRepairCurrent.id);
+    expect(reviewRepairParentAction).toMatchObject({
+      status: 'ready',
+      generation: reviewRepairParentClaim.action.generation,
+      specHash: reviewRepairParentClaim.action.specHash,
+    });
+    expect(store.listActionEvents(reviewRepairParentAction.id)
+      .filter(event => event.type === 'action.input_rebound')).toHaveLength(2);
+    expect(store.db.prepare(`SELECT event_id, run_id, action_generation, action_spec_hash, consumed_at
+      FROM pending_action_inputs WHERE action_id = ? ORDER BY event_id`).all(reviewRepairParentAction.id))
+      .toEqual([
+        {
+          event_id: reviewRepairSourceEvents[0].id,
+          run_id: reviewRepairOldClaim.run.id,
+          action_generation: reviewRepairTargetGeneration,
+          action_spec_hash: '',
+          consumed_at: 1_000,
+        },
+        {
+          event_id: reviewRepairSourceEvents[1].id,
+          run_id: null,
+          action_generation: reviewRepairParentAction.generation,
+          action_spec_hash: reviewRepairParentAction.specHash,
+          consumed_at: 1_000,
+        },
+      ]);
     store.db.exec(`CREATE TRIGGER fail_schema21_review_repair
       BEFORE UPDATE ON pending_action_inputs
       BEGIN SELECT RAISE(ABORT, 'forced schema21 review repair failure'); END`);
@@ -841,13 +896,17 @@ describe('Work Center store migration', () => {
       'SELECT generation, spec_hash, context FROM actions WHERE id = ?',
     ).get(reviewRepairCurrent.id);
     expect(reviewRepairRollbackAction).toMatchObject({
-      generation: reviewRepairTargetGeneration,
-      spec_hash: reviewRepairTargetSpecHash,
+      generation: reviewRepairParentAction.generation,
+      spec_hash: reviewRepairParentAction.specHash,
     });
-    expect(JSON.parse(reviewRepairRollbackAction.context)
-      .filter(entry => entry.type === 'input').every(entry => !entry.inputId)).toBe(true);
+    const reviewRepairRollbackInputs = JSON.parse(reviewRepairRollbackAction.context)
+      .filter(entry => entry.type === 'input');
+    expect(reviewRepairRollbackInputs).toHaveLength(2);
+    expect(reviewRepairRollbackInputs.filter(entry => entry.inputId).map(entry => entry.inputId))
+      .toEqual([`legacy-event:${reviewRepairSourceEvents[1].id}`]);
+    expect(reviewRepairRollbackInputs.filter(entry => !entry.inputId)).toHaveLength(1);
     expect(reviewRepairRollbackDb.prepare(`SELECT COUNT(*) AS count FROM events
-      WHERE action_id = ? AND type = 'action.input_rebound'`).get(reviewRepairCurrent.id).count).toBe(1);
+      WHERE action_id = ? AND type = 'action.input_rebound'`).get(reviewRepairCurrent.id).count).toBe(2);
     expect(reviewRepairRollbackDb.prepare(`SELECT run_id, action_generation, action_spec_hash, consumed_at
       FROM pending_action_inputs WHERE event_id = ?`).get(reviewRepairSourceEvents[0].id)).toEqual({
       run_id: reviewRepairOldClaim.run.id,
@@ -870,10 +929,10 @@ describe('Work Center store migration', () => {
       run_id: null,
       action_generation: reviewRepairAction.generation,
       action_spec_hash: reviewRepairAction.specHash,
-      consumed_at: index === 0 ? 1_000 : 3_000,
+      consumed_at: 1_000,
       superseded_at: null,
     })));
-    expect(reviewRepairRebounds).toHaveLength(2);
+    expect(reviewRepairRebounds).toHaveLength(3);
     const reviewRepairIdentity = {
       generation: reviewRepairAction.generation,
       specHash: reviewRepairAction.specHash,
@@ -910,13 +969,24 @@ describe('Work Center store migration', () => {
       schemaVersion: store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value,
       generation: reviewRepairAction.generation,
       inputIds: reviewRepairAction.context.filter(entry => entry.type === 'input').map(entry => entry.inputId),
+      attachmentNames: reviewRepairAction.context.filter(entry => entry.type === 'input')
+        .flatMap(entry => entry.attachments || []).map(attachment => attachment.name),
+      contextOrder: reviewRepairAction.context
+        .filter(entry => entry.type === 'input' || entry.summary === 'SCHEMA20 CONTEXT ORDER MARKER')
+        .map(entry => entry.type === 'input' ? entry.inputId : entry.summary),
       requestOccurrences: reviewRepairRequest.split(reviewRepairSentinel).length - 1,
       snapshotOccurrences: reviewRepairSnapshot.userContext.guidance
         .filter(entry => entry.text === reviewRepairSentinel).length,
     }).toEqual({
       schemaVersion: '21',
-      generation: reviewRepairTargetGeneration + 1,
+      generation: reviewRepairParentAction.generation + 1,
       inputIds: reviewRepairSourceEvents.map(event => `legacy-event:${event.id}`),
+      attachmentNames: reviewRepairAttachmentNames,
+      contextOrder: [
+        `legacy-event:${reviewRepairSourceEvents[0].id}`,
+        'SCHEMA20 CONTEXT ORDER MARKER',
+        `legacy-event:${reviewRepairSourceEvents[1].id}`,
+      ],
       requestOccurrences: 2,
       snapshotOccurrences: 2,
     });
@@ -952,7 +1022,7 @@ describe('Work Center store migration', () => {
       specHash: reviewRepairAction.specHash,
     });
     expect(store.listActionEvents(reviewRepairAction.id)
-      .filter(event => event.type === 'action.input_rebound')).toHaveLength(2);
+      .filter(event => event.type === 'action.input_rebound')).toHaveLength(3);
     store.close();
     store = null;
     rmSync(dir, { recursive: true, force: true });
@@ -1566,8 +1636,9 @@ describe('Work Center store migration', () => {
     dir = null;
 
     dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-reset-input-projection-'));
-    store = new WorkItemStore(join(dir, 'work-center.db'), { now: () => 2_000 });
-    const resetInputController = new WorkflowController(store);
+    const resetInputDbPath = join(dir, 'work-center.db');
+    store = new WorkItemStore(resetInputDbPath, { now: () => 2_000 });
+    let resetInputController = new WorkflowController(store);
     const resetInputWorkflow = legacyPolicyWorkflow();
     const resetInputItem = resetInputController.create({
       id: 'reset-input-projection',
@@ -1581,13 +1652,34 @@ describe('Work Center store migration', () => {
     });
     let resetInputDetail = store.getWorkItemDetail(resetInputItem.id);
     let resetInputAction = resetInputDetail.actions[0];
+    const resetInputInitialClaim = store.claimReadyAction('reset-input-boot', 60_000);
     resetInputDetail = resetInputController.input(resetInputItem.id, {
       actionId: resetInputAction.id,
       generation: resetInputAction.generation,
       revision: resetInputDetail.revision,
       text: 'RESET MUST DROP THIS INPUT SENTINEL',
     });
-    resetInputAction = resetInputDetail.actions[0];
+    const resetPending = store.listPendingActionInputs(
+      resetInputAction.id,
+      resetInputInitialClaim.run.id,
+      'reset-input-boot',
+      resetInputInitialClaim.run.leaseEpoch,
+    );
+    expect(resetPending).toHaveLength(1);
+    expect(store.acknowledgeActionInput(
+      resetPending[0].id,
+      resetInputAction.id,
+      resetInputInitialClaim.run.id,
+      'reset-input-boot',
+      resetInputInitialClaim.run.leaseEpoch,
+    )).toBe(true);
+    expect(store.interruptRun(
+      resetInputInitialClaim.run.id,
+      'reset-input-boot',
+      resetInputInitialClaim.run.leaseEpoch,
+      'reset before schema 21 reopen',
+    )).toBe(true);
+    resetInputAction = store.getAction(resetInputAction.id);
     resetInputDetail = resetInputController.guide(resetInputItem.id, {
       actionId: resetInputAction.id,
       generation: resetInputAction.generation,
@@ -1597,6 +1689,29 @@ describe('Work Center store migration', () => {
     resetInputAction = resetInputDetail.actions[0];
     expect(resetInputAction.context.filter(entry => entry.type === 'input')).toEqual([]);
     expect(resetInputAction.instruction).not.toContain('RESET MUST DROP THIS INPUT SENTINEL');
+    const resetActionBeforeReopen = store.getAction(resetInputAction.id);
+    const resetRowsBeforeReopen = store.db.prepare(`SELECT event_id, run_id, action_generation,
+      action_spec_hash, consumed_at, superseded_at FROM pending_action_inputs
+      WHERE action_id = ? ORDER BY event_id`).all(resetInputAction.id);
+    const resetReboundsBeforeReopen = store.listActionEvents(resetInputAction.id)
+      .filter(event => event.type === 'action.input_rebound').map(event => event.id);
+    store.db.prepare("UPDATE schema_meta SET value = '20' WHERE key = 'schema_version'").run();
+    store.close();
+    store = null;
+
+    store = new WorkItemStore(resetInputDbPath, { now: () => 3_000 });
+    resetInputController = new WorkflowController(store);
+    expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
+      .toBe('21');
+    expect(store.getAction(resetInputAction.id)).toEqual(resetActionBeforeReopen);
+    expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
+      action_spec_hash, consumed_at, superseded_at FROM pending_action_inputs
+      WHERE action_id = ? ORDER BY event_id`).all(resetInputAction.id)).toEqual(resetRowsBeforeReopen);
+    expect(store.listActionEvents(resetInputAction.id)
+      .filter(event => event.type === 'action.input_rebound').map(event => event.id))
+      .toEqual(resetReboundsBeforeReopen);
+    resetInputDetail = store.getWorkItemDetail(resetInputItem.id);
+    resetInputAction = resetInputDetail.actions[0];
     resetInputDetail = resetInputController.input(resetInputItem.id, {
       actionId: resetInputAction.id,
       generation: resetInputAction.generation,
@@ -1689,8 +1804,9 @@ describe('Work Center store migration', () => {
     dir = null;
 
     dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-replan-input-projection-'));
-    store = new WorkItemStore(join(dir, 'work-center.db'), { now: () => 2_000 });
-    const replanInputController = new WorkflowController(store);
+    const replanInputDbPath = join(dir, 'work-center.db');
+    store = new WorkItemStore(replanInputDbPath, { now: () => 2_000 });
+    let replanInputController = new WorkflowController(store);
     const replanInputWorkflow = resolvePlanningWorkflowSnapshot({});
     const replanInputItem = replanInputController.create({
       id: 'replan-input-projection',
@@ -1716,12 +1832,35 @@ describe('Work Center store migration', () => {
     );
     let replanInputDetail = store.getWorkItemDetail(replanInputItem.id);
     let replanInputAction = replanInputDetail.actions.find(action => action.stageId === 'validate');
+    const replanInputInitialClaim = store.claimReadyAction('replan-input-boot', 60_000);
+    expect(replanInputInitialClaim.action.id).toBe(replanInputAction.id);
     replanInputDetail = replanInputController.input(replanInputItem.id, {
       actionId: replanInputAction.id,
       generation: replanInputAction.generation,
       revision: replanInputDetail.revision,
       text: 'REPLAN MUST DROP THIS INPUT SENTINEL',
     });
+    const replanPending = store.listPendingActionInputs(
+      replanInputAction.id,
+      replanInputInitialClaim.run.id,
+      'replan-input-boot',
+      replanInputInitialClaim.run.leaseEpoch,
+    );
+    expect(replanPending).toHaveLength(1);
+    expect(store.acknowledgeActionInput(
+      replanPending[0].id,
+      replanInputAction.id,
+      replanInputInitialClaim.run.id,
+      'replan-input-boot',
+      replanInputInitialClaim.run.leaseEpoch,
+    )).toBe(true);
+    expect(store.interruptRun(
+      replanInputInitialClaim.run.id,
+      'replan-input-boot',
+      replanInputInitialClaim.run.leaseEpoch,
+      'replan before schema 21 reopen',
+    )).toBe(true);
+    replanInputDetail = store.getWorkItemDetail(replanInputItem.id);
     replanInputAction = replanInputDetail.actions.find(action => action.id === replanInputAction.id);
     const replanTurn = store.beginCoordinatorTurn(replanInputItem.id, 'Replace the unfinished plan safely.', {
       revision: replanInputDetail.revision,
@@ -1760,6 +1899,29 @@ describe('Work Center store migration', () => {
     expect(replannedValidate.context.filter(entry => entry.type === 'input')).toEqual([]);
     expect(replanInputDetail.actions.find(action => action.id === replanInputAction.id).status)
       .toBe('superseded');
+    const replanOldActionBeforeReopen = store.getAction(replanInputAction.id);
+    const replanNewActionBeforeReopen = store.getAction(replannedValidate.id);
+    const replanRowsBeforeReopen = store.db.prepare(`SELECT event_id, run_id, action_generation,
+      action_spec_hash, consumed_at, superseded_at FROM pending_action_inputs
+      WHERE action_id = ? ORDER BY event_id`).all(replanInputAction.id);
+    const replanReboundsBeforeReopen = store.listActionEvents(replanInputAction.id)
+      .filter(event => event.type === 'action.input_rebound').map(event => event.id);
+    store.db.prepare("UPDATE schema_meta SET value = '20' WHERE key = 'schema_version'").run();
+    store.close();
+    store = null;
+
+    store = new WorkItemStore(replanInputDbPath, { now: () => 3_000 });
+    replanInputController = new WorkflowController(store);
+    expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
+      .toBe('21');
+    expect(store.getAction(replanInputAction.id)).toEqual(replanOldActionBeforeReopen);
+    expect(store.getAction(replannedValidate.id)).toEqual(replanNewActionBeforeReopen);
+    expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
+      action_spec_hash, consumed_at, superseded_at FROM pending_action_inputs
+      WHERE action_id = ? ORDER BY event_id`).all(replanInputAction.id)).toEqual(replanRowsBeforeReopen);
+    expect(store.listActionEvents(replanInputAction.id)
+      .filter(event => event.type === 'action.input_rebound').map(event => event.id))
+      .toEqual(replanReboundsBeforeReopen);
     const replanInputClaim = store.claimReadyAction('replan-input-boot', 60_000);
     const replanInputCalls = [];
     const replanInputRunner = new WorkItemRunner({
@@ -1773,6 +1935,87 @@ describe('Work Center store migration', () => {
       signal: new AbortController().signal,
     });
     expect(JSON.stringify(replanInputCalls[0])).not.toContain('REPLAN MUST DROP THIS INPUT SENTINEL');
+    store.close();
+    store = null;
+    rmSync(dir, { recursive: true, force: true });
+    dir = null;
+
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-terminal-input-migration-'));
+    const terminalInputDbPath = join(dir, 'work-center.db');
+    store = new WorkItemStore(terminalInputDbPath, { now: () => 2_000 });
+    const terminalInputController = new WorkflowController(store);
+    const terminalInputWorkflow = legacyPolicyWorkflow();
+    const terminalInputItem = terminalInputController.create({
+      id: 'terminal-input-migration',
+      title: 'Keep terminal input historical',
+      goal: 'Never rewrite completed Action input during migration',
+      acceptanceCriteria: GRAPH_ACCEPTANCE_CRITERIA,
+      workflowTemplate: terminalInputWorkflow.id,
+      workflowSnapshot: terminalInputWorkflow,
+      workDir: '',
+      start: true,
+    });
+    let terminalInputDetail = store.getWorkItemDetail(terminalInputItem.id);
+    const terminalInputClaim = store.claimReadyAction('terminal-input-boot', 60_000);
+    terminalInputDetail = terminalInputController.input(terminalInputItem.id, {
+      actionId: terminalInputClaim.action.id,
+      generation: terminalInputClaim.action.generation,
+      revision: terminalInputDetail.revision,
+      text: 'TERMINAL INPUT MUST REMAIN HISTORICAL',
+    });
+    const terminalPending = store.listPendingActionInputs(
+      terminalInputClaim.action.id,
+      terminalInputClaim.run.id,
+      'terminal-input-boot',
+      terminalInputClaim.run.leaseEpoch,
+    );
+    expect(terminalPending).toHaveLength(1);
+    expect(store.acknowledgeActionInput(
+      terminalPending[0].id,
+      terminalInputClaim.action.id,
+      terminalInputClaim.run.id,
+      'terminal-input-boot',
+      terminalInputClaim.run.leaseEpoch,
+    )).toBe(true);
+    terminalInputDetail = terminalInputController.submit(
+      terminalInputClaim.run.id,
+      'terminal-input-boot',
+      terminalInputClaim.run.leaseEpoch,
+      completedResult('test'),
+    );
+    expect(terminalInputDetail.status).toBe('done');
+    const terminalInputAction = terminalInputDetail.actions.find(action => action.id === terminalInputClaim.action.id);
+    expect(terminalInputAction.status).toBe('completed');
+    store.db.prepare('UPDATE actions SET context = ? WHERE id = ?').run(JSON.stringify([
+      ...terminalInputAction.context,
+      {
+        type: 'input', role: 'user', summary: 'TERMINAL INPUT MUST REMAIN HISTORICAL',
+        attachments: [], evidence: [],
+      },
+    ]), terminalInputAction.id);
+    store.db.prepare(`UPDATE pending_action_inputs SET action_spec_hash = ''
+      WHERE event_id = ?`).run(Number(terminalPending[0].id));
+    const terminalActionBeforeReopen = store.getAction(terminalInputAction.id);
+    const terminalRowsBeforeReopen = store.db.prepare(`SELECT event_id, run_id, action_generation,
+      action_spec_hash, consumed_at, superseded_at FROM pending_action_inputs
+      WHERE action_id = ? ORDER BY event_id`).all(terminalInputAction.id);
+    const terminalReboundsBeforeReopen = store.listActionEvents(terminalInputAction.id)
+      .filter(event => event.type === 'action.input_rebound').map(event => event.id);
+    store.db.prepare("UPDATE schema_meta SET value = '20' WHERE key = 'schema_version'").run();
+    store.close();
+    store = null;
+
+    store = new WorkItemStore(terminalInputDbPath, { now: () => 3_000 });
+    expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
+      .toBe('21');
+    expect(store.getWorkItem(terminalInputItem.id).status).toBe('done');
+    expect(store.getAction(terminalInputAction.id)).toEqual(terminalActionBeforeReopen);
+    expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
+      action_spec_hash, consumed_at, superseded_at FROM pending_action_inputs
+      WHERE action_id = ? ORDER BY event_id`).all(terminalInputAction.id)).toEqual(terminalRowsBeforeReopen);
+    expect(store.listActionEvents(terminalInputAction.id)
+      .filter(event => event.type === 'action.input_rebound').map(event => event.id))
+      .toEqual(terminalReboundsBeforeReopen);
     store.close();
     store = null;
     rmSync(dir, { recursive: true, force: true });
