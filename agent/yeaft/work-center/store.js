@@ -299,6 +299,7 @@ export class WorkItemStore {
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA foreign_keys = ON;');
     this.#initSchema();
+    this.recoverInterruptedCoordinatorTurns();
   }
 
   #initSchema() {
@@ -872,12 +873,20 @@ export class WorkItemStore {
   }
 
   #insertAction(workItemId, input, sequence, now = this.now()) {
+    const stageId = input.stageId || input.type;
+    const activeStage = isGraphWorkItem(this.getWorkItem(workItemId))
+      ? this.db.prepare(`SELECT id FROM actions WHERE work_item_id = ? AND stage_id = ?
+          AND status NOT IN ('superseded', 'cancelled') LIMIT 1`).get(workItemId, stageId)
+      : null;
+    if (activeStage) {
+      throw new Error(`Work Center Action stage identity is already active: ${stageId}`);
+    }
     const action = {
       id: input.id || randomUUID(),
       workItemId,
       sequence,
       type: input.type,
-      stageId: input.stageId || input.type,
+      stageId,
       assignmentPolicy: input.assignmentPolicy || null,
       modelPolicy: input.modelPolicy || null,
       dependsOnStageIds: Array.isArray(input.dependsOnStageIds) ? input.dependsOnStageIds : [],
@@ -1559,6 +1568,11 @@ export class WorkItemStore {
       }
       this.#assertNoIntegrationReservation(activeActions, now);
 
+      const graphMode = isGraphWorkItem(workItem);
+      if (decision.kind !== 'answer'
+          && (!graphMode || workItem.workflowSnapshot?.planningMode !== 'ai')) {
+        throw new Error('Coordinator Action changes require an AI-planned Action graph');
+      }
       let nextWorkItem = workItem;
       let affectedActionIds = [];
       if (decision.kind === 'guide_actions') {
@@ -1597,6 +1611,14 @@ export class WorkItemStore {
             now, action.id, action.generation,
           );
           if (Number(changed.changes) !== 1) throw new Error('Coordinator guidance lost the Action generation fence');
+          this.appendEvent(workItem.id, 'action.guidance_added', {
+            guidance: instruction,
+            source: 'coordinator',
+            turnId,
+          }, {
+            actionId: action.id,
+            actionGeneration: nextAction.generation,
+          });
           affectedActionIds.push(action.id);
         }
         if (affectedActionIds.length !== decision.guidance.length) {
@@ -1657,7 +1679,7 @@ export class WorkItemStore {
         );
       }
 
-      const graphState = this.#graphWorkItemState(workItem.id);
+      const graphState = decision.kind === 'answer' ? null : this.#graphWorkItemState(workItem.id);
       messages[assistantIndex] = {
         ...messages[assistantIndex], text: result.reply, status: 'completed', updatedAt: now,
         decision: {
@@ -1669,14 +1691,22 @@ export class WorkItemStore {
       };
       const current = this.getWorkItem(workItem.id);
       const coordinatorRevision = current.coordinatorRevision + 1;
-      const changed = this.db.prepare(`UPDATE work_items SET messages = ?, coordinator_revision = ?,
-        status = ?, current_action_id = ?, current_run_id = NULL, updated_at = ?
-        WHERE id = ? AND coordinator_revision = ? AND revision = ? AND plan_revision = ?
-        AND ledger_revision = ?`).run(
-        stringify(messages), coordinatorRevision, graphState.status, graphState.currentActionId,
-        now, workItem.id, current.coordinatorRevision, current.revision,
-        current.planRevision, current.ledgerRevision,
-      );
+      const changed = decision.kind === 'answer'
+        ? this.db.prepare(`UPDATE work_items SET messages = ?, coordinator_revision = ?, updated_at = ?
+            WHERE id = ? AND coordinator_revision = ? AND revision = ? AND plan_revision = ?
+            AND ledger_revision = ? AND status = ? AND current_action_id IS ? AND current_run_id IS ?`).run(
+            stringify(messages), coordinatorRevision, now, workItem.id, current.coordinatorRevision,
+            current.revision, current.planRevision, current.ledgerRevision, workItem.status,
+            workItem.currentActionId, workItem.currentRunId,
+          )
+        : this.db.prepare(`UPDATE work_items SET messages = ?, coordinator_revision = ?,
+            status = ?, current_action_id = ?, current_run_id = NULL, updated_at = ?
+            WHERE id = ? AND coordinator_revision = ? AND revision = ? AND plan_revision = ?
+            AND ledger_revision = ?`).run(
+            stringify(messages), coordinatorRevision, graphState.status, graphState.currentActionId,
+            now, workItem.id, current.coordinatorRevision, current.revision,
+            current.planRevision, current.ledgerRevision,
+          );
       if (Number(changed.changes) !== 1) throw new Error('Coordinator completion lost its turn fence');
       this.appendEvent(workItem.id, `coordinator.${decision.kind}`, {
         turnId, reason: decision.reason, affectedActionIds,
@@ -1710,69 +1740,6 @@ export class WorkItemStore {
         turnId, error: messages[index].error,
       });
       return this.getWorkItemDetail(workItem.id);
-    });
-  }
-
-  addWorkItemMessage(id, text, expectedRevision, updateActionInstruction) {
-    return withTransaction(this.db, () => {
-      const workItem = this.getWorkItem(id);
-      if (!workItem) return null;
-      if (['done', 'cancelled'].includes(workItem.status)) {
-        throw new Error(`WorkItem in ${workItem.status} cannot accept messages`);
-      }
-      if (workItem.revision !== expectedRevision) {
-        throw new Error('WorkItem changed before the message was applied; refresh and try again');
-      }
-      const openActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
-        AND status IN ('ready', 'running') ORDER BY sequence`).all(id).map(mapAction);
-      for (const action of openActions.filter(candidate => candidate.status === 'running')) {
-        const run = action.currentRunId ? this.getRun(action.currentRunId) : null;
-        if (!run || run.status !== 'running' || run.acceptingInput === false) {
-          throw new Error('A running Action closed its input window before the WorkItem message was applied; refresh and try again');
-        }
-      }
-      const now = this.now();
-      const revision = workItem.revision + 1;
-      const message = { id: randomUUID(), text, createdAt: now };
-      const messages = [...(workItem.messages || []), message].slice(-100);
-      this.db.prepare(`UPDATE work_items SET messages = ?, revision = ?, updated_at = ? WHERE id = ?`)
-        .run(stringify(messages), revision, now, id);
-      const updatedWorkItem = { ...workItem, messages, revision };
-      for (const action of openActions) {
-        if (action.status === 'ready') {
-          const instruction = updateActionInstruction(updatedWorkItem, action);
-          const nextGeneration = action.generation + 1;
-          const nextSpecHash = actionSpecHash({ ...action, instruction, generation: nextGeneration });
-          this.db.prepare(`UPDATE actions SET instruction = ?, generation = ?, spec_hash = ?,
-            identity_history = ?, result_run_id = NULL, updated_at = ?
-            WHERE id = ? AND status = 'ready' AND generation = ?`).run(
-            instruction,
-            nextGeneration,
-            nextSpecHash,
-            stringify(actionIdentityHistory(action, nextGeneration, nextSpecHash)),
-            now,
-            action.id,
-            action.generation,
-          );
-          continue;
-        }
-        const run = this.getRun(action.currentRunId);
-        const eventId = this.appendEvent(id, 'work_item.message_applied', { message }, {
-          actionId: action.id,
-          runId: action.currentRunId,
-        });
-        this.db.prepare(`INSERT INTO pending_action_inputs
-          (event_id, work_item_id, action_id, run_id, text, attachments, consumed_at)
-          VALUES (?, ?, ?, ?, ?, '[]', NULL)`).run(
-          eventId,
-          id,
-          action.id,
-          action.currentRunId,
-          `WorkItem-level message: ${text}`,
-        );
-      }
-      this.appendEvent(id, 'work_item.message_added', { message });
-      return this.getWorkItemDetail(id);
     });
   }
 
@@ -2085,9 +2052,17 @@ export class WorkItemStore {
               AND w.status IN ('ready', 'running', 'waiting', 'needs_attention')
               AND NOT EXISTS (
                 SELECT 1 FROM json_each(a.depends_on_stage_ids) dependency
-                LEFT JOIN actions required ON required.work_item_id = a.work_item_id
-                  AND required.stage_id = dependency.value
-                WHERE required.id IS NULL OR required.status != 'completed'
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM actions required
+                  WHERE required.id = (
+                    SELECT canonical.id FROM actions canonical
+                    WHERE canonical.work_item_id = a.work_item_id
+                      AND canonical.stage_id = dependency.value
+                      AND canonical.status NOT IN ('superseded', 'cancelled')
+                    ORDER BY canonical.sequence DESC LIMIT 1
+                  )
+                    AND required.status = 'completed'
+                )
               )
               )
           )
@@ -2688,6 +2663,38 @@ export class WorkItemStore {
     const currentActionId = blocked?.id || runnable?.id || null;
     this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?, current_run_id = NULL,
       updated_at = ? WHERE id = ?`).run(status, currentActionId, now, workItemId);
+  }
+
+  recoverInterruptedCoordinatorTurns() {
+    return withTransaction(this.db, () => {
+      const now = this.now();
+      let recovered = 0;
+      for (const row of this.db.prepare(`SELECT id, messages, coordinator_revision FROM work_items
+        WHERE json_extract(messages, '$[#-1].role') = 'assistant'
+          AND json_extract(messages, '$[#-1].status') = 'thinking'`).all()) {
+        const messages = parseJson(row.messages, []);
+        const index = messages.length - 1;
+        if (index < 0 || messages[index]?.role !== 'assistant' || messages[index]?.status !== 'thinking') continue;
+        messages[index] = {
+          ...messages[index],
+          status: 'failed',
+          updatedAt: now,
+          error: 'Coordinator turn was interrupted before it produced a decision',
+        };
+        const changed = this.db.prepare(`UPDATE work_items SET messages = ?,
+          coordinator_revision = coordinator_revision + 1, updated_at = ?
+          WHERE id = ? AND coordinator_revision = ?`).run(
+          stringify(messages), now, row.id, row.coordinator_revision,
+        );
+        if (Number(changed.changes) !== 1) continue;
+        this.appendEvent(row.id, 'coordinator.turn_interrupted', {
+          turnId: messages[index].turnId || null,
+          error: messages[index].error,
+        });
+        recovered += 1;
+      }
+      return recovered;
+    });
   }
 
   recoverInterruptedRuns(ownerBootId) {

@@ -64,20 +64,6 @@ function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-function workItemMessageView(messages) {
-  return (Array.isArray(messages) ? messages : [])
-    .filter(message => message?.role !== 'assistant'
-      && typeof message?.text === 'string' && message.text)
-    .slice()
-    .sort((left, right) => count(left.createdAt) - count(right.createdAt)
-      || String(left.id).localeCompare(String(right.id)))
-    .map(message => ({
-      messageId: message.id,
-      text: message.text,
-      createdAt: count(message.createdAt),
-    }));
-}
-
 function guidanceView(events, action) {
   return (Array.isArray(events) ? events : [])
     .filter(event => event?.actionId === action?.id
@@ -260,21 +246,7 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
     return false;
   };
   const sessionContext = normalizeSessionContextSnapshot(detail.sessionContext);
-  const workItemMessages = workItemMessageView(detail.messages);
   const guidance = guidanceView(detail.events, action);
-  const newestFirstMessages = workItemMessages.slice().reverse();
-  for (const [index, message] of newestFirstMessages.entries()) {
-    const next = {
-      ...snapshot.userContext,
-      workItemMessages: [message, ...snapshot.userContext.workItemMessages],
-      includedCount: snapshot.userContext.includedCount + 1,
-      omittedCount: 0,
-    };
-    const included = trySet('userContext', next);
-    if (index === 0 && !included) {
-      throw mainlineContextBlocked('Latest WorkItem message exceeds the Mainline prompt budget');
-    }
-  }
   const otherUserEntries = [
     ...guidance.map(value => ({ kind: 'guidance', value })),
     ...sessionContext.map(value => ({ kind: 'sessionContext', value })),
@@ -288,8 +260,7 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
     };
     trySet('userContext', next);
   }
-  snapshot.userContext.omittedCount = workItemMessages.length + otherUserEntries.length
-    - snapshot.userContext.includedCount;
+  snapshot.userContext.omittedCount = otherUserEntries.length - snapshot.userContext.includedCount;
 
   const siblingEntries = Object.entries(projection.canonicalActionResults)
     .filter(([actionId]) => actionId !== action.id && !dependencies.some(item => item.actionId === actionId))

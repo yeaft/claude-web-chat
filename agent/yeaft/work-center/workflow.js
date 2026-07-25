@@ -377,7 +377,7 @@ export function resolvePlanningWorkflowSnapshot(settings, requestedWorkItemType 
   const typeInstruction = requestedType
     ? `The user explicitly selected workItemType "${requestedType}". Keep that exact type.`
     : 'Infer one specific workItemType from the contract.';
-  const triageInstruction = `${normalized.actionInstructions.triage}\n\n${typeInstruction}\nReference workflow catalog:\n${catalog || '(none)'}\nUse the catalog only to understand established task categories and sequencing patterns. Always submit the smallest reliable graph of 1 to 8 task-specific Actions; never omit Actions or copy template brief text. The scheduler can run up to ${normalized.maxConcurrentActions} Actions concurrently. Before submitting, compare each pair of Actions and add a dependency only when one consumes a concrete result or side effect of the other; ordering by narrative, phase name, or list position is not a dependency. Split independent analysis, verification, and repository changes into sibling Actions so the scheduler can use that concurrency. Use workspaceMode read only for Actions guaranteed not to mutate files, Git state, services, or external systems; use isolated-write for independent Git changes, integrate for an integrate Action that combines isolated-write dependencies, and shared for serial side effects. If any Action uses isolated-write, add exactly one Action with type integrate and workspaceMode integrate; it must depend directly on every isolated-write Action, and all later Actions must depend on the integration result rather than an isolated-write Action. Non-Git or dirty workspaces are serialized automatically; do not fake parallelism by marking a mutating Action as read. Every generated Action must state objective, approach, expectedOutcome, capability, dependencies, and workspaceMode. The objective, approach, and expectedOutcome must be specific to this WorkItem and that Action: describe the concrete work, the repository-aware execution method, and the verifiable result that will guide the executor. Generic Action-type boilerplate is invalid. Add only Actions required by this task. Do not copy a generic workflow.`;
+  const triageInstruction = `${normalized.actionInstructions.triage}\n\n${typeInstruction}\nReference workflow catalog:\n${catalog || '(none)'}\nUse the catalog only to understand established task categories and sequencing patterns. Always submit the smallest reliable graph of 1 to 8 task-specific Actions; never omit Actions or copy template brief text. Every graph must end in exactly one final acceptance gate: normally one deliver Action, or one terminal review when no delivery operation is required. The final gate must be the unique graph sink and every other Action must be its transitive dependency, so final acceptance cannot run before required evidence. The scheduler can run up to ${normalized.maxConcurrentActions} Actions concurrently. Before submitting, compare each pair of Actions and add a dependency only when one consumes a concrete result or side effect of the other; ordering by narrative, phase name, or list position is not a dependency. Split independent analysis, verification, and repository changes into sibling Actions so the scheduler can use that concurrency. Use workspaceMode read only for Actions guaranteed not to mutate files, Git state, services, or external systems; use isolated-write for independent Git changes, integrate for an integrate Action that combines isolated-write dependencies, and shared for serial side effects. If any Action uses isolated-write, add exactly one Action with type integrate and workspaceMode integrate; it must depend directly on every isolated-write Action, and all later Actions must depend on the integration result rather than an isolated-write Action. Non-Git or dirty workspaces are serialized automatically; do not fake parallelism by marking a mutating Action as read. Every generated Action must state objective, approach, expectedOutcome, capability, dependencies, and workspaceMode. The objective, approach, and expectedOutcome must be specific to this WorkItem and that Action: describe the concrete work, the repository-aware execution method, and the verifiable result that will guide the executor. Generic Action-type boilerplate is invalid. Add only Actions required by this task. Do not copy a generic workflow.`;
   return normalizeWorkflowDefinition({
     id: 'ai-planned',
     name: 'AI planned',
@@ -428,6 +428,40 @@ export function resolveWorkflowSnapshot(settings, workflowId, stageOverrides = {
       };
     }),
   });
+}
+
+export function validateGeneratedCompletionGate(stages) {
+  const deliverStages = stages.filter(stage => stage.type === 'deliver');
+  if (deliverStages.length > 1) {
+    throw new Error('AI-planned graph requires exactly one final acceptance gate; multiple deliver Actions are not allowed');
+  }
+  const dependents = new Map(stages.map(stage => [stage.id, []]));
+  for (const stage of stages) {
+    for (const dependencyId of stage.dependsOnStageIds || []) {
+      dependents.get(dependencyId)?.push(stage.id);
+    }
+  }
+  const sinks = stages.filter(stage => (dependents.get(stage.id) || []).length === 0);
+  const gate = deliverStages[0]
+    || (sinks.length === 1 && sinks[0].type === 'review' ? sinks[0] : null);
+  if (!gate) {
+    throw new Error('AI-planned graph requires one final deliver Action or one terminal review Action');
+  }
+  if (sinks.length !== 1 || sinks[0].id !== gate.id) {
+    throw new Error(`AI-planned final acceptance gate "${gate.id}" must be the unique graph sink`);
+  }
+  const byId = new Map(stages.map(stage => [stage.id, stage]));
+  const ancestors = new Set();
+  const visit = stageId => {
+    if (ancestors.has(stageId)) return;
+    ancestors.add(stageId);
+    for (const dependencyId of byId.get(stageId)?.dependsOnStageIds || []) visit(dependencyId);
+  };
+  visit(gate.id);
+  const uncovered = stages.filter(stage => !ancestors.has(stage.id)).map(stage => stage.id);
+  if (uncovered.length > 0) {
+    throw new Error(`AI-planned final acceptance gate "${gate.id}" does not cover Actions: ${uncovered.join(', ')}`);
+  }
 }
 
 export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
@@ -591,6 +625,7 @@ export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
       throw new Error(`AI-planned Action "${stage.id}" must consume isolated writes through integration`);
     }
   }
+  validateGeneratedCompletionGate(generated);
   return normalizeWorkflowDefinition({
     ...source,
     executionMode: forceGraph ? 'graph' : source.executionMode,
@@ -679,13 +714,7 @@ function renderContext(context = []) {
 
 export function actionInstruction(stage, workItem, context = [], sessionContextBlock = renderSessionContextSnapshot(workItem?.sessionContext)) {
   const criteria = (workItem.acceptanceCriteria || []).map(item => `- ${item}`).join('\n') || '- No explicit criteria';
-  const userMessages = Array.isArray(workItem.messages)
-    ? workItem.messages.filter(message => message?.role !== 'assistant' && typeof message.text === 'string' && message.text)
-    : [];
-  const workItemMessages = userMessages.length > 0
-    ? `\n\nWorkItem-level user messages (apply to every unfinished Action):\n${userMessages.map(message => `- ${message.text}`).join('\n')}`
-    : '';
-  const common = `WorkItem: ${workItem.title}\nGoal: ${workItem.goal}\nAcceptance criteria:\n${criteria}${sessionContextBlock}${workItemMessages}${renderContext(context)}`;
+  const common = `WorkItem: ${workItem.title}\nGoal: ${workItem.goal}\nAcceptance criteria:\n${criteria}${sessionContextBlock}${renderContext(context)}`;
   const policy = stage.instruction || defaultWorkCenterStageInstruction(stage.type);
   const brief = normalizeActionBrief(stage.brief || stage, stage.type);
   const contract = `Action type: ${stage.type}\nWhat to do:\n${brief.objective}\n\nHow to do it:\n${brief.approach}\n\nExpected result:\n${brief.expectedOutcome}`;

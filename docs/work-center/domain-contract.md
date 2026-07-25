@@ -83,7 +83,7 @@ Event 是 append-only 的人类可读审计记录。每次创建、认领、开�
 
 ## 默认 AI 规划
 
-新 WorkItem 只从目标、验收标准和工作目录创建一个 triage Action。Triage 必须返回受 schema 约束的 `workItemType` 与 1..8 个后续 Action；Controller 校验后在同一个终态事务中冻结计划并创建第一个 Action。Action type 是经过 slug 归一化的可扩展领域类型；内置的 research/design/diagnose/implement/migrate/test/review/document/operate/deliver/write 等类型有专用执行基线，其他类型保留原始领域语义并使用 custom 基线。计划不能指定 VP、模型或 effort。
+新 WorkItem 只从目标、验收标准和工作目录创建一个 triage Action。Triage 必须返回受 schema 约束的 `workItemType` 与 1..8 个后续 Action；Controller 校验后在同一个终态事务中冻结计划并创建第一个 Action。每个 graph 必须恰好有一个 final acceptance gate：通常是唯一的 deliver sink；无交付操作时可以是唯一 terminal review。全图其他 Action 都必须是该 gate 的传递祖先。这个 validator 同时用于初始计划、additive proposal 和 Coordinator replan。Action type 是经过 slug 归一化的可扩展领域类型；内置的 research/design/diagnose/implement/migrate/test/review/document/operate/deliver/write 等类型有专用执行基线，其他类型保留原始领域语义并使用 custom 基线。计划不能指定 VP、模型或 effort。
 
 Action 只绑定任务类型、能力和执行隔离约束，实际 VP 在 Run claim 后从当前 Agent VP 池动态选择。AI 规划 WorkItem 的模型和 effort 在每次 Run 开始时读取当前 Work Center policy，并固化到 Run snapshot；旧的显式 workflow WorkItem 继续使用创建时冻结的 policy。Provider 凭证仍由 Agent LLM 设置管理，不写入 Work Center。
 
@@ -93,7 +93,7 @@ Work Center memory 有两条受 `reuseMemory` 控制的路径：同 canonical wo
 
 ## WorkItem Coordinator
 
-用户默认与 WorkItem 级 Coordinator 对话，而不是直接把自然语言塞给某个执行 Action。Coordinator 使用独立的 model/effort policy，不拥有文件、Shell 或外部副作用工具，只能返回三类结构化决策：解释当前状态、给一个或多个未完成 Action 下发指令、或者修改合同并重规划完整的未完成 Action 图。schema 18 以前的 `messages` 是已注入执行器的全局指令，迁移后标记为 `legacy_instruction`，只作为历史上下文展示，不能伪装成已经由 Coordinator 回复过的 user turn。
+用户默认与 WorkItem 级 Coordinator 对话，而不是直接把自然语言塞给某个执行 Action。Coordinator 使用独立的 model/effort policy，不拥有文件、Shell 或外部副作用工具，只能返回三类结构化决策：解释当前状态、给一个或多个未完成 Action 下发指令、或者修改合同并重规划完整的未完成 Action 图。schema 18 以前的 `messages` 是已注入执行器的全局指令，迁移后标记为 `legacy_instruction`，只作为历史上下文展示，不能伪装成已经由 Coordinator 回复过的 user turn，也不能再次注入 executor prompt。Coordinator 的 raw user/assistant turns 同样只属于 conversation；只有结构化 `guide_actions` 或 `replan` 决策可以改变 Action instruction/context 或合同/图。
 
 Coordinator turn 在模型调用前同步持久化用户消息和 `thinking` 占位，并冻结 `revision + planRevision + ledgerRevision + coordinatorRevision`。模型返回后，合同、图、Action generation、Run supersede、审计事件和回复在同一个 `BEGIN IMMEDIATE` 事务中提交；任一 fence 已变化就拒绝旧决策。已完成 Action 和 canonical evidence 永不被重写。Action 页面只承担执行记录与 waiting/failed 恢复，不能修改整个 WorkItem 目标。
 
@@ -117,11 +117,13 @@ Coordinator turn 在模型调用前同步持久化用户消息和 `thinking` 占
 16. failed Action 的显式重试必须固定目标 Action identity，图流程原地 reset 该 Action 及受影响下游，并保留无关 sibling Run、stage、依赖、workspace、分配/模型策略和历史 context。
 17. AI 规划 WorkItem 在 triage 完成时固化任务类型和 Action 流，但每次 Run 使用当时的 Work Center model/effort policy；旧显式 workflow WorkItem 仍使用创建时固化的 policy snapshot。
 18. Settings 使用 revision compare-and-swap；并发旧版本保存必须拒绝并要求重新加载。
-19. 中间 test Action 只验证自身的 task-specific expected result，可以把未到达的全局标准标记为 deferred；只有 deliver 和没有下游工作的 approved review 才要求全部 WorkItem 验收条件 passed。
+19. 中间 test Action 只验证自身的 task-specific expected result，可以把未到达的全局标准标记为 deferred；只有唯一 final gate（deliver，或无 deliver 时覆盖全图的 terminal approved review）才要求全部 WorkItem 验收条件 passed。
+20. 同一个 WorkItem 的每个 active stageId 只能绑定一个 canonical Action；历史 superseded/cancelled 行不参与依赖满足判断。依赖只认当前 canonical completed Action。
+21. Agent 启动打开 store 时，遗留的 Coordinator `thinking` turn 必须原子转成 interrupted/failed 并递增 `coordinatorRevision`，否则不得永久阻塞后续消息。
 
 ## 恢复策略
 
-- Agent 每次启动生成 `ownerBootId`。
+- Agent 每次启动生成 `ownerBootId`；store 打开时先恢复遗留 Coordinator thinking turn。
 - `running` Run 如果 bootId 不同或 `expiresAt` 过期，则标记 `interrupted`。
 - 无已知副作用的 Action 且未超过 `maxAttempts`：重新置为 ready。
 - deliver 或存在不确定副作用：WorkItem 进入 `needs_attention`，不得自动重试。

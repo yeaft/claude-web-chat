@@ -1579,6 +1579,7 @@ export default {
   'workCenter.legacyInstruction': 'Earlier Work Item instruction',
   'workCenter.coordinatorScope': 'Discuss the goal, acceptance criteria, plan, blockers, or next steps for the whole Work Item.',
   'workCenter.coordinatorReady': 'Ready',
+  'workCenter.coordinatorReadOnly': 'This Work Item is closed. Coordinator history remains available, but new changes require a new Work Item.',
   'workCenter.coordinatorThinking': 'Coordinating…',
   'workCenter.coordinatorThinkingHint': 'Reviewing the current contract and Action graph…',
   'workCenter.coordinatorEmptyTitle': 'Coordinate the whole Work Item here',

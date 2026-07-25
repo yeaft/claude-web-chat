@@ -4,6 +4,7 @@ import {
   canonicalActionId,
   canonicalExplicitActionId,
   canonicalExplicitActionIds,
+  validateGeneratedCompletionGate,
 } from './workflow.js';
 
 function cleanProposalId(value) {
@@ -174,9 +175,15 @@ export function applyAdditivePlanProposal({ workItem, actions, proposal, availab
     }),
     ...canonicalActions,
   ];
+  const orderedActions = stableTopologicalActions(mergedActions);
+  validateGeneratedCompletionGate(orderedActions.map(action => ({
+    id: action.id,
+    type: action.type,
+    dependsOnStageIds: action.dependsOnActionIds || [],
+  })));
   const rawPlan = {
     workItemType: workItem.workflowSnapshot.workItemType,
-    actions: stableTopologicalActions(mergedActions),
+    actions: orderedActions,
   };
   const workflowSnapshot = applyGeneratedPlan(synthetic, rawPlan, { availableVpIds });
   const addedStages = workflowSnapshot.stages.filter(stage => addedIds.has(stage.id));

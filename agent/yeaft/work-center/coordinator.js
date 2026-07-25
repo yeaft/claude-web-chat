@@ -35,6 +35,7 @@ Decision rules:
 - answer: use for explanation or status questions. Do not include contractPatch, guidance, or actions.
 - guide_actions: use only when the contract and graph stay valid. guidance must contain one or more {"stageId":"existing unfinished stage id","instruction":"specific next instruction"}. Do not include contractPatch or actions.
 - replan: use when the WorkItem contract or unfinished topology changes. contractPatch may be null or contain title, goal, and/or acceptanceCriteria. actions must be the COMPLETE desired unfinished Action graph after this decision; omit completed Actions. Each Action requires id, name, type, objective, approach, expectedOutcome, capability, candidateVpIds, assignmentReason, dependsOnActionIds, workspaceMode, and may include separateFromActionTypes, changesRequestedActionId, maxAttempts. Dependencies may reference immutable completed stage ids or earlier Actions in this actions array.
+- Every replan must keep exactly one final acceptance gate: normally one deliver Action, or one terminal review when no delivery operation is required. It must be the unique graph sink and transitively depend on all other Actions.
 - Never return destructive cancellation. Tell the user to use the explicit cancel control instead.`;
 
 function parseJsonObject(value) {
@@ -214,7 +215,7 @@ export class WorkItemCoordinator {
   }
 
   message(id, input = {}, options = {}) {
-    if (this.shuttingDown) return Promise.reject(new Error('Work Center Coordinator is shutting down'));
+    if (this.shuttingDown) throw new Error('Work Center Coordinator is shutting down');
     const text = cleanText(input.text, COORDINATOR_MAX_REPLY_CHARS, 'message');
     const started = this.store.beginCoordinatorTurn(id, text, {
       revision: Number(input.revision),
@@ -222,7 +223,7 @@ export class WorkItemCoordinator {
       ledgerRevision: Number(input.ledgerRevision),
       coordinatorRevision: Number(input.coordinatorRevision),
     });
-    if (!started) return Promise.reject(new Error(`WorkItem not found: ${id}`));
+    if (!started) throw new Error(`WorkItem not found: ${id}`);
     options.onUpdate?.('coordinator.turn_started', started.detail);
 
     const abortController = new AbortController();

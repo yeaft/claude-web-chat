@@ -40,7 +40,7 @@ describe('Mainline projection', () => {
 
 
 
-  it('includes WorkItem messages in every Action while isolating Action-scoped input', () => {
+  it('keeps Coordinator conversation out of executor prompts while isolating Action-scoped input', () => {
     const actionA = {
       id: 'action-a', sequence: 1, stageId: 'action-a', type: 'research', status: 'ready',
       generation: 1, specHash: 'action-a-v1', dependsOnStageIds: [],
@@ -52,6 +52,7 @@ describe('Mainline projection', () => {
     const input = detail({
       actions: [actionA, actionB],
       messages: [
+        { id: 'legacy', role: 'legacy_instruction', text: 'Already consumed legacy direction', createdAt: 9 },
         { id: 'message-1', role: 'user', text: 'Apply this to every unfinished Action', createdAt: 10 },
         { id: 'message-2', role: 'assistant', text: 'Coordinator internal reply', createdAt: 11 },
       ],
@@ -70,11 +71,11 @@ describe('Mainline projection', () => {
     const snapshotA = buildMainlineContextSnapshot(input, actionA).contextSnapshot;
     const snapshotB = buildMainlineContextSnapshot(input, actionB).contextSnapshot;
 
-    expect(snapshotA.userContext.workItemMessages).toEqual([
-      expect.objectContaining({ messageId: 'message-1', text: 'Apply this to every unfinished Action' }),
-    ]);
-    expect(snapshotB.userContext.workItemMessages).toEqual(snapshotA.userContext.workItemMessages);
-    expect(JSON.stringify(snapshotA)).not.toContain('Coordinator internal reply');
+    expect(snapshotA.userContext.workItemMessages).toEqual([]);
+    expect(snapshotB.userContext.workItemMessages).toEqual([]);
+    expect(JSON.stringify(snapshotA)).not.toContain('Already consumed legacy direction');
+    expect(JSON.stringify(snapshotA)).not.toContain('Apply this to every unfinished Action');
+    expect(JSON.stringify(snapshotB)).not.toContain('Coordinator internal reply');
     expect(snapshotA.userContext.guidance).toEqual([
       expect.objectContaining({ actionId: actionA.id, text: 'Only Action A may use this' }),
     ]);

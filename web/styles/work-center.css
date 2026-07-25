@@ -2054,6 +2054,16 @@
   font-size: 12px;
 }
 
+.work-center-coordinator-readonly {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-input-wrapper);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .work-center-item-message-input {
   width: 100%;
   max-width: none;

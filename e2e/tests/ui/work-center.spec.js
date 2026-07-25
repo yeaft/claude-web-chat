@@ -63,6 +63,7 @@ const OPEN_ITEM = {
   title: 'Fix Work Center layout',
   goal: 'Keep the Work Center usable at every supported viewport width.',
   status: 'running',
+  boardLane: 'active',
   updatedAt: Date.now(),
   currentAction: { id: 'action-1', type: 'implement', requiredRole: 'developer' },
   coordinatorRevision: 0,
@@ -131,6 +132,7 @@ function detailWithActions(count) {
 const FAILED_ITEM = {
   ...OPEN_ITEM,
   status: 'needs_attention',
+  boardLane: 'needs_attention',
   title: 'Local run',
 };
 
@@ -245,10 +247,23 @@ async function openWorkCenter(chatPage, mockAgent, items = [OPEN_ITEM]) {
 
   const responses = (async () => {
     const data = { items, watcher: { enabled: true } };
-    const responses = { list: data, get_settings: WORK_CENTER_SETTINGS };
-    await respondByOperation(mockAgent, responses);
-    await respondByOperation(mockAgent, responses);
-    await respondByOperation(mockAgent, responses);
+    const responseMap = { list: data, get_settings: WORK_CENTER_SETTINGS };
+    for (let index = 0; index < 8; index++) {
+      await respondByOperation(mockAgent, responseMap);
+      await chatPage.waitForTimeout(25);
+      const ready = await chatPage.evaluate(expectedCount => {
+        const store = window.Pinia.useChatStore();
+        const agentId = store.workCenterAgentId;
+        return store.workCenterLoadedByAgent[agentId] === true
+          && store.workCenterLoadingByAgent[agentId] !== true
+          && (store.workCenterItemsByAgent[agentId] || []).length === expectedCount
+          && !!store.workCenterSettingsByAgent[agentId]
+          && !Object.values(store.workCenterPending)
+            .some(entry => ['list', 'get_settings'].includes(entry.op));
+      }, items.length);
+      if (ready) return;
+    }
+    throw new Error('Work Center board did not settle after fixture responses');
   })();
 
   await chatPage.locator('.sidebar-work-center-agent').first().click();
@@ -313,28 +328,28 @@ test.describe('Work Center responsive UI', () => {
     }
   });
 
-  test('uses three wide-desktop panes and single-pane drilldown when sidebar space is constrained', async ({ chatPage, mockAgent }) => {
+  test('uses single-pane drilldown at wide and constrained widths', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 1600, height: 900 });
     const select = chatPage.locator('.work-center-card').click();
     await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
     await select;
 
-    let metrics = await layoutMetrics(chatPage);
-    expect(metrics.list.width).toBeGreaterThan(0);
-    expect(metrics.detail.width).toBeGreaterThan(0);
-    expect(metrics.actionDetail.width).toBeGreaterThan(0);
-    expect(metrics.list.right).toBeLessThanOrEqual(metrics.detail.x + 1);
-    expect(metrics.detail.right).toBeLessThanOrEqual(metrics.actionDetail.x + 1);
-
-    await chatPage.setViewportSize({ width: 1024, height: 900 });
-    await chatPage.waitForTimeout(250);
     await expect(chatPage.locator('.work-center-list')).toBeHidden();
     await expect(chatPage.locator('.work-center-detail')).toBeVisible();
     await expect(chatPage.locator('.work-center-action-detail-pane')).toBeHidden();
     await chatPage.locator('.work-center-action-summary').click();
     await expect(chatPage.locator('.work-center-detail')).toBeHidden();
     await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
+
+    await chatPage.setViewportSize({ width: 1024, height: 900 });
+    await chatPage.waitForTimeout(250);
+    await expect(chatPage.locator('.work-center-list')).toBeHidden();
+    await expect(chatPage.locator('.work-center-detail')).toBeHidden();
+    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
+    const metrics = await layoutMetrics(chatPage);
+    expect(metrics.mainScrollWidth).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
+    expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
     await chatPage.locator('.work-center-action-detail-pane > .work-center-action-detail-header .work-center-icon-button').click();
     await expect(chatPage.locator('.work-center-detail')).toBeVisible();
     await chatPage.locator('.work-center-breadcrumbs button').first().click();
@@ -348,9 +363,9 @@ test.describe('Work Center responsive UI', () => {
     await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
     await select;
 
-    await expect(chatPage.locator('.work-center-list')).toBeVisible();
+    await expect(chatPage.locator('.work-center-list')).toBeHidden();
     await expect(chatPage.locator('.work-center-detail')).toBeVisible();
-    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
+    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeHidden();
 
     await chatPage.locator('.session-sidebar-shell .sidebar-icon-btn[title="Workbench"]').click();
     await expect(chatPage.locator('.workbench-panel')).toHaveClass(/expanded/);
@@ -370,14 +385,16 @@ test.describe('Work Center responsive UI', () => {
     await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
     await select;
 
+    await chatPage.locator('.work-center-action-summary').click();
+    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
     await chatPage.locator('.session-sidebar-shell .sidebar-icon-btn[title="Workbench"]').click();
     await expect(chatPage.locator('.workbench-panel')).toHaveClass(/expanded/);
 
     await resizeWorkbenchForMainWidth(chatPage, 1280);
     let metrics = await layoutMetrics(chatPage);
     expect(metrics.main.width).toBeGreaterThan(1250);
-    await expect(chatPage.locator('.work-center-list')).toBeVisible();
-    await expect(chatPage.locator('.work-center-detail')).toBeVisible();
+    await expect(chatPage.locator('.work-center-list')).toBeHidden();
+    await expect(chatPage.locator('.work-center-detail')).toBeHidden();
     await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
     expect(metrics.mainScrollWidth).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
     expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
@@ -387,8 +404,8 @@ test.describe('Work Center responsive UI', () => {
     expect(metrics.main.width).toBeGreaterThan(1160);
     expect(metrics.main.width).toBeLessThanOrEqual(1250);
     await expect(chatPage.locator('.work-center-list')).toBeHidden();
-    await expect(chatPage.locator('.work-center-detail')).toBeVisible();
-    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeHidden();
+    await expect(chatPage.locator('.work-center-detail')).toBeHidden();
+    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
     expect(metrics.mainScrollWidth).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
     expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
   });
@@ -531,6 +548,7 @@ test.describe('Work Center responsive UI', () => {
     const detail = detailWithActions(2);
     delete detail.actions[0].messages;
     delete detail.actions[0].response;
+    detail.actions[0].brief = { ...detail.actions[0].brief, objective: 'Historical Action' };
     detail.actions[0].messageCount = 1;
     detail.actions[0].messageCursor = '1';
     await openWorkCenter(chatPage, mockAgent);
@@ -549,12 +567,12 @@ test.describe('Work Center responsive UI', () => {
       nextCursor: null,
       total: 1,
     });
-    await chatPage.locator('.work-center-action-card').first().click();
+    await chatPage.locator('.work-center-action-card', { hasText: 'Historical Action' }).click();
     const request = await messagesResponse;
 
     expect(request.payload).toEqual({
       id: OPEN_ITEM.id, actionId: detail.actions[0].id,
-      generation: detail.actions[0].generation, cursor: null, limit: 20,
+      generation: 1, cursor: null, limit: 20,
     });
     await expect(chatPage.locator('.work-center-action-message')).toContainText('Historical AI response loaded on selection.');
   });
@@ -586,7 +604,7 @@ test.describe('Work Center responsive UI', () => {
     await expect(actionDetail.locator('.work-center-action-execution')).toBeHidden();
 
     const indexResponse = respondToWorkCenterOp(mockAgent, 'get_action_requests', ACTION_REQUEST_INDEX);
-    await actionDetail.getByRole('tab', { name: 'Execution' }).click();
+    await actionDetail.getByRole('tab', { name: 'Execution', exact: true }).click();
     const execution = actionDetail.locator('.work-center-action-execution');
     await expect(execution).toBeVisible();
     const indexRequest = await indexResponse;
@@ -720,16 +738,15 @@ test.describe('Work Center responsive UI', () => {
     });
     await expect(chatPage.locator('html')).toHaveAttribute('data-theme', 'dark');
     await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
-    await expect(chatPage.locator('.work-center-action-composer textarea')).toBeVisible();
+    await expect(chatPage.locator('.work-center-action-composer')).toHaveCount(0);
 
     const metrics = await layoutMetrics(chatPage);
     expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.viewportWidth);
     expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
-    const colors = await chatPage.locator('.work-center-action-input-wrapper').evaluate(element => {
+    const colors = await chatPage.locator('.work-center-action-transcript').evaluate(element => {
       const style = getComputedStyle(element);
       return { background: style.backgroundColor, text: style.color };
     });
-    expect(colors.background).not.toBe('rgba(0, 0, 0, 0)');
     expect(colors.text).not.toBe(colors.background);
   });
 
@@ -761,11 +778,8 @@ test.describe('Work Center responsive UI', () => {
       data: WORK_CENTER_SETTINGS,
     });
     await expect(workDir).toHaveValue('/tmp/test');
-    await createModal.locator('input').first().fill('Visible directory');
-    await createModal.locator('textarea').first().fill('Use the directory shown in the form');
-    await expect(createModal.locator('select').first()).toHaveValue('auto');
-    expect(await createModal.locator('select').first().locator('option').allTextContents())
-      .toContain('Software change');
+    await createModal.getByRole('textbox', { name: /Requirement/ })
+      .fill('Use the directory shown in the form');
     const createRequest = respondToWorkCenterOp(mockAgent, 'create', OPEN_ITEM_DETAIL);
     await createModal.getByRole('button', { name: 'Create', exact: true }).click();
     const request = await createRequest;
@@ -856,7 +870,7 @@ test.describe('Work Center responsive UI', () => {
     await chatPage.getByRole('button', { name: 'Models', exact: true }).click();
     const modelStages = chatPage.locator('.work-center-model-stage');
     await expect(modelStages).toHaveCount(expectedModelPolicyCount());
-    await expect(modelStages.first()).toContainText('Coordinator');
+    await expect(modelStages.filter({ hasText: 'Coordinator' })).toHaveCount(1);
     const modelStage = modelStages.last();
     await expect(modelStage).toContainText('Fallback for all Actions');
     const effort = modelStage.locator('.work-center-model-effort');
@@ -981,11 +995,12 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage.locator('.work-center-plan-preview')).toContainText('Triage chooses the task type');
     await expect(chatPage.locator('.work-center-plan-stages')).toHaveCount(0);
 
-    await chatPage.locator('.work-center-modal input').first().fill('Fix dynamic planning');
-    await chatPage.locator('.work-center-modal textarea').first().fill('Let AI choose the smallest safe flow');
+    await chatPage.locator('.work-center-modal').getByRole('textbox', { name: /Requirement/ })
+      .fill('Fix dynamic planning with the smallest safe flow');
     const createRequest = respondToWorkCenterOp(mockAgent, 'create', OPEN_ITEM_DETAIL);
     await chatPage.getByRole('button', { name: 'Create', exact: true }).click();
     const request = await createRequest;
+    expect(request.payload.workItemType).toBe('auto');
     expect(request.payload).not.toHaveProperty('workflowTemplate');
     expect(request.payload).not.toHaveProperty('stageOverrides');
   });
@@ -993,8 +1008,8 @@ test.describe('Work Center responsive UI', () => {
   test('uploads files and binds their references to the Work Item create request', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.locator('.work-center-header-create').click();
-    await chatPage.locator('.work-center-modal input').first().fill('Inspect uploaded screenshot');
-    await chatPage.locator('.work-center-modal textarea').first().fill('Use the screenshot in every Action');
+    await chatPage.locator('.work-center-modal').getByRole('textbox', { name: /Requirement/ })
+      .fill('Inspect the uploaded screenshot in every Action');
 
     const upload = chatPage.waitForResponse(response => response.url().includes('/api/upload') && response.request().method() === 'POST');
     await chatPage.locator('.work-center-attachment-picker input').setInputFiles({
@@ -1014,10 +1029,10 @@ test.describe('Work Center responsive UI', () => {
     })]);
   });
 
-  test('uploads files with Action input and forwards owned references', async ({ chatPage, mockAgent }) => {
-    await openWorkCenter(chatPage, mockAgent);
+  test('uploads files with Action recovery input and forwards owned references', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent, [FAILED_ITEM]);
     const select = chatPage.locator('.work-center-card').click();
-    await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
+    await respondToWorkCenterOp(mockAgent, 'get', FAILED_ITEM_DETAIL, [FAILED_ITEM]);
     await select;
     await chatPage.locator('.work-center-action-summary').click();
 
@@ -1029,10 +1044,12 @@ test.describe('Work Center responsive UI', () => {
     await upload;
     await expect(composer.locator('.work-center-attachment-chip')).toContainText('follow-up.txt');
 
-    const inputRequest = respondToWorkCenterOp(mockAgent, 'action_input', OPEN_ITEM_DETAIL);
-    await composer.getByRole('button', { name: 'Send input' }).click();
+    const inputRequest = respondToWorkCenterOp(mockAgent, 'action_input', FAILED_ITEM_DETAIL, [FAILED_ITEM]);
+    await composer.getByRole('button', { name: 'Send and retry Action' }).click();
     const request = await inputRequest;
-    await respondToWorkCenterOp(mockAgent, 'list', { items: [OPEN_ITEM], watcher: { enabled: true } });
+    await respondToWorkCenterOp(
+      mockAgent, 'list', { items: [FAILED_ITEM], watcher: { enabled: true } }, [FAILED_ITEM],
+    );
     expect(request.payload).toMatchObject({
       id: OPEN_ITEM.id, actionId: 'action-1', revision: 1,
       attachments: [expect.objectContaining({
@@ -1041,15 +1058,19 @@ test.describe('Work Center responsive UI', () => {
     });
   });
 
-  test('uses filter-specific headings and empty states', async ({ chatPage, mockAgent }) => {
+  test('uses mobile board lane tabs and lane-specific empty states', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
+    await chatPage.setViewportSize({ width: 720, height: 780 });
 
-    await chatPage.getByRole('button', { name: 'Done', exact: true }).click();
-    await expect(chatPage.getByRole('heading', { name: 'No completed work items' })).toBeVisible();
-    await expect(chatPage.locator('.work-center-empty-state button')).toHaveCount(0);
+    await chatPage.getByRole('tab', { name: /Closed/ }).click();
+    const closedLane = chatPage.locator('.work-center-board-lane[data-lane="closed"]');
+    await expect(closedLane).toBeVisible();
+    await expect(closedLane.locator('.work-center-board-empty')).toHaveText('No work items');
+    await expect(closedLane.locator('.work-center-card')).toHaveCount(0);
 
-    await chatPage.getByRole('button', { name: 'All', exact: true }).click();
-    await expect(chatPage.locator('.work-center-list-heading')).toContainText('All work items');
-    await expect(chatPage.locator('.work-center-card')).toHaveCount(1);
+    await chatPage.getByRole('tab', { name: /Active/ }).click();
+    const activeLane = chatPage.locator('.work-center-board-lane[data-lane="active"]');
+    await expect(activeLane).toBeVisible();
+    await expect(activeLane.locator('.work-center-card')).toHaveCount(1);
   });
 });

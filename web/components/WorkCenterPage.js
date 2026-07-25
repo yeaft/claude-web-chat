@@ -142,6 +142,9 @@ export default {
         message?.role === 'assistant' && message.status === 'thinking'
       ));
     },
+    coordinatorReadOnly() {
+      return ['done', 'cancelled'].includes(this.selected?.status);
+    },
     actionMessages() {
       const current = Array.isArray(this.selectedAction?.messages) ? this.selectedAction.messages : [];
       const earlier = this.store.workCenterActionMessages[this.actionMessageKey]?.messages || [];
@@ -818,7 +821,8 @@ export default {
       await this.store.startWorkItem(this.selected.id, this.agentId);
     },
     async sendSelectedWorkItemMessage() {
-      if (!this.selected || !this.workItemMessage.trim() || this.workItemMessageSending || this.coordinatorThinking) return;
+      if (!this.selected || !this.workItemMessage.trim() || this.workItemMessageSending
+          || this.coordinatorThinking || this.coordinatorReadOnly) return;
       const scope = this.workItemComposerScope;
       const itemId = this.selected.id;
       const revision = this.selected.revision;
@@ -1155,7 +1159,8 @@ export default {
                     <p>{{ tr('workCenter.coordinatorEmptyBody', 'Ask what is blocked, change the target, narrow the acceptance criteria, or request a new plan. The Coordinator will update unfinished Actions safely.') }}</p>
                   </div>
                   <p v-if="workItemMessageError" class="work-center-error" role="alert">{{ workItemMessageError }}</p>
-                  <div class="input-wrapper work-center-item-message-input">
+                  <p v-if="coordinatorReadOnly" class="work-center-coordinator-readonly">{{ tr('workCenter.coordinatorReadOnly', 'This Work Item is closed. Coordinator history remains available, but new changes require a new Work Item.') }}</p>
+                  <div v-else class="input-wrapper work-center-item-message-input">
                     <div class="textarea-wrapper">
                       <textarea v-model="workItemMessage" rows="1" :disabled="coordinatorThinking" :placeholder="tr('workCenter.coordinatorPlaceholder', 'Message the Coordinator about the whole Work Item')" @keydown.enter.exact.prevent="sendSelectedWorkItemMessage"></textarea>
                     </div>

@@ -193,18 +193,6 @@ export class WorkflowController {
     return detail;
   }
 
-  message(id, input = {}) {
-    const text = typeof input.text === 'string' ? input.text.trim().slice(0, 8_000) : '';
-    if (!text) throw new Error('WorkItem message is required');
-    const revision = Number(input.revision);
-    if (!Number.isInteger(revision)) throw new Error('revision is required for WorkItem messages');
-    const detail = this.store.addWorkItemMessage(id, text, revision, (workItem, action) => (
-      actionInstruction(action, workItem, action.context || [], renderSessionContextSnapshot(workItem.sessionContext))
-    ));
-    if (!detail) throw new Error(`WorkItem not found: ${id}`);
-    return detail;
-  }
-
   input(id, input = {}) {
     const text = typeof input.text === 'string' ? input.text.trim().slice(0, 8_000) : '';
     const addedAttachmentCount = Math.max(0, Number(input.addedAttachmentCount) || 0);

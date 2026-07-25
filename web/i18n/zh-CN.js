@@ -1575,6 +1575,7 @@ export default {
   'workCenter.legacyInstruction': '早期 Work Item 指令',
   'workCenter.coordinatorScope': '讨论整个 Work Item 的目标、验收条件、计划、阻塞或下一步。',
   'workCenter.coordinatorReady': '可随时沟通',
+  'workCenter.coordinatorReadOnly': '这个 Work Item 已关闭。你仍可查看 Coordinator 历史；新的变更请创建新的 Work Item。',
   'workCenter.coordinatorThinking': '正在协调…',
   'workCenter.coordinatorThinkingHint': '正在检查当前合同和 Action 图…',
   'workCenter.coordinatorEmptyTitle': '在这里协调整个 Work Item',
