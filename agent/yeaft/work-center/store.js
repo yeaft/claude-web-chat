@@ -197,6 +197,29 @@ function actionIdentityHistory(action, generation = action?.generation, specHash
   return [...byGeneration.values()].sort((left, right) => left.generation - right.generation).slice(-100);
 }
 
+function canonicalActionInstruction(workItem, action) {
+  const workflowSnapshot = workItem?.workflowSnapshot || null;
+  const workflowStage = (Array.isArray(workflowSnapshot?.stages) ? workflowSnapshot.stages : [])
+    .find(candidate => candidate?.id === action.stageId);
+  const stage = {
+    ...(workflowStage || {}),
+    id: action.stageId,
+    type: action.type,
+    instruction: workflowStage?.instruction
+      || workflowSnapshot?.actionInstructions?.[action.type]
+      || workflowSnapshot?.actionInstructions?.custom
+      || '',
+    brief: action.brief || workflowStage?.brief || workflowStage || null,
+    assignmentPolicy: action.assignmentPolicy,
+    modelPolicy: action.modelPolicy,
+    dependsOnStageIds: action.dependsOnStageIds,
+    workspaceMode: action.workspaceMode,
+    changesRequestedStageId: action.changesRequestedStageId,
+    maxAttempts: action.maxAttempts,
+  };
+  return actionInstruction(stage, workItem, action.context);
+}
+
 function mapRun(row) {
   if (!row) return null;
   return {
@@ -335,31 +358,14 @@ function repairLegacyActionInstructions(db, now) {
   for (const row of legacyActions) {
     const action = mapAction(row);
     const workflowSnapshot = parseJson(row.work_item_workflow_snapshot, null);
-    const workflowStage = (Array.isArray(workflowSnapshot?.stages) ? workflowSnapshot.stages : [])
-      .find(candidate => candidate?.id === action.stageId);
-    const stage = {
-      ...(workflowStage || {}),
-      id: action.stageId,
-      type: action.type,
-      instruction: workflowStage?.instruction
-        || workflowSnapshot?.actionInstructions?.[action.type]
-        || workflowSnapshot?.actionInstructions?.custom
-        || '',
-      brief: action.brief || workflowStage?.brief || workflowStage || null,
-      assignmentPolicy: action.assignmentPolicy,
-      modelPolicy: action.modelPolicy,
-      dependsOnStageIds: action.dependsOnStageIds,
-      workspaceMode: action.workspaceMode,
-      changesRequestedStageId: action.changesRequestedStageId,
-      maxAttempts: action.maxAttempts,
-    };
     const workItem = {
       title: row.work_item_title,
       goal: row.work_item_goal,
       acceptanceCriteria: parseJson(row.work_item_acceptance_criteria, []),
+      workflowSnapshot,
       sessionContext: parseJson(row.work_item_session_context, []),
     };
-    const instruction = actionInstruction(stage, workItem, action.context);
+    const instruction = canonicalActionInstruction(workItem, action);
     const generation = action.generation + 1;
     const specHash = actionSpecHash({ ...action, instruction });
     const priorIdentityHistory = actionIdentityHistory(action);
@@ -1059,6 +1065,8 @@ export class WorkItemStore {
   }
 
   #resetGraphFromStage(workItemId, targetStageId, replacement, reason, now) {
+    const workItem = this.getWorkItem(workItemId);
+    if (!workItem) throw new Error('Work Center graph reset WorkItem is missing');
     const actions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
       AND status NOT IN ('superseded', 'cancelled') ORDER BY sequence`).all(workItemId).map(mapAction);
     const target = actions.find(action => action.stageId === targetStageId);
@@ -1095,11 +1103,14 @@ export class WorkItemStore {
         const nextAction = action.id === target.id && replacement
           ? { ...action, ...replacement, generation: action.generation + 1 }
           : { ...action, generation: action.generation + 1 };
+        nextAction.instruction = action.id === target.id && replacement
+          ? replacement.instruction || canonicalActionInstruction(workItem, nextAction)
+          : canonicalActionInstruction(workItem, nextAction);
         const nextSpecHash = actionSpecHash(nextAction);
         this.db.prepare(`UPDATE actions SET status = 'ready', attempt = 0, current_run_id = NULL,
-          lease_epoch = ?, generation = generation + 1, spec_hash = ?, identity_history = ?, result_run_id = NULL,
-          workspace = ?, updated_at = ? WHERE id = ?`).run(
-          nextEpoch.get(action.id), nextSpecHash,
+          lease_epoch = ?, generation = generation + 1, instruction = ?, spec_hash = ?, identity_history = ?,
+          result_run_id = NULL, workspace = ?, updated_at = ? WHERE id = ?`).run(
+          nextEpoch.get(action.id), nextAction.instruction, nextSpecHash,
           stringify(actionIdentityHistory(action, nextAction.generation, nextSpecHash)),
           stringify(workspace), now, action.id,
         );
@@ -1112,6 +1123,8 @@ export class WorkItemStore {
         generation: target.generation + 1,
         contractRevision: replacement.contractRevision ?? target.contractRevision,
       };
+      replacementAction.instruction = replacement.instruction
+        || canonicalActionInstruction(workItem, replacementAction);
       const specHash = actionSpecHash(replacementAction);
       this.db.prepare(`UPDATE actions SET type = ?, required_role = ?, assignment_policy = ?,
         model_policy = ?, depends_on_stage_ids = ?, workspace_mode = ?, changes_requested_stage_id = ?,
@@ -1124,7 +1137,7 @@ export class WorkItemStore {
         stringify(Array.isArray(replacement.dependsOnStageIds) ? replacement.dependsOnStageIds : []),
         replacement.workspaceMode || 'shared',
         replacement.changesRequestedStageId || null,
-        replacement.instruction || '',
+        replacementAction.instruction,
         stringify(replacement.brief || null),
         stringify(Array.isArray(replacement.context) ? replacement.context : []),
         Number.isInteger(replacement.maxAttempts) ? replacement.maxAttempts : 2,
