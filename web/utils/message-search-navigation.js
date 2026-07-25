@@ -19,7 +19,9 @@ export function persistedMessageIdsForRenderedItem(item) {
 }
 
 export function shouldDismissHistorySearch(target) {
-  return !target?.closest?.('.yeaft-conversation-outline, .yeaft-search-btn');
+  return !target?.closest?.(
+    '.yeaft-conversation-outline, .yeaft-conversation-outline-sender-menu, .yeaft-search-btn',
+  );
 }
 
 export async function revealOutlineResult({ result, revealWindow, nextTick, revealMessage, isMobile, closeOutline }) {
