@@ -38,6 +38,16 @@ describe('message flow regressions', () => {
       vpId: 'vp-1',
       turnId: 'turn-1',
     });
+
+    expect(store.messagesMap['conv-1']).toHaveLength(1);
+    expect(store.messagesMap['conv-1'][0]).toMatchObject({
+      type: 'assistant',
+      content: 'hello world',
+      isStreaming: true,
+      speakerVpId: 'vp-1',
+      turnId: 'turn-1',
+    });
+
     appendToAssistantMessageForConversation(store, 'conv-1', 'hello world!', {
       id: 'msg-1',
       turnId: 'turn-1',
