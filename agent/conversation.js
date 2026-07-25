@@ -461,7 +461,7 @@ export function enqueueChatProviderInput({
 
     try {
       if (raw?.prompt?.trim() === '/clear' && driver.capabilities?.clear) {
-        await driver.clear(state);
+        await driver.clear(state, { isCurrentTurn: state.isCurrentChatProviderTurn });
       } else {
         let effectivePrompt = expertMessage || prompt;
         if (!expertMessage && expertSelections?.length > 0) {
@@ -752,11 +752,17 @@ export function deleteConversation(msg) {
 
   const conv = ctx.conversations.get(conversationId);
   if (conv) {
-    if (conv.abortController) {
-      conv.abortController.abort();
-    }
-    if (conv.inputStream) {
-      conv.inputStream.done();
+    let driver = null;
+    try { driver = getProvider(conv.providerName || DEFAULT_PROVIDER); } catch { /* legacy fallback below */ }
+    if (typeof driver?.dispose === 'function') {
+      driver.dispose(conv, 'conversation deleted');
+    } else {
+      if (conv.abortController) {
+        conv.abortController.abort();
+      }
+      if (conv.inputStream) {
+        conv.inputStream.done();
+      }
     }
     ctx.conversations.delete(conversationId);
   }

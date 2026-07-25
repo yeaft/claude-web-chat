@@ -167,7 +167,14 @@ function _isCurrentState(state) {
     && state?.chatProviderRetired !== true;
 }
 
+function _isCurrentBoot(state, child, client = null) {
+  return _isCurrentState(state)
+    && state.copilotChild === child
+    && (!client || state.acpClient === client);
+}
+
 async function _bootAcp(state, resumeSessionId) {
+  if (!_isCurrentState(state)) return;
   const args = ['--acp'];
   if (Array.isArray(state.providerOptions?.addDirs)) {
     for (const d of state.providerOptions.addDirs) args.push('--add-dir', String(d));
@@ -187,6 +194,7 @@ async function _bootAcp(state, resumeSessionId) {
     }
   });
   child.on('error', (err) => {
+    if (!_isCurrentBoot(state, child, client)) return;
     const message = `copilot process error: ${err?.message || err}`;
     childError = new Error(message);
     if (state.turnActive) _sendTurnError(state, message, () => _isCurrentState(state));
@@ -196,7 +204,7 @@ async function _bootAcp(state, resumeSessionId) {
     // Ignore a late close from a child that's already been replaced (e.g. a
     // reboot spawned a new one) or torn down — otherwise this would clobber the
     // live boot's acpClient/_bootPromise and orphan the new child.
-    if (state.copilotChild !== child) return;
+    if (!_isCurrentBoot(state, child, client)) return;
     if (state.turnActive) {
       const tail = stderrBuf.trim().slice(-2000);
       _sendTurnError(state, tail || `copilot exited mid-turn (code ${code})`,
@@ -219,8 +227,16 @@ async function _bootAcp(state, resumeSessionId) {
   client = new AcpClient({
     stdin: child.stdin,
     stdout: child.stdout,
-    onNotification: (method, params) => _handleAcpNotification(state, method, params),
-    onRequest: (method, params) => _handleAcpRequest(state, method, params),
+    onNotification: (method, params) => {
+      if (_isCurrentBoot(state, child, client)) _handleAcpNotification(state, method, params);
+    },
+    onRequest: (method, params) => {
+      if (!_isCurrentBoot(state, child, client)) {
+        if (method === 'session/request_permission') return { outcome: { outcome: 'cancelled' } };
+        throw Object.assign(new Error('stale copilot ACP request'), { code: -32601 });
+      }
+      return _handleAcpRequest(state, method, params);
+    },
     onError: (err) => {
       if (ctx?.CONFIG?.debug) console.warn('[copilot] acp transport:', err?.message || err);
     },
@@ -236,6 +252,7 @@ async function _bootAcp(state, resumeSessionId) {
     protocolVersion: ACP_PROTOCOL_VERSION,
     clientCapabilities: {},
   }, { timeoutMs: BOOT_REQUEST_TIMEOUT_MS });
+  if (!_isCurrentBoot(state, child, client)) return;
   state.acpCapabilities = initResp?.agentCapabilities || {};
   state.initialized = true;
 
@@ -246,37 +263,40 @@ async function _bootAcp(state, resumeSessionId) {
       cwd: state.workDir,
       mcpServers: [],
     }, { timeoutMs: BOOT_REQUEST_TIMEOUT_MS });
+    if (!_isCurrentBoot(state, child, client)) return;
     state.sessionId = resumeSessionId;
     state.claudeSessionId = resumeSessionId;
     if (Array.isArray(r?.modes?.availableModes)) state.acpModes = r.modes.availableModes;
     if (Array.isArray(r?.models?.availableModels)) cacheCopilotModelsFromAcp(r.models.availableModels);
     _sendSessionIdUpdate(state);
   } else {
-    if (resumeSessionId && !state.acpCapabilities.loadSession) {
-      // Surface the downgrade — silently handing back a fresh session would
-      // confuse a user who asked to resume.
+    const resumedWithoutLoad = !!resumeSessionId && !state.acpCapabilities.loadSession;
+    const r = await client.request('session/new', {
+      cwd: state.workDir,
+      mcpServers: [],
+    }, { timeoutMs: BOOT_REQUEST_TIMEOUT_MS });
+    if (!_isCurrentBoot(state, child, client)) return;
+    state.sessionId = r?.sessionId || randomUUID();
+    state.claudeSessionId = state.sessionId;
+    if (Array.isArray(r?.modes?.availableModes)) state.acpModes = r.modes.availableModes;
+    if (Array.isArray(r?.models?.availableModels)) cacheCopilotModelsFromAcp(r.models.availableModels);
+    _sendSessionIdUpdate(state);
+    if (resumedWithoutLoad) {
+      // Surface the downgrade only after the fresh session is established and
+      // this boot still owns the current state.
       sendOutput(state.conversationId, {
         type: 'system',
         subtype: 'info',
         message: 'Copilot CLI does not advertise loadSession capability — starting a new session instead of resuming.',
       });
     }
-    const r = await client.request('session/new', {
-      cwd: state.workDir,
-      mcpServers: [],
-    }, { timeoutMs: BOOT_REQUEST_TIMEOUT_MS });
-    state.sessionId = r?.sessionId || randomUUID();
-    state.claudeSessionId = state.sessionId;
-    if (Array.isArray(r?.modes?.availableModes)) state.acpModes = r.modes.availableModes;
-    if (Array.isArray(r?.models?.availableModels)) cacheCopilotModelsFromAcp(r.models.availableModels);
-    _sendSessionIdUpdate(state);
   }
 
   // 3) Emit a system_init envelope so the UI populates tools / model panels.
   // Copilot's built-in toolset is not enumerated over ACP today; advertise the
   // well-known core set so the panel isn't empty.
+  if (!_isCurrentBoot(state, child, client)) return;
   state.tools = _knownCopilotTools();
-  if (!_isCurrentState(state)) return;
   sendOutput(state.conversationId, {
     type: 'system',
     subtype: 'init',
@@ -424,28 +444,35 @@ export function dispose(state, reason = 'disposed') {
  * /clear support: ask ACP for a brand-new session under the same
  * conversationId. Keeps the child alive — no spawn cost.
  */
-export async function clear(state) {
+export async function clear(state, opts = {}) {
   if (!state) return;
+  const isCurrentTurn = opts.isCurrentTurn || (() => _isCurrentState(state));
+  const isCurrent = () => _isCurrentState(state) && isCurrentTurn();
+  if (!isCurrent()) return;
+
   if (!state.initialized || !state.acpClient) {
     try {
-      await _bootAcp(state, null);
+      await _ensureBooted(state, null);
       return;
     } catch (err) {
-      _sendTurnError(state, `copilot ACP reinit failed during clear: ${err?.message || err}`);
+      _sendTurnError(state, `copilot ACP reinit failed during clear: ${err?.message || err}`, isCurrent);
       return;
     }
   }
+
+  const clearClient = state.acpClient;
+  const clearSessionId = state.sessionId;
   // A fresh session invalidates any in-flight permission prompts.
   _drainPendingPermissions(state, 'session cleared');
   try {
-    const r = await state.acpClient.request('session/new', {
+    const r = await clearClient.request('session/new', {
       cwd: state.workDir,
       mcpServers: [],
     });
+    if (!isCurrent() || state.acpClient !== clearClient || state.sessionId !== clearSessionId) return;
     state.sessionId = r?.sessionId || randomUUID();
     state.claudeSessionId = state.sessionId;
     _sendSessionIdUpdate(state);
-    if (!_isCurrentState(state)) return;
     sendOutput(state.conversationId, {
       type: 'system',
       subtype: 'init',
@@ -456,8 +483,8 @@ export async function clear(state) {
       permissionMode: state.allowAllTools ? 'bypassPermissions' : 'default',
     });
   } catch (err) {
-    _sendTurnError(state, `copilot clear failed: ${err?.message || err}`);
-    if (ctx?.CONFIG?.debug) console.warn('[copilot] clear failed:', err?.message || err);
+    _sendTurnError(state, `copilot clear failed: ${err?.message || err}`, isCurrent);
+    if (ctx?.CONFIG?.debug && isCurrent()) console.warn('[copilot] clear failed:', err?.message || err);
   }
 }
 

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { mount } from '@vue/test-utils';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -64,6 +64,54 @@ function deferred() {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+function writeControlledCopilotCli(root) {
+  const controlDir = join(root, 'acp-control');
+  mkdirSync(controlDir, { recursive: true });
+  const scriptPath = join(root, 'copilot-test-cli.cjs');
+  writeFileSync(scriptPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const readline = require('node:readline');
+const root = process.env.YEAFT_ACP_CONTROL_DIR;
+function waitFor(name, done) {
+  const file = path.join(root, name);
+  const timer = setInterval(() => {
+    if (!fs.existsSync(file)) return;
+    clearInterval(timer);
+    done(fs.readFileSync(file, 'utf8').trim());
+  }, 5);
+}
+function send(payload) { process.stdout.write(JSON.stringify(payload) + '\\n'); }
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  const msg = JSON.parse(line);
+  if (msg.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { agentCapabilities: {} } });
+    return;
+  }
+  if (msg.method === 'session/new') {
+    fs.writeFileSync(path.join(root, 'session-new.pending'), String(msg.id));
+    waitFor('session-new', action => {
+      if (action === 'reject') {
+        send({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'controlled boot failure' } });
+      } else {
+        send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: action || 'controlled-session' } });
+      }
+    });
+  }
+});
+`);
+  chmodSync(scriptPath, 0o755);
+  return { controlDir, scriptPath };
+}
+
+async function waitForPath(path, timeoutMs = 2000) {
+  const started = Date.now();
+  while (!existsSync(path)) {
+    if (Date.now() - started > timeoutMs) throw new Error(`Timed out waiting for ${path}`);
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
 }
 
 beforeAll(() => {
@@ -157,11 +205,24 @@ describe('message flow regressions', () => {
   });
 
   async function verifyCopilotFollowUpQueue() {
-    const [{ handleMessage }, ctxModule, { keepQueuedFollowUpProcessing }, { handleAssistantOutputFrame }] = await Promise.all([
+    const workDir = mkdtempSync(join(tmpdir(), 'yeaft-copilot-follow-up-'));
+    const { controlDir, scriptPath } = writeControlledCopilotCli(workDir);
+    const previousCopilotBin = process.env.COPILOT_BIN;
+    const previousControlDir = process.env.YEAFT_ACP_CONTROL_DIR;
+    process.env.COPILOT_BIN = scriptPath;
+    process.env.YEAFT_ACP_CONTROL_DIR = controlDir;
+    const [
+      { handleMessage },
+      ctxModule,
+      { keepQueuedFollowUpProcessing },
+      { handleAssistantOutputFrame },
+      copilotProvider,
+    ] = await Promise.all([
       import('../../agent/connection/message-router.js'),
       import('../../agent/context.js'),
       import('../../web/stores/helpers/handlers/conversationHandler.js'),
       import('../../web/stores/helpers/assistantOutput.js'),
+      import('../../agent/providers/copilot.js'),
     ]);
     const ctx = ctxModule.default;
     const previousConfig = ctx.CONFIG;
@@ -174,7 +235,6 @@ describe('message flow regressions', () => {
     const cancelNotifications = [];
     const copilotChild = { kill: vi.fn() };
     const sent = [];
-    const workDir = mkdtempSync(join(tmpdir(), 'yeaft-copilot-follow-up-'));
     const state = {
       providerName: 'copilot',
       conversationId: 'conversation-copilot',
@@ -304,6 +364,108 @@ describe('message flow regressions', () => {
       expect(completions).toHaveLength(3);
       expect(completions.map(message => message.hasQueuedFollowUp)).toEqual([true, true, false]);
 
+      for (const outcome of ['resolve', 'reject']) {
+        const conversationId = `stale-clear-${outcome}`;
+        const clearRequest = deferred();
+        const oldClearState = {
+          providerName: 'copilot',
+          providerGeneration: `old-${outcome}`,
+          conversationId,
+          workDir,
+          sessionId: 'old-clear-session',
+          claudeSessionId: 'old-clear-session',
+          initialized: true,
+          turnActive: false,
+          abortController: null,
+          copilotChild: { kill: vi.fn() },
+          pendingPermissions: new Map(),
+          tools: [],
+          acpClient: {
+            request: vi.fn((method) => {
+              expect(method).toBe('session/new');
+              return clearRequest.promise;
+            }),
+            notify: vi.fn(),
+          },
+          usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0, totalCostUsd: 0 },
+        };
+        ctx.conversations.set(conversationId, oldClearState);
+        const clearRun = handleMessage({
+          type: 'execute',
+          conversationId,
+          provider: 'copilot',
+          prompt: '/clear',
+        });
+        await vi.waitFor(() => expect(oldClearState.acpClient.request).toHaveBeenCalledOnce());
+        await handleMessage({ type: 'delete_conversation', conversationId });
+        const replacement = {
+          providerName: 'copilot',
+          providerGeneration: `replacement-${outcome}`,
+          conversationId,
+          sessionId: 'replacement-session',
+          turnActive: true,
+        };
+        ctx.conversations.set(conversationId, replacement);
+        const outputStart = sent.length;
+        if (outcome === 'resolve') clearRequest.resolve({ sessionId: 'stale-clear-session' });
+        else clearRequest.reject(new Error('same-id replacement'));
+        await clearRun;
+
+        expect(sent.slice(outputStart).filter(message => message.conversationId === conversationId
+          && (message.type === 'turn_completed'
+            || message.type === 'session_id_update'
+            || message.data?.type === 'result'
+            || message.data?.type === 'system'))).toEqual([]);
+        expect(replacement).toMatchObject({
+          sessionId: 'replacement-session',
+          turnActive: true,
+        });
+        expect(oldClearState.chatProviderRetired).toBe(true);
+        ctx.conversations.delete(conversationId);
+      }
+
+      for (const outcome of ['resolve', 'reject']) {
+        rmSync(join(controlDir, 'session-new'), { force: true });
+        rmSync(join(controlDir, 'session-new.pending'), { force: true });
+        const conversationId = `stale-boot-${outcome}`;
+        const oldBootState = await copilotProvider.start({
+          conversationId,
+          workDir,
+          resumeSessionId: 'old-resume-session',
+          deferBoot: true,
+        });
+        const bootPromise = oldBootState._bootPromise;
+        await waitForPath(join(controlDir, 'session-new.pending'));
+
+        await handleMessage({ type: 'delete_conversation', conversationId });
+        const replacement = {
+          providerName: 'copilot',
+          providerGeneration: `replacement-boot-${outcome}`,
+          conversationId,
+          sessionId: 'replacement-session',
+          turnActive: true,
+        };
+        ctx.conversations.set(conversationId, replacement);
+        const outputStart = sent.length;
+        writeFileSync(join(controlDir, 'session-new'), outcome === 'resolve' ? 'stale-boot-session' : 'reject');
+        await bootPromise.catch(() => {});
+        await new Promise(resolve => setTimeout(resolve, 10));
+
+        expect(sent.slice(outputStart).filter(message => message.conversationId === conversationId
+          && (message.type === 'turn_completed'
+            || message.type === 'session_id_update'
+            || message.data?.type === 'result'
+            || message.data?.type === 'system'))).toEqual([]);
+        expect(oldBootState.sessionId).toBe('old-resume-session');
+        expect(oldBootState.chatProviderRetired).toBe(true);
+        expect(replacement).toMatchObject({
+          sessionId: 'replacement-session',
+          turnActive: true,
+        });
+        copilotProvider.dispose(oldBootState, 'test cleanup');
+        ctx.conversations.delete(conversationId);
+      }
+
       const terminalCount = resultFrames.length + completions.length;
       const stalePrompt = deferred();
       state.acpClient.request = () => stalePrompt.promise;
@@ -341,6 +503,10 @@ describe('message flow regressions', () => {
       ctx.CONFIG = previousConfig;
       ctx.sendToServer = previousSendToServer;
       ctx.conversations = previousConversations;
+      if (previousCopilotBin === undefined) delete process.env.COPILOT_BIN;
+      else process.env.COPILOT_BIN = previousCopilotBin;
+      if (previousControlDir === undefined) delete process.env.YEAFT_ACP_CONTROL_DIR;
+      else process.env.YEAFT_ACP_CONTROL_DIR = previousControlDir;
       rmSync(workDir, { recursive: true, force: true });
     }
   }
