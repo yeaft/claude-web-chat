@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   addMessageToConversation,
@@ -21,7 +23,7 @@ function makeStore() {
 }
 
 describe('message flow regressions', () => {
-  it('appends same-id streaming deltas instead of replacing the latest assistant message', () => {
+  it('keeps same-id streaming updates in one assistant message', () => {
     const store = makeStore();
 
     appendToAssistantMessageForConversation(store, 'conv-1', 'hello ', {
@@ -45,15 +47,31 @@ describe('message flow regressions', () => {
       speakerVpId: 'vp-1',
       turnId: 'turn-1',
     });
+
+    appendToAssistantMessageForConversation(store, 'conv-1', 'hello world!', {
+      id: 'msg-1',
+      turnId: 'turn-1',
+    });
+
+    expect(store.messagesMap['conv-1']).toHaveLength(1);
+    expect(store.messagesMap['conv-1'][0]).toMatchObject({
+      type: 'assistant',
+      content: 'hello world!',
+      isStreaming: true,
+      speakerVpId: 'vp-1',
+      turnId: 'turn-1',
+    });
   });
 
-  it('accepts full same-id snapshots without duplicating already-rendered text', () => {
-    const store = makeStore();
+  it('keeps send available while the current turn is running', () => {
+    const component = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatInput.js'), 'utf8');
 
-    appendToAssistantMessageForConversation(store, 'conv-1', 'hello', { id: 'msg-1', turnId: 'turn-1' });
-    appendToAssistantMessageForConversation(store, 'conv-1', 'hello world', { id: 'msg-1', turnId: 'turn-1' });
-
-    expect(store.messagesMap['conv-1'][0].content).toBe('hello world');
+    expect(component).toContain('v-if="isStopVisible"');
+    expect(component).not.toContain('v-else\n          type="button"\n          class="send-btn"');
+    expect(component).toContain('if (isCompacting.value) return false;');
+    expect(component).not.toContain('if (isCompacting.value || isStopVisible.value) return false;');
+    expect(component).toContain('if (!canSend.value) return;');
+    expect(component).not.toContain('if (isStopVisible.value || !canSend.value) return;');
   });
 
   it('stamps background agent messages without promoting that conversation', () => {
