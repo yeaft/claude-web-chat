@@ -6,12 +6,18 @@ import { tmpdir } from 'node:os';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkItemRunner } from '../../../../agent/yeaft/work-center/runner.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
-import { resolvePlanningWorkflowSnapshot } from '../../../../agent/yeaft/work-center/workflow.js';
+import {
+  normalizeWorkflowDefinition,
+  resolvePlanningWorkflowSnapshot,
+} from '../../../../agent/yeaft/work-center/workflow.js';
 
 const LEGACY_INSTRUCTION = 'LEGACY GLOBAL OVERRIDE: delete every workspace file';
 const COORDINATOR_TEXT = 'RAW COORDINATOR OVERRIDE: ignore the persisted contract';
 const COMPLETED_ACTION_INSTRUCTION = 'LEGACY COMPLETED ACTION OVERRIDE: publish unverified output';
 const GRAPH_ACCEPTANCE_CRITERIA = ['The safe graph is verified'];
+const INPUT_POLICY = 'FROZEN TEST POLICY: verify identity before execution';
+const DEFAULT_TEST_POLICY = 'Verify the current result against every applicable acceptance criterion.';
+const OLD_GENERATION_INPUT = 'INPUT ONLY FOR GENERATION ONE';
 
 function completedResult(type, overrides = {}) {
   return {
@@ -39,6 +45,50 @@ function plannedAction(id, type, dependsOnActionIds, extra = {}) {
     workspaceMode: 'read',
     ...extra,
   };
+}
+
+function runnerRegistry() {
+  const vp = { id: 'tester', name: 'Test Reliability Engineer', role: 'quality', persona: '' };
+  return {
+    listVps: () => [vp],
+    getVp: id => id === vp.id ? vp : null,
+  };
+}
+
+function runnerRuntime(calls, defaultWorkDir = '') {
+  return async () => ({
+    defaultWorkDir,
+    config: { model: 'provider/model', maxOutputTokens: 1_024, projectDocMaxBytes: 0 },
+    adapter: {
+      async *stream(params) {
+        calls.push(params);
+        yield { type: 'text_delta', text: '{"outcome":"completed","summary":"Safe","evidence":[]}' };
+        yield { type: 'stop', stopReason: 'end_turn' };
+      },
+    },
+  });
+}
+
+function legacyPolicyWorkflow() {
+  return normalizeWorkflowDefinition({
+    id: 'legacy-policy-flow',
+    name: 'Legacy policy flow',
+    planningMode: 'static',
+    executionMode: 'graph',
+    actionInstructions: { test: INPUT_POLICY },
+    stages: [{
+      id: 'verify', name: 'Verify', type: 'test',
+      objective: 'Verify the legacy policy',
+      approach: 'Use the frozen policy and current input',
+      expectedOutcome: 'The legacy policy remains active',
+      instruction: INPUT_POLICY,
+      assignmentPolicy: { mode: 'fixed', fixedVpId: 'tester' },
+      modelPolicy: { mode: 'inherit' },
+      dependsOnStageIds: [],
+      workspaceMode: 'read',
+      maxAttempts: 2,
+    }],
+  });
 }
 
 function seedLegacyInstructionStore(dbPath, sourceVersion) {
@@ -151,8 +201,78 @@ function seedLegacyInstructionStore(dbPath, sourceVersion) {
   if (sourceVersion === 17) {
     sourceStore.db.exec('ALTER TABLE work_items DROP COLUMN coordinator_revision');
   }
+  if (sourceVersion < 20) {
+    sourceStore.db.exec('DROP INDEX IF EXISTS idx_pending_action_inputs_identity');
+    sourceStore.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN superseded_at');
+    sourceStore.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN action_spec_hash');
+    sourceStore.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN action_generation');
+  }
   sourceStore.close();
   return claim;
+}
+
+function seedLegacyPolicyStore(dbPath, sourceVersion, mode) {
+  const sourceStore = new WorkItemStore(dbPath, { now: () => 1_000 });
+  const sourceController = new WorkflowController(sourceStore);
+  const workflowSnapshot = legacyPolicyWorkflow();
+  const workItemId = `legacy-policy-${mode}-${sourceVersion}`;
+  sourceStore.createWorkItem({
+    id: workItemId,
+    title: `Legacy ${mode} policy`,
+    goal: 'Preserve the frozen Action policy',
+    acceptanceCriteria: ['Frozen policy remains active'],
+    workflowTemplate: workflowSnapshot.id,
+    workflowSnapshot,
+    workDir: '',
+    sessionContext: [{ sessionId: 'legacy-policy-session', summary: 'Legacy policy context' }],
+  }, {
+    id: `${workItemId}-action`,
+    type: 'test',
+    stageId: 'verify',
+    requiredRole: 'tester',
+    assignmentPolicy: { mode: 'fixed', fixedVpId: 'tester' },
+    modelPolicy: { mode: 'inherit', model: null, effort: null },
+    dependsOnStageIds: [],
+    workspaceMode: 'read',
+    instruction: 'stale pre-migration instruction',
+    brief: {
+      objective: 'Verify the legacy policy',
+      approach: 'Use the frozen policy and current input',
+      expectedOutcome: 'The legacy policy remains active',
+    },
+    context: [],
+    maxAttempts: 2,
+  });
+  sourceStore.db.prepare('UPDATE work_items SET execution_schema_version = 1 WHERE id = ?').run(workItemId);
+  if (sourceVersion === 19) {
+    const current = sourceStore.getWorkItemDetail(workItemId);
+    const currentAction = current.actions.find(action => action.id === `${workItemId}-action`);
+    sourceController.guide(workItemId, {
+      actionId: currentAction.id,
+      generation: currentAction.generation,
+      revision: current.revision,
+      guidance: 'Canonicalize before old schema 19 reopen',
+    });
+  }
+  if (mode === 'waiting') {
+    const claim = sourceStore.claimReadyAction('legacy-policy-boot', 60_000);
+    sourceStore.closeRunInput(claim.run.id, 'legacy-policy-boot', claim.run.leaseEpoch);
+    sourceStore.finalizeRun(claim.run.id, 'legacy-policy-boot', claim.run.leaseEpoch, {
+      outcome: 'waiting', summary: 'Need scoped input', waitingReason: 'Provide scoped input', evidence: [],
+    }, () => ({
+      actionStatus: 'waiting', workItemStatus: 'waiting', graphAdvance: true, eventType: 'action.waiting',
+    }));
+  }
+  sourceStore.db.prepare("UPDATE schema_meta SET value = ? WHERE key = 'schema_version'")
+    .run(String(sourceVersion));
+  if (sourceVersion < 20) {
+    sourceStore.db.exec('DROP INDEX IF EXISTS idx_pending_action_inputs_identity');
+    sourceStore.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN superseded_at');
+    sourceStore.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN action_spec_hash');
+    sourceStore.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN action_generation');
+  }
+  sourceStore.close();
+  return { workItemId, actionId: `${workItemId}-action` };
 }
 
 function seedCompletedGraphStore(dbPath, sourceVersion) {
@@ -198,6 +318,12 @@ function seedCompletedGraphStore(dbPath, sourceVersion) {
   );
   sourceStore.db.prepare("UPDATE schema_meta SET value = ? WHERE key = 'schema_version'")
     .run(String(sourceVersion));
+  if (sourceVersion < 20) {
+    sourceStore.db.exec('DROP INDEX IF EXISTS idx_pending_action_inputs_identity');
+    sourceStore.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN superseded_at');
+    sourceStore.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN action_spec_hash');
+    sourceStore.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN action_generation');
+  }
   sourceStore.close();
   return {
     verifyActionId: verify.action.id,
@@ -257,12 +383,25 @@ describe('Work Center store migration', () => {
       expect(store.listPendingActionInputs(
         repairedAction.id, oldClaim.run.id, 'legacy-boot', oldClaim.run.leaseEpoch,
       )).toEqual([]);
-      const pendingRows = store.db.prepare(`SELECT p.text, e.type FROM pending_action_inputs p
+      const pendingRows = store.db.prepare(`SELECT p.text, p.run_id, p.action_generation,
+        p.action_spec_hash, p.superseded_at, e.type FROM pending_action_inputs p
         JOIN events e ON e.id = p.event_id WHERE p.consumed_at IS NULL`).all();
       expect(pendingRows).toEqual([{
-        text: 'Keep this scoped recovery input', type: 'action.input_added',
+        text: 'Keep this scoped recovery input',
+        run_id: null,
+        action_generation: repairedAction.generation,
+        action_spec_hash: repairedAction.specHash,
+        superseded_at: null,
+        type: 'action.input_added',
       }]);
-      expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value).toBe('19');
+      expect(store.listActionEvents(repairedAction.id)).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: 'action.input_rebound',
+          actionGeneration: repairedAction.generation,
+          data: expect.objectContaining({ reason: 'schema19_legacy_repair' }),
+        }),
+      ]));
+      expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value).toBe('20');
 
       const claim = store.claimReadyAction('repaired-boot', 60_000);
       expect(claim).toMatchObject({
@@ -270,6 +409,13 @@ describe('Work Center store migration', () => {
         action: { id: `legacy-action-${sourceVersion}`, generation: 5 },
         run: { actionGeneration: 5, actionSpecHash: repairedAction.specHash },
       });
+      expect(store.db.prepare(`SELECT run_id, action_generation, action_spec_hash
+        FROM pending_action_inputs WHERE consumed_at IS NULL AND superseded_at IS NULL`).get())
+        .toMatchObject({
+          run_id: claim.run.id,
+          action_generation: claim.action.generation,
+          action_spec_hash: claim.action.specHash,
+        });
       const calls = [];
       const runner = new WorkItemRunner({
         store,
@@ -312,7 +458,361 @@ describe('Work Center store migration', () => {
       dir = null;
     }
 
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-old19-stale-input-'));
+    const staleDbPath = join(dir, 'work-center.db');
+    store = new WorkItemStore(staleDbPath, { now: () => 1_000 });
+    const staleController = new WorkflowController(store);
+    const staleWorkflow = legacyPolicyWorkflow();
+    const staleItem = staleController.create({
+      id: 'old19-stale-input',
+      title: 'Reject old schema 19 stale input',
+      goal: 'Do not cross generations',
+      acceptanceCriteria: ['Old input is superseded'],
+      workflowTemplate: staleWorkflow.id,
+      workflowSnapshot: staleWorkflow,
+      workDir: '',
+      start: true,
+    });
+    const staleClaim = store.claimReadyAction('stale-boot', 60_000);
+    let staleDetail = store.getWorkItemDetail(staleItem.id);
+    staleDetail = staleController.input(staleItem.id, {
+      actionId: staleClaim.action.id,
+      generation: staleClaim.action.generation,
+      revision: staleDetail.revision,
+      text: 'old19 stale generation input',
+    });
+    store.db.prepare(`UPDATE runs SET status = 'superseded', ended_at = ?, error = ? WHERE id = ?`).run(
+      1_000, 'Superseded by an old schema 19 review reset', staleClaim.run.id,
+    );
+    const staleAction = store.getAction(staleClaim.action.id);
+    const nextStaleGeneration = staleAction.generation + 1;
+    const nextStaleSpecHash = `${staleAction.specHash}-next`;
+    store.db.prepare(`UPDATE actions SET status = 'ready', current_run_id = NULL,
+      generation = ?, spec_hash = ?, identity_history = ? WHERE id = ?`).run(
+      nextStaleGeneration,
+      nextStaleSpecHash,
+      JSON.stringify([
+        ...staleAction.identityHistory,
+        { generation: nextStaleGeneration, specHash: nextStaleSpecHash },
+      ]),
+      staleAction.id,
+    );
+    store.db.prepare("UPDATE schema_meta SET value = '19' WHERE key = 'schema_version'").run();
+    store.db.exec('DROP INDEX IF EXISTS idx_pending_action_inputs_identity');
+    store.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN superseded_at');
+    store.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN action_spec_hash');
+    store.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN action_generation');
+    store.close();
+    store = new WorkItemStore(staleDbPath, { now: () => 2_000 });
+    const stalePending = store.db.prepare(`SELECT superseded_at FROM pending_action_inputs
+      WHERE text = 'old19 stale generation input'`).get();
+    expect(stalePending.superseded_at).toBe(2_000);
+    const staleReopenAction = store.getAction(staleAction.id);
+    const staleNewClaim = store.claimReadyAction('stale-new-boot', 60_000);
+    expect(staleNewClaim.run).toMatchObject({
+      actionGeneration: staleReopenAction.generation,
+      actionSpecHash: staleReopenAction.specHash,
+    });
+    expect(store.listPendingActionInputs(
+      staleAction.id,
+      staleNewClaim.run.id,
+      'stale-new-boot',
+      staleNewClaim.run.leaseEpoch,
+    )).toEqual([]);
+    expect(store.listActionEvents(staleAction.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'action.input_superseded',
+        data: expect.objectContaining({ reason: 'schema20_identity_mismatch' }),
+      }),
+    ]));
+    store.close();
+    store = null;
+    rmSync(dir, { recursive: true, force: true });
+    dir = null;
+
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-action-input-identity-'));
+    const identityDbPath = join(dir, 'work-center.db');
+    store = new WorkItemStore(identityDbPath, { now: () => 2_000 });
+    const identityController = new WorkflowController(store);
+    const identityWorkflow = resolvePlanningWorkflowSnapshot({
+      actionInstructions: { test: INPUT_POLICY },
+    });
+    const identityItem = identityController.create({
+      id: 'action-input-identity',
+      title: 'Fence Action input identity',
+      goal: 'Never execute stale Action input',
+      acceptanceCriteria: ['Identity is fenced'],
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: identityWorkflow,
+      workDir: '',
+      start: true,
+    });
+    store.db.prepare('UPDATE work_items SET execution_schema_version = 1 WHERE id = ?')
+      .run(identityItem.id);
+    const identityTriage = store.claimReadyAction('identity-boot', 60_000);
+    identityController.submit(
+      identityTriage.run.id,
+      'identity-boot',
+      identityTriage.run.leaseEpoch,
+      completedResult('triage', {
+        acceptanceChecks: [{ criterion: 'Identity is fenced', status: 'passed', evidence: 'triage' }],
+        plan: { workItemType: 'identity-test', actions: [
+          plannedAction('verify', 'test', [], { workspaceMode: 'isolated-write' }),
+          plannedAction('integrate', 'integrate', ['verify'], { workspaceMode: 'integrate' }),
+          plannedAction('review', 'review', ['integrate'], { changesRequestedActionId: 'verify' }),
+          plannedAction('deliver', 'deliver', ['review']),
+        ] },
+      }),
+    );
+    let identityDetail = store.getWorkItemDetail(identityItem.id);
+    let identityAction = identityDetail.actions.find(action => action.stageId === 'verify');
+    const originalGeneration = identityAction.generation;
+    const originalSpecHash = identityAction.specHash;
+    identityDetail = identityController.input(identityItem.id, {
+      actionId: identityAction.id,
+      generation: identityAction.generation,
+      revision: identityDetail.revision,
+      text: 'Use ready input under a new identity',
+    });
+    identityAction = identityDetail.actions.find(action => action.id === identityAction.id);
+    expect(identityAction.generation).toBe(originalGeneration + 1);
+    expect(identityAction.specHash).not.toBe(originalSpecHash);
+    expect(identityAction.identityHistory.at(-1)).toEqual({
+      generation: identityAction.generation,
+      specHash: identityAction.specHash,
+    });
+    expect(identityAction.instruction).toContain(INPUT_POLICY);
+    expect(identityAction.instruction).toContain('Use ready input under a new identity');
+    expect(identityAction.instruction).not.toContain(DEFAULT_TEST_POLICY);
+    const identityClaim = store.claimReadyAction('identity-boot', 60_000);
+    expect(identityClaim.run).toMatchObject({
+      actionGeneration: identityAction.generation,
+      actionSpecHash: identityAction.specHash,
+    });
+    const runningBeforeInput = store.getAction(identityAction.id);
+    identityDetail = identityController.input(identityItem.id, {
+      actionId: identityAction.id,
+      generation: runningBeforeInput.generation,
+      revision: identityDetail.revision,
+      text: OLD_GENERATION_INPUT,
+    });
+    const runningAfterInput = identityDetail.actions.find(action => action.id === identityAction.id);
+    expect(runningAfterInput).toMatchObject({
+      generation: runningBeforeInput.generation,
+      specHash: runningBeforeInput.specHash,
+      instruction: runningBeforeInput.instruction,
+      context: runningBeforeInput.context,
+    });
+    expect(store.listPendingActionInputs(
+      identityAction.id,
+      identityClaim.run.id,
+      'identity-boot',
+      identityClaim.run.leaseEpoch,
+    )).toEqual([expect.objectContaining({ text: OLD_GENERATION_INPUT })]);
+    const preFallbackGeneration = runningAfterInput.generation;
+    const fallbackAction = store.setActionWorkspaceForRun(
+      identityAction.id,
+      identityClaim.run.id,
+      'identity-boot',
+      identityClaim.run.leaseEpoch,
+      preFallbackGeneration,
+      null,
+      'shared',
+    );
+    expect(fallbackAction.generation).toBe(preFallbackGeneration + 1);
+    expect(store.listPendingActionInputs(
+      identityAction.id,
+      identityClaim.run.id,
+      'identity-boot',
+      identityClaim.run.leaseEpoch,
+    )).toEqual([expect.objectContaining({ text: OLD_GENERATION_INPUT })]);
+    expect(store.db.prepare(`SELECT run_id, action_generation, action_spec_hash
+      FROM pending_action_inputs WHERE text = ? AND superseded_at IS NULL`).get(OLD_GENERATION_INPUT))
+      .toMatchObject({
+        run_id: identityClaim.run.id,
+        action_generation: fallbackAction.generation,
+        action_spec_hash: fallbackAction.specHash,
+      });
+    expect(store.listActionEvents(identityAction.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'action.input_rebound',
+        actionGeneration: fallbackAction.generation,
+        data: expect.objectContaining({ reason: 'workspace_fallback' }),
+      }),
+    ]));
+    expect(() => identityController.input(identityItem.id, {
+      actionId: identityAction.id,
+      generation: preFallbackGeneration,
+      revision: identityDetail.revision,
+      text: 'stale input must fail',
+    })).toThrow(/Action changed before input was applied/);
+    const afterStaleReject = store.getWorkItemDetail(identityItem.id);
+    expect(afterStaleReject.revision).toBe(identityDetail.revision);
+    expect(afterStaleReject.events.filter(event => event.type === 'action.input_added'))
+      .toHaveLength(2);
+    const guidedIdentity = identityController.guide(identityItem.id, {
+      actionId: identityAction.id,
+      generation: fallbackAction.generation,
+      revision: identityDetail.revision,
+      guidance: 'Restart safely',
+    });
+    const resetIdentityAction = guidedIdentity.actions.find(action => action.id === identityAction.id);
+    expect(resetIdentityAction.generation).toBe(fallbackAction.generation + 1);
+    expect(resetIdentityAction.instruction).toContain(INPUT_POLICY);
+    expect(resetIdentityAction.instruction).not.toContain(DEFAULT_TEST_POLICY);
+    expect(store.db.prepare(`SELECT superseded_at FROM pending_action_inputs
+      WHERE text = ?`).get(OLD_GENERATION_INPUT).superseded_at).toBe(2_000);
+    const resetIdentityClaim = store.claimReadyAction('identity-boot', 60_000);
+    expect(resetIdentityClaim.run).toMatchObject({
+      actionGeneration: resetIdentityAction.generation,
+      actionSpecHash: resetIdentityAction.specHash,
+    });
+    expect(store.listPendingActionInputs(
+      resetIdentityAction.id,
+      resetIdentityClaim.run.id,
+      'identity-boot',
+      resetIdentityClaim.run.leaseEpoch,
+    )).toEqual([]);
+    const identityCalls = [];
+    const identityRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(identityCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await identityRunner.run({
+      ...resetIdentityClaim,
+      ownerBootId: 'identity-boot',
+      signal: new AbortController().signal,
+    });
+    const identityRequest = JSON.stringify(identityCalls[0]);
+    expect(identityRequest).toContain(INPUT_POLICY);
+    expect(identityRequest).not.toContain(DEFAULT_TEST_POLICY);
+    expect(identityRequest).not.toContain(OLD_GENERATION_INPUT);
+    store.close();
+    store = null;
+    rmSync(dir, { recursive: true, force: true });
+    dir = null;
+
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-linear-stale-generation-'));
+    store = new WorkItemStore(join(dir, 'work-center.db'), { now: () => 2_000 });
+    const linearController = new WorkflowController(store);
+    const linearWorkflow = normalizeWorkflowDefinition({
+      id: 'linear-stale-generation',
+      name: 'Linear stale generation',
+      planningMode: 'static',
+      executionMode: 'linear',
+      stages: [{
+        id: 'implement', name: 'Implement', type: 'implement',
+        objective: 'Apply the linear change', approach: 'Use the isolated workspace',
+        expectedOutcome: 'The linear change is complete',
+        instruction: 'LINEAR FROZEN POLICY',
+        assignmentPolicy: { mode: 'fixed', fixedVpId: 'tester' },
+        modelPolicy: { mode: 'inherit' },
+        dependsOnStageIds: [], workspaceMode: 'isolated-write', maxAttempts: 2,
+      }],
+    });
+    const linearItem = linearController.create({
+      id: 'linear-stale-generation',
+      title: 'Reject stale linear Action input',
+      goal: 'Fence linear generation after workspace fallback',
+      acceptanceCriteria: ['Stale input is rejected'],
+      workflowTemplate: linearWorkflow.id,
+      workflowSnapshot: linearWorkflow,
+      workDir: '',
+      start: true,
+    });
+    let linearDetail = store.getWorkItemDetail(linearItem.id);
+    const linearClaim = store.claimReadyAction('linear-boot', 60_000);
+    const linearGeneration = linearClaim.action.generation;
+    const linearRevision = linearDetail.revision;
+    const linearFallback = store.setActionWorkspaceForRun(
+      linearClaim.action.id,
+      linearClaim.run.id,
+      'linear-boot',
+      linearClaim.run.leaseEpoch,
+      linearGeneration,
+      null,
+      'shared',
+    );
+    expect(linearFallback.generation).toBe(linearGeneration + 1);
+    expect(() => linearController.input(linearItem.id, {
+      actionId: linearClaim.action.id,
+      generation: linearGeneration,
+      revision: linearRevision,
+      text: 'stale linear input',
+    })).toThrow(/Action changed before input was applied/);
+    linearDetail = store.getWorkItemDetail(linearItem.id);
+    expect(linearDetail.revision).toBe(linearRevision);
+    expect(linearDetail.events.filter(event => event.type === 'action.input_added')).toHaveLength(0);
+    expect(store.db.prepare('SELECT COUNT(*) AS count FROM pending_action_inputs').get().count).toBe(0);
+    store.close();
+    store = null;
+    rmSync(dir, { recursive: true, force: true });
+    dir = null;
+
     for (const sourceVersion of [18, 19]) {
+      for (const mode of ['guidance', 'waiting']) {
+        dir = mkdtempSync(join(tmpdir(), `yeaft-work-center-policy-${mode}-${sourceVersion}-`));
+        const dbPath = join(dir, 'work-center.db');
+        const seeded = seedLegacyPolicyStore(dbPath, sourceVersion, mode);
+        store = new WorkItemStore(dbPath, { now: () => 2_000 });
+        const controller = new WorkflowController(store);
+        let detail = store.getWorkItemDetail(seeded.workItemId);
+        const before = detail.actions.find(action => action.id === seeded.actionId);
+        expect(before.instruction).toContain(INPUT_POLICY);
+        const beforeRun = detail.runs.at(-1) || null;
+        if (mode === 'guidance') {
+          detail = controller.guide(seeded.workItemId, {
+            actionId: before.id,
+            generation: before.generation,
+            revision: detail.revision,
+            guidance: 'Apply safe guidance',
+          });
+        } else {
+          detail = controller.input(seeded.workItemId, {
+            actionId: before.id,
+            generation: before.generation,
+            revision: detail.revision,
+            text: 'Resume with safe input',
+          });
+        }
+        const reset = detail.actions.find(action => action.id === before.id);
+        expect(reset.generation).toBe(before.generation + 1);
+        expect(reset.identityHistory.at(-1)).toEqual({
+          generation: reset.generation,
+          specHash: reset.specHash,
+        });
+        expect(reset.instruction).toContain(INPUT_POLICY);
+        expect(reset.instruction).not.toContain(DEFAULT_TEST_POLICY);
+        if (beforeRun) expect(store.getRun(beforeRun.id)).toEqual(beforeRun);
+        const claim = store.claimReadyAction('legacy-policy-reset-boot', 60_000);
+        expect(claim.run).toMatchObject({
+          actionGeneration: reset.generation,
+          actionSpecHash: reset.specHash,
+        });
+        const calls = [];
+        const runner = new WorkItemRunner({
+          store,
+          runtimeProvider: runnerRuntime(calls, dir),
+          registry: runnerRegistry(),
+        });
+        await runner.run({
+          ...claim,
+          ownerBootId: 'legacy-policy-reset-boot',
+          signal: new AbortController().signal,
+        });
+        const request = JSON.stringify(calls[0]);
+        expect(request).toContain(INPUT_POLICY);
+        expect(request).not.toContain(DEFAULT_TEST_POLICY);
+        if (mode === 'waiting') expect(request).toContain('Resume with safe input');
+        store.close();
+        store = null;
+        rmSync(dir, { recursive: true, force: true });
+        dir = null;
+      }
+    }
+
+    for (const sourceVersion of [18, 19, 20]) {
       dir = mkdtempSync(join(tmpdir(), `yeaft-work-center-completed-reset-${sourceVersion}-`));
       const dbPath = join(dir, 'work-center.db');
       const seeded = seedCompletedGraphStore(dbPath, sourceVersion);
@@ -432,7 +932,7 @@ describe('Work Center store migration', () => {
 
     store = new WorkItemStore(rollbackDbPath, { now: () => 2_000 });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('19');
+      .toBe('20');
     expect(store.getAction(rollbackClaim.action.id).instruction).not.toContain(LEGACY_INSTRUCTION);
     store.close();
     store = null;

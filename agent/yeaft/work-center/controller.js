@@ -1,6 +1,7 @@
 import {
   actionForStage,
   actionInstruction,
+  canonicalActionInstruction,
   applyGeneratedPlan,
   getNextStep,
   initialActionFor,
@@ -74,6 +75,28 @@ function normalizeTerminalResult(result, action) {
     normalized.error = 'Completed review requires approved or changes_requested';
   }
   return normalized;
+}
+
+function canonicalReplacementAction(workItem, action, context) {
+  const replacement = {
+    type: action.type,
+    stageId: action.stageId || action.type,
+    assignmentPolicy: action.assignmentPolicy,
+    modelPolicy: action.modelPolicy,
+    requiredRole: action.requiredRole,
+    dependsOnStageIds: action.dependsOnStageIds,
+    workspaceMode: action.workspaceMode,
+    changesRequestedStageId: action.changesRequestedStageId,
+    brief: action.brief,
+    context,
+    maxAttempts: action.maxAttempts || 2,
+  };
+  replacement.instruction = canonicalActionInstruction(
+    workItem,
+    { ...action, ...replacement },
+    context,
+  );
+  return replacement;
 }
 
 function contextEntry(action, result, run) {
@@ -161,7 +184,7 @@ export class WorkflowController {
     const current = this.store.getWorkItem(id);
     const graphMode = current?.workflowSnapshot?.executionMode === 'graph';
     if (!expected.actionId || !Number.isInteger(expected.revision)
-        || (graphMode && !Number.isInteger(expected.generation))) {
+        || (graphMode && (!Number.isInteger(expected.generation) || expected.generation < 1))) {
       throw new Error(`actionId, revision${graphMode ? ', and generation' : ''} are required for guidance`);
     }
     const detail = this.store.addActionGuidance(id, guidanceSummary, expected, (workItem, previous) => {
@@ -171,23 +194,7 @@ export class WorkflowController {
         summary: guidanceSummary,
         evidence: [],
       }];
-      const step = {
-        type: previous.type,
-        stageId: previous.stageId || previous.type,
-        assignmentPolicy: previous.assignmentPolicy,
-        modelPolicy: previous.modelPolicy,
-        requiredRole: previous.requiredRole,
-        dependsOnStageIds: previous.dependsOnStageIds,
-        workspaceMode: previous.workspaceMode,
-        changesRequestedStageId: previous.changesRequestedStageId,
-        brief: previous.brief,
-      };
-      return {
-        ...step,
-        context,
-        instruction: actionInstruction(step, workItem, context, renderSessionContextSnapshot(workItem.sessionContext)),
-        maxAttempts: previous.maxAttempts || 2,
-      };
+      return canonicalReplacementAction(workItem, previous, context);
     }, input.attachments, input.addedAttachments);
     if (!detail) throw new Error(`WorkItem not found: ${id}`);
     return detail;
@@ -200,10 +207,14 @@ export class WorkflowController {
     const workItem = this.store.getWorkItem(id);
     if (!workItem) throw new Error(`WorkItem not found: ${id}`);
     const targetAction = this.store.getAction(input.actionId);
+    const expectedGeneration = Number(input.generation);
+    if (!Number.isInteger(expectedGeneration) || expectedGeneration < 1) {
+      throw new Error('actionId, revision, and generation are required for Action input');
+    }
     const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
-    const targetMatches = graphMode
-      ? targetAction?.workItemId === id && targetAction.generation === input.generation
-      : workItem.currentActionId === input.actionId;
+    const targetMatches = targetAction?.workItemId === id
+      && targetAction.generation === expectedGeneration
+      && (graphMode || workItem.currentActionId === input.actionId);
     if (!targetMatches || workItem.revision !== input.revision) {
       throw new Error('Action changed before input was applied; refresh and try again');
     }
@@ -214,27 +225,8 @@ export class WorkflowController {
       const inputSummary = text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`;
       return this.store.addActionInput(id, inputSummary, {
         actionId: input.actionId,
-        generation: input.generation,
+        generation: expectedGeneration,
         revision: input.revision,
-      }, (current, currentAction) => {
-        const context = [...(currentAction.context || []), {
-          type: 'input', role: 'user', summary: inputSummary, evidence: [],
-        }];
-        const step = {
-          type: currentAction.type,
-          stageId: currentAction.stageId || currentAction.type,
-          assignmentPolicy: currentAction.assignmentPolicy,
-          modelPolicy: currentAction.modelPolicy,
-          requiredRole: currentAction.requiredRole,
-          dependsOnStageIds: currentAction.dependsOnStageIds,
-          workspaceMode: currentAction.workspaceMode,
-          changesRequestedStageId: currentAction.changesRequestedStageId,
-          brief: currentAction.brief,
-        };
-        return {
-          context,
-          instruction: actionInstruction(step, current, context, renderSessionContextSnapshot(current.sessionContext)),
-        };
       }, input.attachments, input.addedAttachments);
     }
     if (!['waiting', 'failed'].includes(targetAction.status)) {
@@ -259,19 +251,6 @@ export class WorkflowController {
       if (previous?.status === 'waiting' && !answer && addedAttachmentCount === 0) {
         throw new Error('answer or attachments are required to resume a waiting Action');
       }
-      const step = previous
-        ? {
-            type: previous.type,
-            stageId: previous.stageId || previous.type,
-            assignmentPolicy: previous.assignmentPolicy,
-            modelPolicy: previous.modelPolicy,
-            requiredRole: previous.requiredRole,
-            dependsOnStageIds: previous.dependsOnStageIds,
-            workspaceMode: previous.workspaceMode,
-            changesRequestedStageId: previous.changesRequestedStageId,
-            brief: previous.brief,
-          }
-        : initialActionFor(workItem);
       const context = Array.isArray(previous?.context) ? [...previous.context] : [];
       if (previousRun) {
         context.push({
@@ -287,12 +266,9 @@ export class WorkflowController {
             : null),
         });
       }
-      return {
-        ...step,
-        context,
-        instruction: actionInstruction(step, workItem, context, renderSessionContextSnapshot(workItem.sessionContext)),
-        maxAttempts: previous?.maxAttempts || 2,
-      };
+      return previous
+        ? canonicalReplacementAction(workItem, previous, context)
+        : { ...initialActionFor(workItem), context };
     }, {
       expected: input.expected || null,
       attachments: input.attachments,

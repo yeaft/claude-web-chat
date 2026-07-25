@@ -721,6 +721,33 @@ export function actionInstruction(stage, workItem, context = [], sessionContextB
   return `${common}\n\n${policy}\n\n${contract}`;
 }
 
+export function canonicalActionInstruction(workItem, action, context = action?.context || []) {
+  const workflowSnapshot = workItem?.workflowSnapshot || null;
+  const workflowStage = (Array.isArray(workflowSnapshot?.stages) ? workflowSnapshot.stages : [])
+    .find(stage => stage?.id === action?.stageId)
+    || (Array.isArray(workflowSnapshot?.stages) ? workflowSnapshot.stages : [])
+      .find(stage => stage?.type === action?.type)
+    || null;
+  const actionInstructions = workflowSnapshot?.actionInstructions;
+  const policyInstruction = actionInstructions && Object.hasOwn(actionInstructions, action?.type)
+    ? actionInstructions[action.type]
+    : actionInstructions?.custom;
+  const stage = {
+    ...(workflowStage || {}),
+    id: action?.stageId || workflowStage?.id || action?.type,
+    type: action?.type || workflowStage?.type || 'custom',
+    instruction: workflowStage?.instruction || policyInstruction || '',
+    brief: action?.brief || workflowStage?.brief || workflowStage || null,
+    assignmentPolicy: action?.assignmentPolicy,
+    modelPolicy: action?.modelPolicy,
+    dependsOnStageIds: action?.dependsOnStageIds,
+    workspaceMode: action?.workspaceMode,
+    changesRequestedStageId: action?.changesRequestedStageId,
+    maxAttempts: action?.maxAttempts,
+  };
+  return actionInstruction(stage, workItem, context);
+}
+
 export function actionForStage(stage, workItem, context = []) {
   return {
     type: stage.type,

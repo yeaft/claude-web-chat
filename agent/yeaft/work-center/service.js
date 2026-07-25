@@ -305,6 +305,10 @@ export class WorkCenterService {
       }
       case 'action_input': {
         const id = requiredString(payload.id, 'id');
+        const generation = Number(payload.generation);
+        if (!Number.isInteger(generation) || generation < 1) {
+          throw new Error('generation must be a positive integer');
+        }
         const workItem = this.#requiredItem(id);
         let addedAttachments = [];
         let detail;
@@ -317,7 +321,7 @@ export class WorkCenterService {
             text: typeof payload.text === 'string' ? payload.text : '',
             actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
             revision: payload.revision,
-            generation: payload.generation,
+            generation,
             addedAttachmentCount: addedAttachments.length,
             addedAttachments,
             attachments: [...(workItem.attachments || []), ...addedAttachments],
