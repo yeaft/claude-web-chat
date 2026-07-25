@@ -93,7 +93,7 @@ Work Center memory 有两条受 `reuseMemory` 控制的路径：同 canonical wo
 
 ## WorkItem Coordinator
 
-用户默认与 WorkItem 级 Coordinator 对话，而不是直接把自然语言塞给某个执行 Action。Coordinator 使用独立的 model/effort policy，不拥有文件、Shell 或外部副作用工具，只能返回三类结构化决策：解释当前状态、给一个或多个未完成 Action 下发指令、或者修改合同并重规划完整的未完成 Action 图。schema 18 以前的 `messages` 是已注入执行器的全局指令，迁移后标记为 `legacy_instruction`，只作为历史上下文展示，不能伪装成已经由 Coordinator 回复过的 user turn，也不能再次注入 executor prompt。Coordinator 的 raw user/assistant turns 同样只属于 conversation；只有结构化 `guide_actions` 或 `replan` 决策可以改变 Action instruction/context 或合同/图。
+用户默认与 WorkItem 级 Coordinator 对话，而不是直接把自然语言塞给某个执行 Action。Coordinator 使用独立的 model/effort policy，不拥有文件、Shell 或外部副作用工具，只能返回三类结构化决策：解释当前状态、给一个或多个未完成 Action 下发指令、或者修改合同并重规划完整的未完成 Action 图。schema 18 以前的 `messages` 是已注入执行器的全局指令，迁移后标记为 `legacy_instruction`，只作为历史上下文展示，不能伪装成已经由 Coordinator 回复过的 user turn，也不能再次注入 executor prompt。schema 19 会从持久化合同、workflow、Action brief/context 与 session snapshot 重建所有 schema-v1 非终态 Action instruction；迁移在同一事务内 supersede 旧 Run、推进 Action generation/spec identity 并删除旧全局消息产生的 pending input，但保留显式 Action input。Coordinator 的 raw user/assistant turns 同样只属于 conversation；只有结构化 `guide_actions` 或 `replan` 决策可以改变 Action instruction/context 或合同/图。
 
 Coordinator turn 在模型调用前同步持久化用户消息和 `thinking` 占位，并冻结 `revision + planRevision + ledgerRevision + coordinatorRevision`。模型返回后，合同、图、Action generation、Run supersede、审计事件和回复在同一个 `BEGIN IMMEDIATE` 事务中提交；任一 fence 已变化就拒绝旧决策。已完成 Action 和 canonical evidence 永不被重写。Action 页面只承担执行记录与 waiting/failed 恢复，不能修改整个 WorkItem 目标。
 

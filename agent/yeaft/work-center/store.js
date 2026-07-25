@@ -7,7 +7,7 @@ import { normalizeActionCheckpoint } from './action-checkpoint.js';
 import { runMatchesActionIdentity } from './action-identity.js';
 import { actionInstruction } from './workflow.js';
 
-const SCHEMA_VERSION = 18;
+const SCHEMA_VERSION = 19;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -287,6 +287,120 @@ function hasColumn(db, table, column) {
   return db.prepare(`PRAGMA table_info(${table})`).all().some(row => row.name === column);
 }
 
+function normalizeLegacyWorkItemMessages(db) {
+  const updateMessages = db.prepare('UPDATE work_items SET messages = ? WHERE id = ?');
+  for (const row of db.prepare('SELECT id, messages FROM work_items').all()) {
+    const messages = parseJson(row.messages, []);
+    if (!Array.isArray(messages) || messages.length === 0) continue;
+    let changed = false;
+    const normalized = messages.map(message => {
+      if (!message || typeof message !== 'object' || Array.isArray(message) || message.role) return message;
+      changed = true;
+      return {
+        ...message,
+        turnId: message.turnId || message.id || randomUUID(),
+        role: 'legacy_instruction',
+        status: message.status || 'completed',
+        updatedAt: message.updatedAt || message.createdAt || 0,
+      };
+    });
+    if (changed) updateMessages.run(stringify(normalized), row.id);
+  }
+}
+
+function repairLegacyActionInstructions(db, now) {
+  const legacyActions = db.prepare(`SELECT a.*, w.title AS work_item_title,
+    w.goal AS work_item_goal, w.acceptance_criteria AS work_item_acceptance_criteria,
+    w.workflow_snapshot AS work_item_workflow_snapshot, w.session_context AS work_item_session_context,
+    w.current_action_id AS work_item_current_action_id
+    FROM actions a JOIN work_items w ON w.id = a.work_item_id
+    WHERE w.execution_schema_version = 1
+      AND w.status NOT IN ('done', 'cancelled')
+      AND a.status IN ('ready', 'running', 'waiting', 'failed')
+    ORDER BY a.work_item_id, a.sequence`).all();
+  const supersedeRuns = db.prepare(`UPDATE runs SET status = 'superseded', ended_at = ?,
+    error = ?, accepting_input = 0 WHERE action_id = ? AND status = 'running'`);
+  const hasRunningRun = db.prepare(`SELECT 1 FROM runs
+    WHERE action_id = ? AND status = 'running' LIMIT 1`);
+  const updateAction = db.prepare(`UPDATE actions SET instruction = ?, status = ?, attempt = 0,
+    current_run_id = NULL, lease_epoch = ?, generation = ?, spec_hash = ?, identity_history = ?,
+    result_run_id = NULL, workspace = NULL, updated_at = ? WHERE id = ?`);
+  const updateWorkItem = db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
+    current_run_id = NULL, updated_at = ? WHERE id = ?`);
+  const deleteLegacyPendingInput = db.prepare(`DELETE FROM pending_action_inputs
+    WHERE action_id = ? AND consumed_at IS NULL AND event_id IN (
+      SELECT id FROM events WHERE action_id = ? AND type = 'work_item.message_applied'
+    )`);
+  const repairedGraphWorkItems = new Set();
+  for (const row of legacyActions) {
+    const action = mapAction(row);
+    const workflowSnapshot = parseJson(row.work_item_workflow_snapshot, null);
+    const workflowStage = (Array.isArray(workflowSnapshot?.stages) ? workflowSnapshot.stages : [])
+      .find(candidate => candidate?.id === action.stageId);
+    const stage = {
+      ...(workflowStage || {}),
+      id: action.stageId,
+      type: action.type,
+      instruction: workflowStage?.instruction
+        || workflowSnapshot?.actionInstructions?.[action.type]
+        || workflowSnapshot?.actionInstructions?.custom
+        || '',
+      brief: action.brief || workflowStage?.brief || workflowStage || null,
+      assignmentPolicy: action.assignmentPolicy,
+      modelPolicy: action.modelPolicy,
+      dependsOnStageIds: action.dependsOnStageIds,
+      workspaceMode: action.workspaceMode,
+      changesRequestedStageId: action.changesRequestedStageId,
+      maxAttempts: action.maxAttempts,
+    };
+    const workItem = {
+      title: row.work_item_title,
+      goal: row.work_item_goal,
+      acceptanceCriteria: parseJson(row.work_item_acceptance_criteria, []),
+      sessionContext: parseJson(row.work_item_session_context, []),
+    };
+    const instruction = actionInstruction(stage, workItem, action.context);
+    const generation = action.generation + 1;
+    const specHash = actionSpecHash({ ...action, instruction });
+    const priorIdentityHistory = actionIdentityHistory(action);
+    const activeRun = Boolean(hasRunningRun.get(action.id));
+    supersedeRuns.run(
+      now,
+      'Superseded by Work Center schema 19 legacy instruction repair',
+      action.id,
+    );
+    const status = action.status === 'running' ? 'ready' : action.status;
+    const leaseEpoch = action.leaseEpoch + (action.status === 'running' || activeRun ? 1 : 0);
+    updateAction.run(
+      instruction,
+      status,
+      leaseEpoch,
+      generation,
+      specHash,
+      stringify(actionIdentityHistory({ ...action, identityHistory: priorIdentityHistory }, generation, specHash)),
+      now,
+      action.id,
+    );
+    deleteLegacyPendingInput.run(action.id, action.id);
+    if (workflowSnapshot?.executionMode === 'graph') {
+      repairedGraphWorkItems.add(action.workItemId);
+    } else if (row.work_item_current_action_id === action.id) {
+      updateWorkItem.run(status === 'failed' ? 'needs_attention' : status, action.id, now, action.workItemId);
+    }
+  }
+  for (const workItemId of repairedGraphWorkItems) {
+    const candidates = db.prepare(`SELECT id, status FROM actions WHERE work_item_id = ?
+      AND status IN ('ready', 'running', 'waiting', 'failed') ORDER BY sequence`).all(workItemId);
+    const attention = candidates.find(candidate => ['waiting', 'failed'].includes(candidate.status));
+    const active = candidates.find(candidate => ['ready', 'running'].includes(candidate.status));
+    const current = attention || active || null;
+    const status = attention
+      ? (attention.status === 'waiting' ? 'waiting' : 'needs_attention')
+      : active ? (active.status === 'running' ? 'running' : 'ready') : 'done';
+    updateWorkItem.run(status, current?.id || null, now, workItemId);
+  }
+}
+
 export class WorkItemStore {
   constructor(dbPath, options = {}) {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -483,28 +597,6 @@ export class WorkItemStore {
     if (!hasColumn(this.db, 'work_items', 'coordinator_revision')) {
       this.db.exec('ALTER TABLE work_items ADD COLUMN coordinator_revision INTEGER NOT NULL DEFAULT 0');
     }
-    if (storedSchemaVersion < 18) {
-      withTransaction(this.db, () => {
-        const updateMessages = this.db.prepare('UPDATE work_items SET messages = ? WHERE id = ?');
-        for (const row of this.db.prepare('SELECT id, messages FROM work_items').all()) {
-          const messages = parseJson(row.messages, []);
-          if (!Array.isArray(messages) || messages.length === 0) continue;
-          let changed = false;
-          const normalized = messages.map(message => {
-            if (!message || typeof message !== 'object' || Array.isArray(message) || message.role) return message;
-            changed = true;
-            return {
-              ...message,
-              turnId: message.turnId || message.id || randomUUID(),
-              role: 'legacy_instruction',
-              status: message.status || 'completed',
-              updatedAt: message.updatedAt || message.createdAt || 0,
-            };
-          });
-          if (changed) updateMessages.run(stringify(normalized), row.id);
-        }
-      });
-    }
     if (!hasColumn(this.db, 'actions', 'brief')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN brief TEXT');
     }
@@ -640,6 +732,8 @@ export class WorkItemStore {
     }
     if (storedSchemaVersion < SCHEMA_VERSION) {
       withTransaction(this.db, () => {
+        if (storedSchemaVersion < 18) normalizeLegacyWorkItemMessages(this.db);
+        if (storedSchemaVersion < 19) repairLegacyActionInstructions(this.db, this.now());
         const updateIdentity = this.db.prepare(`UPDATE runs SET action_generation = ?,
           action_spec_hash = ?, action_attempt = ? WHERE id = ?`);
         const attempts = new Map();
@@ -657,10 +751,10 @@ export class WorkItemStore {
             row.id,
           );
         }
+        this.db.prepare(`INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
       });
     }
-    this.db.prepare(`INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
   }
 
   close() {
