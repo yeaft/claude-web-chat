@@ -7,7 +7,7 @@ import { normalizeActionCheckpoint } from './action-checkpoint.js';
 import { currentActionInputEventIds, runMatchesActionIdentity } from './action-identity.js';
 import { canonicalActionInstruction, withoutActionInputContext } from './workflow.js';
 
-const SCHEMA_VERSION = 21;
+const SCHEMA_VERSION = 22;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -656,7 +656,7 @@ function repairReviewBuildActionInputIdentity(db, now) {
       repairAction,
       repairRows,
       now,
-      'schema21_review_build_repair',
+      'schema22_review_build_repair',
     );
   }
 }
@@ -1106,7 +1106,7 @@ export class WorkItemStore {
           );
         }
         if (storedSchemaVersion < 20) reconcilePendingActionInputIdentity(this.db, this.now());
-        if (storedSchemaVersion < 21) repairReviewBuildActionInputIdentity(this.db, this.now());
+        if (storedSchemaVersion < 22) repairReviewBuildActionInputIdentity(this.db, this.now());
         this.db.prepare(`INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
           ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
       });

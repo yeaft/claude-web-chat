@@ -410,7 +410,7 @@ describe('Work Center store migration', () => {
           data: expect.objectContaining({ reason: 'schema19_legacy_repair' }),
         }),
       ]));
-      expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value).toBe('21');
+      expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value).toBe('22');
 
       const claim = store.claimReadyAction('repaired-boot', 60_000);
       expect(claim).toMatchObject({
@@ -862,6 +862,7 @@ describe('Work Center store migration', () => {
     });
     expect(store.listActionEvents(reviewRepairParentAction.id)
       .filter(event => event.type === 'action.input_rebound')).toHaveLength(2);
+    store.db.prepare("UPDATE schema_meta SET value = '21' WHERE key = 'schema_version'").run();
     expect(store.db.prepare(`SELECT event_id, run_id, action_generation, action_spec_hash, consumed_at
       FROM pending_action_inputs WHERE action_id = ? ORDER BY event_id`).all(reviewRepairParentAction.id))
       .toEqual([
@@ -880,18 +881,18 @@ describe('Work Center store migration', () => {
           consumed_at: 1_000,
         },
       ]);
-    store.db.exec(`CREATE TRIGGER fail_schema21_review_repair
+    store.db.exec(`CREATE TRIGGER fail_schema22_review_repair
       BEFORE UPDATE ON pending_action_inputs
-      BEGIN SELECT RAISE(ABORT, 'forced schema21 review repair failure'); END`);
+      BEGIN SELECT RAISE(ABORT, 'forced schema22 review repair failure'); END`);
     store.close();
     store = null;
 
     expect(() => new WorkItemStore(reviewRepairDbPath, { now: () => 3_000 }))
-      .toThrow(/forced schema21 review repair failure/);
+      .toThrow(/forced schema22 review repair failure/);
     const reviewRepairRollbackDb = new DatabaseSync(reviewRepairDbPath);
     expect(reviewRepairRollbackDb.prepare(
       "SELECT value FROM schema_meta WHERE key = 'schema_version'",
-    ).get().value).toBe('20');
+    ).get().value).toBe('21');
     const reviewRepairRollbackAction = reviewRepairRollbackDb.prepare(
       'SELECT generation, spec_hash, context FROM actions WHERE id = ?',
     ).get(reviewRepairCurrent.id);
@@ -914,7 +915,7 @@ describe('Work Center store migration', () => {
       action_spec_hash: '',
       consumed_at: 1_000,
     });
-    reviewRepairRollbackDb.exec('DROP TRIGGER fail_schema21_review_repair');
+    reviewRepairRollbackDb.exec('DROP TRIGGER fail_schema22_review_repair');
     reviewRepairRollbackDb.close();
 
     store = new WorkItemStore(reviewRepairDbPath, { now: () => 3_000 });
@@ -978,7 +979,7 @@ describe('Work Center store migration', () => {
       snapshotOccurrences: reviewRepairSnapshot.userContext.guidance
         .filter(entry => entry.text === reviewRepairSentinel).length,
     }).toEqual({
-      schemaVersion: '21',
+      schemaVersion: '22',
       generation: reviewRepairParentAction.generation + 1,
       inputIds: reviewRepairSourceEvents.map(event => `legacy-event:${event.id}`),
       attachmentNames: reviewRepairAttachmentNames,
@@ -1695,14 +1696,14 @@ describe('Work Center store migration', () => {
       WHERE action_id = ? ORDER BY event_id`).all(resetInputAction.id);
     const resetReboundsBeforeReopen = store.listActionEvents(resetInputAction.id)
       .filter(event => event.type === 'action.input_rebound').map(event => event.id);
-    store.db.prepare("UPDATE schema_meta SET value = '20' WHERE key = 'schema_version'").run();
+    store.db.prepare("UPDATE schema_meta SET value = '21' WHERE key = 'schema_version'").run();
     store.close();
     store = null;
 
     store = new WorkItemStore(resetInputDbPath, { now: () => 3_000 });
     resetInputController = new WorkflowController(store);
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('21');
+      .toBe('22');
     expect(store.getAction(resetInputAction.id)).toEqual(resetActionBeforeReopen);
     expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
       action_spec_hash, consumed_at, superseded_at FROM pending_action_inputs
@@ -1906,14 +1907,14 @@ describe('Work Center store migration', () => {
       WHERE action_id = ? ORDER BY event_id`).all(replanInputAction.id);
     const replanReboundsBeforeReopen = store.listActionEvents(replanInputAction.id)
       .filter(event => event.type === 'action.input_rebound').map(event => event.id);
-    store.db.prepare("UPDATE schema_meta SET value = '20' WHERE key = 'schema_version'").run();
+    store.db.prepare("UPDATE schema_meta SET value = '21' WHERE key = 'schema_version'").run();
     store.close();
     store = null;
 
     store = new WorkItemStore(replanInputDbPath, { now: () => 3_000 });
     replanInputController = new WorkflowController(store);
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('21');
+      .toBe('22');
     expect(store.getAction(replanInputAction.id)).toEqual(replanOldActionBeforeReopen);
     expect(store.getAction(replannedValidate.id)).toEqual(replanNewActionBeforeReopen);
     expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
@@ -2001,13 +2002,13 @@ describe('Work Center store migration', () => {
       WHERE action_id = ? ORDER BY event_id`).all(terminalInputAction.id);
     const terminalReboundsBeforeReopen = store.listActionEvents(terminalInputAction.id)
       .filter(event => event.type === 'action.input_rebound').map(event => event.id);
-    store.db.prepare("UPDATE schema_meta SET value = '20' WHERE key = 'schema_version'").run();
+    store.db.prepare("UPDATE schema_meta SET value = '21' WHERE key = 'schema_version'").run();
     store.close();
     store = null;
 
     store = new WorkItemStore(terminalInputDbPath, { now: () => 3_000 });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('21');
+      .toBe('22');
     expect(store.getWorkItem(terminalInputItem.id).status).toBe('done');
     expect(store.getAction(terminalInputAction.id)).toEqual(terminalActionBeforeReopen);
     expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
@@ -2354,7 +2355,7 @@ describe('Work Center store migration', () => {
 
     store = new WorkItemStore(rollbackDbPath, { now: () => 2_000 });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('21');
+      .toBe('22');
     expect(store.getAction(rollbackClaim.action.id).instruction).not.toContain(LEGACY_INSTRUCTION);
     store.close();
     store = null;
