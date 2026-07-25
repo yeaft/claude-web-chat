@@ -250,11 +250,12 @@ export async function handleAgentOutput(agentId, agent, msg) {
     case 'execution_cancelled': {
       const cancelledConv = agent.conversations.get(msg.conversationId);
       if (cancelledConv) {
-        cancelledConv.processing = false;
+        cancelledConv.processing = msg.hasQueuedFollowUp === true;
       }
       await forwardToClients(agentId, msg.conversationId, {
         type: 'execution_cancelled',
-        conversationId: msg.conversationId
+        conversationId: msg.conversationId,
+        hasQueuedFollowUp: msg.hasQueuedFollowUp === true
       });
       await broadcastAgentList();
       break;

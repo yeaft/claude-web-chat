@@ -2,7 +2,7 @@
  * Conversation lifecycle handlers: created, resumed, selected, deleted, etc.
  */
 
-import { isRecentlyClosed, stopProcessingWatchdog } from '../watchdog.js';
+import { isRecentlyClosed, startProcessingWatchdog, stopProcessingWatchdog } from '../watchdog.js';
 import { clearSessionLoading } from '../session.js';
 import { sameUserMessage } from '../dedup.js';
 import { maxDbMessageId } from '../messages.js';
@@ -368,6 +368,14 @@ export function handleConversationDeleted(store, msg) {
   store.saveOpenSessions();
 }
 
+export function keepQueuedFollowUpProcessing(store, conversationId, hasQueuedFollowUp) {
+  if (hasQueuedFollowUp !== true) return;
+  store.processingConversations[conversationId] = true;
+  if (store._closedAt) delete store._closedAt[conversationId];
+  store._turnCompletedConvs?.delete(conversationId);
+  startProcessingWatchdog(store, conversationId);
+}
+
 export function handleTurnCompleted(store, msg) {
   const convId = msg.conversationId;
   if (convId) {
@@ -384,6 +392,7 @@ export function handleTurnCompleted(store, msg) {
     }
     store.finishStreamingForConversation(convId);
     markAllToolsCompleted(store, convId);
+    keepQueuedFollowUpProcessing(store, convId, msg.hasQueuedFollowUp);
     const conv = store.conversations.find(c => c.id === convId);
     if (conv) {
       if (msg.claudeSessionId) conv.claudeSessionId = msg.claudeSessionId;
@@ -456,6 +465,7 @@ export function handleExecutionCancelled(store, msg) {
     }
     store.finishStreamingForConversation(convId);
     markAllToolsCompleted(store, convId);
+    keepQueuedFollowUpProcessing(store, convId, msg.hasQueuedFollowUp);
   }
 }
 

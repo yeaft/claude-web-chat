@@ -1,6 +1,6 @@
 // Provider-neutral assistant output frame processing helpers.
 
-import { resetProcessingWatchdog, stopProcessingWatchdog } from './watchdog.js';
+import { resetProcessingWatchdog, startProcessingWatchdog, stopProcessingWatchdog } from './watchdog.js';
 import { markAllToolsCompleted } from './handlers/conversationHandler.js';
 import { sameUserMessage } from './dedup.js';
 
@@ -422,5 +422,11 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
     // re-checks both gates defensively so it stays safe if invoked
     // from any future call site.
     store.sweepStaleStreamingForConversation(conversationId);
+    if (data.hasQueuedFollowUp === true) {
+      store.processingConversations[conversationId] = true;
+      delete store._closedAt[conversationId];
+      store._turnCompletedConvs.delete(conversationId);
+      startProcessingWatchdog(store, conversationId);
+    }
   }
 }

@@ -24,6 +24,11 @@ const BUILTIN_COMMAND_DESCRIPTIONS = {
   heapdump: 'Heap dump (debug)',
 };
 
+// Native chat providers expose one persistent session per conversation. Their
+// protocols generally allow only one active prompt, so follow-ups arriving as
+// separate WebSocket messages must share a conversation-scoped queue.
+const chatProviderInputQueues = new Map();
+
 /**
  * Load command and skill descriptions from installed plugins.
  * Scans commands/*.md and skills/ ** /SKILL.md (recursively) for each plugin.
@@ -326,12 +331,158 @@ export function sendError(conversationId, message) {
   });
 }
 
+function enqueueChatProviderTask(conversationId, task) {
+  let queue = chatProviderInputQueues.get(conversationId);
+  if (!queue) {
+    queue = { tail: Promise.resolve(), cancelled: false, pending: 0 };
+    chatProviderInputQueues.set(conversationId, queue);
+  }
+
+  queue.pending += 1;
+  const run = queue.tail.then(() => {
+    if (queue.cancelled) return undefined;
+    return task(queue);
+  });
+  const settled = run.then(() => undefined, () => undefined);
+  const tail = settled.then(() => {
+    queue.pending -= 1;
+  });
+  queue.tail = tail;
+  tail.then(() => {
+    if (chatProviderInputQueues.get(conversationId) === queue && queue.tail === tail) {
+      chatProviderInputQueues.delete(conversationId);
+    }
+  });
+  return run;
+}
+
+function cancelChatProviderInputQueue(conversationId) {
+  const queue = chatProviderInputQueues.get(conversationId);
+  if (!queue) return;
+  queue.cancelled = true;
+  chatProviderInputQueues.delete(conversationId);
+}
+
+function completeChatProviderTurn(state, conversationId, hasQueuedFollowUp = false) {
+  if (state?.turnCompletedEmitted) return;
+  if (state) state.turnCompletedEmitted = true;
+  ctx.sendToServer({
+    type: 'turn_completed',
+    conversationId,
+    claudeSessionId: state?.sessionId || state?.claudeSessionId || null,
+    workDir: state?.workDir || ctx.CONFIG.workDir,
+    hasQueuedFollowUp
+  });
+}
+
+/**
+ * Serialize a native provider prompt with every other prompt for the same
+ * conversation. Text and attachment sends both use this entry point, so a
+ * queued item cannot own abort/completion state until the prior turn settles.
+ */
+export function enqueueChatProviderInput({
+  conversationId,
+  providerName,
+  prompt,
+  raw,
+  attachments,
+  workDir,
+  claudeSessionId,
+  userId,
+  username,
+}) {
+  return enqueueChatProviderTask(conversationId, async (queue) => {
+    let state = ctx.conversations.get(conversationId);
+    const effectiveProviderName = state?.providerName || providerName;
+    const driver = getProvider(effectiveProviderName);
+    const effectiveWorkDir = workDir || state?.workDir || ctx.CONFIG.workDir;
+
+    if (!state) {
+      try {
+        state = await driver.start({
+          conversationId,
+          workDir: effectiveWorkDir,
+          resumeSessionId: claudeSessionId || null,
+          userId,
+          username,
+        });
+      } catch (err) {
+        const hasQueuedFollowUp = !queue.cancelled && queue.pending > 1;
+        sendOutput(conversationId, {
+          type: 'result',
+          subtype: 'error',
+          is_error: true,
+          error: `${effectiveProviderName} provider failed to start: ${err?.message || err}`,
+          hasQueuedFollowUp,
+        });
+        completeChatProviderTurn(null, conversationId, hasQueuedFollowUp);
+        return;
+      }
+    }
+
+    // A delete/resume can retire this queue while a provider is booting. Do not
+    // let stale queued work mutate or resurrect the replacement conversation.
+    if (queue.cancelled || ctx.conversations.get(conversationId) !== state) return;
+    if (workDir) state.workDir = workDir;
+
+    const turnOwner = {};
+    state.activeChatProviderTurn = turnOwner;
+    state.hasQueuedChatProviderFollowUp = () => !queue.cancelled && queue.pending > 1;
+    state.cancelled = false;
+    state.turnActive = true;
+    state.turnCompletedEmitted = false;
+    state.turnErrorEmitted = false;
+    state.turnResultReceived = false;
+    sendConversationList();
+
+    try {
+      if (raw?.prompt?.trim() === '/clear' && driver.capabilities?.clear) {
+        await driver.clear(state);
+      } else {
+        await driver.sendInput(state, prompt, {
+          conversationId,
+          raw,
+          ...(attachments === undefined ? {} : { attachments }),
+        });
+      }
+    } catch (err) {
+      if (!state.turnErrorEmitted) {
+        state.turnErrorEmitted = true;
+        sendOutput(conversationId, {
+          type: 'result',
+          subtype: 'error',
+          session_id: state.sessionId || null,
+          is_error: true,
+          error: `${effectiveProviderName} error: ${err?.message || err}`,
+          hasQueuedFollowUp: !queue.cancelled && queue.pending > 1,
+        });
+      }
+    } finally {
+      const hasQueuedFollowUp = !queue.cancelled && queue.pending > 1;
+      completeChatProviderTurn(state, conversationId, hasQueuedFollowUp);
+      if (state.activeChatProviderTurn === turnOwner) {
+        state.activeChatProviderTurn = null;
+        state.hasQueuedChatProviderFollowUp = null;
+        state.abortController = null;
+        if (state._abortKillTimer) {
+          clearTimeout(state._abortKillTimer);
+          state._abortKillTimer = null;
+        }
+        state.turnActive = hasQueuedFollowUp;
+        if (hasQueuedFollowUp) state.turnCompletedEmitted = false;
+        sendConversationList();
+      }
+    }
+  });
+}
+
 // 创建新的 conversation (延迟启动 Claude，等待用户发送第一条消息)
 export async function createConversation(msg) {
   const { conversationId, workDir, userId, username, disallowedTools } = msg;
   const effectiveWorkDir = workDir || ctx.CONFIG.workDir;
   const provider = isValidProvider(msg.provider) ? msg.provider : DEFAULT_PROVIDER;
 
+  if (ctx.conversations.has(conversationId)) cancelChatProviderInputQueue(conversationId);
   console.log(`Creating conversation: ${conversationId} in ${effectiveWorkDir} (lazy start, provider=${provider})`);
   if (username) console.log(`  User: ${username} (${userId})`);
 
@@ -419,6 +570,7 @@ export async function resumeConversation(msg) {
   const effectiveWorkDir = workDir || ctx.CONFIG.workDir;
   const provider = isValidProvider(msg.provider) ? msg.provider : DEFAULT_PROVIDER;
 
+  cancelChatProviderInputQueue(conversationId);
   console.log(`[Resume] conversationId: ${conversationId}`);
   console.log(`[Resume] claudeSessionId: ${claudeSessionId}`);
   console.log(`[Resume] workDir: ${effectiveWorkDir} (lazy start)`);
@@ -547,6 +699,7 @@ export function deleteConversation(msg) {
   const { conversationId } = msg;
 
   console.log(`Deleting conversation: ${conversationId}`);
+  cancelChatProviderInputQueue(conversationId);
 
   // 清理关联的所有终端（一个 conversation 可能有多个分屏终端）
   for (const [terminalId, term] of ctx.terminals.entries()) {
@@ -682,11 +835,15 @@ export async function handleCancelExecution(msg) {
     state.inputStream.done();
   }
 
-  // 清理当前查询状态，但保留会话信息
-  state.query = null;
-  state.inputStream = null;
+  // Claude's persistent query is torn down on cancel. Native providers keep
+  // their session and conversation queue alive so a queued follow-up can start
+  // after the cancelled active prompt settles.
+  if ((state.providerName || DEFAULT_PROVIDER) === 'claude-code') {
+    state.query = null;
+    state.inputStream = null;
+  }
   state.abortController = null;
-  state.turnActive = false;
+  state.turnActive = state.hasQueuedChatProviderFollowUp?.() === true;
 
   console.log(`[${conversationId}] Execution cancelled, session: ${claudeSessionId}`);
 
@@ -694,7 +851,8 @@ export async function handleCancelExecution(msg) {
   ctx.sendToServer({
     type: 'execution_cancelled',
     conversationId,
-    claudeSessionId
+    claudeSessionId,
+    hasQueuedFollowUp: state.turnActive
   });
 
   sendConversationList();
@@ -742,7 +900,8 @@ export async function handleUserInput(msg) {
       type: 'turn_completed',
       conversationId,
       claudeSessionId: existingState?.claudeSessionId,
-      workDir: existingState?.workDir || ctx.CONFIG.workDir
+      workDir: existingState?.workDir || ctx.CONFIG.workDir,
+      hasQueuedFollowUp: existingState?.turnActive === true
     });
     return;
   }
@@ -759,76 +918,17 @@ export async function handleUserInput(msg) {
   const providerName = state?.providerName
     || (isValidProvider(msg.provider) ? msg.provider : DEFAULT_PROVIDER);
   if (providerName !== 'claude-code') {
-    const driver = getProvider(providerName);
-    const effectiveWorkDir = workDir || state?.workDir || ctx.CONFIG.workDir;
-    if (!state) {
-      // Re-spawn the provider's session (e.g. the Copilot ACP child) that
-      // died with the previous agent process. If the CLI is unavailable on
-      // the restarted machine, surface a visible error frame instead of an
-      // unhandled rejection (the send was dispatched un-awaited upstream).
-      try {
-        state = await driver.start({
-          conversationId,
-          workDir: effectiveWorkDir,
-          resumeSessionId: claudeSessionId || null,
-          userId: msg.userId,
-          username: msg.username,
-        });
-      } catch (err) {
-        sendOutput(conversationId, {
-          type: 'result',
-          subtype: 'error',
-          is_error: true,
-          error: `${providerName} provider failed to start: ${err?.message || err}`,
-        });
-        return;
-      }
-    }
-    if (workDir) state.workDir = workDir;
-
-    // /clear for capable providers — reset session in-place without spawning new turn
-    if (slashCommand.type === 'slash' && slashCommand.command === '/clear') {
-      state.turnActive = true;
-      state.turnCompletedEmitted = false;
-      state.turnErrorEmitted = false;
-      if (typeof driver.clear === 'function' && driver.capabilities?.clear) {
-        try { await driver.clear(state); } catch (err) {
-          console.warn(`[${conversationId}] driver.clear failed:`, err?.message || err);
-        }
-      }
-      if (!state.turnCompletedEmitted) {
-        ctx.sendToServer({
-          type: 'turn_completed',
-          conversationId,
-          claudeSessionId: state.sessionId || state.claudeSessionId,
-          workDir: state.workDir
-        });
-      }
-      state.turnActive = false;
-      return;
-    }
-
     sendOutput(conversationId, { type: 'user', message: { role: 'user', content: prompt } });
-    state.turnActive = true;
-    sendConversationList();
-    try {
-      await driver.sendInput(state, prompt, { conversationId, raw: msg });
-    } catch (err) {
-      sendOutput(conversationId, {
-        type: 'result',
-        subtype: 'error',
-        session_id: state.sessionId || null,
-        is_error: true,
-        error: `${providerName} error: ${err?.message || err}`,
-      });
-    } finally {
-      state.turnActive = false;
-      if (state._abortKillTimer) {
-        clearTimeout(state._abortKillTimer);
-        state._abortKillTimer = null;
-      }
-      sendConversationList();
-    }
+    await enqueueChatProviderInput({
+      conversationId,
+      providerName,
+      prompt,
+      raw: msg,
+      workDir,
+      claudeSessionId,
+      userId: msg.userId,
+      username: msg.username,
+    });
     return;
   }
 

@@ -1,5 +1,8 @@
 // @vitest-environment happy-dom
 import { mount } from '@vue/test-utils';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Vue from 'vue';
 import ChatInput from '../../web/components/ChatInput.js';
@@ -51,6 +54,16 @@ function mountChatInput(props = {}) {
     global: { mocks: { $t: key => key } },
     attachTo: document.body,
   });
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 beforeAll(() => {
@@ -139,7 +152,159 @@ describe('message flow regressions', () => {
 
     expect(chatInputStore.sendMessage).toHaveBeenCalledWith('queued Chat follow-up', [], { expertSelections: [] });
     chatInput.unmount();
+
+    await verifyCopilotFollowUpQueue();
   });
+
+  async function verifyCopilotFollowUpQueue() {
+    const [{ handleMessage }, ctxModule, { keepQueuedFollowUpProcessing }, { handleAssistantOutputFrame }] = await Promise.all([
+      import('../../agent/connection/message-router.js'),
+      import('../../agent/context.js'),
+      import('../../web/stores/helpers/handlers/conversationHandler.js'),
+      import('../../web/stores/helpers/assistantOutput.js'),
+    ]);
+    const ctx = ctxModule.default;
+    const previousConfig = ctx.CONFIG;
+    const previousSendToServer = ctx.sendToServer;
+    const previousConversations = ctx.conversations;
+    const firstPrompt = deferred();
+    const secondPrompt = deferred();
+    const attachmentPrompt = deferred();
+    const promptCalls = [];
+    const cancelNotifications = [];
+    const sent = [];
+    const workDir = mkdtempSync(join(tmpdir(), 'yeaft-copilot-follow-up-'));
+    const state = {
+      providerName: 'copilot',
+      conversationId: 'conversation-copilot',
+      workDir,
+      sessionId: 'copilot-session',
+      claudeSessionId: 'copilot-session',
+      initialized: true,
+      turnActive: false,
+      abortController: null,
+      pendingPermissions: new Map(),
+      acpClient: {
+        request(method, params) {
+          expect(method).toBe('session/prompt');
+          promptCalls.push(params.prompt);
+          return [firstPrompt.promise, secondPrompt.promise, attachmentPrompt.promise][promptCalls.length - 1];
+        },
+        notify(method, params) {
+          cancelNotifications.push({ method, params });
+        },
+      },
+      usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0, totalCostUsd: 0 },
+    };
+
+    ctx.CONFIG = { workDir };
+    ctx.sendToServer = message => {
+      sent.push(message);
+      return true;
+    };
+    ctx.conversations = new Map([[state.conversationId, state]]);
+
+    try {
+      const firstRun = handleMessage({
+        type: 'execute',
+        conversationId: state.conversationId,
+        provider: 'copilot',
+        prompt: 'first',
+      });
+      const secondRun = handleMessage({
+        type: 'execute',
+        conversationId: state.conversationId,
+        provider: 'copilot',
+        prompt: 'second',
+      });
+      const attachmentRun = handleMessage({
+        type: 'transfer_files',
+        conversationId: state.conversationId,
+        provider: 'copilot',
+        prompt: 'third',
+        workDir,
+        files: [{ name: 'pixel.png', mimeType: 'image/png', data: 'aW1hZ2U=' }],
+      });
+
+      await vi.waitFor(() => expect(promptCalls).toHaveLength(1));
+      expect(promptCalls[0]).toEqual([{ type: 'text', text: 'first' }]);
+      const activeAbortController = state.abortController;
+      expect(activeAbortController).toBeInstanceOf(AbortController);
+      expect(state.turnActive).toBe(true);
+
+      await handleMessage({
+        type: 'cancel_execution',
+        conversationId: state.conversationId,
+      });
+      expect(activeAbortController.signal.aborted).toBe(true);
+      expect(cancelNotifications).toEqual([
+        { method: 'session/cancel', params: { sessionId: 'copilot-session' } },
+      ]);
+      expect(promptCalls).toHaveLength(1);
+      expect(sent.find(message => message.type === 'execution_cancelled')?.hasQueuedFollowUp).toBe(true);
+
+      firstPrompt.reject(new Error('cancelled'));
+      await vi.waitFor(() => expect(promptCalls).toHaveLength(2));
+      const firstCompletion = sent.find(message => message.type === 'turn_completed');
+      expect(firstCompletion?.hasQueuedFollowUp).toBe(true);
+      const firstResult = sent.find(message => message.type === 'claude_output' && message.data?.type === 'result');
+      expect(firstResult?.data.hasQueuedFollowUp).toBe(true);
+      const webStore = {
+        processingConversations: { [state.conversationId]: true },
+        executionStatusMap: {},
+        messagesMap: { [state.conversationId]: [] },
+        conversations: [{ id: state.conversationId }],
+        _processingWatchdogs: {},
+        _closedAt: {},
+        _turnCompletedConvs: new Set(),
+        finishStreamingForConversation: vi.fn(),
+        sweepStaleStreamingForConversation: vi.fn(),
+        appendToAssistantMessageForConversation: vi.fn(),
+        saveOpenSessions: vi.fn(),
+        sendWsMessage: vi.fn(),
+      };
+      handleAssistantOutputFrame(webStore, state.conversationId, firstResult.data);
+      expect(webStore.processingConversations[state.conversationId]).toBe(true);
+      keepQueuedFollowUpProcessing(webStore, state.conversationId, firstCompletion.hasQueuedFollowUp);
+      expect(webStore.processingConversations[state.conversationId]).toBe(true);
+      expect(webStore._turnCompletedConvs.has(state.conversationId)).toBe(false);
+      expect(promptCalls[1]).toEqual([{ type: 'text', text: 'second' }]);
+      expect(state.abortController).not.toBe(activeAbortController);
+      expect(state.turnActive).toBe(true);
+
+      secondPrompt.resolve({ stopReason: 'end_turn' });
+      await vi.waitFor(() => expect(promptCalls).toHaveLength(3));
+      expect(promptCalls[2]).toEqual([
+        { type: 'text', text: 'third' },
+        { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
+      ]);
+      expect(state.turnActive).toBe(true);
+
+      attachmentPrompt.resolve({ stopReason: 'end_turn' });
+      await Promise.all([firstRun, secondRun, attachmentRun]);
+
+      const outputFrames = sent.filter(message => message.type === 'claude_output');
+      const resultFrames = outputFrames.filter(message => message.data?.type === 'result');
+      expect(resultFrames).toHaveLength(3);
+      expect(resultFrames.map(message => message.data.hasQueuedFollowUp)).toEqual([true, true, false]);
+      const completions = sent.filter(message => message.type === 'turn_completed');
+      expect(completions).toHaveLength(3);
+      expect(completions.map(message => message.hasQueuedFollowUp)).toEqual([true, true, false]);
+      delete webStore.processingConversations[state.conversationId];
+      webStore._turnCompletedConvs.add(state.conversationId);
+      keepQueuedFollowUpProcessing(webStore, state.conversationId, completions[2].hasQueuedFollowUp);
+      expect(webStore.processingConversations[state.conversationId]).toBeUndefined();
+      expect(webStore._turnCompletedConvs.has(state.conversationId)).toBe(true);
+      expect(state.turnActive).toBe(false);
+      expect(state.abortController).toBeNull();
+      for (const timer of Object.values(webStore._processingWatchdogs)) clearTimeout(timer);
+    } finally {
+      ctx.CONFIG = previousConfig;
+      ctx.sendToServer = previousSendToServer;
+      ctx.conversations = previousConversations;
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  }
 
   it('stamps background agent messages without promoting that conversation', () => {
     const store = makeStore();

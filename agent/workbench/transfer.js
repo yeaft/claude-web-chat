@@ -1,8 +1,8 @@
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join, basename, extname } from 'path';
 import ctx from '../context.js';
-import { getProvider, DEFAULT_PROVIDER, isValidProvider } from '../providers/index.js';
-import { sendOutput, sendConversationList } from '../conversation.js';
+import { DEFAULT_PROVIDER, isValidProvider } from '../providers/index.js';
+import { enqueueChatProviderInput, sendOutput } from '../conversation.js';
 
 // 临时文件目录名 (不易冲突)
 const TEMP_UPLOAD_DIR = '.claude-tmp-attachments';
@@ -73,28 +73,6 @@ export async function handleTransferFiles(msg) {
   const providerName = state?.providerName
     || (isValidProvider(msg.provider) ? msg.provider : DEFAULT_PROVIDER);
   if (providerName !== 'claude-code') {
-    const driver = getProvider(providerName);
-    if (!state) {
-      try {
-        state = await driver.start({
-          conversationId,
-          workDir: effectiveWorkDir,
-          resumeSessionId: claudeSessionId || null,
-          userId: msg.userId,
-          username: msg.username,
-        });
-      } catch (err) {
-        sendOutput(conversationId, {
-          type: 'result',
-          subtype: 'error',
-          is_error: true,
-          error: `${providerName} provider failed to start: ${err?.message || err}`,
-        });
-        return;
-      }
-    }
-    if (workDir) state.workDir = workDir;
-
     // Images go inline as provider attachments ([{type,data,mimeType}] — the
     // shape copilot.sendInput understands). Non-image files can't be inlined,
     // so reference their saved paths in the text and let the provider read
@@ -124,26 +102,17 @@ export async function handleTransferFiles(msg) {
     // own attachment-only placeholder (web/stores/chat.js).
     const echoContent = prompt && prompt.trim() ? prompt : '(attached files)';
     sendOutput(conversationId, { type: 'user', message: { role: 'user', content: echoContent } });
-    state.turnActive = true;
-    sendConversationList();
-    try {
-      await driver.sendInput(state, effectivePrompt, { conversationId, raw: msg, attachments });
-    } catch (err) {
-      sendOutput(conversationId, {
-        type: 'result',
-        subtype: 'error',
-        session_id: state.sessionId || null,
-        is_error: true,
-        error: `${providerName} error: ${err?.message || err}`,
-      });
-    } finally {
-      state.turnActive = false;
-      if (state._abortKillTimer) {
-        clearTimeout(state._abortKillTimer);
-        state._abortKillTimer = null;
-      }
-      sendConversationList();
-    }
+    await enqueueChatProviderInput({
+      conversationId,
+      providerName,
+      prompt: effectivePrompt,
+      raw: msg,
+      attachments,
+      workDir,
+      claudeSessionId,
+      userId: msg.userId,
+      username: msg.username,
+    });
     return;
   }
 

@@ -245,13 +245,14 @@ export async function handleAgentConversation(agentId, agent, msg) {
     case 'turn_completed':
       {
         const turnConv = agent.conversations.get(msg.conversationId);
-        // Guard: 如果 processing 已为 false，说明是重复的 turn_completed，跳过
+        // A queued follow-up keeps processing true across this completion, so
+        // each queued item still passes this duplicate guard exactly once.
         if (turnConv && !turnConv.processing) {
           console.warn(`[turn_completed] Ignoring duplicate for ${msg.conversationId}`);
           break;
         }
         if (turnConv) {
-          turnConv.processing = false;
+          turnConv.processing = msg.hasQueuedFollowUp === true;
           if (msg.claudeSessionId) {
             turnConv.claudeSessionId = msg.claudeSessionId;
           }
@@ -270,7 +271,8 @@ export async function handleAgentConversation(agentId, agent, msg) {
           type: 'turn_completed',
           conversationId: msg.conversationId,
           claudeSessionId: msg.claudeSessionId,
-          workDir: msg.workDir
+          workDir: msg.workDir,
+          hasQueuedFollowUp: msg.hasQueuedFollowUp === true
         });
 
         await broadcastAgentList();

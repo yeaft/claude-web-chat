@@ -84,6 +84,7 @@ export async function start(opts) {
     capabilities,
     initialized: false,
     _bootPromise: null,  // in-flight _bootAcp() promise; coalesces concurrent boots
+    hasQueuedChatProviderFollowUp: null,
     pendingPermissions: new Map(),  // requestId → { resolve, reject } for ask-user round-trip
     usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0, totalCostUsd: 0 },
   };
@@ -294,6 +295,12 @@ export async function sendInput(state, prompt, opts = {}) {
     }
   }
 
+  if (state.cancelled) {
+    _sendTurnError(state, 'copilot prompt cancelled before dispatch');
+    _completeTurn(state, conversationId);
+    return;
+  }
+
   const abortController = new AbortController();
   state.abortController = abortController;
   state.turnActive = true;
@@ -339,19 +346,21 @@ export async function sendInput(state, prompt, opts = {}) {
       stop_reason: stopReason,
       is_error: isErr,
       error: isErr ? `copilot stop_reason=${stopReason}` : undefined,
+      hasQueuedFollowUp: state.hasQueuedChatProviderFollowUp?.() === true,
     });
   } catch (err) {
     _sendTurnError(state, err?.message || String(err));
   } finally {
-    _completeTurn(state, conversationId);
+    _completeTurn(state, conversationId, abortController);
   }
 }
 
 export function abort(state) {
   if (state?.abortController) {
+    // The active turn owns this controller; its abort listener sends the ACP
+    // cancellation. Do not notify a second time from this wrapper.
     try { state.abortController.abort(); } catch { /* noop */ }
-  }
-  if (state?.acpClient && state.sessionId) {
+  } else if (state?.acpClient && state.sessionId) {
     try { state.acpClient.notify('session/cancel', { sessionId: state.sessionId }); }
     catch { /* noop */ }
   }
@@ -459,11 +468,18 @@ function _sendTurnError(state, error) {
     session_id: state.sessionId,
     is_error: true,
     error,
+    hasQueuedFollowUp: state.hasQueuedChatProviderFollowUp?.() === true,
   });
 }
 
-function _completeTurn(state, conversationId = state?.conversationId) {
-  if (!state || state.turnCompletedEmitted) return;
+function _completeTurn(state, conversationId = state?.conversationId, abortOwner = state?.abortController) {
+  if (!state) return;
+  if (state.abortController === abortOwner) state.abortController = null;
+  if (state._abortKillTimer) {
+    clearTimeout(state._abortKillTimer);
+    state._abortKillTimer = null;
+  }
+  if (state.turnCompletedEmitted) return;
   state.turnCompletedEmitted = true;
   state.turnActive = false;
   ctx.sendToServer({
@@ -471,6 +487,7 @@ function _completeTurn(state, conversationId = state?.conversationId) {
     conversationId,
     claudeSessionId: state.sessionId,
     workDir: state.workDir,
+    hasQueuedFollowUp: state.hasQueuedChatProviderFollowUp?.() === true,
   });
 }
 
