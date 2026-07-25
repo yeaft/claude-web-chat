@@ -7,7 +7,7 @@ import { normalizeActionCheckpoint } from './action-checkpoint.js';
 import { currentActionInputEventIds, runMatchesActionIdentity } from './action-identity.js';
 import { canonicalActionInstruction, withoutActionInputContext } from './workflow.js';
 
-const SCHEMA_VERSION = 20;
+const SCHEMA_VERSION = 21;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -421,20 +421,22 @@ function promoteReadyActionInputs(db, action, rows, now, reason) {
     action_generation = ?, action_spec_hash = ?, consumed_at = COALESCE(consumed_at, ?)
     WHERE event_id = ? AND action_id = ? AND superseded_at IS NULL`);
   for (const row of pendingRows) {
-    insertReboundEvent.run(
-      action.workItemId,
-      action.id,
-      target.generation,
-      stringify({
-        sourceEventId: Number(row.event_id),
-        sourceRunId: row.run_id || null,
-        sourceGeneration: Math.max(1, Number(row.sourceGeneration ?? row.action_generation) || 1),
-        sourceSpecHash: row.sourceSpecHash ?? row.action_spec_hash ?? '',
-        reason: row.repairedRun ? 'schema19_legacy_repair' : reason,
-        targetSpecHash: target.specHash,
-      }),
-      now,
-    );
+    if (!row.skipReboundAudit) {
+      insertReboundEvent.run(
+        action.workItemId,
+        action.id,
+        target.generation,
+        stringify({
+          sourceEventId: Number(row.event_id),
+          sourceRunId: row.run_id || null,
+          sourceGeneration: Math.max(1, Number(row.sourceGeneration ?? row.action_generation) || 1),
+          sourceSpecHash: row.sourceSpecHash ?? row.action_spec_hash ?? '',
+          reason: row.repairedRun ? 'schema19_legacy_repair' : reason,
+          targetSpecHash: target.specHash,
+        }),
+        now,
+      );
+    }
     const settled = settleReady.run(
       target.generation,
       target.specHash,
@@ -517,6 +519,101 @@ function reconcilePendingActionInputIdentity(db, now) {
   for (const [actionId, readyRows] of readyRowsByAction) {
     const action = mapAction(db.prepare('SELECT * FROM actions WHERE id = ?').get(actionId));
     promoteReadyActionInputs(db, action, readyRows, now, 'schema20_identity_backfill');
+  }
+}
+
+function repairReviewBuildActionInputIdentity(db, now) {
+  const actions = db.prepare(`SELECT a.* FROM actions a
+    JOIN work_items w ON w.id = a.work_item_id
+    WHERE a.status = 'ready' AND a.current_run_id IS NULL
+      AND w.status NOT IN ('done', 'cancelled')
+    ORDER BY a.work_item_id, a.sequence, a.id`).all();
+  const inputRows = db.prepare(`SELECT p.*, e.work_item_id AS event_work_item_id,
+    e.action_id AS event_action_id, e.data AS event_data,
+    e.action_generation AS event_generation, r.work_item_id AS run_work_item_id,
+    r.action_id AS run_action_id, r.status AS run_status, r.error AS run_error,
+    r.action_generation AS run_generation, r.action_spec_hash AS run_spec_hash
+    FROM pending_action_inputs p
+    JOIN events e ON e.id = p.event_id
+    LEFT JOIN runs r ON r.id = p.run_id
+    WHERE p.action_id = ? AND p.superseded_at IS NULL AND e.type = 'action.input_added'
+    ORDER BY p.event_id`);
+  const actionEvents = db.prepare('SELECT * FROM events WHERE action_id = ? ORDER BY id');
+  for (const actionRow of actions) {
+    const action = mapAction(actionRow);
+    const missingInputs = action.context.filter(entry => entry?.type === 'input' && !entry.inputId);
+    if (missingInputs.length === 0 || !action.specHash) continue;
+    const existingInputIds = new Set(action.context
+      .filter(entry => entry?.type === 'input' && entry.inputId)
+      .map(entry => String(entry.inputId)));
+    const events = actionEvents.all(action.id).map(mapEvent);
+    const currentEventIds = currentActionInputEventIds(events, action);
+    const history = new Set(actionIdentityHistory(action)
+      .map(identity => `${identity.generation}\u0000${identity.specHash}`));
+    const eligible = inputRows.all(action.id).flatMap(row => {
+      const event = mapEvent({
+        id: row.event_id,
+        work_item_id: row.work_item_id,
+        action_id: row.action_id,
+        run_id: row.run_id,
+        action_generation: row.event_generation,
+        type: 'action.input_added',
+        data: row.event_data,
+        created_at: row.created_at,
+      });
+      const eventInputId = event.data?.inputId || `legacy-event:${event.id}`;
+      const sameOwner = row.work_item_id === action.workItemId
+        && row.event_work_item_id === action.workItemId
+        && row.event_action_id === action.id
+        && (!row.run_id || (
+          row.run_work_item_id === action.workItemId && row.run_action_id === action.id
+        ));
+      const sourceRunStopped = !row.run_id || (row.run_status && row.run_status !== 'running');
+      const eventText = event.data?.text || '';
+      if (!sameOwner || !sourceRunStopped || (row.text || '') !== eventText
+          || existingInputIds.has(String(eventInputId))) return [];
+      const alreadyCurrent = currentEventIds.has(String(event.id))
+        && Math.max(1, Number(row.action_generation) || 1) === action.generation
+        && (row.action_spec_hash || '') === action.specHash;
+      const runGeneration = Math.max(1, Number(row.run_generation) || 1);
+      const runSpecHash = row.run_spec_hash || '';
+      const malformedCurrentConsumed = row.consumed_at != null
+        && row.run_id
+        && row.run_status === 'interrupted'
+        && runGeneration === action.generation
+        && runSpecHash === action.specHash
+        && Math.max(1, Number(row.event_generation) || 1) === runGeneration
+        && Math.max(1, Number(row.action_generation) || 1) === runGeneration
+        && !row.action_spec_hash;
+      const repairedConsumed = row.consumed_at != null
+        && row.run_id
+        && row.run_status === 'superseded'
+        && row.run_error === 'Superseded by Work Center schema 19 legacy instruction repair'
+        && runGeneration < action.generation
+        && runSpecHash
+        && history.has(`${runGeneration}\u0000${runSpecHash}`)
+        && Math.max(1, Number(row.event_generation) || 1) === runGeneration
+        && Math.max(1, Number(row.action_generation) || 1) === runGeneration
+        && !row.action_spec_hash;
+      if (!alreadyCurrent && !malformedCurrentConsumed && !repairedConsumed) return [];
+      return [{
+        ...row,
+        sourceGeneration: alreadyCurrent ? action.generation : runGeneration,
+        sourceSpecHash: alreadyCurrent ? action.specHash : runSpecHash,
+        skipReboundAudit: alreadyCurrent,
+        eventText,
+      }];
+    });
+    if (eligible.length !== missingInputs.length) continue;
+    const remaining = [...eligible];
+    const matched = [];
+    for (const entry of missingInputs) {
+      const index = remaining.findIndex(row => row.eventText === (entry.summary || ''));
+      if (index < 0) break;
+      matched.push(remaining.splice(index, 1)[0]);
+    }
+    if (matched.length !== missingInputs.length || remaining.length !== 0) continue;
+    promoteReadyActionInputs(db, action, matched, now, 'schema21_review_build_repair');
   }
 }
 
@@ -965,6 +1062,7 @@ export class WorkItemStore {
           );
         }
         if (storedSchemaVersion < 20) reconcilePendingActionInputIdentity(this.db, this.now());
+        if (storedSchemaVersion < 21) repairReviewBuildActionInputIdentity(this.db, this.now());
         this.db.prepare(`INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
           ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
       });

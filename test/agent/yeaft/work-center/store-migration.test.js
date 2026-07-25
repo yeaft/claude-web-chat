@@ -410,7 +410,7 @@ describe('Work Center store migration', () => {
           data: expect.objectContaining({ reason: 'schema19_legacy_repair' }),
         }),
       ]));
-      expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value).toBe('20');
+      expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value).toBe('21');
 
       const claim = store.claimReadyAction('repaired-boot', 60_000);
       expect(claim).toMatchObject({
@@ -708,6 +708,251 @@ describe('Work Center store migration', () => {
       retrySnapshotOccurrences: 2,
       finalReboundCount: 2,
     });
+    store.close();
+    store = null;
+    rmSync(dir, { recursive: true, force: true });
+    dir = null;
+
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-schema20-review-repair-'));
+    const reviewRepairDbPath = join(dir, 'work-center.db');
+    store = new WorkItemStore(reviewRepairDbPath, { now: () => 1_000 });
+    const reviewRepairController = new WorkflowController(store);
+    const reviewRepairWorkflow = normalizeWorkflowDefinition({
+      id: 'schema20-review-repair',
+      name: 'Schema 20 review repair',
+      planningMode: 'static',
+      executionMode: 'graph',
+      actionInstructions: { test: INPUT_POLICY },
+      stages: [{
+        id: 'verify', name: 'Verify', type: 'test',
+        objective: 'Repair review-build input', approach: 'Preserve every accepted occurrence',
+        expectedOutcome: 'Every accepted input remains durable', instruction: INPUT_POLICY,
+        assignmentPolicy: { mode: 'fixed', fixedVpId: 'tester' },
+        modelPolicy: { mode: 'inherit' }, dependsOnStageIds: [],
+        workspaceMode: 'read', maxAttempts: 3,
+      }],
+    });
+    const reviewRepairItem = reviewRepairController.create({
+      id: 'schema20-review-repair',
+      title: 'Repair schema 20 review input',
+      goal: 'Recover consumed and rebound historical input',
+      acceptanceCriteria: ['Every accepted occurrence is projected exactly once'],
+      workflowTemplate: reviewRepairWorkflow.id,
+      workflowSnapshot: reviewRepairWorkflow,
+      workDir: '',
+      start: true,
+    });
+    let reviewRepairDetail = store.getWorkItemDetail(reviewRepairItem.id);
+    const reviewRepairOldClaim = store.claimReadyAction('schema20-review-boot', 60_000);
+    const reviewRepairSentinel = 'SCHEMA20 REVIEW BUILD DUPLICATE SENTINEL';
+    reviewRepairDetail = reviewRepairController.input(reviewRepairItem.id, {
+      actionId: reviewRepairOldClaim.action.id,
+      generation: reviewRepairOldClaim.action.generation,
+      revision: reviewRepairDetail.revision,
+      text: reviewRepairSentinel,
+    });
+    reviewRepairDetail = reviewRepairController.input(reviewRepairItem.id, {
+      actionId: reviewRepairOldClaim.action.id,
+      generation: reviewRepairOldClaim.action.generation,
+      revision: reviewRepairDetail.revision,
+      text: reviewRepairSentinel,
+    });
+    const reviewRepairSourceEvents = store.listActionEvents(reviewRepairOldClaim.action.id)
+      .filter(event => event.type === 'action.input_added');
+    const reviewRepairRows = store.listPendingActionInputs(
+      reviewRepairOldClaim.action.id,
+      reviewRepairOldClaim.run.id,
+      'schema20-review-boot',
+      reviewRepairOldClaim.run.leaseEpoch,
+    );
+    expect(reviewRepairSourceEvents).toHaveLength(2);
+    expect(reviewRepairRows).toHaveLength(2);
+    expect(store.acknowledgeActionInput(
+      reviewRepairRows[0].id,
+      reviewRepairOldClaim.action.id,
+      reviewRepairOldClaim.run.id,
+      'schema20-review-boot',
+      reviewRepairOldClaim.run.leaseEpoch,
+    )).toBe(true);
+    expect(store.interruptRun(
+      reviewRepairOldClaim.run.id,
+      'schema20-review-boot',
+      reviewRepairOldClaim.run.leaseEpoch,
+      'simulate old schema 20 review migration',
+    )).toBe(true);
+    const reviewRepairCurrent = store.getAction(reviewRepairOldClaim.action.id);
+    const reviewRepairTargetGeneration = reviewRepairCurrent.generation;
+    const reviewRepairTargetSpecHash = reviewRepairCurrent.specHash;
+    store.db.prepare('UPDATE actions SET context = ? WHERE id = ?').run(
+      JSON.stringify([
+        ...reviewRepairCurrent.context.filter(entry => entry.type !== 'input'),
+        { type: 'input', role: 'user', summary: reviewRepairSentinel, attachments: [], evidence: [] },
+        { type: 'input', role: 'user', summary: reviewRepairSentinel, attachments: [], evidence: [] },
+      ]),
+      reviewRepairCurrent.id,
+    );
+    expect(store.getRun(reviewRepairOldClaim.run.id)).toMatchObject({
+      status: 'interrupted',
+      actionGeneration: reviewRepairTargetGeneration,
+      actionSpecHash: reviewRepairTargetSpecHash,
+    });
+    for (const event of reviewRepairSourceEvents) {
+      store.db.prepare('UPDATE events SET data = ? WHERE id = ?').run(
+        JSON.stringify({ text: reviewRepairSentinel, attachments: [] }),
+        event.id,
+      );
+    }
+    store.db.prepare(`UPDATE pending_action_inputs SET run_id = ?, action_generation = 1,
+      action_spec_hash = '', consumed_at = 1000 WHERE event_id = ?`).run(
+      reviewRepairOldClaim.run.id,
+      reviewRepairSourceEvents[0].id,
+    );
+    store.db.prepare(`UPDATE pending_action_inputs SET run_id = NULL, action_generation = ?,
+      action_spec_hash = ?, consumed_at = NULL WHERE event_id = ?`).run(
+      reviewRepairTargetGeneration,
+      reviewRepairTargetSpecHash,
+      reviewRepairSourceEvents[1].id,
+    );
+    store.appendEvent(reviewRepairItem.id, 'action.input_rebound', {
+      sourceEventId: reviewRepairSourceEvents[1].id,
+      sourceRunId: reviewRepairOldClaim.run.id,
+      sourceGeneration: reviewRepairOldClaim.run.actionGeneration,
+      sourceSpecHash: reviewRepairOldClaim.run.actionSpecHash,
+      reason: 'schema20_identity_backfill',
+      targetSpecHash: reviewRepairTargetSpecHash,
+    }, {
+      actionId: reviewRepairCurrent.id,
+      actionGeneration: reviewRepairTargetGeneration,
+    });
+    store.db.prepare("UPDATE schema_meta SET value = '20' WHERE key = 'schema_version'").run();
+    store.db.exec(`CREATE TRIGGER fail_schema21_review_repair
+      BEFORE UPDATE ON pending_action_inputs
+      BEGIN SELECT RAISE(ABORT, 'forced schema21 review repair failure'); END`);
+    store.close();
+    store = null;
+
+    expect(() => new WorkItemStore(reviewRepairDbPath, { now: () => 3_000 }))
+      .toThrow(/forced schema21 review repair failure/);
+    const reviewRepairRollbackDb = new DatabaseSync(reviewRepairDbPath);
+    expect(reviewRepairRollbackDb.prepare(
+      "SELECT value FROM schema_meta WHERE key = 'schema_version'",
+    ).get().value).toBe('20');
+    const reviewRepairRollbackAction = reviewRepairRollbackDb.prepare(
+      'SELECT generation, spec_hash, context FROM actions WHERE id = ?',
+    ).get(reviewRepairCurrent.id);
+    expect(reviewRepairRollbackAction).toMatchObject({
+      generation: reviewRepairTargetGeneration,
+      spec_hash: reviewRepairTargetSpecHash,
+    });
+    expect(JSON.parse(reviewRepairRollbackAction.context)
+      .filter(entry => entry.type === 'input').every(entry => !entry.inputId)).toBe(true);
+    expect(reviewRepairRollbackDb.prepare(`SELECT COUNT(*) AS count FROM events
+      WHERE action_id = ? AND type = 'action.input_rebound'`).get(reviewRepairCurrent.id).count).toBe(1);
+    expect(reviewRepairRollbackDb.prepare(`SELECT run_id, action_generation, action_spec_hash, consumed_at
+      FROM pending_action_inputs WHERE event_id = ?`).get(reviewRepairSourceEvents[0].id)).toEqual({
+      run_id: reviewRepairOldClaim.run.id,
+      action_generation: 1,
+      action_spec_hash: '',
+      consumed_at: 1_000,
+    });
+    reviewRepairRollbackDb.exec('DROP TRIGGER fail_schema21_review_repair');
+    reviewRepairRollbackDb.close();
+
+    store = new WorkItemStore(reviewRepairDbPath, { now: () => 3_000 });
+    const reviewRepairAction = store.getAction(reviewRepairCurrent.id);
+    const reviewRepairRebounds = store.listActionEvents(reviewRepairAction.id)
+      .filter(event => event.type === 'action.input_rebound');
+    const reviewRepairSettledRows = store.db.prepare(`SELECT event_id, run_id, action_generation,
+      action_spec_hash, consumed_at, superseded_at FROM pending_action_inputs
+      WHERE action_id = ? ORDER BY event_id`).all(reviewRepairAction.id);
+    expect(reviewRepairSettledRows).toEqual(reviewRepairSourceEvents.map((event, index) => ({
+      event_id: event.id,
+      run_id: null,
+      action_generation: reviewRepairAction.generation,
+      action_spec_hash: reviewRepairAction.specHash,
+      consumed_at: index === 0 ? 1_000 : 3_000,
+      superseded_at: null,
+    })));
+    expect(reviewRepairRebounds).toHaveLength(2);
+    const reviewRepairIdentity = {
+      generation: reviewRepairAction.generation,
+      specHash: reviewRepairAction.specHash,
+      context: reviewRepairAction.context,
+      reboundIds: reviewRepairRebounds.map(event => event.id),
+    };
+    store.close();
+    store = null;
+
+    store = new WorkItemStore(reviewRepairDbPath, { now: () => 4_000 });
+    const reviewRepairReopened = store.getAction(reviewRepairCurrent.id);
+    expect({
+      generation: reviewRepairReopened.generation,
+      specHash: reviewRepairReopened.specHash,
+      context: reviewRepairReopened.context,
+      reboundIds: store.listActionEvents(reviewRepairReopened.id)
+        .filter(event => event.type === 'action.input_rebound').map(event => event.id),
+    }).toEqual(reviewRepairIdentity);
+    const reviewRepairClaim = store.claimReadyAction('schema20-review-boot', 60_000);
+    const reviewRepairCalls = [];
+    const reviewRepairRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(reviewRepairCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await reviewRepairRunner.run({
+      ...reviewRepairClaim,
+      ownerBootId: 'schema20-review-boot',
+      signal: new AbortController().signal,
+    });
+    const reviewRepairRequest = JSON.stringify(reviewRepairCalls[0]);
+    const reviewRepairSnapshot = store.getRun(reviewRepairClaim.run.id).contextSnapshot;
+    expect({
+      schemaVersion: store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value,
+      generation: reviewRepairAction.generation,
+      inputIds: reviewRepairAction.context.filter(entry => entry.type === 'input').map(entry => entry.inputId),
+      requestOccurrences: reviewRepairRequest.split(reviewRepairSentinel).length - 1,
+      snapshotOccurrences: reviewRepairSnapshot.userContext.guidance
+        .filter(entry => entry.text === reviewRepairSentinel).length,
+    }).toEqual({
+      schemaVersion: '21',
+      generation: reviewRepairTargetGeneration + 1,
+      inputIds: reviewRepairSourceEvents.map(event => `legacy-event:${event.id}`),
+      requestOccurrences: 2,
+      snapshotOccurrences: 2,
+    });
+    for (let index = 0; index < 510; index += 1) {
+      store.appendEvent(reviewRepairItem.id, 'test.noise', { index });
+    }
+    expect(store.getWorkItemDetail(reviewRepairItem.id).events.some(event => (
+      event.type === 'action.input_added' || event.type === 'action.input_rebound'
+    ))).toBe(false);
+    expect(store.interruptRun(
+      reviewRepairClaim.run.id,
+      'schema20-review-boot',
+      reviewRepairClaim.run.leaseEpoch,
+      'retry schema21 review repair after event eviction',
+    )).toBe(true);
+    const reviewRepairRetryClaim = store.claimReadyAction('schema20-review-boot', 60_000);
+    const reviewRepairRetryCalls = [];
+    const reviewRepairRetryRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(reviewRepairRetryCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await reviewRepairRetryRunner.run({
+      ...reviewRepairRetryClaim,
+      ownerBootId: 'schema20-review-boot',
+      signal: new AbortController().signal,
+    });
+    expect(JSON.stringify(reviewRepairRetryCalls[0]).split(reviewRepairSentinel)).toHaveLength(3);
+    expect(store.getRun(reviewRepairRetryClaim.run.id).contextSnapshot.userContext.guidance
+      .filter(entry => entry.text === reviewRepairSentinel)).toHaveLength(2);
+    expect(reviewRepairRetryClaim.action).toMatchObject({
+      generation: reviewRepairAction.generation,
+      specHash: reviewRepairAction.specHash,
+    });
+    expect(store.listActionEvents(reviewRepairAction.id)
+      .filter(event => event.type === 'action.input_rebound')).toHaveLength(2);
     store.close();
     store = null;
     rmSync(dir, { recursive: true, force: true });
@@ -1866,7 +2111,7 @@ describe('Work Center store migration', () => {
 
     store = new WorkItemStore(rollbackDbPath, { now: () => 2_000 });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('20');
+      .toBe('21');
     expect(store.getAction(rollbackClaim.action.id).instruction).not.toContain(LEGACY_INSTRUCTION);
     store.close();
     store = null;
