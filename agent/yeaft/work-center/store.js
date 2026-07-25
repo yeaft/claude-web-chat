@@ -4,8 +4,8 @@ import { dirname, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
-import { runMatchesActionIdentity } from './action-identity.js';
-import { canonicalActionInstruction } from './workflow.js';
+import { currentActionInputEventIds, runMatchesActionIdentity } from './action-identity.js';
+import { canonicalActionInstruction, withoutActionInputContext } from './workflow.js';
 
 const SCHEMA_VERSION = 20;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
@@ -308,6 +308,30 @@ function normalizeLegacyWorkItemMessages(db) {
   }
 }
 
+function carryCurrentActionInputContext(db, action) {
+  const events = db.prepare(`SELECT * FROM events WHERE action_id = ? ORDER BY id`)
+    .all(action.id).map(mapEvent);
+  const validInputEventIds = currentActionInputEventIds(events, action);
+  const inputEvents = events.filter(event => event.type === 'action.input_added'
+    && validInputEventIds.has(String(event.id)));
+  const usedEventIds = new Set();
+  return (Array.isArray(action.context) ? action.context : []).flatMap(entry => {
+    if (entry?.type !== 'input') return [entry];
+    if (entry.inputId) return [entry];
+    const event = inputEvents.find(candidate => !usedEventIds.has(candidate.id)
+      && (candidate.data?.text || '') === (entry.summary || ''));
+    if (!event) return [];
+    usedEventIds.add(event.id);
+    return [{
+      ...entry,
+      inputId: `legacy-event:${event.id}`,
+      attachments: Array.isArray(entry.attachments)
+        ? entry.attachments
+        : Array.isArray(event.data?.attachments) ? event.data.attachments : [],
+    }];
+  });
+}
+
 function reconcilePendingActionInputIdentity(db, now) {
   const rows = db.prepare(`SELECT p.*, e.type AS event_type, e.action_generation AS event_generation,
     a.status AS action_status, a.current_run_id, a.generation AS current_generation,
@@ -404,7 +428,7 @@ function repairLegacyActionInstructions(db, now) {
     error = ?, accepting_input = 0 WHERE action_id = ? AND status = 'running'`);
   const hasRunningRun = db.prepare(`SELECT 1 FROM runs
     WHERE action_id = ? AND status = 'running' LIMIT 1`);
-  const updateAction = db.prepare(`UPDATE actions SET instruction = ?, status = ?, attempt = 0,
+  const updateAction = db.prepare(`UPDATE actions SET context = ?, instruction = ?, status = ?, attempt = 0,
     current_run_id = NULL, lease_epoch = ?, generation = ?, spec_hash = ?, identity_history = ?,
     result_run_id = NULL, workspace = NULL, updated_at = ? WHERE id = ?`);
   const updateWorkItem = db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
@@ -424,9 +448,11 @@ function repairLegacyActionInstructions(db, now) {
       workflowSnapshot,
       sessionContext: parseJson(row.work_item_session_context, []),
     };
-    const instruction = canonicalActionInstruction(workItem, action);
+    const context = carryCurrentActionInputContext(db, action);
+    const repairedAction = { ...action, context };
+    const instruction = canonicalActionInstruction(workItem, repairedAction, context);
     const generation = action.generation + 1;
-    const specHash = actionSpecHash({ ...action, instruction });
+    const specHash = actionSpecHash({ ...repairedAction, instruction });
     const priorIdentityHistory = actionIdentityHistory(action);
     const activeRun = Boolean(hasRunningRun.get(action.id));
     supersedeRuns.run(
@@ -437,6 +463,7 @@ function repairLegacyActionInstructions(db, now) {
     const status = action.status === 'running' ? 'ready' : action.status;
     const leaseEpoch = action.leaseEpoch + (action.status === 'running' || activeRun ? 1 : 0);
     updateAction.run(
+      stringify(context),
       instruction,
       status,
       leaseEpoch,
@@ -898,6 +925,7 @@ export class WorkItemStore {
         throw new Error('Files cannot be added while an Action is running');
       }
       const now = this.now();
+      const inputId = randomUUID();
       let eventGeneration = action.generation;
       let eventSpecHash = action.specHash;
       let eventRunId = action.currentRunId;
@@ -909,10 +937,17 @@ export class WorkItemStore {
             AND (p.run_id IS NULL OR source_run.status != 'running') ORDER BY p.event_id`).all(
           action.id, action.generation, action.specHash,
         );
-        const context = [...(action.context || []), {
-          type: 'input', role: 'user', summary: input, evidence: [],
-        }];
-        const nextAction = { ...action, context, generation: action.generation + 1 };
+        const nextGeneration = action.generation + 1;
+        const context = carryCurrentActionInputContext(this.db, action);
+        context.push({
+          type: 'input',
+          role: 'user',
+          inputId,
+          summary: input,
+          attachments: projectedAttachments,
+          evidence: [],
+        });
+        const nextAction = { ...action, context, generation: nextGeneration };
         nextAction.instruction = canonicalActionInstruction(workItem, nextAction, context);
         nextAction.specHash = actionSpecHash(nextAction);
         const changedAction = this.db.prepare(`UPDATE actions SET context = ?, instruction = ?, attempt = 0,
@@ -959,6 +994,7 @@ export class WorkItemStore {
         throw new Error('Action changed before input was applied; refresh and try again');
       }
       const eventId = this.appendEvent(id, 'action.input_added', {
+        inputId,
         text: input,
         attachments: projectedAttachments,
       }, { actionId: action.id, runId: eventRunId, actionGeneration: eventGeneration });
@@ -1243,7 +1279,7 @@ export class WorkItemStore {
     return rebound.length;
   }
 
-  #resetGraphFromStage(workItemId, targetStageId, replacement, reason, now) {
+  #resetGraphFromStage(workItemId, targetStageId, replacement, reason, now, options = {}) {
     const workItem = this.getWorkItem(workItemId);
     if (!workItem) throw new Error('Work Center graph reset WorkItem is missing');
     const actions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
@@ -1280,15 +1316,20 @@ export class WorkItemStore {
         WHERE action_id IN (${placeholders}) AND status = 'running'`).run(now, reason, ...ids);
       for (const action of affectedActions) {
         const workspace = action.id === target.id ? preservedTargetWorkspace : null;
+        const replacementContext = action.id === target.id && replacement
+          ? replacement.context
+          : action.context;
+        const preserveInputIds = action.id === target.id ? options.preserveInputIds : [];
+        const context = withoutActionInputContext(replacementContext, preserveInputIds);
         const nextAction = action.id === target.id && replacement
-          ? { ...action, ...replacement, generation: action.generation + 1 }
-          : { ...action, generation: action.generation + 1 };
-        nextAction.instruction = canonicalActionInstruction(workItem, nextAction);
+          ? { ...action, ...replacement, context, generation: action.generation + 1 }
+          : { ...action, context, generation: action.generation + 1 };
+        nextAction.instruction = canonicalActionInstruction(workItem, nextAction, context);
         const nextSpecHash = actionSpecHash(nextAction);
         this.db.prepare(`UPDATE actions SET status = 'ready', attempt = 0, current_run_id = NULL,
-          lease_epoch = ?, generation = generation + 1, instruction = ?, spec_hash = ?, identity_history = ?,
+          lease_epoch = ?, generation = generation + 1, context = ?, instruction = ?, spec_hash = ?, identity_history = ?,
           result_run_id = NULL, workspace = ?, updated_at = ? WHERE id = ?`).run(
-          nextEpoch.get(action.id), nextAction.instruction, nextSpecHash,
+          nextEpoch.get(action.id), stringify(context), nextAction.instruction, nextSpecHash,
           stringify(actionIdentityHistory(action, nextAction.generation, nextSpecHash)),
           stringify(workspace), now, action.id,
         );
@@ -1298,6 +1339,7 @@ export class WorkItemStore {
       const replacementAction = {
         ...target,
         ...replacement,
+        context: withoutActionInputContext(replacement.context, options.preserveInputIds),
         generation: target.generation + 1,
         contractRevision: replacement.contractRevision ?? target.contractRevision,
       };
@@ -1316,7 +1358,7 @@ export class WorkItemStore {
         replacement.changesRequestedStageId || null,
         replacementAction.instruction,
         stringify(replacement.brief || null),
-        stringify(Array.isArray(replacement.context) ? replacement.context : []),
+        stringify(replacementAction.context),
         Number.isInteger(replacement.maxAttempts) ? replacement.maxAttempts : 2,
         stringify(preservedTargetWorkspace),
         specHash,
@@ -1339,7 +1381,15 @@ export class WorkItemStore {
       if (!action) return null;
       const nextWorkspaceMode = workspaceMode || action.workspaceMode;
       const specChanged = nextWorkspaceMode !== action.workspaceMode;
-      const nextAction = { ...action, workspaceMode: nextWorkspaceMode };
+      const nextContext = specChanged ? carryCurrentActionInputContext(this.db, action) : action.context;
+      const nextAction = { ...action, context: nextContext, workspaceMode: nextWorkspaceMode };
+      if (specChanged) {
+        nextAction.instruction = canonicalActionInstruction(
+          this.getWorkItem(action.workItemId),
+          nextAction,
+          nextContext,
+        );
+      }
       const nextSpecHash = specChanged ? actionSpecHash(nextAction) : action.specHash;
       const now = this.now();
       if (specChanged) {
@@ -1349,12 +1399,14 @@ export class WorkItemStore {
           now,
         );
       }
-      const changed = this.db.prepare(`UPDATE actions SET workspace = ?, workspace_mode = ?,
+      const changed = this.db.prepare(`UPDATE actions SET workspace = ?, workspace_mode = ?, context = ?, instruction = ?,
         generation = generation + ?, spec_hash = ?, identity_history = ?,
         result_run_id = CASE WHEN ? = 1 THEN NULL ELSE result_run_id END,
         updated_at = ? WHERE id = ? AND generation = ?`).run(
         stringify(workspace),
         nextWorkspaceMode,
+        stringify(nextContext),
+        nextAction.instruction,
         specChanged ? 1 : 0,
         nextSpecHash,
         stringify(specChanged
@@ -1385,7 +1437,15 @@ export class WorkItemStore {
       if (!action || action.generation !== expectedGeneration) return null;
       const nextWorkspaceMode = workspaceMode || action.workspaceMode;
       const specChanged = nextWorkspaceMode !== action.workspaceMode;
-      const nextAction = { ...action, workspaceMode: nextWorkspaceMode };
+      const nextContext = specChanged ? carryCurrentActionInputContext(this.db, action) : action.context;
+      const nextAction = { ...action, context: nextContext, workspaceMode: nextWorkspaceMode };
+      if (specChanged) {
+        nextAction.instruction = canonicalActionInstruction(
+          this.getWorkItem(action.workItemId),
+          nextAction,
+          nextContext,
+        );
+      }
       const nextGeneration = action.generation + (specChanged ? 1 : 0);
       const nextSpecHash = specChanged ? actionSpecHash(nextAction) : action.specHash;
       const now = this.now();
@@ -1403,13 +1463,15 @@ export class WorkItemStore {
           throw error;
         }
       }
-      const changed = this.db.prepare(`UPDATE actions SET workspace = ?, workspace_mode = ?,
+      const changed = this.db.prepare(`UPDATE actions SET workspace = ?, workspace_mode = ?, context = ?, instruction = ?,
         generation = generation + ?, spec_hash = ?, identity_history = ?,
         result_run_id = CASE WHEN ? = 1 THEN NULL ELSE result_run_id END,
         updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ?
         AND lease_epoch = ? AND generation = ?`).run(
         stringify(workspace),
         nextWorkspaceMode,
+        stringify(nextContext),
+        nextAction.instruction,
         specChanged ? 1 : 0,
         nextSpecHash,
         stringify(specChanged
@@ -1457,17 +1519,25 @@ export class WorkItemStore {
           AND status = 'ready' AND current_run_id IS NULL`).all(action.workItemId, action.id);
         for (const row of pendingRows) {
           const pending = mapAction(row);
-          const fallback = { ...pending, workspaceMode: 'shared', workspace: null };
+          const nextContext = carryCurrentActionInputContext(this.db, pending);
+          const fallback = { ...pending, context: nextContext, workspaceMode: 'shared', workspace: null };
+          fallback.instruction = canonicalActionInstruction(
+            this.getWorkItem(pending.workItemId),
+            fallback,
+            nextContext,
+          );
           const fallbackSpecHash = actionSpecHash(fallback);
           this.#supersedePendingActionInputs(
             [pending],
             'Superseded by workspace serialization fallback',
             now,
           );
-          const repaired = this.db.prepare(`UPDATE actions SET workspace = NULL, workspace_mode = 'shared',
-            generation = generation + 1, spec_hash = ?, identity_history = ?, result_run_id = NULL, updated_at = ?
+          const repaired = this.db.prepare(`UPDATE actions SET workspace = NULL, workspace_mode = 'shared', context = ?,
+            instruction = ?, generation = generation + 1, spec_hash = ?, identity_history = ?, result_run_id = NULL, updated_at = ?
             WHERE id = ? AND status = 'ready' AND current_run_id IS NULL
             AND generation = ? AND workspace_mode = ?`).run(
+            stringify(nextContext),
+            fallback.instruction,
             fallbackSpecHash,
             stringify(actionIdentityHistory(pending, pending.generation + 1, fallbackSpecHash)),
             now,
@@ -1900,7 +1970,7 @@ export class WorkItemStore {
               now, 'Superseded by WorkItem Coordinator guidance', action.currentRunId,
             );
           }
-          const context = [...(action.context || []), {
+          const context = [...withoutActionInputContext(action.context), {
             type: 'coordinator-guidance', role: 'user', summary: instruction, evidence: [],
           }];
           const nextAction = {
@@ -2319,6 +2389,7 @@ export class WorkItemStore {
           replacement,
           'Superseded by manual graph retry',
           now,
+          { preserveInputIds: inputEvent?.inputId ? [inputEvent.inputId] : [] },
         );
         this.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ?,
           current_run_id = NULL, attachments = ?, revision = ?, updated_at = ? WHERE id = ?`).run(
@@ -2805,22 +2876,27 @@ export class WorkItemStore {
           ...(actionPatch.dependsOnStageIds || []),
           ...(patch.addDependsOnActionIds || []),
         ])];
+        const nextContext = carryCurrentActionInputContext(this.db, actionPatch);
         const nextAction = {
           ...actionPatch,
+          context: nextContext,
           dependsOnStageIds: dependencies,
           generation: actionPatch.generation + 1,
         };
+        nextAction.instruction = canonicalActionInstruction(nextWorkItem, nextAction, nextContext);
         nextAction.specHash = actionSpecHash(nextAction);
         this.#supersedePendingActionInputs(
           [actionPatch],
           'Superseded by Work Center dependency patch',
           now,
         );
-        const changed = this.db.prepare(`UPDATE actions SET depends_on_stage_ids = ?,
+        const changed = this.db.prepare(`UPDATE actions SET depends_on_stage_ids = ?, context = ?, instruction = ?,
           generation = generation + 1, spec_hash = ?, identity_history = ?, result_run_id = NULL,
           workspace = NULL, updated_at = ? WHERE id = ? AND work_item_id = ? AND status = 'ready'
           AND attempt = 0 AND current_run_id IS NULL AND generation = ? AND spec_hash = ?`).run(
           stringify(dependencies),
+          stringify(nextContext),
+          nextAction.instruction,
           nextAction.specHash,
           stringify(actionIdentityHistory(actionPatch, nextAction.generation, nextAction.specHash)),
           now,
@@ -2874,7 +2950,7 @@ export class WorkItemStore {
         nextAction = this.#insertAction(workItem.id, {
           ...barrier.action,
           context: [
-            ...(Array.isArray(barrier.action.context) ? barrier.action.context : []),
+            ...withoutActionInputContext(barrier.action.context),
             {
               type: 'replan-barrier',
               proposalId: barrier.proposalId,
@@ -2897,6 +2973,7 @@ export class WorkItemStore {
           const candidate = {
             ...prior,
             ...retained.nextAction,
+            context: withoutActionInputContext(retained.nextAction.context ?? prior.context),
             status: 'ready',
             generation: prior.generation + 1,
             attempt: 0,

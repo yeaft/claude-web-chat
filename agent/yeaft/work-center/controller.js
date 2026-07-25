@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import {
   actionForStage,
   actionInstruction,
   canonicalActionInstruction,
+  withoutActionInputContext,
   applyGeneratedPlan,
   getNextStep,
   initialActionFor,
@@ -188,7 +190,7 @@ export class WorkflowController {
       throw new Error(`actionId, revision${graphMode ? ', and generation' : ''} are required for guidance`);
     }
     const detail = this.store.addActionGuidance(id, guidanceSummary, expected, (workItem, previous) => {
-      const context = [...(previous.context || []), {
+      const context = [...withoutActionInputContext(previous.context), {
         type: 'guidance',
         role: 'user',
         summary: guidanceSummary,
@@ -238,6 +240,7 @@ export class WorkflowController {
       expected: { actionId: input.actionId, generation: input.generation, revision: input.revision },
       attachments: input.attachments,
       inputEvent: {
+        inputId: randomUUID(),
         text: text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`,
         attachments: input.addedAttachments,
       },
@@ -251,7 +254,7 @@ export class WorkflowController {
       if (previous?.status === 'waiting' && !answer && addedAttachmentCount === 0) {
         throw new Error('answer or attachments are required to resume a waiting Action');
       }
-      const context = Array.isArray(previous?.context) ? [...previous.context] : [];
+      const context = withoutActionInputContext(previous?.context);
       if (previousRun) {
         context.push({
           type: previous.type,
@@ -264,6 +267,16 @@ export class WorkflowController {
           answer: answer || (addedAttachmentCount > 0
             ? `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`
             : null),
+        });
+      }
+      if (Number(workItem.executionSchemaVersion) === 2 && input.inputEvent?.inputId) {
+        context.push({
+          type: 'input',
+          role: 'user',
+          inputId: input.inputEvent.inputId,
+          summary: input.inputEvent.text || '',
+          attachments: Array.isArray(input.inputEvent.attachments) ? input.inputEvent.attachments : [],
+          evidence: [],
         });
       }
       return previous
@@ -447,7 +460,7 @@ export class WorkflowController {
           : planProposal
             ? { ...effectiveWorkItem, workflowSnapshot: planProposal.workflowSnapshot }
             : effectiveWorkItem;
-        const context = [...(action.context || []), contextEntry(action, result, activeRun)];
+        const context = [...withoutActionInputContext(action.context), contextEntry(action, result, activeRun)];
         if (plannedWorkItem.workflowSnapshot?.executionMode === 'graph') {
           if (staleReplanMutation) {
             return {

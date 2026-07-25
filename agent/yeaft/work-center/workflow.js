@@ -721,6 +721,13 @@ export function actionInstruction(stage, workItem, context = [], sessionContextB
   return `${common}\n\n${policy}\n\n${contract}`;
 }
 
+export function withoutActionInputContext(context, preserveInputIds = []) {
+  const preserved = new Set((Array.isArray(preserveInputIds) ? preserveInputIds : []).filter(Boolean));
+  return (Array.isArray(context) ? context : []).filter(entry => (
+    entry?.type !== 'input' || (entry.inputId && preserved.has(entry.inputId))
+  ));
+}
+
 export function canonicalActionInstruction(workItem, action, context = action?.context || []) {
   const workflowSnapshot = workItem?.workflowSnapshot || null;
   const workflowStage = (Array.isArray(workflowSnapshot?.stages) ? workflowSnapshot.stages : [])

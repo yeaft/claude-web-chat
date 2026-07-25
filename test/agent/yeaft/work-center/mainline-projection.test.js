@@ -90,6 +90,16 @@ describe('Mainline projection', () => {
     const action = {
       id: 'action-a', sequence: 1, stageId: 'action-a', type: 'implement', status: 'ready',
       generation: 2, specHash: 'action-a-v2', dependsOnStageIds: [],
+      context: [
+        {
+          type: 'input', role: 'user', inputId: 'current-input-a',
+          summary: 'Current canonical duplicate', attachments: [], evidence: [],
+        },
+        {
+          type: 'input', role: 'user', inputId: 'current-input-b',
+          summary: 'Current canonical duplicate', attachments: [], evidence: [],
+        },
+      ],
     };
     const snapshot = buildMainlineContextSnapshot(detail({
       actions: [action],
@@ -106,10 +116,20 @@ describe('Mainline projection', () => {
           id: 3, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
           data: { text: 'Input for the current generation' },
         },
+        {
+          id: 4, type: 'action.input_added', actionId: action.id, actionGeneration: 1,
+          data: { inputId: 'current-input-a', text: 'Current canonical duplicate' },
+        },
+        {
+          id: 5, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+          data: { inputId: 'current-input-b', text: 'Current canonical duplicate' },
+        },
       ],
     }), action).contextSnapshot;
 
     expect(snapshot.userContext.guidance).toEqual([
+      expect.objectContaining({ eventId: 4, inputId: 'current-input-a', text: 'Current canonical duplicate' }),
+      expect.objectContaining({ eventId: 5, inputId: 'current-input-b', text: 'Current canonical duplicate' }),
       expect.objectContaining({ eventId: 3, text: 'Input for the current generation' }),
     ]);
     expect(JSON.stringify(snapshot)).not.toContain('Input for the superseded generation');

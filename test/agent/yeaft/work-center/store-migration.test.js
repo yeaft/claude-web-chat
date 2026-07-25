@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkItemRunner } from '../../../../agent/yeaft/work-center/runner.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
+import { applyCoordinatorReplan } from '../../../../agent/yeaft/work-center/plan-mutation.js';
 import {
   normalizeWorkflowDefinition,
   resolvePlanningWorkflowSnapshot,
@@ -458,6 +459,69 @@ describe('Work Center store migration', () => {
       dir = null;
     }
 
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-old19-input-carry-'));
+    const old19CarryDbPath = join(dir, 'work-center.db');
+    store = new WorkItemStore(old19CarryDbPath, { now: () => 1_000 });
+    const old19CarryController = new WorkflowController(store);
+    const old19CarryWorkflow = legacyPolicyWorkflow();
+    const old19CarryItem = old19CarryController.create({
+      id: 'old19-input-carry',
+      title: 'Carry old schema 19 ready input',
+      goal: 'Promote legacy input identity before a spec carry',
+      acceptanceCriteria: ['Legacy input remains visible'],
+      workflowTemplate: old19CarryWorkflow.id,
+      workflowSnapshot: old19CarryWorkflow,
+      workDir: '',
+      start: true,
+    });
+    const old19CarryAction = store.getWorkItemDetail(old19CarryItem.id).actions[0];
+    const old19CarryEventId = store.appendEvent(old19CarryItem.id, 'action.input_added', {
+      text: 'OLD19 READY INPUT CARRY SENTINEL',
+      attachments: [{
+        id: 'old19-ready-file', name: 'old19-ready.txt', mimeType: 'text/plain', size: 19, isImage: false,
+      }],
+    }, { actionId: old19CarryAction.id, actionGeneration: old19CarryAction.generation });
+    store.db.prepare('UPDATE actions SET context = ? WHERE id = ?').run(JSON.stringify([
+      ...old19CarryAction.context,
+      { type: 'input', role: 'user', summary: 'OLD19 READY INPUT CARRY SENTINEL', evidence: [] },
+    ]), old19CarryAction.id);
+    store.db.prepare("UPDATE schema_meta SET value = '19' WHERE key = 'schema_version'").run();
+    store.db.exec('DROP INDEX IF EXISTS idx_pending_action_inputs_identity');
+    store.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN superseded_at');
+    store.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN action_spec_hash');
+    store.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN action_generation');
+    store.close();
+    store = new WorkItemStore(old19CarryDbPath, { now: () => 2_000 });
+    const old19CarriedAction = store.setActionWorkspace(old19CarryAction.id, null, 'shared');
+    expect(old19CarriedAction.generation).toBe(old19CarryAction.generation + 1);
+    expect(old19CarriedAction.context.filter(entry => entry.type === 'input')).toEqual([
+      expect.objectContaining({
+        inputId: `legacy-event:${old19CarryEventId}`,
+        summary: 'OLD19 READY INPUT CARRY SENTINEL',
+        attachments: [expect.objectContaining({ name: 'old19-ready.txt' })],
+      }),
+    ]);
+    expect(old19CarriedAction.instruction).toContain('OLD19 READY INPUT CARRY SENTINEL');
+    const old19CarryClaim = store.claimReadyAction('old19-carry-boot', 60_000);
+    const old19CarryCalls = [];
+    const old19CarryRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(old19CarryCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await old19CarryRunner.run({
+      ...old19CarryClaim,
+      ownerBootId: 'old19-carry-boot',
+      signal: new AbortController().signal,
+    });
+    const old19CarryRequest = JSON.stringify(old19CarryCalls[0]);
+    expect(old19CarryRequest).toContain('OLD19 READY INPUT CARRY SENTINEL');
+    expect(old19CarryRequest).toContain('old19-ready.txt');
+    store.close();
+    store = null;
+    rmSync(dir, { recursive: true, force: true });
+    dir = null;
+
     dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-old19-stale-input-'));
     const staleDbPath = join(dir, 'work-center.db');
     store = new WorkItemStore(staleDbPath, { now: () => 1_000 });
@@ -688,6 +752,369 @@ describe('Work Center store migration', () => {
     expect(identityRequest).toContain(INPUT_POLICY);
     expect(identityRequest).not.toContain(DEFAULT_TEST_POLICY);
     expect(identityRequest).not.toContain(OLD_GENERATION_INPUT);
+    store.close();
+    store = null;
+    rmSync(dir, { recursive: true, force: true });
+    dir = null;
+
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-ready-input-projection-'));
+    store = new WorkItemStore(join(dir, 'work-center.db'), { now: () => 2_000 });
+    const readyInputController = new WorkflowController(store);
+    const readyInputWorkflow = legacyPolicyWorkflow();
+    const readyInputItem = readyInputController.create({
+      id: 'ready-input-projection',
+      title: 'Preserve every accepted ready input',
+      goal: 'Project canonical ready input into the schema-v2 Runner',
+      acceptanceCriteria: ['Every accepted ready input reaches the Runner'],
+      workflowTemplate: readyInputWorkflow.id,
+      workflowSnapshot: readyInputWorkflow,
+      workDir: '',
+      start: true,
+    });
+    let readyInputDetail = store.getWorkItemDetail(readyInputItem.id);
+    let readyInputAction = readyInputDetail.actions[0];
+    readyInputDetail = readyInputController.input(readyInputItem.id, {
+      actionId: readyInputAction.id,
+      generation: readyInputAction.generation,
+      revision: readyInputDetail.revision,
+      text: 'FIRST READY INPUT SENTINEL',
+      addedAttachmentCount: 1,
+      addedAttachments: [{
+        id: 'first-ready-attachment',
+        name: 'first-ready.txt',
+        mimeType: 'text/plain',
+        size: 17,
+        isImage: false,
+      }],
+    });
+    readyInputAction = readyInputDetail.actions[0];
+    readyInputDetail = readyInputController.input(readyInputItem.id, {
+      actionId: readyInputAction.id,
+      generation: readyInputAction.generation,
+      revision: readyInputDetail.revision,
+      text: 'SECOND READY INPUT SENTINEL',
+    });
+    readyInputAction = readyInputDetail.actions[0];
+    readyInputDetail = readyInputController.input(readyInputItem.id, {
+      actionId: readyInputAction.id,
+      generation: readyInputAction.generation,
+      revision: readyInputDetail.revision,
+      text: 'SECOND READY INPUT SENTINEL',
+    });
+    readyInputAction = readyInputDetail.actions[0];
+    expect(readyInputAction.generation).toBe(4);
+    const readyInputContext = readyInputAction.context.filter(entry => entry.type === 'input');
+    expect(readyInputContext.map(entry => entry.summary))
+      .toEqual([
+        'FIRST READY INPUT SENTINEL',
+        'SECOND READY INPUT SENTINEL',
+        'SECOND READY INPUT SENTINEL',
+      ]);
+    expect(new Set(readyInputContext.map(entry => entry.inputId)).size).toBe(3);
+    const readyInputEvents = readyInputDetail.events.filter(event => event.type === 'action.input_added');
+    expect(readyInputEvents.map(event => event.actionGeneration).sort()).toEqual([2, 3, 4]);
+    expect(new Set(readyInputEvents.map(event => event.data.inputId)).size).toBe(3);
+    const readyInputClaim = store.claimReadyAction('ready-input-boot', 60_000);
+    const readyInputCalls = [];
+    const readyInputRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(readyInputCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await readyInputRunner.run({
+      ...readyInputClaim,
+      ownerBootId: 'ready-input-boot',
+      signal: new AbortController().signal,
+    });
+    const readyInputRequest = JSON.stringify(readyInputCalls[0]);
+    expect(readyInputRequest).toContain('FIRST READY INPUT SENTINEL');
+    expect(readyInputRequest.split('SECOND READY INPUT SENTINEL')).toHaveLength(3);
+    expect(readyInputRequest).toContain('first-ready.txt');
+    store.close();
+    store = null;
+    rmSync(dir, { recursive: true, force: true });
+    dir = null;
+
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-reset-input-projection-'));
+    store = new WorkItemStore(join(dir, 'work-center.db'), { now: () => 2_000 });
+    const resetInputController = new WorkflowController(store);
+    const resetInputWorkflow = legacyPolicyWorkflow();
+    const resetInputItem = resetInputController.create({
+      id: 'reset-input-projection',
+      title: 'Drop input across graph reset',
+      goal: 'Never revive superseded Action input',
+      acceptanceCriteria: ['Reset input stays superseded'],
+      workflowTemplate: resetInputWorkflow.id,
+      workflowSnapshot: resetInputWorkflow,
+      workDir: '',
+      start: true,
+    });
+    let resetInputDetail = store.getWorkItemDetail(resetInputItem.id);
+    let resetInputAction = resetInputDetail.actions[0];
+    resetInputDetail = resetInputController.input(resetInputItem.id, {
+      actionId: resetInputAction.id,
+      generation: resetInputAction.generation,
+      revision: resetInputDetail.revision,
+      text: 'RESET MUST DROP THIS INPUT SENTINEL',
+    });
+    resetInputAction = resetInputDetail.actions[0];
+    resetInputDetail = resetInputController.guide(resetInputItem.id, {
+      actionId: resetInputAction.id,
+      generation: resetInputAction.generation,
+      revision: resetInputDetail.revision,
+      guidance: 'RESET CURRENT ACTION SAFELY',
+    });
+    resetInputAction = resetInputDetail.actions[0];
+    expect(resetInputAction.context.filter(entry => entry.type === 'input')).toEqual([]);
+    expect(resetInputAction.instruction).not.toContain('RESET MUST DROP THIS INPUT SENTINEL');
+    resetInputDetail = resetInputController.input(resetInputItem.id, {
+      actionId: resetInputAction.id,
+      generation: resetInputAction.generation,
+      revision: resetInputDetail.revision,
+      text: 'POST RESET INPUT SENTINEL',
+    });
+    resetInputAction = resetInputDetail.actions[0];
+    const resetInputClaim = store.claimReadyAction('reset-input-boot', 60_000);
+    const resetInputCalls = [];
+    const resetInputRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(resetInputCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await resetInputRunner.run({
+      ...resetInputClaim,
+      ownerBootId: 'reset-input-boot',
+      signal: new AbortController().signal,
+    });
+    const resetInputRequest = JSON.stringify(resetInputCalls[0]);
+    expect(resetInputRequest).toContain('RESET CURRENT ACTION SAFELY');
+    expect(resetInputRequest).toContain('POST RESET INPUT SENTINEL');
+    expect(resetInputRequest).not.toContain('RESET MUST DROP THIS INPUT SENTINEL');
+    store.close();
+    store = null;
+    rmSync(dir, { recursive: true, force: true });
+    dir = null;
+
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-waiting-input-projection-'));
+    store = new WorkItemStore(join(dir, 'work-center.db'), { now: () => 2_000 });
+    const waitingInputController = new WorkflowController(store);
+    const waitingInputWorkflow = legacyPolicyWorkflow();
+    const waitingInputItem = waitingInputController.create({
+      id: 'waiting-input-projection',
+      title: 'Preserve accepted waiting input',
+      goal: 'Carry only the current recovery input into the new Action spec',
+      acceptanceCriteria: ['Every accepted recovery input reaches the Runner'],
+      workflowTemplate: waitingInputWorkflow.id,
+      workflowSnapshot: waitingInputWorkflow,
+      workDir: '',
+      start: true,
+    });
+    const waitingInputInitialClaim = store.claimReadyAction('waiting-input-boot', 60_000);
+    let waitingInputDetail = waitingInputController.submit(
+      waitingInputInitialClaim.run.id,
+      'waiting-input-boot',
+      waitingInputInitialClaim.run.leaseEpoch,
+      {
+        outcome: 'waiting',
+        summary: 'Need recovery input',
+        evidence: [],
+        waitingReason: 'Provide the recovery input',
+      },
+    );
+    let waitingInputAction = waitingInputDetail.actions[0];
+    waitingInputDetail = waitingInputController.input(waitingInputItem.id, {
+      actionId: waitingInputAction.id,
+      generation: waitingInputAction.generation,
+      revision: waitingInputDetail.revision,
+      text: 'WAITING RECOVERY FIRST SENTINEL',
+    });
+    waitingInputAction = waitingInputDetail.actions[0];
+    waitingInputDetail = waitingInputController.input(waitingInputItem.id, {
+      actionId: waitingInputAction.id,
+      generation: waitingInputAction.generation,
+      revision: waitingInputDetail.revision,
+      text: 'WAITING RECOVERY SECOND SENTINEL',
+    });
+    waitingInputAction = waitingInputDetail.actions[0];
+    expect(waitingInputAction.context.filter(entry => entry.type === 'input').map(entry => entry.summary))
+      .toEqual(['WAITING RECOVERY FIRST SENTINEL', 'WAITING RECOVERY SECOND SENTINEL']);
+    const waitingInputClaim = store.claimReadyAction('waiting-input-boot', 60_000);
+    const waitingInputCalls = [];
+    const waitingInputRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(waitingInputCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await waitingInputRunner.run({
+      ...waitingInputClaim,
+      ownerBootId: 'waiting-input-boot',
+      signal: new AbortController().signal,
+    });
+    const waitingInputRequest = JSON.stringify(waitingInputCalls[0]);
+    expect(waitingInputRequest).toContain('WAITING RECOVERY FIRST SENTINEL');
+    expect(waitingInputRequest).toContain('WAITING RECOVERY SECOND SENTINEL');
+    store.close();
+    store = null;
+    rmSync(dir, { recursive: true, force: true });
+    dir = null;
+
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-replan-input-projection-'));
+    store = new WorkItemStore(join(dir, 'work-center.db'), { now: () => 2_000 });
+    const replanInputController = new WorkflowController(store);
+    const replanInputWorkflow = resolvePlanningWorkflowSnapshot({});
+    const replanInputItem = replanInputController.create({
+      id: 'replan-input-projection',
+      title: 'Drop input across Coordinator replan',
+      goal: 'Never revive input from a replaced Action spec',
+      acceptanceCriteria: GRAPH_ACCEPTANCE_CRITERIA,
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: replanInputWorkflow,
+      workDir: '',
+      start: true,
+    });
+    const replanInputTriage = store.claimReadyAction('replan-input-boot', 60_000);
+    replanInputController.submit(
+      replanInputTriage.run.id,
+      'replan-input-boot',
+      replanInputTriage.run.leaseEpoch,
+      completedResult('triage', {
+        plan: { workItemType: 'replan-input-test', actions: [
+          plannedAction('validate', 'test', []),
+          plannedAction('deliver', 'deliver', ['validate']),
+        ] },
+      }),
+    );
+    let replanInputDetail = store.getWorkItemDetail(replanInputItem.id);
+    let replanInputAction = replanInputDetail.actions.find(action => action.stageId === 'validate');
+    replanInputDetail = replanInputController.input(replanInputItem.id, {
+      actionId: replanInputAction.id,
+      generation: replanInputAction.generation,
+      revision: replanInputDetail.revision,
+      text: 'REPLAN MUST DROP THIS INPUT SENTINEL',
+    });
+    replanInputAction = replanInputDetail.actions.find(action => action.id === replanInputAction.id);
+    const replanTurn = store.beginCoordinatorTurn(replanInputItem.id, 'Replace the unfinished plan safely.', {
+      revision: replanInputDetail.revision,
+      planRevision: replanInputDetail.planRevision,
+      ledgerRevision: replanInputDetail.ledgerRevision,
+      coordinatorRevision: replanInputDetail.coordinatorRevision,
+    });
+    const replanMutation = applyCoordinatorReplan({
+      workItem: replanInputDetail,
+      actions: replanInputDetail.actions,
+      availableVpIds: ['tester'],
+      proposal: {
+        proposalId: `coordinator:${replanTurn.turnId}`,
+        basePlanRevision: replanInputDetail.planRevision,
+        reason: 'Replace every unfinished Action contract.',
+        actions: [
+          plannedAction('validate', 'test', []),
+          plannedAction('deliver', 'deliver', ['validate']),
+        ],
+      },
+    });
+    replanInputDetail = store.completeCoordinatorTurn(replanTurn.turnId, {
+      reply: 'The unfinished Action contracts were replaced.',
+      decision: {
+        kind: 'replan',
+        reason: replanMutation.reason,
+        contractPatch: null,
+        guidance: [],
+        actions: [],
+      },
+      mutation: replanMutation,
+    }, replanTurn.fence);
+    const replannedValidate = replanInputDetail.actions
+      .find(action => action.stageId === 'validate' && action.status === 'ready');
+    expect(replannedValidate.id).not.toBe(replanInputAction.id);
+    expect(replannedValidate.context.filter(entry => entry.type === 'input')).toEqual([]);
+    expect(replanInputDetail.actions.find(action => action.id === replanInputAction.id).status)
+      .toBe('superseded');
+    const replanInputClaim = store.claimReadyAction('replan-input-boot', 60_000);
+    const replanInputCalls = [];
+    const replanInputRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(replanInputCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await replanInputRunner.run({
+      ...replanInputClaim,
+      ownerBootId: 'replan-input-boot',
+      signal: new AbortController().signal,
+    });
+    expect(JSON.stringify(replanInputCalls[0])).not.toContain('REPLAN MUST DROP THIS INPUT SENTINEL');
+    store.close();
+    store = null;
+    rmSync(dir, { recursive: true, force: true });
+    dir = null;
+
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-linear-waiting-input-'));
+    store = new WorkItemStore(join(dir, 'work-center.db'), { now: () => 2_000 });
+    const linearWaitingController = new WorkflowController(store);
+    const linearWaitingWorkflow = normalizeWorkflowDefinition({
+      id: 'linear-waiting-input',
+      name: 'Linear waiting input',
+      planningMode: 'static',
+      executionMode: 'linear',
+      stages: [{
+        id: 'verify', name: 'Verify', type: 'test',
+        objective: 'Verify linear recovery input', approach: 'Use every accepted recovery input',
+        expectedOutcome: 'Linear recovery remains complete', instruction: INPUT_POLICY,
+        assignmentPolicy: { mode: 'fixed', fixedVpId: 'tester' }, modelPolicy: { mode: 'inherit' },
+        dependsOnStageIds: [], workspaceMode: 'read', maxAttempts: 2,
+      }],
+    });
+    const linearWaitingItem = linearWaitingController.create({
+      id: 'linear-waiting-input',
+      title: 'Preserve linear waiting input',
+      goal: 'Carry recovery input onto the replacement Action',
+      acceptanceCriteria: ['Every accepted recovery input reaches the Runner'],
+      workflowTemplate: linearWaitingWorkflow.id,
+      workflowSnapshot: linearWaitingWorkflow,
+      workDir: '',
+      start: true,
+    });
+    const linearWaitingInitialClaim = store.claimReadyAction('linear-waiting-boot', 60_000);
+    let linearWaitingDetail = linearWaitingController.submit(
+      linearWaitingInitialClaim.run.id,
+      'linear-waiting-boot',
+      linearWaitingInitialClaim.run.leaseEpoch,
+      { outcome: 'waiting', summary: 'Need linear input', evidence: [], waitingReason: 'Provide linear input' },
+    );
+    const originalLinearWaitingActionId = linearWaitingDetail.currentActionId;
+    let linearWaitingAction = linearWaitingDetail.actions.find(action => action.id === originalLinearWaitingActionId);
+    linearWaitingDetail = linearWaitingController.input(linearWaitingItem.id, {
+      actionId: linearWaitingAction.id,
+      generation: linearWaitingAction.generation,
+      revision: linearWaitingDetail.revision,
+      text: 'LINEAR WAITING FIRST SENTINEL',
+    });
+    linearWaitingAction = linearWaitingDetail.actions.find(action => action.status === 'ready');
+    expect(linearWaitingAction.id).not.toBe(originalLinearWaitingActionId);
+    linearWaitingDetail = linearWaitingController.input(linearWaitingItem.id, {
+      actionId: linearWaitingAction.id,
+      generation: linearWaitingAction.generation,
+      revision: linearWaitingDetail.revision,
+      text: 'LINEAR WAITING SECOND SENTINEL',
+    });
+    linearWaitingAction = linearWaitingDetail.actions.find(action => action.id === linearWaitingAction.id);
+    expect(linearWaitingAction.context.filter(entry => entry.type === 'input').map(entry => entry.summary))
+      .toEqual(['LINEAR WAITING FIRST SENTINEL', 'LINEAR WAITING SECOND SENTINEL']);
+    const linearWaitingClaim = store.claimReadyAction('linear-waiting-boot', 60_000);
+    const linearWaitingCalls = [];
+    const linearWaitingRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(linearWaitingCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await linearWaitingRunner.run({
+      ...linearWaitingClaim,
+      ownerBootId: 'linear-waiting-boot',
+      signal: new AbortController().signal,
+    });
+    const linearWaitingRequest = JSON.stringify(linearWaitingCalls[0]);
+    expect(linearWaitingRequest).toContain('LINEAR WAITING FIRST SENTINEL');
+    expect(linearWaitingRequest).toContain('LINEAR WAITING SECOND SENTINEL');
     store.close();
     store = null;
     rmSync(dir, { recursive: true, force: true });

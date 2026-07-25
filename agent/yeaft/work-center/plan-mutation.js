@@ -380,7 +380,7 @@ export function applyReplanMutation({ workItem, action, actions, proposal, avail
   }, { availableVpIds });
   const stageById = new Map(workflowSnapshot.stages.map(stage => [stage.id, stage]));
   const context = (Array.isArray(action.context) ? action.context : [])
-    .filter(entry => entry?.type !== 'replan-barrier');
+    .filter(entry => entry?.type !== 'replan-barrier' && entry?.type !== 'input');
   return {
     proposalId,
     basePlanRevision,
