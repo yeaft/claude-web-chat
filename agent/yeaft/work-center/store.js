@@ -308,10 +308,27 @@ function normalizeLegacyWorkItemMessages(db) {
   }
 }
 
-function carryCurrentActionInputContext(db, action) {
+function carryCurrentActionInputContext(db, action, extraInputs = [], explicitOnly = false) {
   const events = db.prepare(`SELECT * FROM events WHERE action_id = ? ORDER BY id`)
     .all(action.id).map(mapEvent);
-  const validInputEventIds = currentActionInputEventIds(events, action);
+  const extraRows = (Array.isArray(extraInputs) ? extraInputs : []).map(value => (
+    value && typeof value === 'object' ? value : { event_id: value }
+  ));
+  const validInputEventIds = explicitOnly ? new Set() : currentActionInputEventIds(events, action);
+  const fallbackAttachments = new Map();
+  for (const row of extraRows) {
+    validInputEventIds.add(String(row.event_id));
+    const attachments = parseJson(row.attachments, []);
+    if (Array.isArray(attachments) && attachments.length > 0) {
+      fallbackAttachments.set(String(row.event_id), attachments);
+    }
+  }
+  const inputAttachments = event => {
+    const attachments = Array.isArray(event?.data?.attachments) ? event.data.attachments : [];
+    return attachments.length > 0
+      ? attachments
+      : fallbackAttachments.get(String(event?.id)) || [];
+  };
   const inputEvents = events.filter(event => event.type === 'action.input_added'
     && validInputEventIds.has(String(event.id)));
   const eventByInputId = new Map(inputEvents
@@ -319,6 +336,7 @@ function carryCurrentActionInputContext(db, action) {
     .map(event => [event.data.inputId, event]));
   const eventById = new Map(inputEvents.map(event => [String(event.id), event]));
   const usedEventIds = new Set();
+  const seenInputIds = new Set();
   const context = (Array.isArray(action.context) ? action.context : []).flatMap(entry => {
     if (entry?.type !== 'input') return [entry];
     let event = entry.inputId ? eventByInputId.get(entry.inputId) : null;
@@ -329,28 +347,106 @@ function carryCurrentActionInputContext(db, action) {
       event = inputEvents.find(candidate => !usedEventIds.has(candidate.id)
         && (candidate.data?.text || '') === (entry.summary || '')) || null;
     }
-    if (!entry.inputId && !event) return [];
+    if (!entry.inputId && !event) return explicitOnly ? [entry] : [];
+    const inputId = entry.inputId || event.data?.inputId || `legacy-event:${event.id}`;
+    if (seenInputIds.has(inputId)) return [];
+    seenInputIds.add(inputId);
     if (event) usedEventIds.add(event.id);
     return [{
       ...entry,
-      inputId: entry.inputId || event.data?.inputId || `legacy-event:${event.id}`,
-      attachments: Array.isArray(entry.attachments)
+      inputId,
+      attachments: Array.isArray(entry.attachments) && entry.attachments.length > 0
         ? entry.attachments
-        : Array.isArray(event?.data?.attachments) ? event.data.attachments : [],
+        : inputAttachments(event),
     }];
   });
   for (const event of inputEvents) {
     if (usedEventIds.has(event.id)) continue;
+    const inputId = event.data?.inputId || `legacy-event:${event.id}`;
+    if (seenInputIds.has(inputId)) continue;
+    seenInputIds.add(inputId);
     context.push({
       type: 'input',
       role: 'user',
-      inputId: event.data?.inputId || `legacy-event:${event.id}`,
+      inputId,
       summary: event.data?.text || '',
-      attachments: Array.isArray(event.data?.attachments) ? event.data.attachments : [],
+      attachments: inputAttachments(event),
       evidence: [],
     });
   }
   return context;
+}
+
+function promoteReadyActionInputs(db, action, rows, now, reason) {
+  const pendingRows = Array.isArray(rows) ? rows : [];
+  if (pendingRows.length === 0) return action;
+  if (action?.status !== 'ready' || action.currentRunId) {
+    throw new Error('Work Center can only promote pending input for an unowned ready Action');
+  }
+  const context = carryCurrentActionInputContext(db, action, pendingRows, true);
+  const contextChanged = stableJson(context) !== stableJson(action.context || []);
+  const workItem = mapWorkItem(db.prepare('SELECT * FROM work_items WHERE id = ?').get(action.workItemId));
+  if (!workItem) throw new Error('Work Center pending input Action lost its WorkItem');
+  const candidate = { ...action, context };
+  candidate.instruction = contextChanged
+    ? canonicalActionInstruction(workItem, candidate, context)
+    : action.instruction;
+  candidate.specHash = contextChanged ? actionSpecHash(candidate) : action.specHash;
+  const specChanged = candidate.specHash !== action.specHash;
+  const target = specChanged
+    ? { ...candidate, generation: action.generation + 1 }
+    : action;
+  if (specChanged) {
+    const changed = db.prepare(`UPDATE actions SET context = ?, instruction = ?, attempt = 0,
+      generation = ?, spec_hash = ?, identity_history = ?, result_run_id = NULL, workspace = NULL, updated_at = ?
+      WHERE id = ? AND status = 'ready' AND current_run_id IS NULL AND generation = ? AND spec_hash = ?`).run(
+      stringify(context),
+      candidate.instruction,
+      target.generation,
+      target.specHash,
+      stringify(actionIdentityHistory(action, target.generation, target.specHash)),
+      now,
+      action.id,
+      action.generation,
+      action.specHash,
+    );
+    if (Number(changed.changes) !== 1) {
+      throw new Error('Work Center could not promote ready Action input atomically');
+    }
+  }
+  const insertReboundEvent = db.prepare(`INSERT INTO events
+    (work_item_id, action_id, run_id, action_generation, type, data, created_at)
+    VALUES (?, ?, NULL, ?, 'action.input_rebound', ?, ?)`);
+  const settleReady = db.prepare(`UPDATE pending_action_inputs SET run_id = NULL,
+    action_generation = ?, action_spec_hash = ?, consumed_at = COALESCE(consumed_at, ?)
+    WHERE event_id = ? AND action_id = ? AND superseded_at IS NULL`);
+  for (const row of pendingRows) {
+    insertReboundEvent.run(
+      action.workItemId,
+      action.id,
+      target.generation,
+      stringify({
+        sourceEventId: Number(row.event_id),
+        sourceRunId: row.run_id || null,
+        sourceGeneration: Math.max(1, Number(row.sourceGeneration ?? row.action_generation) || 1),
+        sourceSpecHash: row.sourceSpecHash ?? row.action_spec_hash ?? '',
+        reason: row.repairedRun ? 'schema19_legacy_repair' : reason,
+        targetSpecHash: target.specHash,
+      }),
+      now,
+    );
+    const settled = settleReady.run(
+      target.generation,
+      target.specHash,
+      now,
+      Number(row.event_id),
+      action.id,
+    );
+    if (Number(settled.changes) !== 1) {
+      throw new Error('Work Center could not settle canonical ready Action input atomically');
+    }
+  }
+  return specChanged ? mapAction(db.prepare('SELECT * FROM actions WHERE id = ?').get(action.id)) : action;
 }
 
 function reconcilePendingActionInputIdentity(db, now) {
@@ -362,21 +458,16 @@ function reconcilePendingActionInputIdentity(db, now) {
     JOIN events e ON e.id = p.event_id
     JOIN actions a ON a.id = p.action_id
     LEFT JOIN runs r ON r.id = p.run_id
-    WHERE p.consumed_at IS NULL AND p.superseded_at IS NULL
+    WHERE p.superseded_at IS NULL
     ORDER BY p.event_id`).all();
   const bindActive = db.prepare(`UPDATE pending_action_inputs SET action_generation = ?, action_spec_hash = ?
-    WHERE event_id = ? AND consumed_at IS NULL AND superseded_at IS NULL`);
+    WHERE event_id = ? AND superseded_at IS NULL`);
   const supersede = db.prepare(`UPDATE pending_action_inputs SET superseded_at = ?
-    WHERE event_id = ? AND consumed_at IS NULL AND superseded_at IS NULL`);
-  const insertReboundEvent = db.prepare(`INSERT INTO events
-    (work_item_id, action_id, run_id, action_generation, type, data, created_at)
-    VALUES (?, ?, NULL, ?, 'action.input_rebound', ?, ?)`);
+    WHERE event_id = ? AND superseded_at IS NULL`);
   const insertSupersededEvent = db.prepare(`INSERT INTO events
     (work_item_id, action_id, run_id, action_generation, type, data, created_at)
     VALUES (?, ?, ?, ?, 'action.input_superseded', ?, ?)`);
-  const rebindReady = db.prepare(`UPDATE pending_action_inputs SET run_id = NULL,
-    action_generation = ?, action_spec_hash = ?
-    WHERE event_id = ? AND consumed_at IS NULL AND superseded_at IS NULL`);
+  const readyRowsByAction = new Map();
   for (const row of rows) {
     const currentGeneration = Math.max(1, Number(row.current_generation) || 1);
     const currentSpecHash = row.current_spec_hash || '';
@@ -400,22 +491,12 @@ function reconcilePendingActionInputIdentity(db, now) {
       && (!sourceSpecHash || !currentSpecHash || sourceSpecHash === currentSpecHash);
     if (row.event_type === 'action.input_added' && row.action_status === 'ready'
         && (sameIdentity || repairedRun)) {
-      insertReboundEvent.run(
-        row.work_item_id,
-        row.action_id,
-        currentGeneration,
-        stringify({
-          sourceEventId: row.event_id,
-          sourceRunId: row.run_id || null,
-          sourceGeneration,
-          sourceSpecHash,
-          reason: repairedRun ? 'schema19_legacy_repair' : 'schema20_identity_backfill',
-        }),
-        now,
-      );
-      rebindReady.run(currentGeneration, currentSpecHash, row.event_id);
+      const readyRows = readyRowsByAction.get(row.action_id) || [];
+      readyRows.push({ ...row, sourceGeneration, sourceSpecHash, repairedRun });
+      readyRowsByAction.set(row.action_id, readyRows);
       continue;
     }
+    if (row.consumed_at != null) continue;
     supersede.run(now, row.event_id);
     insertSupersededEvent.run(
       row.work_item_id,
@@ -432,6 +513,10 @@ function reconcilePendingActionInputIdentity(db, now) {
       }),
       now,
     );
+  }
+  for (const [actionId, readyRows] of readyRowsByAction) {
+    const action = mapAction(db.prepare('SELECT * FROM actions WHERE id = ?').get(actionId));
+    promoteReadyActionInputs(db, action, readyRows, now, 'schema20_identity_backfill');
   }
 }
 
@@ -2530,32 +2615,44 @@ export class WorkItemStore {
         ORDER BY a.updated_at ASC, a.sequence ASC LIMIT 1`).get();
       if (!row) return null;
       const now = this.now();
+      let action = mapAction(row);
+      const readyInputs = this.db.prepare(`SELECT p.* FROM pending_action_inputs p
+        JOIN events source_event ON source_event.id = p.event_id
+        LEFT JOIN runs source_run ON source_run.id = p.run_id
+        WHERE p.action_id = ? AND p.action_generation = ? AND p.action_spec_hash = ?
+          AND p.superseded_at IS NULL
+          AND source_event.type = 'action.input_added'
+          AND (p.run_id IS NOT NULL OR p.consumed_at IS NULL)
+          AND (p.run_id IS NULL OR source_run.status != 'running') ORDER BY p.event_id`).all(
+        action.id, action.generation, action.specHash,
+      );
+      action = promoteReadyActionInputs(this.db, action, readyInputs, now, 'run_claim');
       const runId = randomUUID();
-      const leaseEpoch = Number(row.lease_epoch) + 1;
+      const leaseEpoch = Number(action.leaseEpoch) + 1;
       const priorProgress = this.db.prepare(`SELECT MAX(progress_revision) AS value FROM runs
-        WHERE action_id = ?`).get(row.id);
+        WHERE action_id = ?`).get(action.id);
       const progressRevision = Math.max(0, Number(priorProgress?.value) || 0) + 1;
-      const actionGeneration = Math.max(1, Number(row.generation) || 1);
+      const actionGeneration = action.generation;
       const priorAttempt = this.db.prepare(`SELECT MAX(action_attempt) AS value FROM runs
-        WHERE action_id = ? AND action_generation = ?`).get(row.id, actionGeneration);
+        WHERE action_id = ? AND action_generation = ?`).get(action.id, actionGeneration);
       const actionAttempt = Math.max(0, Number(priorAttempt?.value) || 0) + 1;
       const changedAction = this.db.prepare(`UPDATE actions SET status = 'running', attempt = attempt + 1,
         current_run_id = ?, lease_epoch = ?, updated_at = ?
-        WHERE id = ? AND status = 'ready' AND current_run_id IS NULL`).run(
-        runId, leaseEpoch, now, row.id,
+        WHERE id = ? AND status = 'ready' AND current_run_id IS NULL AND generation = ? AND spec_hash = ?`).run(
+        runId, leaseEpoch, now, action.id, action.generation, action.specHash,
       );
       if (Number(changedAction.changes) !== 1) return null;
-      const workItem = this.getWorkItem(row.work_item_id);
+      const workItem = this.getWorkItem(action.workItemId);
       const graphMode = isGraphWorkItem(workItem);
       const changedWorkItem = graphMode
         ? this.db.prepare(`UPDATE work_items SET status = 'running', current_action_id = ?,
           current_run_id = NULL, updated_at = ? WHERE id = ?
           AND status IN ('ready', 'running', 'waiting', 'needs_attention')`).run(
-          row.id, now, row.work_item_id,
+          action.id, now, action.workItemId,
         )
         : this.db.prepare(`UPDATE work_items SET status = 'running', current_run_id = ?, updated_at = ?
           WHERE id = ? AND status = 'ready' AND current_action_id = ? AND current_run_id IS NULL`).run(
-          runId, now, row.work_item_id, row.id,
+          runId, now, action.workItemId, action.id,
         );
       if (Number(changedWorkItem.changes) !== 1) throw new Error('WorkItem claim lost its Action fence');
       this.db.prepare(`INSERT INTO runs
@@ -2563,15 +2660,15 @@ export class WorkItemStore {
          expires_at, evidence, progress_revision, action_generation, action_spec_hash, action_attempt)
         VALUES (?, ?, ?, ?, ?, 'running', ?, ?, '[]', ?, ?, ?, ?)`).run(
         runId,
-        row.id,
-        row.work_item_id,
+        action.id,
+        action.workItemId,
         ownerBootId,
         leaseEpoch,
         now,
         now + leaseMs,
         progressRevision,
         actionGeneration,
-        row.spec_hash || '',
+        action.specHash,
         actionAttempt,
       );
       const pendingInputs = this.db.prepare(`SELECT p.* FROM pending_action_inputs p
@@ -2579,19 +2676,19 @@ export class WorkItemStore {
         WHERE p.action_id = ? AND p.action_generation = ? AND p.action_spec_hash = ?
           AND p.consumed_at IS NULL AND p.superseded_at IS NULL
           AND (p.run_id IS NULL OR source_run.status != 'running') ORDER BY p.event_id`).all(
-        row.id, actionGeneration, row.spec_hash || '',
+        action.id, actionGeneration, action.specHash,
       );
-      this.#rebindPendingActionInputs(mapAction(row), pendingInputs, {
+      this.#rebindPendingActionInputs(action, pendingInputs, {
         runId,
         generation: actionGeneration,
-        specHash: row.spec_hash || '',
+        specHash: action.specHash,
       }, 'run_claim', now);
-      this.appendEvent(row.work_item_id, 'run.claimed', { ownerBootId, leaseEpoch }, {
-        actionId: row.id, runId,
+      this.appendEvent(action.workItemId, 'run.claimed', { ownerBootId, leaseEpoch }, {
+        actionId: action.id, runId,
       });
       return {
-        workItem: this.getWorkItem(row.work_item_id),
-        action: this.getAction(row.id),
+        workItem: this.getWorkItem(action.workItemId),
+        action: this.getAction(action.id),
         run: this.getRun(runId),
       };
     });

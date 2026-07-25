@@ -190,12 +190,13 @@ function seedLegacyInstructionStore(dbPath, sourceVersion) {
   );
   sourceStore.db.prepare(`INSERT INTO pending_action_inputs
     (event_id, work_item_id, action_id, run_id, text, attachments, consumed_at)
-    VALUES (?, ?, ?, ?, ?, '[]', NULL)`).run(
+    VALUES (?, ?, ?, ?, ?, '[]', ?)`).run(
     actionInputEventId,
     claim.workItem.id,
     claim.action.id,
     claim.run.id,
     'Keep this scoped recovery input',
+    sourceVersion === 17 ? 1_000 : null,
   );
   sourceStore.db.prepare("UPDATE schema_meta SET value = ? WHERE key = 'schema_version'")
     .run(String(sourceVersion));
@@ -384,14 +385,21 @@ describe('Work Center store migration', () => {
       expect(store.listPendingActionInputs(
         repairedAction.id, oldClaim.run.id, 'legacy-boot', oldClaim.run.leaseEpoch,
       )).toEqual([]);
+      expect(repairedAction.context.filter(entry => entry.type === 'input')).toEqual([
+        expect.objectContaining({
+          inputId: expect.stringMatching(/^legacy-event:/),
+          summary: 'Keep this scoped recovery input',
+        }),
+      ]);
       const pendingRows = store.db.prepare(`SELECT p.text, p.run_id, p.action_generation,
-        p.action_spec_hash, p.superseded_at, e.type FROM pending_action_inputs p
-        JOIN events e ON e.id = p.event_id WHERE p.consumed_at IS NULL`).all();
+        p.action_spec_hash, p.consumed_at, p.superseded_at, e.type FROM pending_action_inputs p
+        JOIN events e ON e.id = p.event_id WHERE e.type = 'action.input_added'`).all();
       expect(pendingRows).toEqual([{
         text: 'Keep this scoped recovery input',
         run_id: null,
         action_generation: repairedAction.generation,
         action_spec_hash: repairedAction.specHash,
+        consumed_at: sourceVersion === 17 ? 1_000 : 2_000,
         superseded_at: null,
         type: 'action.input_added',
       }]);
@@ -412,11 +420,7 @@ describe('Work Center store migration', () => {
       });
       expect(store.db.prepare(`SELECT run_id, action_generation, action_spec_hash
         FROM pending_action_inputs WHERE consumed_at IS NULL AND superseded_at IS NULL`).get())
-        .toMatchObject({
-          run_id: claim.run.id,
-          action_generation: claim.action.generation,
-          action_spec_hash: claim.action.specHash,
-        });
+        .toBeUndefined();
       const calls = [];
       const runner = new WorkItemRunner({
         store,
@@ -445,14 +449,14 @@ describe('Work Center store migration', () => {
       expect(calls).toHaveLength(1);
       const renderedRequest = JSON.stringify(calls[0]);
       expect(renderedRequest).toContain('Safe legacy WorkItem');
-      expect(renderedRequest).toContain('Keep this scoped recovery input');
+      expect(renderedRequest.split('Keep this scoped recovery input')).toHaveLength(2);
       expect(renderedRequest).toContain('SAFE GLOBAL POLICY SENTINEL');
       expect(renderedRequest).toContain('SAFE ACTION POLICY SENTINEL');
       expect(renderedRequest).not.toContain(LEGACY_INSTRUCTION);
       expect(renderedRequest).not.toContain(COORDINATOR_TEXT);
       expect(store.db.prepare(`SELECT consumed_at FROM pending_action_inputs p
         JOIN events e ON e.id = p.event_id WHERE e.type = 'action.input_added'`).get().consumed_at)
-        .toBe(2_000);
+        .toBe(sourceVersion === 17 ? 1_000 : 2_000);
       store.close();
       store = null;
       rmSync(dir, { recursive: true, force: true });
@@ -517,6 +521,352 @@ describe('Work Center store migration', () => {
     const old19CarryRequest = JSON.stringify(old19CarryCalls[0]);
     expect(old19CarryRequest).toContain('OLD19 READY INPUT CARRY SENTINEL');
     expect(old19CarryRequest).toContain('old19-ready.txt');
+    store.close();
+    store = null;
+    rmSync(dir, { recursive: true, force: true });
+    dir = null;
+
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-old19-ready-input-migration-'));
+    const readyMigrationDbPath = join(dir, 'work-center.db');
+    store = new WorkItemStore(readyMigrationDbPath, { now: () => 1_000 });
+    const readyMigrationController = new WorkflowController(store);
+    const readyMigrationWorkflow = normalizeWorkflowDefinition({
+      id: 'old19-ready-input-migration',
+      name: 'Old schema 19 ready input migration',
+      planningMode: 'static',
+      executionMode: 'graph',
+      actionInstructions: { test: INPUT_POLICY },
+      stages: [{
+        id: 'verify', name: 'Verify', type: 'test',
+        objective: 'Verify migrated ready input', approach: 'Preserve every accepted input occurrence',
+        expectedOutcome: 'Every retry receives each input once', instruction: INPUT_POLICY,
+        assignmentPolicy: { mode: 'fixed', fixedVpId: 'tester' },
+        modelPolicy: { mode: 'inherit' }, dependsOnStageIds: [],
+        workspaceMode: 'read', maxAttempts: 3,
+      }],
+    });
+    const readyMigrationItem = readyMigrationController.create({
+      id: 'old19-ready-input-migration',
+      title: 'Migrate old schema 19 ready input',
+      goal: 'Keep accepted input durable without duplicate delivery',
+      acceptanceCriteria: ['Every accepted input remains available exactly once'],
+      workflowTemplate: readyMigrationWorkflow.id,
+      workflowSnapshot: readyMigrationWorkflow,
+      workDir: '',
+      start: true,
+    });
+    let readyMigrationDetail = store.getWorkItemDetail(readyMigrationItem.id);
+    const readyMigrationClaim = store.claimReadyAction('old19-ready-boot', 60_000);
+    const readyMigrationSentinel = 'OLD19 READY MIGRATION DUPLICATE SENTINEL';
+    readyMigrationDetail = readyMigrationController.input(readyMigrationItem.id, {
+      actionId: readyMigrationClaim.action.id,
+      generation: readyMigrationClaim.action.generation,
+      revision: readyMigrationDetail.revision,
+      text: readyMigrationSentinel,
+    });
+    readyMigrationDetail = readyMigrationController.input(readyMigrationItem.id, {
+      actionId: readyMigrationClaim.action.id,
+      generation: readyMigrationClaim.action.generation,
+      revision: readyMigrationDetail.revision,
+      text: readyMigrationSentinel,
+    });
+    const readyMigrationSourceEvents = store.listActionEvents(readyMigrationClaim.action.id)
+      .filter(event => event.type === 'action.input_added');
+    expect(readyMigrationSourceEvents).toHaveLength(2);
+    const readyMigrationRowsBefore = store.listPendingActionInputs(
+      readyMigrationClaim.action.id,
+      readyMigrationClaim.run.id,
+      'old19-ready-boot',
+      readyMigrationClaim.run.leaseEpoch,
+    );
+    expect(readyMigrationRowsBefore).toHaveLength(2);
+    expect(store.acknowledgeActionInput(
+      readyMigrationRowsBefore[0].id,
+      readyMigrationClaim.action.id,
+      readyMigrationClaim.run.id,
+      'old19-ready-boot',
+      readyMigrationClaim.run.leaseEpoch,
+    )).toBe(true);
+    const migratedAttachment = {
+      id: 'old19-ready-migration-file',
+      name: 'old19-ready-migration.txt',
+      mimeType: 'text/plain',
+      size: 29,
+      isImage: false,
+    };
+    const secondSourceEvent = readyMigrationSourceEvents[1];
+    store.db.prepare('UPDATE pending_action_inputs SET attachments = ? WHERE event_id = ?').run(
+      JSON.stringify([migratedAttachment]),
+      secondSourceEvent.id,
+    );
+    expect(store.interruptRun(
+      readyMigrationClaim.run.id,
+      'old19-ready-boot',
+      readyMigrationClaim.run.leaseEpoch,
+      'simulate schema 19 restart after running input',
+    )).toBe(true);
+    const readyMigrationBefore = store.getAction(readyMigrationClaim.action.id);
+    store.db.prepare("UPDATE schema_meta SET value = '19' WHERE key = 'schema_version'").run();
+    store.db.exec('DROP INDEX IF EXISTS idx_pending_action_inputs_identity');
+    store.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN superseded_at');
+    store.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN action_spec_hash');
+    store.db.exec('ALTER TABLE pending_action_inputs DROP COLUMN action_generation');
+    store.close();
+    store = null;
+
+    store = new WorkItemStore(readyMigrationDbPath, { now: () => 2_000 });
+    const readyMigrationAction = store.getAction(readyMigrationClaim.action.id);
+    const readyMigrationPending = store.db.prepare(`SELECT event_id, run_id, action_generation,
+      action_spec_hash, consumed_at, superseded_at FROM pending_action_inputs ORDER BY event_id`).all();
+    const readyMigrationRebounds = store.listActionEvents(readyMigrationAction.id)
+      .filter(event => event.type === 'action.input_rebound');
+    const readyMigrationFirstClaim = store.claimReadyAction('old19-ready-boot', 60_000);
+    const readyMigrationFirstCalls = [];
+    const readyMigrationFirstRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(readyMigrationFirstCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await readyMigrationFirstRunner.run({
+      ...readyMigrationFirstClaim,
+      ownerBootId: 'old19-ready-boot',
+      signal: new AbortController().signal,
+    });
+    const readyMigrationFirstRequest = JSON.stringify(readyMigrationFirstCalls[0]);
+    const readyMigrationFirstSnapshot = store.getRun(readyMigrationFirstClaim.run.id).contextSnapshot;
+    for (let index = 0; index < 510; index += 1) {
+      store.appendEvent(readyMigrationItem.id, 'test.noise', { index });
+    }
+    readyMigrationDetail = store.getWorkItemDetail(readyMigrationItem.id);
+    const sourceEventsRemainVisible = readyMigrationDetail.events.some(event => (
+      event.type === 'action.input_added' || event.type === 'action.input_rebound'
+    ));
+    expect(store.interruptRun(
+      readyMigrationFirstClaim.run.id,
+      'old19-ready-boot',
+      readyMigrationFirstClaim.run.leaseEpoch,
+      'retry after migration event window eviction',
+    )).toBe(true);
+    const readyMigrationRetryClaim = store.claimReadyAction('old19-ready-boot', 60_000);
+    const readyMigrationRetryCalls = [];
+    const readyMigrationRetryRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(readyMigrationRetryCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await readyMigrationRetryRunner.run({
+      ...readyMigrationRetryClaim,
+      ownerBootId: 'old19-ready-boot',
+      signal: new AbortController().signal,
+    });
+    const readyMigrationRetryRequest = JSON.stringify(readyMigrationRetryCalls[0]);
+    const readyMigrationRetrySnapshot = store.getRun(readyMigrationRetryClaim.run.id).contextSnapshot;
+    const migratedInputs = readyMigrationAction.context.filter(entry => entry.type === 'input');
+    expect({
+      generation: readyMigrationAction.generation,
+      priorGeneration: readyMigrationBefore.generation,
+      contextCount: migratedInputs.length,
+      inputIds: migratedInputs.map(entry => entry.inputId),
+      contextAttachmentNames: migratedInputs.flatMap(entry => entry.attachments || []).map(item => item.name),
+      instructionOccurrences: readyMigrationAction.instruction.split(readyMigrationSentinel).length - 1,
+      pending: readyMigrationPending,
+      reboundSourceEventIds: readyMigrationRebounds.map(event => event.data.sourceEventId),
+      reboundGenerations: readyMigrationRebounds.map(event => event.actionGeneration),
+      firstRequestOccurrences: readyMigrationFirstRequest.split(readyMigrationSentinel).length - 1,
+      firstSnapshotOccurrences: readyMigrationFirstSnapshot.userContext.guidance
+        .filter(entry => entry.text === readyMigrationSentinel).length,
+      firstSnapshotAttachmentNames: readyMigrationFirstSnapshot.userContext.guidance
+        .flatMap(entry => entry.attachments || []).map(item => item.name),
+      sourceEventsRemainVisible,
+      retryRequestOccurrences: readyMigrationRetryRequest.split(readyMigrationSentinel).length - 1,
+      retrySnapshotOccurrences: readyMigrationRetrySnapshot.userContext.guidance
+        .filter(entry => entry.text === readyMigrationSentinel).length,
+      finalReboundCount: store.listActionEvents(readyMigrationAction.id)
+        .filter(event => event.type === 'action.input_rebound').length,
+    }).toEqual({
+      generation: readyMigrationBefore.generation + 1,
+      priorGeneration: readyMigrationBefore.generation,
+      contextCount: 2,
+      inputIds: readyMigrationSourceEvents.map(event => event.data.inputId),
+      contextAttachmentNames: ['old19-ready-migration.txt'],
+      instructionOccurrences: 2,
+      pending: readyMigrationSourceEvents.map((event, index) => ({
+        event_id: event.id,
+        run_id: null,
+        action_generation: readyMigrationBefore.generation + 1,
+        action_spec_hash: readyMigrationAction.specHash,
+        consumed_at: index === 0 ? 1_000 : 2_000,
+        superseded_at: null,
+      })),
+      reboundSourceEventIds: readyMigrationSourceEvents.map(event => event.id),
+      reboundGenerations: readyMigrationSourceEvents.map(() => readyMigrationBefore.generation + 1),
+      firstRequestOccurrences: 2,
+      firstSnapshotOccurrences: 2,
+      firstSnapshotAttachmentNames: ['old19-ready-migration.txt'],
+      sourceEventsRemainVisible: false,
+      retryRequestOccurrences: 2,
+      retrySnapshotOccurrences: 2,
+      finalReboundCount: 2,
+    });
+    store.close();
+    store = null;
+    rmSync(dir, { recursive: true, force: true });
+    dir = null;
+
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-current-ready-input-recovery-'));
+    store = new WorkItemStore(join(dir, 'work-center.db'), { now: () => 3_000 });
+    const currentRecoveryController = new WorkflowController(store);
+    const currentRecoveryWorkflow = normalizeWorkflowDefinition({
+      id: 'current-ready-input-recovery',
+      name: 'Current ready input recovery',
+      planningMode: 'static',
+      executionMode: 'graph',
+      actionInstructions: { test: INPUT_POLICY },
+      stages: [{
+        id: 'verify', name: 'Verify', type: 'test',
+        objective: 'Recover current Action input', approach: 'Use persisted input identity only',
+        expectedOutcome: 'Each accepted input remains durable once', instruction: INPUT_POLICY,
+        assignmentPolicy: { mode: 'fixed', fixedVpId: 'tester' },
+        modelPolicy: { mode: 'inherit' }, dependsOnStageIds: [],
+        workspaceMode: 'read', maxAttempts: 3,
+      }],
+    });
+    const currentRecoveryItem = currentRecoveryController.create({
+      id: 'current-ready-input-recovery',
+      title: 'Recover current ready input',
+      goal: 'Canonicalize consumed and unconsumed input before reclaim',
+      acceptanceCriteria: ['Every accepted input is durable exactly once'],
+      workflowTemplate: currentRecoveryWorkflow.id,
+      workflowSnapshot: currentRecoveryWorkflow,
+      workDir: '',
+      start: true,
+    });
+    let currentRecoveryDetail = store.getWorkItemDetail(currentRecoveryItem.id);
+    const currentRecoveryInitialClaim = store.claimReadyAction('current-ready-boot', 60_000);
+    const currentRecoverySentinel = 'CURRENT READY INPUT RECOVERY SENTINEL';
+    currentRecoveryDetail = currentRecoveryController.input(currentRecoveryItem.id, {
+      actionId: currentRecoveryInitialClaim.action.id,
+      generation: currentRecoveryInitialClaim.action.generation,
+      revision: currentRecoveryDetail.revision,
+      text: currentRecoverySentinel,
+    });
+    currentRecoveryDetail = currentRecoveryController.input(currentRecoveryItem.id, {
+      actionId: currentRecoveryInitialClaim.action.id,
+      generation: currentRecoveryInitialClaim.action.generation,
+      revision: currentRecoveryDetail.revision,
+      text: currentRecoverySentinel,
+    });
+    const currentRecoveryPending = store.listPendingActionInputs(
+      currentRecoveryInitialClaim.action.id,
+      currentRecoveryInitialClaim.run.id,
+      'current-ready-boot',
+      currentRecoveryInitialClaim.run.leaseEpoch,
+    );
+    expect(currentRecoveryPending).toHaveLength(2);
+    expect(store.acknowledgeActionInput(
+      currentRecoveryPending[0].id,
+      currentRecoveryInitialClaim.action.id,
+      currentRecoveryInitialClaim.run.id,
+      'current-ready-boot',
+      currentRecoveryInitialClaim.run.leaseEpoch,
+    )).toBe(true);
+    expect(store.interruptRun(
+      currentRecoveryInitialClaim.run.id,
+      'current-ready-boot',
+      currentRecoveryInitialClaim.run.leaseEpoch,
+      'reclaim current schema input',
+    )).toBe(true);
+    const currentRecoveryBefore = store.getAction(currentRecoveryInitialClaim.action.id);
+    store.db.exec(`CREATE TRIGGER fail_ready_input_claim_promotion
+      BEFORE UPDATE ON pending_action_inputs
+      BEGIN SELECT RAISE(ABORT, 'forced ready input claim failure'); END`);
+    expect(() => store.claimReadyAction('current-ready-boot', 60_000))
+      .toThrow(/forced ready input claim failure/);
+    expect(store.getAction(currentRecoveryBefore.id)).toEqual(currentRecoveryBefore);
+    expect(store.getWorkItem(currentRecoveryItem.id).status).toBe('ready');
+    expect(store.listActionEvents(currentRecoveryBefore.id)
+      .filter(event => event.type === 'action.input_rebound')).toEqual([]);
+    expect(store.db.prepare(`SELECT COUNT(*) AS count FROM runs WHERE action_id = ?`).get(
+      currentRecoveryBefore.id,
+    ).count).toBe(1);
+    store.db.exec('DROP TRIGGER fail_ready_input_claim_promotion');
+    const currentRecoveryFirstClaim = store.claimReadyAction('current-ready-boot', 60_000);
+    expect(currentRecoveryFirstClaim.action).toMatchObject({
+      id: currentRecoveryBefore.id,
+      generation: currentRecoveryBefore.generation + 1,
+    });
+    expect(currentRecoveryFirstClaim.run).toMatchObject({
+      actionGeneration: currentRecoveryFirstClaim.action.generation,
+      actionSpecHash: currentRecoveryFirstClaim.action.specHash,
+    });
+    const currentRecoveryRows = store.db.prepare(`SELECT event_id, run_id, action_generation,
+      action_spec_hash, consumed_at, superseded_at FROM pending_action_inputs
+      WHERE action_id = ? ORDER BY event_id`).all(currentRecoveryFirstClaim.action.id);
+    expect(currentRecoveryRows).toEqual(currentRecoveryPending.map(row => ({
+      event_id: Number(row.id),
+      run_id: null,
+      action_generation: currentRecoveryFirstClaim.action.generation,
+      action_spec_hash: currentRecoveryFirstClaim.action.specHash,
+      consumed_at: 3_000,
+      superseded_at: null,
+    })));
+    expect(store.listPendingActionInputs(
+      currentRecoveryFirstClaim.action.id,
+      currentRecoveryFirstClaim.run.id,
+      'current-ready-boot',
+      currentRecoveryFirstClaim.run.leaseEpoch,
+    )).toEqual([]);
+    const currentRecoveryFirstCalls = [];
+    const currentRecoveryFirstRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(currentRecoveryFirstCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await currentRecoveryFirstRunner.run({
+      ...currentRecoveryFirstClaim,
+      ownerBootId: 'current-ready-boot',
+      signal: new AbortController().signal,
+    });
+    const currentRecoveryFirstRequest = JSON.stringify(currentRecoveryFirstCalls[0]);
+    expect(currentRecoveryFirstRequest.split(currentRecoverySentinel)).toHaveLength(3);
+    expect(store.getRun(currentRecoveryFirstClaim.run.id).contextSnapshot.userContext.guidance
+      .filter(entry => entry.text === currentRecoverySentinel)).toHaveLength(2);
+    for (let index = 0; index < 510; index += 1) {
+      store.appendEvent(currentRecoveryItem.id, 'test.noise', { index });
+    }
+    currentRecoveryDetail = store.getWorkItemDetail(currentRecoveryItem.id);
+    expect(currentRecoveryDetail.events.some(event => (
+      event.type === 'action.input_added' || event.type === 'action.input_rebound'
+    ))).toBe(false);
+    expect(store.interruptRun(
+      currentRecoveryFirstClaim.run.id,
+      'current-ready-boot',
+      currentRecoveryFirstClaim.run.leaseEpoch,
+      'retry current input after event eviction',
+    )).toBe(true);
+    const currentRecoveryRetryClaim = store.claimReadyAction('current-ready-boot', 60_000);
+    expect(currentRecoveryRetryClaim.action).toMatchObject({
+      id: currentRecoveryFirstClaim.action.id,
+      generation: currentRecoveryFirstClaim.action.generation,
+      specHash: currentRecoveryFirstClaim.action.specHash,
+    });
+    const currentRecoveryRetryCalls = [];
+    const currentRecoveryRetryRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(currentRecoveryRetryCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await currentRecoveryRetryRunner.run({
+      ...currentRecoveryRetryClaim,
+      ownerBootId: 'current-ready-boot',
+      signal: new AbortController().signal,
+    });
+    const currentRecoveryRetryRequest = JSON.stringify(currentRecoveryRetryCalls[0]);
+    expect(currentRecoveryRetryRequest.split(currentRecoverySentinel)).toHaveLength(3);
+    expect(store.getRun(currentRecoveryRetryClaim.run.id).contextSnapshot.userContext.guidance
+      .filter(entry => entry.text === currentRecoverySentinel)).toHaveLength(2);
+    expect(store.listActionEvents(currentRecoveryRetryClaim.action.id)
+      .filter(event => event.type === 'action.input_rebound')).toHaveLength(2);
     store.close();
     store = null;
     rmSync(dir, { recursive: true, force: true });
@@ -1490,7 +1840,29 @@ describe('Work Center store migration', () => {
     expect(rolledBackDb.prepare('SELECT status FROM runs WHERE id = ?').get(rollbackClaim.run.id).status)
       .toBe('running');
     rolledBackDb.exec('DROP TRIGGER fail_legacy_instruction_repair');
+    rolledBackDb.exec(`CREATE TRIGGER fail_pending_input_migration
+      BEFORE UPDATE ON pending_action_inputs
+      BEGIN SELECT RAISE(ABORT, 'forced pending input migration failure'); END`);
     rolledBackDb.close();
+
+    expect(() => new WorkItemStore(rollbackDbPath, { now: () => 2_000 }))
+      .toThrow(/forced pending input migration failure/);
+    const pendingRollbackDb = new DatabaseSync(rollbackDbPath);
+    expect(pendingRollbackDb.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
+      .toBe('17');
+    expect(pendingRollbackDb.prepare('SELECT instruction, generation, context FROM actions').get())
+      .toMatchObject({ instruction: expect.stringContaining(LEGACY_INSTRUCTION), generation: 4 });
+    expect(pendingRollbackDb.prepare(`SELECT COUNT(*) AS count FROM events
+      WHERE type = 'action.input_rebound'`).get().count).toBe(0);
+    expect(pendingRollbackDb.prepare(`SELECT p.run_id, p.consumed_at, p.superseded_at
+      FROM pending_action_inputs p JOIN events e ON e.id = p.event_id
+      WHERE e.type = 'action.input_added'`).get()).toEqual({
+      run_id: rollbackClaim.run.id,
+      consumed_at: 1_000,
+      superseded_at: null,
+    });
+    pendingRollbackDb.exec('DROP TRIGGER fail_pending_input_migration');
+    pendingRollbackDb.close();
 
     store = new WorkItemStore(rollbackDbPath, { now: () => 2_000 });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
