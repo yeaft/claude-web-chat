@@ -124,6 +124,14 @@ describe('Mainline projection', () => {
           id: 5, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
           data: { inputId: 'current-input-b', text: 'Current canonical duplicate' },
         },
+        {
+          id: 6, type: 'action.input_added', actionId: action.id, actionGeneration: 1,
+          data: { inputId: 'rebound-only-input', text: 'Rebound event-only input' },
+        },
+        {
+          id: 7, type: 'action.input_rebound', actionId: action.id, actionGeneration: 2,
+          data: { sourceEventIds: [6] },
+        },
       ],
     }), action).contextSnapshot;
 
@@ -131,6 +139,7 @@ describe('Mainline projection', () => {
       expect.objectContaining({ eventId: 4, inputId: 'current-input-a', text: 'Current canonical duplicate' }),
       expect.objectContaining({ eventId: 5, inputId: 'current-input-b', text: 'Current canonical duplicate' }),
       expect.objectContaining({ eventId: 3, text: 'Input for the current generation' }),
+      expect.objectContaining({ eventId: 6, inputId: 'rebound-only-input', text: 'Rebound event-only input' }),
     ]);
     expect(JSON.stringify(snapshot)).not.toContain('Input for the superseded generation');
     expect(JSON.stringify(snapshot)).not.toContain('Legacy input without a generation');

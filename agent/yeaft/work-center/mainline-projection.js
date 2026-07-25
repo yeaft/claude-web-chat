@@ -131,7 +131,7 @@ function canonicalActionUserContext(events, action) {
         : Array.isArray(event?.data?.attachments) ? event.data.attachments : [],
     }];
   });
-  return { values, usedEventIds };
+  return { values, usedEventIds, validInputEventIds };
 }
 
 function guidanceView(events, action) {
@@ -139,8 +139,9 @@ function guidanceView(events, action) {
   const canonicalEntries = canonicalActionUserContext(allEvents, action);
   const currentEvents = allEvents
     .filter(event => event?.actionId === action?.id
-      && eventMatchesActionGeneration(event, action)
-      && ['action.guidance_added', 'action.input_added'].includes(event.type)
+      && ((event.type === 'action.input_added'
+        && canonicalEntries.validInputEventIds.has(String(event.id)))
+        || (event.type === 'action.guidance_added' && eventMatchesActionGeneration(event, action)))
       && !canonicalEntries.usedEventIds.has(event.id))
     .slice()
     .sort((left, right) => count(left.id) - count(right.id))

@@ -689,13 +689,15 @@ describe('Work Center store migration', () => {
       identityClaim.run.id,
       'identity-boot',
       identityClaim.run.leaseEpoch,
-    )).toEqual([expect.objectContaining({ text: OLD_GENERATION_INPUT })]);
-    expect(store.db.prepare(`SELECT run_id, action_generation, action_spec_hash
-      FROM pending_action_inputs WHERE text = ? AND superseded_at IS NULL`).get(OLD_GENERATION_INPUT))
+    )).toEqual([]);
+    expect(store.db.prepare(`SELECT run_id, action_generation, action_spec_hash, consumed_at, superseded_at
+      FROM pending_action_inputs WHERE text = ?`).get(OLD_GENERATION_INPUT))
       .toMatchObject({
         run_id: identityClaim.run.id,
         action_generation: fallbackAction.generation,
         action_spec_hash: fallbackAction.specHash,
+        consumed_at: 2_000,
+        superseded_at: null,
       });
     expect(store.listActionEvents(identityAction.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -724,8 +726,8 @@ describe('Work Center store migration', () => {
     expect(resetIdentityAction.generation).toBe(fallbackAction.generation + 1);
     expect(resetIdentityAction.instruction).toContain(INPUT_POLICY);
     expect(resetIdentityAction.instruction).not.toContain(DEFAULT_TEST_POLICY);
-    expect(store.db.prepare(`SELECT superseded_at FROM pending_action_inputs
-      WHERE text = ?`).get(OLD_GENERATION_INPUT).superseded_at).toBe(2_000);
+    expect(store.db.prepare(`SELECT consumed_at, superseded_at FROM pending_action_inputs
+      WHERE text = ?`).get(OLD_GENERATION_INPUT)).toEqual({ consumed_at: 2_000, superseded_at: null });
     const resetIdentityClaim = store.claimReadyAction('identity-boot', 60_000);
     expect(resetIdentityClaim.run).toMatchObject({
       actionGeneration: resetIdentityAction.generation,
@@ -752,6 +754,139 @@ describe('Work Center store migration', () => {
     expect(identityRequest).toContain(INPUT_POLICY);
     expect(identityRequest).not.toContain(DEFAULT_TEST_POLICY);
     expect(identityRequest).not.toContain(OLD_GENERATION_INPUT);
+    store.close();
+    store = null;
+    rmSync(dir, { recursive: true, force: true });
+    dir = null;
+
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-rebound-input-retry-'));
+    store = new WorkItemStore(join(dir, 'work-center.db'), { now: () => 2_000 });
+    const reboundInputController = new WorkflowController(store);
+    const reboundInputWorkflow = normalizeWorkflowDefinition({
+      id: 'rebound-input-retry',
+      name: 'Rebound input retry',
+      planningMode: 'static',
+      executionMode: 'graph',
+      actionInstructions: { test: INPUT_POLICY },
+      stages: [{
+        id: 'verify', name: 'Verify', type: 'test',
+        objective: 'Verify rebound input retry', approach: 'Preserve every accepted running input',
+        expectedOutcome: 'The retried Run receives rebound input', instruction: INPUT_POLICY,
+        assignmentPolicy: { mode: 'fixed', fixedVpId: 'tester' },
+        modelPolicy: { mode: 'inherit' }, dependsOnStageIds: [],
+        workspaceMode: 'isolated-write', maxAttempts: 2,
+      }],
+    });
+    const reboundInputItem = reboundInputController.create({
+      id: 'rebound-input-retry',
+      title: 'Preserve rebound running input',
+      goal: 'Keep accepted running input across fallback and retry',
+      acceptanceCriteria: ['The retry receives rebound input'],
+      workflowTemplate: reboundInputWorkflow.id,
+      workflowSnapshot: reboundInputWorkflow,
+      workDir: '',
+      start: true,
+    });
+    let reboundInputDetail = store.getWorkItemDetail(reboundInputItem.id);
+    const reboundInputClaim = store.claimReadyAction('rebound-input-boot', 60_000);
+    reboundInputDetail = reboundInputController.input(reboundInputItem.id, {
+      actionId: reboundInputClaim.action.id,
+      generation: reboundInputClaim.action.generation,
+      revision: reboundInputDetail.revision,
+      text: 'REBOUND RUNNING INPUT RETRY SENTINEL',
+    });
+    const reboundPending = store.listPendingActionInputs(
+      reboundInputClaim.action.id,
+      reboundInputClaim.run.id,
+      'rebound-input-boot',
+      reboundInputClaim.run.leaseEpoch,
+    );
+    expect(reboundPending).toEqual([
+      expect.objectContaining({ text: 'REBOUND RUNNING INPUT RETRY SENTINEL' }),
+    ]);
+    const reboundFallback = store.setActionWorkspaceForRun(
+      reboundInputClaim.action.id,
+      reboundInputClaim.run.id,
+      'rebound-input-boot',
+      reboundInputClaim.run.leaseEpoch,
+      reboundInputClaim.action.generation,
+      null,
+      'shared',
+    );
+    expect(reboundFallback.generation).toBe(reboundInputClaim.action.generation + 1);
+    const reboundPendingAfterFallback = store.listPendingActionInputs(
+      reboundInputClaim.action.id,
+      reboundInputClaim.run.id,
+      'rebound-input-boot',
+      reboundInputClaim.run.leaseEpoch,
+    );
+    expect(reboundPendingAfterFallback).toEqual([]);
+    expect(store.db.prepare(`SELECT consumed_at, superseded_at FROM pending_action_inputs
+      WHERE event_id = ?`).get(Number(reboundPending[0].id)))
+      .toEqual({ consumed_at: 2_000, superseded_at: null });
+    expect(reboundFallback.context.filter(entry => entry.type === 'input'))
+      .toEqual([expect.objectContaining({
+        inputId: expect.any(String),
+        summary: 'REBOUND RUNNING INPUT RETRY SENTINEL',
+      })]);
+    const reboundCurrentRun = store.getRun(reboundInputClaim.run.id);
+    expect(reboundCurrentRun).toMatchObject({
+      actionGeneration: reboundFallback.generation,
+      actionSpecHash: reboundFallback.specHash,
+    });
+    const reboundCurrentCalls = [];
+    const reboundCurrentRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(reboundCurrentCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await reboundCurrentRunner.run({
+      ...reboundInputClaim,
+      action: reboundFallback,
+      run: reboundCurrentRun,
+      ownerBootId: 'rebound-input-boot',
+      signal: new AbortController().signal,
+    });
+    const reboundCurrentRequest = JSON.stringify(reboundCurrentCalls[0]);
+    expect(reboundCurrentRequest.split('REBOUND RUNNING INPUT RETRY SENTINEL')).toHaveLength(2);
+    expect(store.getRun(reboundInputClaim.run.id).contextSnapshot.userContext.guidance)
+      .toEqual([expect.objectContaining({ text: 'REBOUND RUNNING INPUT RETRY SENTINEL' })]);
+    for (let index = 0; index < 510; index += 1) {
+      store.appendEvent(reboundInputItem.id, 'test.noise', { index });
+    }
+    reboundInputDetail = store.getWorkItemDetail(reboundInputItem.id);
+    expect(reboundInputDetail.events).toHaveLength(500);
+    expect(reboundInputDetail.events.some(event => event.type === 'action.input_added')).toBe(false);
+    expect(reboundInputDetail.events.some(event => event.type === 'action.input_rebound')).toBe(false);
+    expect(store.interruptRun(
+      reboundInputClaim.run.id,
+      'rebound-input-boot',
+      reboundInputClaim.run.leaseEpoch,
+      'watcher restart after fallback',
+    )).toBe(true);
+    const reboundRetryClaim = store.claimReadyAction('rebound-input-boot', 60_000);
+    expect(reboundRetryClaim.action).toMatchObject({
+      id: reboundInputClaim.action.id,
+      generation: reboundFallback.generation,
+    });
+    expect(reboundRetryClaim.action.context.filter(entry => entry.type === 'input'))
+      .toEqual([expect.objectContaining({ summary: 'REBOUND RUNNING INPUT RETRY SENTINEL' })]);
+    const reboundInputCalls = [];
+    const reboundInputRunner = new WorkItemRunner({
+      store,
+      runtimeProvider: runnerRuntime(reboundInputCalls, dir),
+      registry: runnerRegistry(),
+    });
+    await reboundInputRunner.run({
+      ...reboundRetryClaim,
+      ownerBootId: 'rebound-input-boot',
+      signal: new AbortController().signal,
+    });
+    const reboundInputRequest = JSON.stringify(reboundInputCalls[0]);
+    expect(reboundInputRequest.split('REBOUND RUNNING INPUT RETRY SENTINEL')).toHaveLength(2);
+    const reboundRun = store.getRun(reboundRetryClaim.run.id);
+    expect(reboundRun.contextSnapshot.userContext.guidance)
+      .toEqual([expect.objectContaining({ text: 'REBOUND RUNNING INPUT RETRY SENTINEL' })]);
     store.close();
     store = null;
     rmSync(dir, { recursive: true, force: true });

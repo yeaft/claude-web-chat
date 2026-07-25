@@ -314,22 +314,43 @@ function carryCurrentActionInputContext(db, action) {
   const validInputEventIds = currentActionInputEventIds(events, action);
   const inputEvents = events.filter(event => event.type === 'action.input_added'
     && validInputEventIds.has(String(event.id)));
+  const eventByInputId = new Map(inputEvents
+    .filter(event => event.data?.inputId)
+    .map(event => [event.data.inputId, event]));
+  const eventById = new Map(inputEvents.map(event => [String(event.id), event]));
   const usedEventIds = new Set();
-  return (Array.isArray(action.context) ? action.context : []).flatMap(entry => {
+  const context = (Array.isArray(action.context) ? action.context : []).flatMap(entry => {
     if (entry?.type !== 'input') return [entry];
-    if (entry.inputId) return [entry];
-    const event = inputEvents.find(candidate => !usedEventIds.has(candidate.id)
-      && (candidate.data?.text || '') === (entry.summary || ''));
-    if (!event) return [];
-    usedEventIds.add(event.id);
+    let event = entry.inputId ? eventByInputId.get(entry.inputId) : null;
+    if (!event && typeof entry.inputId === 'string' && entry.inputId.startsWith('legacy-event:')) {
+      event = eventById.get(entry.inputId.slice('legacy-event:'.length)) || null;
+    }
+    if (!event && !entry.inputId) {
+      event = inputEvents.find(candidate => !usedEventIds.has(candidate.id)
+        && (candidate.data?.text || '') === (entry.summary || '')) || null;
+    }
+    if (!entry.inputId && !event) return [];
+    if (event) usedEventIds.add(event.id);
     return [{
       ...entry,
-      inputId: `legacy-event:${event.id}`,
+      inputId: entry.inputId || event.data?.inputId || `legacy-event:${event.id}`,
       attachments: Array.isArray(entry.attachments)
         ? entry.attachments
-        : Array.isArray(event.data?.attachments) ? event.data.attachments : [],
+        : Array.isArray(event?.data?.attachments) ? event.data.attachments : [],
     }];
   });
+  for (const event of inputEvents) {
+    if (usedEventIds.has(event.id)) continue;
+    context.push({
+      type: 'input',
+      role: 'user',
+      inputId: event.data?.inputId || `legacy-event:${event.id}`,
+      summary: event.data?.text || '',
+      attachments: Array.isArray(event.data?.attachments) ? event.data.attachments : [],
+      evidence: [],
+    });
+  }
+  return context;
 }
 
 function reconcilePendingActionInputIdentity(db, now) {
@@ -1506,11 +1527,29 @@ export class WorkItemStore {
         if (Number(rebound.changes) !== 1) {
           throw new Error('Work Center could not rebind the owned Run after workspace fallback');
         }
-        this.#rebindPendingActionInputs(action, pendingInputs, {
+        const reboundCount = this.#rebindPendingActionInputs(action, pendingInputs, {
           runId,
           generation: nextGeneration,
           specHash: nextSpecHash,
         }, 'workspace_fallback', now);
+        if (reboundCount !== pendingInputs.length) {
+          throw new Error('Work Center could not rebind every pending input after workspace fallback');
+        }
+        const consumeInput = this.db.prepare(`UPDATE pending_action_inputs SET consumed_at = ?
+          WHERE event_id = ? AND run_id = ? AND action_generation = ? AND action_spec_hash = ?
+            AND consumed_at IS NULL AND superseded_at IS NULL`);
+        for (const pendingInput of pendingInputs) {
+          const consumed = consumeInput.run(
+            now,
+            Number(pendingInput.event_id),
+            runId,
+            nextGeneration,
+            nextSpecHash,
+          );
+          if (Number(consumed.changes) !== 1) {
+            throw new Error('Work Center could not consume canonical input after workspace fallback');
+          }
+        }
       }
 
       if (action.workspaceMode === 'isolated-write' && nextWorkspaceMode === 'shared') {
