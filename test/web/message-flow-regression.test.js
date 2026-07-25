@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+// @vitest-environment happy-dom
+import { mount } from '@vue/test-utils';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as Vue from 'vue';
+import ChatInput from '../../web/components/ChatInput.js';
 import {
   addMessageToConversation,
   appendToAssistantMessageForConversation,
@@ -8,6 +12,8 @@ import {
   hasHiddenYeaftMessageTurns,
   sliceYeaftMessagesByRecentTurns,
 } from '../../web/stores/helpers/yeaft-message-window.js';
+
+let chatInputStore;
 
 function makeStore() {
   return {
@@ -20,40 +26,119 @@ function makeStore() {
   };
 }
 
+function makeChatInputStore() {
+  return Vue.reactive({
+    activeConversationId: 'conversation-a',
+    btwMode: false,
+    cancelExecution: vi.fn(),
+    compactStatus: null,
+    currentAgent: 'agent-a',
+    currentConversation: 'conversation-a',
+    currentView: 'yeaft',
+    customExpertRoles: [],
+    expertSelections: [],
+    inputDrafts: {},
+    isProcessing: true,
+    sendMessage: vi.fn(),
+    slashCommandDescriptions: {},
+    yeaftActiveSessionFilter: 'session-1',
+  });
+}
+
+function mountChatInput(props = {}) {
+  return mount(ChatInput, {
+    props,
+    global: { mocks: { $t: key => key } },
+    attachTo: document.body,
+  });
+}
+
+beforeAll(() => {
+  globalThis.Vue = Vue;
+  globalThis.Pinia = {
+    defineStore: () => () => ({}),
+    useAuthStore: () => ({ getActiveToken: () => null }),
+    useChatStore: () => chatInputStore,
+    useSessionsStore: () => ({
+      activeSessionId: 'session-1',
+      sessions: { 'session-1': { id: 'session-1', roster: ['omni'] } },
+      sessionById: sessionId => (sessionId === 'session-1' ? { id: 'session-1', roster: ['omni'] } : null),
+    }),
+    useVpStore: () => ({
+      vpList: [{ vpId: 'omni' }],
+      vpDescription: () => '',
+      vpTextColor: () => 'var(--text-primary)',
+    }),
+  };
+  globalThis.window.Pinia = globalThis.Pinia;
+});
+
+beforeEach(() => {
+  chatInputStore = makeChatInputStore();
+});
+
+afterEach(() => {
+  document.body.innerHTML = '';
+  vi.restoreAllMocks();
+});
+
 describe('message flow regressions', () => {
-  it('appends same-id streaming deltas instead of replacing the latest assistant message', () => {
-    const store = makeStore();
+  it('keeps same-id streaming deltas and full snapshots on one assistant message', () => {
+    const deltaStore = makeStore();
 
-    appendToAssistantMessageForConversation(store, 'conv-1', 'hello ', {
+    appendToAssistantMessageForConversation(deltaStore, 'conv-1', 'hello ', {
       id: 'msg-1',
       sessionId: 'session-1',
       vpId: 'vp-1',
       turnId: 'turn-1',
     });
-    appendToAssistantMessageForConversation(store, 'conv-1', 'world', {
+    appendToAssistantMessageForConversation(deltaStore, 'conv-1', 'world', {
       id: 'msg-1',
       sessionId: 'session-1',
       vpId: 'vp-1',
       turnId: 'turn-1',
     });
 
-    expect(store.messagesMap['conv-1']).toHaveLength(1);
-    expect(store.messagesMap['conv-1'][0]).toMatchObject({
+    expect(deltaStore.messagesMap['conv-1']).toHaveLength(1);
+    expect(deltaStore.messagesMap['conv-1'][0]).toMatchObject({
       type: 'assistant',
       content: 'hello world',
       isStreaming: true,
       speakerVpId: 'vp-1',
       turnId: 'turn-1',
     });
+
+    const snapshotStore = makeStore();
+    appendToAssistantMessageForConversation(snapshotStore, 'conv-1', 'hello', { id: 'msg-1', turnId: 'turn-1' });
+    appendToAssistantMessageForConversation(snapshotStore, 'conv-1', 'hello world', { id: 'msg-1', turnId: 'turn-1' });
+
+    expect(snapshotStore.messagesMap['conv-1']).toHaveLength(1);
+    expect(snapshotStore.messagesMap['conv-1'][0].content).toBe('hello world');
   });
 
-  it('accepts full same-id snapshots without duplicating already-rendered text', () => {
-    const store = makeStore();
+  it('keeps stop and follow-up send controls available while a turn is running', async () => {
+    const sendYeaft = vi.fn();
+    const cancelYeaft = vi.fn();
+    const yeaftInput = mountChatInput({ sendFn: sendYeaft, cancelFn: cancelYeaft, showStop: true });
 
-    appendToAssistantMessageForConversation(store, 'conv-1', 'hello', { id: 'msg-1', turnId: 'turn-1' });
-    appendToAssistantMessageForConversation(store, 'conv-1', 'hello world', { id: 'msg-1', turnId: 'turn-1' });
+    await yeaftInput.get('textarea').setValue('queued Yeaft follow-up');
 
-    expect(store.messagesMap['conv-1'][0].content).toBe('hello world');
+    expect(yeaftInput.get('.stop-btn').attributes('aria-label')).toBe('chatInput.stop');
+    expect(yeaftInput.get('.send-btn:not(.stop-btn)').attributes('disabled')).toBeUndefined();
+
+    await yeaftInput.get('.send-btn:not(.stop-btn)').trigger('click');
+    expect(sendYeaft).toHaveBeenCalledWith('queued Yeaft follow-up', undefined);
+    await yeaftInput.get('.stop-btn').trigger('click');
+    expect(cancelYeaft).toHaveBeenCalledOnce();
+    yeaftInput.unmount();
+
+    chatInputStore.currentView = 'chat';
+    const chatInput = mountChatInput();
+    await chatInput.get('textarea').setValue('queued Chat follow-up');
+    await chatInput.get('.send-btn:not(.stop-btn)').trigger('click');
+
+    expect(chatInputStore.sendMessage).toHaveBeenCalledWith('queued Chat follow-up', [], { expertSelections: [] });
+    chatInput.unmount();
   });
 
   it('stamps background agent messages without promoting that conversation', () => {
