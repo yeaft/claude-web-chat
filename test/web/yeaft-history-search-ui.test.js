@@ -63,6 +63,7 @@ describe('Yeaft conversation outline UI', () => {
     expect(css).toMatch(/\.yeaft-conversation-outline-toolbar\s*\{[\s\S]*?display: flex;[\s\S]*?align-items: center;/);
     expect(css).toMatch(/\.yeaft-conversation-outline-sender\s*\{[\s\S]*?min-width: 112px;[\s\S]*?max-width: 148px;/);
     expect(panel).toContain(':menu-min-width="180"');
+    expect(css).toMatch(/\.yeaft-conversation-outline-sender-menu\s*\{[\s\S]*?font-size: 12px;/);
     expect(modalCss).toContain('select.modern-select {');
     expect(modalCss).toContain('select.modern-select:focus {');
     expect(modalCss).not.toMatch(/(^|\n)\.modern-select\s*\{/);
@@ -87,10 +88,11 @@ describe('Yeaft conversation outline UI', () => {
     expect(panel).toContain("event.key === 'Escape'");
   });
 
-  it('dismisses the history dropdown only when a click lands outside the panel and trigger', () => {
+  it('dismisses the history dropdown only when a click lands outside the panel, teleported sender menu and trigger', () => {
     const targetIn = selector => ({ closest: vi.fn().mockReturnValue(selector ? {} : null) });
 
     expect(shouldDismissHistorySearch(targetIn('.yeaft-conversation-outline'))).toBe(false);
+    expect(shouldDismissHistorySearch(targetIn('.yeaft-conversation-outline-sender-menu'))).toBe(false);
     expect(shouldDismissHistorySearch(targetIn('.yeaft-search-btn'))).toBe(false);
     expect(shouldDismissHistorySearch(targetIn(''))).toBe(true);
     expect(shouldDismissHistorySearch(null)).toBe(true);

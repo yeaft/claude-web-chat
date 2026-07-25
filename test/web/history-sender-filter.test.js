@@ -2,6 +2,7 @@
 import * as Vue from 'vue';
 import { mount } from '@vue/test-utils';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { shouldDismissHistorySearch } from '../../web/utils/message-search-navigation.js';
 
 let YeaftConversationOutline;
 
@@ -58,6 +59,7 @@ describe('Yeaft message history sender filter', () => {
       'yeaft.outline.allSenders', 'You', 'Linus',
     ]);
     expect(menu.querySelector('.modern-select-option.is-selected').getAttribute('aria-selected')).toBe('true');
+    expect(shouldDismissHistorySearch(menu.querySelector('.modern-select-option'))).toBe(false);
     expect(senderTrigger.attributes('aria-controls')).toBe(menu.id);
     expect(senderTrigger.attributes('aria-activedescendant')).toBe(menu.querySelectorAll('.modern-select-option')[2].id);
 
