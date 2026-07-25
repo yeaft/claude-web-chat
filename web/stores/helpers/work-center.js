@@ -1,5 +1,8 @@
 const DETAIL_SUMMARY_FIELDS = Object.freeze([
   'revision',
+  'planRevision',
+  'ledgerRevision',
+  'coordinatorRevision',
   'title',
   'goal',
   'workItemType',
@@ -90,6 +93,12 @@ export function isWorkItemSummaryStale(summary, current) {
   if (summaryRevision != null && currentRevision != null && summaryRevision !== currentRevision) {
     return summaryRevision < currentRevision;
   }
+  const summaryCoordinatorRevision = numberOrNull(summary.coordinatorRevision);
+  const currentCoordinatorRevision = numberOrNull(current.coordinatorRevision);
+  if (summaryCoordinatorRevision != null && currentCoordinatorRevision != null
+      && summaryCoordinatorRevision !== currentCoordinatorRevision) {
+    return summaryCoordinatorRevision < currentCoordinatorRevision;
+  }
   const summaryUpdatedAt = numberOrNull(summary.updatedAt);
   const currentUpdatedAt = numberOrNull(current.updatedAt);
   return summaryUpdatedAt != null && currentUpdatedAt != null && summaryUpdatedAt < currentUpdatedAt;
@@ -113,7 +122,11 @@ function isActionProgressStale(currentStats, nextStats) {
 }
 
 export function workItemDetailNeedsRefresh(current, summary) {
-  if (!current || current.id !== summary?.id || !summary.currentActionId) return false;
+  if (!current || current.id !== summary?.id) return false;
+  const coordinatorRevision = numberOrNull(summary.coordinatorRevision);
+  const currentCoordinatorRevision = numberOrNull(current.coordinatorRevision) ?? 0;
+  if (coordinatorRevision != null && coordinatorRevision > currentCoordinatorRevision) return true;
+  if (!summary.currentActionId) return false;
   if (!Array.isArray(current.actions)) return true;
   const currentAction = current.actions.find(action => action?.id === summary.currentActionId);
   if (!currentAction) return true;
@@ -200,6 +213,7 @@ function hasStaleActionProgress(currentStats, nextStats) {
 
 function isSameWorkItemVersion(current, summary) {
   return numberOrNull(current?.revision) === numberOrNull(summary?.revision)
+    && numberOrNull(current?.coordinatorRevision) === numberOrNull(summary?.coordinatorRevision)
     && numberOrNull(current?.updatedAt) === numberOrNull(summary?.updatedAt);
 }
 

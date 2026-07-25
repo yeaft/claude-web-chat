@@ -66,7 +66,8 @@ function clamp(value, minimum, maximum) {
 
 function workItemMessageView(messages) {
   return (Array.isArray(messages) ? messages : [])
-    .filter(message => typeof message?.text === 'string' && message.text)
+    .filter(message => message?.role !== 'assistant'
+      && typeof message?.text === 'string' && message.text)
     .slice()
     .sort((left, right) => count(left.createdAt) - count(right.createdAt)
       || String(left.id).localeCompare(String(right.id)))

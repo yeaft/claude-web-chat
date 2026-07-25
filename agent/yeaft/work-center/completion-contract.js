@@ -44,9 +44,31 @@ export function validateCompletedResult(result, action, workItem) {
     result.error = 'Completed Action requires one ordered acceptance check with evidence for every acceptance criterion';
     return;
   }
-  const mustVerify = action.type === 'test'
-    || action.type === 'deliver'
-    || (action.type === 'review' && result.reviewDecision === 'approved');
+  // Intermediate test Actions validate their own task-specific expected result.
+  // Requiring them to prove the entire WorkItem contract makes any DAG with
+  // later tests or reviews impossible to complete. Global proof belongs at the
+  // delivery boundary or an approved review with no unfinished downstream work.
+  const remainingStages = Array.isArray(workItem?.workflowSnapshot?.stages)
+    ? workItem.workflowSnapshot.stages.filter(stage => stage?.id !== action.stageId)
+    : [];
+  const downstream = new Set([action.stageId]);
+  let expanded = true;
+  while (expanded) {
+    expanded = false;
+    for (const stage of remainingStages) {
+      if (downstream.has(stage?.id)) continue;
+      if (Array.isArray(stage?.dependsOnStageIds)
+          && stage.dependsOnStageIds.some(stageId => downstream.has(stageId))) {
+        downstream.add(stage.id);
+        expanded = true;
+      }
+    }
+  }
+  const hasDownstreamStage = remainingStages.some(stage => downstream.has(stage?.id));
+  const hasDeliverStage = remainingStages.some(stage => stage?.type === 'deliver');
+  const mustVerify = action.type === 'deliver'
+    || (action.type === 'review' && result.reviewDecision === 'approved'
+      && !hasDownstreamStage && !hasDeliverStage);
   if (mustVerify && checks.some(check => check.status !== 'passed')) {
     result.outcome = 'failed';
     result.error = `${action.type} Action requires every acceptance check to pass`;

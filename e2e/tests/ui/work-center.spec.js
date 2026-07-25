@@ -15,6 +15,7 @@ const WORK_CENTER_SETTINGS = {
     defaultWorkDir: '/tmp/test',
     globalInstructions: 'Follow the Agent release policy for every Action.',
     modelPolicy: { mode: 'specific', model: 'provider/review', effort: 'high' },
+    coordinatorModelPolicy: { mode: 'specific', model: 'provider/review', effort: 'high' },
     actionModelPolicies: Object.fromEntries(BUILT_IN_ACTION_TYPES.map(type => [type, {
       mode: 'inherit', model: null, effort: ['triage', 'research', 'design', 'diagnose', 'review'].includes(type) ? 'high' : 'medium',
     }])),
@@ -64,6 +65,7 @@ const OPEN_ITEM = {
   status: 'running',
   updatedAt: Date.now(),
   currentAction: { id: 'action-1', type: 'implement', requiredRole: 'developer' },
+  coordinatorRevision: 0,
 };
 
 const OPEN_ITEM_DETAIL = {
@@ -73,6 +75,10 @@ const OPEN_ITEM_DETAIL = {
   workDir: '/tmp/project',
   workflowTemplate: 'software-change',
   acceptanceCriteria: ['The Action flow remains readable'],
+  planRevision: 2,
+  ledgerRevision: 4,
+  coordinatorRevision: 0,
+  messages: [],
   executionStats: {
     llmRequestCount: 4, loopCount: 3, toolCount: 8,
     inputTokens: 1200, outputTokens: 300, cacheReadTokens: 200, cacheWriteTokens: 50,
@@ -132,6 +138,7 @@ const FAILED_ITEM_DETAIL = {
   ...OPEN_ITEM_DETAIL,
   ...FAILED_ITEM,
   status: 'needs_attention',
+  messages: [],
   actions: [{
     ...OPEN_ITEM_DETAIL.actions[0],
     status: 'failed',
@@ -230,7 +237,7 @@ function expectedActionPolicyCount() {
 }
 
 function expectedModelPolicyCount() {
-  return BUILT_IN_ACTION_TYPES.length + 2;
+  return BUILT_IN_ACTION_TYPES.length + 3;
 }
 
 async function openWorkCenter(chatPage, mockAgent, items = [OPEN_ITEM]) {
@@ -466,6 +473,25 @@ test.describe('Work Center responsive UI', () => {
     await expect(action).not.toContainText('tokens');
     await expect(chatPage.locator('.work-center-detail-usage')).toContainText('4 LLM requests');
     await expect(chatPage.locator('.work-center-detail-usage')).toContainText('1.8k tokens');
+    const coordinator = chatPage.locator('.work-center-item-messages');
+    await expect(coordinator).toContainText('Coordinate the whole Work Item here');
+    await coordinator.locator('textarea').fill('Change the goal and replan the remaining Actions');
+    const coordinatorResponse = respondToWorkCenterOp(mockAgent, 'work_item_message', {
+      accepted: true,
+      turnId: 'turn-1',
+    });
+    await coordinator.getByRole('button', { name: 'Send to Coordinator' }).click();
+    const coordinatorRequest = await coordinatorResponse;
+    expect(coordinatorRequest.payload).toMatchObject({
+      id: OPEN_ITEM.id,
+      text: 'Change the goal and replan the remaining Actions',
+      revision: 1,
+      planRevision: 2,
+      ledgerRevision: 4,
+      coordinatorRevision: 0,
+    });
+    await expect(coordinator.locator('textarea')).toHaveValue('');
+
     await action.locator('.work-center-action-summary').click();
     const actionDetail = chatPage.locator('.work-center-action-detail-pane');
     await expect(actionDetail.locator('.work-center-action-message')).toContainText('Implemented the layout fix');
@@ -473,7 +499,7 @@ test.describe('Work Center responsive UI', () => {
     await expect(actionDetail.locator('.work-center-action-context')).toContainText('What to do');
     await expect(actionDetail.locator('.work-center-action-context')).toContainText('How to do it');
     await expect(actionDetail.locator('.work-center-action-context')).toContainText('Expected result');
-    await actionDetail.getByRole('tab', { name: 'Conversation' }).click();
+    await actionDetail.getByRole('tab', { name: 'Execution log' }).click();
 
     mockAgent.send({
       type: 'work_center_event',
@@ -497,18 +523,8 @@ test.describe('Work Center responsive UI', () => {
     });
     await expect(actionDetail.locator('.work-center-action-message', { hasText: 'Live AI response from the active Run.' })).toHaveCount(1);
 
-    await actionDetail.locator('.work-center-action-composer textarea').fill('Keep the public API unchanged');
-    const guide = respondToWorkCenterOp(mockAgent, 'action_input', OPEN_ITEM_DETAIL);
-    await actionDetail.getByRole('button', { name: 'Send input' }).click();
-    const request = await guide;
-    await respondToWorkCenterOp(mockAgent, 'list', { items: [OPEN_ITEM], watcher: { enabled: true } });
-    expect(request.op).toBe('action_input');
-    expect(request.payload).toMatchObject({
-      id: OPEN_ITEM.id,
-      text: 'Keep the public API unchanged',
-      actionId: 'action-1',
-      revision: 1,
-    });
+    await expect(actionDetail.locator('.work-center-action-composer')).toHaveCount(0);
+    await expect(actionDetail).toContainText('Live AI response from the active Run.');
   });
 
   test('loads retained messages when a historical Action is selected', async ({ chatPage, mockAgent }) => {
@@ -840,6 +856,7 @@ test.describe('Work Center responsive UI', () => {
     await chatPage.getByRole('button', { name: 'Models', exact: true }).click();
     const modelStages = chatPage.locator('.work-center-model-stage');
     await expect(modelStages).toHaveCount(expectedModelPolicyCount());
+    await expect(modelStages.first()).toContainText('Coordinator');
     const modelStage = modelStages.last();
     await expect(modelStage).toContainText('Fallback for all Actions');
     const effort = modelStage.locator('.work-center-model-effort');
@@ -861,6 +878,7 @@ test.describe('Work Center responsive UI', () => {
     const legacySettings = structuredClone(WORK_CENTER_SETTINGS);
     delete legacySettings.settings.actionInstructions;
     delete legacySettings.settings.modelPolicy;
+    delete legacySettings.settings.coordinatorModelPolicy;
     delete legacySettings.settings.actionModelPolicies;
     legacySettings.settings.workflows[0].stages[0].instruction = 'Legacy triage prompt.';
     legacySettings.settings.workflows[0].stages[0].modelPolicy = {

@@ -5,8 +5,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
 import { runMatchesActionIdentity } from './action-identity.js';
+import { actionInstruction } from './workflow.js';
 
-const SCHEMA_VERSION = 17;
+const SCHEMA_VERSION = 18;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -36,6 +37,17 @@ function stableJson(value) {
     return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
   }
   return JSON.stringify(value);
+}
+
+function coordinatorActionFence(actions) {
+  return createHash('sha256').update(stableJson((actions || []).map(action => ({
+    id: action.id,
+    generation: action.generation,
+    status: action.status,
+    currentRunId: action.currentRunId || null,
+    leaseEpoch: action.leaseEpoch,
+    resultRunId: action.resultRunId || null,
+  })).sort((left, right) => left.id.localeCompare(right.id))), 'utf8').digest('hex');
 }
 
 function actionSpecHash(action) {
@@ -88,6 +100,7 @@ function mapWorkItem(row) {
     completedActionCount: Math.max(0, Number(row.completed_action_count) || 0),
     sessionContext: parseJson(row.session_context, []),
     messages: parseJson(row.messages, []),
+    coordinatorRevision: Math.max(0, Number(row.coordinator_revision) || 0),
     attachments: parseJson(row.attachments, []),
     executionStats: {
       llmRequestCount: Math.max(0, Number(row.usage_llm_request_count) || 0),
@@ -315,6 +328,7 @@ export class WorkItemStore {
         linked_session_ids TEXT NOT NULL DEFAULT '[]',
         session_context TEXT NOT NULL DEFAULT '[]',
         messages TEXT NOT NULL DEFAULT '[]',
+        coordinator_revision INTEGER NOT NULL DEFAULT 0,
         attachments TEXT NOT NULL DEFAULT '[]',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -464,6 +478,31 @@ export class WorkItemStore {
     }
     if (!hasColumn(this.db, 'work_items', 'messages')) {
       this.db.exec("ALTER TABLE work_items ADD COLUMN messages TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!hasColumn(this.db, 'work_items', 'coordinator_revision')) {
+      this.db.exec('ALTER TABLE work_items ADD COLUMN coordinator_revision INTEGER NOT NULL DEFAULT 0');
+    }
+    if (storedSchemaVersion < 18) {
+      withTransaction(this.db, () => {
+        const updateMessages = this.db.prepare('UPDATE work_items SET messages = ? WHERE id = ?');
+        for (const row of this.db.prepare('SELECT id, messages FROM work_items').all()) {
+          const messages = parseJson(row.messages, []);
+          if (!Array.isArray(messages) || messages.length === 0) continue;
+          let changed = false;
+          const normalized = messages.map(message => {
+            if (!message || typeof message !== 'object' || Array.isArray(message) || message.role) return message;
+            changed = true;
+            return {
+              ...message,
+              turnId: message.turnId || message.id || randomUUID(),
+              role: 'legacy_instruction',
+              status: message.status || 'completed',
+              updatedAt: message.updatedAt || message.createdAt || 0,
+            };
+          });
+          if (changed) updateMessages.run(stringify(normalized), row.id);
+        }
+      });
     }
     if (!hasColumn(this.db, 'actions', 'brief')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN brief TEXT');
@@ -1437,6 +1476,241 @@ export class WorkItemStore {
 
   listActionEvents(actionId) {
     return this.db.prepare(`SELECT * FROM events WHERE action_id = ? ORDER BY id`).all(actionId).map(mapEvent);
+  }
+
+  beginCoordinatorTurn(id, text, expected = {}) {
+    return withTransaction(this.db, () => {
+      const workItem = this.getWorkItem(id);
+      if (!workItem) return null;
+      if (['done', 'cancelled'].includes(workItem.status)) {
+        throw new Error(`WorkItem in ${workItem.status} cannot accept Coordinator messages`);
+      }
+      if (workItem.revision !== expected.revision
+          || workItem.planRevision !== expected.planRevision
+          || workItem.ledgerRevision !== expected.ledgerRevision
+          || workItem.coordinatorRevision !== expected.coordinatorRevision) {
+        throw new Error('WorkItem changed before the Coordinator turn started; refresh and try again');
+      }
+      const latest = (workItem.messages || []).at(-1);
+      if (latest?.role === 'assistant' && latest.status === 'thinking') {
+        throw new Error('WorkItem Coordinator is already responding');
+      }
+      const now = this.now();
+      const activeActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
+        AND status NOT IN ('completed', 'superseded', 'cancelled') ORDER BY sequence`).all(id).map(mapAction);
+      this.#assertNoIntegrationReservation(activeActions, now);
+      const turnId = randomUUID();
+      const userMessage = { id: randomUUID(), turnId, role: 'user', text, status: 'completed', createdAt: now };
+      const assistantMessage = {
+        id: randomUUID(), turnId, role: 'assistant', text: '', status: 'thinking',
+        createdAt: now, updatedAt: now, decision: null,
+      };
+      const messages = [...(workItem.messages || []), userMessage, assistantMessage].slice(-100);
+      const coordinatorRevision = workItem.coordinatorRevision + 1;
+      const changed = this.db.prepare(`UPDATE work_items SET messages = ?, coordinator_revision = ?, updated_at = ?
+        WHERE id = ? AND coordinator_revision = ? AND revision = ? AND plan_revision = ?
+        AND ledger_revision = ?`).run(
+        stringify(messages), coordinatorRevision, now, id, workItem.coordinatorRevision,
+        workItem.revision, workItem.planRevision, workItem.ledgerRevision,
+      );
+      if (Number(changed.changes) !== 1) throw new Error('Coordinator turn lost its revision fence');
+      this.appendEvent(id, 'coordinator.turn_started', {
+        turnId, status: 'thinking', coordinatorRevision,
+      });
+      const detail = this.getWorkItemDetail(id);
+      return {
+        turnId,
+        detail,
+        fence: {
+          workItemId: id,
+          revision: workItem.revision,
+          planRevision: workItem.planRevision,
+          ledgerRevision: workItem.ledgerRevision,
+          coordinatorRevision,
+          status: workItem.status,
+          actionFence: coordinatorActionFence(activeActions),
+        },
+      };
+    });
+  }
+
+  completeCoordinatorTurn(turnId, result, expected = {}) {
+    return withTransaction(this.db, () => {
+      const workItem = this.getWorkItem(expected.workItemId);
+      if (!workItem) return null;
+      if (workItem.revision !== expected.revision
+          || workItem.planRevision !== expected.planRevision
+          || workItem.ledgerRevision !== expected.ledgerRevision
+          || workItem.coordinatorRevision !== expected.coordinatorRevision
+          || workItem.status !== expected.status) {
+        throw new Error('WorkItem changed while the Coordinator was responding; send the message again');
+      }
+      const messages = [...(workItem.messages || [])];
+      const assistantIndex = messages.findIndex(message => (
+        message?.turnId === turnId && message.role === 'assistant' && message.status === 'thinking'
+      ));
+      if (assistantIndex < 0) return null;
+      const decision = result?.decision || {};
+      const now = this.now();
+      const activeActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
+        AND status NOT IN ('completed', 'superseded', 'cancelled') ORDER BY sequence`).all(workItem.id).map(mapAction);
+      if (coordinatorActionFence(activeActions) !== expected.actionFence) {
+        throw new Error('WorkItem Actions changed while the Coordinator was responding; send the message again');
+      }
+      this.#assertNoIntegrationReservation(activeActions, now);
+
+      let nextWorkItem = workItem;
+      let affectedActionIds = [];
+      if (decision.kind === 'guide_actions') {
+        const guidanceByStage = new Map(decision.guidance.map(entry => [entry.stageId, entry.instruction]));
+        for (const action of activeActions) {
+          const instruction = guidanceByStage.get(action.stageId);
+          if (!instruction) continue;
+          if (action.status === 'running' && action.currentRunId) {
+            this.db.prepare(`UPDATE runs SET status = 'superseded', ended_at = ?, error = ?
+              WHERE id = ? AND status = 'running'`).run(
+              now, 'Superseded by WorkItem Coordinator guidance', action.currentRunId,
+            );
+          }
+          const context = [...(action.context || []), {
+            type: 'coordinator-guidance', role: 'user', summary: instruction, evidence: [],
+          }];
+          const stage = {
+            type: action.type, stageId: action.stageId, assignmentPolicy: action.assignmentPolicy,
+            modelPolicy: action.modelPolicy, dependsOnStageIds: action.dependsOnStageIds,
+            workspaceMode: action.workspaceMode, changesRequestedStageId: action.changesRequestedStageId,
+            brief: action.brief, instruction: workItem.workflowSnapshot?.actionInstructions?.[action.type] || '',
+          };
+          const nextAction = {
+            ...action, context, generation: action.generation + 1,
+            instruction: actionInstruction(stage, workItem, context),
+          };
+          const specHash = actionSpecHash(nextAction);
+          const changed = this.db.prepare(`UPDATE actions SET status = 'ready', attempt = 0,
+            current_run_id = NULL, lease_epoch = lease_epoch + ?, context = ?, instruction = ?,
+            generation = generation + 1, spec_hash = ?, identity_history = ?, result_run_id = NULL,
+            workspace = NULL, updated_at = ? WHERE id = ? AND generation = ?
+            AND status NOT IN ('completed', 'superseded', 'cancelled')`).run(
+            action.status === 'running' ? 1 : 0,
+            stringify(context), nextAction.instruction, specHash,
+            stringify(actionIdentityHistory(action, nextAction.generation, specHash)),
+            now, action.id, action.generation,
+          );
+          if (Number(changed.changes) !== 1) throw new Error('Coordinator guidance lost the Action generation fence');
+          affectedActionIds.push(action.id);
+        }
+        if (affectedActionIds.length !== decision.guidance.length) {
+          throw new Error('Coordinator guidance target changed before the decision was applied');
+        }
+      } else if (decision.kind === 'replan') {
+        const mutation = result.mutation;
+        if (!mutation || mutation.basePlanRevision !== workItem.planRevision) {
+          throw new Error('Coordinator replan lost the plan revision fence');
+        }
+        for (const action of mutation.unfinished) {
+          if (action.status === 'running' && action.currentRunId) {
+            this.db.prepare(`UPDATE runs SET status = 'superseded', ended_at = ?, error = ?
+              WHERE id = ? AND status = 'running'`).run(
+              now, 'Superseded by WorkItem Coordinator replan', action.currentRunId,
+            );
+          }
+          const superseded = this.db.prepare(`UPDATE actions SET status = 'superseded', current_run_id = NULL,
+            lease_epoch = lease_epoch + ?, workspace = NULL, updated_at = ?
+            WHERE id = ? AND generation = ? AND status NOT IN ('completed', 'superseded', 'cancelled')`).run(
+            action.status === 'running' ? 1 : 0, now, action.id, action.generation,
+          );
+          if (Number(superseded.changes) !== 1) {
+            throw new Error('Coordinator replan lost an unfinished Action generation fence');
+          }
+        }
+        const patch = decision.contractPatch || null;
+        const title = patch?.title ?? workItem.title;
+        const goal = patch?.goal ?? workItem.goal;
+        const criteria = patch?.acceptanceCriteria ?? workItem.acceptanceCriteria;
+        const contractChanged = title !== workItem.title || goal !== workItem.goal
+          || JSON.stringify(criteria) !== JSON.stringify(workItem.acceptanceCriteria);
+        const changedPlan = this.db.prepare(`UPDATE work_items SET title = ?, goal = ?,
+          acceptance_criteria = ?, workflow_snapshot = ?, plan_revision = plan_revision + 1,
+          revision = revision + ?, updated_at = ? WHERE id = ? AND revision = ? AND plan_revision = ?
+          AND ledger_revision = ? AND coordinator_revision = ?`).run(
+          title, goal, stringify(criteria), stringify(mutation.workflowSnapshot),
+          contractChanged ? 1 : 0, now, workItem.id, workItem.revision, workItem.planRevision,
+          workItem.ledgerRevision, workItem.coordinatorRevision,
+        );
+        if (Number(changedPlan.changes) !== 1) throw new Error('Coordinator replan lost the WorkItem contract fence');
+        nextWorkItem = this.getWorkItem(workItem.id);
+        for (const entry of mutation.nextActions) {
+          const inserted = this.#insertAction(workItem.id, {
+            ...entry.nextAction,
+            status: 'ready',
+            contractRevision: nextWorkItem.revision,
+            replacesActionId: entry.prior?.id || null,
+          }, this.#nextSequence(workItem.id), now);
+          affectedActionIds.push(inserted.id);
+        }
+        this.db.prepare(`INSERT INTO plan_audits
+          (work_item_id, proposal_id, base_plan_revision, plan_revision, kind, action_id, run_id, data, created_at)
+          VALUES (?, ?, ?, ?, 'coordinator', ?, ?, ?, ?)`).run(
+          workItem.id, mutation.proposalId, workItem.planRevision, nextWorkItem.planRevision,
+          affectedActionIds[0], `coordinator:${turnId}`,
+          stringify({ reason: mutation.reason, actionCount: affectedActionIds.length }), now,
+        );
+      }
+
+      const graphState = this.#graphWorkItemState(workItem.id);
+      messages[assistantIndex] = {
+        ...messages[assistantIndex], text: result.reply, status: 'completed', updatedAt: now,
+        decision: {
+          kind: decision.kind,
+          reason: decision.reason,
+          changedContract: !!decision.contractPatch,
+          affectedActionIds,
+        },
+      };
+      const current = this.getWorkItem(workItem.id);
+      const coordinatorRevision = current.coordinatorRevision + 1;
+      const changed = this.db.prepare(`UPDATE work_items SET messages = ?, coordinator_revision = ?,
+        status = ?, current_action_id = ?, current_run_id = NULL, updated_at = ?
+        WHERE id = ? AND coordinator_revision = ? AND revision = ? AND plan_revision = ?
+        AND ledger_revision = ?`).run(
+        stringify(messages), coordinatorRevision, graphState.status, graphState.currentActionId,
+        now, workItem.id, current.coordinatorRevision, current.revision,
+        current.planRevision, current.ledgerRevision,
+      );
+      if (Number(changed.changes) !== 1) throw new Error('Coordinator completion lost its turn fence');
+      this.appendEvent(workItem.id, `coordinator.${decision.kind}`, {
+        turnId, reason: decision.reason, affectedActionIds,
+        previousPlanRevision: workItem.planRevision,
+        planRevision: this.getWorkItem(workItem.id).planRevision,
+      });
+      return this.getWorkItemDetail(workItem.id);
+    });
+  }
+
+  failCoordinatorTurn(turnId, error, expected = {}) {
+    return withTransaction(this.db, () => {
+      const workItem = this.getWorkItem(expected.workItemId);
+      if (!workItem || workItem.coordinatorRevision !== expected.coordinatorRevision) return null;
+      const messages = [...(workItem.messages || [])];
+      const index = messages.findIndex(message => (
+        message?.turnId === turnId && message.role === 'assistant' && message.status === 'thinking'
+      ));
+      if (index < 0) return null;
+      const now = this.now();
+      messages[index] = {
+        ...messages[index], status: 'failed', updatedAt: now,
+        error: String(error?.message || error || 'Coordinator failed').slice(0, 8_000),
+      };
+      const changed = this.db.prepare(`UPDATE work_items SET messages = ?, coordinator_revision = coordinator_revision + 1,
+        updated_at = ? WHERE id = ? AND coordinator_revision = ?`).run(
+        stringify(messages), now, workItem.id, workItem.coordinatorRevision,
+      );
+      if (Number(changed.changes) !== 1) return null;
+      this.appendEvent(workItem.id, 'coordinator.turn_failed', {
+        turnId, error: messages[index].error,
+      });
+      return this.getWorkItemDetail(workItem.id);
+    });
   }
 
   addWorkItemMessage(id, text, expectedRevision, updateActionInstruction) {

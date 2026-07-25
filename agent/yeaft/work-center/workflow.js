@@ -303,6 +303,7 @@ export function defaultWorkCenterSettings() {
     defaultWorkDir: '',
     globalInstructions: '',
     modelPolicy: { mode: 'inherit', model: null, effort: null },
+    coordinatorModelPolicy: { mode: 'inherit', model: null, effort: 'high' },
     actionModelPolicies: normalizeActionModelPolicies(),
     actionInstructions: normalizeActionInstructions(),
     workflows: [normalizeWorkflowDefinition({
@@ -341,6 +342,9 @@ export function normalizeWorkCenterSettings(value) {
     defaultWorkDir: typeof source.defaultWorkDir === 'string' ? source.defaultWorkDir.trim() : '',
     globalInstructions: normalizeGlobalInstructions(source.globalInstructions),
     modelPolicy: normalizeModelPolicy(source.modelPolicy || migratedModelPolicy),
+    coordinatorModelPolicy: normalizeModelPolicy(
+      source.coordinatorModelPolicy || { ...(source.modelPolicy || migratedModelPolicy), effort: 'high' },
+    ),
     actionModelPolicies: normalizeActionModelPolicies(source.actionModelPolicies, source.modelPolicy || migratedModelPolicy),
     actionInstructions: normalizeActionInstructions(source.actionInstructions || migratedInstructions),
     workflows,
@@ -675,8 +679,11 @@ function renderContext(context = []) {
 
 export function actionInstruction(stage, workItem, context = [], sessionContextBlock = renderSessionContextSnapshot(workItem?.sessionContext)) {
   const criteria = (workItem.acceptanceCriteria || []).map(item => `- ${item}`).join('\n') || '- No explicit criteria';
-  const workItemMessages = Array.isArray(workItem.messages) && workItem.messages.length > 0
-    ? `\n\nWorkItem-level user messages (apply to every unfinished Action):\n${workItem.messages.map(message => `- ${message.text}`).join('\n')}`
+  const userMessages = Array.isArray(workItem.messages)
+    ? workItem.messages.filter(message => message?.role !== 'assistant' && typeof message.text === 'string' && message.text)
+    : [];
+  const workItemMessages = userMessages.length > 0
+    ? `\n\nWorkItem-level user messages (apply to every unfinished Action):\n${userMessages.map(message => `- ${message.text}`).join('\n')}`
     : '';
   const common = `WorkItem: ${workItem.title}\nGoal: ${workItem.goal}\nAcceptance criteria:\n${criteria}${sessionContextBlock}${workItemMessages}${renderContext(context)}`;
   const policy = stage.instruction || defaultWorkCenterStageInstruction(stage.type);

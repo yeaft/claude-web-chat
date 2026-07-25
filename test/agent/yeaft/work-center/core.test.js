@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 import { WorkItemRunner } from '../../../../agent/yeaft/work-center/runner.js';
+import { WorkItemCoordinator } from '../../../../agent/yeaft/work-center/coordinator.js';
 import { resolvePlanningWorkflowSnapshot } from '../../../../agent/yeaft/work-center/workflow.js';
 import {
   projectActionRequestDetail,
@@ -405,6 +406,166 @@ describe('Work Center core', () => {
   });
 
 
+  it('lets the Coordinator replan unfinished work while preserving completed evidence and fencing late Runs', async () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    const item = controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'coordinator-replan', actions: [
+        { id: 'finished', type: 'research', objective: 'Establish the immutable fact', dependsOnActionIds: [], workspaceMode: 'read' },
+        { id: 'blocked', type: 'test', objective: 'Run an impossible global gate', dependsOnActionIds: ['finished'], workspaceMode: 'read' },
+        { id: 'deliver', type: 'deliver', objective: 'Deliver after the gate', dependsOnActionIds: ['blocked'], workspaceMode: 'shared' },
+      ] },
+    }));
+    const finished = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(finished.run.id, 'boot-a', finished.run.leaseEpoch, completed('research'));
+    const blocked = store.claimReadyAction('boot-a', 5_000);
+    const before = store.getWorkItemDetail(item.id);
+    let resolveCall;
+    const coordinator = new WorkItemCoordinator({
+      store,
+      runtimeProvider: async () => ({
+        config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+        adapter: { call: () => new Promise(resolve => { resolveCall = resolve; }) },
+      }),
+      policyProvider: async () => ({ modelPolicy: { mode: 'primary' }, actionModelPolicies: { triage: { effort: 'high' } } }),
+      registry: {
+        listVps: () => [{ id: 'omni', name: 'Omni', role: 'Requirement Lead', traits: ['triage'] }],
+      },
+    });
+    const turn = coordinator.message(item.id, {
+      text: 'Replace the impossible Host gate with code-level validation and keep delivery explicit.',
+      revision: before.revision,
+      planRevision: before.planRevision,
+      ledgerRevision: before.ledgerRevision,
+      coordinatorRevision: before.coordinatorRevision,
+    });
+    expect(turn.detail.messages.at(-1)).toMatchObject({ role: 'assistant', status: 'thinking' });
+    expect(turn.detail.messages.at(-1).turnId).toBeTruthy();
+    for (let index = 0; index < 10 && !resolveCall; index += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    expect(resolveCall).toBeTypeOf('function');
+    resolveCall({ text: JSON.stringify({
+      reply: 'I replaced the impossible gate with a bounded validation Action and kept delivery downstream.',
+      decision: {
+        kind: 'replan',
+        reason: 'The old intermediate test could not prove later review and delivery work.',
+        contractPatch: { acceptanceCriteria: ['Code-level validation passes', 'Delivery remains explicit'] },
+        guidance: [],
+        actions: [
+          {
+            id: 'validate-code', name: 'Validate code gates', type: 'test',
+            objective: 'Run code-level validation without claiming unavailable Host proof',
+            approach: 'Run focused and repository-wide checks and record residual Host limitations',
+            expectedOutcome: 'Code validation is complete and unavailable Host proof remains explicit',
+            capability: 'test', candidateVpIds: ['omni'], assignmentReason: 'Use the available validation lead',
+            dependsOnActionIds: ['finished'], workspaceMode: 'read',
+          },
+          {
+            id: 'deliver-updated', name: 'Deliver the bounded result', type: 'deliver',
+            objective: 'Deliver the verified bounded result',
+            approach: 'Recheck the final remote state and publish only verified claims',
+            expectedOutcome: 'The WorkItem is delivered with residual limitations recorded',
+            capability: 'deliver', candidateVpIds: ['omni'], assignmentReason: 'Use the available delivery lead',
+            dependsOnActionIds: ['validate-code'], workspaceMode: 'shared',
+          },
+        ],
+      },
+    }) });
+    const replanned = await turn.task;
+
+    expect(replanned).toMatchObject({
+      planRevision: before.planRevision + 1,
+      revision: before.revision + 1,
+      acceptanceCriteria: ['Code-level validation passes', 'Delivery remains explicit'],
+    });
+    expect(replanned.messages.at(-1)).toMatchObject({
+      role: 'assistant', status: 'completed', decision: { kind: 'replan', changedContract: true },
+    });
+    const coordinatorTurnId = replanned.messages.at(-1).turnId;
+    expect(projectWorkItemDetail(replanned)).toMatchObject({
+      coordinatorRevision: replanned.coordinatorRevision,
+      planRevision: replanned.planRevision,
+      messages: [
+        expect.objectContaining({ role: 'user', status: 'completed' }),
+        expect.objectContaining({
+          role: 'assistant', status: 'completed', decision: expect.objectContaining({ kind: 'replan' }),
+        }),
+      ],
+    });
+    expect(projectWorkCenterEvent({ type: 'coordinator.turn_completed', workItem: replanned }).workItem)
+      .toMatchObject({ coordinatorRevision: replanned.coordinatorRevision, planRevision: replanned.planRevision });
+    expect(replanned.actions.find(action => action.id === finished.action.id)).toMatchObject({ status: 'completed' });
+    expect(replanned.actions.find(action => action.id === blocked.action.id)).toMatchObject({ status: 'superseded' });
+    expect(replanned.runs.find(run => run.id === blocked.run.id)).toMatchObject({ status: 'superseded' });
+    expect(replanned.actions.filter(action => action.status === 'ready').map(action => action.stageId))
+      .toEqual(['validate-code', 'deliver-updated']);
+    expect(replanned.planConflicts).toHaveLength(0);
+    expect(store.db.prepare('SELECT kind, base_plan_revision, plan_revision FROM plan_audits WHERE proposal_id = ?')
+      .get(`coordinator:${coordinatorTurnId}`)).toEqual({
+        kind: 'coordinator',
+        base_plan_revision: before.planRevision,
+        plan_revision: before.planRevision + 1,
+      });
+    expect(() => controller.submit(blocked.run.id, 'boot-a', blocked.run.leaseEpoch, completed('test')))
+      .toThrow(/stale|cancelled|expired|finished/i);
+
+    const next = store.getWorkItemDetail(item.id);
+    let resolveLate;
+    coordinator.runtimeProvider = async () => ({
+      config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+      adapter: { call: () => new Promise(resolve => { resolveLate = resolve; }) },
+    });
+    const staleTurn = coordinator.message(item.id, {
+      text: 'What is happening now?',
+      revision: next.revision,
+      planRevision: next.planRevision,
+      ledgerRevision: next.ledgerRevision,
+      coordinatorRevision: next.coordinatorRevision,
+    });
+    const validation = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(validation.run.id, 'boot-a', validation.run.leaseEpoch, completed('test', {
+      acceptanceChecks: next.acceptanceCriteria.map(criterion => ({
+        criterion, status: 'deferred', evidence: 'Final delivery still remains',
+      })),
+    }));
+    for (let index = 0; index < 10 && !resolveLate; index += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    resolveLate({ text: JSON.stringify({
+      reply: 'The validation is still running.',
+      decision: { kind: 'answer', reason: 'Status question', contractPatch: null, guidance: [], actions: [] },
+    }) });
+    const fenced = await staleTurn.task;
+    expect(fenced.messages.at(-1)).toMatchObject({
+      role: 'assistant', status: 'failed', error: expect.stringMatching(/changed while the Coordinator/i),
+    });
+    expect(store.getWorkItem(item.id).ledgerRevision).toBe(next.ledgerRevision + 1);
+
+    const cancellable = controller.create(createInput());
+    const cancelBefore = store.getWorkItemDetail(cancellable.id);
+    let resolveCancelled;
+    coordinator.runtimeProvider = async () => ({
+      config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+      adapter: { call: () => new Promise(resolve => { resolveCancelled = resolve; }) },
+    });
+    const cancelledTurn = coordinator.message(cancellable.id, {
+      text: 'Please change this goal.',
+      revision: cancelBefore.revision,
+      planRevision: cancelBefore.planRevision,
+      ledgerRevision: cancelBefore.ledgerRevision,
+      coordinatorRevision: cancelBefore.coordinatorRevision,
+    });
+    controller.cancel(cancellable.id);
+    for (let index = 0; index < 10 && !resolveCancelled; index += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    resolveCancelled({ text: JSON.stringify({
+      reply: 'I changed the goal.',
+      decision: { kind: 'answer', reason: 'Goal request', contractPatch: null, guidance: [], actions: [] },
+    }) });
+    const cancelledResult = await cancelledTurn.task;
+    expect(cancelledResult.messages.at(-1)).toMatchObject({
+      role: 'assistant', status: 'failed', error: expect.stringMatching(/changed while the Coordinator/i),
+    });
+    expect(store.getWorkItem(cancellable.id)).toMatchObject({ status: 'cancelled' });
+  });
+
   it('claims a ready Action exactly once and fences stale terminal submissions', () => {
     controller.create(createInput());
     const first = store.claimReadyAction('boot-a', 5_000);
@@ -414,9 +575,12 @@ describe('Work Center core', () => {
   });
 
 
-  it.each(['test', 'review', 'deliver'])(
-    'requires every acceptance check to pass before %s can complete',
-    (type) => {
+  it.each([
+    ['test', 'done'],
+    ['deliver', 'needs_attention'],
+  ])(
+    'applies the WorkItem-wide acceptance gate at the correct %s boundary',
+    (type, expectedStatus) => {
       const targetStage = {
         id: type,
         name: type,
@@ -426,11 +590,7 @@ describe('Work Center core', () => {
         modelPolicy: { mode: 'inherit' },
         maxAttempts: 2,
       };
-      const stages = type === 'review'
-        ? [{ ...targetStage, id: 'implement', type: 'implement' }, {
-            ...targetStage, changesRequestedStageId: 'implement',
-          }]
-        : [targetStage];
+      const stages = [targetStage];
       const workflowSnapshot = {
         version: 1,
         id: `verify-${type}`,
@@ -438,12 +598,6 @@ describe('Work Center core', () => {
         stages,
       };
       controller.create(createInput({ workflowTemplate: workflowSnapshot.id, workflowSnapshot }));
-      if (type === 'review') {
-        const implement = store.claimReadyAction('boot-a', 5_000);
-        controller.submit(
-          implement.run.id, 'boot-a', implement.run.leaseEpoch, completed('implement'),
-        );
-      }
       const claim = store.claimReadyAction('boot-a', 5_000);
       const result = completed(type, {
         acceptanceChecks: createInput().acceptanceCriteria.map(criterion => ({
@@ -452,8 +606,12 @@ describe('Work Center core', () => {
       });
       const detail = controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, result);
 
-      expect(detail.status).toBe('needs_attention');
-      expect(store.getRun(claim.run.id).error).toMatch(/requires every acceptance check to pass/i);
+      expect(detail.status).toBe(expectedStatus);
+      if (expectedStatus === 'needs_attention') {
+        expect(store.getRun(claim.run.id).error).toMatch(/requires every acceptance check to pass/i);
+      } else {
+        expect(store.getRun(claim.run.id)).toMatchObject({ status: 'completed', error: null });
+      }
     },
   );
 

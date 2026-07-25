@@ -51,7 +51,10 @@ describe('Mainline projection', () => {
     };
     const input = detail({
       actions: [actionA, actionB],
-      messages: [{ id: 'message-1', text: 'Apply this to every unfinished Action', createdAt: 10 }],
+      messages: [
+        { id: 'message-1', role: 'user', text: 'Apply this to every unfinished Action', createdAt: 10 },
+        { id: 'message-2', role: 'assistant', text: 'Coordinator internal reply', createdAt: 11 },
+      ],
       events: [
         {
           id: 2, type: 'action.input_added', actionId: actionA.id, createdAt: 20,
@@ -71,6 +74,7 @@ describe('Mainline projection', () => {
       expect.objectContaining({ messageId: 'message-1', text: 'Apply this to every unfinished Action' }),
     ]);
     expect(snapshotB.userContext.workItemMessages).toEqual(snapshotA.userContext.workItemMessages);
+    expect(JSON.stringify(snapshotA)).not.toContain('Coordinator internal reply');
     expect(snapshotA.userContext.guidance).toEqual([
       expect.objectContaining({ actionId: actionA.id, text: 'Only Action A may use this' }),
     ]);

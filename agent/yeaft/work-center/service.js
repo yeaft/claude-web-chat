@@ -105,6 +105,7 @@ export class WorkCenterService {
     this.controller = options.controller || new WorkflowController(this.store, {
       listAvailableVpIds: options.listAvailableVpIds,
     });
+    this.coordinator = options.coordinator || null;
     this.onEvent = typeof options.onEvent === 'function' ? options.onEvent : () => {};
     this.watcher = new WorkItemWatcher({
       store: this.store,
@@ -271,14 +272,22 @@ export class WorkCenterService {
         return { id, deleted: true, cleanupWarning };
       }
       case 'work_item_message': {
+        if (!this.coordinator) throw new Error('Work Center Coordinator is unavailable');
         const id = requiredString(payload.id, 'id');
-        const detail = this.controller.message(id, {
+        const turn = this.coordinator.message(id, {
           text: typeof payload.text === 'string' ? payload.text : '',
           revision: payload.revision,
+          planRevision: payload.planRevision,
+          ledgerRevision: payload.ledgerRevision,
+          coordinatorRevision: payload.coordinatorRevision,
+        }, {
+          onUpdate: (type, workItem) => {
+            this.watcher.abortInvalidWorkItemRuns(id);
+            this.#emit({ type, workItem });
+          },
         });
-        this.watcher.notifyWorkItemInput(id);
-        this.#emit({ type: 'work_item.message_added', workItem: detail });
-        return detail;
+        turn.task.catch(() => {});
+        return { accepted: true, turnId: turn.detail.messages?.at(-1)?.turnId || null };
       }
       case 'retry_action': {
         const id = requiredString(payload.id, 'id');
@@ -429,6 +438,7 @@ export class WorkCenterService {
   }
 
   async shutdown() {
+    await this.coordinator?.shutdown?.();
     await this.watcher.stop();
     try { await this.watcher.runner?.shutdown?.(); } catch {}
     try { await this.watcher.runner?.trace?.close?.(); } catch {}

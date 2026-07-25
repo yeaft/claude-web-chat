@@ -30,7 +30,8 @@ describe('Work Center store migration', () => {
         status TEXT NOT NULL, current_action_id TEXT, current_run_id TEXT, work_dir TEXT NOT NULL DEFAULT '',
         workspace_key TEXT NOT NULL DEFAULT '', reuse_memory INTEGER NOT NULL DEFAULT 1, origin TEXT,
         linked_session_ids TEXT NOT NULL DEFAULT '[]', session_context TEXT NOT NULL DEFAULT '[]',
-        attachments TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        messages TEXT NOT NULL DEFAULT '[]', attachments TEXT NOT NULL DEFAULT '[]',
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
       );
       CREATE TABLE actions (
         id TEXT PRIMARY KEY, work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
@@ -60,8 +61,9 @@ describe('Work Center store migration', () => {
       );
     `);
     db.prepare(`INSERT INTO work_items VALUES
-      (?, 1, 1, 0, ?, ?, '[]', 'software-change', ?, 'ready', ?, NULL, '', '', 1, NULL, '[]', '[]', '[]', 1, 1)`).run(
+      (?, 1, 1, 0, ?, ?, '[]', 'software-change', ?, 'ready', ?, NULL, '', '', 1, NULL, '[]', '[]', ?, '[]', 1, 1)`).run(
       'graph-item', 'Legacy graph', 'Remain runnable', JSON.stringify({ executionMode: 'graph' }), 'graph-action',
+      JSON.stringify([{ id: 'legacy-message', text: 'Preserve this direction', createdAt: 1 }]),
     );
     db.prepare(`INSERT INTO actions VALUES
       (?, ?, 1, 'triage', 'omni', 'triage', NULL, NULL, '[]', 'shared', NULL, NULL, '', NULL, '[]', 1,
@@ -69,7 +71,17 @@ describe('Work Center store migration', () => {
     db.close();
 
     store = new WorkItemStore(dbPath);
-    expect(store.getWorkItem('graph-item')).toMatchObject({ executionSchemaVersion: 1, lifecycle: 'active' });
+    expect(store.getWorkItem('graph-item')).toMatchObject({
+      executionSchemaVersion: 1,
+      coordinatorRevision: 0,
+      messages: [expect.objectContaining({
+        id: 'legacy-message', turnId: 'legacy-message', role: 'legacy_instruction', status: 'completed',
+        text: 'Preserve this direction',
+      })],
+      lifecycle: 'active',
+    });
+    expect(store.db.prepare('PRAGMA table_info(work_items)').all().map(column => column.name))
+      .toContain('coordinator_revision');
     const claim = store.claimReadyAction('legacy-boot', 5_000);
     expect(claim).toMatchObject({ workItem: { id: 'graph-item', executionSchemaVersion: 1 }, action: { id: 'graph-action' } });
     expect(store.isActiveRun(claim.run.id, 'legacy-boot', claim.run.leaseEpoch)).toBe(true);
