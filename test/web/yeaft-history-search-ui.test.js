@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { revealOutlineResult } from '../../web/utils/message-search-navigation.js';
+import { revealOutlineResult, shouldDismissHistorySearch } from '../../web/utils/message-search-navigation.js';
+import { sortHistoryResultsNewest } from '../../web/components/YeaftConversationOutline.js';
 
 const read = path => readFileSync(new URL(`../../web/${path}`, import.meta.url), 'utf8');
 const page = read('components/YeaftPage.js');
@@ -11,9 +12,12 @@ const virtual = read('components/VirtualTranscript.js');
 const navigation = read('utils/message-search-navigation.js');
 const store = read('stores/chat.js');
 const css = read('styles/yeaft.css');
+const modalCss = read('styles/chat-modals.css');
 const agent = read('../agent/index.js');
 const relay = read('../server/handlers/client-conversation.js');
 const agentHandler = read('stores/helpers/handlers/agentHandler.js');
+const en = read('i18n/en.js');
+const zhCN = read('i18n/zh-CN.js');
 
 const indexOf = (haystack, needle) => haystack.indexOf(needle);
 
@@ -30,7 +34,10 @@ describe('Yeaft conversation outline UI', () => {
     expect(store).toContain("type: 'yeaft_load_history_outline'");
     expect(store).toContain('limit: 50');
     expect(store).toContain('if (!append && previous.loaded && !force) return true');
-    expect(page).toContain('setTimeout(() => store.searchYeaftHistory(query), 220)');
+    expect(page).toContain('historySearchQuery.value = query');
+    expect(page).toContain('store.searchYeaftHistory(historySearchQuery.value, { senderKey: store.yeaftHistorySearchState.senderKey })');
+    expect(page).toContain('resetHistorySearchState(senderKey)');
+    expect(page).toContain('resetHistorySearchState(rememberedHistorySender())');
     expect(store).toContain("type: 'yeaft_search_history'");
   });
 
@@ -42,14 +49,24 @@ describe('Yeaft conversation outline UI', () => {
     expect(store).not.toContain("localStorage.setItem('yeaft-history-outline");
   });
 
-  it('renders a fixed scrollable outline with count, search and automatic older-page loading', () => {
+  it('renders fixed scrollable message history with count, search and bottom paging', () => {
     expect(css).toMatch(/\.yeaft-conversation-outline\s*\{[\s\S]*?position: absolute;[\s\S]*?height: min\(/);
     expect(css).toMatch(/\.yeaft-conversation-outline-list\s*\{[\s\S]*?overflow-y: auto;/);
     expect(panel).toContain("$t('yeaft.outline.title')");
+    expect(en).toContain("'yeaft.outline.title': 'Message history'");
+    expect(zhCN).toContain("'yeaft.outline.title': '历史消息'");
     expect(panel).toContain('outlineState.totalCount');
-    expect(panel).toContain("if ((listRef.value?.scrollTop || 0) <= 40) loadOlder()");
+    expect(panel).toContain('list.scrollHeight - list.scrollTop - list.clientHeight <= 40');
+    expect(indexOf(panel, 'v-for="(result, index) in visibleResults"')).toBeLessThan(indexOf(panel, 'v-if="!isSearching && outlineState.hasMore"'));
     expect(panel).toContain('restoreOlderScroll');
     expect(panel).toContain("$t('yeaft.outline.placeholder')");
+    expect(css).toMatch(/\.yeaft-conversation-outline-toolbar\s*\{[\s\S]*?display: flex;[\s\S]*?align-items: center;/);
+    expect(css).toMatch(/\.yeaft-conversation-outline-sender\s*\{[\s\S]*?min-width: 112px;[\s\S]*?max-width: 148px;/);
+    expect(panel).toContain(':menu-min-width="180"');
+    expect(css).toMatch(/\.yeaft-conversation-outline-sender-menu\s*\{[\s\S]*?font-size: 12px;/);
+    expect(modalCss).toContain('select.modern-select {');
+    expect(modalCss).toContain('select.modern-select:focus {');
+    expect(modalCss).not.toMatch(/(^|\n)\.modern-select\s*\{/);
   });
 
   it('negotiates outline and search support and fails closed for old Agents', () => {
@@ -71,14 +88,30 @@ describe('Yeaft conversation outline UI', () => {
     expect(panel).toContain("event.key === 'Escape'");
   });
 
+  it('dismisses the history dropdown only when a click lands outside the panel, teleported sender menu and trigger', () => {
+    const targetIn = selector => ({ closest: vi.fn().mockReturnValue(selector ? {} : null) });
+
+    expect(shouldDismissHistorySearch(targetIn('.yeaft-conversation-outline'))).toBe(false);
+    expect(shouldDismissHistorySearch(targetIn('.yeaft-conversation-outline-sender-menu'))).toBe(false);
+    expect(shouldDismissHistorySearch(targetIn('.yeaft-search-btn'))).toBe(false);
+    expect(shouldDismissHistorySearch(targetIn(''))).toBe(true);
+    expect(shouldDismissHistorySearch(null)).toBe(true);
+    expect(page).toContain("document.addEventListener('click', closeHistorySearchOutside)");
+    expect(page).toContain("document.removeEventListener('click', closeHistorySearchOutside)");
+  });
+
   it('uses the existing bounded history window to reveal and flash unloaded messages', () => {
-    expect(page).toContain('loadWindow: candidate => store.loadYeaftHistoryWindow(candidate)');
+    expect(page).toContain('revealWindow: candidate => store.revealYeaftHistoryResult(candidate)');
+    expect(page).toContain("store.hasCapability('session_history_window_prefetch')");
+    expect(panel).toContain("emit('preview', result)");
+    expect(store).toContain('_yeaftHistoryWindowPendingByKey');
+    expect(store).toContain('if (pendingByKey[pendingKey]?.promise) return pendingByKey[pendingKey].promise');
     expect(store).toContain('buildYeaftMessageTurnSpans(scoped)');
     expect(list).toContain('navigateToPersistedMessage({');
     expect(list).toContain("virtualTranscriptRef.value?.scrollToKey?.(blockId, { align: 'center' })");
-    expect(store).toContain('this.revealYeaftMessage(pending.sessionId, pending.messageId, conversationId)');
+    expect(store).toContain('this.isYeaftMessageCached(pending.sessionId, pending.messageId, conversationId)');
     expect(store).not.toContain('containsAnchor || revealedInStore');
-    expect(virtual).toContain('expose({ scrollToKey, scrollToIndex })');
+    expect(virtual).toContain('expose({ scrollToKey, scrollToIndex, cancelPendingBottomFollow })');
     expect(css).toContain('@keyframes yeaft-history-search-flash');
   });
 
@@ -88,7 +121,7 @@ describe('Yeaft conversation outline UI', () => {
 
     await expect(revealOutlineResult({
       result: { messageId: 'm42' },
-      loadWindow: vi.fn().mockResolvedValue(true),
+      revealWindow: vi.fn().mockResolvedValue(true),
       nextTick: vi.fn().mockResolvedValue(undefined),
       revealMessage,
       isMobile: true,
@@ -103,14 +136,14 @@ describe('Yeaft conversation outline UI', () => {
     const closeOutline = vi.fn();
     await expect(revealOutlineResult({
       result: { messageId: 'm42' },
-      loadWindow: vi.fn().mockResolvedValue(true),
+      revealWindow: vi.fn().mockResolvedValue(true),
       revealMessage: vi.fn().mockResolvedValue(false),
       isMobile: true,
       closeOutline,
     })).resolves.toBe(false);
     await expect(revealOutlineResult({
       result: { messageId: 'm42' },
-      loadWindow: vi.fn().mockResolvedValue(true),
+      revealWindow: vi.fn().mockResolvedValue(true),
       revealMessage: vi.fn().mockResolvedValue(true),
       isMobile: false,
       closeOutline,
@@ -118,7 +151,58 @@ describe('Yeaft conversation outline UI', () => {
     expect(closeOutline).not.toHaveBeenCalled();
   });
 
-  it('keeps search results ordered independently from outline rows', () => {
-    expect(indexOf(panel, 'isSearching.value ? props.searchState.results : props.outlineState.results')).toBeGreaterThan(-1);
+  it('orders mixed history rows with one transitive newest-first key', () => {
+    const rows = [
+      { messageId: 'm1', seq: 1, timestamp: '2026-07-24T10:00:00Z' },
+      { messageId: 'm3', seq: 3, timestamp: '2026-07-23T10:00:00Z' },
+      { messageId: 'm2', seq: 2 },
+    ];
+    const permutations = [
+      rows,
+      [rows[0], rows[2], rows[1]],
+      [rows[1], rows[0], rows[2]],
+      [rows[1], rows[2], rows[0]],
+      [rows[2], rows[0], rows[1]],
+      [rows[2], rows[1], rows[0]],
+    ];
+
+    for (const input of permutations) {
+      expect(sortHistoryResultsNewest(input).map(row => row.messageId)).toEqual(['m1', 'm3', 'm2']);
+    }
+    expect(panel).toContain('sortHistoryResultsNewest(');
+    expect(panel).toContain('isSearching.value ? props.searchState.results : props.outlineState.results');
+  });
+
+  it('uses deterministic fallbacks for missing, invalid and tied timestamps', () => {
+    const rows = [
+      { messageId: 'm4', seq: 4, timestamp: 'invalid' },
+      { messageId: 'm5', seq: 5 },
+      { messageId: 'm7', seq: 7, timestamp: '2026-07-24T10:00:00Z' },
+      { messageId: 'm6', seq: 6, timestamp: '2026-07-24T10:00:00Z' },
+      { messageId: 'm8', seq: 8, timestamp: '2026-07-23T10:00:00Z' },
+    ];
+
+    expect(sortHistoryResultsNewest(rows).map(row => row.messageId)).toEqual(['m7', 'm6', 'm8', 'm5', 'm4']);
+    expect(sortHistoryResultsNewest([
+      { messageId: 'm9', seq: 9 },
+      { messageId: 'm10', seq: 9 },
+    ]).map(row => row.messageId)).toEqual(['m9', 'm10']);
+  });
+
+  it('keeps existing rows stable when an older page is appended', () => {
+    const recent = [
+      { messageId: 'm12', seq: 12, timestamp: '2026-07-24T12:00:00Z' },
+      { messageId: 'm11', seq: 11, timestamp: '2026-07-24T11:00:00Z' },
+    ];
+    const before = sortHistoryResultsNewest(recent).map(row => row.messageId);
+    const after = sortHistoryResultsNewest([
+      ...recent,
+      { messageId: 'm10', seq: 10, timestamp: '2026-07-24T10:00:00Z' },
+      { messageId: 'm9', seq: 9, timestamp: 'invalid' },
+    ]).map(row => row.messageId);
+
+    expect(before).toEqual(['m12', 'm11']);
+    expect(after).toEqual(['m12', 'm11', 'm10', 'm9']);
+    expect(after.slice(0, before.length)).toEqual(before);
   });
 });

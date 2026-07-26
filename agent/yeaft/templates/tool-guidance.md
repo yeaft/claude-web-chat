@@ -61,6 +61,14 @@ How to use it:
 - `content` is the imperative form (e.g. "Run tests"); `activeForm` is
   the present-continuous form shown during execution (e.g. "Running
   tests").
+- Avoid an intermediate `TodoWrite`-only model round when the next work tool
+  and its arguments are already known. Emit `TodoWrite` and those independent
+  work tool calls in the same assistant response.
+- This is batching, not speculative progress: mark work completed only after
+  evidence, and keep calls separate when a pending result can change the next
+  action, its arguments, or its safety. A standalone `TodoWrite` remains valid
+  when no work tool should follow, including final completion or a blocking
+  user question.
 
 Do **not** use TodoWrite for single trivial edits, single command runs,
 or pure conversational/question turns — the checklist becomes noise.
@@ -125,6 +133,11 @@ or pure conversational/question turns — the checklist becomes noise.
 - 任何时刻最多只能有 **一个** `"in_progress"`。
 - `content` 是命令式（如 "Run tests"）；`activeForm` 是执行中展示的进行
   时（如 "Running tests"）。
+- 如果下一项工作所用的工具和参数已经确定，不要让中间状态的 `TodoWrite` 单独占一个
+  模型回合；应在同一个 assistant response 中发出 `TodoWrite` 和这些彼此独立的工作工具调用。
+- 这是合批，不是提前宣告进度：只有已有证据时才能把工作标记为完成。如果待返回结果可能改变
+  下一动作、参数或安全性，就必须分开调用。没有工作工具应继续执行时（包括记录最终完成态或
+  询问阻塞问题），`TodoWrite` 仍可单独调用。
 
 **不要**为单条琐碎修改、单次命令执行、纯对话/问题使用 TodoWrite——清单
 反而成了噪音。

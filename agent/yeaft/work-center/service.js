@@ -105,6 +105,7 @@ export class WorkCenterService {
     this.controller = options.controller || new WorkflowController(this.store, {
       listAvailableVpIds: options.listAvailableVpIds,
     });
+    this.coordinator = options.coordinator || null;
     this.onEvent = typeof options.onEvent === 'function' ? options.onEvent : () => {};
     this.watcher = new WorkItemWatcher({
       store: this.store,
@@ -117,6 +118,20 @@ export class WorkCenterService {
       concurrencyProvider: options.watcherOptions?.concurrencyProvider,
     });
     this.store.recoverInterruptedRuns(this.ownerBootId);
+  }
+
+  projectBrowserDetail(detail) {
+    if (!detail) return null;
+    const actions = Array.isArray(detail.actions) ? detail.actions : [];
+    const actionId = detail.currentActionId && actions.some(action => action?.id === detail.currentActionId)
+      ? detail.currentActionId
+      : [...actions].sort((left, right) => (
+          Number(right?.sequence || 0) - Number(left?.sequence || 0)
+            || String(right?.id || '').localeCompare(String(left?.id || ''))
+        ))[0]?.id || null;
+    return projectWorkItemDetail(detail, {
+      bodyActionEvents: actionId ? this.store.listActionEvents(actionId) : detail.events,
+    });
   }
 
   async handle(op, payload = {}, requestContext = {}) {
@@ -133,6 +148,15 @@ export class WorkCenterService {
       case 'get_action_messages': {
         const detail = this.#requiredItem(payload.id);
         const action = this.#requiredAction(detail, payload.actionId);
+        const expectedGeneration = payload.generation == null
+          ? Number(action.generation)
+          : Number(payload.generation);
+        if (!Number.isInteger(expectedGeneration) || expectedGeneration < 1) {
+          throw new Error('generation must be a positive integer');
+        }
+        if (Number(action.generation) !== expectedGeneration) {
+          throw new Error('Action generation changed before messages were loaded');
+        }
         return projectActionMessagePage(action, detail.runs, this.store.listActionEvents(action.id), {
           cursor: payload.cursor,
           limit: payload.limit,
@@ -247,15 +271,37 @@ export class WorkCenterService {
         this.#emit({ type: 'work_item.cancelled', workItem: detail });
         return detail;
       }
-      case 'work_item_message': {
+      case 'delete': {
         const id = requiredString(payload.id, 'id');
-        const detail = this.controller.message(id, {
+        const deleted = this.store.deleteWorkItemAtomic(id, Number(payload.revision));
+        if (!deleted) throw new Error(`WorkItem not found: ${id}`);
+        for (const action of deleted.actions || []) {
+          try { this.watcher.runner?.cleanup?.(action); } catch {}
+        }
+        let cleanupWarning = null;
+        try { removeWorkItemAttachments(this.attachmentRoot, id); } catch {
+          cleanupWarning = 'WorkItem data was deleted, but attachment cleanup needs maintenance';
+        }
+        this.#emit({ type: 'work_item.deleted', workItem: { id, revision: deleted.revision } });
+        return { id, deleted: true, cleanupWarning };
+      }
+      case 'work_item_message': {
+        if (!this.coordinator) throw new Error('Work Center Coordinator is unavailable');
+        const id = requiredString(payload.id, 'id');
+        const turn = this.coordinator.message(id, {
           text: typeof payload.text === 'string' ? payload.text : '',
           revision: payload.revision,
+          planRevision: payload.planRevision,
+          ledgerRevision: payload.ledgerRevision,
+          coordinatorRevision: payload.coordinatorRevision,
+        }, {
+          onUpdate: (type, workItem) => {
+            this.watcher.abortInvalidWorkItemRuns(id);
+            this.#emit({ type, workItem });
+          },
         });
-        this.watcher.notifyWorkItemInput(id);
-        this.#emit({ type: 'work_item.message_added', workItem: detail });
-        return detail;
+        turn.task.catch(() => {});
+        return { accepted: true, turnId: turn.detail.messages?.at(-1)?.turnId || null };
       }
       case 'retry_action': {
         const id = requiredString(payload.id, 'id');
@@ -273,6 +319,10 @@ export class WorkCenterService {
       }
       case 'action_input': {
         const id = requiredString(payload.id, 'id');
+        const generation = Number(payload.generation);
+        if (!Number.isInteger(generation) || generation < 1) {
+          throw new Error('generation must be a positive integer');
+        }
         const workItem = this.#requiredItem(id);
         let addedAttachments = [];
         let detail;
@@ -285,7 +335,7 @@ export class WorkCenterService {
             text: typeof payload.text === 'string' ? payload.text : '',
             actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
             revision: payload.revision,
-            generation: payload.generation,
+            generation,
             addedAttachmentCount: addedAttachments.length,
             addedAttachments,
             attachments: [...(workItem.attachments || []), ...addedAttachments],
@@ -406,6 +456,7 @@ export class WorkCenterService {
   }
 
   async shutdown() {
+    await this.coordinator?.shutdown?.();
     await this.watcher.stop();
     try { await this.watcher.runner?.shutdown?.(); } catch {}
     try { await this.watcher.runner?.trace?.close?.(); } catch {}

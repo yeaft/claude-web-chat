@@ -18,11 +18,14 @@ import {
   isWorkItemDetailResponseStale,
   isWorkItemDetailStale,
   mergeActionMessages,
-
+  normalizeWorkCenterActionGeneration,
+  workCenterActionMessageKey,
   mergeWorkItemSummary,
   workItemDetailNeedsRefresh,
+  workItemDetailRefreshIdentity,
 } from './helpers/work-center.js';
 import { createPerfTraceId, recordPerfTrace, measureNextPaint } from './helpers/perfTrace.js';
+import { normalizeSessionMessageQuote } from '../utils/session-message-quote.js';
 import { yeaftHistoryIdentityKey } from './helpers/yeaft-history-identity.js';
 import {
   getDefaultYeaftVisibleTurns,
@@ -503,6 +506,7 @@ export const useChatStore = defineStore('chat', {
       agentId: null,
       sessionId: null,
       query: '',
+      senderKey: '',
       loading: false,
       results: [],
       hasMore: false,
@@ -515,7 +519,7 @@ export const useChatStore = defineStore('chat', {
     yeaftHistoryOutlineBySession: {},
     _yeaftHistoryOutlineTimeouts: {},
     _yeaftHistorySearchTimeout: null,
-    _yeaftHistoryWindowPending: null,
+    _yeaftHistoryWindowPendingByKey: {},
     // One-shot marker: set true by the websocket onclose handler on a real
     // disconnect, consumed by handleAgentList to run a single Yeaft history
     // catch-up after the socket comes back. Without this gate the catch-up
@@ -642,6 +646,7 @@ export const useChatStore = defineStore('chat', {
     _workCenterListMoreRequestsByAgent: {},
     _workCenterListEventGenerationByAgent: {},
     _workCenterListEventsByAgent: {},
+    _workCenterDeletedIdsByAgent: {},
     workCenterDetailByAgent: {},
     workCenterActionMessages: {},
     workCenterActionMessagesLoading: {},
@@ -665,6 +670,7 @@ export const useChatStore = defineStore('chat', {
     _workCenterDetailEventRefreshByAgent: {},
     _workCenterActionInputGenerationByAgent: {},
     _workCenterActionMessageRequests: {},
+    _workCenterActionMessageGenerationByKey: {},
     _workCenterActionRequestsGeneration: {},
     _workCenterActionRequestDetailsGeneration: {},
 
@@ -1339,6 +1345,12 @@ export const useChatStore = defineStore('chat', {
       return !keyword || String(item.title || '').toLowerCase().includes(keyword)
         || String(item.goal || '').toLowerCase().includes(keyword);
     },
+    applyWorkItemBoardSummary(items, summary, filters = {}) {
+      const merged = applyWorkItemSummary(items, summary);
+      const accepted = merged.find(item => item?.id === summary?.id) || null;
+      if (!accepted || this.workItemMatchesBoardQuery(accepted, filters)) return merged;
+      return merged.filter(item => item.id !== accepted.id);
+    },
     async listWorkItems(agentId = null, filters = {}) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       if (!target) return [];
@@ -1363,7 +1375,8 @@ export const useChatStore = defineStore('chat', {
       this.workCenterErrorByAgent = { ...this.workCenterErrorByAgent, [target]: null };
       try {
         const data = await this.workCenterRequest('list', normalizedFilters, target);
-        const items = Array.isArray(data?.items) ? data.items : [];
+        const items = (Array.isArray(data?.items) ? data.items : [])
+          .filter(item => !this.workItemDeleted(target, item?.id));
         const requestStillCurrent = this._workCenterListGenerationByAgent[target] === generation
           && this._workCenterListQueryByAgent[target] === queryKey
           && this.workCenterAgentId === target;
@@ -1372,9 +1385,9 @@ export const useChatStore = defineStore('chat', {
           const events = this._workCenterListEventsByAgent[target] || {};
           for (const entry of Object.values(events)) {
             if (Number(entry?.generation) <= eventGeneration || entry?.queryKey !== queryKey) continue;
-            mergedItems = entry.matches
-              ? applyWorkItemSummary(mergedItems, entry.summary)
-              : mergedItems.filter(item => item.id !== entry.summary?.id);
+            mergedItems = this.applyWorkItemBoardSummary(
+              mergedItems, entry.summary, normalizedFilters,
+            );
           }
           this.workCenterItemsByAgent = { ...this.workCenterItemsByAgent, [target]: mergedItems };
           this.workCenterListPageByAgent = {
@@ -1425,6 +1438,7 @@ export const useChatStore = defineStore('chat', {
               || this.workCenterAgentId !== target) return [];
           let merged = [...(this.workCenterItemsByAgent[target] || [])];
           for (const item of Array.isArray(data?.items) ? data.items : []) {
+            if (this.workItemDeleted(target, item?.id)) continue;
             const index = merged.findIndex(current => current.id === item.id);
             if (index < 0) merged.push(item);
             else merged[index] = applyWorkItemSummary([merged[index]], item)[0];
@@ -1432,9 +1446,7 @@ export const useChatStore = defineStore('chat', {
           const events = this._workCenterListEventsByAgent[target] || {};
           for (const entry of Object.values(events)) {
             if (Number(entry?.generation) <= eventGeneration || entry?.queryKey !== queryKey) continue;
-            merged = entry.matches
-              ? applyWorkItemSummary(merged, entry.summary)
-              : merged.filter(item => item.id !== entry.summary?.id);
+            merged = this.applyWorkItemBoardSummary(merged, entry.summary, filters);
           }
           this.workCenterItemsByAgent = { ...this.workCenterItemsByAgent, [target]: merged };
           this.workCenterListPageByAgent = {
@@ -1459,6 +1471,37 @@ export const useChatStore = defineStore('chat', {
       };
       return request;
     },
+    workItemDeleted(agentId, id) {
+      return !!this._workCenterDeletedIdsByAgent[agentId]?.[id];
+    },
+    removeWorkItemState(agentId, id) {
+      this._workCenterDeletedIdsByAgent = {
+        ...this._workCenterDeletedIdsByAgent,
+        [agentId]: { ...(this._workCenterDeletedIdsByAgent[agentId] || {}), [id]: true },
+      };
+      this.beginWorkCenterDetailWrite(agentId);
+      this.workCenterItemsByAgent = {
+        ...this.workCenterItemsByAgent,
+        [agentId]: (this.workCenterItemsByAgent[agentId] || []).filter(item => item.id !== id),
+      };
+      if (this.workCenterDetailByAgent[agentId]?.id === id) {
+        this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [agentId]: null };
+      }
+      const prefix = `${agentId}:${id}:`;
+      for (const field of [
+        'workCenterActionMessages', 'workCenterActionMessagesLoading', 'workCenterActionMessagesError',
+        'workCenterActionRequests', 'workCenterActionRequestsLoading', 'workCenterActionRequestsError',
+        'workCenterActionRequestDetails', 'workCenterActionRequestDetailsLoading', 'workCenterActionRequestDetailsError',
+        '_workCenterActionMessageRequests', '_workCenterActionMessageGenerationByKey',
+        '_workCenterActionRequestsGeneration', '_workCenterActionRequestDetailsGeneration',
+      ]) {
+        const next = {};
+        for (const [key, value] of Object.entries(this[field] || {})) {
+          if (!key.startsWith(prefix)) next[key] = value;
+        }
+        this[field] = next;
+      }
+    },
     beginWorkCenterDetailWrite(agentId) {
       const generation = Number(this._workCenterDetailRequestGenerationByAgent[agentId] || 0) + 1;
       this._workCenterDetailRequestGenerationByAgent = {
@@ -1468,6 +1511,7 @@ export const useChatStore = defineStore('chat', {
       return generation;
     },
     commitWorkCenterDetail(agentId, detail, generation) {
+      if (detail?.id && this.workItemDeleted(agentId, detail.id)) return false;
       if (generation != null
           && Number(this._workCenterDetailRequestGenerationByAgent[agentId] || 0) !== generation) return false;
       const current = this.workCenterDetailByAgent[agentId];
@@ -1482,9 +1526,35 @@ export const useChatStore = defineStore('chat', {
       this.commitWorkCenterDetail(target, detail, generation);
       return this.workCenterDetailByAgent[target] || detail;
     },
-    async loadWorkItemActionMessages(id, actionId, cursor, agentId = null) {
+    invalidateWorkItemActionMessages(agentId, id, actionId, actionGeneration) {
+      if (!agentId || !id || !actionId) return null;
+      const expectedGeneration = normalizeWorkCenterActionGeneration(actionGeneration);
+      const key = workCenterActionMessageKey(agentId, id, actionId, expectedGeneration);
+      this._workCenterActionMessageGenerationByKey = {
+        ...this._workCenterActionMessageGenerationByKey,
+        [key]: Number(this._workCenterActionMessageGenerationByKey[key] || 0) + 1,
+      };
+      for (const field of [
+        'workCenterActionMessages',
+        'workCenterActionMessagesLoading',
+        'workCenterActionMessagesError',
+      ]) {
+        const next = { ...this[field] };
+        delete next[key];
+        this[field] = next;
+      }
+      const pending = { ...this._workCenterActionMessageRequests };
+      for (const requestKey of Object.keys(pending)) {
+        if (requestKey.startsWith(`${key}:`)) delete pending[requestKey];
+      }
+      this._workCenterActionMessageRequests = pending;
+      return key;
+    },
+    async loadWorkItemActionMessages(id, actionId, actionGeneration, cursor, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const key = `${target}:${id}:${actionId}`;
+      const expectedGeneration = normalizeWorkCenterActionGeneration(actionGeneration);
+      const key = workCenterActionMessageKey(target, id, actionId, expectedGeneration);
+      const cacheGeneration = Number(this._workCenterActionMessageGenerationByKey[key] || 0);
       const requestKey = `${key}:${cursor == null ? 'latest' : String(cursor)}`;
       if (this._workCenterActionMessageRequests[requestKey]) return this._workCenterActionMessageRequests[requestKey];
       this.workCenterActionMessagesLoading = { ...this.workCenterActionMessagesLoading, [key]: true };
@@ -1492,8 +1562,11 @@ export const useChatStore = defineStore('chat', {
       const request = (async () => {
         try {
           const data = await this.workCenterRequest('get_action_messages', {
-            id, actionId, cursor, limit: 20,
+            id, actionId, generation: expectedGeneration, cursor, limit: 20,
           }, target);
+          if (this.workItemDeleted(target, id)
+              || normalizeWorkCenterActionGeneration(data?.generation) !== expectedGeneration
+              || Number(this._workCenterActionMessageGenerationByKey[key] || 0) !== cacheGeneration) return data;
           const current = this.workCenterActionMessages[key]?.messages || [];
           const messages = mergeActionMessages(current, data?.messages || []);
           const existingPage = this.workCenterActionMessages[key];
@@ -1506,6 +1579,7 @@ export const useChatStore = defineStore('chat', {
           this.workCenterActionMessages = {
             ...this.workCenterActionMessages,
             [key]: {
+              generation: expectedGeneration,
               messages,
               nextCursor: shouldAdvanceCursor ? (data?.nextCursor ?? null) : currentCursor,
               total: Math.max(Number(data?.total) || 0, Number(existingPage?.total) || 0, messages.length),
@@ -1513,17 +1587,21 @@ export const useChatStore = defineStore('chat', {
           };
           return data;
         } catch (error) {
-          this.workCenterActionMessagesError = {
-            ...this.workCenterActionMessagesError,
-            [key]: error?.message || String(error),
-          };
+          if (Number(this._workCenterActionMessageGenerationByKey[key] || 0) === cacheGeneration) {
+            this.workCenterActionMessagesError = {
+              ...this.workCenterActionMessagesError,
+              [key]: error?.message || String(error),
+            };
+          }
           throw error;
         } finally {
-          const pending = { ...this._workCenterActionMessageRequests };
-          delete pending[requestKey];
-          this._workCenterActionMessageRequests = pending;
-          const stillLoading = Object.keys(pending).some(candidate => candidate.startsWith(`${key}:`));
-          this.workCenterActionMessagesLoading = { ...this.workCenterActionMessagesLoading, [key]: stillLoading };
+          if (this._workCenterActionMessageRequests[requestKey] === request) {
+            const pending = { ...this._workCenterActionMessageRequests };
+            delete pending[requestKey];
+            this._workCenterActionMessageRequests = pending;
+            const stillLoading = Object.keys(pending).some(candidate => candidate.startsWith(`${key}:`));
+            this.workCenterActionMessagesLoading = { ...this.workCenterActionMessagesLoading, [key]: stillLoading };
+          }
         }
       })();
       this._workCenterActionMessageRequests = {
@@ -1544,7 +1622,8 @@ export const useChatStore = defineStore('chat', {
       this.workCenterActionRequestsError = { ...this.workCenterActionRequestsError, [key]: null };
       try {
         const data = await this.workCenterRequest('get_action_requests', { id, actionId }, target);
-        if (this._workCenterActionRequestsGeneration[key] === generation) {
+        if (!this.workItemDeleted(target, id)
+            && this._workCenterActionRequestsGeneration[key] === generation) {
           this.workCenterActionRequests = { ...this.workCenterActionRequests, [key]: data?.requests || [] };
         }
         return data?.requests || [];
@@ -1582,7 +1661,8 @@ export const useChatStore = defineStore('chat', {
         const data = await this.workCenterRequest('get_action_request', {
           id, actionId, runId, requestId,
         }, target);
-        if (this._workCenterActionRequestDetailsGeneration[key] === generation) {
+        if (!this.workItemDeleted(target, id)
+            && this._workCenterActionRequestDetailsGeneration[key] === generation) {
           this.workCenterActionRequestDetails = {
             ...this.workCenterActionRequestDetails,
             [key]: data?.request || null,
@@ -1720,13 +1800,29 @@ export const useChatStore = defineStore('chat', {
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
-    async sendWorkItemMessage(id, text, revision, agentId = null) {
+    async deleteWorkItem(id, revision, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const generation = this.beginWorkCenterDetailWrite(target);
-      const detail = await this.workCenterRequest('work_item_message', { id, text, revision }, target);
-      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
-      this.commitWorkCenterDetail(target, detail, generation);
-      return detail;
+      const result = await this.workCenterRequest('delete', { id, revision }, target);
+      this.removeWorkItemState(target, id);
+      return result;
+    },
+    async sendWorkItemMessage(id, text, revision, agentId = null, fence = {}) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const current = this.workCenterDetailByAgent[target]?.id === id
+        ? this.workCenterDetailByAgent[target] : null;
+      const accepted = await this.workCenterRequest('work_item_message', {
+        id,
+        text,
+        revision,
+        planRevision: Number.isInteger(Number(fence.planRevision))
+          ? Number(fence.planRevision) : Number(current?.planRevision) || 0,
+        ledgerRevision: Number.isInteger(Number(fence.ledgerRevision))
+          ? Number(fence.ledgerRevision) : Number(current?.ledgerRevision) || 0,
+        coordinatorRevision: Number.isInteger(Number(fence.coordinatorRevision))
+          ? Number(fence.coordinatorRevision) : Number(current?.coordinatorRevision) || 0,
+      }, target);
+      if (!accepted?.accepted) throw new Error('Work Center Coordinator did not accept the message');
+      return accepted;
     },
     async retryWorkItemAction(id, actionId, revision, actionGeneration, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
@@ -1781,8 +1877,18 @@ export const useChatStore = defineStore('chat', {
       if (!agentId || !event?.workItem) return;
       const summary = event.workItem;
       const current = this.workCenterItemsByAgent[agentId] || [];
+      if (event.type === 'work_item.deleted') {
+        this.removeWorkItemState(agentId, summary.id);
+        return;
+      }
+      if (this.workItemDeleted(agentId, summary.id)) return;
       const filters = this._workCenterListFiltersByAgent[agentId] || {};
-      const matches = this.workItemMatchesBoardQuery(summary, filters);
+      const cachedSummary = this._workCenterListEventsByAgent[agentId]?.[summary.id]?.summary || null;
+      const identityBase = current.some(item => item?.id === summary.id)
+        ? current
+        : (cachedSummary ? [cachedSummary] : []);
+      const acceptedSummary = applyWorkItemSummary(identityBase, summary)
+        .find(item => item?.id === summary.id) || summary;
       const eventGeneration = Number(this._workCenterListEventGenerationByAgent[agentId] || 0) + 1;
       this._workCenterListEventGenerationByAgent = {
         ...this._workCenterListEventGenerationByAgent, [agentId]: eventGeneration,
@@ -1794,48 +1900,117 @@ export const useChatStore = defineStore('chat', {
           [summary.id]: {
             generation: eventGeneration,
             queryKey: this._workCenterListQueryByAgent[agentId] || null,
-            summary,
-            matches,
+            summary: acceptedSummary,
           },
         },
       };
-      const nextItems = matches
-        ? applyWorkItemSummary(current, summary)
-        : current.filter(item => item.id !== summary.id);
+      const nextItems = this.applyWorkItemBoardSummary(current, acceptedSummary, filters);
       this.workCenterItemsByAgent = {
         ...this.workCenterItemsByAgent,
         [agentId]: nextItems,
       };
       const selected = this.workCenterDetailByAgent[agentId];
       if (selected?.id === summary.id) {
-        const needsRefresh = workItemDetailNeedsRefresh(selected, summary);
+        const eventSummary = event.type === 'run.finished'
+          && event.actionId
+          && Array.isArray(summary.actionStats)
+          && summary.actionStats.some(action => action?.id === event.actionId)
+          ? { ...summary, eventActionId: event.actionId }
+          : summary;
+        const refreshIdentity = workItemDetailRefreshIdentity(selected, eventSummary);
+        const coordinatorRevision = Number(summary.coordinatorRevision);
+        const currentCoordinatorRevision = Number(selected.coordinatorRevision) || 0;
+        const coordinatorRefresh = Number.isInteger(coordinatorRevision)
+          && coordinatorRevision > currentCoordinatorRevision;
+        const needsRefresh = workItemDetailNeedsRefresh(selected, eventSummary);
         this.workCenterDetailByAgent = {
           ...this.workCenterDetailByAgent,
           [agentId]: mergeWorkItemSummary(selected, summary),
         };
-        if (needsRefresh) this.refreshWorkItemDetailAfterActionChange(agentId, summary);
+        if (needsRefresh) {
+          this.refreshWorkItemDetailAfterActionChange(
+            agentId,
+            summary,
+            coordinatorRefresh ? null : refreshIdentity,
+          );
+        }
       }
     },
-    async refreshWorkItemDetailAfterActionChange(agentId, summary) {
-      const key = `${summary.id}:${summary.currentActionId}`;
-      if (this._workCenterDetailEventRefreshByAgent[agentId] === key) return;
-      const generation = Number(this._workCenterDetailRequestGenerationByAgent[agentId] || 0);
+    async refreshWorkItemDetailAfterActionChange(agentId, summary, refreshIdentity = null) {
+      const summaryAction = refreshIdentity
+        ? (Array.isArray(summary.actionStats) ? summary.actionStats : [])
+            .find(action => action?.id === refreshIdentity.actionId)
+        : ((Array.isArray(summary.actionStats) ? summary.actionStats : [])
+            .find(action => action?.id === summary.currentActionId) || summary.currentAction);
+      const expectedActionId = refreshIdentity?.actionId || summary.currentActionId || null;
+      const summaryGeneration = Number(refreshIdentity?.generation ?? summaryAction?.generation);
+      const expectedGeneration = Number.isInteger(summaryGeneration) && summaryGeneration > 0
+        ? summaryGeneration
+        : null;
+      const coordinatorRevision = Number(summary.coordinatorRevision);
+      const expectedCoordinatorRevision = !refreshIdentity
+        && Number.isInteger(coordinatorRevision) && coordinatorRevision >= 0
+        ? coordinatorRevision : null;
+      const expectedAttempt = Number(refreshIdentity?.attempt);
+      const refreshAttempt = Number.isInteger(expectedAttempt) && expectedAttempt >= 0
+        ? expectedAttempt
+        : null;
+      const key = expectedCoordinatorRevision != null
+        ? `${summary.id}:coordinator:${expectedCoordinatorRevision}`
+        : `${summary.id}:${expectedActionId}${expectedGeneration == null ? '' : `:${expectedGeneration}`}${refreshAttempt == null ? '' : `:${refreshAttempt}`}`;
+      if (this._workCenterDetailEventRefreshByAgent[agentId]?.key === key) return;
+      const generation = this.beginWorkCenterDetailWrite(agentId);
+      const refresh = { key, generation };
       this._workCenterDetailEventRefreshByAgent = {
         ...this._workCenterDetailEventRefreshByAgent,
-        [agentId]: key,
+        [agentId]: refresh,
       };
+      if (refreshIdentity) {
+        this.invalidateWorkItemActionMessages(
+          agentId,
+          summary.id,
+          refreshIdentity.actionId,
+          refreshIdentity.generation,
+        );
+      }
+      const latestMessages = expectedActionId && expectedGeneration != null
+        ? this.loadWorkItemActionMessages(
+            summary.id,
+            expectedActionId,
+            expectedGeneration,
+            null,
+            agentId,
+          ).catch(() => null)
+        : null;
       try {
         const detail = await this.workCenterRequest('get', { id: summary.id }, agentId);
         const selected = this.workCenterDetailByAgent[agentId];
+        const selectedAction = selected?.actions?.find(action => action?.id === expectedActionId);
+        const detailAction = detail?.actions?.find(action => action?.id === expectedActionId);
+        const selectedGenerationMatches = expectedGeneration == null
+          || normalizeWorkCenterActionGeneration(selectedAction?.generation) === expectedGeneration;
+        const detailGenerationMatches = expectedGeneration == null
+          || normalizeWorkCenterActionGeneration(detailAction?.generation) >= expectedGeneration;
+        const coordinatorRevisionMatches = expectedCoordinatorRevision == null
+          || Number(detail?.coordinatorRevision) === expectedCoordinatorRevision;
+        const actionIdentityMatches = expectedCoordinatorRevision != null
+          || (selectedGenerationMatches
+            && detailGenerationMatches
+            && (summary.currentActionId == null
+              ? detail?.currentActionId == null
+              : selected?.currentActionId === summary.currentActionId
+                && detail?.currentActionId === summary.currentActionId));
         if (selected?.id === summary.id
-            && selected.currentActionId === summary.currentActionId
-            && detail?.currentActionId === summary.currentActionId) {
-          this.commitWorkCenterDetail(agentId, detail, generation);
+            && coordinatorRevisionMatches
+            && actionIdentityMatches
+            && this.commitWorkCenterDetail(agentId, detail, generation)
+            && latestMessages) {
+          await latestMessages;
         }
       } catch {
         // The next event or explicit selection retries; event handling remains non-fatal.
       } finally {
-        if (this._workCenterDetailEventRefreshByAgent[agentId] === key) {
+        if (this._workCenterDetailEventRefreshByAgent[agentId] === refresh) {
           const next = { ...this._workCenterDetailEventRefreshByAgent };
           delete next[agentId];
           this._workCenterDetailEventRefreshByAgent = next;
@@ -2272,9 +2447,10 @@ export const useChatStore = defineStore('chat', {
      *
      * @param {{groupId:string, text:string, mentions?:string[],
      *           attachments?:Array<{fileId:string,name:string,preview?:string,
-     *                               isImage?:boolean,mimeType?:string}>}} payload
+     *                               isImage?:boolean,mimeType?:string}>,
+     *           quote?:object}} payload
      */
-    sendYeaftSessionMessage({ groupId, text, mentions, attachments }) {
+    sendYeaftSessionMessage({ groupId, text, mentions, attachments, quote }) {
       // Route by the session's owning agent, not a page-level pointer. A
       // cross-agent click or a late session_ready replay used to leave the
       // old `yeaftAgentId` pointing at a different agent, so the send hit an
@@ -2284,6 +2460,7 @@ export const useChatStore = defineStore('chat', {
       const safeAttachments = Array.isArray(attachments)
         ? attachments.filter((a) => a && a.fileId)
         : [];
+      const safeQuote = normalizeSessionMessageQuote(quote);
       // PR #721: image-only send guard. The previous early-return on
       // `!text?.trim()` silently dropped sends where the user attached
       // a file with no text. When attachments are present we synthesize
@@ -2308,6 +2485,7 @@ export const useChatStore = defineStore('chat', {
         detail: {
           mentionCount: Array.isArray(mentions) ? mentions.length : 0,
           attachmentCount: safeAttachments.length,
+          quoted: !!safeQuote,
         },
       });
       const activeYeaftConvId = resolveYeaftConversationIdForSession(this, groupId);
@@ -2322,6 +2500,7 @@ export const useChatStore = defineStore('chat', {
           // Use the client message id as the optimistic local turn id so
           // the row has a stable message-block key until server frames arrive.
           turnId: clientMessageId,
+          ...(safeQuote ? { quote: safeQuote } : {}),
         };
         if (safeAttachments.length > 0) {
           // Local-render shape mirrors what `MessageItem` already
@@ -2360,6 +2539,7 @@ export const useChatStore = defineStore('chat', {
         text: effectiveText,
         mentions: Array.isArray(mentions) ? mentions : [],
         perfTraceId,
+        ...(safeQuote ? { quote: safeQuote } : {}),
       };
       if (safeAttachments.length > 0) {
         // Wire-side: only the fields the server resolver needs. The
@@ -2425,6 +2605,16 @@ export const useChatStore = defineStore('chat', {
         ...this.yeaftMessageWindowState,
         [sessionKey]: { visibleTurns: next },
       };
+    },
+
+    isYeaftMessageCached(sessionId, messageId, conversationId = null) {
+      const targetSessionId = sessionId || this.yeaftActiveSessionFilter || null;
+      const targetConversationId = conversationId || resolveYeaftConversationIdForSession(this, targetSessionId);
+      if (!targetConversationId || !messageId) return false;
+      return (this.messagesMap[targetConversationId] || []).some(message => (
+        (!targetSessionId || (message?.sessionId ?? message?.groupId ?? null) === targetSessionId)
+        && ((message?.id || message?.messageId) === messageId || message?.persistedMessageId === messageId)
+      ));
     },
 
     revealYeaftMessage(sessionId, messageId, conversationId = null) {
@@ -2735,21 +2925,25 @@ export const useChatStore = defineStore('chat', {
       return true;
     },
 
-    searchYeaftHistory(query, { append = false } = {}) {
+    searchYeaftHistory(query, { append = false, senderKey = '' } = {}) {
       if (this.currentView !== 'yeaft') return false;
       const normalized = typeof query === 'string' ? query.trim() : '';
+      const normalizedSenderKey = typeof senderKey === 'string' && (senderKey === 'user' || senderKey.startsWith('vp:'))
+        ? senderKey.slice(0, 103)
+        : '';
       const sessionId = this.yeaftActiveSessionFilter || null;
       const agentId = resolveAgentIdForSession(this, sessionId);
       if (this._yeaftHistorySearchTimeout) {
         clearTimeout(this._yeaftHistorySearchTimeout);
         this._yeaftHistorySearchTimeout = null;
       }
-      if (!sessionId || !agentId || normalized.length < 2) {
+      if (!sessionId || !agentId || (normalized.length < 2 && !normalizedSenderKey)) {
         this.yeaftHistorySearchState = {
           requestId: null,
           agentId,
           sessionId,
           query: normalized,
+          senderKey: normalizedSenderKey,
           loading: false,
           results: [],
           hasMore: false,
@@ -2766,6 +2960,7 @@ export const useChatStore = defineStore('chat', {
           agentId,
           sessionId,
           query: normalized,
+          senderKey: normalizedSenderKey,
           loading: false,
           results: [],
           hasMore: false,
@@ -2781,10 +2976,13 @@ export const useChatStore = defineStore('chat', {
         agentId,
         sessionId,
         query: normalized,
+        senderKey: normalizedSenderKey,
         loading: true,
-        results: append && previous.query === normalized ? previous.results : [],
+        results: append && previous.query === normalized && previous.senderKey === normalizedSenderKey ? previous.results : [],
         hasMore: false,
-        nextBeforeSeq: append && previous.query === normalized ? previous.nextBeforeSeq : null,
+        nextBeforeSeq: append && previous.query === normalized && previous.senderKey === normalizedSenderKey
+          ? previous.nextBeforeSeq
+          : null,
         error: null,
       };
       this._yeaftHistorySearchTimeout = setTimeout(() => {
@@ -2802,8 +3000,14 @@ export const useChatStore = defineStore('chat', {
         sessionId,
         requestId,
         query: normalized,
+        senderKey: normalizedSenderKey,
         limit: 20,
-        ...(append && Number.isFinite(previous.nextBeforeSeq) ? { beforeSeq: previous.nextBeforeSeq } : {}),
+        ...(append
+          && previous.query === normalized
+          && previous.senderKey === normalizedSenderKey
+          && Number.isFinite(previous.nextBeforeSeq)
+          ? { beforeSeq: previous.nextBeforeSeq }
+          : {}),
       });
       return true;
     },
@@ -2811,7 +3015,7 @@ export const useChatStore = defineStore('chat', {
     handleYeaftHistorySearchResult(msg) {
       const state = this.yeaftHistorySearchState || {};
       if (!msg || msg.requestId !== state.requestId) return false;
-      if (msg.agentId !== state.agentId || msg.sessionId !== state.sessionId || msg.query !== state.query) return false;
+      if (msg.agentId !== state.agentId || msg.sessionId !== state.sessionId || msg.query !== state.query || (msg.senderKey || '') !== state.senderKey) return false;
       if (this._yeaftHistorySearchTimeout) {
         clearTimeout(this._yeaftHistorySearchTimeout);
         this._yeaftHistorySearchTimeout = null;
@@ -2834,45 +3038,83 @@ export const useChatStore = defineStore('chat', {
       const sessionId = this.yeaftActiveSessionFilter || null;
       const agentId = resolveAgentIdForSession(this, sessionId);
       if (!sessionId || !agentId || !result?.messageId || !Number.isFinite(result.seq)) return Promise.resolve(false);
-      if (this.revealYeaftMessage(sessionId, result.messageId)) return Promise.resolve(true);
+      if (this.isYeaftMessageCached(sessionId, result.messageId)) return Promise.resolve(true);
+
+      const pendingKey = yeaftHistoryIdentityKey(agentId, `${sessionId}:${result.messageId}`);
+      const pendingByKey = this._yeaftHistoryWindowPendingByKey || {};
+      if (pendingByKey[pendingKey]?.promise) return pendingByKey[pendingKey].promise;
+
       const requestId = `history_window_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const previousPending = this._yeaftHistoryWindowPending;
-      if (previousPending) {
-        clearTimeout(previousPending.timeout);
-        previousPending.resolve(false);
-        this._yeaftHistoryWindowPending = null;
-      }
-      return new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          if (this._yeaftHistoryWindowPending?.requestId === requestId) this._yeaftHistoryWindowPending = null;
-          resolve(false);
-        }, 10000);
-        this._yeaftHistoryWindowPending = { requestId, agentId, sessionId, messageId: result.messageId, resolve, timeout };
-        this.sendWsMessage({
-          type: 'yeaft_load_history_window',
+      let resolvePending = null;
+      const promise = new Promise((resolve) => { resolvePending = resolve; });
+      const timeout = setTimeout(() => {
+        const current = this._yeaftHistoryWindowPendingByKey?.[pendingKey];
+        if (current?.requestId !== requestId) return;
+        const { [pendingKey]: _expired, ...rest } = this._yeaftHistoryWindowPendingByKey;
+        this._yeaftHistoryWindowPendingByKey = rest;
+        resolvePending(false);
+      }, 10000);
+      this._yeaftHistoryWindowPendingByKey = {
+        ...pendingByKey,
+        [pendingKey]: {
+          requestId,
           agentId,
           sessionId,
-          requestId,
-          anchorMessageId: result.messageId,
-          anchorSeq: result.seq,
-          beforeTurns: 3,
-          afterTurns: 3,
-        });
+          messageId: result.messageId,
+          resolve: resolvePending,
+          timeout,
+          promise,
+        },
+      };
+      this.sendWsMessage({
+        type: 'yeaft_load_history_window',
+        agentId,
+        sessionId,
+        requestId,
+        anchorMessageId: result.messageId,
+        anchorSeq: result.seq,
+        beforeTurns: 5,
+        afterTurns: 5,
       });
+      return promise;
+    },
+
+    async revealYeaftHistoryResult(result) {
+      const sessionId = this.yeaftActiveSessionFilter || null;
+      const agentId = resolveAgentIdForSession(this, sessionId);
+      const conversationId = resolveYeaftConversationIdForSession(this, sessionId);
+      if (!sessionId || !agentId || !conversationId || !result?.messageId) return false;
+
+      const loaded = await this.loadYeaftHistoryWindow(result);
+      if (!loaded) return false;
+      // A window response can settle after the reader changes Agent or Session.
+      // Keep the click bound to the transcript that initiated it rather than
+      // expanding an unrelated current view with the same Session id.
+      if (this.currentView !== 'yeaft'
+        || this.yeaftActiveSessionFilter !== sessionId
+        || resolveAgentIdForSession(this, sessionId) !== agentId
+        || resolveYeaftConversationIdForSession(this, sessionId) !== conversationId) {
+        return false;
+      }
+      return this.revealYeaftMessage(sessionId, result.messageId, conversationId);
     },
 
     handleYeaftHistoryWindow(msg, conversationId = null) {
-      const pending = this._yeaftHistoryWindowPending;
-      if (!pending || msg?.requestId !== pending.requestId) return false;
+      const pendingEntries = Object.entries(this._yeaftHistoryWindowPendingByKey || {});
+      const match = pendingEntries.find(([, pending]) => pending?.requestId === msg?.requestId);
+      if (!match) return false;
+      const [pendingKey, pending] = match;
       if (msg.agentId !== pending.agentId || msg.sessionId !== pending.sessionId) return false;
       clearTimeout(pending.timeout);
-      this._yeaftHistoryWindowPending = null;
-      // The merge handler passes the exact conversation it updated. Search and
-      // expand that same store window so agent/session switches cannot make a
-      // successful wire response look navigable in the wrong transcript.
+      const { [pendingKey]: _settled, ...rest } = this._yeaftHistoryWindowPendingByKey;
+      this._yeaftHistoryWindowPendingByKey = rest;
+      // The merge handler passes the exact conversation it updated. Validate
+      // that same cache so agent/session switches cannot make a successful wire
+      // response look navigable in the wrong transcript. Rendering expands only
+      // on click; hover prefetch must not move the reader's current position.
       const loaded = !msg.error
         && !!conversationId
-        && this.revealYeaftMessage(pending.sessionId, pending.messageId, conversationId);
+        && this.isYeaftMessageCached(pending.sessionId, pending.messageId, conversationId);
       pending.resolve(!!loaded);
       return !!loaded;
     },
@@ -5587,7 +5829,7 @@ export const useChatStore = defineStore('chat', {
       return true;
     },
 
-    loadMoreYeaftHistory() {
+    loadMoreYeaftHistory(turns = getYeaftWindowLoadStepTurns()) {
       if (this.currentView !== 'yeaft') return;
       if (this.yeaftLoadingMoreHistory || !this.yeaftHasMoreHistory) return;
       if (this.yeaftOldestLoadedSeq == null) return;
@@ -5595,6 +5837,9 @@ export const useChatStore = defineStore('chat', {
       const sessionId = resolveActiveYeaftSessionId(this);
       const targetAgentId = resolveAgentIdForSession(this, sessionId);
       if (!targetAgentId) return;
+      const requestedTurns = Math.min(50, Math.max(1, Number.isFinite(turns)
+        ? Math.floor(turns)
+        : getYeaftWindowLoadStepTurns()));
 
       this.yeaftLoadingMoreHistory = true;
       const sessionKey = yeaftHistoryIdentityKey(targetAgentId, sessionId);
@@ -5615,7 +5860,7 @@ export const useChatStore = defineStore('chat', {
         agentId: targetAgentId,
         sessionId,
         beforeSeq: this.yeaftOldestLoadedSeq,
-        turns: 10,
+        turns: requestedTurns,
         perfTraceId,
       };
       recordPerfTrace(this, {

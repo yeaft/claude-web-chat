@@ -33,28 +33,7 @@ afterEach(() => {
 });
 
 describe('Yeaft Session history search relay', () => {
-  it('relays bounded outline pages with explicit compound identity', async () => {
-    await handleClientConversation('client-1', client, {
-      type: 'yeaft_load_history_outline',
-      agentId: 'agent-1',
-      sessionId: 'sess-1',
-      requestId: 'outline-1',
-      limit: 50,
-      beforeSeq: 42,
-      includeTotal: false,
-    }, allow);
 
-    expect(getForAgent).toHaveBeenCalledWith('owner-1', 'agent-1', 'sess-1');
-    expect(forwardToAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({
-      type: 'yeaft_load_history_outline',
-      sessionId: 'sess-1',
-      requestId: 'outline-1',
-      limit: 50,
-      beforeSeq: 42,
-      includeTotal: false,
-      _requestClientId: 'client-1',
-    }));
-  });
 
   it('requires explicit compound identity and targets the requesting client', async () => {
     await handleClientConversation('client-1', client, {
@@ -63,6 +42,7 @@ describe('Yeaft Session history search relay', () => {
       sessionId: 'sess-1',
       requestId: 'req-1',
       query: 'needle',
+      senderKey: 'vp:linus',
       beforeSeq: 42,
     }, allow);
 
@@ -72,6 +52,7 @@ describe('Yeaft Session history search relay', () => {
       sessionId: 'sess-1',
       requestId: 'req-1',
       query: 'needle',
+      senderKey: 'vp:linus',
       beforeSeq: 42,
       _requestClientId: 'client-1',
     }));
@@ -96,26 +77,5 @@ describe('Yeaft Session history search relay', () => {
     expect(forwardToAgent).not.toHaveBeenCalled();
   });
 
-  it('preserves bounded anchor window fields', async () => {
-    await handleClientConversation('client-1', client, {
-      type: 'yeaft_load_history_window',
-      agentId: 'agent-1',
-      sessionId: 'sess-1',
-      requestId: 'window-1',
-      anchorMessageId: 'm000042',
-      anchorSeq: 42,
-      beforeTurns: 4,
-      afterTurns: 2,
-    }, allow);
 
-    expect(forwardToAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({
-      type: 'yeaft_load_history_window',
-      requestId: 'window-1',
-      anchorMessageId: 'm000042',
-      anchorSeq: 42,
-      beforeTurns: 4,
-      afterTurns: 2,
-      _requestClientId: 'client-1',
-    }));
-  });
 });

@@ -5,7 +5,8 @@ import { defaultRegistry } from '../vp/registry.js';
 import { scanVpLibrary } from '../vp/vp-store.js';
 import { WorkCenterService } from './service.js';
 import { WorkItemRunner } from './runner.js';
-import { projectWorkCenterEvent, projectWorkItemDetail } from './projection.js';
+import { WorkItemCoordinator } from './coordinator.js';
+import { projectWorkCenterEvent } from './projection.js';
 import { previewWorkCenterPlan } from './planner.js';
 import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
 import { defaultWorkCenterStageInstructions } from './workflow.js';
@@ -19,7 +20,7 @@ let shutdownPromise = null;
 let serviceFactory = null;
 
 const BROWSER_DETAIL_OPS = new Set([
-  'get', 'create', 'update', 'start', 'cancel', 'work_item_message', 'action_input', 'retry_action', 'guide', 'retry',
+  'get', 'create', 'update', 'start', 'cancel', 'action_input', 'retry_action', 'guide', 'retry',
 ]);
 const BROWSER_ACTION_DEBUG_OPS = new Set(['get_action_messages', 'get_action_requests', 'get_action_request']);
 // `files` is an internal server-to-Agent field. The browser relay rejects any
@@ -28,11 +29,12 @@ const BROWSER_FILE_FIELDS = Object.freeze({
   create: [
     'title', 'goal', 'acceptanceCriteria', 'workItemType', 'workDir', 'reuseMemory', 'files', 'start',
   ],
-  work_item_message: ['id', 'text', 'revision'],
+  work_item_message: ['id', 'text', 'revision', 'planRevision', 'ledgerRevision', 'coordinatorRevision'],
   action_input: ['id', 'text', 'actionId', 'revision', 'generation', 'files'],
   retry_action: ['id', 'actionId', 'revision', 'generation'],
+  delete: ['id', 'revision'],
   guide: ['id', 'guidance', 'actionId', 'revision', 'generation', 'files'],
-  get_action_messages: ['id', 'actionId', 'cursor', 'limit'],
+  get_action_messages: ['id', 'actionId', 'generation', 'cursor', 'limit'],
   get_action_requests: ['id', 'actionId'],
   get_action_request: ['id', 'actionId', 'runId', 'requestId'],
 });
@@ -116,9 +118,22 @@ async function createDefaultService() {
     registry: defaultRegistry,
     store: null,
   });
+  const coordinator = new WorkItemCoordinator({
+    store: null,
+    runtimeProvider: async () => {
+      const runtime = await runner.runtimeProvider();
+      if (defaultRegistry.vpCount() === 0) {
+        for (const vp of scanVpLibrary({ dir: join(yeaftDir, 'virtual-persons') })) defaultRegistry.setVp(vp);
+      }
+      return runtime;
+    },
+    policyProvider: async () => readWorkCenterSettings(yeaftDir),
+    registry: defaultRegistry,
+  });
   const created = new WorkCenterService({
     yeaftDir,
     runner,
+    coordinator,
     runtimeInfoProvider: getSettingsRuntime,
     listAvailableVpIds: () => defaultRegistry.listVps().map(vp => vp.id),
     watcherOptions: {
@@ -129,6 +144,7 @@ async function createDefaultService() {
     },
   });
   runner.store = created.store;
+  coordinator.store = created.store;
   return created;
 }
 
@@ -172,6 +188,7 @@ export async function handleWorkCenterRequest(msg) {
   const op = typeof msg.op === 'string' ? msg.op : '';
   try {
     let data;
+    let workCenter = null;
     if (op === 'get_settings') {
       data = await readSettingsResponse();
     } else if (op === 'update_settings') {
@@ -194,13 +211,13 @@ export async function handleWorkCenterRequest(msg) {
       await resetYeaftSession();
       data = await readSettingsResponse();
     } else {
-      const workCenter = await ensureWorkCenter();
+      workCenter = await ensureWorkCenter();
       const payload = Object.hasOwn(BROWSER_FILE_FIELDS, op)
         ? browserFilePayload(op, msg.payload)
         : (BROWSER_ACTION_DEBUG_OPS.has(op) ? browserFilePayload(op, msg.payload) : (msg.payload || {}));
       data = await workCenter.handle(op, payload);
     }
-    if (BROWSER_DETAIL_OPS.has(op)) data = projectWorkItemDetail(data);
+    if (BROWSER_DETAIL_OPS.has(op)) data = workCenter.projectBrowserDetail(data);
     send({
       type: 'work_center_response',
       requestId,

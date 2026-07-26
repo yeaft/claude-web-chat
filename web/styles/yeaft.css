@@ -834,16 +834,12 @@
   z-index: 20;
 }
 
-.yeaft-conversation-outline-header,
-.yeaft-conversation-outline-search {
+.yeaft-conversation-outline-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
   padding: 10px 12px;
-}
-
-.yeaft-conversation-outline-header {
-  justify-content: space-between;
   color: var(--text-primary);
 }
 
@@ -854,9 +850,21 @@
   font-weight: 400;
 }
 
-.yeaft-conversation-outline-search {
+.yeaft-conversation-outline-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0 10px 8px;
-  padding: 8px 10px;
+}
+
+.yeaft-conversation-outline-search {
+  min-width: 0;
+  height: 40px;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
   border: 1px solid var(--border-color);
   border-radius: 10px;
   color: var(--text-muted);
@@ -869,6 +877,7 @@
 
 .yeaft-conversation-outline-search input {
   min-width: 0;
+  height: 100%;
   flex: 1;
   border: none;
   background: transparent;
@@ -877,7 +886,33 @@
   box-shadow: none;
 }
 
+.yeaft-conversation-outline-sender {
+  width: auto;
+  min-width: 112px;
+  max-width: 148px;
+  flex: 0 1 auto;
+  font-size: 12px;
+}
+
+.yeaft-conversation-outline-sender .modern-select-trigger {
+  height: 40px;
+  min-height: 40px;
+  padding: 0 8px 0 10px;
+  color: var(--text-secondary);
+}
+
+.yeaft-conversation-outline-sender-menu {
+  font-size: 12px;
+  box-shadow: var(--modal-shadow);
+}
+
+.yeaft-conversation-outline-sender-menu .modern-select-option {
+  min-height: 34px;
+  padding: 8px 30px 8px 10px;
+}
+
 .yeaft-conversation-outline-status {
+  flex-shrink: 0;
   color: var(--text-muted);
   font-size: 12px;
   white-space: nowrap;
@@ -1775,8 +1810,13 @@
   max-width: 90%;
 }
 
+.yeaft-page .input-quote-preview,
 .yeaft-page .attachments-preview {
   max-width: 90%;
+}
+
+.yeaft-page .turn-footer {
+  opacity: 1;
 }
 
 /* ── Mobile Sidebar Overlay ── */
@@ -1885,6 +1925,10 @@
     z-index: 108;
   }
 
+  .yeaft-conversation-outline-sender {
+    max-width: 38%;
+  }
+
   /* Yeaft conversation: narrower padding on mobile */
   .yeaft-page .messages {
     max-width: 100%;
@@ -1900,6 +1944,7 @@
     max-width: 100%;
   }
 
+  .yeaft-page .input-quote-preview,
   .yeaft-page .attachments-preview {
     max-width: 100%;
   }

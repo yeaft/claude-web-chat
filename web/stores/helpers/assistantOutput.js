@@ -179,6 +179,12 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
       }
     }
   } else if (data.type === 'user') {
+    // Yeaft and provider adapters may use a user-role frame for model-only
+    // protocol messages. Tool results still need to update their ToolLine, but
+    // this provenance must block the fallback human-bubble branch below.
+    const modelOnlyUserFrame = data.internal === true || data.message?.internal === true
+      || data.userAuthored === false || data.message?.userAuthored === false;
+
     // Legacy Claude CLI quirk: skill/slash command local output (e.g.
     // /context, /cost) is echoed as a user frame whose content is wrapped
     // in <local-command-stdout>. Other providers (including Copilot CLI)
@@ -266,7 +272,7 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
       }
 
       execStatus.currentTool = null;
-    } else if ((typeof userContent === 'string' && userContent.trim()) || (Array.isArray(data.message?.attachments) && data.message.attachments.length > 0)) {
+    } else if (!modelOnlyUserFrame && ((typeof userContent === 'string' && userContent.trim()) || (Array.isArray(data.message?.attachments) && data.message.attachments.length > 0))) {
       // 普通用户消息（agent 广播回来的）
       // 发送端已通过 addMessage 本地添加，检查是否已存在以避免重复
       //
@@ -292,6 +298,7 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
           content: userContent,
           // Preserve attachment metadata from agent history replay
           ...(data.message?.attachments ? { attachments: data.message.attachments } : {}),
+          ...(data.message?.quote ? { quote: data.message.quote } : {}),
           // Stamp the echo id on the freshly-added message so any future
           // dedup pass (e.g. sync_messages_result merge) still matches.
           ...(echoClientMsgId ? { clientMessageId: echoClientMsgId } : {}),

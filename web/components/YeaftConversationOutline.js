@@ -1,17 +1,56 @@
-function formatOutlineTime(value) {
+import ModernSelect from './ModernSelect.js';
+
+function parseHistoryTime(value) {
   const timestamp = typeof value === 'number' ? value : Date.parse(value || '');
-  if (!Number.isFinite(timestamp)) return '';
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function formatOutlineTime(value) {
+  const timestamp = parseHistoryTime(value);
+  if (timestamp === null) return '';
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp));
+}
+
+export function sortHistoryResultsNewest(results) {
+  return (Array.isArray(results) ? results : [])
+    .map((result, index) => ({
+      result,
+      index,
+      time: parseHistoryTime(result?.timestamp),
+      seq: Number.isFinite(result?.seq) ? result.seq : null,
+      messageId: String(result?.messageId || ''),
+    }))
+    .sort((a, b) => {
+      if (a.time !== null && b.time === null) return -1;
+      if (a.time === null && b.time !== null) return 1;
+      if (a.time !== null && a.time !== b.time) return b.time - a.time;
+      if (a.seq !== null && b.seq === null) return -1;
+      if (a.seq === null && b.seq !== null) return 1;
+      if (a.seq !== null && a.seq !== b.seq) return b.seq - a.seq;
+      const idComparison = b.messageId.localeCompare(a.messageId);
+      return idComparison || a.index - b.index;
+    })
+    .map(({ result }) => result);
 }
 
 export default {
   name: 'YeaftConversationOutline',
+  components: { ModernSelect },
   props: {
     outlineState: { type: Object, required: true },
     searchState: { type: Object, required: true },
-    activeIndex: { type: Number, default: 0 },
+    senderOptions: { type: Array, default: () => [] },
+    activeMessageId: { type: String, default: null },
   },
-  emits: ['query', 'select', 'move', 'load-older', 'load-more-search', 'close'],
+  emits: ['query', 'sender', 'sender-invalid', 'select', 'move', 'preview', 'load-older', 'load-more-search', 'close'],
+  computed: {
+    senderSelectOptions() {
+      return [
+        { value: '', label: this.$t('yeaft.outline.allSenders') },
+        ...this.senderOptions.map(option => ({ value: option.key, label: option.label })),
+      ];
+    },
+  },
   template: `
     <section id="yeaft-conversation-outline" class="yeaft-conversation-outline" :aria-label="$t('yeaft.outline.label')">
       <div class="yeaft-conversation-outline-header">
@@ -21,18 +60,29 @@ export default {
         </div>
         <button type="button" class="yeaft-conversation-outline-close" @click="$emit('close')" :aria-label="$t('common.close')">×</button>
       </div>
-      <div class="yeaft-conversation-outline-search">
-        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-        <input
-          ref="inputRef"
-          type="search"
-          :value="searchState.query"
-          :placeholder="$t('yeaft.outline.placeholder')"
-          :aria-label="$t('yeaft.outline.placeholder')"
-          @input="$emit('query', $event.target.value)"
-          @keydown="onKeyDown"
+      <div class="yeaft-conversation-outline-toolbar">
+        <div class="yeaft-conversation-outline-search">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input
+            ref="inputRef"
+            type="search"
+            :value="searchState.query"
+            :placeholder="$t('yeaft.outline.placeholder')"
+            :aria-label="$t('yeaft.outline.placeholder')"
+            @input="$emit('query', $event.target.value)"
+            @keydown="onKeyDown"
+          />
+          <span v-if="searchState.loading" class="yeaft-conversation-outline-status">{{ $t('yeaft.outline.searching') }}</span>
+        </div>
+        <ModernSelect
+          class="yeaft-conversation-outline-sender"
+          :model-value="searchState.senderKey || ''"
+          :options="senderSelectOptions"
+          :aria-label="$t('yeaft.outline.sender')"
+          :menu-min-width="180"
+          menu-class="yeaft-conversation-outline-sender-menu"
+          @change="$emit('sender', $event)"
         />
-        <span v-if="searchState.loading" class="yeaft-conversation-outline-status">{{ $t('yeaft.outline.searching') }}</span>
       </div>
       <div
         ref="listRef"
@@ -40,13 +90,6 @@ export default {
         role="listbox"
         @scroll="onScroll"
       >
-        <button
-          v-if="!isSearching && outlineState.hasMore"
-          type="button"
-          class="yeaft-conversation-outline-more"
-          :disabled="outlineState.loading"
-          @click="loadOlder"
-        >{{ outlineState.loading ? $t('yeaft.outline.loading') : $t('yeaft.outline.older') }}</button>
         <div v-if="errorKey" class="yeaft-conversation-outline-empty is-error">{{ $t(errorKey) }}</div>
         <div v-else-if="searchState.query.length === 1" class="yeaft-conversation-outline-empty">{{ $t('yeaft.outline.minChars') }}</div>
         <div v-else-if="!visibleResults.length && !isLoading" class="yeaft-conversation-outline-empty">{{ $t(isSearching ? 'yeaft.outline.noMatches' : 'yeaft.outline.empty') }}</div>
@@ -58,7 +101,8 @@ export default {
           :class="{ active: index === activeIndex }"
           role="option"
           :aria-selected="index === activeIndex ? 'true' : 'false'"
-          @mouseenter="$emit('move', index)"
+          @mouseenter="previewResult(result)"
+          @focus="previewResult(result)"
           @click="$emit('select', result)"
         >
           <span class="yeaft-conversation-outline-meta">
@@ -67,6 +111,13 @@ export default {
           </span>
           <span class="yeaft-conversation-outline-snippet">{{ result.snippet || $t('yeaft.outline.nonText') }}</span>
         </button>
+        <button
+          v-if="!isSearching && outlineState.hasMore"
+          type="button"
+          class="yeaft-conversation-outline-more"
+          :disabled="outlineState.loading"
+          @click="loadOlder"
+        >{{ outlineState.loading ? $t('yeaft.outline.loading') : $t('yeaft.outline.older') }}</button>
         <button
           v-if="isSearching && searchState.hasMore"
           type="button"
@@ -80,8 +131,22 @@ export default {
   setup(props, { emit, expose }) {
     const inputRef = Vue.ref(null);
     const listRef = Vue.ref(null);
-    const isSearching = Vue.computed(() => String(props.searchState.query || '').trim().length >= 2);
-    const visibleResults = Vue.computed(() => isSearching.value ? props.searchState.results : props.outlineState.results);
+    const isSearching = Vue.computed(() => String(props.searchState.query || '').trim().length >= 2 || !!props.searchState.senderKey);
+    Vue.watch(
+      () => props.senderOptions.map(option => option.key),
+      validKeys => {
+        const senderKey = props.searchState.senderKey || '';
+        if (senderKey && !validKeys.includes(senderKey)) emit('sender-invalid');
+      },
+      { flush: 'sync' },
+    );
+    const visibleResults = Vue.computed(() => sortHistoryResultsNewest(
+      isSearching.value ? props.searchState.results : props.outlineState.results,
+    ));
+    const activeIndex = Vue.computed(() => {
+      const index = visibleResults.value.findIndex(result => result?.messageId === props.activeMessageId);
+      return index >= 0 ? index : 0;
+    });
     const isLoading = Vue.computed(() => isSearching.value ? props.searchState.loading : props.outlineState.loading);
     const countLabel = Vue.computed(() => {
       if (isSearching.value) return `${props.searchState.results.length}${props.searchState.hasMore ? '+' : ''}`;
@@ -95,7 +160,7 @@ export default {
     });
     const focus = () => Vue.nextTick(() => {
       inputRef.value?.focus?.();
-      if (!isSearching.value && listRef.value) listRef.value.scrollTop = listRef.value.scrollHeight;
+      if (listRef.value) listRef.value.scrollTop = 0;
     });
     const loadOlder = () => {
       const list = listRef.value;
@@ -106,35 +171,43 @@ export default {
     };
     const onScroll = () => {
       if (isSearching.value || props.outlineState.loading || !props.outlineState.hasMore) return;
-      if ((listRef.value?.scrollTop || 0) <= 40) loadOlder();
+      const list = listRef.value;
+      if (list && list.scrollHeight - list.scrollTop - list.clientHeight <= 40) loadOlder();
+    };
+    const previewResult = (result) => {
+      emit('move', result?.messageId || null);
+      emit('preview', result);
+    };
+    const moveActive = (index) => {
+      const nextIndex = Math.max(0, Math.min(visibleResults.value.length - 1, index));
+      const result = visibleResults.value[nextIndex];
+      emit('move', result?.messageId || null);
+      if (result) emit('preview', result);
     };
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
         event.preventDefault();
         emit('close');
-      } else if (event.key === 'ArrowDown') {
+      } else if (event.key === 'ArrowDown' && visibleResults.value.length) {
         event.preventDefault();
-        emit('move', Math.min(visibleResults.value.length - 1, props.activeIndex + 1));
-      } else if (event.key === 'ArrowUp') {
+        moveActive(activeIndex.value + 1);
+      } else if (event.key === 'ArrowUp' && visibleResults.value.length) {
         event.preventDefault();
-        emit('move', Math.max(0, props.activeIndex - 1));
+        moveActive(activeIndex.value - 1);
       } else if (event.key === 'Enter' && visibleResults.value.length) {
         event.preventDefault();
-        emit('select', visibleResults.value[props.activeIndex] || visibleResults.value[0]);
+        emit('select', visibleResults.value[activeIndex.value] || visibleResults.value[0]);
       }
     };
-    Vue.watch(() => props.outlineState.results.length, (next, previous) => {
-      if (previous !== 0 || next === 0 || isSearching.value) return;
-      Vue.nextTick(() => {
-        if (listRef.value) listRef.value.scrollTop = listRef.value.scrollHeight;
-      });
-    });
-    const restoreOlderScroll = ({ scrollHeight = 0, scrollTop = 0 } = {}) => Vue.nextTick(() => {
-      if (!listRef.value) return;
-      listRef.value.scrollTop = scrollTop + Math.max(0, listRef.value.scrollHeight - scrollHeight);
+    Vue.watch([visibleResults, () => props.activeMessageId], ([results, activeMessageId]) => {
+      if (results.some(result => result?.messageId === activeMessageId)) return;
+      emit('move', results[0]?.messageId || null);
+    }, { immediate: true });
+    const restoreOlderScroll = ({ scrollTop = 0 } = {}) => Vue.nextTick(() => {
+      if (listRef.value) listRef.value.scrollTop = scrollTop;
     });
     expose({ focus, restoreOlderScroll });
     Vue.onMounted(focus);
-    return { inputRef, listRef, isSearching, visibleResults, isLoading, countLabel, errorKey, focus, loadOlder, onScroll, onKeyDown, formatOutlineTime };
+    return { inputRef, listRef, isSearching, visibleResults, activeIndex, isLoading, countLabel, errorKey, focus, loadOlder, onScroll, onKeyDown, previewResult, formatOutlineTime };
   },
 };

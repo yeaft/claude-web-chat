@@ -10,6 +10,9 @@ import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
 import { writeSummary } from '../../../agent/yeaft/memory/store.js';
 import { NullTrace, DebugTrace } from '../../../agent/yeaft/debug-trace.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
+import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
+import todoWriteTool from '../../../agent/yeaft/tools/todo-write.js';
+import startPlanTool from '../../../agent/yeaft/tools/start-plan.js';
 
 // ─── Mock Adapter ─────────────────────────────────────────────
 
@@ -457,6 +460,7 @@ describe('Engine', () => {
               content: 'persist before request',
               sessionId: 'session-prewrite',
               threadId: 'main',
+              userAuthored: true,
             });
             throw new Error('provider failed before replying');
           },
@@ -819,10 +823,15 @@ describe('Engine', () => {
         expect(conversationStore.loadRecentBySession('session-continue-persist', 10).map(message => ({
           role: message.role,
           content: message.content,
+          userAuthored: message.userAuthored,
         }))).toEqual([
-          { role: 'user', content: 'write a long answer' },
-          { role: 'assistant', content: 'first part' },
-          { role: 'user', content: 'Continue' },
+          { role: 'user', content: 'write a long answer', userAuthored: true },
+          { role: 'assistant', content: 'first part', userAuthored: undefined },
+          { role: 'user', content: 'Continue', userAuthored: false },
+        ]);
+        expect(conversationStore.loadVisibleBySession('session-continue-persist', null, 10).messages).toEqual([
+          expect.objectContaining({ role: 'user', content: 'write a long answer', userAuthored: true }),
+          expect.objectContaining({ role: 'assistant', content: 'first part' }),
         ]);
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });
@@ -2303,7 +2312,7 @@ describe('Engine', () => {
       expect(call.system).not.toContain('你是一个持续伴随的 AI 伙伴');
     });
 
-    it('should include tool names in system prompt for configured language', async () => {
+    it('should include configured tools and dependency-aware TodoWrite guidance', async () => {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'ok' },
         { type: 'stop', stopReason: 'end_turn' },
@@ -2328,6 +2337,39 @@ describe('Engine', () => {
 
       const call = mockAdapter.callLog[0];
       expect(call.system).toContain('可用工具：search');
+
+      const enSystem = buildSystemPrompt({ language: 'en', toolNames: ['TodoWrite'] });
+      const zhSystem = buildSystemPrompt({ language: 'zh', toolNames: ['TodoWrite'] });
+
+      expect(enSystem).toContain('Avoid an intermediate `TodoWrite`-only model round');
+      expect(enSystem).toMatch(/mark work completed only after\s+evidence/);
+      expect(enSystem).toContain('A standalone `TodoWrite` remains valid');
+      expect(zhSystem).toContain('不要让中间状态的 `TodoWrite` 单独占一个');
+      expect(zhSystem).toContain('只有已有证据时才能把工作标记为完成');
+      expect(zhSystem).toContain('`TodoWrite` 仍可单独调用');
+
+      expect(todoWriteTool.description.en).toContain('BATCH WITH WORK');
+      expect(todoWriteTool.description.en).toContain('same assistant response');
+      expect(todoWriteTool.description.en).toContain('only after evidence');
+      expect(todoWriteTool.description.en).toContain('standalone TodoWrite remains valid');
+      expect(todoWriteTool.description.zh).toContain('和工作工具合批');
+      expect(todoWriteTool.description.zh).toContain('同一个 assistant response');
+      expect(todoWriteTool.description.zh).toContain('只有已有证据时');
+      expect(todoWriteTool.description.zh).toContain('TodoWrite 仍可单独调用');
+
+      const enPlan = await startPlanTool.execute(
+        { topic: 'Batch plan setup with its first investigation' },
+        { config: { language: 'en' }, vpPersona: {} },
+      );
+      const zhPlan = await startPlanTool.execute(
+        { topic: '把计划建立和第一批调查工具合批' },
+        { config: { language: 'zh-CN' }, vpPersona: {} },
+      );
+
+      expect(enPlan).toContain('emit `TodoWrite` and those independent tool calls in the same assistant response');
+      expect(enPlan).toContain('Stop after the plan only when the first step must ask the user');
+      expect(zhPlan).toContain('在同一个 assistant response 中发出 `TodoWrite`');
+      expect(zhPlan).toContain('只有第一步必须询问用户时才在计划后停下');
     });
   });
 });

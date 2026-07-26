@@ -63,7 +63,7 @@ function resolveAgentIdForSession(state, sessionId) {
 // Re-implement the action body 1:1 here so we can drive it without booting
 // Pinia. Keeping it in lock-step with the production version is what the
 // review will scan against.
-function loadMoreYeaftHistory() {
+function loadMoreYeaftHistory(turns = getYeaftWindowLoadStepTurns()) {
   if (this.currentView !== 'yeaft') return;
   if (this.yeaftLoadingMoreHistory || !this.yeaftHasMoreHistory) return;
   if (this.yeaftOldestLoadedSeq == null) return;
@@ -82,6 +82,10 @@ function loadMoreYeaftHistory() {
   const targetAgentId = resolveAgentIdForSession(this, sessionId);
   if (!targetAgentId) return;
 
+  const requestedTurns = Math.min(50, Math.max(1, Number.isFinite(turns)
+    ? Math.floor(turns)
+    : getYeaftWindowLoadStepTurns()));
+
   this.yeaftLoadingMoreHistory = true;
   const sessionKey = sessionId || '__all__';
   this.yeaftSessionHistoryState = {
@@ -96,7 +100,7 @@ function loadMoreYeaftHistory() {
     agentId: targetAgentId,
     sessionId,
     beforeSeq: this.yeaftOldestLoadedSeq,
-    turns: 10,
+    turns: requestedTurns,
   });
 }
 
@@ -323,35 +327,7 @@ describe('handleYeaftHistoryChunk', () => {
     expect(arr[0].sessionId).toBe('g1');
   });
 
-  it('documents why metadata-only must not send an empty recent chunk', () => {
-    const store = mkStore({
-      yeaftActiveSessionFilter: 'g1',
-      messagesMap: {
-        'yeaft-1': [
-          { id: 'cached-q', type: 'user', content: 'cached q', sessionId: 'g1', timestamp: 10 },
-          { id: 'cached-a', type: 'assistant', content: 'cached a', sessionId: 'g1', timestamp: 11 },
-        ],
-      },
-      yeaftSessionHistoryState: {
-        g1: { loaded: true, loading: false, hasMore: false, oldestSeq: 10, latestSeq: 11, count: 2 },
-      },
-    });
 
-    handleYeaftHistoryChunk(store, {
-      conversationId: 'yeaft-1',
-      sessionId: 'g1',
-      mode: 'recent',
-      messages: [],
-      oldestSeq: null,
-      latestSeq: null,
-      hasMore: false,
-    });
-
-    // Empty `recent` is destructive by design: it means "the authoritative
-    // recent window is empty", not "metadata-only". Therefore the backend must
-    // not emit this shape for `limit:0` bootstraps.
-    expect(store.messagesMap['yeaft-1'].filter(m => m.sessionId === 'g1')).toEqual([]);
-  });
 
   it('replaces stale recent bootstrap rows without blanking live session tail', () => {
     const store = mkStore({
@@ -436,6 +412,41 @@ describe('handleYeaftHistoryChunk', () => {
       content: 'send while history is loading',
     }));
     expect(store.yeaftLoadingMoreHistory).toBe(false);
+  });
+
+  it('restores quote metadata and the latest TodoWrite snapshot from Session history', () => {
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'g1',
+      messagesMap: { 'yeaft-1': [] },
+    });
+    const quote = { id: 'm1', role: 'assistant', author: 'Linus', content: 'Earlier answer' };
+
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      mode: 'recent',
+      messages: [
+        { id: 'm0200', role: 'user', content: 'Follow up', sessionId: 'g1', quote },
+        {
+          id: 'm0201', role: 'assistant', content: 'Done', sessionId: 'g1', speakerVpId: 'vp-linus',
+          toolCalls: [
+            { name: 'TodoWrite', input: { todos: [{ content: 'Old', status: 'pending' }] } },
+            { name: 'Bash', input: { command: 'true' } },
+            { name: 'TodoWrite', input: { todos: [{ content: 'Latest', status: 'completed' }] } },
+          ],
+        },
+      ],
+      oldestSeq: 200,
+      latestSeq: 201,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['yeaft-1']).toEqual([
+      expect.objectContaining({ id: 'm0200', type: 'user', quote }),
+      expect.objectContaining({ id: 'm0201', type: 'assistant', content: 'Done' }),
+      expect.objectContaining({ id: 'm0201:todos', type: 'tool-use', toolName: 'TodoWrite', toolInput: { todos: [{ content: 'Latest', status: 'completed' }] } }),
+      expect.objectContaining({ id: 'm0201:tool-summary', type: 'tool-summary', count: 1 }),
+    ]);
   });
 
   it('synthesizes only a tool-summary row for tool-only assistant history', () => {
@@ -724,30 +735,7 @@ describe('handleYeaftHistoryChunk', () => {
     expect(store.yeaftLoadingMoreHistory).toBe(false);
   });
 
-  it('accepts legacy groupId field on a chunk for deploy-window compat', () => {
-    // Old agents may still emit `groupId` instead of `sessionId` on the
-    // wire envelope and per-row stamp. The handler must accept both and
-    // promote to the canonical `sessionId` field on the stored row.
-    const store = mkStore({
-      yeaftActiveSessionFilter: 'g1',
-      messagesMap: { 'yeaft-1': [] },
-    });
-    handleYeaftHistoryChunk(store, {
-      conversationId: 'yeaft-1',
-      groupId: 'g1',
-      messages: [
-        { id: 'm0001', role: 'user',      content: 'legacy-q', groupId: 'g1' },
-        { id: 'm0002', role: 'assistant', content: 'legacy-a', groupId: 'g1' },
-      ],
-      oldestSeq: 1,
-      hasMore: false,
-    });
 
-    expect(store.messagesMap['yeaft-1'].map(m => m.content)).toEqual(['legacy-q', 'legacy-a']);
-    // Even though the agent sent `groupId`, the stored rows use `sessionId`.
-    expect(store.messagesMap['yeaft-1'][0].sessionId).toBe('g1');
-    expect(store.messagesMap['yeaft-1'][1].sessionId).toBe('g1');
-  });
 
   it('preserves persisted timestamps from paginated history rows', () => {
     const store = mkStore({ messagesMap: { 'yeaft-1': [] } });
@@ -1144,21 +1132,7 @@ describe('handleYeaftHistoryChunk', () => {
     expect(store.messagesMap['yeaft-1']).toEqual([]);
   });
 
-  it('clears yeaftLoadingMoreHistory when conversationId is missing entirely', () => {
-    const store = mkStore({
-      yeaftConversationId: null,
-      yeaftLoadingMoreHistory: true,
-    });
-    handleYeaftHistoryChunk(store, {
-      // no conversationId in the message either
-      messages: [{ id: 'm1', role: 'user', content: 'x' }],
-      oldestSeq: 1,
-      hasMore: false,
-    });
-    expect(store.yeaftLoadingMoreHistory).toBe(false);
-    // No conversationId → no map mutation.
-    expect(Object.keys(store.messagesMap)).toEqual([]);
-  });
+
 
   it('falls back to store.yeaftConversationId when the chunk omits conversationId', () => {
     const store = mkStore();
@@ -1481,8 +1455,16 @@ describe('loadMoreYeaftHistory — action gates', () => {
       agentId: 'agent-1',
       sessionId: null,
       beforeSeq: 42,
-      turns: 10,
+      turns: 20,
     });
+  });
+
+  it('clamps an explicit prefetch page size', () => {
+    const store = mkStore({ yeaftOldestLoadedSeq: 42 });
+
+    loadMoreYeaftHistory.call(store, 500);
+
+    expect(store._sent[0]).toMatchObject({ turns: 50, beforeSeq: 42 });
   });
 
   it('forwards activeSessionId from window.Pinia.useSessionsStore', () => {

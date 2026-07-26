@@ -22,7 +22,7 @@ vi.mock('../../../agent/yeaft/status-cache.js', () => ({
 
 const ctx = (await import('../../../agent/context.js')).default;
 const { ConversationStore } = await import('../../../agent/yeaft/conversation/persist.js');
-const { handleYeaftLoadHistory, __testSetSession, __testHooks } = await import('../../../agent/yeaft/web-bridge.js');
+const { handleYeaftLoadHistory, handleYeaftLoadMoreHistory, __testSetSession, __testHooks } = await import('../../../agent/yeaft/web-bridge.js');
 
 function flushMicrotasks() {
   return new Promise(resolve => setImmediate(resolve));
@@ -45,13 +45,14 @@ describe('Yeaft load-history first paint', () => {
     ctx.CONFIG = null;
   });
 
-  it('filters legacy internal-control rows in the visible-history fallback path', () => {
+  it('filters internal and model-only user-role rows in the visible-history fallback path', () => {
     const rows = [
       { id: 'm0001', role: 'user', content: 'visible q', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0002', role: 'user', content: '<task-result id="task_1" kind="shell" status="succeeded">\nPASS\n</task-result>', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0003', role: 'user', content: '[system note] You have called ListAgents with the same arguments 3 times. Previous result: {...}', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0004', role: 'assistant', content: 'visible a', sessionId: 'session-fast', threadId: 'main', speakerVpId: 'vp-linus' },
       { id: 'm0005', role: 'user', content: 'In docs, <task-result> is just prose', sessionId: 'session-fast', threadId: 'main' },
+      { id: 'm0006', role: 'user', content: 'model-only continuation', sessionId: 'session-fast', threadId: 'main', userAuthored: false },
     ];
     const page = __testHooks.loadVisibleGroupHistoryPage({
       loadOlderBySession() {
@@ -64,6 +65,69 @@ describe('Yeaft load-history first paint', () => {
       'visible a',
       'In docs, <task-result> is just prose',
     ]);
+  });
+
+  it('preserves Session message quotes in the history wire projection', () => {
+    const quote = {
+      id: 'm0001', role: 'assistant', author: 'Linus', content: 'Prior answer',
+      todos: [{ content: 'Verify', status: 'completed' }],
+    };
+    const projected = __testHooks.projectVisibleHistoryChunkMessages([
+      { id: 'm0002', role: 'user', content: 'Follow up', sessionId: 'session-fast', quote },
+    ]);
+
+    expect(projected[0]).toMatchObject({ id: 'm0002', quote });
+  });
+
+  it('projects the latest TodoWrite snapshot without counting it as a generic tool summary', () => {
+    const projected = __testHooks.projectVisibleHistoryChunkMessages([{
+      id: 'm0003',
+      role: 'assistant',
+      content: 'Progress',
+      sessionId: 'session-fast',
+      toolCalls: [
+        { id: 'todo-old', name: 'TodoWrite', input: { todos: [{ content: 'Old', status: 'pending' }] } },
+        { id: 'bash', name: 'Bash', input: { command: 'true' } },
+        { id: 'todo-new', name: 'TodoWrite', input: { todos: [{ content: 'New', status: 'completed' }] } },
+      ],
+    }]);
+
+    expect(projected[0]).toMatchObject({
+      todos: [{ content: 'New', status: 'completed' }],
+      toolSummaryCount: 1,
+    });
+  });
+
+  it('preserves TodoWrite through the real store page and history wire projection', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-todo-history-'));
+    try {
+      const store = new ConversationStore(dir);
+      store.append({ role: 'user', content: 'status?', sessionId: 'session-fast' });
+      store.append({
+        role: 'assistant',
+        content: 'Progress',
+        sessionId: 'session-fast',
+        speakerVpId: 'vp-linus',
+        toolCalls: [
+          { id: 'todo', name: 'TodoWrite', input: { todos: [{ content: 'Verify', status: 'completed' }] } },
+          { id: 'bash', name: 'Bash', input: { command: 'true' } },
+        ],
+      });
+
+      const page = __testHooks.loadVisibleGroupHistoryPage(store, 'session-fast', 1);
+      const projected = __testHooks.projectVisibleHistoryChunkMessages(page.messages);
+
+      expect(page.messages[1]).toMatchObject({
+        todos: [{ content: 'Verify', status: 'completed' }],
+        toolSummaryCount: 1,
+      });
+      expect(projected[1]).toMatchObject({
+        todos: [{ content: 'Verify', status: 'completed' }],
+        toolSummaryCount: 1,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('preserves the canonical image asset anchor in the history wire projection', () => {
@@ -118,6 +182,33 @@ describe('Yeaft load-history first paint', () => {
       }),
     ]);
     expect(projected[0].toolSummaryCount).toBeUndefined();
+  });
+
+  it('loads older pages from persisted history before runtime boot resolves', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-fast-older-history-'));
+    try {
+      ctx.CONFIG = { yeaftDir: dir };
+      const store = new ConversationStore(dir);
+      const appended = store.appendBatch(Array.from({ length: 24 }, (_, index) => ({
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        content: `history ${index + 1}`,
+        sessionId: 'session-fast-older',
+        ...(index % 2 === 0 ? {} : { speakerVpId: 'vp-linus' }),
+      })));
+
+      await handleYeaftLoadMoreHistory({
+        sessionId: 'session-fast-older',
+        beforeSeq: store.getMessageSeqById(appended.at(-1).id) + 1,
+        turns: 20,
+      });
+
+      expect(loadSession).not.toHaveBeenCalled();
+      const chunk = sent.find(message => message.type === 'yeaft_history_chunk' && message.mode === 'older');
+      expect(chunk).toMatchObject({ sessionId: 'session-fast-older', turns: 20 });
+      expect(chunk.messages).toHaveLength(24);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('replays the recent message window before full session boot resolves', async () => {
@@ -377,6 +468,7 @@ describe('Yeaft load-history first paint', () => {
         role: 'user',
         content: 'hello at the real send time',
         time: '2026-06-20T01:02:03.456Z',
+        userAuthored: true,
       });
     } finally {
       __testSetSession(null);

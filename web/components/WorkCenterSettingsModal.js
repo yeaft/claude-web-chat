@@ -44,6 +44,7 @@ function defaultSettingsDraft() {
     defaultWorkDir: '',
     globalInstructions: '',
     modelPolicy: { mode: 'inherit', model: null, effort: null },
+    coordinatorModelPolicy: { mode: 'inherit', model: null, effort: 'high' },
     actionModelPolicies: Object.fromEntries(ACTION_TYPES.map(type => [type, {
       mode: 'inherit', model: null, effort: ['triage', 'research', 'design', 'diagnose', 'review'].includes(type) ? 'high' : 'medium',
     }])),
@@ -68,6 +69,8 @@ function defaultSettingsDraft() {
 export function supportsDynamicSettings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   if (!value.modelPolicy || typeof value.modelPolicy !== 'object' || Array.isArray(value.modelPolicy)) return false;
+  if (!value.coordinatorModelPolicy || typeof value.coordinatorModelPolicy !== 'object'
+      || Array.isArray(value.coordinatorModelPolicy)) return false;
   if (typeof value.globalInstructions !== 'string') return false;
   if (!value.actionInstructions || typeof value.actionInstructions !== 'object' || Array.isArray(value.actionInstructions)) return false;
   if (!value.actionModelPolicies || typeof value.actionModelPolicies !== 'object' || Array.isArray(value.actionModelPolicies)) return false;
@@ -109,6 +112,12 @@ export function normalizeSettingsDraft(value, defaultStageInstructions = {}) {
       effort: null,
       ...(migratedModelPolicy || {}),
       ...(source.modelPolicy || {}),
+    },
+    coordinatorModelPolicy: {
+      mode: 'inherit',
+      model: null,
+      effort: 'high',
+      ...(source.coordinatorModelPolicy || {}),
     },
     actionModelPolicies: Object.fromEntries(ACTION_TYPES.map(type => [
       type,
@@ -368,6 +377,7 @@ export default {
     normalizeDraftEffort() {
       if (!this.draft?.modelPolicy || !Array.isArray(this.runtime?.models)) return;
       this.normalizeStageEffort({ modelPolicy: this.draft.modelPolicy });
+      this.normalizeStageEffort({ modelPolicy: this.draft.coordinatorModelPolicy });
       for (const policy of Object.values(this.draft.actionModelPolicies || {})) {
         this.normalizeStageEffort({ modelPolicy: policy });
       }
@@ -489,6 +499,29 @@ export default {
                     <input v-model.number="draft.maxConcurrentActions" type="number" min="1" max="12" :disabled="settingsUnsupported">
                     <small>{{ $t('workCenter.settings.maxConcurrentActionsHelp') }}</small>
                   </label>
+                </article>
+                <article class="work-center-model-stage">
+                  <strong>{{ $t('workCenter.settings.coordinatorModel') }}</strong>
+                  <label>{{ $t('workCenter.settings.modelPolicy') }}
+                    <select :value="draft.coordinatorModelPolicy.mode" :disabled="settingsUnsupported" @change="setModelMode({ modelPolicy: draft.coordinatorModelPolicy }, $event.target.value)">
+                      <option value="inherit">{{ $t('workCenter.settings.model.inherit') }}</option>
+                      <option value="primary">{{ $t('workCenter.settings.model.primary') }}</option>
+                      <option value="fast">{{ $t('workCenter.settings.model.fast') }}</option>
+                      <option value="specific">{{ $t('workCenter.settings.model.specific') }}</option>
+                    </select>
+                  </label>
+                  <label v-if="draft.coordinatorModelPolicy.mode === 'specific'">{{ $t('workCenter.settings.model') }}
+                    <select :value="draft.coordinatorModelPolicy.model" :disabled="settingsUnsupported" @change="setStageModel({ modelPolicy: draft.coordinatorModelPolicy }, $event.target.value)">
+                      <option v-for="model in models" :key="model.ref || model.id" :value="model.ref || model.id">{{ model.provider }} · {{ model.label || model.id }}</option>
+                    </select>
+                  </label>
+                  <label class="work-center-model-effort">{{ $t('workCenter.settings.effort') }}
+                    <select v-model="draft.coordinatorModelPolicy.effort" :disabled="settingsUnsupported || effortOptionsForStage({ modelPolicy: draft.coordinatorModelPolicy }).length === 0">
+                      <option :value="null">{{ $t('workCenter.settings.effortDefault') }}</option>
+                      <option v-for="effort in effortOptionsForStage({ modelPolicy: draft.coordinatorModelPolicy })" :key="effort" :value="effort">{{ effort }}</option>
+                    </select>
+                  </label>
+                  <small>{{ $t('workCenter.settings.coordinatorModelHelp') }}</small>
                 </article>
                 <article v-for="type in actionTypes" :key="type" class="work-center-model-stage">
                   <strong>{{ $t('workCenter.action.' + type) }}</strong>

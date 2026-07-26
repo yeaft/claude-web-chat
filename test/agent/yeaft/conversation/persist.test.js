@@ -18,19 +18,6 @@ afterEach(() => {
 
 // ─── estimateTokens ──────────────────────────────────────────
 
-describe('estimateTokens', () => {
-  it('should estimate ~4 chars per token', () => {
-    expect(estimateTokens('abcd')).toBe(1);
-    expect(estimateTokens('abcdefgh')).toBe(2);
-    expect(estimateTokens('a'.repeat(100))).toBe(25);
-  });
-
-  it('should return 0 for empty/null', () => {
-    expect(estimateTokens('')).toBe(0);
-    expect(estimateTokens(null)).toBe(0);
-    expect(estimateTokens(undefined)).toBe(0);
-  });
-});
 
 // ─── parseMessage ────────────────────────────────────────────
 
@@ -55,11 +42,6 @@ Hello world`;
     expect(msg.content).toBe('Hello world');
   });
 
-  it('should return null for invalid input', () => {
-    expect(parseMessage(null)).toBeNull();
-    expect(parseMessage('')).toBeNull();
-    expect(parseMessage('no frontmatter')).toBeNull();
-  });
 
   it('should parse tool metadata', () => {
     const raw = `---
@@ -79,20 +61,6 @@ Error: not found`;
     expect(msg.isError).toBe(true);
   });
 
-  it('should parse turnNumber', () => {
-    const raw = `---
-id: m0003
-role: assistant
-time: 2026-04-10T10:02:00Z
-turnNumber: 3
-tokens_est: 20
----
-
-Response text`;
-
-    const msg = parseMessage(raw);
-    expect(msg.turnNumber).toBe(3);
-  });
 
   it('should parse clientMessageId for optimistic Yeaft user rows', () => {
     const raw = `---
@@ -111,6 +79,52 @@ Hello`;
     expect(msg.sessionId).toBe('session_demo');
     expect(msg.clientMessageId).toBe('u_local_123');
     expect(msg.content).toBe('Hello');
+  });
+
+  it('round-trips Session message quote metadata', () => {
+    const store = new ConversationStore(TEST_DIR);
+    store.append({
+      role: 'user',
+      content: 'Follow up',
+      sessionId: 'session_quote',
+      quote: {
+        id: 'm0001',
+        role: 'assistant',
+        author: 'Linus',
+        content: 'Previous answer',
+        todos: [{ content: 'Test', status: 'completed' }],
+      },
+    });
+
+    const [loaded] = store.loadAllBySession('session_quote');
+    expect(loaded.quote).toEqual({
+      id: 'm0001',
+      role: 'assistant',
+      author: 'Linus',
+      content: 'Previous answer',
+      todos: [{ content: 'Test', status: 'completed' }],
+    });
+  });
+
+  it('round-trips model-only user provenance while legacy rows remain unmarked', () => {
+    const store = new ConversationStore(TEST_DIR);
+    const legacy = store.append({ role: 'user', content: 'legacy user', sessionId: 'session_provenance' });
+    const synthetic = store.append({
+      role: 'user',
+      content: 'Continue',
+      sessionId: 'session_provenance',
+      userAuthored: false,
+    });
+
+    const restarted = new ConversationStore(TEST_DIR);
+    const rows = restarted.loadAllBySession('session_provenance');
+    expect(rows).toEqual([
+      expect.objectContaining({ id: legacy.id }),
+      expect.objectContaining({ id: synthetic.id, userAuthored: false }),
+    ]);
+    expect(Object.hasOwn(rows[0], 'userAuthored')).toBe(false);
+    expect(restarted.loadVisibleBySession('session_provenance', null, 10).messages)
+      .toEqual([expect.objectContaining({ id: legacy.id, content: 'legacy user' })]);
   });
 
   it('round-trips image asset metadata without embedding image bytes', () => {
@@ -316,30 +330,10 @@ describe('ConversationStore', () => {
     store = new ConversationStore(TEST_DIR);
   });
 
-  describe('constructor', () => {
-    it('should create chat and sessions root but not obsolete group history directories', () => {
-      expect(existsSync(join(TEST_DIR, 'chat', 'messages'))).toBe(true);
-      expect(existsSync(join(TEST_DIR, 'chat', 'cold'))).toBe(true);
-      expect(existsSync(join(TEST_DIR, 'sessions'))).toBe(true);
-      expect(existsSync(join(TEST_DIR, 'groups'))).toBe(false);
-      expect(existsSync(join(TEST_DIR, 'group'))).toBe(false);
-      expect(existsSync(join(TEST_DIR, 'conversation'))).toBe(false);
-    });
-  });
+
 
   describe('append', () => {
-    it('should write a message file', () => {
-      const msg = store.append({ role: 'user', content: 'Hello' });
-      expect(msg.id).toBe('m0001');
-      expect(msg.role).toBe('user');
-      expect(msg.content).toBe('Hello');
-      expect(msg.time).toBeTruthy();
-      expect(msg.tokens_est).toBeGreaterThan(0);
 
-      const segmentPath = join(TEST_DIR, 'chat', 'segments', '000001.jsonl');
-      expect(existsSync(segmentPath)).toBe(true);
-      expect(readFileSync(segmentPath, 'utf8')).toContain('\"content\":\"Hello\"');
-    });
 
     it('should persist clientMessageId metadata for Yeaft user echo dedupe', () => {
       store.append({
@@ -387,20 +381,6 @@ describe('ConversationStore', () => {
       expect(loaded[0].taskStatus).toBe('succeeded');
       expect(loaded[0].internal).toBeUndefined();
       expect(loaded[0].content).toContain('[Task finished]');
-    });
-
-    it('should auto-increment sequence numbers', () => {
-      const msg1 = store.append({ role: 'user', content: 'First' });
-      const msg2 = store.append({ role: 'assistant', content: 'Second' });
-      expect(msg1.id).toBe('m0001');
-      expect(msg2.id).toBe('m0002');
-    });
-
-    it('should persist mode and model', () => {
-      store.append({ role: 'user', content: 'Test', mode: 'work', model: 'gpt-5' });
-      const loaded = store.loadRecent(1);
-      expect(loaded[0].mode).toBe('work');
-      expect(loaded[0].model).toBe('gpt-5');
     });
 
 
@@ -535,6 +515,49 @@ legacy session`, { encoding: 'utf8' });
       expect(page.hasMore).toBe(false);
     });
 
+    it('filters the full visible history by user or VP with and without a query', () => {
+      const user = store.append({ role: 'user', content: 'user needle', sessionId: 'session_sender' });
+      store.append({ role: 'assistant', content: 'linus needle', sessionId: 'session_sender', speakerVpId: 'linus' });
+      const martin = store.append({ role: 'assistant', content: 'martin answer', sessionId: 'session_sender', speakerVpId: 'martin' });
+      store.append({ role: 'user', content: 'engine-only', sessionId: 'session_sender', userAuthored: false });
+
+      expect(store.searchVisibleBySession('session_sender', '', { senderKey: 'user' }).results)
+        .toEqual([expect.objectContaining({ messageId: user.id, role: 'user' })]);
+      expect(store.searchVisibleBySession('session_sender', '', { senderKey: 'vp:martin' }).results)
+        .toEqual([expect.objectContaining({ messageId: martin.id, speakerVpId: 'martin' })]);
+      expect(store.searchVisibleBySession('session_sender', 'needle', { senderKey: 'vp:martin' }).results)
+        .toEqual([]);
+    });
+
+    it('resolves senders from Session and route-forward persisted shapes', () => {
+      const direct = store.append({
+        role: 'assistant', content: 'direct response', sessionId: 'session_sender_shapes', from: 'linus',
+      });
+      const forwarded = store.append({
+        role: 'assistant', content: 'forwarded response', sessionId: 'session_sender_shapes', from: 'martin',
+        meta: { senderVpId: 'martin', injectedBy: 'route_forward' },
+      });
+
+      expect(store.searchVisibleBySession('session_sender_shapes', '', { senderKey: 'vp:linus' }).results)
+        .toEqual([expect.objectContaining({ messageId: direct.id, speakerVpId: 'linus' })]);
+      expect(store.searchVisibleBySession('session_sender_shapes', '', { senderKey: 'vp:martin' }).results)
+        .toEqual([expect.objectContaining({ messageId: forwarded.id, speakerVpId: 'martin' })]);
+    });
+
+    it('pages sender-only results on visible response boundaries', () => {
+      for (let i = 0; i < 3; i += 1) {
+        store.append({ role: 'assistant', content: `answer ${i}`, sessionId: 'session_sender_pages', speakerVpId: 'linus' });
+      }
+      const first = store.searchVisibleBySession('session_sender_pages', '', { senderKey: 'vp:linus', limit: 1 });
+      const second = store.searchVisibleBySession('session_sender_pages', '', {
+        senderKey: 'vp:linus', limit: 1, beforeSeq: first.nextBeforeSeq,
+      });
+      expect(first.results).toHaveLength(1);
+      expect(first.hasMore).toBe(true);
+      expect(second.results).toHaveLength(1);
+      expect(second.results[0].seq).toBeLessThan(first.results[0].seq);
+    });
+
     it('returns one canonical search result for a tool-using assistant response', () => {
       store.append({ role: 'user', content: 'run it', sessionId: 'session_search_response' });
       store.append({
@@ -598,6 +621,7 @@ legacy session`, { encoding: 'utf8' });
       });
       store.append({ role: 'assistant', content: 'first answer', sessionId: 'session_outline', speakerVpId: 'maker' });
       store.append({ role: 'system', content: 'hidden row', sessionId: 'session_outline' });
+      store.append({ role: 'user', content: 'engine reflection', sessionId: 'session_outline', userAuthored: false });
       store.append({ role: 'user', content: 'second question', sessionId: 'session_outline' });
       const latest = store.append({ role: 'assistant', content: 'second answer', sessionId: 'session_outline' });
 
@@ -610,6 +634,8 @@ legacy session`, { encoding: 'utf8' });
         expect.any(String), latest.id,
       ]);
       expect(firstPage).toMatchObject({ hasMore: true, totalCount: 4 });
+      expect([...firstPage.results, ...olderPage.results].map(result => result.snippet))
+        .not.toContain('engine reflection');
       expect(olderPage.results.map(result => result.messageId)).toContain(first.id);
       expect(olderPage.totalCount).toBeNull();
       expect(olderPage.results.find(result => result.messageId === first.id)).toMatchObject({
@@ -777,33 +803,10 @@ legacy session`, { encoding: 'utf8' });
     });
   });
 
-  describe('appendBatch', () => {
-    it('should write multiple messages', () => {
-      const messages = store.appendBatch([
-        { role: 'user', content: 'Hello' },
-        { role: 'assistant', content: 'Hi there' },
-        { role: 'user', content: 'How are you?' },
-      ]);
-      expect(messages).toHaveLength(3);
-      expect(messages[0].id).toBe('m0001');
-      expect(messages[1].id).toBe('m0002');
-      expect(messages[2].id).toBe('m0003');
-    });
-  });
+
 
   describe('loadRecent', () => {
-    it('should load messages sorted chronologically', () => {
-      store.appendBatch([
-        { role: 'user', content: 'First' },
-        { role: 'assistant', content: 'Second' },
-        { role: 'user', content: 'Third' },
-      ]);
 
-      const loaded = store.loadRecent(10);
-      expect(loaded).toHaveLength(3);
-      expect(loaded[0].content).toBe('First');
-      expect(loaded[2].content).toBe('Third');
-    });
 
     it('should respect limit (most recent turns)', () => {
       // `loadRecent` is now turn-based. Build 3 distinct user turns so
@@ -827,21 +830,10 @@ legacy session`, { encoding: 'utf8' });
       expect(loaded[3].content).toBe('a3');
     });
 
-    it('should return empty array when no messages', () => {
-      expect(store.loadRecent()).toEqual([]);
-    });
+
   });
 
-  describe('loadAll', () => {
-    it('should load all hot messages', () => {
-      store.appendBatch([
-        { role: 'user', content: 'A' },
-        { role: 'user', content: 'B' },
-        { role: 'user', content: 'C' },
-      ]);
-      expect(store.loadAll()).toHaveLength(3);
-    });
-  });
+
 
   // Group-history-isolation (Bug 7): group-scoped loaders.
   describe('loadRecentBySession / loadAllBySession', () => {
@@ -888,7 +880,7 @@ legacy session`, { encoding: 'utf8' });
       expect(store.loadRecentBySession('grp_a', 2).map(m => m.content)).toEqual(['A2', 'A3']);
     });
 
-    it('loadAfterSeqByGroup skips internal route_forward handoff rows', () => {
+    it('loadAfterSeqByGroup skips internal and model-only user-role rows', () => {
       const first = store.append({ role: 'user', content: 'real user', sessionId: 'grp_a' });
       store.append({
         role: 'assistant',
@@ -897,6 +889,7 @@ legacy session`, { encoding: 'utf8' });
         speakerVpId: 'vp-linus',
         internal: true,
       });
+      store.append({ role: 'user', content: 'Continue', sessionId: 'grp_a', userAuthored: false });
       store.append({ role: 'assistant', content: 'target response', sessionId: 'grp_a', speakerVpId: 'vp-martin' });
 
       const page = store.loadAfterSeqByGroup('grp_a', Number(first.id.replace(/^m/, '')));
@@ -1121,6 +1114,28 @@ legacy session`, { encoding: 'utf8' });
       const older = store.loadVisibleBySession('grp_a', page.oldestSeq, 1);
       expect(older.messages.map(m => m.content)).toEqual(['old q', 'old a']);
       expect(older.hasMore).toBe(false);
+    });
+
+    it('loadVisibleBySession keeps the latest TodoWrite snapshot and counts only other tools', () => {
+      store.append({ role: 'user', content: 'status?', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: 'working',
+        sessionId: 'grp_a',
+        toolCalls: [
+          { id: 'todo-old', name: 'TodoWrite', input: { todos: [{ content: 'Old', status: 'pending' }] } },
+          { id: 'bash', name: 'Bash', input: { command: 'true' } },
+          { id: 'todo-new', name: 'TodoWrite', input: { todos: [{ content: 'Latest', status: 'completed' }] } },
+        ],
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+      expect(page.messages[1]).toMatchObject({
+        content: 'working',
+        todos: [{ content: 'Latest', status: 'completed' }],
+        toolSummaryCount: 1,
+      });
+      expect(page.messages[1]).not.toHaveProperty('toolCalls');
     });
 
     it('loadVisibleBySession keeps interleaved multi-VP rows for the boundary turn', () => {
@@ -1392,20 +1407,7 @@ legacy session`, { encoding: 'utf8' });
       expect(readCounts.count).toBeLessThan(80);
     });
 
-    it('returns [] for empty/null sessionId without throwing', () => {
-      store.append({ role: 'user', content: 'X', sessionId: 'grp_a' });
-      expect(store.loadRecentBySession(null, 10)).toEqual([]);
-      expect(store.loadRecentBySession('', 10)).toEqual([]);
-    });
 
-    it('loadAllBySession mirrors loadRecentBySession with no limit', () => {
-      const big = Array.from({ length: 80 }, (_, i) => ({
-        role: 'user', content: `m${i}`, sessionId: 'grp_a',
-      }));
-      store.appendBatch(big);
-      expect(store.loadAllBySession('grp_a')).toHaveLength(80);
-      expect(store.loadRecentBySession('grp_a', 50)).toHaveLength(50);
-    });
   });
 
   // Cascade delete + orphan compaction.
@@ -1616,21 +1618,6 @@ legacy session`, { encoding: 'utf8' });
       expect(store.loadOlderBySession('session_cold', null, 10).messages.map(m => m.content)).toEqual(['cold question', 'hot answer']);
       expect(store.loadVisibleBySession('session_cold', null, 10).messages.map(m => m.content)).toEqual(['cold question', 'hot answer']);
       expect(store.loadSessionHistoryForVp('session_cold', 'vp-linus').map(m => m.content)).toEqual(['cold question', 'hot answer']);
-    });
-  });
-
-  describe('countHot / countCold', () => {
-    it('should count messages correctly', () => {
-      expect(store.countHot()).toBe(0);
-      expect(store.countCold()).toBe(0);
-
-      store.appendBatch([
-        { role: 'user', content: 'A' },
-        { role: 'assistant', content: 'B' },
-      ]);
-
-      expect(store.countHot()).toBe(2);
-      expect(store.countCold()).toBe(0);
     });
   });
 

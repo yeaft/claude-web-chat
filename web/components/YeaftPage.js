@@ -24,7 +24,59 @@ import {
 import { shouldShowYeaftOnboardingGuide } from '../utils/yeaftOnboarding.js';
 import { hasUsableYeaftAgent, resolveActiveSessionIdForSettings } from '../utils/yeaftSessionSettings.js';
 import { shouldCloseLlmConfigAfterSave } from '../utils/llm-config-save.js';
-import { revealOutlineResult } from '../utils/message-search-navigation.js';
+import { revealOutlineResult, shouldDismissHistorySearch } from '../utils/message-search-navigation.js';
+
+const HISTORY_SENDER_PREFERENCES_KEY = 'yeaft-history-sender-preferences';
+
+function historySenderPreferenceId(agentId, sessionId) {
+  return agentId && sessionId ? `${agentId}:${sessionId}` : '';
+}
+
+function resolveHistorySenderStorage(storage) {
+  if (storage !== undefined) return storage;
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readHistorySenderPreferences(storage) {
+  try {
+    const value = JSON.parse(storage?.getItem(HISTORY_SENDER_PREFERENCES_KEY) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+export function loadHistorySenderPreference({ agentId, sessionId, validKeys = [], storage } = {}) {
+  const id = historySenderPreferenceId(agentId, sessionId);
+  if (!id) return '';
+  const resolvedStorage = resolveHistorySenderStorage(storage);
+  const preferences = readHistorySenderPreferences(resolvedStorage);
+  const senderKey = typeof preferences[id] === 'string' ? preferences[id] : '';
+  if (!senderKey || validKeys.includes(senderKey)) return senderKey;
+  delete preferences[id];
+  try { resolvedStorage?.setItem(HISTORY_SENDER_PREFERENCES_KEY, JSON.stringify(preferences)); } catch { /* best effort */ }
+  return '';
+}
+
+export function saveHistorySenderPreference({ agentId, sessionId, senderKey, storage } = {}) {
+  const id = historySenderPreferenceId(agentId, sessionId);
+  if (!id) return false;
+  const resolvedStorage = resolveHistorySenderStorage(storage);
+  if (!resolvedStorage) return false;
+  const preferences = readHistorySenderPreferences(resolvedStorage);
+  if (senderKey) preferences[id] = senderKey;
+  else delete preferences[id];
+  try {
+    resolvedStorage.setItem(HISTORY_SENDER_PREFERENCES_KEY, JSON.stringify(preferences));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function sessionTaskSortTime(task) {
   const raw = task?.updatedAt || task?.endedAt || task?.createdAt;
@@ -169,9 +221,13 @@ export default {
           ref="historySearchRef"
           :outline-state="historyOutlineState"
           :search-state="store.yeaftHistorySearchState"
-          :active-index="historySearchActiveIndex"
+          :sender-options="historySenderOptions"
+          :active-message-id="historySearchActiveMessageId"
           @query="onHistorySearchQuery"
-          @move="historySearchActiveIndex = $event"
+          @sender="onHistorySenderChange"
+          @sender-invalid="onHistorySenderInvalid"
+          @move="historySearchActiveMessageId = $event"
+          @preview="previewHistorySearchResult"
           @select="selectHistorySearchResult"
           @load-older="loadOlderHistoryOutline"
           @load-more-search="loadMoreHistorySearchResults"
@@ -282,7 +338,12 @@ export default {
             {{ $t('yeaft.session.empty.cta') }}
           </button>
         </div>
-        <MessageList ref="messageListRef" v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty" />
+        <MessageList
+          ref="messageListRef"
+          v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty"
+          @quote-message="setMessageQuote"
+          @edit-message-as-new="editMessageAsNew"
+        />
         </div>
 
         <div
@@ -311,10 +372,13 @@ export default {
           :conversation-id="store.yeaftConversationId"
           :draft-key="yeaftInputDraftKey"
           :send-fn="sendMessage"
+          :quote="messageQuote"
           :cancel-fn="cancelYeaft"
           :show-stop="isProcessing"
           :work-item-fn="openWorkItemDraft"
           placeholder-key="yeaft.placeholder"
+          @remove-quote="messageQuote = null"
+          @quote-consumed="messageQuote = null"
         />
         </div><!-- /.yeaft-main-center -->
       </div>
@@ -429,18 +493,64 @@ export default {
     // pane emits a VP mention request. Keeps the Yeaft-specific @-syntax out
     // of ChatInput (review fix — Fowler C2, PR #763).
     const chatInputRef = Vue.ref(null);
+    const messageQuote = Vue.ref(null);
     const pageRef = Vue.ref(null);
     const messageListRef = Vue.ref(null);
     const historySearchRef = Vue.ref(null);
     const historySearchOpen = Vue.ref(false);
-    const historySearchActiveIndex = Vue.ref(0);
+    const historySearchActiveMessageId = Vue.ref(null);
     const historyOutlineState = Vue.computed(() => store.getYeaftHistoryOutlineState());
+    const historySenderOptions = Vue.computed(() => {
+      const gs = sessionsStore();
+      const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
+      const session = sessionId ? resolveTimelineSession(gs, sessionId, store.currentAgent || null) : null;
+      const roster = Array.isArray(session?.roster) ? session.roster : [];
+      return [
+        { key: 'user', label: $t('yeaft.outline.you') },
+        ...roster.map(vpId => ({ key: `vp:${vpId}`, label: vpStore.vpLabel(vpId) })),
+      ];
+    });
+    const historySearchQuery = Vue.ref(store.yeaftHistorySearchState?.query || '');
     let historySearchTimer = null;
+    const sessionsStore = () => {
+      try {
+        return window.Pinia?.useSessionsStore?.() || null;
+      } catch { return null; }
+    };
+    const historySearchIdentity = () => {
+      const gs = sessionsStore();
+      return {
+        agentId: store.currentAgent || null,
+        sessionId: store.yeaftActiveSessionFilter || gs?.activeSessionId || null,
+      };
+    };
+    const rememberedHistorySender = () => loadHistorySenderPreference({
+      ...historySearchIdentity(),
+      validKeys: historySenderOptions.value.map(option => option.key),
+    });
+    const resetHistorySearchState = (senderKey = '') => {
+      const { agentId, sessionId } = historySearchIdentity();
+      store.yeaftHistorySearchState = {
+        requestId: null,
+        agentId,
+        sessionId,
+        query: '',
+        senderKey,
+        loading: false,
+        results: [],
+        hasMore: false,
+        nextBeforeSeq: null,
+        error: null,
+      };
+    };
     const yeaftInputDraftKey = Vue.computed(() => {
       const agentId = store.currentAgent || 'agent';
       const gs = sessionsStore();
       const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || 'session';
       return `yeaft:${agentId}:${sessionId}`;
+    });
+    Vue.watch(yeaftInputDraftKey, () => {
+      messageQuote.value = null;
     });
     let mobileViewportRaf = null;
     let mobileViewportRecoverTimer = null;
@@ -666,23 +776,47 @@ export default {
         clearTimeout(historySearchTimer);
         historySearchTimer = null;
       }
-      store.searchYeaftHistory('');
+      historySearchQuery.value = '';
+      resetHistorySearchState(rememberedHistorySender());
       historySearchOpen.value = false;
-      historySearchActiveIndex.value = 0;
+      historySearchActiveMessageId.value = null;
     };
     const openHistorySearch = () => {
+      const senderKey = rememberedHistorySender();
+      historySearchQuery.value = '';
+      resetHistorySearchState(senderKey);
       historySearchOpen.value = true;
       store.loadYeaftHistoryOutline();
+      if (senderKey) store.searchYeaftHistory('', { senderKey });
       Vue.nextTick(() => historySearchRef.value?.focus?.());
     };
     const toggleHistorySearch = () => {
       if (historySearchOpen.value) closeHistorySearch();
       else openHistorySearch();
     };
+    const closeHistorySearchOutside = (event) => {
+      if (historySearchOpen.value && shouldDismissHistorySearch(event.target)) closeHistorySearch();
+    };
     const onHistorySearchQuery = (query) => {
+      historySearchQuery.value = query;
       if (historySearchTimer) clearTimeout(historySearchTimer);
-      historySearchActiveIndex.value = 0;
-      historySearchTimer = setTimeout(() => store.searchYeaftHistory(query), 220);
+      historySearchActiveMessageId.value = null;
+      historySearchTimer = setTimeout(() => {
+        historySearchTimer = null;
+        store.searchYeaftHistory(historySearchQuery.value, { senderKey: store.yeaftHistorySearchState.senderKey });
+      }, 220);
+    };
+    const onHistorySenderChange = (senderKey) => {
+      if (historySearchTimer) clearTimeout(historySearchTimer);
+      historySearchTimer = null;
+      historySearchActiveMessageId.value = null;
+      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey });
+      store.searchYeaftHistory(historySearchQuery.value, { senderKey });
+    };
+    const onHistorySenderInvalid = () => {
+      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey: '' });
+      historySearchActiveMessageId.value = null;
+      store.searchYeaftHistory(historySearchQuery.value, { senderKey: '' });
     };
     const loadOlderHistoryOutline = (scrollSnapshot) => {
       if (!store.loadYeaftHistoryOutline({ append: true })) return;
@@ -695,10 +829,18 @@ export default {
         },
       );
     };
-    const loadMoreHistorySearchResults = () => store.searchYeaftHistory(store.yeaftHistorySearchState.query, { append: true });
+    const loadMoreHistorySearchResults = () => store.searchYeaftHistory(store.yeaftHistorySearchState.query, { append: true, senderKey: store.yeaftHistorySearchState.senderKey });
+    const previewHistorySearchResult = result => {
+      // Warm a bounded anchor window while the user points at a result. The
+      // store de-duplicates this with the eventual click, so preview never
+      // creates parallel reads and clicking an already-cached turn is instant.
+      if (store.hasCapability('session_history_window_prefetch')) {
+        store.loadYeaftHistoryWindow(result);
+      }
+    };
     const selectHistorySearchResult = result => revealOutlineResult({
       result,
-      loadWindow: candidate => store.loadYeaftHistoryWindow(candidate),
+      revealWindow: candidate => store.revealYeaftHistoryResult(candidate),
       nextTick: () => Vue.nextTick(),
       revealMessage: messageId => messageListRef.value?.revealMessage?.(messageId),
       isMobile: isMobile.value,
@@ -732,6 +874,7 @@ export default {
       window.visualViewport?.addEventListener('resize', scheduleMobileViewportRecovery);
       window.visualViewport?.addEventListener('scroll', scheduleMobileViewportRecovery);
       document.addEventListener('click', closeModelDropdownOutside);
+      document.addEventListener('click', closeHistorySearchOutside);
       document.addEventListener('keydown', onKeyDown);
       scheduleMobileViewportSync();
     });
@@ -742,6 +885,7 @@ export default {
       window.visualViewport?.removeEventListener('resize', scheduleMobileViewportRecovery);
       window.visualViewport?.removeEventListener('scroll', scheduleMobileViewportRecovery);
       document.removeEventListener('click', closeModelDropdownOutside);
+      document.removeEventListener('click', closeHistorySearchOutside);
       document.removeEventListener('keydown', onKeyDown);
       if (mobileViewportRaf != null) cancelAnimationFrame(mobileViewportRaf);
       if (mobileViewportRecoverTimer) clearTimeout(mobileViewportRecoverTimer);
@@ -756,24 +900,14 @@ export default {
     });
     Vue.watch(() => [store.currentAgent, store.yeaftActiveSessionFilter], () => {
       closeHistorySearch();
-      store.yeaftHistorySearchState = {
-        requestId: null,
-        agentId: null,
-        sessionId: null,
-        query: '',
-        loading: false,
-        results: [],
-        hasMore: false,
-        nextBeforeSeq: null,
-        error: null,
-      };
+      resetHistorySearchState(rememberedHistorySender());
     });
 
     const goBack = () => {
       store.leaveYeaft();
     };
 
-    const sendMessage = (text, attachmentInfos) => {
+    const sendMessage = (text, attachmentInfos, quote) => {
       // task-334m: Pre-check `no_default_vp` before the WS round-trip.
       // If the active group has no roster + no defaultVpId, surface the
       // invite modal instead of sending a message that would round-trip
@@ -796,7 +930,18 @@ export default {
       // store helper strips `fileId` shape for the wire and keeps the
       // preview/name/mimeType on the local message render.
       const attachments = Array.isArray(attachmentInfos) ? attachmentInfos : undefined;
-      store.sendYeaftSessionMessage({ groupId, text, mentions, attachments });
+      store.sendYeaftSessionMessage({ groupId, text, mentions, attachments, quote });
+    };
+
+    const setMessageQuote = (quote) => {
+      if (!quote) return;
+      messageQuote.value = quote;
+      chatInputRef.value?.focusInput?.();
+    };
+
+    const editMessageAsNew = (text) => {
+      messageQuote.value = null;
+      chatInputRef.value?.replaceDraft?.(text || '');
     };
 
     // Yeaft stop is session-scoped. The virtual Yeaft conversation can have
@@ -840,11 +985,6 @@ export default {
       window.location.reload();
     };
 
-    const sessionsStore = () => {
-      try {
-        return window.Pinia?.useSessionsStore?.() || null;
-      } catch { return null; }
-    };
     const isProcessing = Vue.computed(() => {
       const gs = sessionsStore();
       const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
@@ -1372,16 +1512,21 @@ export default {
       settingsInitialTab,
       settingsInitialEditVpId,
       chatInputRef,
+      messageQuote,
       messageListRef,
       historySearchRef,
       historySearchOpen,
-      historySearchActiveIndex,
+      historySearchActiveMessageId,
       historyOutlineState,
+      historySenderOptions,
       toggleHistorySearch,
       closeHistorySearch,
       onHistorySearchQuery,
+      onHistorySenderChange,
+      onHistorySenderInvalid,
       loadOlderHistoryOutline,
       loadMoreHistorySearchResults,
+      previewHistorySearchResult,
       selectHistorySearchResult,
       yeaftInputDraftKey,
       openSettings,
@@ -1394,6 +1539,8 @@ export default {
       isProcessing,
       goBack,
       sendMessage,
+      setMessageQuote,
+      editMessageAsNew,
       cancelYeaft,
       openWorkItemDraft,
       toggleSidebar,

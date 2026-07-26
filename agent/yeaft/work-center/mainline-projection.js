@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import { eventMatchesActionGeneration, runMatchesActionIdentity } from './action-identity.js';
+import {
+  currentActionInputEventIds,
+  eventMatchesActionGeneration,
+  runMatchesActionIdentity,
+} from './action-identity.js';
 import { normalizeSessionContextSnapshot } from './session-context.js';
 
 export const MAINLINE_CONTEXT_HARD_LIMIT_BYTES = 64 * 1024;
@@ -64,32 +68,93 @@ function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-function workItemMessageView(messages) {
-  return (Array.isArray(messages) ? messages : [])
-    .filter(message => typeof message?.text === 'string' && message.text)
+function inputEventView(event) {
+  return {
+    eventId: event.id,
+    inputId: event.data?.inputId || null,
+    actionId: event.actionId || null,
+    text: event.data?.text || '',
+    attachments: Array.isArray(event.data?.attachments) ? event.data.attachments : [],
+  };
+}
+
+function canonicalActionUserContext(events, action) {
+  const actionEvents = (Array.isArray(events) ? events : [])
+    .filter(event => event?.actionId === action?.id
+      && ['action.guidance_added', 'action.input_added'].includes(event.type))
     .slice()
-    .sort((left, right) => count(left.createdAt) - count(right.createdAt)
-      || String(left.id).localeCompare(String(right.id)))
-    .map(message => ({
-      messageId: message.id,
-      text: message.text,
-      createdAt: count(message.createdAt),
-    }));
+    .sort((left, right) => count(left.id) - count(right.id));
+  const inputEvents = actionEvents.filter(event => event.type === 'action.input_added');
+  const validInputEventIds = currentActionInputEventIds(events, action);
+  const eventByInputId = new Map(inputEvents
+    .filter(event => event.data?.inputId)
+    .map(event => [event.data.inputId, event]));
+  const currentInputEvents = inputEvents.filter(event => validInputEventIds.has(String(event.id)));
+  const usedEventIds = new Set();
+  const contextEntries = (Array.isArray(action?.context) ? action.context : [])
+    .filter(entry => ['input', 'guidance', 'coordinator-guidance'].includes(entry?.type)
+      && typeof entry.summary === 'string');
+  const values = contextEntries.flatMap((entry, index) => {
+    if (entry.type !== 'input') {
+      const event = actionEvents.find(candidate => !usedEventIds.has(candidate.id)
+        && candidate.type === 'action.guidance_added'
+        && (candidate.data?.guidance || '') === entry.summary) || null;
+      if (event) usedEventIds.add(event.id);
+      return [{
+        eventId: event?.id ?? null,
+        inputId: null,
+        actionId: action.id,
+        text: entry.summary,
+        attachments: Array.isArray(entry.attachments)
+          ? entry.attachments
+          : Array.isArray(event?.data?.attachments) ? event.data.attachments : [],
+      }];
+    }
+    let event = entry.inputId ? eventByInputId.get(entry.inputId) : null;
+    if (!event && typeof entry.inputId === 'string' && entry.inputId.startsWith('legacy-event:')) {
+      const legacyEventId = Number(entry.inputId.slice('legacy-event:'.length));
+      event = inputEvents.find(candidate => candidate.id === legacyEventId) || null;
+    }
+    if (!event && !entry.inputId) {
+      event = currentInputEvents.find(candidate => !usedEventIds.has(candidate.id)
+        && (candidate.data?.text || '') === entry.summary) || null;
+    }
+    if (!entry.inputId && !event) return [];
+    if (event) usedEventIds.add(event.id);
+    return [{
+      eventId: event?.id ?? null,
+      inputId: entry.inputId || event?.data?.inputId || `legacy-context:${index}`,
+      actionId: action.id,
+      text: entry.summary,
+      attachments: Array.isArray(entry.attachments)
+        ? entry.attachments
+        : Array.isArray(event?.data?.attachments) ? event.data.attachments : [],
+    }];
+  });
+  return { values, usedEventIds, validInputEventIds };
 }
 
 function guidanceView(events, action) {
-  return (Array.isArray(events) ? events : [])
+  const allEvents = Array.isArray(events) ? events : [];
+  const canonicalEntries = canonicalActionUserContext(allEvents, action);
+  const currentEvents = allEvents
     .filter(event => event?.actionId === action?.id
-      && eventMatchesActionGeneration(event, action)
-      && ['action.guidance_added', 'action.input_added'].includes(event.type))
+      && ((event.type === 'action.input_added'
+        && canonicalEntries.validInputEventIds.has(String(event.id)))
+        || (event.type === 'action.guidance_added' && eventMatchesActionGeneration(event, action)))
+      && !canonicalEntries.usedEventIds.has(event.id))
     .slice()
     .sort((left, right) => count(left.id) - count(right.id))
-    .map(event => ({
-      eventId: event.id,
-      actionId: event.actionId || null,
-      text: event.data?.guidance || event.data?.text || '',
-      attachments: Array.isArray(event.data?.attachments) ? event.data.attachments : [],
-    }));
+    .map(event => event.type === 'action.input_added'
+      ? inputEventView(event)
+      : {
+          eventId: event.id,
+          inputId: null,
+          actionId: event.actionId || null,
+          text: event.data?.guidance || '',
+          attachments: Array.isArray(event.data?.attachments) ? event.data.attachments : [],
+        });
+  return [...canonicalEntries.values, ...currentEvents];
 }
 
 /**
@@ -259,21 +324,7 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
     return false;
   };
   const sessionContext = normalizeSessionContextSnapshot(detail.sessionContext);
-  const workItemMessages = workItemMessageView(detail.messages);
   const guidance = guidanceView(detail.events, action);
-  const newestFirstMessages = workItemMessages.slice().reverse();
-  for (const [index, message] of newestFirstMessages.entries()) {
-    const next = {
-      ...snapshot.userContext,
-      workItemMessages: [message, ...snapshot.userContext.workItemMessages],
-      includedCount: snapshot.userContext.includedCount + 1,
-      omittedCount: 0,
-    };
-    const included = trySet('userContext', next);
-    if (index === 0 && !included) {
-      throw mainlineContextBlocked('Latest WorkItem message exceeds the Mainline prompt budget');
-    }
-  }
   const otherUserEntries = [
     ...guidance.map(value => ({ kind: 'guidance', value })),
     ...sessionContext.map(value => ({ kind: 'sessionContext', value })),
@@ -287,8 +338,7 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
     };
     trySet('userContext', next);
   }
-  snapshot.userContext.omittedCount = workItemMessages.length + otherUserEntries.length
-    - snapshot.userContext.includedCount;
+  snapshot.userContext.omittedCount = otherUserEntries.length - snapshot.userContext.includedCount;
 
   const siblingEntries = Object.entries(projection.canonicalActionResults)
     .filter(([actionId]) => actionId !== action.id && !dependencies.some(item => item.actionId === actionId))
