@@ -423,7 +423,15 @@ describe('Yeaft history outline state', () => {
     };
     const pendingRequests = [];
     store.workCenterRequest = vi.fn(operation => new Promise(resolve => {
-      pendingRequests.push({ operation, resolve });
+      const entry = {
+        operation,
+        resolved: false,
+        resolve(value) {
+          entry.resolved = true;
+          resolve(value);
+        },
+      };
+      pendingRequests.push(entry);
     }));
     const eventSummary = {
       id: 'wi-1', revision: 5, updatedAt: 20, currentActionId: 'action-1',
@@ -468,5 +476,39 @@ describe('Yeaft history outline state', () => {
     expect(store.workCenterDetailByAgent['agent-a'].actions[0]).toMatchObject({
       id: 'action-1', generation: 2, messages: [],
     });
+
+    const coordinatorSummary = {
+      ...eventSummary,
+      revision: 6,
+      updatedAt: 30,
+      coordinatorRevision: 3,
+      currentActionId: null,
+      currentAction: null,
+      actionStats: [],
+    };
+    store.applyWorkCenterEvent('agent-a', {
+      type: 'coordinator.turn_completed', workItem: coordinatorSummary,
+    });
+    expect(store._workCenterDetailEventRefreshByAgent['agent-a']).toBe('wi-1:coordinator:3');
+    const coordinatorRefresh = pendingRequests.find(request => request.operation === 'get' && !request.resolved);
+    coordinatorRefresh.resolve({
+      ...coordinatorSummary,
+      messages: [{ id: 'turn-1', role: 'assistant', status: 'completed', text: 'Plan updated' }],
+      actions: [],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.workCenterDetailByAgent['agent-a']).toMatchObject({
+      coordinatorRevision: 3,
+      messages: [expect.objectContaining({ text: 'Plan updated' })],
+    });
+    const sent = store.sendWorkItemMessage('wi-1', 'Change the target', 6, 'agent-a');
+    const coordinatorRequest = pendingRequests.find(request => request.operation === 'work_item_message');
+    expect(store.workCenterRequest).toHaveBeenLastCalledWith('work_item_message', {
+      id: 'wi-1', text: 'Change the target', revision: 6,
+      planRevision: 0, ledgerRevision: 0, coordinatorRevision: 3,
+    }, 'agent-a');
+    coordinatorRequest.resolve({ accepted: true, turnId: 'turn-2' });
+    await expect(sent).resolves.toEqual({ accepted: true, turnId: 'turn-2' });
   });
 });

@@ -43,7 +43,7 @@ export default {
     },
     canCompose() {
       if (!this.action || ['done', 'cancelled'].includes(this.selected?.status)) return false;
-      return ['ready', 'running', 'waiting', 'failed'].includes(this.action.status);
+      return ['waiting', 'failed'].includes(this.action.status);
     },
     canRetry() {
       return this.action?.status === 'failed' && !this.uploading && !this.sending;
@@ -55,7 +55,7 @@ export default {
       if (this.action?.status === 'failed') {
         return this.tr('workCenter.actionInputRetryHint', 'Send corrected instructions or files to rerun this Action, or retry unchanged.');
       }
-      return this.tr('workCenter.actionInputContinueHint', 'This message applies only to this Action at its next safe execution loop.');
+      return this.tr('workCenter.actionInputContinueHint', 'Direct intervention for this Action only. Use the Coordinator to change the Work Item goal or plan.');
     },
     canSend() {
       return !this.uploading && !this.sending
@@ -279,7 +279,7 @@ export default {
                 :aria-selected="activeView === 'conversation' ? 'true' : 'false'"
                 :aria-controls="panelId('conversation')"
                 :class="{ active: activeView === 'conversation' }"
-                @click="setActiveView('conversation')" @keydown="onTabKeydown($event, 'conversation')">{{ tr('workCenter.actionConversation', 'Conversation') }}</button>
+                @click="setActiveView('conversation')" @keydown="onTabKeydown($event, 'conversation')">{{ tr('workCenter.actionConversation', 'Execution log') }}</button>
         <button ref="contextTab" :id="tabId('context')" type="button" role="tab"
                 :tabindex="activeView === 'context' ? 0 : -1"
                 :aria-selected="activeView === 'context' ? 'true' : 'false'"
@@ -332,7 +332,7 @@ export default {
             </div>
           </section>
           <p v-if="attachmentError" class="work-center-error" role="alert">{{ attachmentError }}</p>
-          <p v-if="!hasThreadMessages" class="work-center-action-empty">{{ tr('workCenter.noActionMessages', 'No execution messages yet.') }}</p>
+          <p v-if="!hasThreadMessages" class="work-center-action-empty">{{ tr('workCenter.noActionMessages', 'No execution log yet.') }}</p>
         </div>
 
         <section v-show="activeView === 'context'" :id="panelId('context')" class="work-center-action-context" role="tabpanel" :aria-labelledby="tabId('context')">

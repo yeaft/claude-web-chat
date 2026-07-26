@@ -4,6 +4,7 @@ import {
   canonicalActionId,
   canonicalExplicitActionId,
   canonicalExplicitActionIds,
+  validateGeneratedCompletionGate,
 } from './workflow.js';
 
 function cleanProposalId(value) {
@@ -174,9 +175,15 @@ export function applyAdditivePlanProposal({ workItem, actions, proposal, availab
     }),
     ...canonicalActions,
   ];
+  const orderedActions = stableTopologicalActions(mergedActions);
+  validateGeneratedCompletionGate(orderedActions.map(action => ({
+    id: action.id,
+    type: action.type,
+    dependsOnStageIds: action.dependsOnActionIds || [],
+  })));
   const rawPlan = {
     workItemType: workItem.workflowSnapshot.workItemType,
-    actions: stableTopologicalActions(mergedActions),
+    actions: orderedActions,
   };
   const workflowSnapshot = applyGeneratedPlan(synthetic, rawPlan, { availableVpIds });
   const addedStages = workflowSnapshot.stages.filter(stage => addedIds.has(stage.id));
@@ -186,6 +193,96 @@ export function applyAdditivePlanProposal({ workItem, actions, proposal, availab
     workflowSnapshot,
     nextActions: addedStages.map(stage => actionForStage(stage, { ...workItem, workflowSnapshot }, [])),
     dependencyPatches,
+  };
+}
+
+export function applyCoordinatorReplan({ workItem, actions, proposal, availableVpIds = null }) {
+  if (workItem.workflowSnapshot?.executionMode !== 'graph'
+      || workItem.workflowSnapshot?.planningMode !== 'ai') {
+    throw new Error('Work Center Coordinator replan requires an AI-planned Action graph');
+  }
+  if (!proposal || typeof proposal !== 'object' || Array.isArray(proposal)) {
+    throw new Error('Work Center Coordinator replan must be an object');
+  }
+  const proposalId = cleanProposalId(proposal.proposalId);
+  const basePlanRevision = Number(proposal.basePlanRevision);
+  if (!Number.isInteger(basePlanRevision) || basePlanRevision !== workItem.planRevision) {
+    throw new Error('Work Center Coordinator replan has a stale basePlanRevision');
+  }
+  if (!Array.isArray(proposal.actions) || proposal.actions.length < 1 || proposal.actions.length > 8) {
+    throw new Error('Work Center Coordinator replan requires between 1 and 8 unfinished Actions');
+  }
+
+  const active = actions.filter(candidate => !['superseded', 'cancelled'].includes(candidate.status));
+  const completed = active.filter(candidate => candidate.status === 'completed');
+  const completedStageIds = new Set(completed.map(candidate => candidate.stageId));
+  const unfinished = active.filter(candidate => candidate.status !== 'completed');
+  const unfinishedByStage = new Map(unfinished.map(candidate => [candidate.stageId, candidate]));
+  const historicalStageIds = new Set(actions.map(candidate => candidate.stageId));
+  const currentStages = new Map((workItem.workflowSnapshot.stages || []).map(stage => [stage.id, stage]));
+  const futureStageIds = new Set();
+
+  const normalizedFuture = proposal.actions.map(raw => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error('Work Center Coordinator replan requires full Action specifications');
+    }
+    const id = canonicalActionId(raw.id);
+    if (!id || futureStageIds.has(id) || completedStageIds.has(id)) {
+      throw new Error(`Work Center Coordinator Action id is missing, duplicated, or completed: ${id || '(missing)'}`);
+    }
+    if (historicalStageIds.has(id) && !unfinishedByStage.has(id)) {
+      throw new Error(`Work Center Coordinator Action reuses historical stage identity: ${id}`);
+    }
+    futureStageIds.add(id);
+    const dependsOnActionIds = canonicalExplicitActionIds(
+      raw.dependsOnActionIds,
+      `Coordinator Action "${id}" dependencies`,
+    );
+    for (const dependencyId of dependsOnActionIds) {
+      if (!completedStageIds.has(dependencyId) && !futureStageIds.has(dependencyId)) {
+        throw new Error(`Work Center Coordinator Action "${id}" references a missing or future dependency "${dependencyId}"`);
+      }
+    }
+    return {
+      ...raw,
+      id,
+      dependsOnActionIds,
+      changesRequestedActionId: Object.hasOwn(raw, 'changesRequestedActionId')
+        ? canonicalExplicitActionId(raw.changesRequestedActionId, `Coordinator Action "${id}" review target`)
+        : undefined,
+    };
+  });
+
+  const completedInputs = completed.filter(candidate => candidate.type !== 'triage').map(candidate => {
+    const stage = currentStages.get(candidate.stageId);
+    if (!stage) throw new Error(`Work Center completed Action is missing from the frozen workflow: ${candidate.stageId}`);
+    return planActionFromStage(stage);
+  });
+  const synthetic = {
+    ...workItem,
+    workflowSnapshot: {
+      ...workItem.workflowSnapshot,
+      actionTemplates: [],
+      stages: [workItem.workflowSnapshot.stages[0]],
+    },
+  };
+  const workflowSnapshot = applyGeneratedPlan(synthetic, {
+    workItemType: workItem.workflowSnapshot.workItemType,
+    actions: [...completedInputs, ...normalizedFuture],
+  }, { availableVpIds });
+  const stageById = new Map(workflowSnapshot.stages.map(stage => [stage.id, stage]));
+
+  return {
+    proposalId,
+    reason: typeof proposal.reason === 'string' ? proposal.reason.trim().slice(0, 4_000) : '',
+    basePlanRevision,
+    workflowSnapshot,
+    unfinished,
+    nextActions: normalizedFuture.map(input => {
+      const prior = unfinishedByStage.get(input.id) || null;
+      const nextAction = actionForStage(stageById.get(input.id), { ...workItem, workflowSnapshot }, []);
+      return { prior, nextAction };
+    }),
   };
 }
 
@@ -283,7 +380,7 @@ export function applyReplanMutation({ workItem, action, actions, proposal, avail
   }, { availableVpIds });
   const stageById = new Map(workflowSnapshot.stages.map(stage => [stage.id, stage]));
   const context = (Array.isArray(action.context) ? action.context : [])
-    .filter(entry => entry?.type !== 'replan-barrier');
+    .filter(entry => entry?.type !== 'replan-barrier' && entry?.type !== 'input');
   return {
     proposalId,
     basePlanRevision,

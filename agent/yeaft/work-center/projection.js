@@ -732,6 +732,7 @@ function enforceWorkItemBrowserDtoBudget(value, options = {}) {
     omittedActionCount: originalCount,
     createdAt: count(workItem.createdAt),
     updatedAt: count(workItem.updatedAt),
+    coordinatorRevision: count(workItem.coordinatorRevision),
   };
   if (options.event === true) dto.workItem = minimalWorkItem;
   else return minimalWorkItem;
@@ -845,6 +846,9 @@ export function projectWorkItemDetail(detail) {
   const projected = {
     id: detail.id,
     revision: detail.revision,
+    planRevision: count(detail.planRevision),
+    ledgerRevision: count(detail.ledgerRevision),
+    coordinatorRevision: count(detail.coordinatorRevision),
     title: detail.title,
     goal: detail.goal,
     acceptanceCriteria: Array.isArray(detail.acceptanceCriteria) ? detail.acceptanceCriteria : [],
@@ -870,8 +874,21 @@ export function projectWorkItemDetail(detail) {
     linkedSessionIds: Array.isArray(detail.linkedSessionIds) ? detail.linkedSessionIds : [],
     messages: (Array.isArray(detail.messages) ? detail.messages : []).slice(-100).map(message => ({
       id: String(message.id || ''),
+      turnId: String(message.turnId || message.id || ''),
+      role: message.role === 'assistant' ? 'assistant' : message.role === 'legacy_instruction' ? 'legacy_instruction' : 'user',
       text: truncateUtf8(message.text || '', MAX_ACTION_MESSAGE_CHARS),
+      status: ['thinking', 'completed', 'failed'].includes(message.status) ? message.status : 'completed',
+      error: truncateUtf8(message.error || '', MAX_ACTION_DIAGNOSTIC_CHARS) || null,
+      decision: message.decision && typeof message.decision === 'object' ? {
+        kind: ['answer', 'guide_actions', 'replan'].includes(message.decision.kind)
+          ? message.decision.kind : null,
+        reason: truncateUtf8(message.decision.reason || '', MAX_ACTION_DIAGNOSTIC_CHARS),
+        changedContract: message.decision.changedContract === true,
+        affectedActionIds: Array.isArray(message.decision.affectedActionIds)
+          ? message.decision.affectedActionIds.map(id => String(id)).slice(0, 8) : [],
+      } : null,
       createdAt: count(message.createdAt),
+      updatedAt: count(message.updatedAt || message.createdAt),
     })),
     attachments: projectAttachments(detail.attachments),
     createdAt: detail.createdAt,
@@ -900,6 +917,9 @@ export function projectWorkItemSummary(detail) {
     return {
       id: detail.id,
       revision: detail.revision,
+      planRevision: count(detail.planRevision),
+      ledgerRevision: count(detail.ledgerRevision),
+      coordinatorRevision: count(detail.coordinatorRevision),
       title: detail.title,
       goal: detail.goal,
       workItemType: detail.workflowSnapshot?.workItemType || detail.workItemType || null,
@@ -931,6 +951,9 @@ export function projectWorkItemSummary(detail) {
   return {
     id: detail.id,
     revision: detail.revision,
+    planRevision: count(detail.planRevision),
+    ledgerRevision: count(detail.ledgerRevision),
+    coordinatorRevision: count(detail.coordinatorRevision),
     title: detail.title,
     goal: detail.goal,
     workItemType: detail.workflowSnapshot?.workItemType || detail.workItemType || null,

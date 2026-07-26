@@ -137,6 +137,14 @@ export default {
         ? `${this.agentId}:${this.selected.id}:${this.workItemComposerGeneration}`
         : '';
     },
+    coordinatorThinking() {
+      return (this.selected?.messages || []).some(message => (
+        message?.role === 'assistant' && message.status === 'thinking'
+      ));
+    },
+    coordinatorReadOnly() {
+      return ['done', 'cancelled'].includes(this.selected?.status);
+    },
     actionMessages() {
       const current = Array.isArray(this.selectedAction?.messages) ? this.selectedAction.messages : [];
       const earlier = this.store.workCenterActionMessages[this.actionMessageKey]?.messages || [];
@@ -277,6 +285,12 @@ export default {
     boardVpId() { this.scheduleBoardQuery(); },
     boardWorkItemType() { this.scheduleBoardQuery(); },
     boardUpdatedRange() { this.scheduleBoardQuery(); },
+    'detail.coordinatorRevision'() {
+      this.$nextTick(() => {
+        const log = this.$el?.querySelector?.('.work-center-item-message-list');
+        if (log) log.scrollTop = log.scrollHeight;
+      });
+    },
     detail: {
       deep: true,
       handler(detail) {
@@ -807,7 +821,8 @@ export default {
       await this.store.startWorkItem(this.selected.id, this.agentId);
     },
     async sendSelectedWorkItemMessage() {
-      if (!this.selected || !this.workItemMessage.trim() || this.workItemMessageSending) return;
+      if (!this.selected || !this.workItemMessage.trim() || this.workItemMessageSending
+          || this.coordinatorThinking || this.coordinatorReadOnly) return;
       const scope = this.workItemComposerScope;
       const itemId = this.selected.id;
       const revision = this.selected.revision;
@@ -815,7 +830,11 @@ export default {
       this.workItemMessageSending = true;
       this.workItemMessageError = '';
       try {
-        await this.store.sendWorkItemMessage(itemId, text, revision, this.agentId);
+        await this.store.sendWorkItemMessage(itemId, text, revision, this.agentId, {
+          planRevision: this.selected.planRevision,
+          ledgerRevision: this.selected.ledgerRevision,
+          coordinatorRevision: this.selected.coordinatorRevision,
+        });
         if (this.workItemComposerScope === scope && this.workItemMessage.trim() === text) {
           this.workItemMessage = '';
         }
@@ -1116,22 +1135,36 @@ export default {
                   </div>
                   <p v-if="attachmentPreviewError" class="work-center-error" role="alert">{{ attachmentPreviewError }}</p>
                 </div>
-                <div class="work-center-section work-center-item-messages">
+                <div class="work-center-section work-center-item-messages" aria-labelledby="work-center-coordinator-title">
                   <div class="work-center-item-message-heading">
-                    <h3>{{ tr('workCenter.workItemMessages', 'Work Item messages') }}</h3>
-                    <small>{{ tr('workCenter.workItemMessageScope', 'Applies to every unfinished Action at its next safe boundary.') }}</small>
+                    <div>
+                      <h3 id="work-center-coordinator-title">{{ tr('workCenter.coordinator', 'Coordinator') }}</h3>
+                      <small>{{ tr('workCenter.coordinatorScope', 'Discuss the goal, acceptance criteria, plan, blockers, or next steps for the whole Work Item.') }}</small>
+                    </div>
+                    <span class="work-center-coordinator-presence" :data-status="coordinatorThinking ? 'thinking' : 'ready'">
+                      <span aria-hidden="true"></span>{{ coordinatorThinking ? tr('workCenter.coordinatorThinking', 'Coordinating…') : tr('workCenter.coordinatorReady', 'Ready') }}
+                    </span>
                   </div>
-                  <div v-if="selected.messages?.length" class="work-center-item-message-list">
-                    <article v-for="message in selected.messages" :key="message.id">
-                      <p>{{ message.text }}</p><small>{{ time(message.createdAt) }}</small>
+                  <div v-if="selected.messages?.length" class="work-center-item-message-list" role="log" aria-live="polite">
+                    <article v-for="message in selected.messages" :key="message.id" :class="'role-' + message.role" :data-status="message.status">
+                      <header><strong>{{ message.role === 'assistant' ? tr('workCenter.coordinator', 'Coordinator') : message.role === 'legacy_instruction' ? tr('workCenter.legacyInstruction', 'Earlier Work Item instruction') : tr('workCenter.you', 'You') }}</strong><small>{{ time(message.updatedAt || message.createdAt) }}</small></header>
+                      <p v-if="message.text">{{ message.text }}</p>
+                      <p v-else-if="message.status === 'thinking'" class="work-center-coordinator-thinking">{{ tr('workCenter.coordinatorThinkingHint', 'Reviewing the current contract and Action graph…') }}</p>
+                      <p v-if="message.error" class="work-center-error">{{ message.error }}</p>
+                      <small v-if="message.decision?.kind && message.decision.kind !== 'answer'" class="work-center-coordinator-decision">{{ tr('workCenter.coordinatorDecision.' + message.decision.kind, message.decision.kind) }}</small>
                     </article>
                   </div>
+                  <div v-else class="work-center-coordinator-empty">
+                    <strong>{{ tr('workCenter.coordinatorEmptyTitle', 'Coordinate the whole Work Item here') }}</strong>
+                    <p>{{ tr('workCenter.coordinatorEmptyBody', 'Ask what is blocked, change the target, narrow the acceptance criteria, or request a new plan. The Coordinator will update unfinished Actions safely.') }}</p>
+                  </div>
                   <p v-if="workItemMessageError" class="work-center-error" role="alert">{{ workItemMessageError }}</p>
-                  <div class="input-wrapper work-center-item-message-input">
+                  <p v-if="coordinatorReadOnly" class="work-center-coordinator-readonly">{{ tr('workCenter.coordinatorReadOnly', 'This Work Item is closed. Coordinator history remains available, but new changes require a new Work Item.') }}</p>
+                  <div v-else class="input-wrapper work-center-item-message-input">
                     <div class="textarea-wrapper">
-                      <textarea v-model="workItemMessage" rows="1" :placeholder="tr('workCenter.workItemMessagePlaceholder', 'Add direction for the whole Work Item')" @keydown.enter.exact.prevent="sendSelectedWorkItemMessage"></textarea>
+                      <textarea v-model="workItemMessage" rows="1" :disabled="coordinatorThinking" :placeholder="tr('workCenter.coordinatorPlaceholder', 'Message the Coordinator about the whole Work Item')" @keydown.enter.exact.prevent="sendSelectedWorkItemMessage"></textarea>
                     </div>
-                    <button class="send-btn" type="button" @click="sendSelectedWorkItemMessage" :disabled="workItemMessageSending || !workItemMessage.trim()" :title="tr('workCenter.sendWorkItemMessage', 'Send to Work Item')">
+                    <button class="send-btn" type="button" @click="sendSelectedWorkItemMessage" :disabled="workItemMessageSending || coordinatorThinking || !workItemMessage.trim()" :title="tr('workCenter.sendCoordinatorMessage', 'Send to Coordinator')">
                       <svg v-if="!workItemMessageSending" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
                       <span v-else class="work-center-send-spinner" aria-hidden="true"></span>
                     </button>

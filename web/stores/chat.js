@@ -1770,13 +1770,23 @@ export const useChatStore = defineStore('chat', {
       this.removeWorkItemState(target, id);
       return result;
     },
-    async sendWorkItemMessage(id, text, revision, agentId = null) {
+    async sendWorkItemMessage(id, text, revision, agentId = null, fence = {}) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const generation = this.beginWorkCenterDetailWrite(target);
-      const detail = await this.workCenterRequest('work_item_message', { id, text, revision }, target);
-      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
-      this.commitWorkCenterDetail(target, detail, generation);
-      return detail;
+      const current = this.workCenterDetailByAgent[target]?.id === id
+        ? this.workCenterDetailByAgent[target] : null;
+      const accepted = await this.workCenterRequest('work_item_message', {
+        id,
+        text,
+        revision,
+        planRevision: Number.isInteger(Number(fence.planRevision))
+          ? Number(fence.planRevision) : Number(current?.planRevision) || 0,
+        ledgerRevision: Number.isInteger(Number(fence.ledgerRevision))
+          ? Number(fence.ledgerRevision) : Number(current?.ledgerRevision) || 0,
+        coordinatorRevision: Number.isInteger(Number(fence.coordinatorRevision))
+          ? Number(fence.coordinatorRevision) : Number(current?.coordinatorRevision) || 0,
+      }, target);
+      if (!accepted?.accepted) throw new Error('Work Center Coordinator did not accept the message');
+      return accepted;
     },
     async retryWorkItemAction(id, actionId, revision, actionGeneration, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
@@ -1878,7 +1888,12 @@ export const useChatStore = defineStore('chat', {
       const expectedGeneration = Number.isInteger(summaryGeneration) && summaryGeneration > 0
         ? summaryGeneration
         : null;
-      const key = `${summary.id}:${summary.currentActionId}${expectedGeneration == null ? '' : `:${expectedGeneration}`}`;
+      const coordinatorRevision = Number(summary.coordinatorRevision);
+      const expectedCoordinatorRevision = Number.isInteger(coordinatorRevision) && coordinatorRevision >= 0
+        ? coordinatorRevision : null;
+      const key = expectedCoordinatorRevision != null
+        ? `${summary.id}:coordinator:${expectedCoordinatorRevision}`
+        : `${summary.id}:${summary.currentActionId}${expectedGeneration == null ? '' : `:${expectedGeneration}`}`;
       if (this._workCenterDetailEventRefreshByAgent[agentId] === key) return;
       const generation = Number(this._workCenterDetailRequestGenerationByAgent[agentId] || 0);
       this._workCenterDetailEventRefreshByAgent = {
@@ -1894,11 +1909,16 @@ export const useChatStore = defineStore('chat', {
           || normalizeWorkCenterActionGeneration(selectedAction?.generation) === expectedGeneration;
         const detailGenerationMatches = expectedGeneration == null
           || normalizeWorkCenterActionGeneration(detailAction?.generation) >= expectedGeneration;
-        if (selected?.id === summary.id
-            && selected.currentActionId === summary.currentActionId
+        const coordinatorRevisionMatches = expectedCoordinatorRevision == null
+          || Number(detail?.coordinatorRevision) === expectedCoordinatorRevision;
+        const actionIdentityMatches = expectedCoordinatorRevision != null
+          || (selected.currentActionId === summary.currentActionId
             && selectedGenerationMatches
             && detail?.currentActionId === summary.currentActionId
-            && detailGenerationMatches) {
+            && detailGenerationMatches);
+        if (selected?.id === summary.id
+            && coordinatorRevisionMatches
+            && actionIdentityMatches) {
           this.commitWorkCenterDetail(agentId, detail, generation);
         }
       } catch {

@@ -780,7 +780,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .work-center-status[data-status="running"] > span {
+  .work-center-status[data-status="running"] > span,
+  .work-center-coordinator-presence[data-status="thinking"] > span {
     animation: none;
   }
 }
@@ -1915,7 +1916,27 @@
 
 .work-center-item-messages {
   display: grid;
-  gap: 10px;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: var(--bg-sidebar);
+}
+
+.work-center-item-message-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.work-center-item-message-heading > div {
+  min-width: 0;
+}
+
+.work-center-item-message-heading h3 {
+  margin-bottom: 3px;
+  color: var(--text-primary);
+  font-size: 14px;
 }
 
 .work-center-item-message-heading small,
@@ -1923,30 +1944,136 @@
   color: var(--text-muted);
 }
 
+.work-center-coordinator-presence {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.work-center-coordinator-presence > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.work-center-coordinator-presence[data-status="thinking"] {
+  color: var(--accent-blue);
+}
+
+.work-center-coordinator-presence[data-status="thinking"] > span {
+  background: var(--accent-blue);
+  animation: work-center-running-pulse 1.4s ease-in-out infinite;
+}
+
 .work-center-item-message-list {
   display: grid;
-  gap: 8px;
+  max-height: min(420px, 48vh);
+  gap: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .work-center-item-message-list article {
+  width: min(88%, 720px);
   padding: 10px 12px;
   border-radius: var(--radius-md);
   background: var(--bg-main);
 }
 
+.work-center-item-message-list article.role-user {
+  justify-self: end;
+  background: var(--session-active);
+}
+
+.work-center-item-message-list article.role-legacy_instruction {
+  justify-self: start;
+  background: var(--bg-input-wrapper);
+}
+
+.work-center-item-message-list article.role-assistant {
+  justify-self: start;
+}
+
+.work-center-item-message-list article[data-status="failed"] {
+  background: var(--error-bg);
+}
+
+.work-center-item-message-list article header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 5px;
+}
+
+.work-center-item-message-list article header strong {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
 .work-center-item-message-list p {
-  margin: 0 0 4px;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.work-center-coordinator-thinking {
+  color: var(--text-muted) !important;
+}
+
+.work-center-coordinator-decision {
+  display: inline-flex;
+  margin-top: 7px;
+  color: var(--accent-blue) !important;
+  font-weight: 600;
+}
+
+.work-center-coordinator-empty {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-main);
+}
+
+.work-center-coordinator-empty strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.work-center-coordinator-empty p {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.work-center-coordinator-readonly {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-input-wrapper);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .work-center-item-message-input {
   width: 100%;
   max-width: none;
   margin: 0;
+  background: var(--bg-input-wrapper);
 }
 
 .work-center-item-message-input textarea {
   min-height: 24px;
-  max-height: 96px;
+  max-height: 120px;
   padding: 0;
   overflow-y: auto;
 }
