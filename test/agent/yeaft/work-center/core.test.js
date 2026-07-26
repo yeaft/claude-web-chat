@@ -7,6 +7,7 @@ import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 import { WorkItemRunner } from '../../../../agent/yeaft/work-center/runner.js';
 import { WorkItemCoordinator } from '../../../../agent/yeaft/work-center/coordinator.js';
+import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
 import {
   applyAdditivePlanProposal,
   applyCoordinatorReplan,
@@ -81,7 +82,7 @@ describe('Work Center core', () => {
   });
 
 
-  it('persists Run identity and projects one continuous Action conversation', () => {
+  it('persists Run identity and projects one continuous Action conversation', async () => {
     const item = controller.create(createInput({ id: 'run-identity' }));
     const first = store.claimReadyAction('boot-a', 5_000);
     expect(first.run).toMatchObject({
@@ -147,6 +148,55 @@ describe('Work Center core', () => {
     expect(firstPage.messages.map(message => message.text)).toEqual(['First execution failed.']);
     expect(JSON.stringify([firstPage, page])).not.toContain('Stale execution must stay hidden.');
 
+    const requestIndex = projectActionRequestIndex(action, runs.map(run => ({
+      run,
+      turn: {
+        turnId: `turn-${run.id}`,
+        openedAt: run.startedAt,
+        closedAt: run.endedAt,
+        loopCount: 1,
+        summaryInputTokens: 10,
+        summaryOutputTokens: 5,
+        totalTokens: 15,
+      },
+    })));
+    expect(requestIndex.requests.map(request => request.id)).toEqual([
+      'turn-run-v2',
+      'turn-run-v1',
+    ]);
+    expect(requestIndex.requests.map(request => request.generation)).toEqual([2, 1]);
+    expect(JSON.stringify(requestIndex)).not.toContain('run-stale');
+
+    const identityAction = {
+      id: 'identity-boundary', generation: 4, specHash: 'spec-v4',
+      identityHistory: [
+        { generation: 1, specHash: 'spec-v1' },
+        { generation: 2, specHash: 'spec-v2' },
+      ],
+    };
+    const identityPage = projectActionMessagePage(identityAction, [
+      { id: 'identity-v1', actionId: identityAction.id, actionGeneration: 1, actionSpecHash: 'spec-v1', status: 'completed', response: 'legal run one', startedAt: 10, endedAt: 11 },
+      { id: 'identity-v2', actionId: identityAction.id, actionGeneration: 2, actionSpecHash: 'spec-v2', status: 'completed', response: 'legal run two', startedAt: 20, endedAt: 21 },
+      { id: 'identity-v2-stale', actionId: identityAction.id, actionGeneration: 2, actionSpecHash: 'wrong-spec', status: 'completed', response: 'stale same-generation run', startedAt: 22, endedAt: 23 },
+      { id: 'identity-v3-orphan', actionId: identityAction.id, actionGeneration: 3, actionSpecHash: 'spec-v3', status: 'completed', response: 'orphan run three', startedAt: 30, endedAt: 31 },
+      { id: 'identity-v4', actionId: identityAction.id, actionGeneration: 4, actionSpecHash: 'spec-v4', status: 'completed', response: 'current run four', startedAt: 40, endedAt: 41 },
+    ], [
+      { id: 1, type: 'action.input_added', actionId: identityAction.id, actionGeneration: 1, createdAt: 5, data: { text: 'legal historical input' } },
+      { id: 3, type: 'action.input_added', actionId: identityAction.id, actionGeneration: 3, createdAt: 25, data: { text: 'orphan event three' } },
+      { id: 5, type: 'action.input_added', actionId: identityAction.id, actionGeneration: 5, createdAt: 45, data: { text: 'future event five' } },
+    ], { limit: 20 });
+    expect(identityPage.messages.map(message => message.text)).toEqual([
+      'legal historical input', 'legal run one', 'legal run two', 'current run four',
+    ]);
+    expect(JSON.stringify(identityPage)).not.toMatch(/stale same-generation|orphan|future/);
+
+    const legacyPage = projectActionMessagePage(
+      { id: 'legacy-generation-one', generation: 1, specHash: '', identityHistory: [] },
+      [{ id: 'legacy-run', actionId: 'legacy-generation-one', actionGeneration: 1, status: 'completed', response: 'legacy response', startedAt: 2, endedAt: 3 }],
+      [{ id: 1, type: 'action.input_added', actionId: 'legacy-generation-one', actionGeneration: 1, createdAt: 1, data: { text: 'legacy input' } }],
+    );
+    expect(legacyPage.messages.map(message => message.text)).toEqual(['legacy input', 'legacy response']);
+
     const detail = projectWorkItemDetail({
       id: 'work-item-conversation', revision: 1, planRevision: 0, ledgerRevision: 0,
       coordinatorRevision: 0, title: 'Conversation', goal: 'Keep one Action conversation',
@@ -161,6 +211,70 @@ describe('Work Center core', () => {
       'Second execution completed.',
     ]);
     expect(detail.actions[0]).not.toHaveProperty('thread');
+
+    const pagedItem = controller.create(createInput({ id: 'conversation-pagination' }));
+    const pagedAction = store.getWorkItemDetail(pagedItem.id).actions[0];
+    const insertEvent = store.db.prepare(`INSERT INTO events
+      (work_item_id, action_id, run_id, action_generation, type, data, created_at)
+      VALUES (?, ?, NULL, ?, 'action.input_added', ?, ?)`);
+    for (let index = 1; index <= 600; index += 1) {
+      insertEvent.run(
+        pagedItem.id,
+        pagedAction.id,
+        pagedAction.generation,
+        JSON.stringify({ text: `message-${String(index).padStart(3, '0')}` }),
+        10_000 + index * 10,
+      );
+    }
+    store.db.prepare(`INSERT INTO runs
+      (id, work_item_id, action_id, owner_boot_id, lease_epoch, status, response,
+        action_generation, action_spec_hash, action_attempt, started_at, expires_at, ended_at)
+      VALUES (?, ?, ?, 'pagination-review', 1, 'completed', ?, ?, ?, 1, ?, ?, ?)`).run(
+      'conversation-pagination-run',
+      pagedItem.id,
+      pagedAction.id,
+      'run-response-300',
+      pagedAction.generation,
+      pagedAction.specHash,
+      12_995,
+      13_995,
+      13_005,
+    );
+
+    const rawDetail = store.getWorkItemDetail(pagedItem.id);
+    expect(rawDetail.events).toHaveLength(500);
+    const service = new WorkCenterService({
+      yeaftDir: dir,
+      store,
+      controller,
+      runner: null,
+      ownerBootId: 'pagination-review',
+      settingsReader: () => ({}),
+    });
+    const browserDetail = service.projectBrowserDetail(rawDetail);
+    const bodyAction = browserDetail.actions.find(candidate => candidate.id === pagedAction.id);
+    expect(bodyAction.messages).toHaveLength(20);
+    expect(bodyAction.messageCount).toBe(601);
+    expect(bodyAction.messageCursor).toBe('581');
+
+    const collected = [...bodyAction.messages];
+    let cursor = bodyAction.messageCursor;
+    while (cursor != null) {
+      const pageResult = await service.handle('get_action_messages', {
+        id: pagedItem.id,
+        actionId: pagedAction.id,
+        generation: pagedAction.generation,
+        cursor,
+        limit: 20,
+      });
+      collected.unshift(...pageResult.messages);
+      cursor = pageResult.nextCursor;
+    }
+    expect(collected).toHaveLength(601);
+    expect(new Set(collected.map(message => message.id)).size).toBe(601);
+    expect(collected[0].text).toBe('message-001');
+    expect(collected.at(-1).text).toBe('message-600');
+    expect(collected.findIndex(message => message.text === 'run-response-300')).toBe(300);
   });
 
   it('claims independent graph Actions concurrently and waits for dependencies', () => {
@@ -202,10 +316,22 @@ describe('Work Center core', () => {
     }));
     const left = store.claimReadyAction('boot-a', 5_000);
     const right = store.claimReadyAction('boot-a', 5_000);
+    now = 2_000;
     const failed = controller.submit(left.run.id, 'boot-a', left.run.leaseEpoch, {
-      outcome: 'failed', error: 'left failed', summary: '', evidence: [],
+      outcome: 'failed', error: 'FIRST FAILURE DETAIL', summary: 'FIRST FAILURE SUMMARY', evidence: [],
     });
     expect(failed.status).toBe('needs_attention');
+    const failedAction = failed.actions.find(action => action.id === left.action.id);
+    const failedPage = projectActionMessagePage(
+      failedAction,
+      failed.runs,
+      store.listActionEvents(failedAction.id),
+    );
+    expect(failedPage.messages.map(message => message.text)).toEqual([
+      'FIRST FAILURE SUMMARY\n\nFIRST FAILURE DETAIL',
+    ]);
+
+    now = 2_100;
     const progressed = controller.submit(
       right.run.id, 'boot-a', right.run.leaseEpoch, completed('research'),
     );
@@ -214,7 +340,7 @@ describe('Work Center core', () => {
       status: 'needs_attention', lifecycle: 'active', attentionState: 'failed',
     });
 
-    const failedAction = failed.actions.find(action => action.id === left.action.id);
+    now = 2_200;
     const retried = controller.retry(item.id, {
       expected: {
         actionId: failedAction.id,
@@ -232,6 +358,38 @@ describe('Work Center core', () => {
     expect(event.workItem.actionStats.find(action => action.id === failedAction.id)).toMatchObject({
       generation: retriedAction.generation,
     });
+
+    const retriedRun = store.claimReadyAction('boot-a', 5_000);
+    expect(retriedRun.action).toMatchObject({
+      id: failedAction.id,
+      generation: retriedAction.generation,
+    });
+    now = 3_000;
+    const completedRetry = controller.submit(
+      retriedRun.run.id,
+      'boot-a',
+      retriedRun.run.leaseEpoch,
+      completed('research', { response: 'SECOND SUCCESS RESPONSE' }),
+    );
+    store.appendEvent(item.id, 'run.loop_output', {
+      response: 'DUPLICATE PARTIAL FAILURE OUTPUT',
+    }, {
+      actionId: failedAction.id,
+      runId: left.run.id,
+      actionGeneration: failedAction.generation,
+    });
+    const completedAction = completedRetry.actions.find(action => action.id === failedAction.id);
+    const completedPage = projectActionMessagePage(
+      completedAction,
+      store.getWorkItemDetail(item.id).runs,
+      store.listActionEvents(failedAction.id),
+    );
+    expect(completedPage.messages.map(message => message.text)).toEqual([
+      'FIRST FAILURE SUMMARY\n\nFIRST FAILURE DETAIL',
+      'SECOND SUCCESS RESPONSE',
+    ]);
+    expect(completedPage.messages.filter(message => message.runId === left.run.id)).toHaveLength(1);
+    expect(JSON.stringify(completedPage)).not.toContain('DUPLICATE PARTIAL FAILURE OUTPUT');
   });
 
   it.each([

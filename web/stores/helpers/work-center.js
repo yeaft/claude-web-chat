@@ -64,6 +64,41 @@ export function pickFresherActionMessage(current, candidate) {
   return candidateUpdatedAt > currentUpdatedAt ? candidate : current;
 }
 
+function actionMessageTime(value) {
+  return Math.max(0, Number(value) || 0);
+}
+
+function actionMessageEventId(message) {
+  return typeof message?.id === 'string' && message.id.startsWith('event:')
+    ? message.id.slice('event:'.length)
+    : null;
+}
+
+function compareActionMessageEventIds(leftId, rightId) {
+  if (/^\d+$/.test(leftId) && /^\d+$/.test(rightId)) {
+    const left = BigInt(leftId);
+    const right = BigInt(rightId);
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
+  }
+  return leftId.localeCompare(rightId);
+}
+
+function compareActionMessages(left, right) {
+  const timeOrder = actionMessageTime(left?.createdAt) - actionMessageTime(right?.createdAt);
+  if (timeOrder) return timeOrder;
+  const leftEventId = actionMessageEventId(left);
+  const rightEventId = actionMessageEventId(right);
+  if (leftEventId != null && rightEventId != null) {
+    return compareActionMessageEventIds(leftEventId, rightEventId);
+  }
+  const leftRole = left?.role === 'user' ? 0 : 1;
+  const rightRole = right?.role === 'user' ? 0 : 1;
+  return leftRole - rightRole
+    || String(left?.id || '').localeCompare(String(right?.id || ''));
+}
+
 export function mergeActionMessages(...sources) {
   const byId = new Map();
   for (const source of sources) {
@@ -73,8 +108,7 @@ export function mergeActionMessages(...sources) {
       byId.set(message.id, pickFresherActionMessage(byId.get(message.id), message));
     }
   }
-  return [...byId.values()].sort((left, right) => Number(left.createdAt || 0) - Number(right.createdAt || 0)
-    || String(left.id || '').localeCompare(String(right.id || '')));
+  return [...byId.values()].sort(compareActionMessages);
 }
 
 export function normalizeWorkCenterActionGeneration(value) {

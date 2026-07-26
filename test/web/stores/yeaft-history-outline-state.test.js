@@ -33,7 +33,7 @@ globalThis.document = { addEventListener: vi.fn(), removeEventListener: vi.fn(),
 const { useChatStore } = await import('../../../web/stores/chat.js');
 const { handleAssistantOutputFrame } = await import('../../../web/stores/helpers/assistantOutput.js');
 const { handleYeaftHistoryWindow: mergeYeaftHistoryWindow } = await import('../../../web/stores/helpers/handlers/conversationHandler.js');
-const { workCenterActionMessageKey } = await import('../../../web/stores/helpers/work-center.js');
+const { mergeActionMessages, workCenterActionMessageKey } = await import('../../../web/stores/helpers/work-center.js');
 const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
 const { revealOutlineResult } = await import('../../../web/utils/message-search-navigation.js');
 
@@ -402,6 +402,24 @@ describe('Yeaft history outline state', () => {
     expect(state.results).toHaveLength(1);
     expect(state.results[0]).toMatchObject({ role: 'assistant', turnId: 'response-live' });
     expect(state.totalCount).toBe(1);
+
+    const sameTime = 100;
+    const mergedActionMessages = mergeActionMessages(
+      [{ id: 'event:10', role: 'user', text: 'legacy ten', createdAt: sameTime, updatedAt: 1 }],
+      [
+        { id: 'event:2', role: 'user', text: 'page two', createdAt: sameTime },
+        { id: 'event:10', role: 'user', text: 'fresh ten', createdAt: sameTime, updatedAt: 2 },
+      ],
+      [
+        { id: 'run:z', role: 'assistant', text: 'inline z', createdAt: sameTime },
+        { id: 'event:9', role: 'user', text: 'inline nine', createdAt: sameTime },
+      ],
+      { id: 'run:a', role: 'assistant', text: 'live a', createdAt: sameTime },
+    );
+    expect(mergedActionMessages.map(message => message.id)).toEqual([
+      'event:2', 'event:9', 'event:10', 'run:a', 'run:z',
+    ]);
+    expect(mergedActionMessages.find(message => message.id === 'event:10')?.text).toBe('fresh ten');
 
     store.workCenterItemsByAgent = { 'agent-a': [] };
     store.workCenterDetailByAgent = {

@@ -175,17 +175,30 @@ function runSpecHash(run) {
       : '';
 }
 
-function conversationRuns(action, runs) {
-  const source = (Array.isArray(runs) ? runs : []).filter(run => run?.actionId === action?.id);
-  const selectedSpecByGeneration = new Map((Array.isArray(action?.identityHistory) ? action.identityHistory : [])
-    .filter(identity => typeof identity?.specHash === 'string' && identity.specHash)
-    .map(identity => [actionGeneration(identity.generation), identity.specHash]));
+function conversationIdentitySelection(action) {
   const currentGeneration = actionGeneration(action?.generation);
+  const generations = new Set([currentGeneration]);
+  const selectedSpecByGeneration = new Map();
+  for (const identity of Array.isArray(action?.identityHistory) ? action.identityHistory : []) {
+    const generation = Number(identity?.generation);
+    if (!Number.isInteger(generation) || generation <= 0 || generation > currentGeneration) continue;
+    const specHash = typeof identity?.specHash === 'string' ? identity.specHash : '';
+    if (!specHash && generation !== 1) continue;
+    generations.add(generation);
+    if (specHash) selectedSpecByGeneration.set(generation, specHash);
+  }
   if (typeof action?.specHash === 'string' && action.specHash) {
     selectedSpecByGeneration.set(currentGeneration, action.specHash);
   }
+  return { generations, selectedSpecByGeneration };
+}
+
+function conversationRuns(action, runs) {
+  const source = (Array.isArray(runs) ? runs : []).filter(run => run?.actionId === action?.id);
+  const { generations, selectedSpecByGeneration } = conversationIdentitySelection(action);
   return source.filter(run => {
     const generation = runGeneration(run);
+    if (!generations.has(generation)) return false;
     const selectedSpec = selectedSpecByGeneration.get(generation) || '';
     const spec = runSpecHash(run);
     return selectedSpec ? spec === selectedSpec : generation === 1 && !spec;
@@ -280,12 +293,14 @@ function actionInputMessages(action, events, generation = actionGeneration(actio
 }
 
 function runResponseMessage(run) {
+  const response = typeof run?.response === 'string' ? run.response : '';
+  const text = response.trim() || (run?.status === 'failed' ? failedRunMessageText(run) : '');
   return normalizeProjectedMessage({
     id: `run:${run.id}`,
     role: 'assistant',
     kind: 'response',
     status: run.status || 'running',
-    text: typeof run.response === 'string' ? run.response : '',
+    text,
     createdAt: count(run.endedAt || run.startedAt),
     updatedAt: count(run.endedAt || run.startedAt),
     progressRevision: count(run.progressRevision),
@@ -335,38 +350,30 @@ function loopOutputMessages(action, events, matchingRuns, generation = actionGen
 
 function messagesForGeneration(action, runs, events, generation) {
   const matchingRuns = conversationRuns(action, runs).filter(run => runGeneration(run) === generation);
-  const matchingRunIds = new Set(matchingRuns.map(run => run.id));
-  const runsWithLoopOutput = new Set((Array.isArray(events) ? events : [])
-    .filter(event => event?.actionId === action?.id
-      && actionGeneration(event.actionGeneration ?? event.data?.actionGeneration) === generation
-      && matchingRunIds.has(event.runId)
-      && event.type === 'run.loop_output')
-    .map(event => event.runId));
+  const failedWithoutResponse = new Set(matchingRuns
+    .filter(run => run?.status === 'failed' && !String(run?.response || '').trim())
+    .map(run => run.id));
+  const loopMessages = loopOutputMessages(
+    action,
+    events,
+    matchingRuns.filter(run => !failedWithoutResponse.has(run.id)),
+    generation,
+  );
+  const runsWithLoopOutput = new Set(loopMessages.map(message => message.runId).filter(Boolean));
   return [
     ...actionInputMessages(action, events, generation),
-    ...loopOutputMessages(action, events, matchingRuns, generation),
+    ...loopMessages,
     ...matchingRuns
-    .sort((left, right) => count(left.startedAt) - count(right.startedAt))
-    .filter(run => !runsWithLoopOutput.has(run.id))
-    .map(run => runResponseMessage(run))
-    .filter(Boolean)]
-    .sort(compareProjectedMessages);
+      .sort((left, right) => count(left.startedAt) - count(right.startedAt))
+      .filter(run => !runsWithLoopOutput.has(run.id))
+      .map(run => runResponseMessage(run))
+      .filter(Boolean),
+  ].sort(compareProjectedMessages);
 }
 
 function actionConversationMessages(action, runs, events) {
   const allRuns = conversationRuns(action, runs);
-  const currentGeneration = actionGeneration(action?.generation);
-  const generations = new Set([
-    currentGeneration,
-    ...(Array.isArray(action?.identityHistory) ? action.identityHistory : [])
-      .map(identity => actionGeneration(identity?.generation)),
-    ...allRuns.map(runGeneration),
-    ...(Array.isArray(events) ? events : [])
-      .filter(event => event?.actionId === action?.id
-        && ['action.guidance_added', 'action.input_added', 'run.loop_output'].includes(event.type)
-        && actionGeneration(event.actionGeneration ?? event.data?.actionGeneration) <= currentGeneration)
-      .map(event => actionGeneration(event.actionGeneration ?? event.data?.actionGeneration)),
-  ]);
+  const { generations } = conversationIdentitySelection(action);
   return [...generations]
     .flatMap(generation => messagesForGeneration(action, allRuns, events, generation))
     .sort(compareProjectedMessages);
@@ -376,6 +383,7 @@ function actionConversationMessages(action, runs, events) {
 
 const MAX_FAILURE_REASON_LENGTH = 2_000;
 const MAX_FAILURE_INSPECTION_LENGTH = 16_000;
+const DEFAULT_FAILED_RUN_MESSAGE = 'The Action failed.';
 const SAFE_FAILURE_FALLBACK = 'The Action failed. Sensitive details were omitted.';
 const CREDENTIAL_ASSIGNMENT_PATTERN = /\b(?:[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)|api[_-]?key|access[_-]?token|authorization|password|secret|token)\s*[:=]/i;
 const PROVIDER_TOKEN_PATTERN = /\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{12,}|github_pat_[A-Za-z0-9_]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|AKIA[A-Z0-9]{12,})\b/i;
@@ -407,6 +415,14 @@ function sanitizeFailureDiagnostic(value) {
   if (!raw) return '';
   if (unsafeFailureText(raw)) return SAFE_FAILURE_FALLBACK;
   return sanitizeDiagnosticText(raw, MAX_ACTION_DIAGNOSTIC_CHARS);
+}
+
+function failedRunMessageText(run) {
+  const diagnostics = [
+    sanitizeFailureDiagnostic(run?.summary),
+    sanitizeFailureDiagnostic(run?.error),
+  ].filter(Boolean);
+  return [...new Set(diagnostics)].join('\n\n') || DEFAULT_FAILED_RUN_MESSAGE;
 }
 
 function sanitizeFailureReason(value) {
@@ -805,9 +821,12 @@ function workItemFailureReason(detail) {
  * Authenticated browser detail DTO. Raw execution records stay Agent-local;
  * the browser receives only aggregate execution stats plus the explicit user-facing response.
  */
-export function projectWorkItemDetail(detail) {
+export function projectWorkItemDetail(detail, options = {}) {
   if (!detail) return null;
   const liveActionId = bodyActionId(detail);
+  const bodyActionEvents = Array.isArray(options.bodyActionEvents)
+    ? options.bodyActionEvents
+    : detail.events;
   const mainline = projectMainlineBrowser(detail);
   const mainlineActionById = new Map((mainline?.actions || []).map(action => [action.id, action]));
   const projected = {
@@ -866,7 +885,12 @@ export function projectWorkItemDetail(detail) {
       : String(detail.actionSummary || ''),
     actions: Array.isArray(detail.actions)
       ? detail.actions.map(action => ({
-          ...projectAction(action, detail.runs, detail.events, action?.id === liveActionId),
+          ...projectAction(
+            action,
+            detail.runs,
+            action?.id === liveActionId ? bodyActionEvents : detail.events,
+            action?.id === liveActionId,
+          ),
           ...(mainlineActionById.get(action.id) || {}),
         }))
       : [],
@@ -1004,7 +1028,7 @@ export function actionThreadIncludesRun(action, runs, runId) {
 
 export function projectActionRequestIndex(action, entries) {
   const source = Array.isArray(entries) ? entries : [];
-  const allowedRunIds = new Set(threadRuns(action, source.map(({ run }) => run)).map(run => run.id));
+  const allowedRunIds = new Set(conversationRuns(action, source.map(({ run }) => run)).map(run => run.id));
   return {
     actionId: action.id,
     generation: Math.max(1, count(action.generation) || 1),
