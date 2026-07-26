@@ -2081,6 +2081,7 @@ export class WorkItemStore {
     const ids = workItems.map(item => item.id);
     const actionsByWorkItem = new Map(ids.map(id => [id, []]));
     for (const row of this.db.prepare(`SELECT * FROM actions WHERE work_item_id IN (${placeholders})
+      AND status NOT IN ('superseded', 'cancelled')
       ORDER BY work_item_id, sequence`).all(...ids)) {
       actionsByWorkItem.get(row.work_item_id).push(mapAction(row));
     }

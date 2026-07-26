@@ -14,11 +14,13 @@ import {
 } from '../../../../agent/yeaft/work-center/plan-mutation.js';
 import { resolvePlanningWorkflowSnapshot } from '../../../../agent/yeaft/work-center/workflow.js';
 import {
+  MAX_WORK_ITEM_BROWSER_DTO_BYTES,
   projectActionMessagePage,
   projectActionRequestDetail,
   projectActionRequestIndex,
   projectWorkCenterEvent,
   projectWorkItemDetail,
+  projectWorkItemSummary,
 } from '../../../../agent/yeaft/work-center/projection.js';
 
 function createInput(overrides = {}) {
@@ -1201,7 +1203,7 @@ describe('Work Center core', () => {
     expect(store.getWorkItem(item.id).status).toBe('cancelled');
   });
 
-  it('retriages atomically and an old Run cannot restore the old revision', () => {
+  it('retriages atomically, fences old Runs, and bounds list/event Action identity', async () => {
     const item = controller.create(createInput());
     const claim = store.claimReadyAction('boot-a', 5_000);
     const updated = controller.update(item.id, { goal: 'Revision two' });
@@ -1212,6 +1214,59 @@ describe('Work Center core', () => {
       .toThrow(/stale|cancelled|expired|finished/i);
     expect(store.recoverInterruptedRuns('new-boot')).toBe(0);
     expect(store.getWorkItem(item.id).goal).toBe('Revision two');
+
+    for (let revision = 3; revision <= 65; revision += 1) {
+      now += 1;
+      controller.update(item.id, { goal: `Revision ${revision}` });
+    }
+    const historicalDetail = store.getWorkItemDetail(item.id);
+    expect(historicalDetail.actions).toHaveLength(65);
+    expect(historicalDetail.actions.filter(action => action.status === 'superseded')).toHaveLength(64);
+
+    const service = new WorkCenterService({
+      yeaftDir: dir,
+      store,
+      controller,
+      runner: null,
+      ownerBootId: 'browser-budget',
+      settingsReader: () => ({}),
+    });
+    const listItem = (await service.handle('list', { limit: 100 })).items
+      .find(entry => entry.id === item.id);
+    const browserEvent = projectWorkCenterEvent({
+      type: 'work_item.updated',
+      workItem: historicalDetail,
+    });
+    expect(listItem.actionStats).toHaveLength(1);
+    expect(browserEvent.workItem.actionStats.map(action => action.id))
+      .toEqual(listItem.actionStats.map(action => action.id));
+    expect(listItem).not.toHaveProperty('omittedActionCount');
+    expect(browserEvent.workItem).not.toHaveProperty('omittedActionCount');
+    expect(Buffer.byteLength(JSON.stringify(listItem), 'utf8'))
+      .toBeLessThanOrEqual(MAX_WORK_ITEM_BROWSER_DTO_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(browserEvent), 'utf8'))
+      .toBeLessThanOrEqual(MAX_WORK_ITEM_BROWSER_DTO_BYTES);
+
+    const oversizedSummary = projectWorkItemSummary({
+      ...listItem,
+      actionStats: Array.from({ length: 2_000 }, (_, index) => ({
+        ...listItem.actionStats[0],
+        id: index === 0 ? listItem.currentActionId : `canonical-${index}`,
+        contentSummary: 'x'.repeat(512),
+      })),
+    });
+    expect(oversizedSummary).toMatchObject({ truncated: true });
+    expect(oversizedSummary).not.toHaveProperty('omittedActionCount');
+    expect(oversizedSummary.actionStats).toHaveLength(2_000);
+    expect(oversizedSummary.actionStats[0]).toEqual({
+      id: listItem.currentActionId,
+      generation: listItem.actionStats[0].generation,
+      status: listItem.actionStats[0].status,
+      progressRevision: listItem.actionStats[0].progressRevision,
+      attempt: listItem.actionStats[0].attempt,
+    });
+    expect(Buffer.byteLength(JSON.stringify(oversizedSummary), 'utf8'))
+      .toBeLessThanOrEqual(MAX_WORK_ITEM_BROWSER_DTO_BYTES);
   });
 
   it('rolls back every finalization write when the transaction faults', () => {

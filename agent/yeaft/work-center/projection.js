@@ -634,9 +634,14 @@ function stripActionBody(action, keepFailure = false) {
   return projected;
 }
 
+function canonicalActions(detail) {
+  return Array.isArray(detail?.actions)
+    ? detail.actions.filter(action => !['superseded', 'cancelled'].includes(action?.status))
+    : [];
+}
+
 function projectActionStats(detail, liveActionId = bodyActionId(detail)) {
-  if (!Array.isArray(detail?.actions)) return [];
-  return detail.actions.map(action => {
+  return canonicalActions(detail).map(action => {
     const projected = projectAction(
       action,
       detail.runs,
@@ -669,11 +674,23 @@ function enforceWorkItemBrowserDtoBudget(value, options = {}) {
   if (!value || jsonByteLength(value) <= MAX_WORK_ITEM_BROWSER_DTO_BYTES) return value;
   const dto = value;
   const workItem = options.event === true ? dto.workItem : dto;
-  const actions = Array.isArray(workItem?.actions)
+  let actions = Array.isArray(workItem?.actions)
     ? workItem.actions
     : Array.isArray(workItem?.actionStats) ? workItem.actionStats : [];
   const keepId = options.keepActionId || workItem?.currentActionId || actions.at(-1)?.id || null;
   workItem.truncated = true;
+
+  if (!Array.isArray(workItem.actions) && Array.isArray(workItem.actionStats)) {
+    workItem.actionStats = actions.map(action => ({
+      id: action?.id,
+      generation: actionGeneration(action?.generation),
+      status: action?.status,
+      progressRevision: count(action?.progressRevision),
+      attempt: Math.max(0, count(action?.attempt)),
+    }));
+    actions = workItem.actionStats;
+    if (jsonByteLength(dto) <= MAX_WORK_ITEM_BROWSER_DTO_BYTES) return dto;
+  }
 
   for (let index = 0; index < actions.length; index += 1) {
     if (actions[index]?.id === keepId) continue;
@@ -915,7 +932,7 @@ export function projectWorkItemDetail(detail, options = {}) {
 export function projectWorkItemSummary(detail) {
   if (!detail) return null;
   if (!Array.isArray(detail.actions)) {
-    return {
+    return enforceWorkItemBrowserDtoBudget({
       id: detail.id,
       revision: detail.revision,
       planRevision: count(detail.planRevision),
@@ -932,7 +949,8 @@ export function projectWorkItemSummary(detail) {
       attentionActionIds: Array.isArray(detail.attentionActionIds) ? detail.attentionActionIds : undefined,
       currentActionId: detail.currentActionId || null,
       currentAction: projectCurrentActionSummary(detail.currentAction),
-      actionStats: Array.isArray(detail.actionStats) ? detail.actionStats : [],
+      actionStats: Array.isArray(detail.actionStats)
+        ? detail.actionStats.map(action => ({ ...action })) : [],
       actionCount: count(detail.actionCount),
       completedActionCount: count(detail.completedActionCount),
       executionStats: executionStats(detail.executionStats),
@@ -946,11 +964,11 @@ export function projectWorkItemSummary(detail) {
       attentionAction: detail.attentionAction || null,
       activeAction: detail.activeAction || null,
       executors: Array.isArray(detail.executors) ? detail.executors : [],
-    };
+    }, { keepActionId: detail.currentActionId || null });
   }
   const action = currentAction(detail);
   const projectedAction = action ? projectAction(action, detail.runs, detail.events, false) : null;
-  return {
+  return enforceWorkItemBrowserDtoBudget({
     id: detail.id,
     revision: detail.revision,
     planRevision: count(detail.planRevision),
@@ -982,7 +1000,7 @@ export function projectWorkItemSummary(detail) {
     createdAt: detail.createdAt,
     updatedAt: detail.updatedAt,
     ...boardFields(detail),
-  };
+  }, { keepActionId: action?.id || null });
 }
 
 export function projectWorkCenterEvent(event) {

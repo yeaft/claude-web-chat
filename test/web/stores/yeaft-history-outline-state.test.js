@@ -452,7 +452,9 @@ describe('Yeaft history outline state', () => {
     });
     let retryDetail;
     let retriedDetail;
+    let failedEvent;
     let eventSummary;
+    let canonicalActiveItem;
     let failedAction;
     try {
       const retryItem = retryController.create({
@@ -518,7 +520,12 @@ describe('Yeaft history outline state', () => {
       );
       failedAction = retryDetail.actions.find(action => action.id === retryClaim.action.id);
       expect(failedAction).toMatchObject({ generation: 1, attempt: 1, status: 'failed' });
-      retryNow = 30;
+      failedEvent = projectWorkCenterEvent({
+        type: 'run.finished',
+        actionId: failedAction.id,
+        runId: retryClaim.run.id,
+        workItem: retryDetail,
+      });
       const retried = retryController.retry(retryItem.id, {
         expected: {
           actionId: failedAction.id,
@@ -534,6 +541,13 @@ describe('Yeaft history outline state', () => {
       expect(eventSummary.actionStats.find(action => action.id === failedAction.id)).toMatchObject({
         generation: 2, attempt: 0, status: 'ready', progressRevision: 0,
       });
+      canonicalActiveItem = (await retryService.handle('list', { lane: 'active', limit: 100 }))
+        .items.find(item => item.id === retryItem.id);
+      expect(canonicalActiveItem).toMatchObject({ boardLane: 'active' });
+      expect(failedEvent.workItem).toMatchObject({
+        boardLane: 'needs_attention',
+        updatedAt: canonicalActiveItem.updatedAt,
+      });
       retryDetail = retryService.projectBrowserDetail(retryDetail);
       retriedDetail = retryService.projectBrowserDetail(retried);
     } finally {
@@ -541,7 +555,61 @@ describe('Yeaft history outline state', () => {
       rmSync(retryDir, { recursive: true, force: true });
     }
 
-    store.workCenterItemsByAgent = { 'agent-a': [] };
+    const activeFilters = {
+      lane: 'active', keyword: '', vpId: '', workItemType: '',
+      createdFrom: null, createdTo: null, updatedFrom: null, updatedTo: null, limit: 100,
+    };
+    const activeQueryKey = JSON.stringify(activeFilters);
+    for (const agentId of ['agent-lane-event', 'agent-lane-refresh', 'agent-lane-more']) {
+      store._workCenterListFiltersByAgent[agentId] = activeFilters;
+      store._workCenterListQueryByAgent[agentId] = activeQueryKey;
+      store._workCenterListGenerationByAgent[agentId] = 1;
+      store.workCenterItemsByAgent[agentId] = [canonicalActiveItem];
+    }
+    store.applyWorkCenterEvent('agent-lane-event', failedEvent);
+    expect(store.workCenterItemsByAgent['agent-lane-event']).toEqual([canonicalActiveItem]);
+    expect(store._workCenterListEventsByAgent['agent-lane-event'][canonicalActiveItem.id].summary)
+      .toEqual(canonicalActiveItem);
+    const attentionAgent = 'agent-lane-tombstone';
+    const attentionFilters = { ...activeFilters, lane: 'needs_attention' };
+    store._workCenterListFiltersByAgent[attentionAgent] = attentionFilters;
+    store._workCenterListQueryByAgent[attentionAgent] = JSON.stringify(attentionFilters);
+    store._workCenterListGenerationByAgent[attentionAgent] = 1;
+    store.workCenterItemsByAgent[attentionAgent] = [failedEvent.workItem];
+    store.applyWorkCenterEvent(attentionAgent, { type: 'action.retried', workItem: eventSummary });
+    expect(store.workCenterItemsByAgent[attentionAgent]).toEqual([]);
+    store.applyWorkCenterEvent(attentionAgent, failedEvent);
+    expect(store.workCenterItemsByAgent[attentionAgent]).toEqual([]);
+    expect(store._workCenterListEventsByAgent[attentionAgent][canonicalActiveItem.id].summary)
+      .toEqual(eventSummary);
+
+    const laneRequests = [];
+    store.workCenterRequest = vi.fn((operation, payload, agentId) => new Promise(resolve => {
+      laneRequests.push({ operation, payload, agentId, resolve });
+    }));
+    store.workCenterAgentId = 'agent-lane-refresh';
+    const laneRefresh = store.listWorkItems('agent-lane-refresh', activeFilters);
+    store.applyWorkCenterEvent('agent-lane-refresh', failedEvent);
+    laneRequests.find(request => request.agentId === 'agent-lane-refresh').resolve({
+      items: [canonicalActiveItem], nextCursor: null,
+    });
+    await laneRefresh;
+    expect(store.workCenterItemsByAgent['agent-lane-refresh']).toEqual([canonicalActiveItem]);
+
+    store.workCenterAgentId = 'agent-lane-more';
+    store.workCenterListPageByAgent['agent-lane-more'] = {
+      nextCursor: 'next-page', queryKey: activeQueryKey,
+    };
+    const laneMore = store.loadMoreWorkItems('agent-lane-more');
+    store.applyWorkCenterEvent('agent-lane-more', failedEvent);
+    laneRequests.find(request => request.agentId === 'agent-lane-more').resolve({
+      items: [], nextCursor: null,
+    });
+    await laneMore;
+    expect(store.workCenterItemsByAgent['agent-lane-more']).toEqual([canonicalActiveItem]);
+
+    store.workCenterAgentId = 'agent-a';
+    store.workCenterItemsByAgent = { ...store.workCenterItemsByAgent, 'agent-a': [] };
     store.workCenterDetailByAgent = { 'agent-a': retryDetail };
     store.workCenterActionMessages = {
       [`agent-a:wi-1:${failedAction.id}:1`]: {
