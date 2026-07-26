@@ -120,6 +120,7 @@ export const CONFIG = {
   sandbox: {
     enabled: process.env.SANDBOX_ENABLED === 'true',
     maxReservedSandboxes: parseInt(process.env.SANDBOX_MAX_RESERVED, 10) || 2,
+    hostMemoryReserveMiB: parseInt(process.env.SANDBOX_HOST_MEMORY_RESERVE_MIB, 10) || 2048,
     hostFreshnessMs: parseInt(process.env.SANDBOX_HOST_FRESHNESS_MS, 10) || 30_000,
     agentRecoveryGraceMs: parseInt(process.env.SANDBOX_AGENT_RECOVERY_GRACE_MS, 10) || 60_000,
     operationTimeoutMs: parseInt(process.env.SANDBOX_OPERATION_TIMEOUT_MS, 10) || 10 * 60_000,

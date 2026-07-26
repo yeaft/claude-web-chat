@@ -37,6 +37,13 @@ const reservedTotals = db.prepare(`
     COALESCE(SUM(memory_mib), 0) AS memory, COALESCE(SUM(disk_gib), 0) AS disk
   FROM sandboxes WHERE host_id = ? AND reservation_held = 1
 `);
+const activeStartupMemory = db.prepare(`
+  SELECT COALESCE(SUM(s.memory_mib), 0) AS memory
+  FROM sandbox_operations o JOIN sandboxes s ON s.id = o.sandbox_id
+  WHERE s.host_id = ? AND s.reservation_held = 1
+    AND o.kind IN ('create', 'start', 'retry')
+    AND o.status = 'running'
+`);
 const insertSandbox = db.prepare(`
   INSERT INTO sandboxes (
     id, user_id, host_id, host_epoch, agent_name, size_id, cpu_millis, memory_mib, disk_gib,
@@ -118,11 +125,20 @@ function candidateHosts(config, now = Date.now()) {
   `).all(config.imageDigest, now - freshnessMs);
 }
 
-function hostCanFit(host, size, maxReserved) {
+function memoryReserveMiB(config) {
+  const reserve = Number(config.hostMemoryReserveMiB);
+  return Number.isSafeInteger(reserve) && reserve > 0 ? reserve : null;
+}
+
+function hostCanFit(host, size, config) {
+  const reserve = memoryReserveMiB(config);
+  if (reserve === null || !Number.isSafeInteger(host.memory_mib_available)) return false;
   const used = reservedTotals.get(host.id);
-  return reservedCount.get().slots < maxReserved
+  const startingMemory = activeStartupMemory.get(host.id).memory;
+  return reservedCount.get().slots < config.maxReservedSandboxes
     && used.cpu + size.cpuMillis <= host.cpu_millis_total
     && used.memory + size.memoryMiB <= host.memory_mib_total
+    && host.memory_mib_available - reserve - startingMemory >= size.memoryMiB
     && used.disk + size.diskGiB <= host.disk_gib_total;
 }
 
@@ -158,7 +174,7 @@ export const sandboxDb = {
     }
     const hosts = candidateHosts(config);
     const availableSizes = Object.values(SANDBOX_SIZES).filter(size =>
-      hosts.some(host => hostCanFit(host, size, config.maxReservedSandboxes))
+      hosts.some(host => hostCanFit(host, size, config))
     );
     if (availableSizes.length === 0) {
       return { available: false, reasonCode: 'SANDBOX_CAPACITY_UNAVAILABLE', catalog: [] };
@@ -213,7 +229,7 @@ export const sandboxDb = {
       if (getSandbox.get(userId)) throw new SandboxConflictError('SANDBOX_ALREADY_EXISTS');
       const capability = this.capability(userId, config);
       if (!capability.available) throw new SandboxConflictError(capability.reasonCode);
-      const host = candidateHosts(config).find(candidate => hostCanFit(candidate, size, config.maxReservedSandboxes));
+      const host = candidateHosts(config).find(candidate => hostCanFit(candidate, size, config));
       if (!host) throw new SandboxConflictError('SANDBOX_CAPACITY_UNAVAILABLE');
 
       const now = Date.now();
@@ -297,6 +313,45 @@ export const sandboxDb = {
         eventType: 'operation_requested', actorKind: 'user', outcome: 'accepted', now
       });
       return { snapshot: publicSnapshot(getSandbox.get(userId)), replayed: false };
+    })();
+  },
+
+  admitPendingOperation(operationId, config, now = Date.now()) {
+    return transaction(() => {
+      const operation = db.prepare(`
+        SELECT o.*, s.host_id, s.instance_id, s.image_digest, s.desired_state,
+          s.cpu_millis, s.memory_mib, s.disk_gib
+        FROM sandbox_operations o JOIN sandboxes s ON s.id = o.sandbox_id
+        WHERE o.id = ? AND o.status = 'pending' AND s.reservation_held = 1
+      `).get(operationId);
+      if (!operation || !['create', 'start', 'retry'].includes(operation.kind)) return operation || null;
+      const host = candidateHosts(config, now).find(candidate => candidate.id === operation.host_id);
+      const reserve = memoryReserveMiB(config);
+      const startingMemory = host ? activeStartupMemory.get(host.id).memory : 0;
+      if (!host || reserve === null
+        || host.memory_mib_available - reserve - startingMemory < operation.memory_mib) {
+        db.prepare(`
+          UPDATE sandbox_operations SET status = 'failed', stage = 'capacity_rejected',
+            error_code = 'SANDBOX_CAPACITY_UNAVAILABLE', updated_at = ?
+          WHERE id = ? AND status = 'pending'
+        `).run(now, operation.id);
+        db.prepare(`
+          UPDATE sandboxes SET observed_state = 'failed',
+            last_error_code = 'SANDBOX_CAPACITY_UNAVAILABLE', updated_at = ?
+          WHERE id = ? AND generation = ? AND reservation_held = 1
+        `).run(now, operation.sandbox_id, operation.generation);
+        appendAuditEvent({
+          sandbox: getSandboxById.get(operation.sandbox_id), operationId: operation.id,
+          eventType: 'runtime_admission', actorKind: 'server', outcome: 'rejected',
+          errorCode: 'SANDBOX_CAPACITY_UNAVAILABLE', now
+        });
+        return null;
+      }
+      const admitted = db.prepare(`
+        UPDATE sandbox_operations SET status = 'running', stage = 'dispatching', updated_at = ?
+        WHERE id = ? AND status = 'pending'
+      `).run(now, operation.id);
+      return admitted.changes === 1 ? { ...operation, status: 'running', stage: 'dispatching' } : null;
     })();
   },
 

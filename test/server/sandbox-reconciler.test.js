@@ -50,6 +50,7 @@ function config(overrides = {}) {
     hostAttestationKey: 'test-host-attestation-key',
     helperAttestationPublicKey,
     imageDigest: 'sha256:fixed',
+    hostMemoryReserveMiB: 512,
     ...overrides
   };
 }
@@ -167,6 +168,7 @@ describe('sandbox reconciler', () => {
     expect(validateControllerConfig(config({ helperAttestationPublicKey: '' }))).toBe(false);
     expect(validateControllerConfig(config({ imageDigest: '' }))).toBe(false);
     expect(validateControllerConfig(config({ controllerHostId: '' }))).toBe(false);
+    expect(validateControllerConfig(config({ hostMemoryReserveMiB: 0 }))).toBe(false);
     expect(validateControllerConfig(config())).toBe(true);
   });
 

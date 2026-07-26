@@ -172,8 +172,11 @@ export function createSandboxReconciler({
 }) {
   let running = false;
 
-  async function dispatch(operation) {
-    if (operation.host_id !== config.controllerHostId) return;
+  async function dispatch(pendingOperation) {
+    if (pendingOperation.host_id !== config.controllerHostId) return;
+    const operation = store.admitPendingOperation?.(pendingOperation.id, config, Date.now())
+      || (store.admitPendingOperation ? null : pendingOperation);
+    if (!operation) return;
     const issuedAt = Date.now();
     const envelope = {
       protocolVersion: 1,

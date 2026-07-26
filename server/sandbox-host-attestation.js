@@ -60,8 +60,9 @@ function validateAttestation(attestation, config, now) {
     throw new SandboxHostAttestationError('SANDBOX_HOST_ATTESTATION_STALE');
   }
   const resources = attestation.resources || {};
-  if (![resources.cpuMillis, resources.memoryMiB, resources.diskGiB]
-    .every(value => Number.isSafeInteger(value) && value > 0)) {
+  if (![resources.cpuMillis, resources.memoryMiB, resources.memoryAvailableMiB, resources.diskGiB]
+    .every(value => Number.isSafeInteger(value) && value > 0)
+    || resources.memoryAvailableMiB > resources.memoryMiB) {
     throw new SandboxHostAttestationError('SANDBOX_HOST_ATTESTATION_INVALID');
   }
   if (!verifySignature(canonicalPayload(attestation), attestation.signature, config.hostAttestationKey)) {
@@ -106,8 +107,8 @@ export function registerSandboxHostAttestation(attestation, config, now = Date.n
         INSERT INTO sandbox_hosts (
           id, epoch, qualified, controller_healthy, helper_healthy, runtime_healthy,
           quota_healthy, network_healthy, image_digest, cpu_millis_total,
-          memory_mib_total, disk_gib_total, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          memory_mib_total, memory_mib_available, disk_gib_total, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           epoch = excluded.epoch,
           qualified = excluded.qualified,
@@ -119,13 +120,15 @@ export function registerSandboxHostAttestation(attestation, config, now = Date.n
           image_digest = excluded.image_digest,
           cpu_millis_total = excluded.cpu_millis_total,
           memory_mib_total = excluded.memory_mib_total,
+          memory_mib_available = excluded.memory_mib_available,
           disk_gib_total = excluded.disk_gib_total,
           updated_at = excluded.updated_at
       `).run(
         attestation.hostId, attestation.epoch, Number(qualified),
         Number(checks.controllerHealthy), Number(checks.helperHealthy),
         Number(checks.runtimeHealthy), Number(checks.quotaHealthy), Number(checks.networkHealthy),
-        attestation.imageDigest, resources.cpuMillis, resources.memoryMiB, resources.diskGiB, now
+        attestation.imageDigest, resources.cpuMillis, resources.memoryMiB,
+        resources.memoryAvailableMiB, resources.diskGiB, now
       );
       db.prepare(`
         INSERT INTO sandbox_host_attestations (nonce, host_id, epoch, observed_at, created_at)

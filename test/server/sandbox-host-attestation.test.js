@@ -37,7 +37,7 @@ function signedAttestation(overrides = {}, key = 'host-attestation-secret') {
     nonce: 'nonce-1',
     observedAt: 100_000,
     imageDigest: 'sha256:fixed',
-    resources: { cpuMillis: 2000, memoryMiB: 4096, diskGiB: 40 },
+    resources: { cpuMillis: 2000, memoryMiB: 4096, memoryAvailableMiB: 3072, diskGiB: 40 },
     checks: {
       controllerHealthy: true,
       helperHealthy: true,
@@ -66,11 +66,12 @@ describe('sandbox Host qualification attestation', () => {
 
     expect(result).toEqual({ accepted: true, qualified: true });
     expect(db.prepare(`
-      SELECT id, epoch, qualified, helper_healthy, image_digest, cpu_millis_total
+      SELECT id, epoch, qualified, helper_healthy, image_digest, cpu_millis_total,
+        memory_mib_available
       FROM sandbox_hosts WHERE id = 'dedicated-1'
     `).get()).toEqual({
       id: 'dedicated-1', epoch: 'epoch-1', qualified: 1, helper_healthy: 1,
-      image_digest: 'sha256:fixed', cpu_millis_total: 2000
+      image_digest: 'sha256:fixed', cpu_millis_total: 2000, memory_mib_available: 3072
     });
     expect(db.prepare(`
       SELECT event_type, outcome, error_code FROM sandbox_host_audit_events
@@ -115,13 +116,28 @@ describe('sandbox Host qualification attestation', () => {
 
     expect(() => registerSandboxHostAttestation(signedAttestation({
       nonce: 'ordered-old', epoch: 'epoch-1', observedAt: 109_000,
-      resources: { cpuMillis: 1000, memoryMiB: 2048, diskGiB: 20 }
+      resources: { cpuMillis: 1000, memoryMiB: 2048, memoryAvailableMiB: 1024, diskGiB: 20 }
     }), config(), 110_500)).toThrowError(
       expect.objectContaining({ code: 'SANDBOX_HOST_ATTESTATION_OUT_OF_ORDER' })
     );
     expect(db.prepare(`
       SELECT epoch, cpu_millis_total, updated_at FROM sandbox_hosts WHERE id = 'dedicated-1'
     `).get()).toEqual({ epoch: 'epoch-2', cpu_millis_total: 2000, updated_at: 110_500 });
+  });
+
+  it('rejects missing or impossible available-memory samples', () => {
+    expect(() => registerSandboxHostAttestation(signedAttestation({
+      nonce: 'missing-available-memory', observedAt: 120_000,
+      resources: { cpuMillis: 2000, memoryMiB: 4096, diskGiB: 40 }
+    }), config(), 120_500)).toThrowError(
+      expect.objectContaining({ code: 'SANDBOX_HOST_ATTESTATION_INVALID' })
+    );
+    expect(() => registerSandboxHostAttestation(signedAttestation({
+      nonce: 'impossible-available-memory', observedAt: 121_000,
+      resources: { cpuMillis: 2000, memoryMiB: 4096, memoryAvailableMiB: 4097, diskGiB: 40 }
+    }), config(), 121_500)).toThrowError(
+      expect.objectContaining({ code: 'SANDBOX_HOST_ATTESTATION_INVALID' })
+    );
   });
 
   it('rejects stale, wrong-image, invalid-signature, and replayed attestations', () => {
@@ -142,6 +158,6 @@ describe('sandbox Host qualification attestation', () => {
     `).get().count).toBe(0);
     expect(db.prepare(`
       SELECT COUNT(*) AS count FROM sandbox_host_audit_events WHERE outcome = 'rejected'
-    `).get().count).toBe(6);
+    `).get().count).toBe(8);
   });
 });

@@ -156,6 +156,7 @@ db.exec(`
     image_digest TEXT NOT NULL,
     cpu_millis_total INTEGER NOT NULL,
     memory_mib_total INTEGER NOT NULL,
+    memory_mib_available INTEGER NOT NULL,
     disk_gib_total INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
@@ -332,7 +333,8 @@ const migrations = [
   `ALTER TABLE daily_stats ADD COLUMN output_tokens INTEGER DEFAULT 0`,
   `ALTER TABLE daily_stats ADD COLUMN cache_read_tokens INTEGER DEFAULT 0`,
   `ALTER TABLE daily_stats ADD COLUMN cache_write_tokens INTEGER DEFAULT 0`,
-  `ALTER TABLE daily_stats ADD COLUMN total_tokens INTEGER DEFAULT 0`
+  `ALTER TABLE daily_stats ADD COLUMN total_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE sandbox_hosts ADD COLUMN memory_mib_available INTEGER NOT NULL DEFAULT 0`
 ];
 
 // Yeaft sessions table — server-side persistence so the unified sidebar

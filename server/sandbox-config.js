@@ -10,7 +10,9 @@ export function validateSandboxDeploymentConfig(config) {
     || !config.controllerHostId || !config.bootstrapSigningKey
     || !config.hostAttestationKey || !config.helperAttestationPublicKey || !config.imageDigest
     || !config.controllerClientCert || !config.controllerClientKey
-    || !config.controllerCaCert) return false;
+    || !config.controllerCaCert
+    || !Number.isSafeInteger(config.hostMemoryReserveMiB)
+    || config.hostMemoryReserveMiB <= 0) return false;
   try {
     return new URL(config.controllerUrl).protocol === 'https:';
   } catch {

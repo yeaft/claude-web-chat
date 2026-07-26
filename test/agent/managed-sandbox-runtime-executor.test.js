@@ -7,7 +7,7 @@ import { createSandboxRuntimeExecutor, sandboxName } from '../../agent/managed-s
 
 const roots = [];
 
-function runtime(overrides = {}) {
+function runtime(overrides = {}, availableMemoryBytes = () => 4 * 1024 * 1024 * 1024) {
   const root = mkdtempSync(join(tmpdir(), 'yeaft-sandbox-runtime-'));
   roots.push(root);
   const calls = [];
@@ -72,9 +72,11 @@ function runtime(overrides = {}) {
       quotaProjectBase: 10000,
       pidsLimit: 128,
       ioWeight: 100,
+      hostMemoryReserveMiB: 512,
       ...overrides
     },
-    run
+    run,
+    availableMemoryBytes
   });
   return { instance, run, calls, root };
 }
@@ -150,6 +152,21 @@ describe('managed Sandbox dedicated Host runtime executor', () => {
     expect(calls.some(([, args]) => args[0] === 'start')).toBe(true);
     expect(calls.some(([, args]) => args[0] === 'rm')).toBe(true);
     expect(calls.find(([, args]) => args[0] === 'create')[1].join(' ')).toContain(join(root, 'sandbox-1', 'home'));
+  });
+
+  it.each(['create', 'retry', 'start'])('does not call container create/start for %s when live memory is below reserve', async action => {
+    let availableMiB = 4096;
+    const lowMemory = runtime({}, () => availableMiB * 1024 * 1024);
+    if (action === 'start') {
+      await lowMemory.instance.execute(operation('create'));
+      lowMemory.calls.length = 0;
+    }
+    availableMiB = 1535;
+
+    await expect(lowMemory.instance.execute(operation(action))).rejects.toMatchObject({
+      code: 'SANDBOX_CAPACITY_UNAVAILABLE'
+    });
+    expect(lowMemory.calls.some(([, args]) => args[0] === 'create' || args[0] === 'start')).toBe(false);
   });
 
   it('fails closed outside a dedicated Host and rejects path-like Sandbox identities', async () => {

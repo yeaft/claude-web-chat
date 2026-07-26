@@ -28,17 +28,18 @@ function addQualifiedHost(overrides = {}) {
     INSERT INTO sandbox_hosts (
       id, epoch, qualified, controller_healthy, helper_healthy, runtime_healthy,
       quota_healthy, network_healthy, image_digest, cpu_millis_total,
-      memory_mib_total, disk_gib_total, updated_at
-    ) VALUES (?, ?, ?, 1, 1, 1, 1, 1, ?, ?, ?, ?, ?)
+      memory_mib_total, memory_mib_available, disk_gib_total, updated_at
+    ) VALUES (?, ?, ?, 1, 1, 1, 1, 1, ?, ?, ?, ?, ?, ?)
   `).run(
     overrides.id || 'host-1', overrides.epoch || 'epoch-1', overrides.qualified ?? 1,
     overrides.imageDigest || 'sha256:fixed', overrides.cpu ?? 2000, overrides.memory ?? 4096,
-    overrides.disk ?? 40, overrides.updatedAt ?? Date.now()
+    overrides.memoryAvailable ?? overrides.memory ?? 4096, overrides.disk ?? 40,
+    overrides.updatedAt ?? Date.now()
   );
 }
 
 function sandboxConfig(overrides = {}) {
-  return { enabled: true, imageDigest: 'sha256:fixed', ...overrides };
+  return { enabled: true, imageDigest: 'sha256:fixed', hostMemoryReserveMiB: 512, ...overrides };
 }
 
 function entitle(userId) {
@@ -151,6 +152,54 @@ describe('sandbox control-plane reservation', () => {
     }, config)).toThrowError(expect.objectContaining({ code: 'SANDBOX_CAPACITY_UNAVAILABLE' }));
     expect(sandboxDb.snapshot(first.id).reservationHeld).toBe(true);
     expect(sandboxDb.snapshot(third.id)).toBeNull();
+  });
+
+  it('rejects Create and dispatch when trusted available memory cannot preserve the Host reserve', () => {
+    addQualifiedHost({ id: '000-host-low-memory', memory: 8192, memoryAvailable: 1535 });
+    const user = userDb.getOrCreate('sandbox-low-memory-create');
+    entitle(user.id);
+    const config = sandboxConfig({ maxReservedSandboxes: 20, hostMemoryReserveMiB: 512 });
+
+    expect(() => sandboxDb.create(user.id, {
+      agentName: 'Low Memory', sizeId: 'small', idempotencyKey: 'low-memory-create'
+    }, config)).toThrowError(expect.objectContaining({ code: 'SANDBOX_CAPACITY_UNAVAILABLE' }));
+
+    db.prepare('UPDATE sandbox_hosts SET memory_mib_available = 4096 WHERE id = ?').run('000-host-low-memory');
+    const created = sandboxDb.create(user.id, {
+      agentName: 'Admission Race', sizeId: 'small', idempotencyKey: 'admission-race-create'
+    }, config);
+    db.prepare('UPDATE sandbox_hosts SET memory_mib_available = 1535 WHERE id = ?').run('000-host-low-memory');
+
+    expect(sandboxDb.admitPendingOperation(created.snapshot.operation.id, config)).toBeNull();
+    expect(sandboxDb.snapshot(user.id)).toMatchObject({
+      observedState: 'failed',
+      lastErrorCode: 'SANDBOX_CAPACITY_UNAVAILABLE',
+      reservationHeld: true,
+      operation: { status: 'failed', stage: 'capacity_rejected', errorCode: 'SANDBOX_CAPACITY_UNAVAILABLE' }
+    });
+    db.prepare('DELETE FROM sandbox_audit_events WHERE sandbox_id = ?').run(created.snapshot.id);
+    db.prepare('DELETE FROM sandboxes WHERE id = ?').run(created.snapshot.id);
+    db.prepare('UPDATE sandbox_hosts SET qualified = 0 WHERE id = ?').run('000-host-low-memory');
+  });
+
+  it('atomically claims a pending startup operation once', () => {
+    addQualifiedHost({ id: 'host-start-lease', memory: 8192, memoryAvailable: 4096 });
+    const user = userDb.getOrCreate('sandbox-start-lease');
+    entitle(user.id);
+    const config = sandboxConfig({ maxReservedSandboxes: 20 });
+    const created = sandboxDb.create(user.id, {
+      agentName: 'Start Lease', sizeId: 'small', idempotencyKey: 'start-lease-create'
+    }, config);
+
+    expect(sandboxDb.admitPendingOperation(created.snapshot.operation.id, config)).toMatchObject({
+      id: created.snapshot.operation.id,
+      status: 'running',
+      stage: 'dispatching'
+    });
+    expect(sandboxDb.admitPendingOperation(created.snapshot.operation.id, config)).toBeNull();
+    db.prepare('DELETE FROM sandbox_audit_events WHERE sandbox_id = ?').run(created.snapshot.id);
+    db.prepare('DELETE FROM sandboxes WHERE id = ?').run(created.snapshot.id);
+    db.prepare('UPDATE sandbox_hosts SET qualified = 0 WHERE id = ?').run('host-start-lease');
   });
 
   it('rejects changed idempotent requests and invalid names with stable codes', () => {

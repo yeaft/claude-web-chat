@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { lstat, mkdir, rm, writeFile } from 'node:fs/promises';
+import { freemem } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 const SANDBOX_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 const PRIVATE_IPV4_DESTINATIONS = [
@@ -86,12 +87,14 @@ function exactImage(inspect, digest) {
  * No caller-controlled command, path, mount, capability or network argument is
  * accepted.
  */
-export function createSandboxRuntimeExecutor({ config, run = commandRunner }) {
+export function createSandboxRuntimeExecutor({ config, run = commandRunner, availableMemoryBytes = freemem }) {
   if (!config?.dedicatedHost || !config.dataRoot || !config.imageDigest
     || !config.serverUrl || !config.runtimeBinary || !config.xfsQuotaBinary
     || !config.nftBinary || !config.networkName || !config.networkBridge
     || !Number.isInteger(config.pidsLimit) || config.pidsLimit <= 0
-    || !Number.isInteger(config.ioWeight) || config.ioWeight <= 0) {
+    || !Number.isInteger(config.ioWeight) || config.ioWeight <= 0
+    || !Number.isInteger(config.hostMemoryReserveMiB) || config.hostMemoryReserveMiB <= 0
+    || typeof availableMemoryBytes !== 'function') {
     throw new Error('Sandbox runtime requires a complete dedicated Host configuration');
   }
 
@@ -177,6 +180,17 @@ export function createSandboxRuntimeExecutor({ config, run = commandRunner }) {
     await inspectNetwork(operation);
   }
 
+  function assertMemoryAvailable(operation) {
+    const bytes = Number(availableMemoryBytes());
+    const availableMiB = Math.floor(bytes / 1024 / 1024);
+    if (!Number.isSafeInteger(availableMiB)
+      || availableMiB - config.hostMemoryReserveMiB < operation.resources.memoryMiB) {
+      const error = new Error('Sandbox runtime memory admission rejected');
+      error.code = 'SANDBOX_CAPACITY_UNAVAILABLE';
+      throw error;
+    }
+  }
+
   async function create(operation) {
     if (operation.imageDigest !== config.imageDigest) throw new Error('Sandbox runtime rejected an unpinned image');
     const name = sandboxName(operation.sandboxId);
@@ -187,6 +201,7 @@ export function createSandboxRuntimeExecutor({ config, run = commandRunner }) {
     await applyNetwork(operation, name, target.policy);
 
     let inspect = await inspectContainer(name);
+    assertMemoryAvailable(operation);
     if (!inspect) {
       if (!operation.bootstrap?.token || !Number.isFinite(operation.bootstrap.expiresAt)) {
         throw new Error('Sandbox runtime requires a scoped bootstrap envelope');
@@ -269,6 +284,7 @@ export function createSandboxRuntimeExecutor({ config, run = commandRunner }) {
     if (operation.action === 'start') {
       const inspect = await inspectContainer(name);
       if (!inspect) throw new Error('Sandbox container is absent');
+      assertMemoryAvailable(operation);
       await run(config.runtimeBinary, ['start', name]);
       return runtimeProof(operation, inspect);
     }
