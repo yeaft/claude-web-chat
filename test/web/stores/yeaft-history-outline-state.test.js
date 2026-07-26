@@ -1,4 +1,14 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { WorkItemStore } from '../../../agent/yeaft/work-center/store.js';
+import { WorkflowController } from '../../../agent/yeaft/work-center/controller.js';
+import { WorkCenterService } from '../../../agent/yeaft/work-center/service.js';
+import {
+  projectActionMessagePage,
+  projectWorkCenterEvent,
+} from '../../../agent/yeaft/work-center/projection.js';
 
 globalThis.localStorage = {
   _m: new Map(),
@@ -33,7 +43,11 @@ globalThis.document = { addEventListener: vi.fn(), removeEventListener: vi.fn(),
 const { useChatStore } = await import('../../../web/stores/chat.js');
 const { handleAssistantOutputFrame } = await import('../../../web/stores/helpers/assistantOutput.js');
 const { handleYeaftHistoryWindow: mergeYeaftHistoryWindow } = await import('../../../web/stores/helpers/handlers/conversationHandler.js');
-const { mergeActionMessages, workCenterActionMessageKey } = await import('../../../web/stores/helpers/work-center.js');
+const {
+  mergeActionMessages,
+  workCenterActionMessageKey,
+  workItemDetailRefreshIdentity,
+} = await import('../../../web/stores/helpers/work-center.js');
 const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
 const { revealOutlineResult } = await import('../../../web/utils/message-search-navigation.js');
 
@@ -411,13 +425,13 @@ describe('Yeaft history outline state', () => {
         { id: 'event:10', role: 'user', text: 'fresh ten', createdAt: sameTime, updatedAt: 2 },
       ],
       [
-        { id: 'run:z', role: 'assistant', text: 'inline z', createdAt: sameTime },
+        { id: 'run:z', role: 'assistant', text: 'inline z', createdAt: sameTime, generation: 2, attempt: 2 },
         { id: 'event:9', role: 'user', text: 'inline nine', createdAt: sameTime },
       ],
-      { id: 'run:a', role: 'assistant', text: 'live a', createdAt: sameTime },
+      { id: 'run:a', role: 'assistant', text: 'live a', createdAt: sameTime, generation: 2, attempt: 3 },
     );
     expect(mergedActionMessages.map(message => message.id)).toEqual([
-      'event:2', 'event:9', 'event:10', 'run:a', 'run:z',
+      'event:2', 'event:9', 'event:10', 'run:z', 'run:a',
     ]);
     expect(mergedActionMessages.find(message => message.id === 'event:10')?.text).toBe('fresh ten');
 
@@ -473,6 +487,7 @@ describe('Yeaft history outline state', () => {
     expect(store.workCenterActionMessages[oldKey].messages)
       .toEqual([expect.objectContaining({ id: 'old-cache' })]);
     expect(store.workCenterActionMessages[currentKey]).toBeUndefined();
+    expect(store._workCenterActionMessageGenerationByKey[currentKey]).toBe(1);
     expect(store._workCenterDetailEventRefreshByAgent['agent-a']).toBe('wi-1:action-1:2');
 
     const staleMessagePage = store.loadWorkItemActionMessages(
@@ -495,10 +510,278 @@ describe('Yeaft history outline state', () => {
       id: 'action-1', generation: 2, messages: [],
     });
 
+    store.workCenterDetailByAgent = {
+      ...store.workCenterDetailByAgent,
+      'agent-a': {
+        id: 'wi-1', revision: 6, coordinatorRevision: 0, updatedAt: 30,
+        status: 'running', currentActionId: 'action-1',
+        actions: [{
+          id: 'action-1', generation: 2, status: 'running', progressRevision: 4,
+          messages: [{ id: 'event:input', role: 'user', status: 'sent', text: 'input' }],
+          liveMessage: {
+            id: 'run:terminal', runId: 'terminal', role: 'assistant', status: 'running',
+            text: 'partial response', generation: 2, attempt: 1, createdAt: 40,
+          },
+        }],
+      },
+    };
+    store.workCenterActionMessages[currentKey] = {
+      generation: 2,
+      messages: [{ id: 'event:cached', role: 'user', text: 'cached input', createdAt: 10 }],
+      nextCursor: '1',
+      total: 2,
+    };
+    let resolveStalePage;
+    const stalePage = store.loadWorkItemActionMessages(
+      'wi-1', 'action-1', 2, '1', 'agent-a',
+    );
+    const stalePageRequest = pendingRequests.find(request => (
+      request.operation === 'get_action_messages' && !request.resolved
+    ));
+    resolveStalePage = stalePageRequest.resolve;
+    const terminalSummary = {
+      id: 'wi-1', revision: 7, coordinatorRevision: 0, updatedAt: 40,
+      status: 'done', currentActionId: null, currentAction: null,
+      actionStats: [{
+        id: 'action-1', generation: 2, status: 'completed', progressRevision: 5,
+        response: 'FINAL REPLY',
+        liveMessage: {
+          id: 'run:terminal', runId: 'terminal', role: 'assistant', status: 'completed',
+          text: 'FINAL REPLY', generation: 2, attempt: 1, createdAt: 50, updatedAt: 50,
+        },
+      }],
+    };
+    expect(workItemDetailRefreshIdentity(
+      store.workCenterDetailByAgent['agent-a'], terminalSummary,
+    )).toEqual({ actionId: 'action-1', generation: 2 });
+    store.applyWorkCenterEvent('agent-a', { type: 'run.finished', workItem: terminalSummary });
+    expect(store.workCenterActionMessages[currentKey]).toBeUndefined();
+    expect(store._workCenterActionMessageGenerationByKey[currentKey]).toBe(2);
+    expect(store._workCenterDetailEventRefreshByAgent['agent-a']).toBe('wi-1:action-1:2');
+    expect(store.workCenterDetailByAgent['agent-a'].actions[0].liveMessage).toMatchObject({
+      status: 'completed', text: 'FINAL REPLY',
+    });
+    expect(pendingRequests.filter(request => (
+      request !== stalePageRequest
+        && ['get', 'get_action_messages'].includes(request.operation)
+        && !request.resolved
+    )).map(request => request.operation).sort()).toEqual(['get', 'get_action_messages']);
+
+    const terminalRefresh = pendingRequests.find(request => request.operation === 'get' && !request.resolved);
+    const terminalMessages = pendingRequests.find(request => (
+      request.operation === 'get_action_messages' && !request.resolved && request !== stalePageRequest
+    ));
+    terminalRefresh.resolve({
+      ...terminalSummary,
+      actions: [{
+        id: 'action-1', generation: 2, status: 'completed', progressRevision: 5,
+        messages: [{
+          id: 'run:terminal', runId: 'terminal', role: 'assistant', status: 'completed',
+          text: 'FINAL REPLY', generation: 2, attempt: 1, createdAt: 50,
+        }],
+      }],
+    });
+    terminalMessages.resolve({
+      actionId: 'action-1', generation: 2,
+      messages: [{
+        id: 'run:terminal', runId: 'terminal', role: 'assistant', status: 'completed',
+        text: 'FINAL REPLY', generation: 2, attempt: 1, createdAt: 50,
+      }],
+      nextCursor: null,
+      total: 2,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.workCenterDetailByAgent['agent-a']).toMatchObject({
+      status: 'done', currentActionId: null,
+      actions: [expect.objectContaining({
+        id: 'action-1', status: 'completed', messages: [expect.objectContaining({ text: 'FINAL REPLY' })],
+      })],
+    });
+    expect(store.workCenterActionMessages[currentKey]).toMatchObject({
+      nextCursor: null,
+      messages: [expect.objectContaining({ text: 'FINAL REPLY' })],
+    });
+    resolveStalePage({
+      actionId: 'action-1', generation: 2,
+      messages: [{ id: 'event:stale', role: 'user', text: 'stale older input' }],
+      nextCursor: null,
+      total: 2,
+    });
+    await stalePage;
+    expect(JSON.stringify(store.workCenterActionMessages[currentKey])).not.toContain('stale older input');
+
+    const finalDir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-final-event-'));
+    let finalNow = 1_000;
+    const finalStore = new WorkItemStore(join(finalDir, 'work-center.db'), { now: () => finalNow });
+    const finalController = new WorkflowController(finalStore);
+    const finalService = new WorkCenterService({
+      yeaftDir: finalDir,
+      store: finalStore,
+      controller: finalController,
+      runner: null,
+      ownerBootId: 'final-event',
+      settingsReader: () => ({}),
+    });
+    try {
+      const finalItem = finalController.create({
+        id: 'final-event',
+        title: 'Deliver the final reply',
+        goal: 'Keep the terminal Action conversation complete',
+        acceptanceCriteria: [],
+        workflowTemplate: 'software-change',
+        workDir: '/tmp',
+        start: true,
+      });
+      let finalClaim = null;
+      for (const type of ['triage', 'implement', 'review']) {
+        const claim = finalStore.claimReadyAction('final-event', 5_000);
+        expect(claim.action.type).toBe(type);
+        finalNow += 10;
+        finalController.submit(claim.run.id, 'final-event', claim.run.leaseEpoch, {
+          outcome: 'completed',
+          response: `${type} reply`,
+          summary: `${type} complete`,
+          evidence: [`${type}-evidence`],
+          acceptanceChecks: [],
+          ...(type === 'review' ? { reviewDecision: 'approved' } : {}),
+        });
+        finalNow += 10;
+      }
+      finalClaim = finalStore.claimReadyAction('final-event', 5_000);
+      expect(finalClaim.action.type).toBe('deliver');
+      const runningDetail = finalStore.updateRunProgress(
+        finalClaim.run.id,
+        'final-event',
+        finalClaim.run.leaseEpoch,
+        { response: 'PARTIAL DELIVERY', loopCount: 1 },
+      );
+      const runningBrowserDetail = finalService.projectBrowserDetail(runningDetail);
+      const finalAgent = 'agent-final';
+      store.workCenterDetailByAgent[finalAgent] = runningBrowserDetail;
+      store.workCenterItemsByAgent[finalAgent] = [];
+      store.workCenterAgentId = finalAgent;
+      const runningAction = runningBrowserDetail.actions.find(action => action.id === finalClaim.action.id);
+      const finalKey = workCenterActionMessageKey(
+        finalAgent,
+        finalItem.id,
+        finalClaim.action.id,
+        finalClaim.action.generation,
+      );
+      store.workCenterActionMessages[finalKey] = {
+        generation: finalClaim.action.generation,
+        messages: [],
+        nextCursor: '1',
+        total: 1,
+      };
+      expect(runningAction.liveMessage).toMatchObject({
+        status: 'running', text: 'PARTIAL DELIVERY',
+      });
+      finalNow += 10;
+      const finishedDetail = finalController.submit(
+        finalClaim.run.id,
+        'final-event',
+        finalClaim.run.leaseEpoch,
+        {
+          outcome: 'completed',
+          response: 'FINAL DELIVERY REPLY',
+          summary: 'deliver complete',
+          evidence: ['deliver-evidence'],
+          acceptanceChecks: [],
+        },
+      );
+      const finishedEvent = projectWorkCenterEvent({ type: 'run.finished', workItem: finishedDetail });
+      expect(finishedEvent.workItem).toMatchObject({
+        status: 'done', currentActionId: null,
+        actionStats: [
+          expect.any(Object), expect.any(Object), expect.any(Object),
+          expect.objectContaining({
+            id: finalClaim.action.id,
+            generation: finalClaim.action.generation,
+            status: 'completed',
+            liveMessage: expect.objectContaining({
+              status: 'completed', text: 'FINAL DELIVERY REPLY',
+            }),
+          }),
+        ],
+      });
+      const finalRequests = [];
+      const originalWorkCenterRequest = store.workCenterRequest;
+      store.workCenterRequest = vi.fn((operation, payload) => {
+        finalRequests.push({ operation, payload });
+        if (operation === 'get') {
+          return Promise.resolve(finalService.projectBrowserDetail(finalStore.getWorkItemDetail(finalItem.id)));
+        }
+        if (operation === 'get_action_messages') {
+          const action = finalStore.getAction(payload.actionId);
+          return Promise.resolve(projectActionMessagePage(
+            action,
+            finalStore.getWorkItemDetail(finalItem.id).runs,
+            finalStore.listActionEvents(payload.actionId),
+            payload,
+          ));
+        }
+        throw new Error(`Unexpected final event operation: ${operation}`);
+      });
+      store.applyWorkCenterEvent(finalAgent, finishedEvent);
+      const immediateAction = store.workCenterDetailByAgent[finalAgent].actions
+        .find(action => action.id === finalClaim.action.id);
+      expect(immediateAction.liveMessage).toMatchObject({
+        status: 'completed', text: 'FINAL DELIVERY REPLY',
+      });
+      expect(immediateAction.liveMessage.text).not.toBe('PARTIAL DELIVERY');
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      const settledDetail = store.workCenterDetailByAgent[finalAgent];
+      const settledAction = settledDetail.actions.find(action => action.id === finalClaim.action.id);
+      expect(settledDetail).toMatchObject({ status: 'done', currentActionId: null });
+      expect(settledAction.messages.filter(message => message.text === 'FINAL DELIVERY REPLY')).toHaveLength(1);
+      expect(JSON.stringify(settledAction.messages)).not.toContain('PARTIAL DELIVERY');
+      expect(store.workCenterActionMessages[finalKey]).toMatchObject({
+        nextCursor: null,
+        messages: [expect.objectContaining({ text: 'FINAL DELIVERY REPLY' })],
+      });
+      expect(finalRequests.map(request => request.operation).sort()).toEqual([
+        'get', 'get_action_messages',
+      ]);
+      store.workCenterRequest = originalWorkCenterRequest;
+    } finally {
+      finalStore.close();
+      rmSync(finalDir, { recursive: true, force: true });
+    }
+
+    const nextActionSummary = {
+      ...terminalSummary,
+      revision: 8,
+      updatedAt: 55,
+      status: 'ready',
+      currentActionId: 'action-2',
+      currentAction: { id: 'action-2', generation: 1, status: 'ready' },
+      actionStats: [
+        terminalSummary.actionStats[0],
+        { id: 'action-2', generation: 1, status: 'ready', progressRevision: 1 },
+      ],
+    };
+    const nextActionCurrent = {
+      ...store.workCenterDetailByAgent['agent-a'],
+      revision: 7,
+      updatedAt: 50,
+      status: 'running',
+      currentActionId: 'action-1',
+      actions: [
+        ...store.workCenterDetailByAgent['agent-a'].actions,
+        { id: 'action-2', generation: 1, status: 'ready', progressRevision: 1 },
+      ],
+    };
+    expect(workItemDetailRefreshIdentity(nextActionCurrent, nextActionSummary))
+      .toEqual({ actionId: 'action-1', generation: 2 });
+
     const coordinatorSummary = {
       ...eventSummary,
-      revision: 6,
-      updatedAt: 30,
+      revision: 8,
+      updatedAt: 60,
       coordinatorRevision: 3,
       currentActionId: null,
       currentAction: null,
@@ -520,10 +803,10 @@ describe('Yeaft history outline state', () => {
       coordinatorRevision: 3,
       messages: [expect.objectContaining({ text: 'Plan updated' })],
     });
-    const sent = store.sendWorkItemMessage('wi-1', 'Change the target', 6, 'agent-a');
+    const sent = store.sendWorkItemMessage('wi-1', 'Change the target', 8, 'agent-a');
     const coordinatorRequest = pendingRequests.find(request => request.operation === 'work_item_message');
     expect(store.workCenterRequest).toHaveBeenLastCalledWith('work_item_message', {
-      id: 'wi-1', text: 'Change the target', revision: 6,
+      id: 'wi-1', text: 'Change the target', revision: 8,
       planRevision: 0, ledgerRevision: 0, coordinatorRevision: 3,
     }, 'agent-a');
     coordinatorRequest.resolve({ accepted: true, turnId: 'turn-2' });

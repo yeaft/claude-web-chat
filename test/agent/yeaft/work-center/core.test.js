@@ -144,6 +144,7 @@ describe('Work Center core', () => {
       'Please retry with the corrected constraint.',
       'Second execution completed.',
     ]);
+    expect(page.messages.at(-1)).toMatchObject({ generation: 2, attempt: 1 });
     const firstPage = projectActionMessagePage(action, runs, events, { cursor: page.nextCursor, limit: 2 });
     expect(firstPage.messages.map(message => message.text)).toEqual(['First execution failed.']);
     expect(JSON.stringify([firstPage, page])).not.toContain('Stale execution must stay hidden.');
@@ -222,7 +223,47 @@ describe('Work Center core', () => {
     expect(terminalLoopPage.messages.map(message => message.text)).toEqual([
       'input after running loop', 'terminal loop output',
     ]);
-    expect(terminalLoopPage.messages[1].createdAt).toBe(200);
+    expect(terminalLoopPage.messages[1]).toMatchObject({
+      createdAt: 200, generation: 1, attempt: 1,
+    });
+
+    const sameTimeAction = {
+      id: 'same-time-runs', generation: 1, specHash: 'same-time-spec',
+      identityHistory: [{ generation: 1, specHash: 'same-time-spec' }],
+    };
+    const sameTimeEvents = [{
+      id: 1, type: 'action.input_added', actionId: sameTimeAction.id,
+      actionGeneration: 1, createdAt: 50, data: { text: 'same-time input' },
+    }];
+    const oldSameTimeRun = {
+      id: 'z-old', actionId: sameTimeAction.id, actionGeneration: 1,
+      actionSpecHash: 'same-time-spec', actionAttempt: 1, status: 'failed',
+      response: 'first terminal reply', startedAt: 80, endedAt: 100,
+    };
+    const newSameTimeRun = {
+      id: 'a-new', actionId: sameTimeAction.id, actionGeneration: 1,
+      actionSpecHash: 'same-time-spec', actionAttempt: 2, status: 'completed',
+      response: 'second terminal reply', startedAt: 90, endedAt: 100,
+    };
+    const sameTimeFirstPage = projectActionMessagePage(
+      sameTimeAction, [oldSameTimeRun], sameTimeEvents, { limit: 1 },
+    );
+    expect(sameTimeFirstPage).toMatchObject({ nextCursor: '1', total: 2 });
+    expect(sameTimeFirstPage.messages.map(message => message.text)).toEqual(['first terminal reply']);
+    const sameTimeFinalPage = projectActionMessagePage(
+      sameTimeAction, [oldSameTimeRun, newSameTimeRun], sameTimeEvents, { limit: 2 },
+    );
+    expect(sameTimeFinalPage.messages.map(message => message.text)).toEqual([
+      'first terminal reply', 'second terminal reply',
+    ]);
+    expect(sameTimeFinalPage.messages.map(message => message.attempt)).toEqual([1, 2]);
+    const sameTimeOlderPage = projectActionMessagePage(
+      sameTimeAction,
+      [oldSameTimeRun, newSameTimeRun],
+      sameTimeEvents,
+      { cursor: sameTimeFirstPage.nextCursor, limit: 2 },
+    );
+    expect(sameTimeOlderPage.messages.map(message => message.text)).toEqual(['same-time input']);
 
     const detail = projectWorkItemDetail({
       id: 'work-item-conversation', revision: 1, planRevision: 0, ledgerRevision: 0,

@@ -575,6 +575,7 @@ test.describe('Work Center responsive UI', () => {
         workItem: {
           ...OPEN_ITEM,
           revision: 1,
+          currentActionId: 'action-1',
           updatedAt: Number(OPEN_ITEM.updatedAt) + 1,
           actionStats: [{
             id: 'action-1', status: 'running', progressRevision: 5,
@@ -592,6 +593,95 @@ test.describe('Work Center responsive UI', () => {
 
     await expect(actionDetail.locator('.work-center-action-composer')).toHaveCount(0);
     await expect(actionDetail).toContainText('Live AI response from the active Run.');
+
+    mockAgent.send({
+      type: 'work_center_event',
+      event: {
+        type: 'run.finished',
+        workItem: {
+          ...OPEN_ITEM,
+          revision: 2,
+          status: 'done',
+          currentActionId: null,
+          currentAction: null,
+          updatedAt: Number(OPEN_ITEM.updatedAt) + 2,
+          actionStats: [{
+            id: 'action-1', generation: 1, status: 'completed', progressRevision: 6,
+            executionStats: OPEN_ITEM_DETAIL.actions[0].executionStats,
+            response: 'FINAL REPLY',
+            liveMessage: {
+              id: 'run:run-live', runId: 'run-live', role: 'assistant', kind: 'response',
+              status: 'completed', text: 'FINAL REPLY', attachments: [],
+              generation: 1, attempt: 1,
+              createdAt: Date.now(), updatedAt: Date.now(), progressRevision: 6,
+            },
+          }],
+        },
+      },
+    });
+    await expect(actionDetail.locator('.work-center-action-message', { hasText: 'FINAL REPLY' })).toHaveCount(1);
+    await expect(actionDetail.locator('.work-center-action-message', { hasText: 'Live AI response from the active Run.' })).toHaveCount(0);
+
+    const terminalDetail = {
+      ...OPEN_ITEM_DETAIL,
+      revision: 2,
+      status: 'done',
+      currentActionId: null,
+      currentAction: null,
+      updatedAt: Number(OPEN_ITEM.updatedAt) + 2,
+      actions: [{
+        ...OPEN_ITEM_DETAIL.actions[0],
+        status: 'completed',
+        progressRevision: 6,
+        response: 'FINAL REPLY',
+        messages: [{
+          id: 'run:run-live', runId: 'run-live', role: 'assistant', kind: 'response',
+          status: 'completed', text: 'FINAL REPLY', attachments: [],
+          generation: 1, attempt: 1,
+          createdAt: Date.now(), updatedAt: Date.now(), progressRevision: 6,
+        }],
+        liveMessage: {
+          id: 'run:run-live', runId: 'run-live', role: 'assistant', kind: 'response',
+          status: 'completed', text: 'FINAL REPLY', attachments: [],
+          generation: 1, attempt: 1,
+          createdAt: Date.now(), updatedAt: Date.now(), progressRevision: 6,
+        },
+      }],
+    };
+    const terminalPage = {
+      actionId: 'action-1', generation: 1,
+      messages: terminalDetail.actions[0].messages,
+      nextCursor: null,
+      total: 1,
+    };
+    const terminalRequestOps = [
+      (await respondByOperation(mockAgent, { get: terminalDetail, get_action_messages: terminalPage })).op,
+      (await respondByOperation(mockAgent, { get: terminalDetail, get_action_messages: terminalPage })).op,
+    ];
+    await expect(actionDetail.locator('.work-center-action-message', { hasText: 'FINAL REPLY' })).toHaveCount(1);
+    await expect(actionDetail.locator('.work-center-action-message', { hasText: 'Live AI response from the active Run.' })).toHaveCount(0);
+    const readFinalState = () => chatPage.evaluate(() => {
+      const store = window.Pinia.useChatStore();
+      const agentId = store.workCenterAgentId;
+      const detail = store.workCenterDetailByAgent[agentId];
+      const action = detail.actions.find(candidate => candidate.id === 'action-1');
+      const key = `${agentId}:${detail.id}:action-1:1`;
+      return {
+        status: detail.status,
+        currentActionId: detail.currentActionId,
+        messages: action.messages.map(message => message.text),
+        cachedMessages: (store.workCenterActionMessages[key]?.messages || []).map(message => message.text),
+        nextCursor: store.workCenterActionMessages[key]?.nextCursor,
+      };
+    });
+    expect(terminalRequestOps.sort()).toEqual(['get', 'get_action_messages']);
+    await expect.poll(readFinalState).toEqual({
+      status: 'done',
+      currentActionId: null,
+      messages: ['FINAL REPLY'],
+      cachedMessages: ['FINAL REPLY'],
+      nextCursor: null,
+    });
   });
 
   test('loads one retained conversation when an earlier Action is selected', async ({ chatPage, mockAgent }) => {

@@ -246,7 +246,11 @@ function compareProjectedMessages(left, right) {
   }
   const leftRole = left?.role === 'user' ? 0 : 1;
   const rightRole = right?.role === 'user' ? 0 : 1;
-  return leftRole - rightRole
+  if (leftRole !== rightRole) return leftRole - rightRole;
+  const generationOrder = count(left?.generation) - count(right?.generation);
+  if (generationOrder) return generationOrder;
+  const attemptOrder = count(left?.attempt) - count(right?.attempt);
+  return attemptOrder
     || String(left?.id || '').localeCompare(String(right?.id || ''));
 }
 
@@ -304,6 +308,8 @@ function runResponseMessage(run) {
     createdAt: count(run.endedAt || run.startedAt),
     updatedAt: count(run.endedAt || run.startedAt),
     progressRevision: count(run.progressRevision),
+    generation: runGeneration(run),
+    attempt: Math.max(1, count(run.actionAttempt) || 1),
     runId: run.id,
     speaker: run.vpSnapshot,
   });
@@ -335,6 +341,8 @@ function loopOutputMessages(action, events, matchingRuns, generation = actionGen
       status: 'completed',
       text: event.data?.response || '',
       createdAt: count(run.endedAt || event.createdAt),
+      generation: runGeneration(run),
+      attempt: Math.max(1, count(run.actionAttempt) || 1),
       runId: event.runId,
       speaker: run.vpSnapshot,
     });

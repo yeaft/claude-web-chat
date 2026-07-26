@@ -155,13 +155,15 @@ export default {
       const earlier = this.store.workCenterActionMessages[this.actionMessageKey]?.messages || [];
       const persisted = mergeActionMessages(compatibilityMessages, earlier, current);
       const live = this.selectedAction?.liveMessage;
-      const visibleLive = live?.status === 'running'
-        && !persisted.some(message => message.role === 'assistant'
+      const liveAlreadyPersisted = live && persisted.some(message => (
+        message.role === 'assistant'
           && message.runId != null
           && message.runId === live.runId
-          && message.text === live.text)
-        ? live : null;
-      return mergeActionMessages(persisted, visibleLive);
+          && (live.status === 'running'
+            ? message.text === live.text
+            : message.status !== 'running')
+      ));
+      return mergeActionMessages(persisted, liveAlreadyPersisted ? null : live);
     },
     actionMessagesNextCursor() {
       const page = this.store.workCenterActionMessages[this.actionMessageKey];

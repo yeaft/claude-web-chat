@@ -95,7 +95,11 @@ function compareActionMessages(left, right) {
   }
   const leftRole = left?.role === 'user' ? 0 : 1;
   const rightRole = right?.role === 'user' ? 0 : 1;
-  return leftRole - rightRole
+  if (leftRole !== rightRole) return leftRole - rightRole;
+  const generationOrder = actionMessageTime(left?.generation) - actionMessageTime(right?.generation);
+  if (generationOrder) return generationOrder;
+  const attemptOrder = actionMessageTime(left?.attempt) - actionMessageTime(right?.attempt);
+  return attemptOrder
     || String(left?.id || '').localeCompare(String(right?.id || ''));
 }
 
@@ -155,21 +159,41 @@ function isActionProgressStale(currentStats, nextStats) {
   return currentProgress != null && nextProgress != null && nextProgress < currentProgress;
 }
 
+export function workItemDetailRefreshIdentity(current, summary) {
+  if (!current || current.id !== summary?.id || isWorkItemSummaryStale(summary, current)) return null;
+  const actions = Array.isArray(current.actions) ? current.actions : [];
+  const stats = Array.isArray(summary.actionStats) ? summary.actionStats : [];
+  const currentActionId = current.currentActionId || null;
+  const nextActionId = Object.prototype.hasOwnProperty.call(summary, 'currentActionId')
+    ? summary.currentActionId || null
+    : currentActionId;
+  const actionId = currentActionId !== nextActionId
+    ? (currentActionId || nextActionId)
+    : nextActionId;
+  if (!actionId) return null;
+  const currentAction = actions.find(action => action?.id === actionId) || null;
+  const summaryAction = stats.find(action => action?.id === actionId)
+    || (summary.currentAction?.id === actionId ? summary.currentAction : null);
+  const currentGeneration = positiveIntegerOrNull(currentAction?.generation);
+  const summaryGeneration = positiveIntegerOrNull(summaryAction?.generation);
+  if (currentActionId !== nextActionId || !currentAction) {
+    return { actionId, generation: summaryGeneration || currentGeneration || 1 };
+  }
+  if (currentGeneration != null && summaryGeneration != null && summaryGeneration > currentGeneration) {
+    return { actionId, generation: summaryGeneration };
+  }
+  if (currentAction?.status === 'running' && summaryAction?.status && summaryAction.status !== 'running') {
+    return { actionId, generation: summaryGeneration || currentGeneration || 1 };
+  }
+  return null;
+}
+
 export function workItemDetailNeedsRefresh(current, summary) {
-  if (!current || current.id !== summary?.id) return false;
+  if (!current || current.id !== summary?.id || isWorkItemSummaryStale(summary, current)) return false;
   const coordinatorRevision = numberOrNull(summary.coordinatorRevision);
   const currentCoordinatorRevision = numberOrNull(current.coordinatorRevision) ?? 0;
   if (coordinatorRevision != null && coordinatorRevision > currentCoordinatorRevision) return true;
-  if (!summary.currentActionId) return false;
-  if (!Array.isArray(current.actions)) return true;
-  const currentAction = current.actions.find(action => action?.id === summary.currentActionId);
-  if (!currentAction) return true;
-  const summaryAction = (Array.isArray(summary.actionStats) ? summary.actionStats : [])
-    .find(action => action?.id === summary.currentActionId) || summary.currentAction;
-  const currentGeneration = positiveIntegerOrNull(currentAction.generation);
-  const summaryGeneration = positiveIntegerOrNull(summaryAction?.generation);
-  return currentGeneration != null && summaryGeneration != null
-    && summaryGeneration > currentGeneration;
+  return workItemDetailRefreshIdentity(current, summary) != null;
 }
 
 const PROGRESS_BOUND_SUMMARY_FIELDS = new Set([

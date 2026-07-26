@@ -22,6 +22,7 @@ import {
   workCenterActionMessageKey,
   mergeWorkItemSummary,
   workItemDetailNeedsRefresh,
+  workItemDetailRefreshIdentity,
 } from './helpers/work-center.js';
 import { createPerfTraceId, recordPerfTrace, measureNextPaint } from './helpers/perfTrace.js';
 import { normalizeSessionMessageQuote } from '../utils/session-message-quote.js';
@@ -669,6 +670,7 @@ export const useChatStore = defineStore('chat', {
     _workCenterDetailEventRefreshByAgent: {},
     _workCenterActionInputGenerationByAgent: {},
     _workCenterActionMessageRequests: {},
+    _workCenterActionMessageGenerationByKey: {},
     _workCenterActionRequestsGeneration: {},
     _workCenterActionRequestDetailsGeneration: {},
 
@@ -1486,8 +1488,8 @@ export const useChatStore = defineStore('chat', {
         'workCenterActionMessages', 'workCenterActionMessagesLoading', 'workCenterActionMessagesError',
         'workCenterActionRequests', 'workCenterActionRequestsLoading', 'workCenterActionRequestsError',
         'workCenterActionRequestDetails', 'workCenterActionRequestDetailsLoading', 'workCenterActionRequestDetailsError',
-        '_workCenterActionMessageRequests', '_workCenterActionRequestsGeneration',
-        '_workCenterActionRequestDetailsGeneration',
+        '_workCenterActionMessageRequests', '_workCenterActionMessageGenerationByKey',
+        '_workCenterActionRequestsGeneration', '_workCenterActionRequestDetailsGeneration',
       ]) {
         const next = {};
         for (const [key, value] of Object.entries(this[field] || {})) {
@@ -1520,10 +1522,35 @@ export const useChatStore = defineStore('chat', {
       this.commitWorkCenterDetail(target, detail, generation);
       return this.workCenterDetailByAgent[target] || detail;
     },
+    invalidateWorkItemActionMessages(agentId, id, actionId, actionGeneration) {
+      if (!agentId || !id || !actionId) return null;
+      const expectedGeneration = normalizeWorkCenterActionGeneration(actionGeneration);
+      const key = workCenterActionMessageKey(agentId, id, actionId, expectedGeneration);
+      this._workCenterActionMessageGenerationByKey = {
+        ...this._workCenterActionMessageGenerationByKey,
+        [key]: Number(this._workCenterActionMessageGenerationByKey[key] || 0) + 1,
+      };
+      for (const field of [
+        'workCenterActionMessages',
+        'workCenterActionMessagesLoading',
+        'workCenterActionMessagesError',
+      ]) {
+        const next = { ...this[field] };
+        delete next[key];
+        this[field] = next;
+      }
+      const pending = { ...this._workCenterActionMessageRequests };
+      for (const requestKey of Object.keys(pending)) {
+        if (requestKey.startsWith(`${key}:`)) delete pending[requestKey];
+      }
+      this._workCenterActionMessageRequests = pending;
+      return key;
+    },
     async loadWorkItemActionMessages(id, actionId, actionGeneration, cursor, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const expectedGeneration = normalizeWorkCenterActionGeneration(actionGeneration);
       const key = workCenterActionMessageKey(target, id, actionId, expectedGeneration);
+      const cacheGeneration = Number(this._workCenterActionMessageGenerationByKey[key] || 0);
       const requestKey = `${key}:${cursor == null ? 'latest' : String(cursor)}`;
       if (this._workCenterActionMessageRequests[requestKey]) return this._workCenterActionMessageRequests[requestKey];
       this.workCenterActionMessagesLoading = { ...this.workCenterActionMessagesLoading, [key]: true };
@@ -1534,7 +1561,8 @@ export const useChatStore = defineStore('chat', {
             id, actionId, generation: expectedGeneration, cursor, limit: 20,
           }, target);
           if (this.workItemDeleted(target, id)
-              || normalizeWorkCenterActionGeneration(data?.generation) !== expectedGeneration) return data;
+              || normalizeWorkCenterActionGeneration(data?.generation) !== expectedGeneration
+              || Number(this._workCenterActionMessageGenerationByKey[key] || 0) !== cacheGeneration) return data;
           const current = this.workCenterActionMessages[key]?.messages || [];
           const messages = mergeActionMessages(current, data?.messages || []);
           const existingPage = this.workCenterActionMessages[key];
@@ -1555,17 +1583,21 @@ export const useChatStore = defineStore('chat', {
           };
           return data;
         } catch (error) {
-          this.workCenterActionMessagesError = {
-            ...this.workCenterActionMessagesError,
-            [key]: error?.message || String(error),
-          };
+          if (Number(this._workCenterActionMessageGenerationByKey[key] || 0) === cacheGeneration) {
+            this.workCenterActionMessagesError = {
+              ...this.workCenterActionMessagesError,
+              [key]: error?.message || String(error),
+            };
+          }
           throw error;
         } finally {
-          const pending = { ...this._workCenterActionMessageRequests };
-          delete pending[requestKey];
-          this._workCenterActionMessageRequests = pending;
-          const stillLoading = Object.keys(pending).some(candidate => candidate.startsWith(`${key}:`));
-          this.workCenterActionMessagesLoading = { ...this.workCenterActionMessagesLoading, [key]: stillLoading };
+          if (this._workCenterActionMessageRequests[requestKey] === request) {
+            const pending = { ...this._workCenterActionMessageRequests };
+            delete pending[requestKey];
+            this._workCenterActionMessageRequests = pending;
+            const stillLoading = Object.keys(pending).some(candidate => candidate.startsWith(`${key}:`));
+            this.workCenterActionMessagesLoading = { ...this.workCenterActionMessagesLoading, [key]: stillLoading };
+          }
         }
       })();
       this._workCenterActionMessageRequests = {
@@ -1873,38 +1905,71 @@ export const useChatStore = defineStore('chat', {
       };
       const selected = this.workCenterDetailByAgent[agentId];
       if (selected?.id === summary.id) {
+        const refreshIdentity = workItemDetailRefreshIdentity(selected, summary);
+        const coordinatorRevision = Number(summary.coordinatorRevision);
+        const currentCoordinatorRevision = Number(selected.coordinatorRevision) || 0;
+        const coordinatorRefresh = Number.isInteger(coordinatorRevision)
+          && coordinatorRevision > currentCoordinatorRevision;
         const needsRefresh = workItemDetailNeedsRefresh(selected, summary);
         this.workCenterDetailByAgent = {
           ...this.workCenterDetailByAgent,
           [agentId]: mergeWorkItemSummary(selected, summary),
         };
-        if (needsRefresh) this.refreshWorkItemDetailAfterActionChange(agentId, summary);
+        if (needsRefresh) {
+          this.refreshWorkItemDetailAfterActionChange(
+            agentId,
+            summary,
+            coordinatorRefresh ? null : refreshIdentity,
+          );
+        }
       }
     },
-    async refreshWorkItemDetailAfterActionChange(agentId, summary) {
-      const summaryAction = (Array.isArray(summary.actionStats) ? summary.actionStats : [])
-        .find(action => action?.id === summary.currentActionId) || summary.currentAction;
-      const summaryGeneration = Number(summaryAction?.generation);
+    async refreshWorkItemDetailAfterActionChange(agentId, summary, refreshIdentity = null) {
+      const summaryAction = refreshIdentity
+        ? (Array.isArray(summary.actionStats) ? summary.actionStats : [])
+            .find(action => action?.id === refreshIdentity.actionId)
+        : ((Array.isArray(summary.actionStats) ? summary.actionStats : [])
+            .find(action => action?.id === summary.currentActionId) || summary.currentAction);
+      const expectedActionId = refreshIdentity?.actionId || summary.currentActionId || null;
+      const summaryGeneration = Number(refreshIdentity?.generation ?? summaryAction?.generation);
       const expectedGeneration = Number.isInteger(summaryGeneration) && summaryGeneration > 0
         ? summaryGeneration
         : null;
       const coordinatorRevision = Number(summary.coordinatorRevision);
-      const expectedCoordinatorRevision = Number.isInteger(coordinatorRevision) && coordinatorRevision >= 0
+      const expectedCoordinatorRevision = !refreshIdentity
+        && Number.isInteger(coordinatorRevision) && coordinatorRevision >= 0
         ? coordinatorRevision : null;
       const key = expectedCoordinatorRevision != null
         ? `${summary.id}:coordinator:${expectedCoordinatorRevision}`
-        : `${summary.id}:${summary.currentActionId}${expectedGeneration == null ? '' : `:${expectedGeneration}`}`;
+        : `${summary.id}:${expectedActionId}${expectedGeneration == null ? '' : `:${expectedGeneration}`}`;
       if (this._workCenterDetailEventRefreshByAgent[agentId] === key) return;
       const generation = Number(this._workCenterDetailRequestGenerationByAgent[agentId] || 0);
       this._workCenterDetailEventRefreshByAgent = {
         ...this._workCenterDetailEventRefreshByAgent,
         [agentId]: key,
       };
+      if (refreshIdentity) {
+        this.invalidateWorkItemActionMessages(
+          agentId,
+          summary.id,
+          refreshIdentity.actionId,
+          refreshIdentity.generation,
+        );
+      }
+      const latestMessages = expectedActionId && expectedGeneration != null
+        ? this.loadWorkItemActionMessages(
+            summary.id,
+            expectedActionId,
+            expectedGeneration,
+            null,
+            agentId,
+          ).catch(() => null)
+        : null;
       try {
         const detail = await this.workCenterRequest('get', { id: summary.id }, agentId);
         const selected = this.workCenterDetailByAgent[agentId];
-        const selectedAction = selected?.actions?.find(action => action?.id === summary.currentActionId);
-        const detailAction = detail?.actions?.find(action => action?.id === summary.currentActionId);
+        const selectedAction = selected?.actions?.find(action => action?.id === expectedActionId);
+        const detailAction = detail?.actions?.find(action => action?.id === expectedActionId);
         const selectedGenerationMatches = expectedGeneration == null
           || normalizeWorkCenterActionGeneration(selectedAction?.generation) === expectedGeneration;
         const detailGenerationMatches = expectedGeneration == null
@@ -1912,14 +1977,18 @@ export const useChatStore = defineStore('chat', {
         const coordinatorRevisionMatches = expectedCoordinatorRevision == null
           || Number(detail?.coordinatorRevision) === expectedCoordinatorRevision;
         const actionIdentityMatches = expectedCoordinatorRevision != null
-          || (selected.currentActionId === summary.currentActionId
-            && selectedGenerationMatches
-            && detail?.currentActionId === summary.currentActionId
-            && detailGenerationMatches);
+          || (selectedGenerationMatches
+            && detailGenerationMatches
+            && (summary.currentActionId == null
+              ? detail?.currentActionId == null
+              : selected?.currentActionId === summary.currentActionId
+                && detail?.currentActionId === summary.currentActionId));
         if (selected?.id === summary.id
             && coordinatorRevisionMatches
-            && actionIdentityMatches) {
-          this.commitWorkCenterDetail(agentId, detail, generation);
+            && actionIdentityMatches
+            && this.commitWorkCenterDetail(agentId, detail, generation)
+            && latestMessages) {
+          await latestMessages;
         }
       } catch {
         // The next event or explicit selection retries; event handling remains non-fatal.
