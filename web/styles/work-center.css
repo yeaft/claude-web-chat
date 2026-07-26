@@ -1481,6 +1481,28 @@
   font-size: 11px;
 }
 
+.work-center-action-waiting {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+  color: var(--text-primary);
+}
+
+.work-center-action-waiting strong {
+  color: var(--accent-blue);
+  font-size: 12px;
+}
+
+.work-center-action-waiting p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .work-center-action-message-list {
   display: grid;
   gap: 24px;

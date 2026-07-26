@@ -8,6 +8,7 @@ import { WorkflowController } from '../../../../agent/yeaft/work-center/controll
 import { WorkItemRunner } from '../../../../agent/yeaft/work-center/runner.js';
 import { WorkItemCoordinator } from '../../../../agent/yeaft/work-center/coordinator.js';
 import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
+import { enforceActionRequestDetailBudget } from '../../../../agent/yeaft/work-center/debug-projection.js';
 import {
   applyAdditivePlanProposal,
   applyCoordinatorReplan,
@@ -169,6 +170,52 @@ describe('Work Center core', () => {
     ]);
     expect(requestIndex.requests.map(request => request.generation)).toEqual([2, 1]);
     expect(JSON.stringify(requestIndex)).not.toContain('run-stale');
+    const orderedRequestIndex = projectActionRequestIndex(action, [
+      {
+        run: { id: 'run-v1-late', actionId: action.id, actionGeneration: 1, actionSpecHash: 'spec-v1', actionAttempt: 9 },
+        turn: { turnId: 'request-v1-late', openedAt: 9_000 },
+      },
+      {
+        run: { id: 'run-v2-attempt-1', actionId: action.id, actionGeneration: 2, actionSpecHash: 'spec-v2', actionAttempt: 1 },
+        turn: { turnId: 'request-v2-attempt-1', openedAt: 3_000 },
+      },
+      {
+        run: { id: 'run-v2-attempt-2-old', actionId: action.id, actionGeneration: 2, actionSpecHash: 'spec-v2', actionAttempt: 2 },
+        turn: { turnId: 'request-v2-attempt-2-old', openedAt: 1_000 },
+      },
+      {
+        run: { id: 'run-v2-attempt-2-new', actionId: action.id, actionGeneration: 2, actionSpecHash: 'spec-v2', actionAttempt: 2 },
+        turn: { turnId: 'request-v2-attempt-2-new', openedAt: 2_000 },
+      },
+    ]);
+    expect(orderedRequestIndex.requests.map(request => request.id)).toEqual([
+      'request-v2-attempt-2-new',
+      'request-v2-attempt-2-old',
+      'request-v2-attempt-1',
+      'request-v1-late',
+    ]);
+    const minimalRequestDetail = enforceActionRequestDetailBudget({
+      actionId: action.id,
+      generation: action.generation,
+      request: {
+        id: 'large-request',
+        runId: 'large-run',
+        status: 'completed',
+        model: 'x'.repeat(300 * 1024),
+        vp: null,
+        openedAt: 1,
+        closedAt: 2,
+        loopCount: 0,
+        totalMs: 1,
+        totalTokens: 1,
+        loops: [],
+      },
+    });
+    expect(minimalRequestDetail).toMatchObject({
+      actionId: action.id,
+      generation: action.generation,
+      request: { id: 'large-request', truncated: true },
+    });
 
     const identityAction = {
       id: 'identity-boundary', generation: 4, specHash: 'spec-v4',
@@ -323,6 +370,18 @@ describe('Work Center core', () => {
     });
     const browserDetail = service.projectBrowserDetail(rawDetail);
     const bodyAction = browserDetail.actions.find(candidate => candidate.id === pagedAction.id);
+    await expect(service.handle('get_action_requests', {
+      id: pagedItem.id,
+      actionId: pagedAction.id,
+      generation: pagedAction.generation + 1,
+    })).rejects.toThrow('Action generation changed before requests were loaded');
+    await expect(service.handle('get_action_request', {
+      id: pagedItem.id,
+      actionId: pagedAction.id,
+      generation: pagedAction.generation + 1,
+      runId: 'conversation-pagination-run',
+      requestId: 'request-stale-generation',
+    })).rejects.toThrow('Action generation changed before request detail was loaded');
     expect(bodyAction.messages).toHaveLength(20);
     expect(bodyAction.messageCount).toBe(601);
     expect(bodyAction.messageCursor).toBe('581');

@@ -1559,6 +1559,7 @@ export default {
   'workCenter.noToolCalls': 'No tool calls in this Loop.',
   'workCenter.actionInputPlaceholder': 'Add context, answer a question, or redirect this Action',
   'workCenter.actionInputResumeHint': 'Your input resumes this Action with the additional context.',
+  'workCenter.waitingQuestionTitle': 'Input required',
   'workCenter.actionInputRetryHint': 'Add instructions or files, then rerun this Action with the new context.',
   'workCenter.actionInputContinueHint': 'Direct intervention for this Action only.',
   'workCenter.actionFailedTitle': 'Why this Action failed',

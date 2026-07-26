@@ -3,7 +3,11 @@ import WorkCenterSettingsModal from './WorkCenterSettingsModal.js';
 import LlmTab from './LlmTab.js';
 import folderPickerMixin from './mixins/folder-picker-mixin.js';
 import { openImagePreview } from '../utils/imagePreview.js';
-import { mergeActionMessages, workCenterActionMessageKey } from '../stores/helpers/work-center.js';
+import {
+  mergeActionMessages,
+  workCenterActionMessageKey,
+  workCenterActionRequestScopeKey,
+} from '../stores/helpers/work-center.js';
 import { workCenterRequestKey } from '../utils/work-center-request-key.js';
 import {
   clearOverlayPointerGesture,
@@ -114,7 +118,12 @@ export default {
     },
     actionRequestKey() {
       return this.selected?.id && this.selectedAction?.id
-        ? `${this.agentId}:${this.selected.id}:${this.selectedAction.id}`
+        ? workCenterActionRequestScopeKey(
+          this.agentId,
+          this.selected.id,
+          this.selectedAction.id,
+          this.selectedAction.generation,
+        )
         : '';
     },
     actionMessageKey() {
@@ -517,6 +526,7 @@ export default {
       return this.store.loadWorkItemActionRequests(
         this.selected.id,
         this.selectedAction.id,
+        this.selectedAction.generation,
         this.agentId,
       ).catch(() => []);
     },
@@ -525,6 +535,7 @@ export default {
       return this.store.loadWorkItemActionRequest(
         this.selected.id,
         this.selectedAction.id,
+        this.selectedAction.generation,
         request.runId,
         request.id,
         this.agentId,
@@ -547,6 +558,7 @@ export default {
       const requests = await this.store.loadWorkItemActionRequests(
         scope.workItemId,
         scope.actionId,
+        scope.generation,
         scope.agentId,
       ).catch(() => []);
       if (!scopeIsCurrent()) return resolve?.(null);
@@ -555,6 +567,7 @@ export default {
       const detail = await this.store.loadWorkItemActionRequest(
         scope.workItemId,
         scope.actionId,
+        scope.generation,
         request.runId,
         request.id,
         scope.agentId,

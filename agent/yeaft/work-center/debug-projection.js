@@ -639,6 +639,7 @@ export function enforceActionRequestDetailBudget(detail, omittedLoopCount = 0) {
   const metadata = value => truncateUtf8(value, 4 * 1024);
   return {
     actionId: metadata(detail.actionId),
+    generation: Math.max(1, Number(detail.generation) || 1),
     request: {
       id: metadata(request.id),
       runId: metadata(request.runId),

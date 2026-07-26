@@ -165,6 +165,14 @@ export class WorkCenterService {
       case 'get_action_requests': {
         const detail = this.#requiredItem(payload.id);
         const action = this.#requiredAction(detail, payload.actionId);
+        const expectedGeneration = Number(payload.generation);
+        if (!Number.isInteger(expectedGeneration) || expectedGeneration < 1) {
+          throw new Error('generation must be a positive integer');
+        }
+        const currentGeneration = Math.max(1, Number(action.generation) || 1);
+        if (currentGeneration !== expectedGeneration) {
+          throw new Error('Action generation changed before requests were loaded');
+        }
         const entries = [];
         for (const run of detail.runs.filter(item => item.actionId === action.id)) {
           const history = await this.#debugHistory(run, { indexOnly: true });
@@ -177,6 +185,14 @@ export class WorkCenterService {
       case 'get_action_request': {
         const detail = this.#requiredItem(payload.id);
         const action = this.#requiredAction(detail, payload.actionId);
+        const expectedGeneration = Number(payload.generation);
+        if (!Number.isInteger(expectedGeneration) || expectedGeneration < 1) {
+          throw new Error('generation must be a positive integer');
+        }
+        const currentGeneration = Math.max(1, Number(action.generation) || 1);
+        if (currentGeneration !== expectedGeneration) {
+          throw new Error('Action generation changed before request detail was loaded');
+        }
         const requestId = requiredString(payload.requestId, 'requestId');
         const run = detail.runs.find(item => item.actionId === action.id && item.id === payload.runId);
         if (!run) throw new Error('Action request not found');

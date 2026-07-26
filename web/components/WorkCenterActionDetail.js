@@ -31,6 +31,7 @@ export default {
       activeView: 'conversation',
       conversationScrollTop: 0,
       expandedRequestKey: null,
+      requestSelectionTouched: false,
     };
   },
   computed: {
@@ -63,7 +64,23 @@ export default {
     },
     hasActionBrief() {
       return !!this.action?.brief?.approach || !!this.action?.brief?.expectedOutcome
-        || !!this.action?.dependsOnStageIds?.length || !!this.action?.canonicalResult;
+        || !!this.action?.dependsOnStageIds?.length || !!this.action?.canonicalResult?.summary;
+    },
+    waitingQuestion() {
+      if (this.action?.status !== 'waiting') return '';
+      return String(this.action?.canonicalResult?.waitingReason || '').trim();
+    },
+    composerDescriptionIds() {
+      return [this.waitingQuestion ? 'work-center-action-waiting-question' : null,
+        'work-center-action-composer-hint'].filter(Boolean).join(' ');
+    },
+    currentGenerationRequests() {
+      const generation = Math.max(1, Number(this.action?.generation) || 1);
+      return this.requests.filter(request => Math.max(1, Number(request?.generation) || 1) === generation)
+        .slice()
+        .sort((left, right) => (Number(right?.attempt) || 0) - (Number(left?.attempt) || 0)
+          || (Number(right?.openedAt) || 0) - (Number(left?.openedAt) || 0)
+          || String(right?.id || '').localeCompare(String(left?.id || '')));
     },
   },
   watch: {
@@ -83,9 +100,9 @@ export default {
       deep: true,
       handler() { this.$nextTick(() => renderMermaidIn(this.$el)); },
     },
-    requests(value) {
-      if (this.activeView !== 'execution' || this.expandedRequestKey || !value?.length) return;
-      this.$nextTick(() => this.openLatestRequest());
+    requests() {
+      if (this.activeView !== 'execution' || this.requestSelectionTouched) return;
+      this.$nextTick(() => this.syncLatestRequest());
     },
   },
   mounted() {
@@ -149,6 +166,7 @@ export default {
       this.activeView = 'conversation';
       this.conversationScrollTop = 0;
       this.expandedRequestKey = null;
+      this.requestSelectionTouched = false;
       this.$nextTick(() => {
         if (this.$refs.conversationPanel) this.$refs.conversationPanel.scrollTop = 0;
         renderMermaidIn(this.$el);
@@ -181,6 +199,7 @@ export default {
       const request = await new Promise(resolve => this.$emit('open-run', run, resolve));
       if (!request || this.action?.id !== actionId || this.action?.generation !== generation) return;
       this.activeView = 'execution';
+      this.requestSelectionTouched = true;
       this.expandedRequestKey = this.requestKey(request);
       await this.$nextTick();
       this.$refs.requestsPanel?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
@@ -193,7 +212,7 @@ export default {
       this.activeView = view;
       if (view === 'execution') {
         this.refreshRequests();
-        this.$nextTick(() => this.openLatestRequest());
+        this.$nextTick(() => this.syncLatestRequest());
       }
       this.$nextTick(() => {
         if (view === 'conversation' && this.$refs.conversationPanel) {
@@ -204,6 +223,7 @@ export default {
     },
     async toggleRequest(request) {
       const key = this.requestKey(request);
+      this.requestSelectionTouched = true;
       if (this.expandedRequestKey === key) {
         this.expandedRequestKey = null;
         return;
@@ -211,10 +231,16 @@ export default {
       this.expandedRequestKey = key;
       if (!this.requestDetail(request)) this.$emit('select-request', request);
     },
-    openLatestRequest() {
-      const request = this.requests[0];
-      if (!request || this.expandedRequestKey) return;
-      this.expandedRequestKey = this.requestKey(request);
+    syncLatestRequest() {
+      if (this.requestSelectionTouched) return;
+      const request = this.currentGenerationRequests[0];
+      if (!request) {
+        this.expandedRequestKey = null;
+        return;
+      }
+      const key = this.requestKey(request);
+      if (this.expandedRequestKey === key) return;
+      this.expandedRequestKey = key;
       if (!this.requestDetail(request)) this.$emit('select-request', request);
     },
     toolHasDetail(tool) {
@@ -270,6 +296,10 @@ export default {
 
       <div class="work-center-action-detail-scroll" :data-view="activeView">
         <div v-show="activeView === 'conversation'" ref="conversationPanel" :id="panelId('conversation')" class="work-center-action-transcript" role="tabpanel" :aria-labelledby="tabId('conversation')">
+          <section v-if="waitingQuestion" id="work-center-action-waiting-question" class="work-center-action-waiting" role="status">
+            <strong>{{ tr('workCenter.waitingQuestionTitle', 'Input required') }}</strong>
+            <p>{{ waitingQuestion }}</p>
+          </section>
           <section v-if="action.failure" class="work-center-action-failure" role="alert">
             <strong>{{ tr('workCenter.actionFailedTitle', 'Why this Action failed') }}</strong>
             <p v-if="action.failure.error">{{ action.failure.error }}</p>
@@ -387,7 +417,7 @@ export default {
             <input type="file" multiple :aria-label="tr('workCenter.addAttachments', 'Add files')" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv" @change="$emit('attachment-input', $event)">
           </label>
           <div class="textarea-wrapper">
-            <textarea ref="composerInput" :value="composerText" rows="1" :placeholder="$t('workCenter.actionChatPlaceholder', { name: executorName })" @input="onComposerInput" @keydown="onComposerKeydown"></textarea>
+            <textarea ref="composerInput" :value="composerText" rows="1" :placeholder="$t('workCenter.actionChatPlaceholder', { name: executorName })" :aria-describedby="composerDescriptionIds" @input="onComposerInput" @keydown="onComposerKeydown"></textarea>
           </div>
           <button class="send-btn" type="button" @click="$emit('send')" :disabled="!canSend" :title="sending ? tr('workCenter.sendingInput', 'Sending…') : (action.status === 'failed' ? tr('workCenter.sendAndRetryAction', 'Send and retry Action') : tr('workCenter.sendInput', 'Send input'))">
             <svg v-if="!sending" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
@@ -395,7 +425,7 @@ export default {
           </button>
         </div>
         <div class="work-center-action-composer-footer">
-          <small class="work-center-action-composer-hint"><strong>{{ executorName }}</strong><span aria-hidden="true"> · </span>{{ uploading ? tr('workCenter.attachmentsUploading', 'Uploading…') : composerHint }}</small>
+          <small id="work-center-action-composer-hint" class="work-center-action-composer-hint"><strong>{{ executorName }}</strong><span aria-hidden="true"> · </span>{{ uploading ? tr('workCenter.attachmentsUploading', 'Uploading…') : composerHint }}</small>
           <button v-if="canRetry" class="btn-secondary" type="button" @click="$emit('retry')">
             {{ tr('workCenter.retryAction', 'Retry Action') }}
           </button>
