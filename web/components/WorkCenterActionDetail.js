@@ -7,7 +7,6 @@ export default {
     action: { type: Object, default: null },
     selected: { type: Object, default: null },
     messages: { type: Array, default: () => [] },
-    messagesGeneration: { type: Number, default: 1 },
     messagesNextCursor: { type: [String, Number], default: null },
     messagesLoading: { type: Boolean, default: false },
     messagesError: { type: String, default: '' },
@@ -33,7 +32,6 @@ export default {
       conversationScrollTop: 0,
       expandedRequestKey: null,
       expandedLoops: {},
-      expandedGenerations: {},
     };
   },
   computed: {
@@ -61,25 +59,8 @@ export default {
       return !this.uploading && !this.sending
         && (!!this.composerText.trim() || this.composerAttachments.length > 0);
     },
-    actionThread() {
-      const currentGeneration = Math.max(1, Number(this.action?.generation) || 1);
-      const currentMessages = Number(this.messagesGeneration) === currentGeneration ? this.messages : [];
-      const thread = Array.isArray(this.action?.thread) ? this.action.thread : [];
-      if (thread.length === 0) return [{
-        generation: currentGeneration,
-        canonical: true,
-        messages: currentMessages,
-        runs: [],
-      }];
-      return thread
-        .map(entry => entry.canonical ? { ...entry, messages: currentMessages } : entry)
-        .sort((left, right) => {
-          if (!!left.canonical !== !!right.canonical) return left.canonical ? -1 : 1;
-          return (Number(right.generation) || 0) - (Number(left.generation) || 0);
-        });
-    },
-    hasThreadMessages() {
-      return this.actionThread.some(entry => Array.isArray(entry.messages) && entry.messages.length > 0);
+    hasMessages() {
+      return this.messages.length > 0;
     },
   },
   watch: {
@@ -162,7 +143,6 @@ export default {
       this.conversationScrollTop = 0;
       this.expandedRequestKey = null;
       this.expandedLoops = {};
-      this.expandedGenerations = {};
       this.$nextTick(() => {
         if (this.$refs.conversationPanel) this.$refs.conversationPanel.scrollTop = 0;
         renderMermaidIn(this.$el);
@@ -212,17 +192,6 @@ export default {
         }
         renderMermaidIn(this.$el);
       });
-    },
-    toggleGeneration(generation) {
-      const key = String(generation?.generation || 'unknown');
-      this.expandedGenerations = {
-        ...this.expandedGenerations,
-        [key]: !this.expandedGenerations[key],
-      };
-    },
-    generationExpanded(generation) {
-      if (generation?.canonical) return true;
-      return !!this.expandedGenerations[String(generation?.generation || 'unknown')];
     },
     async toggleRequest(request) {
       const key = this.requestKey(request);
@@ -279,7 +248,7 @@ export default {
                 :aria-selected="activeView === 'conversation' ? 'true' : 'false'"
                 :aria-controls="panelId('conversation')"
                 :class="{ active: activeView === 'conversation' }"
-                @click="setActiveView('conversation')" @keydown="onTabKeydown($event, 'conversation')">{{ tr('workCenter.actionConversation', 'Execution log') }}</button>
+                @click="setActiveView('conversation')" @keydown="onTabKeydown($event, 'conversation')">{{ tr('workCenter.actionConversation', 'Conversation') }}</button>
         <button ref="contextTab" :id="tabId('context')" type="button" role="tab"
                 :tabindex="activeView === 'context' ? 0 : -1"
                 :aria-selected="activeView === 'context' ? 'true' : 'false'"
@@ -307,32 +276,26 @@ export default {
             {{ messagesLoading ? tr('workCenter.loadingEarlierMessages', 'Loading earlier messages…') : tr('workCenter.loadEarlierMessages', 'Load earlier messages') }}
           </button>
           <p v-if="messagesError" class="work-center-error">{{ messagesError }}</p>
-          <section v-for="generation in actionThread" :key="generation.generation" class="work-center-action-generation" :class="{ canonical: generation.canonical, expanded: generationExpanded(generation) }">
-            <button v-if="!generation.canonical" class="work-center-action-generation-toggle" type="button" @click="toggleGeneration(generation)" :aria-expanded="generationExpanded(generation) ? 'true' : 'false'">
-              <span><span class="work-center-action-chevron" aria-hidden="true"></span><strong>{{ tr('workCenter.previousExecution', 'Previous execution') }}</strong></span>
-              <small>{{ $t('workCenter.generationMessageCount', { generation: generation.generation, count: generation.messages?.length || 0 }) }}</small>
-            </button>
-            <div v-if="generationExpanded(generation)" class="work-center-action-generation-messages">
-              <article v-for="message in generation.messages" :key="message.id" class="work-center-action-message" :class="'role-' + message.role" :data-status="message.status">
-                <header>
-                  <strong>{{ messageSpeaker(message) }}</strong>
-                  <small>{{ time(message.updatedAt || message.createdAt) }}</small>
-                </header>
-                <div v-if="message.text" class="markdown-body" v-html="messageHtml(message.text)"></div>
-                <div v-if="message.attachments?.length" class="work-center-attachment-list">
-                  <button v-for="attachment in message.attachments" :key="attachment.id" type="button"
-                          class="work-center-attachment-chip work-center-attachment-preview"
-                          :disabled="previewingAttachmentId === attachment.id"
-                          :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })"
-                          @click="$emit('open-attachment', attachment, $event.currentTarget)">
-                    <span>{{ attachment.name }}</span><small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
-                  </button>
-                </div>
-              </article>
-            </div>
-          </section>
+          <div class="work-center-action-message-list">
+            <article v-for="message in messages" :key="message.id" class="work-center-action-message" :class="'role-' + message.role" :data-status="message.status">
+              <header>
+                <strong>{{ messageSpeaker(message) }}</strong>
+                <small>{{ time(message.updatedAt || message.createdAt) }}</small>
+              </header>
+              <div v-if="message.text" class="markdown-body" v-html="messageHtml(message.text)"></div>
+              <div v-if="message.attachments?.length" class="work-center-attachment-list">
+                <button v-for="attachment in message.attachments" :key="attachment.id" type="button"
+                        class="work-center-attachment-chip work-center-attachment-preview"
+                        :disabled="previewingAttachmentId === attachment.id"
+                        :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })"
+                        @click="$emit('open-attachment', attachment, $event.currentTarget)">
+                  <span>{{ attachment.name }}</span><small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
+                </button>
+              </div>
+            </article>
+          </div>
           <p v-if="attachmentError" class="work-center-error" role="alert">{{ attachmentError }}</p>
-          <p v-if="!hasThreadMessages" class="work-center-action-empty">{{ tr('workCenter.noActionMessages', 'No execution log yet.') }}</p>
+          <p v-if="!hasMessages" class="work-center-action-empty">{{ tr('workCenter.noActionMessages', 'No messages yet.') }}</p>
         </div>
 
         <section v-show="activeView === 'context'" :id="panelId('context')" class="work-center-action-context" role="tabpanel" :aria-labelledby="tabId('context')">

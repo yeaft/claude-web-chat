@@ -566,7 +566,7 @@ test.describe('Work Center responsive UI', () => {
     await expect(actionDetail.locator('.work-center-action-context')).toContainText('What to do');
     await expect(actionDetail.locator('.work-center-action-context')).toContainText('How to do it');
     await expect(actionDetail.locator('.work-center-action-context')).toContainText('Expected result');
-    await actionDetail.getByRole('tab', { name: 'Execution log' }).click();
+    await actionDetail.getByRole('tab', { name: 'Conversation' }).click();
 
     mockAgent.send({
       type: 'work_center_event',
@@ -594,13 +594,22 @@ test.describe('Work Center responsive UI', () => {
     await expect(actionDetail).toContainText('Live AI response from the active Run.');
   });
 
-  test('loads retained messages when a historical Action is selected', async ({ chatPage, mockAgent }) => {
+  test('loads one retained conversation when an earlier Action is selected', async ({ chatPage, mockAgent }) => {
     const detail = detailWithActions(2);
     delete detail.actions[0].messages;
     delete detail.actions[0].response;
-    detail.actions[0].brief = { ...detail.actions[0].brief, objective: 'Historical Action' };
-    detail.actions[0].messageCount = 1;
+    detail.actions[0].brief = { ...detail.actions[0].brief, objective: 'Earlier Action' };
+    detail.actions[0].messageCount = 3;
     detail.actions[0].messageCursor = '1';
+    detail.actions[0].thread = [{
+      generation: 1,
+      canonical: false,
+      messages: [{
+        id: 'run:first-execution', role: 'assistant', kind: 'response', status: 'failed',
+        text: 'First execution failed.', attachments: [],
+        createdAt: Date.now() - 3, updatedAt: Date.now() - 3, progressRevision: 1,
+      }],
+    }];
     await openWorkCenter(chatPage, mockAgent);
     const select = chatPage.locator('.work-center-card').click();
     await respondToWorkCenterOp(mockAgent, 'get', detail);
@@ -609,22 +618,35 @@ test.describe('Work Center responsive UI', () => {
     const messagesResponse = respondToWorkCenterOp(mockAgent, 'get_action_messages', {
       actionId: detail.actions[0].id,
       generation: detail.actions[0].generation,
-      messages: [{
-        id: 'run:historical-run', role: 'assistant', kind: 'response', status: 'completed',
-        text: 'Historical AI response loaded on selection.', attachments: [],
-        createdAt: Date.now(), updatedAt: Date.now(), progressRevision: 2,
-      }],
+      messages: [
+        {
+          id: 'event:retry-input', role: 'user', kind: 'input', status: 'sent',
+          text: 'Retry with the corrected constraint.', attachments: [],
+          createdAt: Date.now() - 2, updatedAt: Date.now() - 2,
+        },
+        {
+          id: 'run:second-execution', role: 'assistant', kind: 'response', status: 'completed',
+          text: 'Second execution completed.', attachments: [],
+          createdAt: Date.now() - 1, updatedAt: Date.now() - 1, progressRevision: 2,
+        },
+      ],
       nextCursor: null,
-      total: 1,
+      total: 2,
     });
-    await chatPage.locator('.work-center-action-card', { hasText: 'Historical Action' }).click();
+    await chatPage.locator('.work-center-action-card', { hasText: 'Earlier Action' }).click();
     const request = await messagesResponse;
 
     expect(request.payload).toEqual({
       id: OPEN_ITEM.id, actionId: detail.actions[0].id,
       generation: 1, cursor: null, limit: 20,
     });
-    await expect(chatPage.locator('.work-center-action-message')).toContainText('Historical AI response loaded on selection.');
+    const messages = chatPage.locator('.work-center-action-message');
+    await expect(messages).toHaveCount(3);
+    await expect(messages.nth(0)).toContainText('First execution failed.');
+    await expect(messages.nth(1)).toContainText('Retry with the corrected constraint.');
+    await expect(messages.nth(2)).toContainText('Second execution completed.');
+    await expect(chatPage.locator('.work-center-action-generation')).toHaveCount(0);
+    await expect(chatPage.getByText('Previous execution')).toHaveCount(0);
   });
 
   test('explains an Action failure and shows how to recover it', async ({ chatPage, mockAgent }) => {

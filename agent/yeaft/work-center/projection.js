@@ -6,7 +6,7 @@ import {
   sanitizeDebugValue,
   sanitizeDiagnosticText,
 } from './debug-projection.js';
-import { eventMatchesActionGeneration, runMatchesActionIdentity } from './action-identity.js';
+import { runMatchesActionIdentity } from './action-identity.js';
 import { taskSpecificActionBrief } from './workflow.js';
 import { buildMainlineProjection } from './mainline-projection.js';
 
@@ -175,7 +175,7 @@ function runSpecHash(run) {
       : '';
 }
 
-function threadRuns(action, runs) {
+function conversationRuns(action, runs) {
   const source = (Array.isArray(runs) ? runs : []).filter(run => run?.actionId === action?.id);
   const selectedSpecByGeneration = new Map((Array.isArray(action?.identityHistory) ? action.identityHistory : [])
     .filter(identity => typeof identity?.specHash === 'string' && identity.specHash)
@@ -231,7 +231,9 @@ function compareProjectedMessages(left, right) {
   if (leftEventId != null && rightEventId != null) {
     return compareEventIds(leftEventId, rightEventId);
   }
-  return (left?.role === 'user' ? -1 : 1)
+  const leftRole = left?.role === 'user' ? 0 : 1;
+  const rightRole = right?.role === 'user' ? 0 : 1;
+  return leftRole - rightRole
     || String(left?.id || '').localeCompare(String(right?.id || ''));
 }
 
@@ -260,7 +262,7 @@ function normalizeProjectedMessage(message) {
   };
 }
 
-function actionInputMessages(action, events, generation = actionGeneration(action?.generation), includeThreadIdentity = false) {
+function actionInputMessages(action, events, generation = actionGeneration(action?.generation)) {
   return (Array.isArray(events) ? events : [])
     .filter(event => event?.actionId === action?.id
       && actionGeneration(event.actionGeneration) === generation
@@ -273,29 +275,26 @@ function actionInputMessages(action, events, generation = actionGeneration(actio
       text: event.data?.text || event.data?.guidance || '',
       attachments: event.data?.attachments,
       createdAt: event.createdAt,
-      ...(includeThreadIdentity ? { generation } : {}),
     }))
     .filter(Boolean);
 }
 
-function runResponseMessage(run, includeThreadIdentity = false) {
+function runResponseMessage(run) {
   return normalizeProjectedMessage({
     id: `run:${run.id}`,
     role: 'assistant',
     kind: 'response',
     status: run.status || 'running',
     text: typeof run.response === 'string' ? run.response : '',
-    createdAt: count(run.startedAt),
+    createdAt: count(run.endedAt || run.startedAt),
     updatedAt: count(run.endedAt || run.startedAt),
     progressRevision: count(run.progressRevision),
-    generation: includeThreadIdentity ? runGeneration(run) : null,
-    attempt: includeThreadIdentity ? run.actionAttempt : null,
     runId: run.id,
     speaker: run.vpSnapshot,
   });
 }
 
-function loopOutputMessages(action, events, matchingRuns, generation = actionGeneration(action?.generation), includeThreadIdentity = false) {
+function loopOutputMessages(action, events, matchingRuns, generation = actionGeneration(action?.generation)) {
   const runById = new Map(matchingRuns.map(run => [run.id, run]));
   const projected = [];
   let previousTranscriptEvent = null;
@@ -321,8 +320,6 @@ function loopOutputMessages(action, events, matchingRuns, generation = actionGen
       status: 'completed',
       text: event.data?.response || '',
       createdAt: event.createdAt,
-      generation: includeThreadIdentity ? event.actionGeneration ?? event.data?.actionGeneration : null,
-      attempt: includeThreadIdentity ? event.data?.actionAttempt : null,
       runId: event.runId,
       speaker: run.vpSnapshot,
     });
@@ -336,8 +333,8 @@ function loopOutputMessages(action, events, matchingRuns, generation = actionGen
   return projected;
 }
 
-function messagesForGeneration(action, runs, events, generation, includeThreadIdentity = false) {
-  const matchingRuns = threadRuns(action, runs).filter(run => runGeneration(run) === generation);
+function messagesForGeneration(action, runs, events, generation) {
+  const matchingRuns = conversationRuns(action, runs).filter(run => runGeneration(run) === generation);
   const matchingRunIds = new Set(matchingRuns.map(run => run.id));
   const runsWithLoopOutput = new Set((Array.isArray(events) ? events : [])
     .filter(event => event?.actionId === action?.id
@@ -346,50 +343,33 @@ function messagesForGeneration(action, runs, events, generation, includeThreadId
       && event.type === 'run.loop_output')
     .map(event => event.runId));
   return [
-    ...actionInputMessages(action, events, generation, includeThreadIdentity),
-    ...loopOutputMessages(action, events, matchingRuns, generation, includeThreadIdentity),
+    ...actionInputMessages(action, events, generation),
+    ...loopOutputMessages(action, events, matchingRuns, generation),
     ...matchingRuns
     .sort((left, right) => count(left.startedAt) - count(right.startedAt))
     .filter(run => !runsWithLoopOutput.has(run.id))
-    .map(run => runResponseMessage(run, includeThreadIdentity))
+    .map(run => runResponseMessage(run))
     .filter(Boolean)]
     .sort(compareProjectedMessages);
 }
 
-function actionMessages(action, runs, events) {
-  return messagesForGeneration(action, runs, events, actionGeneration(action?.generation));
-}
-
-function projectActionThread(action, runs, events) {
-  const allRuns = threadRuns(action, runs);
+function actionConversationMessages(action, runs, events) {
+  const allRuns = conversationRuns(action, runs);
+  const currentGeneration = actionGeneration(action?.generation);
   const generations = new Set([
-    actionGeneration(action?.generation),
+    currentGeneration,
+    ...(Array.isArray(action?.identityHistory) ? action.identityHistory : [])
+      .map(identity => actionGeneration(identity?.generation)),
     ...allRuns.map(runGeneration),
     ...(Array.isArray(events) ? events : [])
       .filter(event => event?.actionId === action?.id
-        && ['action.guidance_added', 'action.input_added', 'run.loop_output'].includes(event.type))
+        && ['action.guidance_added', 'action.input_added', 'run.loop_output'].includes(event.type)
+        && actionGeneration(event.actionGeneration ?? event.data?.actionGeneration) <= currentGeneration)
       .map(event => actionGeneration(event.actionGeneration ?? event.data?.actionGeneration)),
   ]);
-  return [...generations].sort((left, right) => left - right).map(generation => {
-    const canonical = generation === actionGeneration(action?.generation);
-    return {
-      generation,
-      canonical,
-      messages: canonical ? [] : messagesForGeneration(action, allRuns, events, generation, true).slice(-MAX_ACTION_MESSAGES),
-      runs: allRuns.filter(run => runGeneration(run) === generation)
-        .sort((left, right) => count(left.startedAt) - count(right.startedAt) || String(left.id).localeCompare(String(right.id)))
-        .map(run => ({
-          id: run.id,
-          attempt: Math.max(1, count(run.actionAttempt) || 1),
-          status: run.status || 'running',
-          startedAt: count(run.startedAt),
-          endedAt: count(run.endedAt),
-          progressRevision: count(run.progressRevision),
-          loopCount: count(run.loopCount),
-          toolCount: count(run.toolCount),
-        })),
-    };
-  }).filter(entry => entry.messages.length > 0 || entry.runs.length > 0 || entry.canonical);
+  return [...generations]
+    .flatMap(generation => messagesForGeneration(action, allRuns, events, generation))
+    .sort(compareProjectedMessages);
 }
 
 
@@ -446,21 +426,25 @@ function sanitizeFailureReason(value) {
 
 
 function actionExecution(action, runs, events, includeBody = true) {
+  let conversationMessages = Array.isArray(runs)
+    ? actionConversationMessages(action, runs, events)
+    : [];
+  if (conversationMessages.length === 0 && Array.isArray(action?.messages)) {
+    conversationMessages = action.messages.map(normalizeProjectedMessage).filter(Boolean);
+  }
+  const messageCount = Array.isArray(runs)
+    ? conversationMessages.length
+    : count(action?.messageCount) || conversationMessages.length;
+  const messages = includeBody ? conversationMessages.slice(-MAX_ACTION_MESSAGES) : [];
+  const messageCursor = Array.isArray(runs)
+    ? (includeBody
+        ? (messageCount > messages.length ? String(messageCount - messages.length) : null)
+        : (messageCount > 0 ? String(messageCount) : null))
+    : action?.messageCursor == null ? null : String(action.messageCursor);
   const matchingRuns = Array.isArray(runs)
     ? runs.filter(run => run?.actionId === action?.id && runMatchesActionIdentity(run, action))
     : [];
   if (matchingRuns.length === 0) {
-    const inputMessageCount = Array.isArray(events) ? events.filter(event => (
-      event?.actionId === action?.id
-        && eventMatchesActionGeneration(event, action)
-        && ['action.guidance_added', 'action.input_added'].includes(event.type)
-    )).length : 0;
-    const messages = includeBody
-      ? (Array.isArray(action?.messages)
-          ? action.messages.slice(-MAX_ACTION_MESSAGES).map(normalizeProjectedMessage).filter(Boolean)
-          : actionInputMessages(action, events))
-      : [];
-    const messageCount = count(action?.messageCount) || (includeBody ? messages.length : inputMessageCount);
     return {
       ...executionStats(action?.executionStats || action),
       response: includeBody && typeof action?.response === 'string' ? action.response : '',
@@ -479,11 +463,8 @@ function actionExecution(action, runs, events, includeBody = true) {
       messages,
       liveMessage: includeBody ? normalizeProjectedMessage(action?.liveMessage) : null,
       messageCount,
-      messageCursor: action?.messageCursor == null
-        ? (!includeBody && messageCount > 0 ? String(messageCount) : null)
-        : String(action.messageCursor),
+      messageCursor,
       failureReason: sanitizeFailureReason(action?.failureReason),
-
     };
   }
   const stats = sumExecutionStats(matchingRuns);
@@ -496,16 +477,6 @@ function actionExecution(action, runs, events, includeBody = true) {
         .filter(run => run?.status === 'failed')
         .sort((left, right) => count(right.endedAt || right.startedAt) - count(left.endedAt || left.startedAt))[0]
     : null;
-  const inputMessageCount = includeBody
-    ? 0
-    : (Array.isArray(events) ? events : []).filter(event => (
-        event?.actionId === action?.id
-          && eventMatchesActionGeneration(event, action)
-          && ['action.guidance_added', 'action.input_added'].includes(event.type)
-      )).length;
-  const allMessages = includeBody ? actionMessages(action, matchingRuns, events) : [];
-  const totalMessageCount = includeBody ? allMessages.length : matchingRuns.length + inputMessageCount;
-  const messages = allMessages.slice(-MAX_ACTION_MESSAGES);
   const liveMessage = includeBody ? runResponseMessage(latest) : null;
   return {
     ...stats,
@@ -520,14 +491,11 @@ function actionExecution(action, runs, events, includeBody = true) {
       failedAt: count(latestFailure.endedAt || latestFailure.startedAt),
     } : null,
     failureReason: sanitizeFailureReason(latestFailure?.error),
-
     progressRevision: count(latest?.progressRevision),
     messages,
     liveMessage,
-    messageCount: totalMessageCount,
-    messageCursor: includeBody
-      ? (totalMessageCount > messages.length ? String(totalMessageCount - messages.length) : null)
-      : (totalMessageCount > 0 ? String(totalMessageCount) : null),
+    messageCount,
+    messageCursor,
   };
 }
 
@@ -607,7 +575,6 @@ function projectAction(action, runs, events, includeBody = true) {
       response: execution.response,
       failure: execution.failure,
       messages: execution.messages,
-      thread: Array.isArray(runs) ? projectActionThread(action, runs, events) : (action.thread || []),
       liveMessage: execution.liveMessage,
     } : {}),
   };
@@ -1015,7 +982,7 @@ function projectDebugUsage(value) {
 }
 
 export function projectActionMessagePage(action, runs, events, options = {}) {
-  const messages = actionMessages(action, runs, events);
+  const messages = actionConversationMessages(action, runs, events);
   const requestedCursor = options.cursor == null ? messages.length : Number(options.cursor);
   const end = Number.isFinite(requestedCursor)
     ? Math.max(0, Math.min(messages.length, Math.floor(requestedCursor)))
@@ -1032,7 +999,7 @@ export function projectActionMessagePage(action, runs, events, options = {}) {
 }
 
 export function actionThreadIncludesRun(action, runs, runId) {
-  return threadRuns(action, runs).some(run => run.id === runId);
+  return conversationRuns(action, runs).some(run => run.id === runId);
 }
 
 export function projectActionRequestIndex(action, entries) {

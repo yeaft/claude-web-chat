@@ -13,6 +13,7 @@ import {
 } from '../../../../agent/yeaft/work-center/plan-mutation.js';
 import { resolvePlanningWorkflowSnapshot } from '../../../../agent/yeaft/work-center/workflow.js';
 import {
+  projectActionMessagePage,
   projectActionRequestDetail,
   projectActionRequestIndex,
   projectWorkCenterEvent,
@@ -80,7 +81,7 @@ describe('Work Center core', () => {
   });
 
 
-  it('persists immutable generation and monotonic attempt identity on every Run claim', () => {
+  it('persists Run identity and projects one continuous Action conversation', () => {
     const item = controller.create(createInput({ id: 'run-identity' }));
     const first = store.claimReadyAction('boot-a', 5_000);
     expect(first.run).toMatchObject({
@@ -104,8 +105,63 @@ describe('Work Center core', () => {
     });
     expect(store.getWorkItemDetail(item.id).events.find(event => event.type === 'run.claimed'))
       .toMatchObject({ actionGeneration: first.action.generation });
-  });
 
+    const action = {
+      id: 'action-conversation', generation: 2, specHash: 'spec-v2',
+      identityHistory: [
+        { generation: 1, specHash: 'spec-v1' },
+        { generation: 2, specHash: 'spec-v2' },
+      ],
+    };
+    const runs = [
+      {
+        id: 'run-v1', actionId: action.id, actionGeneration: 1, actionSpecHash: 'spec-v1',
+        actionAttempt: 1, status: 'failed', response: 'First execution failed.',
+        startedAt: 1_010, endedAt: 1_025, vpSnapshot: { id: 'linus', name: 'Linus' },
+      },
+      {
+        id: 'run-v2', actionId: action.id, actionGeneration: 2, actionSpecHash: 'spec-v2',
+        actionAttempt: 1, status: 'completed', response: 'Second execution completed.',
+        startedAt: 1_040, endedAt: 1_050, vpSnapshot: { id: 'linus', name: 'Linus' },
+      },
+      {
+        id: 'run-stale', actionId: action.id, actionGeneration: 1, actionSpecHash: 'replaced-spec',
+        actionAttempt: 2, status: 'completed', response: 'Stale execution must stay hidden.',
+        startedAt: 1_026, endedAt: 1_027, vpSnapshot: { id: 'linus', name: 'Linus' },
+      },
+    ];
+    const events = [
+      {
+        id: 10, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+        createdAt: 1_030, data: { text: 'Please retry with the corrected constraint.' },
+      },
+    ];
+
+    const page = projectActionMessagePage(action, runs, events, { limit: 2 });
+    expect(page).toMatchObject({ actionId: action.id, generation: 2, total: 3, nextCursor: '1' });
+    expect(page.messages.map(message => message.text)).toEqual([
+      'Please retry with the corrected constraint.',
+      'Second execution completed.',
+    ]);
+    const firstPage = projectActionMessagePage(action, runs, events, { cursor: page.nextCursor, limit: 2 });
+    expect(firstPage.messages.map(message => message.text)).toEqual(['First execution failed.']);
+    expect(JSON.stringify([firstPage, page])).not.toContain('Stale execution must stay hidden.');
+
+    const detail = projectWorkItemDetail({
+      id: 'work-item-conversation', revision: 1, planRevision: 0, ledgerRevision: 0,
+      coordinatorRevision: 0, title: 'Conversation', goal: 'Keep one Action conversation',
+      acceptanceCriteria: [], workflowTemplate: 'software-change', status: 'running',
+      lifecycle: 'active', attentionState: 'none', currentActionId: action.id,
+      actions: [{ ...action, sequence: 1, type: 'implement', status: 'completed' }],
+      runs, events, messages: [], attachments: [], createdAt: 1_000, updatedAt: 1_050,
+    });
+    expect(detail.actions[0].messages.map(message => message.text)).toEqual([
+      'First execution failed.',
+      'Please retry with the corrected constraint.',
+      'Second execution completed.',
+    ]);
+    expect(detail.actions[0]).not.toHaveProperty('thread');
+  });
 
   it('claims independent graph Actions concurrently and waits for dependencies', () => {
     const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
