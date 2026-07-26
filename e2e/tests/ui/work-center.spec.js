@@ -2,20 +2,16 @@ import { expect } from '@playwright/test';
 import { test } from '../../fixtures/test-server.js';
 import { BUILT_IN_ACTION_TYPES } from '../../../agent/yeaft/work-center/workflow.js';
 
-const WORK_CENTER_ACTION_TYPES = [
-  'triage', 'research', 'design', 'diagnose', 'implement', 'migrate', 'test',
-  'review', 'integrate', 'document', 'operate', 'deliver', 'write', 'custom',
-];
-
 const WORK_CENTER_SETTINGS = {
   settings: {
     version: 1,
+    revision: 7,
     defaultWorkflowId: 'software-change',
     startImmediately: true,
     defaultWorkDir: '/tmp/test',
     globalInstructions: 'Follow the Agent release policy for every Action.',
     modelPolicy: { mode: 'specific', model: 'provider/review', effort: 'high' },
-    coordinatorModelPolicy: { mode: 'specific', model: 'provider/review', effort: 'high' },
+    coordinatorModelPolicy: { mode: 'inherit', model: null, effort: 'high' },
     actionModelPolicies: Object.fromEntries(BUILT_IN_ACTION_TYPES.map(type => [type, {
       mode: 'inherit', model: null, effort: ['triage', 'research', 'design', 'diagnose', 'review'].includes(type) ? 'high' : 'medium',
     }])),
@@ -27,9 +23,6 @@ const WORK_CENTER_SETTINGS = {
       operate: 'Operate safely', deliver: 'Deliver the result', write: 'Write the content',
       custom: 'Complete the custom Action',
     },
-    actionModelPolicies: Object.fromEntries(WORK_CENTER_ACTION_TYPES.map(type => [
-      type, { mode: 'inherit', model: null, effort: null },
-    ])),
     workflows: [{
       version: 1,
       id: 'software-change',
@@ -88,7 +81,7 @@ const OPEN_ITEM_DETAIL = {
   actionCount: 1,
   actionSummary: 'implement',
   actions: [{
-    id: 'action-1', sequence: 1, type: 'implement', requiredRole: 'developer', status: 'running',
+    id: 'action-1', generation: 1, sequence: 1, type: 'implement', requiredRole: 'developer', status: 'running',
     assignedVp: { id: 'linus', name: 'Linus' },
     contentSummary: 'Implemented the layout fix and verified the responsive breakpoints.',
     brief: {
@@ -151,6 +144,59 @@ const FAILED_ITEM_DETAIL = {
     },
   }],
 };
+
+function closedWorkItem(status) {
+  const suffix = status === 'done' ? 'done' : 'cancelled';
+  return {
+    ...OPEN_ITEM,
+    id: `work-item-${suffix}`,
+    title: status === 'done' ? 'Released layout fix' : 'Cancelled layout experiment',
+    status,
+    boardLane: 'closed',
+    revision: status === 'done' ? 4 : 3,
+    currentAction: null,
+    actionCount: 1,
+    completedActionCount: status === 'done' ? 1 : 0,
+  };
+}
+
+function closedWorkItemDetail(item) {
+  const cancelled = item.status === 'cancelled';
+  return {
+    ...OPEN_ITEM_DETAIL,
+    ...item,
+    currentActionId: null,
+    messages: [
+      {
+        id: `${item.id}:user`, role: 'user', status: 'completed',
+        text: `Close ${item.title}`, createdAt: Date.now() - 2, updatedAt: Date.now() - 2,
+      },
+      {
+        id: `${item.id}:assistant`, role: 'assistant', status: 'completed',
+        text: cancelled ? 'Coordinator recorded the cancellation.' : 'Coordinator confirmed every acceptance criterion.',
+        createdAt: Date.now() - 1, updatedAt: Date.now() - 1,
+      },
+    ],
+    actionCount: 1,
+    actionSummary: 'implement',
+    actions: [{
+      ...OPEN_ITEM_DETAIL.actions[0],
+      id: `action-${item.status}`,
+      status: cancelled ? 'cancelled' : 'completed',
+      response: cancelled ? 'Execution stopped without publishing changes.' : 'Verified and released the layout fix.',
+      messages: [{
+        id: `action-${item.status}:message`, role: 'assistant', status: cancelled ? 'cancelled' : 'completed',
+        text: cancelled ? 'Execution stopped without publishing changes.' : 'Verified and released the layout fix.',
+        createdAt: Date.now(), updatedAt: Date.now(),
+      }],
+    }],
+  };
+}
+
+const DONE_ITEM = closedWorkItem('done');
+const CANCELLED_ITEM = closedWorkItem('cancelled');
+const DONE_ITEM_DETAIL = closedWorkItemDetail(DONE_ITEM);
+const CANCELLED_ITEM_DETAIL = closedWorkItemDetail(CANCELLED_ITEM);
 
 const ACTION_REQUEST_INDEX = {
   actionId: 'action-1',
@@ -240,6 +286,10 @@ function expectedActionPolicyCount() {
 
 function expectedModelPolicyCount() {
   return BUILT_IN_ACTION_TYPES.length + 3;
+}
+
+function workCenterRequestOps(mockAgent) {
+  return mockAgent.messages('work_center_request').map(request => request.op);
 }
 
 async function openWorkCenter(chatPage, mockAgent, items = [OPEN_ITEM]) {
@@ -592,6 +642,45 @@ test.describe('Work Center responsive UI', () => {
     await expect(actionDetail.locator('.work-center-action-composer')).toContainText('rerun this Action');
   });
 
+  test('keeps done and cancelled Work Items read-only without sending message wire', async ({ chatPage, mockAgent }) => {
+    const closedItems = [DONE_ITEM, CANCELLED_ITEM];
+    const closedDetails = new Map([
+      [DONE_ITEM.id, DONE_ITEM_DETAIL],
+      [CANCELLED_ITEM.id, CANCELLED_ITEM_DETAIL],
+    ]);
+    await openWorkCenter(chatPage, mockAgent, closedItems);
+
+    for (const item of closedItems) {
+      const select = chatPage.locator('.work-center-card', { hasText: item.title })
+        .locator('.work-center-card-open').click();
+      await respondToWorkCenterOp(mockAgent, 'get', closedDetails.get(item.id), closedItems);
+      await select;
+
+      const coordinator = chatPage.locator('.work-center-item-messages');
+      await expect(coordinator).toContainText(item.status === 'done'
+        ? 'Coordinator confirmed every acceptance criterion.'
+        : 'Coordinator recorded the cancellation.');
+      await expect(coordinator.locator('.work-center-coordinator-readonly')).toBeVisible();
+      await expect(coordinator.locator('.work-center-item-message-input')).toHaveCount(0);
+      await expect(coordinator.locator('textarea')).toHaveCount(0);
+
+      await chatPage.locator('.work-center-action-summary').click();
+      const actionDetail = chatPage.locator('.work-center-action-detail-pane');
+      await expect(actionDetail).toContainText(item.status === 'done'
+        ? 'Verified and released the layout fix.'
+        : 'Execution stopped without publishing changes.');
+      await expect(actionDetail.locator('.work-center-action-composer')).toHaveCount(0);
+      await expect(actionDetail.locator('textarea')).toHaveCount(0);
+
+      await actionDetail.locator('.work-center-action-detail-header .work-center-icon-button').click();
+      await chatPage.locator('.work-center-detail-heading .work-center-icon-button').click();
+      await expect(chatPage.locator('.work-center-list')).toBeVisible();
+    }
+
+    const blockedOps = new Set(['work_item_message', 'action_input', 'retry_action', 'guide']);
+    expect(workCenterRequestOps(mockAgent).filter(op => blockedOps.has(op))).toEqual([]);
+  });
+
   test('loads request debug only when the Execution view is opened', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     const select = chatPage.locator('.work-center-card').click();
@@ -625,25 +714,37 @@ test.describe('Work Center responsive UI', () => {
     await expect(card).toContainText('Tool calls');
   });
 
-  test('renders one readable Action conversation column in both themes and on mobile', async ({ page }) => {
-    await page.goto('about:blank');
-    await page.setContent(`
-      <main class="work-center-main"><section class="work-center-action-detail-pane">
-        <header class="work-center-action-detail-header"><div class="work-center-action-header-copy"><div class="work-center-action-header-meta"><span class="work-center-action-executor"><span class="work-center-action-vp-presence" data-status="running"></span>Linus</span></div><h2>Verify the layout</h2></div></header>
-        <nav class="work-center-action-view-switch"><button class="active">Conversation</button><button>Task context</button><button>Execution</button></nav>
-        <div class="work-center-action-detail-scroll">
-          <div class="work-center-action-transcript"><section class="work-center-action-generation canonical"><div class="work-center-action-generation-messages"><article class="work-center-action-message role-assistant"><header><strong>Linus</strong></header><div class="markdown-body">Verified the fix.</div></article><article class="work-center-action-message role-user"><header><strong>You</strong></header><div class="markdown-body">Keep it clean.</div></article></div></section></div>
-        </div>
-        <footer class="work-center-action-composer"><div class="input-wrapper work-center-action-input-wrapper"><div class="textarea-wrapper"><textarea placeholder="Message Linus"></textarea></div><button class="send-btn"></button></div></footer>
-      </section></main>
-    `);
-    await page.addStyleTag({ path: `${process.cwd()}/web/styles/variables.css` });
-    await page.addStyleTag({ path: `${process.cwd()}/web/styles/chat-input.css` });
-    await page.addStyleTag({ path: `${process.cwd()}/web/styles/work-center.css` });
+  test('renders one readable Action conversation column in both themes and on mobile', async ({ chatPage, mockAgent }) => {
+    const detail = structuredClone(FAILED_ITEM_DETAIL);
+    detail.actions[0].messages = [
+      {
+        id: 'action-1:assistant', role: 'assistant', status: 'completed',
+        text: 'Verified the responsive layout.', createdAt: Date.now() - 1, updatedAt: Date.now() - 1,
+      },
+      {
+        id: 'action-1:user', role: 'user', status: 'completed',
+        text: 'Keep the correction small.', createdAt: Date.now(), updatedAt: Date.now(),
+      },
+    ];
+    await openWorkCenter(chatPage, mockAgent, [FAILED_ITEM]);
+    const select = chatPage.locator('.work-center-card').click();
+    await respondToWorkCenterOp(mockAgent, 'get', detail, [FAILED_ITEM]);
+    await select;
+    await chatPage.locator('.work-center-action-summary').click();
+
+    const pane = chatPage.locator('.work-center-action-detail-pane');
+    await expect(pane.locator('.work-center-action-composer')).toBeVisible();
+    await expect(pane.locator('.work-center-action-message')).toHaveCount(2);
+    await expect(pane).toContainText('Verified the responsive layout.');
+    await expect(pane).toContainText('Keep the correction small.');
 
     for (const theme of ['light', 'dark']) {
-      await page.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
-      const colors = await page.locator('.work-center-action-detail-pane').evaluate(root => {
+      await chatPage.evaluate(value => {
+        document.documentElement.setAttribute('data-theme', value);
+        localStorage.setItem('theme', value);
+      }, theme);
+      await expect(chatPage.locator('html')).toHaveAttribute('data-theme', theme);
+      const colors = await pane.evaluate(root => {
         const assistant = getComputedStyle(root.querySelector('.role-assistant'));
         const user = getComputedStyle(root.querySelector('.role-user'));
         const composer = getComputedStyle(root.querySelector('.work-center-action-input-wrapper'));
@@ -661,44 +762,47 @@ test.describe('Work Center responsive UI', () => {
     }
 
     for (const width of [1200, 760, 390]) {
-      await page.setViewportSize({ width, height: 720 });
-      const layout = await page.locator('.work-center-action-detail-pane').evaluate(root => {
-        const detail = root.getBoundingClientRect();
+      await chatPage.setViewportSize({ width, height: 720 });
+      await chatPage.waitForTimeout(250);
+      const layout = await pane.evaluate(root => {
+        const detailRect = root.getBoundingClientRect();
         const transcript = root.querySelector('.work-center-action-transcript').getBoundingClientRect();
         const composer = root.querySelector('.work-center-action-composer').getBoundingClientRect();
         return {
-          detailWidth: detail.width,
+          detailLeft: detailRect.left,
+          detailRight: detailRect.right,
+          detailWidth: detailRect.width,
           transcriptWidth: transcript.width,
           composerWidth: composer.width,
           scrollWidth: root.scrollWidth,
         };
       });
+      expect(layout.detailLeft).toBeGreaterThanOrEqual(0);
+      expect(layout.detailRight).toBeLessThanOrEqual(width + 1);
       expect(layout.transcriptWidth).toBeLessThanOrEqual(layout.detailWidth + 1);
       expect(layout.composerWidth).toBeLessThanOrEqual(layout.detailWidth + 1);
       expect(layout.scrollWidth).toBeLessThanOrEqual(layout.detailWidth + 1);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      expect(await chatPage.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     }
   });
 
-  test('keeps Work Item card controls transparent in light and dark themes', async ({ page }) => {
-    await page.goto('about:blank');
-    await page.setContent(`
-      <article class="work-center-card">
-        <button class="work-center-card-open" type="button">Open Work Item</button>
-        <button class="work-center-card-delete" type="button">Delete</button>
-      </article>
-    `);
-    await page.addStyleTag({ path: `${process.cwd()}/web/styles/variables.css` });
-    await page.addStyleTag({ path: `${process.cwd()}/web/styles/work-center.css` });
+  test('keeps Work Item card controls transparent in light and dark themes', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent, [FAILED_ITEM]);
+    const card = chatPage.locator('.work-center-card');
+    await expect(card.locator('.work-center-card-open')).toBeVisible();
+    await expect(card.locator('.work-center-card-delete')).toBeEnabled();
 
     const themeColors = {};
     for (const theme of ['light', 'dark']) {
-      await page.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
-      await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-      themeColors[theme] = await page.locator('.work-center-card').evaluate(card => {
-        const open = card.querySelector('.work-center-card-open');
-        const remove = card.querySelector('.work-center-card-delete');
-        const cardStyle = getComputedStyle(card);
+      await chatPage.evaluate(value => {
+        document.documentElement.setAttribute('data-theme', value);
+        localStorage.setItem('theme', value);
+      }, theme);
+      await expect(chatPage.locator('html')).toHaveAttribute('data-theme', theme);
+      themeColors[theme] = await card.evaluate(element => {
+        const open = element.querySelector('.work-center-card-open');
+        const remove = element.querySelector('.work-center-card-delete');
+        const cardStyle = getComputedStyle(element);
         const openStyle = getComputedStyle(open);
         const removeStyle = getComputedStyle(remove);
         return {
@@ -848,7 +952,7 @@ test.describe('Work Center responsive UI', () => {
     await expect(createModal.getByRole('textbox', { name: /Working directory/ })).toHaveValue('/tmp/test');
   });
 
-  test('opens a fixed settings shell for Action prompts and Work Center model policy', async ({ chatPage, mockAgent }) => {
+  test('saves Coordinator model policy through the real settings wire contract', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 1280, height: 900 });
 
@@ -870,7 +974,8 @@ test.describe('Work Center responsive UI', () => {
     await chatPage.getByRole('button', { name: 'Models', exact: true }).click();
     const modelStages = chatPage.locator('.work-center-model-stage');
     await expect(modelStages).toHaveCount(expectedModelPolicyCount());
-    await expect(modelStages.filter({ hasText: 'Coordinator' })).toHaveCount(1);
+    const coordinatorStage = modelStages.filter({ hasText: 'Coordinator' });
+    await expect(coordinatorStage).toHaveCount(1);
     const modelStage = modelStages.last();
     await expect(modelStage).toContainText('Fallback for all Actions');
     const effort = modelStage.locator('.work-center-model-effort');
@@ -885,6 +990,45 @@ test.describe('Work Center responsive UI', () => {
     await expect(effort.locator('option')).toContainText(['Model default', 'medium', 'high']);
     await expect(effort).toContainText('Select the Agent primary model');
     await expect(modal.getByRole('button', { name: 'General', exact: true })).toHaveCount(0);
+
+    await coordinatorStage.locator('select').first().selectOption('specific');
+    await coordinatorStage.locator('select').nth(1).selectOption('provider/review');
+    await coordinatorStage.locator('.work-center-model-effort select').selectOption('medium');
+
+    const saveResponse = respondUntilOperation(mockAgent, 'update_settings', {
+      list: { items: [OPEN_ITEM], watcher: { enabled: true } },
+      get_settings: WORK_CENTER_SETTINGS,
+      update_settings: request => ({
+        settings: { ...request.payload.settings, revision: 8 },
+        runtime: WORK_CENTER_SETTINGS.runtime,
+      }),
+    });
+    await modal.getByRole('button', { name: 'Save', exact: true }).click();
+    const saveRequest = await saveResponse;
+    expect(saveRequest.payload.settings).toMatchObject({
+      revision: 7,
+      coordinatorModelPolicy: {
+        mode: 'specific', model: 'provider/review', effort: 'medium',
+      },
+    });
+    await respondToWorkCenterOp(
+      mockAgent, 'list', { items: [OPEN_ITEM], watcher: { enabled: true } }, [OPEN_ITEM],
+    );
+    await expect(modal).toBeHidden();
+    await expect.poll(() => workCenterRequestOps(mockAgent).filter(op => op === 'update_settings').length)
+      .toBe(1);
+    await expect.poll(() => chatPage.evaluate(agentId => {
+      const settings = window.Pinia.useChatStore().workCenterSettingsByAgent[agentId];
+      return {
+        revision: settings?.revision,
+        coordinatorModelPolicy: settings?.coordinatorModelPolicy,
+      };
+    }, mockAgent.agentId)).toEqual({
+      revision: 8,
+      coordinatorModelPolicy: {
+        mode: 'specific', model: 'provider/review', effort: 'medium',
+      },
+    });
   });
 
   test('opens settings returned by an older Agent without dynamic fields', async ({ chatPage, mockAgent }) => {
