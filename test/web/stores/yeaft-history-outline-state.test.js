@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkItemStore } from '../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../agent/yeaft/work-center/controller.js';
 import { WorkCenterService } from '../../../agent/yeaft/work-center/service.js';
+import { resolvePlanningWorkflowSnapshot } from '../../../agent/yeaft/work-center/workflow.js';
 import {
   projectActionMessagePage,
   projectWorkCenterEvent,
@@ -45,6 +46,7 @@ const { handleAssistantOutputFrame } = await import('../../../web/stores/helpers
 const { handleYeaftHistoryWindow: mergeYeaftHistoryWindow } = await import('../../../web/stores/helpers/handlers/conversationHandler.js');
 const {
   mergeActionMessages,
+  mergeWorkItemSummary,
   workCenterActionMessageKey,
   workItemDetailRefreshIdentity,
 } = await import('../../../web/stores/helpers/work-center.js');
@@ -435,21 +437,113 @@ describe('Yeaft history outline state', () => {
     ]);
     expect(mergedActionMessages.find(message => message.id === 'event:10')?.text).toBe('fresh ten');
 
+    const retryDir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-generation-retry-'));
+    let retryNow = 10;
+    const retryStore = new WorkItemStore(join(retryDir, 'work-center.db'), { now: () => retryNow });
+    const retryController = new WorkflowController(retryStore);
+    const retryService = new WorkCenterService({
+      yeaftDir: retryDir,
+      store: retryStore,
+      controller: retryController,
+      runner: null,
+      ownerBootId: 'generation-retry',
+      settingsReader: () => ({}),
+    });
+    let retryDetail;
+    let retriedDetail;
+    let eventSummary;
+    let failedAction;
+    try {
+      const retryItem = retryController.create({
+        id: 'wi-1',
+        title: 'Advance a retried graph Action generation',
+        goal: 'Use generation before attempt when ordering Action progress',
+        acceptanceCriteria: [],
+        workflowTemplate: 'ai-planned',
+        workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+        workDir: '/tmp',
+        start: true,
+      });
+      const triageClaim = retryStore.claimReadyAction('generation-retry', 5_000);
+      retryNow = 15;
+      retryController.submit(
+        triageClaim.run.id,
+        'generation-retry',
+        triageClaim.run.leaseEpoch,
+        {
+          outcome: 'completed',
+          response: 'Graph created',
+          summary: 'Triage complete',
+          evidence: ['triage-evidence'],
+          acceptanceChecks: [],
+          plan: {
+            workItemType: 'generation-retry',
+            actions: [
+              {
+                id: 'action-1',
+                type: 'research',
+                objective: 'Inspect the generation-first progress fence',
+                approach: 'Verify the projected retry identity before changing Web state',
+                expectedOutcome: 'The retried Action identity is proven from canonical data',
+                dependsOnActionIds: [],
+                workspaceMode: 'read',
+              },
+              {
+                id: 'deliver-fence',
+                type: 'deliver',
+                objective: 'Deliver the generation-first progress fence',
+                approach: 'Apply the verified identity ordering to the browser projection',
+                expectedOutcome: 'The browser advances to the retried Action generation',
+                dependsOnActionIds: ['action-1'],
+                workspaceMode: 'shared',
+              },
+            ],
+          },
+        },
+      );
+      const retryClaim = retryStore.claimReadyAction('generation-retry', 5_000);
+      retryNow = 20;
+      retryDetail = retryController.submit(
+        retryClaim.run.id,
+        'generation-retry',
+        retryClaim.run.leaseEpoch,
+        {
+          outcome: 'failed',
+          response: 'Old failure response',
+          summary: 'Old failure summary',
+          evidence: [],
+          error: 'Old failure',
+        },
+      );
+      failedAction = retryDetail.actions.find(action => action.id === retryClaim.action.id);
+      expect(failedAction).toMatchObject({ generation: 1, attempt: 1, status: 'failed' });
+      retryNow = 30;
+      const retried = retryController.retry(retryItem.id, {
+        expected: {
+          actionId: failedAction.id,
+          generation: failedAction.generation,
+          revision: retryDetail.revision,
+          statuses: ['failed'],
+        },
+      });
+      eventSummary = projectWorkCenterEvent({
+        type: 'action.retried',
+        workItem: retried,
+      }).workItem;
+      expect(eventSummary.actionStats.find(action => action.id === failedAction.id)).toMatchObject({
+        generation: 2, attempt: 0, status: 'ready', progressRevision: 0,
+      });
+      retryDetail = retryService.projectBrowserDetail(retryDetail);
+      retriedDetail = retryService.projectBrowserDetail(retried);
+    } finally {
+      retryStore.close();
+      rmSync(retryDir, { recursive: true, force: true });
+    }
+
     store.workCenterItemsByAgent = { 'agent-a': [] };
-    store.workCenterDetailByAgent = {
-      'agent-a': {
-        id: 'wi-1', revision: 4, updatedAt: 10, currentActionId: 'action-1',
-        actions: [{
-          id: 'action-1', generation: 1, status: 'failed', progressRevision: 2,
-          messages: [{ id: 'old-inline', text: 'Old failure' }],
-          thread: [{ generation: 1, canonical: true, messages: [] }],
-          liveMessage: { id: 'old-live', text: 'Old live failure' },
-          response: 'Old failure', failure: { error: 'Old failure' }, messageCursor: '1', messageCount: 1,
-        }],
-      },
-    };
+    store.workCenterDetailByAgent = { 'agent-a': retryDetail };
     store.workCenterActionMessages = {
-      'agent-a:wi-1:action-1:1': {
+      [`agent-a:wi-1:${failedAction.id}:1`]: {
         generation: 1, messages: [{ id: 'old-cache', text: 'Old failure' }], nextCursor: null, total: 1,
       },
     };
@@ -465,53 +559,118 @@ describe('Yeaft history outline state', () => {
       };
       pendingRequests.push(entry);
     }));
-    const eventSummary = {
-      id: 'wi-1', revision: 5, updatedAt: 20, currentActionId: 'action-1',
-      currentAction: { id: 'action-1', generation: 2, status: 'ready' },
-      actionStats: [{ id: 'action-1', generation: 2, status: 'ready', progressRevision: 3 }],
-    };
 
+    expect(workItemDetailRefreshIdentity(retryDetail, eventSummary)).toEqual({
+      actionId: failedAction.id,
+      generation: 2,
+      attempt: 0,
+    });
+    expect(mergeWorkItemSummary(retryDetail, eventSummary).actions
+      .find(action => action.id === failedAction.id)).toMatchObject({
+      generation: 2, attempt: 0, status: 'ready', progressRevision: 0,
+    });
     store.applyWorkCenterEvent('agent-a', { type: 'action.retried', workItem: eventSummary });
 
-    const advanced = store.workCenterDetailByAgent['agent-a'].actions[0];
-    expect(advanced).toMatchObject({ id: 'action-1', generation: 2, status: 'ready' });
+    const advanced = store.workCenterDetailByAgent['agent-a'].actions
+      .find(action => action.id === failedAction.id);
+    expect(advanced).toMatchObject({ id: failedAction.id, generation: 2, attempt: 0, status: 'ready' });
     expect(advanced).not.toHaveProperty('messages');
     expect(advanced).not.toHaveProperty('thread');
     expect(advanced).not.toHaveProperty('liveMessage');
-    expect(advanced).not.toHaveProperty('response');
-    const oldKey = workCenterActionMessageKey('agent-a', 'wi-1', 'action-1', 1);
-    const currentKey = workCenterActionMessageKey(
-      'agent-a', 'wi-1', 'action-1', advanced.generation,
+    expect(advanced.response).toBe('');
+    const oldKey = workCenterActionMessageKey('agent-a', 'wi-1', failedAction.id, 1);
+    const retryKey = workCenterActionMessageKey(
+      'agent-a', 'wi-1', failedAction.id, advanced.generation,
     );
-    expect(currentKey).toBe('agent-a:wi-1:action-1:2');
+    expect(retryKey).toBe(`agent-a:wi-1:${failedAction.id}:2`);
     expect(store.workCenterActionMessages[oldKey].messages)
       .toEqual([expect.objectContaining({ id: 'old-cache' })]);
-    expect(store.workCenterActionMessages[currentKey]).toBeUndefined();
-    expect(store._workCenterActionMessageGenerationByKey[currentKey]).toBe(1);
+    expect(store.workCenterActionMessages[retryKey]).toBeUndefined();
+    expect(store._workCenterActionMessageGenerationByKey[retryKey]).toBe(1);
     expect(store._workCenterDetailEventRefreshByAgent['agent-a']).toMatchObject({
-      key: 'wi-1:action-1:2',
+      key: `wi-1:${failedAction.id}:2:0`,
     });
 
     const staleMessagePage = store.loadWorkItemActionMessages(
-      'wi-1', 'action-1', advanced.generation, null, 'agent-a',
+      'wi-1', failedAction.id, advanced.generation, null, 'agent-a',
     );
     pendingRequests.find(request => request.operation === 'get_action_messages').resolve({
-      actionId: 'action-1', generation: 1,
+      actionId: failedAction.id, generation: 1,
       messages: [{ id: 'late-old', text: 'Late old failure' }], nextCursor: null, total: 1,
     });
     await staleMessagePage;
-    expect(store.workCenterActionMessages[currentKey]).toBeUndefined();
+    expect(store.workCenterActionMessages[retryKey]).toBeUndefined();
 
-    pendingRequests.find(request => request.operation === 'get').resolve({
-      ...eventSummary,
-      actions: [{ id: 'action-1', generation: 2, status: 'ready', progressRevision: 3, messages: [] }],
-    });
+    pendingRequests.find(request => request.operation === 'get').resolve(retriedDetail);
     await Promise.resolve();
     await Promise.resolve();
-    expect(store.workCenterDetailByAgent['agent-a'].actions[0]).toMatchObject({
-      id: 'action-1', generation: 2, messages: [],
+    expect(store.workCenterDetailByAgent['agent-a'].actions
+      .find(action => action.id === failedAction.id)).toMatchObject({
+      id: failedAction.id,
+      generation: 2,
+      status: 'ready',
+      messages: [expect.objectContaining({
+        generation: 1,
+        attempt: 1,
+        status: 'failed',
+        text: 'Old failure response',
+      })],
     });
 
+    const acceptedRetry = store.workCenterDetailByAgent['agent-a'];
+    const acceptedRetryAction = acceptedRetry.actions.find(action => action.id === failedAction.id);
+    const requestCountAfterRetry = pendingRequests.length;
+    store.applyWorkCenterEvent('agent-a', {
+      type: 'action.retried',
+      workItem: {
+        ...eventSummary,
+        actionStats: eventSummary.actionStats.map(action => (
+          action.id === failedAction.id
+            ? { ...action, generation: 1, attempt: 99, progressRevision: 99, status: 'failed' }
+            : action
+        )),
+      },
+    });
+    expect(store.workCenterDetailByAgent['agent-a'].actions
+      .find(action => action.id === failedAction.id)).toEqual(acceptedRetryAction);
+    expect(pendingRequests).toHaveLength(requestCountAfterRetry);
+    expect(store.workCenterDetailByAgent['agent-a']).toMatchObject({
+      status: acceptedRetry.status,
+      currentActionId: acceptedRetry.currentActionId,
+    });
+    store.applyWorkCenterEvent('agent-a', {
+      type: 'run.progress',
+      workItem: {
+        ...eventSummary,
+        actionStats: eventSummary.actionStats.map(action => (
+          action.id === failedAction.id
+            ? { ...action, attempt: 1, progressRevision: 10, status: 'running' }
+            : action
+        )),
+      },
+    });
+    const sameGenerationNewAttempt = store.workCenterDetailByAgent['agent-a'].actions
+      .find(action => action.id === failedAction.id);
+    const requestCountAfterNewAttempt = pendingRequests.length;
+    expect(sameGenerationNewAttempt).toMatchObject({
+      generation: 2, attempt: 1, progressRevision: 10, status: 'running',
+    });
+    store.applyWorkCenterEvent('agent-a', {
+      type: 'run.progress',
+      workItem: {
+        ...eventSummary,
+        actionStats: eventSummary.actionStats.map(action => (
+          action.id === failedAction.id
+            ? { ...action, attempt: 0, progressRevision: 999, status: 'failed' }
+            : action
+        )),
+      },
+    });
+    expect(store.workCenterDetailByAgent['agent-a'].actions
+      .find(action => action.id === failedAction.id)).toEqual(sameGenerationNewAttempt);
+    expect(pendingRequests).toHaveLength(requestCountAfterNewAttempt);
+
+    const currentKey = workCenterActionMessageKey('agent-a', 'wi-1', 'action-1', 2);
     store.workCenterDetailByAgent = {
       ...store.workCenterDetailByAgent,
       'agent-a': {
@@ -558,7 +717,7 @@ describe('Yeaft history outline state', () => {
     )).toEqual({ actionId: 'action-1', generation: 2 });
     store.applyWorkCenterEvent('agent-a', { type: 'run.finished', workItem: terminalSummary });
     expect(store.workCenterActionMessages[currentKey]).toBeUndefined();
-    expect(store._workCenterActionMessageGenerationByKey[currentKey]).toBe(2);
+    expect(store._workCenterActionMessageGenerationByKey[currentKey]).toBe(1);
     expect(store._workCenterDetailEventRefreshByAgent['agent-a']).toMatchObject({
       key: 'wi-1:action-1:2',
     });
@@ -1043,6 +1202,8 @@ describe('Yeaft history outline state', () => {
     const coordinatorSummary = {
       ...eventSummary,
       revision: 8,
+      planRevision: 0,
+      ledgerRevision: 0,
       updatedAt: 60,
       coordinatorRevision: 3,
       currentActionId: null,

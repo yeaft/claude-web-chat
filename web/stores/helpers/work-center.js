@@ -159,6 +159,11 @@ export function isWorkItemDetailResponseStale(detail, current) {
 }
 
 function isActionProgressStale(currentStats, nextStats) {
+  const currentGeneration = positiveIntegerOrNull(currentStats?.generation);
+  const nextGeneration = positiveIntegerOrNull(nextStats?.generation);
+  if (currentGeneration != null && nextGeneration != null && currentGeneration !== nextGeneration) {
+    return nextGeneration < currentGeneration;
+  }
   const currentAttempt = nonNegativeIntegerOrNull(currentStats?.attempt);
   const nextAttempt = nonNegativeIntegerOrNull(nextStats?.attempt);
   if (currentAttempt != null && nextAttempt != null && currentAttempt !== nextAttempt) {
@@ -188,6 +193,7 @@ export function workItemDetailRefreshIdentity(current, summary) {
   const currentAction = actions.find(action => action?.id === actionId) || null;
   const summaryAction = stats.find(action => action?.id === actionId)
     || (summary.currentAction?.id === actionId ? summary.currentAction : null);
+  if (currentAction && summaryAction && isActionProgressStale(currentAction, summaryAction)) return null;
   const currentGeneration = positiveIntegerOrNull(currentAction?.generation);
   const summaryGeneration = positiveIntegerOrNull(summaryAction?.generation);
   const summaryAttempt = nonNegativeIntegerOrNull(summaryAction?.attempt);
@@ -238,21 +244,17 @@ export function mergeWorkItemSummary(current, summary) {
       const stats = statsById.get(action?.id);
       if (!stats) return action;
       matchedStats = true;
+      if (isActionProgressStale(action, stats)) {
+        aggregateAccepted = false;
+        return action;
+      }
       const nextProgress = numberOrNull(stats?.progressRevision);
       if (nextProgress == null) {
         const { response, messages, ...legacyStats } = stats;
         return { ...action, ...legacyStats };
       }
-      if (isActionProgressStale(action, stats)) {
-        aggregateAccepted = false;
-        return action;
-      }
       const currentGeneration = positiveIntegerOrNull(action?.generation);
       const nextGeneration = positiveIntegerOrNull(stats?.generation);
-      if (currentGeneration != null && nextGeneration != null && nextGeneration < currentGeneration) {
-        aggregateAccepted = false;
-        return action;
-      }
       if (currentGeneration != null && nextGeneration != null && nextGeneration > currentGeneration) {
         const {
           messages: _messages,
