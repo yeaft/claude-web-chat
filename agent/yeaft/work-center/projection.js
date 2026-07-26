@@ -932,6 +932,7 @@ export function projectWorkItemSummary(detail) {
       attentionActionIds: Array.isArray(detail.attentionActionIds) ? detail.attentionActionIds : undefined,
       currentActionId: detail.currentActionId || null,
       currentAction: projectCurrentActionSummary(detail.currentAction),
+      actionStats: Array.isArray(detail.actionStats) ? detail.actionStats : [],
       actionCount: count(detail.actionCount),
       completedActionCount: count(detail.completedActionCount),
       executionStats: executionStats(detail.executionStats),
@@ -974,6 +975,7 @@ export function projectWorkItemSummary(detail) {
     failureReason: workItemFailureReason(detail),
 
     currentAction: projectCurrentActionSummary(action, projectedAction),
+    actionStats: projectActionStats(detail, null),
     origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,
     linkedSessionIds: Array.isArray(detail.linkedSessionIds) ? detail.linkedSessionIds : [],
     attachmentCount: Array.isArray(detail.attachments) ? detail.attachments.length : 0,

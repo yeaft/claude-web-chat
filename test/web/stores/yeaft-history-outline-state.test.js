@@ -45,6 +45,7 @@ const { useChatStore } = await import('../../../web/stores/chat.js');
 const { handleAssistantOutputFrame } = await import('../../../web/stores/helpers/assistantOutput.js');
 const { handleYeaftHistoryWindow: mergeYeaftHistoryWindow } = await import('../../../web/stores/helpers/handlers/conversationHandler.js');
 const {
+  applyWorkItemSummary,
   mergeActionMessages,
   mergeWorkItemSummary,
   workCenterActionMessageKey,
@@ -880,12 +881,13 @@ describe('Yeaft history outline state', () => {
         firstTerminalRefreshPromise = firstTerminalRefresh.apply(this, args);
         return firstTerminalRefreshPromise;
       };
-      store.applyWorkCenterEvent(overlapAgent, projectWorkCenterEvent({
+      const firstTerminalEvent = projectWorkCenterEvent({
         type: 'run.finished',
         actionId: firstClaim.action.id,
         runId: firstClaim.run.id,
         workItem: firstTerminal,
-      }));
+      });
+      store.applyWorkCenterEvent(overlapAgent, firstTerminalEvent);
       store.refreshWorkItemDetailAfterActionChange = firstTerminalRefresh;
       expect(store._workCenterActionMessageGenerationByKey[overlapKey]).toBe(1);
       const firstRefreshGeneration = store._workCenterDetailEventRefreshByAgent[overlapAgent]?.generation;
@@ -900,7 +902,6 @@ describe('Yeaft history outline state', () => {
         overlapAgent,
       ).catch(() => null);
 
-      overlapNow += 10;
       const secondClaim = overlapStore.claimReadyAction('overlap-event', 5_000);
       expect(secondClaim.action.id).toBe(firstClaim.action.id);
       expect(secondClaim.run.actionAttempt).toBe(2);
@@ -910,7 +911,6 @@ describe('Yeaft history outline state', () => {
         runId: secondClaim.run.id,
         workItem: overlapStore.getWorkItemDetail(overlapItem.id),
       }));
-      overlapNow += 10;
       const secondRunning = overlapStore.updateRunProgress(
         secondClaim.run.id,
         'overlap-event',
@@ -929,6 +929,24 @@ describe('Yeaft history outline state', () => {
         status: 'running',
         text: 'ATTEMPT TWO PARTIAL',
       });
+      const canonicalRunningListItem = (await overlapService.handle('list', { limit: 100 }))
+        .items.find(item => item.id === overlapItem.id);
+      expect(canonicalRunningListItem.actionStats
+        .find(action => action.id === firstClaim.action.id)).toMatchObject({
+        generation: firstClaim.action.generation,
+        attempt: 2,
+        progressRevision: 5,
+        status: 'running',
+      });
+      expect(applyWorkItemSummary([canonicalRunningListItem], firstTerminalEvent.workItem)[0])
+        .toEqual(canonicalRunningListItem);
+      store.workCenterItemsByAgent[overlapAgent] = [canonicalRunningListItem];
+      const detailBeforeLateAttempt = store.workCenterDetailByAgent[overlapAgent];
+      const requestCountBeforeLateAttempt = overlapRequests.length;
+      store.applyWorkCenterEvent(overlapAgent, firstTerminalEvent);
+      expect(store.workCenterItemsByAgent[overlapAgent][0]).toEqual(canonicalRunningListItem);
+      expect(store.workCenterDetailByAgent[overlapAgent]).toEqual(detailBeforeLateAttempt);
+      expect(overlapRequests).toHaveLength(requestCountBeforeLateAttempt);
 
       overlapNow += 10;
       const secondTerminal = overlapController.submit(

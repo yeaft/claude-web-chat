@@ -308,15 +308,7 @@ export function applyWorkItemSummary(items, summary) {
   let nextSummary = existing && isWorkItemSummaryStale(summary, existing) ? existing : summary;
   if (existing && nextSummary === summary && isSameWorkItemVersion(existing, summary)
     && hasStaleActionProgress(existing.actionStats, summary.actionStats)) {
-    nextSummary = {
-      ...summary,
-      status: existing.status,
-      currentActionId: existing.currentActionId,
-      currentAction: existing.currentAction,
-      executionStats: existing.executionStats,
-      failureReason: existing.failureReason,
-      actionStats: existing.actionStats,
-    };
+    nextSummary = existing;
   }
   if (!nextSummary?.id) return current;
   return [nextSummary, ...current.filter(item => item.id !== nextSummary.id)]
