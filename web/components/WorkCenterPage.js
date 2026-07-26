@@ -147,16 +147,23 @@ export default {
     },
     actionMessages() {
       const current = Array.isArray(this.selectedAction?.messages) ? this.selectedAction.messages : [];
+      // Older Agents sent prior Action messages in generation-scoped thread entries.
+      // Flatten that wire-compatible payload into the same conversation; generation
+      // remains an execution fence, not a user-visible message boundary.
+      const compatibilityMessages = (Array.isArray(this.selectedAction?.thread) ? this.selectedAction.thread : [])
+        .flatMap(entry => Array.isArray(entry?.messages) ? entry.messages : []);
       const earlier = this.store.workCenterActionMessages[this.actionMessageKey]?.messages || [];
-      const persisted = mergeActionMessages(earlier, current);
+      const persisted = mergeActionMessages(compatibilityMessages, earlier, current);
       const live = this.selectedAction?.liveMessage;
-      const visibleLive = live?.status === 'running'
-        && !persisted.some(message => message.role === 'assistant'
+      const liveAlreadyPersisted = live && persisted.some(message => (
+        message.role === 'assistant'
           && message.runId != null
           && message.runId === live.runId
-          && message.text === live.text)
-        ? live : null;
-      return mergeActionMessages(persisted, visibleLive);
+          && (live.status === 'running'
+            ? message.text === live.text
+            : message.status !== 'running')
+      ));
+      return mergeActionMessages(persisted, liveAlreadyPersisted ? null : live);
     },
     actionMessagesNextCursor() {
       const page = this.store.workCenterActionMessages[this.actionMessageKey];
@@ -1226,7 +1233,6 @@ export default {
               :action="selectedAction"
               :selected="selected"
               :messages="actionMessages"
-              :messages-generation="selectedAction?.generation"
               :messages-next-cursor="actionMessagesNextCursor"
               :messages-loading="actionMessagesLoading"
               :messages-error="actionMessagesError"

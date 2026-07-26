@@ -1447,75 +1447,11 @@
   font-size: 11px;
 }
 
-.work-center-action-generation {
-  min-width: 0;
-}
-
-.work-center-action-generation.canonical {
-  order: -1;
-  padding-top: 4px;
-}
-
-.work-center-action-generation-toggle {
-  display: flex;
-  width: 100%;
-  min-height: 36px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin: 6px 0 12px;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-secondary);
-  font: inherit;
-  cursor: pointer;
-}
-
-.work-center-action-generation-toggle:hover {
-  background: var(--sidebar-hover);
-  color: var(--text-primary);
-}
-
-.work-center-action-generation-toggle > span {
-  display: inline-flex;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
-}
-
-.work-center-action-generation-toggle strong {
-  font-size: 12px;
-}
-
-.work-center-action-generation-toggle small {
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.work-center-action-generation-toggle .work-center-action-chevron {
-  transform: rotate(90deg);
-}
-
-.work-center-action-generation.expanded .work-center-action-generation-toggle .work-center-action-chevron {
-  transform: rotate(270deg);
-}
-
-.work-center-action-generation-messages {
+.work-center-action-message-list {
   display: grid;
   gap: 24px;
   min-width: 0;
   padding: 4px 0 20px;
-}
-
-.work-center-action-generation:not(.canonical) .work-center-action-generation-messages {
-  margin-bottom: 14px;
-  padding-left: 20px;
-  opacity: 0.88;
 }
 
 .work-center-action-message {
@@ -3196,10 +3132,6 @@
 
   .work-center-action-message {
     max-width: 94%;
-  }
-
-  .work-center-action-generation:not(.canonical) .work-center-action-generation-messages {
-    padding-left: 8px;
   }
 
   .work-center-request-summary {

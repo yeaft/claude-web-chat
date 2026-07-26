@@ -166,7 +166,12 @@ export class WorkItemWatcher {
               response: '', summary: '', evidence: [],
               error: error?.message || String(error),
             });
-            this.onEvent({ type: 'run.finished', workItem: this.store.getWorkItemDetail(claim.workItem.id) });
+            this.onEvent({
+              type: 'run.finished',
+              actionId: claim.action.id,
+              runId: claim.run.id,
+              workItem: this.store.getWorkItemDetail(claim.workItem.id),
+            });
             continue;
           }
           this.#startClaim(claim);
@@ -212,7 +217,12 @@ export class WorkItemWatcher {
       if (this.lifecycle === 'running') queueMicrotask(() => { this.tick().catch(() => {}); });
     });
     this.activeRuns.set(key, entry);
-    this.onEvent({ type: 'run.started', workItem: this.store.getWorkItemDetail(claim.workItem.id) });
+    this.onEvent({
+      type: 'run.started',
+      actionId: claim.action.id,
+      runId: claim.run.id,
+      workItem: this.store.getWorkItemDetail(claim.workItem.id),
+    });
   }
 
   async #execute(claim, signal, registerProgressReader, registerInputWake) {
@@ -232,7 +242,14 @@ export class WorkItemWatcher {
               claim.run.leaseEpoch,
               progress,
             );
-            if (detail) this.onEvent({ type: 'run.progress', workItem: detail });
+            if (detail) {
+              this.onEvent({
+                type: 'run.progress',
+                actionId: claim.action.id,
+                runId: claim.run.id,
+                workItem: detail,
+              });
+            }
             return !!detail;
           },
         });
@@ -265,7 +282,12 @@ export class WorkItemWatcher {
           claim.run.leaseEpoch,
           result,
         );
-        this.onEvent({ type: 'run.finished', workItem });
+        this.onEvent({
+          type: 'run.finished',
+          actionId: claim.action.id,
+          runId: claim.run.id,
+          workItem,
+        });
       } catch (err) {
         if (!/stale|cancelled|already finished/i.test(err?.message || '')) throw err;
       }

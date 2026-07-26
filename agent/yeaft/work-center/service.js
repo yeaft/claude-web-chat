@@ -120,6 +120,20 @@ export class WorkCenterService {
     this.store.recoverInterruptedRuns(this.ownerBootId);
   }
 
+  projectBrowserDetail(detail) {
+    if (!detail) return null;
+    const actions = Array.isArray(detail.actions) ? detail.actions : [];
+    const actionId = detail.currentActionId && actions.some(action => action?.id === detail.currentActionId)
+      ? detail.currentActionId
+      : [...actions].sort((left, right) => (
+          Number(right?.sequence || 0) - Number(left?.sequence || 0)
+            || String(right?.id || '').localeCompare(String(left?.id || ''))
+        ))[0]?.id || null;
+    return projectWorkItemDetail(detail, {
+      bodyActionEvents: actionId ? this.store.listActionEvents(actionId) : detail.events,
+    });
+  }
+
   async handle(op, payload = {}, requestContext = {}) {
     switch (op) {
       case 'list': {

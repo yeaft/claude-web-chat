@@ -32,6 +32,11 @@ function positiveIntegerOrNull(value) {
   return Number.isInteger(number) && number > 0 ? number : null;
 }
 
+function nonNegativeIntegerOrNull(value) {
+  const number = numberOrNull(value);
+  return Number.isInteger(number) && number >= 0 ? number : null;
+}
+
 const TERMINAL_ACTION_MESSAGE_STATUSES = new Set([
   'completed',
   'failed',
@@ -64,6 +69,45 @@ export function pickFresherActionMessage(current, candidate) {
   return candidateUpdatedAt > currentUpdatedAt ? candidate : current;
 }
 
+function actionMessageTime(value) {
+  return Math.max(0, Number(value) || 0);
+}
+
+function actionMessageEventId(message) {
+  return typeof message?.id === 'string' && message.id.startsWith('event:')
+    ? message.id.slice('event:'.length)
+    : null;
+}
+
+function compareActionMessageEventIds(leftId, rightId) {
+  if (/^\d+$/.test(leftId) && /^\d+$/.test(rightId)) {
+    const left = BigInt(leftId);
+    const right = BigInt(rightId);
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
+  }
+  return leftId.localeCompare(rightId);
+}
+
+function compareActionMessages(left, right) {
+  const timeOrder = actionMessageTime(left?.createdAt) - actionMessageTime(right?.createdAt);
+  if (timeOrder) return timeOrder;
+  const leftEventId = actionMessageEventId(left);
+  const rightEventId = actionMessageEventId(right);
+  if (leftEventId != null && rightEventId != null) {
+    return compareActionMessageEventIds(leftEventId, rightEventId);
+  }
+  const leftRole = left?.role === 'user' ? 0 : 1;
+  const rightRole = right?.role === 'user' ? 0 : 1;
+  if (leftRole !== rightRole) return leftRole - rightRole;
+  const generationOrder = actionMessageTime(left?.generation) - actionMessageTime(right?.generation);
+  if (generationOrder) return generationOrder;
+  const attemptOrder = actionMessageTime(left?.attempt) - actionMessageTime(right?.attempt);
+  return attemptOrder
+    || String(left?.id || '').localeCompare(String(right?.id || ''));
+}
+
 export function mergeActionMessages(...sources) {
   const byId = new Map();
   for (const source of sources) {
@@ -73,8 +117,7 @@ export function mergeActionMessages(...sources) {
       byId.set(message.id, pickFresherActionMessage(byId.get(message.id), message));
     }
   }
-  return [...byId.values()].sort((left, right) => Number(left.createdAt || 0) - Number(right.createdAt || 0)
-    || String(left.id || '').localeCompare(String(right.id || '')));
+  return [...byId.values()].sort(compareActionMessages);
 }
 
 export function normalizeWorkCenterActionGeneration(value) {
@@ -116,26 +159,65 @@ export function isWorkItemDetailResponseStale(detail, current) {
 }
 
 function isActionProgressStale(currentStats, nextStats) {
+  const currentGeneration = positiveIntegerOrNull(currentStats?.generation);
+  const nextGeneration = positiveIntegerOrNull(nextStats?.generation);
+  if (currentGeneration != null && nextGeneration != null && currentGeneration !== nextGeneration) {
+    return nextGeneration < currentGeneration;
+  }
+  const currentAttempt = nonNegativeIntegerOrNull(currentStats?.attempt);
+  const nextAttempt = nonNegativeIntegerOrNull(nextStats?.attempt);
+  if (currentAttempt != null && nextAttempt != null && currentAttempt !== nextAttempt) {
+    return nextAttempt < currentAttempt;
+  }
   const currentProgress = numberOrNull(currentStats?.progressRevision);
   const nextProgress = numberOrNull(nextStats?.progressRevision);
   return currentProgress != null && nextProgress != null && nextProgress < currentProgress;
 }
 
+export function workItemDetailRefreshIdentity(current, summary) {
+  if (!current || current.id !== summary?.id || isWorkItemSummaryStale(summary, current)) return null;
+  const actions = Array.isArray(current.actions) ? current.actions : [];
+  const stats = Array.isArray(summary.actionStats) ? summary.actionStats : [];
+  const currentActionId = current.currentActionId || null;
+  const nextActionId = Object.prototype.hasOwnProperty.call(summary, 'currentActionId')
+    ? summary.currentActionId || null
+    : currentActionId;
+  const eventActionId = typeof summary.eventActionId === 'string'
+    && stats.some(action => action?.id === summary.eventActionId)
+    ? summary.eventActionId
+    : null;
+  const actionId = eventActionId || (currentActionId !== nextActionId
+    ? (currentActionId || nextActionId)
+    : nextActionId);
+  if (!actionId) return null;
+  const currentAction = actions.find(action => action?.id === actionId) || null;
+  const summaryAction = stats.find(action => action?.id === actionId)
+    || (summary.currentAction?.id === actionId ? summary.currentAction : null);
+  if (currentAction && summaryAction && isActionProgressStale(currentAction, summaryAction)) return null;
+  const currentGeneration = positiveIntegerOrNull(currentAction?.generation);
+  const summaryGeneration = positiveIntegerOrNull(summaryAction?.generation);
+  const summaryAttempt = nonNegativeIntegerOrNull(summaryAction?.attempt);
+  const refreshIdentity = {
+    actionId,
+    generation: summaryGeneration || currentGeneration || 1,
+    ...(summaryAttempt == null ? {} : { attempt: summaryAttempt }),
+  };
+  if (eventActionId || currentActionId !== nextActionId || !currentAction) return refreshIdentity;
+  if (currentGeneration != null && summaryGeneration != null && summaryGeneration > currentGeneration) {
+    return refreshIdentity;
+  }
+  if (currentAction?.status === 'running' && summaryAction?.status && summaryAction.status !== 'running') {
+    return refreshIdentity;
+  }
+  return null;
+}
+
 export function workItemDetailNeedsRefresh(current, summary) {
-  if (!current || current.id !== summary?.id) return false;
+  if (!current || current.id !== summary?.id || isWorkItemSummaryStale(summary, current)) return false;
   const coordinatorRevision = numberOrNull(summary.coordinatorRevision);
   const currentCoordinatorRevision = numberOrNull(current.coordinatorRevision) ?? 0;
   if (coordinatorRevision != null && coordinatorRevision > currentCoordinatorRevision) return true;
-  if (!summary.currentActionId) return false;
-  if (!Array.isArray(current.actions)) return true;
-  const currentAction = current.actions.find(action => action?.id === summary.currentActionId);
-  if (!currentAction) return true;
-  const summaryAction = (Array.isArray(summary.actionStats) ? summary.actionStats : [])
-    .find(action => action?.id === summary.currentActionId) || summary.currentAction;
-  const currentGeneration = positiveIntegerOrNull(currentAction.generation);
-  const summaryGeneration = positiveIntegerOrNull(summaryAction?.generation);
-  return currentGeneration != null && summaryGeneration != null
-    && summaryGeneration > currentGeneration;
+  return workItemDetailRefreshIdentity(current, summary) != null;
 }
 
 const PROGRESS_BOUND_SUMMARY_FIELDS = new Set([
@@ -162,21 +244,17 @@ export function mergeWorkItemSummary(current, summary) {
       const stats = statsById.get(action?.id);
       if (!stats) return action;
       matchedStats = true;
+      if (isActionProgressStale(action, stats)) {
+        aggregateAccepted = false;
+        return action;
+      }
       const nextProgress = numberOrNull(stats?.progressRevision);
       if (nextProgress == null) {
         const { response, messages, ...legacyStats } = stats;
         return { ...action, ...legacyStats };
       }
-      if (isActionProgressStale(action, stats)) {
-        aggregateAccepted = false;
-        return action;
-      }
       const currentGeneration = positiveIntegerOrNull(action?.generation);
       const nextGeneration = positiveIntegerOrNull(stats?.generation);
-      if (currentGeneration != null && nextGeneration != null && nextGeneration < currentGeneration) {
-        aggregateAccepted = false;
-        return action;
-      }
       if (currentGeneration != null && nextGeneration != null && nextGeneration > currentGeneration) {
         const {
           messages: _messages,
@@ -230,15 +308,7 @@ export function applyWorkItemSummary(items, summary) {
   let nextSummary = existing && isWorkItemSummaryStale(summary, existing) ? existing : summary;
   if (existing && nextSummary === summary && isSameWorkItemVersion(existing, summary)
     && hasStaleActionProgress(existing.actionStats, summary.actionStats)) {
-    nextSummary = {
-      ...summary,
-      status: existing.status,
-      currentActionId: existing.currentActionId,
-      currentAction: existing.currentAction,
-      executionStats: existing.executionStats,
-      failureReason: existing.failureReason,
-      actionStats: existing.actionStats,
-    };
+    nextSummary = existing;
   }
   if (!nextSummary?.id) return current;
   return [nextSummary, ...current.filter(item => item.id !== nextSummary.id)]

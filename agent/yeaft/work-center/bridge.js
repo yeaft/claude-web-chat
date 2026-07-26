@@ -6,7 +6,7 @@ import { scanVpLibrary } from '../vp/vp-store.js';
 import { WorkCenterService } from './service.js';
 import { WorkItemRunner } from './runner.js';
 import { WorkItemCoordinator } from './coordinator.js';
-import { projectWorkCenterEvent, projectWorkItemDetail } from './projection.js';
+import { projectWorkCenterEvent } from './projection.js';
 import { previewWorkCenterPlan } from './planner.js';
 import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
 import { defaultWorkCenterStageInstructions } from './workflow.js';
@@ -188,6 +188,7 @@ export async function handleWorkCenterRequest(msg) {
   const op = typeof msg.op === 'string' ? msg.op : '';
   try {
     let data;
+    let workCenter = null;
     if (op === 'get_settings') {
       data = await readSettingsResponse();
     } else if (op === 'update_settings') {
@@ -210,13 +211,13 @@ export async function handleWorkCenterRequest(msg) {
       await resetYeaftSession();
       data = await readSettingsResponse();
     } else {
-      const workCenter = await ensureWorkCenter();
+      workCenter = await ensureWorkCenter();
       const payload = Object.hasOwn(BROWSER_FILE_FIELDS, op)
         ? browserFilePayload(op, msg.payload)
         : (BROWSER_ACTION_DEBUG_OPS.has(op) ? browserFilePayload(op, msg.payload) : (msg.payload || {}));
       data = await workCenter.handle(op, payload);
     }
-    if (BROWSER_DETAIL_OPS.has(op)) data = projectWorkItemDetail(data);
+    if (BROWSER_DETAIL_OPS.has(op)) data = workCenter.projectBrowserDetail(data);
     send({
       type: 'work_center_response',
       requestId,
