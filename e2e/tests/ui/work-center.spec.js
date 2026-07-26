@@ -145,6 +145,28 @@ const FAILED_ITEM_DETAIL = {
   }],
 };
 
+const WAITING_ITEM = {
+  ...OPEN_ITEM,
+  id: 'work-item-waiting',
+  title: 'Choose the database',
+  status: 'waiting',
+  currentAction: { ...OPEN_ITEM.currentAction, generation: 1, status: 'waiting' },
+};
+
+const WAITING_ITEM_DETAIL = {
+  ...OPEN_ITEM_DETAIL,
+  ...WAITING_ITEM,
+  currentActionId: 'action-1',
+  messages: [],
+  actions: [{
+    ...OPEN_ITEM_DETAIL.actions[0],
+    status: 'waiting',
+    canonicalResult: {
+      waitingReason: 'Choose PostgreSQL or SQLite before the migration continues.',
+    },
+  }],
+};
+
 function closedWorkItem(status) {
   const suffix = status === 'done' ? 'done' : 'cancelled';
   return {
@@ -173,7 +195,7 @@ function closedWorkItemDetail(item) {
       },
       {
         id: `${item.id}:assistant`, role: 'assistant', status: 'completed',
-        text: cancelled ? 'Coordinator recorded the cancellation.' : 'Coordinator confirmed every acceptance criterion.',
+        text: cancelled ? 'Yeaft recorded the cancellation.' : 'Yeaft confirmed every acceptance criterion.',
         createdAt: Date.now() - 1, updatedAt: Date.now() - 1,
       },
     ],
@@ -200,8 +222,10 @@ const CANCELLED_ITEM_DETAIL = closedWorkItemDetail(CANCELLED_ITEM);
 
 const ACTION_REQUEST_INDEX = {
   actionId: 'action-1',
+  generation: 1,
   requests: [{
-    id: 'request-1', runId: 'run-1', status: 'running', model: 'provider/primary',
+    id: 'request-1', runId: 'run-1', generation: 1, attempt: 1,
+    status: 'running', model: 'provider/primary',
     vp: { id: 'linus', name: 'Linus' }, openedAt: Date.now(), closedAt: null,
     loopCount: 2, totalMs: 820, inputTokens: 1200, outputTokens: 300, totalTokens: 1500,
   }],
@@ -209,6 +233,7 @@ const ACTION_REQUEST_INDEX = {
 
 const ACTION_REQUEST_DETAIL = {
   actionId: 'action-1',
+  generation: 1,
   request: {
     ...ACTION_REQUEST_INDEX.requests[0],
     loops: [{
@@ -470,10 +495,13 @@ test.describe('Work Center responsive UI', () => {
 
     const actionList = chatPage.locator('.work-center-action-list');
     const cards = actionList.locator('.work-center-action-card');
+    const workflow = chatPage.locator('.work-center-workflow');
     await expect(cards).toHaveCount(24);
+    const columns = await chatPage.locator('.work-center-detail-layout').evaluate(element => getComputedStyle(element).gridTemplateColumns);
+    expect(columns.trim().split(/\s+/)).toHaveLength(2);
     await cards.last().scrollIntoViewIfNeeded();
     await expect(cards.last()).toBeInViewport();
-    const scroll = await chatPage.locator('.work-center-detail').evaluate(element => ({
+    const scroll = await workflow.evaluate(element => ({
       clientHeight: element.clientHeight,
       scrollHeight: element.scrollHeight,
       scrollTop: element.scrollTop,
@@ -498,6 +526,12 @@ test.describe('Work Center responsive UI', () => {
     expect(cardLayout.titleWidth).toBeGreaterThan(100);
     expect(cardLayout.summaryWidth).toBeGreaterThan(100);
     expect(cardLayout.titleWritingMode).toBe('horizontal-tb');
+
+    await chatPage.setViewportSize({ width: 900, height: 760 });
+    await chatPage.waitForTimeout(350);
+    const compactColumns = await chatPage.locator('.work-center-detail-layout').evaluate(element => getComputedStyle(element).gridTemplateColumns);
+    expect(compactColumns.trim().split(/\s+/)).toHaveLength(1);
+    await expect(workflow).toBeVisible();
   });
 
   test('maximizes and restores the Workbench without leaving the main area in the layout', async ({ chatPage, mockAgent }) => {
@@ -540,16 +574,18 @@ test.describe('Work Center responsive UI', () => {
     await expect(action).not.toContainText('tokens');
     await expect(chatPage.locator('.work-center-detail-usage')).toContainText('4 LLM requests');
     await expect(chatPage.locator('.work-center-detail-usage')).toContainText('1.8k tokens');
-    const coordinator = chatPage.locator('.work-center-item-messages');
-    await expect(coordinator).toContainText('Coordinate the whole Work Item here');
-    await coordinator.locator('textarea').fill('Change the goal and replan the remaining Actions');
-    const coordinatorResponse = respondToWorkCenterOp(mockAgent, 'work_item_message', {
+    const conversation = chatPage.locator('.work-center-conversation');
+    await expect(conversation).toContainText('Conversation');
+    await expect(conversation).not.toContainText('Coordinator');
+    await expect(conversation.locator('.work-center-coordinator-empty')).toHaveCount(0);
+    await conversation.locator('textarea').fill('Change the goal and replan the remaining Actions');
+    const conversationResponse = respondToWorkCenterOp(mockAgent, 'work_item_message', {
       accepted: true,
       turnId: 'turn-1',
     });
-    await coordinator.getByRole('button', { name: 'Send to Coordinator' }).click();
-    const coordinatorRequest = await coordinatorResponse;
-    expect(coordinatorRequest.payload).toMatchObject({
+    await conversation.getByRole('button', { name: 'Send message' }).click();
+    const conversationRequest = await conversationResponse;
+    expect(conversationRequest.payload).toMatchObject({
       id: OPEN_ITEM.id,
       text: 'Change the goal and replan the remaining Actions',
       revision: 1,
@@ -557,16 +593,16 @@ test.describe('Work Center responsive UI', () => {
       ledgerRevision: 4,
       coordinatorRevision: 0,
     });
-    await expect(coordinator.locator('textarea')).toHaveValue('');
+    await expect(conversation.locator('textarea')).toHaveValue('');
 
     await action.locator('.work-center-action-summary').click();
     const actionDetail = chatPage.locator('.work-center-action-detail-pane');
     await expect(actionDetail.locator('.work-center-action-message')).toContainText('Implemented the layout fix');
-    await actionDetail.getByRole('tab', { name: 'Task context' }).click();
-    await expect(actionDetail.locator('.work-center-action-context')).toContainText('What to do');
-    await expect(actionDetail.locator('.work-center-action-context')).toContainText('How to do it');
-    await expect(actionDetail.locator('.work-center-action-context')).toContainText('Expected result');
-    await actionDetail.getByRole('tab', { name: 'Conversation' }).click();
+    await expect(actionDetail.getByRole('tab')).toHaveCount(2);
+    await expect(actionDetail.getByRole('tab', { name: 'Task context' })).toHaveCount(0);
+    await actionDetail.locator('.work-center-action-brief-disclosure summary').click();
+    await expect(actionDetail.locator('.work-center-action-context-list')).toContainText('How to do it');
+    await expect(actionDetail.locator('.work-center-action-context-list')).toContainText('Expected result');
 
     mockAgent.send({
       type: 'work_center_event',
@@ -739,19 +775,36 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage.getByText('Previous execution')).toHaveCount(0);
   });
 
-  test('explains an Action failure and shows how to recover it', async ({ chatPage, mockAgent }) => {
-    await openWorkCenter(chatPage, mockAgent, [FAILED_ITEM]);
-    const select = chatPage.locator('.work-center-card').click();
-    await respondToWorkCenterOp(mockAgent, 'get', FAILED_ITEM_DETAIL, [FAILED_ITEM]);
-    await select;
+  test('explains Action recovery states and exposes the waiting question', async ({ chatPage, mockAgent }) => {
+    const items = [FAILED_ITEM, WAITING_ITEM];
+    await openWorkCenter(chatPage, mockAgent, items);
+    const selectFailure = chatPage.locator('.work-center-card', { hasText: FAILED_ITEM.title }).click();
+    await respondToWorkCenterOp(mockAgent, 'get', FAILED_ITEM_DETAIL, items);
+    await selectFailure;
     await chatPage.locator('.work-center-action-summary').click();
 
-    const actionDetail = chatPage.locator('.work-center-action-detail-pane');
+    let actionDetail = chatPage.locator('.work-center-action-detail-pane');
     await expect(actionDetail.locator('.work-center-action-failure')).toContainText('Why this Action failed');
     await expect(actionDetail.locator('.work-center-action-failure')).toContainText('unsafe patch');
     await expect(actionDetail.locator('.work-center-action-failure')).toContainText('All unverified changes were reverted');
     await expect(actionDetail.locator('.work-center-action-failure')).toContainText('Add corrected instructions or files below');
     await expect(actionDetail.locator('.work-center-action-composer')).toContainText('rerun this Action');
+
+    await actionDetail.locator('.work-center-action-detail-header .work-center-icon-button').click();
+    await chatPage.locator('.work-center-detail-heading .work-center-icon-button').click();
+    const selectWaiting = chatPage.locator('.work-center-card', { hasText: WAITING_ITEM.title }).click();
+    await respondToWorkCenterOp(mockAgent, 'get', WAITING_ITEM_DETAIL, items);
+    await selectWaiting;
+    await chatPage.locator('.work-center-action-summary').click();
+
+    actionDetail = chatPage.locator('.work-center-action-detail-pane');
+    const waitingQuestion = actionDetail.locator('#work-center-action-waiting-question');
+    await expect(waitingQuestion).toContainText('Input required');
+    await expect(waitingQuestion).toContainText('Choose PostgreSQL or SQLite before the migration continues.');
+    const composer = actionDetail.locator('.work-center-action-composer textarea');
+    await expect(composer).toBeVisible();
+    await expect(composer).toHaveAttribute('aria-describedby', /work-center-action-waiting-question/);
+    await expect(composer).toHaveAttribute('aria-describedby', /work-center-action-composer-hint/);
   });
 
   test('keeps done and cancelled Work Items read-only without sending message wire', async ({ chatPage, mockAgent }) => {
@@ -768,13 +821,13 @@ test.describe('Work Center responsive UI', () => {
       await respondToWorkCenterOp(mockAgent, 'get', closedDetails.get(item.id), closedItems);
       await select;
 
-      const coordinator = chatPage.locator('.work-center-item-messages');
-      await expect(coordinator).toContainText(item.status === 'done'
-        ? 'Coordinator confirmed every acceptance criterion.'
-        : 'Coordinator recorded the cancellation.');
-      await expect(coordinator.locator('.work-center-coordinator-readonly')).toBeVisible();
-      await expect(coordinator.locator('.work-center-item-message-input')).toHaveCount(0);
-      await expect(coordinator.locator('textarea')).toHaveCount(0);
+      const conversation = chatPage.locator('.work-center-conversation');
+      await expect(conversation).toContainText(item.status === 'done'
+        ? 'Yeaft confirmed every acceptance criterion.'
+        : 'Yeaft recorded the cancellation.');
+      await expect(conversation.locator('.work-center-conversation-readonly')).toBeVisible();
+      await expect(conversation.locator('.work-center-item-message-input')).toHaveCount(0);
+      await expect(conversation.locator('textarea')).toHaveCount(0);
 
       await chatPage.locator('.work-center-action-summary').click();
       const actionDetail = chatPage.locator('.work-center-action-detail-pane');
@@ -793,7 +846,7 @@ test.describe('Work Center responsive UI', () => {
     expect(workCenterRequestOps(mockAgent).filter(op => blockedOps.has(op))).toEqual([]);
   });
 
-  test('loads request debug only when the Execution view is opened', async ({ chatPage, mockAgent }) => {
+  test('loads retained tool evidence only when the Execution view is opened', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     const select = chatPage.locator('.work-center-card').click();
     await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
@@ -809,21 +862,146 @@ test.describe('Work Center responsive UI', () => {
     const execution = actionDetail.locator('.work-center-action-execution');
     await expect(execution).toBeVisible();
     const indexRequest = await indexResponse;
-    expect(indexRequest.payload).toEqual({ id: OPEN_ITEM.id, actionId: 'action-1' });
-    const card = execution.locator('.work-center-request-card');
-    await expect(card).toContainText('provider/primary');
-    await expect(card).toContainText('1.5k tok');
+    expect(indexRequest.payload).toEqual({ id: OPEN_ITEM.id, actionId: 'action-1', generation: 1 });
 
     const detailResponse = respondToWorkCenterOp(mockAgent, 'get_action_request', ACTION_REQUEST_DETAIL);
-    await card.locator('.work-center-request-summary').click();
     const detailRequest = await detailResponse;
     expect(detailRequest.payload).toEqual({
-      id: OPEN_ITEM.id, actionId: 'action-1', runId: 'run-1', requestId: 'request-1',
+      id: OPEN_ITEM.id, actionId: 'action-1', generation: 1,
+      runId: 'run-1', requestId: 'request-1',
     });
-    await card.locator('.work-center-request-loop > button').click();
-    await expect(card).toContainText('System prompt');
-    await expect(card).toContainText('Raw request');
-    await expect(card).toContainText('Tool calls');
+    const card = execution.locator('.work-center-request-card');
+    await expect(card).toHaveClass(/expanded/);
+    await expect(card).toContainText('provider/primary');
+    await expect(card).toContainText('1.5k tok');
+    await expect(card.locator('.work-center-request-loop')).toContainText('1 tools');
+    const tool = card.locator('.work-center-request-tool');
+    await expect(tool).toContainText('FileRead');
+    await expect(tool).toHaveAttribute('data-status', 'completed');
+    await tool.locator('summary').click();
+    await expect(tool).toContainText('Parameters');
+    await expect(tool).toContainText('web/styles/work-center.css');
+    await expect(tool).toContainText('Result');
+    await expect(tool).toContainText('css');
+    await expect(card).not.toContainText('System prompt');
+    await expect(card).not.toContainText('Raw request');
+
+    const generationTwoDetail = structuredClone(OPEN_ITEM_DETAIL);
+    generationTwoDetail.revision = 2;
+    generationTwoDetail.updatedAt = Number(OPEN_ITEM.updatedAt) + 10;
+    generationTwoDetail.actions[0] = {
+      ...generationTwoDetail.actions[0],
+      generation: 2,
+      attempt: 0,
+      status: 'ready',
+      progressRevision: 0,
+      messages: [],
+      response: '',
+    };
+    const generationTwoPage = {
+      actionId: 'action-1', generation: 2, messages: [], nextCursor: null, total: 0,
+    };
+    mockAgent.send({
+      type: 'work_center_event',
+      event: {
+        type: 'action.retried',
+        workItem: {
+          ...OPEN_ITEM,
+          revision: 2,
+          updatedAt: generationTwoDetail.updatedAt,
+          currentActionId: 'action-1',
+          currentAction: { id: 'action-1', generation: 2, status: 'ready' },
+          actionStats: [{
+            id: 'action-1', generation: 2, attempt: 0, status: 'ready', progressRevision: 0,
+            executionStats: OPEN_ITEM_DETAIL.actions[0].executionStats,
+          }],
+        },
+      },
+    });
+    const rolloverOps = [
+      (await respondByOperation(mockAgent, { get: generationTwoDetail, get_action_messages: generationTwoPage })).op,
+      (await respondByOperation(mockAgent, { get: generationTwoDetail, get_action_messages: generationTwoPage })).op,
+    ];
+    expect(rolloverOps.sort()).toEqual(['get', 'get_action_messages']);
+    await expect(actionDetail.locator('.work-center-action-transcript')).toBeVisible();
+
+    const generationTwoRequests = {
+      actionId: 'action-1',
+      generation: 2,
+      requests: [
+        { ...ACTION_REQUEST_INDEX.requests[0], id: 'request-g1-late', runId: 'run-g1-late', generation: 1, attempt: 9, model: 'model-g1', openedAt: Date.now() + 30 },
+        { ...ACTION_REQUEST_INDEX.requests[0], id: 'request-g2-a1', runId: 'run-g2-a1', generation: 2, attempt: 1, model: 'model-g2-attempt-1', openedAt: Date.now() + 20 },
+        { ...ACTION_REQUEST_INDEX.requests[0], id: 'request-g2-a2', runId: 'run-g2-a2', generation: 2, attempt: 2, model: 'model-g2-attempt-2', openedAt: Date.now() + 10 },
+      ],
+    };
+    const requestCacheBeforeGenerationTwo = await chatPage.evaluate(() => {
+      const store = window.Pinia.useChatStore();
+      const agentId = store.workCenterAgentId;
+      const oldKey = `${agentId}:work-item-open:action-1:1`;
+      const currentKey = `${agentId}:work-item-open:action-1:2`;
+      return {
+        oldIds: (store.workCenterActionRequests[oldKey] || []).map(request => request.id),
+        currentIds: (store.workCenterActionRequests[currentKey] || []).map(request => request.id),
+      };
+    });
+    expect(requestCacheBeforeGenerationTwo).toEqual({ oldIds: ['request-1'], currentIds: [] });
+    const generationTwoIndexResponse = respondToWorkCenterOp(
+      mockAgent, 'get_action_requests', generationTwoRequests,
+    );
+    await actionDetail.getByRole('tab', { name: 'Execution', exact: true }).click();
+    expect((await generationTwoIndexResponse).payload).toEqual({
+      id: OPEN_ITEM.id, actionId: 'action-1', generation: 2,
+    });
+    const latestGenerationTwoDetail = {
+      ...ACTION_REQUEST_DETAIL,
+      generation: 2,
+      request: {
+        ...ACTION_REQUEST_DETAIL.request,
+        ...generationTwoRequests.requests[2],
+        loops: ACTION_REQUEST_DETAIL.request.loops,
+      },
+    };
+    const latestDetailResponse = respondToWorkCenterOp(
+      mockAgent, 'get_action_request', latestGenerationTwoDetail,
+    );
+    const latestDetailRequest = await latestDetailResponse;
+    expect(latestDetailRequest.payload).toMatchObject({
+      generation: 2, runId: 'run-g2-a2', requestId: 'request-g2-a2',
+    });
+    const generationTwoCards = execution.locator('.work-center-request-card');
+    await expect(generationTwoCards).toHaveCount(3);
+    await expect(generationTwoCards.filter({ hasText: 'model-g2-attempt-2' })).toHaveClass(/expanded/);
+    await expect(generationTwoCards.filter({ hasText: 'model-g1' })).not.toHaveClass(/expanded/);
+
+    const manualCard = generationTwoCards.filter({ hasText: 'model-g2-attempt-1' });
+    const manualDetailResponse = respondToWorkCenterOp(mockAgent, 'get_action_request', {
+      ...ACTION_REQUEST_DETAIL,
+      generation: 2,
+      request: {
+        ...ACTION_REQUEST_DETAIL.request,
+        ...generationTwoRequests.requests[1],
+        loops: ACTION_REQUEST_DETAIL.request.loops,
+      },
+    });
+    await manualCard.locator('.work-center-request-summary').click();
+    expect((await manualDetailResponse).payload).toMatchObject({
+      generation: 2, runId: 'run-g2-a1', requestId: 'request-g2-a1',
+    });
+    await expect(manualCard).toHaveClass(/expanded/);
+
+    const refreshedRequests = {
+      ...generationTwoRequests,
+      requests: [
+        { ...ACTION_REQUEST_INDEX.requests[0], id: 'request-g2-a3', runId: 'run-g2-a3', generation: 2, attempt: 3, model: 'model-g2-attempt-3', openedAt: Date.now() + 40 },
+        ...generationTwoRequests.requests,
+      ],
+    };
+    const refreshResponse = respondToWorkCenterOp(mockAgent, 'get_action_requests', refreshedRequests);
+    await execution.getByRole('button', { name: 'Refresh' }).click();
+    expect((await refreshResponse).payload.generation).toBe(2);
+    await expect(execution.locator('.work-center-request-card')).toHaveCount(4);
+    await expect(execution.locator('.work-center-request-card', { hasText: 'model-g2-attempt-1' })).toHaveClass(/expanded/);
+    await expect(execution.locator('.work-center-request-card', { hasText: 'model-g2-attempt-3' })).not.toHaveClass(/expanded/);
   });
 
   test('renders one readable Action conversation column in both themes and on mobile', async ({ chatPage, mockAgent }) => {

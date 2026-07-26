@@ -49,6 +49,7 @@ const {
   mergeActionMessages,
   mergeWorkItemSummary,
   workCenterActionMessageKey,
+  workCenterActionRequestScopeKey,
   workItemDetailRefreshIdentity,
 } = await import('../../../web/stores/helpers/work-center.js');
 const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
@@ -617,9 +618,11 @@ describe('Yeaft history outline state', () => {
       },
     };
     const pendingRequests = [];
-    store.workCenterRequest = vi.fn(operation => new Promise(resolve => {
+    store.workCenterRequest = vi.fn((operation, payload, agentId) => new Promise(resolve => {
       const entry = {
         operation,
+        payload,
+        agentId,
         resolved: false,
         resolve(value) {
           entry.resolved = true;
@@ -669,6 +672,71 @@ describe('Yeaft history outline state', () => {
     });
     await staleMessagePage;
     expect(store.workCenterActionMessages[retryKey]).toBeUndefined();
+
+    const oldRequestScope = workCenterActionRequestScopeKey(
+      'agent-a', 'wi-1', failedAction.id, 1,
+    );
+    const retryRequestScope = workCenterActionRequestScopeKey(
+      'agent-a', 'wi-1', failedAction.id, advanced.generation,
+    );
+    store.workCenterActionRequests = {
+      [oldRequestScope]: [{ id: 'request-old-generation', runId: 'run-old', generation: 1 }],
+    };
+    const inFlightOldGenerationList = store.loadWorkItemActionRequests(
+      'wi-1', failedAction.id, 1, 'agent-a',
+    );
+    const staleRequestList = store.loadWorkItemActionRequests(
+      'wi-1', failedAction.id, advanced.generation, 'agent-a',
+    );
+    const freshRequestList = store.loadWorkItemActionRequests(
+      'wi-1', failedAction.id, advanced.generation, 'agent-a',
+    );
+    const oldGenerationRequest = pendingRequests.find(request => (
+      request.operation === 'get_action_requests' && request.payload.generation === 1
+    ));
+    const requestLists = pendingRequests.filter(request => (
+      request.operation === 'get_action_requests' && request.payload.generation === 2
+    ));
+    expect(requestLists.map(request => request.payload.generation)).toEqual([2, 2]);
+    requestLists[1].resolve({
+      actionId: failedAction.id,
+      generation: 2,
+      requests: [{ id: 'request-current', runId: 'run-current', generation: 2, attempt: 2 }],
+    });
+    await freshRequestList;
+    requestLists[0].resolve({
+      actionId: failedAction.id,
+      generation: 2,
+      requests: [{ id: 'request-late', runId: 'run-late', generation: 2, attempt: 1 }],
+    });
+    await staleRequestList;
+    oldGenerationRequest.resolve({
+      actionId: failedAction.id,
+      generation: 1,
+      requests: [{ id: 'request-old-late', runId: 'run-old-late', generation: 1 }],
+    });
+    await inFlightOldGenerationList;
+    expect(store.workCenterActionRequests[oldRequestScope]).toEqual([
+      expect.objectContaining({ id: 'request-old-late' }),
+    ]);
+    expect(store.workCenterActionRequests[retryRequestScope]).toEqual([
+      expect.objectContaining({ id: 'request-current', attempt: 2 }),
+    ]);
+
+    const staleRequestDetail = store.loadWorkItemActionRequest(
+      'wi-1', failedAction.id, advanced.generation, 'run-current', 'request-current', 'agent-a',
+    );
+    const freshRequestDetail = store.loadWorkItemActionRequest(
+      'wi-1', failedAction.id, advanced.generation, 'run-current', 'request-current', 'agent-a',
+    );
+    const requestDetails = pendingRequests.filter(request => request.operation === 'get_action_request');
+    expect(requestDetails.map(request => request.payload.generation)).toEqual([2, 2]);
+    requestDetails[1].resolve({ generation: 2, request: { id: 'request-current', marker: 'fresh' } });
+    await freshRequestDetail;
+    requestDetails[0].resolve({ generation: 2, request: { id: 'request-current', marker: 'late' } });
+    await staleRequestDetail;
+    expect(store.workCenterActionRequestDetails[`${retryRequestScope}:run-current:request-current`])
+      .toMatchObject({ marker: 'fresh' });
 
     pendingRequests.find(request => request.operation === 'get').resolve(retriedDetail);
     await Promise.resolve();

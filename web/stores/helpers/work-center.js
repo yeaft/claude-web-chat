@@ -129,6 +129,10 @@ export function workCenterActionMessageKey(agentId, workItemId, actionId, genera
   return `${agentId}:${workItemId}:${actionId}:${normalizeWorkCenterActionGeneration(generation)}`;
 }
 
+export function workCenterActionRequestScopeKey(agentId, workItemId, actionId, generation) {
+  return `${agentId}:${workItemId}:${actionId}:${normalizeWorkCenterActionGeneration(generation)}`;
+}
+
 export function isWorkItemSummaryStale(summary, current) {
   if (!summary || !current || summary.id !== current.id) return false;
   const summaryRevision = numberOrNull(summary.revision);

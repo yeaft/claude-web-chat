@@ -1088,7 +1088,10 @@ export function projectActionRequestIndex(action, entries) {
       inputTokens: count(turn.summaryInputTokens),
       outputTokens: count(turn.summaryOutputTokens),
       totalTokens: count(turn.totalTokens),
-    })).sort((left, right) => right.openedAt - left.openedAt || right.id.localeCompare(left.id)),
+    })).sort((left, right) => right.generation - left.generation
+      || right.attempt - left.attempt
+      || right.openedAt - left.openedAt
+      || right.id.localeCompare(left.id)),
   };
 }
 
@@ -1160,6 +1163,7 @@ export function projectActionRequestDetail(action, run, history, runs = [run]) {
   });
   return enforceActionRequestDetailBudget({
     actionId: boundedDebugIdentity(action.id, MAX_ACTION_REQUEST_METADATA_BYTES),
+    generation: Math.max(1, count(action.generation) || 1),
     request: {
       id: boundedDebugIdentity(turn.turnId, MAX_ACTION_REQUEST_METADATA_BYTES),
       runId: boundedDebugIdentity(run.id, MAX_ACTION_REQUEST_METADATA_BYTES),

@@ -20,6 +20,7 @@ import {
   mergeActionMessages,
   normalizeWorkCenterActionGeneration,
   workCenterActionMessageKey,
+  workCenterActionRequestScopeKey,
   mergeWorkItemSummary,
   workItemDetailNeedsRefresh,
   workItemDetailRefreshIdentity,
@@ -1610,25 +1611,30 @@ export const useChatStore = defineStore('chat', {
       };
       return request;
     },
-    async loadWorkItemActionRequests(id, actionId, agentId = null) {
+    async loadWorkItemActionRequests(id, actionId, actionGeneration, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const key = `${target}:${id}:${actionId}`;
-      const generation = Number(this._workCenterActionRequestsGeneration[key] || 0) + 1;
+      const expectedGeneration = normalizeWorkCenterActionGeneration(actionGeneration);
+      const key = workCenterActionRequestScopeKey(target, id, actionId, expectedGeneration);
+      const requestGeneration = Number(this._workCenterActionRequestsGeneration[key] || 0) + 1;
       this._workCenterActionRequestsGeneration = {
         ...this._workCenterActionRequestsGeneration,
-        [key]: generation,
+        [key]: requestGeneration,
       };
       this.workCenterActionRequestsLoading = { ...this.workCenterActionRequestsLoading, [key]: true };
       this.workCenterActionRequestsError = { ...this.workCenterActionRequestsError, [key]: null };
       try {
-        const data = await this.workCenterRequest('get_action_requests', { id, actionId }, target);
-        if (!this.workItemDeleted(target, id)
-            && this._workCenterActionRequestsGeneration[key] === generation) {
+        const data = await this.workCenterRequest('get_action_requests', {
+          id, actionId, generation: expectedGeneration,
+        }, target);
+        const accepted = !this.workItemDeleted(target, id)
+          && normalizeWorkCenterActionGeneration(data?.generation) === expectedGeneration
+          && this._workCenterActionRequestsGeneration[key] === requestGeneration;
+        if (accepted) {
           this.workCenterActionRequests = { ...this.workCenterActionRequests, [key]: data?.requests || [] };
         }
-        return data?.requests || [];
+        return accepted ? (data?.requests || []) : (this.workCenterActionRequests[key] || []);
       } catch (error) {
-        if (this._workCenterActionRequestsGeneration[key] === generation) {
+        if (this._workCenterActionRequestsGeneration[key] === requestGeneration) {
           this.workCenterActionRequestsError = {
             ...this.workCenterActionRequestsError,
             [key]: error?.message || String(error),
@@ -1636,18 +1642,20 @@ export const useChatStore = defineStore('chat', {
         }
         throw error;
       } finally {
-        if (this._workCenterActionRequestsGeneration[key] === generation) {
+        if (this._workCenterActionRequestsGeneration[key] === requestGeneration) {
           this.workCenterActionRequestsLoading = { ...this.workCenterActionRequestsLoading, [key]: false };
         }
       }
     },
-    async loadWorkItemActionRequest(id, actionId, runId, requestId, agentId = null) {
+    async loadWorkItemActionRequest(id, actionId, actionGeneration, runId, requestId, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const key = `${target}:${id}:${actionId}:${runId}:${requestId}`;
-      const generation = Number(this._workCenterActionRequestDetailsGeneration[key] || 0) + 1;
+      const expectedGeneration = normalizeWorkCenterActionGeneration(actionGeneration);
+      const scopeKey = workCenterActionRequestScopeKey(target, id, actionId, expectedGeneration);
+      const key = `${scopeKey}:${runId}:${requestId}`;
+      const requestGeneration = Number(this._workCenterActionRequestDetailsGeneration[key] || 0) + 1;
       this._workCenterActionRequestDetailsGeneration = {
         ...this._workCenterActionRequestDetailsGeneration,
-        [key]: generation,
+        [key]: requestGeneration,
       };
       this.workCenterActionRequestDetailsLoading = {
         ...this.workCenterActionRequestDetailsLoading,
@@ -1659,18 +1667,20 @@ export const useChatStore = defineStore('chat', {
       };
       try {
         const data = await this.workCenterRequest('get_action_request', {
-          id, actionId, runId, requestId,
+          id, actionId, generation: expectedGeneration, runId, requestId,
         }, target);
-        if (!this.workItemDeleted(target, id)
-            && this._workCenterActionRequestDetailsGeneration[key] === generation) {
+        const accepted = !this.workItemDeleted(target, id)
+          && normalizeWorkCenterActionGeneration(data?.generation) === expectedGeneration
+          && this._workCenterActionRequestDetailsGeneration[key] === requestGeneration;
+        if (accepted) {
           this.workCenterActionRequestDetails = {
             ...this.workCenterActionRequestDetails,
             [key]: data?.request || null,
           };
         }
-        return data?.request || null;
+        return accepted ? (data?.request || null) : (this.workCenterActionRequestDetails[key] || null);
       } catch (error) {
-        if (this._workCenterActionRequestDetailsGeneration[key] === generation) {
+        if (this._workCenterActionRequestDetailsGeneration[key] === requestGeneration) {
           this.workCenterActionRequestDetailsError = {
             ...this.workCenterActionRequestDetailsError,
             [key]: error?.message || String(error),
@@ -1678,7 +1688,7 @@ export const useChatStore = defineStore('chat', {
         }
         throw error;
       } finally {
-        if (this._workCenterActionRequestDetailsGeneration[key] === generation) {
+        if (this._workCenterActionRequestDetailsGeneration[key] === requestGeneration) {
           this.workCenterActionRequestDetailsLoading = {
             ...this.workCenterActionRequestDetailsLoading,
             [key]: false,
