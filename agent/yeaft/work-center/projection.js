@@ -334,7 +334,7 @@ function loopOutputMessages(action, events, matchingRuns, generation = actionGen
       kind: 'response',
       status: 'completed',
       text: event.data?.response || '',
-      createdAt: event.createdAt,
+      createdAt: count(run.endedAt || event.createdAt),
       runId: event.runId,
       speaker: run.vpSnapshot,
     });
@@ -349,7 +349,9 @@ function loopOutputMessages(action, events, matchingRuns, generation = actionGen
 }
 
 function messagesForGeneration(action, runs, events, generation) {
-  const matchingRuns = conversationRuns(action, runs).filter(run => runGeneration(run) === generation);
+  const matchingRuns = conversationRuns(action, runs).filter(run => (
+    runGeneration(run) === generation && run?.status !== 'running'
+  ));
   const failedWithoutResponse = new Set(matchingRuns
     .filter(run => run?.status === 'failed' && !String(run?.response || '').trim())
     .map(run => run.id));

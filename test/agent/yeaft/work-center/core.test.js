@@ -197,6 +197,33 @@ describe('Work Center core', () => {
     );
     expect(legacyPage.messages.map(message => message.text)).toEqual(['legacy input', 'legacy response']);
 
+    const terminalLoopPage = projectActionMessagePage(
+      {
+        id: 'terminal-loop-order', generation: 1, specHash: 'loop-spec',
+        identityHistory: [{ generation: 1, specHash: 'loop-spec' }],
+      },
+      [{
+        id: 'terminal-loop-run', actionId: 'terminal-loop-order', actionGeneration: 1,
+        actionSpecHash: 'loop-spec', status: 'completed', response: 'suppressed terminal duplicate',
+        startedAt: 90, endedAt: 200,
+      }],
+      [
+        {
+          id: 6, type: 'run.loop_output', actionId: 'terminal-loop-order',
+          runId: 'terminal-loop-run', actionGeneration: 1, createdAt: 95,
+          data: { response: 'terminal loop output' },
+        },
+        {
+          id: 7, type: 'action.input_added', actionId: 'terminal-loop-order',
+          actionGeneration: 1, createdAt: 100, data: { text: 'input after running loop' },
+        },
+      ],
+    );
+    expect(terminalLoopPage.messages.map(message => message.text)).toEqual([
+      'input after running loop', 'terminal loop output',
+    ]);
+    expect(terminalLoopPage.messages[1].createdAt).toBe(200);
+
     const detail = projectWorkItemDetail({
       id: 'work-item-conversation', revision: 1, planRevision: 0, ledgerRevision: 0,
       coordinatorRevision: 0, title: 'Conversation', goal: 'Keep one Action conversation',
@@ -275,6 +302,89 @@ describe('Work Center core', () => {
     expect(collected[0].text).toBe('message-001');
     expect(collected.at(-1).text).toBe('message-600');
     expect(collected.findIndex(message => message.text === 'run-response-300')).toBe(300);
+
+    const cursorDir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-cursor-'));
+    let cursorNow = 20_000;
+    const cursorStore = new WorkItemStore(join(cursorDir, 'work-center.db'), { now: () => cursorNow });
+    const cursorController = new WorkflowController(cursorStore);
+    const cursorService = new WorkCenterService({
+      yeaftDir: cursorDir,
+      store: cursorStore,
+      controller: cursorController,
+      runner: null,
+      ownerBootId: 'cursor-review',
+      settingsReader: () => ({}),
+    });
+    try {
+      const cursorItem = cursorController.create(createInput({ id: 'conversation-cursor-stability' }));
+      const cursorClaim = cursorStore.claimReadyAction('cursor-review', 5_000);
+      expect(cursorClaim.workItem.id).toBe(cursorItem.id);
+      for (const [text, createdAt] of [
+        ['event-one', 20_010],
+        ['event-two', 20_100],
+        ['event-three', 20_200],
+      ]) {
+        cursorNow = createdAt;
+        cursorStore.appendEvent(cursorItem.id, 'action.input_added', { text }, {
+          actionId: cursorClaim.action.id,
+          actionGeneration: cursorClaim.action.generation,
+        });
+      }
+      const progressDetail = cursorStore.updateRunProgress(
+        cursorClaim.run.id,
+        'cursor-review',
+        cursorClaim.run.leaseEpoch,
+        { response: 'running partial response', loopCount: 1 },
+      );
+      const progressAction = progressDetail.actions.find(candidate => candidate.id === cursorClaim.action.id);
+      const progressPage = projectActionMessagePage(
+        progressAction,
+        progressDetail.runs,
+        cursorStore.listActionEvents(progressAction.id),
+        { limit: 2 },
+      );
+      expect(progressPage).toMatchObject({ total: 3, nextCursor: '1' });
+      expect(progressPage.messages.map(message => message.text)).toEqual(['event-two', 'event-three']);
+      expect(JSON.stringify(progressPage)).not.toContain('running partial response');
+      const progressBrowserDetail = cursorService.projectBrowserDetail(progressDetail);
+      const progressBrowserAction = progressBrowserDetail.actions.find(candidate => candidate.id === progressAction.id);
+      expect(progressBrowserAction.liveMessage).toMatchObject({
+        id: `run:${cursorClaim.run.id}`,
+        status: 'running',
+        text: 'running partial response',
+      });
+
+      cursorNow = 20_300;
+      cursorController.submit(
+        cursorClaim.run.id,
+        'cursor-review',
+        cursorClaim.run.leaseEpoch,
+        completed(cursorClaim.action.type, { response: 'terminal response' }),
+      );
+      const olderPage = await cursorService.handle('get_action_messages', {
+        id: cursorItem.id,
+        actionId: cursorClaim.action.id,
+        generation: cursorClaim.action.generation,
+        cursor: progressPage.nextCursor,
+        limit: 2,
+      });
+      expect(olderPage).toMatchObject({ total: 4, nextCursor: null });
+      expect(olderPage.messages.map(message => message.text)).toEqual(['event-one']);
+      expect(new Set([
+        ...progressPage.messages.map(message => message.id),
+        ...olderPage.messages.map(message => message.id),
+      ]).size).toBe(3);
+      const refreshedPage = await cursorService.handle('get_action_messages', {
+        id: cursorItem.id,
+        actionId: cursorClaim.action.id,
+        generation: cursorClaim.action.generation,
+        limit: 2,
+      });
+      expect(refreshedPage.messages.map(message => message.text)).toEqual(['event-three', 'terminal response']);
+    } finally {
+      cursorStore.close();
+      rmSync(cursorDir, { recursive: true, force: true });
+    }
   });
 
   it('claims independent graph Actions concurrently and waits for dependencies', () => {
