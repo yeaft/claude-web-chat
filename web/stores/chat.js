@@ -1905,12 +1905,18 @@ export const useChatStore = defineStore('chat', {
       };
       const selected = this.workCenterDetailByAgent[agentId];
       if (selected?.id === summary.id) {
-        const refreshIdentity = workItemDetailRefreshIdentity(selected, summary);
+        const eventSummary = event.type === 'run.finished'
+          && event.actionId
+          && Array.isArray(summary.actionStats)
+          && summary.actionStats.some(action => action?.id === event.actionId)
+          ? { ...summary, eventActionId: event.actionId }
+          : summary;
+        const refreshIdentity = workItemDetailRefreshIdentity(selected, eventSummary);
         const coordinatorRevision = Number(summary.coordinatorRevision);
         const currentCoordinatorRevision = Number(selected.coordinatorRevision) || 0;
         const coordinatorRefresh = Number.isInteger(coordinatorRevision)
           && coordinatorRevision > currentCoordinatorRevision;
-        const needsRefresh = workItemDetailNeedsRefresh(selected, summary);
+        const needsRefresh = workItemDetailNeedsRefresh(selected, eventSummary);
         this.workCenterDetailByAgent = {
           ...this.workCenterDetailByAgent,
           [agentId]: mergeWorkItemSummary(selected, summary),
@@ -1939,14 +1945,19 @@ export const useChatStore = defineStore('chat', {
       const expectedCoordinatorRevision = !refreshIdentity
         && Number.isInteger(coordinatorRevision) && coordinatorRevision >= 0
         ? coordinatorRevision : null;
+      const expectedAttempt = Number(refreshIdentity?.attempt);
+      const refreshAttempt = Number.isInteger(expectedAttempt) && expectedAttempt >= 0
+        ? expectedAttempt
+        : null;
       const key = expectedCoordinatorRevision != null
         ? `${summary.id}:coordinator:${expectedCoordinatorRevision}`
-        : `${summary.id}:${expectedActionId}${expectedGeneration == null ? '' : `:${expectedGeneration}`}`;
-      if (this._workCenterDetailEventRefreshByAgent[agentId] === key) return;
-      const generation = Number(this._workCenterDetailRequestGenerationByAgent[agentId] || 0);
+        : `${summary.id}:${expectedActionId}${expectedGeneration == null ? '' : `:${expectedGeneration}`}${refreshAttempt == null ? '' : `:${refreshAttempt}`}`;
+      if (this._workCenterDetailEventRefreshByAgent[agentId]?.key === key) return;
+      const generation = this.beginWorkCenterDetailWrite(agentId);
+      const refresh = { key, generation };
       this._workCenterDetailEventRefreshByAgent = {
         ...this._workCenterDetailEventRefreshByAgent,
-        [agentId]: key,
+        [agentId]: refresh,
       };
       if (refreshIdentity) {
         this.invalidateWorkItemActionMessages(
@@ -1993,7 +2004,7 @@ export const useChatStore = defineStore('chat', {
       } catch {
         // The next event or explicit selection retries; event handling remains non-fatal.
       } finally {
-        if (this._workCenterDetailEventRefreshByAgent[agentId] === key) {
+        if (this._workCenterDetailEventRefreshByAgent[agentId] === refresh) {
           const next = { ...this._workCenterDetailEventRefreshByAgent };
           delete next[agentId];
           this._workCenterDetailEventRefreshByAgent = next;

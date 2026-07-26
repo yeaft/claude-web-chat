@@ -634,9 +634,8 @@ function stripActionBody(action, keepFailure = false) {
   return projected;
 }
 
-function projectActionStats(detail) {
+function projectActionStats(detail, liveActionId = bodyActionId(detail)) {
   if (!Array.isArray(detail?.actions)) return [];
-  const liveActionId = bodyActionId(detail);
   return detail.actions.map(action => {
     const projected = projectAction(
       action,
@@ -654,6 +653,7 @@ function projectActionStats(detail) {
       loopCount: projected.loopCount,
       toolCount: projected.toolCount,
       progressRevision: projected.progressRevision,
+      attempt: Math.max(0, count(action?.attempt)),
     };
     if (projected.failureReason) stats.failureReason = projected.failureReason;
     if (projected.id === liveActionId) {
@@ -994,12 +994,18 @@ export function projectWorkCenterEvent(event) {
       },
     };
   }
-  const liveActionId = bodyActionId(event?.workItem);
+  const eventActionId = typeof event?.actionId === 'string'
+    && event.workItem?.actions?.some(action => action?.id === event.actionId)
+    ? event.actionId
+    : null;
+  const liveActionId = eventActionId || bodyActionId(event?.workItem);
   return enforceWorkItemBrowserDtoBudget({
     type,
+    ...(eventActionId ? { actionId: eventActionId } : {}),
+    ...(typeof event?.runId === 'string' && event.runId ? { runId: event.runId } : {}),
     workItem: {
       ...projectWorkItemSummary(event?.workItem),
-      actionStats: projectActionStats(event?.workItem),
+      actionStats: projectActionStats(event?.workItem, liveActionId),
     },
   }, { event: true, keepActionId: liveActionId });
 }

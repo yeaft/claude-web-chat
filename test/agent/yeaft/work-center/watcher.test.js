@@ -13,22 +13,6 @@ function deferred() {
 }
 
 describe('WorkItemWatcher', () => {
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   it('interrupts a claimed Run when stop races with preparation', async () => {
     const prepareGate = deferred();
     const claim = { workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 4 } };
@@ -68,6 +52,7 @@ describe('WorkItemWatcher', () => {
 
   it('aborts and settles an active Run before closing its fence', async () => {
     const gate = deferred();
+    const events = [];
     let capturedSignal;
     const store = {
       claimReadyAction: vi.fn()
@@ -88,14 +73,21 @@ describe('WorkItemWatcher', () => {
         capturedSignal = options.signal;
         return gate.promise;
       }) },
-      ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+      ownerBootId: 'boot', onEvent: event => events.push(event),
+      pollIntervalMs: 60_000, leaseMs: 60_000,
     });
     await watcher.tick();
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'run.started', actionId: 'a1', runId: 'r1' }),
+    ]);
     const stop = watcher.stop();
     expect(capturedSignal.aborted).toBe(true);
     expect(store.interruptRun).not.toHaveBeenCalled();
     gate.resolve({ outcome: 'completed', summary: '', evidence: [] });
     await expect(stop).resolves.toEqual([{ runId: 'r1', interrupted: true }]);
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'run.started', actionId: 'a1', runId: 'r1' }),
+    ]);
     expect(store.interruptRun).toHaveBeenCalledWith(
       'r1', 'boot', 7, 'Work Center watcher stopped', null,
     );
@@ -138,9 +130,11 @@ describe('WorkItemWatcher', () => {
         }, { once: true });
       })),
     };
+    const events = [];
     const watcher = new WorkItemWatcher({
       store, controller, runner,
-      ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+      ownerBootId: 'boot', onEvent: event => events.push(event),
+      pollIntervalMs: 60_000, leaseMs: 60_000,
     });
 
     try {
@@ -159,6 +153,18 @@ describe('WorkItemWatcher', () => {
         status: 'ready', currentRunId: null,
         actions: [expect.objectContaining({ status: 'ready' })],
       });
+      expect(events).toEqual([
+        expect.objectContaining({
+          type: 'run.started',
+          actionId: store.getWorkItemDetail(item.id).actions[0].id,
+          runId,
+        }),
+        expect.objectContaining({
+          type: 'run.progress',
+          actionId: store.getWorkItemDetail(item.id).actions[0].id,
+          runId,
+        }),
+      ]);
       expect(watcher.activeRuns.size).toBe(0);
     } finally {
       store.close();

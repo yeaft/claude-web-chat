@@ -32,6 +32,11 @@ function positiveIntegerOrNull(value) {
   return Number.isInteger(number) && number > 0 ? number : null;
 }
 
+function nonNegativeIntegerOrNull(value) {
+  const number = numberOrNull(value);
+  return Number.isInteger(number) && number >= 0 ? number : null;
+}
+
 const TERMINAL_ACTION_MESSAGE_STATUSES = new Set([
   'completed',
   'failed',
@@ -154,6 +159,11 @@ export function isWorkItemDetailResponseStale(detail, current) {
 }
 
 function isActionProgressStale(currentStats, nextStats) {
+  const currentAttempt = nonNegativeIntegerOrNull(currentStats?.attempt);
+  const nextAttempt = nonNegativeIntegerOrNull(nextStats?.attempt);
+  if (currentAttempt != null && nextAttempt != null && currentAttempt !== nextAttempt) {
+    return nextAttempt < currentAttempt;
+  }
   const currentProgress = numberOrNull(currentStats?.progressRevision);
   const nextProgress = numberOrNull(nextStats?.progressRevision);
   return currentProgress != null && nextProgress != null && nextProgress < currentProgress;
@@ -167,23 +177,31 @@ export function workItemDetailRefreshIdentity(current, summary) {
   const nextActionId = Object.prototype.hasOwnProperty.call(summary, 'currentActionId')
     ? summary.currentActionId || null
     : currentActionId;
-  const actionId = currentActionId !== nextActionId
+  const eventActionId = typeof summary.eventActionId === 'string'
+    && stats.some(action => action?.id === summary.eventActionId)
+    ? summary.eventActionId
+    : null;
+  const actionId = eventActionId || (currentActionId !== nextActionId
     ? (currentActionId || nextActionId)
-    : nextActionId;
+    : nextActionId);
   if (!actionId) return null;
   const currentAction = actions.find(action => action?.id === actionId) || null;
   const summaryAction = stats.find(action => action?.id === actionId)
     || (summary.currentAction?.id === actionId ? summary.currentAction : null);
   const currentGeneration = positiveIntegerOrNull(currentAction?.generation);
   const summaryGeneration = positiveIntegerOrNull(summaryAction?.generation);
-  if (currentActionId !== nextActionId || !currentAction) {
-    return { actionId, generation: summaryGeneration || currentGeneration || 1 };
-  }
+  const summaryAttempt = nonNegativeIntegerOrNull(summaryAction?.attempt);
+  const refreshIdentity = {
+    actionId,
+    generation: summaryGeneration || currentGeneration || 1,
+    ...(summaryAttempt == null ? {} : { attempt: summaryAttempt }),
+  };
+  if (eventActionId || currentActionId !== nextActionId || !currentAction) return refreshIdentity;
   if (currentGeneration != null && summaryGeneration != null && summaryGeneration > currentGeneration) {
-    return { actionId, generation: summaryGeneration };
+    return refreshIdentity;
   }
   if (currentAction?.status === 'running' && summaryAction?.status && summaryAction.status !== 'running') {
-    return { actionId, generation: summaryGeneration || currentGeneration || 1 };
+    return refreshIdentity;
   }
   return null;
 }
