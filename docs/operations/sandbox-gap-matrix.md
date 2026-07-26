@@ -25,9 +25,9 @@
 | 门禁 | 状态 | 证据 / 关闭条件 |
 | --- | --- | --- |
 | 专用 Host qualification | 未关闭 | `qualify-sandbox-host` 动作生成带时间、Host epoch、镜像 digest 的报告 |
-| 两个 reservation 与并发不超卖 | 代码关闭，集成复验待完成 | `maxReservedSandboxes=2`；容量专项测试 |
-| Normal 资源限制实测 | 未关闭 | 专用 Host 上验证 `1 vCPU / 2 GiB / 20 GB`、PID、IO、EDQUOT |
-| Stop/Start 数据恢复 | 未关闭 | 对 home/workspace 写入哨兵并在重启后核验 |
+| 两个 reservation 与并发不超卖 | Docker 开发验收已通过，生产未关闭 | `npm run test:sandbox:docker` 以受控低可用内存和并发竞争证明拒绝结果稳定、`docker create` 调用数为零；Server 事务 reservation/启动 lease 另由 `test/server/sandbox-db.test.js` 覆盖 |
+| Normal 资源限制实测 | Docker memory/PID hard limit 与内存压力已通过，生产未关闭 | `npm run test:sandbox:docker` inspect 真实 Docker hard limit 并触发内存压力；专用 Host 仍须验证 `1 vCPU / 2 GiB / 20 GB`、PID、IO、XFS EDQUOT 和 gVisor |
+| Stop/Start 数据恢复 | Docker 开发验收已通过，生产未关闭 | `npm run test:sandbox:docker` 对 home/workspace 写入哨兵并在 Stop/Start 后核验；专用 Host 重启恢复仍待 qualification |
 | Remove/账户删除 crash recovery | 未关闭 | 关键 commit 前后 kill -9 与主机重启故障注入 |
 | 公网可用、禁止网段阻断 | 未关闭 | 公开 HTTPS/npm/pip/git/gh/Web/Search/LLM 与私网矩阵 |
 | Credential 与 redaction | 部分关闭 | 协议、bootstrap 删除和长期 credential 不入 env 的自动化通过；真实 argv/image/log 扫描待完成 |

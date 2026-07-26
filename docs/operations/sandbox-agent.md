@@ -17,8 +17,9 @@ Reconciler 仅在 `SANDBOX_ENABLED=true` 且 `SANDBOX_CONTROLLER_URL` 为 HTTPS�
 
 1. 在专用 Host 安装固定版本 Podman、gVisor、XFS quota 和 nftables，把 Controller 与 Helper 配置为 root-owned systemd service/socket；Server Host 不得复用这些权限。
 2. 将数据盘以 XFS project quota 挂载到 `SANDBOX_DATA_ROOT`，预拉取并验证 `SANDBOX_IMAGE_DIGEST`。
-3. 在仍保持 `SANDBOX_ENABLED=false` 时运行 `node scripts/qualify-sandbox-host.mjs <report.json>`。该脚本只做静态能力采集；随后必须按 `docs/operations/sandbox-gap-matrix.md` 执行资源、网络、Credential、重启和故障注入矩阵，并把结果与 report 一起留档。
-4. 只有第 21 节全部证据经过独立审查后，才可对批准范围设置 `SANDBOX_ENABLED=true`。单独的 attestation、脚本成功或单元测试成功都不是生产放行。
+3. 在普通 Docker 开发/CI 主机可运行 `SANDBOX_DOCKER_TEST_IMAGE=<固定测试镜像> npm run test:sandbox:docker`。该验收会真实创建容器，验证 ready 标记、home/workspace 哨兵 Stop/Start 恢复、Remove 无残留、Docker memory/PID hard limit、内存压力 OOM，以及受控低可用内存和并发竞争下 `docker create` 调用数保持为零。Docker 不可用或镜像不存在时命令明确失败，不会跳过或假通过。此命令不执行生产 Podman/gVisor、XFS quota、nftables 或专用 Host 安全拓扑，因此只能作为开发验收证据。
+4. 在仍保持 `SANDBOX_ENABLED=false` 时运行 `node scripts/qualify-sandbox-host.mjs <report.json>`。该脚本只做静态能力采集；随后必须按 `docs/operations/sandbox-gap-matrix.md` 执行资源、网络、Credential、重启和故障注入矩阵，并把结果与 report 一起留档。
+5. 只有第 21 节全部证据经过独立审查后，才可对批准范围设置 `SANDBOX_ENABLED=true`。Docker E2E、单独的 attestation、qualification 脚本成功或单元测试成功都不是生产放行。
 
 ## 监控与告警
 
