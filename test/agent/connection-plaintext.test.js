@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
 import {
   DEFAULT_UPGRADE_REGISTRY,
@@ -54,6 +55,12 @@ function applyRegisteredMessage(ctxLike, msg) {
 
 describe('agent ctx defaults and upgrade contract', () => {
   it('defaults encryption safely and pins every upgrade fetch to the Yeaft registry', async () => {
+    const agentSource = readFileSync(new URL('../../agent/index.js', import.meta.url), 'utf8');
+    const startupCommands = [...agentSource.matchAll(/await execHiddenAsync\(/g)];
+    expect(startupCommands).toHaveLength(6);
+    expect(agentSource).toContain('return execAsync(command, { ...options, windowsHide: true });');
+    expect(agentSource).not.toMatch(/await execAsync\(/);
+
     // The actual default is set in agent/context.js. Mirror the contract.
     const ctxLike = { serverEncryptionRequired: true };
     expect(ctxLike.serverEncryptionRequired).toBe(true);
