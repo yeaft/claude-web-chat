@@ -156,6 +156,16 @@ export default {
     coordinatorReadOnly() {
       return ['done', 'cancelled'].includes(this.selected?.status);
     },
+    coordinatorRequestedSelectedActionInput() {
+      if (this.selected?.status !== 'waiting' || this.selectedAction?.status !== 'waiting') return false;
+      return [...(this.selected.messages || [])].reverse().some(message => (
+        message?.role === 'assistant'
+        && message.status === 'completed'
+        && message.decision?.kind === 'request_human'
+        && message.recovery?.actionId === this.selectedAction.id
+        && message.recovery?.actionGeneration === this.selectedAction.generation
+      ));
+    },
     actionMessages() {
       const current = Array.isArray(this.selectedAction?.messages) ? this.selectedAction.messages : [];
       // Older Agents sent prior Action messages in generation-scoped thread entries.
@@ -958,6 +968,7 @@ export default {
         if (this.actionComposerScope !== scope) return;
         this.actionGuidance = '';
         this.guidanceAttachments = [];
+        if (next?.accepted && next?.routedTo === 'coordinator') return;
         const targetStillExists = next?.actions?.some(action => action?.id === actionId);
         const nextActionId = targetStillExists ? actionId : (next?.currentActionId || this.selectedActionId);
         if (nextActionId !== this.selectedActionId) {
@@ -1335,6 +1346,7 @@ export default {
               :composer-attachments="guidanceAttachments"
               :uploading="guidanceAttachmentsUploading"
               :sending="actionInputSending"
+              :coordinator-requested-input="coordinatorRequestedSelectedActionInput"
               :composer-error="actionInputError"
               :attachments-supported="workItemAttachmentsSupported"
               :previewing-attachment-id="previewingAttachmentId"
