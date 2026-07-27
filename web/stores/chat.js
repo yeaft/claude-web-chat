@@ -1810,6 +1810,14 @@ export const useChatStore = defineStore('chat', {
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
+    async resumeWorkItem(id, revision, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
+      const detail = await this.workCenterRequest('resume', { id, revision }, target);
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
+      this.commitWorkCenterDetail(target, detail, generation);
+      return detail;
+    },
     async deleteWorkItem(id, revision, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const result = await this.workCenterRequest('delete', { id, revision }, target);

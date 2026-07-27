@@ -307,6 +307,13 @@ export class WorkCenterService {
         this.#emit({ type: 'work_item.cancelled', workItem: detail });
         return detail;
       }
+      case 'resume': {
+        const id = requiredString(payload.id, 'id');
+        const detail = this.controller.resume(id, { revision: payload.revision });
+        this.watcher.abortInvalidWorkItemRuns(id);
+        this.#emit({ type: 'work_item.resumed', workItem: detail });
+        return detail;
+      }
       case 'delete': {
         const id = requiredString(payload.id, 'id');
         const deleted = this.store.deleteWorkItemAtomic(id, Number(payload.revision));

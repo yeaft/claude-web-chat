@@ -8,7 +8,7 @@ import { currentActionInputEventIds, runMatchesActionIdentity } from './action-i
 import { canonicalActionInstruction, withoutActionInputContext } from './workflow.js';
 
 const SCHEMA_VERSION = 22;
-const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
+const UNFINISHED_ACTION_STATUSES = "'ready','running','waiting','failed'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
 
@@ -2643,16 +2643,32 @@ export class WorkItemStore {
   }
 
   #invalidateExecution(workItem, actionStatus, runStatus, reason, now) {
-    const openActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
-      AND status IN (${OPEN_ACTION_STATUSES})`).all(workItem.id).map(mapAction);
-    this.#assertNoIntegrationReservation(openActions, now);
-    this.#supersedePendingActionInputs(openActions, reason, now);
-    if (workItem.currentRunId) {
-      this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, error = ?
-        WHERE id = ? AND status = 'running'`).run(runStatus, now, reason, workItem.currentRunId);
+    const unfinishedActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
+      AND status IN (${UNFINISHED_ACTION_STATUSES})`).all(workItem.id).map(mapAction);
+    this.#assertNoIntegrationReservation(unfinishedActions, now);
+    this.#supersedePendingActionInputs(unfinishedActions, reason, now);
+    const actionIds = unfinishedActions.map(action => action.id);
+    if (actionIds.length === 0) return;
+    const placeholders = actionIds.map(() => '?').join(',');
+    this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, error = ?, accepting_input = 0
+      WHERE work_item_id = ? AND action_id IN (${placeholders}) AND status = 'running'`).run(
+      runStatus,
+      now,
+      reason,
+      workItem.id,
+      ...actionIds,
+    );
+    const changed = this.db.prepare(`UPDATE actions SET status = ?, current_run_id = NULL,
+      lease_epoch = lease_epoch + 1, updated_at = ? WHERE work_item_id = ?
+      AND id IN (${placeholders}) AND status IN (${UNFINISHED_ACTION_STATUSES})`).run(
+      actionStatus,
+      now,
+      workItem.id,
+      ...actionIds,
+    );
+    if (Number(changed.changes) !== actionIds.length) {
+      throw new Error('Work Center execution changed while it was invalidated');
     }
-    this.db.prepare(`UPDATE actions SET status = ?, current_run_id = NULL, updated_at = ?
-      WHERE work_item_id = ? AND status IN (${OPEN_ACTION_STATUSES})`).run(actionStatus, now, workItem.id);
   }
 
   updateWorkItemAtomic(id, patch, makeInitialAction) {
@@ -2729,6 +2745,93 @@ export class WorkItemStore {
         current_run_id = NULL, updated_at = ? WHERE id = ?`).run(now, id);
       this.appendEvent(id, 'work_item.cancelled');
       return this.getWorkItem(id);
+    });
+  }
+
+  resumeWorkItemAtomic(id, expectedRevision, makeInitialAction) {
+    return withTransaction(this.db, () => {
+      const workItem = this.getWorkItem(id);
+      if (!workItem) return null;
+      if (!Number.isInteger(expectedRevision) || workItem.revision !== expectedRevision) {
+        throw new Error('WorkItem changed before it was resumed; refresh and try again');
+      }
+      if (workItem.status !== 'cancelled') {
+        throw new Error(`WorkItem in ${workItem.status} cannot be resumed`);
+      }
+
+      const now = this.now();
+      const cancelledActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
+        AND status = 'cancelled' ORDER BY sequence`).all(id).map(mapAction);
+      this.#assertNoIntegrationReservation(cancelledActions, now);
+      this.#supersedePendingActionInputs(
+        cancelledActions,
+        'WorkItem resume started a new Action generation',
+        now,
+      );
+      const resumedActions = [];
+      for (const action of cancelledActions) {
+        const context = carryCurrentActionInputContext(this.db, action);
+        const candidate = {
+          ...action,
+          context,
+          status: 'ready',
+          attempt: 0,
+          currentRunId: null,
+          resultRunId: null,
+          workspace: null,
+          generation: action.generation + 1,
+        };
+        candidate.instruction = canonicalActionInstruction(workItem, candidate, context);
+        candidate.specHash = actionSpecHash(candidate);
+        const changed = this.db.prepare(`UPDATE actions SET status = 'ready', attempt = 0,
+          current_run_id = NULL, lease_epoch = lease_epoch + 1, generation = generation + 1,
+          context = ?, instruction = ?, spec_hash = ?, identity_history = ?, result_run_id = NULL,
+          workspace = NULL, updated_at = ? WHERE id = ? AND work_item_id = ?
+          AND status = 'cancelled' AND generation = ? AND spec_hash = ?`).run(
+          stringify(context),
+          candidate.instruction,
+          candidate.specHash,
+          stringify(actionIdentityHistory(action, candidate.generation, candidate.specHash)),
+          now,
+          action.id,
+          id,
+          action.generation,
+          action.specHash,
+        );
+        if (Number(changed.changes) !== 1) {
+          throw new Error('WorkItem Action changed before it was resumed');
+        }
+        resumedActions.push(this.getAction(action.id));
+      }
+
+      if (resumedActions.length === 0) {
+        const initialAction = makeInitialAction(workItem);
+        resumedActions.push(this.#insertAction(id, {
+          ...initialAction,
+          contractRevision: workItem.revision,
+        }, this.#nextSequence(id), now));
+      }
+
+      const currentAction = resumedActions
+        .find(action => action.dependsOnStageIds.length === 0) || resumedActions[0];
+      const changedWorkItem = this.db.prepare(`UPDATE work_items SET status = 'ready',
+        current_action_id = ?, current_run_id = NULL, updated_at = ?
+        WHERE id = ? AND status = 'cancelled' AND revision = ?`).run(
+        currentAction.id,
+        now,
+        id,
+        expectedRevision,
+      );
+      if (Number(changedWorkItem.changes) !== 1) {
+        throw new Error('WorkItem changed before it was resumed; refresh and try again');
+      }
+      this.appendEvent(id, 'work_item.resumed', {
+        resumedActionIds: resumedActions.map(action => action.id),
+      }, {
+        actionId: currentAction.id,
+        actionGeneration: currentAction.generation,
+      });
+      return this.getWorkItemDetail(id);
     });
   }
 
