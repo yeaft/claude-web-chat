@@ -8,7 +8,7 @@ import { currentActionInputEventIds, runMatchesActionIdentity } from './action-i
 import { canonicalActionInstruction, withoutActionInputContext } from './workflow.js';
 
 const SCHEMA_VERSION = 22;
-const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
+const UNFINISHED_ACTION_STATUSES = "'ready','running','waiting','failed'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
 
@@ -2643,16 +2643,32 @@ export class WorkItemStore {
   }
 
   #invalidateExecution(workItem, actionStatus, runStatus, reason, now) {
-    const openActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
-      AND status IN (${OPEN_ACTION_STATUSES})`).all(workItem.id).map(mapAction);
-    this.#assertNoIntegrationReservation(openActions, now);
-    this.#supersedePendingActionInputs(openActions, reason, now);
-    if (workItem.currentRunId) {
-      this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, error = ?
-        WHERE id = ? AND status = 'running'`).run(runStatus, now, reason, workItem.currentRunId);
+    const unfinishedActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
+      AND status IN (${UNFINISHED_ACTION_STATUSES})`).all(workItem.id).map(mapAction);
+    this.#assertNoIntegrationReservation(unfinishedActions, now);
+    this.#supersedePendingActionInputs(unfinishedActions, reason, now);
+    const actionIds = unfinishedActions.map(action => action.id);
+    if (actionIds.length === 0) return;
+    const placeholders = actionIds.map(() => '?').join(',');
+    this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, error = ?, accepting_input = 0
+      WHERE work_item_id = ? AND action_id IN (${placeholders}) AND status = 'running'`).run(
+      runStatus,
+      now,
+      reason,
+      workItem.id,
+      ...actionIds,
+    );
+    const changed = this.db.prepare(`UPDATE actions SET status = ?, current_run_id = NULL,
+      lease_epoch = lease_epoch + 1, updated_at = ? WHERE work_item_id = ?
+      AND id IN (${placeholders}) AND status IN (${UNFINISHED_ACTION_STATUSES})`).run(
+      actionStatus,
+      now,
+      workItem.id,
+      ...actionIds,
+    );
+    if (Number(changed.changes) !== actionIds.length) {
+      throw new Error('Work Center execution changed while it was invalidated');
     }
-    this.db.prepare(`UPDATE actions SET status = ?, current_run_id = NULL, updated_at = ?
-      WHERE work_item_id = ? AND status IN (${OPEN_ACTION_STATUSES})`).run(actionStatus, now, workItem.id);
   }
 
   updateWorkItemAtomic(id, patch, makeInitialAction) {

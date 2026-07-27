@@ -8,23 +8,31 @@ export function eventMatchesActionGeneration(event, action) {
 }
 
 export function currentActionInputEventIds(events, action) {
-  const inputEvents = new Map((Array.isArray(events) ? events : [])
-    .filter(event => event?.type === 'action.input_added' && event.actionId === action?.id)
+  const actionEvents = (Array.isArray(events) ? events : [])
+    .filter(event => event?.actionId === action?.id);
+  const inputEvents = new Map(actionEvents
+    .filter(event => event.type === 'action.input_added')
     .map(event => [String(event.id), event]));
   const valid = new Set();
+  const superseded = new Set();
   for (const event of inputEvents.values()) {
     if (eventMatchesActionGeneration(event, action)) valid.add(String(event.id));
   }
-  for (const event of Array.isArray(events) ? events : []) {
-    if (event?.type !== 'action.input_rebound' || event.actionId !== action?.id
-        || !eventMatchesActionGeneration(event, action)) continue;
+  for (const event of actionEvents) {
     const sourceEventIds = [
       event.data?.sourceEventId,
       ...(Array.isArray(event.data?.sourceEventIds) ? event.data.sourceEventIds : []),
-    ].filter(value => value != null);
+    ].filter(value => value != null).map(String);
+    if (event.type === 'action.input_superseded') {
+      for (const eventId of sourceEventIds) {
+        superseded.add(eventId);
+        valid.delete(eventId);
+      }
+      continue;
+    }
+    if (event.type !== 'action.input_rebound' || !eventMatchesActionGeneration(event, action)) continue;
     for (const eventId of sourceEventIds) {
-      const key = String(eventId);
-      if (inputEvents.has(key)) valid.add(key);
+      if (inputEvents.has(eventId) && !superseded.has(eventId)) valid.add(eventId);
     }
   }
   return valid;

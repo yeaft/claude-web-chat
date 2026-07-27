@@ -1161,51 +1161,94 @@ test.describe('Work Center responsive UI', () => {
     await expect(pane).toContainText('Verified the responsive layout.');
     await expect(pane).toContainText('Keep the correction small.');
 
+    const expectSameColumn = (left, right, label) => {
+      expect(Math.abs(left.left - right.left), `${label} left edge`).toBeLessThanOrEqual(1);
+      expect(Math.abs(left.right - right.right), `${label} right edge`).toBeLessThanOrEqual(1);
+      expect(Math.abs(left.center - right.center), `${label} center`).toBeLessThanOrEqual(1);
+    };
+
     for (const theme of ['light', 'dark']) {
       await chatPage.evaluate(value => {
         document.documentElement.setAttribute('data-theme', value);
         localStorage.setItem('theme', value);
       }, theme);
       await expect(chatPage.locator('html')).toHaveAttribute('data-theme', theme);
-      const colors = await pane.evaluate(root => {
-        const assistant = getComputedStyle(root.querySelector('.role-assistant'));
-        const user = getComputedStyle(root.querySelector('.role-user'));
-        const composer = getComputedStyle(root.querySelector('.work-center-action-input-wrapper'));
-        return {
-          assistantText: assistant.color,
-          userText: user.color,
-          userBackground: user.backgroundColor,
-          composerBackground: composer.backgroundColor,
-        };
-      });
-      expect(colors.assistantText).not.toBe(colors.composerBackground);
-      expect(colors.userText).not.toBe(colors.userBackground);
-      expect(colors.userBackground).not.toBe('rgba(0, 0, 0, 0)');
-      expect(colors.composerBackground).not.toBe('rgba(0, 0, 0, 0)');
+      for (const width of [1200, 760, 390]) {
+        await chatPage.setViewportSize({ width, height: 720 });
+        await chatPage.waitForTimeout(250);
+        const layout = await pane.evaluate(root => {
+          const toRect = element => {
+            const box = element.getBoundingClientRect();
+            return { left: box.left, right: box.right, width: box.width, center: (box.left + box.right) / 2 };
+          };
+          const assistant = root.querySelector('.role-assistant');
+          const user = root.querySelector('.role-user');
+          const input = root.querySelector('.work-center-action-input-wrapper');
+          return {
+            detail: toRect(root),
+            transcript: toRect(root.querySelector('.work-center-action-transcript')),
+            transcriptColumn: toRect(root.querySelector('.work-center-action-transcript .work-center-action-conversation-column')),
+            composer: toRect(root.querySelector('.work-center-action-composer')),
+            composerColumn: toRect(root.querySelector('.work-center-action-composer-column')),
+            assistant: toRect(assistant),
+            user: toRect(user),
+            failure: toRect(root.querySelector('.work-center-action-failure')),
+            input: toRect(input),
+            scrollWidth: root.scrollWidth,
+            colors: {
+              assistantText: getComputedStyle(assistant).color,
+              userText: getComputedStyle(user).color,
+              userBackground: getComputedStyle(user).backgroundColor,
+              composerBackground: getComputedStyle(input).backgroundColor,
+            },
+          };
+        });
+        expectSameColumn(layout.transcriptColumn, layout.composerColumn, `${theme} ${width}px columns`);
+        expectSameColumn(layout.assistant, layout.input, `${theme} ${width}px assistant/input`);
+        expectSameColumn(layout.failure, layout.input, `${theme} ${width}px status/input`);
+        expect(Math.abs(layout.user.right - layout.input.right), `${theme} ${width}px user right edge`).toBeLessThanOrEqual(1);
+        expect(layout.detail.left).toBeGreaterThanOrEqual(0);
+        expect(layout.detail.right).toBeLessThanOrEqual(width + 1);
+        expect(layout.transcript.width).toBeLessThanOrEqual(layout.detail.width + 1);
+        expect(layout.composer.width).toBeLessThanOrEqual(layout.detail.width + 1);
+        expect(layout.scrollWidth).toBeLessThanOrEqual(layout.detail.width + 1);
+        expect(layout.colors.assistantText).not.toBe(layout.colors.composerBackground);
+        expect(layout.colors.userText).not.toBe(layout.colors.userBackground);
+        expect(layout.colors.userBackground).not.toBe('rgba(0, 0, 0, 0)');
+        expect(layout.colors.composerBackground).not.toBe('rgba(0, 0, 0, 0)');
+        expect(await chatPage.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      }
     }
 
-    for (const width of [1200, 760, 390]) {
-      await chatPage.setViewportSize({ width, height: 720 });
-      await chatPage.waitForTimeout(250);
-      const layout = await pane.evaluate(root => {
-        const detailRect = root.getBoundingClientRect();
-        const transcript = root.querySelector('.work-center-action-transcript').getBoundingClientRect();
-        const composer = root.querySelector('.work-center-action-composer').getBoundingClientRect();
-        return {
-          detailLeft: detailRect.left,
-          detailRight: detailRect.right,
-          detailWidth: detailRect.width,
-          transcriptWidth: transcript.width,
-          composerWidth: composer.width,
-          scrollWidth: root.scrollWidth,
-        };
-      });
-      expect(layout.detailLeft).toBeGreaterThanOrEqual(0);
-      expect(layout.detailRight).toBeLessThanOrEqual(width + 1);
-      expect(layout.transcriptWidth).toBeLessThanOrEqual(layout.detailWidth + 1);
-      expect(layout.composerWidth).toBeLessThanOrEqual(layout.detailWidth + 1);
-      expect(layout.scrollWidth).toBeLessThanOrEqual(layout.detailWidth + 1);
-      expect(await chatPage.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await chatPage.setViewportSize({ width: 1200, height: 720 });
+    const requestIndexResponse = respondToWorkCenterOp(mockAgent, 'get_action_requests', ACTION_REQUEST_INDEX);
+    await pane.getByRole('tab', { name: 'Execution', exact: true }).click();
+    await requestIndexResponse;
+    await respondToWorkCenterOp(mockAgent, 'get_action_request', ACTION_REQUEST_DETAIL);
+    await expect(pane.locator('.work-center-request-tool')).toBeVisible();
+    for (const theme of ['light', 'dark']) {
+      await chatPage.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+      for (const width of [1200, 390]) {
+        await chatPage.setViewportSize({ width, height: 720 });
+        await chatPage.waitForTimeout(250);
+        const executionLayout = await pane.evaluate(root => {
+          const toRect = element => {
+            const box = element.getBoundingClientRect();
+            return { left: box.left, right: box.right, width: box.width, center: (box.left + box.right) / 2 };
+          };
+          return {
+            executionColumn: toRect(root.querySelector('.work-center-action-execution .work-center-action-conversation-column')),
+            composerColumn: toRect(root.querySelector('.work-center-action-composer-column')),
+            request: toRect(root.querySelector('.work-center-request-card')),
+            tool: toRect(root.querySelector('.work-center-request-tool')),
+          };
+        });
+        expectSameColumn(executionLayout.executionColumn, executionLayout.composerColumn, `${theme} ${width}px execution/composer`);
+        expectSameColumn(executionLayout.request, executionLayout.composerColumn, `${theme} ${width}px request/composer`);
+        expect(Math.abs(executionLayout.tool.center - executionLayout.composerColumn.center), `${theme} ${width}px tool center`).toBeLessThanOrEqual(1);
+        expect(executionLayout.tool.left).toBeGreaterThanOrEqual(executionLayout.composerColumn.left);
+        expect(executionLayout.tool.right).toBeLessThanOrEqual(executionLayout.composerColumn.right);
+      }
     }
   });
 

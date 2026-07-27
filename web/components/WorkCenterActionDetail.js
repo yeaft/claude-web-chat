@@ -302,6 +302,7 @@ export default {
 
       <div class="work-center-action-detail-scroll" :data-view="activeView">
         <div v-show="activeView === 'conversation'" ref="conversationPanel" :id="panelId('conversation')" class="work-center-action-transcript" role="tabpanel" :aria-labelledby="tabId('conversation')">
+          <div class="work-center-action-conversation-column">
           <section v-if="waitingQuestion" id="work-center-action-waiting-question" class="work-center-action-waiting" role="status">
             <strong>{{ tr('workCenter.waitingQuestionTitle', 'Input required') }}</strong>
             <p>{{ waitingQuestion }}</p>
@@ -346,9 +347,11 @@ export default {
           </div>
           <p v-if="attachmentError" class="work-center-error" role="alert">{{ attachmentError }}</p>
           <p v-if="!hasMessages" class="work-center-action-empty">{{ tr('workCenter.noActionMessages', 'No messages yet.') }}</p>
+          </div>
         </div>
 
         <section v-show="activeView === 'execution'" :id="panelId('execution')" class="work-center-action-execution" role="tabpanel" :aria-labelledby="tabId('execution')">
+          <div class="work-center-action-conversation-column">
           <header class="work-center-action-execution-heading">
             <div class="work-center-action-metrics" :aria-label="tr('workCenter.executionSummary', 'Execution summary')">
               <span>{{ $t('workCenter.llmRequestCount', { count: formatCount(action.executionStats?.llmRequestCount) }) }}</span>
@@ -406,10 +409,12 @@ export default {
               </div>
             </article>
           </section>
+          </div>
         </section>
       </div>
 
       <footer v-if="canCompose" class="work-center-action-composer">
+        <div class="work-center-action-conversation-column work-center-action-composer-column">
         <p v-if="composerError" class="work-center-error" role="alert">{{ composerError }}</p>
         <div v-if="composerAttachments.length" class="work-center-attachment-list">
           <span v-for="(attachment, index) in composerAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
@@ -435,6 +440,7 @@ export default {
           <button v-if="canRetry" class="btn-secondary" type="button" @click="$emit('retry')">
             {{ tr('workCenter.retryAction', 'Retry Action') }}
           </button>
+        </div>
         </div>
       </footer>
     </section>
