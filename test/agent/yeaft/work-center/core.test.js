@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
@@ -8,6 +8,10 @@ import { WorkflowController } from '../../../../agent/yeaft/work-center/controll
 import { WorkItemRunner } from '../../../../agent/yeaft/work-center/runner.js';
 import { WorkItemCoordinator } from '../../../../agent/yeaft/work-center/coordinator.js';
 import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
+import {
+  buildWorkItemAttachmentContext,
+  persistWorkItemAttachments,
+} from '../../../../agent/yeaft/work-center/attachments.js';
 import { enforceActionRequestDetailBudget } from '../../../../agent/yeaft/work-center/debug-projection.js';
 import {
   applyAdditivePlanProposal,
@@ -1065,6 +1069,122 @@ describe('Work Center core', () => {
       role: 'assistant', status: 'failed', error: expect.stringMatching(/changed while the Coordinator/i),
     });
     expect(store.getWorkItem(cancellable.id)).toMatchObject({ status: 'cancelled' });
+
+    const attachmentItem = controller.create(createInput({ id: 'coordinator-attachment' }));
+    const attachmentBefore = store.getWorkItemDetail(attachmentItem.id);
+    const attachmentRoot = join(dir, 'attachments');
+    mkdirSync(attachmentRoot, { recursive: true, mode: 0o700 });
+    let attachmentCall;
+    const attachmentCoordinator = new WorkItemCoordinator({
+      store,
+      attachmentRoot,
+      runtimeProvider: async () => ({
+        config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+        adapter: { call: async request => {
+          attachmentCall = request;
+          return { text: JSON.stringify({
+            reply: 'The screenshot and note are attached to this WorkItem.',
+            decision: { kind: 'answer', reason: 'Attachment context', contractPatch: null, guidance: [], actions: [] },
+          }) };
+        } },
+      }),
+      policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
+      registry: { listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }] },
+    });
+    const attachmentService = new WorkCenterService({
+      yeaftDir: dir,
+      attachmentRoot,
+      store,
+      controller,
+      coordinator: attachmentCoordinator,
+      runner: null,
+      ownerBootId: 'coordinator-attachment',
+      settingsReader: () => ({}),
+    });
+    const attachmentAccepted = await attachmentService.handle('work_item_message', {
+      id: attachmentItem.id,
+      text: 'Use both files.',
+      revision: attachmentBefore.revision,
+      planRevision: attachmentBefore.planRevision,
+      ledgerRevision: attachmentBefore.ledgerRevision,
+      coordinatorRevision: attachmentBefore.coordinatorRevision,
+      files: [
+        { name: 'screen.png', mimeType: 'image/png', data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64') },
+        { name: 'notes.txt', mimeType: 'text/plain', data: Buffer.from('bounded attachment context').toString('base64') },
+      ],
+    });
+    expect(attachmentAccepted).toMatchObject({ accepted: true, turnId: expect.any(String) });
+    for (let index = 0; index < 20 && !attachmentCall; index += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    expect(attachmentCall?.messages?.[0]?.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'image' }),
+      expect.objectContaining({ type: 'text', text: expect.stringContaining('bounded attachment context') }),
+    ]));
+    for (let index = 0; index < 20; index += 1) {
+      const latest = store.getWorkItemDetail(attachmentItem.id).messages.at(-1);
+      if (latest?.status !== 'thinking') break;
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    const attachmentDetail = store.getWorkItemDetail(attachmentItem.id);
+    expect(attachmentDetail).toMatchObject({ revision: attachmentBefore.revision + 1 });
+    expect(attachmentDetail.messages.at(-2)).toMatchObject({
+      role: 'user', text: 'Use both files.', attachments: [
+        expect.objectContaining({ name: 'screen.png', isImage: true }),
+        expect.objectContaining({ name: 'notes.txt', isImage: false }),
+      ],
+    });
+    expect(projectWorkItemDetail(attachmentDetail).messages.at(-2).attachments).toHaveLength(2);
+
+    const boundedContext = (id, contents, byteBudget = 32 * 1024) => {
+      const attachments = persistWorkItemAttachments(contents.map((content, index) => ({
+        name: `notes-${index + 1}.txt`,
+        mimeType: 'text/plain',
+        data: Buffer.from(content).toString('base64'),
+      })), { root: attachmentRoot, workItemId: id });
+      return buildWorkItemAttachmentContext({ id, attachments }, {
+        root: attachmentRoot,
+        inlineTextBytes: byteBudget,
+      }).promptBlock;
+    };
+    expect(boundedContext('prompt-budget-framing', ['a'], 1)).toBe('');
+    let exactContentBytes = 1;
+    for (let index = 0; index < 4; index += 1) {
+      const measurement = boundedContext(
+        `prompt-budget-measure-${index}`,
+        ['a'.repeat(exactContentBytes)],
+        1024 * 1024,
+      );
+      const framingBytes = Buffer.byteLength(measurement, 'utf8') - exactContentBytes;
+      exactContentBytes = (32 * 1024) - framingBytes;
+    }
+    const exactBoundary = boundedContext('prompt-budget-exact', ['a'.repeat(exactContentBytes)]);
+    const overBoundary = boundedContext('prompt-budget-over', ['a'.repeat(exactContentBytes + 1)]);
+    expect(Buffer.byteLength(exactBoundary, 'utf8')).toBe(32 * 1024);
+    expect(Buffer.byteLength(overBoundary, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+    expect(exactBoundary).not.toContain('[content truncated]');
+    expect(overBoundary).toContain('[content truncated]');
+
+    const reviewerLargeEscape = boundedContext('prompt-budget-escape-large', ['&'.repeat(32_768)]);
+    const reviewerSmallEscape = boundedContext('prompt-budget-escape-small', ['&'.repeat(6_554)]);
+    expect(Buffer.byteLength(reviewerLargeEscape, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+    expect(Buffer.byteLength(reviewerSmallEscape, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+    expect(reviewerLargeEscape).not.toMatch(/&(?!amp;|lt;|gt;)/);
+    expect(reviewerSmallEscape).not.toMatch(/&(?!amp;|lt;|gt;)/);
+
+    const multiFileUnicode = boundedContext('prompt-budget-multi-file', [
+      '你🙂&<>'.repeat(100),
+      '界🚀&<>'.repeat(100),
+      '终点&<>'.repeat(100),
+    ]);
+    expect(Buffer.byteLength(multiFileUnicode, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+    expect(multiFileUnicode).not.toContain('\uFFFD');
+    expect(multiFileUnicode.match(/<work-item-attachment-content>/g)).toHaveLength(3);
+    expect(multiFileUnicode.match(/<\/work-item-attachment-content>/g)).toHaveLength(3);
+    expect(multiFileUnicode).toContain('File: notes-3.txt');
+    expect(multiFileUnicode).not.toMatch(/&(?!amp;|lt;|gt;)/);
+    const multiFileOverflow = boundedContext('prompt-budget-multi-file-overflow', [
+      '&'.repeat(6_554), '&'.repeat(6_554), '&'.repeat(6_554),
+    ]);
+    expect(Buffer.byteLength(multiFileOverflow, 'utf8')).toBeLessThanOrEqual(32 * 1024);
 
     expect(() => {
       coordinator.shuttingDown = true;
