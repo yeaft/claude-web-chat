@@ -16,6 +16,13 @@ import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
 
 const execAsync = promisify(exec);
+
+// Startup maintenance is non-interactive. Without windowsHide, each exec()
+// creates a visible cmd.exe window on Windows before the Agent connects.
+function execHiddenAsync(command, options = {}) {
+  return execAsync(command, { ...options, windowsHide: true });
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Load package version
@@ -148,7 +155,7 @@ async function ensureDependencies() {
   if (!existsSync(nodeModulesPath)) {
     console.log('[Startup] node_modules not found, running npm install...');
     try {
-      await execAsync('npm install', { cwd: agentDir, timeout: 120000 });
+      await execHiddenAsync('npm install', { cwd: agentDir, timeout: 120000 });
       console.log('[Startup] npm install completed');
     } catch (e) {
       console.warn('[Startup] npm install failed:', e.message);
@@ -179,7 +186,7 @@ async function ensureYeaftSkills() {
     if (!existsSync(installDir)) {
       console.log('[Startup] yeaft-skills not found, installing as marketplace plugin...');
       mkdirSync(marketplacesDir, { recursive: true });
-      await execAsync(`git clone ${REPO_URL} "${installDir}"`, { timeout: 60000 });
+      await execHiddenAsync(`git clone ${REPO_URL} "${installDir}"`, { timeout: 60000 });
       needsCacheUpdate = true;
       console.log('[Startup] yeaft-skills installed');
     } else {
@@ -187,10 +194,10 @@ async function ensureYeaftSkills() {
       // Record HEAD before pull to detect changes
       let headBefore = '';
       try {
-        const { stdout: h } = await execAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
+        const { stdout: h } = await execHiddenAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
         headBefore = h.trim();
       } catch { /* ignore */ }
-      const { stdout } = await execAsync('git pull --ff-only', {
+      const { stdout } = await execHiddenAsync('git pull --ff-only', {
         cwd: installDir,
         timeout: 30000
       });
@@ -203,14 +210,14 @@ async function ensureYeaftSkills() {
       // Double-check: compare HEAD after pull
       if (!needsCacheUpdate && headBefore) {
         try {
-          const { stdout: h2 } = await execAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
+          const { stdout: h2 } = await execHiddenAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
           if (h2.trim() !== headBefore) needsCacheUpdate = true;
         } catch { /* ignore */ }
       }
     }
     // Get current commit SHA for installed_plugins.json
     try {
-      const { stdout: sha } = await execAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
+      const { stdout: sha } = await execHiddenAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
       gitSha = sha.trim();
     } catch { /* non-critical */ }
 
