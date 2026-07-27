@@ -24,7 +24,7 @@
 
 | 门禁 | 状态 | 证据 / 关闭条件 |
 | --- | --- | --- |
-| 专用 Host qualification | 未关闭 | `qualify-sandbox-host` 动作生成带时间、Host epoch、镜像 digest 的报告 |
+| 专用 Host qualification | 未关闭（当前环境已可靠拒绝） | `docs/operations/sandbox-host-gate-evidence.md` 记录 2026-07-27 脱敏失败报告；关闭仍需获批专用 Host 生成带时间、Host epoch、镜像 digest 的通过报告 |
 | 两个 reservation 与并发不超卖 | Docker 开发验收已通过，生产未关闭 | `npm run test:sandbox:docker` 以受控低可用内存和并发竞争证明拒绝结果稳定、`docker create` 调用数为零；Server 事务 reservation/启动 lease 另由 `test/server/sandbox-db.test.js` 覆盖 |
 | Normal 资源限制实测 | Docker memory/PID hard limit 与内存压力已通过，生产未关闭 | `npm run test:sandbox:docker` inspect 真实 Docker hard limit 并触发内存压力；专用 Host 仍须验证 `1 vCPU / 2 GiB / 20 GB`、PID、IO、XFS EDQUOT 和 gVisor |
 | Stop/Start 数据恢复 | Docker 开发验收已通过，生产未关闭 | `npm run test:sandbox:docker` 对 home/workspace 写入哨兵并在 Stop/Start 后核验；专用 Host 重启恢复仍待 qualification |
