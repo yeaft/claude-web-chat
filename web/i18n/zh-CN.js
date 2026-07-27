@@ -1518,6 +1518,7 @@ export default {
   'workCenter.workflow': '任务流',
   'workCenter.actionFlow': 'Action 流程',
   'workCenter.actionCount': '{count} 个 Action',
+  'workCenter.noActionSummary': '暂无摘要',
   'workCenter.actionProgress': '{completed} / {total} 个 Action',
   'workCenter.currentAction': '当前 Action',
   'workCenter.expandActions': '展开 Action',

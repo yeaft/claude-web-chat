@@ -29,7 +29,9 @@ const BROWSER_FILE_FIELDS = Object.freeze({
   create: [
     'title', 'goal', 'acceptanceCriteria', 'workItemType', 'workDir', 'reuseMemory', 'files', 'start',
   ],
-  work_item_message: ['id', 'text', 'revision', 'planRevision', 'ledgerRevision', 'coordinatorRevision'],
+  work_item_message: [
+    'id', 'text', 'revision', 'planRevision', 'ledgerRevision', 'coordinatorRevision', 'files',
+  ],
   action_input: ['id', 'text', 'actionId', 'revision', 'generation', 'files'],
   retry_action: ['id', 'actionId', 'revision', 'generation'],
   delete: ['id', 'revision'],
@@ -129,6 +131,7 @@ async function createDefaultService() {
     },
     policyProvider: async () => readWorkCenterSettings(yeaftDir),
     registry: defaultRegistry,
+    attachmentRoot: join(yeaftDir, 'work-center', 'attachments'),
   });
   const created = new WorkCenterService({
     yeaftDir,

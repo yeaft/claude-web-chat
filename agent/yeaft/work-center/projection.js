@@ -890,6 +890,7 @@ export function projectWorkItemDetail(detail, options = {}) {
       turnId: String(message.turnId || message.id || ''),
       role: message.role === 'assistant' ? 'assistant' : message.role === 'legacy_instruction' ? 'legacy_instruction' : 'user',
       text: truncateUtf8(message.text || '', MAX_ACTION_MESSAGE_CHARS),
+      attachments: projectAttachments(message.attachments),
       status: ['thinking', 'completed', 'failed'].includes(message.status) ? message.status : 'completed',
       error: truncateUtf8(message.error || '', MAX_ACTION_DIAGNOSTIC_CHARS) || null,
       decision: message.decision && typeof message.decision === 'object' ? {

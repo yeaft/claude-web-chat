@@ -65,6 +65,8 @@ describe('message flow regressions', () => {
 
   it('keeps send available while the current turn is running', () => {
     const component = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatInput.js'), 'utf8');
+    const workCenter = readFileSync(resolve(import.meta.dirname, '../../web/components/WorkCenterPage.js'), 'utf8');
+    const workCenterCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/work-center.css'), 'utf8');
 
     expect(component).toContain('v-if="isStopVisible"');
     expect(component).not.toContain('v-else\n          type="button"\n          class="send-btn"');
@@ -72,6 +74,13 @@ describe('message flow regressions', () => {
     expect(component).not.toContain('if (isCompacting.value || isStopVisible.value) return false;');
     expect(component).toContain('if (!canSend.value) return;');
     expect(component).not.toContain('if (isStopVisible.value || !canSend.value) return;');
+    expect(workCenter).toContain('@change="onWorkItemMessageAttachmentInput"');
+    expect(workCenter).toContain('workItemMessageAttachments.length === 0');
+    expect(workCenter).toContain('work-center-detail-close');
+    expect(workCenter).not.toContain('class="work-center-action-content-summary"');
+    expect(workCenterCss).toContain('grid-template-columns: minmax(0, 1fr) minmax(400px, 440px);');
+    expect(workCenterCss).toMatch(/\.work-center-detail-close\s*\{[\s\S]*?position: absolute;[\s\S]*?right: 16px;/);
+    expect(workCenterCss).toMatch(/\.work-center-action-description\s*\{[\s\S]*?white-space: nowrap;/);
   });
 
   it('stamps background agent messages without promoting that conversation', () => {

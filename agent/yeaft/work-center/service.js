@@ -304,18 +304,38 @@ export class WorkCenterService {
       case 'work_item_message': {
         if (!this.coordinator) throw new Error('Work Center Coordinator is unavailable');
         const id = requiredString(payload.id, 'id');
-        const turn = this.coordinator.message(id, {
-          text: typeof payload.text === 'string' ? payload.text : '',
-          revision: payload.revision,
-          planRevision: payload.planRevision,
-          ledgerRevision: payload.ledgerRevision,
-          coordinatorRevision: payload.coordinatorRevision,
-        }, {
-          onUpdate: (type, workItem) => {
-            this.watcher.abortInvalidWorkItemRuns(id);
-            this.#emit({ type, workItem });
-          },
-        });
+        const workItem = this.#requiredItem(id);
+        let addedAttachments = [];
+        let turn;
+        try {
+          addedAttachments = appendWorkItemAttachments(workItem.attachments, payload.files, {
+            root: this.attachmentRoot,
+            workItemId: id,
+          });
+          turn = this.coordinator.message(id, {
+            text: typeof payload.text === 'string' ? payload.text : '',
+            revision: payload.revision,
+            planRevision: payload.planRevision,
+            ledgerRevision: payload.ledgerRevision,
+            coordinatorRevision: payload.coordinatorRevision,
+            addedAttachments,
+            attachments: [...(workItem.attachments || []), ...addedAttachments],
+          }, {
+            onUpdate: (type, nextWorkItem) => {
+              this.watcher.abortInvalidWorkItemRuns(id);
+              this.#emit({ type, workItem: nextWorkItem });
+            },
+          });
+        } catch (error) {
+          try {
+            if ((workItem.attachments || []).length === 0 && addedAttachments.length > 0) {
+              removeWorkItemAttachments(this.attachmentRoot, id);
+            } else {
+              removeWorkItemAttachmentFiles(this.attachmentRoot, id, addedAttachments);
+            }
+          } catch {}
+          throw error;
+        }
         turn.task.catch(() => {});
         return { accepted: true, turnId: turn.detail.messages?.at(-1)?.turnId || null };
       }

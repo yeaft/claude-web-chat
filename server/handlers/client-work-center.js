@@ -12,6 +12,11 @@ import {
 
 const REQUEST_TIMEOUT_MS = 60_000;
 const pendingRequests = new Map();
+const WORK_ITEM_ATTACHMENT_OPS = new Set(['create', 'work_item_message', 'action_input', 'guide']);
+
+export function workCenterOpAcceptsAttachments(op) {
+  return WORK_ITEM_ATTACHMENT_OPS.has(op);
+}
 
 function decodePreviewBase64(value) {
   const data = typeof value === 'string' ? value : '';
@@ -140,7 +145,7 @@ export async function handleClientWorkCenter(client, msg, checkAgentAccess) {
 
   const op = typeof msg.op === 'string' ? msg.op : '';
   const sourcePayload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
-  if (['create', 'action_input', 'guide'].includes(op) && Object.hasOwn(sourcePayload, 'files')) {
+  if (workCenterOpAcceptsAttachments(op) && Object.hasOwn(sourcePayload, 'files')) {
     await sendToWebClient(client, {
       type: 'work_center_response',
       requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
@@ -170,13 +175,15 @@ export async function handleClientWorkCenter(client, msg, checkAgentAccess) {
   let resolved = { payload: sourcePayload, consumedIds: [] };
   try {
     const attachments = Array.isArray(sourcePayload.attachments) ? sourcePayload.attachments : [];
-    if (['create', 'action_input', 'guide'].includes(op) && attachments.length > 0) {
+    if (workCenterOpAcceptsAttachments(op) && attachments.length > 0) {
       const capabilities = agents.get(agentId)?.capabilities;
       if (!Array.isArray(capabilities) || !capabilities.includes('work_item_attachments')) {
         throw new Error('The selected Agent does not support WorkItem attachments');
       }
     }
-    if (['create', 'action_input', 'guide'].includes(op)) resolved = resolveWorkItemAttachments(client, sourcePayload);
+    if (workCenterOpAcceptsAttachments(op)) {
+      resolved = resolveWorkItemAttachments(client, sourcePayload);
+    }
   } catch (error) {
     await sendToWebClient(client, {
       type: 'work_center_response',

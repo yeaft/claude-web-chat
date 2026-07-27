@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
@@ -1065,6 +1065,70 @@ describe('Work Center core', () => {
       role: 'assistant', status: 'failed', error: expect.stringMatching(/changed while the Coordinator/i),
     });
     expect(store.getWorkItem(cancellable.id)).toMatchObject({ status: 'cancelled' });
+
+    const attachmentItem = controller.create(createInput({ id: 'coordinator-attachment' }));
+    const attachmentBefore = store.getWorkItemDetail(attachmentItem.id);
+    const attachmentRoot = join(dir, 'attachments');
+    mkdirSync(attachmentRoot, { recursive: true, mode: 0o700 });
+    let attachmentCall;
+    const attachmentCoordinator = new WorkItemCoordinator({
+      store,
+      attachmentRoot,
+      runtimeProvider: async () => ({
+        config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+        adapter: { call: async request => {
+          attachmentCall = request;
+          return { text: JSON.stringify({
+            reply: 'The screenshot and note are attached to this WorkItem.',
+            decision: { kind: 'answer', reason: 'Attachment context', contractPatch: null, guidance: [], actions: [] },
+          }) };
+        } },
+      }),
+      policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
+      registry: { listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }] },
+    });
+    const attachmentService = new WorkCenterService({
+      yeaftDir: dir,
+      attachmentRoot,
+      store,
+      controller,
+      coordinator: attachmentCoordinator,
+      runner: null,
+      ownerBootId: 'coordinator-attachment',
+      settingsReader: () => ({}),
+    });
+    const attachmentAccepted = await attachmentService.handle('work_item_message', {
+      id: attachmentItem.id,
+      text: 'Use both files.',
+      revision: attachmentBefore.revision,
+      planRevision: attachmentBefore.planRevision,
+      ledgerRevision: attachmentBefore.ledgerRevision,
+      coordinatorRevision: attachmentBefore.coordinatorRevision,
+      files: [
+        { name: 'screen.png', mimeType: 'image/png', data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64') },
+        { name: 'notes.txt', mimeType: 'text/plain', data: Buffer.from('bounded attachment context').toString('base64') },
+      ],
+    });
+    expect(attachmentAccepted).toMatchObject({ accepted: true, turnId: expect.any(String) });
+    for (let index = 0; index < 20 && !attachmentCall; index += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    expect(attachmentCall?.messages?.[0]?.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'image' }),
+      expect.objectContaining({ type: 'text', text: expect.stringContaining('bounded attachment context') }),
+    ]));
+    for (let index = 0; index < 20; index += 1) {
+      const latest = store.getWorkItemDetail(attachmentItem.id).messages.at(-1);
+      if (latest?.status !== 'thinking') break;
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    const attachmentDetail = store.getWorkItemDetail(attachmentItem.id);
+    expect(attachmentDetail).toMatchObject({ revision: attachmentBefore.revision + 1 });
+    expect(attachmentDetail.messages.at(-2)).toMatchObject({
+      role: 'user', text: 'Use both files.', attachments: [
+        expect.objectContaining({ name: 'screen.png', isImage: true }),
+        expect.objectContaining({ name: 'notes.txt', isImage: false }),
+      ],
+    });
+    expect(projectWorkItemDetail(attachmentDetail).messages.at(-2).attachments).toHaveLength(2);
 
     expect(() => {
       coordinator.shuttingDown = true;
