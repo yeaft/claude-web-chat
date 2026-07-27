@@ -157,14 +157,14 @@ export default {
       return ['done', 'cancelled'].includes(this.selected?.status);
     },
     coordinatorRequestedSelectedActionInput() {
-      const latest = (this.selected?.messages || []).at(-1);
-      return this.selected?.status === 'waiting'
-        && this.selectedAction?.status === 'waiting'
-        && latest?.role === 'assistant'
-        && latest.status === 'completed'
-        && latest.decision?.kind === 'request_human'
-        && latest.recovery?.actionId === this.selectedAction.id
-        && latest.recovery?.actionGeneration === this.selectedAction.generation;
+      if (this.selected?.status !== 'waiting' || this.selectedAction?.status !== 'waiting') return false;
+      return [...(this.selected.messages || [])].reverse().some(message => (
+        message?.role === 'assistant'
+        && message.status === 'completed'
+        && message.decision?.kind === 'request_human'
+        && message.recovery?.actionId === this.selectedAction.id
+        && message.recovery?.actionGeneration === this.selectedAction.generation
+      ));
     },
     actionMessages() {
       const current = Array.isArray(this.selectedAction?.messages) ? this.selectedAction.messages : [];

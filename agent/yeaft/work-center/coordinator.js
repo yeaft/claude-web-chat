@@ -497,6 +497,8 @@ export class WorkItemCoordinator {
     }, {
       attachments: input.attachments,
       addedAttachments,
+      recovery: input.recovery,
+      requireWaitingRecovery: input.controlRequired === true,
     });
     if (!started) throw new Error(`WorkItem not found: ${id}`);
     options.onUpdate?.('coordinator.turn_started', started.detail);

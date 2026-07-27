@@ -421,6 +421,27 @@ describe('Yeaft history outline state', () => {
     expect(state.results[0]).toMatchObject({ role: 'assistant', turnId: 'response-live' });
     expect(state.totalCount).toBe(1);
 
+    store.workCenterAgentId = 'agent-coordinator-envelope';
+    store.workCenterItemsByAgent['agent-coordinator-envelope'] = [{ id: 'wi-envelope' }];
+    store.workCenterDetailByAgent['agent-coordinator-envelope'] = {
+      id: 'wi-envelope', revision: 4, status: 'waiting',
+      actions: [{ id: 'action-envelope', generation: 2, status: 'waiting' }],
+    };
+    const listWorkItems = vi.spyOn(store, 'listWorkItems');
+    store.workCenterRequest = vi.fn().mockResolvedValue({
+      accepted: true, routedTo: 'coordinator', turnId: 'turn-envelope',
+    });
+    const coordinatorEnvelope = await store.sendWorkItemActionInput(
+      'wi-envelope', 'Continue with the approved recovery.', 'action-envelope', 4, 2,
+      [], 'agent-coordinator-envelope',
+    );
+    expect(coordinatorEnvelope).toEqual({
+      accepted: true, routedTo: 'coordinator', turnId: 'turn-envelope',
+    });
+    expect(listWorkItems).not.toHaveBeenCalledWith('agent-coordinator-envelope', expect.anything());
+    expect(store.workCenterDetailByAgent['agent-coordinator-envelope'])
+      .toMatchObject({ id: 'wi-envelope', status: 'waiting' });
+
     const sameTime = 100;
     const mergedActionMessages = mergeActionMessages(
       [{ id: 'event:10', role: 'user', text: 'legacy ten', createdAt: sameTime, updatedAt: 1 }],

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -17,6 +17,11 @@ import {
   LLMServerError,
 } from '../../../../agent/yeaft/llm/adapter.js';
 import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
+import {
+  __testSetWorkCenterService,
+  handleWorkCenterRequest,
+} from '../../../../agent/yeaft/work-center/bridge.js';
+import ctx from '../../../../agent/context.js';
 import {
   buildWorkItemAttachmentContext,
   persistWorkItemAttachments,
@@ -93,12 +98,38 @@ describe('Work Center core', () => {
   });
 
   afterEach(() => {
+    __testSetWorkCenterService(null);
+    ctx.ws = null;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });
 
 
   it('persists Run identity and projects one continuous Action conversation', async () => {
+    const bridgeEnvelope = { accepted: true, routedTo: 'coordinator', turnId: 'turn-bridge' };
+    const bridgeService = {
+      start: vi.fn(),
+      handle: vi.fn().mockResolvedValue(bridgeEnvelope),
+      projectBrowserDetail: vi.fn(() => ({ id: null })),
+    };
+    __testSetWorkCenterService(bridgeService);
+    const bridgeFrames = [];
+    ctx.ws = { readyState: 1, send: vi.fn(value => bridgeFrames.push(JSON.parse(value))) };
+    globalThis.WebSocket = { OPEN: 1 };
+    await handleWorkCenterRequest({
+      requestId: 'request-bridge', op: 'action_input',
+      payload: { id: 'wi', actionId: 'action', generation: 1, revision: 1, text: 'continue' },
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(bridgeService.projectBrowserDetail).not.toHaveBeenCalled();
+    expect(bridgeFrames).toEqual([expect.objectContaining({
+      type: 'work_center_response', ok: true, data: bridgeEnvelope,
+    })]);
+    __testSetWorkCenterService(null);
+    ctx.ws = null;
+
     const item = controller.create(createInput({ id: 'run-identity' }));
     const first = store.claimReadyAction('boot-a', 5_000);
     expect(first.run).toMatchObject({
@@ -1316,15 +1347,13 @@ describe('Work Center core', () => {
           decision: expect.objectContaining({ kind: 'request_human' }),
         })],
       });
-      const resumed = recoveryController.input(undecidable.item.id, {
-        text: 'Retry the review after implementing every recorded blocker.',
-        actionId: undecidable.review.action.id,
-        revision: waiting.revision,
-        generation: undecidable.review.action.generation,
+      expect(projectWorkItemDetail(waiting).messages.at(-1)).toMatchObject({
+        recovery: {
+          actionId: undecidable.review.action.id,
+          actionGeneration: undecidable.review.action.generation,
+          stageId: undecidable.review.action.stageId,
+        },
       });
-      expect(resumed).toMatchObject({ status: 'ready' });
-      expect(resumed.actions.find(action => action.id === undecidable.review.action.id))
-        .toMatchObject({ status: 'ready', generation: undecidable.review.action.generation + 1 });
       recoveryController.cancel(undecidable.item.id);
 
       const routed = createFailedReview('recover-routed-human-input');
@@ -1396,6 +1425,138 @@ describe('Work Center core', () => {
       });
       await routedCoordinator.shutdown();
       recoveryController.cancel(routed.item.id);
+
+      const repeated = createFailedReview('recover-repeated-human-input');
+      const repeatedWaiting = await undecidableCoordinator.recover(repeated.item.id).task;
+      let releaseRepeatedTurn;
+      let repeatedCalls = 0;
+      const repeatedCoordinator = new WorkItemCoordinator({
+        store: recoveryStore,
+        runtimeProvider: async () => ({
+          config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+          adapter: { call: async () => {
+            repeatedCalls += 1;
+            if (repeatedCalls === 1) {
+              await new Promise(resolve => { releaseRepeatedTurn = resolve; });
+            }
+            return { text: 'invalid coordinator response' };
+          } },
+        }),
+        policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
+        registry: { listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }] },
+      });
+      const repeatedService = new WorkCenterService({
+        yeaftDir: recoveryDir,
+        store: recoveryStore,
+        controller: recoveryController,
+        coordinator: repeatedCoordinator,
+        runner: null,
+        ownerBootId: 'repeated-human-input',
+        settingsReader: () => ({}),
+      });
+      const firstReply = await repeatedService.handle('action_input', {
+        id: repeated.item.id,
+        actionId: repeated.review.action.id,
+        generation: repeated.review.action.generation,
+        revision: repeatedWaiting.revision,
+        text: 'Use the documented fix sequence.',
+        files: [],
+      });
+      expect(firstReply).toMatchObject({ accepted: true, routedTo: 'coordinator' });
+      for (let index = 0; index < 20 && !releaseRepeatedTurn; index += 1) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      expect(releaseRepeatedTurn).toBeTypeOf('function');
+      const duringTurn = recoveryStore.getWorkItemDetail(repeated.item.id);
+      await expect(repeatedService.handle('action_input', {
+        id: repeated.item.id,
+        actionId: repeated.review.action.id,
+        generation: repeated.review.action.generation,
+        revision: duringTurn.revision,
+        text: 'Duplicate reply while the Coordinator is deciding.',
+        files: [],
+      })).rejects.toThrow(/already responding/i);
+      expect(recoveryStore.getWorkItemDetail(repeated.item.id).events
+        .some(event => event.type === 'action.input_added')).toBe(false);
+      releaseRepeatedTurn();
+      for (let index = 0; index < 20; index += 1) {
+        const current = recoveryStore.getWorkItemDetail(repeated.item.id);
+        if (current.messages.at(-1)?.status !== 'thinking') break;
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      expect(repeatedCalls).toBe(2);
+      const failedReply = recoveryStore.getWorkItemDetail(repeated.item.id);
+      expect(failedReply.messages.at(-1)).toMatchObject({ status: 'failed' });
+      const retryReply = await repeatedService.handle('action_input', {
+        id: repeated.item.id,
+        actionId: repeated.review.action.id,
+        generation: repeated.review.action.generation,
+        revision: failedReply.revision,
+        text: 'Retry the Coordinator decision with the same recovery ownership.',
+        files: [],
+      });
+      expect(retryReply).toMatchObject({ accepted: true, routedTo: 'coordinator' });
+      for (let index = 0; index < 20; index += 1) {
+        const current = recoveryStore.getWorkItemDetail(repeated.item.id);
+        if (current.messages.at(-1)?.status !== 'thinking') break;
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      expect(recoveryStore.getWorkItemDetail(repeated.item.id).messages.at(-1))
+        .toMatchObject({ status: 'failed' });
+      await repeatedCoordinator.shutdown();
+      expect(recoveryStore.getWorkItemDetail(repeated.item.id).events
+        .some(event => event.type === 'action.input_added')).toBe(false);
+      recoveryController.cancel(repeated.item.id);
+
+      const guided = createFailedReview('recover-guided-human-input');
+      const guidedWaiting = await undecidableCoordinator.recover(guided.item.id).task;
+      const guidedCoordinator = new WorkItemCoordinator({
+        store: recoveryStore,
+        runtimeProvider: async () => ({
+          config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+          adapter: { call: async () => ({ text: JSON.stringify({
+            reply: 'The answer is sufficient to retry the fenced review.',
+            decision: {
+              kind: 'guide_actions', reason: 'The user supplied the missing constraint',
+              contractPatch: null, actions: [],
+              guidance: [{
+                stageId: guided.review.action.stageId,
+                instruction: 'Retry review using the supplied recovery constraint.',
+              }],
+            },
+          }) }) },
+        }),
+        policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
+        registry: { listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }] },
+      });
+      const guidedService = new WorkCenterService({
+        yeaftDir: recoveryDir,
+        store: recoveryStore,
+        controller: recoveryController,
+        coordinator: guidedCoordinator,
+        runner: null,
+        ownerBootId: 'guided-human-input',
+        settingsReader: () => ({}),
+      });
+      expect(await guidedService.handle('action_input', {
+        id: guided.item.id,
+        actionId: guided.review.action.id,
+        generation: guided.review.action.generation,
+        revision: guidedWaiting.revision,
+        text: 'Retry with the supplied constraint.',
+        files: [],
+      })).toMatchObject({ accepted: true, routedTo: 'coordinator' });
+      for (let index = 0; index < 20; index += 1) {
+        const current = recoveryStore.getWorkItemDetail(guided.item.id);
+        if (current.messages.at(-1)?.status !== 'thinking') break;
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      const guidedReady = recoveryStore.getWorkItemDetail(guided.item.id);
+      expect(guidedReady).toMatchObject({ status: 'ready' });
+      expect(guidedReady.actions.find(action => action.id === guided.review.action.id))
+        .toMatchObject({ status: 'ready', generation: guided.review.action.generation + 1 });
+      await guidedCoordinator.shutdown();
+      recoveryController.cancel(guided.item.id);
 
       const interrupted = createFailedReview('recover-interrupted');
       let infrastructureCalls = 0;
@@ -2010,7 +2171,7 @@ describe('Work Center core', () => {
         ],
         actions: [],
       },
-    }, bypassTurn.fence)).toThrow(/only the failed Action identity/i);
+    }, bypassTurn.fence)).toThrow(/only the fenced Action identity/i);
     expect(restartStore.getWorkItemDetail(mixedItem.id)).toMatchObject({
       status: 'waiting',
       currentActionId: waitingBranch.action.id,

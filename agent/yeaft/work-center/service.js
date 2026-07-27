@@ -60,6 +60,19 @@ function parseBoardCursor(value) {
   }
 }
 
+function coordinatorHumanRequest(detail, action, generation) {
+  if (detail?.status !== 'waiting'
+      || action?.status !== 'waiting'
+      || Number(action.generation) !== Number(generation)) return null;
+  return [...(Array.isArray(detail.messages) ? detail.messages : [])].reverse().find(message => (
+    message?.role === 'assistant'
+    && message.status === 'completed'
+    && message.decision?.kind === 'request_human'
+    && message.recovery?.actionId === action.id
+    && message.recovery?.actionGeneration === action.generation
+  )) || null;
+}
+
 function listBoardItems(store, payload) {
   const limit = Math.min(Math.max(Number(payload.limit) || 100, 1), 200);
   const cursor = parseBoardCursor(payload.cursor);
@@ -368,16 +381,8 @@ export class WorkCenterService {
         }
         const workItem = this.#requiredItem(id);
         const targetAction = this.#requiredAction(workItem, payload.actionId);
-        const latestCoordinatorMessage = (workItem.messages || []).at(-1);
-        const coordinatorRequestedInput = workItem.status === 'waiting'
-          && targetAction.status === 'waiting'
-          && targetAction.generation === generation
-          && latestCoordinatorMessage?.role === 'assistant'
-          && latestCoordinatorMessage.status === 'completed'
-          && latestCoordinatorMessage.decision?.kind === 'request_human'
-          && latestCoordinatorMessage.recovery?.actionId === targetAction.id
-          && latestCoordinatorMessage.recovery?.actionGeneration === targetAction.generation;
-        if (coordinatorRequestedInput) {
+        const humanRequest = coordinatorHumanRequest(workItem, targetAction, generation);
+        if (humanRequest) {
           let addedAttachments = [];
           let turn;
           try {
@@ -392,6 +397,7 @@ export class WorkCenterService {
               ledgerRevision: workItem.ledgerRevision,
               coordinatorRevision: workItem.coordinatorRevision,
               controlRequired: true,
+              recovery: { ...humanRequest.recovery },
               addedAttachments,
               attachments: [...(workItem.attachments || []), ...addedAttachments],
             }, {
