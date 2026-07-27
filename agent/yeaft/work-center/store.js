@@ -2726,6 +2726,93 @@ export class WorkItemStore {
     });
   }
 
+  resumeWorkItemAtomic(id, expectedRevision, makeInitialAction) {
+    return withTransaction(this.db, () => {
+      const workItem = this.getWorkItem(id);
+      if (!workItem) return null;
+      if (!Number.isInteger(expectedRevision) || workItem.revision !== expectedRevision) {
+        throw new Error('WorkItem changed before it was resumed; refresh and try again');
+      }
+      if (workItem.status !== 'cancelled') {
+        throw new Error(`WorkItem in ${workItem.status} cannot be resumed`);
+      }
+
+      const now = this.now();
+      const cancelledActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
+        AND status = 'cancelled' ORDER BY sequence`).all(id).map(mapAction);
+      this.#assertNoIntegrationReservation(cancelledActions, now);
+      this.#supersedePendingActionInputs(
+        cancelledActions,
+        'WorkItem resume started a new Action generation',
+        now,
+      );
+      const resumedActions = [];
+      for (const action of cancelledActions) {
+        const context = carryCurrentActionInputContext(this.db, action);
+        const candidate = {
+          ...action,
+          context,
+          status: 'ready',
+          attempt: 0,
+          currentRunId: null,
+          resultRunId: null,
+          workspace: null,
+          generation: action.generation + 1,
+        };
+        candidate.instruction = canonicalActionInstruction(workItem, candidate, context);
+        candidate.specHash = actionSpecHash(candidate);
+        const changed = this.db.prepare(`UPDATE actions SET status = 'ready', attempt = 0,
+          current_run_id = NULL, lease_epoch = lease_epoch + 1, generation = generation + 1,
+          context = ?, instruction = ?, spec_hash = ?, identity_history = ?, result_run_id = NULL,
+          workspace = NULL, updated_at = ? WHERE id = ? AND work_item_id = ?
+          AND status = 'cancelled' AND generation = ? AND spec_hash = ?`).run(
+          stringify(context),
+          candidate.instruction,
+          candidate.specHash,
+          stringify(actionIdentityHistory(action, candidate.generation, candidate.specHash)),
+          now,
+          action.id,
+          id,
+          action.generation,
+          action.specHash,
+        );
+        if (Number(changed.changes) !== 1) {
+          throw new Error('WorkItem Action changed before it was resumed');
+        }
+        resumedActions.push(this.getAction(action.id));
+      }
+
+      if (resumedActions.length === 0) {
+        const initialAction = makeInitialAction(workItem);
+        resumedActions.push(this.#insertAction(id, {
+          ...initialAction,
+          contractRevision: workItem.revision,
+        }, this.#nextSequence(id), now));
+      }
+
+      const currentAction = resumedActions
+        .find(action => action.dependsOnStageIds.length === 0) || resumedActions[0];
+      const changedWorkItem = this.db.prepare(`UPDATE work_items SET status = 'ready',
+        current_action_id = ?, current_run_id = NULL, updated_at = ?
+        WHERE id = ? AND status = 'cancelled' AND revision = ?`).run(
+        currentAction.id,
+        now,
+        id,
+        expectedRevision,
+      );
+      if (Number(changedWorkItem.changes) !== 1) {
+        throw new Error('WorkItem changed before it was resumed; refresh and try again');
+      }
+      this.appendEvent(id, 'work_item.resumed', {
+        resumedActionIds: resumedActions.map(action => action.id),
+      }, {
+        actionId: currentAction.id,
+        actionGeneration: currentAction.generation,
+      });
+      return this.getWorkItemDetail(id);
+    });
+  }
+
   startWorkItemAtomic(id, makeInitialAction) {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);

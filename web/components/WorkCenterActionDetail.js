@@ -41,7 +41,7 @@ export default {
     },
     canCompose() {
       if (!this.action || ['done', 'cancelled'].includes(this.selected?.status)) return false;
-      return ['waiting', 'failed'].includes(this.action.status);
+      return ['ready', 'running', 'waiting', 'failed'].includes(this.action.status);
     },
     canRetry() {
       return this.action?.status === 'failed' && !this.uploading && !this.sending;
@@ -249,7 +249,9 @@ export default {
     resizeComposerInput(input, reset = false) {
       if (!input) return;
       input.style.height = 'auto';
-      if (!reset) input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
+      const nextHeight = reset ? 24 : Math.min(input.scrollHeight, 144);
+      input.style.height = `${nextHeight}px`;
+      input.style.overflowY = input.scrollHeight > 144 ? 'auto' : 'hidden';
     },
     onComposerInput(event) {
       this.$emit('update:composerText', event.target.value);

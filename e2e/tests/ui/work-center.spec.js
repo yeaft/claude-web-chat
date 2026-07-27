@@ -578,7 +578,19 @@ test.describe('Work Center responsive UI', () => {
     await expect(conversation).toContainText('Conversation');
     await expect(conversation).not.toContainText('Coordinator');
     await expect(conversation.locator('.work-center-coordinator-empty')).toHaveCount(0);
-    await conversation.locator('textarea').fill('Change the goal and replan the remaining Actions');
+    const workItemComposer = conversation.locator('textarea');
+    await workItemComposer.fill('Change the goal\nand replan the remaining Actions');
+    const workItemComposerMetrics = await workItemComposer.evaluate(element => ({
+      clientHeight: element.clientHeight,
+      lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight),
+      overflowY: getComputedStyle(element).overflowY,
+    }));
+    expect(workItemComposerMetrics.clientHeight).toBeGreaterThan(workItemComposerMetrics.lineHeight * 1.5);
+    expect(workItemComposerMetrics.overflowY).toBe('hidden');
+    const workItemInputWidth = await conversation.locator('.work-center-item-message-input')
+      .evaluate(element => element.getBoundingClientRect().width);
+    const conversationWidth = await conversation.evaluate(element => element.getBoundingClientRect().width);
+    expect(workItemInputWidth).toBeGreaterThan(conversationWidth * 0.72);
     const conversationResponse = respondToWorkCenterOp(mockAgent, 'work_item_message', {
       accepted: true,
       turnId: 'turn-1',
@@ -587,13 +599,13 @@ test.describe('Work Center responsive UI', () => {
     const conversationRequest = await conversationResponse;
     expect(conversationRequest.payload).toMatchObject({
       id: OPEN_ITEM.id,
-      text: 'Change the goal and replan the remaining Actions',
+      text: 'Change the goal\nand replan the remaining Actions',
       revision: 1,
       planRevision: 2,
       ledgerRevision: 4,
       coordinatorRevision: 0,
     });
-    await expect(conversation.locator('textarea')).toHaveValue('');
+    await expect(workItemComposer).toHaveValue('');
 
     await action.locator('.work-center-action-summary').click();
     const actionDetail = chatPage.locator('.work-center-action-detail-pane');
@@ -627,7 +639,44 @@ test.describe('Work Center responsive UI', () => {
     });
     await expect(actionDetail.locator('.work-center-action-message', { hasText: 'Live AI response from the active Run.' })).toHaveCount(1);
 
-    await expect(actionDetail.locator('.work-center-action-composer')).toHaveCount(0);
+    const actionComposer = actionDetail.locator('.work-center-action-composer');
+    await expect(actionComposer).toBeVisible();
+    const actionInput = actionComposer.locator('textarea');
+    await actionInput.fill('Keep the current implementation\nand verify the narrow layout');
+    const actionComposerMetrics = await actionInput.evaluate(element => ({
+      clientHeight: element.clientHeight,
+      lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight),
+      overflowY: getComputedStyle(element).overflowY,
+    }));
+    expect(actionComposerMetrics.clientHeight).toBeGreaterThan(actionComposerMetrics.lineHeight * 1.5);
+    expect(actionComposerMetrics.overflowY).toBe('hidden');
+    const actionInputResponse = (async () => {
+      const operations = [];
+      while (!operations.some(request => request.op === 'action_input')
+        || !operations.some(request => request.op === 'list')) {
+        operations.push(await respondByOperation(mockAgent, {
+          action_input: {
+            ...OPEN_ITEM_DETAIL,
+            actions: [{ ...OPEN_ITEM_DETAIL.actions[0], status: 'running' }],
+          },
+          list: { items: [OPEN_ITEM], watcher: { enabled: true } },
+          get: OPEN_ITEM_DETAIL,
+        }));
+      }
+      return operations;
+    })();
+    await actionComposer.getByRole('button', { name: 'Send to Action' }).click();
+    const actionInputOps = await actionInputResponse;
+    const actionInputRequest = actionInputOps.find(request => request.op === 'action_input');
+    expect(actionInputRequest.payload).toMatchObject({
+      id: OPEN_ITEM.id,
+      actionId: 'action-1',
+      generation: 1,
+      revision: 1,
+      text: 'Keep the current implementation\nand verify the narrow layout',
+    });
+    await expect(actionInput).toHaveValue('');
+    await expect(actionComposer).toBeVisible();
     await expect(actionDetail).toContainText('Live AI response from the active Run.');
 
     mockAgent.send({
@@ -691,8 +740,16 @@ test.describe('Work Center responsive UI', () => {
       total: 1,
     };
     const terminalRequestOps = [
-      (await respondByOperation(mockAgent, { get: terminalDetail, get_action_messages: terminalPage })).op,
-      (await respondByOperation(mockAgent, { get: terminalDetail, get_action_messages: terminalPage })).op,
+      (await respondByOperation(mockAgent, {
+        get: terminalDetail,
+        get_action_messages: terminalPage,
+        list: { items: [terminalDetail], watcher: { enabled: true } },
+      })).op,
+      (await respondByOperation(mockAgent, {
+        get: terminalDetail,
+        get_action_messages: terminalPage,
+        list: { items: [terminalDetail], watcher: { enabled: true } },
+      })).op,
     ];
     await expect(actionDetail.locator('.work-center-action-message', { hasText: 'FINAL REPLY' })).toHaveCount(1);
     await expect(actionDetail.locator('.work-center-action-message', { hasText: 'Live AI response from the active Run.' })).toHaveCount(0);
@@ -805,6 +862,82 @@ test.describe('Work Center responsive UI', () => {
     await expect(composer).toBeVisible();
     await expect(composer).toHaveAttribute('aria-describedby', /work-center-action-waiting-question/);
     await expect(composer).toHaveAttribute('aria-describedby', /work-center-action-composer-hint/);
+  });
+
+  test('uses compact stop controls and resumes a stopped Work Item', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent, [OPEN_ITEM, CANCELLED_ITEM]);
+    const selectOpen = chatPage.locator('.work-center-card', { hasText: OPEN_ITEM.title }).click();
+    await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL, [OPEN_ITEM, CANCELLED_ITEM]);
+    await selectOpen;
+
+    const stop = chatPage.getByRole('button', { name: 'Stop work item' });
+    await expect(stop).toBeVisible();
+    await expect(chatPage.locator('.work-center-danger-zone')).toHaveCount(0);
+    const stopBounds = await stop.evaluate(element => {
+      const button = element.getBoundingClientRect();
+      const detail = element.closest('.work-center-detail').getBoundingClientRect();
+      return {
+        height: button.height,
+        rightGap: detail.right - button.right,
+        bottomGap: detail.bottom - button.bottom,
+      };
+    });
+    expect(stopBounds.height).toBeLessThanOrEqual(36);
+    expect(stopBounds.rightGap).toBeGreaterThanOrEqual(16);
+    expect(stopBounds.bottomGap).toBeGreaterThanOrEqual(12);
+    chatPage.once('dialog', dialog => dialog.accept());
+    const cancelResponses = (async () => {
+      const operations = [];
+      while (!operations.some(request => request.op === 'cancel')
+        || !operations.some(request => request.op === 'list')) {
+        operations.push(await respondByOperation(mockAgent, {
+          cancel: CANCELLED_ITEM_DETAIL,
+          list: { items: [CANCELLED_ITEM], watcher: { enabled: true } },
+          get: CANCELLED_ITEM_DETAIL,
+        }));
+      }
+      return operations;
+    })();
+    await stop.click();
+    const cancelOps = await cancelResponses;
+    expect(cancelOps.some(request => request.op === 'list')).toBe(true);
+    expect(cancelOps.find(request => request.op === 'cancel').payload).toEqual({ id: OPEN_ITEM.id });
+    await expect(chatPage.getByText('Work item details')).toBeVisible();
+
+    const selectCancelled = chatPage.locator('.work-center-card', { hasText: CANCELLED_ITEM.title })
+      .locator('.work-center-card-open').dispatchEvent('click');
+    await respondToWorkCenterOp(mockAgent, 'get', CANCELLED_ITEM_DETAIL, [CANCELLED_ITEM]);
+    await selectCancelled;
+    const resume = chatPage.getByRole('button', { name: 'Resume work item' });
+    await expect(resume).toBeVisible();
+    const resumedDetail = {
+      ...OPEN_ITEM_DETAIL,
+      id: CANCELLED_ITEM.id,
+      title: CANCELLED_ITEM.title,
+      status: 'ready',
+      revision: CANCELLED_ITEM_DETAIL.revision,
+      actions: [{ ...OPEN_ITEM_DETAIL.actions[0], id: 'action-cancelled', status: 'ready', generation: 2 }],
+      currentActionId: 'action-cancelled',
+    };
+    const resumeResponses = (async () => {
+      const operations = [];
+      while (!operations.some(request => request.op === 'resume')
+        || !operations.some(request => request.op === 'list')) {
+        operations.push(await respondByOperation(mockAgent, {
+          resume: resumedDetail,
+          list: { items: [resumedDetail], watcher: { enabled: true } },
+          get: resumedDetail,
+        }));
+      }
+      return operations;
+    })();
+    await resume.click();
+    const resumeOps = await resumeResponses;
+    expect(resumeOps.some(request => request.op === 'list')).toBe(true);
+    expect(resumeOps.find(request => request.op === 'resume').payload).toEqual({
+      id: CANCELLED_ITEM.id,
+      revision: CANCELLED_ITEM_DETAIL.revision,
+    });
   });
 
   test('keeps done and cancelled Work Items read-only without sending message wire', async ({ chatPage, mockAgent }) => {
@@ -1132,7 +1265,7 @@ test.describe('Work Center responsive UI', () => {
     });
     await expect(chatPage.locator('html')).toHaveAttribute('data-theme', 'dark');
     await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
-    await expect(chatPage.locator('.work-center-action-composer')).toHaveCount(0);
+    await expect(chatPage.locator('.work-center-action-composer')).toBeVisible();
 
     const metrics = await layoutMetrics(chatPage);
     expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.viewportWidth);

@@ -947,33 +947,34 @@
   font-size: 14px;
 }
 
-.work-center-danger-zone {
+.work-center-detail-controls {
+  position: absolute;
+  right: 20px;
+  bottom: 16px;
+  z-index: 3;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 14px;
-  border-radius: 10px;
+  justify-content: flex-end;
+}
+
+.work-center-main .work-center-stop-action {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  color: var(--error);
+  font-size: 11px;
+}
+
+.work-center-main .work-center-stop-action:hover:not(:disabled) {
   background: var(--error-bg);
 }
 
-.work-center-danger-zone h3 {
-  color: var(--error);
-}
-
-.work-center-danger-zone p {
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.work-center-main .work-center-danger-action {
-  flex: 0 0 auto;
-  border-color: var(--error);
-  color: var(--error);
-}
-
-.work-center-main .work-center-danger-action:hover:not(:disabled) {
-  background: var(--error-bg);
+.work-center-main .work-center-resume-action {
+  min-height: 32px;
+  padding: 5px 10px;
+  font-size: 11px;
 }
 
 .work-center-failure,
@@ -1510,14 +1511,15 @@
 
 .work-center-action-message {
   display: grid;
-  max-width: min(780px, 88%);
+  width: min(100%, 920px);
   gap: 5px;
   color: var(--text-primary);
 }
 
 .work-center-action-message.role-user {
   justify-self: end;
-  padding: 10px 14px;
+  width: min(92%, 920px);
+  padding: 12px 16px;
   border-radius: 16px 16px 4px 16px;
   background: var(--bg-user-msg);
 }
@@ -1852,9 +1854,9 @@
 .work-center-action-composer {
   display: grid;
   flex: 0 0 auto;
-  max-height: min(42vh, 260px);
+  max-height: min(46vh, 320px);
   gap: 8px;
-  padding: 10px clamp(24px, 6vw, 72px) 16px;
+  padding: 10px clamp(24px, 6vw, 72px) 18px;
   background: var(--bg-main);
   overflow-y: auto;
 }
@@ -1863,17 +1865,19 @@
   width: 100%;
   max-width: none;
   margin: 0;
+  align-items: flex-end;
   gap: 8px;
-  padding: 8px 8px 8px 10px;
+  padding: 10px 10px 10px 12px;
+  border-radius: 18px;
 }
 
 .work-center-action-input-wrapper textarea {
   min-height: 24px;
-  max-height: 120px;
+  max-height: 144px;
   padding: 0;
   font-size: 14px;
-  line-height: 1.5;
-  overflow-y: auto;
+  line-height: 1.55;
+  overflow-y: hidden;
 }
 
 .work-center-action-input-wrapper .attach-btn,
@@ -1958,17 +1962,18 @@
 .work-center-item-message-list {
   display: grid;
   gap: 22px;
-  padding: 8px 0 10px;
+  padding: 8px 0 12px;
 }
 
 .work-center-item-message-list article {
-  width: min(88%, 720px);
+  width: min(100%, 920px);
   color: var(--text-primary);
 }
 
 .work-center-item-message-list article.role-user {
   justify-self: end;
-  padding: 10px 14px;
+  width: min(92%, 920px);
+  padding: 12px 16px;
   border-radius: 16px 16px 4px 16px;
   background: var(--bg-user-msg);
 }
@@ -2025,10 +2030,13 @@
 }
 
 .work-center-item-message-input {
-  width: 100%;
+  width: min(100%, 920px);
   max-width: none;
-  margin: 0;
+  margin: 2px auto 0;
+  align-items: flex-end;
   gap: 8px;
+  padding: 10px 10px 10px 12px;
+  border-radius: 18px;
   background: var(--bg-input-wrapper);
 }
 
@@ -2059,9 +2067,11 @@
 
 .work-center-item-message-input textarea {
   min-height: 24px;
-  max-height: 120px;
+  max-height: 144px;
   padding: 0;
-  overflow-y: auto;
+  font-size: 14px;
+  line-height: 1.55;
+  overflow-y: hidden;
 }
 
 .work-center-send-spinner {
@@ -3198,11 +3208,6 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .work-center-danger-zone {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .work-center-action-detail-header {
     padding: 14px 14px 7px;
   }
@@ -3223,7 +3228,8 @@
   }
 
   .work-center-action-message {
-    max-width: 94%;
+    width: 100%;
+    max-width: 100%;
   }
 
   .work-center-request-summary {

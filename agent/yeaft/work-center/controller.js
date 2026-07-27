@@ -173,6 +173,30 @@ export class WorkflowController {
     return this.store.getWorkItemDetail(id);
   }
 
+  resume(id, input = {}) {
+    const revision = Number(input.revision);
+    if (!Number.isInteger(revision) || revision < 1) {
+      throw new Error('revision is required to resume a WorkItem');
+    }
+    const detail = this.store.resumeWorkItemAtomic(id, revision, workItem => {
+      const action = initialActionFor(workItem);
+      if (workItem.reuseMemory === false) return action;
+      const context = this.store.getReusableContext(workItem.workDir, workItem.id);
+      return {
+        ...action,
+        context,
+        instruction: actionInstruction(
+          action,
+          workItem,
+          context,
+          renderSessionContextSnapshot(workItem.sessionContext),
+        ),
+      };
+    });
+    if (!detail) throw new Error(`WorkItem not found: ${id}`);
+    return detail;
+  }
+
   guide(id, input = {}) {
     const guidance = typeof input.guidance === 'string' ? input.guidance.trim().slice(0, 8_000) : '';
     const addedAttachmentCount = Math.max(0, Number(input.addedAttachmentCount) || 0);

@@ -2382,8 +2382,16 @@ describe('Work Center core', () => {
   });
 
 
-  it('cancels the Run atomically and rejects its late submit and recovery', () => {
+  it('cancels the Run atomically, rejects late writes, and resumes with a new Action identity', () => {
     const item = controller.create(createInput());
+    const originalAction = store.getAction(item.currentActionId);
+    controller.input(item.id, {
+      text: 'Keep this accepted constraint after a manual stop',
+      actionId: originalAction.id,
+      revision: item.revision,
+      generation: originalAction.generation,
+    });
+    const acceptedAction = store.getAction(originalAction.id);
     const claim = store.claimReadyAction('boot-a', 5_000);
     const cancelled = controller.cancel(item.id);
     expect(cancelled.status).toBe('cancelled');
@@ -2391,10 +2399,70 @@ describe('Work Center core', () => {
     expect(() => controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, completed('triage')))
       .toThrow(/stale|cancelled|expired|finished/i);
     expect(store.recoverInterruptedRuns('new-boot')).toBe(0);
-    expect(store.getWorkItem(item.id).status).toBe('cancelled');
+    const cancelledRevision = store.getWorkItem(item.id).revision;
+    expect(() => controller.resume(item.id, { revision: cancelledRevision + 1 }))
+      .toThrow(/changed before it was resumed/i);
+
+    const resumed = controller.resume(item.id, { revision: cancelledRevision });
+    const resumedAction = resumed.actions.find(action => action.id === originalAction.id);
+    expect(resumed).toMatchObject({ status: 'ready', currentActionId: originalAction.id });
+    expect(resumedAction).toMatchObject({
+      status: 'ready',
+      generation: acceptedAction.generation + 1,
+      attempt: 0,
+      currentRunId: null,
+      resultRunId: null,
+    });
+    expect(resumedAction.identityHistory).toContainEqual({
+      generation: acceptedAction.generation + 1,
+      specHash: acceptedAction.specHash,
+    });
+    expect(resumedAction.context).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'input',
+        summary: 'Keep this accepted constraint after a manual stop',
+      }),
+    ]));
+    expect(resumed.events.find(event => event.type === 'work_item.resumed')).toMatchObject({
+      actionId: originalAction.id,
+      actionGeneration: acceptedAction.generation + 1,
+    });
+    const resumedClaim = store.claimReadyAction('boot-b', 5_000);
+    expect(resumedClaim).toMatchObject({
+      action: { id: originalAction.id, generation: acceptedAction.generation + 1 },
+      run: { actionGeneration: acceptedAction.generation + 1 },
+    });
+    expect(resumedClaim.run.actionSpecHash).toBe(acceptedAction.specHash);
+    expect(() => controller.resume(item.id, { revision: cancelledRevision }))
+      .toThrow(/cannot be resumed/i);
   });
 
   it('retriages atomically, fences old Runs, and bounds list/event Action identity', async () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    const graphItem = controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('graph-a', 5_000);
+    controller.submit(triage.run.id, 'graph-a', triage.run.leaseEpoch, completed('triage', {
+      plan: {
+        workItemType: 'parallel-resume',
+        summary: 'Run two independent Actions',
+        actions: [
+          { id: 'left', type: 'test', objective: 'Test left', dependsOn: [] },
+          { id: 'right', type: 'review', objective: 'Review right', dependsOn: [] },
+        ],
+      },
+    }));
+    const beforeGraphCancel = store.getWorkItemDetail(graphItem.id);
+    const completedAction = beforeGraphCancel.actions.find(action => action.status === 'completed');
+    controller.cancel(graphItem.id);
+    const resumedGraph = controller.resume(graphItem.id, { revision: graphItem.revision });
+    expect(resumedGraph.actions.find(action => action.id === completedAction.id)).toMatchObject({
+      status: 'completed',
+      generation: completedAction.generation,
+    });
+    expect(resumedGraph.actions.filter(action => action.status === 'ready')).toHaveLength(2);
+    expect(resumedGraph.actions.filter(action => action.status === 'ready')
+      .every(action => action.generation === 2)).toBe(true);
+
     const item = controller.create(createInput());
     const claim = store.claimReadyAction('boot-a', 5_000);
     const updated = controller.update(item.id, { goal: 'Revision two' });

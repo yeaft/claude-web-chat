@@ -34,6 +34,7 @@ export default {
       actionDetailTab: 'messages',
       actionInputSending: false,
       actionInputError: '',
+      actionInputRequestGeneration: 0,
       actionComposerGeneration: 0,
       actionRunOpenGeneration: 0,
       workItemMessage: '',
@@ -391,6 +392,22 @@ export default {
       if (!value) return '';
       try { return new Date(Number(value)).toLocaleString(); } catch { return ''; }
     },
+    resizeWorkItemComposer(input, reset = false) {
+      if (!input) return;
+      input.style.height = 'auto';
+      const nextHeight = reset ? 24 : Math.min(input.scrollHeight, 144);
+      input.style.height = `${nextHeight}px`;
+      input.style.overflowY = input.scrollHeight > 144 ? 'auto' : 'hidden';
+    },
+    onWorkItemMessageInput(event) {
+      this.workItemMessage = event.target.value;
+      this.resizeWorkItemComposer(event.target, !event.target.value);
+    },
+    onWorkItemMessageKeydown(event) {
+      if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+      event.preventDefault();
+      this.sendSelectedWorkItemMessage();
+    },
     boardFilters() {
       const now = Date.now();
       const updatedFrom = this.boardUpdatedRange === 'day' ? now - 24 * 60 * 60 * 1000
@@ -437,6 +454,7 @@ export default {
     },
     resetActionComposer() {
       this.actionComposerGeneration += 1;
+      this.actionInputRequestGeneration += 1;
       this.actionGuidance = '';
       this.actionInputError = '';
       this.guidanceAttachments = [];
@@ -911,6 +929,7 @@ export default {
         if (this.workItemComposerScope === scope && this.workItemMessage.trim() === text) {
           this.workItemMessage = '';
           this.workItemMessageAttachments = [];
+          this.$nextTick(() => this.resizeWorkItemComposer(this.$refs.workItemComposerInput, true));
         }
       } catch (error) {
         if (this.workItemComposerScope === scope) this.workItemMessageError = error?.message || String(error);
@@ -949,17 +968,29 @@ export default {
         mimeType: attachment.mimeType,
         size: attachment.size,
       }));
+      const requestGeneration = (Number(this.actionInputRequestGeneration) || 0) + 1;
+      this.actionInputRequestGeneration = requestGeneration;
+      this.actionGuidance = '';
+      this.guidanceAttachments = [];
       this.actionInputSending = true;
       this.actionInputError = '';
       try {
         const next = await this.store.sendWorkItemActionInput(
           itemId, text, actionId, revision, this.selectedAction.generation, attachments, this.agentId,
         );
-        if (this.actionComposerScope !== scope) return;
-        this.actionGuidance = '';
+        if (this.selected?.id !== itemId) return;
+        if (this.actionInputRequestGeneration !== requestGeneration) return;
+        const responseStillMatches = next?.id === itemId
+          && next?.actions?.some(action => action?.id === actionId);
         this.guidanceAttachments = [];
-        const targetStillExists = next?.actions?.some(action => action?.id === actionId);
-        const nextActionId = targetStillExists ? actionId : (next?.currentActionId || this.selectedActionId);
+        this.$nextTick(() => {
+          const input = this.$el?.querySelector?.('.work-center-action-input-wrapper textarea');
+          if (input) {
+            input.style.height = '24px';
+            input.style.overflowY = 'hidden';
+          }
+        });
+        const nextActionId = responseStillMatches ? actionId : (next?.currentActionId || this.selectedActionId);
         if (nextActionId !== this.selectedActionId) {
           this.resetActionComposer();
           this.previewingAttachmentId = null;
@@ -968,9 +999,15 @@ export default {
         }
         this.selectedActionId = nextActionId;
       } catch (error) {
-        if (this.actionComposerScope === scope) this.actionInputError = error?.message || String(error);
+        if (this.actionInputRequestGeneration === requestGeneration) {
+          if (!this.actionGuidance) this.actionGuidance = text;
+          if (this.guidanceAttachments.length === 0) {
+            this.guidanceAttachments = attachments.map(attachment => ({ ...attachment }));
+          }
+          this.actionInputError = error?.message || String(error);
+        }
       } finally {
-        if (this.actionComposerScope === scope) this.actionInputSending = false;
+        if (this.actionInputRequestGeneration === requestGeneration) this.actionInputSending = false;
       }
     },
     workItemCanDelete(item) {
@@ -1005,10 +1042,14 @@ export default {
       }
     },
     async cancelSelected() {
-      if (!this.selected) return;
-      const prompt = this.tr('workCenter.cancelConfirm', 'Cancel this work item and stop its unfinished Actions?');
+      if (!this.selected || ['done', 'cancelled'].includes(this.selected.status)) return;
+      const prompt = this.tr('workCenter.cancelConfirm', 'Stop this work item and its unfinished Actions?');
       if (typeof confirm === 'function' && !confirm(prompt)) return;
       await this.store.cancelWorkItem(this.selected.id, this.agentId);
+    },
+    async resumeSelected() {
+      if (!this.selected || this.selected.status !== 'cancelled') return;
+      await this.store.resumeWorkItem(this.selected.id, this.selected.revision, this.agentId);
     },
   },
   template: `
@@ -1155,9 +1196,8 @@ export default {
                     <span class="work-center-status" :data-status="selected.status"><span aria-hidden="true"></span>{{ statusLabel(selected.status) }}</span>
                     <h2>{{ selected.title }}</h2>
                   </div>
-                  <div class="work-center-detail-actions">
-                    <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
-                  </div>
+                  <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
+                  <button v-else-if="selected.status === 'cancelled'" class="btn-secondary work-center-resume-action" type="button" @click="resumeSelected">{{ tr('workCenter.resumeWorkItem', 'Resume work item') }}</button>
                 </div>
                 <button class="work-center-icon-button work-center-detail-close" type="button" @click="showItemsPane" :title="tr('workCenter.closeWorkItem', 'Close details')" :aria-label="tr('workCenter.closeWorkItem', 'Close details')">
                   <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4l-6.3 6.31-1.42-1.42L9.17 12l-6.3-6.29 1.42-1.42 6.3 6.31 6.3-6.31 1.41 1.42Z"/></svg>
@@ -1253,7 +1293,7 @@ export default {
                             <input type="file" multiple :aria-label="tr('workCenter.addAttachments', 'Add files')" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv" @change="onWorkItemMessageAttachmentInput">
                           </label>
                           <div class="textarea-wrapper">
-                            <textarea v-model="workItemMessage" rows="1" :disabled="coordinatorThinking" :placeholder="tr('workCenter.conversationPlaceholder', 'Message about this work item')" @keydown.enter.exact.prevent="sendSelectedWorkItemMessage"></textarea>
+                            <textarea ref="workItemComposerInput" :value="workItemMessage" rows="1" :disabled="coordinatorThinking" :placeholder="tr('workCenter.conversationPlaceholder', 'Message about this work item')" @input="onWorkItemMessageInput" @keydown="onWorkItemMessageKeydown"></textarea>
                           </div>
                           <button class="send-btn" type="button" @click="sendSelectedWorkItemMessage" :disabled="workItemMessageSending || workItemMessageAttachmentsUploading || coordinatorThinking || (!workItemMessage.trim() && workItemMessageAttachments.length === 0)" :title="tr('workCenter.sendMessage', 'Send message')" :aria-label="tr('workCenter.sendMessage', 'Send message')">
                             <svg v-if="!workItemMessageSending" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
@@ -1264,13 +1304,6 @@ export default {
                       </template>
                     </section>
 
-                    <div v-if="!['done','cancelled'].includes(selected.status)" class="work-center-section work-center-danger-zone">
-                      <div>
-                        <h3>{{ tr('workCenter.cancelWorkItem', 'Cancel work item') }}</h3>
-                        <p>{{ tr('workCenter.cancelWorkItemHint', 'Stop this Work Item and all unfinished Actions. This cannot be undone.') }}</p>
-                      </div>
-                      <button class="btn-secondary work-center-danger-action" type="button" @click="cancelSelected">{{ tr('workCenter.cancelWorkItem', 'Cancel work item') }}</button>
-                    </div>
                   </div>
 
                   <aside class="work-center-workflow" v-if="selected.actions?.length" :aria-label="tr('workCenter.actionFlow', 'Action flow')">
@@ -1311,6 +1344,12 @@ export default {
                       </article>
                     </div>
                   </aside>
+                </div>
+                <div v-if="!['done','cancelled'].includes(selected.status)" class="work-center-detail-controls">
+                  <button class="btn-ghost work-center-stop-action" type="button" @click="cancelSelected">
+                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+                    {{ tr('workCenter.stopWorkItem', 'Stop work item') }}
+                  </button>
                 </div>
               </template>
               <div v-else class="work-center-detail-empty">
