@@ -367,6 +367,56 @@ export class WorkCenterService {
           throw new Error('generation must be a positive integer');
         }
         const workItem = this.#requiredItem(id);
+        const targetAction = this.#requiredAction(workItem, payload.actionId);
+        const latestCoordinatorMessage = (workItem.messages || []).at(-1);
+        const coordinatorRequestedInput = workItem.status === 'waiting'
+          && targetAction.status === 'waiting'
+          && targetAction.generation === generation
+          && latestCoordinatorMessage?.role === 'assistant'
+          && latestCoordinatorMessage.status === 'completed'
+          && latestCoordinatorMessage.decision?.kind === 'request_human'
+          && latestCoordinatorMessage.recovery?.actionId === targetAction.id
+          && latestCoordinatorMessage.recovery?.actionGeneration === targetAction.generation;
+        if (coordinatorRequestedInput) {
+          let addedAttachments = [];
+          let turn;
+          try {
+            addedAttachments = appendWorkItemAttachments(workItem.attachments, payload.files, {
+              root: this.attachmentRoot,
+              workItemId: id,
+            });
+            turn = this.coordinator.message(id, {
+              text: typeof payload.text === 'string' ? payload.text : '',
+              revision: payload.revision,
+              planRevision: workItem.planRevision,
+              ledgerRevision: workItem.ledgerRevision,
+              coordinatorRevision: workItem.coordinatorRevision,
+              controlRequired: true,
+              addedAttachments,
+              attachments: [...(workItem.attachments || []), ...addedAttachments],
+            }, {
+              onUpdate: (type, nextWorkItem) => {
+                this.watcher.abortInvalidWorkItemRuns(id);
+                this.#emit({ type, workItem: nextWorkItem });
+              },
+            });
+          } catch (error) {
+            try {
+              if ((workItem.attachments || []).length === 0 && addedAttachments.length > 0) {
+                removeWorkItemAttachments(this.attachmentRoot, id);
+              } else {
+                removeWorkItemAttachmentFiles(this.attachmentRoot, id, addedAttachments);
+              }
+            } catch {}
+            throw error;
+          }
+          turn.task.catch(() => {});
+          return {
+            accepted: true,
+            routedTo: 'coordinator',
+            turnId: turn.detail.messages?.at(-1)?.turnId || null,
+          };
+        }
         let addedAttachments = [];
         let detail;
         try {

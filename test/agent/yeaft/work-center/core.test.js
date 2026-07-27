@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
-import { WorkItemRunner } from '../../../../agent/yeaft/work-center/runner.js';
+import {
+  WorkItemRunner,
+  createProposeWorkItemActionsTool,
+} from '../../../../agent/yeaft/work-center/runner.js';
 import { WorkItemCoordinator } from '../../../../agent/yeaft/work-center/coordinator.js';
 import {
   LLMAuthError,
@@ -723,7 +726,7 @@ describe('Work Center core', () => {
   });
 
 
-  it('atomically rejects invalid initial plans, including unsafe final gates', () => {
+  it('atomically rejects invalid initial plans, including unsafe final gates', async () => {
     const cases = [
     {
       name: 'missing final gate',
@@ -812,6 +815,43 @@ describe('Work Center core', () => {
         actions: [{ id: 'late-check', name: 'Late check', type: 'test', objective: 'Validate late', approach: 'Run checks', expectedOutcome: 'Late evidence', dependsOnActionIds: ['deliver'], workspaceMode: 'read' }],
       },
     })).toThrow(/unique graph sink/);
+
+    const currentAction = {
+      id: 'internal-action-uuid', stageId: 'work', status: 'running', attempt: 1,
+    };
+    const deliverAction = {
+      id: 'internal-deliver-uuid', stageId: 'deliver', status: 'ready', attempt: 0,
+    };
+    const collector = { value: null };
+    const proposalTool = createProposeWorkItemActionsTool({
+      vps: [{ id: 'omni', name: 'Omni', role: 'Developer', traits: ['implement'] }],
+      workItem: additiveItem,
+      actions: [currentAction, deliverAction],
+      collector,
+      isRunActive: () => true,
+      currentAction,
+    });
+    expect(proposalTool.description).toContain('Its graph references must use stageId');
+    expect(proposalTool.description).toContain('dependencyPatches[].actionId');
+    await expect(proposalTool.execute({
+      proposalId: 'invalid-internal-reference',
+      basePlanRevision: 1,
+      summary: 'Add the missing manifest repair',
+      evidence: ['The manifest is incomplete'],
+      acceptanceChecks: [],
+      actions: [{
+        id: 'repair-manifest', name: 'Repair manifest', type: 'implement',
+        objective: 'Register the missing tests', approach: 'Update the manifest',
+        expectedOutcome: 'Every test is registered', candidateVpIds: ['omni'],
+        assignmentReason: 'Use the implementation VP',
+        dependsOnActionIds: [currentAction.id], workspaceMode: 'shared',
+      }],
+      dependencyPatches: [{
+        actionId: deliverAction.id,
+        addDependsOnActionIds: ['repair-manifest'],
+      }],
+    })).rejects.toThrow(/invalid dependency.*internal-action-uuid/i);
+    expect(collector.value).toBeNull();
   });
 
 
@@ -1018,6 +1058,44 @@ describe('Work Center core', () => {
       });
     expect(() => controller.submit(blocked.run.id, 'boot-a', blocked.run.leaseEpoch, completed('test')))
       .toThrow(/stale|cancelled|expired|finished/i);
+
+    const afterReplan = store.getWorkItemDetail(item.id);
+    let correctionCalls = 0;
+    coordinator.runtimeProvider = async () => ({
+      config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+      adapter: { call: async request => {
+        correctionCalls += 1;
+        if (correctionCalls === 1) {
+          return { text: JSON.stringify({
+            reply: 'I will update the graph.',
+            decision: {
+              kind: 'replan', reason: 'The graph needs an update', contractPatch: null,
+              guidance: [], actions: [],
+            },
+          }) };
+        }
+        expect(request.messages[0].content).toMatch(/previous decision was rejected.*complete unfinished Action graph/is);
+        return { text: JSON.stringify({
+          reply: 'The graph is already valid, so no plan change is required.',
+          decision: {
+            kind: 'answer', reason: 'The corrected decision preserves the valid graph',
+            contractPatch: null, guidance: [], actions: [],
+          },
+        }) };
+      } },
+    });
+    const correctedTurn = coordinator.message(item.id, {
+      text: 'Make sure the remaining graph can finish.',
+      revision: afterReplan.revision,
+      planRevision: afterReplan.planRevision,
+      ledgerRevision: afterReplan.ledgerRevision,
+      coordinatorRevision: afterReplan.coordinatorRevision,
+    });
+    const corrected = await correctedTurn.task;
+    expect(correctionCalls).toBe(2);
+    expect(corrected.messages.at(-1)).toMatchObject({
+      status: 'completed', decision: { kind: 'answer' },
+    });
 
     const next = store.getWorkItemDetail(item.id);
     let resolveLate;
@@ -1248,6 +1326,76 @@ describe('Work Center core', () => {
       expect(resumed.actions.find(action => action.id === undecidable.review.action.id))
         .toMatchObject({ status: 'ready', generation: undecidable.review.action.generation + 1 });
       recoveryController.cancel(undecidable.item.id);
+
+      const routed = createFailedReview('recover-routed-human-input');
+      const routedWaiting = await undecidableCoordinator.recover(routed.item.id).task;
+      let routedPrompt = '';
+      const routedCoordinator = new WorkItemCoordinator({
+        store: recoveryStore,
+        runtimeProvider: async () => ({
+          config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+          adapter: { call: async request => {
+            routedPrompt = request.messages[0].content;
+            const firstDecision = !request.messages[0].content.includes('previous decision was rejected');
+            return { text: JSON.stringify(firstDecision ? {
+              reply: 'I recorded the answer.',
+              decision: {
+                kind: 'answer', reason: 'A control transition is still required',
+                contractPatch: null, guidance: [], actions: [],
+              },
+            } : {
+              reply: 'I added implementation before the replacement review.',
+              decision: {
+                kind: 'replan', reason: 'The user authorized the missing implementation work',
+                contractPatch: null, guidance: [],
+                actions: [
+                  actionSpec('fix-review-blockers', 'implement', [routed.baseline.action.stageId]),
+                  actionSpec('security-review', 'review', ['fix-review-blockers'], {
+                    changesRequestedActionId: 'fix-review-blockers',
+                  }),
+                  actionSpec('deliver', 'deliver', ['security-review']),
+                ],
+              },
+            }) };
+          } },
+        }),
+        policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
+        registry: { listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }] },
+      });
+      const routedService = new WorkCenterService({
+        yeaftDir: recoveryDir,
+        store: recoveryStore,
+        controller: recoveryController,
+        coordinator: routedCoordinator,
+        runner: null,
+        ownerBootId: 'routed-human-input',
+        settingsReader: () => ({}),
+      });
+      const accepted = await routedService.handle('action_input', {
+        id: routed.item.id,
+        actionId: routed.review.action.id,
+        generation: routed.review.action.generation,
+        revision: routedWaiting.revision,
+        text: 'Add the missing implementation Action, then rerun review and delivery.',
+        files: [],
+      });
+      expect(accepted).toMatchObject({ accepted: true, routedTo: 'coordinator' });
+      for (let index = 0; index < 20; index += 1) {
+        const current = recoveryStore.getWorkItemDetail(routed.item.id);
+        if (current.messages.at(-1)?.status !== 'thinking') break;
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      const routedDetail = recoveryStore.getWorkItemDetail(routed.item.id);
+      expect(routedPrompt).toContain('Add the missing implementation Action');
+      expect(routedDetail).toMatchObject({ status: 'ready' });
+      expect(routedDetail.actions.filter(action => action.status === 'ready').map(action => action.stageId))
+        .toEqual(['fix-review-blockers', 'security-review', 'deliver']);
+      expect(routedDetail.events.some(event => event.type === 'action.input_added')).toBe(false);
+      expect(routedDetail.messages.at(-1)).toMatchObject({
+        role: 'assistant', status: 'completed', decision: { kind: 'replan' },
+      });
+      await routedCoordinator.shutdown();
+      recoveryController.cancel(routed.item.id);
 
       const interrupted = createFailedReview('recover-interrupted');
       let infrastructureCalls = 0;
