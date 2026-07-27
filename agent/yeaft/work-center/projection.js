@@ -901,6 +901,11 @@ export function projectWorkItemDetail(detail, options = {}) {
         affectedActionIds: Array.isArray(message.decision.affectedActionIds)
           ? message.decision.affectedActionIds.map(id => String(id)).slice(0, 8) : [],
       } : null,
+      recovery: message.recovery && typeof message.recovery === 'object' ? {
+        actionId: truncateUtf8(String(message.recovery.actionId || ''), 256),
+        actionGeneration: Math.max(0, count(message.recovery.actionGeneration)),
+        stageId: truncateUtf8(String(message.recovery.stageId || ''), 256),
+      } : null,
       createdAt: count(message.createdAt),
       updatedAt: count(message.updatedAt || message.createdAt),
     })),

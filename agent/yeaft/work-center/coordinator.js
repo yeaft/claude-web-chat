@@ -16,6 +16,7 @@ const COORDINATOR_MAX_REPLY_CHARS = 8_000;
 const COORDINATOR_MAX_INSTRUCTION_CHARS = 8_000;
 const COORDINATOR_MAX_OUTPUT_TOKENS = 8_192;
 const COORDINATOR_MAX_SNAPSHOT_BYTES = 64 * 1024;
+const COORDINATOR_DECISION_ATTEMPTS = 2;
 const COORDINATOR_RECOVERY_DECISION_ATTEMPTS = 2;
 const COORDINATOR_MAX_CONVERSATION_MESSAGES = 20;
 const COORDINATOR_MAX_ACTIONS = 64;
@@ -302,7 +303,9 @@ export function normalizeCoordinatorResponse(value, detail, options = {}) {
     : {};
   const allowedKinds = options.recovery === true
     ? ['guide_actions', 'replan', 'request_human']
-    : ['answer', 'guide_actions', 'replan'];
+    : options.controlRequired === true
+      ? ['guide_actions', 'replan']
+      : ['answer', 'guide_actions', 'replan'];
   const kind = allowedKinds.includes(source.kind) ? source.kind : '';
   if (!kind) throw new Error('Work Center Coordinator decision kind is invalid');
   const reason = cleanText(source.reason, 2_000, 'decision reason');
@@ -494,12 +497,15 @@ export class WorkItemCoordinator {
     }, {
       attachments: input.attachments,
       addedAttachments,
+      recovery: input.recovery,
+      requireWaitingRecovery: input.controlRequired === true,
     });
     if (!started) throw new Error(`WorkItem not found: ${id}`);
     options.onUpdate?.('coordinator.turn_started', started.detail);
     return this.#scheduleTurn(started, {
       text: promptText,
       recovery: false,
+      controlRequired: input.controlRequired === true,
       addedAttachments,
       options,
     });
@@ -535,15 +541,17 @@ export class WorkItemCoordinator {
     const text = `Action stage "${action.stageId}" failed. Decide the next safe control transition. `
       + 'Failure is not a terminal WorkItem state: guide or replan executable work whenever possible. '
       + 'Request human input only when the snapshot lacks information required for a safe decision.';
-    return this.#scheduleTurn(started, { text, recovery: true, options });
+    return this.#scheduleTurn(started, { text, recovery: true, controlRequired: false, options });
   }
 
-  #scheduleTurn(started, { text, recovery, addedAttachments = [], options }) {
+  #scheduleTurn(started, {
+    text, recovery, controlRequired = false, addedAttachments = [], options,
+  }) {
     const abortController = new AbortController();
     this.activeTurns.set(started.turnId, abortController);
     const task = new Promise(resolve => setTimeout(resolve, 0))
       .then(() => this.#executeTurn(started, {
-        text, recovery, addedAttachments, options, abortController,
+        text, recovery, controlRequired, addedAttachments, options, abortController,
       }))
       .finally(() => {
         this.activeTurns.delete(started.turnId);
@@ -554,7 +562,7 @@ export class WorkItemCoordinator {
   }
 
   async #executeTurn(started, {
-    text, recovery, addedAttachments, options, abortController,
+    text, recovery, controlRequired, addedAttachments, options, abortController,
   }) {
     try {
       let normalized = null;
@@ -605,7 +613,9 @@ export class WorkItemCoordinator {
         } catch (error) {
           throw coordinatorExecutionError(error, 'selection');
         }
-        const maxAttempts = recovery ? COORDINATOR_RECOVERY_DECISION_ATTEMPTS : 1;
+        const maxAttempts = recovery
+          ? COORDINATOR_RECOVERY_DECISION_ATTEMPTS
+          : COORDINATOR_DECISION_ATTEMPTS;
         for (let index = 0; index < maxAttempts; index += 1) {
           attemptCount = index + 1;
           mutation = null;
@@ -645,6 +655,7 @@ export class WorkItemCoordinator {
             }
             normalized = normalizeCoordinatorResponse(result?.text, started.detail, {
               recovery,
+              controlRequired,
               recoveryActionId: started.fence.recovery?.actionId || null,
             });
             if (normalized.decision.kind === 'replan') {

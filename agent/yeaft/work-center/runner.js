@@ -32,6 +32,7 @@ import { MCPManager } from '../mcp.js';
 import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
 import { recallWorkspaceSessionContext } from './workspace-context.js';
 import { applyGeneratedPlan, BUILT_IN_ACTION_TYPES } from './workflow.js';
+import { applyAdditivePlanProposal } from './plan-mutation.js';
 import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
 import { normalizeEvidence } from './evidence.js';
 import {
@@ -395,13 +396,18 @@ function plannedActionSchema(vpIds, { requireCandidates = true } = {}) {
   } };
 }
 
-export function createProposeWorkItemActionsTool({ vps, workItem, actions, collector, isRunActive }) {
+export function createProposeWorkItemActionsTool({
+  vps, workItem, actions, collector, isRunActive, currentAction = null,
+}) {
   const vpCatalog = planningVpCatalog(vps);
   const vpIds = vpCatalog.map(vp => vp.id);
   const existing = actions.filter(action => !['superseded', 'cancelled'].includes(action.status));
+  const currentIdentity = currentAction
+    ? ` Current Action: stageId=${currentAction.stageId}; internalActionId=${currentAction.id}. Its graph references must use stageId.`
+    : '';
   return defineTool({
     name: 'ProposeWorkItemActions',
-    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Existing Actions: ${existing.map(action => `${action.id}/${action.stageId} (${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions.`,
+    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Use stable stageId values in dependsOnActionIds, changesRequestedActionId, and dependencyPatches[].addDependsOnActionIds. The only internal id field is dependencyPatches[].actionId, which must use the displayed internalActionId of an eligible ready attempt=0 target.${currentIdentity} Existing Actions: ${existing.map(action => `stageId=${action.stageId} (internalActionId=${action.id}, ${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions. This tool validates the complete additive DAG immediately; if validation fails, correct the proposal in the same turn.`,
     parameters: { type: 'object', additionalProperties: false,
       required: ['summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'actions'],
       properties: {
@@ -413,6 +419,13 @@ export function createProposeWorkItemActionsTool({ vps, workItem, actions, colle
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('A WorkItem plan mutation was already submitted for this Run');
+      applyAdditivePlanProposal({
+        workItem,
+        actions,
+        proposal: input,
+        availableVpIds: vpIds,
+      });
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       collector.value = { kind: 'expand', input: structuredClone(input) };
       ctx.requestEndTurn?.({ kind: 'work_item_actions_proposed', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId, actionCount: input.actions.length });
@@ -981,7 +994,7 @@ export class WorkItemRunner {
       runTools.push(createProposeWorkItemActionsTool({
         vps: this.registry.listVps(), workItem,
         actions: this.store.getWorkItemDetail(workItem.id).actions,
-        collector: mutationCollector, isRunActive,
+        collector: mutationCollector, isRunActive, currentAction: executionAction,
       }));
       runTools.push(createRequestWorkItemReplanTool({ workItem, collector: mutationCollector, isRunActive }));
     }

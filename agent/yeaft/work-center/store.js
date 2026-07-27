@@ -2207,27 +2207,33 @@ export class WorkItemStore {
       let recovery = options.recovery && typeof options.recovery === 'object'
         ? { ...options.recovery } : null;
       if (recovery) {
-        const failedAction = activeActions.find(action => action.id === recovery.actionId);
+        const recoveryAction = activeActions.find(action => action.id === recovery.actionId);
+        const requiredStatus = options.requireWaitingRecovery === true ? 'waiting' : 'failed';
         if (['done', 'cancelled'].includes(workItem.status)
-            || failedAction?.status !== 'failed'
-            || failedAction.generation !== recovery.actionGeneration
-            || failedAction.stageId !== recovery.stageId) {
-          throw new Error('WorkItem failure changed before Coordinator recovery started');
+            || recoveryAction?.status !== requiredStatus
+            || recoveryAction.generation !== recovery.actionGeneration
+            || recoveryAction.stageId !== recovery.stageId) {
+          throw new Error(options.requireWaitingRecovery === true
+            ? 'WorkItem human input target changed before the Coordinator turn started'
+            : 'WorkItem failure changed before Coordinator recovery started');
         }
-        const priorAttempts = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM events
-          WHERE work_item_id = ? AND type = 'coordinator.recovery_started'
-            AND action_id = ? AND action_generation = ?`).get(
-          id,
-          failedAction.id,
-          failedAction.generation,
-        )?.count) || 0;
-        recovery = { ...recovery, attempt: priorAttempts + 1 };
+        if (options.requireWaitingRecovery !== true) {
+          const priorAttempts = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM events
+            WHERE work_item_id = ? AND type = 'coordinator.recovery_started'
+              AND action_id = ? AND action_generation = ?`).get(
+            id,
+            recoveryAction.id,
+            recoveryAction.generation,
+          )?.count) || 0;
+          recovery = { ...recovery, attempt: priorAttempts + 1 };
+        }
       }
-      if (!recovery && !String(text || '').trim() && projectedAttachments.length === 0) {
+      const automaticRecovery = recovery && options.requireWaitingRecovery !== true;
+      if (!automaticRecovery && !String(text || '').trim() && projectedAttachments.length === 0) {
         throw new Error('WorkItem Coordinator message or attachments are required');
       }
       const turnId = randomUUID();
-      const userMessage = recovery ? null : {
+      const userMessage = automaticRecovery ? null : {
         id: randomUUID(), turnId, role: 'user', text, attachments: projectedAttachments,
         status: 'completed', createdAt: now,
       };
@@ -2250,7 +2256,7 @@ export class WorkItemStore {
         id, workItem.coordinatorRevision, workItem.revision, workItem.planRevision, workItem.ledgerRevision,
       );
       if (Number(changed.changes) !== 1) throw new Error('Coordinator turn lost its revision fence');
-      this.appendEvent(id, recovery ? 'coordinator.recovery_started' : 'coordinator.turn_started', {
+      this.appendEvent(id, automaticRecovery ? 'coordinator.recovery_started' : 'coordinator.turn_started', {
         turnId,
         status: 'thinking',
         coordinatorRevision,
@@ -2313,17 +2319,17 @@ export class WorkItemStore {
         throw new Error('Coordinator replan requires an AI-planned Action graph');
       }
       if (recovery && decision.kind === 'guide_actions') {
-        const failedAction = activeActions.find(action => (
+        const recoveryAction = activeActions.find(action => (
           action.id === recovery.actionId
           && action.generation === recovery.actionGeneration
           && action.stageId === recovery.stageId
-          && action.status === 'failed'
+          && ['failed', 'waiting'].includes(action.status)
         ));
-        if (!failedAction
+        if (!recoveryAction
             || !Array.isArray(decision.guidance)
             || decision.guidance.length !== 1
-            || decision.guidance[0]?.stageId !== failedAction.stageId) {
-          throw new Error('Coordinator recovery guidance must target only the failed Action identity');
+            || decision.guidance[0]?.stageId !== recoveryAction.stageId) {
+          throw new Error('Coordinator recovery guidance must target only the fenced Action identity');
         }
       }
       let nextWorkItem = workItem;

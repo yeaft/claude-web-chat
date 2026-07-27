@@ -81,6 +81,8 @@ describe('message flow regressions', () => {
     expect(workCenterCss).toContain('grid-template-columns: minmax(0, 1fr) minmax(400px, 440px);');
     expect(workCenterCss).toMatch(/\.work-center-detail-close\s*\{[\s\S]*?position: absolute;[\s\S]*?right: 16px;/);
     expect(workCenterCss).toMatch(/\.work-center-action-description\s*\{[\s\S]*?white-space: nowrap;/);
+    expect(workCenter).toContain("[...(this.selected.messages || [])].reverse().some");
+    expect(workCenter).toContain("message.recovery?.actionId === this.selectedAction.id");
   });
 
   it('stamps background agent messages without promoting that conversation', () => {
