@@ -1430,12 +1430,14 @@ describe('Work Center core', () => {
       const repeatedWaiting = await undecidableCoordinator.recover(repeated.item.id).task;
       let releaseRepeatedTurn;
       let repeatedCalls = 0;
+      const repeatedPrompts = [];
       const repeatedCoordinator = new WorkItemCoordinator({
         store: recoveryStore,
         runtimeProvider: async () => ({
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-          adapter: { call: async () => {
+          adapter: { call: async request => {
             repeatedCalls += 1;
+            repeatedPrompts.push(request.messages[0].content);
             if (repeatedCalls === 1) {
               await new Promise(resolve => { releaseRepeatedTurn = resolve; });
             }
@@ -1463,6 +1465,16 @@ describe('Work Center core', () => {
         files: [],
       });
       expect(firstReply).toMatchObject({ accepted: true, routedTo: 'coordinator' });
+      let firstReplyDetail = recoveryStore.getWorkItemDetail(repeated.item.id);
+      expect(firstReplyDetail.messages.slice(-2)).toEqual([
+        expect.objectContaining({
+          role: 'user', text: 'Use the documented fix sequence.', status: 'completed',
+        }),
+        expect.objectContaining({ role: 'assistant', status: 'thinking' }),
+      ]);
+      const firstReplyTurnId = firstReplyDetail.messages.at(-1).turnId;
+      expect(firstReplyDetail.events.find(event => event.data?.turnId === firstReplyTurnId))
+        .toMatchObject({ type: 'coordinator.turn_started' });
       for (let index = 0; index < 20 && !releaseRepeatedTurn; index += 1) {
         await new Promise(resolve => setTimeout(resolve, 0));
       }
@@ -1496,6 +1508,15 @@ describe('Work Center core', () => {
         files: [],
       });
       expect(retryReply).toMatchObject({ accepted: true, routedTo: 'coordinator' });
+      for (let index = 0; index < 20 && repeatedCalls < 3; index += 1) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      expect(repeatedPrompts.at(-1)).toContain('Use the documented fix sequence.');
+      expect(recoveryStore.getWorkItemDetail(repeated.item.id).messages
+        .filter(message => message.role === 'user').map(message => message.text)).toEqual([
+          'Use the documented fix sequence.',
+          'Retry the Coordinator decision with the same recovery ownership.',
+        ]);
       for (let index = 0; index < 20; index += 1) {
         const current = recoveryStore.getWorkItemDetail(repeated.item.id);
         if (current.messages.at(-1)?.status !== 'thinking') break;

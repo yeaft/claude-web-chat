@@ -2228,11 +2228,12 @@ export class WorkItemStore {
           recovery = { ...recovery, attempt: priorAttempts + 1 };
         }
       }
-      if (!recovery && !String(text || '').trim() && projectedAttachments.length === 0) {
+      const automaticRecovery = recovery && options.requireWaitingRecovery !== true;
+      if (!automaticRecovery && !String(text || '').trim() && projectedAttachments.length === 0) {
         throw new Error('WorkItem Coordinator message or attachments are required');
       }
       const turnId = randomUUID();
-      const userMessage = recovery ? null : {
+      const userMessage = automaticRecovery ? null : {
         id: randomUUID(), turnId, role: 'user', text, attachments: projectedAttachments,
         status: 'completed', createdAt: now,
       };
@@ -2255,7 +2256,7 @@ export class WorkItemStore {
         id, workItem.coordinatorRevision, workItem.revision, workItem.planRevision, workItem.ledgerRevision,
       );
       if (Number(changed.changes) !== 1) throw new Error('Coordinator turn lost its revision fence');
-      this.appendEvent(id, recovery ? 'coordinator.recovery_started' : 'coordinator.turn_started', {
+      this.appendEvent(id, automaticRecovery ? 'coordinator.recovery_started' : 'coordinator.turn_started', {
         turnId,
         status: 'thinking',
         coordinatorRevision,
