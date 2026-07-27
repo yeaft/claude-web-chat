@@ -1,5 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
+import {
+  DEFAULT_UPGRADE_REGISTRY,
+  buildUpgradeInstallArgs,
+  buildUpgradeMetadataArgs,
+  buildUpgradeMetadataUrl,
+  buildUpgradeUpdateArgs,
+  buildWindowsUpgradeInvocation,
+  launchWindowsUpgradeScript,
+} from '../../agent/upgrade-command.js';
+import { buildWindowsUpgradeCommand } from '../../agent/connection/upgrade.js';
 
 /**
  * Tests for the agent side of feat-ws-plaintext-negotiation.
@@ -41,11 +52,186 @@ function applyRegisteredMessage(ctxLike, msg) {
   }
 }
 
-describe('agent ctx defaults', () => {
-  it('defaults serverEncryptionRequired to true (assume old server)', async () => {
+describe('agent ctx defaults and upgrade contract', () => {
+  it('defaults encryption safely and pins every upgrade fetch to the Yeaft registry', async () => {
     // The actual default is set in agent/context.js. Mirror the contract.
     const ctxLike = { serverEncryptionRequired: true };
     expect(ctxLike.serverEncryptionRequired).toBe(true);
+
+    expect(DEFAULT_UPGRADE_REGISTRY).toBe('https://pkg.yeaft.com/');
+    expect(buildUpgradeMetadataArgs('@yeaft/webchat-agent@latest', 'version')).toEqual([
+      'view',
+      '@yeaft/webchat-agent@latest',
+      'version',
+      '--registry=https://pkg.yeaft.com/',
+      '--prefer-online',
+      '--prefer-offline=false',
+      '--offline=false',
+    ]);
+    expect(buildUpgradeInstallArgs('@yeaft/webchat-agent@1.0.250')).toEqual([
+      'install',
+      '-g',
+      '@yeaft/webchat-agent@1.0.250',
+      '--registry=https://pkg.yeaft.com/',
+    ]);
+    expect(buildUpgradeInstallArgs('@yeaft/webchat-agent@1.0.250', { global: false })).toEqual([
+      'install',
+      '@yeaft/webchat-agent@1.0.250',
+      '--registry=https://pkg.yeaft.com/',
+    ]);
+    expect(buildUpgradeUpdateArgs('@yeaft/webchat-agent')).toEqual([
+      'update',
+      '-g',
+      '@yeaft/webchat-agent',
+      '--registry=https://pkg.yeaft.com/',
+    ]);
+    expect(buildUpgradeMetadataUrl('@yeaft/webchat-agent')).toBe(
+      'https://pkg.yeaft.com/%40yeaft%2Fwebchat-agent/latest',
+    );
+    expect(buildWindowsUpgradeCommand()).toBe(
+      'call npm update -g %PKG% --registry=https://pkg.yeaft.com/',
+    );
+
+    const options = {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      windowsVerbatimArguments: true,
+    };
+    const batPath = 'C:\\Users\\Corp User\\AppData\\Roaming\\yeaft-agent\\upgrade.bat';
+    const handoffPath = 'C:\\Users\\Corp User\\AppData\\Roaming\\yeaft-agent\\upgrade.started';
+    expect(buildWindowsUpgradeInvocation(batPath)).toEqual({
+      command: 'cmd.exe',
+      args: ['/d', '/s', '/c', `"${batPath}"`],
+      options,
+    });
+    const makeChild = () => {
+      const child = new EventEmitter();
+      child.exitCode = null;
+      child.signalCode = null;
+      child.unref = vi.fn();
+      child.kill = vi.fn();
+      return child;
+    };
+    const runLauncher = (overrides = {}) => launchWindowsUpgradeScript({
+      batPath,
+      handoffPath,
+      fileExists: () => false,
+      removeFile: () => {},
+      sleep: async () => {},
+      timeoutMs: 10,
+      ...overrides,
+    });
+
+    await expect(runLauncher({
+      spawnProcess: () => { throw new Error('cmd blocked'); },
+    })).rejects.toThrow('Windows upgrade launcher failed: cmd blocked');
+
+    const asyncErrorChild = makeChild();
+    await expect(runLauncher({
+      spawnProcess: () => {
+        queueMicrotask(() => asyncErrorChild.emit('error', new Error('spawn denied')));
+        return asyncErrorChild;
+      },
+    })).rejects.toThrow('Windows upgrade launcher failed: spawn denied');
+    expect(asyncErrorChild.kill).toHaveBeenCalledOnce();
+
+    const postSpawnErrorChild = makeChild();
+    await expect(runLauncher({
+      spawnProcess: () => {
+        queueMicrotask(() => {
+          postSpawnErrorChild.emit('spawn');
+          queueMicrotask(() => postSpawnErrorChild.emit('error', new Error('launcher failed after spawn')));
+        });
+        return postSpawnErrorChild;
+      },
+    })).rejects.toThrow('Windows upgrade launcher failed: launcher failed after spawn');
+    expect(postSpawnErrorChild.kill).toHaveBeenCalledOnce();
+    expect(postSpawnErrorChild.unref).not.toHaveBeenCalled();
+
+    const exitedChild = makeChild();
+    const exitedSpawn = vi.fn(() => {
+      queueMicrotask(() => {
+        exitedChild.emit('spawn');
+        exitedChild.exitCode = 1;
+        exitedChild.emit('close', 1);
+      });
+      return exitedChild;
+    });
+    const exitedHandoff = vi.fn();
+    await expect(runLauncher({
+      spawnProcess: exitedSpawn,
+      onHandoff: exitedHandoff,
+    })).rejects.toThrow('exited before handoff (code 1)');
+    expect(exitedHandoff).not.toHaveBeenCalled();
+    expect(exitedChild.unref).not.toHaveBeenCalled();
+    expect(exitedChild.kill).toHaveBeenCalledOnce();
+
+    const markerThenExitChild = makeChild();
+    const markerThenExitHandoff = vi.fn();
+    let markerChecks = 0;
+    await expect(runLauncher({
+      spawnProcess: () => {
+        queueMicrotask(() => markerThenExitChild.emit('spawn'));
+        return markerThenExitChild;
+      },
+      fileExists: () => ++markerChecks > 0,
+      sleep: async () => {
+        markerThenExitChild.exitCode = 1;
+        markerThenExitChild.emit('close', 1);
+      },
+      onHandoff: markerThenExitHandoff,
+    })).rejects.toThrow('exited before handoff (code 1)');
+    expect(markerChecks).toBe(1);
+    expect(markerThenExitHandoff).not.toHaveBeenCalled();
+    expect(markerThenExitChild.kill).toHaveBeenCalledOnce();
+
+    const timeoutChild = makeChild();
+    await expect(runLauncher({
+      spawnProcess: () => {
+        queueMicrotask(() => timeoutChild.emit('spawn'));
+        return timeoutChild;
+      },
+      timeoutMs: 0,
+    })).rejects.toThrow('did not confirm handoff within 0ms');
+    expect(timeoutChild.kill).toHaveBeenCalledOnce();
+
+    const cmdChild = makeChild();
+    const spawnMock = vi.fn(() => {
+      queueMicrotask(() => cmdChild.emit('spawn'));
+      return cmdChild;
+    });
+    let handoffChecks = 0;
+    const onHandoff = vi.fn();
+    await expect(runLauncher({
+      spawnProcess: spawnMock,
+      fileExists: () => ++handoffChecks >= 2,
+      onHandoff,
+    })).resolves.toBe('cmd.exe');
+    expect(spawnMock).toHaveBeenCalledWith(
+      'cmd.exe',
+      ['/d', '/s', '/c', `"${batPath}"`],
+      options,
+    );
+    expect(handoffChecks).toBeGreaterThanOrEqual(3);
+    expect(onHandoff).toHaveBeenCalledOnce();
+    expect(cmdChild.kill).not.toHaveBeenCalled();
+    expect(cmdChild.unref).toHaveBeenCalledOnce();
+
+    const callbackChild = makeChild();
+    const removeHandoff = vi.fn();
+    await expect(runLauncher({
+      spawnProcess: () => {
+        queueMicrotask(() => callbackChild.emit('spawn'));
+        return callbackChild;
+      },
+      fileExists: () => true,
+      removeFile: removeHandoff,
+      onHandoff: () => { throw new Error('pm2 delete failed'); },
+    })).rejects.toThrow('pm2 delete failed');
+    expect(callbackChild.kill).toHaveBeenCalledOnce();
+    expect(callbackChild.unref).not.toHaveBeenCalled();
+    expect(removeHandoff).toHaveBeenCalledTimes(2);
   });
 });
 
