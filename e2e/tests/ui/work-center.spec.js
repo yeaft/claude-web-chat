@@ -83,7 +83,7 @@ const OPEN_ITEM_DETAIL = {
   actions: [{
     id: 'action-1', generation: 1, sequence: 1, type: 'implement', requiredRole: 'developer', status: 'running',
     assignedVp: { id: 'linus', name: 'Linus' },
-    contentSummary: 'Implemented the layout fix and verified the responsive breakpoints.',
+    contentSummary: 'Updated the existing layout styles and verified supported breakpoints.',
     brief: {
       objective: 'Make the Work Center layout responsive',
       approach: 'Update the existing layout styles and verify supported breakpoints',
@@ -95,10 +95,10 @@ const OPEN_ITEM_DETAIL = {
       totalTokens: 1750,
     },
     loopCount: 3, toolCount: 8, progressRevision: 4,
-    response: 'Implemented the layout fix and verified the responsive breakpoints.',
+    response: 'Updated the existing layout styles and verified supported breakpoints.',
     messages: [{
-      id: 'action-1:1', status: 'running',
-      text: 'Implemented the layout fix and verified the responsive breakpoints.',
+      id: 'action-1:1', role: 'assistant', status: 'running',
+      text: 'Updated the existing layout styles and verified supported breakpoints.',
       createdAt: Date.now(), updatedAt: Date.now(),
     }],
   }],
@@ -512,7 +512,7 @@ test.describe('Work Center responsive UI', () => {
     const firstCard = cards.first();
     const cardLayout = await firstCard.evaluate(element => {
       const title = element.querySelector('.work-center-action-primary strong');
-      const summary = element.querySelector('.work-center-action-content-summary');
+      const summary = element.querySelector('.work-center-action-description');
       const titleStyle = title ? getComputedStyle(title) : null;
       return {
         cardWidth: element.getBoundingClientRect().width,
@@ -565,9 +565,9 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage.locator('.work-center-action-list-heading')).toContainText('1 Actions');
     const action = chatPage.locator('.work-center-action-card');
     await expect(action).toHaveCount(1);
-    await expect(action).toContainText('Implement');
+    await expect(chatPage.locator('.work-center-action-list-heading small')).toHaveText('implement');
     await expect(action).toContainText('Linus');
-    await expect(action).toContainText('Implemented the layout fix');
+    await expect(action).toContainText('Update the existing layout styles and verify supported breakpoints');
     await expect(action).not.toContainText('LLM requests');
     await expect(action).not.toContainText('loops');
     await expect(action).not.toContainText('tools');
@@ -597,7 +597,7 @@ test.describe('Work Center responsive UI', () => {
 
     await action.locator('.work-center-action-summary').click();
     const actionDetail = chatPage.locator('.work-center-action-detail-pane');
-    await expect(actionDetail.locator('.work-center-action-message')).toContainText('Implemented the layout fix');
+    await expect(actionDetail.locator('.work-center-action-message')).toContainText('Updated the existing layout styles');
     await expect(actionDetail.getByRole('tab')).toHaveCount(2);
     await expect(actionDetail.getByRole('tab', { name: 'Task context' })).toHaveCount(0);
     await actionDetail.locator('.work-center-action-brief-disclosure summary').click();
@@ -791,7 +791,7 @@ test.describe('Work Center responsive UI', () => {
     await expect(actionDetail.locator('.work-center-action-composer')).toContainText('rerun this Action');
 
     await actionDetail.locator('.work-center-action-detail-header .work-center-icon-button').click();
-    await chatPage.locator('.work-center-detail-heading .work-center-icon-button').click();
+    await chatPage.locator('.work-center-detail-close').click();
     const selectWaiting = chatPage.locator('.work-center-card', { hasText: WAITING_ITEM.title }).click();
     await respondToWorkCenterOp(mockAgent, 'get', WAITING_ITEM_DETAIL, items);
     await selectWaiting;
@@ -838,7 +838,7 @@ test.describe('Work Center responsive UI', () => {
       await expect(actionDetail.locator('textarea')).toHaveCount(0);
 
       await actionDetail.locator('.work-center-action-detail-header .work-center-icon-button').click();
-      await chatPage.locator('.work-center-detail-heading .work-center-icon-button').click();
+      await chatPage.locator('.work-center-detail-close').click();
       await expect(chatPage.locator('.work-center-list')).toBeVisible();
     }
 
@@ -1461,6 +1461,118 @@ test.describe('Work Center responsive UI', () => {
     expect(request.payload.attachments).toEqual([expect.objectContaining({
       fileId: expect.any(String), name: 'screen.png', mimeType: 'image/png', size: 10,
     })]);
+  });
+
+  test('sends an attachment-only Work Item message and keeps the detail layout compact', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent);
+    await chatPage.setViewportSize({ width: 1400, height: 900 });
+    const select = chatPage.locator('.work-center-card').click();
+    await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
+    await select;
+
+    const conversation = chatPage.locator('.work-center-conversation');
+    const upload = chatPage.waitForResponse(response => (
+      response.url().includes('/api/upload') && response.request().method() === 'POST'
+    ));
+    await conversation.locator('.work-center-attachment-picker input').setInputFiles({
+      name: 'work-item-screen.png', mimeType: 'image/png', buffer: Buffer.from('work-item-image'),
+    });
+    await upload;
+    await expect(conversation.locator('.work-center-message-draft-attachments')).toContainText('work-item-screen.png');
+    await expect(conversation.locator('textarea')).toHaveValue('');
+
+    const messageResponse = respondToWorkCenterOp(mockAgent, 'work_item_message', {
+      accepted: true,
+      turnId: 'attachment-only-turn',
+    });
+    await conversation.getByRole('button', { name: 'Send message' }).click();
+    const messageRequest = await messageResponse;
+    expect(messageRequest.payload).toMatchObject({
+      id: OPEN_ITEM.id,
+      text: '',
+      revision: 1,
+      planRevision: 2,
+      ledgerRevision: 4,
+      coordinatorRevision: 0,
+      attachments: [expect.objectContaining({
+        fileId: expect.any(String),
+        name: 'work-item-screen.png',
+        mimeType: 'image/png',
+        size: 15,
+      })],
+    });
+    await expect(conversation.locator('.work-center-message-draft-attachments')).toHaveCount(0);
+
+    for (const { width, theme } of [
+      { width: 1400, theme: 'light' },
+      { width: 1400, theme: 'dark' },
+      { width: 430, theme: 'light' },
+      { width: 430, theme: 'dark' },
+    ]) {
+      await chatPage.setViewportSize({ width, height: 900 });
+      await chatPage.evaluate(value => {
+        document.documentElement.setAttribute('data-theme', value);
+        localStorage.setItem('theme', value);
+      }, theme);
+      await chatPage.waitForTimeout(250);
+
+      const metrics = await chatPage.locator('.work-center-detail').evaluate(detail => {
+        const layout = detail.querySelector('.work-center-detail-layout');
+        const workflow = detail.querySelector('.work-center-workflow');
+        const main = detail.querySelector('.work-center-detail-main');
+        const close = detail.querySelector('.work-center-detail-close');
+        const card = detail.querySelector('.work-center-action-card');
+        const content = card.querySelector('.work-center-action-content');
+        const detailRect = detail.getBoundingClientRect();
+        const closeRect = close.getBoundingClientRect();
+        const lineRects = [...content.children].map(element => element.getBoundingClientRect());
+        const themeProbe = document.createElement('div');
+        themeProbe.style.background = 'var(--session-active)';
+        document.body.append(themeProbe);
+        const sessionActiveBackground = getComputedStyle(themeProbe).backgroundColor;
+        themeProbe.remove();
+        return {
+          columnCount: getComputedStyle(layout).gridTemplateColumns.trim().split(/\s+/).length,
+          workflowWidth: workflow.getBoundingClientRect().width,
+          cardHeight: card.getBoundingClientRect().height,
+          lineCount: lineRects.length,
+          distinctLineTops: new Set(lineRects.map(rect => Math.round(rect.top))).size,
+          closeTop: Math.round(closeRect.top - detailRect.top),
+          closeRight: Math.round(detailRect.right - closeRect.right),
+          detailScrollWidth: detail.scrollWidth,
+          detailClientWidth: detail.clientWidth,
+          documentScrollWidth: document.documentElement.scrollWidth,
+          documentClientWidth: document.documentElement.clientWidth,
+          workflowBackground: getComputedStyle(workflow).backgroundColor,
+          detailBackground: getComputedStyle(detail).backgroundColor,
+          mainBackground: getComputedStyle(main).backgroundColor,
+          cardBackground: getComputedStyle(card).backgroundColor,
+          sessionActiveBackground,
+          cardActive: card.classList.contains('active'),
+        };
+      });
+
+      expect(metrics.lineCount).toBe(3);
+      expect(metrics.distinctLineTops).toBe(3);
+      expect(metrics.cardHeight).toBeLessThanOrEqual(75);
+      expect(metrics.detailScrollWidth).toBeLessThanOrEqual(metrics.detailClientWidth + 1);
+      expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.documentClientWidth + 1);
+      expect(metrics.workflowBackground).toBe(metrics.detailBackground);
+      expect(metrics.mainBackground).toBe('rgba(0, 0, 0, 0)');
+      expect(metrics.cardActive).toBe(true);
+      expect(metrics.cardBackground).toBe(metrics.sessionActiveBackground);
+      if (width === 1400) {
+        expect(metrics.columnCount).toBe(2);
+        expect(metrics.workflowWidth).toBeGreaterThanOrEqual(439);
+        expect(metrics.workflowWidth).toBeLessThanOrEqual(441);
+        expect(metrics.closeTop).toBe(16);
+        expect(metrics.closeRight).toBe(16);
+      } else {
+        expect(metrics.columnCount).toBe(1);
+        expect(metrics.closeTop).toBe(12);
+        expect(metrics.closeRight).toBe(12);
+      }
+    }
   });
 
   test('uploads files with Action recovery input and forwards owned references', async ({ chatPage, mockAgent }) => {

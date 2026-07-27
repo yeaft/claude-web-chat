@@ -1382,11 +1382,13 @@ describe('Yeaft history outline state', () => {
       coordinatorRevision: 3,
       messages: [expect.objectContaining({ text: 'Plan updated' })],
     });
-    const sent = store.sendWorkItemMessage('wi-1', 'Change the target', 8, 'agent-a');
+    const messageAttachments = [{ fileId: 'file-1', name: 'screen.png', mimeType: 'image/png', size: 120 }];
+    const sent = store.sendWorkItemMessage('wi-1', 'Change the target', 8, messageAttachments, 'agent-a');
     const coordinatorRequest = pendingRequests.find(request => request.operation === 'work_item_message');
     expect(store.workCenterRequest).toHaveBeenLastCalledWith('work_item_message', {
       id: 'wi-1', text: 'Change the target', revision: 8,
       planRevision: 0, ledgerRevision: 0, coordinatorRevision: 3,
+      attachments: messageAttachments,
     }, 'agent-a');
     coordinatorRequest.resolve({ accepted: true, turnId: 'turn-2' });
     await expect(sent).resolves.toEqual({ accepted: true, turnId: 'turn-2' });

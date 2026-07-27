@@ -2171,6 +2171,14 @@ export class WorkItemStore {
         throw new Error('WorkItem Coordinator is already responding');
       }
       const now = this.now();
+      const projectedAttachments = (Array.isArray(options.addedAttachments) ? options.addedAttachments : [])
+        .map(attachment => ({
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          size: Math.max(0, Number(attachment.size) || 0),
+          isImage: attachment.isImage === true,
+        }));
       const activeActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
         AND status NOT IN ('completed', 'superseded', 'cancelled') ORDER BY sequence`).all(id).map(mapAction);
       this.#assertNoIntegrationReservation(activeActions, now);
@@ -2193,9 +2201,13 @@ export class WorkItemStore {
         )?.count) || 0;
         recovery = { ...recovery, attempt: priorAttempts + 1 };
       }
+      if (!recovery && !String(text || '').trim() && projectedAttachments.length === 0) {
+        throw new Error('WorkItem Coordinator message or attachments are required');
+      }
       const turnId = randomUUID();
       const userMessage = recovery ? null : {
-        id: randomUUID(), turnId, role: 'user', text, status: 'completed', createdAt: now,
+        id: randomUUID(), turnId, role: 'user', text, attachments: projectedAttachments,
+        status: 'completed', createdAt: now,
       };
       const assistantMessage = {
         id: randomUUID(), turnId, role: 'assistant', text: '', status: 'thinking',
@@ -2205,15 +2217,22 @@ export class WorkItemStore {
       const messages = [...(workItem.messages || []), ...(userMessage ? [userMessage] : []), assistantMessage]
         .slice(-100);
       const coordinatorRevision = workItem.coordinatorRevision + 1;
-      const changed = this.db.prepare(`UPDATE work_items SET messages = ?, coordinator_revision = ?, updated_at = ?
+      const revision = workItem.revision + (projectedAttachments.length > 0 ? 1 : 0);
+      const nextAttachments = Array.isArray(options.attachments)
+        ? options.attachments
+        : workItem.attachments;
+      const changed = this.db.prepare(`UPDATE work_items SET messages = ?, attachments = ?, revision = ?, coordinator_revision = ?, updated_at = ?
         WHERE id = ? AND coordinator_revision = ? AND revision = ? AND plan_revision = ?
         AND ledger_revision = ?`).run(
-        stringify(messages), coordinatorRevision, now, id, workItem.coordinatorRevision,
-        workItem.revision, workItem.planRevision, workItem.ledgerRevision,
+        stringify(messages), stringify(nextAttachments), revision, coordinatorRevision, now,
+        id, workItem.coordinatorRevision, workItem.revision, workItem.planRevision, workItem.ledgerRevision,
       );
       if (Number(changed.changes) !== 1) throw new Error('Coordinator turn lost its revision fence');
       this.appendEvent(id, recovery ? 'coordinator.recovery_started' : 'coordinator.turn_started', {
-        turnId, status: 'thinking', coordinatorRevision,
+        turnId,
+        status: 'thinking',
+        coordinatorRevision,
+        addedAttachmentCount: projectedAttachments.length,
       }, recovery ? {
         actionId: recovery.actionId,
         actionGeneration: recovery.actionGeneration,
@@ -2224,7 +2243,7 @@ export class WorkItemStore {
         detail,
         fence: {
           workItemId: id,
-          revision: workItem.revision,
+          revision,
           planRevision: workItem.planRevision,
           ledgerRevision: workItem.ledgerRevision,
           coordinatorRevision,

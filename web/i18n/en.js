@@ -1522,6 +1522,7 @@ export default {
   'workCenter.workflow': 'Workflow',
   'workCenter.actionFlow': 'Action flow',
   'workCenter.actionCount': '{count} Actions',
+  'workCenter.noActionSummary': 'No summary yet',
   'workCenter.actionProgress': '{completed} / {total} Actions',
   'workCenter.currentAction': 'Current Action',
   'workCenter.expandActions': 'Show Actions',

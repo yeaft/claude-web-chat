@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { previewFiles } from '../../server/context.js';
 import { fallbackUploadName, registerUploadRoutes } from '../../server/routes/upload-routes.js';
+import { workCenterOpAcceptsAttachments } from '../../server/handlers/client-work-center.js';
 
 describe('upload routes', () => {
   it('keeps existing multipart filenames', () => {
     expect(fallbackUploadName({ originalname: 'screen.png', mimetype: 'image/png' }, 0)).toBe('screen.png');
+    expect(['create', 'work_item_message', 'action_input', 'guide']
+      .every(operation => workCenterOpAcceptsAttachments(operation))).toBe(true);
+    expect(workCenterOpAcceptsAttachments('get')).toBe(false);
   });
 
   it('generates usable names for pasted clipboard images with empty multipart filenames', () => {

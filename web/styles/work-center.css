@@ -507,8 +507,10 @@
   display: none;
 }
 
-.work-center-body.is-empty {
+.work-center-body.is-empty,
+.work-center-body:not([data-pane="items"]) {
   border-color: transparent;
+  border-radius: 0;
 }
 
 .work-center-body.is-empty .work-center-detail,
@@ -536,6 +538,7 @@
 }
 
 .work-center-detail {
+  position: relative;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -829,7 +832,14 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
-  padding: 24px clamp(20px, 4vw, 56px) 18px;
+  padding: 24px clamp(64px, 6vw, 80px) 18px clamp(20px, 4vw, 56px);
+}
+
+.work-center-detail-close {
+  position: absolute;
+  z-index: 2;
+  top: 16px;
+  right: 16px;
 }
 
 .work-center-detail-heading h2 {
@@ -847,7 +857,7 @@
 
 .work-center-detail-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  grid-template-columns: minmax(0, 1fr) minmax(400px, 440px);
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -875,8 +885,8 @@
 }
 
 .work-center-workflow {
-  padding: 18px 14px 28px;
-  background: var(--bg-sidebar);
+  padding: 18px 18px 28px;
+  background: var(--bg-main);
 }
 
 .work-center-detail-layout.without-workflow .work-center-detail-main {
@@ -895,9 +905,7 @@
   display: grid;
   min-width: 0;
   gap: 3px;
-  padding: 11px 12px;
-  border-radius: 9px;
-  background: var(--bg-sidebar);
+  padding: 4px 0;
 }
 
 .work-center-detail-meta dt {
@@ -1105,8 +1113,8 @@
   min-width: 0;
   overflow: hidden;
   border: 0;
-  border-radius: 8px;
-  background: var(--bg-main);
+  border-radius: 7px;
+  background: transparent;
 }
 
 .work-center-action-summary {
@@ -1115,8 +1123,8 @@
   min-width: 0;
   align-items: center;
   grid-template-columns: 26px minmax(0, 1fr) 14px;
-  gap: 10px;
-  padding: 11px 10px;
+  gap: 9px;
+  padding: 8px 9px;
   border: 0;
   background: transparent;
   color: var(--text-primary);
@@ -1159,7 +1167,7 @@
 .work-center-action-content {
   display: grid;
   min-width: 0;
-  gap: 5px;
+  gap: 2px;
 }
 
 .work-center-action-primary,
@@ -1176,29 +1184,18 @@
 
 .work-center-action-primary strong {
   min-width: 0;
+  overflow: hidden;
   flex: 1;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .work-center-action-description {
-  display: -webkit-box;
-  overflow: hidden;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.work-center-action-secondary small {
   min-width: 0;
   overflow: hidden;
-  flex: 0 0 auto;
-  max-width: 34%;
   color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.35;
@@ -1206,12 +1203,13 @@
   white-space: nowrap;
 }
 
-.work-center-action-content-summary {
+.work-center-action-secondary small {
   min-width: 0;
   overflow: hidden;
   flex: 1;
+  max-width: 100%;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2030,7 +2028,33 @@
   width: 100%;
   max-width: none;
   margin: 0;
+  gap: 8px;
   background: var(--bg-input-wrapper);
+}
+
+.work-center-item-message-input .attach-btn,
+.work-center-item-message-input .send-btn {
+  width: 34px;
+  height: 34px;
+}
+
+.work-center-item-message-input .work-center-attachment-picker {
+  position: relative;
+  padding: 0;
+  color: var(--text-secondary);
+}
+
+.work-center-message-draft-attachments {
+  margin-bottom: -4px;
+}
+
+.work-center-message-attachments {
+  margin-top: 8px;
+}
+
+.work-center-message-uploading {
+  color: var(--text-muted);
+  font-size: 10px;
 }
 
 .work-center-item-message-input textarea {
@@ -2967,7 +2991,7 @@
   flex: 1;
 }
 
-@container work-center (max-width: 980px) {
+@container work-center (max-width: 1120px) {
   .work-center-detail-layout {
     grid-template-columns: minmax(0, 1fr);
     overflow-y: auto;
@@ -3147,7 +3171,12 @@
   }
 
   .work-center-detail-heading {
-    padding: 20px 18px 16px;
+    padding: 20px 58px 16px 18px;
+  }
+
+  .work-center-detail-close {
+    top: 12px;
+    right: 12px;
   }
 
   .work-center-detail-main,

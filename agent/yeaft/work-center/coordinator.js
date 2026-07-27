@@ -2,6 +2,7 @@ import { resolveMaxOutputTokens } from '../models.js';
 import { resolveWorkItemModel, selectWorkItemVp } from './assignment.js';
 import { normalizeContractPatch } from './completion-contract.js';
 import { applyCoordinatorReplan } from './plan-mutation.js';
+import { buildWorkItemAttachmentContext } from './attachments.js';
 
 const COORDINATOR_MAX_REPLY_CHARS = 8_000;
 const COORDINATOR_MAX_INSTRUCTION_CHARS = 8_000;
@@ -362,6 +363,7 @@ export class WorkItemCoordinator {
     this.runtimeProvider = options.runtimeProvider;
     this.policyProvider = typeof options.policyProvider === 'function' ? options.policyProvider : async () => ({});
     this.registry = options.registry;
+    this.attachmentRoot = options.attachmentRoot || null;
     this.activeTurns = new Map();
     this.activeTasks = new Map();
     this.shuttingDown = false;
@@ -369,16 +371,31 @@ export class WorkItemCoordinator {
 
   message(id, input = {}, options = {}) {
     if (this.shuttingDown) throw new Error('Work Center Coordinator is shutting down');
-    const text = cleanText(input.text, COORDINATOR_MAX_REPLY_CHARS, 'message');
+    const text = typeof input.text === 'string'
+      ? input.text.trim().slice(0, COORDINATOR_MAX_REPLY_CHARS)
+      : '';
+    const addedAttachments = Array.isArray(input.addedAttachments) ? input.addedAttachments : [];
+    if (!text && addedAttachments.length === 0) {
+      throw new Error('Work Center Coordinator message or attachments are required');
+    }
+    const promptText = text || `The user added ${addedAttachments.length} attachment(s) for this WorkItem.`;
     const started = this.store.beginCoordinatorTurn(id, text, {
       revision: Number(input.revision),
       planRevision: Number(input.planRevision),
       ledgerRevision: Number(input.ledgerRevision),
       coordinatorRevision: Number(input.coordinatorRevision),
+    }, {
+      attachments: input.attachments,
+      addedAttachments,
     });
     if (!started) throw new Error(`WorkItem not found: ${id}`);
     options.onUpdate?.('coordinator.turn_started', started.detail);
-    return this.#scheduleTurn(started, { text, recovery: false, options });
+    return this.#scheduleTurn(started, {
+      text: promptText,
+      recovery: false,
+      addedAttachments,
+      options,
+    });
   }
 
   recover(id, options = {}) {
@@ -408,19 +425,18 @@ export class WorkItemCoordinator {
     });
     if (!started) return null;
     options.onUpdate?.('coordinator.recovery_started', started.detail);
-    const recovery = started.detail.messages?.at(-1)?.recovery || {};
     const text = `Action stage "${action.stageId}" failed. Decide the next safe control transition. `
       + 'Failure is not a terminal WorkItem state: guide or replan executable work whenever possible. '
       + 'Request human input only when the snapshot lacks information required for a safe decision.';
     return this.#scheduleTurn(started, { text, recovery: true, options });
   }
 
-  #scheduleTurn(started, { text, recovery, options }) {
+  #scheduleTurn(started, { text, recovery, addedAttachments = [], options }) {
     const abortController = new AbortController();
     this.activeTurns.set(started.turnId, abortController);
     const task = new Promise(resolve => setTimeout(resolve, 0))
       .then(() => this.#executeTurn(started, {
-        text, recovery, options, abortController,
+        text, recovery, addedAttachments, options, abortController,
       }))
       .finally(() => {
         this.activeTurns.delete(started.turnId);
@@ -430,13 +446,21 @@ export class WorkItemCoordinator {
     return { detail: started.detail, task };
   }
 
-  async #executeTurn(started, { text, recovery, options, abortController }) {
+  async #executeTurn(started, {
+    text, recovery, addedAttachments, options, abortController,
+  }) {
     try {
       let normalized = null;
       let mutation = null;
       let attemptCount = 0;
       let lastError = null;
       const snapshotText = coordinatorSnapshotText(started.detail);
+      const attachmentContext = !recovery && this.attachmentRoot
+        ? buildWorkItemAttachmentContext({ ...started.detail, attachments: addedAttachments }, {
+            root: this.attachmentRoot,
+            inlineTextBytes: 32 * 1024,
+          })
+        : { promptBlock: '', promptParts: [] };
       try {
         let runtime;
         let settings;
@@ -475,14 +499,15 @@ export class WorkItemCoordinator {
           try {
             let result;
             try {
+              const latestMessage = `Current WorkItem snapshot:\n${snapshotText}\n\n${recovery ? 'Automatic failure recovery trigger' : 'Latest user message'}:\n${text}${attachmentContext.promptBlock}${correction}`;
+              const content = attachmentContext.promptParts.length > 0
+                ? [{ type: 'text', text: latestMessage }, ...attachmentContext.promptParts]
+                : latestMessage;
               result = await Promise.race([
                 runtime.adapter.call({
                   model: resolved.model,
                   system: COORDINATOR_SYSTEM_PROMPT,
-                  messages: [{
-                    role: 'user',
-                    content: `Current WorkItem snapshot:\n${snapshotText}\n\n${recovery ? 'Automatic failure recovery trigger' : 'Latest user message'}:\n${text}${correction}`,
-                  }],
+                  messages: [{ role: 'user', content }],
                   maxTokens: Math.min(
                     resolveMaxOutputTokens(resolved.model, runtime.config),
                     COORDINATOR_MAX_OUTPUT_TOKENS,

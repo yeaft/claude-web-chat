@@ -1816,7 +1816,7 @@ export const useChatStore = defineStore('chat', {
       this.removeWorkItemState(target, id);
       return result;
     },
-    async sendWorkItemMessage(id, text, revision, agentId = null, fence = {}) {
+    async sendWorkItemMessage(id, text, revision, attachments = [], agentId = null, fence = {}) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const current = this.workCenterDetailByAgent[target]?.id === id
         ? this.workCenterDetailByAgent[target] : null;
@@ -1830,6 +1830,7 @@ export const useChatStore = defineStore('chat', {
           ? Number(fence.ledgerRevision) : Number(current?.ledgerRevision) || 0,
         coordinatorRevision: Number.isInteger(Number(fence.coordinatorRevision))
           ? Number(fence.coordinatorRevision) : Number(current?.coordinatorRevision) || 0,
+        attachments: Array.isArray(attachments) ? attachments : [],
       }, target);
       if (!accepted?.accepted) throw new Error('Work Center Coordinator did not accept the message');
       return accepted;

@@ -37,6 +37,8 @@ export default {
       actionComposerGeneration: 0,
       actionRunOpenGeneration: 0,
       workItemMessage: '',
+      workItemMessageAttachments: [],
+      workItemMessageAttachmentsUploading: false,
       workItemMessageSending: false,
       workItemMessageError: '',
       workItemComposerGeneration: 0,
@@ -444,6 +446,8 @@ export default {
     resetWorkItemComposer() {
       this.workItemComposerGeneration += 1;
       this.workItemMessage = '';
+      this.workItemMessageAttachments = [];
+      this.workItemMessageAttachmentsUploading = false;
       this.workItemMessageError = '';
       this.workItemMessageSending = false;
     },
@@ -720,6 +724,47 @@ export default {
     removeGuidanceAttachment(index) {
       this.guidanceAttachments = this.guidanceAttachments.filter((_attachment, itemIndex) => itemIndex !== index);
     },
+    async onWorkItemMessageAttachmentInput(event) {
+      if (!this.workItemAttachmentsSupported) {
+        event.target.value = '';
+        this.workItemMessageError = this.tr('workCenter.attachmentsUnsupported', 'The selected Agent does not support Work Item attachments.');
+        return;
+      }
+      const files = Array.from(event.target.files || []);
+      event.target.value = '';
+      if (files.length === 0) return;
+      const scope = this.workItemComposerScope;
+      if (!scope) return;
+      const existingCount = Array.isArray(this.selected?.attachments) ? this.selected.attachments.length : 0;
+      const remaining = Math.max(0, 10 - existingCount - this.workItemMessageAttachments.length);
+      const selected = files.slice(0, remaining);
+      if (selected.length === 0) return;
+      this.workItemMessageAttachmentsUploading = true;
+      this.workItemMessageError = '';
+      try {
+        const formData = new FormData();
+        for (const file of selected) formData.append('files', file, file.name || 'attachment');
+        const authStore = Pinia.useAuthStore();
+        const token = authStore.getActiveToken?.() || authStore.token || null;
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
+        const response = await fetch('/api/upload', { method: 'POST', headers, body: formData });
+        if (!response.ok) throw new Error(this.tr('workCenter.attachmentsUploadFailed', 'Attachment upload failed'));
+        const result = await response.json();
+        if (this.workItemComposerScope !== scope) return;
+        this.workItemMessageAttachments = [
+          ...this.workItemMessageAttachments,
+          ...(Array.isArray(result.files) ? result.files : []),
+        ].slice(0, Math.max(0, 10 - existingCount));
+      } catch (error) {
+        if (this.workItemComposerScope === scope) this.workItemMessageError = error?.message || String(error);
+      } finally {
+        if (this.workItemComposerScope === scope) this.workItemMessageAttachmentsUploading = false;
+      }
+    },
+    removeWorkItemMessageAttachment(index) {
+      this.workItemMessageAttachments = this.workItemMessageAttachments
+        .filter((_attachment, itemIndex) => itemIndex !== index);
+    },
     async previewAttachment(attachment, trigger = null) {
       if (!this.selected?.id || !attachment?.id || this.previewingAttachmentId) return;
       const agentId = this.agentId;
@@ -841,22 +886,31 @@ export default {
       await this.store.startWorkItem(this.selected.id, this.agentId);
     },
     async sendSelectedWorkItemMessage() {
-      if (!this.selected || !this.workItemMessage.trim() || this.workItemMessageSending
+      if (!this.selected
+          || (!this.workItemMessage.trim() && this.workItemMessageAttachments.length === 0)
+          || this.workItemMessageSending || this.workItemMessageAttachmentsUploading
           || this.coordinatorThinking || this.coordinatorReadOnly) return;
       const scope = this.workItemComposerScope;
       const itemId = this.selected.id;
       const revision = this.selected.revision;
       const text = this.workItemMessage.trim();
+      const attachments = this.workItemMessageAttachments.map(attachment => ({
+        fileId: attachment.fileId,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+      }));
       this.workItemMessageSending = true;
       this.workItemMessageError = '';
       try {
-        await this.store.sendWorkItemMessage(itemId, text, revision, this.agentId, {
+        await this.store.sendWorkItemMessage(itemId, text, revision, attachments, this.agentId, {
           planRevision: this.selected.planRevision,
           ledgerRevision: this.selected.ledgerRevision,
           coordinatorRevision: this.selected.coordinatorRevision,
         });
         if (this.workItemComposerScope === scope && this.workItemMessage.trim() === text) {
           this.workItemMessage = '';
+          this.workItemMessageAttachments = [];
         }
       } catch (error) {
         if (this.workItemComposerScope === scope) this.workItemMessageError = error?.message || String(error);
@@ -1103,11 +1157,11 @@ export default {
                   </div>
                   <div class="work-center-detail-actions">
                     <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
-                    <button class="work-center-icon-button" type="button" @click="showItemsPane" :title="tr('workCenter.closeWorkItem', 'Close details')" :aria-label="tr('workCenter.closeWorkItem', 'Close details')">
-                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4l-6.3 6.31-1.42-1.42L9.17 12l-6.3-6.29 1.42-1.42 6.3 6.31 6.3-6.31 1.41 1.42Z"/></svg>
-                    </button>
                   </div>
                 </div>
+                <button class="work-center-icon-button work-center-detail-close" type="button" @click="showItemsPane" :title="tr('workCenter.closeWorkItem', 'Close details')" :aria-label="tr('workCenter.closeWorkItem', 'Close details')">
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4l-6.3 6.31-1.42-1.42L9.17 12l-6.3-6.29 1.42-1.42 6.3 6.31 6.3-6.31 1.41 1.42Z"/></svg>
+                </button>
                 <div class="work-center-detail-layout" :class="{ 'without-workflow': !selected.actions?.length }">
                   <div class="work-center-detail-main">
                     <div class="work-center-detail-overview">
@@ -1172,21 +1226,42 @@ export default {
                           <header><strong>{{ message.role === 'assistant' ? tr('workCenter.assistant', 'Yeaft') : message.role === 'legacy_instruction' ? tr('workCenter.originalRequest', 'Original request') : tr('workCenter.you', 'You') }}</strong><small>{{ time(message.updatedAt || message.createdAt) }}</small></header>
                           <p v-if="message.text">{{ message.text }}</p>
                           <p v-else-if="message.status === 'thinking'" class="work-center-conversation-thinking">{{ tr('workCenter.conversationThinking', 'Working…') }}</p>
+                          <div v-if="message.attachments?.length" class="work-center-attachment-list work-center-message-attachments">
+                            <button v-for="attachment in message.attachments" :key="attachment.id" type="button"
+                                    class="work-center-attachment-chip work-center-attachment-preview"
+                                    @click="previewAttachment(attachment, $event.currentTarget)" :disabled="previewingAttachmentId === attachment.id"
+                                    :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })">
+                              <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
+                            </button>
+                          </div>
                           <p v-if="message.error" class="work-center-error">{{ message.error }}</p>
                           <small v-if="message.decision?.kind && message.decision.kind !== 'answer'" class="work-center-conversation-decision">{{ tr('workCenter.coordinatorDecision.' + message.decision.kind, message.decision.kind) }}</small>
                         </article>
                       </div>
                       <p v-if="workItemMessageError" class="work-center-error" role="alert">{{ workItemMessageError }}</p>
                       <p v-if="coordinatorReadOnly" class="work-center-conversation-readonly">{{ tr('workCenter.conversationReadOnly', 'This work item is closed. The conversation remains available.') }}</p>
-                      <div v-else class="input-wrapper work-center-item-message-input">
-                        <div class="textarea-wrapper">
-                          <textarea v-model="workItemMessage" rows="1" :disabled="coordinatorThinking" :placeholder="tr('workCenter.conversationPlaceholder', 'Message about this work item')" @keydown.enter.exact.prevent="sendSelectedWorkItemMessage"></textarea>
+                      <template v-else>
+                        <div v-if="workItemMessageAttachments.length" class="work-center-attachment-list work-center-message-draft-attachments">
+                          <span v-for="(attachment, index) in workItemMessageAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
+                            <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
+                            <button type="button" @click="removeWorkItemMessageAttachment(index)" :aria-label="tr('workCenter.removeAttachment', 'Remove from draft')">×</button>
+                          </span>
                         </div>
-                        <button class="send-btn" type="button" @click="sendSelectedWorkItemMessage" :disabled="workItemMessageSending || coordinatorThinking || !workItemMessage.trim()" :title="tr('workCenter.sendMessage', 'Send message')" :aria-label="tr('workCenter.sendMessage', 'Send message')">
-                          <svg v-if="!workItemMessageSending" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-                          <span v-else class="work-center-send-spinner" aria-hidden="true"></span>
-                        </button>
-                      </div>
+                        <div class="input-wrapper work-center-item-message-input">
+                          <label v-if="workItemAttachmentsSupported" class="attach-btn work-center-attachment-picker" :title="tr('workCenter.addAttachments', 'Add files')">
+                            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
+                            <input type="file" multiple :aria-label="tr('workCenter.addAttachments', 'Add files')" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv" @change="onWorkItemMessageAttachmentInput">
+                          </label>
+                          <div class="textarea-wrapper">
+                            <textarea v-model="workItemMessage" rows="1" :disabled="coordinatorThinking" :placeholder="tr('workCenter.conversationPlaceholder', 'Message about this work item')" @keydown.enter.exact.prevent="sendSelectedWorkItemMessage"></textarea>
+                          </div>
+                          <button class="send-btn" type="button" @click="sendSelectedWorkItemMessage" :disabled="workItemMessageSending || workItemMessageAttachmentsUploading || coordinatorThinking || (!workItemMessage.trim() && workItemMessageAttachments.length === 0)" :title="tr('workCenter.sendMessage', 'Send message')" :aria-label="tr('workCenter.sendMessage', 'Send message')">
+                            <svg v-if="!workItemMessageSending" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                            <span v-else class="work-center-send-spinner" aria-hidden="true"></span>
+                          </button>
+                        </div>
+                        <small v-if="workItemMessageAttachmentsUploading" class="work-center-message-uploading">{{ tr('workCenter.attachmentsUploading', 'Uploading…') }}</small>
+                      </template>
                     </section>
 
                     <div v-if="!['done','cancelled'].includes(selected.status)" class="work-center-section work-center-danger-zone">
@@ -1224,12 +1299,11 @@ export default {
                               <strong>{{ action.brief?.objective || actionLabel(action.type) }}</strong>
                               <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
                             </span>
-                            <span v-if="action.brief?.approach || action.canonicalResult?.summary" class="work-center-action-description">
-                              {{ action.canonicalResult?.summary || action.brief?.approach }}
+                            <span class="work-center-action-description" :title="action.canonicalResult?.summary || action.brief?.approach || actionContentSummary(action)">
+                              {{ action.canonicalResult?.summary || action.brief?.approach || actionContentSummary(action) || tr('workCenter.noActionSummary', 'No summary yet') }}
                             </span>
                             <span class="work-center-action-secondary">
                               <small class="work-center-action-vp">{{ actionExecutor(action) }}</small>
-                              <span v-if="actionContentSummary(action)" class="work-center-action-content-summary" :title="actionContentSummary(action)">{{ actionContentSummary(action) }}</span>
                             </span>
                           </span>
                           <span class="work-center-action-chevron" aria-hidden="true"></span>
