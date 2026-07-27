@@ -1737,6 +1737,72 @@ test.describe('Work Center responsive UI', () => {
     });
   });
 
+  test('keeps the empty board aligned across desktop, mobile, light, and dark layouts', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent, []);
+
+    for (const { width, theme } of [
+      { width: 1400, theme: 'light' },
+      { width: 1400, theme: 'dark' },
+      { width: 430, theme: 'light' },
+      { width: 430, theme: 'dark' },
+    ]) {
+      await chatPage.setViewportSize({ width, height: 900 });
+      await chatPage.evaluate(value => {
+        document.documentElement.setAttribute('data-theme', value);
+        localStorage.setItem('theme', value);
+      }, theme);
+
+      const emptyState = chatPage.locator('.work-center-empty-state');
+      await expect(emptyState).toBeVisible();
+      await expect(chatPage.locator('.work-center-board-empty')).toHaveCount(0);
+      const metrics = await chatPage.evaluate(() => {
+        const rect = element => element.getBoundingClientRect();
+        const board = document.querySelector('.work-center-board');
+        const body = document.querySelector('.work-center-body');
+        const empty = document.querySelector('.work-center-empty-state');
+        const boardRect = rect(board);
+        const emptyRect = rect(empty);
+        const laneRects = [...document.querySelectorAll('.work-center-board-lane')]
+          .map(rect)
+          .filter(laneRect => laneRect.width > 0 && laneRect.height > 0);
+        return {
+          boardDisplay: getComputedStyle(board).display,
+          bodyBorderWidth: getComputedStyle(body).borderTopWidth,
+          bodyBorderRadius: getComputedStyle(body).borderTopLeftRadius,
+          visibleLaneCount: laneRects.length,
+          laneWidths: laneRects.map(laneRect => laneRect.width),
+          firstLaneLeft: laneRects[0]?.left || 0,
+          lastLaneRight: laneRects.at(-1)?.right || 0,
+          boardLeft: boardRect.left,
+          boardRight: boardRect.right,
+          boardCenter: boardRect.left + boardRect.width / 2,
+          emptyCenter: emptyRect.left + emptyRect.width / 2,
+          documentScrollWidth: document.documentElement.scrollWidth,
+          documentClientWidth: document.documentElement.clientWidth,
+        };
+      });
+
+      expect(metrics.bodyBorderWidth).toBe('1px');
+      expect(metrics.bodyBorderRadius).toBe('12px');
+      expect(Math.abs(metrics.emptyCenter - metrics.boardCenter)).toBeLessThanOrEqual(1);
+      expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.documentClientWidth + 1);
+      if (width === 1400) {
+        expect(metrics.boardDisplay).toBe('grid');
+        expect(metrics.visibleLaneCount).toBe(3);
+        expect(Math.max(...metrics.laneWidths) - Math.min(...metrics.laneWidths)).toBeLessThanOrEqual(1);
+        expect(Math.min(...metrics.laneWidths)).toBeGreaterThan(200);
+        expect(metrics.firstLaneLeft - metrics.boardLeft).toBeGreaterThanOrEqual(9);
+        expect(metrics.boardRight - metrics.lastLaneRight).toBeGreaterThanOrEqual(9);
+      } else {
+        expect(metrics.boardDisplay).toBe('flex');
+        expect(metrics.visibleLaneCount).toBe(1);
+      }
+    }
+
+    await chatPage.getByRole('button', { name: 'Create first work item' }).click();
+    await expect(chatPage.locator('.work-center-modal')).toBeVisible();
+  });
+
   test('uses mobile board lane tabs and lane-specific empty states', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 720, height: 780 });
