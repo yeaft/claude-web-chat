@@ -1572,6 +1572,7 @@ export default {
   'workCenter.sendAndRetryAction': 'Send and retry Action',
   'workCenter.coordinatorDecision.guide_actions': 'Action instructions updated',
   'workCenter.coordinatorDecision.replan': 'Goal or plan updated',
+  'workCenter.coordinatorDecision.request_human': 'Human input requested',
   'workCenter.conversation': 'Conversation',
   'workCenter.conversationThinking': 'Working…',
   'workCenter.conversationReadOnly': 'This work item is closed. The conversation remains available.',

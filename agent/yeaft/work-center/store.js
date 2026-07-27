@@ -50,6 +50,28 @@ function coordinatorActionFence(actions) {
   })).sort((left, right) => left.id.localeCompare(right.id))), 'utf8').digest('hex');
 }
 
+function coordinatorRecoveryIdentity(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const actionId = typeof value.actionId === 'string' ? value.actionId : '';
+  const stageId = typeof value.stageId === 'string' ? value.stageId : '';
+  const actionGeneration = Number(value.actionGeneration);
+  if (!actionId || !stageId || !Number.isInteger(actionGeneration) || actionGeneration < 1) return null;
+  return { actionId, actionGeneration, stageId };
+}
+
+function sameCoordinatorRecoveryIdentity(persisted, expected) {
+  const persistedPresent = persisted != null;
+  const expectedPresent = expected != null;
+  if (!persistedPresent && !expectedPresent) return true;
+  if (persistedPresent !== expectedPresent) return false;
+  const persistedIdentity = coordinatorRecoveryIdentity(persisted);
+  const expectedIdentity = coordinatorRecoveryIdentity(expected);
+  return !!persistedIdentity && !!expectedIdentity
+    && persistedIdentity.actionId === expectedIdentity.actionId
+    && persistedIdentity.actionGeneration === expectedIdentity.actionGeneration
+    && persistedIdentity.stageId === expectedIdentity.stageId;
+}
+
 function actionSpecHash(action) {
   const spec = {
     type: action.type || '',
@@ -1991,6 +2013,26 @@ export class WorkItemStore {
       }));
   }
 
+  listFailedActionRecoveries() {
+    return this.db.prepare(`SELECT a.work_item_id, a.id AS action_id, a.generation,
+        COUNT(recovery_event.id) AS recovery_attempts,
+        MAX(recovery_event.created_at) AS last_recovery_at
+      FROM actions a JOIN work_items w ON w.id = a.work_item_id
+      LEFT JOIN events recovery_event ON recovery_event.work_item_id = a.work_item_id
+        AND recovery_event.action_id = a.id
+        AND recovery_event.action_generation = a.generation
+        AND recovery_event.type = 'coordinator.recovery_started'
+      WHERE a.status = 'failed' AND w.status NOT IN ('done', 'cancelled')
+      GROUP BY a.id
+      ORDER BY a.updated_at, a.sequence, a.id`).all().map(row => ({
+        workItemId: row.work_item_id,
+        actionId: row.action_id,
+        actionGeneration: Math.max(1, Number(row.generation) || 1),
+        recoveryAttempts: Math.max(0, Number(row.recovery_attempts) || 0),
+        lastRecoveryAt: Math.max(0, Number(row.last_recovery_at) || 0),
+      }));
+  }
+
   listWorkItems(filters = {}) {
     const where = [];
     const values = [];
@@ -2133,7 +2175,7 @@ export class WorkItemStore {
     return this.db.prepare(`SELECT * FROM events WHERE action_id = ? ORDER BY id`).all(actionId).map(mapEvent);
   }
 
-  beginCoordinatorTurn(id, text, expected = {}, attachments = null, addedAttachments = []) {
+  beginCoordinatorTurn(id, text, expected = {}, options = {}) {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
@@ -2151,32 +2193,56 @@ export class WorkItemStore {
         throw new Error('WorkItem Coordinator is already responding');
       }
       const now = this.now();
-      const projectedAttachments = (Array.isArray(addedAttachments) ? addedAttachments : []).map(attachment => ({
-        id: attachment.id,
-        name: attachment.name,
-        mimeType: attachment.mimeType,
-        size: Math.max(0, Number(attachment.size) || 0),
-        isImage: attachment.isImage === true,
-      }));
-      if (!String(text || '').trim() && projectedAttachments.length === 0) {
-        throw new Error('WorkItem Coordinator message or attachments are required');
-      }
+      const projectedAttachments = (Array.isArray(options.addedAttachments) ? options.addedAttachments : [])
+        .map(attachment => ({
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          size: Math.max(0, Number(attachment.size) || 0),
+          isImage: attachment.isImage === true,
+        }));
       const activeActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
         AND status NOT IN ('completed', 'superseded', 'cancelled') ORDER BY sequence`).all(id).map(mapAction);
       this.#assertNoIntegrationReservation(activeActions, now);
+      let recovery = options.recovery && typeof options.recovery === 'object'
+        ? { ...options.recovery } : null;
+      if (recovery) {
+        const failedAction = activeActions.find(action => action.id === recovery.actionId);
+        if (['done', 'cancelled'].includes(workItem.status)
+            || failedAction?.status !== 'failed'
+            || failedAction.generation !== recovery.actionGeneration
+            || failedAction.stageId !== recovery.stageId) {
+          throw new Error('WorkItem failure changed before Coordinator recovery started');
+        }
+        const priorAttempts = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM events
+          WHERE work_item_id = ? AND type = 'coordinator.recovery_started'
+            AND action_id = ? AND action_generation = ?`).get(
+          id,
+          failedAction.id,
+          failedAction.generation,
+        )?.count) || 0;
+        recovery = { ...recovery, attempt: priorAttempts + 1 };
+      }
+      if (!recovery && !String(text || '').trim() && projectedAttachments.length === 0) {
+        throw new Error('WorkItem Coordinator message or attachments are required');
+      }
       const turnId = randomUUID();
-      const userMessage = {
+      const userMessage = recovery ? null : {
         id: randomUUID(), turnId, role: 'user', text, attachments: projectedAttachments,
         status: 'completed', createdAt: now,
       };
       const assistantMessage = {
         id: randomUUID(), turnId, role: 'assistant', text: '', status: 'thinking',
         createdAt: now, updatedAt: now, decision: null,
+        ...(recovery ? { recovery: { ...recovery } } : {}),
       };
-      const messages = [...(workItem.messages || []), userMessage, assistantMessage].slice(-100);
+      const messages = [...(workItem.messages || []), ...(userMessage ? [userMessage] : []), assistantMessage]
+        .slice(-100);
       const coordinatorRevision = workItem.coordinatorRevision + 1;
       const revision = workItem.revision + (projectedAttachments.length > 0 ? 1 : 0);
-      const nextAttachments = Array.isArray(attachments) ? attachments : workItem.attachments;
+      const nextAttachments = Array.isArray(options.attachments)
+        ? options.attachments
+        : workItem.attachments;
       const changed = this.db.prepare(`UPDATE work_items SET messages = ?, attachments = ?, revision = ?, coordinator_revision = ?, updated_at = ?
         WHERE id = ? AND coordinator_revision = ? AND revision = ? AND plan_revision = ?
         AND ledger_revision = ?`).run(
@@ -2184,9 +2250,15 @@ export class WorkItemStore {
         id, workItem.coordinatorRevision, workItem.revision, workItem.planRevision, workItem.ledgerRevision,
       );
       if (Number(changed.changes) !== 1) throw new Error('Coordinator turn lost its revision fence');
-      this.appendEvent(id, 'coordinator.turn_started', {
-        turnId, status: 'thinking', coordinatorRevision, addedAttachmentCount: projectedAttachments.length,
-      });
+      this.appendEvent(id, recovery ? 'coordinator.recovery_started' : 'coordinator.turn_started', {
+        turnId,
+        status: 'thinking',
+        coordinatorRevision,
+        addedAttachmentCount: projectedAttachments.length,
+      }, recovery ? {
+        actionId: recovery.actionId,
+        actionGeneration: recovery.actionGeneration,
+      } : {});
       const detail = this.getWorkItemDetail(id);
       return {
         turnId,
@@ -2199,6 +2271,7 @@ export class WorkItemStore {
           coordinatorRevision,
           status: workItem.status,
           actionFence: coordinatorActionFence(activeActions),
+          recovery: recovery ? { ...recovery } : null,
         },
       };
     });
@@ -2220,6 +2293,11 @@ export class WorkItemStore {
         message?.turnId === turnId && message.role === 'assistant' && message.status === 'thinking'
       ));
       if (assistantIndex < 0) return null;
+      const persistedRecovery = messages[assistantIndex]?.recovery ?? null;
+      if (!sameCoordinatorRecoveryIdentity(persistedRecovery, expected.recovery ?? null)) {
+        throw new Error('Coordinator recovery fence does not match the persisted turn identity');
+      }
+      const recovery = coordinatorRecoveryIdentity(persistedRecovery);
       const decision = result?.decision || {};
       const now = this.now();
       const activeActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
@@ -2230,13 +2308,63 @@ export class WorkItemStore {
       this.#assertNoIntegrationReservation(activeActions, now);
 
       const graphMode = isGraphWorkItem(workItem);
-      if (decision.kind !== 'answer'
+      if (decision.kind === 'replan'
           && (!graphMode || workItem.workflowSnapshot?.planningMode !== 'ai')) {
-        throw new Error('Coordinator Action changes require an AI-planned Action graph');
+        throw new Error('Coordinator replan requires an AI-planned Action graph');
+      }
+      if (recovery && decision.kind === 'guide_actions') {
+        const failedAction = activeActions.find(action => (
+          action.id === recovery.actionId
+          && action.generation === recovery.actionGeneration
+          && action.stageId === recovery.stageId
+          && action.status === 'failed'
+        ));
+        if (!failedAction
+            || !Array.isArray(decision.guidance)
+            || decision.guidance.length !== 1
+            || decision.guidance[0]?.stageId !== failedAction.stageId) {
+          throw new Error('Coordinator recovery guidance must target only the failed Action identity');
+        }
       }
       let nextWorkItem = workItem;
       let affectedActionIds = [];
-      if (decision.kind === 'guide_actions') {
+      if (decision.kind === 'request_human') {
+        const action = recovery ? activeActions.find(candidate => (
+          candidate.id === recovery.actionId
+          && candidate.generation === recovery.actionGeneration
+        )) : null;
+        if (!action || action.status !== 'failed') {
+          throw new Error('Coordinator human request lost the failed Action fence');
+        }
+        const question = typeof decision.question === 'string' ? decision.question.trim().slice(0, 8_000) : '';
+        if (!question) throw new Error('Coordinator human request requires a question');
+        const changedAction = this.db.prepare(`UPDATE actions SET status = 'waiting', updated_at = ?
+          WHERE id = ? AND status = 'failed' AND generation = ? AND current_run_id IS NULL`).run(
+          now, action.id, action.generation,
+        );
+        if (Number(changedAction.changes) !== 1) {
+          throw new Error('Coordinator human request lost the failed Action generation fence');
+        }
+        const resultRunId = action.resultRunId
+          || this.db.prepare(`SELECT id FROM runs WHERE action_id = ? AND status = 'failed'
+            ORDER BY ended_at DESC, started_at DESC LIMIT 1`).get(action.id)?.id;
+        if (!resultRunId) throw new Error('Coordinator human request requires a failed Run');
+        const changedRun = this.db.prepare(`UPDATE runs SET waiting_reason = ?
+          WHERE id = ? AND action_id = ? AND status = 'failed'`).run(question, resultRunId, action.id);
+        if (Number(changedRun.changes) !== 1) {
+          throw new Error('Coordinator human request lost the failed Run fence');
+        }
+        affectedActionIds = [action.id];
+        this.appendEvent(workItem.id, 'action.waiting', {
+          reason: question,
+          source: 'coordinator',
+          turnId,
+        }, {
+          actionId: action.id,
+          runId: resultRunId,
+          actionGeneration: action.generation,
+        });
+      } else if (decision.kind === 'guide_actions') {
         const guidanceByStage = new Map(decision.guidance.map(entry => [entry.stageId, entry.instruction]));
         for (const action of activeActions) {
           const instruction = guidanceByStage.get(action.stageId);
@@ -2344,7 +2472,7 @@ export class WorkItemStore {
         );
       }
 
-      const graphState = decision.kind === 'answer' ? null : this.#graphWorkItemState(workItem.id);
+      const graphState = ['answer'].includes(decision.kind) ? null : this.#graphWorkItemState(workItem.id);
       messages[assistantIndex] = {
         ...messages[assistantIndex], text: result.reply, status: 'completed', updatedAt: now,
         decision: {
@@ -2724,6 +2852,16 @@ export class WorkItemStore {
       const row = this.db.prepare(`SELECT a.* FROM actions a
         JOIN work_items w ON w.id = a.work_item_id
         WHERE a.status = 'ready' AND a.current_run_id IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM actions failed_recovery
+            WHERE failed_recovery.work_item_id = a.work_item_id
+              AND failed_recovery.status = 'failed'
+          )
+          AND NOT (
+            json_extract(w.messages, '$[#-1].role') = 'assistant'
+            AND json_extract(w.messages, '$[#-1].status') = 'thinking'
+            AND json_type(w.messages, '$[#-1].recovery') IS NOT NULL
+          )
           AND (
             (COALESCE(json_extract(w.workflow_snapshot, '$.executionMode'), 'linear') != 'graph'
               AND w.status = 'ready' AND w.current_action_id = a.id AND w.current_run_id IS NULL)
