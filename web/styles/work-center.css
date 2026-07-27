@@ -507,21 +507,9 @@
   display: none;
 }
 
-.work-center-body.is-empty,
 .work-center-body:not([data-pane="items"]) {
   border-color: transparent;
   border-radius: 0;
-}
-
-.work-center-body.is-empty .work-center-detail,
-.work-center-body.is-empty .work-center-action-detail-pane {
-  display: none;
-}
-
-.work-center-body.is-empty .work-center-list {
-  display: flex;
-  align-items: stretch;
-  background: transparent;
 }
 
 .work-center-list,
@@ -562,6 +550,7 @@
 }
 
 .work-center-board {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(3, minmax(260px, 1fr));
   gap: 14px;
@@ -2096,6 +2085,18 @@
   width: 100%;
   min-height: 280px;
   padding: 36px 24px;
+}
+
+.work-center-board > .work-center-empty-state {
+  position: absolute;
+  z-index: 1;
+  inset: 10px;
+  width: auto;
+  pointer-events: none;
+}
+
+.work-center-board > .work-center-empty-state .work-center-empty-create {
+  pointer-events: auto;
 }
 
 .work-center-empty-state h2 {
