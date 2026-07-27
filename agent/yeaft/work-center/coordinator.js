@@ -8,6 +8,77 @@ const COORDINATOR_MAX_INSTRUCTION_CHARS = 8_000;
 const COORDINATOR_MAX_OUTPUT_TOKENS = 8_192;
 const COORDINATOR_MAX_SNAPSHOT_BYTES = 64 * 1024;
 const COORDINATOR_RECOVERY_DECISION_ATTEMPTS = 2;
+const COORDINATOR_MAX_CONVERSATION_MESSAGES = 20;
+const COORDINATOR_MAX_ACTIONS = 64;
+const COORDINATOR_MAX_WORK_ITEM_BYTES = 14 * 1024;
+const COORDINATOR_MAX_ACTIONS_BYTES = 34 * 1024;
+const COORDINATOR_MAX_CONVERSATION_BYTES = 10 * 1024;
+
+function truncateUtf8(value, maxBytes) {
+  const bytes = Buffer.from(String(value || ''), 'utf8');
+  if (bytes.length <= maxBytes) return bytes.toString('utf8');
+  let end = Math.min(maxBytes, bytes.length);
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return bytes.subarray(0, end).toString('utf8');
+}
+
+function jsonByteLength(value) {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+function boundedJsonArray(values, maxBytes, options = {}) {
+  const source = Array.isArray(values) ? values : [];
+  const selected = [];
+  const indexes = options.newestFirst
+    ? [...source.keys()].reverse()
+    : [...source.keys()];
+  for (const index of indexes) {
+    const candidate = options.newestFirst
+      ? [source[index], ...selected]
+      : [...selected, source[index]];
+    if (jsonByteLength(candidate) <= maxBytes) selected.splice(0, selected.length, ...candidate);
+  }
+  return selected;
+}
+
+function boundedEvidence(value) {
+  return (Array.isArray(value) ? value : []).slice(0, 3).map(item => ({
+    kind: truncateUtf8(item?.kind, 32) || 'text',
+    label: truncateUtf8(item?.label, 192),
+    ...(item?.ref ? { ref: truncateUtf8(item.ref, 256) } : {}),
+    ...(item?.status ? { status: truncateUtf8(item.status, 32) } : {}),
+  })).filter(item => item.label);
+}
+
+function boundedAction(action, result, compact = false) {
+  const brief = action?.brief && typeof action.brief === 'object' ? action.brief : null;
+  return {
+    stageId: truncateUtf8(action?.stageId, 256),
+    type: truncateUtf8(action?.type, 64),
+    status: truncateUtf8(action?.status, 64),
+    generation: Math.max(1, Number(action?.generation) || 1),
+    dependencies: (Array.isArray(action?.dependsOnStageIds) ? action.dependsOnStageIds : [])
+      .slice(0, 8)
+      .map(value => truncateUtf8(value, 128))
+      .filter(Boolean),
+    workspaceMode: truncateUtf8(action?.workspaceMode, 64),
+    ...(!compact && brief ? {
+      brief: {
+        objective: truncateUtf8(brief.objective, 256),
+        approach: truncateUtf8(brief.approach, 256),
+        expectedOutcome: truncateUtf8(brief.expectedOutcome, 256),
+      },
+    } : {}),
+    result: result ? {
+      status: truncateUtf8(result.status, 64),
+      summary: truncateUtf8(result.summary, compact ? 256 : 768),
+      ...(!compact ? { evidence: boundedEvidence(result.evidence) } : {}),
+      waitingReason: truncateUtf8(result.waitingReason, 384) || null,
+      error: truncateUtf8(result.error, 384) || null,
+      reviewDecision: truncateUtf8(result.reviewDecision, 64) || null,
+    } : null,
+  };
+}
 
 const COORDINATOR_SYSTEM_PROMPT = `You are the Work Center Coordinator. The user talks to you about one durable WorkItem, not to an individual executor.
 
@@ -139,8 +210,8 @@ export function normalizeCoordinatorResponse(value, detail, options = {}) {
       const failed = detail.actions?.find(action => (
         action.id === options.recoveryActionId && action.status === 'failed'
       ));
-      if (!failed || !guidance.some(entry => entry.stageId === failed.stageId)) {
-        throw new Error('Work Center Coordinator recovery guidance must target the failed Action');
+      if (!failed || guidance.length !== 1 || guidance[0].stageId !== failed.stageId) {
+        throw new Error('Work Center Coordinator recovery guidance must target only the failed Action');
       }
     }
     return {
@@ -184,24 +255,26 @@ export function normalizeCoordinatorResponse(value, detail, options = {}) {
 }
 
 function coordinatorHistory(messages) {
-  return (Array.isArray(messages) ? messages : [])
+  const history = (Array.isArray(messages) ? messages : [])
     .filter(message => message?.role !== 'assistant' || message.status !== 'thinking')
     .filter(message => typeof message?.text === 'string' && message.text.trim())
-    .slice(-20)
+    .slice(-COORDINATOR_MAX_CONVERSATION_MESSAGES)
     .map(message => ({
       role: message.role === 'assistant' ? 'assistant' : 'user',
-      text: message.role === 'legacy_instruction'
-        ? `[Legacy global instruction already delivered to executors] ${message.text.slice(0, COORDINATOR_MAX_REPLY_CHARS)}`
-        : message.text.slice(0, COORDINATOR_MAX_REPLY_CHARS),
+      text: truncateUtf8(message.role === 'legacy_instruction'
+        ? `[Legacy global instruction already delivered to executors] ${message.text}`
+        : message.text, 2_000),
     }));
+  return boundedJsonArray(history, COORDINATOR_MAX_CONVERSATION_BYTES, { newestFirst: true });
 }
 
 function coordinatorSnapshotText(detail) {
-  const snapshot = JSON.stringify(coordinatorSnapshot(detail));
-  if (Buffer.byteLength(snapshot, 'utf8') > COORDINATOR_MAX_SNAPSHOT_BYTES) {
-    throw new Error('WorkItem is too large for a safe Coordinator turn; compact the Action history first');
+  const snapshot = coordinatorSnapshot(detail);
+  const serialized = JSON.stringify(snapshot);
+  if (Buffer.byteLength(serialized, 'utf8') > COORDINATOR_MAX_SNAPSHOT_BYTES) {
+    throw new Error('WorkItem cannot be represented within the Coordinator snapshot budget');
   }
-  return snapshot;
+  return serialized;
 }
 
 function finalizedCriteria(detail, contractPatch) {
@@ -224,40 +297,61 @@ function coordinatorSnapshot(detail) {
       : candidates[0];
     if (canonical) canonicalRunByAction.set(action.id, canonical);
   }
+
+  const acceptanceCriteria = boundedJsonArray(
+    (Array.isArray(detail.acceptanceCriteria) ? detail.acceptanceCriteria : [])
+      .slice(0, 24)
+      .map(value => truncateUtf8(value, 768))
+      .filter(Boolean),
+    8 * 1024,
+  );
+  const workItem = {
+    id: truncateUtf8(detail.id, 256),
+    revision: detail.revision,
+    planRevision: detail.planRevision,
+    ledgerRevision: detail.ledgerRevision,
+    status: truncateUtf8(detail.status, 64),
+    title: truncateUtf8(detail.title, 1 * 1024),
+    goal: truncateUtf8(detail.goal, 4 * 1024),
+    acceptanceCriteria,
+    workItemType: truncateUtf8(detail.workflowSnapshot?.workItemType, 256) || null,
+  };
+  if (jsonByteLength(workItem) > COORDINATOR_MAX_WORK_ITEM_BYTES) {
+    throw new Error('WorkItem contract cannot be represented within the Coordinator snapshot budget');
+  }
+
+  const currentActions = (Array.isArray(detail.actions) ? detail.actions : [])
+    .filter(action => !['superseded', 'cancelled'].includes(action.status));
+  const unfinished = currentActions.filter(action => action.status !== 'completed');
+  const completed = currentActions.filter(action => action.status === 'completed');
+  const selected = [
+    ...unfinished,
+    ...completed.slice(-Math.max(0, COORDINATOR_MAX_ACTIONS - unfinished.length)),
+  ].slice(0, COORDINATOR_MAX_ACTIONS);
+  let projectedActions = selected.map(action => boundedAction(
+    action,
+    canonicalRunByAction.get(action.id),
+    action.status === 'completed',
+  ));
+  let actions = boundedJsonArray(projectedActions, COORDINATOR_MAX_ACTIONS_BYTES);
+  let includedActionIdentities = new Set(actions.map(action => `${action.stageId}:${action.generation}`));
+  if (unfinished.some(action => !includedActionIdentities.has(`${action.stageId}:${action.generation}`))) {
+    projectedActions = selected.map(action => boundedAction(
+      action,
+      canonicalRunByAction.get(action.id),
+      true,
+    ));
+    actions = boundedJsonArray(projectedActions, COORDINATOR_MAX_ACTIONS_BYTES);
+    includedActionIdentities = new Set(actions.map(action => `${action.stageId}:${action.generation}`));
+  }
+  if (unfinished.some(action => !includedActionIdentities.has(`${action.stageId}:${action.generation}`))) {
+    throw new Error('Active Actions cannot be represented within the Coordinator snapshot budget');
+  }
+
   return {
-    workItem: {
-      id: detail.id,
-      revision: detail.revision,
-      planRevision: detail.planRevision,
-      ledgerRevision: detail.ledgerRevision,
-      status: detail.status,
-      title: detail.title,
-      goal: detail.goal,
-      acceptanceCriteria: detail.acceptanceCriteria || [],
-      workItemType: detail.workflowSnapshot?.workItemType || null,
-    },
-    actions: (detail.actions || [])
-      .filter(action => !['superseded', 'cancelled'].includes(action.status))
-      .map(action => {
-        const result = canonicalRunByAction.get(action.id);
-        return {
-          stageId: action.stageId,
-          type: action.type,
-          status: action.status,
-          generation: action.generation,
-          dependencies: action.dependsOnStageIds || [],
-          workspaceMode: action.workspaceMode,
-          brief: action.brief || null,
-          result: result ? {
-            status: result.status,
-            summary: result.summary || '',
-            evidence: (result.evidence || []).slice(0, 20),
-            waitingReason: result.waitingReason || null,
-            error: result.error || null,
-            reviewDecision: result.reviewDecision || null,
-          } : null,
-        };
-      }),
+    workItem,
+    actions,
+    omittedCompletedActionCount: Math.max(0, completed.length - actions.filter(action => action.status === 'completed').length),
     conversation: coordinatorHistory(detail.messages),
   };
 }
@@ -342,6 +436,7 @@ export class WorkItemCoordinator {
       let mutation = null;
       let attemptCount = 0;
       let lastError = null;
+      const snapshotText = coordinatorSnapshotText(started.detail);
       try {
         let runtime;
         let settings;
@@ -386,7 +481,7 @@ export class WorkItemCoordinator {
                   system: COORDINATOR_SYSTEM_PROMPT,
                   messages: [{
                     role: 'user',
-                    content: `Current WorkItem snapshot:\n${coordinatorSnapshotText(started.detail)}\n\n${recovery ? 'Automatic failure recovery trigger' : 'Latest user message'}:\n${text}${correction}`,
+                    content: `Current WorkItem snapshot:\n${snapshotText}\n\n${recovery ? 'Automatic failure recovery trigger' : 'Latest user message'}:\n${text}${correction}`,
                   }],
                   maxTokens: Math.min(
                     resolveMaxOutputTokens(resolved.model, runtime.config),

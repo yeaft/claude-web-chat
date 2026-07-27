@@ -2266,6 +2266,22 @@ export class WorkItemStore {
           && (!graphMode || workItem.workflowSnapshot?.planningMode !== 'ai')) {
         throw new Error('Coordinator replan requires an AI-planned Action graph');
       }
+      const recovery = expected.recovery && typeof expected.recovery === 'object'
+        ? expected.recovery : null;
+      if (recovery && decision.kind === 'guide_actions') {
+        const failedAction = activeActions.find(action => (
+          action.id === recovery.actionId
+          && action.generation === recovery.actionGeneration
+          && action.stageId === recovery.stageId
+          && action.status === 'failed'
+        ));
+        if (!failedAction
+            || !Array.isArray(decision.guidance)
+            || decision.guidance.length !== 1
+            || decision.guidance[0]?.stageId !== failedAction.stageId) {
+          throw new Error('Coordinator recovery guidance must target only the failed Action identity');
+        }
+      }
       let nextWorkItem = workItem;
       let affectedActionIds = [];
       if (decision.kind === 'request_human') {

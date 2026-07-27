@@ -1290,6 +1290,88 @@ describe('Work Center core', () => {
       expect(available.actions.find(action => action.id === interrupted.review.action.id))
         .toMatchObject({ status: 'ready', generation: interrupted.review.action.generation + 1 });
       recoveryController.cancel(interrupted.item.id);
+
+      const largeHistory = createFailedReview('recover-large-history');
+      for (let index = 0; index < 5; index += 1) {
+        const historyDetail = recoveryStore.getWorkItemDetail(largeHistory.item.id);
+        const historyTurn = recoveryStore.beginCoordinatorTurn(
+          largeHistory.item.id,
+          `${'U'.repeat(7_890)}-${index}`,
+          {
+            revision: historyDetail.revision,
+            planRevision: historyDetail.planRevision,
+            ledgerRevision: historyDetail.ledgerRevision,
+            coordinatorRevision: historyDetail.coordinatorRevision,
+          },
+        );
+        recoveryStore.completeCoordinatorTurn(historyTurn.turnId, {
+          reply: `${'A'.repeat(7_890)}-${index}`,
+          decision: {
+            kind: 'answer', reason: 'Persist a valid long Coordinator exchange',
+            contractPatch: null, guidance: [], actions: [],
+          },
+        }, historyTurn.fence);
+      }
+      let largeHistoryAdapterCalls = 0;
+      let recoverySnapshot = null;
+      const largeHistoryCoordinator = new WorkItemCoordinator({
+        store: recoveryStore,
+        runtimeProvider: async () => ({
+          config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+          adapter: { call: async request => {
+            largeHistoryAdapterCalls += 1;
+            const content = request.messages[0].content;
+            const prefix = 'Current WorkItem snapshot:\n';
+            const suffix = '\n\nAutomatic failure recovery trigger:';
+            const start = content.indexOf(prefix);
+            const end = content.indexOf(suffix);
+            expect(start).toBeGreaterThanOrEqual(0);
+            expect(end).toBeGreaterThan(start);
+            recoverySnapshot = content.slice(start + prefix.length, end);
+            return { text: JSON.stringify({
+              reply: 'The bounded snapshot preserves enough evidence to retry the failed review.',
+              decision: {
+                kind: 'guide_actions',
+                reason: 'The failed review remains the only recovery target.',
+                contractPatch: null,
+                guidance: [{
+                  stageId: largeHistory.review.action.stageId,
+                  instruction: 'Retry the review using the bounded persisted context.',
+                }],
+                actions: [],
+              },
+            }) };
+          } },
+        }),
+        policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
+        registry: {
+          listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }],
+        },
+      });
+      const largeHistoryRecovered = await largeHistoryCoordinator.recover(largeHistory.item.id, {
+        actionId: largeHistory.review.action.id,
+        actionGeneration: largeHistory.review.action.generation,
+      }).task;
+      expect(largeHistoryAdapterCalls).toBe(1);
+      expect(Buffer.byteLength(recoverySnapshot, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+      expect(() => JSON.parse(recoverySnapshot)).not.toThrow();
+      expect(JSON.parse(recoverySnapshot)).toMatchObject({
+        workItem: { id: largeHistory.item.id },
+        actions: expect.arrayContaining([
+          expect.objectContaining({
+            stageId: largeHistory.review.action.stageId,
+            status: 'failed',
+            generation: largeHistory.review.action.generation,
+          }),
+        ]),
+      });
+      expect(JSON.parse(recoverySnapshot).conversation.length).toBeLessThanOrEqual(20);
+      expect(largeHistoryRecovered.actions.find(action => action.id === largeHistory.review.action.id))
+        .toMatchObject({ status: 'ready', generation: largeHistory.review.action.generation + 1 });
+      expect(largeHistoryRecovered.messages.filter(message => message.recovery)).toEqual([
+        expect.objectContaining({ status: 'completed' }),
+      ]);
+      recoveryController.cancel(largeHistory.item.id);
     } finally {
       recoveryStore.close();
       rmSync(recoveryDir, { recursive: true, force: true });
@@ -1471,12 +1553,53 @@ describe('Work Center core', () => {
       status: 'waiting',
       currentActionId: waitingBranch.action.id,
       actions: expect.arrayContaining([
-        expect.objectContaining({ id: waitingBranch.action.id, status: 'waiting' }),
-        expect.objectContaining({ id: failedBranch.action.id, status: 'failed' }),
+        expect.objectContaining({ id: waitingBranch.action.id, status: 'waiting', generation: 1 }),
+        expect.objectContaining({ id: failedBranch.action.id, status: 'failed', generation: 1 }),
       ]),
     });
 
+    const mixedBeforeRecovery = restartStore.getWorkItemDetail(mixedItem.id);
+    const bypassTurn = restartStore.beginCoordinatorTurn(mixedItem.id, '', {
+      revision: mixedBeforeRecovery.revision,
+      planRevision: mixedBeforeRecovery.planRevision,
+      ledgerRevision: mixedBeforeRecovery.ledgerRevision,
+      coordinatorRevision: mixedBeforeRecovery.coordinatorRevision,
+    }, {
+      recovery: {
+        actionId: failedBranch.action.id,
+        actionGeneration: failedBranch.action.generation,
+        stageId: failedBranch.action.stageId,
+      },
+    });
+    expect(() => restartStore.completeCoordinatorTurn(bypassTurn.turnId, {
+      reply: 'Retry both branches.',
+      decision: {
+        kind: 'guide_actions',
+        reason: 'Attempt to bypass the recovery target boundary.',
+        contractPatch: null,
+        guidance: [
+          { stageId: failedBranch.action.stageId, instruction: 'Retry the failed branch.' },
+          { stageId: waitingBranch.action.stageId, instruction: 'Ignore the pending human question.' },
+        ],
+        actions: [],
+      },
+    }, bypassTurn.fence)).toThrow(/only the failed Action identity/i);
+    expect(restartStore.getWorkItemDetail(mixedItem.id)).toMatchObject({
+      status: 'waiting',
+      currentActionId: waitingBranch.action.id,
+      actions: expect.arrayContaining([
+        expect.objectContaining({ id: waitingBranch.action.id, status: 'waiting', generation: 1 }),
+        expect.objectContaining({ id: failedBranch.action.id, status: 'failed', generation: 1 }),
+      ]),
+    });
+    restartStore.failCoordinatorTurn(
+      bypassTurn.turnId,
+      new Error('Rejected cross-Action recovery guidance'),
+      bypassTurn.fence,
+    );
+
     let restartCoordinatorCalls = 0;
+    let mixedRecoveryCalls = 0;
     let coordinatorInFlight = 0;
     let maxCoordinatorInFlight = 0;
     const restartCoordinator = new WorkItemCoordinator({
@@ -1491,16 +1614,29 @@ describe('Work Center core', () => {
           coordinatorInFlight -= 1;
           const failedStageId = request.messages[0].content.includes('failed-branch')
             ? 'failed-branch' : 'security-review';
+          if (failedStageId === 'failed-branch') mixedRecoveryCalls += 1;
+          const guidance = failedStageId === 'failed-branch' && mixedRecoveryCalls === 1
+            ? [
+                {
+                  stageId: failedStageId,
+                  instruction: `Retry ${failedStageId} with the persisted failure evidence.`,
+                },
+                {
+                  stageId: 'waiting-branch',
+                  instruction: 'Ignore the pending human question and resume this sibling.',
+                },
+              ]
+            : [{
+                stageId: failedStageId,
+                instruction: `Retry ${failedStageId} with the persisted failure evidence.`,
+              }];
           return { text: JSON.stringify({
             reply: `Resume ${failedStageId} without terminating the WorkItem.`,
             decision: {
               kind: 'guide_actions',
               reason: 'The existing graph remains valid after corrected execution guidance.',
               contractPatch: null,
-              guidance: [{
-                stageId: failedStageId,
-                instruction: `Retry ${failedStageId} with the persisted failure evidence.`,
-              }],
+              guidance,
               actions: [],
             },
           }) };
@@ -1548,8 +1684,13 @@ describe('Work Center core', () => {
           expect.objectContaining({ id: failedBranch.action.id, status: 'completed' }),
         ]),
       });
-      expect(restartCoordinatorCalls).toBe(2);
+      expect(restartCoordinatorCalls).toBe(3);
+      expect(mixedRecoveryCalls).toBe(2);
       expect(maxCoordinatorInFlight).toBe(1);
+      expect(restartStore.getRun(waitingBranch.run.id)).toMatchObject({
+        status: 'waiting',
+        waitingReason: 'Choose the supported deployment target.',
+      });
     } finally {
       await restartService.shutdown();
       rmSync(restartDir, { recursive: true, force: true });
