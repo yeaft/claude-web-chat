@@ -8,6 +8,10 @@ import { WorkflowController } from '../../../../agent/yeaft/work-center/controll
 import { WorkItemRunner } from '../../../../agent/yeaft/work-center/runner.js';
 import { WorkItemCoordinator } from '../../../../agent/yeaft/work-center/coordinator.js';
 import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
+import {
+  buildWorkItemAttachmentContext,
+  persistWorkItemAttachments,
+} from '../../../../agent/yeaft/work-center/attachments.js';
 import { enforceActionRequestDetailBudget } from '../../../../agent/yeaft/work-center/debug-projection.js';
 import {
   applyAdditivePlanProposal,
@@ -1129,6 +1133,58 @@ describe('Work Center core', () => {
       ],
     });
     expect(projectWorkItemDetail(attachmentDetail).messages.at(-2).attachments).toHaveLength(2);
+
+    const boundedContext = (id, contents, byteBudget = 32 * 1024) => {
+      const attachments = persistWorkItemAttachments(contents.map((content, index) => ({
+        name: `notes-${index + 1}.txt`,
+        mimeType: 'text/plain',
+        data: Buffer.from(content).toString('base64'),
+      })), { root: attachmentRoot, workItemId: id });
+      return buildWorkItemAttachmentContext({ id, attachments }, {
+        root: attachmentRoot,
+        inlineTextBytes: byteBudget,
+      }).promptBlock;
+    };
+    expect(boundedContext('prompt-budget-framing', ['a'], 1)).toBe('');
+    let exactContentBytes = 1;
+    for (let index = 0; index < 4; index += 1) {
+      const measurement = boundedContext(
+        `prompt-budget-measure-${index}`,
+        ['a'.repeat(exactContentBytes)],
+        1024 * 1024,
+      );
+      const framingBytes = Buffer.byteLength(measurement, 'utf8') - exactContentBytes;
+      exactContentBytes = (32 * 1024) - framingBytes;
+    }
+    const exactBoundary = boundedContext('prompt-budget-exact', ['a'.repeat(exactContentBytes)]);
+    const overBoundary = boundedContext('prompt-budget-over', ['a'.repeat(exactContentBytes + 1)]);
+    expect(Buffer.byteLength(exactBoundary, 'utf8')).toBe(32 * 1024);
+    expect(Buffer.byteLength(overBoundary, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+    expect(exactBoundary).not.toContain('[content truncated]');
+    expect(overBoundary).toContain('[content truncated]');
+
+    const reviewerLargeEscape = boundedContext('prompt-budget-escape-large', ['&'.repeat(32_768)]);
+    const reviewerSmallEscape = boundedContext('prompt-budget-escape-small', ['&'.repeat(6_554)]);
+    expect(Buffer.byteLength(reviewerLargeEscape, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+    expect(Buffer.byteLength(reviewerSmallEscape, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+    expect(reviewerLargeEscape).not.toMatch(/&(?!amp;|lt;|gt;)/);
+    expect(reviewerSmallEscape).not.toMatch(/&(?!amp;|lt;|gt;)/);
+
+    const multiFileUnicode = boundedContext('prompt-budget-multi-file', [
+      '你🙂&<>'.repeat(100),
+      '界🚀&<>'.repeat(100),
+      '终点&<>'.repeat(100),
+    ]);
+    expect(Buffer.byteLength(multiFileUnicode, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+    expect(multiFileUnicode).not.toContain('\uFFFD');
+    expect(multiFileUnicode.match(/<work-item-attachment-content>/g)).toHaveLength(3);
+    expect(multiFileUnicode.match(/<\/work-item-attachment-content>/g)).toHaveLength(3);
+    expect(multiFileUnicode).toContain('File: notes-3.txt');
+    expect(multiFileUnicode).not.toMatch(/&(?!amp;|lt;|gt;)/);
+    const multiFileOverflow = boundedContext('prompt-budget-multi-file-overflow', [
+      '&'.repeat(6_554), '&'.repeat(6_554), '&'.repeat(6_554),
+    ]);
+    expect(Buffer.byteLength(multiFileOverflow, 'utf8')).toBeLessThanOrEqual(32 * 1024);
 
     expect(() => {
       coordinator.shuttingDown = true;

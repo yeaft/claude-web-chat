@@ -1215,17 +1215,6 @@
   white-space: nowrap;
 }
 
-.work-center-action-content-summary {
-  min-width: 0;
-  overflow: hidden;
-  flex: 1;
-  color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .work-center-action-chevron {
   flex: 0 0 auto;
   color: var(--text-muted);
