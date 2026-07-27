@@ -50,6 +50,28 @@ function coordinatorActionFence(actions) {
   })).sort((left, right) => left.id.localeCompare(right.id))), 'utf8').digest('hex');
 }
 
+function coordinatorRecoveryIdentity(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const actionId = typeof value.actionId === 'string' ? value.actionId : '';
+  const stageId = typeof value.stageId === 'string' ? value.stageId : '';
+  const actionGeneration = Number(value.actionGeneration);
+  if (!actionId || !stageId || !Number.isInteger(actionGeneration) || actionGeneration < 1) return null;
+  return { actionId, actionGeneration, stageId };
+}
+
+function sameCoordinatorRecoveryIdentity(persisted, expected) {
+  const persistedPresent = persisted != null;
+  const expectedPresent = expected != null;
+  if (!persistedPresent && !expectedPresent) return true;
+  if (persistedPresent !== expectedPresent) return false;
+  const persistedIdentity = coordinatorRecoveryIdentity(persisted);
+  const expectedIdentity = coordinatorRecoveryIdentity(expected);
+  return !!persistedIdentity && !!expectedIdentity
+    && persistedIdentity.actionId === expectedIdentity.actionId
+    && persistedIdentity.actionGeneration === expectedIdentity.actionGeneration
+    && persistedIdentity.stageId === expectedIdentity.stageId;
+}
+
 function actionSpecHash(action) {
   const spec = {
     type: action.type || '',
@@ -2271,6 +2293,11 @@ export class WorkItemStore {
         message?.turnId === turnId && message.role === 'assistant' && message.status === 'thinking'
       ));
       if (assistantIndex < 0) return null;
+      const persistedRecovery = messages[assistantIndex]?.recovery ?? null;
+      if (!sameCoordinatorRecoveryIdentity(persistedRecovery, expected.recovery ?? null)) {
+        throw new Error('Coordinator recovery fence does not match the persisted turn identity');
+      }
+      const recovery = coordinatorRecoveryIdentity(persistedRecovery);
       const decision = result?.decision || {};
       const now = this.now();
       const activeActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
@@ -2285,8 +2312,6 @@ export class WorkItemStore {
           && (!graphMode || workItem.workflowSnapshot?.planningMode !== 'ai')) {
         throw new Error('Coordinator replan requires an AI-planned Action graph');
       }
-      const recovery = expected.recovery && typeof expected.recovery === 'object'
-        ? expected.recovery : null;
       if (recovery && decision.kind === 'guide_actions') {
         const failedAction = activeActions.find(action => (
           action.id === recovery.actionId
@@ -2304,7 +2329,6 @@ export class WorkItemStore {
       let nextWorkItem = workItem;
       let affectedActionIds = [];
       if (decision.kind === 'request_human') {
-        const recovery = messages[assistantIndex]?.recovery;
         const action = recovery ? activeActions.find(candidate => (
           candidate.id === recovery.actionId
           && candidate.generation === recovery.actionGeneration

@@ -1,8 +1,16 @@
+import { createHash } from 'node:crypto';
 import { resolveMaxOutputTokens } from '../models.js';
+import {
+  LLMAuthError,
+  LLMContextError,
+  LLMRateLimitError,
+  LLMServerError,
+} from '../llm/adapter.js';
 import { resolveWorkItemModel, selectWorkItemVp } from './assignment.js';
 import { normalizeContractPatch } from './completion-contract.js';
 import { applyCoordinatorReplan } from './plan-mutation.js';
 import { buildWorkItemAttachmentContext } from './attachments.js';
+import { sanitizeDiagnosticText } from './debug-projection.js';
 
 const COORDINATOR_MAX_REPLY_CHARS = 8_000;
 const COORDINATOR_MAX_INSTRUCTION_CHARS = 8_000;
@@ -14,6 +22,8 @@ const COORDINATOR_MAX_ACTIONS = 64;
 const COORDINATOR_MAX_WORK_ITEM_BYTES = 14 * 1024;
 const COORDINATOR_MAX_ACTIONS_BYTES = 34 * 1024;
 const COORDINATOR_MAX_CONVERSATION_BYTES = 10 * 1024;
+const COORDINATOR_MAX_STAGE_ID_BYTES = 256;
+const COORDINATOR_TEMPORARY_ERROR = 'Work Center Coordinator is temporarily unavailable; automatic recovery will retry';
 
 function truncateUtf8(value, maxBytes) {
   const bytes = Buffer.from(String(value || ''), 'utf8');
@@ -51,16 +61,62 @@ function boundedEvidence(value) {
   })).filter(item => item.label);
 }
 
-function boundedAction(action, result, compact = false) {
+function coordinatorStageReferences(detail) {
+  const actions = (Array.isArray(detail?.actions) ? detail.actions : [])
+    .filter(action => !['superseded', 'cancelled'].includes(action?.status));
+  const stageIds = [...new Set(actions
+    .map(action => typeof action?.stageId === 'string' ? action.stageId : '')
+    .filter(Boolean))];
+  const reserved = new Set(stageIds);
+  const used = new Set();
+  const aliasByStageId = new Map();
+  const stageIdByReference = new Map();
+
+  for (const stageId of stageIds) {
+    let alias = stageId;
+    if (Buffer.byteLength(alias, 'utf8') > COORDINATOR_MAX_STAGE_ID_BYTES) {
+      const digest = createHash('sha256').update(stageId, 'utf8').digest('hex');
+      let counter = 0;
+      do {
+        const suffix = `~${digest}${counter > 0 ? `-${counter}` : ''}`;
+        alias = `${truncateUtf8(stageId, COORDINATOR_MAX_STAGE_ID_BYTES - Buffer.byteLength(suffix, 'utf8'))}${suffix}`;
+        counter += 1;
+      } while (used.has(alias) || (reserved.has(alias) && alias !== stageId));
+    }
+    if (used.has(alias)) throw new Error(`Coordinator snapshot has duplicate stage identity: ${stageId}`);
+    used.add(alias);
+    aliasByStageId.set(stageId, alias);
+    stageIdByReference.set(stageId, stageId);
+    stageIdByReference.set(alias, stageId);
+  }
+  for (const action of actions) {
+    if (typeof action?.id === 'string' && action.id && typeof action.stageId === 'string'
+        && !stageIdByReference.has(action.id)) {
+      stageIdByReference.set(action.id, action.stageId);
+    }
+  }
+  return {
+    project(value) {
+      const stageId = typeof value === 'string' ? value : '';
+      return aliasByStageId.get(stageId) || truncateUtf8(stageId, COORDINATOR_MAX_STAGE_ID_BYTES);
+    },
+    resolve(value) {
+      const reference = typeof value === 'string' ? value.trim() : '';
+      return stageIdByReference.get(reference) || reference;
+    },
+  };
+}
+
+function boundedAction(action, result, stageReferences, compact = false) {
   const brief = action?.brief && typeof action.brief === 'object' ? action.brief : null;
   return {
-    stageId: truncateUtf8(action?.stageId, 256),
+    stageId: stageReferences.project(action?.stageId),
     type: truncateUtf8(action?.type, 64),
     status: truncateUtf8(action?.status, 64),
     generation: Math.max(1, Number(action?.generation) || 1),
     dependencies: (Array.isArray(action?.dependsOnStageIds) ? action.dependsOnStageIds : [])
       .slice(0, 8)
-      .map(value => truncateUtf8(value, 128))
+      .map(value => stageReferences.project(value))
       .filter(Boolean),
     workspaceMode: truncateUtf8(action?.workspaceMode, 64),
     ...(!compact && brief ? {
@@ -112,6 +168,7 @@ Decision rules:
 - request_human: use only during automatic failure recovery, and only when no safe retry, guidance, or replan can be decided without human information. Set question to the exact information or decision required. Do not include contractPatch, guidance, or actions.
 - Every replan must keep exactly one final acceptance gate: normally one deliver Action, or one terminal review when no delivery operation is required. It must be the unique graph sink and transitively depend on all other Actions.
 - Action references are stage ids, never internal database Action ids.
+- Stage ids in the snapshot may be bounded aliases. Echo them exactly; the runtime resolves them to durable identities.
 - Never return destructive cancellation. Tell the user to use the explicit cancel control instead.`;
 
 function parseJsonObject(value) {
@@ -138,11 +195,64 @@ function cleanText(value, limit, name) {
   return text;
 }
 
-function temporaryCoordinatorError(cause) {
-  const error = new Error('Work Center Coordinator is temporarily unavailable; automatic recovery will retry');
-  error.coordinatorRetryable = true;
+function permanentCoordinatorDiagnostic(cause, phase) {
+  if (cause instanceof LLMAuthError) {
+    return 'Work Center Coordinator authentication failed. Update the configured provider credentials before retrying this Action.';
+  }
+  if (cause instanceof LLMContextError) {
+    return 'Work Center Coordinator exceeded the model context limit. Reduce the WorkItem context or select a model with a larger context window before retrying this Action.';
+  }
+  const detail = sanitizeDiagnosticText(cause?.message || String(cause || ''), 2_000);
+  const label = phase === 'runtime'
+    ? 'runtime could not be loaded'
+    : phase === 'policy'
+      ? 'settings could not be loaded'
+      : phase === 'selection'
+        ? 'executor or model selection failed'
+        : 'provider request failed';
+  return `Work Center Coordinator ${label}${detail ? `: ${detail}` : '.'}`;
+}
+
+function coordinatorExecutionError(cause, phase) {
+  if (cause?.coordinatorClassified === true) return cause;
+  const explicitlyPermanent = cause?.retryable === false;
+  const retryable = !explicitlyPermanent && (
+    cause instanceof LLMRateLimitError
+    || cause instanceof LLMServerError
+    || (['runtime', 'policy'].includes(phase) && cause?.retryable === true)
+  );
+  const error = new Error(retryable
+    ? COORDINATOR_TEMPORARY_ERROR
+    : permanentCoordinatorDiagnostic(cause, phase));
+  error.coordinatorClassified = true;
+  error.coordinatorRetryable = retryable;
+  error.coordinatorPhase = phase;
   error.cause = cause;
   return error;
+}
+
+function permanentRecoveryDecision(error) {
+  const diagnostic = String(error?.message || 'Work Center Coordinator cannot recover this Action automatically');
+  const resolution = error?.cause instanceof LLMAuthError
+    ? 'Update the provider credentials, then tell Yeaft to retry or replan the failed Action.'
+    : error?.cause instanceof LLMContextError
+      ? 'Reduce the WorkItem context or choose a model with a larger context window, then tell Yeaft to retry or replan the failed Action.'
+      : error?.coordinatorPhase === 'selection'
+        ? 'Configure an available VP and model, then tell Yeaft to retry or replan the failed Action.'
+        : error?.coordinatorPhase === 'policy'
+          ? 'Correct the Work Center settings, then tell Yeaft to retry or replan the failed Action.'
+          : 'Correct the Coordinator runtime or provider configuration, then tell Yeaft to retry or replan the failed Action.';
+  return {
+    reply: `${diagnostic} Automatic recovery stopped to avoid repeated attempts.`,
+    decision: {
+      kind: 'request_human',
+      reason: `Automatic recovery stopped after a non-retryable ${error?.coordinatorPhase || 'Coordinator'} error`,
+      question: `${diagnostic} ${resolution}`,
+      contractPatch: null,
+      guidance: [],
+      actions: [],
+    },
+  };
 }
 
 function normalizeGuidance(value, detail) {
@@ -152,9 +262,10 @@ function normalizeGuidance(value, detail) {
   const activeByStage = new Map((detail.actions || [])
     .filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status))
     .map(action => [action.stageId, action]));
+  const stageReferences = coordinatorStageReferences(detail);
   const seen = new Set();
   return value.map(entry => {
-    const stageId = typeof entry?.stageId === 'string' ? entry.stageId.trim() : '';
+    const stageId = stageReferences.resolve(entry?.stageId);
     if (!stageId || seen.has(stageId) || !activeByStage.has(stageId)) {
       throw new Error(`Work Center Coordinator guidance references an invalid unfinished Action: ${stageId || '(missing)'}`);
     }
@@ -167,20 +278,13 @@ function normalizeGuidance(value, detail) {
 }
 
 function normalizeCoordinatorActionReferences(actions, detail) {
-  const stageByReference = new Map();
-  for (const action of detail.actions || []) {
-    const stageId = typeof action?.stageId === 'string' ? action.stageId.trim() : '';
-    if (!stageId) continue;
-    stageByReference.set(stageId, stageId);
-    if (typeof action.id === 'string' && action.id && !stageByReference.has(action.id)) {
-      stageByReference.set(action.id, stageId);
-    }
-  }
-  const normalizeReference = value => (
-    typeof value === 'string' ? stageByReference.get(value.trim()) || value : value
-  );
+  const stageReferences = coordinatorStageReferences(detail);
+  const normalizeReference = value => typeof value === 'string'
+    ? stageReferences.resolve(value)
+    : value;
   return actions.map(action => ({
     ...structuredClone(action),
+    ...(typeof action?.id === 'string' ? { id: normalizeReference(action.id) } : {}),
     ...(Array.isArray(action?.dependsOnActionIds) ? {
       dependsOnActionIds: action.dependsOnActionIds.map(normalizeReference),
     } : {}),
@@ -323,6 +427,7 @@ function coordinatorSnapshot(detail) {
 
   const currentActions = (Array.isArray(detail.actions) ? detail.actions : [])
     .filter(action => !['superseded', 'cancelled'].includes(action.status));
+  const stageReferences = coordinatorStageReferences(detail);
   const unfinished = currentActions.filter(action => action.status !== 'completed');
   const completed = currentActions.filter(action => action.status === 'completed');
   const selected = [
@@ -332,20 +437,22 @@ function coordinatorSnapshot(detail) {
   let projectedActions = selected.map(action => boundedAction(
     action,
     canonicalRunByAction.get(action.id),
+    stageReferences,
     action.status === 'completed',
   ));
   let actions = boundedJsonArray(projectedActions, COORDINATOR_MAX_ACTIONS_BYTES);
   let includedActionIdentities = new Set(actions.map(action => `${action.stageId}:${action.generation}`));
-  if (unfinished.some(action => !includedActionIdentities.has(`${action.stageId}:${action.generation}`))) {
+  if (unfinished.some(action => !includedActionIdentities.has(`${stageReferences.project(action.stageId)}:${action.generation}`))) {
     projectedActions = selected.map(action => boundedAction(
       action,
       canonicalRunByAction.get(action.id),
+      stageReferences,
       true,
     ));
     actions = boundedJsonArray(projectedActions, COORDINATOR_MAX_ACTIONS_BYTES);
     includedActionIdentities = new Set(actions.map(action => `${action.stageId}:${action.generation}`));
   }
-  if (unfinished.some(action => !includedActionIdentities.has(`${action.stageId}:${action.generation}`))) {
+  if (unfinished.some(action => !includedActionIdentities.has(`${stageReferences.project(action.stageId)}:${action.generation}`))) {
     throw new Error('Active Actions cannot be represented within the Coordinator snapshot budget');
   }
 
@@ -466,15 +573,24 @@ export class WorkItemCoordinator {
         let settings;
         try {
           runtime = await this.runtimeProvider();
+        } catch (error) {
+          throw coordinatorExecutionError(error, 'runtime');
+        }
+        try {
           settings = await this.policyProvider();
         } catch (error) {
-          throw temporaryCoordinatorError(error);
+          throw coordinatorExecutionError(error, 'policy');
         }
         if (this.shuttingDown) throw new Error('Work Center Coordinator is shutting down');
         let vps;
         let resolved;
         try {
           vps = this.registry?.listVps?.() || [];
+          if (vps.length === 0) {
+            const error = new Error('Work Center has no available VPs');
+            error.retryable = false;
+            throw error;
+          }
           const assignment = selectWorkItemVp({
             policy: { mode: 'pool', candidateVpIds: vps.map(vp => vp.id), capability: 'triage' },
             stageType: 'triage',
@@ -487,7 +603,7 @@ export class WorkItemCoordinator {
           };
           resolved = resolveWorkItemModel(runtime.config, assignment.vp, coordinatorPolicy);
         } catch (error) {
-          throw temporaryCoordinatorError(error);
+          throw coordinatorExecutionError(error, 'selection');
         }
         const maxAttempts = recovery ? COORDINATOR_RECOVERY_DECISION_ATTEMPTS : 1;
         for (let index = 0; index < maxAttempts; index += 1) {
@@ -525,7 +641,7 @@ export class WorkItemCoordinator {
               ]);
             } catch (error) {
               if (abortController.signal.aborted || this.shuttingDown) throw error;
-              throw temporaryCoordinatorError(error);
+              throw coordinatorExecutionError(error, 'provider');
             }
             normalized = normalizeCoordinatorResponse(result?.text, started.detail, {
               recovery,
@@ -552,7 +668,7 @@ export class WorkItemCoordinator {
             break;
           } catch (error) {
             normalized = null;
-            if (abortController.signal.aborted || this.shuttingDown || error?.coordinatorRetryable) {
+            if (abortController.signal.aborted || this.shuttingDown || error?.coordinatorClassified) {
               throw error;
             }
             lastError = error;
@@ -568,17 +684,19 @@ export class WorkItemCoordinator {
         if (!recovery || lastError?.coordinatorRetryable) {
           throw lastError || new Error('Work Center Coordinator did not produce a decision');
         }
-        normalized = {
-          reply: 'Automatic recovery could not choose a safe executable next step. Human input is required.',
-          decision: {
-            kind: 'request_human',
-            reason: 'Automatic recovery exhausted its bounded decision attempts',
-            question: 'Review the failed Action and provide the missing decision or constraint needed to retry or replan it safely.',
-            contractPatch: null,
-            guidance: [],
-            actions: [],
-          },
-        };
+        normalized = lastError?.coordinatorClassified
+          ? permanentRecoveryDecision(lastError)
+          : {
+              reply: 'Automatic recovery could not choose a safe executable next step. Human input is required.',
+              decision: {
+                kind: 'request_human',
+                reason: 'Automatic recovery exhausted its bounded decision attempts',
+                question: 'Review the failed Action and provide the missing decision or constraint needed to retry or replan it safely.',
+                contractPatch: null,
+                guidance: [],
+                actions: [],
+              },
+            };
       }
       const detail = this.store.completeCoordinatorTurn(started.turnId, {
         reply: normalized.reply,

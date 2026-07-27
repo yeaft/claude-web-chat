@@ -7,6 +7,12 @@ import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 import { WorkItemRunner } from '../../../../agent/yeaft/work-center/runner.js';
 import { WorkItemCoordinator } from '../../../../agent/yeaft/work-center/coordinator.js';
+import {
+  LLMAuthError,
+  LLMContextError,
+  LLMRateLimitError,
+  LLMServerError,
+} from '../../../../agent/yeaft/llm/adapter.js';
 import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
 import {
   buildWorkItemAttachmentContext,
@@ -1249,7 +1255,11 @@ describe('Work Center core', () => {
         store: recoveryStore,
         runtimeProvider: async () => {
           infrastructureCalls += 1;
-          if (infrastructureCalls === 1) throw new Error('provider temporarily unavailable');
+          if (infrastructureCalls === 1) {
+            const error = new Error('provider temporarily unavailable');
+            error.retryable = true;
+            throw error;
+          }
           return {
             config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
             adapter: { call: async () => ({ text: JSON.stringify({
@@ -1415,7 +1425,11 @@ describe('Work Center core', () => {
       store: serviceStore,
       runtimeProvider: async () => {
         coordinatorRuntimeCalls += 1;
-        if (coordinatorRuntimeCalls === 1) throw new Error('provider temporarily unavailable');
+        if (coordinatorRuntimeCalls === 1) {
+          const error = new Error('provider temporarily unavailable');
+          error.retryable = true;
+          throw error;
+        }
         return {
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
           adapter: { call: async () => {
@@ -1492,6 +1506,267 @@ describe('Work Center core', () => {
     } finally {
       await service.shutdown();
       rmSync(serviceDir, { recursive: true, force: true });
+    }
+
+    const longIdentityDir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-long-identity-'));
+    const longIdentityStore = new WorkItemStore(join(longIdentityDir, 'work-center.db'));
+    const longIdentityController = new WorkflowController(longIdentityStore);
+    const longPrefix = 'long-stage-'.padEnd(190, 'a');
+    const longStages = [`${longPrefix}-left`, `${longPrefix}-right`];
+    const longIdentityItem = longIdentityController.create(createInput({
+      id: 'long-stage-identity-snapshot',
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const longIdentityTriage = longIdentityStore.claimReadyAction('long-identity-setup', 5_000);
+    longIdentityController.submit(
+      longIdentityTriage.run.id,
+      'long-identity-setup',
+      longIdentityTriage.run.leaseEpoch,
+      completed('triage', {
+        plan: { workItemType: 'long-stage-identity', actions: [
+          { id: longStages[0], type: 'research', objective: 'Build the long dependency identity', dependsOnActionIds: [], workspaceMode: 'read' },
+          { id: longStages[1], type: 'deliver', objective: 'Consume the long dependency identity', dependsOnActionIds: [longStages[0]], workspaceMode: 'shared' },
+        ] },
+      }),
+    );
+    const longIdentityClaim = longIdentityStore.claimReadyAction('long-identity-setup', 5_000);
+    longIdentityController.submit(longIdentityClaim.run.id, 'long-identity-setup', longIdentityClaim.run.leaseEpoch, {
+      outcome: 'failed', response: 'Long identity failed.', summary: 'Long identity needs recovery.', evidence: [], error: 'long identity failure',
+    });
+    let longIdentitySnapshot = '';
+    const longIdentityCoordinator = new WorkItemCoordinator({
+      store: longIdentityStore,
+      runtimeProvider: async () => ({
+        config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+        adapter: { call: async request => {
+          longIdentitySnapshot = request.messages[0].content.match(/Current WorkItem snapshot:\n([\s\S]*?)\n\nAutomatic failure recovery trigger:/)?.[1] || '';
+          const snapshot = JSON.parse(longIdentitySnapshot);
+          const failedProjection = snapshot.actions.find(action => action.status === 'failed');
+          const dependentProjection = snapshot.actions.find(action => action.dependencies.length > 0);
+          return { text: JSON.stringify({
+            reply: 'Retry the failed long identity using its exact projected alias.',
+            decision: {
+              kind: 'guide_actions',
+              reason: 'The existing graph remains valid.',
+              contractPatch: null,
+              guidance: [{ stageId: failedProjection.stageId, instruction: 'Retry the long identity without changing graph topology.' }],
+              actions: [],
+            },
+          }) };
+        } },
+      }),
+      policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
+      registry: { listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }] },
+    });
+    const longIdentityRecovered = await longIdentityCoordinator.recover(longIdentityItem.id, {
+      actionId: longIdentityClaim.action.id,
+      actionGeneration: longIdentityClaim.action.generation,
+    }).task;
+    const longSnapshot = JSON.parse(longIdentitySnapshot);
+    const projectedLongStages = longSnapshot.actions.map(action => action.stageId);
+    const projectedDependency = longSnapshot.actions.find(action => action.dependencies.length > 0).dependencies[0];
+    expect(Buffer.byteLength(longIdentitySnapshot, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+    expect(new Set(projectedLongStages).size).toBe(projectedLongStages.length);
+    expect(projectedLongStages[0]).not.toBe(projectedLongStages[1]);
+    expect(projectedDependency).toBe(longSnapshot.actions.find(action => action.status === 'failed').stageId);
+    expect(projectedLongStages.every(stageId => Buffer.byteLength(stageId, 'utf8') <= 256)).toBe(true);
+    expect(longIdentityRecovered.actions.find(action => action.id === longIdentityClaim.action.id))
+      .toMatchObject({ status: 'ready', generation: longIdentityClaim.action.generation + 1 });
+    expect(longIdentityRecovered.messages.at(-1).decision.affectedActionIds).toEqual([longIdentityClaim.action.id]);
+    longIdentityController.cancel(longIdentityItem.id);
+    longIdentityStore.close();
+    rmSync(longIdentityDir, { recursive: true, force: true });
+
+    const permanentErrorCases = [
+      {
+        name: 'missing VP',
+        runtime: async () => ({
+          config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+          adapter: { call: async () => { throw new Error('adapter must not run without a VP'); } },
+        }),
+        vps: [],
+        diagnostic: /no available VPs/i,
+      },
+      {
+        name: 'missing model',
+        runtime: async () => ({ config: { availableModels: [] }, adapter: { call: async () => { throw new Error('adapter must not run without a model'); } } }),
+        vps: [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }],
+        diagnostic: /no configured model/i,
+      },
+      {
+        name: 'policy error',
+        policyError: Object.assign(new Error('invalid coordinator policy'), { retryable: false }),
+        diagnostic: /settings could not be loaded/i,
+      },
+      {
+        name: 'authentication error',
+        providerError: new LLMAuthError('invalid key', 401),
+        diagnostic: /authentication failed/i,
+      },
+      {
+        name: 'context error',
+        providerError: new LLMContextError('context too long'),
+        diagnostic: /context limit/i,
+      },
+    ];
+    for (const testCase of permanentErrorCases) {
+      const caseDir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-permanent-recovery-'));
+      let caseStore = new WorkItemStore(join(caseDir, 'work-center.db'));
+      const caseController = new WorkflowController(caseStore);
+      let providerCalls = 0;
+      let caseService = null;
+      let caseServiceOpen = false;
+      try {
+        const caseItem = caseController.create(createInput({
+          id: `permanent-${testCase.name.replace(/\s+/g, '-')}`,
+          workflowTemplate: 'ai-planned',
+          workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+        }));
+        const caseTriage = caseStore.claimReadyAction('permanent-setup', 5_000);
+        caseController.submit(caseTriage.run.id, 'permanent-setup', caseTriage.run.leaseEpoch, completed('triage', {
+          plan: { workItemType: 'permanent-recovery', actions: [
+            { id: 'failed-action', type: 'implement', objective: 'Exercise permanent recovery failure', dependsOnActionIds: [], workspaceMode: 'read' },
+            { id: 'deliver', type: 'deliver', objective: 'Deliver after recovery', dependsOnActionIds: ['failed-action'], workspaceMode: 'shared' },
+          ] },
+        }));
+        const caseClaim = caseStore.claimReadyAction('permanent-setup', 5_000);
+        caseController.submit(caseClaim.run.id, 'permanent-setup', caseClaim.run.leaseEpoch, {
+          outcome: 'failed', response: 'Recovery is required.', summary: 'Action failed.', evidence: [], error: 'needs recovery',
+        });
+        const runtime = testCase.runtime || (async () => ({
+          config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+          adapter: { call: async () => {
+            providerCalls += 1;
+            throw testCase.providerError;
+          } },
+        }));
+        const makeService = storeForService => {
+          const caseCoordinator = new WorkItemCoordinator({
+            store: storeForService,
+            runtimeProvider: runtime,
+            policyProvider: async () => {
+              if (testCase.policyError) throw testCase.policyError;
+              return { modelPolicy: { mode: 'primary' } };
+            },
+            registry: { listVps: () => testCase.vps || [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }] },
+          });
+          return new WorkCenterService({
+            yeaftDir: caseDir,
+            store: storeForService,
+            controller: new WorkflowController(storeForService),
+            coordinator: caseCoordinator,
+            runner: null,
+            ownerBootId: `permanent-${testCase.name}`,
+            pollIntervalMs: 5,
+            settingsReader: () => ({}),
+          });
+        };
+        caseService = makeService(caseStore);
+        caseServiceOpen = true;
+        caseService.start();
+        for (let index = 0; index < 100; index += 1) {
+          const detail = caseStore.getWorkItemDetail(caseItem.id);
+          if (detail.actions.find(action => action.id === caseClaim.action.id)?.status === 'waiting') break;
+          await new Promise(resolve => setTimeout(resolve, 5));
+        }
+        const stopped = caseStore.getWorkItemDetail(caseItem.id);
+        expect(stopped.actions.find(action => action.id === caseClaim.action.id), testCase.name)
+          .toMatchObject({ status: 'waiting', generation: caseClaim.action.generation });
+        expect(stopped.messages, testCase.name).toEqual([
+          expect.objectContaining({
+            status: 'completed',
+            recovery: expect.objectContaining({ actionId: caseClaim.action.id }),
+            decision: expect.objectContaining({ kind: 'request_human' }),
+            text: expect.stringMatching(testCase.diagnostic),
+          }),
+        ]);
+        expect(stopped.messages[0].text, testCase.name).not.toMatch(/invalid key|context too long/i);
+        expect(caseStore.listFailedActionRecoveries(), testCase.name).toEqual([]);
+        const callsAfterStop = providerCalls;
+        await new Promise(resolve => setTimeout(resolve, 25));
+        expect(providerCalls, testCase.name).toBe(callsAfterStop);
+        await caseService.shutdown();
+        caseServiceOpen = false;
+
+        caseStore = new WorkItemStore(join(caseDir, 'work-center.db'));
+        caseService = makeService(caseStore);
+        caseServiceOpen = true;
+        caseService.start();
+        await new Promise(resolve => setTimeout(resolve, 25));
+        expect(providerCalls, `${testCase.name} after reopen`).toBe(callsAfterStop);
+        expect(caseStore.listFailedActionRecoveries(), `${testCase.name} after reopen`).toEqual([]);
+        expect(caseStore.getWorkItemDetail(caseItem.id).messages, `${testCase.name} after reopen`)
+          .toEqual(stopped.messages);
+        await caseService.shutdown();
+        caseServiceOpen = false;
+      } finally {
+        if (caseServiceOpen) {
+          try { await caseService.shutdown(); } catch {}
+        }
+        try { caseStore.close(); } catch {}
+        rmSync(caseDir, { recursive: true, force: true });
+      }
+    }
+
+    for (const providerError of [
+      new LLMRateLimitError('rate limited', 429, 1),
+      new LLMServerError('upstream unavailable', 503),
+    ]) {
+      const transientDir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-transient-recovery-'));
+      const transientStore = new WorkItemStore(join(transientDir, 'work-center.db'));
+      const transientController = new WorkflowController(transientStore);
+      const transientItem = transientController.create(createInput({
+        id: `transient-${providerError.name}`,
+        workflowTemplate: 'ai-planned',
+        workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+      }));
+      const transientTriage = transientStore.claimReadyAction('transient-setup', 5_000);
+      transientController.submit(transientTriage.run.id, 'transient-setup', transientTriage.run.leaseEpoch, completed('triage', {
+        plan: { workItemType: 'transient-recovery', actions: [
+          { id: 'failed-action', type: 'implement', objective: 'Exercise transient recovery failure', dependsOnActionIds: [], workspaceMode: 'read' },
+          { id: 'deliver', type: 'deliver', objective: 'Deliver after recovery', dependsOnActionIds: ['failed-action'], workspaceMode: 'shared' },
+        ] },
+      }));
+      const transientClaim = transientStore.claimReadyAction('transient-setup', 5_000);
+      transientController.submit(transientClaim.run.id, 'transient-setup', transientClaim.run.leaseEpoch, {
+        outcome: 'failed', response: 'Recovery is required.', summary: 'Action failed.', evidence: [], error: 'needs recovery',
+      });
+      let calls = 0;
+      const transientCoordinator = new WorkItemCoordinator({
+        store: transientStore,
+        runtimeProvider: async () => ({
+          config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+          adapter: { call: async () => {
+            calls += 1;
+            throw providerError;
+          } },
+        }),
+        policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
+        registry: { listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }] },
+      });
+      const transientResult = await transientCoordinator.recover(transientItem.id, {
+        actionId: transientClaim.action.id,
+        actionGeneration: transientClaim.action.generation,
+      }).task;
+      expect(calls).toBe(1);
+      expect(transientResult.actions.find(action => action.id === transientClaim.action.id))
+        .toMatchObject({ status: 'failed', generation: transientClaim.action.generation });
+      expect(transientResult.messages.at(-1)).toMatchObject({
+        status: 'failed',
+        error: 'Work Center Coordinator is temporarily unavailable; automatic recovery will retry',
+      });
+      expect(transientStore.listFailedActionRecoveries()).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          workItemId: transientItem.id,
+          actionId: transientClaim.action.id,
+          actionGeneration: transientClaim.action.generation,
+          recoveryAttempts: 1,
+        }),
+      ]));
+      transientController.cancel(transientItem.id);
+      transientStore.close();
+      rmSync(transientDir, { recursive: true, force: true });
     }
 
     const restartDir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-recovery-restart-'));
@@ -1601,6 +1876,113 @@ describe('Work Center core', () => {
       new Error('Rejected cross-Action recovery guidance'),
       bypassTurn.fence,
     );
+
+    const forgedDir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-recovery-forged-fence-'));
+    const forgedStore = new WorkItemStore(join(forgedDir, 'work-center.db'));
+    const forgedController = new WorkflowController(forgedStore);
+    try {
+      const forgedItem = forgedController.create(createInput({
+        id: 'forged-recovery-fence',
+        workflowTemplate: 'ai-planned',
+        workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+      }));
+      const forgedTriage = forgedStore.claimReadyAction('forged-setup', 5_000);
+      forgedController.submit(
+        forgedTriage.run.id,
+        'forged-setup',
+        forgedTriage.run.leaseEpoch,
+        completed('triage', {
+          plan: {
+            workItemType: 'forged-recovery-fence',
+            actions: [
+              {
+                id: 'failed-root-a', type: 'implement', objective: 'Fail root A independently',
+                dependsOnActionIds: [], workspaceMode: 'read',
+              },
+              {
+                id: 'failed-root-b', type: 'implement', objective: 'Fail root B independently',
+                dependsOnActionIds: [], workspaceMode: 'read',
+              },
+              {
+                id: 'deliver', type: 'deliver', objective: 'Deliver after both roots recover',
+                dependsOnActionIds: ['failed-root-a', 'failed-root-b'], workspaceMode: 'shared',
+              },
+            ],
+          },
+        }),
+      );
+      const forgedClaims = [
+        forgedStore.claimReadyAction('forged-root-a', 5_000),
+        forgedStore.claimReadyAction('forged-root-b', 5_000),
+      ];
+      const rootA = forgedClaims.find(claim => claim.action.stageId === 'failed-root-a');
+      const rootB = forgedClaims.find(claim => claim.action.stageId === 'failed-root-b');
+      expect(rootA?.action).toMatchObject({ status: 'running', generation: 1 });
+      expect(rootB?.action).toMatchObject({ status: 'running', generation: 1 });
+      for (const claim of [rootA, rootB]) {
+        forgedController.submit(claim.run.id, claim.run.ownerBootId, claim.run.leaseEpoch, {
+          outcome: 'failed',
+          response: `${claim.action.stageId} failed.`,
+          summary: `${claim.action.stageId} failure`,
+          evidence: [],
+          error: `${claim.action.stageId} needs recovery`,
+        });
+      }
+      const failedA = forgedStore.getAction(rootA.action.id);
+      const failedB = forgedStore.getAction(rootB.action.id);
+      expect(failedA).toMatchObject({ status: 'failed', generation: 1 });
+      expect(failedB).toMatchObject({ status: 'failed', generation: 1 });
+      const forgedBeforeTurn = forgedStore.getWorkItemDetail(forgedItem.id);
+      const forgedTurn = forgedStore.beginCoordinatorTurn(forgedItem.id, '', {
+        revision: forgedBeforeTurn.revision,
+        planRevision: forgedBeforeTurn.planRevision,
+        ledgerRevision: forgedBeforeTurn.ledgerRevision,
+        coordinatorRevision: forgedBeforeTurn.coordinatorRevision,
+      }, {
+        recovery: {
+          actionId: failedA.id,
+          actionGeneration: failedA.generation,
+          stageId: failedA.stageId,
+        },
+      });
+      const persistedBeforeForgery = forgedStore.getWorkItemDetail(forgedItem.id);
+      expect(persistedBeforeForgery.messages.at(-1)).toMatchObject({
+        turnId: forgedTurn.turnId,
+        status: 'thinking',
+        recovery: {
+          actionId: failedA.id,
+          actionGeneration: failedA.generation,
+          stageId: failedA.stageId,
+        },
+      });
+      const forgedFence = {
+        ...forgedTurn.fence,
+        recovery: {
+          actionId: failedB.id,
+          actionGeneration: failedB.generation,
+          stageId: failedB.stageId,
+        },
+      };
+      expect(() => forgedStore.completeCoordinatorTurn(forgedTurn.turnId, {
+        reply: 'Retry root B while claiming this is root A recovery.',
+        decision: {
+          kind: 'guide_actions',
+          reason: 'Attempt to forge the recovery identity fence.',
+          contractPatch: null,
+          guidance: [{ stageId: failedB.stageId, instruction: 'Retry only root B.' }],
+          actions: [],
+        },
+      }, forgedFence)).toThrow(/persisted turn identity/i);
+      expect(forgedStore.getWorkItemDetail(forgedItem.id)).toEqual(persistedBeforeForgery);
+      forgedStore.failCoordinatorTurn(
+        forgedTurn.turnId,
+        new Error('Rejected forged recovery identity'),
+        forgedTurn.fence,
+      );
+    } finally {
+      forgedStore.close();
+      rmSync(forgedDir, { recursive: true, force: true });
+    }
 
     let restartCoordinatorCalls = 0;
     let mixedRecoveryCalls = 0;
