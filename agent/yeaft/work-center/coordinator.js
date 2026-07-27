@@ -7,6 +7,7 @@ const COORDINATOR_MAX_REPLY_CHARS = 8_000;
 const COORDINATOR_MAX_INSTRUCTION_CHARS = 8_000;
 const COORDINATOR_MAX_OUTPUT_TOKENS = 8_192;
 const COORDINATOR_MAX_SNAPSHOT_BYTES = 64 * 1024;
+const COORDINATOR_RECOVERY_DECISION_ATTEMPTS = 2;
 
 const COORDINATOR_SYSTEM_PROMPT = `You are the Work Center Coordinator. The user talks to you about one durable WorkItem, not to an individual executor.
 
@@ -23,8 +24,9 @@ Return exactly one JSON object and no surrounding prose:
 {
   "reply": "natural user-facing response",
   "decision": {
-    "kind": "answer|guide_actions|replan",
+    "kind": "answer|guide_actions|replan|request_human",
     "reason": "short audit reason",
+    "question": null,
     "contractPatch": null,
     "guidance": [],
     "actions": []
@@ -35,7 +37,9 @@ Decision rules:
 - answer: use for explanation or status questions. Do not include contractPatch, guidance, or actions.
 - guide_actions: use only when the contract and graph stay valid. guidance must contain one or more {"stageId":"existing unfinished stage id","instruction":"specific next instruction"}. Do not include contractPatch or actions.
 - replan: use when the WorkItem contract or unfinished topology changes. contractPatch may be null or contain title, goal, and/or acceptanceCriteria. actions must be the COMPLETE desired unfinished Action graph after this decision; omit completed Actions. Each Action requires id, name, type, objective, approach, expectedOutcome, capability, candidateVpIds, assignmentReason, dependsOnActionIds, workspaceMode, and may include separateFromActionTypes, changesRequestedActionId, maxAttempts. Dependencies may reference immutable completed stage ids or earlier Actions in this actions array.
+- request_human: use only during automatic failure recovery, and only when no safe retry, guidance, or replan can be decided without human information. Set question to the exact information or decision required. Do not include contractPatch, guidance, or actions.
 - Every replan must keep exactly one final acceptance gate: normally one deliver Action, or one terminal review when no delivery operation is required. It must be the unique graph sink and transitively depend on all other Actions.
+- Action references are stage ids, never internal database Action ids.
 - Never return destructive cancellation. Tell the user to use the explicit cancel control instead.`;
 
 function parseJsonObject(value) {
@@ -62,6 +66,13 @@ function cleanText(value, limit, name) {
   return text;
 }
 
+function temporaryCoordinatorError(cause) {
+  const error = new Error('Work Center Coordinator is temporarily unavailable; automatic recovery will retry');
+  error.coordinatorRetryable = true;
+  error.cause = cause;
+  return error;
+}
+
 function normalizeGuidance(value, detail) {
   if (!Array.isArray(value) || value.length < 1 || value.length > 8) {
     throw new Error('Work Center Coordinator guidance requires between 1 and 8 targets');
@@ -83,26 +94,75 @@ function normalizeGuidance(value, detail) {
   });
 }
 
-export function normalizeCoordinatorResponse(value, detail) {
+function normalizeCoordinatorActionReferences(actions, detail) {
+  const stageByReference = new Map();
+  for (const action of detail.actions || []) {
+    const stageId = typeof action?.stageId === 'string' ? action.stageId.trim() : '';
+    if (!stageId) continue;
+    stageByReference.set(stageId, stageId);
+    if (typeof action.id === 'string' && action.id && !stageByReference.has(action.id)) {
+      stageByReference.set(action.id, stageId);
+    }
+  }
+  const normalizeReference = value => (
+    typeof value === 'string' ? stageByReference.get(value.trim()) || value : value
+  );
+  return actions.map(action => ({
+    ...structuredClone(action),
+    ...(Array.isArray(action?.dependsOnActionIds) ? {
+      dependsOnActionIds: action.dependsOnActionIds.map(normalizeReference),
+    } : {}),
+    ...(Object.hasOwn(action || {}, 'changesRequestedActionId') ? {
+      changesRequestedActionId: normalizeReference(action.changesRequestedActionId),
+    } : {}),
+  }));
+}
+
+export function normalizeCoordinatorResponse(value, detail, options = {}) {
   const parsed = typeof value === 'string' ? parseJsonObject(value) : value;
   const reply = cleanText(parsed?.reply, COORDINATOR_MAX_REPLY_CHARS, 'reply');
   const source = parsed?.decision && typeof parsed.decision === 'object' && !Array.isArray(parsed.decision)
     ? parsed.decision
     : {};
-  const kind = ['answer', 'guide_actions', 'replan'].includes(source.kind) ? source.kind : '';
+  const allowedKinds = options.recovery === true
+    ? ['guide_actions', 'replan', 'request_human']
+    : ['answer', 'guide_actions', 'replan'];
+  const kind = allowedKinds.includes(source.kind) ? source.kind : '';
   if (!kind) throw new Error('Work Center Coordinator decision kind is invalid');
   const reason = cleanText(source.reason, 2_000, 'decision reason');
   if (kind === 'answer') {
     return { reply, decision: { kind, reason, contractPatch: null, guidance: [], actions: [] } };
   }
   if (kind === 'guide_actions') {
+    const guidance = normalizeGuidance(source.guidance, detail);
+    if (options.recovery === true) {
+      const failed = detail.actions?.find(action => (
+        action.id === options.recoveryActionId && action.status === 'failed'
+      ));
+      if (!failed || !guidance.some(entry => entry.stageId === failed.stageId)) {
+        throw new Error('Work Center Coordinator recovery guidance must target the failed Action');
+      }
+    }
     return {
       reply,
       decision: {
         kind,
         reason,
         contractPatch: null,
-        guidance: normalizeGuidance(source.guidance, detail),
+        guidance,
+        actions: [],
+      },
+    };
+  }
+  if (kind === 'request_human') {
+    return {
+      reply,
+      decision: {
+        kind,
+        reason,
+        question: cleanText(source.question, COORDINATOR_MAX_REPLY_CHARS, 'human question'),
+        contractPatch: null,
+        guidance: [],
         actions: [],
       },
     };
@@ -118,7 +178,7 @@ export function normalizeCoordinatorResponse(value, detail) {
       reason,
       contractPatch,
       guidance: [],
-      actions: structuredClone(source.actions),
+      actions: normalizeCoordinatorActionReferences(source.actions, detail),
     },
   };
 }
@@ -181,7 +241,6 @@ function coordinatorSnapshot(detail) {
       .map(action => {
         const result = canonicalRunByAction.get(action.id);
         return {
-          id: action.id,
           stageId: action.stageId,
           type: action.type,
           status: action.status,
@@ -225,91 +284,199 @@ export class WorkItemCoordinator {
     });
     if (!started) throw new Error(`WorkItem not found: ${id}`);
     options.onUpdate?.('coordinator.turn_started', started.detail);
+    return this.#scheduleTurn(started, { text, recovery: false, options });
+  }
 
+  recover(id, options = {}) {
+    if (this.shuttingDown) throw new Error('Work Center Coordinator is shutting down');
+    const detail = this.store.getWorkItemDetail(id);
+    const hasExplicitIdentity = typeof options.actionId === 'string' && options.actionId;
+    const action = hasExplicitIdentity
+      ? detail?.actions?.find(candidate => (
+          candidate.id === options.actionId
+          && candidate.generation === options.actionGeneration
+        ))
+      : detail?.actions?.find(candidate => (
+          candidate.id === detail.currentActionId && candidate.status === 'failed'
+        ));
+    if (!detail || ['done', 'cancelled'].includes(detail.status) || action?.status !== 'failed') return null;
+    const started = this.store.beginCoordinatorTurn(id, '', {
+      revision: detail.revision,
+      planRevision: detail.planRevision,
+      ledgerRevision: detail.ledgerRevision,
+      coordinatorRevision: detail.coordinatorRevision,
+    }, {
+      recovery: {
+        actionId: action.id,
+        actionGeneration: action.generation,
+        stageId: action.stageId,
+      },
+    });
+    if (!started) return null;
+    options.onUpdate?.('coordinator.recovery_started', started.detail);
+    const recovery = started.detail.messages?.at(-1)?.recovery || {};
+    const text = `Action stage "${action.stageId}" failed. Decide the next safe control transition. `
+      + 'Failure is not a terminal WorkItem state: guide or replan executable work whenever possible. '
+      + 'Request human input only when the snapshot lacks information required for a safe decision.';
+    return this.#scheduleTurn(started, { text, recovery: true, options });
+  }
+
+  #scheduleTurn(started, { text, recovery, options }) {
     const abortController = new AbortController();
     this.activeTurns.set(started.turnId, abortController);
-    const task = new Promise(resolve => setTimeout(resolve, 0)).then(async () => {
-      try {
-        const runtime = await this.runtimeProvider();
-        if (this.shuttingDown) throw new Error('Work Center Coordinator is shutting down');
-        const settings = await this.policyProvider();
-        const vps = this.registry?.listVps?.() || [];
-        const assignment = selectWorkItemVp({
-          policy: { mode: 'pool', candidateVpIds: vps.map(vp => vp.id), capability: 'triage' },
-          stageType: 'triage',
-          vps,
-          priorRuns: started.detail.runs || [],
-        });
-        const coordinatorPolicy = settings?.coordinatorModelPolicy || {
-          ...(settings?.modelPolicy || {}),
-          effort: settings?.actionModelPolicies?.triage?.effort || settings?.modelPolicy?.effort || 'high',
-        };
-        const resolved = resolveWorkItemModel(runtime.config, assignment.vp, coordinatorPolicy);
-        const result = await Promise.race([
-          runtime.adapter.call({
-          model: resolved.model,
-          system: COORDINATOR_SYSTEM_PROMPT,
-          messages: [{
-            role: 'user',
-            content: `Current WorkItem snapshot:\n${coordinatorSnapshotText(started.detail)}\n\nLatest user message:\n${text}`,
-          }],
-          maxTokens: Math.min(
-            resolveMaxOutputTokens(resolved.model, runtime.config),
-            COORDINATOR_MAX_OUTPUT_TOKENS,
-          ),
-          effort: resolved.effort,
-          effortSource: resolved.source,
-          effortContext: { scenario: 'work-center-coordinator' },
-          signal: abortController.signal,
-          }),
-          new Promise((_, reject) => {
-            abortController.signal.addEventListener('abort', () => {
-              reject(new Error('Work Center Coordinator was interrupted'));
-            }, { once: true });
-          }),
-        ]);
-        const normalized = normalizeCoordinatorResponse(result?.text, started.detail);
-        if (normalized.decision.kind === 'replan') {
-          finalizedCriteria(started.detail, normalized.decision.contractPatch);
-        }
-        const mutation = normalized.decision.kind === 'replan'
-          ? applyCoordinatorReplan({
-              workItem: {
-                ...started.detail,
-                ...(normalized.decision.contractPatch || {}),
-              },
-              actions: started.detail.actions || [],
-              proposal: {
-                proposalId: `coordinator:${started.turnId}`,
-                basePlanRevision: started.detail.planRevision,
-                reason: normalized.decision.reason,
-                actions: normalized.decision.actions,
-              },
-              availableVpIds: vps.map(vp => vp.id),
-            })
-          : null;
-        const detail = this.store.completeCoordinatorTurn(started.turnId, {
-          reply: normalized.reply,
-          decision: normalized.decision,
-          mutation,
-        }, started.fence);
-        if (!detail) throw new Error('Work Center Coordinator turn is stale or already completed');
-        options.onUpdate?.('coordinator.turn_completed', detail);
-        return detail;
-      } catch (error) {
-        const detail = this.store.failCoordinatorTurn(started.turnId, error, started.fence);
-        if (detail) {
-          options.onUpdate?.('coordinator.turn_failed', detail);
-          return detail;
-        }
-        throw error;
-      } finally {
+    const task = new Promise(resolve => setTimeout(resolve, 0))
+      .then(() => this.#executeTurn(started, {
+        text, recovery, options, abortController,
+      }))
+      .finally(() => {
         this.activeTurns.delete(started.turnId);
         this.activeTasks.delete(started.turnId);
-      }
-    });
+      });
     this.activeTasks.set(started.turnId, task);
     return { detail: started.detail, task };
+  }
+
+  async #executeTurn(started, { text, recovery, options, abortController }) {
+    try {
+      let normalized = null;
+      let mutation = null;
+      let attemptCount = 0;
+      let lastError = null;
+      try {
+        let runtime;
+        let settings;
+        try {
+          runtime = await this.runtimeProvider();
+          settings = await this.policyProvider();
+        } catch (error) {
+          throw temporaryCoordinatorError(error);
+        }
+        if (this.shuttingDown) throw new Error('Work Center Coordinator is shutting down');
+        let vps;
+        let resolved;
+        try {
+          vps = this.registry?.listVps?.() || [];
+          const assignment = selectWorkItemVp({
+            policy: { mode: 'pool', candidateVpIds: vps.map(vp => vp.id), capability: 'triage' },
+            stageType: 'triage',
+            vps,
+            priorRuns: started.detail.runs || [],
+          });
+          const coordinatorPolicy = settings?.coordinatorModelPolicy || {
+            ...(settings?.modelPolicy || {}),
+            effort: settings?.actionModelPolicies?.triage?.effort || settings?.modelPolicy?.effort || 'high',
+          };
+          resolved = resolveWorkItemModel(runtime.config, assignment.vp, coordinatorPolicy);
+        } catch (error) {
+          throw temporaryCoordinatorError(error);
+        }
+        const maxAttempts = recovery ? COORDINATOR_RECOVERY_DECISION_ATTEMPTS : 1;
+        for (let index = 0; index < maxAttempts; index += 1) {
+          attemptCount = index + 1;
+          mutation = null;
+          const correction = lastError
+            ? `\n\nYour previous decision was rejected by the deterministic validator:\n${String(lastError.message || lastError).slice(0, 2_000)}\nReturn a corrected complete JSON decision.`
+            : '';
+          try {
+            let result;
+            try {
+              result = await Promise.race([
+                runtime.adapter.call({
+                  model: resolved.model,
+                  system: COORDINATOR_SYSTEM_PROMPT,
+                  messages: [{
+                    role: 'user',
+                    content: `Current WorkItem snapshot:\n${coordinatorSnapshotText(started.detail)}\n\n${recovery ? 'Automatic failure recovery trigger' : 'Latest user message'}:\n${text}${correction}`,
+                  }],
+                  maxTokens: Math.min(
+                    resolveMaxOutputTokens(resolved.model, runtime.config),
+                    COORDINATOR_MAX_OUTPUT_TOKENS,
+                  ),
+                  effort: resolved.effort,
+                  effortSource: resolved.source,
+                  effortContext: { scenario: 'work-center-coordinator' },
+                  signal: abortController.signal,
+                }),
+                new Promise((_, reject) => {
+                  abortController.signal.addEventListener('abort', () => {
+                    reject(new Error('Work Center Coordinator was interrupted'));
+                  }, { once: true });
+                }),
+              ]);
+            } catch (error) {
+              if (abortController.signal.aborted || this.shuttingDown) throw error;
+              throw temporaryCoordinatorError(error);
+            }
+            normalized = normalizeCoordinatorResponse(result?.text, started.detail, {
+              recovery,
+              recoveryActionId: started.fence.recovery?.actionId || null,
+            });
+            if (normalized.decision.kind === 'replan') {
+              finalizedCriteria(started.detail, normalized.decision.contractPatch);
+              mutation = applyCoordinatorReplan({
+                workItem: {
+                  ...started.detail,
+                  ...(normalized.decision.contractPatch || {}),
+                },
+                actions: started.detail.actions || [],
+                proposal: {
+                  proposalId: `coordinator:${started.turnId}`,
+                  basePlanRevision: started.detail.planRevision,
+                  reason: normalized.decision.reason,
+                  actions: normalized.decision.actions,
+                },
+                availableVpIds: vps.map(vp => vp.id),
+              });
+            }
+            lastError = null;
+            break;
+          } catch (error) {
+            normalized = null;
+            if (abortController.signal.aborted || this.shuttingDown || error?.coordinatorRetryable) {
+              throw error;
+            }
+            lastError = error;
+          }
+        }
+      } catch (error) {
+        lastError = error;
+      }
+      if (abortController.signal.aborted || this.shuttingDown) {
+        throw lastError || new Error('Work Center Coordinator was interrupted');
+      }
+      if (!normalized) {
+        if (!recovery || lastError?.coordinatorRetryable) {
+          throw lastError || new Error('Work Center Coordinator did not produce a decision');
+        }
+        normalized = {
+          reply: 'Automatic recovery could not choose a safe executable next step. Human input is required.',
+          decision: {
+            kind: 'request_human',
+            reason: 'Automatic recovery exhausted its bounded decision attempts',
+            question: 'Review the failed Action and provide the missing decision or constraint needed to retry or replan it safely.',
+            contractPatch: null,
+            guidance: [],
+            actions: [],
+          },
+        };
+      }
+      const detail = this.store.completeCoordinatorTurn(started.turnId, {
+        reply: normalized.reply,
+        decision: normalized.decision,
+        mutation,
+        attemptCount,
+      }, started.fence);
+      if (!detail) throw new Error('Work Center Coordinator turn is stale or already completed');
+      options.onUpdate?.(recovery ? 'coordinator.recovery_completed' : 'coordinator.turn_completed', detail);
+      return detail;
+    } catch (error) {
+      const detail = this.store.failCoordinatorTurn(started.turnId, error, started.fence);
+      if (detail) {
+        options.onUpdate?.('coordinator.turn_failed', detail);
+        return detail;
+      }
+      throw error;
+    }
   }
 
   async shutdown() {

@@ -1567,6 +1567,7 @@ export default {
   'workCenter.sendAndRetryAction': '发送并重试 Action',
   'workCenter.coordinatorDecision.guide_actions': '已更新 Action 指令',
   'workCenter.coordinatorDecision.replan': '已更新目标或计划',
+  'workCenter.coordinatorDecision.request_human': '需要人工补充信息',
   'workCenter.conversation': '对话',
   'workCenter.conversationThinking': '处理中…',
   'workCenter.conversationReadOnly': '这个工作项已关闭，对话记录仍可查看。',

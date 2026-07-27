@@ -893,7 +893,7 @@ export function projectWorkItemDetail(detail, options = {}) {
       status: ['thinking', 'completed', 'failed'].includes(message.status) ? message.status : 'completed',
       error: truncateUtf8(message.error || '', MAX_ACTION_DIAGNOSTIC_CHARS) || null,
       decision: message.decision && typeof message.decision === 'object' ? {
-        kind: ['answer', 'guide_actions', 'replan'].includes(message.decision.kind)
+        kind: ['answer', 'guide_actions', 'replan', 'request_human'].includes(message.decision.kind)
           ? message.decision.kind : null,
         reason: truncateUtf8(message.decision.reason || '', MAX_ACTION_DIAGNOSTIC_CHARS),
         changedContract: message.decision.changedContract === true,

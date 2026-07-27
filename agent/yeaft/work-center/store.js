@@ -1991,6 +1991,26 @@ export class WorkItemStore {
       }));
   }
 
+  listFailedActionRecoveries() {
+    return this.db.prepare(`SELECT a.work_item_id, a.id AS action_id, a.generation,
+        COUNT(recovery_event.id) AS recovery_attempts,
+        MAX(recovery_event.created_at) AS last_recovery_at
+      FROM actions a JOIN work_items w ON w.id = a.work_item_id
+      LEFT JOIN events recovery_event ON recovery_event.work_item_id = a.work_item_id
+        AND recovery_event.action_id = a.id
+        AND recovery_event.action_generation = a.generation
+        AND recovery_event.type = 'coordinator.recovery_started'
+      WHERE a.status = 'failed' AND w.status NOT IN ('done', 'cancelled')
+      GROUP BY a.id
+      ORDER BY a.updated_at, a.sequence, a.id`).all().map(row => ({
+        workItemId: row.work_item_id,
+        actionId: row.action_id,
+        actionGeneration: Math.max(1, Number(row.generation) || 1),
+        recoveryAttempts: Math.max(0, Number(row.recovery_attempts) || 0),
+        lastRecoveryAt: Math.max(0, Number(row.last_recovery_at) || 0),
+      }));
+  }
+
   listWorkItems(filters = {}) {
     const where = [];
     const values = [];
@@ -2133,7 +2153,7 @@ export class WorkItemStore {
     return this.db.prepare(`SELECT * FROM events WHERE action_id = ? ORDER BY id`).all(actionId).map(mapEvent);
   }
 
-  beginCoordinatorTurn(id, text, expected = {}) {
+  beginCoordinatorTurn(id, text, expected = {}, options = {}) {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
@@ -2154,13 +2174,36 @@ export class WorkItemStore {
       const activeActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
         AND status NOT IN ('completed', 'superseded', 'cancelled') ORDER BY sequence`).all(id).map(mapAction);
       this.#assertNoIntegrationReservation(activeActions, now);
+      let recovery = options.recovery && typeof options.recovery === 'object'
+        ? { ...options.recovery } : null;
+      if (recovery) {
+        const failedAction = activeActions.find(action => action.id === recovery.actionId);
+        if (['done', 'cancelled'].includes(workItem.status)
+            || failedAction?.status !== 'failed'
+            || failedAction.generation !== recovery.actionGeneration
+            || failedAction.stageId !== recovery.stageId) {
+          throw new Error('WorkItem failure changed before Coordinator recovery started');
+        }
+        const priorAttempts = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM events
+          WHERE work_item_id = ? AND type = 'coordinator.recovery_started'
+            AND action_id = ? AND action_generation = ?`).get(
+          id,
+          failedAction.id,
+          failedAction.generation,
+        )?.count) || 0;
+        recovery = { ...recovery, attempt: priorAttempts + 1 };
+      }
       const turnId = randomUUID();
-      const userMessage = { id: randomUUID(), turnId, role: 'user', text, status: 'completed', createdAt: now };
+      const userMessage = recovery ? null : {
+        id: randomUUID(), turnId, role: 'user', text, status: 'completed', createdAt: now,
+      };
       const assistantMessage = {
         id: randomUUID(), turnId, role: 'assistant', text: '', status: 'thinking',
         createdAt: now, updatedAt: now, decision: null,
+        ...(recovery ? { recovery: { ...recovery } } : {}),
       };
-      const messages = [...(workItem.messages || []), userMessage, assistantMessage].slice(-100);
+      const messages = [...(workItem.messages || []), ...(userMessage ? [userMessage] : []), assistantMessage]
+        .slice(-100);
       const coordinatorRevision = workItem.coordinatorRevision + 1;
       const changed = this.db.prepare(`UPDATE work_items SET messages = ?, coordinator_revision = ?, updated_at = ?
         WHERE id = ? AND coordinator_revision = ? AND revision = ? AND plan_revision = ?
@@ -2169,9 +2212,12 @@ export class WorkItemStore {
         workItem.revision, workItem.planRevision, workItem.ledgerRevision,
       );
       if (Number(changed.changes) !== 1) throw new Error('Coordinator turn lost its revision fence');
-      this.appendEvent(id, 'coordinator.turn_started', {
+      this.appendEvent(id, recovery ? 'coordinator.recovery_started' : 'coordinator.turn_started', {
         turnId, status: 'thinking', coordinatorRevision,
-      });
+      }, recovery ? {
+        actionId: recovery.actionId,
+        actionGeneration: recovery.actionGeneration,
+      } : {});
       const detail = this.getWorkItemDetail(id);
       return {
         turnId,
@@ -2184,6 +2230,7 @@ export class WorkItemStore {
           coordinatorRevision,
           status: workItem.status,
           actionFence: coordinatorActionFence(activeActions),
+          recovery: recovery ? { ...recovery } : null,
         },
       };
     });
@@ -2215,13 +2262,50 @@ export class WorkItemStore {
       this.#assertNoIntegrationReservation(activeActions, now);
 
       const graphMode = isGraphWorkItem(workItem);
-      if (decision.kind !== 'answer'
+      if (decision.kind === 'replan'
           && (!graphMode || workItem.workflowSnapshot?.planningMode !== 'ai')) {
-        throw new Error('Coordinator Action changes require an AI-planned Action graph');
+        throw new Error('Coordinator replan requires an AI-planned Action graph');
       }
       let nextWorkItem = workItem;
       let affectedActionIds = [];
-      if (decision.kind === 'guide_actions') {
+      if (decision.kind === 'request_human') {
+        const recovery = messages[assistantIndex]?.recovery;
+        const action = recovery ? activeActions.find(candidate => (
+          candidate.id === recovery.actionId
+          && candidate.generation === recovery.actionGeneration
+        )) : null;
+        if (!action || action.status !== 'failed') {
+          throw new Error('Coordinator human request lost the failed Action fence');
+        }
+        const question = typeof decision.question === 'string' ? decision.question.trim().slice(0, 8_000) : '';
+        if (!question) throw new Error('Coordinator human request requires a question');
+        const changedAction = this.db.prepare(`UPDATE actions SET status = 'waiting', updated_at = ?
+          WHERE id = ? AND status = 'failed' AND generation = ? AND current_run_id IS NULL`).run(
+          now, action.id, action.generation,
+        );
+        if (Number(changedAction.changes) !== 1) {
+          throw new Error('Coordinator human request lost the failed Action generation fence');
+        }
+        const resultRunId = action.resultRunId
+          || this.db.prepare(`SELECT id FROM runs WHERE action_id = ? AND status = 'failed'
+            ORDER BY ended_at DESC, started_at DESC LIMIT 1`).get(action.id)?.id;
+        if (!resultRunId) throw new Error('Coordinator human request requires a failed Run');
+        const changedRun = this.db.prepare(`UPDATE runs SET waiting_reason = ?
+          WHERE id = ? AND action_id = ? AND status = 'failed'`).run(question, resultRunId, action.id);
+        if (Number(changedRun.changes) !== 1) {
+          throw new Error('Coordinator human request lost the failed Run fence');
+        }
+        affectedActionIds = [action.id];
+        this.appendEvent(workItem.id, 'action.waiting', {
+          reason: question,
+          source: 'coordinator',
+          turnId,
+        }, {
+          actionId: action.id,
+          runId: resultRunId,
+          actionGeneration: action.generation,
+        });
+      } else if (decision.kind === 'guide_actions') {
         const guidanceByStage = new Map(decision.guidance.map(entry => [entry.stageId, entry.instruction]));
         for (const action of activeActions) {
           const instruction = guidanceByStage.get(action.stageId);
@@ -2329,7 +2413,7 @@ export class WorkItemStore {
         );
       }
 
-      const graphState = decision.kind === 'answer' ? null : this.#graphWorkItemState(workItem.id);
+      const graphState = ['answer'].includes(decision.kind) ? null : this.#graphWorkItemState(workItem.id);
       messages[assistantIndex] = {
         ...messages[assistantIndex], text: result.reply, status: 'completed', updatedAt: now,
         decision: {
@@ -2709,6 +2793,16 @@ export class WorkItemStore {
       const row = this.db.prepare(`SELECT a.* FROM actions a
         JOIN work_items w ON w.id = a.work_item_id
         WHERE a.status = 'ready' AND a.current_run_id IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM actions failed_recovery
+            WHERE failed_recovery.work_item_id = a.work_item_id
+              AND failed_recovery.status = 'failed'
+          )
+          AND NOT (
+            json_extract(w.messages, '$[#-1].role') = 'assistant'
+            AND json_extract(w.messages, '$[#-1].status') = 'thinking'
+            AND json_type(w.messages, '$[#-1].recovery') IS NOT NULL
+          )
           AND (
             (COALESCE(json_extract(w.workflow_snapshot, '$.executionMode'), 'linear') != 'graph'
               AND w.status = 'ready' AND w.current_action_id = a.id AND w.current_run_id IS NULL)

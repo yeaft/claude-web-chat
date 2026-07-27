@@ -107,6 +107,13 @@ export class WorkCenterService {
     });
     this.coordinator = options.coordinator || null;
     this.onEvent = typeof options.onEvent === 'function' ? options.onEvent : () => {};
+    this.recoveryTasks = new Map();
+    this.recoveryQueue = new Map();
+    this.recoveryPollIntervalMs = Number(options.pollIntervalMs) > 0
+      ? Number(options.pollIntervalMs)
+      : 2_000;
+    this.recoveryTimer = null;
+    this.shuttingDown = false;
     this.watcher = new WorkItemWatcher({
       store: this.store,
       controller: this.controller,
@@ -465,14 +472,109 @@ export class WorkCenterService {
 
   #emit(event) {
     try { this.onEvent(event); } catch {}
+    if (['run.finished', 'coordinator.turn_completed'].includes(event?.type)) {
+      for (const action of event.workItem?.actions || []) {
+        if (action.status !== 'failed') continue;
+        this.#enqueueFailureRecovery({
+          workItemId: event.workItem.id,
+          actionId: action.id,
+          actionGeneration: action.generation,
+        });
+      }
+    }
+  }
+
+  #recoveryKey(entry) {
+    return `${entry.workItemId}:${entry.actionId}:${entry.actionGeneration}`;
+  }
+
+  #enqueueFailureRecovery(entry) {
+    if (this.shuttingDown || !this.coordinator || !entry?.workItemId || !entry.actionId) return;
+    const key = this.#recoveryKey(entry);
+    this.recoveryQueue.set(key, entry);
+    this.#drainFailureRecoveryQueue();
+  }
+
+  #scanFailureRecoveries() {
+    if (this.shuttingDown || !this.coordinator) return;
+    const now = Date.now();
+    for (const entry of this.store.listFailedActionRecoveries()) {
+      const delay = entry.recoveryAttempts > 0
+        ? Math.min(1_000 * (2 ** Math.min(entry.recoveryAttempts - 1, 9)), 300_000)
+        : 0;
+      if (entry.lastRecoveryAt > 0 && now < entry.lastRecoveryAt + delay) continue;
+      this.recoveryQueue.set(this.#recoveryKey(entry), entry);
+    }
+    this.#drainFailureRecoveryQueue();
+  }
+
+  #drainFailureRecoveryQueue() {
+    if (this.shuttingDown || !this.coordinator || this.recoveryTasks.size > 0) return;
+    let next = null;
+    for (const [key, entry] of this.recoveryQueue) {
+      const detail = this.store.getWorkItemDetail(entry.workItemId);
+      const action = detail?.actions?.find(candidate => candidate.id === entry.actionId);
+      if (!detail || ['done', 'cancelled'].includes(detail.status)
+          || action?.status !== 'failed'
+          || action.generation !== entry.actionGeneration) {
+        this.recoveryQueue.delete(key);
+        continue;
+      }
+      if (detail.actions.some(candidate => candidate.status === 'running')) continue;
+      next = [key, entry];
+      break;
+    }
+    if (!next) return;
+    const [key, entry] = next;
+    this.recoveryQueue.delete(key);
+    let turn;
+    try {
+      turn = this.coordinator.recover(entry.workItemId, {
+        actionId: entry.actionId,
+        actionGeneration: entry.actionGeneration,
+        onUpdate: (type, workItem) => {
+          this.watcher.abortInvalidWorkItemRuns(entry.workItemId);
+          this.#emit({ type, actionId: entry.actionId, workItem });
+        },
+      });
+    } catch (error) {
+      this.#emit({
+        type: 'coordinator.recovery_schedule_failed',
+        actionId: entry.actionId,
+        workItem: this.store.getWorkItemDetail(entry.workItemId),
+        error: error?.message || String(error),
+      });
+      return null;
+    }
+    if (!turn) return null;
+    const task = turn.task.finally(() => {
+      this.recoveryTasks.delete(key);
+    });
+    this.recoveryTasks.set(key, task);
+    task.catch(() => {});
+    return task;
   }
 
   start() {
+    this.#scanFailureRecoveries();
+    if (!this.recoveryTimer) {
+      this.recoveryTimer = setInterval(
+        () => this.#scanFailureRecoveries(),
+        this.recoveryPollIntervalMs,
+      );
+      this.recoveryTimer.unref?.();
+    }
     this.watcher.start();
   }
 
   async shutdown() {
+    this.shuttingDown = true;
+    if (this.recoveryTimer) clearInterval(this.recoveryTimer);
+    this.recoveryTimer = null;
     await this.coordinator?.shutdown?.();
+    await Promise.allSettled([...this.recoveryTasks.values()]);
+    this.recoveryTasks.clear();
+    this.recoveryQueue.clear();
     await this.watcher.stop();
     try { await this.watcher.runner?.shutdown?.(); } catch {}
     try { await this.watcher.runner?.trace?.close?.(); } catch {}
