@@ -17,69 +17,75 @@ export default {
     <div :class="messageClass">
       <!-- User message -->
       <template v-if="message.type === 'user'">
-        <div v-if="messageTime" class="message-user-meta">
-          <span class="message-time" :title="messageTimeFull">{{ messageTime }}</span>
-        </div>
-        <!-- Expert selections labels -->
-        <div class="message-expert-labels" v-if="message.expertSelections && message.expertSelections.length > 0">
-          <span
-            v-for="sel in message.expertSelections"
-            :key="sel.role + (sel.action || '')"
-            class="expert-label"
-          >{{ formatExpertLabel(sel) }}</span>
-        </div>
-        <div v-if="message.quote" class="message-quoted-context">
-          <div class="message-quoted-author">{{ $t('message.quotedFrom', { author: message.quote.author }) }}</div>
-          <div v-if="message.quote.content" class="message-quoted-content">{{ message.quote.content }}</div>
-          <div v-if="message.quote.todos && message.quote.todos.length" class="message-quoted-todos">
-            <div v-for="todo in message.quote.todos" :key="todo.content" class="message-quoted-todo">
-              <span>{{ todoStatusSymbol(todo.status) }}</span>
-              <span>{{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}</span>
-            </div>
-          </div>
-        </div>
-        <div class="message-content" v-if="message.content">{{ displayContent }}</div>
-        <div v-if="sessionActions || (message.attachments && message.attachments.length > 0)" class="message-user-footer">
-          <template v-if="sessionActions">
-            <button type="button" class="message-action-btn" @click="$emit('quote', userQuote)" :title="$t('message.quote')">
-              <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>
-              <span>{{ $t('message.quote') }}</span>
-            </button>
-            <button type="button" class="message-action-btn" @click="$emit('edit-as-new', displayContent)" :title="$t('message.editAsNew')">
-              <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
-              <span>{{ $t('message.editAsNew') }}</span>
-            </button>
+        <div class="message-user-meta">
+          <span class="message-user-author">{{ $t('message.you') }}</span>
+          <template v-if="messageTime">
+            <span class="message-user-meta-separator" aria-hidden="true">·</span>
+            <span class="message-time" :title="messageTimeFull">{{ messageTime }}</span>
           </template>
-          <button v-if="message.attachments && message.attachments.length > 0" type="button" class="attachments-badge" @click="toggleAttachments">
-            <span class="badge-icon" aria-hidden="true">\u{1F4CE}</span>
-            <span class="badge-text">{{ getAttachmentsText(message.attachments) }}</span>
-            <span class="badge-toggle" :class="{ expanded: showAttachments }" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
-            </span>
-          </button>
         </div>
-        <!-- Expanded attachments preview -->
-        <div class="user-attachments" v-if="message.attachments && message.attachments.length > 0 && showAttachments">
-          <template v-for="(attachment, index) in message.attachments" :key="index">
-            <button
-              v-if="attachment.isImage && attachment.preview"
-              type="button"
-              class="user-attachment-item is-image"
-              @click="previewAttachment(attachment, $event.currentTarget)"
-            >
-              <img
-                :src="attachment.preview"
-                :alt="attachment.name || t('message.imagePreview')"
-                class="user-attachment-image"
-              />
-            </button>
-            <div v-else class="user-attachment-item">
-              <div class="user-attachment-file">
-                <span class="file-icon">{{ getFileIcon(attachment.mimeType) }}</span>
-                <span class="file-name">{{ attachment.name }}</span>
+        <div class="message-user-block">
+          <!-- Expert selections labels -->
+          <div class="message-expert-labels" v-if="message.expertSelections && message.expertSelections.length > 0">
+            <span
+              v-for="sel in message.expertSelections"
+              :key="sel.role + (sel.action || '')"
+              class="expert-label"
+            >{{ formatExpertLabel(sel) }}</span>
+          </div>
+          <div v-if="message.quote" class="message-quoted-context">
+            <div class="message-quoted-author">{{ $t('message.quotedFrom', { author: message.quote.author }) }}</div>
+            <div v-if="message.quote.content" class="message-quoted-content">{{ message.quote.content }}</div>
+            <div v-if="message.quote.todos && message.quote.todos.length" class="message-quoted-todos">
+              <div v-for="todo in message.quote.todos" :key="todo.content" class="message-quoted-todo">
+                <span>{{ todoStatusSymbol(todo.status) }}</span>
+                <span>{{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}</span>
               </div>
             </div>
-          </template>
+          </div>
+          <div class="message-content" v-if="message.content">{{ displayContent }}</div>
+          <div v-if="sessionActions || (message.attachments && message.attachments.length > 0)" class="message-user-footer">
+            <template v-if="sessionActions">
+              <button type="button" class="message-action-btn" @click="$emit('quote', userQuote)" :title="$t('message.quote')">
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>
+                <span>{{ $t('message.quote') }}</span>
+              </button>
+              <button type="button" class="message-action-btn" @click="$emit('edit-as-new', displayContent)" :title="$t('message.editAsNew')">
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                <span>{{ $t('message.editAsNew') }}</span>
+              </button>
+            </template>
+            <button v-if="message.attachments && message.attachments.length > 0" type="button" class="attachments-badge" @click="toggleAttachments">
+              <span class="badge-icon" aria-hidden="true">\u{1F4CE}</span>
+              <span class="badge-text">{{ getAttachmentsText(message.attachments) }}</span>
+              <span class="badge-toggle" :class="{ expanded: showAttachments }" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
+              </span>
+            </button>
+          </div>
+          <!-- Expanded attachments preview -->
+          <div class="user-attachments" v-if="message.attachments && message.attachments.length > 0 && showAttachments">
+            <template v-for="(attachment, index) in message.attachments" :key="index">
+              <button
+                v-if="attachment.isImage && attachment.preview"
+                type="button"
+                class="user-attachment-item is-image"
+                @click="previewAttachment(attachment, $event.currentTarget)"
+              >
+                <img
+                  :src="attachment.preview"
+                  :alt="attachment.name || t('message.imagePreview')"
+                  class="user-attachment-image"
+                />
+              </button>
+              <div v-else class="user-attachment-item">
+                <div class="user-attachment-file">
+                  <span class="file-icon">{{ getFileIcon(attachment.mimeType) }}</span>
+                  <span class="file-name">{{ attachment.name }}</span>
+                </div>
+              </div>
+            </template>
+          </div>
         </div>
       </template>
 

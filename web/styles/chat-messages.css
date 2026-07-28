@@ -1931,11 +1931,11 @@
   text-overflow: ellipsis;
 }
 
-/* Adjust user message with attachments */
+/* Keep user metadata outside the bubble while content and actions share one block. */
 .message.user {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: stretch;
 }
 
 .message.user .message-content {
