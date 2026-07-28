@@ -63,10 +63,11 @@ describe('message flow regressions', () => {
     });
   });
 
-  it('keeps send available while the current turn is running', () => {
+  it('keeps Work Center inputs available and detail layouts responsive', () => {
     const component = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatInput.js'), 'utf8');
     const workCenter = readFileSync(resolve(import.meta.dirname, '../../web/components/WorkCenterPage.js'), 'utf8');
     const workCenterCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/work-center.css'), 'utf8');
+    const variables = readFileSync(resolve(import.meta.dirname, '../../web/styles/variables.css'), 'utf8');
 
     expect(component).toContain('v-if="isStopVisible"');
     expect(component).not.toContain('v-else\n          type="button"\n          class="send-btn"');
@@ -83,13 +84,6 @@ describe('message flow regressions', () => {
     expect(workCenterCss).toMatch(/\.work-center-action-description\s*\{[\s\S]*?white-space: nowrap;/);
     expect(workCenter).toContain("[...(this.selected.messages || [])].reverse().some");
     expect(workCenter).toContain("message.recovery?.actionId === this.selectedAction.id");
-  });
-
-  it('uses the available Work Center detail space without breaking narrow fallbacks', () => {
-    const workCenter = readFileSync(resolve(import.meta.dirname, '../../web/components/WorkCenterPage.js'), 'utf8');
-    const workCenterCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/work-center.css'), 'utf8');
-    const variables = readFileSync(resolve(import.meta.dirname, '../../web/styles/variables.css'), 'utf8');
-
     expect(workCenter).toContain(":class=\"{ 'showing-detail': narrowPane !== 'items' }\"");
     expect(workCenterCss).toMatch(/\.work-center-shell\.showing-detail\s*\{[\s\S]*?padding-top: 10px;/);
     expect(workCenterCss).toMatch(/\.work-center-detail-heading\s*\{[\s\S]*?padding: 10px 56px 12px 24px;/);
