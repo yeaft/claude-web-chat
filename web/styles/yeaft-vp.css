@@ -829,9 +829,9 @@
 
 /* ─── Issue C (2026-05-12) — UserTurnBlock ──────────────
    IM-style human row in the Yeaft Session view. VP turns keep their
-   speaker avatar; human turns now render as a plain right-aligned message
-   frame without a separate user avatar gutter. The inner MessageItem keeps
-   its own bubble styling (.message.user is already `align-items: flex-end`). */
+   speaker avatar; human turns render as a plain right-aligned message frame
+   without a separate user avatar gutter. MessageItem owns the metadata row
+   and the inner message block styling. */
 .user-turn-block {
   position: relative;
   margin: 12px 0;

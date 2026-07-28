@@ -156,8 +156,54 @@ describe('Session message quote UI wiring', () => {
 
   });
 
-  it('uses concise localized edit labels', () => {
+  it('uses concise localized labels and keeps user content inside one message block', async () => {
+    const user = readFileSync(resolve(process.cwd(), 'web/components/MessageItem.js'), 'utf8');
+    const sidebarCss = readFileSync(resolve(process.cwd(), 'web/styles/sidebar.css'), 'utf8');
+    const messagesCss = readFileSync(resolve(process.cwd(), 'web/styles/chat-messages.css'), 'utf8');
+    const blockStart = user.indexOf('class="message-user-block"');
+    const blockEnd = user.indexOf('<!-- System message -->');
+    const userBlock = user.slice(blockStart, blockEnd);
+
     expect(readFileSync(resolve(process.cwd(), 'web/i18n/en.js'), 'utf8')).toContain("'message.editAsNew': 'Edit'");
     expect(readFileSync(resolve(process.cwd(), 'web/i18n/zh-CN.js'), 'utf8')).toContain("'message.editAsNew': '编辑'");
+    expect(user).toContain("<span class=\"message-user-author\">{{ $t('message.you') }}</span>");
+    expect(user).toContain('class="message-user-meta-separator"');
+    expect(user.indexOf('class="message-user-meta"')).toBeLessThan(blockStart);
+    expect(userBlock).toContain('class="message-content"');
+    expect(userBlock).toContain('class="message-user-footer"');
+    expect(userBlock).toContain('class="user-attachments"');
+    expect(sidebarCss).toMatch(/\.message-user-block\s*\{[\s\S]*?background: var\(--bg-user-msg-subtle\);/);
+    expect(sidebarCss).toMatch(/\.message-user-meta\s*\{[\s\S]*?justify-content: flex-end;/);
+    expect(messagesCss).toMatch(/\.message\.user\s*\{[\s\S]*?align-items: stretch;/);
+
+    globalThis.Vue = Vue;
+    globalThis.Pinia.useChatStore = () => ({ customExpertRoles: [] });
+    const { default: MessageItem } = await import('../../web/components/MessageItem.js');
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: { type: 'user', content: 'Check this again', timestamp: Date.UTC(2026, 6, 28, 8, 15) },
+        sessionActions: true,
+      },
+      global: {
+        mocks: {
+          $t: key => ({
+            'message.you': 'You',
+            'message.quote': 'Quote',
+            'message.editAsNew': 'Edit',
+          }[key] || key),
+        },
+        provide: { t: key => key },
+      },
+    });
+
+    expect(wrapper.get('.message-user-author').text()).toBe('You');
+    expect(wrapper.get('.message-user-meta-separator').text()).toBe('·');
+    expect(wrapper.get('.message-user-meta .message-time').text()).not.toBe('');
+    expect(wrapper.get('.message-user-block .message-content').text()).toBe('Check this again');
+    expect(wrapper.findAll('.message-user-block .message-action-btn')).toHaveLength(2);
+    expect(wrapper.get('.message-user-meta').element.compareDocumentPosition(
+      wrapper.get('.message-user-block').element,
+    ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    wrapper.unmount();
   });
 });
