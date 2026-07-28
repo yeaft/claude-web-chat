@@ -99,12 +99,7 @@ export default {
               :title="progressToggleLabel"
               :aria-label="progressToggleLabel"
               :aria-expanded="String(progressExpanded)"
-            >
-              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                <path v-if="progressExpanded" fill="currentColor" d="M7 14l5-5 5 5z"/>
-                <path v-else fill="currentColor" d="M7 10l5 5 5-5z"/>
-              </svg>
-            </summary>
+            >{{ progressToggleLabel }}</summary>
             <div class="turn-progress-list">
               <div
                 v-for="segment in progressSegments"

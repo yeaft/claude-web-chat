@@ -23,8 +23,9 @@
 
 /* Turn: text content */
 .turn-content {
+  --turn-content-actions-width: 40px;
   padding: 0;
-  padding-right: 40px;
+  padding-right: var(--turn-content-actions-width);
   position: relative;
 }
 
@@ -45,48 +46,55 @@
 /* Progress and final result stay separate Markdown documents. The distinction
    is expressed by whitespace and indentation, not section headings. */
 .turn-progress-group {
+  display: flex;
+  flex-direction: column;
   color: var(--text-secondary);
 }
 
 .turn-progress-toggle {
+  order: 2;
+  align-self: flex-end;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
+  min-height: 24px;
+  padding: 3px 0;
   color: var(--text-secondary);
-  background: transparent;
+  background: none;
   border: 0;
-  border-radius: 8px;
+  border-radius: 0;
   cursor: pointer;
   list-style: none;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.turn-progress-group[open] > .turn-progress-toggle {
+  margin-top: 4px;
 }
 
 .turn-progress-toggle:hover,
 .turn-progress-toggle:focus-visible {
-  color: var(--text-secondary);
-  background: var(--sidebar-hover);
+  color: var(--text-primary);
+  background: none;
 }
 
 .turn-progress-toggle:focus-visible {
   outline: 2px solid var(--accent-blue);
-  outline-offset: 1px;
+  outline-offset: 2px;
 }
 
 .turn-progress-toggle::-webkit-details-marker {
   display: none;
 }
 
-.turn-progress-toggle svg {
-  display: block;
-}
-
 .turn-progress-list {
+  order: 1;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 4px 0 0 20px;
+  padding: 0 0 0 20px;
 }
 
 .turn-response-segment {

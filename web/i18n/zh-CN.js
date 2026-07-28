@@ -30,7 +30,7 @@ export default {
 
   // ============ Chat messages ============
   'chat.toolActionsOmitted': '已省略 {count} 个历史工具动作',
-  'message.showProgress': '展开过程',
+  'message.showProgress': '查看过程',
   'message.hideProgress': '收起过程',
 
   // ============ Login ============
