@@ -2991,7 +2991,9 @@ export class Engine {
         if (assistantMsg.imageAssetAnchor) displayImageAnchorMessage = persistedAssistantMessage;
         lastPersistedAssistantMessage = persistedAssistantMessage;
       }
-      lastPersistedAssistantTextMessage = responseText.trim() ? persistedAssistantMessage : null;
+      if (responseText.trim() && persistedAssistantMessage) {
+        lastPersistedAssistantTextMessage = persistedAssistantMessage;
+      }
       if (previousImageAnchorMessage && displayImageAnchorMessage === null && !persistedAssistantMessage) {
         const restored = this.#conversationStore.update(previousImageAnchorMessage, { imageAssetAnchor: true });
         displayImageAnchorMessage = restored || null;

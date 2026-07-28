@@ -22,7 +22,13 @@ vi.mock('../../../agent/yeaft/status-cache.js', () => ({
 
 const ctx = (await import('../../../agent/context.js')).default;
 const { ConversationStore } = await import('../../../agent/yeaft/conversation/persist.js');
-const { handleYeaftLoadHistory, handleYeaftLoadMoreHistory, __testSetSession, __testHooks } = await import('../../../agent/yeaft/web-bridge.js');
+const {
+  handleYeaftLoadHistory,
+  handleYeaftLoadMoreHistory,
+  __testHandleEngineEvent,
+  __testSetSession,
+  __testHooks,
+} = await import('../../../agent/yeaft/web-bridge.js');
 
 function flushMicrotasks() {
   return new Promise(resolve => setImmediate(resolve));
@@ -103,6 +109,37 @@ describe('Yeaft load-history first paint', () => {
       id: 'm0004', role: 'assistant', content: 'Partial', sessionId: 'session-fast',
       incomplete: true, stopReason: 'aborted',
     }])[0]).toMatchObject({ responseKind: 'progress' });
+    expect(__testHooks.projectVisibleHistoryChunkMessages([{
+      id: 'm0005', role: 'assistant', content: 'Partial before error', sessionId: 'session-fast',
+      incomplete: true, stopReason: 'error',
+    }])[0]).toMatchObject({ responseKind: 'progress' });
+
+    const markEngineTerminal = vi.fn();
+    const handlerCtx = {
+      assistantTextParts: [],
+      toolCallsAccum: [],
+      toolResultsAccum: [],
+      resetQueryTimer: vi.fn(),
+      pauseQueryTimer: vi.fn(),
+      markEngineTerminal,
+      sessionId: 'session-fast',
+      vpId: 'vp-linus',
+      turnId: 'turn-error',
+      threadId: 'main',
+    };
+    __testHandleEngineEvent({
+      type: 'error',
+      error: new Error('provider exploded'),
+      retryable: false,
+    }, handlerCtx);
+    expect(markEngineTerminal).not.toHaveBeenCalled();
+    __testHandleEngineEvent({
+      type: 'turn_end',
+      stopReason: 'error',
+      terminal: true,
+      threadId: 'main',
+    }, handlerCtx);
+    expect(markEngineTerminal).toHaveBeenCalledWith('error', { message: 'provider exploded' });
   });
 
   it('preserves TodoWrite through the real store page and history wire projection', () => {

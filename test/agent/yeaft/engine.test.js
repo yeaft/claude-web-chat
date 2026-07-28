@@ -624,6 +624,45 @@ describe('Engine', () => {
           turnId: 'vp-turn-tool',
           speakerVpId: 'vp-linus',
         });
+
+        const emptyFinalAdapter = new MockAdapter();
+        emptyFinalAdapter.pushResponse([
+          { type: 'text_delta', text: 'Completed via tool.' },
+          { type: 'tool_call', id: 'call_empty_final', name: 'durable_tool', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        emptyFinalAdapter.pushResponse([
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const emptyFinalEngine = new Engine({
+          adapter: emptyFinalAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+          vpId: 'vp-linus',
+        });
+        emptyFinalEngine.registerTool({
+          name: 'durable_tool',
+          description: 'returns durable output',
+          parameters: { type: 'object', properties: {} },
+          execute: async () => rawToolOutput,
+        });
+
+        for await (const _event of emptyFinalEngine.query({
+          prompt: 'use the tool, then finish silently',
+          sessionId: 'session-tool-empty-final',
+          vpTurnId: 'vp-turn-empty-final',
+        })) {
+          // consume
+        }
+
+        const emptyFinalRows = conversationStore.loadRecentBySession('session-tool-empty-final', 10);
+        expect(emptyFinalRows.find(message => message.content === 'Completed via tool.')).toMatchObject({
+          responseKind: 'result',
+          stopReason: 'end_turn',
+          turnId: 'vp-turn-empty-final',
+        });
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });
       }

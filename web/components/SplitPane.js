@@ -571,6 +571,7 @@ export default {
           textSegments: [],
           isStreaming: false,
           isActive: false,
+          isHistory: false,
           todoMsg: null,
           toolMsgs: [],
           askMsg: null,
@@ -600,6 +601,7 @@ export default {
           if (!currentTurn) startTurn();
           appendTurnResponseSegment(currentTurn, msg);
           if (msg.isStreaming) currentTurn.isStreaming = true;
+          if (msg.isHistory) currentTurn.isHistory = true;
           currentTurn.messages.push(msg);
           continue;
         }

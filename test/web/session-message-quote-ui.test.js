@@ -53,6 +53,10 @@ describe('Session message quote UI wiring', () => {
     markTurnResponseKinds(aborted, { sessionId: 's1', vpId: 'linus', turnId: 't3', reason: 'aborted' });
     expect(aborted[0].responseKind).toBe('progress');
 
+    const errored = [{ type: 'assistant', content: 'Partial before error', sessionId: 's1', speakerVpId: 'linus', turnId: 't4' }];
+    markTurnResponseKinds(errored, { sessionId: 's1', vpId: 'linus', turnId: 't4', reason: 'errored' });
+    expect(errored[0].responseKind).toBe('progress');
+
     const turn = {
       id: 'turn-row', turnId: 't1', textContent: '', textSegments: [], toolMsgs: [], toolSummaryCount: 0,
       imageMsgs: [], todoMsg: null, askMsg: null, isStreaming: false, messages: [rows[0], rows[2]],
@@ -102,6 +106,53 @@ describe('Session message quote UI wiring', () => {
     });
     finalizeTurnResponseSegments(abortedHistory);
     expect(abortedHistory.textSegments[0].kind).toBe('progress');
+
+    const splitStore = {
+      activePanelId: 'pane-1',
+      panels: [{ id: 'pane-1', conversationId: 'conversation-1' }],
+      messagesMap: {
+        'conversation-1': [
+          { id: 'legacy-progress', type: 'assistant', content: 'Legacy progress', isHistory: true },
+          { id: 'legacy-result', type: 'assistant', content: '## Legacy result', isHistory: true },
+        ],
+      },
+      processingConversations: {},
+      connectionState: 'connected',
+      compactStatus: null,
+      sessionHealth: {},
+      getPaneRightPanel: () => null,
+      setActivePanel: vi.fn(),
+      removePanel: vi.fn(),
+      sendMessageToConversation: vi.fn(),
+      cancelExecutionForConversation: vi.fn(),
+      setPaneRightPanel: vi.fn(),
+      sendWsMessage: vi.fn(),
+    };
+    globalThis.Pinia.useChatStore = () => splitStore;
+    const { default: SplitPane } = await import('../../web/components/SplitPane.js');
+    const splitWrapper = mount(SplitPane, {
+      props: { paneId: 'pane-1' },
+      global: {
+        mocks: { $t: key => key },
+        stubs: {
+          ChatHeader: true,
+          MessageItem: true,
+          ChatInput: true,
+          ExpertPanel: true,
+          SubAgentPanel: true,
+          AssistantTurn: {
+            props: ['turn'],
+            template: `<div class="split-assistant-turn">
+              <span v-for="segment in turn.textSegments" :class="'split-segment-' + segment.kind">{{ segment.content }}</span>
+            </div>`,
+          },
+        },
+      },
+    });
+    await Vue.nextTick();
+    expect(splitWrapper.get('.split-segment-progress').text()).toBe('Legacy progress');
+    expect(splitWrapper.get('.split-segment-result').text()).toBe('## Legacy result');
+    splitWrapper.unmount();
 
   });
 
