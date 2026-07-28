@@ -63,10 +63,11 @@ describe('message flow regressions', () => {
     });
   });
 
-  it('keeps send available while the current turn is running', () => {
+  it('keeps Work Center inputs available and detail layouts responsive', () => {
     const component = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatInput.js'), 'utf8');
     const workCenter = readFileSync(resolve(import.meta.dirname, '../../web/components/WorkCenterPage.js'), 'utf8');
     const workCenterCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/work-center.css'), 'utf8');
+    const variables = readFileSync(resolve(import.meta.dirname, '../../web/styles/variables.css'), 'utf8');
 
     expect(component).toContain('v-if="isStopVisible"');
     expect(component).not.toContain('v-else\n          type="button"\n          class="send-btn"');
@@ -83,6 +84,17 @@ describe('message flow regressions', () => {
     expect(workCenterCss).toMatch(/\.work-center-action-description\s*\{[\s\S]*?white-space: nowrap;/);
     expect(workCenter).not.toContain('coordinatorRequestedSelectedActionInput');
     expect(workCenter).not.toContain("next?.routedTo === 'coordinator'");
+    expect(workCenter).not.toContain("[...(this.selected.messages || [])].reverse().some");
+    expect(workCenter).not.toContain("message.recovery?.actionId === this.selectedAction.id");
+    expect(workCenter).toContain(":class=\"{ 'showing-detail': narrowPane !== 'items' }\"");
+    expect(workCenterCss).toMatch(/\.work-center-shell\.showing-detail\s*\{[\s\S]*?padding-top: 10px;/);
+    expect(workCenterCss).toMatch(/\.work-center-detail-heading\s*\{[\s\S]*?padding: 10px 56px 12px 24px;/);
+    expect(workCenterCss).toMatch(/\.work-center-action-detail-header,[\s\S]*?\.work-center-action-composer\s*\{[\s\S]*?width: 100%;/);
+    expect(workCenterCss).not.toContain('width: min(100%, 1120px);');
+    expect(variables).toContain('--work-center-conversation-column-width: 1200px;');
+    expect(variables).toContain('--work-center-conversation-gutter: clamp(20px, 3vw, 40px);');
+    expect(workCenterCss).toMatch(/@container work-center \(max-width: 1120px\)\s*\{[\s\S]*?\.work-center-detail-layout\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);/);
+    expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-action-detail-pane\s*\{[\s\S]*?--work-center-conversation-gutter: var\(--work-center-conversation-gutter-compact\);/);
   });
 
   it('stamps background agent messages without promoting that conversation', () => {

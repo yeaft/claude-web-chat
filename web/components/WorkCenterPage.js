@@ -1054,7 +1054,7 @@ export default {
   },
   template: `
     <main class="work-center-main" :class="{ 'workbench-maximized': store.workbenchMaximized && store.workbenchExpanded }">
-        <div class="work-center-shell">
+        <div class="work-center-shell" :class="{ 'showing-detail': narrowPane !== 'items' }">
           <header class="work-center-header">
             <div class="work-center-heading">
               <button class="work-center-sidebar-toggle" type="button" @click="store.toggleSessionSidebar()"
