@@ -69,12 +69,14 @@ const DEFAULTS = {
   //   • jitterRatio: ± random fraction applied to backoff; 0 disables.
   //   • streamIdleTimeoutMs: per-SSE-chunk silence budget. 0 disables the
   //     stalled-stream guard; every received chunk refreshes the budget.
+  //     Keep the default below the normal 120s Session silence watchdog so
+  //     the engine can cancel the stale response and issue a fresh request.
   llmRetry: {
     maxRetries: 3,
     baseDelayMs: 1_000,
     maxDelayMs: 30_000,
     jitterRatio: 0.25,
-    streamIdleTimeoutMs: 20_000,
+    streamIdleTimeoutMs: 90_000,
   },
 };
 

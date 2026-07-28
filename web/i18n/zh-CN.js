@@ -1366,6 +1366,8 @@ export default {
   // VpTurnBlock — 每个 VP 每轮 turn 的 block 包装。body 始终是完整的
   // AssistantTurn；延迟挂载交给 VirtualTranscript。
   'yeaft.vp.turnBlock.elapsedTitle': '本轮 turn 开始至今的时间',
+  'yeaft.vp.turnBlock.retryingRequest': '响应停滞，正在发起全新请求（{attempt}/{max}）',
+  'yeaft.vp.turnBlock.retryingContinue': '响应停滞，正在用全新请求续写（{attempt}/{max}）',
 
   // Session 状态面板 —— 对话右侧的状态看板。旧 vpTimeline key 仍作为
   // roster 行的兼容标签保留。
@@ -1411,6 +1413,7 @@ export default {
   'yeaft.vpTimeline.status.idle': '空闲',
   'yeaft.vpTimeline.status.typing': '输入中…',
   'yeaft.vpTimeline.status.thinking': '思考中…',
+  'yeaft.vpTimeline.status.retrying': '正在重试请求…',
   'yeaft.vpTimeline.status.streaming': '生成中',
   'yeaft.vpTimeline.status.tool': '调用工具中…',
   'yeaft.vpTimeline.status.error': '出错',

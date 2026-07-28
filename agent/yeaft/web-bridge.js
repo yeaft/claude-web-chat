@@ -593,7 +593,7 @@ function createThreadId() {
   return `thr_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
 }
 
-const RUNNING_THREAD_STATES = new Set(['queued', 'typing', 'thinking', 'streaming', 'tool']);
+const RUNNING_THREAD_STATES = new Set(['queued', 'typing', 'thinking', 'retrying', 'streaming', 'tool']);
 /** @type {Map<string, Map<string, object>>} */
 const vpThreads = new Map();
 /** @type {Map<string, Set<Promise<string|null>>>} */
@@ -3868,6 +3868,7 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'llm_retry':
+      maybeTransitionVpStatus(hctx, 'retrying');
       // Engine paused before re-issuing the same turn because the LLM
       // returned a retryable error (rate limit / 5xx / transient network /
       // stream idle timeout). Surface to the client so the UI can show
@@ -3879,6 +3880,7 @@ function handleEngineEvent(event, hctx) {
         maxRetries: event.maxRetries,
         delayMs: event.delayMs,
         reason: event.reason,
+        recoveryMode: event.recoveryMode || 'restart',
         errorName: event.errorName,
         statusCode: event.statusCode,
         message: event.message,
@@ -4045,15 +4047,32 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'error': {
+      // Engine retry exhaustion is an event terminal, not a thrown exception.
+      // Move the broker out of its running-only `retrying` state here so
+      // reconnect snapshots cannot resurrect a finished Session as active.
+      maybeTransitionVpStatus(hctx, 'error');
       const errMsg = event.error?.message || 'Unknown error';
-      hctx.lastEngineErrorDetail = { message: errMsg };
+      const retryAttempts = Number.isFinite(event.retryAttempts) ? event.retryAttempts : 0;
+      const exhaustedIdle = event.reason === 'stream_idle_timeout' && event.retryExhausted;
+      const visibleErrMsg = exhaustedIdle && retryAttempts > 0
+        ? `${errMsg} after ${retryAttempts} fresh request retries`
+        : errMsg;
+      hctx.lastEngineErrorDetail = {
+        message: visibleErrMsg,
+        ...(event.reason ? { reason: event.reason } : {}),
+        ...(event.retryExhausted !== undefined ? { retryExhausted: !!event.retryExhausted } : {}),
+        ...(Number.isFinite(event.retryAttempts) ? { retryAttempts: event.retryAttempts } : {}),
+        ...(Number.isFinite(event.maxRetries) ? { maxRetries: event.maxRetries } : {}),
+      };
       sendSessionEvent({
         type: 'error',
-        message: errMsg,
+        message: visibleErrMsg,
         errorName: event.error?.name || null,
         retryable: !!event.retryable,
         ...(event.reason ? { reason: event.reason } : {}),
         ...(event.retryExhausted !== undefined ? { retryExhausted: !!event.retryExhausted } : {}),
+        ...(Number.isFinite(event.retryAttempts) ? { retryAttempts: event.retryAttempts } : {}),
+        ...(Number.isFinite(event.maxRetries) ? { maxRetries: event.maxRetries } : {}),
       }, envelope);
       if (isPermissionErrorMsg(errMsg)) {
         if (!_permissionDiagnosticSent) {
@@ -4072,7 +4091,7 @@ function handleEngineEvent(event, hctx) {
         sendSessionOutputFrame({
           type: 'assistant',
           message: {
-            content: [{ type: 'text', text: `⚠️ Error: ${errMsg}` }],
+            content: [{ type: 'text', text: `⚠️ Error: ${visibleErrMsg}` }],
           },
         }, envelope);
       }

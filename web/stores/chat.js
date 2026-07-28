@@ -57,7 +57,7 @@ const vpStatusKey = (groupId, vpId) => `${groupId || ''}::${vpId}`;
 const YEAFT_RECENT_TURNS = 5;
 const YEAFT_RECENT_TERMINAL_TASK_LIMIT = 8;
 const YEAFT_TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'orphaned']);
-const YEAFT_RUNNING_VP_STATES = new Set(['typing', 'thinking', 'streaming', 'tool']);
+const YEAFT_RUNNING_VP_STATES = new Set(['typing', 'thinking', 'retrying', 'streaming', 'tool']);
 const YEAFT_CATALOG_STATUS_FIELDS = Object.freeze([
   'model',
   'availableModels',
@@ -3185,6 +3185,23 @@ export const useChatStore = defineStore('chat', {
 
       // ── Assistant output frame data: dispatch through the shared pipeline ──
       if (msg.data) {
+        // `llm_retry` remains visible while the replacement request is silent.
+        // Its first real output frame proves recovery, so clear only the retry
+        // annotation; the turn itself stays active until vp_turn_end.
+        if (msg.turnId && this.activeVpTurns?.[msg.turnId]?.retryAttempt) {
+          const {
+            retryAttempt: _retryAttempt,
+            retryMax: _retryMax,
+            retryDelayMs: _retryDelayMs,
+            retryReason: _retryReason,
+            retryRecoveryMode: _retryRecoveryMode,
+            ...activeTurn
+          } = this.activeVpTurns[msg.turnId];
+          this.activeVpTurns = {
+            ...this.activeVpTurns,
+            [msg.turnId]: activeTurn,
+          };
+        }
         const conversationId = msg.conversationId || this.yeaftConversationId;
         if (conversationId) {
           const frameAgentId = msg.agentId || this.yeaftAgentId || this.currentAgent || null;
@@ -3723,6 +3740,27 @@ export const useChatStore = defineStore('chat', {
             this.yeaftDebugTurnsById = next.turnsById;
             this.yeaftDebugTurnOrder = next.turnOrder;
           }
+          break;
+        }
+
+        case 'llm_retry': {
+          if (!msg.turnId) break;
+          const active = this.activeVpTurns?.[msg.turnId];
+          if (!active) break;
+          const retryReason = event.reason === 'stream_idle_timeout'
+            ? 'stream_idle_timeout'
+            : 'transient_error';
+          this.activeVpTurns = {
+            ...this.activeVpTurns,
+            [msg.turnId]: {
+              ...active,
+              retryAttempt: event.attempt || 0,
+              retryMax: event.maxRetries || 0,
+              retryDelayMs: event.delayMs || 0,
+              retryReason,
+              retryRecoveryMode: event.recoveryMode || 'restart',
+            },
+          };
           break;
         }
 

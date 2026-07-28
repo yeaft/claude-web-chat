@@ -1370,6 +1370,8 @@ export default {
   // VpTurnBlock — per-VP turn wrapper. The body is always the full
   // AssistantTurn surface; VirtualTranscript handles delayed mounting.
   'yeaft.vp.turnBlock.elapsedTitle': 'Time elapsed since this turn started',
+  'yeaft.vp.turnBlock.retryingRequest': 'Response stalled; retrying with a fresh request ({attempt}/{max})',
+  'yeaft.vp.turnBlock.retryingContinue': 'Response stalled; continuing with a fresh request ({attempt}/{max})',
 
   // Session status pane — right-of-conversation status board. The old
   // vpTimeline keys remain as compatibility labels for the roster rows.
@@ -1415,6 +1417,7 @@ export default {
   'yeaft.vpTimeline.status.idle': 'idle',
   'yeaft.vpTimeline.status.typing': 'typing…',
   'yeaft.vpTimeline.status.thinking': 'thinking…',
+  'yeaft.vpTimeline.status.retrying': 'retrying request…',
   'yeaft.vpTimeline.status.streaming': 'streaming',
   'yeaft.vpTimeline.status.tool': 'using tool…',
   'yeaft.vpTimeline.status.error': 'error',

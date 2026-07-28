@@ -89,7 +89,7 @@ eval/            — 评估脚本
 6. end_turn -> 持久化 messages / raw tool output / debug trace -> acknowledge sub-agent notifications -> 检查 Dream / AMS adjust / compact 触发
 7. max_tokens -> 自动续写（最多 3 次）
 8. 遇到 LLMContextError -> 强制 compact -> 重试
-9. 可重试错误且配了 fallbackModel -> 换 model -> 重试；adapter 层会对 rate limit / 5xx / idle timeout 做分类
+9. rate limit / 5xx / idle timeout 等可重试错误会先做有界的新请求重试；若旧流已有部分文本，则把它作为不完整 assistant 上下文并用隐藏 continuation 续写，避免重放已显示内容；重试耗尽且配置了 fallbackModel 时再换 model
 
 ### LLM 层（agent/yeaft/llm/）— Yeaft Code Agent provider 集成
 ```
