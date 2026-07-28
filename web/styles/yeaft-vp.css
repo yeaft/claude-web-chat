@@ -805,7 +805,10 @@
   gap: 6px;
 }
 
-.vp-turn-block-body-expanded .turn-todos,
+.vp-turn-block-body-expanded .turn-todos {
+  border-top: 0;
+}
+
 .vp-turn-block-body-expanded .turn-actions,
 .vp-turn-block-body-expanded .turn-images,
 .vp-turn-block-body-expanded .turn-ask {

@@ -130,6 +130,56 @@ describe('LLM adapter auth headers', () => {
     expect(calls[0].url).toBe('https://api.githubcopilot.com/v1/responses');
     expect(calls[0].init.headers.Authorization).toBe('Bearer copilot-token');
     expect(calls[0].init.headers['x-api-key']).toBeUndefined();
+
+    // Visible progress assistant messages carry continuity information. Both
+    // provider formats must preserve their text while dropping UI metadata.
+    vi.clearAllMocks();
+    const messages = [
+      { role: 'user', content: 'Original question' },
+      { role: 'assistant', content: 'I found the state boundary.', responseKind: 'progress' },
+      { role: 'assistant', content: 'The previous turn completed.', responseKind: 'result' },
+    ];
+    const anthropicCalls = [];
+    global.fetch = vi.fn(async (url, init) => {
+      anthropicCalls.push({ url, body: JSON.parse(init.body) });
+      return anthropicResponse();
+    });
+    const anthropic = new AnthropicAdapter({ apiKey: 'key', baseUrl: 'https://anthropic.test' });
+    await anthropic.call({ model: 'claude-sonnet-4.5', system: '', messages });
+
+    expect(anthropicCalls[0].body.messages).toEqual([
+      { role: 'user', content: 'Original question' },
+      { role: 'assistant', content: [{ type: 'text', text: 'I found the state boundary.' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'The previous turn completed.' }] },
+    ]);
+    expect(JSON.stringify(anthropicCalls[0].body)).not.toContain('responseKind');
+
+    const openAiCalls = [];
+    global.fetch = vi.fn(async (url, init) => {
+      openAiCalls.push({ url, body: JSON.parse(init.body) });
+      return jsonResponse({ output_text: 'ok', usage: { input_tokens: 1, output_tokens: 1 } });
+    });
+    const openai = new OpenAIResponsesAdapter({ apiKey: 'key', baseUrl: 'https://openai.test/v1' });
+    await openai.call({ model: 'gpt-5.5', system: '', messages });
+
+    expect(openAiCalls[0].body.input).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'Original question' }],
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'I found the state boundary.' }],
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'The previous turn completed.' }],
+      },
+    ]);
+    expect(JSON.stringify(openAiCalls[0].body)).not.toContain('responseKind');
   });
 
   it('translates PDF document blocks to Responses input_file content', async () => {

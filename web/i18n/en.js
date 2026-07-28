@@ -30,8 +30,8 @@ export default {
 
   // ============ Chat messages ============
   'chat.toolActionsOmitted': '{count} older tool actions omitted',
-  'message.progress': 'Progress',
-  'message.result': 'Result',
+  'message.showProgress': 'Expand progress',
+  'message.hideProgress': 'Collapse progress',
 
   // ============ Login ============
   'login.subtitle': 'Yeaft Web Code Agent',

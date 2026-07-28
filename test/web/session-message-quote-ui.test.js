@@ -67,7 +67,10 @@ describe('Session message quote UI wiring', () => {
     const wrapper = mount(AssistantTurn, {
       props: { turn },
       global: {
-        mocks: { $t: key => ({ 'message.progress': '过程', 'message.result': '结果' }[key] || key) },
+        mocks: { $t: key => ({
+          'message.showProgress': '展开过程',
+          'message.hideProgress': '收起过程',
+        }[key] || key) },
         provide: { t: key => key },
         stubs: { ToolLine: true, AskCard: true, VpSpeakerHeader: true },
       },
@@ -76,7 +79,17 @@ describe('Session message quote UI wiring', () => {
     expect(globalThis.marked.parse).toHaveBeenNthCalledWith(1, 'Inspecting files.');
     expect(globalThis.marked.parse).toHaveBeenNthCalledWith(2, '## 改动');
     expect(wrapper.get('.turn-progress-group').attributes()).not.toHaveProperty('open');
+    expect(wrapper.get('.turn-progress-toggle').attributes('aria-expanded')).toBe('false');
+    expect(wrapper.get('.turn-progress-toggle').attributes('aria-label')).toBe('message.showProgress');
+    expect(wrapper.find('.turn-progress-count').exists()).toBe(false);
+    expect(wrapper.find('.turn-response-label').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain('过程');
+    expect(wrapper.text()).not.toContain('结果');
     expect(wrapper.get('.turn-response-result h2').text()).toBe('改动');
+    await wrapper.get('.turn-progress-toggle').trigger('click');
+    expect(wrapper.get('.turn-progress-group').attributes()).toHaveProperty('open');
+    expect(wrapper.get('.turn-progress-toggle').attributes('aria-expanded')).toBe('true');
+    expect(wrapper.get('.turn-progress-toggle').attributes('aria-label')).toBe('message.hideProgress');
     wrapper.unmount();
 
     const streamingTurn = { ...turn, textContent: '', textSegments: [], messages: [], isStreaming: false, isActive: true };
@@ -106,6 +119,47 @@ describe('Session message quote UI wiring', () => {
     });
     finalizeTurnResponseSegments(abortedHistory);
     expect(abortedHistory.textSegments[0].kind).toBe('progress');
+
+    const pendingHistoryMessage = {
+      id: 'pending-history', type: 'assistant', content: 'Still waiting for reviewers',
+      responseKind: 'result', status: 'pending', isStreaming: false,
+    };
+    const pendingHistory = {
+      ...turn,
+      textContent: '',
+      textSegments: [],
+      messages: [pendingHistoryMessage],
+      isHistory: true,
+      isActive: false,
+    };
+    appendTurnResponseSegment(pendingHistory, pendingHistoryMessage);
+    finalizeTurnResponseSegments(pendingHistory);
+    expect(pendingHistory.textSegments[0].kind).toBe('progress');
+
+    pendingHistoryMessage.status = 'completed';
+    pendingHistoryMessage.turnEndReason = 'end_turn';
+    pendingHistory.textSegments = [];
+    appendTurnResponseSegment(pendingHistory, pendingHistoryMessage);
+    finalizeTurnResponseSegments(pendingHistory);
+    expect(pendingHistory.textSegments[0].kind).toBe('result');
+
+    for (const failure of [
+      { turnEndReason: 'cancelled' },
+      { turnEndReason: 'error' },
+      { incomplete: true, stopReason: 'error' },
+    ]) {
+      const contradictoryMessage = {
+        id: `failed-${failure.turnEndReason || failure.stopReason}`,
+        type: 'assistant', content: 'Partial failure', responseKind: 'result', isStreaming: false,
+        ...failure,
+      };
+      const contradictoryTurn = {
+        ...turn, textContent: '', textSegments: [], messages: [contradictoryMessage], isHistory: true,
+      };
+      appendTurnResponseSegment(contradictoryTurn, contradictoryMessage);
+      finalizeTurnResponseSegments(contradictoryTurn);
+      expect(contradictoryTurn.textSegments[0].kind).toBe('progress');
+    }
 
     const splitStore = {
       activePanelId: 'pane-1',

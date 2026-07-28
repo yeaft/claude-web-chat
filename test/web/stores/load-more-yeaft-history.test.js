@@ -224,7 +224,10 @@ describe('handleYeaftHistoryChunk', () => {
         conversationId: 'yeaft-1',
         sessionId: 'g1',
         messages: [
-          { id: 'm0002', role: 'assistant', content: 'older-a1', sessionId: 'g1' },
+          {
+            id: 'm0002', role: 'assistant', content: 'older-a1', sessionId: 'g1',
+            responseKind: 'progress', incomplete: true, stopReason: 'error',
+          },
         ],
         oldestSeq: 1,
         hasMore: false,
@@ -235,6 +238,9 @@ describe('handleYeaftHistoryChunk', () => {
       expect(msg.speakerVpId).toBe('linus');
       expect(msg.isStreaming).toBe(false);
       expect(msg.isHistory).toBe(true);
+      expect(msg).toMatchObject({
+        responseKind: 'progress', incomplete: true, stopReason: 'error',
+      });
     } finally {
       globalThis.window = oldWindow;
     }

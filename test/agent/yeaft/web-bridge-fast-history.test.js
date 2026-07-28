@@ -26,6 +26,7 @@ const {
   handleYeaftLoadHistory,
   handleYeaftLoadMoreHistory,
   __testHandleEngineEvent,
+  __testGroupHistory,
   __testSetSession,
   __testHooks,
 } = await import('../../../agent/yeaft/web-bridge.js');
@@ -201,8 +202,14 @@ describe('Yeaft load-history first paint', () => {
     }])[0]).toMatchObject({ responseKind: 'progress' });
     expect(__testHooks.projectVisibleHistoryChunkMessages([{
       id: 'm0005', role: 'assistant', content: 'Partial before error', sessionId: 'session-fast',
-      incomplete: true, stopReason: 'error',
-    }])[0]).toMatchObject({ responseKind: 'progress' });
+      responseKind: 'result', incomplete: true, stopReason: 'error',
+    }])[0]).toMatchObject({
+      responseKind: 'progress', incomplete: true, stopReason: 'error',
+    });
+    expect(__testHooks.projectVisibleHistoryChunkMessages([{
+      id: 'm0006', role: 'assistant', content: 'Cancelled partial', sessionId: 'session-fast',
+      responseKind: 'result', stopReason: 'cancelled',
+    }])[0]).toMatchObject({ responseKind: 'progress', stopReason: 'cancelled' });
 
     const markEngineTerminal = vi.fn();
     const handlerCtx = {
@@ -262,6 +269,19 @@ describe('Yeaft load-history first paint', () => {
         todos: [{ content: 'Verify', status: 'completed' }],
         toolSummaryCount: 1,
         responseKind: 'result',
+      });
+
+      store.append({
+        role: 'assistant', content: 'Persisted partial', sessionId: 'session-fast',
+        speakerVpId: 'vp-linus', responseKind: 'result', incomplete: true, stopReason: 'error',
+      });
+      const failedPage = __testHooks.loadVisibleGroupHistoryPage(store, 'session-fast', 1);
+      const failedProjected = __testHooks.projectVisibleHistoryChunkMessages(failedPage.messages);
+      expect(failedPage.messages.at(-1)).toMatchObject({
+        responseKind: 'progress', incomplete: true, stopReason: 'error',
+      });
+      expect(failedProjected.at(-1)).toMatchObject({
+        responseKind: 'progress', incomplete: true, stopReason: 'error',
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -542,6 +562,30 @@ describe('Yeaft load-history first paint', () => {
       // One bounded UI replay (limit: 1) plus one bounded runtime hydrate
       // (default recentTurnsLimit) is fine; parsing the whole 1002-row session is not.
       expect(readCounts.count).toBeLessThan(80);
+
+      store.append({ role: 'user', content: 'progress q', sessionId: 'session-progress' });
+      store.append({
+        role: 'assistant', content: 'I found the request construction boundary.',
+        sessionId: 'session-progress', speakerVpId: 'vp-linus', responseKind: 'progress',
+      });
+      store.append({
+        role: 'assistant', content: 'The prior turn completed.',
+        sessionId: 'session-progress', speakerVpId: 'vp-linus',
+        responseKind: 'result', stopReason: 'end_turn',
+      });
+      expect(__testGroupHistory('session-progress')).toEqual([
+        expect.objectContaining({ role: 'user', content: 'progress q' }),
+        expect.objectContaining({
+          role: 'assistant',
+          content: 'I found the request construction boundary.',
+          responseKind: 'progress',
+        }),
+        expect.objectContaining({
+          role: 'assistant',
+          content: 'The prior turn completed.',
+          responseKind: 'result',
+        }),
+      ]);
     } finally {
       __testSetSession(null);
       rmSync(dir, { recursive: true, force: true });

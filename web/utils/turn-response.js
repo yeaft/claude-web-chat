@@ -9,6 +9,8 @@ function responseText(content) {
     .join('');
 }
 
+const FAILED_RESPONSE_REASONS = new Set(['aborted', 'errored', 'error', 'cancelled', 'canceled']);
+
 function matchesTurn(row, event) {
   if (!row || row.type !== 'assistant') return false;
   const rowSessionId = row.sessionId ?? row.groupId ?? null;
@@ -64,10 +66,33 @@ export function appendTurnResponseSegment(turn, message) {
  */
 export function finalizeTurnResponseSegments(turn) {
   const segments = Array.isArray(turn?.textSegments) ? turn.textSegments : [];
-  if (segments.length === 0 || segments.some(segment => segment.kind === 'result')) return;
-  const endedNormally = (turn.messages || []).some(message => message?.turnEndReason === 'end_turn');
+  if (segments.length === 0) return;
+
+  const messages = Array.isArray(turn?.messages) ? turn.messages : [];
+  const stillRunning = turn?.isActive === true
+    || turn?.isStreaming === true
+    || segments.some(segment => segment.isStreaming === true)
+    || messages.some(message => message?.isStreaming === true || message?.status === 'pending');
+  const endedUnsuccessfully = messages.some(message => (
+    message?.incomplete === true
+    || FAILED_RESPONSE_REASONS.has(message?.status)
+    || FAILED_RESPONSE_REASONS.has(message?.turnEndReason)
+    || FAILED_RESPONSE_REASONS.has(message?.stopReason)
+  ));
+
+  // A persisted responseKind cannot make an in-flight or failed turn successful.
+  // Live text chunks stop streaming before tool execution, while the VP turn
+  // remains pending. Keep every visible row as progress until a real terminal
+  // lifecycle event arrives.
+  if (stillRunning || endedUnsuccessfully) {
+    for (const segment of segments) segment.kind = 'progress';
+    return;
+  }
+
+  if (segments.some(segment => segment.kind === 'result')) return;
+  const endedNormally = messages.some(message => message?.turnEndReason === 'end_turn');
   const hasExplicitKinds = segments.some(segment => segment.explicitKind);
-  const legacySingleSegment = segments.length === 1 && turn.isStreaming !== true && !hasExplicitKinds;
+  const legacySingleSegment = segments.length === 1 && !hasExplicitKinds;
   if (endedNormally || legacySingleSegment || (turn.isHistory && !hasExplicitKinds)) {
     segments[segments.length - 1].kind = 'result';
   }

@@ -4204,6 +4204,9 @@ export const useChatStore = defineStore('chat', {
             route_forward: 'completed',
             aborted: 'aborted',
             errored: 'errored',
+            error: 'errored',
+            cancelled: 'cancelled',
+            canceled: 'cancelled',
           };
           const nextStatus = reasonToStatus[event.reason] || 'completed';
           const stampedAt = Date.now();
@@ -5394,7 +5397,7 @@ export const useChatStore = defineStore('chat', {
     // =====================
     addMessageToConversation(conversationId, msg) { msgHelpers.addMessageToConversation(this, conversationId, msg); },
     appendToAssistantMessageForConversation(conversationId, text, opts) { msgHelpers.appendToAssistantMessageForConversation(this, conversationId, text, opts); },
-    finishStreamingForConversation(conversationId) { msgHelpers.finishStreamingForConversation(this, conversationId); },
+    finishStreamingForConversation(conversationId, options) { msgHelpers.finishStreamingForConversation(this, conversationId, options); },
     sweepStaleStreamingForConversation(conversationId) { msgHelpers.sweepStaleStreamingForConversation(this, conversationId); },
     appendToAssistantMessage(text) { this.appendToAssistantMessageForConversation(this.currentConversation, text); },
     finishStreaming() { this.finishStreamingForConversation(this.currentConversation); },
