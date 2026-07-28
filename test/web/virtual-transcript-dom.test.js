@@ -155,8 +155,19 @@ describe('VirtualTranscript DOM windowing', () => {
     await flushRafs();
     expect(scroller.scrollTop).toBe(3000);
 
+    wrapper.vm.setBottomFollowEnabled(false);
     scroller.scrollTop = 9700;
     rowHeight = 150;
+    resizeCallback([{ target: row }]);
+    await flushRafs();
+    await Vue.nextTick();
+    await flushRafs();
+    // The measured row sits above the visible window, so preserving the same
+    // content anchor adds its 30px height delta rather than pinning the tail.
+    expect(scroller.scrollTop).toBe(9730);
+
+    wrapper.vm.setBottomFollowEnabled(true);
+    rowHeight = 180;
     resizeCallback([{ target: row }]);
     await flushRafs();
     await Vue.nextTick();

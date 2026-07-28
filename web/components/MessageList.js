@@ -1942,11 +1942,9 @@ export default {
       isAtBottom.value = resolveTranscriptUserFollow({
         following: wasFollowing,
         atBottom,
+        resumeBoundaryReached: reachedBottom,
         direction,
       });
-      if (userScrollInteractionActive && !wasFollowing && direction >= 0 && reachedBottom) {
-        isAtBottom.value = true;
-      }
       autoFollowPaused.value = !isAtBottom.value;
       virtualTranscriptRef.value?.setBottomFollowEnabled?.(isAtBottom.value);
       if (isAtBottom.value) pruneYeaftWindowNearBottom();
