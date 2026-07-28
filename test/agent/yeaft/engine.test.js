@@ -445,6 +445,33 @@ describe('Engine', () => {
       const turnEnd = events.find(e => e.type === 'turn_end');
       expect(turnEnd.stopReason).toBe('end_turn');
       expect(turnEnd.turnNumber).toBe(1);
+
+      const continuityAdapter = new MockAdapter();
+      continuityAdapter.pushResponse([
+        { type: 'text_delta', text: 'Current answer' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const continuityEngine = new Engine({
+        adapter: continuityAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+      for await (const _event of continuityEngine.query({
+        prompt: 'Continue',
+        messages: [
+          { role: 'user', content: 'Original question' },
+          { role: 'assistant', content: 'I found the relevant state boundary.', responseKind: 'progress' },
+          { role: 'assistant', content: 'The previous turn completed.', responseKind: 'result' },
+        ],
+      })) {
+        // consume
+      }
+      expect(continuityAdapter.callLog[0].messages).toEqual([
+        { role: 'user', content: 'Original question' },
+        { role: 'assistant', content: 'I found the relevant state boundary.', responseKind: 'progress' },
+        { role: 'assistant', content: 'The previous turn completed.', responseKind: 'result' },
+        { role: 'user', content: 'Continue' },
+      ]);
     });
 
     it('persists the user row before starting the LLM request', async () => {

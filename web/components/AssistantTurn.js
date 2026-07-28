@@ -87,10 +87,23 @@ export default {
               </svg>
             </button>
           </div>
-          <details v-if="progressSegments.length > 0" class="turn-progress-group" :open="turn.isActive || turn.isStreaming">
-            <summary class="turn-progress-summary">
-              <span>{{ $t('message.progress') }}</span>
-              <span class="turn-progress-count">{{ progressSegments.length }}</span>
+          <details
+            v-if="progressSegments.length > 0"
+            ref="progressGroupRef"
+            class="turn-progress-group"
+            :open="progressExpanded"
+            @toggle="onProgressToggle"
+          >
+            <summary
+              class="turn-progress-toggle"
+              :title="progressToggleLabel"
+              :aria-label="progressToggleLabel"
+              :aria-expanded="String(progressExpanded)"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                <path v-if="progressExpanded" fill="currentColor" d="M7 14l5-5 5 5z"/>
+                <path v-else fill="currentColor" d="M7 10l5 5 5-5z"/>
+              </svg>
             </summary>
             <div class="turn-progress-list">
               <div
@@ -108,7 +121,6 @@ export default {
             :key="segment.key"
             class="turn-response-segment turn-response-result"
           >
-            <div v-if="progressSegments.length > 0" class="turn-response-label">{{ $t('message.result') }}</div>
             <div class="turn-text markdown-body" v-html="renderSegment(segment.content)"></div>
             <span v-if="segment.isStreaming" class="cursor-blink"></span>
           </div>
@@ -264,6 +276,8 @@ export default {
     };
     const screenshotting = Vue.ref(false);
     const turnRef = Vue.ref(null);
+    const progressGroupRef = Vue.ref(null);
+    const progressExpanded = Vue.ref(props.turn?.isActive === true || props.turn?.isStreaming === true);
     const failedImages = Vue.reactive(new Set());
     const t = Vue.inject('t');
 
@@ -392,6 +406,20 @@ export default {
     });
     const progressSegments = Vue.computed(() => textSegments.value.filter(segment => segment.kind !== 'result'));
     const resultSegments = Vue.computed(() => textSegments.value.filter(segment => segment.kind === 'result'));
+    const progressToggleLabel = Vue.computed(() => (
+      progressExpanded.value ? t('message.hideProgress') : t('message.showProgress')
+    ));
+    const onProgressToggle = (event) => {
+      progressExpanded.value = event?.currentTarget?.open === true;
+    };
+
+    Vue.watch(
+      () => props.turn?.isActive === true || props.turn?.isStreaming === true,
+      (active) => {
+        progressExpanded.value = active;
+        if (progressGroupRef.value) progressGroupRef.value.open = active;
+      },
+    );
 
     const addCodeBlockCopyButtons = (html) => {
       return html.replace(/<pre><code([^>]*)>([\s\S]*?)<\/code><\/pre>/g,
@@ -629,6 +657,10 @@ export default {
       textSegments,
       progressSegments,
       resultSegments,
+      progressGroupRef,
+      progressExpanded,
+      progressToggleLabel,
+      onProgressToggle,
       renderSegment,
       copyContent,
       copyFullResponse,

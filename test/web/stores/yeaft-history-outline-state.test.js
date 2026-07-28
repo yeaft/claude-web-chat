@@ -302,9 +302,43 @@ describe('Yeaft history outline state', () => {
     }];
 
     expect(store.revealYeaftMessage('same', 'm42')).toBe(true);
+
+    store.executionStatusMap = {};
+    store.conversations = [];
+    store.processingConversations = { 'conv-a': true };
+    store._currentYeaftSessionId = 'same';
+    store._currentYeaftTurnId = 'turn-tool';
+    store._currentYeaftVpId = 'maker';
+    store.messagesMap['conv-a'] = [{
+      id: 'progress-before-tool',
+      type: 'assistant',
+      content: 'Inspecting files',
+      sessionId: 'same',
+      turnId: 'turn-tool',
+      speakerVpId: 'maker',
+      isStreaming: true,
+      status: 'pending',
+    }];
+
+    handleAssistantOutputFrame(store, 'conv-a', {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'tool-1', name: 'FileRead', input: { file_path: 'README.md' } }],
+      },
+    });
+
+    expect(store.messagesMap['conv-a'][0]).toMatchObject({
+      isStreaming: false,
+      status: 'pending',
+      turnId: 'turn-tool',
+    });
+    expect(store.messagesMap['conv-a'][0]).not.toHaveProperty('turnEndAt');
+    expect(store.messagesMap['conv-a'][1]).toMatchObject({
+      type: 'tool-use',
+      toolName: 'FileRead',
+      turnId: 'turn-tool',
+    });
   });
-
-
 
   it('force-refreshes a loaded visible outline when a completed response has no durable anchor yet', () => {
     const store = primeStore();

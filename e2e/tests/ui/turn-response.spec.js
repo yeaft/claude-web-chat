@@ -53,15 +53,19 @@ function harnessHtml() {
         { key: 'progress', content: 'Inspecting files.', kind: 'progress', explicitKind: true, isStreaming: false },
         { key: 'result', content: '## 改动', kind: 'result', explicitKind: true, isStreaming: false },
       ],
-      toolMsgs: [], toolSummaryCount: 0, imageMsgs: [], todoMsg: null, askMsg: null,
-      messages: [], isStreaming: false, isActive: false,
+      toolMsgs: [], toolSummaryCount: 0, imageMsgs: [],
+      todoMsg: { toolInput: { todos: [{ content: 'Verify spacing', status: 'pending' }] } },
+      askMsg: null, messages: [], isStreaming: false, isActive: false,
     });
     const app = Vue.createApp({
       components: { AssistantTurn },
       setup() { return { turn }; },
       template: '<AssistantTurn :turn="turn" />',
     });
-    const translate = key => ({ 'message.progress': '过程', 'message.result': '结果' }[key] || key);
+    const translate = key => ({
+      'message.showProgress': '展开过程',
+      'message.hideProgress': '收起过程',
+    }[key] || key);
     app.config.globalProperties.$t = translate;
     app.provide('t', translate);
     app.mount('#app');
@@ -114,26 +118,55 @@ test('separates active progress from the final result across themes and mobile',
 
   const progress = page.locator('.turn-progress-group');
   const result = page.locator('.turn-response-result');
+  const progressToggle = page.locator('.turn-progress-toggle');
+  const todos = page.locator('.turn-todos');
   await expect(progress).not.toHaveAttribute('open', '');
-  await expect(page.locator('.turn-progress-summary')).toContainText('过程');
-  await expect(result.locator('.turn-response-label')).toHaveText('结果');
+  await expect(progressToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(progressToggle).toHaveAttribute('aria-label', '展开过程');
+  await expect(progressToggle).toHaveText('');
+  await expect(page.locator('.turn-response-label')).toHaveCount(0);
   await expect(result.locator('h2')).toHaveText('改动');
   await expect(page.locator('.turn-response-progress')).toBeHidden();
+  await expect(todos).toBeVisible();
 
-  await page.locator('.turn-progress-summary').click();
+  await progressToggle.focus();
+  await expect(progressToggle).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(progressToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(progressToggle).toHaveAttribute('aria-label', '收起过程');
   await expect(page.locator('.turn-response-progress')).toBeVisible();
+  await page.keyboard.press('Space');
+  await expect(progressToggle).toHaveAttribute('aria-expanded', 'false');
+  await progressToggle.click();
+  await expect(progressToggle).toHaveAttribute('aria-expanded', 'true');
   const fontSizes = await page.evaluate(() => ({
     progress: parseFloat(getComputedStyle(document.querySelector('.turn-response-progress')).fontSize),
     result: parseFloat(getComputedStyle(document.querySelector('.turn-response-result .markdown-body')).fontSize),
   }));
   expect(fontSizes.progress).toBeLessThan(fontSizes.result);
+  const layout = await page.evaluate(() => {
+    const contentRect = document.querySelector('.turn-content').getBoundingClientRect();
+    const todoRect = document.querySelector('.turn-todos').getBoundingClientRect();
+    const todoStyle = getComputedStyle(document.querySelector('.turn-todos'));
+    const progressListStyle = getComputedStyle(document.querySelector('.turn-progress-list'));
+    return {
+      gap: todoRect.top - contentRect.bottom,
+      todoBorderTopWidth: todoStyle.borderTopWidth,
+      progressPaddingLeft: parseFloat(progressListStyle.paddingLeft),
+    };
+  });
+  expect(layout.gap).toBeGreaterThanOrEqual(16);
+  expect(layout.todoBorderTopWidth).toBe('0px');
+  expect(layout.progressPaddingLeft).toBeGreaterThanOrEqual(16);
 
   await page.evaluate(() => {
-    const details = document.querySelector('.turn-progress-group');
-    details.open = false;
     window.__turn.isActive = true;
   });
   await expect(progress).toHaveAttribute('open', '');
+  await page.evaluate(() => {
+    window.__turn.isActive = false;
+  });
+  await expect(progress).not.toHaveAttribute('open', '');
 
   for (const theme of ['light', 'dark']) {
     await page.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
