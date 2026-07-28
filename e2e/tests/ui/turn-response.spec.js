@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { execFileSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,9 +18,7 @@ function harnessHtml() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="/web/styles/variables.css">
-  <link rel="stylesheet" href="/web/styles/chat-messages.css">
-  <link rel="stylesheet" href="/web/styles/yeaft-vp.css">
+  <link rel="stylesheet" href="/web/dist/style.bundle.css">
   <style>
     body { margin: 0; padding: 24px; background: var(--bg-main); color: var(--text-primary); }
     #app { width: min(760px, 100%); margin: 0 auto; }
@@ -46,7 +45,7 @@ function harnessHtml() {
       },
     };
     window.hljs = undefined;
-    const { default: AssistantTurn } = await import('/web/components/AssistantTurn.js');
+    const { default: VpTurnBlock } = await import('/web/components/VpTurnBlock.js');
     const { finalizeTurnResponseSegments } = await import('/web/utils/turn-response.js');
     const turn = Vue.reactive({
       id: 'turn-ui', turnId: 'turn-ui', textContent: 'Inspecting files.\\n\\n## 改动',
@@ -59,9 +58,9 @@ function harnessHtml() {
       askMsg: null, messages: [], isStreaming: false, isActive: false,
     });
     const app = Vue.createApp({
-      components: { AssistantTurn },
+      components: { VpTurnBlock },
       setup() { return { turn }; },
-      template: '<AssistantTurn :turn="turn" />',
+      template: '<VpTurnBlock :turn="turn" />',
     });
     const translate = key => ({
       'message.showProgress': '展开过程',
@@ -82,6 +81,10 @@ let server;
 let baseUrl;
 
 test.beforeAll(async () => {
+  execFileSync(process.execPath, [resolve(projectRoot, 'web/build.js')], {
+    cwd: projectRoot,
+    stdio: 'pipe',
+  });
   server = createServer((request, response) => {
     const pathname = new URL(request.url, 'http://127.0.0.1').pathname;
     if (pathname === '/__turn-response') {
@@ -121,7 +124,7 @@ test('separates active progress from the final result across themes and mobile',
   const progress = page.locator('.turn-progress-group');
   const result = page.locator('.turn-response-result');
   const progressToggle = page.locator('.turn-progress-toggle');
-  const todos = page.locator('.turn-todos');
+  const todos = page.locator('.vp-turn-block-body-expanded .turn-todos');
   await expect(progress).not.toHaveAttribute('open', '');
   await expect(progressToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(progressToggle).toHaveAttribute('aria-label', '展开过程');
@@ -172,19 +175,25 @@ test('separates active progress from the final result across themes and mobile',
     result: parseFloat(getComputedStyle(document.querySelector('.turn-response-result .markdown-body')).fontSize),
   }));
   expect(fontSizes.progress).toBeLessThan(fontSizes.result);
-  const layout = await page.evaluate(() => {
+  const readLayout = () => page.evaluate(() => {
     const contentRect = document.querySelector('.turn-content').getBoundingClientRect();
-    const todoRect = document.querySelector('.turn-todos').getBoundingClientRect();
-    const todoStyle = getComputedStyle(document.querySelector('.turn-todos'));
+    const todo = document.querySelector('.vp-turn-block-body-expanded .turn-todos');
+    const todoRect = todo.getBoundingClientRect();
+    const todoStyle = getComputedStyle(todo);
     const progressListStyle = getComputedStyle(document.querySelector('.turn-progress-list'));
     return {
       gap: todoRect.top - contentRect.bottom,
       todoBorderTopWidth: todoStyle.borderTopWidth,
+      todoPaddingLeft: parseFloat(todoStyle.paddingLeft),
+      todoPaddingRight: parseFloat(todoStyle.paddingRight),
       progressPaddingLeft: parseFloat(progressListStyle.paddingLeft),
     };
   });
+  const layout = await readLayout();
   expect(layout.gap).toBeGreaterThanOrEqual(16);
   expect(layout.todoBorderTopWidth).toBe('0px');
+  expect(layout.todoPaddingLeft).toBe(16);
+  expect(layout.todoPaddingRight).toBe(16);
   expect(layout.progressPaddingLeft).toBeGreaterThanOrEqual(16);
 
   await page.evaluate(() => {
@@ -202,12 +211,19 @@ test('separates active progress from the final result across themes and mobile',
       background: getComputedStyle(document.body).backgroundColor,
       progress: getComputedStyle(document.querySelector('.turn-response-progress')).color,
       result: getComputedStyle(document.querySelector('.turn-response-result')).color,
+      toggle: getComputedStyle(document.querySelector('.turn-progress-toggle')).color,
     }));
     expect(colors.progress).not.toBe(colors.result);
     expect(colors.result).not.toBe(colors.background);
+    expect(colors.toggle).toBe(colors.progress);
   }
 
   await page.setViewportSize({ width: 430, height: 800 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  expect(await readLayout()).toMatchObject({
+    todoBorderTopWidth: '0px',
+    todoPaddingLeft: 16,
+    todoPaddingRight: 16,
+  });
   await expect(result.locator('h2')).toBeVisible();
 });
