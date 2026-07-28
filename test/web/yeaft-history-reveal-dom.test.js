@@ -181,7 +181,7 @@ async function expectRenderedReveal(wrapper, store, scrollToKey) {
 
   expect(scrollToKey).toHaveBeenCalledTimes(1);
   const blockId = scrollToKey.mock.calls[0][0];
-  expect(scrollToKey).toHaveBeenCalledWith(blockId, { align: 'center' });
+  expect(scrollToKey).toHaveBeenCalledWith(blockId, { align: 'start' });
   const virtualRow = wrapper.get(`[data-virtual-id="${blockId}"]`);
   expect(virtualRow.exists()).toBe(true);
   // Assistant history rows are grouped into a rendered turn, so their DOM

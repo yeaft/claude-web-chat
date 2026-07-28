@@ -10,6 +10,7 @@ import {
   isTranscriptScrollbarPointer,
   isTranscriptScrollKey,
   resolveTranscriptBottomFollow,
+  resolveTranscriptUserFollow,
   shouldFollowTranscriptBottom,
   shouldMarkTranscriptKeyScroll,
   virtualScrollTopForIndex,
@@ -171,6 +172,7 @@ describe('virtual transcript range calculation', () => {
 
   it('distinguishes bottom-follow from reading history', () => {
     expect(virtualTranscriptDefaults.bottomThreshold).toBe(80);
+    expect(virtualTranscriptDefaults.resumeBottomThreshold).toBe(2);
     expect(shouldFollowTranscriptBottom({ scrollTop: 920, scrollHeight: 1000, clientHeight: 80 })).toBe(true);
     expect(shouldFollowTranscriptBottom({ scrollTop: 500, scrollHeight: 1000, clientHeight: 80 })).toBe(false);
   });
@@ -181,6 +183,14 @@ describe('virtual transcript range calculation', () => {
     expect(resolveTranscriptBottomFollow({ following: true, atBottom: true })).toBe(true);
     expect(resolveTranscriptBottomFollow({ following: false, atBottom: true, userScroll: true })).toBe(true);
     expect(resolveTranscriptBottomFollow({ following: true, atBottom: false, userScroll: true })).toBe(false);
+
+    // A small upward move can remain inside the near-bottom threshold. User
+    // direction still owns the viewport, so live messages must not resume follow.
+    expect(resolveTranscriptUserFollow({ following: true, atBottom: true, direction: -12 })).toBe(false);
+    expect(resolveTranscriptUserFollow({ following: false, atBottom: true, direction: 12 })).toBe(true);
+    expect(resolveTranscriptUserFollow({ following: false, atBottom: true, direction: 0 })).toBe(false);
+    expect(shouldFollowTranscriptBottom({ scrollTop: 890, scrollHeight: 1000, clientHeight: 80, threshold: 80 })).toBe(true);
+    expect(shouldFollowTranscriptBottom({ scrollTop: 890, scrollHeight: 1000, clientHeight: 80, threshold: 2 })).toBe(false);
   });
 
   it('recognizes keyboard actions that explicitly scroll the transcript', () => {

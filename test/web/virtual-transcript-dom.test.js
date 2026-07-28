@@ -101,7 +101,7 @@ describe('VirtualTranscript DOM windowing', () => {
 
 
 
-  it('invalidates a queued near-bottom adjustment and lets a new generation follow again', async () => {
+  it('fences stale bottom work and keeps a tall targeted row aligned to its first line', async () => {
     const scroller = createScroller({ viewportHeight: 300, scrollHeight: 10000 });
     scroller.scrollTop = 9700;
     let rowHeight = 90;
@@ -162,6 +162,25 @@ describe('VirtualTranscript DOM windowing', () => {
     await Vue.nextTick();
     await flushRafs();
     expect(scroller.scrollTop).toBe(10000);
+
+    // Targeted search owns the viewport even when the block is taller than it.
+    // The rendered message row is aligned to the viewport start, then re-aligned
+    // after a later layout shift instead of leaving the first line above view.
+    scroller.getBoundingClientRect = () => ({
+      x: 0, y: 0, top: 100, right: 800, bottom: 400, left: 0, width: 800, height: 300, toJSON: () => ({}),
+    });
+    let targetTop = 650;
+    const target = wrapper.get('.virtual-transcript-item').element;
+    vi.spyOn(target, 'getBoundingClientRect').mockImplementation(() => ({
+      x: 0, y: targetTop, top: targetTop, right: 100, bottom: targetTop + 1200, left: 0, width: 100, height: 1200, toJSON: () => ({}),
+    }));
+    expect(wrapper.vm.anchorTarget(target.dataset.virtualId, target, { align: 'start' })).toBe(true);
+    const afterFirstAlignment = scroller.scrollTop;
+    expect(afterFirstAlignment).toBe(10550);
+
+    targetTop = 180;
+    expect(wrapper.vm.anchorTarget(target.dataset.virtualId, target, { align: 'start' })).toBe(true);
+    expect(scroller.scrollTop).toBe(afterFirstAlignment + 80);
     wrapper.unmount();
   });
 
