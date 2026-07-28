@@ -330,7 +330,7 @@ export function appendToAssistantMessageForConversation(store, conversationId, t
   }
 }
 
-export function finishStreamingForConversation(store, conversationId) {
+export function finishStreamingForConversation(store, conversationId, { completeLifecycle = true } = {}) {
   if (!conversationId) return;
 
   const msgs = store.messagesMap[conversationId];
@@ -374,15 +374,7 @@ export function finishStreamingForConversation(store, conversationId) {
     }
     if (m.isStreaming) {
       m.isStreaming = false;
-      // Per-message lifecycle: promote pending → completed at finalize
-      // time. The vp_turn_end reducer in the store is the live source
-      // of truth and runs FIRST when the turn really ends; this branch
-      // catches history-replay paths (no vp_turn_end fires) and any
-      // edge where finishStreaming runs without the broker event. We
-      // guard on status === 'pending' so live 'aborted' / 'errored'
-      // stamps from the store are never silently overwritten back to
-      // 'completed'.
-      if (m.status === 'pending') {
+      if (completeLifecycle && m.status === 'pending') {
         m.status = 'completed';
         m.turnEndAt = Date.now();
       }

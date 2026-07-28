@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   addMessageToConversation,
   appendToAssistantMessageForConversation,
+  finishStreamingForConversation,
 } from '../../web/stores/helpers/messages.js';
 import {
   buildYeaftMessageTurnSpans,
@@ -61,6 +62,15 @@ describe('message flow regressions', () => {
       speakerVpId: 'vp-1',
       turnId: 'turn-1',
     });
+
+    finishStreamingForConversation(store, 'conv-1', { completeLifecycle: false });
+    expect(store.messagesMap['conv-1'][0]).toMatchObject({
+      content: 'hello world!',
+      isStreaming: false,
+      status: 'pending',
+      turnId: 'turn-1',
+    });
+    expect(store.messagesMap['conv-1'][0]).not.toHaveProperty('turnEndAt');
   });
 
   it('keeps Work Center inputs available and detail layouts responsive', () => {

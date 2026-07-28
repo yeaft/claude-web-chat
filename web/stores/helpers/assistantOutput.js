@@ -148,7 +148,9 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
         // Finish any in-progress streaming so typing dots reappear during tool execution.
         // Without this, isStreaming stays true on the assistant message, which suppresses
         // the typing indicator (showTypingDots = isProcessing && !hasStreamingMessage).
-        store.finishStreamingForConversation(conversationId);
+        // Tool execution ends the current text chunk, not the VP turn. Keep
+        // lifecycle status pending until vp_turn_end / terminal result.
+        store.finishStreamingForConversation(conversationId, { completeLifecycle: false });
 
         execStatus.currentTool = {
           name: block.name,

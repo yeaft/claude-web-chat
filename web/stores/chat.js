@@ -5394,7 +5394,7 @@ export const useChatStore = defineStore('chat', {
     // =====================
     addMessageToConversation(conversationId, msg) { msgHelpers.addMessageToConversation(this, conversationId, msg); },
     appendToAssistantMessageForConversation(conversationId, text, opts) { msgHelpers.appendToAssistantMessageForConversation(this, conversationId, text, opts); },
-    finishStreamingForConversation(conversationId) { msgHelpers.finishStreamingForConversation(this, conversationId); },
+    finishStreamingForConversation(conversationId, options) { msgHelpers.finishStreamingForConversation(this, conversationId, options); },
     sweepStaleStreamingForConversation(conversationId) { msgHelpers.sweepStaleStreamingForConversation(this, conversationId); },
     appendToAssistantMessage(text) { this.appendToAssistantMessageForConversation(this.currentConversation, text); },
     finishStreaming() { this.finishStreamingForConversation(this.currentConversation); },

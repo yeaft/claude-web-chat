@@ -26,6 +26,7 @@ const {
   handleYeaftLoadHistory,
   handleYeaftLoadMoreHistory,
   __testHandleEngineEvent,
+  __testGroupHistory,
   __testSetSession,
   __testHooks,
 } = await import('../../../agent/yeaft/web-bridge.js');
@@ -542,6 +543,30 @@ describe('Yeaft load-history first paint', () => {
       // One bounded UI replay (limit: 1) plus one bounded runtime hydrate
       // (default recentTurnsLimit) is fine; parsing the whole 1002-row session is not.
       expect(readCounts.count).toBeLessThan(80);
+
+      store.append({ role: 'user', content: 'progress q', sessionId: 'session-progress' });
+      store.append({
+        role: 'assistant', content: 'I found the request construction boundary.',
+        sessionId: 'session-progress', speakerVpId: 'vp-linus', responseKind: 'progress',
+      });
+      store.append({
+        role: 'assistant', content: 'The prior turn completed.',
+        sessionId: 'session-progress', speakerVpId: 'vp-linus',
+        responseKind: 'result', stopReason: 'end_turn',
+      });
+      expect(__testGroupHistory('session-progress')).toEqual([
+        expect.objectContaining({ role: 'user', content: 'progress q' }),
+        expect.objectContaining({
+          role: 'assistant',
+          content: 'I found the request construction boundary.',
+          responseKind: 'progress',
+        }),
+        expect.objectContaining({
+          role: 'assistant',
+          content: 'The prior turn completed.',
+          responseKind: 'result',
+        }),
+      ]);
     } finally {
       __testSetSession(null);
       rmSync(dir, { recursive: true, force: true });
