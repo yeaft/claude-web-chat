@@ -108,10 +108,11 @@ describe('Yeaft conversation outline UI', () => {
     expect(store).toContain('if (pendingByKey[pendingKey]?.promise) return pendingByKey[pendingKey].promise');
     expect(store).toContain('buildYeaftMessageTurnSpans(scoped)');
     expect(list).toContain('navigateToPersistedMessage({');
-    expect(list).toContain("virtualTranscriptRef.value?.scrollToKey?.(blockId, { align: 'center' })");
+    expect(list).toContain('virtualTranscriptRef.value?.scrollToKey?.(blockId, options)');
+    expect(list).toContain('virtualTranscriptRef.value?.anchorTarget?.(blockId, row, options)');
     expect(store).toContain('this.isYeaftMessageCached(pending.sessionId, pending.messageId, conversationId)');
     expect(store).not.toContain('containsAnchor || revealedInStore');
-    expect(virtual).toContain('expose({ scrollToKey, scrollToIndex, cancelPendingBottomFollow })');
+    expect(virtual).toContain('expose({ scrollToKey, scrollToIndex, anchorTarget, clearTargetAnchor, cancelPendingBottomFollow, setBottomFollowEnabled })');
     expect(css).toContain('@keyframes yeaft-history-search-flash');
   });
 

@@ -65,6 +65,10 @@ export default {
     let pendingScrollDelta = 0;
     let pendingScrollToBottom = false;
     let scrollAdjustmentGeneration = 0;
+    let bottomFollowEnabled = true;
+    let activeTargetKey = null;
+    let activeTargetAlign = 'start';
+    let activeTargetElement = null;
 
     // Item offsets only change when the items, estimates, or measured heights
     // change. Keep them out of the scroll-dependent computed so wheel/touch
@@ -110,6 +114,7 @@ export default {
       if (!initialEndPending || props.initialAlign !== 'end' || props.items.length === 0 || !el) {
         return false;
       }
+      clearTargetAnchor();
       el.scrollTop = el.scrollHeight;
       initialEndPending = false;
       readScrollState();
@@ -164,10 +169,16 @@ export default {
       });
     }
 
-    function cancelPendingBottomFollow() {
+    function clearTargetAnchor() {
+      activeTargetKey = null;
+      activeTargetElement = null;
+    }
+
+    function cancelPendingBottomFollow({ preserveTarget = false } = {}) {
       scrollAdjustmentGeneration += 1;
       pendingScrollToBottom = false;
       pendingScrollDelta = 0;
+      if (!preserveTarget) clearTargetAnchor();
       if (scrollAdjustRafId) cancelAnimationFrame(scrollAdjustRafId);
       scrollAdjustRafId = null;
     }
@@ -207,8 +218,9 @@ export default {
       if (!measurements.length) return;
 
       const scroller = scrollEl.value;
-      const wasNearBottom = isNearBottom(scroller);
+      const wasNearBottom = bottomFollowEnabled && isNearBottom(scroller);
       const windowStart = virtualWindow.value.visibleStart;
+      const shouldRealignTarget = !!activeTargetKey && measurements.some(measurement => measurement.key === activeTargetKey);
       let anchorDelta = 0;
       let shouldScrollToBottom = false;
 
@@ -233,15 +245,70 @@ export default {
         }
       }
 
-      const hasAnchorAdjustment = Math.abs(anchorDelta) >= HEIGHT_CHANGE_THRESHOLD;
-      if (!hasAnchorAdjustment && !shouldScrollToBottom) return;
-      const adjustment = { delta: anchorDelta, toBottom: shouldScrollToBottom };
-      const adjustmentGeneration = scrollAdjustmentGeneration;
-      if (shouldScrollToBottom) {
-        Vue.nextTick(() => scheduleScrollAdjustment(adjustment, adjustmentGeneration));
-      } else {
-        scheduleScrollAdjustment(adjustment, adjustmentGeneration);
+      // Once the active target itself participates in this measurement batch,
+      // its final DOM geometry already includes every predecessor height change.
+      // Target alignment must therefore be the only scroll owner for the batch;
+      // applying anchorDelta as well would count predecessor growth twice.
+      if (shouldRealignTarget) {
+        cancelPendingBottomFollow({ preserveTarget: true });
+        scheduleTargetAlignment(activeTargetKey, activeTargetAlign);
+        return;
       }
+
+      const hasAnchorAdjustment = Math.abs(anchorDelta) >= HEIGHT_CHANGE_THRESHOLD;
+      if (hasAnchorAdjustment || shouldScrollToBottom) {
+        const adjustment = { delta: anchorDelta, toBottom: shouldScrollToBottom };
+        const adjustmentGeneration = scrollAdjustmentGeneration;
+        if (shouldScrollToBottom) {
+          Vue.nextTick(() => scheduleScrollAdjustment(adjustment, adjustmentGeneration));
+        } else {
+          scheduleScrollAdjustment(adjustment, adjustmentGeneration);
+        }
+      }
+    }
+
+    function alignTarget(key, align = 'start') {
+      const scroller = scrollEl.value;
+      const target = activeTargetElement || itemEls.get(String(key));
+      if (!scroller || !target) return false;
+      const scrollerRect = scroller.getBoundingClientRect?.();
+      const targetRect = target.getBoundingClientRect?.();
+      if (!scrollerRect || !targetRect) return false;
+      const scrollerTop = Number(scrollerRect.top);
+      const scrollerHeight = Number(scroller.clientHeight || viewportHeight.value);
+      const targetHeight = Number(targetRect.height || 0);
+      const desiredTop = align === 'center' && targetHeight <= scrollerHeight
+        ? scrollerTop + (scrollerHeight - targetHeight) / 2
+        : align === 'end' && targetHeight <= scrollerHeight
+          ? Number(scrollerRect.bottom) - targetHeight
+          : scrollerTop;
+      const delta = Number(targetRect.top) - desiredTop;
+      if (Math.abs(delta) >= HEIGHT_CHANGE_THRESHOLD) scroller.scrollTop += delta;
+      readScrollState();
+      return true;
+    }
+
+    function scheduleTargetAlignment(key, align = 'start', targetElement) {
+      const targetKey = String(key);
+      activeTargetKey = targetKey;
+      activeTargetAlign = align;
+      // Remeasuring an outer virtual block must retain any persisted child row
+      // that currently owns the search anchor. Callers can still replace or
+      // clear that owner explicitly by passing an element or null.
+      if (targetElement !== undefined) activeTargetElement = targetElement;
+      const run = () => {
+        if (activeTargetKey !== targetKey) return;
+        alignTarget(targetKey, activeTargetAlign);
+      };
+      Vue.nextTick(run);
+    }
+
+    function setBottomFollowEnabled(enabled) {
+      const nextEnabled = !!enabled;
+      if (nextEnabled) clearTargetAnchor();
+      if (bottomFollowEnabled === nextEnabled) return;
+      bottomFollowEnabled = nextEnabled;
+      if (!bottomFollowEnabled) cancelPendingBottomFollow();
     }
 
     function observeItem(key, index, el) {
@@ -267,8 +334,11 @@ export default {
       const safeIndex = Number.isFinite(index) ? Math.floor(index) : -1;
       const scroller = scrollEl.value;
       if (!scroller || safeIndex < 0 || safeIndex >= props.items.length) return false;
-      cancelPendingBottomFollow();
+      cancelPendingBottomFollow({ preserveTarget: true });
       const key = getVirtualItemKey(props.items[safeIndex], safeIndex);
+      activeTargetKey = key;
+      activeTargetAlign = align;
+      activeTargetElement = null;
       scroller.scrollTop = virtualScrollTopForIndex(props.items, safeIndex, heightCache, {
         itemGap: props.itemGap,
         estimateHeight: props.estimateHeight,
@@ -278,8 +348,8 @@ export default {
       readScrollState();
       await Vue.nextTick();
       const target = itemEls.get(key);
-      if (target?.scrollIntoView) target.scrollIntoView({ block: align, inline: 'nearest' });
-      readScrollState();
+      if (!target) return false;
+      scheduleTargetAlignment(key, align);
       return true;
     }
 
@@ -288,13 +358,24 @@ export default {
       return Number.isFinite(index) ? scrollToIndex(index, options) : Promise.resolve(false);
     }
 
-    expose({ scrollToKey, scrollToIndex, cancelPendingBottomFollow });
+    function anchorTarget(key, targetElement, { align = 'start' } = {}) {
+      const targetKey = String(key || '');
+      if (!targetKey || !targetElement) return false;
+      activeTargetKey = targetKey;
+      activeTargetAlign = align;
+      activeTargetElement = targetElement;
+      alignTarget(targetKey, align);
+      return true;
+    }
+
+    expose({ scrollToKey, scrollToIndex, anchorTarget, clearTargetAnchor, cancelPendingBottomFollow, setBottomFollowEnabled });
 
     Vue.watch(
       () => props.items.map((item, index) => getVirtualItemKey(item, index)).join('\n'),
       () => {
         itemIndexByKey.clear();
         props.items.forEach((item, index) => itemIndexByKey.set(getVirtualItemKey(item, index), index));
+        if (activeTargetKey && !itemIndexByKey.has(activeTargetKey)) clearTargetAnchor();
         Vue.nextTick(syncInitialPosition);
       },
       { immediate: true },
