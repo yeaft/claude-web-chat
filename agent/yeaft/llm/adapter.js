@@ -420,6 +420,56 @@ export function redactRawRequest(req) {
 }
 
 /**
+ * Return a wire-safe copy of a JSON-compatible value.
+ *
+ * JavaScript strings may contain lone UTF-16 surrogates. JSON.stringify keeps
+ * them as `\\ud800`-style escapes, but strict API servers reject them because
+ * they cannot represent Unicode scalar values in UTF-8. Replace only malformed
+ * code units with U+FFFD; valid surrogate pairs (including emoji) are kept.
+ *
+ * @param {any} value
+ * @returns {any}
+ */
+export function toWellFormedJson(value) {
+  // Let the native serializer retain its complete semantics first: toJSON,
+  // boxed primitives, non-finite numbers, array holes, and omitted values.
+  const serialized = JSON.stringify(value, (_key, child) => {
+    if (typeof child === 'string') return child.toWellFormed();
+    // JSON.stringify invokes the replacer before unboxing String objects.
+    // String#valueOf checks the real [[StringData]] internal slot across realms;
+    // unlike instanceof or Object#toString, it cannot be spoofed by a caller.
+    if (child && typeof child === 'object') {
+      try {
+        return String.prototype.valueOf.call(child).toWellFormed();
+      } catch (err) {
+        if (!(err instanceof TypeError)) throw err;
+      }
+    }
+    return child;
+  });
+  if (serialized === undefined) return undefined;
+
+  // The replacer cannot rename object keys. Rebuild only the already-serialized
+  // plain JSON tree so malformed keys are fixed too. Null-prototype containers
+  // keep an own "__proto__" key as data rather than invoking the legacy setter.
+  const normalizeKeys = child => {
+    if (Array.isArray(child)) return child.map(normalizeKeys);
+    if (!child || typeof child !== 'object') return child;
+    const out = Object.create(null);
+    for (const [key, nested] of Object.entries(child)) {
+      Object.defineProperty(out, key.toWellFormed(), {
+        value: normalizeKeys(nested),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  };
+  return normalizeKeys(JSON.parse(serialized));
+}
+
+/**
  * Snapshot a Fetch Response's headers into a plain object for the debug
  * panel. Defensive against polyfilled / mocked Response shapes that don't
  * implement `Headers#entries()` — falls back to `{}` rather than throwing.
