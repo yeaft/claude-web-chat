@@ -522,6 +522,7 @@ describe('Engine', () => {
             speakerVpId: 'vp-linus',
             incomplete: true,
             stopReason: 'error',
+            responseKind: 'progress',
           }),
         ]);
       } finally {
@@ -567,6 +568,7 @@ describe('Engine', () => {
             speakerVpId: 'vp-linus',
             incomplete: true,
             stopReason: 'aborted',
+            responseKind: 'progress',
           }),
         ]);
       } finally {
@@ -614,6 +616,7 @@ describe('Engine', () => {
         expect(persisted[1]).toMatchObject({
           toolCalls: [expect.objectContaining({ id: 'call_incremental', name: 'durable_tool' })],
           turnId: 'vp-turn-tool',
+          responseKind: 'progress',
         });
         expect(persisted[2]).toMatchObject({
           toolCallId: 'call_incremental',
@@ -877,6 +880,8 @@ describe('Engine', () => {
           threadId: 'main',
           turnId: 'vp-turn-ui-1',
           speakerVpId: 'vp-linus',
+          responseKind: 'result',
+          stopReason: 'end_turn',
         });
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });

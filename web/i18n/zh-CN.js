@@ -30,6 +30,8 @@ export default {
 
   // ============ Chat messages ============
   'chat.toolActionsOmitted': '已省略 {count} 个历史工具动作',
+  'message.progress': '过程',
+  'message.result': '结果',
 
   // ============ Login ============
   'login.subtitle': 'Yeaft Web Code Agent',

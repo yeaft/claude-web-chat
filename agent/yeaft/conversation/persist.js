@@ -326,6 +326,17 @@ function parseAskUserResult(toolCall, toolResult) {
   };
 }
 
+function projectedResponseKind(row) {
+  if (row?.responseKind === 'progress' || row?.responseKind === 'result') {
+    return row.responseKind;
+  }
+  if (row?.incomplete === true || row?.stopReason === 'aborted' || row?.stopReason === 'error') {
+    return 'progress';
+  }
+  if (row?.stopReason === 'end_turn') return 'result';
+  return null;
+}
+
 export function projectVisibleSessionMessages(messages) {
   const rows = Array.isArray(messages) ? messages : [];
   const toolResults = new Map();
@@ -342,7 +353,10 @@ export function projectVisibleSessionMessages(messages) {
     if (row.role !== 'assistant' || !Array.isArray(row.toolCalls) || row.toolCalls.length === 0) {
       if (row.role === 'assistant' && !row.content && !row.attachments && !row.images
           && !row.todos && !row.toolSummaryCount && !row.askUserResults) continue;
-      visible.push(row);
+      const responseKind = row.role === 'assistant' ? projectedResponseKind(row) : null;
+      visible.push(responseKind && row.responseKind !== responseKind
+        ? { ...row, responseKind }
+        : row);
       continue;
     }
 
@@ -355,7 +369,11 @@ export function projectVisibleSessionMessages(messages) {
       if (result) askUserResults.push(result);
       else omittedToolCount += 1;
     }
-    const { toolCalls, ...rest } = row;
+    const { toolCalls, ...rowWithoutToolCalls } = row;
+    const responseKind = projectedResponseKind(rowWithoutToolCalls);
+    const rest = responseKind && rowWithoutToolCalls.responseKind !== responseKind
+      ? { ...rowWithoutToolCalls, responseKind }
+      : rowWithoutToolCalls;
     const todos = latestTodoWriteSnapshot(toolCalls);
     const projected = {
       ...rest,
@@ -413,6 +431,7 @@ function serializeMessage(msg) {
   if (typeof msg.userAuthored === 'boolean') fm.push(`userAuthored: ${msg.userAuthored}`);
   if (msg.incomplete) fm.push('incomplete: true');
   if (msg.stopReason) fm.push(`stopReason: ${msg.stopReason}`);
+  if (msg.responseKind === 'progress' || msg.responseKind === 'result') fm.push(`responseKind: ${msg.responseKind}`);
   // Session attribution: when a VP authors an assistant turn (either
   // its own reply or a route_forward injection from another VP), stamp
   // the speaker so the UI can render the message on the correct VP track.
@@ -551,6 +570,9 @@ export function parseMessage(raw) {
       case 'userAuthored': msg.userAuthored = value === 'true'; break;
       case 'incomplete': msg.incomplete = value === 'true'; break;
       case 'stopReason': msg.stopReason = value; break;
+      case 'responseKind':
+        if (value === 'progress' || value === 'result') msg.responseKind = value;
+        break;
       case 'speakerVpId': msg.speakerVpId = value; break;
       case 'quoteB64':
         try {

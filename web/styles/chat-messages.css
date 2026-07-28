@@ -42,6 +42,89 @@
   opacity: 1;
 }
 
+/* Turn: progress and final result are separate Markdown documents. */
+.turn-progress-group {
+  color: var(--text-secondary);
+}
+
+.turn-progress-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.04em;
+  list-style: none;
+  text-transform: uppercase;
+}
+
+.turn-progress-summary::-webkit-details-marker {
+  display: none;
+}
+
+.turn-progress-summary::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+}
+
+.turn-progress-group[open] > .turn-progress-summary::before {
+  transform: rotate(45deg);
+}
+
+.turn-progress-count {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0 0 16px;
+}
+
+.turn-response-segment {
+  min-width: 0;
+}
+
+.turn-response-label {
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.turn-response-progress {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.turn-response-result {
+  color: var(--text-primary);
+}
+
+.turn-progress-group + .turn-response-result {
+  margin-top: 16px;
+}
+
+.turn-response-progress .markdown-body {
+  color: inherit;
+  font-size: inherit;
+  line-height: 1.55;
+}
+
 /* Turn: VP route_forward messages */
 .turn-route-messages {
   display: flex;

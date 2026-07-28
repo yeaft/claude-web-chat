@@ -85,6 +85,7 @@ describe('Yeaft load-history first paint', () => {
       role: 'assistant',
       content: 'Progress',
       sessionId: 'session-fast',
+      responseKind: 'progress',
       toolCalls: [
         { id: 'todo-old', name: 'TodoWrite', input: { todos: [{ content: 'Old', status: 'pending' }] } },
         { id: 'bash', name: 'Bash', input: { command: 'true' } },
@@ -95,7 +96,13 @@ describe('Yeaft load-history first paint', () => {
     expect(projected[0]).toMatchObject({
       todos: [{ content: 'New', status: 'completed' }],
       toolSummaryCount: 1,
+      responseKind: 'progress',
     });
+
+    expect(__testHooks.projectVisibleHistoryChunkMessages([{
+      id: 'm0004', role: 'assistant', content: 'Partial', sessionId: 'session-fast',
+      incomplete: true, stopReason: 'aborted',
+    }])[0]).toMatchObject({ responseKind: 'progress' });
   });
 
   it('preserves TodoWrite through the real store page and history wire projection', () => {
@@ -108,6 +115,8 @@ describe('Yeaft load-history first paint', () => {
         content: 'Progress',
         sessionId: 'session-fast',
         speakerVpId: 'vp-linus',
+        responseKind: 'result',
+        stopReason: 'end_turn',
         toolCalls: [
           { id: 'todo', name: 'TodoWrite', input: { todos: [{ content: 'Verify', status: 'completed' }] } },
           { id: 'bash', name: 'Bash', input: { command: 'true' } },
@@ -120,10 +129,12 @@ describe('Yeaft load-history first paint', () => {
       expect(page.messages[1]).toMatchObject({
         todos: [{ content: 'Verify', status: 'completed' }],
         toolSummaryCount: 1,
+        responseKind: 'result',
       });
       expect(projected[1]).toMatchObject({
         todos: [{ content: 'Verify', status: 'completed' }],
         toolSummaryCount: 1,
+        responseKind: 'result',
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

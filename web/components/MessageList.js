@@ -32,6 +32,7 @@ import {
 } from '../utils/message-turn-collapse.js';
 import { navigateToPersistedMessage } from '../utils/message-search-navigation.js';
 import { formatSessionMessageDateTime } from '../utils/session-message-quote.js';
+import { appendTurnResponseSegment, finalizeTurnResponseSegments } from '../utils/turn-response.js';
 // task-757: appendTypingPlaceholders removed from the pipeline.
 // The standalone typing card it produced (at the bottom of the
 // conversation) showed "[VP] is typing…" in a separate row that
@@ -927,6 +928,8 @@ export default {
 
       const finishTurn = () => {
         if (currentTurn) {
+          currentTurn.isActive = !!(currentTurn.turnId && store.activeVpTurns?.[currentTurn.turnId]);
+          finalizeTurnResponseSegments(currentTurn);
           // Has the VP produced anything the user/group can see?
           // Tools are NOT user-visible content — they're internal
           // activity. A route_forward call shows up as a tool chip
@@ -1006,7 +1009,9 @@ export default {
           type: 'assistant-turn',
           id: 'turn_' + turnCounter,
           textContent: '',
+          textSegments: [],
           isStreaming: false,
+          isActive: false,
           isHistory: false,
           todoMsg: null,
           toolMsgs: [],
@@ -1084,9 +1089,7 @@ export default {
         if (msg.type === 'assistant') {
           closeTurnIfTurnBoundaryChanged(msg);
           if (!currentTurn) startTurn();
-          if (msg.content) {
-            currentTurn.textContent += msg.content;
-          }
+          appendTurnResponseSegment(currentTurn, msg);
           if (msg.isStreaming) {
             currentTurn.isStreaming = true;
           }

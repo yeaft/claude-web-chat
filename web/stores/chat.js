@@ -27,6 +27,7 @@ import {
 } from './helpers/work-center.js';
 import { createPerfTraceId, recordPerfTrace, measureNextPaint } from './helpers/perfTrace.js';
 import { normalizeSessionMessageQuote } from '../utils/session-message-quote.js';
+import { markTurnResponseKinds } from '../utils/turn-response.js';
 import { yeaftHistoryIdentityKey } from './helpers/yeaft-history-identity.js';
 import {
   getDefaultYeaftVisibleTurns,
@@ -4168,10 +4169,10 @@ export const useChatStore = defineStore('chat', {
           };
           const nextStatus = reasonToStatus[event.reason] || 'completed';
           const stampedAt = Date.now();
-          const conv = this.yeaftConversationId;
+          const conv = msg.conversationId || this.yeaftConversationId;
           if (conv && Array.isArray(this.messagesMap[conv])) {
             const rows = this.messagesMap[conv];
-            let mutated = false;
+            let mutated = markTurnResponseKinds(rows, event);
             // Stamp EVERY pending assistant row owned by this turn — not
             // just the last. A turn that produced multiple assistant
             // rows (text, then tool_use, then more text) needs all of
