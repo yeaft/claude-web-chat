@@ -9,6 +9,7 @@ import {
   WorkItemRunner,
   createProposeWorkItemActionsTool,
   createSubmitWorkItemReplanTool,
+  createWorkItemToolRegistry,
 } from '../../../../agent/yeaft/work-center/runner.js';
 import { WorkItemCoordinator } from '../../../../agent/yeaft/work-center/coordinator.js';
 import {
@@ -1117,6 +1118,20 @@ describe('Work Center core', () => {
     expect(replanProperties.add.maxItems).toBe(8);
     expect(replanProperties.retain.items.properties.actionId.enum).toEqual(barrier.candidateActionIds);
 
+    const addedDuringReplan = Array.from({ length: 9 }, (_value, index) => ({
+      id: `replan-added-${index + 1}`,
+      name: `Replan addition ${index + 1}`,
+      type: 'research',
+      objective: `Establish replan addition ${index + 1} evidence`,
+      approach: `Inspect the replan addition ${index + 1} boundary`,
+      expectedOutcome: `Replan addition ${index + 1} evidence is recorded`,
+      capability: 'research',
+      candidateVpIds: ['omni'],
+      assignmentReason: 'Use the available research executor.',
+      dependsOnActionIds: [],
+      workspaceMode: 'read',
+    }));
+    const acceptedAdditions = addedDuringReplan.slice(0, 8);
     const frozenById = new Map(barrierDetail.actions.map(action => [action.id, action]));
     const retain = barrier.candidateActionIds.map(actionId => {
       const frozen = frozenById.get(actionId);
@@ -1132,7 +1147,9 @@ describe('Work Center core', () => {
           capability: frozen.assignmentPolicy?.capability || frozen.type,
           candidateVpIds: ['omni'],
           assignmentReason: 'Retain the frozen candidate in the complete replan.',
-          dependsOnActionIds: frozen.dependsOnStageIds,
+          dependsOnActionIds: frozen.type === 'deliver'
+            ? [...frozen.dependsOnStageIds, ...acceptedAdditions.map(action => action.id)]
+            : frozen.dependsOnStageIds,
           workspaceMode: frozen.workspaceMode,
           maxAttempts: frozen.maxAttempts,
         },
@@ -1147,13 +1164,30 @@ describe('Work Center core', () => {
       retain,
       replace: [],
       remove: [],
-      add: [],
+      add: acceptedAdditions,
     };
-    expect(JSON.parse(await replanTool.execute(replanInput))).toMatchObject({
-      submitted: true,
-      proposalId: replanInput.proposalId,
+    const replanRegistry = createWorkItemToolRegistry({
+      workDir: dir,
+      isRunActive: () => true,
+      runTools: [replanTool],
     });
+    const beforeRejectedAddition = store.getWorkItemDetail(largeReplanItem.id);
+    await expect(replanRegistry.execute('SubmitWorkItemReplan', {
+      ...replanInput,
+      proposalId: 'reject-ninth-replan-addition',
+      add: addedDuringReplan,
+    }, {})).rejects.toThrow(/at most 8 new Actions/);
+    expect(replanCollector.value).toBeNull();
+    const afterRejectedAddition = store.getWorkItemDetail(largeReplanItem.id);
+    expect(afterRejectedAddition.planRevision).toBe(beforeRejectedAddition.planRevision);
+    expect(afterRejectedAddition.actions).toEqual(beforeRejectedAddition.actions);
+    expect(afterRejectedAddition.events).toEqual(beforeRejectedAddition.events);
+
+    expect(JSON.parse(await replanRegistry.execute('SubmitWorkItemReplan', replanInput, {})))
+      .toMatchObject({ submitted: true, proposalId: replanInput.proposalId });
+    expect(replanCollector.value).toMatchObject({ retain: expect.any(Array), add: expect.any(Array) });
     expect(replanCollector.value.retain).toHaveLength(9);
+    expect(replanCollector.value.add).toHaveLength(8);
 
     const appliedLargeReplan = controller.submit(
       replanClaim.run.id,
@@ -1169,6 +1203,9 @@ describe('Work Center core', () => {
     expect(appliedLargeReplan.actions.filter(action => (
       barrier.candidateActionIds.includes(action.id) && action.status === 'ready'
     ))).toHaveLength(9);
+    expect(appliedLargeReplan.actions.filter(action => (
+      acceptedAdditions.some(added => added.id === action.stageId) && action.status === 'ready'
+    ))).toHaveLength(8);
     controller.cancel(largeReplanItem.id);
 
     const workflowSnapshot = resolvePlanningWorkflowSnapshot({});

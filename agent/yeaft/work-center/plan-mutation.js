@@ -8,6 +8,8 @@ import {
   validateGeneratedCompletionGate,
 } from './workflow.js';
 
+export const MAX_REPLAN_ADDED_ACTIONS = 8;
+
 function cleanProposalId(value) {
   const id = typeof value === 'string' ? value.trim().slice(0, 128) : '';
   if (!id) throw new Error('Work Center plan proposal requires proposalId');
@@ -309,6 +311,14 @@ export function applyReplanMutation({ workItem, action, actions, proposal, avail
     throw new Error('Work Center replan Action is missing its frozen candidate set');
   }
   const candidateIds = barrier.candidateActionIds;
+  for (const field of ['retain', 'replace', 'remove', 'add']) {
+    if (!Array.isArray(proposal[field])) {
+      throw new Error(`Work Center replan mutation requires ${field} to be an array`);
+    }
+  }
+  if (proposal.add.length > MAX_REPLAN_ADDED_ACTIONS) {
+    throw new Error(`Work Center replan mutation can add at most ${MAX_REPLAN_ADDED_ACTIONS} new Actions`);
+  }
   const actionById = new Map(actions.map(candidate => [candidate.id, candidate]));
   const candidates = new Map(candidateIds.map(id => [id, actionById.get(id)]));
   for (const [id, candidate] of candidates) {
