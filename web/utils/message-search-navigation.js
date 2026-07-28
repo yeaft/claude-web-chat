@@ -61,8 +61,10 @@ export async function navigateToPersistedMessage({
   collapseStates,
   scrollToBlock,
   findRow,
+  anchorRow,
   flashRow,
   nextTick,
+  align = 'start',
 }) {
   const target = resolvePersistedMessageTarget(blocks, messageId);
   if (!target || typeof scrollToBlock !== 'function' || typeof findRow !== 'function') return false;
@@ -73,13 +75,14 @@ export async function navigateToPersistedMessage({
     await nextTick?.();
   }
 
-  const moved = await scrollToBlock(target.blockId);
+  const moved = await scrollToBlock(target.blockId, { align });
   if (!moved) return false;
   await nextTick?.();
 
   const row = findRow(target.rowId);
   if (!row) return false;
-  row.scrollIntoView?.({ block: 'center', inline: 'nearest' });
+  if (typeof anchorRow === 'function') anchorRow(target.blockId, target.rowId, row, { align });
+  else row.scrollIntoView?.({ block: align, inline: 'nearest' });
   flashRow?.(target.rowId);
   return true;
 }

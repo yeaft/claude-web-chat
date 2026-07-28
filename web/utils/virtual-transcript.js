@@ -4,6 +4,7 @@ const DEFAULT_OVERSCAN = 1;
 const DEFAULT_ITEM_GAP = 18;
 const MAX_ESTIMATED_HEIGHT = 1400;
 const DEFAULT_BOTTOM_THRESHOLD = 80;
+const DEFAULT_RESUME_BOTTOM_THRESHOLD = 2;
 const DEFAULT_HISTORY_PREFETCH_VIEWPORTS = 2;
 const DEFAULT_HISTORY_PREFETCH_MIN_PX = 600;
 
@@ -183,6 +184,18 @@ export function resolveTranscriptBottomFollow({ following = true, atBottom = fal
   return !!following && !!atBottom;
 }
 
+export function resolveTranscriptUserFollow({
+  following = true,
+  atBottom = false,
+  resumeBoundaryReached = false,
+  direction = 0,
+} = {}) {
+  const scrollDirection = Number(direction) || 0;
+  if (scrollDirection < 0) return false;
+  if (!following) return scrollDirection > 0 && !!resumeBoundaryReached;
+  return !!atBottom;
+}
+
 const TRANSCRIPT_SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 const INTERACTIVE_TARGET_SELECTOR = 'input, textarea, select, button, a, [contenteditable], [role="button"], [role="link"]';
 
@@ -231,6 +244,7 @@ export const virtualTranscriptDefaults = Object.freeze({
   overscan: DEFAULT_OVERSCAN,
   itemGap: DEFAULT_ITEM_GAP,
   bottomThreshold: DEFAULT_BOTTOM_THRESHOLD,
+  resumeBottomThreshold: DEFAULT_RESUME_BOTTOM_THRESHOLD,
   historyPrefetchViewports: DEFAULT_HISTORY_PREFETCH_VIEWPORTS,
   historyPrefetchMinPx: DEFAULT_HISTORY_PREFETCH_MIN_PX,
 });

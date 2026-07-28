@@ -181,7 +181,7 @@ async function expectRenderedReveal(wrapper, store, scrollToKey) {
 
   expect(scrollToKey).toHaveBeenCalledTimes(1);
   const blockId = scrollToKey.mock.calls[0][0];
-  expect(scrollToKey).toHaveBeenCalledWith(blockId, { align: 'center' });
+  expect(scrollToKey).toHaveBeenCalledWith(blockId, { align: 'start' });
   const virtualRow = wrapper.get(`[data-virtual-id="${blockId}"]`);
   expect(virtualRow.exists()).toBe(true);
   // Assistant history rows are grouped into a rendered turn, so their DOM
@@ -202,6 +202,7 @@ function observeVirtualScroll(wrapper) {
 describe('Yeaft history result rendered reveal', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
+    storeFactories.clear();
     sessionsStore = Vue.reactive({
       activeSessionId: 'same',
       activeNeedsInvite: false,
@@ -223,6 +224,68 @@ describe('Yeaft history result rendered reveal', () => {
     const store = primeStore();
     const revealWindow = vi.spyOn(store, 'revealYeaftHistoryResult');
     const wrapper = mountPage();
+    const messageList = wrapper.getComponent({ name: 'MessageList' });
+    const scroller = messageList.get('main.chat-container').element;
+    let scrollTop = 920;
+    let scrollHeight = 1000;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, get: () => 60 },
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: value => { scrollTop = Math.max(0, Number(value) || 0); },
+      },
+    });
+
+    scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 }));
+    scrollTop = 920;
+    scroller.dispatchEvent(new Event('scroll'));
+    await Vue.nextTick();
+    expect(messageList.get('.scroll-to-latest').classes()).not.toContain('is-hidden');
+
+    // Moving down by 1px while still 3..80px from the bottom must not resume
+    // live following. A new tail row and delayed virtual measurement must also
+    // leave the reader where they are.
+    scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 1 }));
+    scrollTop = 921;
+    scroller.dispatchEvent(new Event('scroll'));
+    await Vue.nextTick();
+    expect(messageList.get('.scroll-to-latest').classes()).not.toContain('is-hidden');
+    await new Promise(resolve => setTimeout(resolve, 275));
+    const pausedTop = scrollTop;
+    store.messagesMap['conv-a'].push({
+      id: 'm62',
+      messageId: 'm62',
+      type: 'user',
+      content: 'new live row',
+      sessionId: 'same',
+      timestamp: 62,
+    });
+    scrollHeight = 1040;
+    await Vue.nextTick();
+    await flushPromises();
+    expect(scrollTop).toBe(pausedTop);
+    expect(messageList.get('.scroll-to-latest').classes()).not.toContain('is-hidden');
+
+    // Only the strict 2px boundary or the explicit latest button can resume.
+    scrollTop = 950;
+    scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 1 }));
+    scrollTop = 978;
+    scroller.dispatchEvent(new Event('scroll'));
+    await Vue.nextTick();
+    expect(messageList.get('.scroll-to-latest').classes()).toContain('is-hidden');
+    scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 }));
+    scrollTop = 940;
+    scroller.dispatchEvent(new Event('scroll'));
+    await Vue.nextTick();
+    expect(messageList.get('.scroll-to-latest').classes()).not.toContain('is-hidden');
+    await messageList.get('.scroll-to-latest').trigger('click');
+    await Vue.nextTick();
+    expect(scrollTop).toBe(scrollHeight);
+    expect(messageList.get('.scroll-to-latest').classes()).toContain('is-hidden');
+    store.messagesMap['conv-a'].pop();
+
     wrapper.vm.toggleHistorySearch();
     await Vue.nextTick();
 

@@ -19,6 +19,7 @@ import {
   historyPrefetchThreshold,
   isTranscriptScrollbarPointer,
   resolveTranscriptBottomFollow,
+  resolveTranscriptUserFollow,
   shouldFollowTranscriptBottom,
   shouldMarkTranscriptKeyScroll,
   virtualTranscriptDefaults,
@@ -1317,6 +1318,7 @@ export default {
     const isAtBottom = Vue.ref(true);
     const autoFollowPaused = Vue.ref(false);
     const SCROLL_THRESHOLD = virtualTranscriptDefaults.bottomThreshold;
+    const SCROLL_RESUME_THRESHOLD = virtualTranscriptDefaults.resumeBottomThreshold;
     let loadMoreArmed = true;
 
     const hasStreamingMessage = Vue.computed(() => {
@@ -1776,11 +1778,13 @@ export default {
     const resumeAutoFollow = () => {
       autoFollowPaused.value = false;
       isAtBottom.value = true;
+      virtualTranscriptRef.value?.setBottomFollowEnabled?.(true);
     };
 
     const pauseAutoFollow = () => {
       autoFollowPaused.value = true;
       isAtBottom.value = false;
+      virtualTranscriptRef.value?.setBottomFollowEnabled?.(false);
       virtualTranscriptRef.value?.cancelPendingBottomFollow?.();
     };
 
@@ -1799,6 +1803,8 @@ export default {
         atBottom,
       });
       autoFollowPaused.value = !isAtBottom.value;
+      virtualTranscriptRef.value?.setBottomFollowEnabled?.(isAtBottom.value);
+      if (!userScrollInteractionActive) lastObservedScrollTop = Number(scrollTop || 0);
       maybeLoadMoreNearTop(scrollTop || 0, clientHeight || 0);
     };
 
@@ -1874,6 +1880,7 @@ export default {
     let userScrollInteractionActive = false;
     let pointerScrollActive = false;
     let userScrollEndTimer = null;
+    let lastObservedScrollTop = 0;
     const USER_SCROLL_END_FALLBACK_MS = 250;
 
     const clearUserScrollInteraction = () => {
@@ -1890,8 +1897,11 @@ export default {
       userScrollEndTimer = setTimeout(clearUserScrollInteraction, USER_SCROLL_END_FALLBACK_MS);
     };
 
-    const markUserScrollIntent = () => {
+    const markUserScrollIntent = (event) => {
       userScrollInteractionActive = true;
+      virtualTranscriptRef.value?.clearTargetAnchor?.();
+      lastObservedScrollTop = Number(containerRef.value?.scrollTop || 0);
+      if (Number(event?.deltaY) < 0) pauseAutoFollow();
       scheduleUserScrollInteractionEnd();
     };
 
@@ -1899,6 +1909,8 @@ export default {
       if (!isTranscriptScrollbarPointer(event, containerRef.value)) return;
       pointerScrollActive = true;
       userScrollInteractionActive = true;
+      virtualTranscriptRef.value?.clearTargetAnchor?.();
+      lastObservedScrollTop = Number(containerRef.value?.scrollTop || 0);
       if (userScrollEndTimer) {
         clearTimeout(userScrollEndTimer);
         userScrollEndTimer = null;
@@ -1911,16 +1923,33 @@ export default {
     };
 
     const onScrollKey = (event) => {
-      if (shouldMarkTranscriptKeyScroll(event, containerRef.value)) markUserScrollIntent();
+      if (!shouldMarkTranscriptKeyScroll(event, containerRef.value)) return;
+      if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') pauseAutoFollow();
+      userScrollInteractionActive = true;
+      virtualTranscriptRef.value?.clearTargetAnchor?.();
+      scheduleUserScrollInteractionEnd();
     };
 
     const onScroll = () => {
-      isAtBottom.value = resolveTranscriptBottomFollow({
-        following: !autoFollowPaused.value,
-        atBottom: checkIfAtBottom(),
-        userScroll: userScrollInteractionActive,
+      const currentScrollTop = Number(containerRef.value?.scrollTop || 0);
+      const direction = userScrollInteractionActive ? currentScrollTop - lastObservedScrollTop : 0;
+      const wasFollowing = !autoFollowPaused.value;
+      lastObservedScrollTop = currentScrollTop;
+      const atBottom = checkIfAtBottom();
+      const reachedBottom = shouldFollowTranscriptBottom({
+        scrollTop: currentScrollTop,
+        scrollHeight: containerRef.value?.scrollHeight || 0,
+        clientHeight: containerRef.value?.clientHeight || 0,
+        threshold: SCROLL_RESUME_THRESHOLD,
+      });
+      isAtBottom.value = resolveTranscriptUserFollow({
+        following: wasFollowing,
+        atBottom,
+        resumeBoundaryReached: reachedBottom,
+        direction,
       });
       autoFollowPaused.value = !isAtBottom.value;
+      virtualTranscriptRef.value?.setBottomFollowEnabled?.(isAtBottom.value);
       if (isAtBottom.value) pruneYeaftWindowNearBottom();
       if (userScrollInteractionActive) scheduleUserScrollInteractionEnd();
 
@@ -2026,14 +2055,15 @@ export default {
         messageId,
         collapseStates: messageTurnCollapseStates,
         nextTick: Vue.nextTick,
-        scrollToBlock: (blockId) => {
+        scrollToBlock: (blockId, options) => {
           pauseAutoFollow();
-          return virtualTranscriptRef.value?.scrollToKey?.(blockId, { align: 'center' });
+          return virtualTranscriptRef.value?.scrollToKey?.(blockId, options);
         },
         findRow: (rowId) => {
           const rows = containerRef.value?.querySelectorAll?.('[data-msg-id]') || [];
           return Array.from(rows).find(el => el?.dataset?.msgId === rowId) || null;
         },
+        anchorRow: (blockId, _rowId, row, options) => virtualTranscriptRef.value?.anchorTarget?.(blockId, row, options),
         flashRow: (rowId) => {
           const generation = ++flashGeneration;
           flashMsgId.value = rowId;
