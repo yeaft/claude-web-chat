@@ -184,15 +184,17 @@ describe('VirtualTranscript DOM windowing', () => {
     targetScroller.getBoundingClientRect = () => ({
       x: 0, y: 0, top: 100, right: 800, bottom: 400, left: 0, width: 800, height: 300, toJSON: () => ({}),
     });
-    let blockHeight = 1000;
+    const blockHeights = Array(12).fill(1000);
+    const blockOffset = index => blockHeights.slice(0, index).reduce((sum, height) => sum + height, 0);
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBoundingClientRect() {
       if (this.classList?.contains('virtual-transcript-item')) {
-        const top = 100 + Number(this.dataset.virtualIndex || 0) * 1000 - targetScroller.scrollTop;
-        const height = this.dataset.virtualId === 'block-5' ? blockHeight : 1000;
+        const index = Number(this.dataset.virtualIndex || 0);
+        const top = 100 + blockOffset(index) - targetScroller.scrollTop;
+        const height = blockHeights[index];
         return { x: 0, y: top, top, right: 800, bottom: top + height, left: 0, width: 800, height, toJSON: () => ({}) };
       }
       if (this.classList?.contains('target-child')) {
-        const top = 100 + 5600 - targetScroller.scrollTop;
+        const top = 100 + blockOffset(5) + 600 - targetScroller.scrollTop;
         return { x: 0, y: top, top, right: 800, bottom: top + 40, left: 0, width: 800, height: 40, toJSON: () => ({}) };
       }
       return { x: 0, y: 0, top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0, toJSON: () => ({}) };
@@ -210,18 +212,56 @@ describe('VirtualTranscript DOM windowing', () => {
     await Vue.nextTick();
     await flushRafs();
     await flushRafs();
-    const block = targetWrapper.get('[data-virtual-id="block-5"]').element;
+    const predecessorBlock = targetWrapper.get('[data-virtual-id="block-4"]').element;
+    const targetBlock = targetWrapper.get('[data-virtual-id="block-5"]').element;
     const child = targetWrapper.get('.target-child').element;
     expect(targetWrapper.vm.anchorTarget('block-5', child, { align: 'start' })).toBe(true);
     expect(targetScroller.scrollTop).toBe(5600);
 
-    blockHeight = 1100;
-    resizeCallback([{ target: block }]);
+    // Target-only growth after the child does not move the persisted row.
+    blockHeights[5] = 1100;
+    resizeCallback([{ target: targetBlock }]);
     await flushRafs();
     await Vue.nextTick();
     await flushRafs();
     expect(targetScroller.scrollTop).toBe(5600);
     expect(child.getBoundingClientRect().top).toBe(targetScroller.getBoundingClientRect().top);
+
+    // Predecessor-only growth still uses the generic content-anchor delta.
+    blockHeights[4] = 1100;
+    resizeCallback([{ target: predecessorBlock }]);
+    await flushRafs();
+    await Vue.nextTick();
+    await flushRafs();
+    expect(targetScroller.scrollTop).toBe(5700);
+    expect(child.getBoundingClientRect().top).toBe(targetScroller.getBoundingClientRect().top);
+
+    // If the predecessor and active target resize in one observer batch, target
+    // realignment owns the final scroll. Adding anchorDelta again would yield
+    // 5900 and push the persisted row 100px above the viewport.
+    blockHeights[4] = 1200;
+    blockHeights[5] = 1200;
+    resizeCallback([{ target: predecessorBlock }, { target: targetBlock }]);
+    await flushRafs();
+    await Vue.nextTick();
+    await flushRafs();
+    expect(targetScroller.scrollTop).toBe(5800);
+    expect(child.getBoundingClientRect().top).toBe(targetScroller.getBoundingClientRect().top);
+
+    // scrollToKey explicitly transfers ownership back to the aggregate block.
+    expect(await targetWrapper.vm.scrollToKey('block-5', { align: 'start' })).toBe(true);
+    await Vue.nextTick();
+    expect(targetScroller.scrollTop).toBe(5200);
+    expect(targetBlock.getBoundingClientRect().top).toBe(targetScroller.getBoundingClientRect().top);
+
+    blockHeights[4] = 1300;
+    blockHeights[5] = 1300;
+    resizeCallback([{ target: predecessorBlock }, { target: targetBlock }]);
+    await flushRafs();
+    await Vue.nextTick();
+    await flushRafs();
+    expect(targetScroller.scrollTop).toBe(5300);
+    expect(targetBlock.getBoundingClientRect().top).toBe(targetScroller.getBoundingClientRect().top);
     targetWrapper.unmount();
     targetScroller.remove();
   });

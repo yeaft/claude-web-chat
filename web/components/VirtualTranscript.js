@@ -245,6 +245,16 @@ export default {
         }
       }
 
+      // Once the active target itself participates in this measurement batch,
+      // its final DOM geometry already includes every predecessor height change.
+      // Target alignment must therefore be the only scroll owner for the batch;
+      // applying anchorDelta as well would count predecessor growth twice.
+      if (shouldRealignTarget) {
+        cancelPendingBottomFollow({ preserveTarget: true });
+        scheduleTargetAlignment(activeTargetKey, activeTargetAlign);
+        return;
+      }
+
       const hasAnchorAdjustment = Math.abs(anchorDelta) >= HEIGHT_CHANGE_THRESHOLD;
       if (hasAnchorAdjustment || shouldScrollToBottom) {
         const adjustment = { delta: anchorDelta, toBottom: shouldScrollToBottom };
@@ -255,7 +265,6 @@ export default {
           scheduleScrollAdjustment(adjustment, adjustmentGeneration);
         }
       }
-      if (shouldRealignTarget) scheduleTargetAlignment(activeTargetKey, activeTargetAlign);
     }
 
     function alignTarget(key, align = 'start') {
