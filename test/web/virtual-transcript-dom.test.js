@@ -101,7 +101,7 @@ describe('VirtualTranscript DOM windowing', () => {
 
 
 
-  it('fences stale bottom work and keeps a tall targeted row aligned to its first line', async () => {
+  it('fences stale bottom work and keeps a targeted child row aligned after block resize', async () => {
     const scroller = createScroller({ viewportHeight: 300, scrollHeight: 10000 });
     scroller.scrollTop = 9700;
     let rowHeight = 90;
@@ -174,25 +174,56 @@ describe('VirtualTranscript DOM windowing', () => {
     await flushRafs();
     expect(scroller.scrollTop).toBe(10000);
 
-    // Targeted search owns the viewport even when the block is taller than it.
-    // The rendered message row is aligned to the viewport start, then re-aligned
-    // after a later layout shift instead of leaving the first line above view.
-    scroller.getBoundingClientRect = () => ({
+    wrapper.unmount();
+
+    // Search anchors an actual persisted child row, not the aggregate virtual
+    // block. A later outer-block measurement must keep that child at the
+    // viewport start instead of falling back to the block's first line.
+    const targetScroller = createScroller({ viewportHeight: 300, scrollHeight: 12000 });
+    targetScroller.scrollTop = 5000;
+    targetScroller.getBoundingClientRect = () => ({
       x: 0, y: 0, top: 100, right: 800, bottom: 400, left: 0, width: 800, height: 300, toJSON: () => ({}),
     });
-    let targetTop = 650;
-    const target = wrapper.get('.virtual-transcript-item').element;
-    vi.spyOn(target, 'getBoundingClientRect').mockImplementation(() => ({
-      x: 0, y: targetTop, top: targetTop, right: 100, bottom: targetTop + 1200, left: 0, width: 100, height: 1200, toJSON: () => ({}),
-    }));
-    expect(wrapper.vm.anchorTarget(target.dataset.virtualId, target, { align: 'start' })).toBe(true);
-    const afterFirstAlignment = scroller.scrollTop;
-    expect(afterFirstAlignment).toBe(10550);
+    let blockHeight = 1000;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBoundingClientRect() {
+      if (this.classList?.contains('virtual-transcript-item')) {
+        const top = 100 + Number(this.dataset.virtualIndex || 0) * 1000 - targetScroller.scrollTop;
+        const height = this.dataset.virtualId === 'block-5' ? blockHeight : 1000;
+        return { x: 0, y: top, top, right: 800, bottom: top + height, left: 0, width: 800, height, toJSON: () => ({}) };
+      }
+      if (this.classList?.contains('target-child')) {
+        const top = 100 + 5600 - targetScroller.scrollTop;
+        return { x: 0, y: top, top, right: 800, bottom: top + 40, left: 0, width: 800, height: 40, toJSON: () => ({}) };
+      }
+      return { x: 0, y: 0, top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0, toJSON: () => ({}) };
+    });
+    const targetWrapper = mount(VirtualTranscript, {
+      props: { items: turns(12, 'block'), estimateHeight: () => 1000, itemGap: 0, overscan: 1 },
+      slots: {
+        default: ({ item }) => Vue.h('div', { 'data-turn-id': item.id }, [
+          item.id,
+          item.id === 'block-5' ? Vue.h('div', { class: 'target-child' }, 'persisted row') : null,
+        ]),
+      },
+      attachTo: targetScroller,
+    });
+    await Vue.nextTick();
+    await flushRafs();
+    await flushRafs();
+    const block = targetWrapper.get('[data-virtual-id="block-5"]').element;
+    const child = targetWrapper.get('.target-child').element;
+    expect(targetWrapper.vm.anchorTarget('block-5', child, { align: 'start' })).toBe(true);
+    expect(targetScroller.scrollTop).toBe(5600);
 
-    targetTop = 180;
-    expect(wrapper.vm.anchorTarget(target.dataset.virtualId, target, { align: 'start' })).toBe(true);
-    expect(scroller.scrollTop).toBe(afterFirstAlignment + 80);
-    wrapper.unmount();
+    blockHeight = 1100;
+    resizeCallback([{ target: block }]);
+    await flushRafs();
+    await Vue.nextTick();
+    await flushRafs();
+    expect(targetScroller.scrollTop).toBe(5600);
+    expect(child.getBoundingClientRect().top).toBe(targetScroller.getBoundingClientRect().top);
+    targetWrapper.unmount();
+    targetScroller.remove();
   });
 
 

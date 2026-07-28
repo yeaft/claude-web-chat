@@ -279,11 +279,14 @@ export default {
       return true;
     }
 
-    function scheduleTargetAlignment(key, align = 'start', targetElement = null) {
+    function scheduleTargetAlignment(key, align = 'start', targetElement) {
       const targetKey = String(key);
       activeTargetKey = targetKey;
       activeTargetAlign = align;
-      activeTargetElement = targetElement;
+      // Remeasuring an outer virtual block must retain any persisted child row
+      // that currently owns the search anchor. Callers can still replace or
+      // clear that owner explicitly by passing an element or null.
+      if (targetElement !== undefined) activeTargetElement = targetElement;
       const run = () => {
         if (activeTargetKey !== targetKey) return;
         alignTarget(targetKey, activeTargetAlign);
