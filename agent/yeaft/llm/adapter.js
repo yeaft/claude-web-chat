@@ -436,9 +436,14 @@ export function toWellFormedJson(value) {
   const serialized = JSON.stringify(value, (_key, child) => {
     if (typeof child === 'string') return child.toWellFormed();
     // JSON.stringify invokes the replacer before unboxing String objects.
-    // Use the intrinsic tag instead of instanceof so cross-realm values work.
-    if (Object.prototype.toString.call(child) === '[object String]') {
-      return String(child).toWellFormed();
+    // String#valueOf checks the real [[StringData]] internal slot across realms;
+    // unlike instanceof or Object#toString, it cannot be spoofed by a caller.
+    if (child && typeof child === 'object') {
+      try {
+        return String.prototype.valueOf.call(child).toWellFormed();
+      } catch (err) {
+        if (!(err instanceof TypeError)) throw err;
+      }
     }
     return child;
   });

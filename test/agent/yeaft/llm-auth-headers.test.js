@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { archiveOne } from '../../../agent/yeaft/archive/tool-results.js';
 import { AnthropicAdapter } from '../../../agent/yeaft/llm/anthropic.js';
@@ -180,6 +181,12 @@ describe('LLM adapter auth headers', () => {
     });
 
     const ownProto = JSON.parse('{"__proto__":{"polluted":"yes"}}');
+    const crossRealmText = runInNewContext(`new String('cross\\uD800')`);
+    const spoofedText = { value: 'keep-me', [Symbol.toStringTag]: 'String' };
+    const throwingTag = { value: 'still-here' };
+    Object.defineProperty(throwingTag, Symbol.toStringTag, {
+      get() { throw new Error('must not inspect Symbol.toStringTag'); },
+    });
     const responses = new OpenAIResponsesAdapter({ apiKey: 'key', baseUrl: 'https://openai.test/v1' });
     await responses.call({
       model: 'gpt-5.5',
@@ -195,7 +202,9 @@ describe('LLM adapter auth headers', () => {
           at: new Date('2026-01-02T03:04:05Z'),
           bytes: Buffer.from([1, 2]),
           boxed: new Number(7),
-          boxedText: { nested: new String(`boxed \uD800`) },
+          boxedText: { nested: new String(`boxed \uD800`), crossRealmText },
+          spoofedText,
+          throwingTag,
           custom: { toJSON(key) { return { key, text: `custom \uD800` }; } },
           customText: { toJSON() { return new String(`custom boxed \uDFFF`); } },
           ownProto,
@@ -209,7 +218,9 @@ describe('LLM adapter auth headers', () => {
         at: '2026-01-02T03:04:05.000Z',
         bytes: { type: 'Buffer', data: [1, 2] },
         boxed: 7,
-        boxedText: { nested: 'boxed �' },
+        boxedText: { nested: 'boxed �', crossRealmText: 'cross�' },
+        spoofedText: { value: 'keep-me' },
+        throwingTag: { value: 'still-here' },
         custom: { key: 'custom', text: 'custom �' },
         customText: 'custom boxed �',
         ownProto: { __proto__: { polluted: 'yes' } },
@@ -221,6 +232,9 @@ describe('LLM adapter auth headers', () => {
       ],
     });
     expect(calls[0].body.metadata.boxedText.nested.isWellFormed()).toBe(true);
+    expect(calls[0].body.metadata.boxedText.crossRealmText.isWellFormed()).toBe(true);
+    expect(calls[0].body.metadata.spoofedText).toEqual({ value: 'keep-me' });
+    expect(calls[0].body.metadata.throwingTag).toEqual({ value: 'still-here' });
     expect(calls[0].body.metadata.customText.isWellFormed()).toBe(true);
     expect(Object.hasOwn(calls[0].body.metadata.ownProto, '__proto__')).toBe(true);
     expect(calls[0].body.metadata.ownProto.polluted).toBeUndefined();
