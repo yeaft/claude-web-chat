@@ -1403,6 +1403,9 @@ export class Engine {
     if (message._reflection) record._reflection = true;
     if (message.role === 'user') record.userAuthored = message.userAuthored === true;
     if (message.internal === true) record.internal = true;
+    if (message.responseKind === 'progress' || message.responseKind === 'result') {
+      record.responseKind = message.responseKind;
+    }
     if (Array.isArray(message.foldedMessageIds) && message.foldedMessageIds.length > 0) {
       record.foldedMessageIds = [...message.foldedMessageIds];
     }
@@ -2292,6 +2295,7 @@ export class Engine {
     let fullResponseText = '';
     let displayImageAnchorMessage = null;
     let lastPersistedAssistantMessage = null;
+    let lastPersistedAssistantTextMessage = null;
     let currentModel = this.#config.model;
     let cumulativeInputTokens = 0;
     let cumulativeOutputTokens = 0;
@@ -2368,7 +2372,7 @@ export class Engine {
       const persistIncompleteAssistantOnce = (reason) => {
         if (incompleteAssistantPersisted || !responseText) return null;
         incompleteAssistantPersisted = true;
-        return this.#persistConversationMessage({ role: 'assistant', content: responseText }, {
+        return this.#persistConversationMessage({ role: 'assistant', content: responseText, responseKind: 'progress' }, {
           sessionId: runtimeSessionId,
           turnId: vpTurnId || queryTurnId,
           model: currentModel,
@@ -2935,7 +2939,7 @@ export class Engine {
       // yielding any post-stream diagnostics. A consumer may stop iterating at
       // any yield; persistence therefore cannot wait for turn_end or even the
       // debug `loop` event below.
-      const assistantMsg = { role: 'assistant', content: responseText };
+      const assistantMsg = { role: 'assistant', content: responseText, responseKind: 'progress' };
       if (toolCalls.length > 0) {
         assistantMsg.toolCalls = toolCalls.map(tc => ({
           id: tc.id,
@@ -2986,6 +2990,9 @@ export class Engine {
         assistantMsg._persistedMessageId = persistedAssistantMessage.id;
         if (assistantMsg.imageAssetAnchor) displayImageAnchorMessage = persistedAssistantMessage;
         lastPersistedAssistantMessage = persistedAssistantMessage;
+      }
+      if (responseText.trim() && persistedAssistantMessage) {
+        lastPersistedAssistantTextMessage = persistedAssistantMessage;
       }
       if (previousImageAnchorMessage && displayImageAnchorMessage === null && !persistedAssistantMessage) {
         const restored = this.#conversationStore.update(previousImageAnchorMessage, { imageAssetAnchor: true });
@@ -3196,6 +3203,15 @@ export class Engine {
         }
         if (pendingSubAgentNotifs.length > 0) {
           acknowledgePendingNotifications(notifScope, pendingSubAgentNotifs.map(n => n.id));
+        }
+        if (stopReason === 'end_turn'
+            && lastPersistedAssistantTextMessage
+            && typeof this.#conversationStore?.update === 'function') {
+          const resultMessage = this.#conversationStore.update(lastPersistedAssistantTextMessage, {
+            responseKind: 'result',
+            stopReason,
+          });
+          if (resultMessage) lastPersistedAssistantTextMessage = resultMessage;
         }
         yield { type: 'turn_end', turnNumber, stopReason, threadId, terminal: true };
 

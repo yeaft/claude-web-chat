@@ -1721,6 +1721,8 @@ legacy session`, { encoding: 'utf8' });
         mode: 'work',
         model: 'claude-sonnet-4-20250514',
         turnNumber: 2,
+        responseKind: 'result',
+        stopReason: 'end_turn',
       });
 
       const loaded = store.loadRecent(1);
@@ -1729,6 +1731,8 @@ legacy session`, { encoding: 'utf8' });
       expect(loaded[0].mode).toBe('work');
       expect(loaded[0].model).toBe('claude-sonnet-4-20250514');
       expect(loaded[0].turnNumber).toBe(2);
+      expect(loaded[0].responseKind).toBe('result');
+      expect(loaded[0].stopReason).toBe('end_turn');
     });
 
     it('should preserve tool message fields', () => {

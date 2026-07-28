@@ -1189,6 +1189,7 @@ function projectPersistedToHistoryEntry(m, { includeReflections = false } = {}) 
   entry.threadId = m.threadId || m.turnId || 'main';
   if (m.turnId) entry.turnId = m.turnId;
   if (m.imageAssetAnchor) entry.imageAssetAnchor = true;
+  if (m.responseKind === 'progress' || m.responseKind === 'result') entry.responseKind = m.responseKind;
   if (m.sessionId) entry.sessionId = m.sessionId;
   if (m.clientMessageId) entry.clientMessageId = m.clientMessageId;
   if (m.speakerVpId) entry.speakerVpId = m.speakerVpId;
@@ -1308,6 +1309,7 @@ function projectVisibleHistoryChunkMessages(messages = []) {
       ...(m.quote ? { quote: m.quote } : {}),
       ...(Array.isArray(m.images) && m.images.length > 0 ? { images: m.images } : {}),
       ...(m.speakerVpId ? { speakerVpId: m.speakerVpId } : {}),
+      ...(m.responseKind === 'progress' || m.responseKind === 'result' ? { responseKind: m.responseKind } : {}),
       ...(Array.isArray(m.todos) ? { todos: m.todos } : {}),
       ...(Array.isArray(m.askUserResults) && m.askUserResults.length > 0 ? { askUserResults: m.askUserResults } : {}),
       ...(Number.isFinite(m.toolSummaryCount) && m.toolSummaryCount > 0
@@ -3785,6 +3787,12 @@ function handleEngineEvent(event, hctx) {
         }
         break;
       }
+      if (event.stopReason === 'error') {
+        if (typeof hctx.markEngineTerminal === 'function') {
+          hctx.markEngineTerminal('error', hctx.lastEngineErrorDetail || event.detail || null);
+        }
+        break;
+      }
       // route_forward is different: the tool has handed control to another
       // VP and Engine.query will not stream more text for this VP. Settle the
       // current VP immediately so the roster row does not sit on "thinking"
@@ -4038,6 +4046,7 @@ function handleEngineEvent(event, hctx) {
 
     case 'error': {
       const errMsg = event.error?.message || 'Unknown error';
+      hctx.lastEngineErrorDetail = { message: errMsg };
       sendSessionEvent({
         type: 'error',
         message: errMsg,
@@ -5139,6 +5148,17 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
 
       if (engineTerminalReason === 'aborted') {
         finishAbortedTurn(engineTerminalDetail);
+        return;
+      }
+      if (engineTerminalReason === 'error') {
+        turnEndReason = 'errored';
+        turnEndDetail = engineTerminalDetail;
+        flushStreamTextBatch(handlerCtx, envelope, { resetImmediate: true });
+        sendSessionOutputFrame({
+          type: 'result',
+          result_text: '',
+          is_error: true,
+        }, envelope);
         return;
       }
 

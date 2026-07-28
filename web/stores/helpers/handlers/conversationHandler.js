@@ -694,6 +694,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           turnId,
           _hasPersistedTurnId: hasPersistedTurnId,
           ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
+          ...(m.responseKind === 'progress' || m.responseKind === 'result' ? { responseKind: m.responseKind } : {}),
           isStreaming: false,
           isHistory: true,
         });

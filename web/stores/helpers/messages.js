@@ -105,6 +105,10 @@ function mergeMessageFields(existing, incoming) {
       if (!existing.content) existing.content = value;
       continue;
     }
+    if (key === 'responseKind' && (value === 'progress' || value === 'result')) {
+      existing.responseKind = value;
+      continue;
+    }
     if (key === 'attachments' && Array.isArray(value)) {
       if (!Array.isArray(existing.attachments) || existing.attachments.length === 0) {
         existing.attachments = value;
