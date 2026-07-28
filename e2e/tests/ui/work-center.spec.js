@@ -157,7 +157,15 @@ const WAITING_ITEM_DETAIL = {
   ...OPEN_ITEM_DETAIL,
   ...WAITING_ITEM,
   currentActionId: 'action-1',
-  messages: [],
+  messages: [{
+    id: 'coordinator-human-request', role: 'assistant', status: 'completed',
+    text: 'Choose the database so the Work Item can continue.',
+    decision: { kind: 'request_human', reason: 'The database target is missing.' },
+    recovery: {
+      actionId: 'action-1', actionGeneration: 1, stageId: 'implement', attempt: 1,
+    },
+    createdAt: Date.now(), updatedAt: Date.now(),
+  }],
   actions: [{
     ...OPEN_ITEM_DETAIL.actions[0],
     status: 'waiting',
@@ -860,8 +868,39 @@ test.describe('Work Center responsive UI', () => {
     await expect(waitingQuestion).toContainText('Choose PostgreSQL or SQLite before the migration continues.');
     const composer = actionDetail.locator('.work-center-action-composer textarea');
     await expect(composer).toBeVisible();
+    await expect(composer).toHaveAttribute('placeholder', 'Message Linus about this Action');
     await expect(composer).toHaveAttribute('aria-describedby', /work-center-action-waiting-question/);
     await expect(composer).toHaveAttribute('aria-describedby', /work-center-action-composer-hint/);
+    await expect(actionDetail.locator('#work-center-action-composer-hint'))
+      .toContainText('Your input resumes this Action');
+    await expect(actionDetail).not.toContainText('goes to the Work Item Coordinator');
+
+    await composer.fill('Use PostgreSQL and explain the migration tradeoff.');
+    const continuedDetail = {
+      ...WAITING_ITEM_DETAIL,
+      status: 'ready',
+      revision: 2,
+      currentAction: { ...WAITING_ITEM.currentAction, generation: 2, status: 'ready' },
+      actions: [{ ...WAITING_ITEM_DETAIL.actions[0], generation: 2, status: 'ready' }],
+    };
+    const actionInputResponse = (async () => {
+      const operations = [];
+      while (!operations.some(request => request.op === 'action_input')
+        || !operations.some(request => request.op === 'list')) {
+        operations.push(await respondByOperation(mockAgent, {
+          action_input: continuedDetail,
+          list: { items: [{ ...WAITING_ITEM, status: 'ready' }], watcher: { enabled: true } },
+          get: continuedDetail,
+        }));
+      }
+      return operations;
+    })();
+    await actionDetail.getByRole('button', { name: 'Send to Action' }).click();
+    const operations = await actionInputResponse;
+    expect(operations.find(request => request.op === 'action_input').payload).toMatchObject({
+      id: WAITING_ITEM.id, actionId: 'action-1', generation: 1, revision: 1,
+      text: 'Use PostgreSQL and explain the migration tradeoff.',
+    });
   });
 
   test('uses compact stop controls and resumes a stopped Work Item', async ({ chatPage, mockAgent }) => {

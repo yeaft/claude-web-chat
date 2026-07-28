@@ -22,7 +22,6 @@ export default {
     sending: { type: Boolean, default: false },
     composerError: { type: String, default: '' },
     attachmentsSupported: { type: Boolean, default: false },
-    coordinatorRequestedInput: { type: Boolean, default: false },
     previewingAttachmentId: { type: String, default: null },
     attachmentError: { type: String, default: '' },
   },
@@ -48,9 +47,6 @@ export default {
       return this.action?.status === 'failed' && !this.uploading && !this.sending;
     },
     composerHint() {
-      if (this.coordinatorRequestedInput) {
-        return this.tr('workCenter.actionInputCoordinatorHint', 'Your answer goes to the Work Item Coordinator, which may retry or replan the remaining Actions.');
-      }
       if (this.action?.status === 'waiting') {
         return this.tr('workCenter.actionInputResumeHint', 'Your input resumes this Action with the additional context.');
       }
