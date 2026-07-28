@@ -420,6 +420,28 @@ export function redactRawRequest(req) {
 }
 
 /**
+ * Return a wire-safe copy of a JSON-compatible value.
+ *
+ * JavaScript strings may contain lone UTF-16 surrogates. JSON.stringify keeps
+ * them as `\\ud800`-style escapes, but strict API servers reject them because
+ * they cannot represent Unicode scalar values in UTF-8. Replace only malformed
+ * code units with U+FFFD; valid surrogate pairs (including emoji) are kept.
+ *
+ * @param {any} value
+ * @returns {any}
+ */
+export function toWellFormedJson(value) {
+  if (typeof value === 'string') return value.toWellFormed();
+  if (Array.isArray(value)) return value.map(toWellFormedJson);
+  if (!value || typeof value !== 'object') return value;
+  const out = {};
+  for (const [key, child] of Object.entries(value)) {
+    out[key.toWellFormed()] = toWellFormedJson(child);
+  }
+  return out;
+}
+
+/**
  * Snapshot a Fetch Response's headers into a plain object for the debug
  * panel. Defensive against polyfilled / mocked Response shapes that don't
  * implement `Headers#entries()` — falls back to `{}` rather than throwing.
