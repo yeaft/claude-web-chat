@@ -165,12 +165,21 @@ describe('LLM adapter auth headers', () => {
   it('keeps provider request bodies and archive previews valid when strings contain lone surrogates', async () => {
     const calls = [];
     global.fetch = vi.fn(async (url, init) => {
-      calls.push({ url, body: JSON.parse(init.body) });
+      const body = JSON.parse(init.body);
+      calls.push({ url, body, serializedBody: init.body });
+      if (body.stream) {
+        const event = JSON.stringify({
+          type: 'response.completed',
+          response: { status: 'completed', usage: { input_tokens: 1, output_tokens: 1 } },
+        });
+        return new Response(`data: ${event}\n\n`, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }
       return url.includes('anthropic')
         ? anthropicResponse()
         : jsonResponse({ output_text: 'ok', usage: { input_tokens: 1, output_tokens: 1 } });
     });
 
+    const ownProto = JSON.parse('{"__proto__":{"polluted":"yes"}}');
     const responses = new OpenAIResponsesAdapter({ apiKey: 'key', baseUrl: 'https://openai.test/v1' });
     await responses.call({
       model: 'gpt-5.5',
@@ -180,17 +189,35 @@ describe('LLM adapter auth headers', () => {
         { role: 'assistant', content: '', toolCalls: [{ id: 'call-1', name: 'tool', input: { value: `arg \uD800` } }] },
         { role: 'tool', toolCallId: 'call-1', content: `output \uD83D` },
       ],
-      extraBody: { metadata: { label: `meta \uDFFF` } },
+      extraBody: {
+        metadata: {
+          label: `meta \uDFFF`,
+          at: new Date('2026-01-02T03:04:05Z'),
+          bytes: Buffer.from([1, 2]),
+          boxed: new Number(7),
+          custom: { toJSON(key) { return { key, text: `custom \uD800` }; } },
+          ownProto,
+        },
+      },
     });
     expect(calls[0].body).toMatchObject({
       instructions: 'system �',
-      metadata: { label: 'meta �' },
+      metadata: {
+        label: 'meta �',
+        at: '2026-01-02T03:04:05.000Z',
+        bytes: { type: 'Buffer', data: [1, 2] },
+        boxed: 7,
+        custom: { key: 'custom', text: 'custom �' },
+        ownProto: { __proto__: { polluted: 'yes' } },
+      },
       input: [
         { content: [{ text: 'valid 😀 user �' }] },
         { arguments: '{"value":"arg �"}' },
         { output: 'output �' },
       ],
     });
+    expect(Object.hasOwn(calls[0].body.metadata.ownProto, '__proto__')).toBe(true);
+    expect(calls[0].body.metadata.ownProto.polluted).toBeUndefined();
 
     const anthropic = new AnthropicAdapter({ apiKey: 'key', baseUrl: 'https://anthropic.test' });
     await anthropic.call({
@@ -200,6 +227,16 @@ describe('LLM adapter auth headers', () => {
     });
     expect(calls[1].body.system).toBe(`system ${String.fromCodePoint(0xFFFD)}`);
     expect(calls[1].body.messages[0].content).toBe(`valid 😀 user ${String.fromCodePoint(0xFFFD)}`);
+
+    let rawExchange;
+    for await (const _event of responses.stream({
+      model: 'gpt-5.5',
+      system: `stream \uD800`,
+      messages: [{ role: 'user', content: 'hi' }],
+      onRawExchange(exchange) { rawExchange = exchange; },
+    })) { /* consume */ }
+    expect(JSON.stringify(rawExchange.rawRequest.body)).toBe(calls[2].serializedBody);
+    expect(rawExchange.rawRequest.body.instructions).toBe('stream �');
 
     const root = await mkdtemp(join(tmpdir(), 'yeaft-archive-preview-'));
     cleanup.push(root);

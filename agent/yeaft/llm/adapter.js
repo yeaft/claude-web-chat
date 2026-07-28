@@ -431,14 +431,31 @@ export function redactRawRequest(req) {
  * @returns {any}
  */
 export function toWellFormedJson(value) {
-  if (typeof value === 'string') return value.toWellFormed();
-  if (Array.isArray(value)) return value.map(toWellFormedJson);
-  if (!value || typeof value !== 'object') return value;
-  const out = {};
-  for (const [key, child] of Object.entries(value)) {
-    out[key.toWellFormed()] = toWellFormedJson(child);
-  }
-  return out;
+  // Let the native serializer retain its complete semantics first: toJSON,
+  // boxed primitives, non-finite numbers, array holes, and omitted values.
+  const serialized = JSON.stringify(value, (_key, child) =>
+    typeof child === 'string' ? child.toWellFormed() : child
+  );
+  if (serialized === undefined) return undefined;
+
+  // The replacer cannot rename object keys. Rebuild only the already-serialized
+  // plain JSON tree so malformed keys are fixed too. Null-prototype containers
+  // keep an own "__proto__" key as data rather than invoking the legacy setter.
+  const normalizeKeys = child => {
+    if (Array.isArray(child)) return child.map(normalizeKeys);
+    if (!child || typeof child !== 'object') return child;
+    const out = Object.create(null);
+    for (const [key, nested] of Object.entries(child)) {
+      Object.defineProperty(out, key.toWellFormed(), {
+        value: normalizeKeys(nested),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  };
+  return normalizeKeys(JSON.parse(serialized));
 }
 
 /**
