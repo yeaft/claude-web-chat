@@ -8,6 +8,8 @@ import { renderMermaidIn } from '../utils/markdown.js';
 import { openImagePreview } from '../utils/imagePreview.js';
 import { formatSessionMessageDateTime, quoteFromAssistantTurn } from '../utils/session-message-quote.js';
 
+let assistantTurnInstanceId = 0;
+
 export default {
   name: 'AssistantTurn',
   components: { ToolLine, AskCard, VpSpeakerHeader },
@@ -87,20 +89,16 @@ export default {
               </svg>
             </button>
           </div>
-          <details
+          <div
             v-if="progressSegments.length > 0"
-            ref="progressGroupRef"
             class="turn-progress-group"
-            :open="progressExpanded"
-            @toggle="onProgressToggle"
+            :class="{ 'is-expanded': progressExpanded }"
           >
-            <summary
-              class="turn-progress-toggle"
-              :title="progressToggleLabel"
-              :aria-label="progressToggleLabel"
-              :aria-expanded="String(progressExpanded)"
-            >{{ progressToggleLabel }}</summary>
-            <div class="turn-progress-list">
+            <div
+              :id="progressPanelId"
+              class="turn-progress-list"
+              :hidden="!progressExpanded"
+            >
               <div
                 v-for="segment in progressSegments"
                 :key="segment.key"
@@ -110,7 +108,16 @@ export default {
                 <span v-if="segment.isStreaming" class="cursor-blink"></span>
               </div>
             </div>
-          </details>
+            <button
+              type="button"
+              class="turn-progress-toggle"
+              :title="progressToggleLabel"
+              :aria-label="progressToggleLabel"
+              :aria-expanded="String(progressExpanded)"
+              :aria-controls="progressPanelId"
+              @click="toggleProgress"
+            >{{ progressToggleLabel }}</button>
+          </div>
           <div
             v-for="segment in resultSegments"
             :key="segment.key"
@@ -271,7 +278,7 @@ export default {
     };
     const screenshotting = Vue.ref(false);
     const turnRef = Vue.ref(null);
-    const progressGroupRef = Vue.ref(null);
+    const progressPanelId = `turn-progress-panel-${++assistantTurnInstanceId}`;
     const progressExpanded = Vue.ref(props.turn?.isActive === true || props.turn?.isStreaming === true);
     const failedImages = Vue.reactive(new Set());
     const t = Vue.inject('t');
@@ -404,15 +411,14 @@ export default {
     const progressToggleLabel = Vue.computed(() => (
       progressExpanded.value ? t('message.hideProgress') : t('message.showProgress')
     ));
-    const onProgressToggle = (event) => {
-      progressExpanded.value = event?.currentTarget?.open === true;
+    const toggleProgress = () => {
+      progressExpanded.value = !progressExpanded.value;
     };
 
     Vue.watch(
       () => props.turn?.isActive === true || props.turn?.isStreaming === true,
       (active) => {
         progressExpanded.value = active;
-        if (progressGroupRef.value) progressGroupRef.value.open = active;
       },
     );
 
@@ -652,10 +658,10 @@ export default {
       textSegments,
       progressSegments,
       resultSegments,
-      progressGroupRef,
+      progressPanelId,
       progressExpanded,
       progressToggleLabel,
-      onProgressToggle,
+      toggleProgress,
       renderSegment,
       copyContent,
       copyFullResponse,

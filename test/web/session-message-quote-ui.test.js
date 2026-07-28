@@ -78,21 +78,27 @@ describe('Session message quote UI wiring', () => {
     await Vue.nextTick();
     expect(globalThis.marked.parse).toHaveBeenNthCalledWith(1, 'Inspecting files.');
     expect(globalThis.marked.parse).toHaveBeenNthCalledWith(2, '## 改动');
-    expect(wrapper.get('.turn-progress-group').attributes()).not.toHaveProperty('open');
-    expect(wrapper.get('.turn-progress-toggle').attributes('aria-expanded')).toBe('false');
-    expect(wrapper.get('.turn-progress-toggle').attributes('aria-label')).toBe('查看过程');
-    expect(wrapper.get('.turn-progress-toggle').text()).toBe('查看过程');
+    expect(wrapper.get('.turn-progress-group').classes()).not.toContain('is-expanded');
+    const progressPanel = wrapper.get('.turn-progress-list');
+    const progressToggle = wrapper.get('.turn-progress-toggle');
+    expect(progressPanel.attributes()).toHaveProperty('hidden');
+    expect(progressToggle.element.tagName).toBe('BUTTON');
+    expect(progressToggle.attributes('aria-expanded')).toBe('false');
+    expect(progressToggle.attributes('aria-controls')).toBe(progressPanel.attributes('id'));
+    expect(progressToggle.attributes('aria-label')).toBe('查看过程');
+    expect(progressToggle.text()).toBe('查看过程');
     expect(wrapper.find('.turn-progress-toggle svg').exists()).toBe(false);
     expect(wrapper.find('.turn-progress-count').exists()).toBe(false);
     expect(wrapper.find('.turn-response-label').exists()).toBe(false);
     expect(wrapper.text()).toContain('查看过程');
     expect(wrapper.text()).not.toContain('结果');
     expect(wrapper.get('.turn-response-result h2').text()).toBe('改动');
-    await wrapper.get('.turn-progress-toggle').trigger('click');
-    expect(wrapper.get('.turn-progress-group').attributes()).toHaveProperty('open');
-    expect(wrapper.get('.turn-progress-toggle').attributes('aria-expanded')).toBe('true');
-    expect(wrapper.get('.turn-progress-toggle').attributes('aria-label')).toBe('收起过程');
-    expect(wrapper.get('.turn-progress-toggle').text()).toBe('收起过程');
+    await progressToggle.trigger('click');
+    expect(wrapper.get('.turn-progress-group').classes()).toContain('is-expanded');
+    expect(progressPanel.attributes()).not.toHaveProperty('hidden');
+    expect(progressToggle.attributes('aria-expanded')).toBe('true');
+    expect(progressToggle.attributes('aria-label')).toBe('收起过程');
+    expect(progressToggle.text()).toBe('收起过程');
     wrapper.unmount();
 
     const streamingTurn = { ...turn, textContent: '', textSegments: [], messages: [], isStreaming: false, isActive: true };
@@ -108,7 +114,8 @@ describe('Session message quote UI wiring', () => {
       },
     });
     await Vue.nextTick();
-    expect(streamingWrapper.get('.turn-progress-group').attributes()).toHaveProperty('open');
+    expect(streamingWrapper.get('.turn-progress-group').classes()).toContain('is-expanded');
+    expect(streamingWrapper.get('.turn-progress-list').attributes()).not.toHaveProperty('hidden');
     streamingWrapper.unmount();
 
     const legacy = { ...turn, textContent: '', textSegments: [], messages: [] };

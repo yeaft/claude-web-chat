@@ -39,18 +39,18 @@ function harnessHtml() {
           .replaceAll('&', '&amp;')
           .replaceAll('<', '&lt;')
           .replaceAll('>', '&gt;');
-        return escaped.startsWith('## ')
-          ? '<h2>' + escaped.slice(3) + '</h2>'
-          : '<p>' + escaped + '</p>';
+        if (escaped.startsWith('## ')) return '<h2>' + escaped.slice(3) + '</h2>';
+        const linked = escaped.replace(/\\[([^\\]]+)\\]\\((#[^)]+)\\)/g, '<a href="$2">$1</a>');
+        return '<p>' + linked + '</p>';
       },
     };
     window.hljs = undefined;
     const { default: VpTurnBlock } = await import('/web/components/VpTurnBlock.js');
     const { finalizeTurnResponseSegments } = await import('/web/utils/turn-response.js');
     const turn = Vue.reactive({
-      id: 'turn-ui', turnId: 'turn-ui', textContent: 'Inspecting files.\\n\\n## 改动',
+      id: 'turn-ui', turnId: 'turn-ui', textContent: '[Inspect files](#details)\\n\\n## 改动',
       textSegments: [
-        { key: 'progress', content: 'Inspecting files.', kind: 'progress', explicitKind: true, isStreaming: false },
+        { key: 'progress', content: '[Inspect files](#details)', kind: 'progress', explicitKind: true, isStreaming: false },
         { key: 'result', content: '## 改动', kind: 'result', explicitKind: true, isStreaming: false },
       ],
       toolMsgs: [], toolSummaryCount: 0, imageMsgs: [],
@@ -122,11 +122,17 @@ test('separates active progress from the final result across themes and mobile',
   await page.waitForFunction(() => window.__ready === true);
 
   const progress = page.locator('.turn-progress-group');
+  const progressPanel = page.locator('.turn-progress-list');
+  const progressLink = progressPanel.locator('a');
   const result = page.locator('.turn-response-result');
   const progressToggle = page.locator('.turn-progress-toggle');
   const todos = page.locator('.vp-turn-block-body-expanded .turn-todos');
-  await expect(progress).not.toHaveAttribute('open', '');
+  await expect(progress).not.toHaveClass(/is-expanded/);
+  await expect(progressPanel).toBeHidden();
+  const progressPanelId = await progressPanel.getAttribute('id');
+  expect(progressPanelId).toMatch(/^turn-progress-panel-\d+$/);
   await expect(progressToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(progressToggle).toHaveAttribute('aria-controls', progressPanelId);
   await expect(progressToggle).toHaveAttribute('aria-label', '查看过程');
   await expect(progressToggle).toHaveText('查看过程');
   await expect(page.locator('.turn-response-label')).toHaveCount(0);
@@ -152,25 +158,34 @@ test('separates active progress from the final result across themes and mobile',
 
   await page.evaluate(() => {
     window.__turn.textSegments = [
-      { key: 'progress', content: 'Inspecting files.', kind: 'progress', explicitKind: true, isStreaming: false },
+      { key: 'progress', content: '[Inspect files](#details)', kind: 'progress', explicitKind: true, isStreaming: false },
       { key: 'result', content: '## 改动', kind: 'result', explicitKind: true, isStreaming: false },
     ];
     window.__turn.messages = [];
-    window.__turn.textContent = 'Inspecting files.\n\n## 改动';
+    window.__turn.textContent = '[Inspect files](#details)\n\n## 改动';
   });
   await expect(result.locator('h2')).toHaveText('改动');
 
   await progressToggle.focus();
   await expect(progressToggle).toBeFocused();
   await page.keyboard.press('Enter');
+  await expect(progress).toHaveClass(/is-expanded/);
   await expect(progressToggle).toHaveAttribute('aria-expanded', 'true');
   await expect(progressToggle).toHaveAttribute('aria-label', '收起过程');
   await expect(progressToggle).toHaveText('收起过程');
   await expect(page.locator('.turn-response-progress')).toBeVisible();
+  await expect(progressPanel).not.toHaveAttribute('hidden', '');
   await page.keyboard.press('Space');
   await expect(progressToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(progressPanel).toBeHidden();
   await progressToggle.click();
   await expect(progressToggle).toHaveAttribute('aria-expanded', 'true');
+  await page.locator('.turn-content .copy-btn').focus();
+  await page.keyboard.press('Tab');
+  await expect(progressLink).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(progressToggle).toBeFocused();
+  expect(await progressPanel.getAttribute('id')).toBe(progressPanelId);
   const fontSizes = await page.evaluate(() => ({
     progress: parseFloat(getComputedStyle(document.querySelector('.turn-response-progress')).fontSize),
     result: parseFloat(getComputedStyle(document.querySelector('.turn-response-result .markdown-body')).fontSize),
@@ -218,13 +233,15 @@ test('separates active progress from the final result across themes and mobile',
   await page.evaluate(() => {
     window.__turn.isActive = true;
   });
-  await expect(progress).toHaveAttribute('open', '');
+  await expect(progress).toHaveClass(/is-expanded/);
+  await expect(progressPanel).toBeVisible();
   await page.evaluate(() => {
     window.__turn.isActive = false;
     document.activeElement?.blur();
   });
   await page.mouse.move(0, 0);
-  await expect(progress).not.toHaveAttribute('open', '');
+  await expect(progress).not.toHaveClass(/is-expanded/);
+  await expect(progressPanel).toBeHidden();
 
   for (const theme of ['light', 'dark']) {
     await page.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
