@@ -468,7 +468,7 @@ export function createSubmitWorkItemReplanTool({ vps, workItem, action, actions,
   const candidateIdSchema = candidateIds.length > 0
     ? { type: 'string', enum: candidateIds }
     : { type: 'string' };
-  const candidateLimit = Math.min(8, candidateIds.length);
+  const candidateLimit = candidateIds.length;
   const classification = { type: 'object', additionalProperties: false,
     required: ['actionId', 'action'], properties: {
       actionId: candidateIdSchema,

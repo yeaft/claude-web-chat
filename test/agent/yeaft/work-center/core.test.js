@@ -8,6 +8,7 @@ import { WorkflowController } from '../../../../agent/yeaft/work-center/controll
 import {
   WorkItemRunner,
   createProposeWorkItemActionsTool,
+  createSubmitWorkItemReplanTool,
 } from '../../../../agent/yeaft/work-center/runner.js';
 import { WorkItemCoordinator } from '../../../../agent/yeaft/work-center/coordinator.js';
 import {
@@ -913,6 +914,7 @@ describe('Work Center core', () => {
       }],
     })).rejects.toThrow(/invalid dependency.*internal-action-uuid/i);
     expect(collector.value).toBeNull();
+
   });
 
 
@@ -1013,7 +1015,162 @@ describe('Work Center core', () => {
   });
 
 
-  it('lets the Coordinator replan unfinished work while preserving completed evidence and fencing late Runs', async () => {
+  it('lets executors and the Coordinator replan unfinished work while preserving completed evidence and fences', async () => {
+    const largeReplanItem = controller.create(createInput({
+      id: 'large-replan-candidates',
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const largeTriage = store.claimReadyAction('boot-large-replan', 5_000);
+    const initialCandidates = Array.from({ length: 7 }, (_value, index) => ({
+      id: `candidate-${index + 1}`,
+      type: 'research',
+      objective: `Establish candidate ${index + 1} evidence`,
+      dependsOnActionIds: [],
+      workspaceMode: 'read',
+    }));
+    const initialLargeDetail = controller.submit(
+      largeTriage.run.id,
+      'boot-large-replan',
+      largeTriage.run.leaseEpoch,
+      completed('triage', {
+        plan: {
+          workItemType: 'large-replan',
+          actions: [
+            ...initialCandidates,
+            {
+              id: 'deliver', type: 'deliver', objective: 'Deliver all candidate evidence',
+              dependsOnActionIds: initialCandidates.map(action => action.id), workspaceMode: 'shared',
+            },
+          ],
+        },
+      }),
+    );
+    const expansionClaim = store.claimReadyAction('boot-large-replan', 5_000);
+    expect(expansionClaim.action.stageId).toBe('candidate-1');
+    const addedCandidates = Array.from({ length: 3 }, (_value, index) => ({
+      id: `added-${index + 1}`,
+      name: `Added candidate ${index + 1}`,
+      type: 'research',
+      objective: `Establish added candidate ${index + 1} evidence`,
+      approach: `Inspect the added candidate ${index + 1} boundary`,
+      expectedOutcome: `Added candidate ${index + 1} evidence is recorded`,
+      capability: 'research',
+      candidateVpIds: ['omni'],
+      assignmentReason: 'Use the available research executor',
+      dependsOnActionIds: ['candidate-1'],
+      workspaceMode: 'read',
+    }));
+    const largeDeliverAction = initialLargeDetail.actions.find(action => action.stageId === 'deliver');
+    const expandedLargeDetail = controller.submit(
+      expansionClaim.run.id,
+      'boot-large-replan',
+      expansionClaim.run.leaseEpoch,
+      completed('research', {
+        planProposal: {
+          proposalId: 'expand-before-large-replan',
+          basePlanRevision: initialLargeDetail.planRevision,
+          actions: addedCandidates,
+          dependencyPatches: [{
+            actionId: largeDeliverAction.id,
+            addDependsOnActionIds: addedCandidates.map(action => action.id),
+          }],
+        },
+      }),
+    );
+    expect(expandedLargeDetail.actions.filter(action => (
+      !['completed', 'superseded', 'cancelled'].includes(action.status)
+    ))).toHaveLength(10);
+
+    const replanRequester = store.claimReadyAction('boot-large-replan', 5_000);
+    expect(replanRequester.action.stageId).toBe('candidate-2');
+    const barrierDetail = controller.submit(
+      replanRequester.run.id,
+      'boot-large-replan',
+      replanRequester.run.leaseEpoch,
+      completed('research', {
+        replanRequest: {
+          proposalId: 'classify-large-replan',
+          basePlanRevision: expandedLargeDetail.planRevision,
+          reason: 'Reclassify the complete frozen candidate set.',
+        },
+      }),
+    );
+    const replanClaim = store.claimReadyAction('boot-large-replan', 5_000);
+    expect(replanClaim.action.stageId).toMatch(/^replan-/);
+    const barrier = replanClaim.action.context.find(entry => entry?.type === 'replan-barrier');
+    expect(barrier.candidateActionIds).toHaveLength(9);
+
+    const replanCollector = { value: null };
+    const replanTool = createSubmitWorkItemReplanTool({
+      vps: [{ id: 'omni', name: 'Omni', role: 'Developer', traits: ['research', 'deliver'] }],
+      workItem: barrierDetail,
+      action: replanClaim.action,
+      actions: barrierDetail.actions,
+      collector: replanCollector,
+      isRunActive: () => true,
+    });
+    const replanProperties = replanTool.parameters.properties;
+    expect(replanProperties.retain.maxItems).toBe(9);
+    expect(replanProperties.replace.maxItems).toBe(9);
+    expect(replanProperties.remove.maxItems).toBe(9);
+    expect(replanProperties.add.maxItems).toBe(8);
+    expect(replanProperties.retain.items.properties.actionId.enum).toEqual(barrier.candidateActionIds);
+
+    const frozenById = new Map(barrierDetail.actions.map(action => [action.id, action]));
+    const retain = barrier.candidateActionIds.map(actionId => {
+      const frozen = frozenById.get(actionId);
+      return {
+        actionId,
+        action: {
+          id: frozen.stageId,
+          name: `Retain ${frozen.stageId}`,
+          type: frozen.type,
+          objective: frozen.brief.objective,
+          approach: frozen.brief.approach,
+          expectedOutcome: frozen.brief.expectedOutcome,
+          capability: frozen.assignmentPolicy?.capability || frozen.type,
+          candidateVpIds: ['omni'],
+          assignmentReason: 'Retain the frozen candidate in the complete replan.',
+          dependsOnActionIds: frozen.dependsOnStageIds,
+          workspaceMode: frozen.workspaceMode,
+          maxAttempts: frozen.maxAttempts,
+        },
+      };
+    });
+    const replanInput = {
+      summary: 'Classified all nine frozen candidates.',
+      evidence: ['The complete candidate set is represented by the tool schema.'],
+      acceptanceChecks: completed('triage').acceptanceChecks,
+      proposalId: 'submit-large-replan',
+      basePlanRevision: barrierDetail.planRevision,
+      retain,
+      replace: [],
+      remove: [],
+      add: [],
+    };
+    expect(JSON.parse(await replanTool.execute(replanInput))).toMatchObject({
+      submitted: true,
+      proposalId: replanInput.proposalId,
+    });
+    expect(replanCollector.value.retain).toHaveLength(9);
+
+    const appliedLargeReplan = controller.submit(
+      replanClaim.run.id,
+      'boot-large-replan',
+      replanClaim.run.leaseEpoch,
+      completed('triage', { replanMutation: replanCollector.value }),
+    );
+    expect(appliedLargeReplan).toMatchObject({
+      id: largeReplanItem.id,
+      status: 'ready',
+      planRevision: barrierDetail.planRevision + 1,
+    });
+    expect(appliedLargeReplan.actions.filter(action => (
+      barrier.candidateActionIds.includes(action.id) && action.status === 'ready'
+    ))).toHaveLength(9);
+    controller.cancel(largeReplanItem.id);
+
     const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
     const item = controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
     const triage = store.claimReadyAction('boot-a', 5_000);
