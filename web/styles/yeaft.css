@@ -3607,14 +3607,12 @@
   background: var(--accent-soft, rgba(99, 102, 241, 0.12));
 }
 
-/* Streaming/typing/thinking/tool breathing animation on the row name.
-   Uses an identical 3 s ease-in-out infinite cycle. All four
-   "in-flight" labels share the same animation so a turn that switches
-   thinking → streaming → tool visually reads as one continuous
-   activity instead of stop-start. */
+/* In-flight breathing animation on the row name. Retrying is a live turn,
+   not an error terminal, so it shares the existing activity treatment. */
 .yeaft-vp-timeline-row.is-status-streaming .yeaft-vp-timeline-row-name,
 .yeaft-vp-timeline-row.is-status-typing .yeaft-vp-timeline-row-name,
 .yeaft-vp-timeline-row.is-status-thinking .yeaft-vp-timeline-row-name,
+.yeaft-vp-timeline-row.is-status-retrying .yeaft-vp-timeline-row-name,
 .yeaft-vp-timeline-row.is-status-tool .yeaft-vp-timeline-row-name {
   animation: yeaftVpNameBreathing 3s ease-in-out infinite;
 }
@@ -3626,6 +3624,7 @@
   .yeaft-vp-timeline-row.is-status-streaming .yeaft-vp-timeline-row-name,
   .yeaft-vp-timeline-row.is-status-typing .yeaft-vp-timeline-row-name,
   .yeaft-vp-timeline-row.is-status-thinking .yeaft-vp-timeline-row-name,
+  .yeaft-vp-timeline-row.is-status-retrying .yeaft-vp-timeline-row-name,
   .yeaft-vp-timeline-row.is-status-tool .yeaft-vp-timeline-row-name {
     animation: none;
   }

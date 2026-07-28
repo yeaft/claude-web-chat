@@ -52,6 +52,96 @@ describe('Yeaft load-history first paint', () => {
   });
 
   it('filters internal and model-only user-role rows in the visible-history fallback path', () => {
+    const hctx = {
+      assistantTextParts: [],
+      toolCallsAccum: [],
+      toolResultsAccum: [],
+      resetQueryTimer: vi.fn(),
+      sessionId: 'session-fast',
+      vpId: 'vp-linus',
+      turnId: 'turn-retry',
+      threadId: 'main',
+    };
+    __testHandleEngineEvent({
+      type: 'llm_retry',
+      attempt: 2,
+      maxRetries: 3,
+      delayMs: 2000,
+      reason: 'stream_idle_timeout',
+      recoveryMode: 'continue',
+      errorName: 'LLMStreamIdleTimeoutError',
+      statusCode: 0,
+      message: 'idle',
+    }, hctx);
+    __testHandleEngineEvent({
+      type: 'error',
+      error: new Error('OpenAI stream idle timeout after 90000ms'),
+      retryable: true,
+      reason: 'stream_idle_timeout',
+      retryExhausted: true,
+      retryAttempts: 3,
+      maxRetries: 3,
+    }, hctx);
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'llm_retry',
+        recoveryMode: 'continue',
+        attempt: 2,
+      }),
+    }));
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'vp_status_changed',
+        state: 'retrying',
+        turnId: 'turn-retry',
+      }),
+    }));
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'error',
+        retryAttempts: 3,
+        message: expect.stringContaining('after 3 fresh request retries'),
+      }),
+    }));
+    expect(sent).toContainEqual(expect.objectContaining({
+      data: expect.objectContaining({
+        type: 'assistant',
+        message: expect.objectContaining({
+          content: [{ type: 'text', text: expect.stringContaining('after 3 fresh request retries') }],
+        }),
+      }),
+    }));
+    const markEngineTerminal = vi.fn();
+    hctx.markEngineTerminal = markEngineTerminal;
+    __testHandleEngineEvent({
+      type: 'turn_end',
+      stopReason: 'error',
+      terminal: true,
+      threadId: 'main',
+    }, hctx);
+    expect(markEngineTerminal).toHaveBeenCalledWith('error', expect.objectContaining({
+      message: expect.stringContaining('after 3 fresh request retries'),
+      reason: 'stream_idle_timeout',
+      retryAttempts: 3,
+    }));
+    expect(__testHooks.decorateSessionsWithRuntimeState([{ id: 'session-fast' }])).toEqual([
+      expect.objectContaining({
+        id: 'session-fast',
+        running: false,
+        active: false,
+        runningVpCount: 0,
+      }),
+    ]);
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'vp_status_changed',
+        state: 'error',
+        runningThreadCount: 0,
+        turnId: 'turn-retry',
+      }),
+    }));
+    sent.length = 0;
+
     const rows = [
       { id: 'm0001', role: 'user', content: 'visible q', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0002', role: 'user', content: '<task-result id="task_1" kind="shell" status="succeeded">\nPASS\n</task-result>', sessionId: 'session-fast', threadId: 'main' },

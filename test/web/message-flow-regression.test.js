@@ -93,6 +93,23 @@ describe('message flow regressions', () => {
     expect(variables).toContain('--work-center-conversation-gutter: clamp(20px, 3vw, 40px);');
     expect(workCenterCss).toMatch(/@container work-center \(max-width: 1120px\)\s*\{[\s\S]*?\.work-center-detail-layout\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);/);
     expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-action-detail-pane\s*\{[\s\S]*?--work-center-conversation-gutter: var\(--work-center-conversation-gutter-compact\);/);
+
+    const turnBlock = readFileSync(resolve(import.meta.dirname, '../../web/components/VpTurnBlock.js'), 'utf8');
+    const chatStore = readFileSync(resolve(import.meta.dirname, '../../web/stores/chat.js'), 'utf8');
+    const bridge = readFileSync(resolve(import.meta.dirname, '../../agent/yeaft/web-bridge.js'), 'utf8');
+    const en = readFileSync(resolve(import.meta.dirname, '../../web/i18n/en.js'), 'utf8');
+    const zh = readFileSync(resolve(import.meta.dirname, '../../web/i18n/zh-CN.js'), 'utf8');
+    expect(bridge).toContain("RUNNING_THREAD_STATES = new Set(['queued', 'typing', 'thinking', 'retrying', 'streaming', 'tool'])");
+    expect(bridge).toContain("recoveryMode: event.recoveryMode || 'restart'");
+    expect(chatStore).toContain("case 'llm_retry': {");
+    expect(chatStore).toContain('retryAttempt: event.attempt || 0');
+    expect(chatStore).toContain('if (msg.turnId && this.activeVpTurns?.[msg.turnId]?.retryAttempt)');
+    expect(chatStore).toContain('retryRecoveryMode: _retryRecoveryMode');
+    expect(chatStore).toContain("'thinking', 'retrying', 'streaming'");
+    expect(turnBlock).toContain('turn.isStreaming && retryText');
+    expect(turnBlock).toContain("'yeaft.vp.turnBlock.retryingContinue'");
+    expect(en).toContain("'yeaft.vp.turnBlock.retryingRequest': 'Response stalled;");
+    expect(zh).toContain("'yeaft.vp.turnBlock.retryingRequest': '响应停滞");
   });
 
   it('stamps background agent messages without promoting that conversation', () => {

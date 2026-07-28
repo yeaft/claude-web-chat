@@ -1495,6 +1495,7 @@ describe('Engine', () => {
       expect(retryEvents).toHaveLength(1);
       expect(retryEvents[0].attempt).toBe(1);
       expect(retryEvents[0].reason).toBe('rate_limit_retry_after');
+      expect(retryEvents[0].recoveryMode).toBe('restart');
       expect(retryEvents[0].delayMs).toBeLessThanOrEqual(50);
       const errorEvents = events.filter(e => e.type === 'error');
       expect(errorEvents).toHaveLength(0);
@@ -1573,7 +1574,40 @@ describe('Engine', () => {
       expect(errorEvents[0].retryable).toBe(true);
       expect(errorEvents[0].reason).toBe('stream_idle_timeout');
       expect(errorEvents[0].retryExhausted).toBe(true);
+      expect(errorEvents[0].retryAttempts).toBe(3);
+      expect(errorEvents[0].maxRetries).toBe(3);
       expect(errorEvents[0].error).toBeInstanceOf(LLMStreamIdleTimeoutError);
+
+      // Once a complete tool call has crossed the stream boundary, retrying or
+      // falling back could publish and execute it twice. Fail closed instead.
+      let toolAttempts = 0;
+      const toolEngine = new Engine({
+        adapter: {
+          async *stream() {
+            toolAttempts += 1;
+            yield { type: 'tool_call', id: 'call-once', name: 'echo', input: { value: 1 } };
+            throw new LLMStreamIdleTimeoutError('OpenAI stream idle timeout after 90000ms', 90_000);
+          },
+        },
+        trace,
+        config: {
+          model: 'test-model',
+          fallbackModel: 'fallback-model',
+          maxOutputTokens: 1024,
+          llmRetry: { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 5, jitterRatio: 0 },
+        },
+      });
+      const toolEvents = [];
+      for await (const event of toolEngine.query({ prompt: 'use a tool' })) toolEvents.push(event);
+      expect(toolAttempts).toBe(1);
+      expect(toolEvents.filter(event => event.type === 'tool_call')).toHaveLength(1);
+      expect(toolEvents.filter(event => event.type === 'llm_retry' || event.type === 'fallback')).toHaveLength(0);
+      expect(toolEvents).toContainEqual(expect.objectContaining({
+        type: 'error',
+        reason: 'stream_idle_timeout',
+        retryExhausted: false,
+        retryAttempts: 0,
+      }));
     });
 
     it('falls back after stream idle timeout retries are exhausted', async () => {
@@ -1615,6 +1649,75 @@ describe('Engine', () => {
       }));
       expect(events.filter(e => e.type === 'error')).toHaveLength(0);
       expect(events).toContainEqual(expect.objectContaining({ type: 'text_delta', text: 'fallback ok' }));
+
+      // A retry after visible text must continue from the accepted prefix on a
+      // fresh request instead of replaying the original prompt and duplicating
+      // the already-rendered output.
+      const requests = [];
+      const traceRows = [];
+      const continuationTrace = Object.create(trace);
+      continuationTrace.startTurn = () => 'retry-trace';
+      continuationTrace.endTurn = (_id, row) => traceRows.push(row);
+      const continuationDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-idle-continuation-'));
+      const continuationStore = new ConversationStore(continuationDir);
+      let attempt = 0;
+      const continuationEngine = new Engine({
+        adapter: {
+          async *stream(params) {
+            requests.push(params.messages.map(message => ({
+              role: message.role,
+              content: message.content,
+            })));
+            attempt += 1;
+            if (attempt === 1) {
+              yield { type: 'text_delta', text: 'first half ' };
+              throw new LLMStreamIdleTimeoutError('OpenAI stream idle timeout after 90000ms', 90_000);
+            }
+            yield { type: 'stop', stopReason: 'end_turn' };
+          },
+        },
+        trace: continuationTrace,
+        conversationStore: continuationStore,
+        yeaftDir: continuationDir,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          llmRetry: { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 5, jitterRatio: 0 },
+        },
+      });
+      const continuationEvents = [];
+      for await (const event of continuationEngine.query({
+        prompt: 'hello',
+        sessionId: 'session-idle-continuation',
+      })) continuationEvents.push(event);
+      expect(attempt).toBe(2);
+      expect(continuationEvents.filter(event => event.type === 'text_delta').map(event => event.text))
+        .toEqual(['first half ']);
+      expect(continuationEvents.filter(event => event.type === 'llm_retry')).toEqual([
+        expect.objectContaining({ reason: 'stream_idle_timeout', recoveryMode: 'continue' }),
+      ]);
+      expect(requests[1].slice(-2)).toEqual([
+        expect.objectContaining({ role: 'assistant', content: 'first half ' }),
+        expect.objectContaining({
+          role: 'user',
+          content: expect.stringContaining('Continue from the exact point'),
+        }),
+      ]);
+      const retryTrace = traceRows.find(row => row.stopReason === 'llm_retry');
+      expect(retryTrace.messages).not.toContainEqual(expect.objectContaining({
+        role: 'user',
+        content: expect.stringContaining('Continue from the exact point'),
+      }));
+      expect(traceRows.at(-1).messages).toContainEqual(expect.objectContaining({
+        role: 'user',
+        content: expect.stringContaining('Continue from the exact point'),
+      }));
+      expect(continuationStore.loadRecentBySession('session-idle-continuation', 10)
+        .find(message => message.content === 'first half ')).toMatchObject({
+          responseKind: 'result',
+          stopReason: 'end_turn',
+        });
+      rmSync(continuationDir, { recursive: true, force: true });
     });
 
     it('does not emit debug loop rows for retryable attempts before fallback succeeds', async () => {
@@ -1757,12 +1860,11 @@ describe('Engine', () => {
       expect(events).not.toContainEqual(expect.objectContaining({ type: 'turn_end', stopReason: 'end_turn' }));
     });
 
-    it('stops retrying when aborted mid-backoff and persists visible partial text once', async () => {
+    it('settles retry persistence for boundary teardown and later textless failure', async () => {
       const { LLMServerError } = await import('../../../agent/yeaft/llm/adapter.js');
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-retry-abort-partial-'));
       try {
         const conversationStore = new ConversationStore(yeaftDir);
-        const controller = new AbortController();
         let attempts = 0;
         const engine = new Engine({
           adapter: {
@@ -1778,24 +1880,27 @@ describe('Engine', () => {
           config: {
             model: 'test-model',
             maxOutputTokens: 1024,
-            llmRetry: { maxRetries: 3, baseDelayMs: 5_000, maxDelayMs: 5_000, jitterRatio: 0 },
+            llmRetry: { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
           },
         });
 
-        const events = [];
-        for await (const event of engine.query({
+        const iterator = engine.query({
           prompt: 'hi',
-          signal: controller.signal,
           sessionId: 'session-retry-abort',
           vpTurnId: 'turn-retry-abort',
-        })) {
-          events.push(event);
-          if (event.type === 'llm_retry') controller.abort('test');
+        })[Symbol.asyncIterator]();
+        const events = [];
+        while (true) {
+          const step = await iterator.next();
+          if (step.done) break;
+          events.push(step.value);
+          if (step.value.type === 'turn_end' && step.value.stopReason === 'llm_retry') break;
         }
+        await iterator.return();
 
         expect(attempts).toBe(1);
         expect(events.some(e => e.type === 'llm_retry')).toBe(true);
-        expect(events.some(e => e.type === 'aborted')).toBe(true);
+        expect(events).toContainEqual(expect.objectContaining({ type: 'turn_end', stopReason: 'llm_retry' }));
         expect(conversationStore.loadRecentBySession('session-retry-abort', Infinity)).toEqual([
           expect.objectContaining({ role: 'user', content: 'hi' }),
           expect.objectContaining({
@@ -1808,6 +1913,55 @@ describe('Engine', () => {
         ]);
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });
+      }
+      const errorDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-retry-final-partial-'));
+      try {
+        const conversationStore = new ConversationStore(errorDir);
+        let attempts = 0;
+        const engine = new Engine({
+          adapter: {
+            async *stream() {
+              attempts += 1;
+              if (attempts === 1) yield { type: 'text_delta', text: 'visible partial before failure' };
+              throw new LLMServerError('temporary upstream failure', 503);
+            },
+          },
+          trace,
+          conversationStore,
+          yeaftDir: errorDir,
+          config: {
+            model: 'test-model',
+            maxOutputTokens: 1024,
+            llmRetry: { maxRetries: 2, baseDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
+          },
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'hi',
+          sessionId: 'session-retry-final-partial',
+          vpTurnId: 'turn-retry-final-partial',
+        })) events.push(event);
+
+        expect(attempts).toBe(3);
+        expect(events).toContainEqual(expect.objectContaining({ type: 'error', retryable: true }));
+        expect(conversationStore.loadRecentBySession('session-retry-final-partial', Infinity)).toEqual([
+          expect.objectContaining({ role: 'user', content: 'hi' }),
+          expect.objectContaining({
+            role: 'assistant',
+            content: 'visible partial before failure',
+            incomplete: true,
+            stopReason: 'error',
+            turnId: 'turn-retry-final-partial',
+          }),
+          expect.objectContaining({
+            role: 'user',
+            userAuthored: false,
+            content: expect.stringContaining('Continue from the exact point'),
+          }),
+        ]);
+      } finally {
+        rmSync(errorDir, { recursive: true, force: true });
       }
     });
   });

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ctx from '../../../agent/context.js';
-import { loadConfig } from '../../../agent/yeaft/config.js';
+import { loadConfig, normalizeLlmRetry } from '../../../agent/yeaft/config.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
 import { __testGetOrCreateVpEngine, __testHooks, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
@@ -51,6 +51,10 @@ afterEach(() => {
 
 describe('Yeaft session-scoped model config', () => {
   it('keeps model and effort isolated per Session', () => {
+    expect(normalizeLlmRetry(null, null)).toMatchObject({
+      maxRetries: 3,
+      streamIdleTimeoutMs: 90_000,
+    });
     const root = makeDir();
     const userConfig = {
       model: 'proxy/gpt-5',

@@ -100,6 +100,9 @@ const RETRY_DEFAULTS = Object.freeze({
   jitterRatio: 0.25,
 });
 
+const RETRY_CONTINUATION_PROMPT =
+  'Continue from the exact point where the previous response stopped. Do not repeat text already produced.';
+
 // Accept legacy namespaced commands and Claude Code-style bare skill commands.
 // Project-tier skills are shown as /<skill-name>; /yeaft-skills:<name> and
 // /skill:<name> stay supported for globals, older clients, and typed history.
@@ -353,8 +356,8 @@ export function shouldAllowGroupReflection({
  * @typedef {{ type: 'consolidate', archivedCount: number, extractedCount: number }} ConsolidateEvent
  * @typedef {{ type: 'recall', entryCount: number, cached: boolean }} RecallEvent
  * @typedef {{ type: 'fallback', from: string, to: string, reason: string }} FallbackEvent
- * @typedef {{ type: 'llm_retry', attempt: number, maxRetries: number, delayMs: number, reason: 'rate_limit_retry_after'|'rate_limit_backoff'|'transient_backoff'|'stream_idle_timeout', errorName: string, statusCode: number|null, message: string }} LlmRetryEvent
- * @typedef {{ type: 'error', error: Error, retryable: boolean, reason?: 'stream_idle_timeout', retryExhausted?: boolean }} ErrorEvent
+ * @typedef {{ type: 'llm_retry', attempt: number, maxRetries: number, delayMs: number, reason: 'rate_limit_retry_after'|'rate_limit_backoff'|'transient_backoff'|'stream_idle_timeout', recoveryMode: 'restart'|'continue', errorName: string, statusCode: number|null, message: string }} LlmRetryEvent
+ * @typedef {{ type: 'error', error: Error, retryable: boolean, reason?: 'stream_idle_timeout', retryExhausted?: boolean, retryAttempts?: number, maxRetries?: number }} ErrorEvent
  *
  * @typedef {import('./llm/adapter.js').StreamEvent | TurnStartEvent | TurnEndEvent | ToolStartEvent | ToolEndEvent | ConsolidateEvent | RecallEvent | FallbackEvent | LlmRetryEvent | ErrorEvent} EngineEvent
  */
@@ -1860,10 +1863,27 @@ export class Engine {
     // The signal passed down to adapter.stream() + tool execution.
     const runSignal = abortCtrl.signal;
 
+    const retryLifecycle = {
+      pendingContinuation: null,
+      lastPersistedPartial: null,
+    };
     try {
       this.#currentThreadId = threadId || MAIN_THREAD_ID;
-      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName });
+      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName, retryLifecycle });
     } finally {
+      // Closing the async generator at a visible retry boundary means the
+      // continuation never reached a provider. Keep it out of history and
+      // terminate the accepted assistant prefix instead of leaving `retry`.
+      if (retryLifecycle.pendingContinuation
+          && retryLifecycle.lastPersistedPartial
+          && typeof this.#conversationStore?.update === 'function') {
+        const abortedPartial = this.#conversationStore.update(
+          retryLifecycle.lastPersistedPartial,
+          { stopReason: 'aborted' },
+        );
+        if (abortedPartial) retryLifecycle.lastPersistedPartial = abortedPartial;
+      }
+      retryLifecycle.pendingContinuation = null;
       if (signal) {
         try { signal.removeEventListener('abort', onExternalAbort); } catch { /* ignore */ }
       }
@@ -1897,7 +1917,7 @@ export class Engine {
    * in a try/finally without indenting the whole loop.
    * @private
    */
-  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, closePendingUserInput = null, collabToolPolicy = null, explicitSkillName = null }) {
+  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, closePendingUserInput = null, collabToolPolicy = null, explicitSkillName = null, retryLifecycle }) {
 
     const effectiveCollabToolPolicy = collabToolPolicy === COLLAB_TOOL_POLICY.SINGLE_VP || collabToolPolicy === COLLAB_TOOL_POLICY.MULTI_VP
       ? collabToolPolicy
@@ -2329,6 +2349,15 @@ export class Engine {
       // the previous iteration) cleanly ends the loop instead of
       // launching another adapter stream.
       if (signal?.aborted) {
+        if (retryLifecycle.lastPersistedPartial
+            && typeof this.#conversationStore?.update === 'function') {
+          const abortedPartial = this.#conversationStore.update(
+            retryLifecycle.lastPersistedPartial,
+            { stopReason: 'aborted' },
+          );
+          if (abortedPartial) retryLifecycle.lastPersistedPartial = abortedPartial;
+        }
+        retryLifecycle.pendingContinuation = null;
         yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
         yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
         break;
@@ -2484,7 +2513,10 @@ export class Engine {
         // <yeaftDir>/memory/<scopeDir>/archive/tool-results/<id>.md so
         // message_trace can fetch it on demand. The stub keeps the
         // OpenAI/Anthropic toolCallId pairing intact.
-        let wireMessages = stripMetaForWire([...conversationMessages]);
+        const pendingContinuationForRequest = retryLifecycle.pendingContinuation;
+        let wireMessages = stripMetaForWire(pendingContinuationForRequest
+          ? [...conversationMessages, pendingContinuationForRequest]
+          : [...conversationMessages]);
 
         if (scenario !== 'work-item' && this.#yeaftDir && (this.#config?.archive?.toolResults !== false)) {
           try {
@@ -2551,6 +2583,18 @@ export class Engine {
               }
             } catch { /* best-effort */ }
           }
+        }
+
+        // Do not durably publish a model-only continuation until every
+        // pre-request await is complete and the fresh provider request is about
+        // to start. Stop at the visible loop boundary must leave no
+        // continuation that the provider never received.
+        if (signal?.aborted) throw new LLMAbortError();
+        if (pendingContinuationForRequest
+            && retryLifecycle.pendingContinuation === pendingContinuationForRequest) {
+          this.#persistConversationMessage(pendingContinuationForRequest, { sessionId: runtimeSessionId });
+          conversationMessages.push(pendingContinuationForRequest);
+          retryLifecycle.pendingContinuation = null;
         }
 
         // Snapshot task results carried by this exact request. Request start
@@ -2721,6 +2765,30 @@ export class Engine {
           });
         };
 
+        const prepareRetryContinuation = () => {
+          if (!responseText || toolCalls.length > 0) return null;
+          const partialAssistant = {
+            role: 'assistant',
+            content: responseText,
+            incomplete: true,
+            responseKind: 'progress',
+          };
+          const persistedPartial = persistIncompleteAssistantOnce('retry');
+          if (persistedPartial) {
+            partialAssistant._persistedMessageId = persistedPartial.id;
+            lastPersistedAssistantTextMessage = persistedPartial;
+            retryLifecycle.lastPersistedPartial = persistedPartial;
+          }
+          conversationMessages.push(partialAssistant);
+          fullResponseText += responseText;
+          retryLifecycle.pendingContinuation = {
+            role: 'user',
+            content: RETRY_CONTINUATION_PROMPT,
+            userAuthored: false,
+          };
+          return persistedPartial;
+        };
+
         // Abort/retry/fallback are not final assistant responses. Handle them
         // before writing debug loop rows; otherwise transient DeepSeek stream
         // cuts or user stops show up as bogus `Error: Request aborted` replies.
@@ -2729,7 +2797,18 @@ export class Engine {
           || err?.name === 'LLMAbortError'
           || (signal?.aborted && /abort/i.test(err?.message || ''));
         if (earlyIsAbort || signal?.aborted) {
-          persistIncompleteAssistantOnce('aborted');
+          const abortedPartial = persistIncompleteAssistantOnce('aborted');
+          if (abortedPartial) {
+            retryLifecycle.lastPersistedPartial = abortedPartial;
+          } else if (retryLifecycle.lastPersistedPartial
+              && typeof this.#conversationStore?.update === 'function') {
+            const updatedPartial = this.#conversationStore.update(
+              retryLifecycle.lastPersistedPartial,
+              { stopReason: 'aborted' },
+            );
+            if (updatedPartial) retryLifecycle.lastPersistedPartial = updatedPartial;
+          }
+          retryLifecycle.pendingContinuation = null;
           traceRequest('llm.request_abort', {
             durationMs: perfNowMs() - requestPerfStart,
             ok: false,
@@ -2770,7 +2849,12 @@ export class Engine {
 
         const earlyIsRateLimit = err instanceof LLMRateLimitError;
         const earlyIsTransient = err instanceof LLMServerError;
-        if (earlyIsRateLimit || earlyIsTransient) {
+        // A completed tool_call has already crossed the streaming boundary to
+        // the caller. Replaying that request would publish a duplicate call and
+        // leave ambiguous execution ownership, so only pre-tool failures are
+        // eligible for transparent retry or model fallback.
+        const canReplayProviderRequest = toolCalls.length === 0;
+        if ((earlyIsRateLimit || earlyIsTransient) && canReplayProviderRequest) {
           if (consecutiveRetryableErrors < retryPolicy.maxRetries) {
             consecutiveRetryableErrors += 1;
             let delayMs;
@@ -2787,20 +2871,37 @@ export class Engine {
                 ? 'stream_idle_timeout'
                 : 'transient_backoff';
             }
+            // A retry is a brand-new provider request. Replaying the original
+            // request after forwarding partial text duplicates that text in
+            // the UI and can make the model restart its answer. Preserve the
+            // accepted prefix as an incomplete assistant boundary, then ask
+            // the next request to continue from it.
+            const recoveryMode = responseText && toolCalls.length === 0 ? 'continue' : 'restart';
             endAttemptTrace('llm_retry');
+            if (recoveryMode === 'continue') prepareRetryContinuation();
             yield {
               type: 'llm_retry',
               attempt: consecutiveRetryableErrors,
               maxRetries: retryPolicy.maxRetries,
               delayMs,
               reason,
+              recoveryMode,
               errorName: err.name,
               statusCode: err.statusCode ?? null,
               message: String(err.message || '').slice(0, 300),
             };
             const slept = await sleepWithAbort(delayMs, signal);
             if (!slept || signal?.aborted) {
-              persistIncompleteAssistantOnce('aborted');
+              const partial = persistIncompleteAssistantOnce('aborted');
+              if (!partial && retryLifecycle.lastPersistedPartial
+                  && typeof this.#conversationStore?.update === 'function') {
+                const abortedPartial = this.#conversationStore.update(
+                  retryLifecycle.lastPersistedPartial,
+                  { stopReason: 'aborted' },
+                );
+                if (abortedPartial) retryLifecycle.lastPersistedPartial = abortedPartial;
+              }
+              retryLifecycle.pendingContinuation = null;
               yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
               yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
               break;
@@ -2812,8 +2913,9 @@ export class Engine {
 
         const earlyFallbackModel = this.#config.fallbackModel;
         if (earlyFallbackModel && earlyFallbackModel !== currentModel
-          && (earlyIsRateLimit || earlyIsTransient)) {
+          && (earlyIsRateLimit || earlyIsTransient) && canReplayProviderRequest) {
           endAttemptTrace('fallback_retry');
+          prepareRetryContinuation();
           yield { type: 'fallback', from: currentModel, to: earlyFallbackModel, reason: err.message };
           currentModel = earlyFallbackModel;
           consecutiveRetryableErrors = 0;
@@ -2821,7 +2923,21 @@ export class Engine {
           continue;
         }
 
-        persistIncompleteAssistantOnce('error');
+        // A later fresh request can fail before producing text. In that case the
+        // durable assistant prefix belongs to this same query and must leave the
+        // transient `retry` state even though the current attempt persisted none.
+        const persistedErrorPartial = persistIncompleteAssistantOnce('error');
+        if (persistedErrorPartial) {
+          retryLifecycle.lastPersistedPartial = persistedErrorPartial;
+        } else if (retryLifecycle.lastPersistedPartial
+          && typeof this.#conversationStore?.update === 'function') {
+          const errorPartial = this.#conversationStore.update(
+            retryLifecycle.lastPersistedPartial,
+            { stopReason: 'error' },
+          );
+          if (errorPartial) retryLifecycle.lastPersistedPartial = errorPartial;
+        }
+        retryLifecycle.pendingContinuation = null;
 
         this.#trace.endTurn(turnId, {
           model: currentModel,
@@ -2893,7 +3009,10 @@ export class Engine {
         };
         if (err instanceof LLMStreamIdleTimeoutError) {
           errorEvent.reason = 'stream_idle_timeout';
-          errorEvent.retryExhausted = consecutiveRetryableErrors >= retryPolicy.maxRetries;
+          errorEvent.retryExhausted = canReplayProviderRequest
+            && consecutiveRetryableErrors >= retryPolicy.maxRetries;
+          errorEvent.retryAttempts = consecutiveRetryableErrors;
+          errorEvent.maxRetries = retryPolicy.maxRetries;
         }
         yield errorEvent;
         yield { type: 'turn_end', turnNumber, stopReason: 'error', threadId };
