@@ -433,9 +433,15 @@ export function redactRawRequest(req) {
 export function toWellFormedJson(value) {
   // Let the native serializer retain its complete semantics first: toJSON,
   // boxed primitives, non-finite numbers, array holes, and omitted values.
-  const serialized = JSON.stringify(value, (_key, child) =>
-    typeof child === 'string' ? child.toWellFormed() : child
-  );
+  const serialized = JSON.stringify(value, (_key, child) => {
+    if (typeof child === 'string') return child.toWellFormed();
+    // JSON.stringify invokes the replacer before unboxing String objects.
+    // Use the intrinsic tag instead of instanceof so cross-realm values work.
+    if (Object.prototype.toString.call(child) === '[object String]') {
+      return String(child).toWellFormed();
+    }
+    return child;
+  });
   if (serialized === undefined) return undefined;
 
   // The replacer cannot rename object keys. Rebuild only the already-serialized

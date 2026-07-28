@@ -195,7 +195,9 @@ describe('LLM adapter auth headers', () => {
           at: new Date('2026-01-02T03:04:05Z'),
           bytes: Buffer.from([1, 2]),
           boxed: new Number(7),
+          boxedText: { nested: new String(`boxed \uD800`) },
           custom: { toJSON(key) { return { key, text: `custom \uD800` }; } },
+          customText: { toJSON() { return new String(`custom boxed \uDFFF`); } },
           ownProto,
         },
       },
@@ -207,7 +209,9 @@ describe('LLM adapter auth headers', () => {
         at: '2026-01-02T03:04:05.000Z',
         bytes: { type: 'Buffer', data: [1, 2] },
         boxed: 7,
+        boxedText: { nested: 'boxed �' },
         custom: { key: 'custom', text: 'custom �' },
+        customText: 'custom boxed �',
         ownProto: { __proto__: { polluted: 'yes' } },
       },
       input: [
@@ -216,6 +220,8 @@ describe('LLM adapter auth headers', () => {
         { output: 'output �' },
       ],
     });
+    expect(calls[0].body.metadata.boxedText.nested.isWellFormed()).toBe(true);
+    expect(calls[0].body.metadata.customText.isWellFormed()).toBe(true);
     expect(Object.hasOwn(calls[0].body.metadata.ownProto, '__proto__')).toBe(true);
     expect(calls[0].body.metadata.ownProto.polluted).toBeUndefined();
 
