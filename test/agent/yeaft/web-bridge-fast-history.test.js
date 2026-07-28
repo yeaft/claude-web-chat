@@ -202,8 +202,14 @@ describe('Yeaft load-history first paint', () => {
     }])[0]).toMatchObject({ responseKind: 'progress' });
     expect(__testHooks.projectVisibleHistoryChunkMessages([{
       id: 'm0005', role: 'assistant', content: 'Partial before error', sessionId: 'session-fast',
-      incomplete: true, stopReason: 'error',
-    }])[0]).toMatchObject({ responseKind: 'progress' });
+      responseKind: 'result', incomplete: true, stopReason: 'error',
+    }])[0]).toMatchObject({
+      responseKind: 'progress', incomplete: true, stopReason: 'error',
+    });
+    expect(__testHooks.projectVisibleHistoryChunkMessages([{
+      id: 'm0006', role: 'assistant', content: 'Cancelled partial', sessionId: 'session-fast',
+      responseKind: 'result', stopReason: 'cancelled',
+    }])[0]).toMatchObject({ responseKind: 'progress', stopReason: 'cancelled' });
 
     const markEngineTerminal = vi.fn();
     const handlerCtx = {
@@ -263,6 +269,19 @@ describe('Yeaft load-history first paint', () => {
         todos: [{ content: 'Verify', status: 'completed' }],
         toolSummaryCount: 1,
         responseKind: 'result',
+      });
+
+      store.append({
+        role: 'assistant', content: 'Persisted partial', sessionId: 'session-fast',
+        speakerVpId: 'vp-linus', responseKind: 'result', incomplete: true, stopReason: 'error',
+      });
+      const failedPage = __testHooks.loadVisibleGroupHistoryPage(store, 'session-fast', 1);
+      const failedProjected = __testHooks.projectVisibleHistoryChunkMessages(failedPage.messages);
+      expect(failedPage.messages.at(-1)).toMatchObject({
+        responseKind: 'progress', incomplete: true, stopReason: 'error',
+      });
+      expect(failedProjected.at(-1)).toMatchObject({
+        responseKind: 'progress', incomplete: true, stopReason: 'error',
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

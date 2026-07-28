@@ -4204,6 +4204,9 @@ export const useChatStore = defineStore('chat', {
             route_forward: 'completed',
             aborted: 'aborted',
             errored: 'errored',
+            error: 'errored',
+            cancelled: 'cancelled',
+            canceled: 'cancelled',
           };
           const nextStatus = reasonToStatus[event.reason] || 'completed';
           const stampedAt = Date.now();

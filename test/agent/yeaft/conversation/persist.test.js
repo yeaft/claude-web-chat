@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { chmodSync, existsSync, mkdirSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { ConversationStore, parseMessage, estimateTokens } from '../../../../agent/yeaft/conversation/persist.js';
+import {
+  ConversationStore,
+  parseMessage,
+  estimateTokens,
+  projectVisibleSessionMessages,
+} from '../../../../agent/yeaft/conversation/persist.js';
 
 const TEST_DIR = join(tmpdir(), `yeaft-test-conv-${Date.now()}`);
 
@@ -1136,6 +1141,17 @@ legacy session`, { encoding: 'utf8' });
         toolSummaryCount: 1,
       });
       expect(page.messages[1]).not.toHaveProperty('toolCalls');
+
+      const contradictory = projectVisibleSessionMessages([{
+        role: 'assistant', content: 'Partial before failure', responseKind: 'result',
+        incomplete: true, stopReason: 'error',
+      }]);
+      expect(contradictory[0]).toMatchObject({
+        responseKind: 'progress', incomplete: true, stopReason: 'error',
+      });
+      expect(projectVisibleSessionMessages([{
+        role: 'assistant', content: 'Cancelled partial', responseKind: 'result', stopReason: 'cancelled',
+      }])[0]).toMatchObject({ responseKind: 'progress', stopReason: 'cancelled' });
     });
 
     it('loadVisibleBySession keeps interleaved multi-VP rows for the boundary turn', () => {

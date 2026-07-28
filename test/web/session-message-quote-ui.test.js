@@ -143,6 +143,24 @@ describe('Session message quote UI wiring', () => {
     finalizeTurnResponseSegments(pendingHistory);
     expect(pendingHistory.textSegments[0].kind).toBe('result');
 
+    for (const failure of [
+      { turnEndReason: 'cancelled' },
+      { turnEndReason: 'error' },
+      { incomplete: true, stopReason: 'error' },
+    ]) {
+      const contradictoryMessage = {
+        id: `failed-${failure.turnEndReason || failure.stopReason}`,
+        type: 'assistant', content: 'Partial failure', responseKind: 'result', isStreaming: false,
+        ...failure,
+      };
+      const contradictoryTurn = {
+        ...turn, textContent: '', textSegments: [], messages: [contradictoryMessage], isHistory: true,
+      };
+      appendTurnResponseSegment(contradictoryTurn, contradictoryMessage);
+      finalizeTurnResponseSegments(contradictoryTurn);
+      expect(contradictoryTurn.textSegments[0].kind).toBe('progress');
+    }
+
     const splitStore = {
       activePanelId: 'pane-1',
       panels: [{ id: 'pane-1', conversationId: 'conversation-1' }],

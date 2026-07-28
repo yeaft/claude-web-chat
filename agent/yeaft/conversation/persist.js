@@ -326,12 +326,14 @@ function parseAskUserResult(toolCall, toolResult) {
   };
 }
 
+const FAILED_RESPONSE_REASONS = new Set(['aborted', 'errored', 'error', 'cancelled', 'canceled']);
+
 function projectedResponseKind(row) {
+  if (row?.incomplete === true || FAILED_RESPONSE_REASONS.has(row?.stopReason)) {
+    return 'progress';
+  }
   if (row?.responseKind === 'progress' || row?.responseKind === 'result') {
     return row.responseKind;
-  }
-  if (row?.incomplete === true || row?.stopReason === 'aborted' || row?.stopReason === 'error') {
-    return 'progress';
   }
   if (row?.stopReason === 'end_turn') return 'result';
   return null;

@@ -47,6 +47,7 @@ function harnessHtml() {
     };
     window.hljs = undefined;
     const { default: AssistantTurn } = await import('/web/components/AssistantTurn.js');
+    const { finalizeTurnResponseSegments } = await import('/web/utils/turn-response.js');
     const turn = Vue.reactive({
       id: 'turn-ui', turnId: 'turn-ui', textContent: 'Inspecting files.\\n\\n## 改动',
       textSegments: [
@@ -70,6 +71,7 @@ function harnessHtml() {
     app.provide('t', translate);
     app.mount('#app');
     window.__turn = turn;
+    window.__finalizeTurnResponseSegments = finalizeTurnResponseSegments;
     window.__ready = true;
   </script>
 </body>
@@ -128,6 +130,32 @@ test('separates active progress from the final result across themes and mobile',
   await expect(result.locator('h2')).toHaveText('改动');
   await expect(page.locator('.turn-response-progress')).toBeHidden();
   await expect(todos).toBeVisible();
+
+  await page.evaluate(() => {
+    const contradictoryMessage = {
+      type: 'assistant', content: '## Partial failure', responseKind: 'result',
+      incomplete: true, stopReason: 'error', isStreaming: false,
+    };
+    window.__turn.textSegments = [{
+      key: 'contradictory', content: contradictoryMessage.content,
+      kind: 'result', explicitKind: true, isStreaming: false,
+    }];
+    window.__turn.messages = [contradictoryMessage];
+    window.__turn.textContent = contradictoryMessage.content;
+    window.__finalizeTurnResponseSegments(window.__turn);
+  });
+  await expect(result).toHaveCount(0);
+  await expect(page.locator('.turn-response-progress h2')).toHaveText('Partial failure');
+
+  await page.evaluate(() => {
+    window.__turn.textSegments = [
+      { key: 'progress', content: 'Inspecting files.', kind: 'progress', explicitKind: true, isStreaming: false },
+      { key: 'result', content: '## 改动', kind: 'result', explicitKind: true, isStreaming: false },
+    ];
+    window.__turn.messages = [];
+    window.__turn.textContent = 'Inspecting files.\n\n## 改动';
+  });
+  await expect(result.locator('h2')).toHaveText('改动');
 
   await progressToggle.focus();
   await expect(progressToggle).toBeFocused();

@@ -9,6 +9,8 @@ function responseText(content) {
     .join('');
 }
 
+const FAILED_RESPONSE_REASONS = new Set(['aborted', 'errored', 'error', 'cancelled', 'canceled']);
+
 function matchesTurn(row, event) {
   if (!row || row.type !== 'assistant') return false;
   const rowSessionId = row.sessionId ?? row.groupId ?? null;
@@ -72,11 +74,10 @@ export function finalizeTurnResponseSegments(turn) {
     || segments.some(segment => segment.isStreaming === true)
     || messages.some(message => message?.isStreaming === true || message?.status === 'pending');
   const endedUnsuccessfully = messages.some(message => (
-    message?.status === 'aborted'
-    || message?.status === 'errored'
-    || message?.status === 'cancelled'
-    || message?.turnEndReason === 'aborted'
-    || message?.turnEndReason === 'errored'
+    message?.incomplete === true
+    || FAILED_RESPONSE_REASONS.has(message?.status)
+    || FAILED_RESPONSE_REASONS.has(message?.turnEndReason)
+    || FAILED_RESPONSE_REASONS.has(message?.stopReason)
   ));
 
   // A persisted responseKind cannot make an in-flight or failed turn successful.
