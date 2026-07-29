@@ -1,13 +1,24 @@
 import { randomUUID } from 'crypto';
 import { CONFIG } from '../config.js';
-import { sessionDb, messageDb, userDb, yeaftSessionDb } from '../database.js';
+import {
+  sessionDb,
+  messageDb,
+  userDb,
+  yeaftSessionDb,
+  sessionUiMetadataDb,
+} from '../database.js';
 import { agents, pendingFiles, trackUserTurn, webClients } from '../context.js';
 import {
   sendToWebClient, forwardToAgent,
-  broadcastAgentList, verifyConversationOwnership, verifyAgentOwnership
+  broadcastAgentList, broadcastSessionCatalog,
+  verifyConversationOwnership, verifyAgentOwnership
 } from '../ws-utils.js';
 import { routeSessionPin } from './session-pin-router.js';
 import { recordPerfTraceEvent } from '../perf-trace.js';
+import {
+  chatCatalogKey,
+  yeaftCatalogKey,
+} from '../session-catalog.js';
 
 
 function isRetiredCollabSessionId(id) {
@@ -31,6 +42,22 @@ async function broadcastSessionPin(userId, payload) {
     if (!CONFIG.skipAuth && target.userId !== userId) continue;
     await sendToWebClient(target, payload);
   }
+}
+
+function persistSessionPin(userId, routeRef, pinned) {
+  const { runtimeProvider, agentId, sessionId } = routeRef;
+  const catalogKey = runtimeProvider === 'yeaft'
+    ? yeaftCatalogKey(agentId, sessionId)
+    : chatCatalogKey(sessionId);
+  const current = sessionUiMetadataDb.get(userId, catalogKey);
+  return sessionUiMetadataDb.applyBatch(userId, [{
+    catalogKey,
+    runtimeProvider,
+    agentId,
+    sessionId,
+    pinned,
+    sortRank: current?.sortRank ?? null,
+  }]);
 }
 
 export function groupOnlineYeaftSessions(rows, agentRegistry = agents) {
@@ -289,44 +316,58 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
     }
 
     case 'delete_conversation': {
-      if (!client.currentAgent) return;
-
-      // ★ DB cleanup: always execute regardless of agent online status
-      // Use verifyConversationOwnership (checks DB) instead of checkAgentAccess (requires agent in memory)
-      // This ensures close/delete works even when the agent is offline
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId)) {
-        console.warn(`[Security] User ${client.userId} attempted to delete conversation ${msg.conversationId} they don't own`);
-        await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
+      const persisted = sessionDb.get(msg.conversationId);
+      const deleteAgentId = msg.agentId || persisted?.agent_id || client.currentAgent;
+      if (!deleteAgentId) return;
+      if (!CONFIG.skipAuth && (!verifyConversationOwnership(msg.conversationId, client.userId, client.role)
+        || (agents.has(deleteAgentId) && !verifyAgentOwnership(deleteAgentId, client.userId, client.role))
+        || (persisted?.agent_id && persisted.agent_id !== deleteAgentId))) {
+        console.warn(`[Security] User ${client.userId} attempted to delete conversation ${msg.conversationId} on agent ${deleteAgentId}`);
+        await sendToWebClient(client, {
+          type: 'conversation_delete_result',
+          requestId: msg.requestId || null,
+          conversationId: msg.conversationId,
+          agentId: deleteAgentId,
+          ok: false,
+          error: 'Permission denied',
+        });
         return;
       }
 
-      // Always deactivate in DB — this is the critical fix
       try {
         sessionDb.setActive(msg.conversationId, false);
+        const deleteAgent = agents.get(deleteAgentId);
+        deleteAgent?.conversations.delete(msg.conversationId);
+        await broadcastAgentList();
+        if (deleteAgent?.ws?.readyState === 1) {
+          await forwardToAgent(deleteAgentId, {
+            type: 'delete_conversation',
+            conversationId: msg.conversationId,
+          });
+        }
+        await sendToWebClient(client, {
+          type: 'conversation_delete_result',
+          requestId: msg.requestId || null,
+          conversationId: msg.conversationId,
+          agentId: deleteAgentId,
+          ok: true,
+        });
       } catch (e) {
         console.error('Failed to deactivate session in database:', e.message);
-      }
-
-      // Remove from agent's in-memory conversations (if agent is online)
-      const deleteAgent = agents.get(client.currentAgent);
-      if (deleteAgent) {
-        deleteAgent.conversations.delete(msg.conversationId);
-      }
-      await broadcastAgentList();
-
-      // Forward to agent for resource cleanup (terminals, processes, etc.) — best effort
-      // Only attempt if agent is online with an open WebSocket
-      if (deleteAgent?.ws?.readyState === 1) {
-        await forwardToAgent(client.currentAgent, {
-          type: 'delete_conversation',
-          conversationId: msg.conversationId
+        await sendToWebClient(client, {
+          type: 'conversation_delete_result',
+          requestId: msg.requestId || null,
+          conversationId: msg.conversationId,
+          agentId: deleteAgentId,
+          ok: false,
+          error: e.message,
         });
       }
       break;
     }
 
     case 'select_conversation':
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} attempted to select conversation ${msg.conversationId} they don't own`);
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
@@ -361,12 +402,116 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       } catch (e) {
         console.warn('[Server] yeaftSessionDb reorder failed:', e?.message || e);
       }
+      if (ok) await broadcastSessionCatalog(client.userId);
       await sendToWebClient(client, {
         type: 'session_crud_result',
         op: 'reorder',
         requestId: msg.requestId,
         ...(agentId ? { agentId } : {}),
         ok,
+      });
+      break;
+    }
+
+    case 'reorder_session_catalog': {
+      if (!client.userId || !Array.isArray(msg.sessions)) break;
+      const updates = [];
+      for (const [index, item] of msg.sessions.entries()) {
+        const routeRef = item?.routeRef;
+        if (!item?.catalogKey || !routeRef?.runtimeProvider) { updates.length = 0; break; }
+        const { runtimeProvider, agentId, sessionId } = routeRef;
+        let expectedCatalogKey = null;
+        if (runtimeProvider === 'yeaft') {
+          if (!agentId || !sessionId || !yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) {
+            updates.length = 0;
+            break;
+          }
+          expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
+        } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
+          if (!agentId || !sessionId
+            || (!CONFIG.skipAuth && !verifyConversationOwnership(sessionId, client.userId, client.role))) {
+            updates.length = 0;
+            break;
+          }
+          const row = sessionDb.get(sessionId);
+          if (!row || row.agent_id !== agentId || (row.provider || 'claude-code') !== runtimeProvider) {
+            updates.length = 0;
+            break;
+          }
+          expectedCatalogKey = chatCatalogKey(sessionId);
+        }
+        if (expectedCatalogKey !== item.catalogKey) { updates.length = 0; break; }
+        updates.push({
+          catalogKey: expectedCatalogKey,
+          runtimeProvider,
+          agentId,
+          sessionId,
+          pinned: item.pinned === true,
+          sortRank: index,
+        });
+      }
+      let persisted = false;
+      if (updates.length === msg.sessions.length && updates.length > 0) {
+        try {
+          persisted = sessionUiMetadataDb.applyBatch(client.userId, updates);
+          if (persisted) await broadcastSessionCatalog(client.userId);
+        } catch (e) {
+          console.warn('[Server] Session catalog reorder failed:', e?.message || e);
+        }
+      }
+      await sendToWebClient(client, {
+        type: 'session_catalog_reorder_result',
+        requestId: msg.requestId || null,
+        ok: persisted,
+        ...(!persisted ? { error: 'Permission denied or stale Session route' } : {}),
+      });
+      break;
+    }
+
+    case 'set_session_ui_metadata': {
+      if (!client.userId || !msg.catalogKey || !msg.routeRef?.runtimeProvider) break;
+      const { runtimeProvider, agentId, sessionId } = msg.routeRef;
+      let expectedCatalogKey = null;
+      if (runtimeProvider === 'yeaft') {
+        if (agentId && sessionId && yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) {
+          expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
+        }
+      } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
+        const row = sessionId ? sessionDb.get(sessionId) : null;
+        if (agentId && sessionId
+          && (CONFIG.skipAuth || verifyConversationOwnership(sessionId, client.userId, client.role))
+          && row?.agent_id === agentId
+          && (row.provider || 'claude-code') === runtimeProvider) {
+          expectedCatalogKey = chatCatalogKey(sessionId);
+        }
+      }
+      const authorized = expectedCatalogKey === msg.catalogKey;
+      let persisted = false;
+      if (authorized) {
+        try {
+          persisted = sessionUiMetadataDb.applyBatch(client.userId, [{
+            catalogKey: expectedCatalogKey,
+            runtimeProvider,
+            agentId,
+            sessionId,
+            pinned: msg.pinned === true,
+            sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
+          }]);
+          if (persisted) await broadcastSessionCatalog(client.userId);
+        } catch (e) {
+          console.warn('[Server] Session metadata update failed:', e?.message || e);
+        }
+      }
+      await sendToWebClient(client, {
+        type: 'session_ui_metadata_updated',
+        requestId: msg.requestId || null,
+        ok: persisted,
+        catalogKey: msg.catalogKey,
+        routeRef: msg.routeRef,
+        ...(persisted ? {
+          pinned: msg.pinned === true,
+          sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
+        } : { error: 'Permission denied or stale Session route' }),
       });
       break;
     }
@@ -388,22 +533,17 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         }
         const isPinned = msg.type === 'pin_session';
         try {
-          const ok = yeaftSessionDb.setPinnedForAgent(
-            client.userId,
-            explicitYeaftAgentId,
-            {
-              id: msg.conversationId,
-              name: msg.sessionName || msg.conversationId,
-              workDir: msg.workDir || '',
-            },
-            isPinned,
-          );
-          if (!ok) {
+          const row = yeaftSessionDb.getForAgent(client.userId, explicitYeaftAgentId, msg.conversationId);
+          if (!row || !persistSessionPin(client.userId, {
+            runtimeProvider: 'yeaft',
+            agentId: explicitYeaftAgentId,
+            sessionId: msg.conversationId,
+          }, isPinned)) {
             console.warn(`[Server] Unauthorized yeaft pin ${msg.conversationId} by ${client.userId}`);
             break;
           }
         } catch (e) {
-          console.warn(`[Server] yeaftSessionDb.setPinnedForAgent failed for ${msg.conversationId}:`, e?.message || e);
+          console.warn(`[Server] Yeaft Session pin failed for ${msg.conversationId}:`, e?.message || e);
           break;
         }
         await broadcastSessionPin(client.userId, {
@@ -413,13 +553,14 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           sessionKind: 'yeaft',
           pinned: isPinned,
         });
+        await broadcastSessionCatalog(client.userId);
         break;
       }
 
       const route = routeSessionPin(
         {
-          getYeaftRow: (id) => yeaftSessionDb.get(id),
-          verifyChatOwnership: (id, userId) => verifyConversationOwnership(id, userId),
+          getYeaftRows: (id) => yeaftSessionDb.getAllById(id),
+          verifyChatOwnership: (id, userId) => verifyConversationOwnership(id, userId, client.role),
           skipAuth: CONFIG.skipAuth,
         },
         client,
@@ -433,24 +574,45 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         break;
       }
       if (route.kind === 'yeaft') {
-        try { yeaftSessionDb.setPinned(route.id, route.isPinned); }
-        catch (e) { console.warn(`[Server] yeaftSessionDb.setPinned failed for ${route.id}:`, e?.message || e); }
-        await sendToWebClient(client, { type: 'session_pinned', conversationId: route.id, pinned: route.isPinned });
+        try {
+          persistSessionPin(client.userId, {
+            runtimeProvider: 'yeaft',
+            agentId: route.agentId,
+            sessionId: route.id,
+          }, route.isPinned);
+        } catch (e) {
+          console.warn(`[Server] Yeaft Session pin failed for ${route.id}:`, e?.message || e);
+          break;
+        }
+        await sendToWebClient(client, {
+          type: 'session_pinned',
+          conversationId: route.id,
+          agentId: route.agentId,
+          sessionKind: 'yeaft',
+          pinned: route.isPinned,
+        });
+        await broadcastSessionCatalog(client.userId);
         break;
       }
       // route.kind === 'chat'
       try {
-        sessionDb.setPinned(route.id, route.isPinned);
+        const row = sessionDb.get(route.id);
+        persistSessionPin(client.userId, {
+          runtimeProvider: row?.provider || 'claude-code',
+          agentId: row?.agent_id || null,
+          sessionId: route.id,
+        }, route.isPinned);
         // If pinning, also ensure session is active (reactivate if it was auto-deactivated)
         if (route.isPinned) sessionDb.setActive(route.id, true);
-      } catch (e) { /* ignore */ }
+      } catch (e) { break; }
       await sendToWebClient(client, { type: 'session_pinned', conversationId: route.id, pinned: route.isPinned });
+      await broadcastSessionCatalog(client.userId);
       break;
     }
 
     case 'sync_messages':
       if (msg.conversationId) {
-        if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId)) {
+        if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId, client.role)) {
           console.warn(`[Security] User ${client.userId} attempted to sync messages for conversation ${msg.conversationId} they don't own`);
           return;
         }
@@ -486,9 +648,17 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
 
           const total = messageDb.getCount(msg.conversationId);
           console.log(`[sync_messages] Found ${messages.length} messages (total=${total}, hasMore=${hasMore})`);
+          const mode = msg.afterMessageId !== undefined && msg.afterMessageId !== null
+            ? 'delta'
+            : (msg.beforeId ? 'older' : 'recent');
           await sendToWebClient(client, {
             type: 'sync_messages_result',
             conversationId: msg.conversationId,
+            catalogKey: chatCatalogKey(msg.conversationId),
+            requestId: msg.requestId || null,
+            mode,
+            cursor: msg.beforeId ?? msg.afterMessageId ?? null,
+            afterMessageId: msg.afterMessageId ?? null,
             messages,
             hasMore,
             total
@@ -509,7 +679,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
 
       // Ownership check when explicit conversationId is provided
       if (msg.conversationId && !CONFIG.skipAuth) {
-        if (!verifyConversationOwnership(msg.conversationId, client.userId)) {
+        if (!verifyConversationOwnership(msg.conversationId, client.userId, client.role)) {
           await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
           return;
         }
@@ -684,7 +854,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (!client.currentAgent) return;
       if (!await checkAgentAccess(client.currentAgent)) return;
       const cancelConvId = msg.conversationId || client.currentConversation;
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(cancelConvId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(cancelConvId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} cancel denied for ${cancelConvId}`);
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
@@ -701,7 +871,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (!refreshAgent) return;
       if (!await checkAgentAccess(refreshAgent)) return;
       const refreshConvId = msg.conversationId || client.currentConversation;
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(refreshConvId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(refreshConvId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} refresh denied for ${refreshConvId}`);
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
@@ -746,11 +916,14 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
     }
 
     case 'update_conversation_settings': {
-      if (!client.currentAgent) return;
-      if (!await checkAgentAccess(client.currentAgent)) return;
       const settingsConvId = msg.conversationId || client.currentConversation;
-      if (!settingsConvId) return;
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(settingsConvId, client.userId)) {
+      const settingsRow = settingsConvId ? sessionDb.get(settingsConvId) : null;
+      const settingsAgentId = msg.agentId || settingsRow?.agent_id || client.currentAgent;
+      if (!settingsConvId || !settingsAgentId) return;
+      if (msg.disallowedTools !== undefined && !await checkAgentAccess(settingsAgentId)) return;
+      if (!CONFIG.skipAuth && (!verifyConversationOwnership(settingsConvId, client.userId, client.role)
+        || (agents.has(settingsAgentId) && !verifyAgentOwnership(settingsAgentId, client.userId, client.role))
+        || (settingsRow?.agent_id && settingsRow.agent_id !== settingsAgentId))) {
         console.warn(`[Security] User ${client.userId} settings update denied for ${settingsConvId}`);
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
@@ -762,7 +935,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       // line 351 silently clobbers the user's renamed title the next
       // time `convInfo.customTitle` is reset to undefined.
       if (msg.title !== undefined) {
-        const titleAgent = agents.get(client.currentAgent);
+        const titleAgent = agents.get(settingsAgentId);
         const titleConvInfo = titleAgent?.conversations.get(settingsConvId);
         if (msg.title) {
           sessionDb.update(settingsConvId, { title: msg.title, isCustomTitle: 1 });
@@ -776,12 +949,13 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       }
       // Only forward to agent if disallowedTools present
       if (msg.disallowedTools) {
-        await forwardToAgent(client.currentAgent, {
+        await forwardToAgent(settingsAgentId, {
           type: 'update_conversation_settings',
           conversationId: settingsConvId,
           disallowedTools: msg.disallowedTools
         });
       }
+      if (msg.title !== undefined) await broadcastSessionCatalog(client.userId);
       break;
     }
 
@@ -790,7 +964,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (!await checkAgentAccess(client.currentAgent)) return;
       const answerConvId = msg.conversationId || client.currentConversation;
       if (!answerConvId) return;
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(answerConvId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(answerConvId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} ask_user_answer denied for ${answerConvId}`);
         return;
       }
@@ -841,7 +1015,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         await sendToWebClient(client, { type: 'btw_error', error: 'No conversation selected' });
         return;
       }
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(btwConvId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(btwConvId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} btw_question denied for ${btwConvId}`);
         await sendToWebClient(client, { type: 'btw_error', conversationId: btwConvId, error: 'Permission denied' });
         return;

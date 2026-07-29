@@ -19,7 +19,7 @@
  * or op=archive.
  */
 
-import { stmts } from './connection.js';
+import { stmts, transaction } from './connection.js';
 
 function safeJsonParse(s, fallback) {
   if (s == null || s === '') return fallback;
@@ -140,6 +140,11 @@ export const yeaftSessionDb = {
     return mapRow(stmts.getYeaftSession.get(id));
   },
 
+  getAllById(id) {
+    if (!id) return [];
+    return stmts.getYeaftSessionsById.all(id).map(mapRow);
+  },
+
   getForAgent(userId, agentId, id) {
     if (!userId || !agentId || !id) return null;
     return mapRow(stmts.getYeaftSessionForAgent.get(id, userId, agentId));
@@ -200,11 +205,14 @@ export const yeaftSessionDb = {
       ordered.push(id);
     }
     if (ordered.length === 0) return false;
-    const now = Date.now();
-    ordered.forEach((id, index) => {
-      stmts.setYeaftSessionSortOrder.run(index, now, id, userId, agentId);
-    });
-    return true;
+    return transaction(() => {
+      const now = Date.now();
+      ordered.forEach((id, index) => {
+        const result = stmts.setYeaftSessionSortOrder.run(index, now, id, userId, agentId);
+        if (result.changes !== 1) throw new Error('Yeaft Session identity changed during reorder');
+      });
+      return true;
+    })();
   },
 
   setOrderForUser(userId, sessions) {
@@ -227,11 +235,14 @@ export const yeaftSessionDb = {
       ordered.push({ agentId, sessionId });
     }
     if (ordered.length === 0) return false;
-    const now = Date.now();
-    ordered.forEach(({ agentId, sessionId }, index) => {
-      stmts.setYeaftSessionSortOrder.run(index, now, sessionId, userId, agentId);
-    });
-    return true;
+    return transaction(() => {
+      const now = Date.now();
+      ordered.forEach(({ agentId, sessionId }, index) => {
+        const result = stmts.setYeaftSessionSortOrder.run(index, now, sessionId, userId, agentId);
+        if (result.changes !== 1) throw new Error('Yeaft Session identity changed during reorder');
+      });
+      return true;
+    })();
   },
 
   /**

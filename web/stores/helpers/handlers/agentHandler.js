@@ -5,6 +5,7 @@
 
 import { isRecentlyClosed, stopProcessingWatchdog } from '../watchdog.js';
 import { clearSessionLoading, restorePanels } from '../session.js';
+import { maxDbMessageId } from '../messages.js';
 
 /**
  * Decide whether the current Yeaft agent just RESTARTED (a fresh process),
@@ -69,11 +70,7 @@ export function restoreLastViewedConversation(store, agentSetup) {
   store.sendWsMessage({ type: 'select_conversation', conversationId: lastViewed });
 
 
-  store.sendWsMessage({
-    type: 'sync_messages',
-    conversationId: lastViewed,
-    turns: 5
-  });
+  store.requestChatHistory?.(lastViewed, { mode: 'recent', turns: 5 });
   store.sendWsMessage({ type: 'refresh_conversation', conversationId: lastViewed });
 
   return true;
@@ -341,20 +338,15 @@ export function handleAgentList(store, msg) {
         // broadcastAgentList -> select/sync/refresh -> agent status update ->
         // broadcastAgentList. Keep it edge-triggered like Yeaft catch-up.
         const currentMsgs = store.messagesMap[store.currentConversation] || [];
-        if (currentMsgs.length > 0) {
-          const lastMessageId = currentMsgs[currentMsgs.length - 1]?.id;
+        const lastMessageId = maxDbMessageId(currentMsgs);
+        if (lastMessageId != null) {
           console.log('[Reconnect] Requesting missed messages after:', lastMessageId);
-          store.sendWsMessage({
-            type: 'sync_messages',
-            conversationId: store.currentConversation,
-            afterMessageId: lastMessageId
+          store.requestChatHistory?.(store.currentConversation, {
+            mode: 'delta',
+            afterMessageId: lastMessageId,
           });
         } else {
-          store.sendWsMessage({
-            type: 'sync_messages',
-            conversationId: store.currentConversation,
-            turns: 5
-          });
+          store.requestChatHistory?.(store.currentConversation, { mode: 'recent', turns: 5 });
         }
         store.sendWsMessage({
           type: 'refresh_conversation',

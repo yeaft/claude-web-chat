@@ -96,6 +96,11 @@ export const sessionDb = {
     return stmts.getSessionsByUserAndAgent.all(userId, agentId, limit).map(mapRow);
   },
 
+  hasOwnedRoute(userId, agentId) {
+    if (!userId || !agentId) return false;
+    return !!stmts.hasSessionOwnedByUserAndAgent.get(userId, agentId);
+  },
+
   getAll(limit = 100) {
     return stmts.getAllSessions.all(limit).map(mapRow);
   },

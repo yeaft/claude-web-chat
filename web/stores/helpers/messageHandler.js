@@ -162,6 +162,25 @@ export function handleMessage(store, msg) {
       break;
     }
 
+    case 'session_catalog_snapshot':
+      store.applySessionCatalogSnapshot(msg.catalog);
+      break;
+
+    case 'session_ui_metadata_updated': {
+      if (!store.finishSessionCatalogMutation?.(msg)) break;
+      if (msg.ok !== true) break;
+      const row = store.sessionCatalog.find(item => item.catalogKey === msg.catalogKey);
+      if (row) {
+        row.pinned = msg.pinned === true;
+        row.sortRank = Number.isFinite(msg.sortRank) ? msg.sortRank : null;
+      }
+      break;
+    }
+
+    case 'session_catalog_reorder_result':
+      store.finishSessionCatalogMutation?.(msg);
+      break;
+
     case 'agent_selected':
       handleAgentSelected(store, msg);
       if (store.workCenterOpen && store.workCenterAgentId) {
@@ -226,6 +245,10 @@ export function handleMessage(store, msg) {
 
     case 'conversation_deleted':
       handleConversationDeleted(store, msg);
+      break;
+
+    case 'conversation_delete_result':
+      if (msg.ok) handleConversationDeleted(store, msg);
       break;
 
     case 'turn_completed':

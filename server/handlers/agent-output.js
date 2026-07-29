@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { messageDb, yeaftSessionDb } from '../database.js';
-import { broadcastAgentList, forwardToClients, sendToAgent, sendToWebClient } from '../ws-utils.js';
+import { broadcastAgentList, broadcastSessionCatalog, forwardToClients, sendToAgent, sendToWebClient } from '../ws-utils.js';
 import { webClients, previewFiles } from '../context.js';
 import { CONFIG } from '../config.js';
 import { yeaftAssetStore } from '../yeaft-asset-store.js';
@@ -802,6 +802,7 @@ export async function handleAgentOutput(agentId, agent, msg) {
       // snapshot per connected client.
       const syncedEvent = syncYeaftSessionMetadata(agentId, agent, msg);
       const decoratedSessions = syncedEvent.sessions;
+      await broadcastSessionCatalog(agent.ownerId);
       // Relay verbatim to web (agentId stamped so the web sessions store
       // can merge per-agent rosters).
       for (const [, c] of webClients) {
@@ -866,6 +867,11 @@ export async function handleAgentOutput(agentId, agent, msg) {
       // sessions, and that response must carry persisted server-side pin
       // state before it hits the web store.
       const outboundMsg = syncYeaftSessionMetadata(agentId, agent, msg);
+      // CRUD acknowledgements are not authoritative catalog snapshots. The
+      // agent emits session_list_updated after mutations; broadcast only after
+      // that reconciliation so create/rename cannot briefly project stale data.
+      const catalogChanged = outboundMsg?.op === 'list';
+      if (catalogChanged) await broadcastSessionCatalog(agent.ownerId);
       for (const [, c] of webClients) {
         if (c.authenticated && (CONFIG.skipAuth || c.userId === agent.ownerId)) {
           await sendToWebClient(c, { ...outboundMsg, agentId: agentId });

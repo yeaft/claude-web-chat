@@ -23,12 +23,13 @@ import SidebarModeToggle from './SidebarModeToggle.js';
 import SidebarAgentHeader from './SidebarAgentHeader.js';
 import SidebarWorkCenter from './SidebarWorkCenter.js';
 import SessionSidebarShell from './SessionSidebarShell.js';
+import UnifiedSessionList from './UnifiedSessionList.js';
 import { shortenPath } from '../utils/path-display.js';
 import { buildYeaftSidebarSessionList } from '../stores/helpers/yeaft-sidebar-sessions.js';
 
 export default {
   name: 'YeaftSidebar',
-  components: { SessionCreateModal, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell },
+  components: { SessionCreateModal, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell, UnifiedSessionList },
   emits: ['select-group', 'select-chat', 'toggle-sidebar', 'back', 'open-settings', 'open-group-settings'],
   template: `
     <SessionSidebarShell class="yeaft-sidebar" :collapsed="collapsed">
@@ -67,7 +68,7 @@ export default {
             @upgrade-agent="upgradeAgent"
           />
           <div class="sidebar-header-actions">
-            <SidebarModeToggle view="yeaft" @flip="onModeFlip" />
+            <SidebarModeToggle v-if="!chatStore || !chatStore.sessionCatalogLoaded" view="yeaft" @flip="onModeFlip" />
             <button class="sidebar-icon-btn" :title="tr('chat.sidebar.collapse', 'Collapse')" @click="$emit('toggle-sidebar')">
               <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 18h13v-2H3v2zm0-5h10v-2H3v2zm0-7v2h13V6H3zm18 9.59L17.42 12 21 8.41 19.59 7l-5 5 5 5L21 15.59z"/></svg>
             </button>
@@ -86,9 +87,18 @@ export default {
         @open="onOpenWorkCenter"
       />
 
-      <div class="us-scroll us-scroll-flush">
-        <!-- Parity with Chat sidebar: session-tab-bar (single Chat tab,
-             session-item rows reusing sidebar.css classes. -->
+      <UnifiedSessionList
+        v-if="chatStore && chatStore.sessionCatalogLoaded"
+        :sessions="chatStore.sessionCatalog"
+        :active-catalog-key="chatStore.activeCatalogKey"
+        @select="chatStore.openCatalogSession"
+        @create-chat="onOpenChatCreate"
+        @create-yeaft="onOpenSessionCreate"
+        @action="onUnifiedSessionAction"
+      />
+
+      <div v-else class="us-scroll us-scroll-flush">
+        <!-- Legacy Yeaft list stays available until the catalog snapshot arrives. -->
         <div class="session-tab-bar">
           <div class="session-tab session-tab-solo active">
             <svg class="session-tab-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
@@ -232,6 +242,15 @@ export default {
     } catch (_) { /* no-fetch test env */ }
   },
   mounted() {
+    if (this.chatStore?.openUnifiedSessionCreate) {
+      this.chatStore.openUnifiedSessionCreate = false;
+      this.sessionCreateOpen = true;
+    }
+    if (this.chatStore?.pendingUnifiedSessionSettings) {
+      const pending = this.chatStore.pendingUnifiedSessionSettings;
+      this.chatStore.pendingUnifiedSessionSettings = null;
+      this.openGroupSettings({ id: pending.sessionId, agentId: pending.agentId }, pending.section || 'session');
+    }
     this._agentUpgradeAckHandler = (e) => {
       const { agentId, success, error, alreadyLatest, version, reason, currentNode, requiredNode } = e.detail || {};
       if (!agentId) return;
@@ -413,6 +432,36 @@ export default {
     // onSessionRestored are gone (folded into SessionCreateModal's own
     // `created` flow).
     onOpenSessionCreate() { this.sessionCreateOpen = true; },
+    onOpenChatCreate() {
+      const s = this.chatStore || this.store;
+      if (!s) return;
+      s.openUnifiedChatCreate = true;
+      s.leaveYeaft();
+    },
+    onUnifiedSessionAction({ action, row, title, sessions } = {}) {
+      if (!row?.routeRef) return;
+      const s = this.chatStore || this.store;
+      const { runtimeProvider, agentId, sessionId } = row.routeRef;
+      if (action === 'rename') {
+        s?.renameCatalogSession?.({ row, title });
+      } else if (action === 'reorder') {
+        s?.reorderCatalogSessions?.(sessions);
+      } else if (action === 'pin') {
+        s?.toggleCatalogSessionPin?.(row);
+      } else if (runtimeProvider === 'yeaft' && action === 'settings') {
+        this.openGroupSettings({ id: sessionId, agentId }, 'session');
+      } else if (runtimeProvider === 'yeaft' && action === 'remove') {
+        this.onRemoveFromList({ id: sessionId, agentId });
+      } else if (action === 'split') {
+        s?.leaveYeaft?.();
+        s?.splitToPanel?.(sessionId);
+      } else if (action === 'remove') {
+        if (confirm(this.$t('chat.delete.confirm'))) {
+          s?.leaveYeaft?.();
+          s?.closeSession?.(sessionId, agentId);
+        }
+      }
+    },
     onSessionCreated(_group) {
       // groups store auto-activates via applyCrudResult; modal closes itself.
     },

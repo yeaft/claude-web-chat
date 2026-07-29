@@ -14,6 +14,13 @@ import { incVpTyping, decVpTyping } from './helpers/vp-typing.js';
 import { selectActiveConversationId } from './helpers/active-conv.js';
 import { trimDebugRetention } from './helpers/debug-retention.js';
 import {
+  beginCatalogMutation,
+  beginChatHistoryRequest,
+  cancelChatHistoryRequest,
+  chatCatalogKey,
+  finishCatalogMutation,
+} from './helpers/session-catalog.js';
+import {
   applyWorkItemSummary,
   isWorkItemDetailResponseStale,
   isWorkItemDetailStale,
@@ -474,6 +481,16 @@ export const useChatStore = defineStore('chat', {
     // ★ Phase 6: 消息分页状态
     hasMoreMessages: false,
     loadingMoreMessages: false,
+    chatHistoryRequests: {},
+    chatHistoryRequestIdSupported: null,
+    chatHistoryConnectionGeneration: 0,
+    sessionCatalog: [],
+    sessionCatalogLoaded: false,
+    sessionCatalogMutationRequests: {},
+    activeCatalogKey: null,
+    openUnifiedSessionCreate: false,
+    openUnifiedChatCreate: false,
+    pendingUnifiedSessionSettings: null,
     // Yeaft 分页状态 (parallel to the Chat-mode flags above):
     //  - yeaftHasMoreHistory: server told us there's at least one earlier
     //    turn for the active group that we haven't loaded yet.
@@ -5294,6 +5311,135 @@ export const useChatStore = defineStore('chat', {
       this.activeRightPanel = value;
     },
 
+    applySessionCatalogSnapshot(rows) {
+      const seen = new Set();
+      this.sessionCatalog = (Array.isArray(rows) ? rows : []).filter(row => {
+        if (!row?.catalogKey || seen.has(row.catalogKey)) return false;
+        seen.add(row.catalogKey);
+        return true;
+      });
+      this.sessionCatalogLoaded = true;
+    },
+    toggleCatalogSessionPin(row) {
+      if (!row?.catalogKey || !row?.routeRef
+        || Object.keys(this.sessionCatalogMutationRequests).length > 0) return false;
+      const requestId = `session_ui_${crypto.randomUUID()}`;
+      const previousCatalog = beginCatalogMutation(this, requestId);
+      const nextPinned = !row.pinned;
+      row.pinned = nextPinned;
+      const sent = this.sendWsMessage({
+        type: 'set_session_ui_metadata',
+        requestId,
+        catalogKey: row.catalogKey,
+        routeRef: row.routeRef,
+        pinned: nextPinned,
+        sortRank: Number.isFinite(row.sortRank) ? row.sortRank : null,
+      });
+      if (!sent) {
+        this.sessionCatalog = previousCatalog;
+        delete this.sessionCatalogMutationRequests[requestId];
+        return false;
+      }
+      return true;
+    },
+    renameCatalogSession({ row, title } = {}) {
+      if (!row?.routeRef || !title) return false;
+      const { runtimeProvider, agentId, sessionId } = row.routeRef;
+      if (runtimeProvider === 'yeaft') {
+        this.sessionCrudRequest('rename', { sessionId, name: title }, { agentId });
+      } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
+        this.renameChatSession(sessionId, title, agentId);
+      } else {
+        return false;
+      }
+      return true;
+    },
+    reorderCatalogSessions(rows) {
+      if (!Array.isArray(rows) || rows.length === 0
+        || Object.keys(this.sessionCatalogMutationRequests).length > 0) return false;
+      const requestId = `session_order_${crypto.randomUUID()}`;
+      const previousCatalog = beginCatalogMutation(this, requestId);
+      this.sessionCatalog = rows.map((row, index) => ({ ...row, sortRank: index }));
+      const sent = this.sendWsMessage({
+        type: 'reorder_session_catalog',
+        requestId,
+        sessions: this.sessionCatalog.map((row, index) => ({
+          catalogKey: row.catalogKey,
+          routeRef: row.routeRef,
+          pinned: !!row.pinned,
+          sortRank: index,
+        })),
+      });
+      if (!sent) {
+        this.sessionCatalog = previousCatalog;
+        delete this.sessionCatalogMutationRequests[requestId];
+        return false;
+      }
+      return true;
+    },
+    finishSessionCatalogMutation(msg) {
+      return finishCatalogMutation(this, msg);
+    },
+    openCatalogSession(descriptor) {
+      if (!descriptor?.catalogKey || !descriptor.routeRef) return false;
+      const { runtimeProvider, agentId, sessionId } = descriptor.routeRef;
+      this.activeCatalogKey = descriptor.catalogKey;
+      if (runtimeProvider === 'yeaft') {
+        this.enterYeaft(agentId);
+        this.setActiveSessionFilter(sessionId, { agentId, force: true });
+        try {
+          const sessions = window.Pinia?.useSessionsStore?.();
+          sessions?.setActive?.(sessionId, agentId);
+        } catch (_) {}
+        return true;
+      }
+      if (runtimeProvider !== 'claude-code' && runtimeProvider !== 'copilot') return false;
+      if (this.currentView === 'yeaft') this.leaveYeaft();
+      this.selectConversation(sessionId, agentId);
+      return true;
+    },
+    requestChatHistory(conversationId, { mode = 'recent', turns = null, beforeId = null, afterMessageId = null } = {}) {
+      if (!conversationId) return null;
+      const catalogKey = chatCatalogKey(conversationId);
+      if (this.chatHistoryRequestIdSupported !== true && this.chatHistoryRequests[catalogKey]?.loading) {
+        return null;
+      }
+      const cursor = beforeId ?? afterMessageId ?? null;
+      const requestId = this.beginChatHistoryRequest(conversationId, mode, cursor);
+      const sent = this.sendWsMessage({
+        type: 'sync_messages',
+        conversationId,
+        ...(turns != null ? { turns } : {}),
+        ...(beforeId != null ? { beforeId } : {}),
+        ...(afterMessageId != null ? { afterMessageId } : {}),
+        requestId,
+      });
+      if (!sent) {
+        cancelChatHistoryRequest(this, catalogKey, requestId, 'send_failed');
+        return null;
+      }
+      return requestId;
+    },
+    beginChatHistoryRequest(conversationId, mode = 'recent', cursor = null) {
+      return beginChatHistoryRequest(this, conversationId, mode, cursor);
+    },
+    isCurrentChatHistoryResponse(msg) {
+      if (!msg?.conversationId || !msg?.requestId || !msg?.catalogKey) return false;
+      const expectedCatalogKey = chatCatalogKey(msg.conversationId);
+      if (msg.catalogKey !== expectedCatalogKey) return false;
+      const pending = this.chatHistoryRequests[expectedCatalogKey];
+      return !!pending
+        && pending.loading === true
+        && pending.requestId === msg.requestId
+        && Number(pending.connectionGeneration || 0) === Number(this.chatHistoryConnectionGeneration || 0);
+    },
+    finishChatHistoryRequest(msg) {
+      if (!this.isCurrentChatHistoryResponse(msg)) return false;
+      const pending = this.chatHistoryRequests[msg.catalogKey];
+      this.chatHistoryRequests[msg.catalogKey] = { ...pending, loading: false };
+      return true;
+    },
+
     isRefreshingSession(convId) {
       if (convId) return !!this.refreshingSessionMap[convId];
       return this.refreshingSession;
@@ -5420,7 +5566,7 @@ export const useChatStore = defineStore('chat', {
     // =====================
     selectAgent(agentId) { convHelpers.selectAgent(this, agentId); },
     createConversation(workDir, agentId = null, disallowedTools = null, options = undefined) { convHelpers.createConversation(this, workDir, agentId, disallowedTools, options); },
-    resumeConversation(claudeSessionId, workDir, agentId = null, disallowedTools = null) { convHelpers.resumeConversation(this, claudeSessionId, workDir, agentId, disallowedTools); },
+    resumeConversation(claudeSessionId, workDir, agentId = null, disallowedToolsOrOptions = null, maybeOptions = null) { convHelpers.resumeConversation(this, claudeSessionId, workDir, agentId, disallowedToolsOrOptions, maybeOptions); },
     selectConversation(conversationId, agentId) { convHelpers.selectConversation(this, conversationId, agentId); },
     updateConversationSettings(conversationId, settings) { convHelpers.updateConversationSettings(this, conversationId, settings); },
     toggleConversationMcp(serverName, enabled) { convHelpers.toggleConversationMcp(this, serverName, enabled); },
@@ -5466,7 +5612,7 @@ export const useChatStore = defineStore('chat', {
                   // Load messages for chat conversations that aren't cached
                   if (panel.conversationId && !this.messagesMap[panel.conversationId]) {
                     this.messagesMap[panel.conversationId] = [];
-                    this.sendWsMessage({ type: 'sync_messages', conversationId: panel.conversationId, turns: 5 });
+                    this.requestChatHistory(panel.conversationId, { mode: 'recent', turns: 5 });
                   }
                 }
                 localStorage.removeItem('splitPanesSaved');
@@ -5519,7 +5665,7 @@ export const useChatStore = defineStore('chat', {
       // Ensure messagesMap entry exists
       if (conversationId && !this.messagesMap[conversationId]) {
         this.messagesMap[conversationId] = [];
-        this.sendWsMessage({ type: 'sync_messages', conversationId, turns: 5 });
+        this.requestChatHistory(conversationId, { mode: 'recent', turns: 5 });
       }
       this.saveOpenSessions();
     },
@@ -5558,7 +5704,7 @@ export const useChatStore = defineStore('chat', {
       // Ensure messagesMap entry exists
       if (!this.messagesMap[conversationId]) {
         this.messagesMap[conversationId] = [];
-        this.sendWsMessage({ type: 'sync_messages', conversationId, turns: 5 });
+        this.requestChatHistory(conversationId, { mode: 'recent', turns: 5 });
       }
       this.saveOpenSessions();
     },
@@ -5808,11 +5954,11 @@ export const useChatStore = defineStore('chat', {
       const msgs = this.messagesMap[this.currentConversation] || [];
       const firstMsgWithId = msgs.find(m => m.dbMessageId);
       const targetConvId = this.currentConversation;
-      this.sendWsMessage({
-        type: 'sync_messages',
-        conversationId: targetConvId,
+      const cursor = firstMsgWithId?.dbMessageId ?? null;
+      this.requestChatHistory(targetConvId, {
+        mode: 'older',
         turns: 5,
-        ...(firstMsgWithId ? { beforeId: firstMsgWithId.dbMessageId } : {})
+        beforeId: cursor,
       });
 
       // feat-chat-load-perf: client-side timeout so the spinner can't get
@@ -6205,22 +6351,16 @@ export const useChatStore = defineStore('chat', {
       this.workbenchMaximized = !this.workbenchMaximized;
     },
 
-    renameChatSession(convId, title) {
-      if (title && title.trim()) {
-        this.customConversationTitles[convId] = title.trim();
-        this.sendWsMessage({
-          type: 'update_conversation_settings',
-          conversationId: convId,
-          title: title.trim()
-        });
-      } else {
-        delete this.customConversationTitles[convId];
-        this.sendWsMessage({
-          type: 'update_conversation_settings',
-          conversationId: convId,
-          title: ''
-        });
-      }
+    renameChatSession(convId, title, agentId = null) {
+      const trimmed = title && title.trim() ? title.trim() : '';
+      if (trimmed) this.customConversationTitles[convId] = trimmed;
+      else delete this.customConversationTitles[convId];
+      this.sendWsMessage({
+        type: 'update_conversation_settings',
+        conversationId: convId,
+        ...(agentId ? { agentId } : {}),
+        title: trimmed,
+      });
     },
 
     openFileInExplorer(filePath) {

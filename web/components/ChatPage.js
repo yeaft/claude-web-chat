@@ -12,6 +12,7 @@ import SidebarModeToggle from './SidebarModeToggle.js';
 import SidebarAgentHeader from './SidebarAgentHeader.js';
 import SidebarWorkCenter from './SidebarWorkCenter.js';
 import SessionSidebarShell from './SessionSidebarShell.js';
+import UnifiedSessionList from './UnifiedSessionList.js';
 import WorkCenterPage from './WorkCenterPage.js';
 import { shortenPath as shortenPathUtil } from '../utils/path-display.js';
 import { getLastPathSegment as _getLastPathSegment, formatResumeDate } from '../utils/path-segments.js';
@@ -21,7 +22,7 @@ import { collapseSidebar } from '../utils/sidebar-collapse.js';
 
 export default {
   name: 'ChatPage',
-  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, WorkCenterPage, SettingsPanel, ExpertPanel, SubAgentPanel, BtwOverlay, SplitPane, ModernSelect, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell },
+  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, WorkCenterPage, SettingsPanel, ExpertPanel, SubAgentPanel, BtwOverlay, SplitPane, ModernSelect, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell, UnifiedSessionList },
   template: `
     <div class="chat-page" :class="{ 'show-sidebar': store.sessionSidebarOpen }">
 
@@ -69,6 +70,7 @@ export default {
             />
             <div class="sidebar-header-actions">
               <SidebarModeToggle
+                v-if="!store.sessionCatalogLoaded"
                 :view="store.currentView"
                 :disabled="onlineAgentCount === 0"
                 @flip="onModeFlip"
@@ -110,7 +112,18 @@ export default {
           @open="store.enterWorkCenter"
         />
 
-        <!-- Session Tab Bar -->
+        <UnifiedSessionList
+          v-if="store.sessionCatalogLoaded"
+          :sessions="store.sessionCatalog"
+          :active-catalog-key="store.activeCatalogKey"
+          @select="store.openCatalogSession"
+          @create-chat="openConversationModal"
+          @create-yeaft="openUnifiedSessionCreate"
+          @action="onUnifiedSessionAction"
+        />
+
+        <template v-else>
+        <!-- Legacy sidebar stays available until the catalog snapshot arrives. -->
         <div class="session-tab-bar">
           <div class="session-tab active session-tab-solo">
             <svg class="session-tab-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
@@ -234,6 +247,7 @@ export default {
             </div>
 
         </div>
+        </template>
         <div class="sidebar-bottom">
           <button class="sidebar-nav-item" @click="showSettingsPanel = true">
             <svg viewBox="0 0 24 24" width="20" height="20"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" fill="currentColor"/></svg>
@@ -571,6 +585,30 @@ export default {
       return sortSessionsByActivity(conversations);
     },
 
+    openUnifiedSessionCreate() {
+      this.store.openUnifiedSessionCreate = true;
+      this.store.enterYeaft();
+    },
+    onUnifiedSessionAction({ action, row, title, sessions } = {}) {
+      if (!row?.routeRef) return;
+      const { runtimeProvider, agentId, sessionId } = row.routeRef;
+      if (action === 'rename') {
+        this.store.renameCatalogSession({ row, title });
+      } else if (action === 'reorder') {
+        this.store.reorderCatalogSessions(sessions);
+      } else if (action === 'pin') {
+        this.store.toggleCatalogSessionPin(row);
+      } else if (action === 'split' && runtimeProvider !== 'yeaft') {
+        this.store.splitToPanel(sessionId);
+      } else if (action === 'remove' && runtimeProvider !== 'yeaft') {
+        if (confirm(this.$t('chat.delete.confirm'))) this.closeSession(sessionId, agentId);
+      } else if (runtimeProvider === 'yeaft' && action === 'remove') {
+        this.store.sessionCrudRequest('archive', { sessionId }, { agentId });
+      } else if (runtimeProvider === 'yeaft' && action === 'settings') {
+        this.store.pendingUnifiedSessionSettings = { sessionId, agentId, section: 'session' };
+        this.store.openCatalogSession(row);
+      }
+    },
     openConversationModal() {
       this.showConversationModal = true;
       this.convModalAgent = '';
@@ -966,6 +1004,10 @@ export default {
     }
   },
   mounted() {
+    if (this.store.openUnifiedChatCreate) {
+      this.store.openUnifiedChatCreate = false;
+      this.openConversationModal();
+    }
     this._clickOutsideHandler = (e) => {
       if (!e.target.closest('.agent-selector')) {
         this.showAgentDropdown = false;

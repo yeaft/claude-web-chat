@@ -79,22 +79,24 @@ export async function applyLlmConfigUpdate(msg, dependencies = {}) {
   return response;
 }
 
+export function applyRegisteredTransport(msg) {
+  if (msg.sessionKey) {
+    ctx.sessionKey = decodeKey(msg.sessionKey);
+    console.log('Encryption enabled');
+  }
+
+  // New servers advertise plaintext acceptance. This mutation is scoped to
+  // the active connection because connect() restores conservative defaults.
+  if (msg.acceptPlaintext === true) {
+    ctx.serverEncryptionRequired = false;
+    console.log('[WS] Server accepts plaintext, disabling outbound encryption');
+  }
+}
+
 export async function handleMessage(msg) {
   switch (msg.type) {
     case 'registered':
-      if (msg.sessionKey) {
-        ctx.sessionKey = decodeKey(msg.sessionKey);
-        console.log('Encryption enabled');
-      }
-
-      // feat-ws-plaintext-negotiation: new server advertises that it
-      // will accept plaintext frames from us. Stop encrypting outbound.
-      // The receive path (parseMessage) stays unconditional so the old
-      // ciphertext that may already be in flight still decrypts.
-      if (msg.acceptPlaintext === true) {
-        ctx.serverEncryptionRequired = false;
-        console.log('[WS] Server accepts plaintext, disabling outbound encryption');
-      }
+      applyRegisteredTransport(msg);
 
       // 只保存基本配置。instanceId 是本地服务实例身份；agentName 只用于展示。
       ctx.saveConfig({

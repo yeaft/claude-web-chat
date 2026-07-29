@@ -2,7 +2,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { CONFIG } from '../../server/config.js';
 import { agents } from '../../server/context.js';
-import { resolveAgentAccessError } from '../../server/ws-utils.js';
+import { sessionDb, yeaftSessionDb, sessionUiMetadataDb } from '../../server/database.js';
+import {
+  buildSessionCatalog,
+  resolveAgentAccessError,
+  verifyConversationOwnership,
+} from '../../server/ws-utils.js';
+import { handleClientConversation } from '../../server/handlers/client-conversation.js';
+import { routeSessionPin } from '../../server/handlers/session-pin-router.js';
 
 describe('resolveAgentAccessError', () => {
   const originalSkipAuth = CONFIG.skipAuth;
@@ -37,5 +44,107 @@ describe('resolveAgentAccessError', () => {
     agents.set('agent-1', { ownerId: 'user-1', ws: { readyState: 3 } });
 
     expect(resolveAgentAccessError('agent-1', 'user-1', 'user')).toBe('Agent not found or offline');
+  });
+
+  it('filters NULL-owner Chat rows by Agent ACL', async () => {
+    CONFIG.skipAuth = false;
+    agents.set('agent-owned', { ownerId: 'user-1', ws: { readyState: 1 } });
+    agents.set('agent-foreign', { ownerId: 'user-2', ws: { readyState: 1 } });
+    agents.set('agent-global', { ownerId: null, ws: { readyState: 1 } });
+    const getActive = sessionDb.getActiveByUser;
+    const getByUser = sessionDb.getByUser;
+    sessionDb.getByUser = () => [];
+    sessionDb.getActiveByUser = () => [
+      { id: 'legacy-owned', user_id: null, agent_id: 'agent-owned', is_active: 1 },
+      { id: 'legacy-foreign', user_id: null, agent_id: 'agent-foreign', is_active: 1 },
+      { id: 'legacy-global', user_id: null, agent_id: 'agent-global', is_active: 1 },
+      { id: 'legacy-offline', user_id: null, agent_id: 'agent-offline', is_active: 1 },
+    ];
+    try {
+      sessionDb.getByUser = () => [{ user_id: 'user-1', agent_id: 'agent-offline' }];
+      expect(buildSessionCatalog('user-1', 'user').map(row => row.catalogKey)).toEqual([
+        'chat:legacy-offline', 'chat:legacy-owned',
+      ]);
+      expect(buildSessionCatalog('user-1', 'admin').map(row => row.catalogKey)).toEqual([
+        'chat:legacy-global', 'chat:legacy-offline', 'chat:legacy-owned',
+      ]);
+
+      agents.clear();
+      const getSession = sessionDb.get;
+      const hasOwnedRoute = sessionDb.hasOwnedRoute;
+      sessionDb.get = () => ({ id: 'legacy-chat', user_id: null, agent_id: 'agent-offline' });
+      sessionDb.hasOwnedRoute = (userId, agentId) => userId === 'user-1' && agentId === 'agent-offline';
+      try {
+        expect(verifyConversationOwnership('legacy-chat', 'user-1', 'user')).toBe(true);
+        expect(verifyConversationOwnership('legacy-chat', 'user-2', 'user')).toBe(false);
+
+        const foreignClient = {
+          userId: 'user-2', role: 'user', currentAgent: null, authenticated: true,
+          ws: { readyState: 1, send() {}, close() {} },
+        };
+        const setActive = sessionDb.setActive;
+        sessionDb.setActive = (...args) => { throw new Error(`unexpected mutation ${args.join(':')}`); };
+        try {
+          await handleClientConversation('foreign-client', foreignClient, {
+            type: 'delete_conversation',
+            conversationId: 'legacy-chat',
+            agentId: 'agent-offline',
+            requestId: 'foreign-delete',
+          }, async () => true);
+        } finally {
+          sessionDb.setActive = setActive;
+        }
+      } finally {
+        sessionDb.get = getSession;
+        sessionDb.hasOwnedRoute = hasOwnedRoute;
+      }
+    } finally {
+      sessionDb.getActiveByUser = getActive;
+      sessionDb.getByUser = getByUser;
+    }
+  });
+
+  it('atomically writes canonical pin metadata without touching a duplicate Yeaft id', () => {
+    const suffix = `${Date.now()}-${Math.random()}`;
+    const userId = `catalog-user-${suffix}`;
+    const username = `catalog-${suffix}`;
+    const now = Date.now();
+    // The production DB module is isolated by the Vitest worker. Use public
+    // APIs so this test exercises the same transaction as the handler.
+    return import('../../server/db/connection.js').then(({ default: sql }) => {
+      sql.prepare('INSERT INTO users (id, username, created_at) VALUES (?, ?, ?)').run(userId, username, now);
+      const chatId = `chat-${suffix}`;
+      sessionDb.create(chatId, 'agent-a', 'A', '/tmp', null, 'Chat', userId, 'copilot');
+      sessionUiMetadataDb.applyBatch(userId, [{
+        catalogKey: `chat:${chatId}`,
+        runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: chatId,
+        pinned: true, sortRank: 1,
+      }]);
+      expect(sessionDb.get(chatId).is_pinned).toBe(1);
+      yeaftSessionDb.upsertFromSnapshot(userId, 'agent-a', { id: `same-${suffix}`, name: 'A' });
+      yeaftSessionDb.upsertFromSnapshot(userId, 'agent-b', { id: `same-${suffix}`, name: 'B' });
+      sessionUiMetadataDb.applyBatch(userId, [{
+        catalogKey: `yeaft:agent-a:same-${suffix}`,
+        runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: `same-${suffix}`,
+        pinned: true, sortRank: 0,
+      }]);
+      expect(yeaftSessionDb.getForAgent(userId, 'agent-a', `same-${suffix}`).pinned).toBe(true);
+      expect(yeaftSessionDb.getForAgent(userId, 'agent-b', `same-${suffix}`).pinned).toBe(false);
+      expect(sessionUiMetadataDb.get(userId, `yeaft:agent-a:same-${suffix}`)).toMatchObject({
+        pinned: true, sortRank: 0,
+      });
+    });
+  });
+
+  it('fails closed when legacy Yeaft pin identity is ambiguous', () => {
+    const result = routeSessionPin({
+      getYeaftRows: () => [
+        { userId: 'user-1', agentId: 'agent-a' },
+        { userId: 'user-1', agentId: 'agent-b' },
+      ],
+      verifyChatOwnership: () => true,
+      skipAuth: false,
+    }, { userId: 'user-1' }, { type: 'pin_session', conversationId: 'same-id' });
+    expect(result).toMatchObject({ kind: 'denied', reason: 'yeaft-ambiguous' });
   });
 });
