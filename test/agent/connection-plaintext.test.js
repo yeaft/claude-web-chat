@@ -14,6 +14,12 @@ import {
 import { buildWindowsUpgradeCommand } from '../../agent/connection/upgrade.js';
 import ctx from '../../agent/context.js';
 import { connect, resetConnectionTransport, sendToServer } from '../../agent/connection/index.js';
+import { parseLocalArgs } from '../../agent/local-run.js';
+import {
+  applyAgentIdentityToEnv,
+  getDefaultAgentName,
+  getInstanceIdFromArgs,
+} from '../../agent/service/config.js';
 import { applyRegisteredTransport } from '../../agent/connection/message-router.js';
 import { generateSessionKey, isEncrypted } from '../../agent/encryption.js';
 
@@ -50,7 +56,25 @@ async function sendToServerUnderTest(ctxLike, msg) {
 }
 
 describe('agent ctx defaults and upgrade contract', () => {
-  it('defaults encryption safely and pins every upgrade fetch to the Yeaft registry', async () => {
+  it('defaults identity and encryption safely and pins every upgrade fetch to the Yeaft registry', async () => {
+    expect(getDefaultAgentName('Dev Box/东')).toBe('Dev-Box--');
+    expect(getDefaultAgentName('')).toBe('default');
+
+    const computerName = getDefaultAgentName();
+    expect(computerName).toMatch(/^[A-Za-z0-9._-]+$/);
+    expect(getInstanceIdFromArgs([], {})).toBe(computerName);
+    expect(parseLocalArgs([])).toEqual({ name: computerName, port: 6868 });
+
+    const env = {};
+    expect(applyAgentIdentityToEnv([], env)).toBe(computerName);
+    expect(env).toEqual({
+      YEAFT_AGENT_INSTANCE: computerName,
+      AGENT_NAME: computerName,
+    });
+
+    expect(getInstanceIdFromArgs(['--name', 'explicit-name'], {})).toBe('explicit-name');
+    expect(() => parseLocalArgs(['--name', 'bad name'])).toThrow('Invalid name');
+
     const agentSource = readFileSync(new URL('../../agent/index.js', import.meta.url), 'utf8');
     const startupCommands = [...agentSource.matchAll(/await execHiddenAsync\(/g)];
     expect(startupCommands).toHaveLength(6);

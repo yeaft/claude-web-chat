@@ -18,6 +18,7 @@ export {
   parseServiceArgs,
   SERVICE_NAME,
   DEFAULT_INSTANCE_ID,
+  getDefaultAgentName,
   normalizeInstanceId,
   isDefaultInstance,
   validateInstanceId,

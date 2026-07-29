@@ -3,12 +3,18 @@
  */
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
-import { platform, homedir } from 'os';
+import { platform, homedir, hostname } from 'os';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const SERVICE_NAME = 'yeaft-agent';
 export const DEFAULT_INSTANCE_ID = 'default';
+
+export function getDefaultAgentName(machineName = hostname()) {
+  const raw = String(machineName || '');
+  if (!raw) return DEFAULT_INSTANCE_ID;
+  return raw.replace(/[^A-Za-z0-9._-]/gu, '-');
+}
 
 /**
  * Load .env file from agent directory (or cwd) into process.env
@@ -77,7 +83,7 @@ export function getInstanceIdFromArgs(args = [], env = process.env) {
     || agentName
     || env.YEAFT_AGENT_INSTANCE
     || env.AGENT_NAME
-    || DEFAULT_INSTANCE_ID,
+    || getDefaultAgentName(),
   );
 }
 
@@ -90,6 +96,8 @@ export function applyAgentIdentityToEnv(args = [], env = process.env) {
       i++;
     }
   }
+
+  if (!env.AGENT_NAME) env.AGENT_NAME = env.YEAFT_AGENT_INSTANCE;
 
   return env.YEAFT_AGENT_INSTANCE;
 }
@@ -189,7 +197,7 @@ export function parseServiceArgs(args) {
   const config = {
     instanceId,
     serverUrl: existing.serverUrl || '',
-    agentName: existing.agentName || '',
+    agentName: existing.agentName || instanceId,
     agentSecret: existing.agentSecret || '',
     workDir: existing.workDir || '',
     yeaftDir: existing.yeaftDir || '',

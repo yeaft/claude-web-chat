@@ -5,12 +5,13 @@ import { createServer } from 'net';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
+import { getDefaultAgentName } from './service/config.js';
 
 const DEFAULT_PORT = 6868;
 const LOCAL_HOST = '127.0.0.1';
 
 export function parseLocalArgs(args) {
-  const options = { name: '', port: DEFAULT_PORT };
+  const options = { name: getDefaultAgentName(), port: DEFAULT_PORT };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     const value = args[i + 1];
@@ -28,7 +29,6 @@ export function parseLocalArgs(args) {
       throw new Error(`Unknown local option: ${arg}`);
     }
   }
-  if (!options.name) throw new Error('local requires --name <name>');
   if (!/^[A-Za-z0-9._-]+$/.test(options.name)) {
     throw new Error('Invalid name: use only letters, numbers, dot, underscore, or hyphen');
   }
