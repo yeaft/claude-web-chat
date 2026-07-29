@@ -20,6 +20,15 @@ export function yeaftCatalogKey(agentId, sessionId) {
   return `yeaft:${agentId}:${sessionId}`;
 }
 
+function timestampValue(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value !== 'string' || !value) return 0;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export function projectSessionCatalog({
   chatSessions = [],
   yeaftSessions = [],
@@ -75,8 +84,8 @@ export function projectSessionCatalog({
     const leftRank = Number.isFinite(left.sortRank) ? left.sortRank : Number.MAX_SAFE_INTEGER;
     const rightRank = Number.isFinite(right.sortRank) ? right.sortRank : Number.MAX_SAFE_INTEGER;
     if (leftRank !== rightRank) return leftRank - rightRank;
-    const activityDelta = Number(right.updatedAt || 0) - Number(left.updatedAt || 0);
-    if (activityDelta !== 0) return activityDelta;
+    const creationDelta = timestampValue(right.createdAt) - timestampValue(left.createdAt);
+    if (creationDelta !== 0) return creationDelta;
     return left.catalogKey.localeCompare(right.catalogKey);
   });
 }

@@ -1,6 +1,9 @@
+// @vitest-environment happy-dom
+import { mount } from '@vue/test-utils';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import * as Vue from 'vue';
 import {
   addMessageToConversation,
   appendToAssistantMessageForConversation,
@@ -97,7 +100,7 @@ describe('message flow regressions', () => {
     ])).toBe(17);
   });
 
-  it('keeps Work Center inputs available and detail layouts responsive', () => {
+  it('keeps Work Center inputs available and detail layouts responsive', async () => {
     const component = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatInput.js'), 'utf8');
     const websocket = readFileSync(resolve(import.meta.dirname, '../../web/stores/helpers/websocket.js'), 'utf8');
     const chatStoreSource = readFileSync(resolve(import.meta.dirname, '../../web/stores/chat.js'), 'utf8');
@@ -114,6 +117,133 @@ describe('message flow regressions', () => {
     expect(normalizeChatRuntimeProvider('copilot')).toBe('copilot');
     expect(() => normalizeChatRuntimeProvider('unknown')).toThrow(/Unknown Chat runtime provider/);
     expect(() => chatCatalogKey('')).toThrow(/conversationId/);
+
+    const catalogRows = [
+      {
+        catalogKey: 'yeaft:agent-a:pinned',
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: 'pinned' },
+        title: 'Pinned',
+        workDir: '/repo',
+        pinned: true,
+        availability: 'online',
+      },
+      {
+        catalogKey: 'chat:offline',
+        runtimeProvider: 'copilot',
+        routeRef: { runtimeProvider: 'copilot', agentId: 'agent-b', sessionId: 'offline' },
+        title: 'Offline',
+        pinned: false,
+        availability: 'offline',
+      },
+      {
+        catalogKey: 'chat:visible',
+        runtimeProvider: 'copilot',
+        routeRef: { runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: 'visible' },
+        title: 'Visible',
+        pinned: false,
+        availability: 'online',
+      },
+    ];
+    const sidebar = mount(UnifiedSessionList, {
+      attachTo: document.body,
+      props: { sessions: catalogRows, activeCatalogKey: catalogRows[0].catalogKey },
+      global: { mocks: { $t: key => key } },
+    });
+    expect(sidebar.findAll('.session-item')).toHaveLength(2);
+    expect(sidebar.text()).not.toContain('Offline');
+    const header = sidebar.get('.session-item-header');
+    expect(header.get('.session-pin-icon').element.nextElementSibling.classList.contains('title')).toBe(true);
+
+    const dataTransfer = {
+      value: '',
+      setData(_type, value) { this.value = value; },
+      getData() { return this.value; },
+    };
+    const visibleRows = sidebar.findAll('.session-item');
+    await visibleRows[0].trigger('dragstart', { dataTransfer });
+    await visibleRows[1].trigger('drop', { dataTransfer });
+    expect(sidebar.emitted('action').at(-1)[0].sessions.map(row => row.catalogKey)).toEqual([
+      'chat:visible',
+      'chat:offline',
+      'yeaft:agent-a:pinned',
+    ]);
+
+    const documentAdd = vi.spyOn(document, 'addEventListener');
+    const documentRemove = vi.spyOn(document, 'removeEventListener');
+    const windowAdd = vi.spyOn(window, 'addEventListener');
+    const windowRemove = vi.spyOn(window, 'removeEventListener');
+    sidebar.unmount();
+    const lifecycleSidebar = mount(UnifiedSessionList, {
+      attachTo: document.body,
+      props: { sessions: catalogRows, activeCatalogKey: catalogRows[0].catalogKey },
+      global: { mocks: { $t: key => key } },
+    });
+    expect(documentAdd).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
+    expect(documentAdd).toHaveBeenCalledWith('keydown', expect.any(Function));
+    expect(windowAdd).toHaveBeenCalledWith('scroll', expect.any(Function), true);
+    expect(windowAdd).toHaveBeenCalledWith('resize', expect.any(Function));
+    documentRemove.mockClear();
+    windowRemove.mockClear();
+
+    const trigger = lifecycleSidebar.get('.session-dots-btn');
+    trigger.element.getBoundingClientRect = () => ({
+      top: 720, bottom: 744, left: 300, right: 324, width: 24, height: 24,
+    });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 });
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    await trigger.trigger('click');
+    await Vue.nextTick();
+    const menu = document.body.querySelector('.session-menu-floating');
+    expect(menu).not.toBeNull();
+    expect(menu.parentElement).toBe(document.body);
+    expect(parseInt(menu.style.top, 10)).toBeLessThan(720);
+    const menuButtons = [...menu.querySelectorAll('.session-menu-item')];
+    const remove = menuButtons.find(button => button.textContent.includes('removeFromList'));
+    expect(remove).toBeTruthy();
+    expect(remove.disabled).toBe(false);
+    remove.click();
+    await Vue.nextTick();
+    expect(lifecycleSidebar.emitted('action').at(-1)[0]).toMatchObject({
+      action: 'remove',
+      row: { catalogKey: catalogRows[0].catalogKey },
+    });
+
+    const openMenu = async () => {
+      await trigger.trigger('click');
+      await Vue.nextTick();
+      expect(document.body.querySelector('.session-menu-floating')).not.toBeNull();
+    };
+    await openMenu();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await Vue.nextTick();
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
+    await openMenu();
+    window.dispatchEvent(new Event('scroll'));
+    await Vue.nextTick();
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
+    await openMenu();
+    window.dispatchEvent(new Event('resize'));
+    await Vue.nextTick();
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
+    await openMenu();
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    await Vue.nextTick();
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
+    await openMenu();
+    await lifecycleSidebar.findAll('.session-item')[0].trigger('click');
+    await Vue.nextTick();
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
+
+    lifecycleSidebar.unmount();
+    expect(documentRemove).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
+    expect(documentRemove).toHaveBeenCalledWith('keydown', expect.any(Function));
+    expect(windowRemove).toHaveBeenCalledWith('scroll', expect.any(Function), true);
+    expect(windowRemove).toHaveBeenCalledWith('resize', expect.any(Function));
+    documentAdd.mockRestore();
+    documentRemove.mockRestore();
+    windowAdd.mockRestore();
+    windowRemove.mockRestore();
 
     expect(UnifiedSessionList.template).toContain(':key="row.catalogKey"');
     expect(UnifiedSessionList.emits).toContain('create-chat');
