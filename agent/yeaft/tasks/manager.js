@@ -71,20 +71,35 @@ export class TaskManager {
     this.active = new Map();
     this.processes = new Map();
     this.cancelEscalationTimers = new Map();
+    this.pendingStartupEvents = [];
     this.#loadPersistedRunningTasks();
   }
 
   setEventSink(onEvent) {
-    this.onEvent = typeof onEvent === 'function' ? onEvent : null;
+    const sink = typeof onEvent === 'function' ? onEvent : null;
+    this.onEvent = sink;
+    if (!sink || this.pendingStartupEvents.length === 0) return;
+
+    const pending = this.pendingStartupEvents;
+    this.pendingStartupEvents = [];
+    for (const event of pending) this.#deliverEvent(event, sink);
   }
 
   #key(sessionId, taskId) {
     return `${sessionId || 'default'}::${taskId}`;
   }
 
-  #emit(event, task, extra = {}) {
+  #deliverEvent(event, sink = this.onEvent) {
+    try { sink?.(event); } catch { /* event sinks must not break tasks */ }
+  }
+
+  #emit(event, task, extra = {}, { deferUntilSink = false } = {}) {
     const payload = { type: 'yeaft_task_event', event, task: publicSnapshot(task), ...extra };
-    try { this.onEvent?.(payload); } catch { /* event sinks must not break tasks */ }
+    if (!this.onEvent && deferUntilSink) {
+      this.pendingStartupEvents.push(payload);
+      return;
+    }
+    this.#deliverEvent(payload);
   }
 
   #loadPersistedRunningTasks() {
@@ -101,7 +116,7 @@ export class TaskManager {
       };
       this.store.writeTask(orphaned);
       this.store.appendEvent(orphaned.sessionId, { event: 'orphaned', taskId: orphaned.id });
-      this.#emit('completed', orphaned);
+      this.#emit('completed', orphaned, {}, { deferUntilSink: true });
     }
   }
 

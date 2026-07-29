@@ -116,6 +116,26 @@ describe('TaskManager', () => {
       conversationStore: { append: msg => messages.push(msg) },
     });
 
+    const firstSinkEvents = [];
+    restarted.setEventSink(event => firstSinkEvents.push(event));
+    expect(firstSinkEvents).toHaveLength(3);
+    expect(firstSinkEvents.every(event => event.event === 'completed')).toBe(true);
+    expect(firstSinkEvents.map(event => event.task.id).sort()).toEqual([
+      task.id,
+      invalidTask.id,
+      unknownTask.id,
+    ].sort());
+    expect(firstSinkEvents.map(event => event.task.resultDelivery).sort()).toEqual([
+      'model_reentry',
+      'status_only',
+      'status_only',
+    ].sort());
+
+    const replacementSinkEvents = [];
+    restarted.setEventSink(event => replacementSinkEvents.push(event));
+    expect(replacementSinkEvents).toHaveLength(0);
+    expect(firstSinkEvents).toHaveLength(3);
+
     expect(restarted.listActiveTasks('session_restart')).toHaveLength(0);
     const restored = restarted.getTask('session_restart', task.id);
     expect(restored).toMatchObject({ status: 'orphaned', resultDelivery: 'model_reentry' });

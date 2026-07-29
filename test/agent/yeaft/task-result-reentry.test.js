@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,6 +16,7 @@ import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { TaskManager } from '../../../agent/yeaft/tasks/manager.js';
 import { TASK_RESULT_DELIVERY } from '../../../agent/yeaft/tasks/store.js';
 import bashTool from '../../../agent/yeaft/tools/bash.js';
+import ctx from '../../../agent/context.js';
 
 class RecordingAdapter {
   constructor(responses = []) {
@@ -105,11 +106,18 @@ async function drainVpDriversWithin(timeoutMs = 2000) {
 
 describe('task result re-entry', () => {
   let tempDir = null;
+  let originalMessageBuffer = [];
+
+  beforeEach(() => {
+    originalMessageBuffer = ctx.messageBuffer.slice();
+    ctx.messageBuffer.length = 0;
+  });
 
   afterEach(async () => {
     vi.restoreAllMocks();
     __testSetSession(null);
     await __testResetVpState();
+    ctx.messageBuffer.splice(0, ctx.messageBuffer.length, ...originalMessageBuffer);
     if (tempDir) rmSync(tempDir, { recursive: true, force: true });
     tempDir = null;
   });
@@ -145,6 +153,14 @@ describe('task result re-entry', () => {
       ],
       [
         { type: 'text_delta', text: 'The legacy delegated result was received.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
+      [
+        { type: 'text_delta', text: 'The recovered explicit task was received.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
+      [
+        { type: 'text_delta', text: 'The recovered legacy task was received.' },
         { type: 'stop', stopReason: 'end_turn' },
       ],
     ]);
@@ -350,5 +366,115 @@ describe('task result re-entry', () => {
     });
     expect(adapter.streamCalls).toHaveLength(5);
     expect(persisted.filter(row => row.internal === true)).toHaveLength(2);
+
+    // Production constructs TaskManager before installing the web bridge. A
+    // restart must retain recovered completion events until that sink exists,
+    // then deliver every UI status exactly once while only opted-in tasks wake
+    // the model.
+    const restartDir = join(tempDir, 'restart');
+    const beforeRestart = new TaskManager({ yeaftDir: restartDir });
+    const restartSessionId = 'session-restart-task-result';
+    const restartVpId = 'vp-restart-owner';
+    const explicitRestartTask = beforeRestart.startTask({
+      sessionId: restartSessionId,
+      ownerVpId: restartVpId,
+      kind: 'sub_agent',
+      title: 'Explicit restart delegate',
+      resultDelivery: TASK_RESULT_DELIVERY.MODEL_REENTRY,
+      source: { threadId: 'main' },
+    });
+    const legacyRestartTask = beforeRestart.startTask({
+      sessionId: restartSessionId,
+      ownerVpId: restartVpId,
+      kind: 'sub_agent',
+      title: 'Legacy restart delegate',
+      resultDelivery: TASK_RESULT_DELIVERY.MODEL_REENTRY,
+      source: { threadId: 'main' },
+    });
+    const legacyStored = beforeRestart.store.readTask(restartSessionId, legacyRestartTask.id);
+    delete legacyStored.resultDelivery;
+    beforeRestart.store.writeTask(legacyStored);
+    const shellRestartTask = beforeRestart.startTask({
+      sessionId: restartSessionId,
+      ownerVpId: restartVpId,
+      kind: 'shell',
+      title: 'Detached shell',
+      source: { threadId: 'main' },
+    });
+    const invalidRestartTask = beforeRestart.startTask({
+      sessionId: restartSessionId,
+      ownerVpId: restartVpId,
+      kind: 'sub_agent',
+      title: 'Invalid restart delivery',
+      resultDelivery: 'future_delivery_mode',
+      source: { threadId: 'main' },
+    });
+    const unknownRestartTask = beforeRestart.startTask({
+      sessionId: restartSessionId,
+      ownerVpId: restartVpId,
+      kind: 'future_task_kind',
+      title: 'Unknown restart task',
+      source: { threadId: 'main' },
+    });
+
+    const shellStored = beforeRestart.store.readTask(restartSessionId, shellRestartTask.id);
+    delete shellStored.resultDelivery;
+    beforeRestart.store.writeTask(shellStored);
+    const invalidStored = beforeRestart.store.readTask(restartSessionId, invalidRestartTask.id);
+    invalidStored.resultDelivery = 'future_delivery_mode';
+    beforeRestart.store.writeTask(invalidStored);
+    const unknownStored = beforeRestart.store.readTask(restartSessionId, unknownRestartTask.id);
+    delete unknownStored.resultDelivery;
+    beforeRestart.store.writeTask(unknownStored);
+
+    const restartTaskIds = [
+      explicitRestartTask.id,
+      legacyRestartTask.id,
+      shellRestartTask.id,
+      invalidRestartTask.id,
+      unknownRestartTask.id,
+    ];
+
+    const restartedTaskManager = new TaskManager({ yeaftDir: restartDir });
+    expect(restartedTaskManager.listActiveTasks(restartSessionId)).toHaveLength(0);
+    const restartedSessionLike = { ...sessionLike, taskManager: restartedTaskManager };
+    __testSetSession(restartedSessionLike);
+    const bufferStart = ctx.messageBuffer.length;
+    installYeaftRuntimeBridge(restartedSessionLike);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await drainVpDriversWithin();
+
+    const restartCompletionFrames = ctx.messageBuffer.slice(bufferStart).filter(message => (
+      message.type === 'yeaft_output'
+      && message.event?.type === 'yeaft_task_event'
+      && message.event?.event === 'completed'
+      && restartTaskIds.includes(message.event.task?.id)
+    ));
+    expect(restartCompletionFrames).toHaveLength(5);
+    for (const taskId of restartTaskIds) {
+      expect(restartCompletionFrames.filter(message => message.event.task.id === taskId)).toHaveLength(1);
+      expect(restartedTaskManager.getTask(restartSessionId, taskId)?.status).toBe('orphaned');
+    }
+    expect(restartedTaskManager.getTask(restartSessionId, explicitRestartTask.id)?.resultDelivery).toBe('model_reentry');
+    expect(restartedTaskManager.getTask(restartSessionId, legacyRestartTask.id)?.resultDelivery).toBe('model_reentry');
+    expect(restartedTaskManager.getTask(restartSessionId, shellRestartTask.id)?.resultDelivery).toBe('status_only');
+    expect(restartedTaskManager.getTask(restartSessionId, invalidRestartTask.id)?.resultDelivery).toBe('status_only');
+    expect(restartedTaskManager.getTask(restartSessionId, unknownRestartTask.id)?.resultDelivery).toBe('status_only');
+
+    expect(adapter.streamCalls).toHaveLength(7);
+    const restartRescueWire = JSON.stringify(adapter.streamCalls.slice(5).map(call => call.messages));
+    expect(restartRescueWire).toContain(explicitRestartTask.id);
+    expect(restartRescueWire).toContain(legacyRestartTask.id);
+    expect(restartRescueWire).not.toContain(shellRestartTask.id);
+    expect(restartRescueWire).not.toContain(invalidRestartTask.id);
+    expect(restartRescueWire).not.toContain(unknownRestartTask.id);
+
+    const bufferedAfterFirstInstall = ctx.messageBuffer.length;
+    installYeaftRuntimeBridge(restartedSessionLike);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await drainVpDriversWithin();
+    expect(ctx.messageBuffer).toHaveLength(bufferedAfterFirstInstall);
+    expect(adapter.streamCalls).toHaveLength(7);
+    expect(persisted.filter(row => row.internal === true)).toHaveLength(4);
   });
 });
