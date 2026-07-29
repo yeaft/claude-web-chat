@@ -7,6 +7,7 @@ export default {
     activeCatalogKey: { type: String, default: null },
     processingConversations: { type: Object, default: () => ({}) },
     isYeaftSessionProcessing: { type: Function, default: null },
+    agents: { type: Array, default: () => [] },
   },
   emits: ['select', 'create-chat', 'create-yeaft', 'action'],
   data() {
@@ -43,12 +44,17 @@ export default {
       return 'Claude Code';
     },
     agentLabel(row) {
-      return row?.agentName || row?.agentId || row?.routeRef?.agentId || '';
+      const agentId = row?.routeRef?.agentId || row?.agentId || '';
+      const registeredAgent = this.agents.find(agent => agent?.id === agentId);
+      if (registeredAgent?.name) return registeredAgent.name;
+      return row?.agentName && row.agentName !== agentId ? row.agentName : '';
     },
     secondaryLabel(row) {
-      const parts = [];
-      if (row.runtimeProvider !== 'yeaft' && this.agentLabel(row)) parts.push(this.agentLabel(row));
-      parts.push(this.providerLabel(row));
+      const provider = this.providerLabel(row);
+      const agent = this.agentLabel(row);
+      const parts = row.runtimeProvider === 'yeaft'
+        ? [agent ? `${agent}.${provider}` : provider]
+        : [agent, provider].filter(Boolean);
       if (row.availability === 'offline') parts.push(this.$t('settings.dashboard.offline'));
       return parts.join(' · ');
     },
@@ -199,7 +205,6 @@ export default {
               <span class="session-item-header">
                 <span v-if="row.pinned" class="session-pin-icon"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg></span>
                 <span v-if="isProcessing(row)" class="processing-dot"></span>
-                <span v-if="row.runtimeProvider === 'yeaft' && agentLabel(row)" class="session-agent session-agent-prefix">{{ agentLabel(row) }}</span>
                 <input
                   v-if="editingKey === row.catalogKey"
                   ref="renameInput"

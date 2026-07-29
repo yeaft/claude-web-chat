@@ -93,6 +93,7 @@ export default {
         :active-catalog-key="chatStore.activeCatalogKey"
         :processing-conversations="chatStore.processingConversations"
         :is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"
+        :agents="chatStore.agents"
         @select="chatStore.openCatalogSession"
         @create-chat="onOpenChatCreate"
         @create-yeaft="onOpenSessionCreate"

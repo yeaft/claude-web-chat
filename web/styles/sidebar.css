@@ -1048,10 +1048,6 @@
   white-space: nowrap;
 }
 
-.session-agent-prefix {
-  max-width: 96px;
-}
-
 .new-chat-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
