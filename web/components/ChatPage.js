@@ -116,6 +116,8 @@ export default {
           v-if="store.sessionCatalogLoaded"
           :sessions="store.sessionCatalog"
           :active-catalog-key="store.activeCatalogKey"
+          :processing-conversations="store.processingConversations"
+          :processing-yeaft-sessions="store.yeaftProcessingSessions"
           @select="store.openCatalogSession"
           @create-chat="openConversationModal"
           @create-yeaft="openUnifiedSessionCreate"
@@ -598,8 +600,6 @@ export default {
         this.store.reorderCatalogSessions(sessions);
       } else if (action === 'pin') {
         this.store.toggleCatalogSessionPin(row);
-      } else if (action === 'split' && runtimeProvider !== 'yeaft') {
-        this.store.splitToPanel(sessionId);
       } else if (action === 'remove' && runtimeProvider !== 'yeaft') {
         if (confirm(this.$t('chat.delete.confirm'))) this.closeSession(sessionId, agentId);
       } else if (runtimeProvider === 'yeaft' && action === 'remove') {

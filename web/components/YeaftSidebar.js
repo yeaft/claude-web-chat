@@ -91,6 +91,8 @@ export default {
         v-if="chatStore && chatStore.sessionCatalogLoaded"
         :sessions="chatStore.sessionCatalog"
         :active-catalog-key="chatStore.activeCatalogKey"
+        :processing-conversations="chatStore.processingConversations"
+        :processing-yeaft-sessions="chatStore.yeaftProcessingSessions"
         @select="chatStore.openCatalogSession"
         @create-chat="onOpenChatCreate"
         @create-yeaft="onOpenSessionCreate"
@@ -452,9 +454,6 @@ export default {
         this.openGroupSettings({ id: sessionId, agentId }, 'session');
       } else if (runtimeProvider === 'yeaft' && action === 'remove') {
         this.onRemoveFromList({ id: sessionId, agentId });
-      } else if (action === 'split') {
-        s?.leaveYeaft?.();
-        s?.splitToPanel?.(sessionId);
       } else if (action === 'remove') {
         if (confirm(this.$t('chat.delete.confirm'))) {
           s?.leaveYeaft?.();

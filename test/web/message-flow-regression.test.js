@@ -124,6 +124,7 @@ describe('message flow regressions', () => {
         runtimeProvider: 'yeaft',
         routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: 'pinned' },
         title: 'Pinned',
+        agentName: 'Agent Alpha',
         workDir: '/repo',
         pinned: true,
         availability: 'online',
@@ -147,13 +148,33 @@ describe('message flow regressions', () => {
     ];
     const sidebar = mount(UnifiedSessionList, {
       attachTo: document.body,
-      props: { sessions: catalogRows, activeCatalogKey: catalogRows[0].catalogKey },
+      props: {
+        sessions: catalogRows,
+        activeCatalogKey: catalogRows[0].catalogKey,
+        processingConversations: { visible: true },
+        processingYeaftSessions: { pinned: true },
+      },
       global: { mocks: { $t: key => key } },
     });
     expect(sidebar.findAll('.session-item')).toHaveLength(2);
     expect(sidebar.text()).not.toContain('Offline');
     const header = sidebar.get('.session-item-header');
-    expect(header.get('.session-pin-icon').element.nextElementSibling.classList.contains('title')).toBe(true);
+    expect(sidebar.findAll('.session-item.processing')).toHaveLength(2);
+    expect(sidebar.findAll('.processing-dot')).toHaveLength(2);
+    const agentPrefix = header.get('.session-agent-prefix');
+    expect(agentPrefix.text()).toBe('Agent Alpha');
+    expect(agentPrefix.element.nextElementSibling.classList.contains('title')).toBe(true);
+    expect(UnifiedSessionList.methods.agentLabel({
+      runtimeProvider: 'yeaft',
+      routeRef: { agentId: 'agent-fallback' },
+    })).toBe('agent-fallback');
+    await sidebar.setProps({ processingConversations: {}, processingYeaftSessions: {} });
+    expect(sidebar.findAll('.processing-dot')).toHaveLength(0);
+    await sidebar.setProps({
+      processingConversations: { visible: true },
+      processingYeaftSessions: { pinned: true },
+    });
+    expect(sidebar.findAll('.processing-dot')).toHaveLength(2);
 
     const dataTransfer = {
       value: '',
@@ -176,7 +197,12 @@ describe('message flow regressions', () => {
     sidebar.unmount();
     const lifecycleSidebar = mount(UnifiedSessionList, {
       attachTo: document.body,
-      props: { sessions: catalogRows, activeCatalogKey: catalogRows[0].catalogKey },
+      props: {
+        sessions: catalogRows,
+        activeCatalogKey: catalogRows[0].catalogKey,
+        processingConversations: { visible: true },
+        processingYeaftSessions: { pinned: true },
+      },
       global: { mocks: { $t: key => key } },
     });
     expect(documentAdd).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
@@ -199,7 +225,13 @@ describe('message flow regressions', () => {
     expect(menu.parentElement).toBe(document.body);
     expect(parseInt(menu.style.top, 10)).toBeLessThan(720);
     const menuButtons = [...menu.querySelectorAll('.session-menu-item')];
-    const remove = menuButtons.find(button => button.textContent.includes('removeFromList'));
+    expect(menuButtons.map(button => button.textContent.trim())).toEqual([
+      'chat.sidebar.unpin',
+      'chat.sidebar.renameConv',
+      'yeaft.session.openSettings',
+      'common.close',
+    ]);
+    const remove = menuButtons.find(button => button.textContent.includes('common.close'));
     expect(remove).toBeTruthy();
     expect(remove.disabled).toBe(false);
     remove.click();
@@ -208,6 +240,19 @@ describe('message flow regressions', () => {
       action: 'remove',
       row: { catalogKey: catalogRows[0].catalogKey },
     });
+
+    const chatTrigger = lifecycleSidebar.findAll('.session-dots-btn')[1];
+    await chatTrigger.trigger('click');
+    await Vue.nextTick();
+    const chatMenu = document.body.querySelector('.session-menu-floating');
+    expect([...chatMenu.querySelectorAll('.session-menu-item')].map(button => button.textContent.trim())).toEqual([
+      'chat.sidebar.pin',
+      'chat.sidebar.renameConv',
+      'common.close',
+    ]);
+    expect(chatMenu.textContent).not.toContain('splitScreen.splitToPanel');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await Vue.nextTick();
 
     const openMenu = async () => {
       await trigger.trigger('click');
@@ -253,10 +298,16 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).toContain(":tabindex=\"isAvailable(row) ? 0 : -1\"");
     expect(UnifiedSessionList.methods.isAvailable({ availability: 'offline' })).toBe(false);
     expect(UnifiedSessionList.template).toContain("emitAction('remove', row)");
+    expect(UnifiedSessionList.template).not.toContain("emitAction('split', row)");
+    expect(UnifiedSessionList.template).toContain("$t('common.close')");
     expect(UnifiedSessionList.methods.providerLabel({ runtimeProvider: 'copilot' })).toBe('Copilot');
     expect(chatPageSource).toContain('@create-chat="openConversationModal"');
     expect(chatPageSource).toContain('@action="onUnifiedSessionAction"');
     expect(yeaftSidebarSource).toContain('@create-yeaft="onOpenSessionCreate"');
+    expect(chatPageSource).toContain(':processing-conversations="store.processingConversations"');
+    expect(yeaftSidebarSource).toContain(':processing-yeaft-sessions="chatStore.yeaftProcessingSessions"');
+    expect(chatPageSource).not.toContain("action === 'split'");
+    expect(yeaftSidebarSource).not.toContain("action === 'split'");
     expect(websocket).toContain('store.sessionCatalogLoaded = false;');
     expect(websocket).toContain('store.sessionCatalog = [];');
     expect(chatStoreSource).toContain("this.setActiveSessionFilter(sessionId, { agentId, force: true });");

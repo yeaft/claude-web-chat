@@ -5,6 +5,8 @@ export default {
   props: {
     sessions: { type: Array, default: () => [] },
     activeCatalogKey: { type: String, default: null },
+    processingConversations: { type: Object, default: () => ({}) },
+    processingYeaftSessions: { type: Object, default: () => ({}) },
   },
   emits: ['select', 'create-chat', 'create-yeaft', 'action'],
   data() {
@@ -40,12 +42,21 @@ export default {
       if (row.runtimeProvider === 'copilot') return 'Copilot';
       return 'Claude Code';
     },
+    agentLabel(row) {
+      return row?.agentName || row?.agentId || row?.routeRef?.agentId || '';
+    },
     secondaryLabel(row) {
       const parts = [];
-      if (row.agentName) parts.push(row.agentName);
+      if (row.runtimeProvider !== 'yeaft' && this.agentLabel(row)) parts.push(this.agentLabel(row));
       parts.push(this.providerLabel(row));
       if (row.availability === 'offline') parts.push(this.$t('settings.dashboard.offline'));
       return parts.join(' · ');
+    },
+    isProcessing(row) {
+      const sessionId = row?.routeRef?.sessionId;
+      if (!sessionId) return false;
+      if (row.runtimeProvider === 'yeaft') return !!this.processingYeaftSessions?.[sessionId];
+      return !!this.processingConversations?.[sessionId];
     },
     shortPath(path) {
       return shortenPath(path || '');
@@ -169,7 +180,7 @@ export default {
             :tabindex="isAvailable(row) ? 0 : -1"
             :aria-disabled="isAvailable(row) ? undefined : 'true'"
             class="session-item yeaft-session-draggable"
-            :class="{ active: row.catalogKey === activeCatalogKey, pinned: row.pinned, 'agent-offline': !isAvailable(row), dragging: draggedKey === row.catalogKey, 'drag-over': dragOverKey === row.catalogKey }"
+            :class="{ active: row.catalogKey === activeCatalogKey, pinned: row.pinned, processing: isProcessing(row), 'agent-offline': !isAvailable(row), dragging: draggedKey === row.catalogKey, 'drag-over': dragOverKey === row.catalogKey }"
             draggable="true"
             @click="select(row)"
             @keydown.enter.prevent="select(row)"
@@ -183,6 +194,8 @@ export default {
             <span class="session-item-main">
               <span class="session-item-header">
                 <span v-if="row.pinned" class="session-pin-icon"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg></span>
+                <span v-if="isProcessing(row)" class="processing-dot"></span>
+                <span v-if="row.runtimeProvider === 'yeaft' && agentLabel(row)" class="session-agent session-agent-prefix">{{ agentLabel(row) }}</span>
                 <input
                   v-if="editingKey === row.catalogKey"
                   ref="renameInput"
@@ -207,15 +220,14 @@ export default {
                   >
                     <button type="button" role="menuitem" class="session-menu-item" @click="emitAction('pin', row)">{{ row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin') }}</button>
                     <button type="button" role="menuitem" class="session-menu-item" @click="startRename(row)">{{ $t('chat.sidebar.renameConv') }}</button>
-                    <button v-if="row.runtimeProvider !== 'yeaft'" type="button" role="menuitem" class="session-menu-item split-to-panel-item" @click="emitAction('split', row)">{{ $t('splitScreen.splitToPanel') }}</button>
                     <button v-if="row.runtimeProvider === 'yeaft'" type="button" role="menuitem" class="session-menu-item" @click="emitAction('settings', row)">{{ $t('yeaft.session.openSettings') }}</button>
-                    <button type="button" role="menuitem" class="session-menu-item danger" @click="emitAction('remove', row)">{{ row.runtimeProvider === 'yeaft' ? $t('yeaft.session.removeFromList') : $t('chat.sidebar.closeConv') }}</button>
+                    <button type="button" role="menuitem" class="session-menu-item danger" @click="emitAction('remove', row)">{{ $t('common.close') }}</button>
                   </span>
                 </Teleport>
               </span>
               <span class="session-info">
                 <span class="session-path" v-if="row.workDir">{{ shortPath(row.workDir) }}</span>
-                <span class="session-agent">{{ secondaryLabel(row) }}</span>
+                <span class="session-agent" v-if="secondaryLabel(row)">{{ secondaryLabel(row) }}</span>
               </span>
             </span>
           </div>
