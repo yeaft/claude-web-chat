@@ -48,7 +48,7 @@ const subArgs = args.slice(1);
 const SERVICE_COMMANDS = ['install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs'];
 
 if (command === 'doctor') {
-  await handleDoctorCommand();
+  await handleDoctorCommand(subArgs);
 } else if (command === 'llm') {
   await handleLlmCommand(subArgs);
 } else if (command === 'local') {
@@ -415,14 +415,21 @@ async function handleServiceCommand(command, args) {
   }
 }
 
-async function handleDoctorCommand() {
+async function handleDoctorCommand(args) {
+  warnDeprecatedInstanceArg(args);
   const { doctor } = await import('./service.js');
-  doctor();
+  doctor(args);
 }
 
 function parseAndStart(args) {
-  warnDeprecatedInstanceArg(args);
-  applyAgentIdentityToEnv(args);
+  try {
+    warnDeprecatedInstanceArg(args);
+    applyAgentIdentityToEnv(args);
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+    return;
+  }
 
   // Parse non-identity flags. Saved environment remains the fallback for these options.
   for (let i = 0; i < args.length; i++) {

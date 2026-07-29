@@ -19,6 +19,8 @@ import {
   applyAgentIdentityToEnv,
   getDefaultAgentName,
   getInstanceIdFromArgs,
+  parseServiceArgs,
+  resolveAgentName,
 } from '../../agent/service/config.js';
 import { applyRegisteredTransport } from '../../agent/connection/message-router.js';
 import { generateSessionKey, isEncrypted } from '../../agent/encryption.js';
@@ -63,19 +65,61 @@ describe('agent ctx defaults and upgrade contract', () => {
     const computerName = getDefaultAgentName();
     expect(computerName).toMatch(/^[A-Za-z0-9._-]+$/);
     expect(getInstanceIdFromArgs([], {})).toBe(computerName);
-    expect(parseLocalArgs([])).toEqual({ name: computerName, port: 6868 });
+    expect(getInstanceIdFromArgs([], {}, { management: true })).toBe('default');
+    expect(parseLocalArgs([], {})).toEqual({ name: computerName, port: 6868 });
+    expect(parseLocalArgs([], { AGENT_NAME: 'env-name' })).toEqual({ name: 'env-name', port: 6868 });
 
     const env = {};
-    expect(applyAgentIdentityToEnv([], env)).toBe(computerName);
-    expect(env).toEqual({
-      YEAFT_AGENT_INSTANCE: computerName,
-      AGENT_NAME: computerName,
-    });
+    expect(applyAgentIdentityToEnv([], env)).toBeNull();
+    expect(env).toEqual({});
 
     expect(getInstanceIdFromArgs(['--name', 'explicit-name'], {})).toBe('explicit-name');
-    expect(() => parseLocalArgs(['--name', 'bad name'])).toThrow('Invalid name');
+    expect(getInstanceIdFromArgs(['--instance', 'legacy', '--name', 'explicit-name'], {})).toBe('explicit-name');
+    expect(getInstanceIdFromArgs([], { AGENT_NAME: 'env-name' })).toBe('env-name');
+    expect(resolveAgentName([], { AGENT_NAME: 'env-name' }, 'file-name')).toBe('env-name');
+    expect(resolveAgentName([], {}, 'file-name')).toBe('file-name');
+    expect(resolveAgentName([], {}, 'host-name')).toBe('host-name');
+    expect(applyAgentIdentityToEnv(['--instance', 'legacy', '--name', 'explicit-name'], env)).toBe('explicit-name');
+    expect(env).toEqual({
+      YEAFT_AGENT_INSTANCE: 'explicit-name',
+      AGENT_NAME: 'explicit-name',
+    });
+    expect(() => getInstanceIdFromArgs(['--name'], {})).toThrow('--name requires a value');
+    expect(() => getInstanceIdFromArgs(['--instance'], {})).toThrow('--instance requires a value');
+    expect(() => getInstanceIdFromArgs(['--instance', 'legacy', '--name', 'bad name'], {})).toThrow('Instance id');
+    expect(() => parseLocalArgs(['--name', 'bad name'])).toThrow('Instance id');
+
+    const priorIdentity = {
+      AGENT_NAME: process.env.AGENT_NAME,
+      YEAFT_AGENT_INSTANCE: process.env.YEAFT_AGENT_INSTANCE,
+    };
+    try {
+      delete process.env.AGENT_NAME;
+      delete process.env.YEAFT_AGENT_INSTANCE;
+      const defaultService = parseServiceArgs([]);
+      expect(defaultService.instanceId).toBe('default');
+      expect(defaultService.agentName).toBe(computerName);
+
+      process.env.AGENT_NAME = 'env-name';
+      const envService = parseServiceArgs([]);
+      expect(envService.instanceId).toBe('default');
+      expect(envService.agentName).toBe('env-name');
+
+      const namedService = parseServiceArgs(['--instance', 'legacy', '--name', 'explicit-name']);
+      expect(namedService.instanceId).toBe('explicit-name');
+      expect(namedService.agentName).toBe('explicit-name');
+    } finally {
+      if (priorIdentity.AGENT_NAME === undefined) delete process.env.AGENT_NAME;
+      else process.env.AGENT_NAME = priorIdentity.AGENT_NAME;
+      if (priorIdentity.YEAFT_AGENT_INSTANCE === undefined) delete process.env.YEAFT_AGENT_INSTANCE;
+      else process.env.YEAFT_AGENT_INSTANCE = priorIdentity.YEAFT_AGENT_INSTANCE;
+    }
 
     const agentSource = readFileSync(new URL('../../agent/index.js', import.meta.url), 'utf8');
+    const doctorSource = readFileSync(new URL('../../agent/service/doctor.js', import.meta.url), 'utf8');
+    expect(doctorSource).toContain('getSystemdServicePath(instanceId)');
+    expect(doctorSource).toContain('getLaunchdPlistPath(instanceId)');
+    expect(doctorSource).toContain('getEcosystemPath(instanceId)');
     const startupCommands = [...agentSource.matchAll(/await execHiddenAsync\(/g)];
     expect(startupCommands).toHaveLength(6);
     expect(agentSource).toContain('return execAsync(command, { ...options, windowsHide: true });');

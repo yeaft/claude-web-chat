@@ -26,6 +26,7 @@ export {
   SERVICE_NAME,
   DEFAULT_INSTANCE_ID,
   getDefaultAgentName,
+  resolveAgentName,
   normalizeInstanceId,
   isDefaultInstance,
   validateInstanceId,
@@ -106,7 +107,7 @@ export async function install(args) {
 }
 
 export function uninstall(args = []) {
-  const instanceId = getInstanceIdFromArgs(args);
+  const instanceId = getInstanceIdFromArgs(args, process.env, { management: true });
   console.log(`Uninstalling yeaft-agent service (${instanceId})...`);
   if (os === 'linux') linuxUninstall(instanceId);
   else if (os === 'darwin') macUninstall(instanceId);
@@ -115,7 +116,7 @@ export function uninstall(args = []) {
 }
 
 export function start(args = []) {
-  const instanceId = getInstanceIdFromArgs(args);
+  const instanceId = getInstanceIdFromArgs(args, process.env, { management: true });
   ensureInstalled(instanceId);
   if (os === 'linux') linuxStart(instanceId);
   else if (os === 'darwin') macStart(instanceId);
@@ -123,7 +124,7 @@ export function start(args = []) {
 }
 
 export function stop(args = []) {
-  const instanceId = getInstanceIdFromArgs(args);
+  const instanceId = getInstanceIdFromArgs(args, process.env, { management: true });
   ensureInstalled(instanceId);
   if (os === 'linux') linuxStop(instanceId);
   else if (os === 'darwin') macStop(instanceId);
@@ -131,7 +132,7 @@ export function stop(args = []) {
 }
 
 export function restart(args = []) {
-  const instanceId = getInstanceIdFromArgs(args);
+  const instanceId = getInstanceIdFromArgs(args, process.env, { management: true });
   ensureInstalled(instanceId);
   if (os === 'linux') linuxRestart(instanceId);
   else if (os === 'darwin') macRestart(instanceId);
@@ -139,14 +140,14 @@ export function restart(args = []) {
 }
 
 export function status(args = []) {
-  const instanceId = getInstanceIdFromArgs(args);
+  const instanceId = getInstanceIdFromArgs(args, process.env, { management: true });
   if (os === 'linux') linuxStatus(instanceId);
   else if (os === 'darwin') macStatus(instanceId);
   else if (os === 'win32') winStatus(instanceId);
 }
 
 export function logs(args = []) {
-  const instanceId = getInstanceIdFromArgs(args);
+  const instanceId = getInstanceIdFromArgs(args, process.env, { management: true });
   if (os === 'linux') linuxLogs(instanceId);
   else if (os === 'darwin') macLogs(instanceId);
   else if (os === 'win32') winLogs(instanceId);

@@ -10,7 +10,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import ctx from './context.js';
-import { getDefaultAgentName, getDefaultYeaftDir, validateInstanceId, getConfigPath, loadServiceConfig } from './service.js';
+import { getDefaultAgentName, getDefaultYeaftDir, resolveAgentName, validateInstanceId, getConfigPath, loadServiceConfig } from './service.js';
 import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
@@ -75,7 +75,8 @@ function saveConfig(config) {
 }
 
 const fileConfig = loadConfig();
-const INSTANCE_ID = validateInstanceId(process.env.YEAFT_AGENT_INSTANCE || fileConfig.instanceId || DEFAULT_AGENT_NAME);
+const AGENT_NAME = resolveAgentName([], process.env, fileConfig.agentName || DEFAULT_AGENT_NAME);
+const INSTANCE_ID = validateInstanceId(process.env.YEAFT_AGENT_INSTANCE || fileConfig.instanceId || AGENT_NAME);
 
 // task-fix (5-bugs): the Yeaft web-bridge reads `ctx.CONFIG.yeaftDir`
 // for every group / VP / memory operation. If unset, `path.join(undefined, …)`
@@ -96,7 +97,7 @@ try {
 const CONFIG = {
   instanceId: INSTANCE_ID,
   serverUrl: process.env.SERVER_URL || fileConfig.serverUrl,
-  agentName: process.env.AGENT_NAME || fileConfig.agentName || DEFAULT_AGENT_NAME,
+  agentName: AGENT_NAME,
   workDir: process.env.WORK_DIR || fileConfig.workDir || process.cwd(),
   yeaftDir: YEAFT_DIR,
   reconnectInterval: fileConfig.reconnectInterval,

@@ -19,6 +19,7 @@ export {
   SERVICE_NAME,
   DEFAULT_INSTANCE_ID,
   getDefaultAgentName,
+  resolveAgentName,
   normalizeInstanceId,
   isDefaultInstance,
   validateInstanceId,
