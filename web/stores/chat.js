@@ -60,9 +60,9 @@ const EMPTY_ARRAY = Object.freeze([]);
 // agentId conflates identical Session/VP ids across Agents.
 const vpStatusKey = (agentId, sessionId, vpId) => `${agentId || ''}::${sessionId || ''}::${vpId}`;
 
-function hasUniqueLegacyYeaftSessionOwner(state, sessionId, agentId) {
-  if (!sessionId || !agentId) return false;
+function yeaftSessionOwnerIds(state, sessionId) {
   const owners = new Set();
+  if (!sessionId) return owners;
   for (const row of state?.sessionCatalog || []) {
     if (row?.runtimeProvider !== 'yeaft' || row?.routeRef?.sessionId !== sessionId) continue;
     if (row.routeRef.agentId) owners.add(row.routeRef.agentId);
@@ -73,7 +73,16 @@ function hasUniqueLegacyYeaftSessionOwner(state, sessionId, agentId) {
       if (row?.id === sessionId && row?.agentId) owners.add(row.agentId);
     }
   }
-  return owners.size === 1 && owners.has(agentId);
+  return owners;
+}
+
+function uniqueYeaftSessionOwner(state, sessionId) {
+  const owners = yeaftSessionOwnerIds(state, sessionId);
+  return owners.size === 1 ? owners.values().next().value : null;
+}
+
+function hasUniqueLegacyYeaftSessionOwner(state, sessionId, agentId) {
+  return !!agentId && uniqueYeaftSessionOwner(state, sessionId) === agentId;
 }
 
 function matchesYeaftRuntimeIdentity(row, sessionId, agentId) {
@@ -105,6 +114,13 @@ function projectYeaftProcessingSnapshot(state, agentId, statuses, scopedSessionI
     next = Object.fromEntries(Object.entries(next).filter(([key]) => (
       scopedSessionId ? key !== yeaftSessionIdentityKey(agentId, scopedSessionId) : !key.startsWith(prefix)
     )));
+    if (scopedSessionId) {
+      if (hasUniqueLegacyYeaftSessionOwner(state, scopedSessionId, agentId)) delete next[scopedSessionId];
+    } else {
+      for (const key of Object.keys(next)) {
+        if (hasUniqueLegacyYeaftSessionOwner(state, key, agentId)) delete next[key];
+      }
+    }
   } else if (scopedSessionId) {
     delete next[scopedSessionId];
   } else {
@@ -4480,7 +4496,7 @@ export const useChatStore = defineStore('chat', {
           } else if (sessionId) {
             this.clearYeaftSessionProcessingIfIdle(sessionId, { agentId });
           }
-          this.restoreActiveYeaftSessionFromStatuses([nextStatus]);
+          this.restoreActiveYeaftSessionFromStatuses([nextStatus], agentId);
           break;
         }
         case 'vp_status_snapshot': {
@@ -4549,7 +4565,7 @@ export const useChatStore = defineStore('chat', {
             statuses,
             eventSessionId == null ? null : eventSessionId,
           );
-          this.restoreActiveYeaftSessionFromStatuses(statuses);
+          this.restoreActiveYeaftSessionFromStatuses(statuses, msg.agentId || null);
           break;
         }
 
@@ -4957,7 +4973,7 @@ export const useChatStore = defineStore('chat', {
     // on disk after a refresh/re-entry; switching back to that group must
     // still ask the agent for authoritative history unless this group has
     // already completed a history load in the current UI lifecycle.
-    restoreActiveYeaftSessionFromStatuses(statuses = []) {
+    restoreActiveYeaftSessionFromStatuses(statuses = [], sourceAgentId = null) {
       if (this.yeaftActiveSessionFilter) return null;
       const rows = Array.isArray(statuses) ? statuses : [];
       const running = rows
@@ -4965,10 +4981,12 @@ export const useChatStore = defineStore('chat', {
         .sort((a, b) => (b.updatedAt || b.since || 0) - (a.updatedAt || a.since || 0));
       const sessionId = running[0]?.sessionId || running[0]?.groupId || null;
       if (!sessionId) return null;
-      this.setActiveSessionFilter(sessionId, { force: true });
+      const agentId = sourceAgentId || running[0]?.agentId || uniqueYeaftSessionOwner(this, sessionId);
+      if (!agentId) return null;
+      this.setActiveSessionFilter(sessionId, { agentId, force: true });
       try {
         const gs = window.Pinia?.useSessionsStore?.() || (window.__useSessionsStore && window.__useSessionsStore());
-        if (gs && typeof gs.setActive === 'function') gs.setActive(sessionId);
+        if (gs && typeof gs.setActive === 'function') gs.setActive(sessionId, agentId);
       } catch (_) {}
       return sessionId;
     },

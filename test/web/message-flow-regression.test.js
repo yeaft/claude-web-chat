@@ -44,8 +44,14 @@ function defineStore(id, options) {
 }
 const runtimeSessionsStore = Vue.reactive({
   sessionList: [],
+  activeSessionId: null,
+  activeAgentId: null,
   sessionById(sessionId, agentId = null) {
     return this.sessionList.find(row => row.id === sessionId && (!agentId || row.agentId === agentId)) || null;
+  },
+  setActive(sessionId, agentId = null) {
+    this.activeSessionId = sessionId;
+    this.activeAgentId = agentId;
   },
 });
 globalThis.Pinia = {
@@ -587,9 +593,88 @@ describe('message flow regressions', () => {
     store.yeaftProcessingSessions = { shared: true };
     expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(false);
     expect(store.isYeaftSessionProcessing('shared', 'agent-b')).toBe(false);
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      event: { type: 'vp_status_snapshot', sessionId: 'shared', statuses: [] },
+    });
+    expect(store.yeaftProcessingSessions).toEqual({ shared: true });
+
     store.sessionCatalog = [store.sessionCatalog[0]];
     runtimeSessionsStore.sessionList = [{ id: 'shared', agentId: 'agent-a' }];
     expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(true);
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      event: { type: 'vp_status_snapshot', sessionId: 'shared', statuses: [] },
+    });
+    expect(store.yeaftProcessingSessions).toEqual({});
+    expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(false);
+
+    store.yeaftProcessingSessions = { shared: true };
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      event: { type: 'vp_status_snapshot', statuses: [] },
+    });
+    expect(store.yeaftProcessingSessions).toEqual({});
+
+    store.sessionCatalog = [
+      {
+        catalogKey: 'yeaft:agent-a:shared',
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: 'shared' },
+        title: 'Agent A',
+        availability: 'online',
+      },
+      {
+        catalogKey: 'yeaft:agent-b:shared',
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-b', sessionId: 'shared' },
+        title: 'Agent B',
+        availability: 'online',
+      },
+    ];
+    runtimeSessionsStore.sessionList = [
+      { id: 'shared', agentId: 'agent-a' },
+      { id: 'shared', agentId: 'agent-b' },
+    ];
+    store.yeaftProcessingSessions = { shared: true };
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      event: { type: 'vp_status_snapshot', statuses: [] },
+    });
+    expect(store.yeaftProcessingSessions).toEqual({ shared: true });
+
+    store.yeaftProcessingSessions = {};
+    store.vpStatuses = {};
+    store.yeaftActiveSessionFilter = null;
+    store.currentAgent = 'agent-a';
+    runtimeSessionsStore.activeSessionId = null;
+    runtimeSessionsStore.activeAgentId = null;
+    store.handleYeaftOutput({
+      agentId: 'agent-b',
+      event: {
+        type: 'vp_status_snapshot',
+        statuses: [{ sessionId: 'shared', vpId: 'omni', state: 'streaming', turnId: 'restore-b' }],
+      },
+    });
+    expect(store.yeaftActiveSessionFilter).toBe('shared');
+    expect(store.currentAgent).toBe('agent-b');
+    expect(runtimeSessionsStore.activeSessionId).toBe('shared');
+    expect(runtimeSessionsStore.activeAgentId).toBe('agent-b');
+
+    store.yeaftActiveSessionFilter = null;
+    store.currentAgent = 'agent-a';
+    runtimeSessionsStore.activeSessionId = null;
+    runtimeSessionsStore.activeAgentId = null;
+    store.handleYeaftOutput({
+      event: {
+        type: 'vp_status_snapshot',
+        statuses: [{ sessionId: 'shared', vpId: 'omni', state: 'streaming', turnId: 'ambiguous' }],
+      },
+    });
+    expect(store.yeaftActiveSessionFilter).toBeNull();
+    expect(store.currentAgent).toBe('agent-a');
+    expect(runtimeSessionsStore.activeSessionId).toBeNull();
+    expect(runtimeSessionsStore.activeAgentId).toBeNull();
 
     wrapper.unmount();
   });
