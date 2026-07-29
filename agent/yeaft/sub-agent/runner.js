@@ -157,9 +157,9 @@ export function startSubAgent(agent, deps = {}) {
     toolStats: deps.toolStats || null,
     taskManager: deps.taskManager || null,
   });
-  // Same-turn async-task plumbing: inherit the parent's coordinator so a
-  // background bash launched FROM this sub-agent registers itself against
-  // the shared owner map and its terminal event reaches the sub-engine.
+  // Same-turn result plumbing: inherit the parent's coordinator so any
+  // result-producing child task launched from this sub-agent uses the shared
+  // owner map. Persistent shell tasks remain status-only and do not register.
   if (deps.asyncTaskCoordinator && typeof subEngine.setAsyncTaskCoordinator === 'function') {
     subEngine.setAsyncTaskCoordinator(deps.asyncTaskCoordinator);
   }

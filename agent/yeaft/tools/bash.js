@@ -255,14 +255,7 @@ Guidelines:
             threadId: ctx.threadId || 'main',
           },
         });
-        // Same-turn parking: tell the engine "this turn has an async
-        // task in flight". The engine refuses to finalize end_turn
-        // while the set is non-empty and will splice the task result
-        // into the next adapter loop when it terminates. No-op when
-        // the engine didn't wire the hook (legacy callers / tests).
-        const currentToolCall = typeof ctx.currentToolCall === 'function' ? ctx.currentToolCall() : null;
-        try { ctx.registerAsyncTask?.(task.id, currentToolCall || {}); } catch { /* never block tool return on coord errors */ }
-        return `Started background task ${task.id}.\nStatus: ${task.status}\nLog: ${task.log?.path || ''}\nUse ListTasks, ReadTaskLog, or CancelTask to inspect or control it.`;
+        return `Started background task ${task.id}.\nStatus: ${task.status}\nLog: ${task.log?.path || ''}\nThe task is detached from this turn. Use ListTasks, ReadTaskLog, or CancelTask to inspect or control it.`;
       } catch (err) {
         throw new Error(err?.message || String(err));
       }

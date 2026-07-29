@@ -27,6 +27,25 @@ export const TASK_STATUS = Object.freeze({
   ORPHANED: 'orphaned',
 });
 
+export const TASK_RESULT_DELIVERY = Object.freeze({
+  MODEL_REENTRY: 'model_reentry',
+  STATUS_ONLY: 'status_only',
+});
+
+export function normalizeTaskResultDelivery(value, fallback = TASK_RESULT_DELIVERY.MODEL_REENTRY) {
+  if (value === TASK_RESULT_DELIVERY.MODEL_REENTRY || value === TASK_RESULT_DELIVERY.STATUS_ONLY) {
+    return value;
+  }
+  return fallback;
+}
+
+export function taskResultDeliveryFor(task) {
+  const legacyFallback = task?.kind === 'shell'
+    ? TASK_RESULT_DELIVERY.STATUS_ONLY
+    : TASK_RESULT_DELIVERY.MODEL_REENTRY;
+  return normalizeTaskResultDelivery(task?.resultDelivery, legacyFallback);
+}
+
 const TERMINAL = new Set([
   TASK_STATUS.SUCCEEDED,
   TASK_STATUS.FAILED,

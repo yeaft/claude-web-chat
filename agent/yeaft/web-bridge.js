@@ -76,6 +76,7 @@ import { getAgentRegistry, agentBelongsToScope } from './tools/agent.js';
 import { isPromptableAgentStatus } from './sub-agent/status.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
 import { recordAgentSessionCreated, recordAgentTurn } from '../metrics.js';
+import { TASK_RESULT_DELIVERY, taskResultDeliveryFor } from './tasks/store.js';
 
 const LEGACY_SKILL_COMMAND_PREFIX = 'skill:';
 const YEAFT_SKILL_COMMAND_PREFIX = 'yeaft-skills:';
@@ -1706,10 +1707,9 @@ function getOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
     sessionId,
     vpId,
   });
-  // Install the async-task coordinator so background tasks launched
-  // from this engine register against the shared owner map and
-  // `scheduleTaskResultReentry` can deliver terminal events back into
-  // the same query() instead of opening a fresh turn.
+  // Install the async-task coordinator so result-producing child tasks
+  // register against the shared owner map. Persistent shell tasks are
+  // status-only and never enter this ownership path.
   try {
     if (typeof eng.setAsyncTaskCoordinator === 'function') {
       eng.setAsyncTaskCoordinator(buildAsyncTaskCoordinator());
@@ -1852,6 +1852,7 @@ function scheduleTaskResultRescue({ taskId, sessionId, vpId, threadId = 'main', 
 function scheduleTaskResultReentry(event) {
   if (!event || event.event !== 'completed' || !event.task) return;
   const task = event.task;
+  if (taskResultDeliveryFor(task) === TASK_RESULT_DELIVERY.STATUS_ONLY) return;
   const sessionId = task.sessionId || event.sessionId || null;
   const vpId = task.ownerVpId || null;
   if (!sessionId || !vpId) return;
@@ -3990,9 +3991,10 @@ function handleEngineEvent(event, hctx) {
       }, envelope);
       break;
 
-    // Same-turn async-task wait. Engine parks at end_turn while a
-    // background bash / sub-agent is still running and re-enters the
-    // same turn when the terminal event arrives (see engine.js
+    // Same-turn result-producing task wait. Engine parks at end_turn while a
+    // registered child task is still running and re-enters the same turn when
+    // the terminal event arrives. Persistent shell tasks are status-only and
+    // never emit this wait edge (see engine.js
     // `#runQuery` wait block). Bridge forwards both edges so the debug
     // panel (and any other in-process subscriber) can render the park
     // window with the live list of pending taskIds. Wire types stay

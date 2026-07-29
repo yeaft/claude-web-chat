@@ -53,7 +53,10 @@ describe('TaskManager', () => {
       source: { threadId: 'main' },
     });
 
-    expect(task.status).toBe('running');
+    expect(task).toMatchObject({
+      status: 'running',
+      resultDelivery: 'status_only',
+    });
     expect(manager.listActiveTasks('session_test')).toHaveLength(1);
 
     await waitFor(() => manager.getTask('session_test', task.id)?.status === 'succeeded');
@@ -137,6 +140,7 @@ describe('TaskManager', () => {
       kind: 'shell',
       title: 'Unattached task',
     });
+    expect(task.resultDelivery).toBe('status_only');
 
     const result = manager.cancelTask('session_cancel', task.id);
     expect(result.ok).toBe(false);

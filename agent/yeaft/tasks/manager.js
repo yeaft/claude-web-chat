@@ -6,7 +6,14 @@
  */
 
 import { randomUUID } from 'crypto';
-import { TaskStore, TASK_STATUS, isTerminalTaskStatus } from './store.js';
+import {
+  TaskStore,
+  TASK_RESULT_DELIVERY,
+  TASK_STATUS,
+  isTerminalTaskStatus,
+  normalizeTaskResultDelivery,
+  taskResultDeliveryFor,
+} from './store.js';
 import { startShellProcess } from './shell-runner.js';
 import { getRuntimePlatformInfo } from '../runtime-platform.js';
 
@@ -35,6 +42,7 @@ function publicSnapshot(task) {
     kind: task.kind,
     title: task.title,
     status: task.status,
+    resultDelivery: taskResultDeliveryFor(task),
     createdAt: task.createdAt,
     startedAt: task.startedAt,
     updatedAt: task.updatedAt,
@@ -97,9 +105,12 @@ export class TaskManager {
     }
   }
 
-  startTask({ sessionId, ownerVpId = null, kind = 'tool', title = '', runtime = {}, source = {}, logPath = null } = {}) {
+  startTask({ sessionId, ownerVpId = null, kind = 'tool', title = '', runtime = {}, source = {}, logPath = null, resultDelivery = null } = {}) {
     const taskId = makeTaskId();
     const resolvedSessionId = sessionId || 'default';
+    const deliveryFallback = kind === 'shell'
+      ? TASK_RESULT_DELIVERY.STATUS_ONLY
+      : TASK_RESULT_DELIVERY.MODEL_REENTRY;
     const task = {
       id: taskId,
       sessionId: resolvedSessionId,
@@ -107,6 +118,7 @@ export class TaskManager {
       kind,
       title: title || kind,
       status: TASK_STATUS.RUNNING,
+      resultDelivery: normalizeTaskResultDelivery(resultDelivery, deliveryFallback),
       createdAt: nowIso(),
       startedAt: nowIso(),
       updatedAt: nowIso(),
@@ -140,6 +152,7 @@ export class TaskManager {
       kind: 'shell',
       title: title || command.slice(0, 120),
       status: TASK_STATUS.RUNNING,
+      resultDelivery: TASK_RESULT_DELIVERY.STATUS_ONLY,
       createdAt: nowIso(),
       startedAt: nowIso(),
       updatedAt: nowIso(),
