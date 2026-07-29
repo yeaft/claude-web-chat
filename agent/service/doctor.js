@@ -7,7 +7,7 @@
 import { execSync } from 'child_process';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { platform, homedir } from 'os';
-import { getInstanceIdFromArgs, getNodePath } from './config.js';
+import { getNodePath, resolveServiceInstanceId } from './config.js';
 import { getLaunchdPlistPath, getMacServiceStatus } from './macos.js';
 import { getSystemdServicePath, getLinuxServiceStatus } from './linux.js';
 import { getEcosystemPath, getWinServiceStatus } from './windows.js';
@@ -114,7 +114,7 @@ function tildeify(filePath) {
 
 export function doctor(args = []) {
   const os = platform();
-  const instanceId = getInstanceIdFromArgs(args, process.env, { management: true });
+  const instanceId = resolveServiceInstanceId(args, process.env, { management: true });
   let configPath = null;
   let parsePaths = null;
   let getServiceStatus = null;

@@ -84,20 +84,33 @@ function readIdentityArgs(args = []) {
   return { deprecatedInstanceId, explicitName };
 }
 
-export function resolveAgentName(args = [], env = process.env, fallbackName = getDefaultAgentName()) {
+export function resolveDisplayName(args = [], env = process.env, fallbackName = getDefaultAgentName()) {
   const { explicitName } = readIdentityArgs(args);
   return explicitName
-    || (env.AGENT_NAME ? validateInstanceId(env.AGENT_NAME) : '')
-    || validateInstanceId(fallbackName);
+    || env.AGENT_NAME
+    || fallbackName
+    || getDefaultAgentName();
 }
 
-export function getInstanceIdFromArgs(args = [], env = process.env, options = {}) {
+export function resolveRuntimeIdentity(fileConfig = {}, env = process.env) {
+  const agentName = resolveDisplayName([], env, fileConfig.agentName || getDefaultAgentName());
+  const instanceId = validateInstanceId(env.YEAFT_AGENT_INSTANCE || fileConfig.instanceId || DEFAULT_INSTANCE_ID);
+  return { agentName, instanceId };
+}
+
+export function resolveServiceInstanceId(args = [], env = process.env, options = {}) {
   const { deprecatedInstanceId, explicitName } = readIdentityArgs(args);
   if (explicitName) return explicitName;
   if (deprecatedInstanceId) return deprecatedInstanceId;
-  if (options.management) return DEFAULT_INSTANCE_ID;
   if (env.YEAFT_AGENT_INSTANCE) return validateInstanceId(env.YEAFT_AGENT_INSTANCE);
-  return resolveAgentName(args, env, options.fallbackName);
+  if (options.management) return DEFAULT_INSTANCE_ID;
+  if (env.AGENT_NAME) return validateInstanceId(env.AGENT_NAME);
+  return validateInstanceId(options.fallbackName || getDefaultAgentName());
+}
+
+/** Legacy alias for resolveServiceInstanceId(). */
+export function getInstanceIdFromArgs(args = [], env = process.env, options = {}) {
+  return resolveServiceInstanceId(args, env, options);
 }
 
 export function applyAgentIdentityToEnv(args = [], env = process.env) {
@@ -205,18 +218,20 @@ export function parseServiceArgs(args) {
   // Load .env if available (for dev / source-based usage)
   loadDotenv();
 
-  const instanceId = getInstanceIdFromArgs(args, process.env, { management: true });
+  const instanceId = resolveServiceInstanceId(args, process.env, { management: true });
   const existing = loadServiceConfig(instanceId) || {};
   const explicitIdentity = args.includes('--name') || args.includes('--instance');
   const fallbackName = explicitIdentity
     ? instanceId
     : existing.agentName || getDefaultAgentName();
-  // Explicit identity flags must not be overridden by stale process identity.
-  const identityEnv = explicitIdentity ? { ...process.env, AGENT_NAME: '' } : process.env;
   const config = {
     instanceId,
     serverUrl: existing.serverUrl || '',
-    agentName: resolveAgentName(args, identityEnv, fallbackName),
+    agentName: resolveDisplayName(
+      args,
+      explicitIdentity ? { ...process.env, AGENT_NAME: '' } : process.env,
+      fallbackName,
+    ),
     agentSecret: existing.agentSecret || '',
     workDir: existing.workDir || '',
     yeaftDir: existing.yeaftDir || '',
@@ -248,7 +263,6 @@ export function parseServiceArgs(args) {
 export function validateConfig(config) {
   try {
     validateInstanceId(config.instanceId || DEFAULT_INSTANCE_ID);
-    validateInstanceId(config.agentName);
   } catch (err) {
     console.error(`Error: ${err.message}`);
     process.exit(1);

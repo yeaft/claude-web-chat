@@ -20,7 +20,9 @@ import {
   getDefaultAgentName,
   getInstanceIdFromArgs,
   parseServiceArgs,
-  resolveAgentName,
+  resolveDisplayName,
+  resolveRuntimeIdentity,
+  resolveServiceInstanceId,
 } from '../../agent/service/config.js';
 import { applyRegisteredTransport } from '../../agent/connection/message-router.js';
 import { generateSessionKey, isEncrypted } from '../../agent/encryption.js';
@@ -66,6 +68,7 @@ describe('agent ctx defaults and upgrade contract', () => {
     expect(computerName).toMatch(/^[A-Za-z0-9._-]+$/);
     expect(getInstanceIdFromArgs([], {})).toBe(computerName);
     expect(getInstanceIdFromArgs([], {}, { management: true })).toBe('default');
+    expect(getInstanceIdFromArgs([], { YEAFT_AGENT_INSTANCE: 'named' }, { management: true })).toBe('named');
     expect(parseLocalArgs([], {})).toEqual({ name: computerName, port: 6868 });
     expect(parseLocalArgs([], { AGENT_NAME: 'env-name' })).toEqual({ name: 'env-name', port: 6868 });
 
@@ -76,9 +79,16 @@ describe('agent ctx defaults and upgrade contract', () => {
     expect(getInstanceIdFromArgs(['--name', 'explicit-name'], {})).toBe('explicit-name');
     expect(getInstanceIdFromArgs(['--instance', 'legacy', '--name', 'explicit-name'], {})).toBe('explicit-name');
     expect(getInstanceIdFromArgs([], { AGENT_NAME: 'env-name' })).toBe('env-name');
-    expect(resolveAgentName([], { AGENT_NAME: 'env-name' }, 'file-name')).toBe('env-name');
-    expect(resolveAgentName([], {}, 'file-name')).toBe('file-name');
-    expect(resolveAgentName([], {}, 'host-name')).toBe('host-name');
+    expect(resolveDisplayName([], { AGENT_NAME: 'Display Name' }, 'file-name')).toBe('Display Name');
+    expect(resolveDisplayName([], {}, 'Worker A')).toBe('Worker A');
+    expect(resolveDisplayName([], {}, 'host-name')).toBe('host-name');
+    expect(resolveRuntimeIdentity({ agentName: 'Worker A' }, {})).toEqual({ agentName: 'Worker A', instanceId: 'default' });
+    expect(resolveRuntimeIdentity({ agentName: 'file-name', instanceId: 'saved-instance' }, { AGENT_NAME: 'Display Name' })).toEqual({
+      agentName: 'Display Name',
+      instanceId: 'saved-instance',
+    });
+    expect(resolveServiceInstanceId([], { YEAFT_AGENT_INSTANCE: 'named' }, { management: true })).toBe('named');
+    expect(() => resolveServiceInstanceId([], { YEAFT_AGENT_INSTANCE: 'bad name' }, { management: true })).toThrow('Instance id');
     expect(applyAgentIdentityToEnv(['--instance', 'legacy', '--name', 'explicit-name'], env)).toBe('explicit-name');
     expect(env).toEqual({
       YEAFT_AGENT_INSTANCE: 'explicit-name',
@@ -100,10 +110,15 @@ describe('agent ctx defaults and upgrade contract', () => {
       expect(defaultService.instanceId).toBe('default');
       expect(defaultService.agentName).toBe(computerName);
 
-      process.env.AGENT_NAME = 'env-name';
+      process.env.AGENT_NAME = 'Display Name';
       const envService = parseServiceArgs([]);
       expect(envService.instanceId).toBe('default');
-      expect(envService.agentName).toBe('env-name');
+      expect(envService.agentName).toBe('Display Name');
+
+      process.env.YEAFT_AGENT_INSTANCE = 'named';
+      const envNamedService = parseServiceArgs([]);
+      expect(envNamedService.instanceId).toBe('named');
+      expect(envNamedService.agentName).toBe('Display Name');
 
       const namedService = parseServiceArgs(['--instance', 'legacy', '--name', 'explicit-name']);
       expect(namedService.instanceId).toBe('explicit-name');

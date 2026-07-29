@@ -5,13 +5,13 @@ import { createServer } from 'net';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
-import { resolveAgentName } from './service/config.js';
+import { resolveDisplayName, validateInstanceId } from './service/config.js';
 
 const DEFAULT_PORT = 6868;
 const LOCAL_HOST = '127.0.0.1';
 
 export function parseLocalArgs(args, env = process.env) {
-  const options = { name: resolveAgentName(args, env), port: DEFAULT_PORT };
+  const options = { name: resolveDisplayName(args, env), port: DEFAULT_PORT };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     const value = args[i + 1];
@@ -28,6 +28,7 @@ export function parseLocalArgs(args, env = process.env) {
       throw new Error(`Unknown local option: ${arg}`);
     }
   }
+  validateInstanceId(options.name);
   return options;
 }
 
