@@ -856,6 +856,12 @@
   white-space: nowrap;
 }
 
+.session-item-main {
+  display: block;
+  min-width: 0;
+  width: 100%;
+}
+
 .session-actions {
   display: flex;
   align-items: center;
@@ -926,6 +932,13 @@
   z-index: 200;
   padding: 4px;
   animation: fadeSlideDown 0.12s ease-out;
+}
+
+.session-menu.session-menu-floating {
+  position: fixed;
+  right: auto;
+  margin-top: 0;
+  z-index: 1000;
 }
 
 .session-menu-item {

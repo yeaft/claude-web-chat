@@ -107,12 +107,12 @@ describe('Yeaft Session online Agent filtering', () => {
 
     const catalog = projectSessionCatalog({
       chatSessions: [
-        { id: 'same-id', agent_id: 'chat-agent', title: 'Chat', updated_at: 10, is_active: 1 },
+        { id: 'same-id', agent_id: 'chat-agent', title: 'Chat', created_at: 10, updated_at: 50, is_active: 1 },
         { id: 'inactive', agent_id: 'chat-agent', is_active: 0 },
       ],
       yeaftSessions: [
-        { id: 'same-id', agentId: 'agent-online', name: 'Online', updatedAt: 20 },
-        { id: 'same-id', agentId: 'agent-closed', name: 'Closed', updatedAt: 30 },
+        { id: 'same-id', agentId: 'agent-online', name: 'Online', createdAt: 20, updatedAt: 20 },
+        { id: 'same-id', agentId: 'agent-closed', name: 'Closed', createdAt: 30, updatedAt: 30 },
       ],
       metadata: [{ catalogKey: yeaftCatalogKey('agent-online', 'same-id'), pinned: true, sortRank: 1 }],
       onlineAgentIds: new Set(['agent-online']),
@@ -122,6 +122,36 @@ describe('Yeaft Session online Agent filtering', () => {
       'yeaft:agent-closed:same-id',
       'chat:same-id',
     ]);
+    const creationOrdered = projectSessionCatalog({
+      chatSessions: [
+        { id: 'chat-new', agent_id: 'chat-agent', created_at: Date.parse('2026-07-29T12:00:00.000Z'), updated_at: 1, is_active: 1 },
+        { id: 'chat-old', agent_id: 'chat-agent', created_at: Date.parse('2026-07-29T10:00:00.000Z'), updated_at: 999, is_active: 1 },
+      ],
+      yeaftSessions: [
+        { id: 'yeaft-middle-new', agentId: 'agent-online', createdAt: '2026-07-29T11:30:00.000Z', updatedAt: '2026-07-29T20:00:00.000Z' },
+        { id: 'yeaft-middle-old', agentId: 'agent-online', createdAt: '2026-07-29T11:00:00.000Z', updatedAt: '2026-07-29T21:00:00.000Z' },
+      ],
+      onlineAgentIds: new Set(['agent-online', 'chat-agent']),
+    });
+    const reversedAfterActivity = projectSessionCatalog({
+      chatSessions: [
+        { id: 'chat-old', agent_id: 'chat-agent', created_at: Date.parse('2026-07-29T10:00:00.000Z'), updated_at: 5000, is_active: 1 },
+        { id: 'chat-new', agent_id: 'chat-agent', created_at: Date.parse('2026-07-29T12:00:00.000Z'), updated_at: 2, is_active: 1 },
+      ],
+      yeaftSessions: [
+        { id: 'yeaft-middle-new', agentId: 'agent-online', createdAt: '2026-07-29T11:30:00.000Z', updatedAt: '2026-07-30T20:00:00.000Z' },
+        { id: 'yeaft-middle-old', agentId: 'agent-online', createdAt: '2026-07-29T11:00:00.000Z', updatedAt: '2026-07-30T21:00:00.000Z' },
+      ].reverse(),
+      onlineAgentIds: new Set(['agent-online', 'chat-agent']),
+    });
+    const stableCreationOrder = [
+      'chat:chat-new',
+      'yeaft:agent-online:yeaft-middle-new',
+      'yeaft:agent-online:yeaft-middle-old',
+      'chat:chat-old',
+    ];
+    expect(creationOrdered.map(row => row.catalogKey)).toEqual(stableCreationOrder);
+    expect(reversedAfterActivity.map(row => row.catalogKey)).toEqual(stableCreationOrder);
     expect(catalog.map(row => row.availability)).toEqual(['online', 'offline', 'offline']);
     expect(catalog.some(row => row.catalogKey === 'chat:inactive')).toBe(false);
     expect(() => projectSessionCatalog({
