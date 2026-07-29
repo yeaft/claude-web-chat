@@ -9,6 +9,8 @@ import {
   __testResetVpState,
   __testSetSession,
   __testWaitForRoutePromises,
+  __testHooks,
+  ensureSessionLoaded,
   installYeaftRuntimeBridge,
 } from '../../../agent/yeaft/web-bridge.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
@@ -37,6 +39,34 @@ class RecordingAdapter {
   async call() {
     return { text: 'ok', usage: {} };
   }
+}
+
+function createStoreFactory() {
+  const instances = new Map();
+  return (id, options) => () => {
+    if (instances.has(id)) return instances.get(id);
+    const instance = { ...(typeof options.state === 'function' ? options.state() : {}) };
+    for (const [name, getter] of Object.entries(options.getters || {})) {
+      Object.defineProperty(instance, name, {
+        enumerable: true,
+        get() { return getter.call(instance, instance); },
+      });
+    }
+    for (const [name, action] of Object.entries(options.actions || {})) {
+      instance[name] = action.bind(instance);
+    }
+    instances.set(id, instance);
+    return instance;
+  };
+}
+
+function createLocalStorage() {
+  const values = new Map();
+  return {
+    getItem: key => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, String(value)),
+    removeItem: key => values.delete(key),
+  };
 }
 
 function makeTaskManagerStub({ yeaftDir }) {
@@ -114,7 +144,9 @@ describe('task result re-entry', () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    __testHooks.resetRuntimeFactoriesForTest();
     __testSetSession(null);
     await __testResetVpState();
     ctx.messageBuffer.splice(0, ctx.messageBuffer.length, ...originalMessageBuffer);
@@ -437,22 +469,46 @@ describe('task result re-entry', () => {
 
     const restartedTaskManager = new TaskManager({ yeaftDir: restartDir });
     expect(restartedTaskManager.listActiveTasks(restartSessionId)).toHaveLength(0);
-    const restartedSessionLike = { ...sessionLike, taskManager: restartedTaskManager };
-    __testSetSession(restartedSessionLike);
+    const restartedSessionLike = {
+      ...sessionLike,
+      status: { skills: 0, mcpServers: [], tools: toolRegistry.size },
+      taskManager: restartedTaskManager,
+    };
+    const runtimeSkillManager = { size: 0, list: () => [], load: () => ({ changed: false, loaded: 0, errors: [] }) };
+    __testSetSession(null);
+    __testHooks.setRuntimeFactoriesForTest({
+      loadSession: async () => restartedSessionLike,
+      createSkillManager: () => runtimeSkillManager,
+      createMcpManager: () => ({
+        async connectAll() { return { connected: [], failed: [] }; },
+        async disconnectAll() {},
+      }),
+      loadMcpConfig: () => ({ servers: [], skipped: [] }),
+    });
     const bufferStart = ctx.messageBuffer.length;
-    installYeaftRuntimeBridge(restartedSessionLike);
+    await ensureSessionLoaded({ sessionId: restartSessionId });
+    const baseRuntimeLoad = __testHooks.scheduleBaseRuntimeLoadForTest();
+    if (baseRuntimeLoad) await baseRuntimeLoad;
     await new Promise(resolve => setTimeout(resolve, 0));
     await drainVpDriversWithin();
 
-    const restartCompletionFrames = ctx.messageBuffer.slice(bufferStart).filter(message => (
+    const restartFrames = ctx.messageBuffer.slice(bufferStart).filter(message => (
+      message.type === 'yeaft_output'
+      && (message.event?.type === 'session_ready' || message.event?.type === 'yeaft_task_event')
+    ));
+    const readyIndex = restartFrames.findIndex(message => message.event?.type === 'session_ready');
+    const restartCompletionFrames = restartFrames.filter(message => (
       message.type === 'yeaft_output'
       && message.event?.type === 'yeaft_task_event'
       && message.event?.event === 'completed'
       && restartTaskIds.includes(message.event.task?.id)
     ));
+    expect(readyIndex).toBeGreaterThanOrEqual(0);
     expect(restartCompletionFrames).toHaveLength(5);
     for (const taskId of restartTaskIds) {
-      expect(restartCompletionFrames.filter(message => message.event.task.id === taskId)).toHaveLength(1);
+      const matchingFrames = restartCompletionFrames.filter(message => message.event.task.id === taskId);
+      expect(matchingFrames).toHaveLength(1);
+      expect(restartFrames.indexOf(matchingFrames[0])).toBeLessThan(readyIndex);
       expect(restartedTaskManager.getTask(restartSessionId, taskId)?.status).toBe('orphaned');
     }
     expect(restartedTaskManager.getTask(restartSessionId, explicitRestartTask.id)?.resultDelivery).toBe('model_reentry');
@@ -460,6 +516,51 @@ describe('task result re-entry', () => {
     expect(restartedTaskManager.getTask(restartSessionId, shellRestartTask.id)?.resultDelivery).toBe('status_only');
     expect(restartedTaskManager.getTask(restartSessionId, invalidRestartTask.id)?.resultDelivery).toBe('status_only');
     expect(restartedTaskManager.getTask(restartSessionId, unknownRestartTask.id)?.resultDelivery).toBe('status_only');
+
+    const sessionsStore = {
+      sessionById: id => (id === restartSessionId ? { id, agentId: 'agent-restart' } : null),
+    };
+    const webPinia = {
+      defineStore: createStoreFactory(),
+      useSessionsStore: () => sessionsStore,
+    };
+    vi.stubGlobal('localStorage', createLocalStorage());
+    vi.stubGlobal('document', {
+      addEventListener() {},
+      removeEventListener() {},
+      documentElement: { setAttribute() {}, classList: { toggle() {} } },
+    });
+    vi.stubGlobal('window', {
+      Pinia: webPinia,
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent() {},
+    });
+    vi.stubGlobal('Pinia', webPinia);
+    const { useChatStore } = await import('../../../web/stores/chat.js');
+    const chatStore = useChatStore();
+    chatStore.currentView = 'yeaft';
+    chatStore.currentAgent = 'agent-restart';
+    chatStore.yeaftActiveSessionFilter = restartSessionId;
+    chatStore.yeaftSessionAgentById = { [restartSessionId]: 'agent-restart' };
+    chatStore.yeaftActiveTasksBySession = {
+      [restartSessionId]: {
+        stale_running: { id: 'stale_running', sessionId: restartSessionId, status: 'running' },
+      },
+    };
+    chatStore.sendWsMessage = vi.fn();
+    for (const frame of restartFrames) chatStore.handleYeaftOutput(frame);
+
+    const visibleRestartTasks = chatStore.yeaftActiveTasksBySession[restartSessionId] || {};
+    expect(Object.keys(visibleRestartTasks).sort()).toEqual(restartTaskIds.slice().sort());
+    for (const taskId of restartTaskIds) {
+      expect(visibleRestartTasks[taskId]).toMatchObject({ id: taskId, status: 'orphaned' });
+    }
+    expect(visibleRestartTasks).not.toHaveProperty('stale_running');
+
+    const readyFrame = restartFrames[readyIndex];
+    chatStore.handleYeaftOutput(readyFrame);
+    expect(chatStore.yeaftActiveTasksBySession[restartSessionId]).toEqual(visibleRestartTasks);
 
     expect(adapter.streamCalls).toHaveLength(7);
     const restartRescueWire = JSON.stringify(adapter.streamCalls.slice(5).map(call => call.messages));
@@ -474,6 +575,7 @@ describe('task result re-entry', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     await drainVpDriversWithin();
     expect(ctx.messageBuffer).toHaveLength(bufferedAfterFirstInstall);
+    expect(chatStore.yeaftActiveTasksBySession[restartSessionId]).toEqual(visibleRestartTasks);
     expect(adapter.streamCalls).toHaveLength(7);
     expect(persisted.filter(row => row.internal === true)).toHaveLength(4);
   });
