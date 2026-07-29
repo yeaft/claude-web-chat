@@ -6,7 +6,14 @@
  */
 
 import { randomUUID } from 'crypto';
-import { TaskStore, TASK_STATUS, isTerminalTaskStatus } from './store.js';
+import {
+  TaskStore,
+  TASK_RESULT_DELIVERY,
+  TASK_STATUS,
+  isTerminalTaskStatus,
+  normalizeTaskResultDelivery,
+  taskResultDeliveryFor,
+} from './store.js';
 import { startShellProcess } from './shell-runner.js';
 import { getRuntimePlatformInfo } from '../runtime-platform.js';
 
@@ -35,6 +42,7 @@ function publicSnapshot(task) {
     kind: task.kind,
     title: task.title,
     status: task.status,
+    resultDelivery: taskResultDeliveryFor(task),
     createdAt: task.createdAt,
     startedAt: task.startedAt,
     updatedAt: task.updatedAt,
@@ -63,20 +71,35 @@ export class TaskManager {
     this.active = new Map();
     this.processes = new Map();
     this.cancelEscalationTimers = new Map();
+    this.pendingStartupEvents = [];
     this.#loadPersistedRunningTasks();
   }
 
   setEventSink(onEvent) {
-    this.onEvent = typeof onEvent === 'function' ? onEvent : null;
+    const sink = typeof onEvent === 'function' ? onEvent : null;
+    this.onEvent = sink;
+    if (!sink || this.pendingStartupEvents.length === 0) return;
+
+    const pending = this.pendingStartupEvents;
+    this.pendingStartupEvents = [];
+    for (const event of pending) this.#deliverEvent(event, sink);
   }
 
   #key(sessionId, taskId) {
     return `${sessionId || 'default'}::${taskId}`;
   }
 
-  #emit(event, task, extra = {}) {
+  #deliverEvent(event, sink = this.onEvent) {
+    try { sink?.(event); } catch { /* event sinks must not break tasks */ }
+  }
+
+  #emit(event, task, extra = {}, { deferUntilSink = false } = {}) {
     const payload = { type: 'yeaft_task_event', event, task: publicSnapshot(task), ...extra };
-    try { this.onEvent?.(payload); } catch { /* event sinks must not break tasks */ }
+    if (!this.onEvent && deferUntilSink) {
+      this.pendingStartupEvents.push(payload);
+      return;
+    }
+    this.#deliverEvent(payload);
   }
 
   #loadPersistedRunningTasks() {
@@ -93,13 +116,17 @@ export class TaskManager {
       };
       this.store.writeTask(orphaned);
       this.store.appendEvent(orphaned.sessionId, { event: 'orphaned', taskId: orphaned.id });
-      this.#emit('completed', orphaned);
+      this.#emit('completed', orphaned, {}, { deferUntilSink: true });
     }
   }
 
-  startTask({ sessionId, ownerVpId = null, kind = 'tool', title = '', runtime = {}, source = {}, logPath = null } = {}) {
+  startTask({ sessionId, ownerVpId = null, kind = 'tool', title = '', runtime = {}, source = {}, logPath = null, resultDelivery = TASK_RESULT_DELIVERY.STATUS_ONLY } = {}) {
     const taskId = makeTaskId();
     const resolvedSessionId = sessionId || 'default';
+    const normalizedResultDelivery = normalizeTaskResultDelivery(resultDelivery);
+    if (normalizedResultDelivery !== resultDelivery) {
+      console.warn(`[Yeaft] Invalid task resultDelivery ${String(resultDelivery)}; using ${TASK_RESULT_DELIVERY.STATUS_ONLY}.`);
+    }
     const task = {
       id: taskId,
       sessionId: resolvedSessionId,
@@ -107,6 +134,7 @@ export class TaskManager {
       kind,
       title: title || kind,
       status: TASK_STATUS.RUNNING,
+      resultDelivery: normalizedResultDelivery,
       createdAt: nowIso(),
       startedAt: nowIso(),
       updatedAt: nowIso(),
@@ -140,6 +168,7 @@ export class TaskManager {
       kind: 'shell',
       title: title || command.slice(0, 120),
       status: TASK_STATUS.RUNNING,
+      resultDelivery: TASK_RESULT_DELIVERY.STATUS_ONLY,
       createdAt: nowIso(),
       startedAt: nowIso(),
       updatedAt: nowIso(),

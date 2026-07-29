@@ -3477,6 +3477,16 @@ export const useChatStore = defineStore('chat', {
           }
           const readyTasks = Array.isArray(event.tasks) ? event.tasks : [];
           const nextTasks = {};
+          // session_ready is authoritative for running tasks, but terminal task
+          // events may arrive immediately before it during Agent restart. Keep
+          // the bounded terminal history while replacing stale running rows.
+          for (const [sessionId, tasksById] of Object.entries(this.yeaftActiveTasksBySession || {})) {
+            const terminalTasks = Object.fromEntries(Object.entries(tasksById || {}).filter(([, task]) => (
+              task?.id && YEAFT_TERMINAL_TASK_STATUSES.has(task.status)
+            )));
+            const retained = keepRecentSessionTasks(terminalTasks);
+            if (Object.keys(retained).length > 0) nextTasks[sessionId] = retained;
+          }
           for (const task of readyTasks) {
             if (!task?.id || !task.sessionId || task.status !== 'running') continue;
             nextTasks[task.sessionId] = { ...(nextTasks[task.sessionId] || {}), [task.id]: task };
