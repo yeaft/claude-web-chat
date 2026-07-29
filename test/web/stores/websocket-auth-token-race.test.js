@@ -80,8 +80,14 @@ describe('websocket auth token races', () => {
     globalThis.location = { protocol: 'https:', host: 'example.test' };
     const { connect } = await loadWebsocketHelpers(authStore);
     const store = createStore();
+    store.sessionCatalogLoaded = true;
+    store.sessionCatalog = [{ catalogKey: 'chat:stale' }];
+    store.activeCatalogKey = 'chat:stale';
 
     connect(store);
+    expect(store.sessionCatalogLoaded).toBe(false);
+    expect(store.sessionCatalog).toEqual([]);
+    expect(store.activeCatalogKey).toBe(null);
     authStore.token = 'new-token';
     authStore.authGeneration = 2;
     sockets[0].onclose({ code: 1008, reason: 'Authentication required' });

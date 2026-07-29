@@ -117,7 +117,9 @@ export default {
           :sessions="store.sessionCatalog"
           :active-catalog-key="store.activeCatalogKey"
           @select="store.openCatalogSession"
-          @create="openUnifiedSessionCreate"
+          @create-chat="openConversationModal"
+          @create-yeaft="openUnifiedSessionCreate"
+          @action="onUnifiedSessionAction"
         />
 
         <template v-else>
@@ -587,6 +589,26 @@ export default {
       this.store.openUnifiedSessionCreate = true;
       this.store.enterYeaft();
     },
+    onUnifiedSessionAction({ action, row, title, sessions } = {}) {
+      if (!row?.routeRef) return;
+      const { runtimeProvider, agentId, sessionId } = row.routeRef;
+      if (action === 'rename') {
+        this.store.renameCatalogSession({ row, title });
+      } else if (action === 'reorder') {
+        this.store.reorderCatalogSessions(sessions);
+      } else if (action === 'pin') {
+        this.store.toggleCatalogSessionPin(row);
+      } else if (action === 'split' && runtimeProvider !== 'yeaft') {
+        this.store.splitToPanel(sessionId);
+      } else if (action === 'remove' && runtimeProvider !== 'yeaft') {
+        if (confirm(this.$t('chat.delete.confirm'))) this.closeSession(sessionId, agentId);
+      } else if (runtimeProvider === 'yeaft' && action === 'remove') {
+        this.store.sessionCrudRequest('archive', { sessionId }, { agentId });
+      } else if (runtimeProvider === 'yeaft' && action === 'settings') {
+        this.store.pendingUnifiedSessionSettings = { sessionId, agentId, section: 'session' };
+        this.store.openCatalogSession(row);
+      }
+    },
     openConversationModal() {
       this.showConversationModal = true;
       this.convModalAgent = '';
@@ -982,6 +1004,10 @@ export default {
     }
   },
   mounted() {
+    if (this.store.openUnifiedChatCreate) {
+      this.store.openUnifiedChatCreate = false;
+      this.openConversationModal();
+    }
     this._clickOutsideHandler = (e) => {
       if (!e.target.closest('.agent-selector')) {
         this.showAgentDropdown = false;

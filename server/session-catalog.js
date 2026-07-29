@@ -20,11 +20,18 @@ export function yeaftCatalogKey(agentId, sessionId) {
   return `yeaft:${agentId}:${sessionId}`;
 }
 
-export function projectSessionCatalog({ chatSessions = [], yeaftSessions = [], metadata = [] } = {}) {
+export function projectSessionCatalog({
+  chatSessions = [],
+  yeaftSessions = [],
+  metadata = [],
+  onlineAgentIds = new Set(),
+} = {}) {
   const metadataByKey = new Map(metadata.map(row => [row.catalogKey, row]));
+  const onlineAgents = onlineAgentIds instanceof Set ? onlineAgentIds : new Set(onlineAgentIds);
   const rows = [];
 
   for (const session of chatSessions) {
+    if (session.is_active === 0) continue;
     const catalogKey = chatCatalogKey(session.id);
     const runtimeProvider = normalizeChatRuntimeProvider(session.provider);
     const meta = metadataByKey.get(catalogKey) || {};
@@ -36,7 +43,7 @@ export function projectSessionCatalog({ chatSessions = [], yeaftSessions = [], m
       workDir: session.work_dir || '',
       agentId: session.agent_id,
       agentName: session.agent_name || '',
-      availability: 'unknown',
+      availability: onlineAgents.has(session.agent_id) ? 'online' : 'offline',
       pinned: meta.pinned ?? session.is_pinned === 1,
       sortRank: meta.sortRank ?? null,
       createdAt: session.created_at || null,
@@ -55,7 +62,7 @@ export function projectSessionCatalog({ chatSessions = [], yeaftSessions = [], m
       workDir: session.workDir || '',
       agentId: session.agentId,
       agentName: session.agentName || '',
-      availability: 'unknown',
+      availability: onlineAgents.has(session.agentId) ? 'online' : 'offline',
       pinned: meta.pinned ?? !!session.pinned,
       sortRank: meta.sortRank ?? session.sortOrder ?? null,
       createdAt: session.createdAt || null,

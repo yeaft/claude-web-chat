@@ -142,6 +142,12 @@ export function connect(store) {
   }
 
   store.connectionState = store.reconnectAttempts > 0 ? 'reconnecting' : 'connecting';
+  // Catalog support is a capability of the current Server connection. Reset
+  // before every handshake so reconnecting to an older Server immediately
+  // restores the legacy sidebar instead of showing a stale prior snapshot.
+  store.sessionCatalogLoaded = false;
+  store.sessionCatalog = [];
+  store.activeCatalogKey = null;
   console.log(`[WS] Connecting... (attempt ${store.reconnectAttempts + 1})`);
 
   store._wsAuthToken = authToken;

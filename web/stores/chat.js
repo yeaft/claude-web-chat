@@ -480,6 +480,8 @@ export const useChatStore = defineStore('chat', {
     sessionCatalogLoaded: false,
     activeCatalogKey: null,
     openUnifiedSessionCreate: false,
+    openUnifiedChatCreate: false,
+    pendingUnifiedSessionSettings: null,
     // Yeaft 分页状态 (parallel to the Chat-mode flags above):
     //  - yeaftHasMoreHistory: server told us there's at least one earlier
     //    turn for the active group that we haven't loaded yet.
@@ -5299,6 +5301,46 @@ export const useChatStore = defineStore('chat', {
       });
       this.sessionCatalogLoaded = true;
     },
+    toggleCatalogSessionPin(row) {
+      if (!row?.catalogKey || !row?.routeRef) return false;
+      const nextPinned = !row.pinned;
+      row.pinned = nextPinned;
+      this.sendWsMessage({
+        type: 'set_session_ui_metadata',
+        requestId: `session_ui_${crypto.randomUUID()}`,
+        catalogKey: row.catalogKey,
+        routeRef: row.routeRef,
+        pinned: nextPinned,
+        sortRank: Number.isFinite(row.sortRank) ? row.sortRank : null,
+      });
+      return true;
+    },
+    renameCatalogSession({ row, title } = {}) {
+      if (!row?.routeRef || !title) return false;
+      const { runtimeProvider, agentId, sessionId } = row.routeRef;
+      if (runtimeProvider === 'yeaft') {
+        this.sessionCrudRequest('rename', { sessionId, name: title }, { agentId });
+      } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
+        this.renameChatSession(sessionId, title);
+      } else {
+        return false;
+      }
+      return true;
+    },
+    reorderCatalogSessions(rows) {
+      if (!Array.isArray(rows) || rows.length === 0) return false;
+      this.sessionCatalog = rows.map((row, index) => ({ ...row, sortRank: index }));
+      this.sendWsMessage({
+        type: 'reorder_session_catalog',
+        sessions: this.sessionCatalog.map((row, index) => ({
+          catalogKey: row.catalogKey,
+          routeRef: row.routeRef,
+          pinned: !!row.pinned,
+          sortRank: index,
+        })),
+      });
+      return true;
+    },
     openCatalogSession(descriptor) {
       if (!descriptor?.catalogKey || !descriptor.routeRef) return false;
       const { runtimeProvider, agentId, sessionId } = descriptor.routeRef;
@@ -5316,6 +5358,20 @@ export const useChatStore = defineStore('chat', {
       if (this.currentView === 'yeaft') this.leaveYeaft();
       this.selectConversation(sessionId, agentId);
       return true;
+    },
+    requestChatHistory(conversationId, { mode = 'recent', turns = null, beforeId = null, afterMessageId = null } = {}) {
+      if (!conversationId) return null;
+      const cursor = beforeId ?? afterMessageId ?? null;
+      const requestId = this.beginChatHistoryRequest(conversationId, mode, cursor);
+      this.sendWsMessage({
+        type: 'sync_messages',
+        conversationId,
+        ...(turns != null ? { turns } : {}),
+        ...(beforeId != null ? { beforeId } : {}),
+        ...(afterMessageId != null ? { afterMessageId } : {}),
+        requestId,
+      });
+      return requestId;
     },
     beginChatHistoryRequest(conversationId, mode = 'recent', cursor = null) {
       const catalogKey = chatCatalogKey(conversationId);
@@ -5519,7 +5575,7 @@ export const useChatStore = defineStore('chat', {
                   // Load messages for chat conversations that aren't cached
                   if (panel.conversationId && !this.messagesMap[panel.conversationId]) {
                     this.messagesMap[panel.conversationId] = [];
-                    this.sendWsMessage({ type: 'sync_messages', conversationId: panel.conversationId, turns: 5 });
+                    this.requestChatHistory(panel.conversationId, { mode: 'recent', turns: 5 });
                   }
                 }
                 localStorage.removeItem('splitPanesSaved');
@@ -5572,7 +5628,7 @@ export const useChatStore = defineStore('chat', {
       // Ensure messagesMap entry exists
       if (conversationId && !this.messagesMap[conversationId]) {
         this.messagesMap[conversationId] = [];
-        this.sendWsMessage({ type: 'sync_messages', conversationId, turns: 5 });
+        this.requestChatHistory(conversationId, { mode: 'recent', turns: 5 });
       }
       this.saveOpenSessions();
     },
@@ -5611,7 +5667,7 @@ export const useChatStore = defineStore('chat', {
       // Ensure messagesMap entry exists
       if (!this.messagesMap[conversationId]) {
         this.messagesMap[conversationId] = [];
-        this.sendWsMessage({ type: 'sync_messages', conversationId, turns: 5 });
+        this.requestChatHistory(conversationId, { mode: 'recent', turns: 5 });
       }
       this.saveOpenSessions();
     },
@@ -5862,13 +5918,10 @@ export const useChatStore = defineStore('chat', {
       const firstMsgWithId = msgs.find(m => m.dbMessageId);
       const targetConvId = this.currentConversation;
       const cursor = firstMsgWithId?.dbMessageId ?? null;
-      const requestId = this.beginChatHistoryRequest(targetConvId, 'older', cursor);
-      this.sendWsMessage({
-        type: 'sync_messages',
-        conversationId: targetConvId,
+      this.requestChatHistory(targetConvId, {
+        mode: 'older',
         turns: 5,
-        ...(firstMsgWithId ? { beforeId: firstMsgWithId.dbMessageId } : {}),
-        requestId,
+        beforeId: cursor,
       });
 
       // feat-chat-load-perf: client-side timeout so the spinner can't get

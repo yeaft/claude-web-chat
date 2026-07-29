@@ -102,11 +102,7 @@ export function autoRestoreConversation(store, conversationId) {
   } else {
     store.messagesMap[conversationId] = [];
     // ★ Phase 6.1: 使用 turns 加载最近 5 个 turn
-    store.sendWsMessage({
-      type: 'sync_messages',
-      conversationId,
-      turns: 5
-    });
+    store.requestChatHistory?.(conversationId, { mode: 'recent', turns: 5 });
   }
 
   store.sendWsMessage({
@@ -171,7 +167,7 @@ export function restorePanels(store) {
         store.messagesMap[panel.conversationId] = [];
       }
       if (!store.messagesMap[panel.conversationId].length) {
-        store.sendWsMessage({ type: 'sync_messages', conversationId: panel.conversationId, turns: 5 });
+        store.requestChatHistory?.(panel.conversationId, { mode: 'recent', turns: 5 });
       }
     }
   }

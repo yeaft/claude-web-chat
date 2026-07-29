@@ -92,7 +92,9 @@ export default {
         :sessions="chatStore.sessionCatalog"
         :active-catalog-key="chatStore.activeCatalogKey"
         @select="chatStore.openCatalogSession"
-        @create="onOpenSessionCreate"
+        @create-chat="onOpenChatCreate"
+        @create-yeaft="onOpenSessionCreate"
+        @action="onUnifiedSessionAction"
       />
 
       <div v-else class="us-scroll us-scroll-flush">
@@ -243,6 +245,11 @@ export default {
     if (this.chatStore?.openUnifiedSessionCreate) {
       this.chatStore.openUnifiedSessionCreate = false;
       this.sessionCreateOpen = true;
+    }
+    if (this.chatStore?.pendingUnifiedSessionSettings) {
+      const pending = this.chatStore.pendingUnifiedSessionSettings;
+      this.chatStore.pendingUnifiedSessionSettings = null;
+      this.openGroupSettings({ id: pending.sessionId, agentId: pending.agentId }, pending.section || 'session');
     }
     this._agentUpgradeAckHandler = (e) => {
       const { agentId, success, error, alreadyLatest, version, reason, currentNode, requiredNode } = e.detail || {};
@@ -425,6 +432,36 @@ export default {
     // onSessionRestored are gone (folded into SessionCreateModal's own
     // `created` flow).
     onOpenSessionCreate() { this.sessionCreateOpen = true; },
+    onOpenChatCreate() {
+      const s = this.chatStore || this.store;
+      if (!s) return;
+      s.openUnifiedChatCreate = true;
+      s.leaveYeaft();
+    },
+    onUnifiedSessionAction({ action, row, title, sessions } = {}) {
+      if (!row?.routeRef) return;
+      const s = this.chatStore || this.store;
+      const { runtimeProvider, agentId, sessionId } = row.routeRef;
+      if (action === 'rename') {
+        s?.renameCatalogSession?.({ row, title });
+      } else if (action === 'reorder') {
+        s?.reorderCatalogSessions?.(sessions);
+      } else if (action === 'pin') {
+        s?.toggleCatalogSessionPin?.(row);
+      } else if (runtimeProvider === 'yeaft' && action === 'settings') {
+        this.openGroupSettings({ id: sessionId, agentId }, 'session');
+      } else if (runtimeProvider === 'yeaft' && action === 'remove') {
+        this.onRemoveFromList({ id: sessionId, agentId });
+      } else if (action === 'split') {
+        s?.leaveYeaft?.();
+        s?.splitToPanel?.(sessionId);
+      } else if (action === 'remove') {
+        if (confirm(this.$t('chat.delete.confirm'))) {
+          s?.leaveYeaft?.();
+          s?.closeSession?.(sessionId, agentId);
+        }
+      }
+    },
     onSessionCreated(_group) {
       // groups store auto-activates via applyCrudResult; modal closes itself.
     },

@@ -10,13 +10,13 @@ import {
 import { agents, pendingFiles, trackUserTurn, webClients } from '../context.js';
 import {
   sendToWebClient, forwardToAgent,
-  broadcastAgentList, verifyConversationOwnership, verifyAgentOwnership
+  broadcastAgentList, broadcastSessionCatalog,
+  verifyConversationOwnership, verifyAgentOwnership
 } from '../ws-utils.js';
 import { routeSessionPin } from './session-pin-router.js';
 import { recordPerfTraceEvent } from '../perf-trace.js';
 import {
   chatCatalogKey,
-  projectSessionCatalog,
   yeaftCatalogKey,
 } from '../session-catalog.js';
 
@@ -169,21 +169,6 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         }
       }
       await broadcastAgentList();
-      if (client.userId) {
-        try {
-          const catalog = projectSessionCatalog({
-            chatSessions: sessionDb.getByUser(client.userId, 10000),
-            yeaftSessions: yeaftSessionDb.getByUser(client.userId),
-            metadata: sessionUiMetadataDb.getByUser(client.userId),
-          });
-          await sendToWebClient(client, {
-            type: 'session_catalog_snapshot',
-            catalog,
-          });
-        } catch (e) {
-          console.warn('[Server] session catalog projection failed:', e?.message || e);
-        }
-      }
       // Yeaft session rows are only actionable while their owning Agent is
       // connected. Keep offline rows in the DB for reconnect recovery, but do
       // not hydrate them into the sidebar where remove/settings cannot work.
@@ -387,6 +372,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       } catch (e) {
         console.warn('[Server] yeaftSessionDb reorder failed:', e?.message || e);
       }
+      if (ok) await broadcastSessionCatalog(client.userId);
       await sendToWebClient(client, {
         type: 'session_crud_result',
         op: 'reorder',
@@ -394,6 +380,44 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         ...(agentId ? { agentId } : {}),
         ok,
       });
+      break;
+    }
+
+    case 'reorder_session_catalog': {
+      if (!client.userId || !Array.isArray(msg.sessions)) break;
+      const updates = [];
+      for (const [index, item] of msg.sessions.entries()) {
+        const routeRef = item?.routeRef;
+        if (!item?.catalogKey || !routeRef?.runtimeProvider) { updates.length = 0; break; }
+        const { runtimeProvider, agentId, sessionId } = routeRef;
+        let expectedCatalogKey = null;
+        if (runtimeProvider === 'yeaft') {
+          if (!agentId || !sessionId || !verifyAgentOwnership(agentId, client.userId, client.role)
+            || !yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) {
+            updates.length = 0;
+            break;
+          }
+          expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
+        } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
+          if (!sessionId || (!CONFIG.skipAuth && !verifyConversationOwnership(sessionId, client.userId))) {
+            updates.length = 0;
+            break;
+          }
+          const row = sessionDb.get(sessionId);
+          if (!row || (row.provider || 'claude-code') !== runtimeProvider) { updates.length = 0; break; }
+          expectedCatalogKey = chatCatalogKey(sessionId);
+        }
+        if (expectedCatalogKey !== item.catalogKey) { updates.length = 0; break; }
+        updates.push({
+          catalogKey: expectedCatalogKey,
+          pinned: item.pinned === true,
+          sortRank: index,
+        });
+      }
+      if (updates.length === msg.sessions.length && updates.length > 0) {
+        for (const update of updates) sessionUiMetadataDb.upsert(client.userId, update.catalogKey, update);
+        await broadcastSessionCatalog(client.userId);
+      }
       break;
     }
 
@@ -416,6 +440,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         pinned: msg.pinned === true,
         sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
       });
+      await broadcastSessionCatalog(client.userId);
       await sendToWebClient(client, {
         type: 'session_ui_metadata_updated',
         requestId: msg.requestId || null,
@@ -469,6 +494,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           sessionKind: 'yeaft',
           pinned: isPinned,
         });
+        await broadcastSessionCatalog(client.userId);
         break;
       }
 
@@ -492,6 +518,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         try { yeaftSessionDb.setPinned(route.id, route.isPinned); }
         catch (e) { console.warn(`[Server] yeaftSessionDb.setPinned failed for ${route.id}:`, e?.message || e); }
         await sendToWebClient(client, { type: 'session_pinned', conversationId: route.id, pinned: route.isPinned });
+        await broadcastSessionCatalog(client.userId);
         break;
       }
       // route.kind === 'chat'
@@ -501,6 +528,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         if (route.isPinned) sessionDb.setActive(route.id, true);
       } catch (e) { /* ignore */ }
       await sendToWebClient(client, { type: 'session_pinned', conversationId: route.id, pinned: route.isPinned });
+      await broadcastSessionCatalog(client.userId);
       break;
     }
 
@@ -846,6 +874,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           disallowedTools: msg.disallowedTools
         });
       }
+      if (msg.title !== undefined) await broadcastSessionCatalog(client.userId);
       break;
     }
 

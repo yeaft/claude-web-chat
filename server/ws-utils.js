@@ -1,7 +1,8 @@
 import { WebSocket } from 'ws';
 import { CONFIG } from './config.js';
 import { encrypt, decrypt, isEncrypted, encodeKey } from './encryption.js';
-import { sessionDb } from './database.js';
+import { sessionDb, yeaftSessionDb, sessionUiMetadataDb } from './database.js';
+import { projectSessionCatalog } from './session-catalog.js';
 import { agents, webClients, directoryCache, DIR_CACHE_TTL, DIR_CACHE_MAX_SIZE, trackMessageBytesSent } from './context.js';
 
 // Send message to web client.
@@ -75,6 +76,43 @@ export async function parseMessage(data, sessionKey) {
   }
 }
 
+function onlineAgentIdsForUser(userId, role = null) {
+  return new Set(
+    Array.from(agents.entries())
+      .filter(([, agent]) => agent?.ws?.readyState === WebSocket.OPEN)
+      .filter(([, agent]) => CONFIG.skipAuth
+        || agent.ownerId === userId
+        || (!agent.ownerId && role === 'admin'))
+      .map(([agentId]) => agentId),
+  );
+}
+
+function buildSessionCatalog(userId, role = null) {
+  return projectSessionCatalog({
+    chatSessions: sessionDb.getActiveByUser(userId),
+    yeaftSessions: yeaftSessionDb.getByUser(userId),
+    metadata: sessionUiMetadataDb.getByUser(userId),
+    onlineAgentIds: onlineAgentIdsForUser(userId, role),
+  });
+}
+
+// Broadcast the owner-scoped read model after canonical Session state changes.
+export async function broadcastSessionCatalog(userId) {
+  if (!userId) return;
+  for (const [, client] of webClients) {
+    if (!client?.authenticated) continue;
+    if (client.userId !== userId) continue;
+    try {
+      await sendToWebClient(client, {
+        type: 'session_catalog_snapshot',
+        catalog: buildSessionCatalog(userId, client.role),
+      });
+    } catch (e) {
+      console.warn('[Server] session catalog projection failed:', e?.message || e);
+    }
+  }
+}
+
 // 广播 agent 列表给所有已认证的 web 客户端（按 owner 过滤）
 export async function broadcastAgentList() {
   for (const [, client] of webClients) {
@@ -125,6 +163,14 @@ export async function broadcastAgentList() {
         type: 'agent_list',
         agents: agentList
       });
+      try {
+        await sendToWebClient(client, {
+          type: 'session_catalog_snapshot',
+          catalog: buildSessionCatalog(client.userId, client.role),
+        });
+      } catch (e) {
+        console.warn('[Server] session catalog projection failed:', e?.message || e);
+      }
     }
   }
 }

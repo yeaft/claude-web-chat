@@ -1,11 +1,23 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   addMessageToConversation,
   appendToAssistantMessageForConversation,
   finishStreamingForConversation,
 } from '../../web/stores/helpers/messages.js';
+import UnifiedSessionList from '../../web/components/UnifiedSessionList.js';
+import {
+  catalogKeyForRoute,
+  chatCatalogKey,
+  chatRouteRef,
+  normalizeChatRuntimeProvider,
+  yeaftCatalogKey,
+  yeaftRouteRef,
+} from '../../web/stores/helpers/session-catalog.js';
+globalThis.Pinia = globalThis.Pinia || { defineStore: () => () => ({}) };
+const { handleSyncMessagesResult } = await import('../../web/stores/helpers/handlers/conversationHandler.js');
+
 import {
   buildYeaftMessageTurnSpans,
   hasHiddenYeaftMessageTurns,
@@ -75,6 +87,77 @@ describe('message flow regressions', () => {
 
   it('keeps Work Center inputs available and detail layouts responsive', () => {
     const component = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatInput.js'), 'utf8');
+    const websocket = readFileSync(resolve(import.meta.dirname, '../../web/stores/helpers/websocket.js'), 'utf8');
+    const chatStoreSource = readFileSync(resolve(import.meta.dirname, '../../web/stores/chat.js'), 'utf8');
+    const chatPageSource = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatPage.js'), 'utf8');
+    const yeaftSidebarSource = readFileSync(resolve(import.meta.dirname, '../../web/components/YeaftSidebar.js'), 'utf8');
+
+    const first = chatRouteRef({ id: 'conversation-1', agentId: 'agent-a', provider: 'copilot' });
+    const moved = chatRouteRef({ id: 'conversation-1', agentId: 'agent-b', provider: 'copilot' });
+    expect(catalogKeyForRoute(first)).toBe('chat:conversation-1');
+    expect(catalogKeyForRoute(moved)).toBe('chat:conversation-1');
+    expect(yeaftCatalogKey('agent-a', 'same-id')).not.toBe(yeaftCatalogKey('agent-b', 'same-id'));
+    expect(catalogKeyForRoute(yeaftRouteRef({ id: 'same-id', agentId: 'agent-b' }))).toBe('yeaft:agent-b:same-id');
+    expect(normalizeChatRuntimeProvider(null)).toBe('claude-code');
+    expect(normalizeChatRuntimeProvider('copilot')).toBe('copilot');
+    expect(() => normalizeChatRuntimeProvider('unknown')).toThrow(/Unknown Chat runtime provider/);
+    expect(() => chatCatalogKey('')).toThrow(/conversationId/);
+
+    expect(UnifiedSessionList.template).toContain(':key="row.catalogKey"');
+    expect(UnifiedSessionList.emits).toContain('create-chat');
+    expect(UnifiedSessionList.emits).toContain('create-yeaft');
+    expect(UnifiedSessionList.template).toContain("$emit('create-yeaft')");
+    expect(UnifiedSessionList.template).toContain("emitAction('pin', row)");
+    expect(UnifiedSessionList.template).toContain(":tabindex=\"isAvailable(row) ? 0 : -1\"");
+    expect(UnifiedSessionList.methods.isAvailable({ availability: 'offline' })).toBe(false);
+    expect(UnifiedSessionList.template).toContain("emitAction('remove', row)");
+    expect(UnifiedSessionList.methods.providerLabel({ runtimeProvider: 'copilot' })).toBe('Copilot');
+    expect(chatPageSource).toContain('@create-chat="openConversationModal"');
+    expect(chatPageSource).toContain('@action="onUnifiedSessionAction"');
+    expect(yeaftSidebarSource).toContain('@create-yeaft="onOpenSessionCreate"');
+    expect(websocket).toContain('store.sessionCatalogLoaded = false;');
+    expect(websocket).toContain('store.sessionCatalog = [];');
+    expect(chatStoreSource).toContain("this.setActiveSessionFilter(sessionId, { agentId, force: true });");
+    expect(chatStoreSource).toContain('requestChatHistory(conversationId');
+    expect(chatStoreSource).toContain("type: 'set_session_ui_metadata'");
+    expect(chatStoreSource).toContain("type: 'reorder_session_catalog'");
+    expect((chatStoreSource.match(/type: 'sync_messages'/g) || [])).toHaveLength(1);
+    expect(readFileSync(resolve(import.meta.dirname, '../../web/components/ChatHeader.js'), 'utf8')).not.toContain("type: 'sync_messages'");
+    expect(readFileSync(resolve(import.meta.dirname, '../../web/stores/helpers/handlers/agentHandler.js'), 'utf8')).not.toContain("type: 'sync_messages'");
+
+    const historyStore = {
+      messagesMap: { a: [], b: [] },
+      activeConversations: ['b'],
+      currentConversation: 'b',
+      loadingMoreMessages: true,
+      refreshingSessionMap: { a: true, b: true },
+      chatSessionState: {},
+      hasMoreMessages: false,
+      chatHistoryRequests: {
+        'chat:a': { requestId: 'request-a', catalogKey: 'chat:a', loading: true },
+        'chat:b': { requestId: 'request-b', catalogKey: 'chat:b', loading: true },
+      },
+      formatDbMessageForHistoryHydration: vi.fn(row => ({ id: `row-${row.id}`, dbMessageId: row.id, type: row.role, content: row.content })),
+      isCurrentChatHistoryResponse(msg) {
+        return msg.catalogKey === `chat:${msg.conversationId}`
+          && this.chatHistoryRequests[msg.catalogKey]?.requestId === msg.requestId;
+      },
+      finishChatHistoryRequest(msg) {
+        if (!this.isCurrentChatHistoryResponse(msg)) return false;
+        this.chatHistoryRequests[msg.catalogKey].loading = false;
+        return true;
+      },
+      setRefreshingSession(id, value) { this.refreshingSessionMap[id] = value; },
+    };
+    expect(handleSyncMessagesResult(historyStore, {
+      conversationId: 'a', catalogKey: 'chat:a', requestId: 'stale', mode: 'recent', messages: [], hasMore: false,
+    })).toBe(false);
+    expect(historyStore.refreshingSessionMap.a).toBe(true);
+    expect(handleSyncMessagesResult(historyStore, {
+      conversationId: 'a', catalogKey: 'chat:a', requestId: 'request-a', mode: 'recent', messages: [], hasMore: false,
+    })).toBe(true);
+    expect(historyStore.loadingMoreMessages).toBe(true);
+    expect(historyStore.refreshingSessionMap.a).toBe(false);
     const workCenter = readFileSync(resolve(import.meta.dirname, '../../web/components/WorkCenterPage.js'), 'utf8');
     const workCenterCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/work-center.css'), 'utf8');
     const variables = readFileSync(resolve(import.meta.dirname, '../../web/styles/variables.css'), 'utf8');

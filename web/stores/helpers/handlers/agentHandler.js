@@ -69,11 +69,7 @@ export function restoreLastViewedConversation(store, agentSetup) {
   store.sendWsMessage({ type: 'select_conversation', conversationId: lastViewed });
 
 
-  store.sendWsMessage({
-    type: 'sync_messages',
-    conversationId: lastViewed,
-    turns: 5
-  });
+  store.requestChatHistory?.(lastViewed, { mode: 'recent', turns: 5 });
   store.sendWsMessage({ type: 'refresh_conversation', conversationId: lastViewed });
 
   return true;
@@ -344,17 +340,12 @@ export function handleAgentList(store, msg) {
         if (currentMsgs.length > 0) {
           const lastMessageId = currentMsgs[currentMsgs.length - 1]?.id;
           console.log('[Reconnect] Requesting missed messages after:', lastMessageId);
-          store.sendWsMessage({
-            type: 'sync_messages',
-            conversationId: store.currentConversation,
-            afterMessageId: lastMessageId
+          store.requestChatHistory?.(store.currentConversation, {
+            mode: 'delta',
+            afterMessageId: lastMessageId,
           });
         } else {
-          store.sendWsMessage({
-            type: 'sync_messages',
-            conversationId: store.currentConversation,
-            turns: 5
-          });
+          store.requestChatHistory?.(store.currentConversation, { mode: 'recent', turns: 5 });
         }
         store.sendWsMessage({
           type: 'refresh_conversation',
