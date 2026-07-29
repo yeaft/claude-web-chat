@@ -8,6 +8,8 @@ import { WorkflowController } from '../../../../agent/yeaft/work-center/controll
 import {
   WorkItemRunner,
   createProposeWorkItemActionsTool,
+  createSubmitWorkItemReplanTool,
+  createWorkItemToolRegistry,
 } from '../../../../agent/yeaft/work-center/runner.js';
 import { WorkItemCoordinator } from '../../../../agent/yeaft/work-center/coordinator.js';
 import {
@@ -109,11 +111,12 @@ describe('Work Center core', () => {
 
 
   it('persists Run identity and projects one continuous Action conversation', async () => {
-    const bridgeEnvelope = { accepted: true, routedTo: 'coordinator', turnId: 'turn-bridge' };
+    const bridgeDetail = { id: 'wi', actions: [] };
+    const projectedBridgeDetail = { id: 'wi', status: 'ready', actions: [] };
     const bridgeService = {
       start: vi.fn(),
-      handle: vi.fn().mockResolvedValue(bridgeEnvelope),
-      projectBrowserDetail: vi.fn(() => ({ id: null })),
+      handle: vi.fn().mockResolvedValue(bridgeDetail),
+      projectBrowserDetail: vi.fn(() => projectedBridgeDetail),
     };
     __testSetWorkCenterService(bridgeService);
     const bridgeFrames = [];
@@ -124,9 +127,9 @@ describe('Work Center core', () => {
       payload: { id: 'wi', actionId: 'action', generation: 1, revision: 1, text: 'continue' },
     });
     await new Promise(resolve => setImmediate(resolve));
-    expect(bridgeService.projectBrowserDetail).not.toHaveBeenCalled();
+    expect(bridgeService.projectBrowserDetail).toHaveBeenCalledWith(bridgeDetail);
     expect(bridgeFrames).toEqual([expect.objectContaining({
-      type: 'work_center_response', ok: true, data: bridgeEnvelope,
+      type: 'work_center_response', ok: true, data: projectedBridgeDetail,
     })]);
     __testSetWorkCenterService(null);
     ctx.ws = null;
@@ -827,6 +830,34 @@ describe('Work Center core', () => {
         .toBe(0);
     }
 
+    const oversizedInitial = controller.create(createInput({
+      id: 'invalid-oversized-initial-plan',
+      workflowTemplate: 'ai-planned', workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const oversizedInitialTriage = store.claimReadyAction('boot-a', 5_000);
+    const oversizedInitialActions = Array.from({ length: 8 }, (_value, index) => ({
+      id: `step-${index + 1}`,
+      type: index === 7 ? 'deliver' : 'research',
+      objective: `Complete initial planning step ${index + 1}`,
+      dependsOnActionIds: index === 0 ? [] : [`step-${index}`],
+      workspaceMode: index === 7 ? 'shared' : 'read',
+    }));
+    oversizedInitialActions.splice(7, 0, {
+      id: 'step-extra', type: 'research', objective: 'Exceed the initial planning limit',
+      dependsOnActionIds: ['step-7'], workspaceMode: 'read',
+    });
+    oversizedInitialActions.at(-1).dependsOnActionIds = ['step-extra'];
+    const oversizedInitialDetail = controller.submit(
+      oversizedInitialTriage.run.id,
+      'boot-a',
+      oversizedInitialTriage.run.leaseEpoch,
+      completed('triage', { plan: { workItemType: 'oversized-initial', actions: oversizedInitialActions } }),
+    );
+    expect(oversizedInitialDetail).toMatchObject({ status: 'needs_attention', planRevision: 0 });
+    expect(store.getRun(oversizedInitialTriage.run.id).error)
+      .toMatch(/between 1 and 8 task-specific Actions/);
+    expect(oversizedInitial.id).toBe('invalid-oversized-initial-plan');
+
     const additiveItem = {
       id: 'additive-gate', planRevision: 1,
       workflowSnapshot: {
@@ -884,6 +915,7 @@ describe('Work Center core', () => {
       }],
     })).rejects.toThrow(/invalid dependency.*internal-action-uuid/i);
     expect(collector.value).toBeNull();
+
   });
 
 
@@ -984,7 +1016,198 @@ describe('Work Center core', () => {
   });
 
 
-  it('lets the Coordinator replan unfinished work while preserving completed evidence and fencing late Runs', async () => {
+  it('lets executors and the Coordinator replan unfinished work while preserving completed evidence and fences', async () => {
+    const largeReplanItem = controller.create(createInput({
+      id: 'large-replan-candidates',
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const largeTriage = store.claimReadyAction('boot-large-replan', 5_000);
+    const initialCandidates = Array.from({ length: 7 }, (_value, index) => ({
+      id: `candidate-${index + 1}`,
+      type: 'research',
+      objective: `Establish candidate ${index + 1} evidence`,
+      dependsOnActionIds: [],
+      workspaceMode: 'read',
+    }));
+    const initialLargeDetail = controller.submit(
+      largeTriage.run.id,
+      'boot-large-replan',
+      largeTriage.run.leaseEpoch,
+      completed('triage', {
+        plan: {
+          workItemType: 'large-replan',
+          actions: [
+            ...initialCandidates,
+            {
+              id: 'deliver', type: 'deliver', objective: 'Deliver all candidate evidence',
+              dependsOnActionIds: initialCandidates.map(action => action.id), workspaceMode: 'shared',
+            },
+          ],
+        },
+      }),
+    );
+    const expansionClaim = store.claimReadyAction('boot-large-replan', 5_000);
+    expect(expansionClaim.action.stageId).toBe('candidate-1');
+    const addedCandidates = Array.from({ length: 3 }, (_value, index) => ({
+      id: `added-${index + 1}`,
+      name: `Added candidate ${index + 1}`,
+      type: 'research',
+      objective: `Establish added candidate ${index + 1} evidence`,
+      approach: `Inspect the added candidate ${index + 1} boundary`,
+      expectedOutcome: `Added candidate ${index + 1} evidence is recorded`,
+      capability: 'research',
+      candidateVpIds: ['omni'],
+      assignmentReason: 'Use the available research executor',
+      dependsOnActionIds: ['candidate-1'],
+      workspaceMode: 'read',
+    }));
+    const largeDeliverAction = initialLargeDetail.actions.find(action => action.stageId === 'deliver');
+    const expandedLargeDetail = controller.submit(
+      expansionClaim.run.id,
+      'boot-large-replan',
+      expansionClaim.run.leaseEpoch,
+      completed('research', {
+        planProposal: {
+          proposalId: 'expand-before-large-replan',
+          basePlanRevision: initialLargeDetail.planRevision,
+          actions: addedCandidates,
+          dependencyPatches: [{
+            actionId: largeDeliverAction.id,
+            addDependsOnActionIds: addedCandidates.map(action => action.id),
+          }],
+        },
+      }),
+    );
+    expect(expandedLargeDetail.actions.filter(action => (
+      !['completed', 'superseded', 'cancelled'].includes(action.status)
+    ))).toHaveLength(10);
+
+    const replanRequester = store.claimReadyAction('boot-large-replan', 5_000);
+    expect(replanRequester.action.stageId).toBe('candidate-2');
+    const barrierDetail = controller.submit(
+      replanRequester.run.id,
+      'boot-large-replan',
+      replanRequester.run.leaseEpoch,
+      completed('research', {
+        replanRequest: {
+          proposalId: 'classify-large-replan',
+          basePlanRevision: expandedLargeDetail.planRevision,
+          reason: 'Reclassify the complete frozen candidate set.',
+        },
+      }),
+    );
+    const replanClaim = store.claimReadyAction('boot-large-replan', 5_000);
+    expect(replanClaim.action.stageId).toMatch(/^replan-/);
+    const barrier = replanClaim.action.context.find(entry => entry?.type === 'replan-barrier');
+    expect(barrier.candidateActionIds).toHaveLength(9);
+
+    const replanCollector = { value: null };
+    const replanTool = createSubmitWorkItemReplanTool({
+      vps: [{ id: 'omni', name: 'Omni', role: 'Developer', traits: ['research', 'deliver'] }],
+      workItem: barrierDetail,
+      action: replanClaim.action,
+      actions: barrierDetail.actions,
+      collector: replanCollector,
+      isRunActive: () => true,
+    });
+    const replanProperties = replanTool.parameters.properties;
+    expect(replanProperties.retain.maxItems).toBe(9);
+    expect(replanProperties.replace.maxItems).toBe(9);
+    expect(replanProperties.remove.maxItems).toBe(9);
+    expect(replanProperties.add.maxItems).toBe(8);
+    expect(replanProperties.retain.items.properties.actionId.enum).toEqual(barrier.candidateActionIds);
+
+    const addedDuringReplan = Array.from({ length: 9 }, (_value, index) => ({
+      id: `replan-added-${index + 1}`,
+      name: `Replan addition ${index + 1}`,
+      type: 'research',
+      objective: `Establish replan addition ${index + 1} evidence`,
+      approach: `Inspect the replan addition ${index + 1} boundary`,
+      expectedOutcome: `Replan addition ${index + 1} evidence is recorded`,
+      capability: 'research',
+      candidateVpIds: ['omni'],
+      assignmentReason: 'Use the available research executor.',
+      dependsOnActionIds: [],
+      workspaceMode: 'read',
+    }));
+    const acceptedAdditions = addedDuringReplan.slice(0, 8);
+    const frozenById = new Map(barrierDetail.actions.map(action => [action.id, action]));
+    const retain = barrier.candidateActionIds.map(actionId => {
+      const frozen = frozenById.get(actionId);
+      return {
+        actionId,
+        action: {
+          id: frozen.stageId,
+          name: `Retain ${frozen.stageId}`,
+          type: frozen.type,
+          objective: frozen.brief.objective,
+          approach: frozen.brief.approach,
+          expectedOutcome: frozen.brief.expectedOutcome,
+          capability: frozen.assignmentPolicy?.capability || frozen.type,
+          candidateVpIds: ['omni'],
+          assignmentReason: 'Retain the frozen candidate in the complete replan.',
+          dependsOnActionIds: frozen.type === 'deliver'
+            ? [...frozen.dependsOnStageIds, ...acceptedAdditions.map(action => action.id)]
+            : frozen.dependsOnStageIds,
+          workspaceMode: frozen.workspaceMode,
+          maxAttempts: frozen.maxAttempts,
+        },
+      };
+    });
+    const replanInput = {
+      summary: 'Classified all nine frozen candidates.',
+      evidence: ['The complete candidate set is represented by the tool schema.'],
+      acceptanceChecks: completed('triage').acceptanceChecks,
+      proposalId: 'submit-large-replan',
+      basePlanRevision: barrierDetail.planRevision,
+      retain,
+      replace: [],
+      remove: [],
+      add: acceptedAdditions,
+    };
+    const replanRegistry = createWorkItemToolRegistry({
+      workDir: dir,
+      isRunActive: () => true,
+      runTools: [replanTool],
+    });
+    const beforeRejectedAddition = store.getWorkItemDetail(largeReplanItem.id);
+    await expect(replanRegistry.execute('SubmitWorkItemReplan', {
+      ...replanInput,
+      proposalId: 'reject-ninth-replan-addition',
+      add: addedDuringReplan,
+    }, {})).rejects.toThrow(/at most 8 new Actions/);
+    expect(replanCollector.value).toBeNull();
+    const afterRejectedAddition = store.getWorkItemDetail(largeReplanItem.id);
+    expect(afterRejectedAddition.planRevision).toBe(beforeRejectedAddition.planRevision);
+    expect(afterRejectedAddition.actions).toEqual(beforeRejectedAddition.actions);
+    expect(afterRejectedAddition.events).toEqual(beforeRejectedAddition.events);
+
+    expect(JSON.parse(await replanRegistry.execute('SubmitWorkItemReplan', replanInput, {})))
+      .toMatchObject({ submitted: true, proposalId: replanInput.proposalId });
+    expect(replanCollector.value).toMatchObject({ retain: expect.any(Array), add: expect.any(Array) });
+    expect(replanCollector.value.retain).toHaveLength(9);
+    expect(replanCollector.value.add).toHaveLength(8);
+
+    const appliedLargeReplan = controller.submit(
+      replanClaim.run.id,
+      'boot-large-replan',
+      replanClaim.run.leaseEpoch,
+      completed('triage', { replanMutation: replanCollector.value }),
+    );
+    expect(appliedLargeReplan).toMatchObject({
+      id: largeReplanItem.id,
+      status: 'ready',
+      planRevision: barrierDetail.planRevision + 1,
+    });
+    expect(appliedLargeReplan.actions.filter(action => (
+      barrier.candidateActionIds.includes(action.id) && action.status === 'ready'
+    ))).toHaveLength(9);
+    expect(appliedLargeReplan.actions.filter(action => (
+      acceptedAdditions.some(added => added.id === action.stageId) && action.status === 'ready'
+    ))).toHaveLength(8);
+    controller.cancel(largeReplanItem.id);
+
     const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
     const item = controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
     const triage = store.claimReadyAction('boot-a', 5_000);
@@ -1081,6 +1304,35 @@ describe('Work Center core', () => {
     expect(store.db.prepare(`SELECT stage_id, COUNT(*) AS count FROM actions WHERE work_item_id = ?
       AND status NOT IN ('superseded', 'cancelled') GROUP BY stage_id HAVING COUNT(*) > 1`).all(item.id))
       .toEqual([]);
+
+    const expandedFuture = Array.from({ length: 8 }, (_value, index) => ({
+      id: `future-${index + 1}`,
+      name: `Future ${index + 1}`,
+      type: index === 7 ? 'deliver' : 'research',
+      objective: `Complete future stage ${index + 1}`,
+      approach: `Use completed evidence for future stage ${index + 1}`,
+      expectedOutcome: `Future stage ${index + 1} is verified`,
+      capability: index === 7 ? 'deliver' : 'research',
+      candidateVpIds: [],
+      assignmentReason: '',
+      dependsOnActionIds: index === 0 ? ['finished'] : [`future-${index}`],
+      workspaceMode: index === 7 ? 'shared' : 'read',
+    }));
+    const expandedMutation = applyCoordinatorReplan({
+      workItem: before,
+      actions: before.actions,
+      availableVpIds: [],
+      proposal: {
+        proposalId: 'completed-history-is-not-a-future-action',
+        basePlanRevision: before.planRevision,
+        reason: 'Keep completed evidence and replace the complete unfinished graph.',
+        actions: expandedFuture,
+      },
+    });
+    expect(expandedMutation.workflowSnapshot.stages).toHaveLength(10);
+    expect(expandedMutation.workflowSnapshot.stages.map(stage => stage.id)).toEqual([
+      'triage', 'finished', ...expandedFuture.map(action => action.id),
+    ]);
     expect(replanned.planConflicts).toHaveLength(0);
     expect(store.db.prepare('SELECT kind, base_plan_revision, plan_revision FROM plan_audits WHERE proposal_id = ?')
       .get(`coordinator:${coordinatorTurnId}`)).toEqual({
@@ -1128,6 +1380,33 @@ describe('Work Center core', () => {
     expect(corrected.messages.at(-1)).toMatchObject({
       status: 'completed', decision: { kind: 'answer' },
     });
+
+    coordinator.runtimeProvider = async () => ({
+      config: {
+        primaryModel: 'provider/model', language: 'zh-CN',
+        availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }],
+      },
+      adapter: { call: async () => ({ text: JSON.stringify({
+        reply: '这段回复缺少有效控制决定。',
+        decision: {
+          kind: 'invalid', reason: 'invalid', contractPatch: null, guidance: [], actions: [],
+        },
+      }) }) },
+    });
+    const invalidBefore = store.getWorkItemDetail(item.id);
+    const invalidTurn = coordinator.message(item.id, {
+      text: '用人话解释当前阻塞，不要修改计划。',
+      revision: invalidBefore.revision,
+      planRevision: invalidBefore.planRevision,
+      ledgerRevision: invalidBefore.ledgerRevision,
+      coordinatorRevision: invalidBefore.coordinatorRevision,
+    });
+    const invalid = await invalidTurn.task;
+    expect(invalid.messages.at(-1)).toMatchObject({
+      role: 'assistant', status: 'failed',
+      error: 'Work Center Coordinator 未能生成有效回复。你的消息已经保留，请重试。',
+    });
+    expect(invalid.messages.at(-1).error).not.toContain('decision kind is invalid');
 
     const next = store.getWorkItemDetail(item.id);
     let resolveLate;
@@ -1357,228 +1636,79 @@ describe('Work Center core', () => {
       });
       recoveryController.cancel(undecidable.item.id);
 
-      const routed = createFailedReview('recover-routed-human-input');
-      const routedWaiting = await undecidableCoordinator.recover(routed.item.id).task;
-      let routedPrompt = '';
-      const routedCoordinator = new WorkItemCoordinator({
+      const localized = createFailedReview('recover-localized-human-input');
+      let localizedSystem = '';
+      const localizedCoordinator = new WorkItemCoordinator({
         store: recoveryStore,
         runtimeProvider: async () => ({
-          config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+          config: { primaryModel: 'provider/model', language: 'zh-CN', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
           adapter: { call: async request => {
-            routedPrompt = request.messages[0].content;
-            const firstDecision = !request.messages[0].content.includes('previous decision was rejected');
-            return { text: JSON.stringify(firstDecision ? {
-              reply: 'I recorded the answer.',
+            localizedSystem = request.system;
+            return { text: JSON.stringify({
+              reply: '需要你补充部署目标。',
               decision: {
-                kind: 'answer', reason: 'A control transition is still required',
+                kind: 'request_human', reason: '缺少部署目标',
+                question: '请选择生产环境或预发布环境。',
                 contractPatch: null, guidance: [], actions: [],
-              },
-            } : {
-              reply: 'I added implementation before the replacement review.',
-              decision: {
-                kind: 'replan', reason: 'The user authorized the missing implementation work',
-                contractPatch: null, guidance: [],
-                actions: [
-                  actionSpec('fix-review-blockers', 'implement', [routed.baseline.action.stageId]),
-                  actionSpec('security-review', 'review', ['fix-review-blockers'], {
-                    changesRequestedActionId: 'fix-review-blockers',
-                  }),
-                  actionSpec('deliver', 'deliver', ['security-review']),
-                ],
               },
             }) };
           } },
         }),
         policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
-        registry: { listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }] },
+        registry: {
+          listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }],
+        },
       });
-      const routedService = new WorkCenterService({
-        yeaftDir: recoveryDir,
-        store: recoveryStore,
-        controller: recoveryController,
-        coordinator: routedCoordinator,
-        runner: null,
-        ownerBootId: 'routed-human-input',
-        settingsReader: () => ({}),
+      const localizedWaiting = await localizedCoordinator.recover(localized.item.id).task;
+      expect(localizedSystem).toContain('Simplified Chinese (zh-CN)');
+      expect(localizedWaiting.messages.at(-1)).toMatchObject({
+        text: '需要你补充部署目标。',
+        decision: { kind: 'request_human' },
       });
-      const accepted = await routedService.handle('action_input', {
-        id: routed.item.id,
-        actionId: routed.review.action.id,
-        generation: routed.review.action.generation,
-        revision: routedWaiting.revision,
-        text: 'Add the missing implementation Action, then rerun review and delivery.',
-        files: [],
-      });
-      expect(accepted).toMatchObject({ accepted: true, routedTo: 'coordinator' });
-      for (let index = 0; index < 20; index += 1) {
-        const current = recoveryStore.getWorkItemDetail(routed.item.id);
-        if (current.messages.at(-1)?.status !== 'thinking') break;
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
-      const routedDetail = recoveryStore.getWorkItemDetail(routed.item.id);
-      expect(routedPrompt).toContain('Add the missing implementation Action');
-      expect(routedDetail).toMatchObject({ status: 'ready' });
-      expect(routedDetail.actions.filter(action => action.status === 'ready').map(action => action.stageId))
-        .toEqual(['fix-review-blockers', 'security-review', 'deliver']);
-      expect(routedDetail.events.some(event => event.type === 'action.input_added')).toBe(false);
-      expect(routedDetail.messages.at(-1)).toMatchObject({
-        role: 'assistant', status: 'completed', decision: { kind: 'replan' },
-      });
-      await routedCoordinator.shutdown();
-      recoveryController.cancel(routed.item.id);
+      expect(localizedWaiting.runs.find(run => run.id === localized.review.run.id))
+        .toMatchObject({ waitingReason: '请选择生产环境或预发布环境。' });
+      await localizedCoordinator.shutdown();
+      recoveryController.cancel(localized.item.id);
 
-      const repeated = createFailedReview('recover-repeated-human-input');
-      const repeatedWaiting = await undecidableCoordinator.recover(repeated.item.id).task;
-      let releaseRepeatedTurn;
-      let repeatedCalls = 0;
-      const repeatedPrompts = [];
-      const repeatedCoordinator = new WorkItemCoordinator({
-        store: recoveryStore,
-        runtimeProvider: async () => ({
-          config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-          adapter: { call: async request => {
-            repeatedCalls += 1;
-            repeatedPrompts.push(request.messages[0].content);
-            if (repeatedCalls === 1) {
-              await new Promise(resolve => { releaseRepeatedTurn = resolve; });
-            }
-            return { text: 'invalid coordinator response' };
-          } },
-        }),
-        policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
-        registry: { listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }] },
+      const actionConversation = createFailedReview('recover-action-conversation');
+      const actionConversationWaiting = await undecidableCoordinator.recover(actionConversation.item.id).task;
+      const coordinatorMessage = vi.fn(() => {
+        throw new Error('Action input must not be routed to the Coordinator');
       });
-      const repeatedService = new WorkCenterService({
+      const actionConversationService = new WorkCenterService({
         yeaftDir: recoveryDir,
         store: recoveryStore,
         controller: recoveryController,
-        coordinator: repeatedCoordinator,
+        coordinator: { message: coordinatorMessage },
         runner: null,
-        ownerBootId: 'repeated-human-input',
+        ownerBootId: 'action-conversation-input',
         settingsReader: () => ({}),
       });
-      const firstReply = await repeatedService.handle('action_input', {
-        id: repeated.item.id,
-        actionId: repeated.review.action.id,
-        generation: repeated.review.action.generation,
-        revision: repeatedWaiting.revision,
-        text: 'Use the documented fix sequence.',
+      const continuedAction = await actionConversationService.handle('action_input', {
+        id: actionConversation.item.id,
+        actionId: actionConversation.review.action.id,
+        generation: actionConversation.review.action.generation,
+        revision: actionConversationWaiting.revision,
+        text: 'Explain the blocker in plain language, then continue this review.',
         files: [],
       });
-      expect(firstReply).toMatchObject({ accepted: true, routedTo: 'coordinator' });
-      let firstReplyDetail = recoveryStore.getWorkItemDetail(repeated.item.id);
-      expect(firstReplyDetail.messages.slice(-2)).toEqual([
-        expect.objectContaining({
-          role: 'user', text: 'Use the documented fix sequence.', status: 'completed',
+      expect(coordinatorMessage).not.toHaveBeenCalled();
+      expect(continuedAction).toMatchObject({ status: 'ready' });
+      expect(continuedAction.actions.find(action => action.id === actionConversation.review.action.id))
+        .toMatchObject({
+          status: 'ready',
+          generation: actionConversation.review.action.generation + 1,
+          requiredRole: actionConversation.review.action.requiredRole,
+        });
+      const actionConversationEvents = recoveryStore.listActionEvents(actionConversation.review.action.id);
+      expect(actionConversationEvents.filter(event => event.type === 'action.input_added')).toHaveLength(1);
+      expect(actionConversationEvents.find(event => event.type === 'action.input_added')).toMatchObject({
+        data: expect.objectContaining({
+          text: 'Explain the blocker in plain language, then continue this review.',
         }),
-        expect.objectContaining({ role: 'assistant', status: 'thinking' }),
-      ]);
-      const firstReplyTurnId = firstReplyDetail.messages.at(-1).turnId;
-      expect(firstReplyDetail.events.find(event => event.data?.turnId === firstReplyTurnId))
-        .toMatchObject({ type: 'coordinator.turn_started' });
-      for (let index = 0; index < 20 && !releaseRepeatedTurn; index += 1) {
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
-      expect(releaseRepeatedTurn).toBeTypeOf('function');
-      const duringTurn = recoveryStore.getWorkItemDetail(repeated.item.id);
-      await expect(repeatedService.handle('action_input', {
-        id: repeated.item.id,
-        actionId: repeated.review.action.id,
-        generation: repeated.review.action.generation,
-        revision: duringTurn.revision,
-        text: 'Duplicate reply while the Coordinator is deciding.',
-        files: [],
-      })).rejects.toThrow(/already responding/i);
-      expect(recoveryStore.getWorkItemDetail(repeated.item.id).events
-        .some(event => event.type === 'action.input_added')).toBe(false);
-      releaseRepeatedTurn();
-      for (let index = 0; index < 20; index += 1) {
-        const current = recoveryStore.getWorkItemDetail(repeated.item.id);
-        if (current.messages.at(-1)?.status !== 'thinking') break;
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
-      expect(repeatedCalls).toBe(2);
-      const failedReply = recoveryStore.getWorkItemDetail(repeated.item.id);
-      expect(failedReply.messages.at(-1)).toMatchObject({ status: 'failed' });
-      const retryReply = await repeatedService.handle('action_input', {
-        id: repeated.item.id,
-        actionId: repeated.review.action.id,
-        generation: repeated.review.action.generation,
-        revision: failedReply.revision,
-        text: 'Retry the Coordinator decision with the same recovery ownership.',
-        files: [],
       });
-      expect(retryReply).toMatchObject({ accepted: true, routedTo: 'coordinator' });
-      for (let index = 0; index < 20 && repeatedCalls < 3; index += 1) {
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
-      expect(repeatedPrompts.at(-1)).toContain('Use the documented fix sequence.');
-      expect(recoveryStore.getWorkItemDetail(repeated.item.id).messages
-        .filter(message => message.role === 'user').map(message => message.text)).toEqual([
-          'Use the documented fix sequence.',
-          'Retry the Coordinator decision with the same recovery ownership.',
-        ]);
-      for (let index = 0; index < 20; index += 1) {
-        const current = recoveryStore.getWorkItemDetail(repeated.item.id);
-        if (current.messages.at(-1)?.status !== 'thinking') break;
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
-      expect(recoveryStore.getWorkItemDetail(repeated.item.id).messages.at(-1))
-        .toMatchObject({ status: 'failed' });
-      await repeatedCoordinator.shutdown();
-      expect(recoveryStore.getWorkItemDetail(repeated.item.id).events
-        .some(event => event.type === 'action.input_added')).toBe(false);
-      recoveryController.cancel(repeated.item.id);
-
-      const guided = createFailedReview('recover-guided-human-input');
-      const guidedWaiting = await undecidableCoordinator.recover(guided.item.id).task;
-      const guidedCoordinator = new WorkItemCoordinator({
-        store: recoveryStore,
-        runtimeProvider: async () => ({
-          config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-          adapter: { call: async () => ({ text: JSON.stringify({
-            reply: 'The answer is sufficient to retry the fenced review.',
-            decision: {
-              kind: 'guide_actions', reason: 'The user supplied the missing constraint',
-              contractPatch: null, actions: [],
-              guidance: [{
-                stageId: guided.review.action.stageId,
-                instruction: 'Retry review using the supplied recovery constraint.',
-              }],
-            },
-          }) }) },
-        }),
-        policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
-        registry: { listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }] },
-      });
-      const guidedService = new WorkCenterService({
-        yeaftDir: recoveryDir,
-        store: recoveryStore,
-        controller: recoveryController,
-        coordinator: guidedCoordinator,
-        runner: null,
-        ownerBootId: 'guided-human-input',
-        settingsReader: () => ({}),
-      });
-      expect(await guidedService.handle('action_input', {
-        id: guided.item.id,
-        actionId: guided.review.action.id,
-        generation: guided.review.action.generation,
-        revision: guidedWaiting.revision,
-        text: 'Retry with the supplied constraint.',
-        files: [],
-      })).toMatchObject({ accepted: true, routedTo: 'coordinator' });
-      for (let index = 0; index < 20; index += 1) {
-        const current = recoveryStore.getWorkItemDetail(guided.item.id);
-        if (current.messages.at(-1)?.status !== 'thinking') break;
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
-      const guidedReady = recoveryStore.getWorkItemDetail(guided.item.id);
-      expect(guidedReady).toMatchObject({ status: 'ready' });
-      expect(guidedReady.actions.find(action => action.id === guided.review.action.id))
-        .toMatchObject({ status: 'ready', generation: guided.review.action.generation + 1 });
-      await guidedCoordinator.shutdown();
-      recoveryController.cancel(guided.item.id);
+      expect(continuedAction.messages.filter(message => message.role === 'user')).toEqual([]);
+      recoveryController.cancel(actionConversation.item.id);
 
       const interrupted = createFailedReview('recover-interrupted');
       let infrastructureCalls = 0;

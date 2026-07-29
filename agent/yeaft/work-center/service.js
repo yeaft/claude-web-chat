@@ -60,19 +60,6 @@ function parseBoardCursor(value) {
   }
 }
 
-function coordinatorHumanRequest(detail, action, generation) {
-  if (detail?.status !== 'waiting'
-      || action?.status !== 'waiting'
-      || Number(action.generation) !== Number(generation)) return null;
-  return [...(Array.isArray(detail.messages) ? detail.messages : [])].reverse().find(message => (
-    message?.role === 'assistant'
-    && message.status === 'completed'
-    && message.decision?.kind === 'request_human'
-    && message.recovery?.actionId === action.id
-    && message.recovery?.actionGeneration === action.generation
-  )) || null;
-}
-
 function listBoardItems(store, payload) {
   const limit = Math.min(Math.max(Number(payload.limit) || 100, 1), 200);
   const cursor = parseBoardCursor(payload.cursor);
@@ -387,49 +374,7 @@ export class WorkCenterService {
           throw new Error('generation must be a positive integer');
         }
         const workItem = this.#requiredItem(id);
-        const targetAction = this.#requiredAction(workItem, payload.actionId);
-        const humanRequest = coordinatorHumanRequest(workItem, targetAction, generation);
-        if (humanRequest) {
-          let addedAttachments = [];
-          let turn;
-          try {
-            addedAttachments = appendWorkItemAttachments(workItem.attachments, payload.files, {
-              root: this.attachmentRoot,
-              workItemId: id,
-            });
-            turn = this.coordinator.message(id, {
-              text: typeof payload.text === 'string' ? payload.text : '',
-              revision: payload.revision,
-              planRevision: workItem.planRevision,
-              ledgerRevision: workItem.ledgerRevision,
-              coordinatorRevision: workItem.coordinatorRevision,
-              controlRequired: true,
-              recovery: { ...humanRequest.recovery },
-              addedAttachments,
-              attachments: [...(workItem.attachments || []), ...addedAttachments],
-            }, {
-              onUpdate: (type, nextWorkItem) => {
-                this.watcher.abortInvalidWorkItemRuns(id);
-                this.#emit({ type, workItem: nextWorkItem });
-              },
-            });
-          } catch (error) {
-            try {
-              if ((workItem.attachments || []).length === 0 && addedAttachments.length > 0) {
-                removeWorkItemAttachments(this.attachmentRoot, id);
-              } else {
-                removeWorkItemAttachmentFiles(this.attachmentRoot, id, addedAttachments);
-              }
-            } catch {}
-            throw error;
-          }
-          turn.task.catch(() => {});
-          return {
-            accepted: true,
-            routedTo: 'coordinator',
-            turnId: turn.detail.messages?.at(-1)?.turnId || null,
-          };
-        }
+        this.#requiredAction(workItem, payload.actionId);
         let addedAttachments = [];
         let detail;
         try {

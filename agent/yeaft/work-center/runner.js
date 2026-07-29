@@ -32,7 +32,11 @@ import { MCPManager } from '../mcp.js';
 import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
 import { recallWorkspaceSessionContext } from './workspace-context.js';
 import { applyGeneratedPlan, BUILT_IN_ACTION_TYPES } from './workflow.js';
-import { applyAdditivePlanProposal } from './plan-mutation.js';
+import {
+  applyAdditivePlanProposal,
+  applyReplanMutation,
+  MAX_REPLAN_ADDED_ACTIONS,
+} from './plan-mutation.js';
 import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
 import { normalizeEvidence } from './evidence.js';
 import {
@@ -468,7 +472,7 @@ export function createSubmitWorkItemReplanTool({ vps, workItem, action, actions,
   const candidateIdSchema = candidateIds.length > 0
     ? { type: 'string', enum: candidateIds }
     : { type: 'string' };
-  const candidateLimit = Math.min(8, candidateIds.length);
+  const candidateLimit = candidateIds.length;
   const classification = { type: 'object', additionalProperties: false,
     required: ['actionId', 'action'], properties: {
       actionId: candidateIdSchema,
@@ -486,11 +490,19 @@ export function createSubmitWorkItemReplanTool({ vps, workItem, action, actions,
         retain: { type: 'array', maxItems: candidateLimit, items: classification },
         replace: { type: 'array', maxItems: candidateLimit, items: classification },
         remove: { type: 'array', maxItems: candidateLimit, uniqueItems: true, items: candidateIdSchema },
-        add: { type: 'array', maxItems: 8, items: plannedActionSchema(vpIds) },
+        add: { type: 'array', maxItems: MAX_REPLAN_ADDED_ACTIONS, items: plannedActionSchema(vpIds) },
       } },
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('A WorkItem plan was already submitted for this Run');
+      applyReplanMutation({
+        workItem,
+        action,
+        actions,
+        proposal: input,
+        availableVpIds: vpIds,
+      });
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       collector.value = structuredClone(input);
       ctx.requestEndTurn?.({ kind: 'work_item_replan_submitted', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId });

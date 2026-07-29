@@ -1864,7 +1864,6 @@ export const useChatStore = defineStore('chat', {
       const detail = await this.workCenterRequest('action_input', {
         id, text, actionId, revision, generation: actionGeneration, attachments,
       }, target);
-      if (detail?.accepted && detail?.routedTo === 'coordinator') return detail;
       await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       const current = this.workCenterDetailByAgent[target];
       const currentAction = current?.actions?.find(action => action?.id === actionId);

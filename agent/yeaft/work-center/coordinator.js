@@ -24,7 +24,16 @@ const COORDINATOR_MAX_WORK_ITEM_BYTES = 14 * 1024;
 const COORDINATOR_MAX_ACTIONS_BYTES = 34 * 1024;
 const COORDINATOR_MAX_CONVERSATION_BYTES = 10 * 1024;
 const COORDINATOR_MAX_STAGE_ID_BYTES = 256;
-const COORDINATOR_TEMPORARY_ERROR = 'Work Center Coordinator is temporarily unavailable; automatic recovery will retry';
+
+function coordinatorLanguage(value) {
+  return String(value || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+}
+
+function coordinatorTemporaryError(language) {
+  return coordinatorLanguage(language) === 'zh'
+    ? 'Work Center Coordinator 暂时不可用；系统会自动重试恢复'
+    : 'Work Center Coordinator is temporarily unavailable; automatic recovery will retry';
+}
 
 function truncateUtf8(value, maxBytes) {
   const bytes = Buffer.from(String(value || ''), 'utf8');
@@ -172,6 +181,15 @@ Decision rules:
 - Stage ids in the snapshot may be bounded aliases. Echo them exactly; the runtime resolves them to durable identities.
 - Never return destructive cancellation. Tell the user to use the explicit cancel control instead.`;
 
+function coordinatorSystemPrompt(language) {
+  const userLanguage = coordinatorLanguage(language) === 'zh'
+    ? 'Simplified Chinese (zh-CN)'
+    : 'English';
+  return `${COORDINATOR_SYSTEM_PROMPT}
+
+User-facing language: ${userLanguage}. Write reply and question in that language. Keep JSON property names and decision enum values in English. Never expose deterministic validator errors as the user-facing reply; explain the underlying issue plainly.`;
+}
+
 function parseJsonObject(value) {
   const source = String(value || '').trim();
   if (!source) throw new Error('Work Center Coordinator returned an empty response');
@@ -196,25 +214,40 @@ function cleanText(value, limit, name) {
   return text;
 }
 
-function permanentCoordinatorDiagnostic(cause, phase) {
+function permanentCoordinatorDiagnostic(cause, phase, language) {
+  const zh = coordinatorLanguage(language) === 'zh';
   if (cause instanceof LLMAuthError) {
-    return 'Work Center Coordinator authentication failed. Update the configured provider credentials before retrying this Action.';
+    return zh
+      ? 'Work Center Coordinator 认证失败。请更新 Provider 凭据后再重试。'
+      : 'Work Center Coordinator authentication failed. Update the configured provider credentials before retrying this Action.';
   }
   if (cause instanceof LLMContextError) {
-    return 'Work Center Coordinator exceeded the model context limit. Reduce the WorkItem context or select a model with a larger context window before retrying this Action.';
+    return zh
+      ? 'Work Center Coordinator 超过模型上下文限制。请减少 WorkItem 上下文，或改用上下文窗口更大的模型后重试。'
+      : 'Work Center Coordinator exceeded the model context limit. Reduce the WorkItem context or select a model with a larger context window before retrying this Action.';
   }
   const detail = sanitizeDiagnosticText(cause?.message || String(cause || ''), 2_000);
-  const label = phase === 'runtime'
-    ? 'runtime could not be loaded'
-    : phase === 'policy'
-      ? 'settings could not be loaded'
-      : phase === 'selection'
-        ? 'executor or model selection failed'
-        : 'provider request failed';
-  return `Work Center Coordinator ${label}${detail ? `: ${detail}` : '.'}`;
+  const label = zh
+    ? (phase === 'runtime'
+      ? '无法加载运行时'
+      : phase === 'policy'
+        ? '无法加载设置'
+        : phase === 'selection'
+          ? '执行者或模型选择失败'
+          : 'Provider 请求失败')
+    : (phase === 'runtime'
+      ? 'runtime could not be loaded'
+      : phase === 'policy'
+        ? 'settings could not be loaded'
+        : phase === 'selection'
+          ? 'executor or model selection failed'
+          : 'provider request failed');
+  return zh
+    ? `Work Center Coordinator ${label}${detail ? `：${detail}` : '。'}`
+    : `Work Center Coordinator ${label}${detail ? `: ${detail}` : '.'}`;
 }
 
-function coordinatorExecutionError(cause, phase) {
+function coordinatorExecutionError(cause, phase, language) {
   if (cause?.coordinatorClassified === true) return cause;
   const explicitlyPermanent = cause?.retryable === false;
   const retryable = !explicitlyPermanent && (
@@ -223,8 +256,8 @@ function coordinatorExecutionError(cause, phase) {
     || (['runtime', 'policy'].includes(phase) && cause?.retryable === true)
   );
   const error = new Error(retryable
-    ? COORDINATOR_TEMPORARY_ERROR
-    : permanentCoordinatorDiagnostic(cause, phase));
+    ? coordinatorTemporaryError(language)
+    : permanentCoordinatorDiagnostic(cause, phase, language));
   error.coordinatorClassified = true;
   error.coordinatorRetryable = retryable;
   error.coordinatorPhase = phase;
@@ -232,19 +265,34 @@ function coordinatorExecutionError(cause, phase) {
   return error;
 }
 
-function permanentRecoveryDecision(error) {
-  const diagnostic = String(error?.message || 'Work Center Coordinator cannot recover this Action automatically');
-  const resolution = error?.cause instanceof LLMAuthError
-    ? 'Update the provider credentials, then tell Yeaft to retry or replan the failed Action.'
-    : error?.cause instanceof LLMContextError
-      ? 'Reduce the WorkItem context or choose a model with a larger context window, then tell Yeaft to retry or replan the failed Action.'
-      : error?.coordinatorPhase === 'selection'
-        ? 'Configure an available VP and model, then tell Yeaft to retry or replan the failed Action.'
-        : error?.coordinatorPhase === 'policy'
-          ? 'Correct the Work Center settings, then tell Yeaft to retry or replan the failed Action.'
-          : 'Correct the Coordinator runtime or provider configuration, then tell Yeaft to retry or replan the failed Action.';
+function permanentRecoveryDecision(error, language) {
+  const zh = coordinatorLanguage(language) === 'zh';
+  const diagnostic = String(error?.message || (zh
+    ? 'Work Center Coordinator 无法自动恢复这个 Action'
+    : 'Work Center Coordinator cannot recover this Action automatically'));
+  const resolution = zh
+    ? (error?.cause instanceof LLMAuthError
+      ? '请更新 Provider 凭据，然后让 Yeaft 重试或重新规划失败的 Action。'
+      : error?.cause instanceof LLMContextError
+        ? '请减少 WorkItem 上下文，或选择上下文窗口更大的模型，然后让 Yeaft 重试或重新规划失败的 Action。'
+        : error?.coordinatorPhase === 'selection'
+          ? '请配置可用的 VP 和模型，然后让 Yeaft 重试或重新规划失败的 Action。'
+          : error?.coordinatorPhase === 'policy'
+            ? '请修正 Work Center 设置，然后让 Yeaft 重试或重新规划失败的 Action。'
+            : '请修正 Coordinator 运行时或 Provider 配置，然后让 Yeaft 重试或重新规划失败的 Action。')
+    : (error?.cause instanceof LLMAuthError
+      ? 'Update the provider credentials, then tell Yeaft to retry or replan the failed Action.'
+      : error?.cause instanceof LLMContextError
+        ? 'Reduce the WorkItem context or choose a model with a larger context window, then tell Yeaft to retry or replan the failed Action.'
+        : error?.coordinatorPhase === 'selection'
+          ? 'Configure an available VP and model, then tell Yeaft to retry or replan the failed Action.'
+          : error?.coordinatorPhase === 'policy'
+            ? 'Correct the Work Center settings, then tell Yeaft to retry or replan the failed Action.'
+            : 'Correct the Coordinator runtime or provider configuration, then tell Yeaft to retry or replan the failed Action.');
   return {
-    reply: `${diagnostic} Automatic recovery stopped to avoid repeated attempts.`,
+    reply: zh
+      ? `${diagnostic} 为避免重复尝试，自动恢复已停止。`
+      : `${diagnostic} Automatic recovery stopped to avoid repeated attempts.`,
     decision: {
       kind: 'request_human',
       reason: `Automatic recovery stopped after a non-retryable ${error?.coordinatorPhase || 'Coordinator'} error`,
@@ -254,6 +302,18 @@ function permanentRecoveryDecision(error) {
       actions: [],
     },
   };
+}
+
+function coordinatorDecisionError(error, language) {
+  const diagnostic = sanitizeDiagnosticText(error?.message || String(error || ''), 2_000);
+  const wrapped = new Error(coordinatorLanguage(language) === 'zh'
+    ? 'Work Center Coordinator 未能生成有效回复。你的消息已经保留，请重试。'
+    : 'Work Center Coordinator could not produce a valid response. Your message was preserved; try again.');
+  wrapped.coordinatorClassified = true;
+  wrapped.coordinatorRetryable = false;
+  wrapped.coordinatorPhase = 'decision';
+  wrapped.cause = diagnostic ? new Error(diagnostic) : error;
+  return wrapped;
 }
 
 function normalizeGuidance(value, detail) {
@@ -303,9 +363,7 @@ export function normalizeCoordinatorResponse(value, detail, options = {}) {
     : {};
   const allowedKinds = options.recovery === true
     ? ['guide_actions', 'replan', 'request_human']
-    : options.controlRequired === true
-      ? ['guide_actions', 'replan']
-      : ['answer', 'guide_actions', 'replan'];
+    : ['answer', 'guide_actions', 'replan'];
   const kind = allowedKinds.includes(source.kind) ? source.kind : '';
   if (!kind) throw new Error('Work Center Coordinator decision kind is invalid');
   const reason = cleanText(source.reason, 2_000, 'decision reason');
@@ -474,6 +532,9 @@ export class WorkItemCoordinator {
     this.policyProvider = typeof options.policyProvider === 'function' ? options.policyProvider : async () => ({});
     this.registry = options.registry;
     this.attachmentRoot = options.attachmentRoot || null;
+    this.languageProvider = typeof options.languageProvider === 'function'
+      ? options.languageProvider
+      : runtime => runtime?.config?.language || 'en';
     this.activeTurns = new Map();
     this.activeTasks = new Map();
     this.shuttingDown = false;
@@ -497,15 +558,12 @@ export class WorkItemCoordinator {
     }, {
       attachments: input.attachments,
       addedAttachments,
-      recovery: input.recovery,
-      requireWaitingRecovery: input.controlRequired === true,
     });
     if (!started) throw new Error(`WorkItem not found: ${id}`);
     options.onUpdate?.('coordinator.turn_started', started.detail);
     return this.#scheduleTurn(started, {
       text: promptText,
       recovery: false,
-      controlRequired: input.controlRequired === true,
       addedAttachments,
       options,
     });
@@ -541,17 +599,17 @@ export class WorkItemCoordinator {
     const text = `Action stage "${action.stageId}" failed. Decide the next safe control transition. `
       + 'Failure is not a terminal WorkItem state: guide or replan executable work whenever possible. '
       + 'Request human input only when the snapshot lacks information required for a safe decision.';
-    return this.#scheduleTurn(started, { text, recovery: true, controlRequired: false, options });
+    return this.#scheduleTurn(started, { text, recovery: true, options });
   }
 
   #scheduleTurn(started, {
-    text, recovery, controlRequired = false, addedAttachments = [], options,
+    text, recovery, addedAttachments = [], options,
   }) {
     const abortController = new AbortController();
     this.activeTurns.set(started.turnId, abortController);
     const task = new Promise(resolve => setTimeout(resolve, 0))
       .then(() => this.#executeTurn(started, {
-        text, recovery, controlRequired, addedAttachments, options, abortController,
+        text, recovery, addedAttachments, options, abortController,
       }))
       .finally(() => {
         this.activeTurns.delete(started.turnId);
@@ -562,7 +620,7 @@ export class WorkItemCoordinator {
   }
 
   async #executeTurn(started, {
-    text, recovery, controlRequired, addedAttachments, options, abortController,
+    text, recovery, addedAttachments, options, abortController,
   }) {
     try {
       let normalized = null;
@@ -570,6 +628,7 @@ export class WorkItemCoordinator {
       let attemptCount = 0;
       let lastError = null;
       const snapshotText = coordinatorSnapshotText(started.detail);
+      let language = 'en';
       const attachmentContext = !recovery && this.attachmentRoot
         ? buildWorkItemAttachmentContext({ ...started.detail, attachments: addedAttachments }, {
             root: this.attachmentRoot,
@@ -581,13 +640,14 @@ export class WorkItemCoordinator {
         let settings;
         try {
           runtime = await this.runtimeProvider();
+          language = coordinatorLanguage(await this.languageProvider(runtime));
         } catch (error) {
-          throw coordinatorExecutionError(error, 'runtime');
+          throw coordinatorExecutionError(error, 'runtime', language);
         }
         try {
           settings = await this.policyProvider();
         } catch (error) {
-          throw coordinatorExecutionError(error, 'policy');
+          throw coordinatorExecutionError(error, 'policy', language);
         }
         if (this.shuttingDown) throw new Error('Work Center Coordinator is shutting down');
         let vps;
@@ -611,7 +671,7 @@ export class WorkItemCoordinator {
           };
           resolved = resolveWorkItemModel(runtime.config, assignment.vp, coordinatorPolicy);
         } catch (error) {
-          throw coordinatorExecutionError(error, 'selection');
+          throw coordinatorExecutionError(error, 'selection', language);
         }
         const maxAttempts = recovery
           ? COORDINATOR_RECOVERY_DECISION_ATTEMPTS
@@ -632,7 +692,7 @@ export class WorkItemCoordinator {
               result = await Promise.race([
                 runtime.adapter.call({
                   model: resolved.model,
-                  system: COORDINATOR_SYSTEM_PROMPT,
+                  system: coordinatorSystemPrompt(language),
                   messages: [{ role: 'user', content }],
                   maxTokens: Math.min(
                     resolveMaxOutputTokens(resolved.model, runtime.config),
@@ -651,11 +711,10 @@ export class WorkItemCoordinator {
               ]);
             } catch (error) {
               if (abortController.signal.aborted || this.shuttingDown) throw error;
-              throw coordinatorExecutionError(error, 'provider');
+              throw coordinatorExecutionError(error, 'provider', language);
             }
             normalized = normalizeCoordinatorResponse(result?.text, started.detail, {
               recovery,
-              controlRequired,
               recoveryActionId: started.fence.recovery?.actionId || null,
             });
             if (normalized.decision.kind === 'replan') {
@@ -692,17 +751,27 @@ export class WorkItemCoordinator {
         throw lastError || new Error('Work Center Coordinator was interrupted');
       }
       if (!normalized) {
-        if (!recovery || lastError?.coordinatorRetryable) {
-          throw lastError || new Error('Work Center Coordinator did not produce a decision');
+        if (!recovery) {
+          throw lastError?.coordinatorClassified
+            ? lastError
+            : coordinatorDecisionError(
+              lastError || new Error('Work Center Coordinator did not produce a decision'),
+              language,
+            );
         }
+        if (lastError?.coordinatorRetryable) throw lastError;
         normalized = lastError?.coordinatorClassified
-          ? permanentRecoveryDecision(lastError)
+          ? permanentRecoveryDecision(lastError, language)
           : {
-              reply: 'Automatic recovery could not choose a safe executable next step. Human input is required.',
+              reply: language === 'zh'
+                ? '自动恢复无法确定安全、可执行的下一步，需要你补充信息。'
+                : 'Automatic recovery could not choose a safe executable next step. Human input is required.',
               decision: {
                 kind: 'request_human',
                 reason: 'Automatic recovery exhausted its bounded decision attempts',
-                question: 'Review the failed Action and provide the missing decision or constraint needed to retry or replan it safely.',
+                question: language === 'zh'
+                  ? '请查看失败的 Action，并补充安全重试或重新规划所需的决定或约束。'
+                  : 'Review the failed Action and provide the missing decision or constraint needed to retry or replan it safely.',
                 contractPatch: null,
                 guidance: [],
                 actions: [],

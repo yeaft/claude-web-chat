@@ -1561,7 +1561,6 @@ export default {
   'workCenter.noToolCalls': '这个 Loop 没有工具调用。',
   'workCenter.actionInputPlaceholder': '补充上下文、回答问题或调整这个 Action',
   'workCenter.actionInputResumeHint': '你的输入会带着新增上下文继续这个 Action。',
-  'workCenter.actionInputCoordinatorHint': '你的回答会发送给 Work Item Coordinator，由它决定重试或重新规划剩余 Actions。',
   'workCenter.waitingQuestionTitle': '需要你的回答',
   'workCenter.actionInputRetryHint': '补充修正说明或文件后，使用新上下文重新执行这个 Action。',
   'workCenter.actionInputContinueHint': '这里只直接干预当前 Action。',
