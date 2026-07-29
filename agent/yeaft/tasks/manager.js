@@ -105,12 +105,13 @@ export class TaskManager {
     }
   }
 
-  startTask({ sessionId, ownerVpId = null, kind = 'tool', title = '', runtime = {}, source = {}, logPath = null, resultDelivery = null } = {}) {
+  startTask({ sessionId, ownerVpId = null, kind = 'tool', title = '', runtime = {}, source = {}, logPath = null, resultDelivery = TASK_RESULT_DELIVERY.STATUS_ONLY } = {}) {
     const taskId = makeTaskId();
     const resolvedSessionId = sessionId || 'default';
-    const deliveryFallback = kind === 'shell'
-      ? TASK_RESULT_DELIVERY.STATUS_ONLY
-      : TASK_RESULT_DELIVERY.MODEL_REENTRY;
+    const normalizedResultDelivery = normalizeTaskResultDelivery(resultDelivery);
+    if (normalizedResultDelivery !== resultDelivery) {
+      console.warn(`[Yeaft] Invalid task resultDelivery ${String(resultDelivery)}; using ${TASK_RESULT_DELIVERY.STATUS_ONLY}.`);
+    }
     const task = {
       id: taskId,
       sessionId: resolvedSessionId,
@@ -118,7 +119,7 @@ export class TaskManager {
       kind,
       title: title || kind,
       status: TASK_STATUS.RUNNING,
-      resultDelivery: normalizeTaskResultDelivery(resultDelivery, deliveryFallback),
+      resultDelivery: normalizedResultDelivery,
       createdAt: nowIso(),
       startedAt: nowIso(),
       updatedAt: nowIso(),

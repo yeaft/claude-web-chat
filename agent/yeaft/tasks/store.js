@@ -32,18 +32,28 @@ export const TASK_RESULT_DELIVERY = Object.freeze({
   STATUS_ONLY: 'status_only',
 });
 
-export function normalizeTaskResultDelivery(value, fallback = TASK_RESULT_DELIVERY.MODEL_REENTRY) {
+export function normalizeTaskResultDelivery(value) {
   if (value === TASK_RESULT_DELIVERY.MODEL_REENTRY || value === TASK_RESULT_DELIVERY.STATUS_ONLY) {
     return value;
   }
-  return fallback;
+  return TASK_RESULT_DELIVERY.STATUS_ONLY;
 }
 
 export function taskResultDeliveryFor(task) {
-  const legacyFallback = task?.kind === 'shell'
-    ? TASK_RESULT_DELIVERY.STATUS_ONLY
-    : TASK_RESULT_DELIVERY.MODEL_REENTRY;
-  return normalizeTaskResultDelivery(task?.resultDelivery, legacyFallback);
+  return normalizeTaskResultDelivery(task?.resultDelivery);
+}
+
+function normalizePersistedTask(task) {
+  if (!task || typeof task !== 'object') return task;
+  if (Object.prototype.hasOwnProperty.call(task, 'resultDelivery')) {
+    return { ...task, resultDelivery: normalizeTaskResultDelivery(task.resultDelivery) };
+  }
+  return {
+    ...task,
+    resultDelivery: task.kind === 'sub_agent'
+      ? TASK_RESULT_DELIVERY.MODEL_REENTRY
+      : TASK_RESULT_DELIVERY.STATUS_ONLY,
+  };
 }
 
 const TERMINAL = new Set([
@@ -152,7 +162,7 @@ export class TaskStore {
   readTask(sessionId, taskId) {
     const path = this.taskPath(sessionId, taskId);
     if (!existsSync(path)) return null;
-    return JSON.parse(readFileSync(path, 'utf8'));
+    return normalizePersistedTask(JSON.parse(readFileSync(path, 'utf8')));
   }
 
   loadActiveTasks() {
@@ -164,7 +174,7 @@ export class TaskStore {
       for (const entry of readdirSync(sessionDir, { withFileTypes: true })) {
         if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
         try {
-          const task = JSON.parse(readFileSync(join(sessionDir, entry.name), 'utf8'));
+          const task = normalizePersistedTask(JSON.parse(readFileSync(join(sessionDir, entry.name), 'utf8')));
           if (task && task.status === TASK_STATUS.RUNNING) out.push(task);
         } catch {
           // Ignore corrupt task metadata; one bad task must not block boot.

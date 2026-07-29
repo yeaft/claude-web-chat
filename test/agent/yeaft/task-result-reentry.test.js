@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -13,6 +13,8 @@ import {
 } from '../../../agent/yeaft/web-bridge.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
+import { TaskManager } from '../../../agent/yeaft/tasks/manager.js';
+import { TASK_RESULT_DELIVERY } from '../../../agent/yeaft/tasks/store.js';
 import bashTool from '../../../agent/yeaft/tools/bash.js';
 
 class RecordingAdapter {
@@ -36,12 +38,16 @@ class RecordingAdapter {
   }
 }
 
-function makeTaskManagerStub() {
+function makeTaskManagerStub({ yeaftDir }) {
   let sink = null;
   const started = [];
+  const persisted = new TaskManager({ yeaftDir });
   return {
     started,
-    setEventSink(fn) { sink = fn; },
+    setEventSink(fn) {
+      sink = fn;
+      persisted.setEventSink(fn);
+    },
     startShellTask(input) {
       const task = {
         id: 'task_service_1',
@@ -64,7 +70,21 @@ function makeTaskManagerStub() {
       if (!sink) throw new Error('task event sink not installed');
       sink(event);
     },
-    listActiveTasks() { return []; },
+    startTask(input) { return persisted.startTask(input); },
+    startLegacyTask(input) {
+      const task = persisted.startTask({
+        ...input,
+        resultDelivery: TASK_RESULT_DELIVERY.MODEL_REENTRY,
+      });
+      const stored = persisted.store.readTask(task.sessionId, task.id);
+      delete stored.resultDelivery;
+      persisted.store.writeTask(stored);
+      persisted.active.delete(`${task.sessionId}::${task.id}`);
+      return task;
+    },
+    completeTask(sessionId, taskId, opts) { return persisted.completeTask(sessionId, taskId, opts); },
+    getTask(sessionId, taskId) { return persisted.getTask(sessionId, taskId); },
+    listActiveTasks() { return persisted.listActiveTasks(); },
     renderActiveTasksForPrompt() { return ''; },
   };
 }
@@ -87,6 +107,7 @@ describe('task result re-entry', () => {
   let tempDir = null;
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     __testSetSession(null);
     await __testResetVpState();
     if (tempDir) rmSync(tempDir, { recursive: true, force: true });
@@ -122,8 +143,12 @@ describe('task result re-entry', () => {
         { type: 'text_delta', text: 'The delegated result was received.' },
         { type: 'stop', stopReason: 'end_turn' },
       ],
+      [
+        { type: 'text_delta', text: 'The legacy delegated result was received.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
     ]);
-    const taskManager = makeTaskManagerStub();
+    const taskManager = makeTaskManagerStub({ yeaftDir: tempDir });
     const persisted = [];
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(bashTool);
@@ -260,5 +285,70 @@ describe('task result re-entry', () => {
       sessionId,
     });
     expect(internalRows[0].content).toContain('task_delegate_1');
+
+    // A persisted legacy sub-agent without the field keeps the compatibility
+    // fallback and still opens exactly one rescue turn.
+    const legacyTask = taskManager.startLegacyTask({
+      sessionId,
+      ownerVpId: vpId,
+      kind: 'sub_agent',
+      title: 'Legacy delegate',
+      source: { threadId: 'main' },
+    });
+    taskManager.completeTask(sessionId, legacyTask.id, {
+      status: 'succeeded',
+      summary: 'Legacy review passed',
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await drainVpDriversWithin();
+    expect(taskManager.getTask(sessionId, legacyTask.id)).toMatchObject({
+      status: 'succeeded',
+      resultDelivery: TASK_RESULT_DELIVERY.MODEL_REENTRY,
+    });
+    expect(adapter.streamCalls).toHaveLength(5);
+    expect(JSON.stringify(adapter.streamCalls[4].messages)).toContain('Legacy review passed');
+
+    // Unknown kinds and explicit unknown delivery modes are status-only.
+    // Drive them through the real TaskManager persistence/completion path and
+    // prove neither gains the side effect of starting an adapter turn.
+    const invalidTask = taskManager.startTask({
+      sessionId,
+      ownerVpId: vpId,
+      kind: 'sub_agent',
+      title: 'Invalid delivery',
+      resultDelivery: 'future_delivery_mode',
+      source: { threadId: 'main' },
+    });
+    expect(invalidTask.resultDelivery).toBe(TASK_RESULT_DELIVERY.STATUS_ONLY);
+    taskManager.completeTask(sessionId, invalidTask.id, {
+      status: 'succeeded',
+      summary: 'Must not re-enter',
+    });
+
+    const unknownKindTask = taskManager.startTask({
+      sessionId,
+      ownerVpId: vpId,
+      kind: 'future_task_kind',
+      title: 'Unknown task kind',
+      source: { threadId: 'main' },
+    });
+    expect(unknownKindTask.resultDelivery).toBe(TASK_RESULT_DELIVERY.STATUS_ONLY);
+    taskManager.completeTask(sessionId, unknownKindTask.id, {
+      status: 'succeeded',
+      summary: 'Must not re-enter',
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await drainVpDriversWithin();
+    expect(taskManager.getTask(sessionId, invalidTask.id)).toMatchObject({
+      status: 'succeeded',
+      resultDelivery: TASK_RESULT_DELIVERY.STATUS_ONLY,
+    });
+    expect(taskManager.getTask(sessionId, unknownKindTask.id)).toMatchObject({
+      status: 'succeeded',
+      resultDelivery: TASK_RESULT_DELIVERY.STATUS_ONLY,
+    });
+    expect(adapter.streamCalls).toHaveLength(5);
+    expect(persisted.filter(row => row.internal === true)).toHaveLength(2);
   });
 });

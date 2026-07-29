@@ -1852,7 +1852,7 @@ function scheduleTaskResultRescue({ taskId, sessionId, vpId, threadId = 'main', 
 function scheduleTaskResultReentry(event) {
   if (!event || event.event !== 'completed' || !event.task) return;
   const task = event.task;
-  if (taskResultDeliveryFor(task) === TASK_RESULT_DELIVERY.STATUS_ONLY) return;
+  if (taskResultDeliveryFor(task) !== TASK_RESULT_DELIVERY.MODEL_REENTRY) return;
   const sessionId = task.sessionId || event.sessionId || null;
   const vpId = task.ownerVpId || null;
   if (!sessionId || !vpId) return;
