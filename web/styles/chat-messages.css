@@ -43,56 +43,16 @@
   opacity: 1;
 }
 
-/* Progress and final result stay separate Markdown documents. The distinction
-   is expressed by whitespace and indentation, not section headings. */
+/* Progress and final result stay separate Markdown documents. Progress is
+   always visible; typography and whitespace provide the visual hierarchy. */
 .turn-progress-group {
-  display: flex;
-  flex-direction: column;
   color: var(--text-secondary);
-}
-
-.turn-progress-toggle {
-  align-self: flex-end;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 24px;
-  padding: 3px 0;
-  color: var(--text-secondary);
-  background: none;
-  border: 0;
-  border-radius: 0;
-  cursor: pointer;
-  list-style: none;
-  font-family: inherit;
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.turn-progress-group.is-expanded > .turn-progress-toggle {
-  margin-top: 4px;
-}
-
-.turn-progress-toggle:hover,
-.turn-progress-toggle:focus-visible {
-  color: var(--text-primary);
-  background: none;
-}
-
-.turn-progress-toggle:focus-visible {
-  outline: 2px solid var(--accent-blue);
-  outline-offset: 2px;
 }
 
 .turn-progress-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 0 0 0 20px;
-}
-
-.turn-progress-list[hidden] {
-  display: none;
 }
 
 .turn-response-segment {
