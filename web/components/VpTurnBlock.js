@@ -183,7 +183,12 @@ export default {
 
     const retryText = Vue.computed(() => {
       const turnId = props.turn && props.turn.turnId;
-      const retry = turnId ? store.activeVpTurns?.[turnId] : null;
+      const retry = turnId
+        ? Object.values(store.activeVpTurns || {}).find(row => (
+          row?.turnId === turnId
+          && (!store.currentAgent || !row?.agentId || row.agentId === store.currentAgent)
+        )) || store.activeVpTurns?.[turnId]
+        : null;
       if (!retry?.retryAttempt || !retry?.retryMax) return '';
       const key = retry.retryRecoveryMode === 'continue'
         ? 'yeaft.vp.turnBlock.retryingContinue'

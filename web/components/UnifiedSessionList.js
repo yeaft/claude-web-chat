@@ -6,7 +6,7 @@ export default {
     sessions: { type: Array, default: () => [] },
     activeCatalogKey: { type: String, default: null },
     processingConversations: { type: Object, default: () => ({}) },
-    processingYeaftSessions: { type: Object, default: () => ({}) },
+    isYeaftSessionProcessing: { type: Function, default: null },
   },
   emits: ['select', 'create-chat', 'create-yeaft', 'action'],
   data() {
@@ -55,7 +55,11 @@ export default {
     isProcessing(row) {
       const sessionId = row?.routeRef?.sessionId;
       if (!sessionId) return false;
-      if (row.runtimeProvider === 'yeaft') return !!this.processingYeaftSessions?.[sessionId];
+      if (row.runtimeProvider === 'yeaft') {
+        return typeof this.isYeaftSessionProcessing === 'function'
+          ? this.isYeaftSessionProcessing(sessionId, row?.routeRef?.agentId || null)
+          : false;
+      }
       return !!this.processingConversations?.[sessionId];
     },
     shortPath(path) {

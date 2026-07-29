@@ -11,6 +11,7 @@ import {
   maxDbMessageId,
 } from '../../web/stores/helpers/messages.js';
 import UnifiedSessionList from '../../web/components/UnifiedSessionList.js';
+import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
 import {
   beginCatalogMutation,
   beginChatHistoryRequest,
@@ -23,7 +24,36 @@ import {
   yeaftCatalogKey,
   yeaftRouteRef,
 } from '../../web/stores/helpers/session-catalog.js';
-globalThis.Pinia = globalThis.Pinia || { defineStore: () => () => ({}) };
+const storeFactories = new Map();
+function defineStore(id, options) {
+  return () => {
+    if (storeFactories.has(id)) return storeFactories.get(id);
+    const instance = Vue.reactive({ ...(typeof options.state === 'function' ? options.state() : {}) });
+    for (const [name, getter] of Object.entries(options.getters || {})) {
+      Object.defineProperty(instance, name, {
+        enumerable: true,
+        get() { return getter.call(instance, instance); },
+      });
+    }
+    for (const [name, action] of Object.entries(options.actions || {})) {
+      instance[name] = action.bind(instance);
+    }
+    storeFactories.set(id, instance);
+    return instance;
+  };
+}
+const runtimeSessionsStore = Vue.reactive({
+  sessionList: [],
+  sessionById(sessionId, agentId = null) {
+    return this.sessionList.find(row => row.id === sessionId && (!agentId || row.agentId === agentId)) || null;
+  },
+});
+globalThis.Pinia = {
+  ...(globalThis.Pinia || {}),
+  defineStore,
+  useSessionsStore: () => runtimeSessionsStore,
+};
+const { useChatStore } = await import('../../web/stores/chat.js');
 const { handleSyncMessagesResult } = await import('../../web/stores/helpers/handlers/conversationHandler.js');
 
 import {
@@ -152,7 +182,7 @@ describe('message flow regressions', () => {
         sessions: catalogRows,
         activeCatalogKey: catalogRows[0].catalogKey,
         processingConversations: { visible: true },
-        processingYeaftSessions: { pinned: true },
+        isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'agent-a',
       },
       global: { mocks: { $t: key => key } },
     });
@@ -168,11 +198,14 @@ describe('message flow regressions', () => {
       runtimeProvider: 'yeaft',
       routeRef: { agentId: 'agent-fallback' },
     })).toBe('agent-fallback');
-    await sidebar.setProps({ processingConversations: {}, processingYeaftSessions: {} });
+    await sidebar.setProps({
+      processingConversations: {},
+      isYeaftSessionProcessing: () => false,
+    });
     expect(sidebar.findAll('.processing-dot')).toHaveLength(0);
     await sidebar.setProps({
       processingConversations: { visible: true },
-      processingYeaftSessions: { pinned: true },
+      isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'agent-a',
     });
     expect(sidebar.findAll('.processing-dot')).toHaveLength(2);
 
@@ -201,7 +234,7 @@ describe('message flow regressions', () => {
         sessions: catalogRows,
         activeCatalogKey: catalogRows[0].catalogKey,
         processingConversations: { visible: true },
-        processingYeaftSessions: { pinned: true },
+        isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'agent-a',
       },
       global: { mocks: { $t: key => key } },
     });
@@ -305,8 +338,10 @@ describe('message flow regressions', () => {
     expect(chatPageSource).toContain('@action="onUnifiedSessionAction"');
     expect(yeaftSidebarSource).toContain('@create-yeaft="onOpenSessionCreate"');
     expect(chatPageSource).toContain(':processing-conversations="store.processingConversations"');
-    expect(yeaftSidebarSource).toContain(':processing-yeaft-sessions="chatStore.yeaftProcessingSessions"');
+    expect(yeaftSidebarSource).toContain(':is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"');
     expect(chatPageSource).not.toContain("action === 'split'");
+    expect(chatPageSource).not.toContain('splitScreen.splitToPanel');
+    expect(chatPageSource).not.toContain('split-to-panel-item');
     expect(yeaftSidebarSource).not.toContain("action === 'split'");
     expect(websocket).toContain('store.sessionCatalogLoaded = false;');
     expect(websocket).toContain('store.sessionCatalog = [];');
@@ -428,13 +463,135 @@ describe('message flow regressions', () => {
     expect(bridge).toContain("recoveryMode: event.recoveryMode || 'restart'");
     expect(chatStore).toContain("case 'llm_retry': {");
     expect(chatStore).toContain('retryAttempt: event.attempt || 0');
-    expect(chatStore).toContain('if (msg.turnId && this.activeVpTurns?.[msg.turnId]?.retryAttempt)');
+    expect(chatStore).toContain('const frameTurnKey = msg.turnId ? yeaftTurnStateKey(this, msg.agentId || null, msg.turnId)');
     expect(chatStore).toContain('retryRecoveryMode: _retryRecoveryMode');
     expect(chatStore).toContain("'thinking', 'retrying', 'streaming'");
     expect(turnBlock).toContain('turn.isStreaming && retryText');
     expect(turnBlock).toContain("'yeaft.vp.turnBlock.retryingContinue'");
     expect(en).toContain("'yeaft.vp.turnBlock.retryingRequest': 'Response stalled;");
     expect(zh).toContain("'yeaft.vp.turnBlock.retryingRequest': '响应停滞");
+
+    storeFactories.clear();
+    runtimeSessionsStore.sessionList = [
+      { id: 'shared', agentId: 'agent-a' },
+      { id: 'shared', agentId: 'agent-b' },
+    ];
+    const store = useChatStore();
+    store.sessionCatalog = [
+      {
+        catalogKey: 'yeaft:agent-a:shared',
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: 'shared' },
+        title: 'Agent A',
+        availability: 'online',
+      },
+      {
+        catalogKey: 'yeaft:agent-b:shared',
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-b', sessionId: 'shared' },
+        title: 'Agent B',
+        availability: 'online',
+      },
+    ];
+    store.activeVpTurns = {};
+    store.stoppingVpTurnIds = {};
+    store.vpStatuses = {};
+    store.yeaftProcessingSessions = {};
+    store.yeaftActiveSessionFilter = 'shared';
+    store.currentAgent = 'agent-a';
+    store.yeaftConversationId = 'conv-a';
+    store.messagesMap = { 'conv-a': [] };
+
+    const wrapper = mount(UnifiedSessionList, {
+      attachTo: document.body,
+      props: {
+        sessions: store.sessionCatalog,
+        isYeaftSessionProcessing: store.isYeaftSessionProcessing,
+      },
+      global: { mocks: { $t: key => key } },
+    });
+
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: { type: 'vp_turn_start', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a' },
+    });
+    await Vue.nextTick();
+    expect(store.yeaftProcessingSessions).toEqual({
+      [yeaftSessionIdentityKey('agent-a', 'shared')]: true,
+    });
+    expect(wrapper.findAll('.processing-dot')).toHaveLength(1);
+    expect(wrapper.findAll('.session-item')[0].classes()).toContain('processing');
+    expect(wrapper.findAll('.session-item')[1].classes()).not.toContain('processing');
+
+    store.handleYeaftOutput({
+      agentId: 'agent-b',
+      conversationId: 'conv-b',
+      event: { type: 'vp_turn_start', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a' },
+    });
+    expect(Object.values(store.activeVpTurns).filter(row => row.turnId === 'turn-a')).toHaveLength(2);
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: { type: 'vp_turn_end', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a', reason: 'end_turn' },
+    });
+    await Vue.nextTick();
+    expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(false);
+    expect(store.isYeaftSessionProcessing('shared', 'agent-b')).toBe(true);
+    expect(wrapper.findAll('.processing-dot')).toHaveLength(1);
+    expect(wrapper.findAll('.session-item')[0].classes()).not.toContain('processing');
+    expect(wrapper.findAll('.session-item')[1].classes()).toContain('processing');
+
+    store.activeVpTurns = {};
+    store.yeaftProcessingSessions = {};
+    store.vpStatuses = {};
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      event: {
+        type: 'vp_status_snapshot',
+        statuses: [{ sessionId: 'shared', vpId: 'omni', state: 'streaming', turnId: 'snapshot-a' }],
+      },
+    });
+    store.handleYeaftOutput({
+      agentId: 'agent-b',
+      event: {
+        type: 'vp_status_snapshot',
+        statuses: [{ sessionId: 'shared', vpId: 'omni', state: 'streaming', turnId: 'snapshot-b' }],
+      },
+    });
+    expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(true);
+    expect(store.isYeaftSessionProcessing('shared', 'agent-b')).toBe(true);
+
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      event: {
+        type: 'vp_status_snapshot',
+        sessionId: 'shared',
+        statuses: [{ sessionId: 'shared', vpId: 'omni', state: 'idle' }],
+      },
+    });
+    await Vue.nextTick();
+    expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(false);
+    expect(store.isYeaftSessionProcessing('shared', 'agent-b')).toBe(true);
+    expect(wrapper.findAll('.processing-dot')).toHaveLength(1);
+    expect(wrapper.findAll('.session-item')[1].classes()).toContain('processing');
+
+    store.handleYeaftOutput({
+      agentId: 'agent-b',
+      event: { type: 'yeaft_aborted', sessionId: 'shared' },
+    });
+    await Vue.nextTick();
+    expect(store.isYeaftSessionProcessing('shared', 'agent-b')).toBe(false);
+    expect(wrapper.findAll('.processing-dot')).toHaveLength(0);
+
+    store.yeaftProcessingSessions = { shared: true };
+    expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(false);
+    expect(store.isYeaftSessionProcessing('shared', 'agent-b')).toBe(false);
+    store.sessionCatalog = [store.sessionCatalog[0]];
+    runtimeSessionsStore.sessionList = [{ id: 'shared', agentId: 'agent-a' }];
+    expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(true);
+
+    wrapper.unmount();
   });
 
   it('stamps background agent messages without promoting that conversation', () => {

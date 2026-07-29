@@ -117,7 +117,7 @@ export default {
           :sessions="store.sessionCatalog"
           :active-catalog-key="store.activeCatalogKey"
           :processing-conversations="store.processingConversations"
-          :processing-yeaft-sessions="store.yeaftProcessingSessions"
+          :is-yeaft-session-processing="store.isYeaftSessionProcessing"
           @select="store.openCatalogSession"
           @create-chat="openConversationModal"
           @create-yeaft="openUnifiedSessionCreate"
@@ -174,10 +174,6 @@ export default {
                       <svg viewBox="0 0 24 24"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
                       {{ $t('chat.sidebar.unpin') }}
                     </button>
-                    <button class="session-menu-item split-to-panel-item" v-if="!store.isInAnyPanel(conv.id)" @click.stop="splitToPanel(conv.id); closeSessionMenu()">
-                      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-                      {{ $t('splitScreen.splitToPanel') }}
-                    </button>
                     <button class="session-menu-item" @click.stop="startChatRename(conv); closeSessionMenu()">
                       <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
                       {{ $t('chat.sidebar.renameConv') }}
@@ -225,10 +221,6 @@ export default {
                     <button class="session-menu-item" @click.stop="store.togglePin(conv.id); closeSessionMenu()">
                       <svg viewBox="0 0 24 24"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
                       {{ $t('chat.sidebar.pin') }}
-                    </button>
-                    <button class="session-menu-item split-to-panel-item" v-if="!store.isInAnyPanel(conv.id)" @click.stop="splitToPanel(conv.id); closeSessionMenu()">
-                      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-                      {{ $t('splitScreen.splitToPanel') }}
                     </button>
                     <button class="session-menu-item" @click.stop="startChatRename(conv); closeSessionMenu()">
                       <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
@@ -759,9 +751,6 @@ export default {
         return;
       }
       this.selectConversation(conv.id, conv.agentId);
-    },
-    splitToPanel(conversationId) {
-      this.store.splitToPanel(conversationId);
     },
     closeSession(conversationId, agentId) {
       this.store.closeSession(conversationId, agentId);
