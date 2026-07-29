@@ -551,6 +551,11 @@ export const stmts = {
     UPDATE sessions SET is_pinned = ?, updated_at = ? WHERE id = ?
   `),
 
+  updateSessionPinnedForRoute: db.prepare(`
+    UPDATE sessions SET is_pinned = ?, updated_at = ?
+    WHERE id = ? AND agent_id = ? AND (user_id = ? OR user_id IS NULL)
+  `),
+
   // fix-copilot-provider-persist: persist the conversation's code-agent
   // provider so it survives an agent process restart. Mirrors the pinned/
   // agent update shape. Only written when a non-default provider is known
@@ -588,6 +593,10 @@ export const stmts = {
 
   getSessionsByUserAndAgent: db.prepare(`
     SELECT * FROM sessions WHERE user_id = ? AND agent_id = ? ORDER BY updated_at DESC LIMIT ?
+  `),
+
+  hasSessionOwnedByUserAndAgent: db.prepare(`
+    SELECT 1 FROM sessions WHERE user_id = ? AND agent_id = ? LIMIT 1
   `),
 
   getAllSessions: db.prepare(`

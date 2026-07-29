@@ -49,3 +49,48 @@ export function catalogKeyForRoute(routeRef) {
   normalizeChatRuntimeProvider(routeRef?.runtimeProvider);
   return chatCatalogKey(routeRef?.sessionId);
 }
+
+export function beginCatalogMutation(store, requestId) {
+  const previousCatalog = store.sessionCatalog.map(item => ({ ...item }));
+  store.sessionCatalogMutationRequests[requestId] = { previousCatalog };
+  return previousCatalog;
+}
+
+export function finishCatalogMutation(store, msg) {
+  const request = msg?.requestId ? store.sessionCatalogMutationRequests[msg.requestId] : null;
+  if (!request) return false;
+  delete store.sessionCatalogMutationRequests[msg.requestId];
+  if (msg.ok !== true) store.sessionCatalog = request.previousCatalog;
+  return true;
+}
+
+export function beginChatHistoryRequest(store, conversationId, mode = 'recent', cursor = null) {
+  const catalogKey = chatCatalogKey(conversationId);
+  const prior = store.chatHistoryRequests[catalogKey] || {};
+  const generation = Number(prior.generation || 0) + 1;
+  const requestId = `chat_history_${generation}_${crypto.randomUUID()}`;
+  store.chatHistoryRequests[catalogKey] = {
+    requestId,
+    catalogKey,
+    generation,
+    mode,
+    cursor,
+    connectionGeneration: Number(store.chatHistoryConnectionGeneration || 0),
+    loading: true,
+    cancelled: false,
+    error: null,
+  };
+  return requestId;
+}
+
+export function cancelChatHistoryRequest(store, catalogKey, requestId, error) {
+  const pending = store.chatHistoryRequests[catalogKey];
+  if (pending?.requestId !== requestId) return false;
+  store.chatHistoryRequests[catalogKey] = {
+    ...pending,
+    loading: false,
+    cancelled: true,
+    error,
+  };
+  return true;
+}

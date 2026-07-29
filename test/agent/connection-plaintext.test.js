@@ -12,6 +12,10 @@ import {
   launchWindowsUpgradeScript,
 } from '../../agent/upgrade-command.js';
 import { buildWindowsUpgradeCommand } from '../../agent/connection/upgrade.js';
+import ctx from '../../agent/context.js';
+import { connect, resetConnectionTransport, sendToServer } from '../../agent/connection/index.js';
+import { applyRegisteredTransport } from '../../agent/connection/message-router.js';
+import { generateSessionKey, isEncrypted } from '../../agent/encryption.js';
 
 /**
  * Tests for the agent side of feat-ws-plaintext-negotiation.
@@ -22,8 +26,7 @@ import { buildWindowsUpgradeCommand } from '../../agent/connection/upgrade.js';
  *   - send-side: encrypt only if (serverEncryptionRequired && sessionKey)
  *   - receive-side: unchanged — decrypt iff sessionKey && isEncrypted()
  *
- * Source files exercised by intent (not directly imported, because
- * agent/context.js has side effects that don't unit-test cleanly):
+ * Source files exercised by the production transport helpers:
  *   - agent/connection/message-router.js (case 'registered' handler)
  *   - agent/connection/buffer.js (sendToServer encrypt-or-plaintext gate)
  *   - agent/connection/index.js (capabilities include 'plaintext-ok')
@@ -43,13 +46,6 @@ async function sendToServerUnderTest(ctxLike, msg) {
     ws.send(JSON.stringify(encrypted));
   } else {
     ws.send(JSON.stringify(msg));
-  }
-}
-
-// Verbatim copy of the registered-handler flag flip in message-router.js.
-function applyRegisteredMessage(ctxLike, msg) {
-  if (msg.acceptPlaintext === true) {
-    ctxLike.serverEncryptionRequired = false;
   }
 }
 
@@ -273,37 +269,55 @@ describe('agent advertises plaintext-ok capability', () => {
 });
 
 describe('agent received `registered` flips serverEncryptionRequired', () => {
-  it('flips serverEncryptionRequired off on registered { acceptPlaintext: true }', () => {
-    const ctxLike = { serverEncryptionRequired: true };
-    applyRegisteredMessage(ctxLike, {
-      type: 'registered',
-      agentId: 'global:Worker-1',
-      sessionKey: null,
-      acceptPlaintext: true
-    });
-    expect(ctxLike.serverEncryptionRequired).toBe(false);
-  });
+  it('keeps the registered plaintext decision connection-scoped', async () => {
+    const original = {
+      ws: ctx.ws,
+      sessionKey: ctx.sessionKey,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      pendingAuthTempId: ctx.pendingAuthTempId,
+      CONFIG: ctx.CONFIG,
+      agentCapabilities: ctx.agentCapabilities,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+    };
+    try {
+      resetConnectionTransport();
+      expect(ctx.serverEncryptionRequired).toBe(true);
+      applyRegisteredTransport({ type: 'registered', acceptPlaintext: true });
+      expect(ctx.serverEncryptionRequired).toBe(false);
 
-  it('keeps serverEncryptionRequired on when registered omits acceptPlaintext (old server)', () => {
-    const ctxLike = { serverEncryptionRequired: true };
-    applyRegisteredMessage(ctxLike, {
-      type: 'registered',
-      agentId: 'global:Worker-1',
-      sessionKey: 'base64key'
-      // no acceptPlaintext field
-    });
-    expect(ctxLike.serverEncryptionRequired).toBe(true);
-  });
+      const legacyKey = generateSessionKey();
+      class ConnectSocket extends MockWebSocket {}
+      ctx.CONFIG = {
+        instanceId: 'test-agent',
+        agentName: 'Test Agent',
+        workDir: '/tmp',
+        serverUrl: 'ws://localhost:1',
+        disallowedTools: [],
+      };
+      ctx.agentCapabilities = [];
+      connect(ConnectSocket);
+      applyRegisteredTransport({
+        type: 'registered',
+        sessionKey: Buffer.from(legacyKey).toString('base64'),
+      });
+      const legacySocket = ctx.ws;
+      legacySocket.readyState = WS_OPEN;
+      await sendToServer({ type: 'claude_output', payload: { text: 'legacy' } });
+      await new Promise(resolve => setImmediate(resolve));
 
-  it('keeps serverEncryptionRequired on if acceptPlaintext is false explicitly', () => {
-    const ctxLike = { serverEncryptionRequired: true };
-    applyRegisteredMessage(ctxLike, {
-      type: 'registered',
-      agentId: 'global:Worker-1',
-      sessionKey: null,
-      acceptPlaintext: false
-    });
-    expect(ctxLike.serverEncryptionRequired).toBe(true);
+      expect(ctx.serverEncryptionRequired).toBe(true);
+      expect(isEncrypted(legacySocket.getLastMessage())).toBe(true);
+    } finally {
+      ctx.ws = original.ws;
+      ctx.sessionKey = original.sessionKey;
+      ctx.serverEncryptionRequired = original.serverEncryptionRequired;
+      ctx.pendingAuthTempId = original.pendingAuthTempId;
+      ctx.CONFIG = original.CONFIG;
+      ctx.agentCapabilities = original.agentCapabilities;
+      ctx.outboundSendQueue = original.outboundSendQueue;
+      ctx.outboundSendQueueActive = original.outboundSendQueueActive;
+    }
   });
 });
 

@@ -167,6 +167,8 @@ export function handleMessage(store, msg) {
       break;
 
     case 'session_ui_metadata_updated': {
+      if (!store.finishSessionCatalogMutation?.(msg)) break;
+      if (msg.ok !== true) break;
       const row = store.sessionCatalog.find(item => item.catalogKey === msg.catalogKey);
       if (row) {
         row.pinned = msg.pinned === true;
@@ -174,6 +176,10 @@ export function handleMessage(store, msg) {
       }
       break;
     }
+
+    case 'session_catalog_reorder_result':
+      store.finishSessionCatalogMutation?.(msg);
+      break;
 
     case 'agent_selected':
       handleAgentSelected(store, msg);

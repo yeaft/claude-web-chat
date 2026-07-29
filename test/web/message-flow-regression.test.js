@@ -9,9 +9,13 @@ import {
 } from '../../web/stores/helpers/messages.js';
 import UnifiedSessionList from '../../web/components/UnifiedSessionList.js';
 import {
+  beginCatalogMutation,
+  beginChatHistoryRequest,
+  cancelChatHistoryRequest,
   catalogKeyForRoute,
   chatCatalogKey,
   chatRouteRef,
+  finishCatalogMutation,
   normalizeChatRuntimeProvider,
   yeaftCatalogKey,
   yeaftRouteRef,
@@ -133,6 +137,16 @@ describe('message flow regressions', () => {
     expect(readFileSync(resolve(import.meta.dirname, '../../web/components/ChatHeader.js'), 'utf8')).not.toContain("type: 'sync_messages'");
     expect(readFileSync(resolve(import.meta.dirname, '../../web/stores/helpers/handlers/agentHandler.js'), 'utf8')).not.toContain("type: 'sync_messages'");
 
+    const catalogStore = {
+      sessionCatalog: [{ catalogKey: 'chat:offline', pinned: false }],
+      sessionCatalogMutationRequests: {},
+    };
+    const previousCatalog = beginCatalogMutation(catalogStore, 'pin-1');
+    catalogStore.sessionCatalog[0].pinned = true;
+    expect(finishCatalogMutation(catalogStore, { requestId: 'pin-1', ok: false })).toBe(true);
+    expect(catalogStore.sessionCatalog).toEqual(previousCatalog);
+    expect(catalogStore.sessionCatalogMutationRequests).toEqual({});
+
     const historyStore = {
       messagesMap: { a: [], b: [] },
       activeConversations: ['b'],
@@ -179,6 +193,20 @@ describe('message flow regressions', () => {
       conversationId: 'b', messages: [{ id: 99, role: 'assistant', content: 'late' }], hasMore: false,
     })).toBe(false);
     expect(historyStore.messagesMap.b).toEqual([]);
+
+    const historyActions = {
+      chatHistoryConnectionGeneration: 2,
+      chatHistoryRequests: {},
+    };
+    const failedRequestId = beginChatHistoryRequest(historyActions, 'offline', 'recent');
+    expect(cancelChatHistoryRequest(historyActions, 'chat:offline', failedRequestId, 'send_failed')).toBe(true);
+    expect(historyActions.chatHistoryRequests['chat:offline']).toMatchObject({
+      loading: false,
+      cancelled: true,
+      error: 'send_failed',
+      connectionGeneration: 2,
+    });
+
     const workCenter = readFileSync(resolve(import.meta.dirname, '../../web/components/WorkCenterPage.js'), 'utf8');
     const workCenterCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/work-center.css'), 'utf8');
     const variables = readFileSync(resolve(import.meta.dirname, '../../web/styles/variables.css'), 'utf8');

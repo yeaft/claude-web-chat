@@ -24,6 +24,8 @@ function createStore() {
     authenticated: false,
     serverEncryptionRequired: false,
     chatHistoryRequestIdSupported: true,
+    chatHistoryConnectionGeneration: 4,
+    chatHistoryRequests: {},
     currentView: 'chat',
     startHeartbeat: vi.fn(),
     stopHeartbeat: vi.fn(),
@@ -85,10 +87,25 @@ describe('websocket auth token races', () => {
     store.sessionCatalogLoaded = true;
     store.sessionCatalog = [{ catalogKey: 'chat:stale' }];
     store.activeCatalogKey = 'chat:stale';
+    store.sessionCatalogMutationRequests = {
+      oldMutation: { previousCatalog: [{ catalogKey: 'chat:before-reconnect' }] },
+    };
+    store.chatHistoryRequests['chat:stale'] = {
+      requestId: 'old-request',
+      loading: true,
+      connectionGeneration: 4,
+    };
 
     connect(store);
     expect(store.serverEncryptionRequired).toBe(true);
     expect(store.chatHistoryRequestIdSupported).toBe(null);
+    expect(store.chatHistoryConnectionGeneration).toBe(5);
+    expect(store.chatHistoryRequests['chat:stale']).toMatchObject({
+      loading: false,
+      cancelled: true,
+      error: 'connection_changed',
+    });
+    expect(store.sessionCatalogMutationRequests).toEqual({});
     expect(store.sessionCatalogLoaded).toBe(false);
     expect(store.sessionCatalog).toEqual([]);
     expect(store.activeCatalogKey).toBe(null);

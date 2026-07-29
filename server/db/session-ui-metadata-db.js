@@ -57,7 +57,13 @@ export const sessionUiMetadataDb = {
           );
           if (result.changes !== 1) throw new Error('Yeaft Session identity changed during metadata update');
         } else if (update.runtimeProvider === 'claude-code' || update.runtimeProvider === 'copilot') {
-          const result = stmts.updateSessionPinned.run(update.pinned === true ? 1 : 0, now, update.sessionId);
+          const result = stmts.updateSessionPinnedForRoute.run(
+            update.pinned === true ? 1 : 0,
+            now,
+            update.sessionId,
+            update.agentId,
+            userId,
+          );
           if (result.changes !== 1) throw new Error('Chat Session identity changed during metadata update');
         }
       }

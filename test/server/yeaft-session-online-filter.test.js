@@ -13,14 +13,16 @@ const getForAgent = vi.fn(() => null);
 const reconcileFromSnapshot = vi.fn();
 const getChatSession = vi.fn(() => null);
 const applySessionUiMetadataBatch = vi.fn(() => true);
+const verifyConversationOwnership = vi.fn(() => true);
+const verifyAgentOwnership = vi.fn(() => true);
 
 vi.mock('../../server/ws-utils.js', () => ({
   sendToWebClient,
   forwardToAgent,
   broadcastAgentList,
   broadcastSessionCatalog,
-  verifyConversationOwnership: vi.fn(() => true),
-  verifyAgentOwnership: vi.fn(() => true),
+  verifyConversationOwnership,
+  verifyAgentOwnership,
 }));
 
 vi.mock('../../server/database.js', () => ({
@@ -78,6 +80,10 @@ afterEach(() => {
   getForAgent.mockReset();
   getChatSession.mockReset();
   applySessionUiMetadataBatch.mockClear();
+  verifyConversationOwnership.mockReset();
+  verifyConversationOwnership.mockReturnValue(true);
+  verifyAgentOwnership.mockReset();
+  verifyAgentOwnership.mockReturnValue(true);
 });
 
 describe('Yeaft Session online Agent filtering', () => {
@@ -211,9 +217,48 @@ describe('Yeaft Session online Agent filtering', () => {
       expect.objectContaining({ catalogKey: 'chat:chat-1', sortRank: 2 }),
     ]);
     expect(broadcastSessionCatalog).toHaveBeenCalledWith('user-1');
+    expect(catalogClient.sent.at(-1)).toMatchObject({
+      type: 'session_catalog_reorder_result',
+      ok: true,
+    });
+
+    // Offline catalog rows are authorized by their persisted composite route;
+    // the online Agent registry is irrelevant to metadata durability.
+    CONFIG.skipAuth = false;
+    verifyAgentOwnership.mockReturnValue(false);
+    verifyConversationOwnership.mockReturnValue(true);
+    getForAgent.mockReturnValue({ id: 'offline-yeaft', agentId: 'agent-offline' });
+    getChatSession.mockReturnValue({ id: 'offline-chat', user_id: 'user-1', agent_id: 'agent-offline', provider: 'copilot' });
+    await handleClientConversation('client-1', catalogClient, {
+      type: 'reorder_session_catalog',
+      requestId: 'offline-order',
+      sessions: [
+        {
+          catalogKey: 'yeaft:agent-offline:offline-yeaft',
+          routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-offline', sessionId: 'offline-yeaft' },
+          pinned: true,
+        },
+        {
+          catalogKey: 'chat:offline-chat',
+          routeRef: { runtimeProvider: 'copilot', agentId: 'agent-offline', sessionId: 'offline-chat' },
+          pinned: false,
+        },
+      ],
+    }, allow);
+    expect(applySessionUiMetadataBatch).toHaveBeenLastCalledWith('user-1', [
+      expect.objectContaining({ catalogKey: 'yeaft:agent-offline:offline-yeaft', sortRank: 0 }),
+      expect.objectContaining({ catalogKey: 'chat:offline-chat', sortRank: 1 }),
+    ]);
+    expect(catalogClient.sent.at(-1)).toMatchObject({
+      type: 'session_catalog_reorder_result',
+      requestId: 'offline-order',
+      ok: true,
+    });
 
     applySessionUiMetadataBatch.mockClear();
     broadcastSessionCatalog.mockClear();
+    CONFIG.skipAuth = true;
+    verifyAgentOwnership.mockReturnValue(true);
     await handleClientConversation('client-1', catalogClient, {
       type: 'reorder_session_catalog',
       sessions: [...sessions, { ...sessions[0], catalogKey: 'yeaft:agent-x:wrong' }],

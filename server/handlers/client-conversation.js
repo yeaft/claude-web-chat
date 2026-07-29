@@ -319,7 +319,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       const persisted = sessionDb.get(msg.conversationId);
       const deleteAgentId = msg.agentId || persisted?.agent_id || client.currentAgent;
       if (!deleteAgentId) return;
-      if (!CONFIG.skipAuth && (!verifyConversationOwnership(msg.conversationId, client.userId)
+      if (!CONFIG.skipAuth && (!verifyConversationOwnership(msg.conversationId, client.userId, client.role)
         || (agents.has(deleteAgentId) && !verifyAgentOwnership(deleteAgentId, client.userId, client.role))
         || (persisted?.agent_id && persisted.agent_id !== deleteAgentId))) {
         console.warn(`[Security] User ${client.userId} attempted to delete conversation ${msg.conversationId} on agent ${deleteAgentId}`);
@@ -367,7 +367,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
     }
 
     case 'select_conversation':
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} attempted to select conversation ${msg.conversationId} they don't own`);
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
@@ -422,15 +422,14 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         const { runtimeProvider, agentId, sessionId } = routeRef;
         let expectedCatalogKey = null;
         if (runtimeProvider === 'yeaft') {
-          if (!agentId || !sessionId || !verifyAgentOwnership(agentId, client.userId, client.role)
-            || !yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) {
+          if (!agentId || !sessionId || !yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) {
             updates.length = 0;
             break;
           }
           expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
         } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
-          if (!agentId || !sessionId || !verifyAgentOwnership(agentId, client.userId, client.role)
-            || (!CONFIG.skipAuth && !verifyConversationOwnership(sessionId, client.userId))) {
+          if (!agentId || !sessionId
+            || (!CONFIG.skipAuth && !verifyConversationOwnership(sessionId, client.userId, client.role))) {
             updates.length = 0;
             break;
           }
@@ -451,10 +450,21 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           sortRank: index,
         });
       }
+      let persisted = false;
       if (updates.length === msg.sessions.length && updates.length > 0) {
-        const persisted = sessionUiMetadataDb.applyBatch(client.userId, updates);
-        if (persisted) await broadcastSessionCatalog(client.userId);
+        try {
+          persisted = sessionUiMetadataDb.applyBatch(client.userId, updates);
+          if (persisted) await broadcastSessionCatalog(client.userId);
+        } catch (e) {
+          console.warn('[Server] Session catalog reorder failed:', e?.message || e);
+        }
       }
+      await sendToWebClient(client, {
+        type: 'session_catalog_reorder_result',
+        requestId: msg.requestId || null,
+        ok: persisted,
+        ...(!persisted ? { error: 'Permission denied or stale Session route' } : {}),
+      });
       break;
     }
 
@@ -463,34 +473,45 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       const { runtimeProvider, agentId, sessionId } = msg.routeRef;
       let expectedCatalogKey = null;
       if (runtimeProvider === 'yeaft') {
-        if (!agentId || !sessionId || !verifyAgentOwnership(agentId, client.userId, client.role)) break;
-        if (!yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) break;
-        expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
+        if (agentId && sessionId && yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) {
+          expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
+        }
       } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
-        if (!agentId || !sessionId || !verifyAgentOwnership(agentId, client.userId, client.role)
-          || (!CONFIG.skipAuth && !verifyConversationOwnership(sessionId, client.userId))) break;
-        const row = sessionDb.get(sessionId);
-        if (!row || row.agent_id !== agentId || (row.provider || 'claude-code') !== runtimeProvider) break;
-        expectedCatalogKey = chatCatalogKey(sessionId);
+        const row = sessionId ? sessionDb.get(sessionId) : null;
+        if (agentId && sessionId
+          && (CONFIG.skipAuth || verifyConversationOwnership(sessionId, client.userId, client.role))
+          && row?.agent_id === agentId
+          && (row.provider || 'claude-code') === runtimeProvider) {
+          expectedCatalogKey = chatCatalogKey(sessionId);
+        }
       }
-      if (!expectedCatalogKey || expectedCatalogKey !== msg.catalogKey) break;
-      const persisted = sessionUiMetadataDb.applyBatch(client.userId, [{
-        catalogKey: expectedCatalogKey,
-        runtimeProvider,
-        agentId,
-        sessionId,
-        pinned: msg.pinned === true,
-        sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
-      }]);
-      if (!persisted) break;
-      await broadcastSessionCatalog(client.userId);
+      const authorized = expectedCatalogKey === msg.catalogKey;
+      let persisted = false;
+      if (authorized) {
+        try {
+          persisted = sessionUiMetadataDb.applyBatch(client.userId, [{
+            catalogKey: expectedCatalogKey,
+            runtimeProvider,
+            agentId,
+            sessionId,
+            pinned: msg.pinned === true,
+            sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
+          }]);
+          if (persisted) await broadcastSessionCatalog(client.userId);
+        } catch (e) {
+          console.warn('[Server] Session metadata update failed:', e?.message || e);
+        }
+      }
       await sendToWebClient(client, {
         type: 'session_ui_metadata_updated',
         requestId: msg.requestId || null,
-        catalogKey: expectedCatalogKey,
+        ok: persisted,
+        catalogKey: msg.catalogKey,
         routeRef: msg.routeRef,
-        pinned: msg.pinned === true,
-        sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
+        ...(persisted ? {
+          pinned: msg.pinned === true,
+          sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
+        } : { error: 'Permission denied or stale Session route' }),
       });
       break;
     }
@@ -539,7 +560,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       const route = routeSessionPin(
         {
           getYeaftRows: (id) => yeaftSessionDb.getAllById(id),
-          verifyChatOwnership: (id, userId) => verifyConversationOwnership(id, userId),
+          verifyChatOwnership: (id, userId) => verifyConversationOwnership(id, userId, client.role),
           skipAuth: CONFIG.skipAuth,
         },
         client,
@@ -591,7 +612,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
 
     case 'sync_messages':
       if (msg.conversationId) {
-        if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId)) {
+        if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId, client.role)) {
           console.warn(`[Security] User ${client.userId} attempted to sync messages for conversation ${msg.conversationId} they don't own`);
           return;
         }
@@ -658,7 +679,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
 
       // Ownership check when explicit conversationId is provided
       if (msg.conversationId && !CONFIG.skipAuth) {
-        if (!verifyConversationOwnership(msg.conversationId, client.userId)) {
+        if (!verifyConversationOwnership(msg.conversationId, client.userId, client.role)) {
           await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
           return;
         }
@@ -833,7 +854,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (!client.currentAgent) return;
       if (!await checkAgentAccess(client.currentAgent)) return;
       const cancelConvId = msg.conversationId || client.currentConversation;
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(cancelConvId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(cancelConvId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} cancel denied for ${cancelConvId}`);
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
@@ -850,7 +871,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (!refreshAgent) return;
       if (!await checkAgentAccess(refreshAgent)) return;
       const refreshConvId = msg.conversationId || client.currentConversation;
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(refreshConvId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(refreshConvId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} refresh denied for ${refreshConvId}`);
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
@@ -900,7 +921,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       const settingsAgentId = msg.agentId || settingsRow?.agent_id || client.currentAgent;
       if (!settingsConvId || !settingsAgentId) return;
       if (msg.disallowedTools !== undefined && !await checkAgentAccess(settingsAgentId)) return;
-      if (!CONFIG.skipAuth && (!verifyConversationOwnership(settingsConvId, client.userId)
+      if (!CONFIG.skipAuth && (!verifyConversationOwnership(settingsConvId, client.userId, client.role)
         || (agents.has(settingsAgentId) && !verifyAgentOwnership(settingsAgentId, client.userId, client.role))
         || (settingsRow?.agent_id && settingsRow.agent_id !== settingsAgentId))) {
         console.warn(`[Security] User ${client.userId} settings update denied for ${settingsConvId}`);
@@ -943,7 +964,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (!await checkAgentAccess(client.currentAgent)) return;
       const answerConvId = msg.conversationId || client.currentConversation;
       if (!answerConvId) return;
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(answerConvId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(answerConvId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} ask_user_answer denied for ${answerConvId}`);
         return;
       }
@@ -994,7 +1015,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         await sendToWebClient(client, { type: 'btw_error', error: 'No conversation selected' });
         return;
       }
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(btwConvId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(btwConvId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} btw_question denied for ${btwConvId}`);
         await sendToWebClient(client, { type: 'btw_error', conversationId: btwConvId, error: 'Permission denied' });
         return;

@@ -142,10 +142,26 @@ export function connect(store) {
   }
 
   store.connectionState = store.reconnectAttempts > 0 ? 'reconnecting' : 'connecting';
-  // Encryption negotiation is connection-scoped. Start every socket in the
-  // conservative legacy mode; only this socket's auth_result may downgrade it.
+  // Encryption and history request capabilities are connection-scoped. Start
+  // every socket conservatively and cancel requests owned by the old socket;
+  // reconnect catch-up will issue fresh requests after agent_list arrives.
   store.serverEncryptionRequired = true;
   store.chatHistoryRequestIdSupported = null;
+  store.chatHistoryConnectionGeneration = Number(store.chatHistoryConnectionGeneration || 0) + 1;
+  for (const [catalogKey, request] of Object.entries(store.chatHistoryRequests || {})) {
+    if (!request?.loading) continue;
+    store.chatHistoryRequests[catalogKey] = {
+      ...request,
+      loading: false,
+      cancelled: true,
+      error: 'connection_changed',
+    };
+  }
+  const pendingCatalogMutations = Object.values(store.sessionCatalogMutationRequests || {});
+  if (pendingCatalogMutations.length > 0) {
+    store.sessionCatalog = pendingCatalogMutations[0].previousCatalog;
+    store.sessionCatalogMutationRequests = {};
+  }
   // Catalog support is a capability of the current Server connection. Reset
   // before every handshake so reconnecting to an older Server immediately
   // restores the legacy sidebar instead of showing a stale prior snapshot.

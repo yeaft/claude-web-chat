@@ -13,7 +13,13 @@ import * as yeaftViewHelpers from './helpers/yeaft-view.js';
 import { incVpTyping, decVpTyping } from './helpers/vp-typing.js';
 import { selectActiveConversationId } from './helpers/active-conv.js';
 import { trimDebugRetention } from './helpers/debug-retention.js';
-import { chatCatalogKey } from './helpers/session-catalog.js';
+import {
+  beginCatalogMutation,
+  beginChatHistoryRequest,
+  cancelChatHistoryRequest,
+  chatCatalogKey,
+  finishCatalogMutation,
+} from './helpers/session-catalog.js';
 import {
   applyWorkItemSummary,
   isWorkItemDetailResponseStale,
@@ -477,8 +483,10 @@ export const useChatStore = defineStore('chat', {
     loadingMoreMessages: false,
     chatHistoryRequests: {},
     chatHistoryRequestIdSupported: null,
+    chatHistoryConnectionGeneration: 0,
     sessionCatalog: [],
     sessionCatalogLoaded: false,
+    sessionCatalogMutationRequests: {},
     activeCatalogKey: null,
     openUnifiedSessionCreate: false,
     openUnifiedChatCreate: false,
@@ -5313,17 +5321,25 @@ export const useChatStore = defineStore('chat', {
       this.sessionCatalogLoaded = true;
     },
     toggleCatalogSessionPin(row) {
-      if (!row?.catalogKey || !row?.routeRef) return false;
+      if (!row?.catalogKey || !row?.routeRef
+        || Object.keys(this.sessionCatalogMutationRequests).length > 0) return false;
+      const requestId = `session_ui_${crypto.randomUUID()}`;
+      const previousCatalog = beginCatalogMutation(this, requestId);
       const nextPinned = !row.pinned;
       row.pinned = nextPinned;
-      this.sendWsMessage({
+      const sent = this.sendWsMessage({
         type: 'set_session_ui_metadata',
-        requestId: `session_ui_${crypto.randomUUID()}`,
+        requestId,
         catalogKey: row.catalogKey,
         routeRef: row.routeRef,
         pinned: nextPinned,
         sortRank: Number.isFinite(row.sortRank) ? row.sortRank : null,
       });
+      if (!sent) {
+        this.sessionCatalog = previousCatalog;
+        delete this.sessionCatalogMutationRequests[requestId];
+        return false;
+      }
       return true;
     },
     renameCatalogSession({ row, title } = {}) {
@@ -5339,10 +5355,14 @@ export const useChatStore = defineStore('chat', {
       return true;
     },
     reorderCatalogSessions(rows) {
-      if (!Array.isArray(rows) || rows.length === 0) return false;
+      if (!Array.isArray(rows) || rows.length === 0
+        || Object.keys(this.sessionCatalogMutationRequests).length > 0) return false;
+      const requestId = `session_order_${crypto.randomUUID()}`;
+      const previousCatalog = beginCatalogMutation(this, requestId);
       this.sessionCatalog = rows.map((row, index) => ({ ...row, sortRank: index }));
-      this.sendWsMessage({
+      const sent = this.sendWsMessage({
         type: 'reorder_session_catalog',
+        requestId,
         sessions: this.sessionCatalog.map((row, index) => ({
           catalogKey: row.catalogKey,
           routeRef: row.routeRef,
@@ -5350,7 +5370,15 @@ export const useChatStore = defineStore('chat', {
           sortRank: index,
         })),
       });
+      if (!sent) {
+        this.sessionCatalog = previousCatalog;
+        delete this.sessionCatalogMutationRequests[requestId];
+        return false;
+      }
       return true;
+    },
+    finishSessionCatalogMutation(msg) {
+      return finishCatalogMutation(this, msg);
     },
     openCatalogSession(descriptor) {
       if (!descriptor?.catalogKey || !descriptor.routeRef) return false;
@@ -5378,7 +5406,7 @@ export const useChatStore = defineStore('chat', {
       }
       const cursor = beforeId ?? afterMessageId ?? null;
       const requestId = this.beginChatHistoryRequest(conversationId, mode, cursor);
-      this.sendWsMessage({
+      const sent = this.sendWsMessage({
         type: 'sync_messages',
         conversationId,
         ...(turns != null ? { turns } : {}),
@@ -5386,30 +5414,24 @@ export const useChatStore = defineStore('chat', {
         ...(afterMessageId != null ? { afterMessageId } : {}),
         requestId,
       });
+      if (!sent) {
+        cancelChatHistoryRequest(this, catalogKey, requestId, 'send_failed');
+        return null;
+      }
       return requestId;
     },
     beginChatHistoryRequest(conversationId, mode = 'recent', cursor = null) {
-      const catalogKey = chatCatalogKey(conversationId);
-      const prior = this.chatHistoryRequests[catalogKey] || {};
-      const generation = Number(prior.generation || 0) + 1;
-      const requestId = `chat_history_${generation}_${crypto.randomUUID()}`;
-      this.chatHistoryRequests[catalogKey] = {
-        requestId,
-        catalogKey,
-        generation,
-        mode,
-        cursor,
-        loading: true,
-        error: null,
-      };
-      return requestId;
+      return beginChatHistoryRequest(this, conversationId, mode, cursor);
     },
     isCurrentChatHistoryResponse(msg) {
       if (!msg?.conversationId || !msg?.requestId || !msg?.catalogKey) return false;
       const expectedCatalogKey = chatCatalogKey(msg.conversationId);
       if (msg.catalogKey !== expectedCatalogKey) return false;
       const pending = this.chatHistoryRequests[expectedCatalogKey];
-      return !!pending && pending.requestId === msg.requestId;
+      return !!pending
+        && pending.loading === true
+        && pending.requestId === msg.requestId
+        && Number(pending.connectionGeneration || 0) === Number(this.chatHistoryConnectionGeneration || 0);
     },
     finishChatHistoryRequest(msg) {
       if (!this.isCurrentChatHistoryResponse(msg)) return false;
