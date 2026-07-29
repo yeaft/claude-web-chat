@@ -156,11 +156,10 @@ describe('message flow regressions', () => {
 
     const catalogRows = [
       {
-        catalogKey: 'yeaft:agent-a:pinned',
+        catalogKey: 'yeaft:user_1770305719:server-instance:pinned',
         runtimeProvider: 'yeaft',
-        routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: 'pinned' },
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'user_1770305719:server-instance', sessionId: 'pinned' },
         title: 'Pinned',
-        agentName: 'Agent Alpha',
         workDir: '/repo',
         pinned: true,
         availability: 'online',
@@ -188,22 +187,25 @@ describe('message flow regressions', () => {
         sessions: catalogRows,
         activeCatalogKey: catalogRows[0].catalogKey,
         processingConversations: { visible: true },
-        isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'agent-a',
+        isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'user_1770305719:server-instance',
+        agents: [{ id: 'user_1770305719:server-instance', name: 'server' }],
       },
       global: { mocks: { $t: key => key } },
     });
     expect(sidebar.findAll('.session-item')).toHaveLength(2);
     expect(sidebar.text()).not.toContain('Offline');
-    const header = sidebar.get('.session-item-header');
+    const firstRow = sidebar.findAll('.session-item')[0];
     expect(sidebar.findAll('.session-item.processing')).toHaveLength(2);
     expect(sidebar.findAll('.processing-dot')).toHaveLength(2);
-    const agentPrefix = header.get('.session-agent-prefix');
-    expect(agentPrefix.text()).toBe('Agent Alpha');
-    expect(agentPrefix.element.nextElementSibling.classList.contains('title')).toBe(true);
-    expect(UnifiedSessionList.methods.agentLabel({
+    expect(firstRow.get('.session-item-header').text()).toContain('Pinned');
+    expect(firstRow.get('.session-item-header').text()).not.toContain('server');
+    expect(firstRow.get('.session-info .session-agent').text()).toBe('server.Yeaft');
+    expect(sidebar.text()).not.toContain('user_1770305719');
+    expect(UnifiedSessionList.methods.agentLabel.call({ agents: [] }, {
       runtimeProvider: 'yeaft',
+      agentName: 'agent-fallback',
       routeRef: { agentId: 'agent-fallback' },
-    })).toBe('agent-fallback');
+    })).toBe('');
     await sidebar.setProps({
       processingConversations: {},
       isYeaftSessionProcessing: () => false,
@@ -211,7 +213,7 @@ describe('message flow regressions', () => {
     expect(sidebar.findAll('.processing-dot')).toHaveLength(0);
     await sidebar.setProps({
       processingConversations: { visible: true },
-      isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'agent-a',
+      isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'user_1770305719:server-instance',
     });
     expect(sidebar.findAll('.processing-dot')).toHaveLength(2);
 
@@ -226,7 +228,7 @@ describe('message flow regressions', () => {
     expect(sidebar.emitted('action').at(-1)[0].sessions.map(row => row.catalogKey)).toEqual([
       'chat:visible',
       'chat:offline',
-      'yeaft:agent-a:pinned',
+      'yeaft:user_1770305719:server-instance:pinned',
     ]);
 
     const documentAdd = vi.spyOn(document, 'addEventListener');
@@ -240,7 +242,8 @@ describe('message flow regressions', () => {
         sessions: catalogRows,
         activeCatalogKey: catalogRows[0].catalogKey,
         processingConversations: { visible: true },
-        isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'agent-a',
+        isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'user_1770305719:server-instance',
+        agents: [{ id: 'user_1770305719:server-instance', name: 'server' }],
       },
       global: { mocks: { $t: key => key } },
     });
@@ -344,7 +347,9 @@ describe('message flow regressions', () => {
     expect(chatPageSource).toContain('@action="onUnifiedSessionAction"');
     expect(yeaftSidebarSource).toContain('@create-yeaft="onOpenSessionCreate"');
     expect(chatPageSource).toContain(':processing-conversations="store.processingConversations"');
+    expect(chatPageSource).toContain(':agents="store.agents"');
     expect(yeaftSidebarSource).toContain(':is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"');
+    expect(yeaftSidebarSource).toContain(':agents="chatStore.agents"');
     expect(chatPageSource).not.toContain("action === 'split'");
     expect(chatPageSource).not.toContain('splitScreen.splitToPanel');
     expect(chatPageSource).not.toContain('split-to-panel-item');
