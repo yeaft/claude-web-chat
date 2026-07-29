@@ -62,10 +62,7 @@ function harnessHtml() {
       setup() { return { turn }; },
       template: '<VpTurnBlock :turn="turn" />',
     });
-    const translate = key => ({
-      'message.showProgress': '查看过程',
-      'message.hideProgress': '收起过程',
-    }[key] || key);
+    const translate = key => key;
     app.config.globalProperties.$t = translate;
     app.provide('t', translate);
     app.mount('#app');
@@ -117,27 +114,21 @@ test.afterAll(async () => {
   await new Promise(resolveClose => server.close(resolveClose));
 });
 
-test('separates active progress from the final result across themes and mobile', async ({ page }) => {
+test('keeps progress visible and distinct from the final result across themes and mobile', async ({ page }) => {
   await page.goto(`${baseUrl}/__turn-response`);
   await page.waitForFunction(() => window.__ready === true);
 
   const progress = page.locator('.turn-progress-group');
-  const progressPanel = page.locator('.turn-progress-list');
-  const progressLink = progressPanel.locator('a');
+  const progressList = page.locator('.turn-progress-list');
+  const progressLink = progressList.locator('a');
   const result = page.locator('.turn-response-result');
-  const progressToggle = page.locator('.turn-progress-toggle');
   const todos = page.locator('.vp-turn-block-body-expanded .turn-todos');
-  await expect(progress).not.toHaveClass(/is-expanded/);
-  await expect(progressPanel).toBeHidden();
-  const progressPanelId = await progressPanel.getAttribute('id');
-  expect(progressPanelId).toMatch(/^turn-progress-panel-\d+$/);
-  await expect(progressToggle).toHaveAttribute('aria-expanded', 'false');
-  await expect(progressToggle).toHaveAttribute('aria-controls', progressPanelId);
-  await expect(progressToggle).toHaveAttribute('aria-label', '查看过程');
-  await expect(progressToggle).toHaveText('查看过程');
+  await expect(progress).toBeVisible();
+  await expect(progressList).toBeVisible();
+  await expect(page.locator('.turn-progress-toggle')).toHaveCount(0);
   await expect(page.locator('.turn-response-label')).toHaveCount(0);
   await expect(result.locator('h2')).toHaveText('改动');
-  await expect(page.locator('.turn-response-progress')).toBeHidden();
+  await expect(page.locator('.turn-response-progress')).toBeVisible();
   await expect(todos).toBeVisible();
 
   await page.evaluate(() => {
@@ -166,26 +157,9 @@ test('separates active progress from the final result across themes and mobile',
   });
   await expect(result.locator('h2')).toHaveText('改动');
 
-  await progressToggle.focus();
-  await expect(progressToggle).toBeFocused();
-  await page.keyboard.press('Enter');
-  await expect(progress).toHaveClass(/is-expanded/);
-  await expect(progressToggle).toHaveAttribute('aria-expanded', 'true');
-  await expect(progressToggle).toHaveAttribute('aria-label', '收起过程');
-  await expect(progressToggle).toHaveText('收起过程');
-  await expect(page.locator('.turn-response-progress')).toBeVisible();
-  await expect(progressPanel).not.toHaveAttribute('hidden', '');
-  await page.keyboard.press('Space');
-  await expect(progressToggle).toHaveAttribute('aria-expanded', 'false');
-  await expect(progressPanel).toBeHidden();
-  await progressToggle.click();
-  await expect(progressToggle).toHaveAttribute('aria-expanded', 'true');
   await page.locator('.turn-content .copy-btn').focus();
   await page.keyboard.press('Tab');
   await expect(progressLink).toBeFocused();
-  await page.keyboard.press('Tab');
-  await expect(progressToggle).toBeFocused();
-  expect(await progressPanel.getAttribute('id')).toBe(progressPanelId);
   const fontSizes = await page.evaluate(() => ({
     progress: parseFloat(getComputedStyle(document.querySelector('.turn-response-progress')).fontSize),
     result: parseFloat(getComputedStyle(document.querySelector('.turn-response-result .markdown-body')).fontSize),
@@ -196,25 +170,13 @@ test('separates active progress from the final result across themes and mobile',
     const todo = document.querySelector('.vp-turn-block-body-expanded .turn-todos');
     const todoRect = todo.getBoundingClientRect();
     const todoStyle = getComputedStyle(todo);
-    const progressList = document.querySelector('.turn-progress-list');
-    const progressListRect = progressList.getBoundingClientRect();
-    const progressListStyle = getComputedStyle(progressList);
-    const progressToggle = document.querySelector('.turn-progress-toggle');
-    const progressToggleRect = progressToggle.getBoundingClientRect();
-    const progressToggleStyle = getComputedStyle(progressToggle);
+    const progressListStyle = getComputedStyle(document.querySelector('.turn-progress-list'));
     return {
       gap: todoRect.top - contentRect.bottom,
       todoBorderTopWidth: todoStyle.borderTopWidth,
       todoPaddingLeft: parseFloat(todoStyle.paddingLeft),
       todoPaddingRight: parseFloat(todoStyle.paddingRight),
       progressPaddingLeft: parseFloat(progressListStyle.paddingLeft),
-      progressToggleRightGap: contentRect.right - progressToggleRect.right,
-      contentActionsWidth: parseFloat(getComputedStyle(document.querySelector('.turn-content')).getPropertyValue('--turn-content-actions-width')),
-      progressToggleBelowContent: progressToggleRect.top >= progressListRect.bottom,
-      progressToggleBackground: progressToggleStyle.backgroundImage,
-      progressToggleBackgroundColor: progressToggleStyle.backgroundColor,
-      progressToggleBorderWidth: progressToggleStyle.borderWidth,
-      progressToggleSvgCount: progressToggle.querySelectorAll('svg').length,
     };
   });
   const layout = await readLayout();
@@ -222,26 +184,18 @@ test('separates active progress from the final result across themes and mobile',
   expect(layout.todoBorderTopWidth).toBe('0px');
   expect(layout.todoPaddingLeft).toBe(16);
   expect(layout.todoPaddingRight).toBe(16);
-  expect(layout.progressPaddingLeft).toBeGreaterThanOrEqual(16);
-  expect(layout.progressToggleRightGap).toBe(layout.contentActionsWidth);
-  expect(layout.progressToggleBelowContent).toBe(true);
-  expect(layout.progressToggleBackground).toBe('none');
-  expect(layout.progressToggleBackgroundColor).toBe('rgba(0, 0, 0, 0)');
-  expect(layout.progressToggleBorderWidth).toBe('0px');
-  expect(layout.progressToggleSvgCount).toBe(0);
+  expect(layout.progressPaddingLeft).toBe(0);
 
   await page.evaluate(() => {
     window.__turn.isActive = true;
   });
-  await expect(progress).toHaveClass(/is-expanded/);
-  await expect(progressPanel).toBeVisible();
+  await expect(progress).toBeVisible();
+  await expect(progressList).toBeVisible();
   await page.evaluate(() => {
     window.__turn.isActive = false;
-    document.activeElement?.blur();
   });
-  await page.mouse.move(0, 0);
-  await expect(progress).not.toHaveClass(/is-expanded/);
-  await expect(progressPanel).toBeHidden();
+  await expect(progress).toBeVisible();
+  await expect(progressList).toBeVisible();
 
   for (const theme of ['light', 'dark']) {
     await page.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
@@ -249,11 +203,9 @@ test('separates active progress from the final result across themes and mobile',
       background: getComputedStyle(document.body).backgroundColor,
       progress: getComputedStyle(document.querySelector('.turn-response-progress')).color,
       result: getComputedStyle(document.querySelector('.turn-response-result')).color,
-      toggle: getComputedStyle(document.querySelector('.turn-progress-toggle')).color,
     }));
     expect(colors.progress).not.toBe(colors.result);
     expect(colors.result).not.toBe(colors.background);
-    expect(colors.toggle).toBe(colors.progress);
   }
 
   await page.setViewportSize({ width: 430, height: 800 });
