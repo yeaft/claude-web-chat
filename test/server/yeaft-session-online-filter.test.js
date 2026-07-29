@@ -4,16 +4,19 @@ import { projectSessionCatalog, yeaftCatalogKey } from '../../server/session-cat
 const sendToWebClient = vi.fn(async (client, msg) => {
   client.sent.push(msg);
 });
+const forwardToAgent = vi.fn(async () => {});
 const broadcastAgentList = vi.fn(async () => {});
 const broadcastSessionCatalog = vi.fn(async () => {});
 const getByUser = vi.fn(() => []);
+const getByAgent = vi.fn(() => []);
 const getForAgent = vi.fn(() => null);
+const reconcileFromSnapshot = vi.fn();
 const getChatSession = vi.fn(() => null);
-const upsertSessionUiMetadata = vi.fn(() => true);
+const applySessionUiMetadataBatch = vi.fn(() => true);
 
 vi.mock('../../server/ws-utils.js', () => ({
   sendToWebClient,
-  forwardToAgent: vi.fn(),
+  forwardToAgent,
   broadcastAgentList,
   broadcastSessionCatalog,
   verifyConversationOwnership: vi.fn(() => true),
@@ -25,18 +28,22 @@ vi.mock('../../server/database.js', () => ({
     getActiveByUser: vi.fn(() => []),
     getByUser: vi.fn(() => []),
     get: getChatSession,
+    update: vi.fn(),
     setActive: vi.fn(),
   },
   messageDb: {},
   userDb: {},
   yeaftSessionDb: {
     getByUser,
+    getByAgent,
     getForAgent,
+    reconcileFromSnapshot,
     setOrderForUser: vi.fn(() => true),
   },
   sessionUiMetadataDb: {
+    get: vi.fn(() => null),
     getByUser: vi.fn(() => []),
-    upsert: upsertSessionUiMetadata,
+    applyBatch: applySessionUiMetadataBatch,
   },
 }));
 
@@ -45,7 +52,8 @@ vi.mock('../../server/handlers/session-pin-router.js', () => ({
 }));
 
 const { CONFIG } = await import('../../server/config.js');
-const { agents } = await import('../../server/context.js');
+const { agents, webClients } = await import('../../server/context.js');
+const { handleAgentOutput } = await import('../../server/handlers/agent-output.js');
 const {
   groupOnlineYeaftSessions,
   handleClientConversation,
@@ -57,14 +65,19 @@ const allow = async () => true;
 afterEach(() => {
   CONFIG.skipAuth = originalSkipAuth;
   agents.clear();
+  webClients.clear();
   getByUser.mockReset();
   getByUser.mockReturnValue([]);
+  getByAgent.mockReset();
+  getByAgent.mockReturnValue([]);
+  reconcileFromSnapshot.mockClear();
   sendToWebClient.mockClear();
+  forwardToAgent.mockClear();
   broadcastAgentList.mockClear();
   broadcastSessionCatalog.mockClear();
   getForAgent.mockReset();
   getChatSession.mockReset();
-  upsertSessionUiMetadata.mockClear();
+  applySessionUiMetadataBatch.mockClear();
 });
 
 describe('Yeaft Session online Agent filtering', () => {
@@ -167,7 +180,7 @@ describe('Yeaft Session online Agent filtering', () => {
     getForAgent.mockImplementation((_userId, agentId, sessionId) => (
       sessionId === 'same-id' ? { id: sessionId, agentId } : null
     ));
-    getChatSession.mockReturnValue({ id: 'chat-1', provider: 'copilot' });
+    getChatSession.mockReturnValue({ id: 'chat-1', agent_id: 'agent-a', provider: 'copilot' });
     const catalogClient = { userId: 'user-1', role: 'user', sent: [] };
     const sessions = [
       {
@@ -192,20 +205,77 @@ describe('Yeaft Session online Agent filtering', () => {
       sessions,
     }, allow);
 
-    expect(upsertSessionUiMetadata.mock.calls.map(call => call.slice(0, 3))).toEqual([
-      ['user-1', 'yeaft:agent-a:same-id', expect.objectContaining({ sortRank: 0 })],
-      ['user-1', 'yeaft:agent-b:same-id', expect.objectContaining({ sortRank: 1 })],
-      ['user-1', 'chat:chat-1', expect.objectContaining({ sortRank: 2 })],
+    expect(applySessionUiMetadataBatch).toHaveBeenCalledWith('user-1', [
+      expect.objectContaining({ catalogKey: 'yeaft:agent-a:same-id', sortRank: 0 }),
+      expect.objectContaining({ catalogKey: 'yeaft:agent-b:same-id', sortRank: 1 }),
+      expect.objectContaining({ catalogKey: 'chat:chat-1', sortRank: 2 }),
     ]);
     expect(broadcastSessionCatalog).toHaveBeenCalledWith('user-1');
 
-    upsertSessionUiMetadata.mockClear();
+    applySessionUiMetadataBatch.mockClear();
     broadcastSessionCatalog.mockClear();
     await handleClientConversation('client-1', catalogClient, {
       type: 'reorder_session_catalog',
       sessions: [...sessions, { ...sessions[0], catalogKey: 'yeaft:agent-x:wrong' }],
     }, allow);
-    expect(upsertSessionUiMetadata).not.toHaveBeenCalled();
+    expect(applySessionUiMetadataBatch).not.toHaveBeenCalled();
     expect(broadcastSessionCatalog).not.toHaveBeenCalled();
+
+    CONFIG.skipAuth = false;
+    agents.set('agent-a', {
+      ws: { readyState: 1 },
+      ownerId: 'user-1',
+      conversations: new Map([['chat-1', { id: 'chat-1', title: 'Old' }]]),
+    });
+    const routedClient = { userId: 'user-1', role: 'user', currentAgent: 'agent-b', sent: [] };
+    getChatSession.mockReturnValue({ id: 'chat-1', user_id: 'user-1', agent_id: 'agent-a', provider: 'copilot' });
+    await handleClientConversation('client-1', routedClient, {
+      type: 'update_conversation_settings',
+      conversationId: 'chat-1',
+      agentId: 'agent-a',
+      title: 'Renamed',
+    }, allow);
+    expect(agents.get('agent-a').conversations.get('chat-1')).toMatchObject({
+      title: 'Renamed',
+      customTitle: true,
+    });
+
+    await handleClientConversation('client-1', routedClient, {
+      type: 'delete_conversation',
+      conversationId: 'chat-1',
+      agentId: 'agent-a',
+      requestId: 'delete-1',
+    }, allow);
+    expect(forwardToAgent).toHaveBeenCalledWith('agent-a', {
+      type: 'delete_conversation',
+      conversationId: 'chat-1',
+    });
+    expect(routedClient.sent.at(-1)).toMatchObject({
+      type: 'conversation_delete_result',
+      requestId: 'delete-1',
+      agentId: 'agent-a',
+      ok: true,
+    });
+
+    CONFIG.skipAuth = true;
+    const ownerClient = { authenticated: true, userId: 'user-1', sent: [], ws: { readyState: 1 } };
+    webClients.set('owner-client', ownerClient);
+    const agent = { ownerId: 'user-1', conversations: new Map(), ws: { readyState: 1 } };
+    broadcastSessionCatalog.mockClear();
+    await handleAgentOutput('agent-a', agent, {
+      type: 'session_crud_result', op: 'rename', ok: true, sessionId: 'same-id', requestId: 'rename-1',
+    });
+    expect(broadcastSessionCatalog).not.toHaveBeenCalled();
+    expect(ownerClient.sent.at(-1)).toMatchObject({ type: 'session_crud_result', requestId: 'rename-1' });
+
+    ownerClient.sent = [];
+    await handleAgentOutput('agent-a', agent, {
+      type: 'session_list_updated',
+      sessions: [{ id: 'same-id', name: 'Renamed' }],
+    });
+    expect(reconcileFromSnapshot).toHaveBeenCalledWith('user-1', 'agent-a', [
+      { id: 'same-id', name: 'Renamed' },
+    ]);
+    expect(broadcastSessionCatalog).toHaveBeenCalledTimes(1);
   });
 });

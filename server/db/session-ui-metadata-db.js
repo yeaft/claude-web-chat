@@ -1,4 +1,4 @@
-import { stmts } from './connection.js';
+import { stmts, transaction } from './connection.js';
 
 function mapRow(row) {
   if (!row) return null;
@@ -32,6 +32,37 @@ export const sessionUiMetadataDb = {
   getByUser(userId) {
     if (!userId) return [];
     return stmts.getSessionUiMetadataByUser.all(userId).map(mapRow);
+  },
+
+  applyBatch(userId, updates) {
+    if (!userId || !Array.isArray(updates) || updates.length === 0) return false;
+    return transaction(() => {
+      const now = Date.now();
+      for (const update of updates) {
+        if (!update?.catalogKey) throw new Error('Catalog metadata update requires catalogKey');
+        stmts.upsertSessionUiMetadata.run(
+          userId,
+          update.catalogKey,
+          update.pinned === true ? 1 : 0,
+          Number.isFinite(update.sortRank) ? update.sortRank : null,
+          now,
+        );
+        if (update.runtimeProvider === 'yeaft') {
+          const result = stmts.setYeaftSessionPinnedForAgent.run(
+            update.pinned === true ? 1 : 0,
+            now,
+            update.sessionId,
+            userId,
+            update.agentId,
+          );
+          if (result.changes !== 1) throw new Error('Yeaft Session identity changed during metadata update');
+        } else if (update.runtimeProvider === 'claude-code' || update.runtimeProvider === 'copilot') {
+          const result = stmts.updateSessionPinned.run(update.pinned === true ? 1 : 0, now, update.sessionId);
+          if (result.changes !== 1) throw new Error('Chat Session identity changed during metadata update');
+        }
+      }
+      return true;
+    })();
   },
 
   delete(userId, catalogKey) {

@@ -24,7 +24,7 @@
 
 /**
  * @typedef {Object} PinRouteDeps
- * @property {(id: string) => ({ userId?: string|null }|null)} getYeaftRow  Reads a yeaft session row (or returns null if not yeaft-owned).
+ * @property {(id: string) => Array<{ userId?: string|null, agentId?: string|null }>} getYeaftRows  Reads all matching Yeaft Session rows.
  * @property {(id: string, userId: string) => boolean} verifyChatOwnership  Returns true if `userId` owns the chat conversation `id`.
  * @property {boolean} [skipAuth]  Skip both ownership checks (dev / single-user).
  */
@@ -47,12 +47,13 @@ export function routeSessionPin(deps, client, msg) {
   const id = msg && msg.conversationId;
   if (!id) return { kind: 'noop' };
   const isPinned = msg.type === 'pin_session';
-  const yeaftRow = deps.getYeaftRow(id);
-  if (yeaftRow) {
-    if (!deps.skipAuth && yeaftRow.userId && yeaftRow.userId !== client.userId) {
-      return { kind: 'denied', id, reason: 'yeaft-foreign' };
+  const yeaftRows = deps.getYeaftRows(id);
+  if (yeaftRows.length > 0) {
+    const owned = yeaftRows.filter(row => deps.skipAuth || row.userId === client.userId);
+    if (owned.length !== 1 || yeaftRows.length !== 1) {
+      return { kind: 'denied', id, reason: owned.length === 0 ? 'yeaft-foreign' : 'yeaft-ambiguous' };
     }
-    return { kind: 'yeaft', id, isPinned };
+    return { kind: 'yeaft', id, agentId: owned[0].agentId, isPinned };
   }
   if (!deps.skipAuth && !deps.verifyChatOwnership(id, client.userId)) {
     return { kind: 'denied', id, reason: 'chat-foreign' };

@@ -867,8 +867,10 @@ export async function handleAgentOutput(agentId, agent, msg) {
       // sessions, and that response must carry persisted server-side pin
       // state before it hits the web store.
       const outboundMsg = syncYeaftSessionMetadata(agentId, agent, msg);
-      const catalogChanged = outboundMsg?.op === 'list'
-        || (outboundMsg?.ok && outboundMsg.op !== 'get');
+      // CRUD acknowledgements are not authoritative catalog snapshots. The
+      // agent emits session_list_updated after mutations; broadcast only after
+      // that reconciliation so create/rename cannot briefly project stale data.
+      const catalogChanged = outboundMsg?.op === 'list';
       if (catalogChanged) await broadcastSessionCatalog(agent.ownerId);
       for (const [, c] of webClients) {
         if (c.authenticated && (CONFIG.skipAuth || c.userId === agent.ownerId)) {

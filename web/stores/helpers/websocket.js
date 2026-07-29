@@ -142,6 +142,10 @@ export function connect(store) {
   }
 
   store.connectionState = store.reconnectAttempts > 0 ? 'reconnecting' : 'connecting';
+  // Encryption negotiation is connection-scoped. Start every socket in the
+  // conservative legacy mode; only this socket's auth_result may downgrade it.
+  store.serverEncryptionRequired = true;
+  store.chatHistoryRequestIdSupported = null;
   // Catalog support is a capability of the current Server connection. Reset
   // before every handshake so reconnecting to an older Server immediately
   // restores the legacy sidebar instead of showing a stale prior snapshot.

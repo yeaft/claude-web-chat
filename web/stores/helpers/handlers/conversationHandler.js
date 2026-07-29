@@ -461,7 +461,21 @@ export function handleExecutionCancelled(store, msg) {
 
 export function handleSyncMessagesResult(store, msg) {
   const scopedResponse = !!msg.requestId;
-  if (scopedResponse && !store.isCurrentChatHistoryResponse?.(msg)) return false;
+  if (scopedResponse) {
+    store.chatHistoryRequestIdSupported = true;
+    if (!store.isCurrentChatHistoryResponse?.(msg)) return false;
+  } else {
+    const catalogKey = `chat:${msg.conversationId}`;
+    const pending = store.chatHistoryRequests?.[catalogKey];
+    if (store.chatHistoryRequestIdSupported === true || !pending?.loading) return false;
+    msg = {
+      ...msg,
+      requestId: pending.requestId,
+      catalogKey,
+      mode: pending.mode || msg.mode,
+      ...(pending.mode === 'delta' ? { afterMessageId: pending.cursor } : {}),
+    };
+  }
 
   if (!store.messagesMap[msg.conversationId]) {
     store.messagesMap[msg.conversationId] = [];
@@ -569,7 +583,7 @@ export function handleSyncMessagesResult(store, msg) {
       hasMoreOlder: isDeltaSync ? !!priorHasMoreOlder : !!msg.hasMore,
     };
   }
-  if (!scopedResponse || store.finishChatHistoryRequest?.(msg)) {
+  if (store.finishChatHistoryRequest?.(msg)) {
     if (store.currentConversation === msg.conversationId) {
       store.loadingMoreMessages = false;
     }

@@ -5,6 +5,7 @@ import {
   addMessageToConversation,
   appendToAssistantMessageForConversation,
   finishStreamingForConversation,
+  maxDbMessageId,
 } from '../../web/stores/helpers/messages.js';
 import UnifiedSessionList from '../../web/components/UnifiedSessionList.js';
 import {
@@ -85,6 +86,13 @@ describe('message flow regressions', () => {
     expect(store.messagesMap['conv-1'][0]).not.toHaveProperty('turnEndAt');
   });
 
+  it('uses the largest persisted DB id when a streaming row is at the tail', () => {
+    expect(maxDbMessageId([
+      { id: 'optimistic-user', dbMessageId: 17 },
+      { id: 'streaming-assistant-uuid', isStreaming: true },
+    ])).toBe(17);
+  });
+
   it('keeps Work Center inputs available and detail layouts responsive', () => {
     const component = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatInput.js'), 'utf8');
     const websocket = readFileSync(resolve(import.meta.dirname, '../../web/stores/helpers/websocket.js'), 'utf8');
@@ -158,6 +166,19 @@ describe('message flow regressions', () => {
     })).toBe(true);
     expect(historyStore.loadingMoreMessages).toBe(true);
     expect(historyStore.refreshingSessionMap.a).toBe(false);
+
+    historyStore.chatHistoryRequestIdSupported = null;
+    historyStore.chatHistoryRequests['chat:b'] = {
+      requestId: 'legacy-b', catalogKey: 'chat:b', mode: 'recent', loading: true,
+    };
+    expect(handleSyncMessagesResult(historyStore, {
+      conversationId: 'b', messages: [], hasMore: false,
+    })).toBe(true);
+    expect(historyStore.chatHistoryRequests['chat:b'].loading).toBe(false);
+    expect(handleSyncMessagesResult(historyStore, {
+      conversationId: 'b', messages: [{ id: 99, role: 'assistant', content: 'late' }], hasMore: false,
+    })).toBe(false);
+    expect(historyStore.messagesMap.b).toEqual([]);
     const workCenter = readFileSync(resolve(import.meta.dirname, '../../web/components/WorkCenterPage.js'), 'utf8');
     const workCenterCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/work-center.css'), 'utf8');
     const variables = readFileSync(resolve(import.meta.dirname, '../../web/styles/variables.css'), 'utf8');

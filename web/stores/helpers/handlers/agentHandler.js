@@ -5,6 +5,7 @@
 
 import { isRecentlyClosed, stopProcessingWatchdog } from '../watchdog.js';
 import { clearSessionLoading, restorePanels } from '../session.js';
+import { maxDbMessageId } from '../messages.js';
 
 /**
  * Decide whether the current Yeaft agent just RESTARTED (a fresh process),
@@ -337,8 +338,8 @@ export function handleAgentList(store, msg) {
         // broadcastAgentList -> select/sync/refresh -> agent status update ->
         // broadcastAgentList. Keep it edge-triggered like Yeaft catch-up.
         const currentMsgs = store.messagesMap[store.currentConversation] || [];
-        if (currentMsgs.length > 0) {
-          const lastMessageId = currentMsgs[currentMsgs.length - 1]?.id;
+        const lastMessageId = maxDbMessageId(currentMsgs);
+        if (lastMessageId != null) {
           console.log('[Reconnect] Requesting missed messages after:', lastMessageId);
           store.requestChatHistory?.(store.currentConversation, {
             mode: 'delta',

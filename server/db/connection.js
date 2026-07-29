@@ -888,6 +888,10 @@ export const stmts = {
     SELECT * FROM yeaft_sessions WHERE id = ? ORDER BY updated_at DESC LIMIT 1
   `),
 
+  getYeaftSessionsById: db.prepare(`
+    SELECT * FROM yeaft_sessions WHERE id = ? ORDER BY updated_at DESC
+  `),
+
   getYeaftSessionForAgent: db.prepare(`
     SELECT * FROM yeaft_sessions WHERE id = ? AND user_id = ? AND agent_id = ?
   `),

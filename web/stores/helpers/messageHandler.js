@@ -241,6 +241,10 @@ export function handleMessage(store, msg) {
       handleConversationDeleted(store, msg);
       break;
 
+    case 'conversation_delete_result':
+      if (msg.ok) handleConversationDeleted(store, msg);
+      break;
+
     case 'turn_completed':
       handleTurnCompleted(store, msg);
       break;

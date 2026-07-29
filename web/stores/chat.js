@@ -476,6 +476,7 @@ export const useChatStore = defineStore('chat', {
     hasMoreMessages: false,
     loadingMoreMessages: false,
     chatHistoryRequests: {},
+    chatHistoryRequestIdSupported: null,
     sessionCatalog: [],
     sessionCatalogLoaded: false,
     activeCatalogKey: null,
@@ -5321,7 +5322,7 @@ export const useChatStore = defineStore('chat', {
       if (runtimeProvider === 'yeaft') {
         this.sessionCrudRequest('rename', { sessionId, name: title }, { agentId });
       } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
-        this.renameChatSession(sessionId, title);
+        this.renameChatSession(sessionId, title, agentId);
       } else {
         return false;
       }
@@ -5361,6 +5362,10 @@ export const useChatStore = defineStore('chat', {
     },
     requestChatHistory(conversationId, { mode = 'recent', turns = null, beforeId = null, afterMessageId = null } = {}) {
       if (!conversationId) return null;
+      const catalogKey = chatCatalogKey(conversationId);
+      if (this.chatHistoryRequestIdSupported !== true && this.chatHistoryRequests[catalogKey]?.loading) {
+        return null;
+      }
       const cursor = beforeId ?? afterMessageId ?? null;
       const requestId = this.beginChatHistoryRequest(conversationId, mode, cursor);
       this.sendWsMessage({
@@ -6314,22 +6319,16 @@ export const useChatStore = defineStore('chat', {
       this.workbenchMaximized = !this.workbenchMaximized;
     },
 
-    renameChatSession(convId, title) {
-      if (title && title.trim()) {
-        this.customConversationTitles[convId] = title.trim();
-        this.sendWsMessage({
-          type: 'update_conversation_settings',
-          conversationId: convId,
-          title: title.trim()
-        });
-      } else {
-        delete this.customConversationTitles[convId];
-        this.sendWsMessage({
-          type: 'update_conversation_settings',
-          conversationId: convId,
-          title: ''
-        });
-      }
+    renameChatSession(convId, title, agentId = null) {
+      const trimmed = title && title.trim() ? title.trim() : '';
+      if (trimmed) this.customConversationTitles[convId] = trimmed;
+      else delete this.customConversationTitles[convId];
+      this.sendWsMessage({
+        type: 'update_conversation_settings',
+        conversationId: convId,
+        ...(agentId ? { agentId } : {}),
+        title: trimmed,
+      });
     },
 
     openFileInExplorer(filePath) {

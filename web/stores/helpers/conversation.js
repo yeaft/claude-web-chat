@@ -263,65 +263,13 @@ export function toggleConversationMcp(store, serverName, enabled) {
 }
 
 export function closeSession(store, conversationId, agentId) {
-  const conv = store.conversations.find(c => c.id === conversationId);
-
-
-  // Mark as recently deleted to prevent handleAgentList from re-adding it
-  if (!store._recentlyDeletedSessions) store._recentlyDeletedSessions = {};
-  store._recentlyDeletedSessions[conversationId] = Date.now();
-
-  // Optimistically remove from local conversations list
-  store.conversations = store.conversations.filter(c => c.id !== conversationId);
-
-  // Clean up caches
-  delete store.messagesMap[conversationId];
-  // perf-chat-session-switch-cache: per-conv cache metadata follows the
-  // messages — without this, reopening a closed-then-recreated session
-  // would inherit the stale lastSeenDbId / hasMoreOlder of the old one.
-  delete store.chatSessionState[conversationId];
-  delete store.processingConversations[conversationId];
-  stopProcessingWatchdog(store, conversationId);
-  delete store.executionStatusMap[conversationId];
-
-  // Remove from activeConversations if present
-  const activeIdx = store.activeConversations.indexOf(conversationId);
-  if (activeIdx >= 0) {
-    store.activeConversations.splice(activeIdx, 1);
-    if (store.activeConversations.length === 0) {
-      // Clear lastViewedConversation so refresh doesn't restore this session
-      localStorage.removeItem('lastViewedConversation');
-      store.lastViewedConversation = null;
-    }
-  }
-
-  // Clear from split panels if present
-  for (const pane of store.panels) {
-    if (pane.conversationId === conversationId) {
-      pane.conversationId = null;
-    }
-  }
-
-  // Clear pin state if present
-  const pinIdx = store.pinnedSessions.indexOf(conversationId);
-  if (pinIdx >= 0) {
-    store.pinnedSessions.splice(pinIdx, 1);
-    localStorage.setItem('pinned-sessions', JSON.stringify(store.pinnedSessions));
-  }
-
-  // Send delete_conversation to server (reuses existing handler which:
-  // 1. removes from agent.conversations Map
-  // 2. sets is_active=0 in DB (data preserved)
-  // 3. broadcasts updated agent list
-  // 4. forwards to agent for resource cleanup (terminals, processes))
-  if (agentId && agentId !== store.currentAgent) {
-    store.sendWsMessage({ type: 'select_agent', agentId, silent: true });
-    store.sendWsMessage({ type: 'delete_conversation', conversationId });
-    store.sendWsMessage({ type: 'select_agent', agentId: store.currentAgent, silent: true });
-  } else {
-    store.sendWsMessage({ type: 'delete_conversation', conversationId });
-  }
-
-  store.saveOpenSessions();
+  if (!conversationId) return false;
+  return store.sendWsMessage({
+    type: 'delete_conversation',
+    requestId: `delete_${crypto.randomUUID()}`,
+    conversationId,
+    ...(agentId ? { agentId } : {}),
+  });
 }
 
 export function deleteConversation(store, conversationId, agentId) {
@@ -357,23 +305,12 @@ export function deleteConversation(store, conversationId, agentId) {
     localStorage.setItem('pinned-sessions', JSON.stringify(store.pinnedSessions));
   }
 
-  // 如果目标 conversation 在其他 agent 上，需要先通知 server 切换 agent
-  // 否则 server 端 forwardToAgent 会发送到 client.currentAgent
-  if (agentId && agentId !== store.currentAgent) {
-    // 先选择目标 agent，再发删除，最后切回
-    store.sendWsMessage({ type: 'select_agent', agentId, silent: true });
-    store.sendWsMessage({
-      type: 'delete_conversation',
-      conversationId
-    });
-    // 切回原 agent
-    store.sendWsMessage({ type: 'select_agent', agentId: store.currentAgent, silent: true });
-  } else {
-    store.sendWsMessage({
-      type: 'delete_conversation',
-      conversationId
-    });
-  }
+  store.sendWsMessage({
+    type: 'delete_conversation',
+    requestId: `delete_${crypto.randomUUID()}`,
+    conversationId,
+    ...(agentId ? { agentId } : {}),
+  });
 }
 
 export function sendMessage(store, text, attachments = [], options = {}) {

@@ -87,9 +87,23 @@ function onlineAgentIdsForUser(userId, role = null) {
   );
 }
 
-function buildSessionCatalog(userId, role = null) {
+export function buildSessionCatalog(userId, role = null) {
+  const chatSessions = sessionDb.getActiveByUser(userId).filter((session) => {
+    if (CONFIG.skipAuth || session.user_id === userId) return true;
+    if (session.user_id != null) return false;
+    const agent = agents.get(session.agent_id);
+    if (agent) {
+      if (agent.ownerId === userId) return true;
+      return !agent.ownerId && role === 'admin';
+    }
+    // Legacy NULL-owner rows may outlive an Agent connection. Keep them only
+    // when the Agent id belongs to another persisted Session owned by this user.
+    return sessionDb.getByUser(userId).some(row => (
+      row.agent_id === session.agent_id && row.user_id === userId
+    ));
+  });
   return projectSessionCatalog({
-    chatSessions: sessionDb.getActiveByUser(userId),
+    chatSessions,
     yeaftSessions: yeaftSessionDb.getByUser(userId),
     metadata: sessionUiMetadataDb.getByUser(userId),
     onlineAgentIds: onlineAgentIdsForUser(userId, role),

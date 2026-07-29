@@ -22,6 +22,8 @@ function createStore() {
     reconnectAttempts: 0,
     connectionState: 'disconnected',
     authenticated: false,
+    serverEncryptionRequired: false,
+    chatHistoryRequestIdSupported: true,
     currentView: 'chat',
     startHeartbeat: vi.fn(),
     stopHeartbeat: vi.fn(),
@@ -85,6 +87,8 @@ describe('websocket auth token races', () => {
     store.activeCatalogKey = 'chat:stale';
 
     connect(store);
+    expect(store.serverEncryptionRequired).toBe(true);
+    expect(store.chatHistoryRequestIdSupported).toBe(null);
     expect(store.sessionCatalogLoaded).toBe(false);
     expect(store.sessionCatalog).toEqual([]);
     expect(store.activeCatalogKey).toBe(null);
@@ -95,6 +99,22 @@ describe('websocket auth token races', () => {
     expect(sockets[0].url).toContain('token=old-token');
     expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token', 1);
     expect(authStore.token).toBe('new-token');
+  });
+
+  it('restores encrypted outbound mode before reconnecting to a legacy Server', async () => {
+    const authStore = createRaceAuthStore();
+    const sockets = installFakeWebSocket();
+    globalThis.location = { protocol: 'https:', host: 'example.test' };
+    const { connect } = await loadWebsocketHelpers(authStore);
+    const store = createStore();
+    store.sessionKey = new Uint8Array(32).fill(7);
+    store.serverEncryptionRequired = false;
+
+    connect(store);
+    sockets[0].readyState = globalThis.WebSocket.OPEN;
+    store.ws = sockets[0];
+    expect(store.serverEncryptionRequired).toBe(true);
+    expect(sockets[0].sent).toEqual([]);
   });
 
   it('ignores auth_result failures from an older socket after a newer login wins', async () => {
