@@ -169,6 +169,7 @@ index.js     — 入口，把所有内置工具聚合成 createFullRegistry()
 
 ### 后台任务 / 子 Agent 编排
 - `Bash background=true` 进入 `tasks/` 子系统：返回 `taskId` 和日志路径；`ListTasks` / `ReadTaskLog` / `CancelTask` 读取或控制同一套任务记录
+- 持久 shell task 的 `resultDelivery` 是 `status_only`：它不阻塞前台模型回合，终止 / 取消只更新 task 状态，不自动触发新的模型回合；只有显式 `model_reentry` 的结果型异步 task 才把终态送回模型
 - `TaskManager` 按 Session 持久化任务状态和日志；agent 重启后仍标记未完成任务为 `orphaned`，不会假装进程还可控
 - `SpawnAgent` 走 `sub-agent/runner.js`，每个子 Agent 有独立 output log、liveness 计数器、预算上限和 terminal 状态
 - 子 Agent 终止 / idle 通知会进入 `sub-agent/notifications.js` 队列；`WaitAgent` 可按 agentId drain，Engine 在 parent 下一次 user-driven turn 前也会把 pending notification 注入上下文并在 turn 成功后 acknowledge

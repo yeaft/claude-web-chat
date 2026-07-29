@@ -551,11 +551,12 @@ export class Engine {
   #externalUserWakePending = false;
 
   /**
-   * Tasks (background bash, sub-agent spawns) that were launched DURING
-   * the currently-running query() and have NOT terminated yet. The query
-   * loop refuses to finalize end_turn while this set is non-empty — instead
-   * it parks on `#asyncTaskWaiters` until a terminal event or a new user
-   * append wakes it up. Cleared at the top of each query() and again in
+   * Result-producing async tasks (currently sub-agent spawns) launched DURING
+   * the running query() and not yet terminated. Persistent shell tasks are
+   * deliberately status-only and never enter this set. The query loop refuses
+   * to finalize end_turn while this set is non-empty — instead it parks on
+   * `#asyncTaskWaiters` until a terminal event or a new user append wakes it.
+   * Cleared at the top of each query() and again in
    * the finally block so a stale set never leaks across turns.
    * @type {Set<string>}
    */
@@ -1272,12 +1273,10 @@ export class Engine {
       // can mark "after this batch, end the turn — do NOT call adapter
       // again". Honored at the top of the tool-loop continuation.
       requestEndTurn: vpCtx?.requestEndTurn,
-      // Background-task ownership hook. Tools that produce a TaskManager
-      // task (bash background, agent spawn) call this with the new
-      // `task.id` so the engine keeps the current query parked at end_turn
-      // until the task terminates — its result is then spliced into the
-      // next adapter loop in the SAME turn. Tools that don't produce
-      // async tasks ignore it.
+      // Result-producing async-task ownership hook. Tools such as SpawnAgent
+      // call this with the new `task.id` so the engine keeps the current query
+      // parked at end_turn until the result arrives. Persistent background
+      // shell tasks are status-only and intentionally do not call this hook.
       registerAsyncTask: (taskId, meta = {}) => {
         const current = typeof vpCtx?.currentToolCall === 'function' ? vpCtx.currentToolCall() : null;
         this.#registerAsyncTask(taskId, { ...(current || {}), ...(meta || {}) });
@@ -1305,11 +1304,9 @@ export class Engine {
         // to. Null when the parent has no stats wired (e.g. tests).
         toolStats: this.#toolStats || null,
         taskManager: this.#taskManager || null,
-        // Propagate the async-task coordinator so sub-agents launched
-        // from this engine register their background tasks against the
-        // SAME owner map the bridge uses. Without this, a sub-agent's
-        // background bash terminal event would not find its engine and
-        // would fall through to the legacy rescue path.
+        // Propagate the async-task coordinator so sub-agents launched from
+        // this engine register result-producing child tasks against the same
+        // owner map the bridge uses.
         asyncTaskCoordinator: this.#asyncTaskCoordinator || null,
       },
     };
@@ -3199,9 +3196,10 @@ export class Engine {
       }
 
       // If no tool calls, we're done — UNLESS we still own a pending
-      // async task. The user-facing semantic: a turn that launched a
-      // background bash / sub-agent stays "live" until those tasks
-      // terminate (or the user appends, or abort). The model already
+      // result-producing async task. Persistent shell tasks never register
+      // here; they remain visible in TaskManager without holding this turn.
+      // Registered tasks stay live until they terminate (or the user appends,
+      // or abort). The model already
       // said end_turn; we just defer finalization by parking on the
       // wait queue, then splice the synthetic task-result message in
       // and run one more adapter loop. This matches the contract the
@@ -4166,8 +4164,8 @@ export class Engine {
   }
 
   /**
-   * Register a background task as belonging to the current query. Called
-   * from tools (bash background, agent spawn) via `toolCtx.registerAsyncTask`.
+   * Register a result-producing async task as belonging to the current query.
+   * Called by tools such as SpawnAgent via `toolCtx.registerAsyncTask`.
    * @param {string} taskId
    * @param {{ id?: string, name?: string, threadId?: string, toolCallId?: string, toolName?: string }} [meta]
    * @returns {void}
