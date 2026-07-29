@@ -988,7 +988,7 @@ export default {
     const isProcessing = Vue.computed(() => {
       const gs = sessionsStore();
       const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
-      return sessionId ? store.isYeaftSessionProcessing(sessionId) : false;
+      return sessionId ? store.isYeaftSessionProcessing(sessionId, store.currentAgent || null) : false;
     });
     // task-fix-mobile-group-settings: surface a group ⚙ in the topbar
     // so the conversation always has a settings entry-point — sidebar
@@ -1435,18 +1435,29 @@ export default {
       // the composite key isn't a usable VP id by itself.
       const rawStatuses = store.vpStatuses || {};
       const scopedStatuses = {};
+      const activeAgentId = store.currentAgent || null;
       for (const entry of Object.values(rawStatuses)) {
         if (!entry || !entry.vpId) continue;
         const entrySessionId = entry.sessionId ?? entry.groupId;
         if (entrySessionId && entrySessionId !== filter) continue;
+        if (activeAgentId && entry.agentId && entry.agentId !== activeAgentId) continue;
         if (!rosterSet.has(entry.vpId)) continue;
         scopedStatuses[entry.vpId] = entry;
+      }
+
+      const scopedStoppingTurnIds = {};
+      for (const row of Object.values(store.activeVpTurns || {})) {
+        if (!row?.turnId || !row?.sessionId) continue;
+        if (row.sessionId !== filter || (activeAgentId && row.agentId && row.agentId !== activeAgentId)) continue;
+        if (Object.entries(store.stoppingVpTurnIds || {}).some(([key]) => store.activeVpTurns?.[key] === row)) {
+          scopedStoppingTurnIds[row.turnId] = true;
+        }
       }
 
       return buildTimelineRows({
         vpList,
         vpStatuses: scopedStatuses,
-        stoppingVpTurnIds: store.stoppingVpTurnIds || {},
+        stoppingVpTurnIds: scopedStoppingTurnIds,
         connectionState: store.connectionState,
         vpLabelOf: (id) => vpStore.vpLabel(id),
         vpDescriptionOf: (id) => vpStore.vpDescription(id),
