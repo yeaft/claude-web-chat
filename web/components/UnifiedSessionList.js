@@ -22,6 +22,18 @@ export default {
       return this.sessions.filter(row => this.isAvailable(row));
     },
   },
+  mounted() {
+    document.addEventListener('pointerdown', this.onDocumentPointerDown, true);
+    document.addEventListener('keydown', this.onDocumentKeydown);
+    window.addEventListener('scroll', this.closeMenu, true);
+    window.addEventListener('resize', this.closeMenu);
+  },
+  beforeUnmount() {
+    document.removeEventListener('pointerdown', this.onDocumentPointerDown, true);
+    document.removeEventListener('keydown', this.onDocumentKeydown);
+    window.removeEventListener('scroll', this.closeMenu, true);
+    window.removeEventListener('resize', this.closeMenu);
+  },
   methods: {
     providerLabel(row) {
       if (row.runtimeProvider === 'yeaft') return 'Yeaft';
@@ -43,11 +55,24 @@ export default {
     },
     select(row) {
       if (!this.isAvailable(row)) return;
+      this.closeMenu();
       this.$emit('select', row);
+    },
+    closeMenu() {
+      this.activeMenuKey = null;
+    },
+    onDocumentPointerDown(event) {
+      if (!this.activeMenuKey) return;
+      const target = event?.target;
+      if (target?.closest?.('.session-menu-floating, .session-dots-btn')) return;
+      this.closeMenu();
+    },
+    onDocumentKeydown(event) {
+      if (event?.key === 'Escape') this.closeMenu();
     },
     toggleMenu(row, event) {
       if (this.activeMenuKey === row.catalogKey) {
-        this.activeMenuKey = null;
+        this.closeMenu();
         return;
       }
       const trigger = event?.currentTarget?.getBoundingClientRect?.();
@@ -69,11 +94,11 @@ export default {
       this.activeMenuKey = row.catalogKey;
     },
     emitAction(action, row, extra = {}) {
-      this.activeMenuKey = null;
+      this.closeMenu();
       this.$emit('action', { action, row, ...extra });
     },
     startRename(row) {
-      this.activeMenuKey = null;
+      this.closeMenu();
       this.editingKey = row.catalogKey;
       this.editingTitle = row.title || '';
       this.$nextTick(() => {

@@ -136,18 +136,57 @@ describe('message flow regressions', () => {
         pinned: false,
         availability: 'offline',
       },
+      {
+        catalogKey: 'chat:visible',
+        runtimeProvider: 'copilot',
+        routeRef: { runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: 'visible' },
+        title: 'Visible',
+        pinned: false,
+        availability: 'online',
+      },
     ];
     const sidebar = mount(UnifiedSessionList, {
       attachTo: document.body,
       props: { sessions: catalogRows, activeCatalogKey: catalogRows[0].catalogKey },
       global: { mocks: { $t: key => key } },
     });
-    expect(sidebar.findAll('.session-item')).toHaveLength(1);
+    expect(sidebar.findAll('.session-item')).toHaveLength(2);
     expect(sidebar.text()).not.toContain('Offline');
     const header = sidebar.get('.session-item-header');
     expect(header.get('.session-pin-icon').element.nextElementSibling.classList.contains('title')).toBe(true);
 
-    const trigger = sidebar.get('.session-dots-btn');
+    const dataTransfer = {
+      value: '',
+      setData(_type, value) { this.value = value; },
+      getData() { return this.value; },
+    };
+    const visibleRows = sidebar.findAll('.session-item');
+    await visibleRows[0].trigger('dragstart', { dataTransfer });
+    await visibleRows[1].trigger('drop', { dataTransfer });
+    expect(sidebar.emitted('action').at(-1)[0].sessions.map(row => row.catalogKey)).toEqual([
+      'chat:visible',
+      'chat:offline',
+      'yeaft:agent-a:pinned',
+    ]);
+
+    const documentAdd = vi.spyOn(document, 'addEventListener');
+    const documentRemove = vi.spyOn(document, 'removeEventListener');
+    const windowAdd = vi.spyOn(window, 'addEventListener');
+    const windowRemove = vi.spyOn(window, 'removeEventListener');
+    sidebar.unmount();
+    const lifecycleSidebar = mount(UnifiedSessionList, {
+      attachTo: document.body,
+      props: { sessions: catalogRows, activeCatalogKey: catalogRows[0].catalogKey },
+      global: { mocks: { $t: key => key } },
+    });
+    expect(documentAdd).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
+    expect(documentAdd).toHaveBeenCalledWith('keydown', expect.any(Function));
+    expect(windowAdd).toHaveBeenCalledWith('scroll', expect.any(Function), true);
+    expect(windowAdd).toHaveBeenCalledWith('resize', expect.any(Function));
+    documentRemove.mockClear();
+    windowRemove.mockClear();
+
+    const trigger = lifecycleSidebar.get('.session-dots-btn');
     trigger.element.getBoundingClientRect = () => ({
       top: 720, bottom: 744, left: 300, right: 324, width: 24, height: 24,
     });
@@ -165,11 +204,46 @@ describe('message flow regressions', () => {
     expect(remove.disabled).toBe(false);
     remove.click();
     await Vue.nextTick();
-    expect(sidebar.emitted('action').at(-1)[0]).toMatchObject({
+    expect(lifecycleSidebar.emitted('action').at(-1)[0]).toMatchObject({
       action: 'remove',
       row: { catalogKey: catalogRows[0].catalogKey },
     });
-    sidebar.unmount();
+
+    const openMenu = async () => {
+      await trigger.trigger('click');
+      await Vue.nextTick();
+      expect(document.body.querySelector('.session-menu-floating')).not.toBeNull();
+    };
+    await openMenu();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await Vue.nextTick();
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
+    await openMenu();
+    window.dispatchEvent(new Event('scroll'));
+    await Vue.nextTick();
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
+    await openMenu();
+    window.dispatchEvent(new Event('resize'));
+    await Vue.nextTick();
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
+    await openMenu();
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    await Vue.nextTick();
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
+    await openMenu();
+    await lifecycleSidebar.findAll('.session-item')[0].trigger('click');
+    await Vue.nextTick();
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
+
+    lifecycleSidebar.unmount();
+    expect(documentRemove).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
+    expect(documentRemove).toHaveBeenCalledWith('keydown', expect.any(Function));
+    expect(windowRemove).toHaveBeenCalledWith('scroll', expect.any(Function), true);
+    expect(windowRemove).toHaveBeenCalledWith('resize', expect.any(Function));
+    documentAdd.mockRestore();
+    documentRemove.mockRestore();
+    windowAdd.mockRestore();
+    windowRemove.mockRestore();
 
     expect(UnifiedSessionList.template).toContain(':key="row.catalogKey"');
     expect(UnifiedSessionList.emits).toContain('create-chat');
