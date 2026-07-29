@@ -1,6 +1,9 @@
+// @vitest-environment happy-dom
+import { mount } from '@vue/test-utils';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import * as Vue from 'vue';
 import {
   addMessageToConversation,
   appendToAssistantMessageForConversation,
@@ -97,7 +100,7 @@ describe('message flow regressions', () => {
     ])).toBe(17);
   });
 
-  it('keeps Work Center inputs available and detail layouts responsive', () => {
+  it('keeps Work Center inputs available and detail layouts responsive', async () => {
     const component = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatInput.js'), 'utf8');
     const websocket = readFileSync(resolve(import.meta.dirname, '../../web/stores/helpers/websocket.js'), 'utf8');
     const chatStoreSource = readFileSync(resolve(import.meta.dirname, '../../web/stores/chat.js'), 'utf8');
@@ -114,6 +117,59 @@ describe('message flow regressions', () => {
     expect(normalizeChatRuntimeProvider('copilot')).toBe('copilot');
     expect(() => normalizeChatRuntimeProvider('unknown')).toThrow(/Unknown Chat runtime provider/);
     expect(() => chatCatalogKey('')).toThrow(/conversationId/);
+
+    const catalogRows = [
+      {
+        catalogKey: 'yeaft:agent-a:pinned',
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: 'pinned' },
+        title: 'Pinned',
+        workDir: '/repo',
+        pinned: true,
+        availability: 'online',
+      },
+      {
+        catalogKey: 'chat:offline',
+        runtimeProvider: 'copilot',
+        routeRef: { runtimeProvider: 'copilot', agentId: 'agent-b', sessionId: 'offline' },
+        title: 'Offline',
+        pinned: false,
+        availability: 'offline',
+      },
+    ];
+    const sidebar = mount(UnifiedSessionList, {
+      attachTo: document.body,
+      props: { sessions: catalogRows, activeCatalogKey: catalogRows[0].catalogKey },
+      global: { mocks: { $t: key => key } },
+    });
+    expect(sidebar.findAll('.session-item')).toHaveLength(1);
+    expect(sidebar.text()).not.toContain('Offline');
+    const header = sidebar.get('.session-item-header');
+    expect(header.get('.session-pin-icon').element.nextElementSibling.classList.contains('title')).toBe(true);
+
+    const trigger = sidebar.get('.session-dots-btn');
+    trigger.element.getBoundingClientRect = () => ({
+      top: 720, bottom: 744, left: 300, right: 324, width: 24, height: 24,
+    });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 });
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    await trigger.trigger('click');
+    await Vue.nextTick();
+    const menu = document.body.querySelector('.session-menu-floating');
+    expect(menu).not.toBeNull();
+    expect(menu.parentElement).toBe(document.body);
+    expect(parseInt(menu.style.top, 10)).toBeLessThan(720);
+    const menuButtons = [...menu.querySelectorAll('.session-menu-item')];
+    const remove = menuButtons.find(button => button.textContent.includes('removeFromList'));
+    expect(remove).toBeTruthy();
+    expect(remove.disabled).toBe(false);
+    remove.click();
+    await Vue.nextTick();
+    expect(sidebar.emitted('action').at(-1)[0]).toMatchObject({
+      action: 'remove',
+      row: { catalogKey: catalogRows[0].catalogKey },
+    });
+    sidebar.unmount();
 
     expect(UnifiedSessionList.template).toContain(':key="row.catalogKey"');
     expect(UnifiedSessionList.emits).toContain('create-chat');

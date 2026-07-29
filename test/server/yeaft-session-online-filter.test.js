@@ -107,12 +107,12 @@ describe('Yeaft Session online Agent filtering', () => {
 
     const catalog = projectSessionCatalog({
       chatSessions: [
-        { id: 'same-id', agent_id: 'chat-agent', title: 'Chat', updated_at: 10, is_active: 1 },
+        { id: 'same-id', agent_id: 'chat-agent', title: 'Chat', created_at: 10, updated_at: 50, is_active: 1 },
         { id: 'inactive', agent_id: 'chat-agent', is_active: 0 },
       ],
       yeaftSessions: [
-        { id: 'same-id', agentId: 'agent-online', name: 'Online', updatedAt: 20 },
-        { id: 'same-id', agentId: 'agent-closed', name: 'Closed', updatedAt: 30 },
+        { id: 'same-id', agentId: 'agent-online', name: 'Online', createdAt: 20, updatedAt: 20 },
+        { id: 'same-id', agentId: 'agent-closed', name: 'Closed', createdAt: 30, updatedAt: 30 },
       ],
       metadata: [{ catalogKey: yeaftCatalogKey('agent-online', 'same-id'), pinned: true, sortRank: 1 }],
       onlineAgentIds: new Set(['agent-online']),
@@ -122,6 +122,12 @@ describe('Yeaft Session online Agent filtering', () => {
       'yeaft:agent-closed:same-id',
       'chat:same-id',
     ]);
+    const afterChatActivity = projectSessionCatalog({
+      chatSessions: [{ id: 'same-id', agent_id: 'chat-agent', created_at: 10, updated_at: 999, is_active: 1 }],
+      yeaftSessions: [{ id: 'newer', agentId: 'agent-online', createdAt: 20, updatedAt: 20 }],
+      onlineAgentIds: new Set(['agent-online', 'chat-agent']),
+    });
+    expect(afterChatActivity.map(row => row.catalogKey)).toEqual(['yeaft:agent-online:newer', 'chat:same-id']);
     expect(catalog.map(row => row.availability)).toEqual(['online', 'offline', 'offline']);
     expect(catalog.some(row => row.catalogKey === 'chat:inactive')).toBe(false);
     expect(() => projectSessionCatalog({

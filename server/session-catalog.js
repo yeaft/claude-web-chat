@@ -75,8 +75,8 @@ export function projectSessionCatalog({
     const leftRank = Number.isFinite(left.sortRank) ? left.sortRank : Number.MAX_SAFE_INTEGER;
     const rightRank = Number.isFinite(right.sortRank) ? right.sortRank : Number.MAX_SAFE_INTEGER;
     if (leftRank !== rightRank) return leftRank - rightRank;
-    const activityDelta = Number(right.updatedAt || 0) - Number(left.updatedAt || 0);
-    if (activityDelta !== 0) return activityDelta;
+    const creationDelta = Number(right.createdAt || 0) - Number(left.createdAt || 0);
+    if (creationDelta !== 0) return creationDelta;
     return left.catalogKey.localeCompare(right.catalogKey);
   });
 }
