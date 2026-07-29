@@ -269,11 +269,11 @@ Additional users can register directly from the login page (open registration, n
 ```bash
 npm install -g @yeaft/webchat-agent
 
-# Run once (foreground)
-yeaft-agent --server wss://your-server.com --name worker-1 --secret your-secret
+# Run once. --name is optional; computer-name invalid characters become "-".
+yeaft-agent --server wss://your-server.com --secret your-secret
 
 # Or install as system service (auto-start on boot, auto-restart on crash)
-yeaft-agent install --server wss://your-server.com --name worker-1 --secret your-secret
+yeaft-agent install --server wss://your-server.com --secret your-secret
 
 # Manage installed service
 yeaft-agent status                 # check if running

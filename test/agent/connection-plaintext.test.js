@@ -14,6 +14,16 @@ import {
 import { buildWindowsUpgradeCommand } from '../../agent/connection/upgrade.js';
 import ctx from '../../agent/context.js';
 import { connect, resetConnectionTransport, sendToServer } from '../../agent/connection/index.js';
+import { parseLocalArgs } from '../../agent/local-run.js';
+import {
+  applyAgentIdentityToEnv,
+  getDefaultAgentName,
+  getInstanceIdFromArgs,
+  parseServiceArgs,
+  resolveDisplayName,
+  resolveRuntimeIdentity,
+  resolveServiceInstanceId,
+} from '../../agent/service/config.js';
 import { applyRegisteredTransport } from '../../agent/connection/message-router.js';
 import { generateSessionKey, isEncrypted } from '../../agent/encryption.js';
 
@@ -50,8 +60,81 @@ async function sendToServerUnderTest(ctxLike, msg) {
 }
 
 describe('agent ctx defaults and upgrade contract', () => {
-  it('defaults encryption safely and pins every upgrade fetch to the Yeaft registry', async () => {
+  it('defaults identity and encryption safely and pins every upgrade fetch to the Yeaft registry', async () => {
+    expect(getDefaultAgentName('Dev Box/东')).toBe('Dev-Box--');
+    expect(getDefaultAgentName('')).toBe('default');
+
+    const computerName = getDefaultAgentName();
+    expect(computerName).toMatch(/^[A-Za-z0-9._-]+$/);
+    expect(getInstanceIdFromArgs([], {})).toBe(computerName);
+    expect(getInstanceIdFromArgs([], {}, { management: true })).toBe('default');
+    expect(getInstanceIdFromArgs([], { YEAFT_AGENT_INSTANCE: 'named' }, { management: true })).toBe('named');
+    expect(parseLocalArgs([], {})).toEqual({ name: computerName, port: 6868 });
+    expect(parseLocalArgs([], { AGENT_NAME: 'env-name' })).toEqual({ name: 'env-name', port: 6868 });
+
+    const env = {};
+    expect(applyAgentIdentityToEnv([], env)).toBeNull();
+    expect(env).toEqual({});
+
+    expect(getInstanceIdFromArgs(['--name', 'explicit-name'], {})).toBe('explicit-name');
+    expect(getInstanceIdFromArgs(['--instance', 'legacy', '--name', 'explicit-name'], {})).toBe('explicit-name');
+    expect(getInstanceIdFromArgs([], { AGENT_NAME: 'env-name' })).toBe('env-name');
+    expect(resolveDisplayName([], { AGENT_NAME: 'Display Name' }, 'file-name')).toBe('Display Name');
+    expect(resolveDisplayName([], {}, 'Worker A')).toBe('Worker A');
+    expect(resolveDisplayName([], {}, 'host-name')).toBe('host-name');
+    expect(resolveRuntimeIdentity({ agentName: 'Worker A' }, {})).toEqual({ agentName: 'Worker A', instanceId: 'default' });
+    expect(resolveRuntimeIdentity({ agentName: 'file-name', instanceId: 'saved-instance' }, { AGENT_NAME: 'Display Name' })).toEqual({
+      agentName: 'Display Name',
+      instanceId: 'saved-instance',
+    });
+    expect(resolveServiceInstanceId([], { YEAFT_AGENT_INSTANCE: 'named' }, { management: true })).toBe('named');
+    expect(() => resolveServiceInstanceId([], { YEAFT_AGENT_INSTANCE: 'bad name' }, { management: true })).toThrow('Instance id');
+    expect(applyAgentIdentityToEnv(['--instance', 'legacy', '--name', 'explicit-name'], env)).toBe('explicit-name');
+    expect(env).toEqual({
+      YEAFT_AGENT_INSTANCE: 'explicit-name',
+      AGENT_NAME: 'explicit-name',
+    });
+    expect(() => getInstanceIdFromArgs(['--name'], {})).toThrow('--name requires a value');
+    expect(() => getInstanceIdFromArgs(['--instance'], {})).toThrow('--instance requires a value');
+    expect(() => getInstanceIdFromArgs(['--instance', 'legacy', '--name', 'bad name'], {})).toThrow('Instance id');
+    expect(() => parseLocalArgs(['--name', 'bad name'])).toThrow('Instance id');
+
+    const priorIdentity = {
+      AGENT_NAME: process.env.AGENT_NAME,
+      YEAFT_AGENT_INSTANCE: process.env.YEAFT_AGENT_INSTANCE,
+    };
+    try {
+      delete process.env.AGENT_NAME;
+      delete process.env.YEAFT_AGENT_INSTANCE;
+      const defaultService = parseServiceArgs([]);
+      expect(defaultService.instanceId).toBe('default');
+      expect(defaultService.agentName).toBe(computerName);
+
+      process.env.AGENT_NAME = 'Display Name';
+      const envService = parseServiceArgs([]);
+      expect(envService.instanceId).toBe('default');
+      expect(envService.agentName).toBe('Display Name');
+
+      process.env.YEAFT_AGENT_INSTANCE = 'named';
+      const envNamedService = parseServiceArgs([]);
+      expect(envNamedService.instanceId).toBe('named');
+      expect(envNamedService.agentName).toBe('Display Name');
+
+      const namedService = parseServiceArgs(['--instance', 'legacy', '--name', 'explicit-name']);
+      expect(namedService.instanceId).toBe('explicit-name');
+      expect(namedService.agentName).toBe('explicit-name');
+    } finally {
+      if (priorIdentity.AGENT_NAME === undefined) delete process.env.AGENT_NAME;
+      else process.env.AGENT_NAME = priorIdentity.AGENT_NAME;
+      if (priorIdentity.YEAFT_AGENT_INSTANCE === undefined) delete process.env.YEAFT_AGENT_INSTANCE;
+      else process.env.YEAFT_AGENT_INSTANCE = priorIdentity.YEAFT_AGENT_INSTANCE;
+    }
+
     const agentSource = readFileSync(new URL('../../agent/index.js', import.meta.url), 'utf8');
+    const doctorSource = readFileSync(new URL('../../agent/service/doctor.js', import.meta.url), 'utf8');
+    expect(doctorSource).toContain('getSystemdServicePath(instanceId)');
+    expect(doctorSource).toContain('getLaunchdPlistPath(instanceId)');
+    expect(doctorSource).toContain('getEcosystemPath(instanceId)');
     const startupCommands = [...agentSource.matchAll(/await execHiddenAsync\(/g)];
     expect(startupCommands).toHaveLength(6);
     expect(agentSource).toContain('return execAsync(command, { ...options, windowsHide: true });');

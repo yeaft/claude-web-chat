@@ -48,7 +48,7 @@ const subArgs = args.slice(1);
 const SERVICE_COMMANDS = ['install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs'];
 
 if (command === 'doctor') {
-  await handleDoctorCommand();
+  await handleDoctorCommand(subArgs);
 } else if (command === 'llm') {
   await handleLlmCommand(subArgs);
 } else if (command === 'local') {
@@ -78,7 +78,7 @@ function printHelp() {
 
   Usage:
     yeaft-agent [options]              Run agent in foreground
-    yeaft-agent local --name <name>    Run local Web UI, server, and agent
+    yeaft-agent local [options]        Run local Web UI, server, and agent
     yeaft-agent install [options]      Install as system service
     yeaft-agent uninstall [options]    Remove system service
     yeaft-agent start [options]        Start installed service
@@ -94,7 +94,7 @@ function printHelp() {
   Options:
     --instance <id>     Deprecated alias for the local service instance id
     --server <url>      WebSocket server URL (default: ws://localhost:3456)
-    --name <name>       Agent name and instance id (letters, numbers, ._-)
+    --name <name>       Agent name and instance id (default: computer name; invalid chars become -)
     --port <port>       Local server port (local command only; default: 6868)
     --secret <secret>   Agent secret for authentication
     --work-dir <dir>    Default working directory (default: cwd)
@@ -104,13 +104,13 @@ function printHelp() {
   Environment variables (alternative to flags):
     YEAFT_AGENT_INSTANCE Deprecated local service instance id override
     SERVER_URL          WebSocket server URL
-    AGENT_NAME          Agent name and instance id fallback
+    AGENT_NAME          Agent name and instance id override
     AGENT_SECRET        Agent secret
     WORK_DIR            Working directory
     YEAFT_DIR           Yeaft data directory
 
   Examples:
-    yeaft-agent local --name my-worker
+    yeaft-agent local
     yeaft-agent local --name my-worker --port 7000
     yeaft-agent --server wss://your-server.com --name my-worker --secret xxx
     yeaft-agent install --server wss://your-server.com --name my-worker --secret xxx
@@ -415,14 +415,21 @@ async function handleServiceCommand(command, args) {
   }
 }
 
-async function handleDoctorCommand() {
+async function handleDoctorCommand(args) {
+  warnDeprecatedInstanceArg(args);
   const { doctor } = await import('./service.js');
-  doctor();
+  doctor(args);
 }
 
 function parseAndStart(args) {
-  warnDeprecatedInstanceArg(args);
-  applyAgentIdentityToEnv(args);
+  try {
+    warnDeprecatedInstanceArg(args);
+    applyAgentIdentityToEnv(args);
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+    return;
+  }
 
   // Parse non-identity flags. Saved environment remains the fallback for these options.
   for (let i = 0; i < args.length; i++) {
