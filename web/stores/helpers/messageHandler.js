@@ -162,6 +162,19 @@ export function handleMessage(store, msg) {
       break;
     }
 
+    case 'session_catalog_snapshot':
+      store.applySessionCatalogSnapshot(msg.catalog);
+      break;
+
+    case 'session_ui_metadata_updated': {
+      const row = store.sessionCatalog.find(item => item.catalogKey === msg.catalogKey);
+      if (row) {
+        row.pinned = msg.pinned === true;
+        row.sortRank = Number.isFinite(msg.sortRank) ? msg.sortRank : null;
+      }
+      break;
+    }
+
     case 'agent_selected':
       handleAgentSelected(store, msg);
       if (store.workCenterOpen && store.workCenterAgentId) {

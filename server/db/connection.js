@@ -227,6 +227,19 @@ const yeaftSessionsTable = `
 `;
 db.exec(yeaftSessionsTable);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS session_ui_metadata (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    catalog_key TEXT NOT NULL,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    sort_rank INTEGER,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, catalog_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_session_ui_metadata_user_sort
+    ON session_ui_metadata(user_id, pinned DESC, sort_rank ASC);
+`);
+
 try {
   const tableInfo = db.prepare(`PRAGMA table_info(yeaft_sessions)`).all();
   const idColumn = tableInfo.find(col => col && col.name === 'id');
@@ -591,6 +604,28 @@ export const stmts = {
 
   deleteSession: db.prepare(`
     DELETE FROM sessions WHERE id = ?
+  `),
+
+  upsertSessionUiMetadata: db.prepare(`
+    INSERT INTO session_ui_metadata (user_id, catalog_key, pinned, sort_rank, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, catalog_key) DO UPDATE SET
+      pinned = excluded.pinned,
+      sort_rank = excluded.sort_rank,
+      updated_at = excluded.updated_at
+  `),
+
+  getSessionUiMetadata: db.prepare(`
+    SELECT * FROM session_ui_metadata WHERE user_id = ? AND catalog_key = ?
+  `),
+
+  getSessionUiMetadataByUser: db.prepare(`
+    SELECT * FROM session_ui_metadata WHERE user_id = ?
+    ORDER BY pinned DESC, sort_rank ASC, updated_at DESC
+  `),
+
+  deleteSessionUiMetadata: db.prepare(`
+    DELETE FROM session_ui_metadata WHERE user_id = ? AND catalog_key = ?
   `),
 
   // Message 操作

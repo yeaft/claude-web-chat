@@ -1,6 +1,12 @@
 import { randomUUID } from 'crypto';
 import { CONFIG } from '../config.js';
-import { sessionDb, messageDb, userDb, yeaftSessionDb } from '../database.js';
+import {
+  sessionDb,
+  messageDb,
+  userDb,
+  yeaftSessionDb,
+  sessionUiMetadataDb,
+} from '../database.js';
 import { agents, pendingFiles, trackUserTurn, webClients } from '../context.js';
 import {
   sendToWebClient, forwardToAgent,
@@ -8,6 +14,11 @@ import {
 } from '../ws-utils.js';
 import { routeSessionPin } from './session-pin-router.js';
 import { recordPerfTraceEvent } from '../perf-trace.js';
+import {
+  chatCatalogKey,
+  projectSessionCatalog,
+  yeaftCatalogKey,
+} from '../session-catalog.js';
 
 
 function isRetiredCollabSessionId(id) {
@@ -158,6 +169,21 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         }
       }
       await broadcastAgentList();
+      if (client.userId) {
+        try {
+          const catalog = projectSessionCatalog({
+            chatSessions: sessionDb.getByUser(client.userId, 10000),
+            yeaftSessions: yeaftSessionDb.getByUser(client.userId),
+            metadata: sessionUiMetadataDb.getByUser(client.userId),
+          });
+          await sendToWebClient(client, {
+            type: 'session_catalog_snapshot',
+            catalog,
+          });
+        } catch (e) {
+          console.warn('[Server] session catalog projection failed:', e?.message || e);
+        }
+      }
       // Yeaft session rows are only actionable while their owning Agent is
       // connected. Keep offline rows in the DB for reconnect recovery, but do
       // not hydrate them into the sidebar where remove/settings cannot work.
@@ -371,6 +397,36 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       break;
     }
 
+    case 'set_session_ui_metadata': {
+      if (!client.userId || !msg.catalogKey || !msg.routeRef?.runtimeProvider) break;
+      const { runtimeProvider, agentId, sessionId } = msg.routeRef;
+      let expectedCatalogKey = null;
+      if (runtimeProvider === 'yeaft') {
+        if (!agentId || !sessionId || !verifyAgentOwnership(agentId, client.userId, client.role)) break;
+        if (!yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) break;
+        expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
+      } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
+        if (!sessionId || (!CONFIG.skipAuth && !verifyConversationOwnership(sessionId, client.userId))) break;
+        const row = sessionDb.get(sessionId);
+        if (!row || (row.provider || 'claude-code') !== runtimeProvider) break;
+        expectedCatalogKey = chatCatalogKey(sessionId);
+      }
+      if (!expectedCatalogKey || expectedCatalogKey !== msg.catalogKey) break;
+      sessionUiMetadataDb.upsert(client.userId, expectedCatalogKey, {
+        pinned: msg.pinned === true,
+        sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
+      });
+      await sendToWebClient(client, {
+        type: 'session_ui_metadata_updated',
+        requestId: msg.requestId || null,
+        catalogKey: expectedCatalogKey,
+        routeRef: msg.routeRef,
+        pinned: msg.pinned === true,
+        sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
+      });
+      break;
+    }
+
     case 'pin_session':
     case 'unpin_session': {
       // fix-yeaft-session-list-and-menu: yeaft sessions live in a
@@ -486,9 +542,17 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
 
           const total = messageDb.getCount(msg.conversationId);
           console.log(`[sync_messages] Found ${messages.length} messages (total=${total}, hasMore=${hasMore})`);
+          const mode = msg.afterMessageId !== undefined && msg.afterMessageId !== null
+            ? 'delta'
+            : (msg.beforeId ? 'older' : 'recent');
           await sendToWebClient(client, {
             type: 'sync_messages_result',
             conversationId: msg.conversationId,
+            catalogKey: chatCatalogKey(msg.conversationId),
+            requestId: msg.requestId || null,
+            mode,
+            cursor: msg.beforeId ?? msg.afterMessageId ?? null,
+            afterMessageId: msg.afterMessageId ?? null,
             messages,
             hasMore,
             total

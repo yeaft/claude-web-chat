@@ -460,6 +460,9 @@ export function handleExecutionCancelled(store, msg) {
 }
 
 export function handleSyncMessagesResult(store, msg) {
+  const scopedResponse = !!msg.requestId;
+  if (scopedResponse && !store.isCurrentChatHistoryResponse?.(msg)) return false;
+
   if (!store.messagesMap[msg.conversationId]) {
     store.messagesMap[msg.conversationId] = [];
   }
@@ -476,7 +479,7 @@ export function handleSyncMessagesResult(store, msg) {
   // of which says anything about the older-history button. So:
   // delta responses MUST NOT overwrite hasMoreOlder. Only cold-load and
   // older-pagination responses get to.
-  const isDeltaSync =
+  const isDeltaSync = msg.mode === 'delta' ||
     typeof msg.afterMessageId === 'number' && msg.afterMessageId > 0;
   if (msg.conversationId && store.activeConversations.includes(msg.conversationId)) {
     const formatted = summarizeHistoricalToolMessages(filterEmptyUserMessages(
@@ -566,8 +569,13 @@ export function handleSyncMessagesResult(store, msg) {
       hasMoreOlder: isDeltaSync ? !!priorHasMoreOlder : !!msg.hasMore,
     };
   }
-  store.loadingMoreMessages = false;
-  store.setRefreshingSession(msg.conversationId, false);
+  if (!scopedResponse || store.finishChatHistoryRequest?.(msg)) {
+    if (store.currentConversation === msg.conversationId) {
+      store.loadingMoreMessages = false;
+    }
+    store.setRefreshingSession(msg.conversationId, false);
+  }
+  return true;
 }
 
 /**

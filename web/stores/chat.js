@@ -13,6 +13,7 @@ import * as yeaftViewHelpers from './helpers/yeaft-view.js';
 import { incVpTyping, decVpTyping } from './helpers/vp-typing.js';
 import { selectActiveConversationId } from './helpers/active-conv.js';
 import { trimDebugRetention } from './helpers/debug-retention.js';
+import { chatCatalogKey } from './helpers/session-catalog.js';
 import {
   applyWorkItemSummary,
   isWorkItemDetailResponseStale,
@@ -474,6 +475,11 @@ export const useChatStore = defineStore('chat', {
     // ★ Phase 6: 消息分页状态
     hasMoreMessages: false,
     loadingMoreMessages: false,
+    chatHistoryRequests: {},
+    sessionCatalog: [],
+    sessionCatalogLoaded: false,
+    activeCatalogKey: null,
+    openUnifiedSessionCreate: false,
     // Yeaft 分页状态 (parallel to the Chat-mode flags above):
     //  - yeaftHasMoreHistory: server told us there's at least one earlier
     //    turn for the active group that we haven't loaded yet.
@@ -5284,6 +5290,63 @@ export const useChatStore = defineStore('chat', {
       this.activeRightPanel = value;
     },
 
+    applySessionCatalogSnapshot(rows) {
+      const seen = new Set();
+      this.sessionCatalog = (Array.isArray(rows) ? rows : []).filter(row => {
+        if (!row?.catalogKey || seen.has(row.catalogKey)) return false;
+        seen.add(row.catalogKey);
+        return true;
+      });
+      this.sessionCatalogLoaded = true;
+    },
+    openCatalogSession(descriptor) {
+      if (!descriptor?.catalogKey || !descriptor.routeRef) return false;
+      const { runtimeProvider, agentId, sessionId } = descriptor.routeRef;
+      this.activeCatalogKey = descriptor.catalogKey;
+      if (runtimeProvider === 'yeaft') {
+        this.enterYeaft(agentId);
+        this.setActiveSessionFilter(sessionId, { agentId, force: true });
+        try {
+          const sessions = window.Pinia?.useSessionsStore?.();
+          sessions?.setActive?.(sessionId, agentId);
+        } catch (_) {}
+        return true;
+      }
+      if (runtimeProvider !== 'claude-code' && runtimeProvider !== 'copilot') return false;
+      if (this.currentView === 'yeaft') this.leaveYeaft();
+      this.selectConversation(sessionId, agentId);
+      return true;
+    },
+    beginChatHistoryRequest(conversationId, mode = 'recent', cursor = null) {
+      const catalogKey = chatCatalogKey(conversationId);
+      const prior = this.chatHistoryRequests[catalogKey] || {};
+      const generation = Number(prior.generation || 0) + 1;
+      const requestId = `chat_history_${generation}_${crypto.randomUUID()}`;
+      this.chatHistoryRequests[catalogKey] = {
+        requestId,
+        catalogKey,
+        generation,
+        mode,
+        cursor,
+        loading: true,
+        error: null,
+      };
+      return requestId;
+    },
+    isCurrentChatHistoryResponse(msg) {
+      if (!msg?.conversationId || !msg?.requestId || !msg?.catalogKey) return false;
+      const expectedCatalogKey = chatCatalogKey(msg.conversationId);
+      if (msg.catalogKey !== expectedCatalogKey) return false;
+      const pending = this.chatHistoryRequests[expectedCatalogKey];
+      return !!pending && pending.requestId === msg.requestId;
+    },
+    finishChatHistoryRequest(msg) {
+      if (!this.isCurrentChatHistoryResponse(msg)) return false;
+      const pending = this.chatHistoryRequests[msg.catalogKey];
+      this.chatHistoryRequests[msg.catalogKey] = { ...pending, loading: false };
+      return true;
+    },
+
     isRefreshingSession(convId) {
       if (convId) return !!this.refreshingSessionMap[convId];
       return this.refreshingSession;
@@ -5410,7 +5473,7 @@ export const useChatStore = defineStore('chat', {
     // =====================
     selectAgent(agentId) { convHelpers.selectAgent(this, agentId); },
     createConversation(workDir, agentId = null, disallowedTools = null, options = undefined) { convHelpers.createConversation(this, workDir, agentId, disallowedTools, options); },
-    resumeConversation(claudeSessionId, workDir, agentId = null, disallowedTools = null) { convHelpers.resumeConversation(this, claudeSessionId, workDir, agentId, disallowedTools); },
+    resumeConversation(claudeSessionId, workDir, agentId = null, disallowedToolsOrOptions = null, maybeOptions = null) { convHelpers.resumeConversation(this, claudeSessionId, workDir, agentId, disallowedToolsOrOptions, maybeOptions); },
     selectConversation(conversationId, agentId) { convHelpers.selectConversation(this, conversationId, agentId); },
     updateConversationSettings(conversationId, settings) { convHelpers.updateConversationSettings(this, conversationId, settings); },
     toggleConversationMcp(serverName, enabled) { convHelpers.toggleConversationMcp(this, serverName, enabled); },
@@ -5798,11 +5861,14 @@ export const useChatStore = defineStore('chat', {
       const msgs = this.messagesMap[this.currentConversation] || [];
       const firstMsgWithId = msgs.find(m => m.dbMessageId);
       const targetConvId = this.currentConversation;
+      const cursor = firstMsgWithId?.dbMessageId ?? null;
+      const requestId = this.beginChatHistoryRequest(targetConvId, 'older', cursor);
       this.sendWsMessage({
         type: 'sync_messages',
         conversationId: targetConvId,
         turns: 5,
-        ...(firstMsgWithId ? { beforeId: firstMsgWithId.dbMessageId } : {})
+        ...(firstMsgWithId ? { beforeId: firstMsgWithId.dbMessageId } : {}),
+        requestId,
       });
 
       // feat-chat-load-perf: client-side timeout so the spinner can't get

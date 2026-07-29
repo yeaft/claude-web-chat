@@ -17,12 +17,14 @@ vi.mock('../../server/ws-utils.js', () => ({
 vi.mock('../../server/database.js', () => ({
   sessionDb: {
     getActiveByUser: vi.fn(() => []),
+    getByUser: vi.fn(() => []),
     get: vi.fn(() => null),
     setActive: vi.fn(),
   },
   messageDb: {},
   userDb: {},
   yeaftSessionDb: { getByUser },
+  sessionUiMetadataDb: { getByUser: vi.fn(() => []) },
 }));
 
 vi.mock('../../server/handlers/session-pin-router.js', () => ({
@@ -95,6 +97,14 @@ describe('Yeaft Session online Agent filtering', () => {
     await handleClientConversation('client-1', client, { type: 'get_agents' }, allow);
 
     expect(client.sent).toEqual([{
+      type: 'session_catalog_snapshot',
+      catalog: expect.arrayContaining([
+        expect.objectContaining({ catalogKey: 'yeaft:agent-online:online-pinned' }),
+        expect.objectContaining({ catalogKey: 'yeaft:agent-closed:closed-pinned' }),
+        expect.objectContaining({ catalogKey: 'yeaft:agent-online:online-free' }),
+        expect.objectContaining({ catalogKey: 'yeaft:agent-missing:missing-free' }),
+      ]),
+    }, {
       type: 'yeaft_session_hydrate',
       agentId: 'agent-online',
       sessions: [

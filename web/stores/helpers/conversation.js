@@ -180,10 +180,12 @@ export function selectConversation(store, conversationId, agentId) {
       // Cache hit + at least one persisted row → silent incremental sync.
       // Don't touch messagesMap — the cache is what the user sees the
       // instant the sidebar click resolves.
+      const requestId = store.beginChatHistoryRequest?.(conversationId, 'delta', lastSeenDbId) || undefined;
       store.sendWsMessage({
         type: 'sync_messages',
         conversationId,
-        afterMessageId: lastSeenDbId
+        afterMessageId: lastSeenDbId,
+        requestId,
       });
     } else {
       // No persisted cursor yet. If there are optimistic/unflushed messages in
@@ -193,10 +195,12 @@ export function selectConversation(store, conversationId, agentId) {
         store.messagesMap[conversationId] = [];
         setSessionLoading(store, true, t('chat.session.loadingHistory'));
       }
+      const requestId = store.beginChatHistoryRequest?.(conversationId, 'recent', null) || undefined;
       store.sendWsMessage({
         type: 'sync_messages',
         conversationId,
-        turns: 5
+        turns: 5,
+        requestId,
       });
     }
   // ★ Bug #4 / perf-chat-session-switch-cache: pagination state.
