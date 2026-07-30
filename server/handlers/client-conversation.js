@@ -184,31 +184,67 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           });
         }
       }
-      await broadcastAgentList();
       // Yeaft session rows are only actionable while their owning Agent is
       // connected. Keep offline rows in the DB for reconnect recovery, but do
       // not hydrate them into the sidebar where remove/settings cannot work.
-      // Group by agentId so the web store can keep using per-agent snapshots.
-      if (client.userId) {
-        try {
-          const allRows = yeaftSessionDb.getByUser(client.userId);
-          const byAgent = groupOnlineYeaftSessions(allRows);
-          for (const [agentId, sessions] of Object.entries(byAgent)) {
-            await sendToWebClient(client, {
-              type: 'yeaft_session_hydrate',
-              agentId,
-              sessions,
-              fromDb: true,
-            });
-          }
-        } catch (e) {
-          console.warn('[Server] yeaft session hydrate failed:', e?.message || e);
+      // Send every authoritative slice before a single completion frame; the UI
+      // must not promote a partial multi-Agent inventory to its visible state.
+      let hydrateError = null;
+      try {
+        if (!client.userId) throw new Error('session owner unavailable');
+        const allRows = yeaftSessionDb.getByUser(client.userId);
+        const byAgent = groupOnlineYeaftSessions(allRows);
+        for (const [agentId, agent] of agents) {
+          const visible = agent?.ws?.readyState === 1 && (
+            CONFIG.skipAuth
+            || agent.ownerId === client.userId
+            || (!agent.ownerId && client.role === 'admin')
+          );
+          if (visible && !byAgent[agentId]) byAgent[agentId] = [];
         }
+        for (const [agentId, sessions] of Object.entries(byAgent)) {
+          await sendToWebClient(client, {
+            type: 'yeaft_session_hydrate',
+            ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
+            agentId,
+            sessions,
+            fromDb: true,
+          });
+        }
+        if (Object.keys(byAgent).length === 0) {
+          await sendToWebClient(client, {
+            type: 'yeaft_session_hydrate',
+            ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
+            agentId: null,
+            sessions: [],
+            fromDb: true,
+          });
+        }
+      } catch (e) {
+        hydrateError = e?.message || String(e);
+        console.warn('[Server] yeaft session hydrate failed:', hydrateError);
       }
+      await broadcastAgentList();
+      await sendToWebClient(client, {
+        type: 'yeaft_session_hydrate_complete',
+        ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
+        ok: hydrateError === null,
+        ...(hydrateError ? { error: hydrateError } : {}),
+      });
       break;
 
     case 'select_agent': {
-      if (!await checkAgentAccess(msg.agentId)) break;
+      const selectionGeneration = Number(client.agentSelectionGeneration || 0) + 1;
+      client.agentSelectionGeneration = selectionGeneration;
+      if (!await checkAgentAccess(msg.agentId)) {
+        if (typeof msg.requestId === 'string' && msg.requestId) {
+          await sendToWebClient(client, {
+            type: 'agent_selected', requestId: msg.requestId, agentId: msg.agentId, ok: false,
+          });
+        }
+        break;
+      }
+      if (client.agentSelectionGeneration !== selectionGeneration) break;
       const agent = agents.get(msg.agentId);
       if (agent && agent.ws.readyState === 1 /* WebSocket.OPEN */) {
         client.currentAgent = msg.agentId;
@@ -233,6 +269,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         });
         await sendToWebClient(client, {
           type: 'agent_selected',
+          ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
           agentId: msg.agentId,
           agentName: agent.name,
           workDir: agent.workDir,
@@ -249,6 +286,11 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         }
       } else {
         await sendToWebClient(client, { type: 'error', message: 'Agent not found or offline' });
+        if (typeof msg.requestId === 'string' && msg.requestId) {
+          await sendToWebClient(client, {
+            type: 'agent_selected', requestId: msg.requestId, agentId: msg.agentId, ok: false,
+          });
+        }
       }
       break;
     }

@@ -187,15 +187,81 @@ describe('Yeaft Session online Agent filtering', () => {
     await handleClientConversation('client-1', client, { type: 'get_agents' }, allow);
 
     expect(broadcastAgentList).toHaveBeenCalledOnce();
-    expect(client.sent).toEqual([{
-      type: 'yeaft_session_hydrate',
-      agentId: 'agent-online',
-      sessions: [
-        { id: 'online-pinned', agentId: 'agent-online', pinned: true },
-        { id: 'online-free', agentId: 'agent-online', pinned: false },
-      ],
-      fromDb: true,
-    }]);
+    expect(sendToWebClient.mock.invocationCallOrder[0])
+      .toBeLessThan(broadcastAgentList.mock.invocationCallOrder[0]);
+    expect(broadcastAgentList.mock.invocationCallOrder[0])
+      .toBeLessThan(sendToWebClient.mock.invocationCallOrder.at(-1));
+    expect(client.sent).toEqual([
+      {
+        type: 'yeaft_session_hydrate',
+        agentId: 'agent-online',
+        sessions: [
+          { id: 'online-pinned', agentId: 'agent-online', pinned: true },
+          { id: 'online-free', agentId: 'agent-online', pinned: false },
+        ],
+        fromDb: true,
+      },
+      { type: 'yeaft_session_hydrate_complete', ok: true },
+    ]);
+
+    getByUser.mockReturnValue([]);
+    agents.clear();
+    client.sent = [];
+    sendToWebClient.mockClear();
+    broadcastAgentList.mockClear();
+    await handleClientConversation('client-1', client, { type: 'get_agents' }, allow);
+    expect(client.sent).toEqual([
+      { type: 'yeaft_session_hydrate', agentId: null, sessions: [], fromDb: true },
+      { type: 'yeaft_session_hydrate_complete', ok: true },
+    ]);
+    expect(sendToWebClient.mock.invocationCallOrder[0])
+      .toBeLessThan(broadcastAgentList.mock.invocationCallOrder[0]);
+    expect(broadcastAgentList.mock.invocationCallOrder[0])
+      .toBeLessThan(sendToWebClient.mock.invocationCallOrder.at(-1));
+
+    agents.set('agent-online', {
+      ws: { readyState: 1 }, ownerId: 'user-1', conversations: new Map(),
+    });
+
+    client.sent = [];
+    await handleClientConversation('client-1', client, {
+      type: 'select_agent', agentId: 'agent-online', requestId: 'agent-select-1',
+    }, allow);
+    expect(client.sent.at(-1)).toMatchObject({
+      type: 'agent_selected', agentId: 'agent-online', requestId: 'agent-select-1',
+    });
+
+    agents.set('agent-a', {
+      ws: { readyState: 1 }, ownerId: 'user-1', name: 'Agent A', conversations: new Map(),
+    });
+    agents.set('agent-b', {
+      ws: { readyState: 1 }, ownerId: 'user-1', name: 'Agent B', conversations: new Map(),
+    });
+    const raceClient = { userId: 'user-1', sent: [] };
+    let releaseAgentA;
+    let markAgentAStarted;
+    const agentAStarted = new Promise(resolve => { markAgentAStarted = resolve; });
+    const agentAGate = new Promise(resolve => { releaseAgentA = resolve; });
+    const checkRaceAccess = async (agentId) => {
+      if (agentId === 'agent-a') {
+        markAgentAStarted();
+        await agentAGate;
+      }
+      return true;
+    };
+    const slowA = handleClientConversation('client-race', raceClient, {
+      type: 'select_agent', agentId: 'agent-a', requestId: 'select-a',
+    }, checkRaceAccess);
+    await agentAStarted;
+    await handleClientConversation('client-race', raceClient, {
+      type: 'select_agent', agentId: 'agent-b', requestId: 'select-b',
+    }, checkRaceAccess);
+    releaseAgentA();
+    await slowA;
+    expect(raceClient.currentAgent).toBe('agent-b');
+    expect(raceClient.sent).toEqual([
+      expect.objectContaining({ type: 'agent_selected', agentId: 'agent-b', requestId: 'select-b' }),
+    ]);
 
     await handleClientConversation('client-1', client, {
       type: 'reorder_yeaft_sessions',
@@ -342,6 +408,37 @@ describe('Yeaft Session online Agent filtering', () => {
     });
     expect(broadcastSessionCatalog).not.toHaveBeenCalled();
     expect(ownerClient.sent.at(-1)).toMatchObject({ type: 'session_crud_result', requestId: 'rename-1' });
+
+    const otherTab = { authenticated: true, userId: 'user-1', sent: [], ws: { readyState: 1 } };
+    webClients.set('other-tab', otherTab);
+    ownerClient.sent = [];
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_history_chunk',
+      conversationId: 'yeaft-agent-a',
+      sessionId: 'same-id',
+      requestId: 'history-gone',
+      _requestClientId: 'closed-tab',
+      messages: [{ role: 'user', content: 'private history' }],
+    });
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_output',
+      conversationId: 'yeaft-agent-a',
+      sessionId: 'same-id',
+      requestId: 'history-gone',
+      _requestClientId: 'closed-tab',
+      event: { type: 'history_loaded', sessionId: 'same-id', requestId: 'history-gone' },
+    });
+    expect(ownerClient.sent).toEqual([]);
+    expect(otherTab.sent).toEqual([]);
+
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_history_chunk',
+      conversationId: 'yeaft-agent-a',
+      sessionId: 'same-id',
+      messages: [{ role: 'user', content: 'legacy history' }],
+    });
+    expect(ownerClient.sent.at(-1)).toMatchObject({ type: 'yeaft_history_chunk', sessionId: 'same-id' });
+    expect(otherTab.sent.at(-1)).toMatchObject({ type: 'yeaft_history_chunk', sessionId: 'same-id' });
 
     ownerClient.sent = [];
     await handleAgentOutput('agent-a', agent, {

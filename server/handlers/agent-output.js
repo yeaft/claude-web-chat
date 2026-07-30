@@ -550,8 +550,11 @@ export async function handleAgentOutput(agentId, agent, msg) {
       }
       // History request completions are client-scoped; live Session output stays
       // broadcast to every authenticated tab owned by this user.
-      const requestedClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
-      const outputClients = requestedClient ? [[msg._requestClientId, requestedClient]] : webClients;
+      const hasRequestedClient = typeof msg._requestClientId === 'string' && !!msg._requestClientId;
+      const requestedClient = hasRequestedClient ? webClients.get(msg._requestClientId) : null;
+      const outputClients = hasRequestedClient
+        ? (requestedClient ? [[msg._requestClientId, requestedClient]] : [])
+        : webClients;
       // Forward Yeaft Session output to all authenticated clients of this agent's owner.
       // Payload carries { conversationId, data } (assistant output frame) or { event } (metadata).
       //
@@ -700,8 +703,11 @@ export async function handleAgentOutput(agentId, agent, msg) {
           detail: { mode: msg.mode || 'older', count: messages.length },
         });
       }
-      const requestedClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
-      const historyClients = requestedClient ? [[msg._requestClientId, requestedClient]] : webClients;
+      const hasRequestedClient = typeof msg._requestClientId === 'string' && !!msg._requestClientId;
+      const requestedClient = hasRequestedClient ? webClients.get(msg._requestClientId) : null;
+      const historyClients = hasRequestedClient
+        ? (requestedClient ? [[msg._requestClientId, requestedClient]] : [])
+        : webClients;
       for (const [cId, c] of historyClients) {
         if (c.authenticated && (CONFIG.skipAuth || c.userId === agent.ownerId)) {
           await sendToWebClient(c, {

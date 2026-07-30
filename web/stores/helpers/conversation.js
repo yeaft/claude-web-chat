@@ -42,16 +42,25 @@ function makeClientMessageId() {
 }
 
 export function selectAgent(store, agentId) {
-  if (agentId === store.currentAgent) {
+  if (agentId === store.currentAgent && !store.pendingAgentSelection) {
     console.log('[selectAgent] Same agent, skipping:', agentId);
     return;
   }
   console.log('[selectAgent] Switching agent from', store.currentAgent, 'to', agentId);
+  const requestId = `agent_select_${crypto.randomUUID()}`;
   store.agentSwitching = true;
-  store.sendWsMessage({
+  store.pendingAgentSelection = { agentId, requestId };
+  const sent = store.sendWsMessage({
     type: 'select_agent',
-    agentId
+    agentId,
+    requestId,
   });
+  if (sent === false) {
+    store.pendingAgentSelection = null;
+    store.agentSwitching = false;
+    return null;
+  }
+  return requestId;
 }
 
 export function createConversation(store, workDir, agentId = null, disallowedTools = null, options = {}) {
@@ -664,7 +673,11 @@ export function cancelExecutionForConversation(store, conversationId) {
 
 export function refreshAgents(store) {
   if (store.ws && store.ws.readyState === WebSocket.OPEN) {
-    store.sendWsMessage({ type: 'get_agents' });
+    if (typeof store.requestYeaftSessionInventory === 'function') {
+      store.requestYeaftSessionInventory();
+    } else {
+      store.sendWsMessage({ type: 'get_agents' });
+    }
   }
 }
 

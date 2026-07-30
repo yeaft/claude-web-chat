@@ -35,6 +35,34 @@ function defaultAgentLlmConfig(msg = {}) {
 
 const DEBUG_HISTORY_DEFAULT_LIMIT = 1;
 const DEBUG_HISTORY_SEARCH_LIMIT = 5;
+const LEGACY_YEAFT_SESSION_INVENTORY_QUIET_MS = 500;
+
+function sessionsStore() {
+  return window.Pinia?.useSessionsStore?.()
+    || (window.__useSessionsStore && window.__useSessionsStore());
+}
+
+function resetLegacyYeaftSessionInventory(store, sessions) {
+  if (store._legacyYeaftSessionInventoryReset) return;
+  if (typeof sessions?.resetInventory === 'function') sessions.resetInventory();
+  store._legacyYeaftSessionInventoryReset = true;
+}
+
+function scheduleLegacyYeaftSessionInventoryComplete(store) {
+  if (store.yeaftSessionInventoryCompleteSupported !== false) return;
+  clearTimeout(store._legacyYeaftSessionHydrateTimer);
+  store._legacyYeaftSessionHydrateTimer = setTimeout(() => {
+    store._legacyYeaftSessionHydrateTimer = null;
+    const sessions = sessionsStore();
+    if (sessions && sessions.hasLoadedSnapshot !== true
+        && typeof sessions.applySnapshot === 'function') {
+      sessions.applySnapshot([], null);
+    }
+    store._hasHandledYeaftSessionHydrate = true;
+    store.yeaftSessionHydrateRequestId = null;
+    store.yeaftSessionHydrateError = null;
+  }, LEGACY_YEAFT_SESSION_INVENTORY_QUIET_MS);
+}
 
 function cloneDebugValue(value) {
   if (value == null) return value;
@@ -127,16 +155,25 @@ export function handleMessage(store, msg) {
         if (msg.acceptPlaintext === true) {
           store.serverEncryptionRequired = false;
         }
+        store.yeaftSessionInventoryCompleteSupported = msg.yeaftSessionInventoryComplete === true;
+        store.yeaftSessionHydrateSlices = [];
+        store._legacyYeaftSessionInventoryReset = false;
+        store._hasHandledYeaftSessionHydrate = false;
+        store.yeaftSessionHydrateError = null;
 
         if (msg.role) {
           authStore.role = msg.role;
         }
 
-        const knownConvIds = store.conversations.map(c => c.id).filter(Boolean);
-        store.sendWsMessage({
-          type: 'get_agents',
-          conversationIds: knownConvIds.length > 0 ? knownConvIds : undefined
-        });
+        if (typeof store.requestYeaftSessionInventory === 'function') {
+          store.requestYeaftSessionInventory();
+        } else {
+          const knownConvIds = store.conversations.map(c => c.id).filter(Boolean);
+          store.sendWsMessage({
+            type: 'get_agents',
+            conversationIds: knownConvIds.length > 0 ? knownConvIds : undefined,
+          });
+        }
 
         store.checkPendingRecovery();
       } else {
@@ -150,17 +187,80 @@ export function handleMessage(store, msg) {
 
     case 'agent_list':
       handleAgentList(store, msg);
+      if (store.yeaftSessionInventoryCompleteSupported === false) {
+        resetLegacyYeaftSessionInventory(store, sessionsStore());
+        scheduleLegacyYeaftSessionInventoryComplete(store);
+      }
       if (store.workCenterOpen && store.workCenterAgentId) {
         store.listWorkItems(store.workCenterAgentId).catch(() => {});
       }
       break;
 
     case 'yeaft_session_hydrate': {
-      const sessions = window.Pinia?.useSessionsStore?.()
-        || (window.__useSessionsStore && window.__useSessionsStore());
-      if (sessions) sessions.applySnapshot(msg.sessions || [], msg.agentId || null);
+      if (store.yeaftSessionInventoryCompleteSupported === true
+          && (!msg.requestId || msg.requestId !== store.yeaftSessionHydrateRequestId)) break;
+      if (msg.requestId && store.yeaftSessionHydrateRequestId
+          && msg.requestId !== store.yeaftSessionHydrateRequestId) break;
+      const sessions = sessionsStore();
+      if (store.yeaftSessionInventoryCompleteSupported === true) {
+        const slices = Array.isArray(store.yeaftSessionHydrateSlices)
+          ? store.yeaftSessionHydrateSlices.filter(slice => slice.agentId !== (msg.agentId || null))
+          : [];
+        store.yeaftSessionHydrateSlices = [...slices, {
+          agentId: msg.agentId || null,
+          sessions: Array.isArray(msg.sessions) ? msg.sessions : [],
+        }];
+      } else {
+        resetLegacyYeaftSessionInventory(store, sessions);
+        if (sessions) sessions.applySnapshot(msg.sessions || [], msg.agentId || null);
+        scheduleLegacyYeaftSessionInventoryComplete(store);
+      }
       break;
     }
+
+    case 'yeaft_session_hydrate_complete':
+      if (store.yeaftSessionInventoryCompleteSupported === true
+          && (!msg.requestId || msg.requestId !== store.yeaftSessionHydrateRequestId)) break;
+      if (store.yeaftSessionHydrateRequestId && !msg.requestId) break;
+      if (msg.requestId && store.yeaftSessionHydrateRequestId
+          && msg.requestId !== store.yeaftSessionHydrateRequestId) break;
+      clearTimeout(store._legacyYeaftSessionHydrateTimer);
+      store._legacyYeaftSessionHydrateTimer = null;
+      if (msg.ok !== false) {
+        const sessions = sessionsStore();
+        let preferredSessionId = store.yeaftActiveSessionFilter || null;
+        if (!preferredSessionId) {
+          try { preferredSessionId = localStorage.getItem('lastViewedYeaftSession') || null; }
+          catch (_) {}
+        }
+        const preferredAgentId = preferredSessionId && typeof store.resolveYeaftSessionAgentId === 'function'
+          ? store.resolveYeaftSessionAgentId(preferredSessionId)
+          : store.currentAgent || null;
+        if (typeof sessions?.beginInventoryCommit === 'function') {
+          sessions.beginInventoryCommit(preferredSessionId, preferredAgentId);
+        } else if (typeof sessions?.resetInventory === 'function') {
+          sessions.resetInventory();
+        }
+        const slices = Array.isArray(store.yeaftSessionHydrateSlices)
+          ? store.yeaftSessionHydrateSlices
+          : [];
+        const orderedSlices = preferredAgentId
+          ? [
+              ...slices.filter(slice => slice.agentId === preferredAgentId),
+              ...slices.filter(slice => slice.agentId !== preferredAgentId),
+            ]
+          : slices;
+        for (const slice of orderedSlices) {
+          sessions?.applySnapshot(slice.sessions || [], slice.agentId || null);
+        }
+      }
+      store.yeaftSessionHydrateSlices = [];
+      store.yeaftSessionHydrateRequestId = null;
+      store._hasHandledYeaftSessionHydrate = msg.ok !== false;
+      store.yeaftSessionHydrateError = msg.ok === false
+        ? (msg.error || 'session_inventory_failed')
+        : null;
+      break;
 
     case 'session_catalog_snapshot':
       store.applySessionCatalogSnapshot(msg.catalog);
@@ -182,7 +282,7 @@ export function handleMessage(store, msg) {
       break;
 
     case 'agent_selected':
-      handleAgentSelected(store, msg);
+      if (!handleAgentSelected(store, msg)) break;
       if (store.workCenterOpen && store.workCenterAgentId) {
         store.listWorkItems(store.workCenterAgentId).catch(() => {});
       }

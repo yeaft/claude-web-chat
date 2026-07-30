@@ -133,6 +133,21 @@ export function connect(store) {
     return;
   }
 
+  // Agent and Session inventories belong to the socket that delivered them.
+  // Invalidate both before replacing the socket so the UI cannot render a
+  // stale empty/content state while the new authenticated snapshot is pending.
+  clearTimeout(store._legacyYeaftSessionHydrateTimer);
+  store._legacyYeaftSessionHydrateTimer = null;
+  store._hasHandledAgentList = false;
+  store._hasHandledYeaftSessionHydrate = false;
+  store.yeaftSessionInventoryCompleteSupported = null;
+  store.yeaftSessionHydrateRequestId = null;
+  store.yeaftSessionHydrateSlices = [];
+  store.yeaftSessionHydrateError = null;
+  store._legacyYeaftSessionInventoryReset = false;
+  store.pendingAgentSelection = null;
+  store.agentSwitching = false;
+
   if (store.ws) {
     store.ws.onopen = null;
     store.ws.onmessage = null;
@@ -223,7 +238,17 @@ export function connect(store) {
     }
     console.log('[WS] Disconnected:', event.code, event.reason);
     store.authenticated = false;
+    clearTimeout(store._legacyYeaftSessionHydrateTimer);
+    store._legacyYeaftSessionHydrateTimer = null;
     store._hasHandledAgentList = false;
+    store._hasHandledYeaftSessionHydrate = false;
+    store.yeaftSessionInventoryCompleteSupported = null;
+    store.yeaftSessionHydrateRequestId = null;
+    store.yeaftSessionHydrateSlices = [];
+    store.yeaftSessionHydrateError = null;
+    store._legacyYeaftSessionInventoryReset = false;
+    store.pendingAgentSelection = null;
+    store.agentSwitching = false;
     const wasUpdating = store.connectionState === 'updating';
     store.connectionState = wasUpdating ? 'updating' : 'disconnected';
     store.stopHeartbeat();

@@ -647,6 +647,22 @@ export const useSessionsStore = defineStore('sessions', {
       this.lastCrudResult = null;
     },
 
+    resetInventory() {
+      this.sessions = {};
+      this.sessionOrder = [];
+      this.activeSessionId = null;
+      this.activeSessionKey = null;
+      this.lastSnapshotAt = 0;
+    },
+
+    beginInventoryCommit(preferredSessionId = null, preferredAgentId = null) {
+      this.resetInventory();
+      if (preferredSessionId) {
+        this.activeSessionId = preferredSessionId;
+        this.activeSessionKey = storeKeyFor(preferredAgentId, preferredSessionId) || preferredSessionId;
+      }
+    },
+
     _normalize(s, agentId = null, fallbackPinned = false) {
       return {
         id: s.id,

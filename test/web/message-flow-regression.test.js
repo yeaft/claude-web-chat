@@ -68,6 +68,8 @@ const {
   handleConversationResumed,
   handleSyncMessagesResult,
 } = await import('../../web/stores/helpers/handlers/conversationHandler.js');
+const { handleAgentSelected } = await import('../../web/stores/helpers/handlers/agentHandler.js');
+const { handleMessage } = await import('../../web/stores/helpers/messageHandler.js');
 
 import {
   buildYeaftMessageTurnSpans,
@@ -669,6 +671,139 @@ describe('message flow regressions', () => {
       { id: 'shared', agentId: 'agent-b' },
     ];
     const store = useChatStore();
+    store.sendWsMessage = vi.fn();
+    store.agents = [
+      { id: 'agent-a', name: 'Agent A', online: true },
+      { id: 'agent-b', name: 'Agent B', online: true },
+    ];
+    store.currentAgent = 'agent-old';
+    const requestA = store.selectAgent('agent-a');
+    const requestB = store.selectAgent('agent-b');
+    store.activateYeaftAgent('agent-b', store.agents[1]);
+    expect(requestA).not.toBe(requestB);
+    expect(handleAgentSelected(store, {
+      type: 'agent_selected', requestId: requestA, agentId: 'agent-a', agentName: 'Agent A', conversations: [],
+    })).toBe(false);
+    expect(store.currentAgent).toBe('agent-b');
+    expect(handleAgentSelected(store, {
+      type: 'agent_selected', requestId: requestB, agentId: 'agent-b', agentName: 'Agent B', conversations: [],
+    })).toBe(true);
+    expect(store.currentAgent).toBe('agent-b');
+    expect(store.pendingAgentSelection).toBeNull();
+
+    const legacyRequest = store.selectAgent('agent-a');
+    expect(legacyRequest).toBeTruthy();
+    expect(handleAgentSelected(store, {
+      type: 'agent_selected', agentId: 'agent-b', agentName: 'Agent B', conversations: [],
+    })).toBe(false);
+    expect(handleAgentSelected(store, {
+      type: 'agent_selected', agentId: 'agent-a', agentName: 'Agent A', conversations: [],
+    })).toBe(true);
+    expect(store.currentAgent).toBe('agent-a');
+
+    store.currentAgent = 'agent-a';
+    store.sendWsMessage = vi.fn(() => false);
+    expect(store.selectAgent('agent-b')).toBeNull();
+    expect(store.pendingAgentSelection).toBeNull();
+    expect(store.agentSwitching).toBe(false);
+    store.pendingAgentSelection = { agentId: 'agent-b', requestId: 'failed-agent' };
+    store.agentSwitching = true;
+    expect(handleAgentSelected(store, {
+      type: 'agent_selected', agentId: 'agent-b', requestId: 'failed-agent', ok: false,
+    })).toBe(false);
+    expect(store.pendingAgentSelection).toBeNull();
+    expect(store.agentSwitching).toBe(false);
+
+    vi.useFakeTimers();
+    store.conversations = [{ id: 'chat-one' }];
+    store.sendWsMessage = vi.fn(() => true);
+    const inventoryRequest = store.requestYeaftSessionInventory();
+    expect(inventoryRequest).toMatch(/^session_inventory_/);
+    expect(store.sendWsMessage).toHaveBeenLastCalledWith({
+      type: 'get_agents', requestId: inventoryRequest, conversationIds: ['chat-one'],
+    });
+    expect(store.yeaftSessionHydrateError).toBeNull();
+    vi.advanceTimersByTime(15_000);
+    expect(store.yeaftSessionHydrateRequestId).toBeNull();
+    expect(store.yeaftSessionHydrateSlices).toEqual([]);
+    expect(store.yeaftSessionHydrateError).toBe('session_inventory_timeout');
+    const staleTimeoutState = {
+      yeaftSessionInventoryCompleteSupported: true,
+      yeaftSessionHydrateRequestId: null,
+      yeaftSessionHydrateSlices: [],
+      _hasHandledYeaftSessionHydrate: false,
+      yeaftSessionHydrateError: 'session_inventory_timeout',
+    };
+    handleMessage(staleTimeoutState, {
+      type: 'yeaft_session_hydrate_complete', requestId: inventoryRequest, ok: true,
+    });
+    expect(staleTimeoutState.yeaftSessionHydrateError).toBe('session_inventory_timeout');
+    vi.useRealTimers();
+
+    const hydrateSessions = {
+      live: [],
+      applySnapshot: vi.fn(function applySnapshot(rows, agentId) {
+        this.live.push({ agentId, rows });
+      }),
+      resetInventory: vi.fn(function resetInventory() { this.live = []; }),
+      beginInventoryCommit: vi.fn(function beginInventoryCommit(sessionId, agentId) {
+        this.live = [];
+        this.preferred = { sessionId, agentId };
+      }),
+    };
+    const hydrateStore = {
+      _lastPongAt: 0,
+      currentAgent: 'agent-b',
+      yeaftActiveSessionFilter: 'same',
+      resolveYeaftSessionAgentId: vi.fn(() => 'agent-b'),
+      yeaftSessionInventoryCompleteSupported: true,
+      yeaftSessionHydrateRequestId: 'inventory-2',
+      yeaftSessionHydrateSlices: [],
+      _hasHandledYeaftSessionHydrate: false,
+      yeaftSessionHydrateError: null,
+    };
+    const previousSessionsStore = globalThis.Pinia.useSessionsStore;
+    globalThis.Pinia.useSessionsStore = () => hydrateSessions;
+    vi.useFakeTimers();
+    try {
+      handleMessage(hydrateStore, {
+        type: 'yeaft_session_hydrate', requestId: 'inventory-1', agentId: 'agent-a', sessions: [{ id: 'stale' }],
+      });
+      handleMessage(hydrateStore, {
+        type: 'yeaft_session_hydrate', requestId: 'inventory-2', agentId: 'agent-a', sessions: [{ id: 'one' }],
+      });
+      handleMessage(hydrateStore, {
+        type: 'yeaft_session_hydrate', requestId: 'inventory-2', agentId: 'agent-b', sessions: [{ id: 'two' }],
+      });
+      expect(hydrateSessions.applySnapshot).not.toHaveBeenCalled();
+      handleMessage(hydrateStore, {
+        type: 'yeaft_session_hydrate_complete', requestId: 'inventory-1', ok: true,
+      });
+      expect(hydrateStore._hasHandledYeaftSessionHydrate).toBe(false);
+      handleMessage(hydrateStore, {
+        type: 'yeaft_session_hydrate_complete', requestId: 'inventory-2', ok: true,
+      });
+      expect(hydrateSessions.beginInventoryCommit).toHaveBeenCalledWith('same', 'agent-b');
+      expect(hydrateSessions.live).toEqual([
+        { agentId: 'agent-b', rows: [{ id: 'two' }] },
+        { agentId: 'agent-a', rows: [{ id: 'one' }] },
+      ]);
+      expect(hydrateStore._hasHandledYeaftSessionHydrate).toBe(true);
+
+      hydrateStore.yeaftSessionInventoryCompleteSupported = false;
+      hydrateStore._hasHandledYeaftSessionHydrate = false;
+      hydrateStore._legacyYeaftSessionInventoryReset = false;
+      handleMessage(hydrateStore, {
+        type: 'yeaft_session_hydrate', agentId: 'agent-a', sessions: [{ id: 'legacy' }],
+      });
+      expect(hydrateStore._hasHandledYeaftSessionHydrate).toBe(false);
+      vi.advanceTimersByTime(500);
+      expect(hydrateStore._hasHandledYeaftSessionHydrate).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      globalThis.Pinia.useSessionsStore = previousSessionsStore;
+    }
+
     store.sessionCatalog = [
       {
         catalogKey: 'yeaft:agent-a:shared',

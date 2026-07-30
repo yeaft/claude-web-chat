@@ -1048,6 +1048,13 @@
   text-align: center;
 }
 
+.yeaft-history-load-error.has-messages {
+  flex: 0 0 auto;
+  min-height: auto;
+  flex-direction: row;
+  padding: 8px 16px;
+}
+
 /* ── Right Detail Panel ── */
 
 .yeaft-detail {

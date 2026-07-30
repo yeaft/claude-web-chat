@@ -76,9 +76,11 @@ describe('server → web : auth_result frame advertises acceptPlaintext', () => 
       success: true,
       sessionKey: Buffer.from(sessionKey).toString('base64'),
       role: 'admin',
-      acceptPlaintext: true
+      acceptPlaintext: true,
+      yeaftSessionInventoryComplete: true,
     };
     expect(frame.acceptPlaintext).toBe(true);
+    expect(frame.yeaftSessionInventoryComplete).toBe(true);
     // Field still carries sessionKey so old clients keep working.
     expect(frame.sessionKey).toBeTruthy();
   });

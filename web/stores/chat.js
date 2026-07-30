@@ -180,6 +180,7 @@ function clearYeaftAgentRuntimeState(state, agentId) {
 // a session the UI has never seen). User-confirmed: 5 turns is the sweet
 // spot — small enough to paint instantly, large enough to give context.
 const YEAFT_RECENT_TURNS = 5;
+const YEAFT_SESSION_INVENTORY_TIMEOUT_MS = 15_000;
 const YEAFT_RECENT_TERMINAL_TASK_LIMIT = 8;
 const YEAFT_TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'orphaned']);
 const YEAFT_RUNNING_VP_STATES = new Set(['typing', 'thinking', 'retrying', 'streaming', 'tool']);
@@ -485,6 +486,11 @@ export const useChatStore = defineStore('chat', {
     ws: null,
     authenticated: false,
     _hasHandledAgentList: false,
+    _hasHandledYeaftSessionHydrate: false,
+    yeaftSessionInventoryCompleteSupported: null,
+    yeaftSessionHydrateRequestId: null,
+    yeaftSessionHydrateSlices: [],
+    yeaftSessionHydrateError: null,
     sessionKey: null, // Uint8Array for encryption
     // feat-ws-plaintext-negotiation: defaults `true` (= assume old
     // server, keep encrypting outbound for back-compat). Cleared to
@@ -584,6 +590,7 @@ export const useChatStore = defineStore('chat', {
     sessionLoading: false,  // 创建/恢复会话时的 loading
     sessionLoadingText: '',  // loading 时显示的文字
     agentSwitching: false,  // 切换 agent 时的 loading
+    pendingAgentSelection: null, // { agentId, requestId }; fences stale agent_selected replies
     // 临时保存恢复会话时的标题
     _pendingSessionTitle: null,
     // Workbench 面板是否展开（替代 backgroundPanelExpanded）
@@ -2308,6 +2315,34 @@ export const useChatStore = defineStore('chat', {
     },
     resolveYeaftSessionAgentId(sessionId) {
       return resolveAgentIdForSession(this, sessionId);
+    },
+    requestYeaftSessionInventory() {
+      const requestId = `session_inventory_${crypto.randomUUID()}`;
+      this.yeaftSessionHydrateRequestId = requestId;
+      this.yeaftSessionHydrateSlices = [];
+      this._legacyYeaftSessionInventoryReset = false;
+      this._hasHandledAgentList = false;
+      this._hasHandledYeaftSessionHydrate = false;
+      this.yeaftSessionHydrateError = null;
+      const knownConvIds = this.conversations.map(c => c.id).filter(Boolean);
+      const sent = this.sendWsMessage({
+        type: 'get_agents',
+        requestId,
+        conversationIds: knownConvIds.length > 0 ? knownConvIds : undefined,
+      });
+      if (!sent) {
+        this.yeaftSessionHydrateRequestId = null;
+        this.yeaftSessionHydrateSlices = [];
+        this.yeaftSessionHydrateError = 'session_inventory_send_failed';
+        return null;
+      }
+      setTimeout(() => {
+        if (this.yeaftSessionHydrateRequestId !== requestId) return;
+        this.yeaftSessionHydrateRequestId = null;
+        this.yeaftSessionHydrateSlices = [];
+        this.yeaftSessionHydrateError = 'session_inventory_timeout';
+      }, YEAFT_SESSION_INVENTORY_TIMEOUT_MS);
+      return requestId;
     },
     beginYeaftHistoryLoad(options) {
       const request = beginYeaftHistoryLoad(this, options);
@@ -4304,14 +4339,30 @@ export const useChatStore = defineStore('chat', {
           // render the user's full cross-agent yeaft session list on
           // reload before any agent connects.
           const gs = window.Pinia?.useSessionsStore?.() || (window.__useSessionsStore && window.__useSessionsStore());
-          const prevGroupId = gs ? (gs.activeSessionId || null) : null;
           const rows = event.sessions || [];
+          if (event.type !== 'yeaft_session_hydrate'
+              && this.yeaftSessionHydrateRequestId
+              && this.yeaftSessionInventoryCompleteSupported === true) {
+            const slices = Array.isArray(this.yeaftSessionHydrateSlices)
+              ? this.yeaftSessionHydrateSlices.filter(slice => slice.agentId !== (msg.agentId || null))
+              : [];
+            this.yeaftSessionHydrateSlices = [...slices, {
+              agentId: msg.agentId || null,
+              sessions: rows,
+            }];
+            break;
+          }
+          const prevGroupId = gs ? (gs.activeSessionId || null) : null;
           // msg.agentId is stamped on yeaft_output envelopes by the
           // server relay (since v0.1.882). Pass it through so the
           // sessions store can keep per-agent rosters in the unified
           // sidebar. Older agents/servers omit the field — the store
           // falls back to the legacy whole-replacement path.
-          if (gs) gs.applySnapshot(rows, msg.agentId || null);
+          if (gs) {
+            gs.applySnapshot(rows, msg.agentId || null);
+            this._hasHandledYeaftSessionHydrate = true;
+            this.yeaftSessionHydrateError = null;
+          }
           const newGroupId = gs ? (gs.activeSessionId || null) : null;
           // Bug 1: after enterYeaft the group snapshot may arrive *after*
           // initial history load (which happened with groupId:null), so
@@ -5848,7 +5899,7 @@ export const useChatStore = defineStore('chat', {
     // =====================
     // Conversation lifecycle
     // =====================
-    selectAgent(agentId) { convHelpers.selectAgent(this, agentId); },
+    selectAgent(agentId) { return convHelpers.selectAgent(this, agentId); },
     createConversation(workDir, agentId = null, disallowedTools = null, options = undefined) { convHelpers.createConversation(this, workDir, agentId, disallowedTools, options); },
     resumeConversation(claudeSessionId, workDir, agentId = null, disallowedToolsOrOptions = null, maybeOptions = null) { convHelpers.resumeConversation(this, claudeSessionId, workDir, agentId, disallowedToolsOrOptions, maybeOptions); },
     selectConversation(conversationId, agentId) { convHelpers.selectConversation(this, conversationId, agentId); },
