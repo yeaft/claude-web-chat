@@ -5,7 +5,7 @@
 import { isRecentlyClosed, stopProcessingWatchdog } from '../watchdog.js';
 import { clearSessionLoading } from '../session.js';
 import { sameUserMessage } from '../dedup.js';
-import { maxDbMessageId } from '../messages.js';
+import { maxDbMessageId, mergeMessagesByStableId } from '../messages.js';
 import { summarizeHistoricalToolMessages } from '../tool-window.js';
 import { t } from '../../../utils/i18n.js';
 import { recordPerfTrace, measureNextPaint } from '../perfTrace.js';
@@ -181,6 +181,50 @@ function isInternalControlHistoryContent(content) {
   const text = content.trimStart();
   return text.startsWith('<task-result ')
     || /^\[system note\] You have called \S+ with the same arguments \d+ times\./.test(text);
+}
+
+function promoteVisibleYeaftHistoryConversation(store, msg, sessionId, conversationId) {
+  const agentId = msg.agentId || (sessionId && store.yeaftSessionAgentById?.[sessionId]) || null;
+  if (!agentId || !conversationId || store.currentView !== 'yeaft') return;
+  if ((store.yeaftActiveSessionFilter || null) !== (sessionId || null)) return;
+
+  const resolveOwner = typeof store.resolveYeaftSessionAgentId === 'function'
+    ? store.resolveYeaftSessionAgentId(sessionId)
+    : store.yeaftSessionAgentById?.[sessionId] || store.currentAgent || null;
+  if (resolveOwner && resolveOwner !== agentId) return;
+
+  const visibleConversationId = store.yeaftConversationId ? String(store.yeaftConversationId) : '';
+  const fallbackLocalConversationId = visibleConversationId.startsWith(`yeaft-local-${agentId}-`)
+    ? store.yeaftConversationId
+    : null;
+  const previousConversationId = store.yeaftConversationIdsByAgent?.[agentId]
+    || fallbackLocalConversationId;
+  if (previousConversationId && previousConversationId !== conversationId) {
+    const existingRows = store.messagesMap[previousConversationId] || [];
+    const targetRows = store.messagesMap[conversationId] || [];
+    store.messagesMap[conversationId] = mergeMessagesByStableId(targetRows, existingRows);
+    sortYeaftRowsByTimestamp(store.messagesMap[conversationId]);
+    if (String(previousConversationId).startsWith('yeaft-local-')) {
+      delete store.messagesMap[previousConversationId];
+    }
+    if (store.processingConversations?.[previousConversationId]) {
+      store.processingConversations[conversationId] = true;
+      delete store.processingConversations[previousConversationId];
+    }
+    if (store.executionStatusMap?.[previousConversationId]) {
+      store.executionStatusMap[conversationId] = store.executionStatusMap[previousConversationId];
+      delete store.executionStatusMap[previousConversationId];
+    }
+  } else if (!store.messagesMap[conversationId]) {
+    store.messagesMap[conversationId] = [];
+  }
+
+  store.yeaftConversationIdsByAgent = {
+    ...(store.yeaftConversationIdsByAgent || {}),
+    [agentId]: conversationId,
+  };
+  store.yeaftConversationId = conversationId;
+  store.activeConversations = [conversationId];
 }
 
 /** Mark all pending tool-use messages as completed for a conversation */
@@ -833,6 +877,11 @@ export function handleYeaftHistoryChunk(store, msg) {
     store.yeaftLoadingMoreHistory = false;
     return;
   }
+  // Cold history intentionally arrives before session_ready so the browser can
+  // paint without waiting for runtime boot. The chunk already carries the real
+  // bridge conversation id; promote it for the visible Session now, otherwise
+  // MessageList keeps reading the empty local placeholder until metadata lands.
+  promoteVisibleYeaftHistoryConversation(store, msg, msgSessionId, convId);
   // The chunk's sessionId is authoritative — it is stamped by the agent
   // from the request sessionId, not inferred from the currently selected row.
   // Accept chunks even when the user has switched to another Session: rows are
