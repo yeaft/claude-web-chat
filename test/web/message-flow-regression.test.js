@@ -222,6 +222,9 @@ describe('message flow regressions', () => {
     expect(sidebar.findAll('.session-item')).toHaveLength(0);
     await sidebar.setProps({ sessions: catalogRows });
     expect(sidebar.findAll('.session-item')).toHaveLength(3);
+    const sessionMenuDots = sidebar.get('.session-dots-btn svg').findAll('circle');
+    expect(sessionMenuDots.map(dot => dot.attributes('cx'))).toEqual(['5', '12', '19']);
+    expect(sessionMenuDots.map(dot => dot.attributes('cy'))).toEqual(['12', '12', '12']);
     expect(sidebar.text()).toContain('Visible');
     expect(sidebar.text()).toContain('Pinned');
     expect(sidebar.findAll('.session-item.processing')).toHaveLength(2);
@@ -652,6 +655,10 @@ describe('message flow regressions', () => {
       agents: [
         { id: 'agent-a', name: 'server', online: true, capabilities: ['work_center'] },
         { id: 'agent-b', name: 'C1', online: true, capabilities: ['work_center'] },
+        { id: 'agent-c', name: 'C2', online: true, capabilities: ['work_center'] },
+        { id: 'agent-d', name: 'C3', online: true, capabilities: ['work_center'] },
+        { id: 'agent-e', name: 'C4', online: true, capabilities: ['work_center'] },
+        { id: 'agent-f', name: 'C5', online: true, capabilities: ['work_center'] },
       ],
       workCenterWatcherByAgent: {},
       workCenterListPageByAgent: {},
@@ -697,7 +704,13 @@ describe('message flow regressions', () => {
     await Vue.nextTick();
     const agentMenu = document.body.querySelector('.work-center-agent-menu');
     expect(agentMenu).not.toBeNull();
-    expect([...agentMenu.querySelectorAll('.modern-select-option-label')].map(row => row.textContent.trim())).toEqual(['server', 'C1']);
+    expect([...agentMenu.querySelectorAll('.modern-select-option-label')].map(row => row.textContent.trim())).toEqual([
+      'server', 'C1', 'C2', 'C3', 'C4', 'C5',
+    ]);
+    expect(workCenterCss).toMatch(/\.work-center-agent-menu \.modern-select-list\s*\{[^}]*max-height:\s*min\(164px, var\(--modern-select-list-max-height, 164px\)\);/s);
+    const workCenterAgentListRule = workCenterCss.match(/\.work-center-agent-menu \.modern-select-list\s*\{([^}]*)\}/s)?.[1] || '';
+    expect(workCenterAgentListRule).not.toMatch(/(^|[;\s])height\s*:/);
+    expect(workCenterCss).toMatch(/\.work-center-agent-menu \.modern-select-option\s*\{[^}]*min-height:\s*32px;[^}]*box-sizing:\s*border-box;/s);
     agentMenu.querySelectorAll('.modern-select-option')[1].click();
     await Vue.nextTick();
     expect(workCenterStore.enterWorkCenter).toHaveBeenCalledWith('agent-b');
@@ -1247,11 +1260,30 @@ describe('message flow regressions', () => {
     expect(selects[1].element.value).toBe('copilot');
     expect(modal.get('.yeaft-session-create-heading h2').text()).toBe('yeaft.session.create.title');
     expect(modal.get('.yeaft-session-create-heading p').text()).toBe('yeaft.session.create.subtitle');
-    expect(modal.findAll('.yeaft-session-create-fields > .resume-control-row')).toHaveLength(4);
+    const createFields = modal.get('.yeaft-session-create-fields');
+    expect(createFields.findAll(':scope > .resume-control-row')).toHaveLength(4);
+    expect(createFields.findAll(':scope > .resume-control-row > .resume-control-label').map(label => label.text())).toEqual([
+      'yeaft.session.create.agentLabel',
+      'modal.newConv.provider',
+      'yeaft.session.create.nameLabel',
+      'yeaft.session.create.workDirLabel',
+    ]);
     expect(modal.get('.yeaft-create-submit').classes()).toContain('btn-primary');
     expect(modal.find('.resume-control-row-vp').exists()).toBe(false);
     await selects[1].setValue('yeaft');
-    expect(modal.find('.resume-control-row-vp').exists()).toBe(true);
+    const vpRow = modal.get('.resume-control-row-vp');
+    expect(vpRow.element.parentElement).toBe(modal.get('.yeaft-session-create-fields').element);
+    expect(modal.findAll('.yeaft-session-create-fields > .resume-control-row')).toHaveLength(5);
+    expect(modal.findAll('.yeaft-session-create-fields > .resume-control-row > .resume-control-label').map(label => label.text())).toEqual([
+      'yeaft.session.create.agentLabel',
+      'modal.newConv.provider',
+      'yeaft.session.create.nameLabel',
+      'yeaft.session.create.workDirLabel',
+      'yeaft.session.create.vpPicker',
+    ]);
+    const sessionCreateCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/yeaft-session-create.css'), 'utf8');
+    expect(sessionCreateCss).toMatch(/\.yeaft-session-create-fields\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
+    expect(sessionCreateCss).toMatch(/\.yeaft-session-create-fields \.resume-control-row\s*\{[^}]*flex-direction:\s*column;/s);
     await selects[1].setValue('claude-code');
     modal.vm.form.workDir = '/repo';
     await modal.vm.onSubmit();
