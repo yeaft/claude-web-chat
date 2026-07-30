@@ -537,8 +537,8 @@
   padding: 0 8px;
 }
 
-/* Primary sidebar navigation: use a rounded segmented switch for the primary
-   surface and quiet background changes for the secondary provider filter. */
+/* Unified navigation: sessions are the primary object. Work Center lives in
+   the header; the list keeps one compact title/count/create row. */
 .sidebar-navigation {
   flex: 1 1 auto;
   display: flex;
@@ -547,141 +547,88 @@
   overflow: hidden;
 }
 
-.sidebar-surface-switch {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 3px;
-  margin: 2px 12px 12px;
-  padding: 3px;
-  border-radius: 13px;
-  background: var(--bg-input-wrapper);
+.sidebar-session-toolbar {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 10px 6px 14px;
 }
 
-.sidebar-surface-option,
-.sidebar-provider-tab,
-.sidebar-create-session {
-  border: 0;
-  background: transparent;
-  color: var(--text-secondary);
-  font: inherit;
-  cursor: pointer;
+.sidebar-session-title {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.sidebar-surface-option {
+.sidebar-session-count {
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-toolbar-spacer {
+  flex: 1;
+}
+
+.sidebar-tool-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  min-width: 0;
-  min-height: 36px;
-  padding: 7px 6px;
-  border-radius: 10px;
-  font-size: 13px;
-  font-weight: 500;
-  transition: color 0.15s ease, background 0.15s ease;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
 }
 
-.sidebar-surface-option:hover:not(:disabled):not(.active) {
-  color: var(--text-primary);
+.sidebar-tool-button:hover:not(:disabled),
+.sidebar-tool-button.active {
   background: var(--sidebar-hover);
+  color: var(--text-primary);
 }
 
-.sidebar-surface-option:focus-visible,
-.sidebar-provider-tab:focus-visible {
+.sidebar-tool-button:focus-visible {
   outline: 2px solid var(--accent-blue);
   outline-offset: -2px;
 }
 
-.sidebar-surface-option:disabled {
-  color: var(--text-muted);
+.sidebar-tool-button:disabled {
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.45;
 }
 
-.sidebar-surface-option.active {
+.sidebar-tool-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.sidebar-work-center-header-btn {
+  width: 36px;
+  height: 36px;
+  margin-right: 2px;
   color: var(--text-primary);
-  background: var(--bg-main);
-  font-weight: 600;
 }
 
-.sidebar-provider-tabs {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 4px;
-  padding: 0 12px;
-}
-
-.sidebar-provider-tab {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  min-width: 0;
-  padding: 7px 4px;
-  border-radius: 7px;
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-  transition: color 0.15s ease, background 0.15s ease;
-}
-
-.sidebar-provider-tab:hover {
-  color: var(--text-primary);
-  background: var(--sidebar-hover);
-}
-
-.sidebar-provider-tab.active {
-  color: var(--text-primary);
+.sidebar-work-center-header-btn:hover:not(:disabled),
+.sidebar-work-center-header-btn.active {
   background: var(--session-active);
-  font-weight: 600;
-}
-
-.sidebar-provider-count {
-  color: var(--text-muted);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-
-.sidebar-provider-tab.active .sidebar-provider-count {
   color: var(--accent-blue);
 }
 
-.sidebar-session-actions {
-  padding: 8px 12px 10px;
-}
-
-.sidebar-create-session {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  padding: 9px 10px;
-  border-radius: 9px;
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 500;
-  text-align: left;
-}
-
-.sidebar-create-session:hover:not(:disabled) {
-  background: var(--sidebar-hover);
-}
-
-.sidebar-create-session:disabled {
-  color: var(--text-muted);
+.sidebar-work-center-header-btn:disabled {
+  opacity: 0.4;
   cursor: not-allowed;
-  opacity: 0.55;
 }
 
-.sidebar-session-results,
-.sidebar-work-center-results {
+.sidebar-session-results {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-}
-
-.sidebar-work-center-results {
-  padding-top: 2px;
+  padding-bottom: 12px;
 }
 
 /* Session Tab Bar */
