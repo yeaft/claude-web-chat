@@ -291,7 +291,6 @@ export default {
               @close="store.activeRightPanel = null"
             />
           </div>
-        </template>
       </main>
 
       <!-- Multi-panel mode: SplitPane ×N -->
@@ -481,6 +480,7 @@ export default {
           </div>
         </div>
       </div>
+    </div>
   `,
   data() {
     return {
