@@ -263,6 +263,63 @@ describe('Yeaft Session online Agent filtering', () => {
       expect.objectContaining({ type: 'agent_selected', agentId: 'agent-b', requestId: 'select-b' }),
     ]);
 
+    const restoreRaceClient = { userId: 'user-1', currentAgent: 'agent-b', sent: [] };
+    let releaseExplicitA;
+    let markExplicitAStarted;
+    const explicitAStarted = new Promise(resolve => { markExplicitAStarted = resolve; });
+    const explicitAGate = new Promise(resolve => { releaseExplicitA = resolve; });
+    const checkExplicitRaceAccess = async (agentId) => {
+      if (agentId === 'agent-a') {
+        markExplicitAStarted();
+        await explicitAGate;
+      }
+      return true;
+    };
+    const explicitA = handleClientConversation('client-restore-race', restoreRaceClient, {
+      type: 'select_agent', agentId: 'agent-a', requestId: 'explicit-a',
+    }, checkExplicitRaceAccess);
+    await explicitAStarted;
+    await handleClientConversation('client-restore-race', restoreRaceClient, {
+      type: 'select_agent', agentId: 'agent-b', silent: true,
+    }, checkExplicitRaceAccess);
+    expect(restoreRaceClient.currentAgent).toBe('agent-b');
+    expect(restoreRaceClient.sent).toEqual([]);
+    releaseExplicitA();
+    await explicitA;
+    expect(restoreRaceClient.currentAgent).toBe('agent-a');
+    expect(restoreRaceClient.pendingAgentSelectionGeneration).toBeNull();
+    expect(restoreRaceClient.sent).toEqual([
+      expect.objectContaining({ type: 'agent_selected', agentId: 'agent-a', requestId: 'explicit-a' }),
+    ]);
+
+    const staleRestoreClient = { userId: 'user-1', currentAgent: 'agent-b', sent: [] };
+    let releaseSilentB;
+    let markSilentBStarted;
+    const silentBStarted = new Promise(resolve => { markSilentBStarted = resolve; });
+    const silentBGate = new Promise(resolve => { releaseSilentB = resolve; });
+    const checkStaleRestoreAccess = async (agentId) => {
+      if (agentId === 'agent-b') {
+        markSilentBStarted();
+        await silentBGate;
+      }
+      return true;
+    };
+    const silentB = handleClientConversation('client-stale-restore', staleRestoreClient, {
+      type: 'select_agent', agentId: 'agent-b', silent: true,
+    }, checkStaleRestoreAccess);
+    await silentBStarted;
+    await handleClientConversation('client-stale-restore', staleRestoreClient, {
+      type: 'select_agent', agentId: 'agent-a', requestId: 'explicit-after-restore',
+    }, checkStaleRestoreAccess);
+    releaseSilentB();
+    await silentB;
+    expect(staleRestoreClient.currentAgent).toBe('agent-a');
+    expect(staleRestoreClient.sent).toEqual([
+      expect.objectContaining({
+        type: 'agent_selected', agentId: 'agent-a', requestId: 'explicit-after-restore',
+      }),
+    ]);
+
     await handleClientConversation('client-1', client, {
       type: 'reorder_yeaft_sessions',
       sessions: [{ agentId: 'agent-online', sessionId: 'online-free' }],

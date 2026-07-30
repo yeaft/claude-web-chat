@@ -878,19 +878,31 @@ describe('message flow regressions', () => {
       store.yeaftActiveSessionFilter = 'session-b';
       store.yeaftSessionAgentById = { 'session-b': 'agent-b' };
       store.yeaftSessionInventoryCompleteSupported = false;
-      store.yeaftSessionHydrateRequestId = 'legacy-inventory';
+      store.yeaftSessionHydrateRequestId = null;
       store.yeaftSessionHydrateSlices = [];
       store._hasHandledYeaftSessionHydrate = false;
+      store.sendWsMessage.mockClear();
+      const legacyRequest = store.requestYeaftSessionInventory();
+      expect(store.requestYeaftSessionInventory()).toBe(legacyRequest);
+      expect(store.sendWsMessage).toHaveBeenCalledTimes(1);
       const setFilterSpy = vi.spyOn(store, 'setActiveSessionFilter');
       try {
-        handleMessage(store, {
-          type: 'yeaft_session_hydrate', agentId: 'agent-a', sessions: [{ id: 'session-a', name: 'Session A' }],
-        });
-        expect(legacySessions.activeSessionId).toBe('session-b');
+        // Old Servers broadcast agent_list before any Session slice. That frame
+        // is not a completion boundary, even when the first slice is slow.
+        handleMessage(store, { type: 'agent_list', agents: [] });
+        vi.advanceTimersByTime(550);
+        expect(store.yeaftSessionHydrateRequestId).toBe(legacyRequest);
+        expect(store._hasHandledYeaftSessionHydrate).toBe(false);
+        expect(legacySessions.activeSession).toMatchObject({ id: 'session-b', agentId: 'agent-b' });
         expect(store.yeaftActiveSessionFilter).toBe('session-b');
         expect(store.currentAgent).toBe('agent-b');
         expect(setFilterSpy).not.toHaveBeenCalled();
 
+        handleMessage(store, {
+          type: 'yeaft_session_hydrate', agentId: 'agent-a', sessions: [{ id: 'session-a', name: 'Session A' }],
+        });
+        expect(legacySessions.activeSessionId).toBe('session-b');
+        vi.advanceTimersByTime(300);
         handleMessage(store, {
           type: 'yeaft_session_hydrate', agentId: 'agent-b', sessions: [{ id: 'session-b', name: 'Session B' }],
         });
@@ -901,6 +913,7 @@ describe('message flow regressions', () => {
         expect(setFilterSpy).not.toHaveBeenCalled();
 
         vi.advanceTimersByTime(1);
+        expect(store.yeaftSessionHydrateRequestId).toBeNull();
         expect(store._hasHandledYeaftSessionHydrate).toBe(true);
         expect(legacySessions.sessionOrder.map((key) => {
           const row = legacySessions.sessions[key];
@@ -914,8 +927,21 @@ describe('message flow regressions', () => {
         expect(store.currentAgent).toBe('agent-b');
         expect(setFilterSpy).not.toHaveBeenCalled();
 
+        // A zero-slice legacy response is indistinguishable from a delayed first
+        // slice. Preserve the live cache until the bounded request timeout rather
+        // than manufacturing an empty authoritative inventory after 500ms.
+        store.sendWsMessage.mockClear();
+        const emptyLegacyRequest = store.requestYeaftSessionInventory();
+        expect(store.requestYeaftSessionInventory()).toBe(emptyLegacyRequest);
+        expect(store.sendWsMessage).toHaveBeenCalledTimes(1);
         handleMessage(store, { type: 'agent_list', agents: [] });
-        vi.advanceTimersByTime(500);
+        // The completed request's still-pending 15s timeout must not retire this
+        // newer owner. Only the timeout created for emptyLegacyRequest may do so.
+        vi.advanceTimersByTime(13_650);
+        expect(store.yeaftSessionHydrateRequestId).toBe(emptyLegacyRequest);
+        vi.advanceTimersByTime(1_350);
+        expect(store.yeaftSessionHydrateRequestId).toBeNull();
+        expect(store.yeaftSessionHydrateError).toBe('session_inventory_timeout');
         expect(legacySessions.activeSession).toMatchObject({ id: 'session-b', agentId: 'agent-b' });
         expect(store.yeaftActiveSessionFilter).toBe('session-b');
         expect(store.currentAgent).toBe('agent-b');

@@ -228,10 +228,9 @@ export function handleMessage(store, msg) {
 
     case 'agent_list':
       handleAgentList(store, msg);
-      if (store.yeaftSessionInventoryCompleteSupported === false
-          && store.yeaftSessionHydrateRequestId) {
-        scheduleLegacyYeaftSessionInventoryComplete(store);
-      }
+      // Legacy Servers broadcast agent_list before sending any Session slices.
+      // Only an actual slice can start the quiet completion window; otherwise a
+      // slow first slice would turn the current live inventory into a fake empty one.
       if (store.workCenterOpen && store.workCenterAgentId) {
         store.listWorkItems(store.workCenterAgentId).catch(() => {});
       }

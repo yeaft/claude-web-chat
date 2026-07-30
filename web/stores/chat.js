@@ -2317,6 +2317,13 @@ export const useChatStore = defineStore('chat', {
       return resolveAgentIdForSession(this, sessionId);
     },
     requestYeaftSessionInventory() {
+      // Legacy Servers do not echo requestId, so overlapping requests cannot be
+      // separated safely. Reuse the current owner until its slice quiet-window
+      // commits or the bounded request timeout releases it.
+      if (this.yeaftSessionInventoryCompleteSupported === false
+          && this.yeaftSessionHydrateRequestId) {
+        return this.yeaftSessionHydrateRequestId;
+      }
       clearTimeout(this._legacyYeaftSessionHydrateTimer);
       this._legacyYeaftSessionHydrateTimer = null;
       const requestId = `session_inventory_${crypto.randomUUID()}`;

@@ -234,62 +234,87 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       break;
 
     case 'select_agent': {
-      const selectionGeneration = Number(client.agentSelectionGeneration || 0) + 1;
-      client.agentSelectionGeneration = selectionGeneration;
-      if (!await checkAgentAccess(msg.agentId)) {
-        if (typeof msg.requestId === 'string' && msg.requestId) {
-          await sendToWebClient(client, {
-            type: 'agent_selected', requestId: msg.requestId, agentId: msg.agentId, ok: false,
-          });
-        }
-        break;
-      }
-      if (client.agentSelectionGeneration !== selectionGeneration) break;
-      const agent = agents.get(msg.agentId);
-      if (agent && agent.ws.readyState === 1 /* WebSocket.OPEN */) {
-        client.currentAgent = msg.agentId;
-        if (!msg.silent) {
-          client.currentConversation = null;
-        }
-
-        if (msg.silent) break;
-
-        const filteredConvs = Array.from(agent.conversations.values()).filter(c =>
-          CONFIG.skipAuth || !c.userId || c.userId === client.userId
-        ).map(c => {
-          // fix-chat-title-sticky: lazy-hydrate the title AND the
-          // sticky bit on send. This catches conversations rebuilt
-          // before the bit was wired through (older code paths,
-          if (!c.title || c.customTitle === undefined) {
-            const dbSession = sessionDb.get(c.id);
-            if (dbSession?.title && !c.title) c.title = dbSession.title;
-            if (c.customTitle === undefined) c.customTitle = !!dbSession?.customTitle;
-          }
-          return c;
-        });
-        await sendToWebClient(client, {
-          type: 'agent_selected',
-          ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
-          agentId: msg.agentId,
-          agentName: agent.name,
-          workDir: agent.workDir,
-          capabilities: agent.capabilities || ['terminal', 'file_editor', 'background_tasks'],
-          version: agent.version || null,
-          conversations: filteredConvs,
-          slashCommands: agent.slashCommands || [],
-          slashCommandDescriptions: agent.slashCommandDescriptions || {}
-        });
-
-        // If slash commands cache is empty, ask Agent to reload from filesystem
-        if (!agent.slashCommands?.length) {
-          await forwardToAgent(msg.agentId, { type: 'request_slash_commands' });
-        }
+      const silentSelection = msg.silent === true;
+      const explicitGenerationAtStart = Number(client.agentSelectionGeneration || 0);
+      let selectionGeneration;
+      if (silentSelection) {
+        // Background reconnect/restore is advisory. It cannot supersede a user
+        // selection, but concurrent silent restores still obey newest-wins.
+        if (client.pendingAgentSelectionGeneration != null) break;
+        selectionGeneration = Number(client.silentAgentSelectionGeneration || 0) + 1;
+        client.silentAgentSelectionGeneration = selectionGeneration;
       } else {
-        await sendToWebClient(client, { type: 'error', message: 'Agent not found or offline' });
-        if (typeof msg.requestId === 'string' && msg.requestId) {
-          await sendToWebClient(client, {
-            type: 'agent_selected', requestId: msg.requestId, agentId: msg.agentId, ok: false,
+        selectionGeneration = explicitGenerationAtStart + 1;
+        client.agentSelectionGeneration = selectionGeneration;
+        client.pendingAgentSelectionGeneration = selectionGeneration;
+      }
+      const selectionIsCurrent = () => silentSelection
+        ? client.pendingAgentSelectionGeneration == null
+          && Number(client.agentSelectionGeneration || 0) === explicitGenerationAtStart
+          && client.silentAgentSelectionGeneration === selectionGeneration
+        : client.agentSelectionGeneration === selectionGeneration
+          && client.pendingAgentSelectionGeneration === selectionGeneration;
+      try {
+        const allowed = await checkAgentAccess(msg.agentId);
+        if (!selectionIsCurrent()) break;
+        if (!allowed) {
+          if (typeof msg.requestId === 'string' && msg.requestId) {
+            await sendToWebClient(client, {
+              type: 'agent_selected', requestId: msg.requestId, agentId: msg.agentId, ok: false,
+            });
+          }
+          break;
+        }
+        const agent = agents.get(msg.agentId);
+        if (agent && agent.ws.readyState === 1 /* WebSocket.OPEN */) {
+          client.currentAgent = msg.agentId;
+          if (!silentSelection) {
+            client.currentConversation = null;
+          }
+
+          if (silentSelection) break;
+
+          const filteredConvs = Array.from(agent.conversations.values()).filter(c =>
+            CONFIG.skipAuth || !c.userId || c.userId === client.userId
+          ).map(c => {
+            // fix-chat-title-sticky: lazy-hydrate the title AND the
+            // sticky bit on send. This catches conversations rebuilt
+            // before the bit was wired through (older code paths,
+            if (!c.title || c.customTitle === undefined) {
+              const dbSession = sessionDb.get(c.id);
+              if (dbSession?.title && !c.title) c.title = dbSession.title;
+              if (c.customTitle === undefined) c.customTitle = !!dbSession?.customTitle;
+            }
+            return c;
           });
+          await sendToWebClient(client, {
+            type: 'agent_selected',
+            ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
+            agentId: msg.agentId,
+            agentName: agent.name,
+            workDir: agent.workDir,
+            capabilities: agent.capabilities || ['terminal', 'file_editor', 'background_tasks'],
+            version: agent.version || null,
+            conversations: filteredConvs,
+            slashCommands: agent.slashCommands || [],
+            slashCommandDescriptions: agent.slashCommandDescriptions || {}
+          });
+
+          // If slash commands cache is empty, ask Agent to reload from filesystem
+          if (!agent.slashCommands?.length) {
+            await forwardToAgent(msg.agentId, { type: 'request_slash_commands' });
+          }
+        } else {
+          await sendToWebClient(client, { type: 'error', message: 'Agent not found or offline' });
+          if (typeof msg.requestId === 'string' && msg.requestId) {
+            await sendToWebClient(client, {
+              type: 'agent_selected', requestId: msg.requestId, agentId: msg.agentId, ok: false,
+            });
+          }
+        }
+      } finally {
+        if (!silentSelection && client.pendingAgentSelectionGeneration === selectionGeneration) {
+          client.pendingAgentSelectionGeneration = null;
         }
       }
       break;
