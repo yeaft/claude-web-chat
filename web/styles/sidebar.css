@@ -923,7 +923,7 @@
 }
 
 .unread-dot {
-  background: var(--error);
+  background: var(--success);
 }
 
 .pane-active-dot {
