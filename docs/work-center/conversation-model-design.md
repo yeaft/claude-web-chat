@@ -1082,7 +1082,7 @@ Approval 必须描述：
 
 `restoreTerminalSafety` 是 recovery-mode Coordinator 的唯一终态恢复命令，不是普通 `complete` 的别名。它只允许 `lifecycleStatus=done`、terminal snapshot invalidated/restoring、当前 recovery admission open 的 CoordinatorTurn 产生；普通 Coordinator、用户、Executor 和浏览器不能构造或提交。
 
-同一个 CoordinatorTurn **禁止**同时提交非空 `resolveOperations` 与 `restoreTerminalSafety`。只要 turn 含任一 resolution，`restoreTerminalSafety` 必须为 null；resolution 外层事务提交前调用 16.3 节共用的 `enqueueTerminalSafetyReadyIfEligible()`，按 post-resolution 权威状态决定是否写 ready event，绝不使用 turn 启动时的 pre-resolution snapshot 或猜测 revision delta。若 lifecycle=done 且全部安全前置条件已成立，helper 原子写唯一 `terminal_safety_ready_for_restore` Coordinator mailbox event；它携带提交后的 WorkItem/Operation/request/safety revisions、recovery admission epoch、terminal snapshot epoch/status 和 operationSafetyHash，并创建一个新的 recovery CoordinatorTurn，后者从新 snapshot 单独提交 restore。若 lifecycle=cancelled，helper 不创建 Coordinator restore turn，而写内部 `cancelled_safety_ready_for_terminalizer` event，交给 Watcher 认领。前置条件未满足时不创建 ready event，等待后续 recovery mutation。两类 event 的唯一键均为 `(workItemId, recoveryAdmissionEpoch, terminalSnapshotEpoch, operationSafetyHash, type)`，重复 resolution/retry 不能排队第二个恢复执行者。
+同一个 CoordinatorTurn **禁止**同时提交非空 `resolveOperations` 与 `restoreTerminalSafety`。只要 turn 含任一 resolution，`restoreTerminalSafety` 必须为 null；resolution 外层事务提交前调用 16.3 节共用的 `enqueueTerminalSafetyReadyIfEligible()`，按 post-resolution 权威状态决定是否写 ready event，绝不使用 turn 启动时的 pre-resolution snapshot 或猜测 revision delta。若 lifecycle=done 且全部安全前置条件已成立，helper 原子写唯一 `terminal_safety_ready_for_restore` Coordinator mailbox event；它携带提交后的 WorkItem/Operation/request/safety revisions、recovery admission epoch、terminal snapshot epoch/status 和 operationSafetyHash，并创建一个新的 recovery CoordinatorTurn，后者从新 snapshot 单独提交 restore。若 lifecycle=cancelled，helper 不创建 Coordinator restore turn，而写内部 `cancelled_safety_ready_for_terminalizer` event，交给 Watcher 认领。前置条件未满足时不创建 ready event，等待后续 recovery mutation。两类 event 使用 16.14 节规范化行和 partial unique；`operationSafetyHash` 是 event identity/fence 字段，不进入“每个 snapshot/type 最多一个 pending/claimed”的唯一键。hash/identity 换代时 helper 先把旧 event 与其 CoordinatorTurn/Watcher claim 持久 supersede，再创建/复用新 event；重复 resolution/retry 不能排队第二个 live 恢复执行者，旧 event 也不能阻塞新 restore。
 
 `restoreTerminalSafety` 还不能与 `reply`、`contractPatch`、`createActions`、`postActionMessages`、`controlActions`、`openRequests`、`acceptedSharedKnowledge` 或普通 `complete` 同时非空。`resultingLifecycle=done` 表示最新验收仍成立；`needs_attention` 表示验收失效。具体 shared mutation 见 16.3 节，wire 只是同一 mutation 的内部恢复入口。
 
@@ -1137,18 +1137,7 @@ Executor 可以返回结果、证据、风险、问题和建议，但不能直�
   operationRevision,
   safetyRevision,
   cancellationEpoch,
-  cancellationAttempt: null | {
-    id: cancellationAttemptId,
-    purpose: 'initial_cancel' | 'terminal_safety_restore',
-    ownerId,
-    ownerLeaseEpoch,
-    cancellationEpoch,
-    recoveryAdmissionEpoch: null,
-    terminalSafetySnapshotEpoch: null,
-    status: 'active' | 'settling' | 'settled' | 'superseded',
-    createdAt,
-    settledAt: null,
-  },
+  currentCancellationAttemptId: null,
   title,
   goal,
   acceptanceCriteria: [],
@@ -1206,7 +1195,7 @@ Executor 可以返回结果、证据、风险、问题和建议，但不能直�
 
 每个可能让 WorkItem 级恢复条件从未满足变为满足的 transaction-aware mutation——包括 `resolveOperations`、自动 effect/execution probe、authority closure、主/supplemental release saga、reconciliation 和 migration repair——都必须在同一个外层事务末尾调用 `enqueueTerminalSafetyReadyIfEligible()`。helper 重新读取全部 Run、Operation、request、reconciliation、supplemental 和 mailbox 状态，重算 `operationSafetyHash`，并校验 lifecycle、safety/recovery/snapshot identity。done 只创建 `terminal_safety_ready_for_restore` Coordinator mailbox event；cancelled 只创建 `cancelled_safety_ready_for_terminalizer` 内部 Event；其他 lifecycle 不创建 terminal ready event。event 的持久化与触发条件变化同事务提交，避免“状态已安全但崩溃前没唤醒恢复者”。
 
-Watcher 认领 `cancelled_safety_ready_for_terminalizer` 时调用 `claimCancelledSafetyTerminalizer()`：在单一 `BEGIN IMMEDIATE` 中校验 event identity、lifecycle=cancelled、terminal snapshot invalidated/restoring、recovery admission open、当前 `operationSafetyHash` 与 event 一致，并创建或幂等复用 `purpose=terminal_safety_restore` attempt，绑定 `recoveryAdmissionEpoch + terminalSafetySnapshotEpoch + cancellationEpoch` 和当前 `ownerId + ownerLeaseEpoch,status=active`。partial unique 约束保证同一 `(workItemId,purpose,recoveryAdmissionEpoch,terminalSnapshotEpoch)` 最多一个 active/settling attempt。owner lease 过期时，新 Watcher 必须复用同一 attempt ID，在单一 CAS 中替换 `ownerId`、递增 `ownerLeaseEpoch` 并保留 status=active；禁止仅因接管创建新 attempt 或延长 recovery/snapshot identity。旧 owner/lease caller随 CAS 立即失效。claim 只建立执行权，不修改 safety/lifecycle/snapshot。
+Watcher 认领 `cancelled_safety_ready_for_terminalizer` 时先在一个事务创建/幂等复用 `purpose=terminal_safety_restore,status=ready` 的规范化 CancellationAttempt，绑定 `recoveryAdmissionEpoch + terminalSafetySnapshotEpoch + cancellationEpoch`，更新 `WorkItem.currentCancellationAttemptId`；然后通过 16.13 节共享 `claimCancellationAttempt()` 协议取得 owner lease。claim 只建立执行权，不修改 safety/lifecycle/snapshot。
 
 安全恢复由唯一 shared mutation `restoreTerminalSafety({ caller, expected, assessment })` 提交；不能由 watcher、UI 投影或普通 complete 隐式触发。`caller` 是显式 tagged union，shared core 复用安全重算和终态写入，但两个 variant 绝不共享或跳过 caller 校验：
 
@@ -1220,6 +1209,7 @@ caller = {
   kind: 'cancelled_terminalizer',
   cancellationAttemptId,
   ownerId,
+  ownerBootId,
   ownerLeaseEpoch,
   commandIdentity: `${cancellationAttemptId}:terminalSafetyRestore:${terminalSnapshotEpoch}`,
 }
@@ -1229,13 +1219,13 @@ caller = {
 
 `caller.kind=coordinator` 只允许原 lifecycle done。mutation 额外验证 recovery-mode CoordinatorTurn、它 claim 的唯一 `terminal_safety_ready_for_restore` mailbox event、turn snapshot 与 expected identity 完全一致，并消费该 event；除此之外存在任何未处理 recovery mailbox event 都拒绝 restore。该 caller 必须携带 15.3 节结构化 assessment，并只能选择 done 或 needs_attention。
 
-`caller.kind=cancelled_terminalizer` **只处理已 cancelled WorkItem 的 terminal-safety restore，不处理首次 `cancelling → cancelled`**。它要求原 lifecycle cancelled、terminal snapshot invalidated/restoring、recovery admission open 且 `assessment=null`。调用前必须已有由 `claimCancelledSafetyTerminalizer()` 创建/认领的 attempt；terminalizer 在同一个外层事务先把匹配 attempt 从 active CAS 为 settling，再调用 shared mutation。mutation 额外读取持久化 `WorkItem.cancellationAttempt`，严格比较 `purpose=terminal_safety_restore + cancellationAttemptId + ownerId + ownerLeaseEpoch + cancellationEpoch + recoveryAdmissionEpoch + terminalSafetySnapshotEpoch + status=settling`；调用方必须是 Controller/Watcher 注册的当前内部 recovery terminalizer actor。它不要求、不读取也不伪造 CoordinatorTurn/mailbox event，固定 resultingLifecycle=cancelled，禁止验收/finalResult输入和任何 lifecycle 变化。`active → settling` 与 shared mutation 必须在同一个外层 `BEGIN IMMEDIATE` 中完成；restore 失败会整笔 rollback，使 attempt 仍为 active。旧 purpose/attempt、旧 owner lease/epoch、superseded/settled attempt 或伪造 internal caller在写入前失败。
+`caller.kind=cancelled_terminalizer` **只处理已 cancelled WorkItem 的 terminal-safety restore，不处理首次 `cancelling → cancelled`**。它要求原 lifecycle cancelled、terminal snapshot invalidated/restoring、recovery admission open 且 `assessment=null`。调用前必须已有规范化 CancellationAttempt live 行，且 `WorkItem.currentCancellationAttemptId` 指向它；terminalizer 在同一个外层事务先把匹配 attempt 从 active CAS 为 settling，再调用 shared mutation。mutation 锁定该 CancellationAttempt 行，严格比较 `purpose=terminal_safety_restore + cancellationAttemptId + ownerId + ownerBootId + ownerLeaseEpoch + leaseExpiresAt未过期 + cancellationEpoch + recoveryAdmissionEpoch + terminalSafetySnapshotEpoch + status=settling`；调用方必须是 Controller/Watcher registry 中相同 boot/owner 的当前内部 recovery terminalizer actor。它不要求、不读取也不伪造 CoordinatorTurn/mailbox event，固定 resultingLifecycle=cancelled，禁止验收/finalResult输入和任何 lifecycle 变化。`active → settling` 与 shared mutation 必须在同一个外层 `BEGIN IMMEDIATE` 中完成；restore 失败会整笔 rollback，使 attempt 仍为 active。旧 purpose/attempt、旧 owner lease/epoch、superseded/settled attempt 或伪造 internal caller在写入前失败。
 
 对 `resultingLifecycle=done`：只允许原 lifecycle 为 done；要求 command 提供 `summary + acceptanceResults + evidenceRefs + residualRisks`，服务端验证每条当前 acceptance criterion 恰好有一条结果、evidence refs 属于当前 WorkItem/Operation、无 pending risk gate。事务把旧 finalResult 和 invalidated snapshot append 到 history，写新的 finalResult/hash 与 `terminalSafetySnapshot.lifecycleStatus=done,status=current`，关闭 recovery admission，恢复 `safetyStatus=safe`，保持业务 lifecycle done。
 
 对 `resultingLifecycle=needs_attention`：只允许原 lifecycle 为 done；同样要求结构化验收结果和风险，且至少一条 acceptance result 非 pass 或 residual risk 明确阻止 done。事务把旧 finalResult/snapshot保留为历史证据，写 recovery assessment，设置 lifecycle=`needs_attention`、`safetyStatus=safe`，关闭 recovery admission，清除当前 terminal snapshot 指针，并恢复普通 Coordinator admission；它不自动创建/启动 Action。
 
-cancelled safety restore 只允许原 lifecycle cancelled、全部安全条件成立。事务写新的 current cancelled snapshot、关闭 recovery admission、恢复 `safetyStatus=safe`，并在同一事务把匹配的 `terminal_safety_restore` attempt 从 settling 置为 settled、写 `settledAt`；不能改变 lifecycle 或 finalResult。
+cancelled safety restore 只允许原 lifecycle cancelled、全部安全条件成立。事务写新的 current cancelled snapshot、关闭 recovery admission、恢复 `safetyStatus=safe`，并在同一事务把规范化 `terminal_safety_restore` attempt 从 settling 置为 settled、写 `settledAt`、清除 WorkItem pointer；不能改变 lifecycle 或 finalResult。
 
 `resultingLifecycle=done` 成功写 `work_item.terminal_safety_restored`；`needs_attention` 写 `work_item.terminal_safety_reopened_for_attention`；cancelled safety restore 写独立 Event `work_item.cancelled_safety_restored`。三者都写 Conversation status、推进 WorkItem/safety revisions并刷新 lane。重复 command identity 返回原结果；旧 CoordinatorTurn、新 late evidence、重复 restore 或任一 identity/revision漂移均整笔无副作用。`terminalSafetySnapshot` 每次失效/恢复都生成新 epoch，不原地擦除旧安全历史。
 
@@ -1412,6 +1402,122 @@ cancelled safety restore 只允许原 lifecycle cancelled、全部安全条件�
 
 创建、投递、claim、Run 开始、安全边界、控制、工具副作用、终态、批准、supersede、恢复和完成都写 append-only Event。
 
+### 16.13 CancellationAttempt
+
+CancellationAttempt 是规范化、history-preserving lifecycle 行，不嵌入 WorkItem。行内 lease/status 通过 CAS 单调更新；attempt 行本身永久保留，所有换 owner、settle、supersede 另写 append-only Event：
+
+```js
+{
+  id: cancellationAttemptId,
+  workItemId,
+  purpose: 'initial_cancel' | 'terminal_safety_restore',
+  cancellationEpoch,
+  recoveryAdmissionEpoch: null,
+  terminalSafetySnapshotEpoch: null,
+  ownerId: null,
+  ownerBootId: null,
+  ownerLeaseEpoch: 0,
+  leaseExpiresAt: null,
+  status: 'ready' | 'active' | 'settling' | 'settled' | 'superseded',
+  commandIdentity,
+  sourceIdentity,
+  lastHeartbeatAt: null,
+  createdAt,
+  updatedAt,
+  settledAt: null,
+  supersededAt: null,
+}
+```
+
+数据库 DDL 必须包含 purpose-aware CHECK，而不是只依赖应用层：
+
+```sql
+CHECK (
+  (purpose = 'initial_cancel'
+    AND recovery_admission_epoch IS NULL
+    AND terminal_safety_snapshot_epoch IS NULL)
+  OR
+  (purpose = 'terminal_safety_restore'
+    AND recovery_admission_epoch IS NOT NULL
+    AND terminal_safety_snapshot_epoch IS NOT NULL)
+),
+CHECK (
+  (status IN ('active', 'settling')
+    AND owner_id IS NOT NULL
+    AND owner_boot_id IS NOT NULL
+    AND lease_expires_at IS NOT NULL)
+  OR
+  (status IN ('ready', 'settled', 'superseded')
+    AND lease_expires_at IS NULL)
+),
+CHECK (status != 'settled' OR settled_at IS NOT NULL),
+CHECK (status != 'superseded' OR superseded_at IS NOT NULL)
+```
+
+正常执行时 status 只能由权威 mutation 单调推进 `ready → active → settling → settled`，或从 ready/active/settling 进入 superseded；历史行永不覆盖或删除。唯一恢复例外是旧 boot/过期 lease 下的 `settling → active`：`reclaimCancellationAttempt()` 必须在同一 CAS 替换 owner/boot、递增 ownerLeaseEpoch、写新的 lease/heartbeat，并追加 `cancellation_attempt.reclaimed` Event。未过期或同一有效 owner 不得倒退状态。
+- `commandIdentity` 在创建行时冻结：`initial_cancel` 为 `${attemptId}:finalizeWorkItemCancellation:${cancellationEpoch}`，`terminal_safety_restore` 为 `${attemptId}:terminalSafetyRestore:${terminalSafetySnapshotEpoch}`；同一行永不换 identity；
+- `sourceIdentity` 记录创建来源：initial cancel 使用 `stop:<workItemId>:<clientCommandId>:<cancellationEpoch>`，terminal restore 使用 `ready-event:<readyEventId>`。重复来源必须查回同一 attempt，不能生成新的 ID。
+
+两种 purpose 共用以下 durable owner lease 协议：
+
+- `claimCancellationAttempt(attemptId, ownerId, ownerBootId, now, ttl)`：锁定 ready/active 行，校验 identity 和 WorkItem pointer。ready 或 lease 已过期时，复用原 attempt ID，写 owner/boot、递增 ownerLeaseEpoch、写 `leaseExpiresAt=now+ttl,status=active`；未过期且属于其他 owner 时返回 busy；未过期且已属于同一 owner/boot 时幂等返回当前 claim，不推进 epoch 或 expiry，续租必须走 renew。不得创建第二个 live attempt。
+- `renewCancellationAttempt(attemptId, ownerId, ownerBootId, ownerLeaseEpoch, expectedExpiresAt, now, ttl)`：仅当前未过期 owner 可 CAS 续租；绑定完整 attempt/owner/boot/lease epoch/old expiry，续租推进 `lastHeartbeatAt/leaseExpiresAt`，不改变 cancellation/recovery/snapshot identity。
+- `reclaimCancellationAttempt(...)`：Agent 每次启动生成唯一 `ownerBootId`。启动扫描所有 ready/active/settling 行；若 ownerBootId 不等于当前 boot、`leaseExpiresAt <= now`，或持久 owner 对应的 OS/runtime identity 已明确不存在，则复用同一 attempt ID、替换 owner/boot、递增 ownerLeaseEpoch并回到 active。仅“进程内 registry 没找到”不足以在未过期时抢占。
+- settling 只有在同一事务即将调用 finalize/restore 时短暂存在；正常事务失败整笔 rollback 为 active。若数据库因进程/机器崩溃留下 settling 行，Agent 启动只能在旧 boot 或 lease 已过期后按上述唯一恢复例外 reclaim 为 active，再重验全部安全 fence，不能直接假设已完成。
+- 所有 finalize/restore caller 校验 `attemptId + purpose + ownerId + ownerBootId + ownerLeaseEpoch + leaseExpiresAt未过期 + status=settling + commandIdentity`。旧 owner、旧 boot、旧 lease epoch、过期 lease 和已 settled/superseded 行均无副作用。
+
+SQLite partial unique：
+
+```sql
+CREATE UNIQUE INDEX cancellation_attempt_initial_live
+ON cancellation_attempts(work_item_id, purpose, cancellation_epoch)
+WHERE purpose = 'initial_cancel' AND status IN ('ready', 'active', 'settling');
+
+CREATE UNIQUE INDEX cancellation_attempt_restore_live
+ON cancellation_attempts(work_item_id, purpose, recovery_admission_epoch, terminal_safety_snapshot_epoch)
+WHERE purpose = 'terminal_safety_restore' AND status IN ('ready', 'active', 'settling');
+
+CREATE UNIQUE INDEX cancellation_attempt_command_identity
+ON cancellation_attempts(command_identity);
+
+CREATE UNIQUE INDEX cancellation_attempt_source_identity
+ON cancellation_attempts(source_identity);
+```
+
+`WorkItem.currentCancellationAttemptId` 只是当前 live attempt 投影，外键指向该表。创建流程在同一 `BEGIN IMMEDIATE` 中锁定 WorkItem pointer 和 natural/source identity：若 source/natural identity 命中 ready/active/settling 行，返回同一 live 行并保持 pointer；若命中 settled/superseded 历史行，返回其既有 terminal/idempotent 结果且绝不重新设置 pointer或复活状态；否则先把旧 live 行置为 superseded并清除活动 lease (`leaseExpiresAt`)，保留最后 owner/boot/lease epoch/heartbeat作为审计事实，再插入新 ready 行并更新 pointer。这个顺序保证 partial unique 从不瞬时冲突。attempt 进入 settled/superseded 时同一事务清空 `leaseExpiresAt`；若 pointer 仍指向该行则置 null。settled/superseded 行永久保留，用于 command idempotency、旧 caller 拒绝、事故审计和迁移验证。重复 terminal command 通过全局唯一 `commandIdentity` 找到历史 settled 行并返回原结果，不能依赖已清空的 WorkItem pointer。
+
+### 16.14 TerminalSafetyReadyEvent
+
+terminal safety ready 不是无状态通知，而是持久 mailbox/control event：
+
+```js
+{
+  id,
+  workItemId,
+  type: 'terminal_safety_ready_for_restore' | 'cancelled_safety_ready_for_terminalizer',
+  recoveryAdmissionEpoch,
+  terminalSafetySnapshotEpoch,
+  operationSafetyHash,
+  status: 'pending' | 'claimed' | 'consumed' | 'superseded',
+  claimedById: null,
+  claimedByBootId: null,
+  claimLeaseEpoch: 0,
+  claimExpiresAt: null,
+  supersededByEventId: null,
+  createdAt,
+  consumedAt: null,
+  supersededAt: null,
+}
+```
+
+同一 `(workItemId,recoveryAdmissionEpoch,terminalSafetySnapshotEpoch,type)` 最多一个 pending/claimed event，并以 SQLite partial unique index强制。`enqueueTerminalSafetyReadyIfEligible()` 在写 H2 事件前，必须把同 WorkItem/recovery epoch/type 下 identity/hash 不匹配的 H1 pending/claimed event 置为 superseded，失效其 claim/CoordinatorTurn，并记录 `supersededByEventId`；随后创建或幂等复用 H2。restore 只把自己 claim 的 event 置为 consumed，superseded event 不算“未处理 recovery mailbox event”，不能阻塞新 restore。Agent 启动扫描回收过期 claimed event：若 identity 仍 current则复用同一 event ID、递增 claimLeaseEpoch并重新 claim；若已 stale则 supersede后由 helper重建。
+
+```sql
+CREATE UNIQUE INDEX terminal_safety_ready_live
+ON terminal_safety_ready_events(work_item_id, recovery_admission_epoch, terminal_safety_snapshot_epoch, type)
+WHERE status IN ('pending', 'claimed');
+```
+
 ---
 
 ## 17. 关键事务与并发 fence
@@ -1516,7 +1622,7 @@ Run 结果不能直接把 WorkItem 改为 done。Run 终态后仍存活的 Opera
 `stop_work_item` 不是依次调用每个 Action Stop。它先在单一 `BEGIN IMMEDIATE` 事务中建立全 WorkItem 取消边界：
 
 1. 校验 `clientCommandId + workItemId + expectedWorkItemRevision` 并做幂等去重；
-2. 将 WorkItem 置为 `cancelling`，确认 `safetyStatus=safe` 或复用当前 recovery epoch，推进 `cancellationEpoch`、WorkItem/action-entry/run/request/operation/safety revisions，并创建/幂等复用 WorkItem 级 `purpose=initial_cancel + cancellationAttemptId + ownerId + ownerLeaseEpoch + cancellationEpoch,status=active`；该 attempt 的 recovery/snapshot epoch 均为 null，旧 attempt 原子置为 superseded；
+2. 将 WorkItem 置为 `cancelling`，确认 `safetyStatus=safe` 或复用当前 recovery epoch，推进 `cancellationEpoch`、WorkItem/action-entry/run/request/operation/safety revisions；在规范化 `cancellation_attempts` 插入/幂等复用 `purpose=initial_cancel,status=ready` 行（recovery/snapshot epoch 均为 null），按 partial unique supersede 旧 live 行，并更新 `WorkItem.currentCancellationAttemptId`；事务提交后当前 Controller 立即调用共享 `claimCancellationAttempt()` 取得 owner lease；
 3. 通过 WorkItem cancellation gate 关闭所有 Action 的新 message/start admission，但不篡改 Action 自身的 open/superseded/closed 历史；并发到达的 message/start/complete 必须在同一 revision fence 下失败，不得部分写入；
 4. 对全部 queued/running/dispatch_unknown/pausing/stopping active Run 推进 lease epoch，并创建或幂等复用 `(runId, cancellationEpoch)` cancellation attempt。尚未 dispatch 的 queued Run（包括仅有 `prepared` EngineTurn）和 `dispatch_unknown` Run 没有可继续接受的执行实体：在本事务立即写 immutable `cancelled` 或 `interrupted` RunResult；后者保留 `providerInvocation=unknown`。真实 running/pausing/stopping process 的 Run 先置为非终态 `stopping`，由 cancellation watchdog 收敛。迟到 provider/tool/result 不能通过旧 lease改写 Run/turn，但其中的 effect/grant/resource 事实必须进入 Operation reconciliation；既有 waiting/paused/completed/failed/stopped RunResult 保持不可变；
 5. 把所有未绑定 ActionEntry 置为 `cancelled` 并保留审计；已 `bound` 的 entries 保持原 EngineTurn 身份。对应 turn 已 responded 则保留 consumed；prepared 可直接 cancelled；dispatching/unknown 在逻辑上置为 cancelled、entries 置为 cancelled，并永久记录 `providerInvocation=unknown`；迟到 response 不能恢复 turn/entry，但必须解析并持久化其中的 Operation evidence/reconciliation；所有情况都不能重新排队；
@@ -1531,7 +1637,7 @@ Run 结果不能直接把 WorkItem 改为 done。Run 终态后仍存活的 Opera
 - provider/tool 不可取消、Agent 崩溃后不可查询或超过 deadline：不无限等待，CAS 写 `interrupted` RunResult；对应 Operation 的 effect 无法确认时写 `effectStatus=unknown`，execution 无法证明静默且无法强制 fence 时写 `executionStatus=hazardous_orphan`，并继续持有/隔离其排他资源；
 - watchdog 重启后从 durable deadline 继续，重复 Stop 复用同一 cancellation attempt，不延长 deadline、不重复 terminal RunResult。
 
-逻辑 Run 终结不表示物理副作用或执行实体已收敛。只要任一 blocking Operation 不满足 `operationSafeToProceed`，或仍有 pending `operation_effect` request，WorkItem 保持 `cancelling`；对外写入只允许 `resolve_operation` 和重复幂等 Stop，只读查询始终允许，系统 recovery probe、cancellation watchdog、authority fence 和 terminal CAS 继续运行；message、Start、reopen 或 complete 一律拒绝。Run 不会再成为无限等待条件，因为每个 active Run 都由上述确定性 terminalizer 收敛。全部 Run 已终态、每个 blocking Operation 都满足 `operationSafeToProceed`，所有 effect/supplemental resolution request、reconciliation 和 recovery mailbox event 已消费后，当前 cancellation controller 以显式 caller `{ kind:'initial_cancel_terminalizer', cancellationAttemptId, ownerId, ownerLeaseEpoch, commandIdentity: cancellationAttemptId + ':finalizeWorkItemCancellation:' + cancellationEpoch }` 调用独立 shared mutation `finalizeWorkItemCancellation()`，而不是 `restoreTerminalSafety()`。mutation 验证 caller 是 Controller/Watcher registry 中该 attempt 的当前 owner；它在一个 `BEGIN IMMEDIATE` 中校验 lifecycle=cancelling、`purpose=initial_cancel + cancellationAttemptId + ownerId + ownerLeaseEpoch + cancellationEpoch + status=active` 及全部 WorkItem/Operation/request/safety revisions；将 attempt 置为 settling 后重新计算 `operationSafetyHash`，写 lifecycle=cancelled、current cancelled terminal snapshot、`safetyStatus=safe`、关闭 recovery admission、`work_item.cancelled` Event 和 Conversation status，并把同一 attempt 置为 settled/写 settledAt。任一步失败整笔 rollback，attempt 仍为 active；重复 command identity 返回原结果。任何迟到事实、旧 purpose/attempt/lease 或重复 terminalizer 并发胜出都会使 CAS 失败。首次取消不调用 cancelled safety restore，也不写 `work_item.cancelled_safety_restored`。Stop 不回滚 applied effect，也不删除消息、entry、request 或 mailbox 审计。
+逻辑 Run 终结不表示物理副作用或执行实体已收敛。只要任一 blocking Operation 不满足 `operationSafeToProceed`，或仍有 pending `operation_effect` request，WorkItem 保持 `cancelling`；对外写入只允许 `resolve_operation` 和重复幂等 Stop，只读查询始终允许，系统 recovery probe、cancellation watchdog、authority fence 和 terminal CAS 继续运行；message、Start、reopen 或 complete 一律拒绝。Run 不会再成为无限等待条件，因为每个 active Run 都由上述确定性 terminalizer 收敛。全部 Run 已终态、每个 blocking Operation 都满足 `operationSafeToProceed`，所有 effect/supplemental resolution request、reconciliation 和 recovery mailbox event 已消费后，当前 cancellation controller 以显式 caller `{ kind:'initial_cancel_terminalizer', cancellationAttemptId, ownerId, ownerBootId, ownerLeaseEpoch, commandIdentity: cancellationAttemptId + ':finalizeWorkItemCancellation:' + cancellationEpoch }` 调用独立 shared mutation `finalizeWorkItemCancellation()`，而不是 `restoreTerminalSafety()`。mutation 锁定规范化 CancellationAttempt 行与 WorkItem pointer，验证 caller 是 Controller/Watcher registry 中相同 boot 的当前 owner；它在一个 `BEGIN IMMEDIATE` 中校验 lifecycle=cancelling、`purpose=initial_cancel + cancellationAttemptId + ownerId + ownerBootId + ownerLeaseEpoch + leaseExpiresAt未过期 + cancellationEpoch + status=active` 及全部 WorkItem/Operation/request/safety revisions；将 attempt 置为 settling 后重新计算 `operationSafetyHash`，写 lifecycle=cancelled、current cancelled terminal snapshot、`safetyStatus=safe`、关闭 recovery admission、`work_item.cancelled` Event 和 Conversation status，并把同一 attempt 置为 settled/写 settledAt，清除 WorkItem pointer。任一步失败整笔 rollback，attempt 仍为 active；重复 command identity 按历史 settled 行返回原结果。任何迟到事实、旧 purpose/attempt/lease 或重复 terminalizer 并发胜出都会使 CAS 失败。首次取消不调用 cancelled safety restore，也不写 `work_item.cancelled_safety_restored`。Stop 不回滚 applied effect，也不删除消息、entry、request 或 mailbox 审计。
 
 `cancelled` WorkItem 默认拒绝全部新输入和执行。正常状态下它的每个 blocking Operation 都满足 `operationSafeToProceed`，且没有 pending resolution request；显式 reopen 通过 23.3 节的完整 fence 后才回到 active。若这些不变量不成立，reopen 失败并进入恢复诊断，不能改成 needs-attention 绕过取消边界。reopen 不恢复 cancelled entries、requests、mailbox events 或旧 Runs；仍 `open` 的 Action 可以接收一条新的 message/start 并创建新 Run，superseded/closed Action 永不复活。
 
@@ -2430,16 +2536,28 @@ schema 17–22 没有目标模型的独立 Operation 表，迁移只能从 Run m
 
 每个迁移 Operation 都校验四组组合：effect final 必须匹配 cutoff；cutoff 必须闭合 evidence channel和 grant acquisition；fenced 必须匹配冻结 manifest的全部 grant/authority；released 必须由逐 lease proof聚合。迁移 WorkItem初始为 `needs_attention`，Start/wake/complete继续受 `operationSafeToProceed` 阻止；migration自身只允许只读 probe和既有外部事实 reconciliation，不启动新的业务执行。
 
-### 26.7 原子 shadow migration 与验证
+### 26.7 CancellationAttempt 与 ready event 迁移
+
+真实 schema 17–22 没有 `cancellation_attempts`、`terminal_safety_ready_events`、`WorkItem.currentCancellationAttemptId`，也没有可迁移的嵌套 `WorkItem.cancellationAttempt`。迁移不得根据 `status=cancelled`、旧 `work_item.cancelled` Event、Run lease 或时间戳伪造 attempt owner、boot、lease、command identity 或 ready event：
+
+- 所有迁移 WorkItem 的 `currentCancellationAttemptId` 初始为 null；
+- 旧 cancelled/done lifecycle、取消 Event 和 Run evidence 作为原始历史保留，但不生成 settled/superseded CancellationAttempt；旧系统没有该权威对象；
+- 迁移后若 WorkItem 仍为 `cancelling` 或需要 terminal-safety recovery，由新状态机根据当前 lifecycle/safety/recovery identity 创建新的 `ready` attempt。`initial_cancel` 的 source identity 使用 migration recovery command ID；`terminal_safety_restore` 使用新生成的 ready event ID。不得把旧时间戳冒充 source identity；
+- legacy done/cancelled 进入 26.8 节的 safety reconciliation 后，只有 `enqueueTerminalSafetyReadyIfEligible()` 产生的规范化 ready event 才可创建 terminal restore attempt；
+- 若检测到非生产 prototype DB 中存在旧嵌套 attempt JSON，生产 migration 必须停止并给出备份/专用一次性转换诊断，不能静默猜测 owner lease。专用转换也必须为每个历史对象生成独立规范化行，保留 purpose/status/source，无法证明 owner/expiry 时收敛为 `ready` 或 `superseded`，绝不能迁为 active/settling；
+- migration ledger 对新表使用稳定 key `cancellation-attempt:<workItemId>:<sourceIdentity>` 与 `terminal-ready:<workItemId>:<type>:<recoveryEpoch>:<snapshotEpoch>:<operationSafetyHash>`，重复打开数据库不能重复行或 pointer；
+- 迁移验证要求：所有 non-null pointer 指向同 WorkItem 的 live 行；两类 partial unique、command/source identity unique 全部成立；settled/superseded 历史没有 pointer；不存在无 owner/boot/expiry 的 active/settling 行。
+
+### 26.8 原子 shadow migration 与验证
 
 1. 在单一 `BEGIN IMMEDIATE` 中创建目标 shadow tables 和 migration ledger；
-2. 导入 WorkItem、Action thread、legacy identity history、Run、EngineTurn、ActionEntry、HumanRequest、Operation 的 observation/cutoff/manifest/release saga、authority/quarantine record 和 Event；
+2. 导入 WorkItem、Action thread、legacy identity history、Run、EngineTurn、ActionEntry、HumanRequest、Operation 的 observation/cutoff/manifest/release saga、authority/quarantine record 和 Event；按 26.7 节初始化 CancellationAttempt/ready-event 空集、pointer 与 migration ledger，禁止伪造旧 attempt；
 3. active legacy Run 不继续执行：推进旧 lease fence，导入为 interrupted/cancelled；其 Operation 严格按 26.6 节映射 provisional effect、execution/cutoff、grant manifest 和逐 lease release，不用 `known/terminal` 猜测 final safety；
 4. legacy stage/dependency 只进入 migration metadata，不进入目标调度表；
 5. 对每个 source table 校验 owner、source count、occurrence count、附件 hash、终态 Run、effect final/cutoff 匹配、manifest authority/grant inventory、逐 lease held/released/failed/unknown proof和 superseded/rebound/consumed 分类总数；
 6. 任一不变量失败则整笔 rollback，旧 schema 和 scheduler 保持原状；
 7. 全部验证通过后在同一事务切换 schema version/table view，停用旧 graph scheduler；提交后只会看到完整旧模型或完整新模型，不存在半迁移；
-8. 重启或重复打开数据库时，schema version 和 migration ledger 令迁移成为 no-op；禁止重复 ActionEntry、EngineTurn、ConversationEntry、Operation、quarantine record 或 Event；
+8. 重启或重复打开数据库时，schema version 和 migration ledger 令迁移成为 no-op；禁止重复 ActionEntry、EngineTurn、ConversationEntry、Operation、CancellationAttempt、TerminalSafetyReadyEvent、quarantine record 或 Event；
 9. 每个迁移 WorkItem 创建一条 migration CoordinatorTurn/Conversation summary，列出 blocked/rejected occurrence、unknown effect、hazardous execution 和 held resources。非终态 lifecycle 进入 `needs_attention`；legacy lifecycle 若是 done/cancelled，则保留该 lifecycle history，同时创建 `safetyStatus=reconciling/unsafe`、invalidated terminal snapshot 和 recovery-only admission，仅将列表 lane 投影到 Needs attention，不能把旧终态直接视为安全；
 10. 迁移中的 late grant/lease、unknown authority 和部分外部 release 全部按 supplemental inventory/recovery release set 导入；相同 legacySourceKey/sourceEvidenceId 重放不得重复 discovery、authority request、release attempt、warning 或 recovery epoch；
 11. 提交后的产品回滚使用迁移前备份和明确 downgrade 工具，不通过删除新行假装恢复。
@@ -2625,16 +2743,18 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 - terminal safety invalidation 后业务 composer/Action controls 继续只读，但 recovery-only request/probe/fence/release 可执行；普通 CoordinatorTurn 不能跨入 recovery epoch，只有唯一 recovery-mode turn 可提交受限命令；
 - 多个并发 late facts 复用同一 recovery epoch，追加 cause refs；重复 evidence/discovery 不重复 warning、request、notification 或 Coordinator recovery turn；
 - 首次 `cancelling → cancelled`：Controller/Watcher 使用 `purpose=initial_cancel` attempt 调用 `finalizeWorkItemCancellation()`；它不经过 `restoreTerminalSafety()`，成功原子写 `work_item.cancelled` 和 attempt settled，失败 rollback 后 attempt 保持 active；
-- 已 cancelled 后 safety restore：`cancelled_safety_ready_for_terminalizer` 由 Watcher 认领，`claimCancelledSafetyTerminalizer()` 创建/幂等复用 `purpose=terminal_safety_restore` attempt，绑定当前 recoveryAdmissionEpoch 与 invalidated terminalSnapshotEpoch；owner 接管必须复用 attempt ID并原子递增 ownerLeaseEpoch；全部 Operation/supplemental/reconciliation 收敛后，在同一外层事务把 attempt active→settling并以 tagged `cancelled_terminalizer` 调用 shared restore。它没有 CoordinatorTurn、assessment或lifecycle选择，只能恢复 cancelled，成功写 `work_item.cancelled_safety_restored`并 attempt settled；
+- 已 cancelled 后 safety restore：`cancelled_safety_ready_for_terminalizer` 由 Watcher 认领，事务创建/幂等复用规范化 `purpose=terminal_safety_restore,status=ready` 行并更新 WorkItem pointer，再调用共享 `claimCancellationAttempt()`；owner 接管必须复用 attempt ID、替换 ownerBootId并原子递增 ownerLeaseEpoch；全部 Operation/supplemental/reconciliation 收敛后，在同一外层事务把 attempt active→settling并以 tagged `cancelled_terminalizer` 调用 shared restore。它没有 CoordinatorTurn、assessment或lifecycle选择，只能恢复 cancelled，成功写 `work_item.cancelled_safety_restored`并永久保留 settled attempt；
 - recovery turn 含任一 `resolveOperations` 时 `restoreTerminalSafety` 必须为 null；最后一项 resolution 提交后仅在 post-resolution 权威状态已满足全部条件时原子排队唯一 `terminal_safety_ready_for_restore` event，并创建**新的** recovery CoordinatorTurn；不得使用旧 turn 的 pre-resolution snapshot restore；
 - `done invalidated → all safe → 新 recovery turn → restoreTerminalSafety(resultingLifecycle=done)`：Coordinator 提交完整 acceptance results/finalResult evidence；服务端重算 safety hash和 evidence ownership，写新 current done snapshot、restored event，关闭 recovery admission，lane 回 Closed；
 - `done invalidated → acceptance failed → restoreTerminalSafety(resultingLifecycle=needs_attention)`：至少一条 acceptance 非 pass 或阻塞风险；保留旧 finalResult/snapshot history，lifecycle 转 needs_attention，恢复普通 Coordinator admission，不创建/启动 Action，lane 留在 Needs attention；
 - resolve 最后一项 request 后，验证只有新 recovery turn 能 restore；旧 resolution turn 同时携带 restore 必须 schema 拒绝。覆盖一个 resolution、两个按稳定 operation/request identity 排序的 resolution、resolution 提交前插入 late evidence、重复 resolution command和 ready-event重放；任何额外 row/revision 变化都使 resolution或后续新 turn snapshot失效，不允许猜测 revision delta；
+- H1 ready event 已 pending/claimed 后注入 late evidence，恢复为 H2 时必须在同一 helper事务把 H1 event及旧 CoordinatorTurn/Watcher claim置为 superseded、清除 claim lease并创建/复用H2；superseded H1不计入未处理 mailbox，不能阻塞H2 restore。重复H1/H2 callback和Agent重启保持单一live event；
 - restore 与新 late evidence 并发：late fact 先提交则 operation/safety/snapshot revision使 restore 无副作用；restore 先提交则 late fact 通过 `mutateOperationSafety()` 立即失效新 snapshot并打开下一 recovery epoch，不能丢事实或保持 Closed；
 - 旧 recovery CoordinatorTurn、重复 command id、两个 recovery turn、restore 与 `resolve_operation` stale、terminal snapshot 已再次失效/恢复等竞态都只有一个完整事务成功；失败方不修改 finalResult、lifecycle、admission、warning 或 lane；
 - cancelled 无 CoordinatorTurn 的合法 safety restore 必须成功；旧/wrong-purpose/superseded cancellationAttemptId、旧 owner lease/cancellation/recovery/snapshot epoch、重复 terminalizer、late evidence并发和伪造 internal caller必须无副作用。失败时 attempt不得卡在 settling；shared core对 coordinator与cancelled_terminalizer分别执行 caller校验，禁止“没有 CoordinatorTurn就跳过鉴权”；
 - `initial_cancel` attempt 不能调用 restore，`terminal_safety_restore` attempt 不能调用首次 finalize；两类 caller tag、command identity、Event 和 lifecycle前置条件不可互换。覆盖首次取消、cancelled late invalidation后恢复、失败重试和进程重启；
-- cancelled ready event 的重复认领、Watcher 崩溃和 owner lease 过期必须复用同一 terminal_safety_restore attempt ID，仅 CAS ownerId/ownerLeaseEpoch；旧 owner caller 无副作用，不得产生第二个 active/settling attempt；
+- 两种 purpose 都重放 Controller/Watcher 在 claim 前、Run/Operation 收敛中、active→settling 前和 finalize/restore 事务内崩溃；Agent启动扫描按 ownerBootId/leaseExpiresAt 复用同一 attempt ID、替换 owner/boot并递增 ownerLeaseEpoch。旧 owner续租/finalize、未过期抢占、重复 reclaim和两个 Watcher并发只有一个 CAS成功，不得产生第二个 ready/active/settling attempt；
+- cancelled ready event 的重复认领、Watcher 崩溃和 owner lease 过期使用同一共享协议；旧 owner caller 无副作用。initial_cancel 在 Stop 提交后、Run 收敛中和 finalize 前崩溃都能由新 boot认领原 attempt并最终收敛，不能永久停在 cancelling；
 - recovery turn command 混入 reply/contract/action/control/openRequest/complete 必须整体拒绝；普通 Coordinator、用户、Executor 和浏览器直接调用 `restore_terminal_safety` 必须在 mutation 前拒绝且无 Event；
 - `resultingLifecycle=done` 缺 acceptance result、重复/未知 criterion、越权 evidence、未清 pending recovery state或 payload safety hash 与服务端重算不一致时拒绝；`needs_attention` 没有任何失败/阻塞风险时拒绝，防止无依据降级；
 - terminal lifecycle + safety safe 投影 Closed；terminal lifecycle + reconciling/unsafe 投影 Needs attention。恢复 done、转 needs_attention、再次 late invalidation 的 Event/DTO/cache revision和 lane必须同步；断线重连、列表缓存和详情缓存都以 safetyRevision/terminal snapshot epoch 失效；
@@ -2670,7 +2790,9 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 - 重复 migration 受 legacySourceKey ledger 唯一约束，不重复 entry/turn/event；
 - active legacy Run 不盲目继续；其 Operation 按 26.6 节保守导入，无法证明的 effect 为 provisional/unknown、execution 为 hazardous_orphan、manifest inventory incomplete、resource saga held，并阻止 wake；
 - legacy `known`/Run terminal 不能证明 final observation、execution cutoff 或 closed capability universe；缺 authority/grant/resource inventory 时创建 quarantine manifest/authority record；
-- migration 对 observation/cutoff、capability universe/manifest、逐 lease saga、partial unique `operation_effect` request 做计数和不变量校验；相同 legacySourceKey 重放不重复 grant、lease attempt、reconciliation evidence 或 request；
+- migration 对 observation/cutoff、capability universe/manifest、逐 lease saga、partial unique `operation_effect` request、CancellationAttempt pointer/partial unique/command+source identity 和 ready-event live unique 做计数和不变量校验；相同 legacySourceKey 重放不重复 grant、lease attempt、reconciliation evidence、attempt、ready event 或 request；
+- 用真实 schema 17/18/19/20/21/22 fixture 验证迁移后 attempt/ready-event 表为空、pointer 为 null；随后触发 initial_cancel 与 terminal safety restore，验证各自产生独立规范化行，settled/superseded 历史永久保留，重复 migration/open/Stop/ready event 不重复行或 command/source identity；
+- 专用 prototype 嵌套对象转换 fixture 覆盖无法证明 owner lease时只迁为 ready/superseded，绝不迁为 active/settling；purpose epoch CHECK、live partial unique、pointer FK 和历史审计全部通过；
 - shadow migration 校验失败整笔 rollback，成功切换只有完整旧/新模型；
 - 重复 reopen 幂等且不会重新迁移 occurrence；
 - 目标数据库没有 dependency/stage 调度语义。
@@ -2681,7 +2803,7 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 
 设计经独立复审通过后再实现：
 
-1. **规范化存储**：Conversation、ActionEntry、Action、Run、EngineTurn、HumanRequest、Operation。
+1. **规范化存储**：Conversation、ActionEntry、Action、Run、EngineTurn、HumanRequest、Operation、CancellationAttempt、TerminalSafetyReadyEvent。
 2. **Runner 协议**：durable provider dispatch、safe checkpoint、entry bound/consumed high watermark、Run lease、消息注入。
 3. **控制命令**：Pause/Start/Stop、WorkItem cancellation epoch、Operation liveness gate、恢复。
 4. **Coordinator 合同**：create/control/message Action，不包含 graph。
