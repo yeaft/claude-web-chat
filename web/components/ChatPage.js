@@ -116,6 +116,7 @@ export default {
           v-if="store.sessionCatalogLoaded"
           :sessions="store.sessionCatalog"
           :active-catalog-key="store.activeCatalogKey"
+          :is-session-unread="isCatalogSessionUnread"
           @select="store.openCatalogSession"
           @create-chat="openConversationModal"
           @create-yeaft="openUnifiedSessionCreate"
@@ -583,6 +584,10 @@ export default {
     },
     sortByActivity(conversations) {
       return sortSessionsByActivity(conversations);
+    },
+    isCatalogSessionUnread(row) {
+      if (row?.runtimeProvider !== 'yeaft') return false;
+      return this.store.isYeaftSessionUnread(row.routeRef?.sessionId, row.routeRef?.agentId);
     },
 
     openUnifiedSessionCreate() {

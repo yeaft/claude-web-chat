@@ -5,6 +5,8 @@ export default {
   props: {
     sessions: { type: Array, default: () => [] },
     activeCatalogKey: { type: String, default: null },
+    isSessionProcessing: { type: Function, default: () => false },
+    isSessionUnread: { type: Function, default: () => false },
   },
   emits: ['select', 'create-chat', 'create-yeaft', 'action'],
   data() {
@@ -112,7 +114,7 @@ export default {
             :tabindex="isAvailable(row) ? 0 : -1"
             :aria-disabled="isAvailable(row) ? undefined : 'true'"
             class="session-item yeaft-session-draggable"
-            :class="{ active: row.catalogKey === activeCatalogKey, pinned: row.pinned, 'agent-offline': !isAvailable(row), dragging: draggedKey === row.catalogKey, 'drag-over': dragOverKey === row.catalogKey }"
+            :class="{ active: row.catalogKey === activeCatalogKey, pinned: row.pinned, processing: isSessionProcessing(row), unread: isSessionUnread(row), 'agent-offline': !isAvailable(row), dragging: draggedKey === row.catalogKey, 'drag-over': dragOverKey === row.catalogKey }"
             draggable="true"
             @click="select(row)"
             @keydown.enter.prevent="select(row)"
@@ -124,6 +126,8 @@ export default {
             @dragend="draggedKey = null; dragOverKey = null"
           >
             <span v-if="row.pinned" class="session-pin-icon"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg></span>
+            <span v-if="isSessionUnread(row)" class="unread-dot" aria-hidden="true"></span>
+            <span v-else-if="isSessionProcessing(row)" class="processing-dot" aria-hidden="true"></span>
             <span class="session-item-main">
               <span class="session-item-header">
                 <input

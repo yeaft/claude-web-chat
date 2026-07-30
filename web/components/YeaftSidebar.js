@@ -91,6 +91,8 @@ export default {
         v-if="chatStore && chatStore.sessionCatalogLoaded"
         :sessions="chatStore.sessionCatalog"
         :active-catalog-key="chatStore.activeCatalogKey"
+        :is-session-processing="isCatalogSessionProcessing"
+        :is-session-unread="isCatalogSessionUnread"
         @select="chatStore.openCatalogSession"
         @create-chat="onOpenChatCreate"
         @create-yeaft="onOpenSessionCreate"
@@ -135,7 +137,8 @@ export default {
               >
                 <div class="session-item-header">
                   <span v-if="s.pinned" class="session-pin-icon"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg></span>
-                  <span v-if="s.processing || isSessionProcessing(s.id)" class="processing-dot"></span>
+                  <span v-if="chatStore && chatStore.isYeaftSessionUnread(s.id, s.raw.agentId)" class="unread-dot" aria-hidden="true"></span>
+                  <span v-else-if="s.processing || isSessionProcessing(s.id)" class="processing-dot" aria-hidden="true"></span>
                   <div class="title" :title="groupDisplayName(s.raw)">
                     <span>{{ groupDisplayName(s.raw) }}</span>
                   </div>
@@ -405,6 +408,16 @@ export default {
       if (!s || !sessionId) return false;
       if (typeof s.isYeaftSessionProcessing === 'function') return s.isYeaftSessionProcessing(sessionId);
       return !!s.yeaftProcessingSessions?.[sessionId];
+    },
+    isCatalogSessionProcessing(row) {
+      if (row?.runtimeProvider !== 'yeaft') return false;
+      return this.isSessionProcessing(row.routeRef?.sessionId);
+    },
+    isCatalogSessionUnread(row) {
+      if (row?.runtimeProvider !== 'yeaft') return false;
+      const s = this.chatStore || this.store;
+      if (!s || typeof s.isYeaftSessionUnread !== 'function') return false;
+      return s.isYeaftSessionUnread(row.routeRef?.sessionId, row.routeRef?.agentId);
     },
     // task-341: workbench toggle, guarded for test env.
     onToggleWorkbench() {
