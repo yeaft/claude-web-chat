@@ -1210,6 +1210,8 @@ caller = {
   ownerId,
   ownerBootId,
   ownerLeaseEpoch,
+  dispatchFenceEpoch,
+  externalDispatchPolicyHash,
   commandIdentity: `${cancellationAttemptId}:terminalSafetyRestore:${terminalSnapshotEpoch}`,
 }
 ```
@@ -1218,7 +1220,7 @@ caller = {
 
 `caller.kind=coordinator` 只允许原 lifecycle done。mutation 额外验证 recovery-mode CoordinatorTurn、它 claim 的唯一 `terminal_safety_ready_for_restore` mailbox event、turn snapshot 与 expected identity 完全一致，并消费该 event；除此之外存在任何未处理 recovery mailbox event 都拒绝 restore。该 caller 必须携带 15.3 节结构化 assessment，并只能选择 done 或 needs_attention。
 
-`caller.kind=cancelled_terminalizer` **只处理已 cancelled WorkItem 的 terminal-safety restore，不处理首次 `cancelling → cancelled`**。它要求原 lifecycle cancelled、terminal snapshot invalidated/restoring、recovery admission open 且 `assessment=null`。调用前必须已有该 WorkItem 唯一的规范化 CancellationAttempt live 行；terminalizer在同一个外层事务先把匹配attempt从active CAS为settling，再调用shared mutation。mutation锁定该行，在同一SQLite事务取得dbNow并严格比较`workItemId + purpose=terminal_safety_restore + cancellationAttemptId + ownerId + ownerBootId + ownerLeaseEpoch + leaseExpiresAt>dbNow + cancellationEpoch + recoveryAdmissionEpoch + terminalSafetySnapshotEpoch + status=settling`；调用方必须是 Controller/Watcher registry 中相同 boot/owner 的当前内部 recovery terminalizer actor。它不要求、不读取也不伪造 CoordinatorTurn/mailbox event，固定 resultingLifecycle=cancelled，禁止验收/finalResult输入和任何 lifecycle 变化。`active → settling` 与 shared mutation 必须在同一个外层 `BEGIN IMMEDIATE` 中完成；restore 失败会整笔 rollback，使 attempt 仍为 active。旧 purpose/attempt、旧 owner lease/epoch、superseded/settled attempt 或伪造 internal caller在写入前失败。
+`caller.kind=cancelled_terminalizer` **只处理已 cancelled WorkItem 的 terminal-safety restore，不处理首次 `cancelling → cancelled`**。它要求原 lifecycle cancelled、terminal snapshot invalidated/restoring、recovery admission open 且 `assessment=null`。调用前必须已有该 WorkItem 唯一的规范化 CancellationAttempt live 行；terminalizer在同一个外层事务先把匹配attempt从active CAS为settling，再调用shared mutation。mutation锁定该行，在同一SQLite事务取得dbNow并严格比较`workItemId + purpose=terminal_safety_restore + cancellationAttemptId + ownerId + ownerBootId + ownerLeaseEpoch + dispatchFenceEpoch + externalDispatchPolicyHash + leaseExpiresAt>dbNow + cancellationEpoch + recoveryAdmissionEpoch + terminalSafetySnapshotEpoch + status=settling`；并确认该attempt没有未解决的exclusive dispatch、authority fence advance 或unknown dispatch reconciliation；调用方必须是 Controller/Watcher registry 中相同 boot/owner 的当前内部 recovery terminalizer actor。它不要求、不读取也不伪造 CoordinatorTurn/mailbox event，固定 resultingLifecycle=cancelled，禁止验收/finalResult输入和任何 lifecycle 变化。`active → settling` 与 shared mutation 必须在同一个外层 `BEGIN IMMEDIATE` 中完成；restore 失败会整笔 rollback，使 attempt 仍为 active。旧 purpose/attempt、旧 owner lease/epoch、superseded/settled attempt 或伪造 internal caller在写入前失败。
 
 对 `resultingLifecycle=done`：只允许原 lifecycle 为 done；要求 command 提供 `summary + acceptanceResults + evidenceRefs + residualRisks`，服务端验证每条当前 acceptance criterion 恰好有一条结果、evidence refs 属于当前 WorkItem/Operation、无 pending risk gate。事务把旧 finalResult 和 invalidated snapshot append 到 history，写新的 finalResult/hash 与 `terminalSafetySnapshot.lifecycleStatus=done,status=current`，关闭 recovery admission，恢复 `safetyStatus=safe`，保持业务 lifecycle done。
 
@@ -1416,7 +1418,23 @@ CancellationAttempt 是规范化、history-preserving lifecycle 行，不嵌入 
   ownerId: null,
   ownerBootId: null,
   ownerLeaseEpoch: 0,
+  dispatchFenceEpoch: 0,
   leaseExpiresAt: null,
+  externalDispatchPolicy: {
+    schemaVersion,
+    entries: [{
+      kind,
+      authorityId,
+      protocol,
+      providerOrToolVersion,
+      safetyClass: 'read_only_probe' | 'idempotent_effect' | 'authority_fenced_effect' | 'exclusive_unfenceable_effect',
+      contractHash,
+      supportsQuery,
+      supportsStableIdempotency,
+      supportsMonotonicFence,
+    }],
+  },
+  externalDispatchPolicyHash,
   reclaimProofRef: null,
   reclaimedFromOwnerBootId: null,
   reclaimedFromOwnerLeaseEpoch: null,
@@ -1497,6 +1515,7 @@ CHECK (status != 'superseded' OR superseded_at IS NOT NULL)
 terminal result CHECK 明确同时覆盖 settled 与 superseded：supersede 是该 attempt 原 `commandIdentity` 的终态，必须持久化 canonical “attempt superseded” 响应、对应 `cancellation_attempt.superseded` Event 和 committed revisions；它不是 finalize/restore 成功结果。settled 则持久化 canonical finalize/restore 成功响应。两者都支持 command replay，但字节、Event type 和 lifecycle 结果不同。
 
 正常执行时 status 只能由权威 mutation 单调推进 `ready → active → settling → settled`，或从 ready/active/settling 进入 superseded；历史行永不覆盖或删除。唯一恢复例外是**权威证明可接管**时的 `settling → active`：`reclaimCancellationAttempt()` 必须满足下述 expiry/exit-fence 条件，在同一 CAS 替换 owner/boot、递增 ownerLeaseEpoch、写新的 lease/heartbeat/reclaim proof，并追加 `cancellation_attempt.reclaimed` Event。仅 boot 不同、进程内 registry 缺失或普通心跳暂缺都不得倒退状态。
+- `externalDispatchPolicy` 在 attempt 创建时从 tool/provider/authority registry 的版本化合同冻结，按 canonical JSON 计算 `externalDispatchPolicyHash`；hash 覆盖 schemaVersion、排序后的全部 entry 和 capability flags。重启、claim、reclaim、prepare、authorize、callback、finalize 都从该持久 payload 重算 hash并与行值比较，不能从当前配置重新分类；未知/缺失 entry按 `exclusive_unfenceable_effect`，policy payload/hash不匹配使 attempt进入 blocked recovery；
 - `commandIdentity` 在创建行时冻结：`initial_cancel` 为 `${attemptId}:finalizeWorkItemCancellation:${cancellationEpoch}`，`terminal_safety_restore` 为 `${attemptId}:terminalSafetyRestore:${terminalSafetySnapshotEpoch}`；同一行永不换 identity；
 - `sourceIdentity` 记录创建来源：initial cancel 使用 `stop:<workItemId>:<clientCommandId>:<cancellationEpoch>`，terminal restore 使用 `ready-event:<readyEventId>`。重复来源必须查回同一 attempt，不能生成新的 ID。
 
@@ -1505,10 +1524,11 @@ terminal result CHECK 明确同时覆盖 settled 与 superseded：supersede 是�
 - `claimCancellationAttempt(attemptId, ownerId, ownerBootId, ttl)`：锁定 ready/active 行并校验 attempt/workItem identity。所有时间读取和 expiry 计算都在同一 SQLite 写事务中使用数据库时钟 `dbNow`，调用方不能传 `now`。ready 行写 owner/boot、递增 ownerLeaseEpoch、写 `leaseExpiresAt=dbNow+ttl,status=active`。active 未过期且属于其他 owner/boot 时返回 busy；未过期且完整 owner identity 相同则幂等返回当前 claim，不推进 epoch 或 expiry，续租必须走 renew。不得创建第二个 live attempt。
 - `renewCancellationAttempt(attemptId, ownerId, ownerBootId, ownerLeaseEpoch, expectedExpiresAt, ttl)`：同一 SQLite 事务取得 `dbNow`；仅当前未过期 owner 可 CAS 续租。绑定完整 attempt/owner/boot/lease epoch/old expiry，续租推进 `lastHeartbeatAt/leaseExpiresAt=dbNow+ttl`，不改变 cancellation/recovery/snapshot identity。
 - Agent 新 boot 只触发 liveness/exit-proof 探测，不是抢占授权。`ownerBootId != 当前 boot`、进程内 registry 缺失、普通心跳暂缺或仅 OS PID 不存在，都不能在 lease 未过期时授权 reclaim。
-- `reclaimCancellationAttempt(...)` 只允许两种条件之一：SQLite 事务内 `leaseExpiresAt <= dbNow`；或持久 instance registry 已原子写入与旧 `ownerId + ownerBootId + ownerLeaseEpoch` 精确匹配的 terminal exit proof，并且 execution fence subsystem 已持久证明旧 owner 的 cancellation probe/cancel/release 权限被更高 fence epoch撤销。提前接管必须保存 `reclaimProofRef + reclaimedFromOwnerBootId + reclaimedFromOwnerLeaseEpoch + reclaimedExecutionFenceEpoch`，attempt CAS 同时验证 exit proof、fence proof和当前旧 owner identity。
-- reclaim 复用原 attempt ID，替换 owner/boot、递增 ownerLeaseEpoch并回到 active。旧 owner之后的 renew/finalize和外部 callback因 attempt lease/fence epoch stale而拒绝。任何在 fence 前已发出的外部动作仍进入 Operation审计/reconciliation，不能当作未发生。
+- `reclaimCancellationAttempt(...)` 先锁定 attempt，重算并验证持久 `externalDispatchPolicy/hash`，再读取该 attempt 全部 unresolved `ExternalRecoveryIntent`、prepared/dispatching/unknown logical dispatch、authorized/sending/unknown send-attempt 与 ReclaimFenceAdvance。安全条件取这些对象的最强分类：只有全部**剩余 intent 与在途 send-attempt**都是 read-only 或真正同 key幂等时，SQLite `leaseExpiresAt <= dbNow` 才足以直接接管；存在 authority-fenced effect 时，必须先完成16.16节ReclaimFenceAdvance并持久化全部 required authority 新 token proof；存在任一 exclusive-unfenceable intent/send-attempt时，即使 lease 已过期也必须取得旧owner terminal exit proof和更高execution-fence proof。无法满足最强条件时reclaim返回blocked，不改变owner/lease epoch。不存在“尚未prepare所以不计入分类”的恢复动作。
+- 提前接管同样要求持久 instance registry 已原子写入与旧 `ownerId + ownerBootId + ownerLeaseEpoch` 精确匹配的 terminal exit proof，并且 execution fence subsystem 已证明旧 owner 的外发能力被更高 fence epoch撤销。接管必须保存 `reclaimProofRef + reclaimedFromOwnerBootId + reclaimedFromOwnerLeaseEpoch + reclaimedExecutionFenceEpoch`；authority-fenced分类还保存外部 fence proof/token。attempt CAS同时验证proof、当前旧owner identity和全部dispatch policy snapshot。
+- reclaim 复用原 attempt ID，替换owner/boot、递增ownerLeaseEpoch与`dispatchFenceEpoch`并回到active。旧owner之后的renew/finalize/callback因attempt lease/fence epoch stale而拒绝；旧owner尝试新dispatch时也必须在16.15节授权事务失败。任何接管前已发出的外部动作仍进入Operation审计/reconciliation，不能当作未发生。
 - settling 只有在同一事务即将调用 finalize/restore时短暂存在；正常事务失败整笔 rollback为active。若数据库因崩溃留下 settling行，启动扫描仍须满足数据库 lease过期或完整 exit+execution-fence proof，不能仅因boot不同直接reclaim。
-- 所有 finalize/restore caller 校验 `attemptId + purpose + ownerId + ownerBootId + ownerLeaseEpoch + leaseExpiresAt > dbNow + status=settling + commandIdentity`。旧 owner、旧boot、旧fence epoch、旧lease epoch、过期lease和已settled/superseded行均无副作用。
+- 所有 finalize/restore caller 校验 `attemptId + purpose + ownerId + ownerBootId + ownerLeaseEpoch + dispatchFenceEpoch + externalDispatchPolicyHash + leaseExpiresAt > dbNow + status=settling + commandIdentity`，并确认没有 status=required/prepared 的 intent、没有 authorized/sending/unknown send-attempt、没有 prepared/dispatching/unknown logical dispatch/fence advance，也没有未解决 callback reconciliation。read-only intent 也必须先 satisfied/cancelled；不能因“无副作用”跳过完成证据。旧owner、旧boot、旧dispatch fence/policy、旧lease epoch、过期lease和已settled/superseded行均无副作用。
 
 SQLite partial unique：
 
@@ -1569,6 +1589,190 @@ CREATE UNIQUE INDEX terminal_safety_ready_live
 ON terminal_safety_ready_events(work_item_id, recovery_admission_epoch, terminal_safety_snapshot_epoch, type)
 WHERE status IN ('pending', 'claimed');
 ```
+
+### 16.15 ExternalRecoveryIntent、Dispatch 与 SendAttempt
+
+所有 cancellation probe、provider/tool/task cancel、watchdog 探测、authority closure、grant/credential revoke、lease/resource release 和补偿性 recovery 调用，都必须先注册持久 `ExternalRecoveryIntent`，再创建/复用一个 logical `ExternalRecoveryDispatch`；每次实际外发则创建不可变、append-only 的 `ExternalRecoverySendAttempt`。adapter、watchdog 和 task manager 不得绕过这三层直接外发。唯一例外是 16.16 节 `ReclaimFenceAdvance`，它只能推进 authority fencing token，不能携带业务恢复请求；其每次外发同样使用 `ExternalRecoverySendAttempt`。
+
+```js
+{
+  id: intentId,
+  workItemId,
+  cancellationAttemptId,
+  operationId: null,
+  runId: null,
+  taskId: null,
+  kind,
+  semanticTargetHash,
+  safetyClass: 'read_only_probe' | 'idempotent_effect' | 'authority_fenced_effect' | 'exclusive_unfenceable_effect',
+  authorityId,
+  authorityContractHash,
+  externalDispatchPolicyHash,
+  status: 'required' | 'prepared' | 'satisfied' | 'cancelled' | 'superseded',
+  sourceIdentity,
+  createdAt,
+  resolvedAt: null,
+}
+
+{
+  id: dispatchId,
+  intentId,
+  workItemId,
+  cancellationAttemptId,
+  attemptPurpose: 'initial_cancel' | 'terminal_safety_restore',
+  preparedByOwnerId,
+  preparedByOwnerBootId,
+  preparedByOwnerLeaseEpoch,
+  preparedAtDispatchFenceEpoch,
+  operationId: null,
+  runId: null,
+  taskId: null,
+  kind,
+  safetyClass: 'read_only_probe' | 'idempotent_effect' | 'authority_fenced_effect' | 'exclusive_unfenceable_effect',
+  authorityId,
+  authorityContractHash,
+  authorityFenceToken: null,
+  authorityFenceProofRef: null,
+  idempotencyKey,
+  requestBytes,
+  requestHash,
+  semanticTargetHash,
+  aggregateStatus: 'prepared' | 'dispatching' | 'confirmed' | 'failed' | 'unknown' | 'superseded',
+  nextAttemptNumber,
+  confirmedAttemptId: null,
+  externalEffectRef: null,
+  preparedAt,
+  resolvedAt: null,
+}
+
+{
+  id: sendAttemptId,
+  dispatchId: null,
+  fenceAdvanceId: null,
+  attemptNumber,
+  ownerId,
+  ownerBootId,
+  ownerLeaseEpoch,
+  dispatchFenceEpoch,
+  envelopeBytes,
+  envelopeHash,
+  requestHash,
+  authorityContractHash,
+  idempotencyKey,
+  authorityFenceToken: null,
+  status: 'authorized' | 'sending' | 'confirmed' | 'failed' | 'unknown' | 'superseded',
+  callbackIdentity: null,
+  responseBytes: null,
+  responseHash: null,
+  externalEffectRef: null,
+  authorizedAt,
+  sentAt: null,
+  resolvedAt: null,
+}
+```
+
+`ExternalRecoverySendAttempt` 必须用 SQL CHECK 保证 `dispatch_id` 与 `fence_advance_id` 恰有一个非空；`(dispatch_id,attempt_number)` 和 `(fence_advance_id,attempt_number)` 分别 partial unique。owner/boot/lease/fence、envelope bytes/hash、request/contract/key/token 在插入后不可修改；状态和 callback/result 只能由绑定该 attempt ID 的 CAS 单调推进。logical dispatch 的 owner字段只记录 prepared-by 历史，reclaim 后不改写；旧、新 owner 的 envelope 永远落在不同 send-attempt 行。
+
+分类来自 CancellationAttempt 的持久 `externalDispatchPolicy`；按 `kind + authorityId + protocol/model/tool version` 找到冻结entry并复制其`contractHash`为`authorityContractHash`。运行期adapter不能读取当前配置后重新分类，也不能自行把未知操作降级为“幂等”或“只读”。默认分类是最保守的`exclusive_unfenceable_effect`：
+
+1. `read_only_probe`：外部合同保证不改变受保护状态。允许旧/新 owner 重复发送同一 frozen request；结果仍须按 dispatch/attempt epoch CAS，只能作为 evidence，不能直接覆盖新 owner 的权威状态。
+2. `idempotent_effect`：authority 明确保证同一 `idempotencyKey` 永久绑定同一 `requestHash + semanticTargetHash`，重复调用返回同一外部 effect/result；同 key 不同 bytes/target 必须被 authority 拒绝。reclaim 后只能复用已有 prepared/dispatching/unknown 行、key 和 request bytes，不能创建不同 key 重新表达同一动作。
+3. `authority_fenced_effect`：authority 强制校验单调 `dispatchFenceEpoch` token，并拒绝低于已激活 epoch 的请求。reclaim 必须先通过稳定 fence-advance key让 authority 原子提高 token，再将 proof CAS 回 attempt；只有 proof 持久化后才能切换 DB owner。旧 owner 即使持有已 prepared envelope，发送时也会被 authority 拒绝。
+4. `exclusive_unfenceable_effect`：外部动作会改变状态，但 authority 不提供同 key 幂等或单调 fence。普通 lease expiry 不授予新 owner并发执行权；reclaim 前必须取得旧 owner terminal exit proof，并由 execution-fence subsystem证明旧进程、credential、socket/IPC和外发能力已撤销。无法证明时 attempt 保持原 owner/进入 blocked recovery，Operation 标记 hazardous_orphan，不允许新 owner发送该类动作。
+
+每个 intent 的 source identity 与每个 dispatch 的 logical identity 对 `(attemptId, kind, operation/run/task identity, semantic target)` 稳定；即使 read-only 也必须有 idempotency key 以便审计和 callback 去重。未来动作必须先注册 intent：Stop/Run/Operation/release-set mutation 在知道某项恢复动作可能需要外发时，于同一事务插入/查回 intent。`prepareExternalRecoveryDispatch()` 只能消费当前 owner 下 status=required/prepared 的匹配 intent；任何未登记的外发一律拒绝并记录 policy violation。这样 reclaim 能评估**尚未创建 dispatch 的剩余动作**，而不只扫描在途网络请求。
+
+数据库唯一约束：
+
+```sql
+CREATE UNIQUE INDEX external_recovery_intent_source
+ON external_recovery_intents(cancellation_attempt_id, source_identity);
+
+CREATE UNIQUE INDEX external_recovery_intent_identity
+ON external_recovery_intents(cancellation_attempt_id, kind, operation_key, run_key, task_key, semantic_target_hash);
+
+CREATE UNIQUE INDEX external_recovery_dispatch_key
+ON external_recovery_dispatches(authority_id, idempotency_key);
+
+CREATE UNIQUE INDEX external_recovery_dispatch_identity
+ON external_recovery_dispatches(intent_id);
+
+CREATE UNIQUE INDEX external_recovery_send_attempt_dispatch
+ON external_recovery_send_attempts(dispatch_id, attempt_number)
+WHERE dispatch_id IS NOT NULL;
+
+CREATE UNIQUE INDEX external_recovery_send_attempt_fence
+ON external_recovery_send_attempts(fence_advance_id, attempt_number)
+WHERE fence_advance_id IS NOT NULL;
+```
+
+operation/run/task identity 使用 NOT NULL 规范化 key 或生成列参与唯一性，不能依赖 SQLite `NULL != NULL` 留出重复行。intent 的 kind/target/classification/policy hash 在插入后不可修改；logical dispatch 的 request bytes/hash/safetyClass/authorityContractHash/idempotencyKey/semanticTargetHash 在 prepared 后不可修改。重试不修改 logical dispatch 的 prepared-by 身份，而是插入下一个 append-only send-attempt。
+
+每次准备和发送外部恢复调用都经过两阶段持久授权：
+
+1. `prepareExternalRecoveryDispatch()` 在 `BEGIN IMMEDIATE` 中锁定 WorkItem、唯一 live CancellationAttempt、匹配 `ExternalRecoveryIntent`、Operation/Run/Task 和 logical dispatch identity。它校验 `attemptId + purpose + ownerId + ownerBootId + ownerLeaseEpoch + leaseExpiresAt > dbNow + dispatchFenceEpoch + externalDispatchPolicyHash`，确认 intent 仍 required/prepared 且 policy identity匹配，按 frozen policy 得到 safetyClass，冻结 request bytes/hash、semantic target、authority contract、key/token并插入或查回同一 logical dispatch；intent推进prepared。旧owner、过期lease、旧policy/fence epoch、未登记intent或same key/different request一律无副作用。
+2. `authorizeExternalRecoverySend()` 紧邻 adapter/authority send执行，在新的 SQLite写事务再次锁定live attempt、intent和logical dispatch，重复上述owner/lease/purpose/fence校验。它分配`nextAttemptNumber`，插入不可变`ExternalRecoverySendAttempt`，其envelope包含dispatch/send-attempt ID、owner/boot/lease epoch、dispatch fence、request/hash/key/token；logical aggregate推进dispatching。事务返回该持久envelope；调用方只能逐字节发送它，不能在事务后重构或修改。retry/unknown恢复总是创建新send-attempt行，旧行保留。
+3. send前若进程暂停，恢复后不得直接发送内存envelope；必须重新读取send-attempt并调用`beginExternalRecoveryNetworkSend(sendAttemptId, owner identity...)`。该CAS再次校验live attempt lease/fence及send-attempt status=authorized，置为sending并返回持久bytes。若lease/fence已换代则将旧send-attempt标记superseded（authority-fenced旧envelope仍依赖外部token拒绝），不发送。
+
+数据库检查不能消除“授权事务提交后、网络 send 前进程暂停”的窗口，因此安全性由 frozen safetyClass 补齐：read-only重复无副作用；idempotent effect即使旧/new owner都发送也由authority同key同bytes收敛为同一effect；authority-fenced effect由外部token拒绝旧envelope；exclusive-unfenceable effect禁止仅凭expiry产生新owner，所以旧envelope与新owner永不并存。任何 adapter/authority 不满足其声明合同时，记录policy violation、把相关Operation转hazardous_orphan并阻止后续自动恢复。
+
+callback/result 先按 `sendAttemptId + dispatchId/fenceAdvanceId + attemptNumber + envelopeHash + requestHash + authorityContractHash + idempotencyKey + callbackIdentity` 幂等写 send-attempt 行，再重算 logical aggregate，并通过 `mutateOperationSafety()` 进入审计/reconciliation。callback 必须携带或可查询验证 external fence token/authority epoch；它不能直接修改 Run、Operation 或 WorkItem 投影。只有该 send-attempt 仍匹配当前 attempt owner lease/fence、logical request 且结果确定时才可正常收敛并将 intent 置 satisfied；旧 owner/旧 fence 的 callback保留在其send-attempt行作为证据并触发reconciliation，不能覆盖新owner attempt、丢弃事实或恢复旧owner执行权。
+
+### 16.16 ReclaimFenceAdvance
+
+`authority_fenced_effect` 的 token advance 不能要求当前 attempt owner lease，否则 lease 到期后的 reclaim 会循环依赖。它使用独立、窄权限、持久控制面对象；该对象只能把某个 authority 的 attempt fence 从旧 epoch推进到预定新 epoch，不能包含 provider/tool cancel、probe、release、revoke 或其他业务 payload：
+
+```js
+{
+  id: fenceAdvanceId,
+  cancellationAttemptId,
+  workItemId,
+  authorityId,
+  authorityContractHash,
+  expectedOwnerId,
+  expectedOwnerBootId,
+  expectedOwnerLeaseEpoch,
+  expectedDispatchFenceEpoch,
+  targetDispatchFenceEpoch,
+  requestBytes,
+  requestHash,
+  idempotencyKey,
+  aggregateStatus: 'prepared' | 'dispatching' | 'confirmed' | 'failed' | 'unknown' | 'superseded',
+  nextAttemptNumber,
+  confirmedSendAttemptId: null,
+  authorityProofRef: null,
+  preparedAt,
+  resolvedAt: null,
+}
+```
+
+稳定唯一键为 `(cancellationAttemptId, authorityId, targetDispatchFenceEpoch)`；request bytes/hash/idempotency key在prepared后不可改。target必须严格等于`expectedDispatchFenceEpoch + 1`。
+
+```sql
+CREATE UNIQUE INDEX reclaim_fence_advance_identity
+ON reclaim_fence_advances(cancellation_attempt_id, authority_id, target_dispatch_fence_epoch);
+
+CREATE UNIQUE INDEX reclaim_fence_advance_key
+ON reclaim_fence_advances(authority_id, idempotency_key);
+```
+
+同一 attempt/authority 最多一个 aggregateStatus 为 `prepared/dispatching/unknown` 的 live advance，并以 partial unique 强制；创建新 target前必须确认旧 target已confirmed或superseded。
+
+```sql
+CREATE UNIQUE INDEX reclaim_fence_advance_live
+ON reclaim_fence_advances(cancellation_attempt_id, authority_id)
+WHERE aggregate_status IN ('prepared', 'dispatching', 'unknown');
+```
+
+`prepareReclaimFenceAdvance()` 在 SQLite `BEGIN IMMEDIATE` 中锁定 attempt，确认 lease 已过期或存在匹配旧 owner/boot/lease epoch的 terminal exit proof，重算冻结 dispatch policy，确认该 authority 的所有相关 dispatch都声明并实际支持 monotonic fence；随后冻结只含 fence advance 的request。它不切换owner，不修改attempt fence epoch。
+
+`sendReclaimFenceAdvance()` 不需要旧 owner lease，但必须重新锁定 attempt 和 advance logical row，确认 attempt owner/boot/lease/fence 仍等于 expected、lease 仍已过期或 exit proof 仍 current、没有别的 live advance、目标 authority contract/hash 一致；随后分配 nextAttemptNumber并插入 append-only `ExternalRecoverySendAttempt(fenceAdvanceId=...)`。它**不能**调用普通 `beginExternalRecoveryNetworkSend()`，因为后者要求当前 owner lease。
+
+fence advance 使用专用 `beginReclaimFenceAdvanceNetworkSend(sendAttemptId, controllerId, controllerBootId)`。该窄权限 CAS 不要求 attempt owner lease，但必须验证：send-attempt 只绑定 fenceAdvanceId；advance/attempt/workItem identity 完整；expected old owner/boot/lease epoch 与 attempt 当前行一致；`leaseExpiresAt <= dbNow` 或匹配的 terminal exit proof 仍有效；expected/target dispatch fence 分别等于 attempt 当前 epoch 和 `current+1`；policy hash与 authority contract 重算一致；request 只含 authority/token/target epoch，不含 provider/tool cancel、probe、release、revoke或任意业务 payload；status=authorized。CAS 将 send-attempt 置为 sending 并返回持久 envelope bytes。controllerId/boot只作审计，不能改变 attempt owner或获得普通 recovery dispatch 权限。
+
+authority合同必须保证同idempotency key+target epoch重复调用幂等，且一旦target激活便拒绝所有低epoch请求。多个 Controller/Watcher 可因崩溃重试同一 advance，但只能创建递增的 send-attempt，全部 envelope 保持同 request/key/target；authority 收敛为同一 token。回调只能终结对应send-attempt行，再重算advance aggregate；`confirmReclaimFenceAdvance()`查询/验证authority proof后，在SQLite事务中把logical advance置confirmed并记录confirmedSendAttemptId。多个required authority分别推进；任一failed/unknown时reclaim保持blocked。
+
+只有所有涉及`authority_fenced_effect`的required authority都confirmed同一target epoch、没有exclusive-unfenceable阻塞，`reclaimCancellationAttempt()` 才能在同一SQLite事务验证proof集合、把attempt `dispatchFenceEpoch`推进到target、替换owner/boot并递增ownerLeaseEpoch。旧owner准备过的普通ExternalRecoveryDispatch因外部authority低token被拒绝；advance对象本身不能被adapter解释成业务dispatch。进程在authority成功与本地proof落盘之间崩溃时，恢复器按稳定key查询同一advance，不创建新target或不同key。
 
 ---
 
@@ -1682,14 +1886,14 @@ Run 结果不能直接把 WorkItem 改为 done。Run 终态后仍存活的 Opera
 7. 对 `executionStatus=running` 的 Operation 写 `cancel_requested`并推进 execution epoch；已有 `hazardous_orphan` 不得降级，`not_started/quiescent/fenced` 不得被 Stop 改坏。Stop 时的 effect probe 在 execution尚无 cutoff 时只能写 provisional observation；无法确认写 unknown。随后关闭 grant acquisition、收敛 pending grant attempts、建立 quiescent/fence cutoff，再基于 cutoff重新 probe或请求用户确认。任何 effect 更新都不得假装 execution已静默，也不能跳过 manifest closure；
 8. 写唯一 Conversation control entry 和 `work_item.cancel_requested` Event。
 
-事务提交后才请求中止 provider、tool 和后台 task。每个真实 process cancellation attempt 持久化 `requestedAt/deadlineAt/status`；watchdog 以 `runId + cancellationEpoch + leaseEpoch` 探测 owner registry、Task/Operation 记录和 OS 进程：
+事务提交后才请求中止 provider、tool 和后台 task，但每一个外部 probe/cancel/release/watchdog 动作都必须先经过 16.15 节 `prepareExternalRecoveryDispatch()` 与 `authorizeExternalRecoverySend()`；不存在“拿到 attempt 后可直接调 adapter”的隐式权限。每个真实 process cancellation attempt 持久化 `requestedAt/deadlineAt/status`；watchdog 以 `cancellationAttemptId + ownerLeaseEpoch + dispatchFenceEpoch + runId + cancellationEpoch + leaseEpoch` 探测 owner registry、Task/Operation记录和OS进程：
 
 - 收到明确 cancel acknowledgement 或确认进程不存在：CAS 写 `cancelled` RunResult；
 - 进程已经完成但结果在旧 epoch：逻辑 Run 写 `interrupted`；结果不能改写 Run，却必须进入 Operation reconciliation，用于建立/否定 cutoff 和复核 effect；
 - provider/tool 不可取消、Agent 崩溃后不可查询或超过 deadline：不无限等待，CAS 写 `interrupted` RunResult；对应 Operation 的 effect 无法确认时写 `effectStatus=unknown`，execution 无法证明静默且无法强制 fence 时写 `executionStatus=hazardous_orphan`，并继续持有/隔离其排他资源；
 - watchdog 重启后从 durable deadline 继续，重复 Stop 复用同一 cancellation attempt，不延长 deadline、不重复 terminal RunResult。
 
-逻辑 Run 终结不表示物理副作用或执行实体已收敛。只要任一 blocking Operation 不满足 `operationSafeToProceed`，或仍有 pending `operation_effect` request，WorkItem 保持 `cancelling`；对外写入只允许 `resolve_operation` 和重复幂等 Stop，只读查询始终允许，系统 recovery probe、cancellation watchdog、authority fence 和 terminal CAS 继续运行；message、Start、reopen 或 complete 一律拒绝。Run 不会再成为无限等待条件，因为每个 active Run 都由上述确定性 terminalizer 收敛。全部 Run 已终态、每个 blocking Operation 都满足 `operationSafeToProceed`，所有 effect/supplemental resolution request、reconciliation 和 recovery mailbox event 已消费后，当前 cancellation controller 以显式 caller `{ kind:'initial_cancel_terminalizer', cancellationAttemptId, ownerId, ownerBootId, ownerLeaseEpoch, commandIdentity: cancellationAttemptId + ':finalizeWorkItemCancellation:' + cancellationEpoch }` 调用独立 shared mutation `finalizeWorkItemCancellation()`，而不是 `restoreTerminalSafety()`。mutation锁定该WorkItem唯一live CancellationAttempt行，在同一SQLite事务取得dbNow并校验registry actor与`workItemId + purpose=initial_cancel + cancellationAttemptId + ownerId + ownerBootId + ownerLeaseEpoch + leaseExpiresAt>dbNow + cancellationEpoch + status=active`及全部WorkItem/Operation/request/safety revisions；将attempt置为settling后重新计算`operationSafetyHash`，写lifecycle=cancelled、current cancelled terminal snapshot、`safetyStatus=safe`、关闭recovery admission、`work_item.cancelled` Event和Conversation status，并把同一attempt置为settled、写settledAt与immutable terminal command result。任一步失败整笔 rollback，attempt 仍为 active；重复 command identity 按历史 settled 行返回原结果。任何迟到事实、旧 purpose/attempt/lease 或重复 terminalizer 并发胜出都会使 CAS 失败。首次取消不调用 cancelled safety restore，也不写 `work_item.cancelled_safety_restored`。Stop 不回滚 applied effect，也不删除消息、entry、request 或 mailbox 审计。
+逻辑 Run 终结不表示物理副作用或执行实体已收敛。只要任一 blocking Operation 不满足 `operationSafeToProceed`，或仍有 pending `operation_effect` request，WorkItem 保持 `cancelling`；对外写入只允许 `resolve_operation` 和重复幂等 Stop，只读查询始终允许，系统 recovery probe、cancellation watchdog、authority fence 和 terminal CAS 继续运行；message、Start、reopen 或 complete 一律拒绝。Run 不会再成为无限等待条件，因为每个 active Run 都由上述确定性 terminalizer 收敛。全部 Run 已终态、每个 blocking Operation 都满足 `operationSafeToProceed`，所有 effect/supplemental resolution request、reconciliation 和 recovery mailbox event 已消费后，当前 cancellation controller 以显式 caller `{ kind:'initial_cancel_terminalizer', cancellationAttemptId, ownerId, ownerBootId, ownerLeaseEpoch, dispatchFenceEpoch, externalDispatchPolicyHash, commandIdentity: cancellationAttemptId + ':finalizeWorkItemCancellation:' + cancellationEpoch }` 调用独立 shared mutation `finalizeWorkItemCancellation()`，而不是 `restoreTerminalSafety()`。mutation锁定该WorkItem唯一live CancellationAttempt行，在同一SQLite事务取得dbNow并校验registry actor与`workItemId + purpose=initial_cancel + cancellationAttemptId + ownerId + ownerBootId + ownerLeaseEpoch + dispatchFenceEpoch + externalDispatchPolicyHash + leaseExpiresAt>dbNow + cancellationEpoch + status=active`及全部WorkItem/Operation/request/safety revisions；将attempt置为settling后重新计算`operationSafetyHash`，写lifecycle=cancelled、current cancelled terminal snapshot、`safetyStatus=safe`、关闭recovery admission、`work_item.cancelled` Event和Conversation status，并把同一attempt置为settled、写settledAt与immutable terminal command result。任一步失败整笔 rollback，attempt 仍为 active；重复 command identity 按历史 settled 行返回原结果。任何迟到事实、旧 purpose/attempt/lease 或重复 terminalizer 并发胜出都会使 CAS 失败。首次取消不调用 cancelled safety restore，也不写 `work_item.cancelled_safety_restored`。Stop 不回滚 applied effect，也不删除消息、entry、request 或 mailbox 审计。
 
 `cancelled` WorkItem 默认拒绝全部新输入和执行。正常状态下它的每个 blocking Operation 都满足 `operationSafeToProceed`，且没有 pending resolution request；显式 reopen 通过 23.3 节的完整 fence 后才回到 active。若这些不变量不成立，reopen 失败并进入恢复诊断，不能改成 needs-attention 绕过取消边界。reopen 不恢复 cancelled entries、requests、mailbox events 或旧 Runs；仍 `open` 的 Action 可以接收一条新的 message/start 并创建新 Run，superseded/closed Action 永不复活。
 
@@ -2169,11 +2373,11 @@ operationSafeToProceed = effectSafe AND executionSafe AND grantUniverseSafe AND 
 
 Operation 的 effect、execution、grant universe 与 resource release 使用不同出口，任何路径都不能以一轴代替另一轴：
 
-1. **自动 effect probe**：恢复器先持久化 probe attempt 与预期 `operationId + revision + executionEpoch + effectCutoffHash + grantManifestGeneration/hash + capabilityUniverseGeneration/hash + cancellationEpoch`。只有 cutoff 已建立、evidence high watermarks 闭合且 reconciliation 无 pending/conflict 时，结果才能写 final observation；否则只能写 provisional。确认已发生 → `applied`；确认未发生 → `not_applied`；确认失败且无副作用 → `failed_no_effect`；不确定 → `unknown`。若 final observation 成功且存在 pending `operation_effect` request，同一事务消费 request 并推进 request revision。
+1. **自动 effect probe**：恢复器先通过ExternalRecoveryDispatch持久化`read_only_probe`（或真实会改变外部状态时使用更强分类）及预期 `cancellationAttemptId + ownerLeaseEpoch + dispatchFenceEpoch + operationId + revision + executionEpoch + effectCutoffHash + grantManifestGeneration/hash + capabilityUniverseGeneration/hash + cancellationEpoch`。只有 cutoff 已建立、evidence high watermarks 闭合且 reconciliation 无 pending/conflict 时，结果才能写 final observation；否则只能写 provisional。确认已发生 → `applied`；确认未发生 → `not_applied`；确认失败且无副作用 → `failed_no_effect`；不确定 → `unknown`。若 final observation 成功且存在 pending `operation_effect` request，同一事务消费 request 并推进 request revision。
 2. **人工 effect 裁决**：effect 首次 unknown 或旧 observation 失效时，在同一事务创建/rebind 唯一 pending `operation_effect` HumanRequest。用户或 Coordinator 提交结构化 decision 和 effect evidence；若 execution 尚无 cutoff，只写 provisional observation并保留/rebind request，UI 明确显示“待 execution 收敛后复核”；只有 payload 的 `effectCutoffHash/executionEpoch` 匹配当前 cutoff，才可写 final 并消费 request。
-3. **系统 execution probe/cancel**：稳定 process/task identity 的 terminal result、可信 cancel acknowledgement 或 process-gone 探测只能证明 execution 不再动作；系统还必须关闭 grant acquisition/evidence channel并建立 cutoff。探测不确定时保持 `running/cancel_requested`，超过 deadline 且无法完整 fence 时写 `hazardous_orphan`。
-4. **系统 authority fence**：每个 required authority 独立关闭 acquisition、撤销/换代其 grant，并返回带 issuer/acquisition epoch 的 closure proof。系统在全部 closure proof 和冻结 manifest通过后，才能写 enforced fence、`executionStatus=fenced` 和 authority-fence cutoff。用户、Coordinator 和 `resolve_operation` 不能写这些状态。
-5. **资源 release saga**：系统按 frozen release set逐 lease请求外部 authority，持久化每项结果并更新聚合投影。失败或 unknown 项保留，稍后按同一 idempotency key恢复；它不回滚已经成功的外部 release。
+3. **系统 execution probe/cancel**：每次外发先创建/授权ExternalRecoveryDispatch；只读process-gone探测是`read_only_probe`，cancel请求只有在authority明确同key幂等时才是`idempotent_effect`，支持单调token时是`authority_fenced_effect`，否则是`exclusive_unfenceable_effect`。稳定 process/task identity 的 terminal result、可信 cancel acknowledgement 或 process-gone 探测只能证明 execution 不再动作；系统还必须关闭 grant acquisition/evidence channel并建立 cutoff。探测不确定时保持 `running/cancel_requested`，超过 deadline 且无法完整 fence 时写 `hazardous_orphan`。
+4. **系统 authority fence**：业务期的closure/revoke仍经ExternalRecoveryDispatch；**reclaim期间用于打破owner lease循环的token advance只走16.16节ReclaimFenceAdvance**。只有authority强制拒绝旧token时，普通业务动作才能分类`authority_fenced_effect`，否则按幂等或exclusive规则处理。每个required authority独立关闭acquisition、撤销/换代其grant，并返回带issuer/acquisition epoch的closure proof。系统在全部 closure proof 和冻结 manifest通过后，才能写 enforced fence、`executionStatus=fenced` 和 authority-fence cutoff。用户、Coordinator 和 `resolve_operation` 不能写这些状态。
+5. **资源 release saga**：每个lease/revoke item映射到唯一ExternalRecoveryDispatch。authority合同保证同key同request同effect时分类idempotent；支持单调release fence时分类authority-fenced；两者都不满足则exclusive且reclaim受阻。系统按frozen release set逐lease请求外部authority，持久化每项结果并更新聚合投影。失败或 unknown 项保留，稍后按同一 idempotency key恢复；它不回滚已经成功的外部 release。
 
 `resolve_operation` 事务必须校验 `workItemId + actionId + operationId + requestId + expectedOperationRevision + expectedRequestRevision + expectedOwnerLeaseEpoch + expectedExecutionEpoch + effectCutoffHash + grantManifestGeneration + grantManifestHash + capabilityUniverseGeneration + capabilityUniverseHash + cancellationEpoch`。它只写 effectStatus/effectObservation、推进 revisions并写 evidence/Conversation/Event；不得修改 executionStatus、effectCutoff、grantManifest、authorityFence 或 resource release。execution 没有匹配 cutoff 时不消费 request。重复 `clientCommandId` 返回原结果；两个用户、用户与 Coordinator、自动 probe 与人工裁决、Stop/reopen/complete并发时只有一个 CAS 成功。
 
@@ -2195,11 +2399,11 @@ Operation 的 effect、execution、grant universe 与 resource release 使用不
 
 1. 读取 active Run lease；
 2. 读取 durable EngineTurn，按 `prepared/dispatching/responded/unknown` 和 adapter capability裁决，不按内存重造请求；
-3. 读取 Operation 的 execution epoch、grant manifest generation、pending grant attempt、effect cutoff/reconciliation 和逐 lease release records；
+3. 读取 Operation 的 execution epoch、grant manifest generation、pending grant attempt、effect cutoff/reconciliation、逐lease release records，以及live CancellationAttempt的冻结externalDispatchPolicy、全部prepared/dispatching/unknown ExternalRecoveryDispatch和ReclaimFenceAdvance；
 4. 判断 provider/tool/process 与每个外部 authority 是否仍可查询；
 5. 核对最后 safe checkpoint、request hash、ActionEntry high watermarks和 response CAS；
 6. orphaned execution 无法证明 process gone 或完整 fence时写 `hazardous_orphan`；effect observation降为 provisional/unknown；manifest/release 保持实际部分状态，不伪造 closed/released；
-7. 幂等收敛 pending grant attempt、authority closure 和 release attempt；外部成功而本地未确认的记录按稳定 key补写 proof；
+7. 按ExternalRecoveryDispatch分类幂等收敛pending grant attempt、authority closure和release attempt；外部成功而本地未确认的记录按同一dispatch ID/key/request hash查询并补写proof，exclusive unknown不得自动重发；
 8. 处理迟到 evidence reconciliation；不复用旧 runId静默重跑；同一逻辑 EngineTurn只有在幂等/人工裁决允许时增加 attempt；
 9. 只有 `operationSafeToProceed` 成立时创建 recovery Run 或允许 Start；迟到旧 Run/turn/Operation 写请求不能直接覆盖权威状态，但其事实证据不得丢弃。
 
@@ -2598,12 +2802,14 @@ schema 17–22 没有目标模型的独立 Operation 表，迁移只能从 Run m
 - legacy done/cancelled 进入 26.8 节的 safety reconciliation 后，只有 `enqueueTerminalSafetyReadyIfEligible()` 产生的规范化 ready event 才可创建 terminal restore attempt；
 - 若检测到非生产 prototype DB 中存在旧嵌套 attempt JSON，生产 migration 必须停止并给出备份/专用一次性转换诊断，不能静默猜测 owner lease。专用转换也必须为每个历史对象生成独立规范化行，保留 purpose/status/source，无法证明 owner/expiry 时收敛为 `ready` 或 `superseded`，绝不能迁为 active/settling；
 - migration ledger 对新表使用稳定 key `cancellation-attempt:<workItemId>:<sourceIdentity>` 与 `terminal-ready:<workItemId>:<type>:<recoveryEpoch>:<snapshotEpoch>:<operationSafetyHash>`，重复打开数据库不能重复行；
-- 迁移验证要求：通用 live partial unique保证每个 WorkItem最多一行live attempt；两类purpose partial unique、command/source identity unique全部成立；不存在无 owner/boot/authority/expiry的active/settling行，terminal行均有immutable result bytes/hash/Event/revisions。
+- 真实 schema 17–22 没有 ExternalRecoveryIntent、ExternalRecoveryDispatch、ExternalRecoverySendAttempt、ReclaimFenceAdvance 或 frozen dispatch policy。迁移不伪造这些对象；新状态机创建首个 CancellationAttempt 时，从当时版本化 tool/provider/authority registry 冻结 policy payload/hash。无法找到版本化 authority contract的 entry默认 `exclusive_unfenceable_effect`；legacy in-flight external action作为 Operation unknown/hazardous evidence导入，不迁成 read-only/idempotent dispatch；
+- prototype attempt 转换时若缺 frozen policy payload，只能写包含全部已知kind/authority的exclusive policy，并进入blocked recovery；不得只保存hash或用当前adapter能力回填较弱分类。ExternalRecoveryIntent/Dispatch/SendAttempt 与 ReclaimFenceAdvance 只由迁移后的新 recovery mutation 创建；migration ledger 分别使用 `external-intent:<attemptId>:<sourceIdentity>`、`external-dispatch:<attemptId>:<intentId>`、`external-send:<dispatchOrAdvanceId>:<attemptNumber>` 和 `reclaim-fence:<attemptId>:<authorityId>:<targetEpoch>`；
+- 迁移验证要求：通用 live partial unique保证每个 WorkItem最多一行live attempt；两类purpose partial unique、command/source identity unique全部成立；不存在无 owner/boot/expiry的active/settling行，terminal行均有immutable result bytes/hash/Event/revisions；每个新attempt都有可重算的policy payload/hash，未知contract保持exclusive。
 
 ### 26.8 原子 shadow migration 与验证
 
 1. 在单一 `BEGIN IMMEDIATE` 中创建目标 shadow tables 和 migration ledger；
-2. 导入 WorkItem、Action thread、legacy identity history、Run、EngineTurn、ActionEntry、HumanRequest、Operation 的 observation/cutoff/manifest/release saga、authority/quarantine record 和 Event；按26.7节初始化CancellationAttempt/ready-event空集与migration ledger，禁止新增pointer或伪造旧attempt；
+2. 导入 WorkItem、Action thread、legacy identity history、Run、EngineTurn、ActionEntry、HumanRequest、Operation 的 observation/cutoff/manifest/release saga、authority/quarantine record 和 Event；按26.7节初始化CancellationAttempt、ready-event、ExternalRecoveryIntent/Dispatch/SendAttempt、ReclaimFenceAdvance空集与migration ledger，禁止新增pointer、伪造旧attempt或弱化未知外部动作分类；
 3. active legacy Run 不继续执行：推进旧 lease fence，导入为 interrupted/cancelled；其 Operation 严格按 26.6 节映射 provisional effect、execution/cutoff、grant manifest 和逐 lease release，不用 `known/terminal` 猜测 final safety；
 4. legacy stage/dependency 只进入 migration metadata，不进入目标调度表；
 5. 对每个 source table 校验 owner、source count、occurrence count、附件 hash、终态 Run、effect final/cutoff 匹配、manifest authority/grant inventory、逐 lease held/released/failed/unknown proof和 superseded/rebound/consumed 分类总数；
@@ -2805,8 +3011,13 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 - 旧 recovery CoordinatorTurn、重复 command id、两个 recovery turn、restore 与 `resolve_operation` stale、terminal snapshot 已再次失效/恢复等竞态都只有一个完整事务成功；失败方不修改 finalResult、lifecycle、admission、warning 或 lane；
 - cancelled 无 CoordinatorTurn 的合法 safety restore 必须成功；旧/wrong-purpose/superseded cancellationAttemptId、旧 owner lease/cancellation/recovery/snapshot epoch、重复 terminalizer、late evidence并发和伪造 internal caller必须无副作用。失败时 attempt不得卡在 settling；shared core对 coordinator与cancelled_terminalizer分别执行 caller校验，禁止“没有 CoordinatorTurn就跳过鉴权”；
 - `initial_cancel` attempt 不能调用 restore，`terminal_safety_restore` attempt 不能调用首次 finalize；两类 caller tag、command identity、Event 和 lifecycle前置条件不可互换。覆盖首次取消、cancelled late invalidation后恢复、失败重试和进程重启；
-- 两种 purpose 都重放 Controller/Watcher 在 claim 前、Run/Operation 收敛中、active→settling 前和 finalize/restore 事务内崩溃；Agent启动扫描按 ownerBootId/leaseExpiresAt 复用同一 attempt ID、替换 owner/boot并递增 ownerLeaseEpoch。旧 owner续租/finalize、未过期抢占、重复 reclaim和两个 Watcher并发只有一个 CAS成功，不得产生第二个 ready/active/settling attempt；
-- cancelled ready event 的重复认领、Watcher 崩溃和 owner lease 过期使用同一共享协议；旧 owner caller 无副作用。initial_cancel 在 Stop 提交后、Run 收敛中和 finalize 前崩溃都能由新 boot认领原 attempt并最终收敛，不能永久停在 cancelling；
+- 两种 purpose 都重放 Controller/Watcher 在 claim 前、Run/Operation 收敛中、active→settling 前和 finalize/restore 事务内崩溃；Agent启动扫描复用同一attempt ID。未过期lease下boot变化、registry缺失、PID消失但无execution-fence proof都不得抢占；旧owner续租/finalize、重复reclaim和两个Watcher并发只有一个CAS成功，不得产生第二个ready/active/settling attempt；
+- cancelled ready event 的重复认领、Watcher崩溃和owner lease到期使用同一共享协议；旧owner caller无副作用。initial_cancel在Stop提交后、Run收敛中和finalize前崩溃都能按dispatch最强分类安全接管或明确blocked，不能以split-brain换取收敛；
+- expiry reclaim后旧owner恢复并尝试每类**新**dispatch：read-only可重复但只能产生evidence；idempotent effect必须复用同一dispatch行、同一key和相同request/target，same key/different bytes或different key重表达同一identity均被数据库/authority拒绝；authority-fenced effect旧token由authority拒绝；exclusive-unfenceable effect在无exit+execution-fence proof时reclaim与新dispatch都blocked；
+- 旧/新owner同时调用`prepareExternalRecoveryDispatch/authorizeExternalRecoverySend`：旧owner因owner/boot/lease/fence stale在send前失败；若旧owner已拿到envelope后暂停，则按四类contract分别验证无副作用、同key同effect、低token拒绝或禁止并存。覆盖授权后网络发送前暂停、发送成功回调前崩溃、callback迟到和新owner重试；
+- frozen policy payload/hash在重启后可重算；篡改payload/hash、当前registry降级分类、未知kind/authority或缺versioned contract均转blocked/exclusive，不能外发。schema17–22迁移后首个attempt冻结当前versioned policy；legacy unknown external action不被迁为弱分类；
+- authority-fenced reclaim覆盖多个authority：每个ReclaimFenceAdvance使用稳定key/target，A成功B失败时DB owner不切换；崩溃后查询A并补proof、以原key重试B。全部confirmed后reclaim单事务推进attempt fence和owner。重复advance、same key/different target、不同key同target及旧target callback均不能产生第二个epoch或切换owner；
+- fence advance 网络发送必须走 `beginReclaimFenceAdvanceNetworkSend()`，不得走要求当前owner lease的普通 `beginExternalRecoveryNetworkSend()`。覆盖 lease 已过期、旧owner仍写在attempt行、两个Controller并发发送、authorized后暂停、authority成功本地未落盘、重复send-attempt和controller重启；所有外发只能是同key/同target/同bytes的token advance，不能携带业务payload或授予普通dispatch权限；
 - recovery turn command 混入 reply/contract/action/control/openRequest/complete 必须整体拒绝；普通 Coordinator、用户、Executor 和浏览器直接调用 `restore_terminal_safety` 必须在 mutation 前拒绝且无 Event；
 - `resultingLifecycle=done` 缺 acceptance result、重复/未知 criterion、越权 evidence、未清 pending recovery state或 payload safety hash 与服务端重算不一致时拒绝；`needs_attention` 没有任何失败/阻塞风险时拒绝，防止无依据降级；
 - terminal lifecycle + safety safe 投影 Closed；terminal lifecycle + reconciling/unsafe 投影 Needs attention。恢复 done、转 needs_attention、再次 late invalidation 的 Event/DTO/cache revision和 lane必须同步；断线重连、列表缓存和详情缓存都以 safetyRevision/terminal snapshot epoch 失效；
@@ -2842,7 +3053,7 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 - 重复 migration 受 legacySourceKey ledger 唯一约束，不重复 entry/turn/event；
 - active legacy Run 不盲目继续；其 Operation 按 26.6 节保守导入，无法证明的 effect 为 provisional/unknown、execution 为 hazardous_orphan、manifest inventory incomplete、resource saga held，并阻止 wake；
 - legacy `known`/Run terminal 不能证明 final observation、execution cutoff 或 closed capability universe；缺 authority/grant/resource inventory 时创建 quarantine manifest/authority record；
-- migration 对 observation/cutoff、capability universe/manifest、逐lease saga、partial unique `operation_effect` request、CancellationAttempt通用/purpose partial unique、command+source identity、terminal result snapshot和ready-event live unique做计数和不变量校验；相同 legacySourceKey 重放不重复 grant、lease attempt、reconciliation evidence、attempt、ready event 或 request；
+- migration 对 observation/cutoff、capability universe/manifest、逐lease saga、partial unique `operation_effect` request、CancellationAttempt通用/purpose partial unique、command+source identity、terminal result snapshot、ready-event live unique、intent/dispatch/send-attempt/fence-advance CHECK与unique、以及policy payload/hash做计数与不变量校验；相同 legacySourceKey 重放不重复 grant、lease attempt、reconciliation evidence、attempt、ready event、dispatch、fence advance或request；
 - 用真实schema17/18/19/20/21/22 fixture验证迁移后attempt/ready-event表为空且WorkItem schema没有attempt pointer；随后触发 initial_cancel 与 terminal safety restore，验证各自产生独立规范化行，settled/superseded 历史永久保留，重复 migration/open/Stop/ready event 不重复行或 command/source identity；
 - 专用 prototype 嵌套对象转换 fixture 覆盖无法证明 owner lease时只迁为 ready/superseded，绝不迁为 active/settling；purpose epoch CHECK、通用/purpose live partial unique、terminal result CHECK和历史审计全部通过；
 - shadow migration 校验失败整笔 rollback，成功切换只有完整旧/新模型；
@@ -2855,7 +3066,7 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 
 设计经独立复审通过后再实现：
 
-1. **规范化存储**：Conversation、ActionEntry、Action、Run、EngineTurn、HumanRequest、Operation、CancellationAttempt、TerminalSafetyReadyEvent。
+1. **规范化存储**：Conversation、ActionEntry、Action、Run、EngineTurn、HumanRequest、Operation、CancellationAttempt、TerminalSafetyReadyEvent、ExternalRecoveryIntent、ExternalRecoveryDispatch、ExternalRecoverySendAttempt、ReclaimFenceAdvance。
 2. **Runner 协议**：durable provider dispatch、safe checkpoint、entry bound/consumed high watermark、Run lease、消息注入。
 3. **控制命令**：Pause/Start/Stop、WorkItem cancellation epoch、Operation liveness gate、恢复。
 4. **Coordinator 合同**：create/control/message Action，不包含 graph。
