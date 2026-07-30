@@ -556,7 +556,7 @@
 
 .sidebar-session-title {
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
 }
 
@@ -875,11 +875,11 @@
 }
 
 .session-item {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.15s;
-  margin-bottom: 2px;
+  margin-bottom: 1px;
 }
 
 .session-item:hover {
@@ -942,7 +942,8 @@
 }
 
 .session-item .title {
-  font-size: 15px;
+  font-size: 14px;
+  line-height: 1.3;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1115,10 +1116,10 @@
 .session-info {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   font-size: 11px;
   color: var(--text-secondary);
-  margin-top: 2px;
+  margin-top: 1px;
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
   min-width: 0;
   overflow: hidden;
@@ -1138,17 +1139,23 @@
   font-size: 11px;
 }
 
-.session-agent {
+.session-agent,
+.session-provider,
+.session-availability {
   flex-shrink: 0;
-  color: var(--primary-color);
-  background: var(--primary-color-transparent, rgba(217, 119, 6, 0.15));
   padding: 1px 6px;
   border-radius: 4px;
+  color: var(--text-secondary);
+  background: var(--bg-input-wrapper);
   font-size: 10px;
   max-width: 80px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.session-availability {
+  color: var(--text-muted);
 }
 
 .new-chat-btn:disabled {

@@ -1,6 +1,7 @@
 import WorkCenterActionDetail from './WorkCenterActionDetail.js';
 import WorkCenterSettingsModal from './WorkCenterSettingsModal.js';
 import LlmTab from './LlmTab.js';
+import ModernSelect from './ModernSelect.js';
 import folderPickerMixin from './mixins/folder-picker-mixin.js';
 import { openImagePreview } from '../utils/imagePreview.js';
 import {
@@ -24,7 +25,7 @@ function invalidateActionRunOpen(target) {
 
 export default {
   name: 'WorkCenterPage',
-  components: { WorkCenterActionDetail, WorkCenterSettingsModal, LlmTab },
+  components: { WorkCenterActionDetail, WorkCenterSettingsModal, LlmTab, ModernSelect },
   mixins: [folderPickerMixin],
   data() {
     return {
@@ -86,6 +87,12 @@ export default {
     onlineAgents() {
       return this.agents.filter(agent => agent?.online
         && Array.isArray(agent.capabilities) && agent.capabilities.includes('work_center'));
+    },
+    workCenterAgentOptions() {
+      return this.onlineAgents.map(agent => ({
+        value: agent.id,
+        label: agent.name || agent.id,
+      }));
     },
     watcher() { return this.store.workCenterWatcherByAgent[this.agentId] || null; },
     boardNextCursor() { return this.store.workCenterListPageByAgent[this.agentId]?.nextCursor || null; },
@@ -360,9 +367,9 @@ export default {
       const translated = this.$t ? this.$t(key) : key;
       return translated && translated !== key ? translated : fallback;
     },
-    agentName(agentId) {
-      const agent = this.agents.find(item => item.id === agentId);
-      return agent?.name || agentId || this.tr('workCenter.agent', 'Agent');
+    selectWorkCenterAgent(nextAgentId) {
+      if (!nextAgentId || nextAgentId === this.agentId) return;
+      this.store.enterWorkCenter(nextAgentId);
     },
     statusLabel(status) {
       return this.tr(`workCenter.status.${status}`, String(status || '').replace('_', ' '));
@@ -1062,10 +1069,17 @@ export default {
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 18h18v-2H3v2Zm0-5h18v-2H3v2Zm0-7v2h18V6H3Z"/></svg>
               </button>
               <h1>{{ tr('workCenter.title', 'Work Center') }}</h1>
-              <span class="work-center-agent-context">
+              <div class="work-center-agent-picker">
                 <span class="work-center-agent-dot" aria-hidden="true"></span>
-                {{ agentName(agentId) }}
-              </span>
+                <ModernSelect
+                  :model-value="agentId"
+                  :options="workCenterAgentOptions"
+                  :aria-label="tr('workCenter.selectAgent', 'Select Agent')"
+                  :menu-min-width="160"
+                  menu-class="work-center-agent-menu"
+                  @update:model-value="selectWorkCenterAgent"
+                />
+              </div>
             </div>
             <div class="work-center-header-actions">
               <button class="work-center-icon-button" type="button" @click="settingsOpen = true"
