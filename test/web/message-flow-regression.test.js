@@ -12,6 +12,7 @@ import {
 } from '../../web/stores/helpers/messages.js';
 import UnifiedSessionList from '../../web/components/UnifiedSessionList.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
+import WorkCenterPage from '../../web/components/WorkCenterPage.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
 import {
   beginCatalogMutation,
@@ -417,22 +418,17 @@ describe('message flow regressions', () => {
     expect(sidebarCss).not.toMatch(/\.sidebar-provider-group\s*\{/s);
     expect(sidebarCss).toMatch(/\.sidebar-session-toolbar\s*\{[^}]*min-height:\s*38px/s);
     expect(sidebarCss).toMatch(/\.sidebar-session-title\s*\{[^}]*font-size:\s*15px/s);
-    expect(sidebarCss).toMatch(/\.session-item \.title\s*\{[^}]*font-size:\s*13px/s);
-    const badgeTokenMatches = [
-      ...sidebarCss.matchAll(/\.session-(?:agent|provider)\s*\{([\s\S]*?)\}/g),
-    ];
-    expect(badgeTokenMatches).toHaveLength(2);
-    for (const [, declaration] of badgeTokenMatches) {
-      const tokenNames = [...declaration.matchAll(/var\((--[\w-]+)/g)].map(match => match[1]);
-      expect(tokenNames).toHaveLength(2);
-      for (const tokenName of tokenNames) {
-        const tokenPattern = new RegExp(`${tokenName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*[^;]+;`);
-        expect(lightThemeVariables).toMatch(tokenPattern);
-        expect(darkThemeVariables).toMatch(tokenPattern);
-      }
+    expect(sidebarCss).toMatch(/\.session-item\s*\{[^}]*padding:\s*8px 12px;[^}]*margin-bottom:\s*1px/s);
+    expect(sidebarCss).toMatch(/\.session-item \.title\s*\{[^}]*font-size:\s*14px/s);
+    const sharedBadgeRule = sidebarCss.match(/\.session-agent,\s*\.session-provider,\s*\.session-availability\s*\{([\s\S]*?)\}/)?.[1] || '';
+    expect(sharedBadgeRule).toMatch(/color:\s*var\(--text-secondary\)/);
+    expect(sharedBadgeRule).toMatch(/background:\s*var\(--bg-input-wrapper\)/);
+    expect(sidebarCss).not.toMatch(/\.session-(?:agent|provider)(?=\s*\{)[^}]*background:/s);
+    for (const tokenName of ['--text-secondary', '--bg-input-wrapper']) {
+      const tokenPattern = new RegExp(`${tokenName}:\\s*[^;]+;`);
+      expect(lightThemeVariables).toMatch(tokenPattern);
+      expect(darkThemeVariables).toMatch(tokenPattern);
     }
-    expect(sidebarCss).toMatch(/\.session-agent\s*\{[^}]*color:\s*var\(--text-primary\);[^}]*background:\s*var\(--bg-input-wrapper\);/s);
-    expect(sidebarCss).toMatch(/\.session-provider\s*\{[^}]*color:\s*var\(--accent-blue\);[^}]*background:\s*var\(--accent-bg\);/s);
     expect(sidebarCss).toMatch(/\.sidebar-tool-button:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/s);
     const fallbackWorkCenter = mount(SidebarWorkCenter, {
       props: { agents: [] },
@@ -640,9 +636,71 @@ describe('message flow regressions', () => {
     expect(component).toContain('if (!canSend.value) return;');
     expect(component).not.toContain('if (isStopVisible.value || !canSend.value) return;');
     expect(workCenter).toContain('@change="onWorkItemMessageAttachmentInput"');
-    expect(workCenter).toContain('@change="selectWorkCenterAgent"');
+    expect(workCenter).toContain("import ModernSelect from './ModernSelect.js'");
+    expect(workCenter).toContain(':options="workCenterAgentOptions"');
+    expect(workCenter).toContain('@update:model-value="selectWorkCenterAgent"');
+    expect(workCenter).not.toContain('<label class="work-center-agent-picker">');
+    expect(workCenter).not.toContain('<select :value="agentId"');
     expect(workCenter).toContain("this.store.enterWorkCenter(nextAgentId)");
-    expect(workCenterCss).toMatch(/\.work-center-agent-picker\s*\{[^}]*background:\s*var\(--bg-input\)/s);
+    expect(workCenterCss).toMatch(/\.work-center-agent-picker \.modern-select-trigger\s*\{[^}]*background:\s*var\(--bg-input\)/s);
+    const workCenterStore = {
+      workCenterAgentId: 'agent-a',
+      currentAgent: 'agent-a',
+      agents: [
+        { id: 'agent-a', name: 'server', online: true, capabilities: ['work_center'] },
+        { id: 'agent-b', name: 'C1', online: true, capabilities: ['work_center'] },
+      ],
+      workCenterWatcherByAgent: {},
+      workCenterListPageByAgent: {},
+      workCenterListMoreLoadingByAgent: {},
+      workCenterSettingsByAgent: {},
+      workCenterRuntimeByAgent: {},
+      workCenterItemsByAgent: { 'agent-a': [] },
+      workCenterLoadingByAgent: {},
+      workCenterLoadedByAgent: {},
+      workCenterErrorByAgent: {},
+      workCenterDetailByAgent: {},
+      workCenterActionMessages: {},
+      workCenterActionMessagesLoading: {},
+      workCenterActionMessagesError: {},
+      workCenterActionRequests: {},
+      workCenterActionRequestDetails: {},
+      workCenterActionRequestDetailsLoading: {},
+      workCenterActionRequestDetailsError: {},
+      workCenterActionRequestsLoading: {},
+      workCenterActionRequestsError: {},
+      workbenchMaximized: false,
+      workbenchExpanded: false,
+      workCenterCreateDraft: null,
+      listWorkItems: vi.fn(() => Promise.resolve([])),
+      loadWorkCenterSettings: vi.fn(() => Promise.resolve(null)),
+      enterWorkCenter: vi.fn(),
+      toggleSessionSidebar: vi.fn(),
+    };
+    globalThis.Pinia.useChatStore = () => workCenterStore;
+    globalThis.Vue = Vue;
+    const workCenterPage = mount(WorkCenterPage, {
+      global: {
+        mocks: { $t: key => key },
+        stubs: {
+          WorkCenterActionDetail: true,
+          WorkCenterSettingsModal: true,
+          LlmTab: true,
+        },
+      },
+    });
+    expect(workCenterPage.get('.work-center-agent-picker .modern-select-label').text()).toBe('server');
+    await workCenterPage.get('.work-center-agent-picker .modern-select-trigger').trigger('click');
+    await Vue.nextTick();
+    const agentMenu = document.body.querySelector('.work-center-agent-menu');
+    expect(agentMenu).not.toBeNull();
+    expect([...agentMenu.querySelectorAll('.modern-select-option-label')].map(row => row.textContent.trim())).toEqual(['server', 'C1']);
+    agentMenu.querySelectorAll('.modern-select-option')[1].click();
+    await Vue.nextTick();
+    expect(workCenterStore.enterWorkCenter).toHaveBeenCalledWith('agent-b');
+    workCenterPage.unmount();
+    delete globalThis.Vue;
+    delete globalThis.Pinia.useChatStore;
     expect(workCenter).toContain('workItemMessageAttachments.length === 0');
     expect(workCenter).toContain('work-center-detail-close');
     expect(workCenter).not.toContain('class="work-center-action-content-summary"');
