@@ -806,6 +806,8 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
 
 export function handleYeaftHistoryChunk(store, msg) {
   const msgSessionId = msg.sessionId != null ? msg.sessionId : msg.groupId;
+  if (msg.requestId && typeof store.isCurrentYeaftHistoryResponse === 'function'
+      && !store.isCurrentYeaftHistoryResponse(msg)) return;
   const mode = msg.mode === 'recent' || msg.mode === 'delta' ? msg.mode : 'older';
   const incomingMessages = Array.isArray(msg.messages) ? msg.messages : [];
 
@@ -884,7 +886,9 @@ export function handleYeaftHistoryChunk(store, msg) {
         latestSeq: nextLatest,
         syncingAfterSeq: null,
       };
-  if (store.yeaftSessionHistoryState) {
+  if (msg.requestId && typeof store.finishYeaftHistoryLoad === 'function') {
+    store.finishYeaftHistoryLoad(msg, nextState);
+  } else if (store.yeaftSessionHistoryState) {
     store.yeaftSessionHistoryState = {
       ...store.yeaftSessionHistoryState,
       [sessionKey]: nextState,

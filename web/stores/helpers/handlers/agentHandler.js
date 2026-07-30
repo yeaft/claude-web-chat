@@ -412,6 +412,24 @@ export function handleAgentList(store, msg) {
  */
 export function handleAgentSelected(store, msg) {
   console.log('[agent_selected] Switching to agent:', msg.agentId);
+  const pending = store.pendingAgentSelection || null;
+  if (pending) {
+    const matchesRequest = typeof msg.requestId === 'string' && msg.requestId
+      ? msg.requestId === pending.requestId
+      : msg.agentId === pending.agentId;
+    if (!matchesRequest) return false;
+    store.pendingAgentSelection = null;
+    if (msg.ok === false) {
+      store.agentSwitching = false;
+      return false;
+    }
+  } else if (msg.requestId) {
+    return false;
+  } else if (store.currentAgent && msg.agentId !== store.currentAgent) {
+    // A delayed response from a legacy Server has no request identity. With no
+    // pending target, only the already-active Agent is safe to re-affirm.
+    return false;
+  }
   store.agentSwitching = false;
   const isSameAgent = store.currentAgent === msg.agentId;
   const agentInfo = {
@@ -548,4 +566,5 @@ export function handleAgentSelected(store, msg) {
 
   // ★ Restore split-screen panels from localStorage (independent of conversation restore)
   restorePanels(store);
+  return true;
 }

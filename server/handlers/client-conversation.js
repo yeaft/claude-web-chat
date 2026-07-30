@@ -184,71 +184,138 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           });
         }
       }
-      await broadcastAgentList();
       // Yeaft session rows are only actionable while their owning Agent is
       // connected. Keep offline rows in the DB for reconnect recovery, but do
       // not hydrate them into the sidebar where remove/settings cannot work.
-      // Group by agentId so the web store can keep using per-agent snapshots.
-      if (client.userId) {
-        try {
-          const allRows = yeaftSessionDb.getByUser(client.userId);
-          const byAgent = groupOnlineYeaftSessions(allRows);
-          for (const [agentId, sessions] of Object.entries(byAgent)) {
-            await sendToWebClient(client, {
-              type: 'yeaft_session_hydrate',
-              agentId,
-              sessions,
-              fromDb: true,
-            });
-          }
-        } catch (e) {
-          console.warn('[Server] yeaft session hydrate failed:', e?.message || e);
+      // Send every authoritative slice before a single completion frame; the UI
+      // must not promote a partial multi-Agent inventory to its visible state.
+      let hydrateError = null;
+      try {
+        if (!client.userId) throw new Error('session owner unavailable');
+        const allRows = yeaftSessionDb.getByUser(client.userId);
+        const byAgent = groupOnlineYeaftSessions(allRows);
+        for (const [agentId, agent] of agents) {
+          const visible = agent?.ws?.readyState === 1 && (
+            CONFIG.skipAuth
+            || agent.ownerId === client.userId
+            || (!agent.ownerId && client.role === 'admin')
+          );
+          if (visible && !byAgent[agentId]) byAgent[agentId] = [];
         }
+        for (const [agentId, sessions] of Object.entries(byAgent)) {
+          await sendToWebClient(client, {
+            type: 'yeaft_session_hydrate',
+            ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
+            agentId,
+            sessions,
+            fromDb: true,
+          });
+        }
+        if (Object.keys(byAgent).length === 0) {
+          await sendToWebClient(client, {
+            type: 'yeaft_session_hydrate',
+            ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
+            agentId: null,
+            sessions: [],
+            fromDb: true,
+          });
+        }
+      } catch (e) {
+        hydrateError = e?.message || String(e);
+        console.warn('[Server] yeaft session hydrate failed:', hydrateError);
       }
+      await broadcastAgentList();
+      await sendToWebClient(client, {
+        type: 'yeaft_session_hydrate_complete',
+        ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
+        ok: hydrateError === null,
+        ...(hydrateError ? { error: hydrateError } : {}),
+      });
       break;
 
     case 'select_agent': {
-      if (!await checkAgentAccess(msg.agentId)) break;
-      const agent = agents.get(msg.agentId);
-      if (agent && agent.ws.readyState === 1 /* WebSocket.OPEN */) {
-        client.currentAgent = msg.agentId;
-        if (!msg.silent) {
-          client.currentConversation = null;
-        }
-
-        if (msg.silent) break;
-
-        const filteredConvs = Array.from(agent.conversations.values()).filter(c =>
-          CONFIG.skipAuth || !c.userId || c.userId === client.userId
-        ).map(c => {
-          // fix-chat-title-sticky: lazy-hydrate the title AND the
-          // sticky bit on send. This catches conversations rebuilt
-          // before the bit was wired through (older code paths,
-          if (!c.title || c.customTitle === undefined) {
-            const dbSession = sessionDb.get(c.id);
-            if (dbSession?.title && !c.title) c.title = dbSession.title;
-            if (c.customTitle === undefined) c.customTitle = !!dbSession?.customTitle;
-          }
-          return c;
-        });
-        await sendToWebClient(client, {
-          type: 'agent_selected',
-          agentId: msg.agentId,
-          agentName: agent.name,
-          workDir: agent.workDir,
-          capabilities: agent.capabilities || ['terminal', 'file_editor', 'background_tasks'],
-          version: agent.version || null,
-          conversations: filteredConvs,
-          slashCommands: agent.slashCommands || [],
-          slashCommandDescriptions: agent.slashCommandDescriptions || {}
-        });
-
-        // If slash commands cache is empty, ask Agent to reload from filesystem
-        if (!agent.slashCommands?.length) {
-          await forwardToAgent(msg.agentId, { type: 'request_slash_commands' });
-        }
+      const silentSelection = msg.silent === true;
+      const explicitGenerationAtStart = Number(client.agentSelectionGeneration || 0);
+      let selectionGeneration;
+      if (silentSelection) {
+        // Background reconnect/restore is advisory. It cannot supersede a user
+        // selection, but concurrent silent restores still obey newest-wins.
+        if (client.pendingAgentSelectionGeneration != null) break;
+        selectionGeneration = Number(client.silentAgentSelectionGeneration || 0) + 1;
+        client.silentAgentSelectionGeneration = selectionGeneration;
       } else {
-        await sendToWebClient(client, { type: 'error', message: 'Agent not found or offline' });
+        selectionGeneration = explicitGenerationAtStart + 1;
+        client.agentSelectionGeneration = selectionGeneration;
+        client.pendingAgentSelectionGeneration = selectionGeneration;
+      }
+      const selectionIsCurrent = () => silentSelection
+        ? client.pendingAgentSelectionGeneration == null
+          && Number(client.agentSelectionGeneration || 0) === explicitGenerationAtStart
+          && client.silentAgentSelectionGeneration === selectionGeneration
+        : client.agentSelectionGeneration === selectionGeneration
+          && client.pendingAgentSelectionGeneration === selectionGeneration;
+      try {
+        const allowed = await checkAgentAccess(msg.agentId);
+        if (!selectionIsCurrent()) break;
+        if (!allowed) {
+          if (typeof msg.requestId === 'string' && msg.requestId) {
+            await sendToWebClient(client, {
+              type: 'agent_selected', requestId: msg.requestId, agentId: msg.agentId, ok: false,
+            });
+          }
+          break;
+        }
+        const agent = agents.get(msg.agentId);
+        if (agent && agent.ws.readyState === 1 /* WebSocket.OPEN */) {
+          client.currentAgent = msg.agentId;
+          if (!silentSelection) {
+            client.currentConversation = null;
+          }
+
+          if (silentSelection) break;
+
+          const filteredConvs = Array.from(agent.conversations.values()).filter(c =>
+            CONFIG.skipAuth || !c.userId || c.userId === client.userId
+          ).map(c => {
+            // fix-chat-title-sticky: lazy-hydrate the title AND the
+            // sticky bit on send. This catches conversations rebuilt
+            // before the bit was wired through (older code paths,
+            if (!c.title || c.customTitle === undefined) {
+              const dbSession = sessionDb.get(c.id);
+              if (dbSession?.title && !c.title) c.title = dbSession.title;
+              if (c.customTitle === undefined) c.customTitle = !!dbSession?.customTitle;
+            }
+            return c;
+          });
+          await sendToWebClient(client, {
+            type: 'agent_selected',
+            ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
+            agentId: msg.agentId,
+            agentName: agent.name,
+            workDir: agent.workDir,
+            capabilities: agent.capabilities || ['terminal', 'file_editor', 'background_tasks'],
+            version: agent.version || null,
+            conversations: filteredConvs,
+            slashCommands: agent.slashCommands || [],
+            slashCommandDescriptions: agent.slashCommandDescriptions || {}
+          });
+
+          // If slash commands cache is empty, ask Agent to reload from filesystem
+          if (!agent.slashCommands?.length) {
+            await forwardToAgent(msg.agentId, { type: 'request_slash_commands' });
+          }
+        } else {
+          await sendToWebClient(client, { type: 'error', message: 'Agent not found or offline' });
+          if (typeof msg.requestId === 'string' && msg.requestId) {
+            await sendToWebClient(client, {
+              type: 'agent_selected', requestId: msg.requestId, agentId: msg.agentId, ok: false,
+            });
+          }
+        }
+      } finally {
+        if (!silentSelection && client.pendingAgentSelectionGeneration === selectionGeneration) {
+          client.pendingAgentSelectionGeneration = null;
+        }
       }
       break;
     }
@@ -1067,9 +1134,11 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         type: 'yeaft_load_history',
         limit: msg.limit,
         sessionId: msg.sessionId || null,
+        ...(typeof msg.requestId === 'string' ? { requestId: msg.requestId } : {}),
         ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
         ...(Number.isFinite(msg.afterSeq) ? { afterSeq: msg.afterSeq } : {}),
         ...(typeof msg.afterMessageId === 'string' ? { afterMessageId: msg.afterMessageId } : {}),
+        _requestClientId: clientId,
       };
       if (forwarded.perfTraceId) {
         recordPerfTraceEvent({
@@ -1152,9 +1221,11 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       await forwardToAgent(moreAgentId, {
         type: 'yeaft_load_more_history',
         sessionId: msg.sessionId || null,
+        requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
         beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
         turns: typeof msg.turns === 'number' ? msg.turns : 20,
         ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
+        _requestClientId: clientId,
       });
       break;
     }

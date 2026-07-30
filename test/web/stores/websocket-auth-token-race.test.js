@@ -22,6 +22,11 @@ function createStore() {
     reconnectAttempts: 0,
     connectionState: 'disconnected',
     authenticated: false,
+    _hasHandledAgentList: true,
+    _hasHandledYeaftSessionHydrate: true,
+    yeaftSessionInventoryCompleteSupported: true,
+    yeaftSessionHydrateRequestId: 'old-inventory',
+    _yeaftSessionInventorySocketQuarantined: true,
     serverEncryptionRequired: false,
     chatHistoryRequestIdSupported: true,
     chatHistoryConnectionGeneration: 4,
@@ -97,6 +102,11 @@ describe('websocket auth token races', () => {
     };
 
     connect(store);
+    expect(store._hasHandledAgentList).toBe(false);
+    expect(store._hasHandledYeaftSessionHydrate).toBe(false);
+    expect(store.yeaftSessionInventoryCompleteSupported).toBeNull();
+    expect(store.yeaftSessionHydrateRequestId).toBeNull();
+    expect(store._yeaftSessionInventorySocketQuarantined).toBe(false);
     expect(store.serverEncryptionRequired).toBe(true);
     expect(store.chatHistoryRequestIdSupported).toBe(null);
     expect(store.chatHistoryConnectionGeneration).toBe(5);
@@ -116,6 +126,10 @@ describe('websocket auth token races', () => {
     expect(sockets[0].url).toContain('token=old-token');
     expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token', 1);
     expect(authStore.token).toBe('new-token');
+    expect(store._hasHandledAgentList).toBe(false);
+    expect(store._hasHandledYeaftSessionHydrate).toBe(false);
+    expect(store.yeaftSessionInventoryCompleteSupported).toBeNull();
+    expect(store.yeaftSessionHydrateRequestId).toBeNull();
   });
 
   it('restores encrypted outbound mode before reconnecting to a legacy Server', async () => {

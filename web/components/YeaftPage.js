@@ -204,7 +204,7 @@ export default {
             v-if="!showOnboardingGuide"
             class="yeaft-topbar-right"
             :search-open="historySearchOpen"
-            :loading-more-history="store.yeaftLoadingMoreHistory"
+            :loading-more-history="store.yeaftLoadingMoreHistory || !!store.yeaftSessionHydrateRequestId"
             :session-status-visible="sessionStatusVisible"
             :debug-mode="debugMode"
             :show-page-reload="isMobile"
@@ -235,6 +235,15 @@ export default {
         />
 
         <div class="yeaft-conversation-body">
+          <div
+            v-if="!showSettings && !showOnboardingGuide && (store.yeaftSessionHydrateError || store.yeaftHistoryLoadError)"
+            class="yeaft-history-load-error"
+            :class="{ 'has-messages': store.yeaftVisibleMessages.length > 0 }"
+            role="alert"
+          >
+            <span>{{ $t(store.yeaftSessionHydrateError ? 'yeaft.sessionInventory.error' : 'yeaft.historyLoad.error') }}</span>
+            <button type="button" class="btn-secondary" @click="store.yeaftSessionHydrateError ? retryConversationInventory() : reloadMessages()">{{ $t(store.yeaftSessionHydrateError ? 'yeaft.sessionInventory.retry' : 'yeaft.historyLoad.retry') }}</button>
+          </div>
         <!-- H2.f.6: YeaftFeatureDetailView removed — cross-thread aggregation
              retired with the multi-thread engine; the task-detail view had
              no message data source after H2.f.1, so it's been deleted.
@@ -318,13 +327,23 @@ export default {
           </div>
         </section>
 
+        <div
+          v-if="!showSettings && !showOnboardingGuide && !conversationInventoryReady && !store.yeaftSessionHydrateError && store.yeaftVisibleMessages.length === 0"
+          class="initial-message-loading yeaft-conversation-bootstrap-loading"
+          role="status"
+          aria-live="polite"
+        >
+          <div class="initial-message-loading-spinner" aria-hidden="true"></div>
+          <div class="initial-message-loading-text">{{ $t('chat.session.loadingHistory') }}</div>
+        </div>
+
         <!-- Messages Area — reuse standard MessageList for identical rendering -->
         <!-- task-fix-empty-group: hero state replaces MessageList when the
              active group has no roster — gives the user a single, clear
              next step instead of a blank canvas. The modal still pops on
              top for groups the user hasn't dismissed yet. -->
         <div
-          v-if="!showSettings && !showOnboardingGuide && isActiveGroupEmpty"
+          v-if="!showSettings && !showOnboardingGuide && conversationInventoryReady && isActiveGroupEmpty && store.yeaftVisibleMessages.length === 0 && !store.yeaftInitialHistoryLoading && !store.yeaftHistoryLoadError"
           class="yeaft-empty-group-hero"
         >
           <div class="yeaft-empty-group-hero__icon" aria-hidden="true">
@@ -340,7 +359,7 @@ export default {
         </div>
         <MessageList
           ref="messageListRef"
-          v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty"
+          v-if="!showSettings && !showOnboardingGuide && (conversationInventoryReady || store.yeaftVisibleMessages.length > 0) && (!isActiveGroupEmpty || store.yeaftVisibleMessages.length > 0 || store.yeaftInitialHistoryLoading)"
           @quote-message="setMessageQuote"
           @edit-message-as-new="editMessageAsNew"
         />
@@ -981,6 +1000,17 @@ export default {
       store.reloadYeaftMessages();
     };
 
+    const retryConversationInventory = () => {
+      if (typeof store.requestYeaftSessionInventory === 'function') {
+        store.requestYeaftSessionInventory();
+        return;
+      }
+      store._hasHandledAgentList = false;
+      store._hasHandledYeaftSessionHydrate = false;
+      store.yeaftSessionHydrateError = null;
+      store.sendWsMessage({ type: 'get_agents' });
+    };
+
     const reloadPage = () => {
       window.location.reload();
     };
@@ -1265,11 +1295,19 @@ export default {
       const gs = sessionsStore();
       return !!(gs && gs.activeNeedsInvite);
     });
+    const conversationInventoryReady = Vue.computed(() => {
+      const gs = sessionsStore();
+      return store._hasHandledAgentList === true
+        && store._hasHandledYeaftSessionHydrate === true
+        && !!(gs && gs.hasLoadedSnapshot);
+    });
     const showOnboardingGuide = Vue.computed(() => {
       const gs = sessionsStore();
       return shouldShowYeaftOnboardingGuide({
+        agentInventoryReady: store._hasHandledAgentList === true,
         hasYeaftAgent: hasUsableYeaftAgent(store),
-        sessionsReady: !!(gs && gs.hasLoadedSnapshot),
+        sessionsReady: store._hasHandledYeaftSessionHydrate === true
+          && !!(gs && gs.hasLoadedSnapshot),
         sessionsEmpty: !!(gs && gs.isEmpty),
       });
     });
@@ -1558,6 +1596,7 @@ export default {
       toggleDebug,
       closeDebug,
       reloadMessages,
+      retryConversationInventory,
       reloadPage,
       toggleModelDropdown,
       selectModel,
@@ -1587,6 +1626,7 @@ export default {
       onInviteOpenLibrary,
       onInviteDismiss,
       isActiveGroupEmpty,
+      conversationInventoryReady,
       showOnboardingGuide,
       installAgentCommand,
       connectAgentCommand,

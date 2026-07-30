@@ -62,7 +62,7 @@ export default {
       </div>
 
       <!-- Welcome Screen when no conversation -->
-      <div v-if="!store.currentConversation" class="welcome-screen">
+      <div v-if="!store.activeConversationId" class="welcome-screen">
         <div class="welcome-content">
           <div class="welcome-logo">
             <svg viewBox="0 0 48 48" width="64" height="64" aria-hidden="true">
@@ -1330,12 +1330,14 @@ export default {
     });
 
     const showInitialMessagesLoading = Vue.computed(() => {
-      if (!store.currentConversation || messageBlocks.value.length > 0) return false;
-      if (store.currentView === 'yeaft') return !!store.yeaftLoadingMoreHistory;
+      if (!store.activeConversationId || messageBlocks.value.length > 0) return false;
+      if (store.currentView === 'yeaft') return !!store.yeaftInitialHistoryLoading;
       return !!store.sessionLoading;
     });
 
-    const initialMessagesLoadingText = Vue.computed(() => store.sessionLoadingText || '');
+    const initialMessagesLoadingText = Vue.computed(() => (
+      store.currentView === 'yeaft' ? '' : (store.sessionLoadingText || '')
+    ));
 
     const showSessionLoadingOverlay = Vue.computed(() => {
       return !!store.sessionLoading && !showInitialMessagesLoading.value;

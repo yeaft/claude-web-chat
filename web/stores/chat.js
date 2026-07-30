@@ -38,6 +38,15 @@ import { normalizeSessionMessageQuote } from '../utils/session-message-quote.js'
 import { markTurnResponseKinds } from '../utils/turn-response.js';
 import { yeaftHistoryIdentityKey } from './helpers/yeaft-history-identity.js';
 import {
+  activeYeaftHistoryLoadState,
+  beginYeaftHistoryLoad,
+  failYeaftHistoryLoad,
+  finishYeaftHistoryLoad,
+  isCurrentYeaftHistoryResponse,
+  syncActiveYeaftHistoryLoad,
+  YEAFT_HISTORY_LOAD_TIMEOUT_MS,
+} from './helpers/yeaft-history-load.js';
+import {
   yeaftAgentSessionIdentityPrefix,
   yeaftSessionIdentityKey,
   yeaftTurnIdentityKey,
@@ -171,6 +180,7 @@ function clearYeaftAgentRuntimeState(state, agentId) {
 // a session the UI has never seen). User-confirmed: 5 turns is the sweet
 // spot — small enough to paint instantly, large enough to give context.
 const YEAFT_RECENT_TURNS = 5;
+const YEAFT_SESSION_INVENTORY_TIMEOUT_MS = 15_000;
 const YEAFT_RECENT_TERMINAL_TASK_LIMIT = 8;
 const YEAFT_TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'orphaned']);
 const YEAFT_RUNNING_VP_STATES = new Set(['typing', 'thinking', 'retrying', 'streaming', 'tool']);
@@ -475,6 +485,13 @@ export const useChatStore = defineStore('chat', {
   state: () => ({
     ws: null,
     authenticated: false,
+    _hasHandledAgentList: false,
+    _hasHandledYeaftSessionHydrate: false,
+    yeaftSessionInventoryCompleteSupported: null,
+    yeaftSessionHydrateRequestId: null,
+    yeaftSessionHydrateSlices: [],
+    yeaftSessionHydrateError: null,
+    _yeaftSessionInventorySocketQuarantined: false,
     sessionKey: null, // Uint8Array for encryption
     // feat-ws-plaintext-negotiation: defaults `true` (= assume old
     // server, keep encrypting outbound for back-compat). Cleared to
@@ -574,6 +591,7 @@ export const useChatStore = defineStore('chat', {
     sessionLoading: false,  // 创建/恢复会话时的 loading
     sessionLoadingText: '',  // loading 时显示的文字
     agentSwitching: false,  // 切换 agent 时的 loading
+    pendingAgentSelection: null, // { agentId, requestId }; fences stale agent_selected replies
     // 临时保存恢复会话时的标题
     _pendingSessionTitle: null,
     // Workbench 面板是否展开（替代 backgroundPanelExpanded）
@@ -616,6 +634,7 @@ export const useChatStore = defineStore('chat', {
     yeaftHasMoreHistory: false,
     yeaftLoadingMoreHistory: false,
     yeaftOldestLoadedSeq: null,
+    yeaftHistoryLoadError: null,
     // Group-scoped Yeaft history cursors/cache metadata. The legacy three
     // flags above mirror the currently active group for component
     // compatibility; this map is the source of truth across group switches.
@@ -1067,6 +1086,17 @@ export const useChatStore = defineStore('chat', {
       const visibleTurns = state.yeaftMessageWindowState[sessionKey]?.visibleTurns
         || getDefaultYeaftVisibleTurns();
       return hasHiddenScopedYeaftMessageTurns(raw, state.yeaftActiveSessionFilter || null, visibleTurns);
+    },
+    activeYeaftHistoryState(state) {
+      return activeYeaftHistoryLoadState(state);
+    },
+    yeaftInitialHistoryLoading(state) {
+      const load = activeYeaftHistoryLoadState(state);
+      return state.currentView === 'yeaft'
+        && !!state.yeaftActiveSessionFilter
+        && !!load?.loading
+        && !load?.loaded
+        && this.yeaftVisibleMessages.length === 0;
     },
     // task-fix: per-VP typing-indicator getters scoped to the CURRENT
     // conversation. Components read these instead of the underlying
@@ -2284,6 +2314,78 @@ export const useChatStore = defineStore('chat', {
       if (agentInfo) this.currentAgentInfo = agentInfo;
       return this.activateYeaftAgentCatalog(agentId, previousAgentId);
     },
+    resolveYeaftSessionAgentId(sessionId) {
+      return resolveAgentIdForSession(this, sessionId);
+    },
+    requestYeaftSessionInventory() {
+      // Legacy Servers do not echo requestId, so overlapping requests cannot be
+      // separated safely. Reuse the current owner until its slice quiet-window
+      // commits. After either a quiet commit or timeout, replace the socket before
+      // another request: the old request may still deliver identity-less slices.
+      if (this.yeaftSessionInventoryCompleteSupported === false
+          && this.yeaftSessionHydrateRequestId) {
+        return this.yeaftSessionHydrateRequestId;
+      }
+      if (this._yeaftSessionInventorySocketQuarantined) {
+        this.manualReconnect();
+        return null;
+      }
+      clearTimeout(this._legacyYeaftSessionHydrateTimer);
+      this._legacyYeaftSessionHydrateTimer = null;
+      const requestId = `session_inventory_${crypto.randomUUID()}`;
+      this.yeaftSessionHydrateRequestId = requestId;
+      this.yeaftSessionHydrateSlices = [];
+      this._hasHandledAgentList = false;
+      this._hasHandledYeaftSessionHydrate = false;
+      this.yeaftSessionHydrateError = null;
+      const knownConvIds = this.conversations.map(c => c.id).filter(Boolean);
+      const sent = this.sendWsMessage({
+        type: 'get_agents',
+        requestId,
+        conversationIds: knownConvIds.length > 0 ? knownConvIds : undefined,
+      });
+      if (!sent) {
+        this.yeaftSessionHydrateRequestId = null;
+        this.yeaftSessionHydrateSlices = [];
+        this.yeaftSessionHydrateError = 'session_inventory_send_failed';
+        return null;
+      }
+      setTimeout(() => {
+        if (this.yeaftSessionHydrateRequestId !== requestId) return;
+        this.yeaftSessionHydrateRequestId = null;
+        this.yeaftSessionHydrateSlices = [];
+        this.yeaftSessionHydrateError = 'session_inventory_timeout';
+        if (this.yeaftSessionInventoryCompleteSupported !== true) {
+          this._yeaftSessionInventorySocketQuarantined = true;
+        }
+      }, YEAFT_SESSION_INVENTORY_TIMEOUT_MS);
+      return requestId;
+    },
+    beginYeaftHistoryLoad(options) {
+      const request = beginYeaftHistoryLoad(this, options);
+      if (!request) return null;
+      const { agentId, sessionId } = options || {};
+      setTimeout(() => {
+        if (failYeaftHistoryLoad(this, {
+          agentId,
+          sessionId,
+          requestId: request.requestId,
+          error: 'history_load_timeout',
+        })) {
+          console.warn(`[Yeaft] history load timed out for ${agentId}/${sessionId}`);
+        }
+      }, YEAFT_HISTORY_LOAD_TIMEOUT_MS);
+      return request;
+    },
+    finishYeaftHistoryLoad(msg, patch = {}) {
+      return finishYeaftHistoryLoad(this, msg, patch);
+    },
+    isCurrentYeaftHistoryResponse(msg) {
+      return isCurrentYeaftHistoryResponse(this, msg);
+    },
+    syncActiveYeaftHistoryLoad() {
+      return syncActiveYeaftHistoryLoad(this);
+    },
     enterYeaft(agentId = null) {
       const previousAgentId = this.currentAgent;
       // Capture the chat-side activeConversations snapshot BEFORE flipping
@@ -2444,12 +2546,14 @@ export const useChatStore = defineStore('chat', {
       const metadataOnly = needSessionReady && !needHistoryReplay && !needHistoryCatchUp;
       if (metadataOnly && this.yeaftBootstrapMetaLoadingKey === metaKey) return false;
       if (metadataOnly) this.yeaftBootstrapMetaLoadingKey = metaKey;
+      let historyRequest = null;
       if (activeSessionId && needHistoryReplay) {
-        this.yeaftSessionHistoryState = {
-          ...this.yeaftSessionHistoryState,
-          [sessionKey]: { loaded: false, loading: true, hasMore: false, oldestSeq: null, count: 0 },
-        };
-        this.yeaftLoadingMoreHistory = true;
+        historyRequest = this.beginYeaftHistoryLoad({
+          agentId: targetAgentId,
+          sessionId: activeSessionId,
+          mode: 'recent',
+          preserveLoaded: false,
+        });
       } else if (activeSessionId && hasCachedSessionRows && !sessionState?.loaded) {
         this.yeaftSessionHistoryState = {
           ...this.yeaftSessionHistoryState,
@@ -2465,16 +2569,19 @@ export const useChatStore = defineStore('chat', {
         };
         this.yeaftLoadingMoreHistory = false;
       } else if (activeSessionId && needHistoryCatchUp) {
-        this.yeaftSessionHistoryState = {
-          ...this.yeaftSessionHistoryState,
-          [sessionKey]: { ...sessionState, loaded: true, loading: true, latestSeq },
-        };
-        this.yeaftLoadingMoreHistory = true;
+        historyRequest = this.beginYeaftHistoryLoad({
+          agentId: targetAgentId,
+          sessionId: activeSessionId,
+          mode: 'delta',
+          preserveLoaded: true,
+          latestSeq,
+        });
       }
       const payload = {
         type: 'yeaft_load_history',
         agentId: targetAgentId,
         sessionId: activeSessionId,
+        ...(historyRequest ? { requestId: historyRequest.requestId } : {}),
       };
       if (needHistoryCatchUp) payload.afterSeq = latestSeq;
       else payload.limit = needHistoryReplay ? YEAFT_RECENT_TURNS : 0;
@@ -4118,6 +4225,12 @@ export const useChatStore = defineStore('chat', {
 
         case 'history_loaded':
           {
+            const historyResponse = {
+              ...event,
+              agentId: msg.agentId || null,
+              requestId: event.requestId || msg.requestId || null,
+            };
+            if (historyResponse.requestId && !this.isCurrentYeaftHistoryResponse(historyResponse)) break;
             const responseAgentId = msg.agentId || null;
             const responseSessionId = event.sessionId ?? null;
             const sessionKey = yeaftHistoryIdentityKey(responseAgentId, responseSessionId);
@@ -4162,10 +4275,15 @@ export const useChatStore = defineStore('chat', {
                   latestSeq: nextLatest,
                   syncingAfterSeq: null,
                 };
-            this.yeaftSessionHistoryState = {
-              ...this.yeaftSessionHistoryState,
-              [sessionKey]: nextState,
-            };
+            const completedState = historyResponse.requestId
+              ? this.finishYeaftHistoryLoad(historyResponse, nextState)
+              : null;
+            if (!completedState) {
+              this.yeaftSessionHistoryState = {
+                ...this.yeaftSessionHistoryState,
+                [sessionKey]: nextState,
+              };
+            }
             const activeKey = yeaftHistoryIdentityKey(
               responseAgentId ? this.currentAgent : null,
               this.yeaftActiveSessionFilter ?? null,
@@ -4238,14 +4356,30 @@ export const useChatStore = defineStore('chat', {
           // render the user's full cross-agent yeaft session list on
           // reload before any agent connects.
           const gs = window.Pinia?.useSessionsStore?.() || (window.__useSessionsStore && window.__useSessionsStore());
-          const prevGroupId = gs ? (gs.activeSessionId || null) : null;
           const rows = event.sessions || [];
+          if (event.type !== 'yeaft_session_hydrate'
+              && this.yeaftSessionHydrateRequestId
+              && this.yeaftSessionInventoryCompleteSupported === true) {
+            const slices = Array.isArray(this.yeaftSessionHydrateSlices)
+              ? this.yeaftSessionHydrateSlices.filter(slice => slice.agentId !== (msg.agentId || null))
+              : [];
+            this.yeaftSessionHydrateSlices = [...slices, {
+              agentId: msg.agentId || null,
+              sessions: rows,
+            }];
+            break;
+          }
+          const prevGroupId = gs ? (gs.activeSessionId || null) : null;
           // msg.agentId is stamped on yeaft_output envelopes by the
           // server relay (since v0.1.882). Pass it through so the
           // sessions store can keep per-agent rosters in the unified
           // sidebar. Older agents/servers omit the field — the store
           // falls back to the legacy whole-replacement path.
-          if (gs) gs.applySnapshot(rows, msg.agentId || null);
+          if (gs) {
+            gs.applySnapshot(rows, msg.agentId || null);
+            this._hasHandledYeaftSessionHydrate = true;
+            this.yeaftSessionHydrateError = null;
+          }
           const newGroupId = gs ? (gs.activeSessionId || null) : null;
           // Bug 1: after enterYeaft the group snapshot may arrive *after*
           // initial history load (which happened with groupId:null), so
@@ -5099,10 +5233,35 @@ export const useChatStore = defineStore('chat', {
 
       const sessionKey = yeaftHistoryIdentityKey(targetAgentId, next);
       const savedState = this.yeaftSessionHistoryState[sessionKey] || null;
-      this.yeaftHasMoreHistory = !!savedState?.hasMore;
-      this.yeaftLoadingMoreHistory = !!savedState?.loading;
-      this.yeaftOldestLoadedSeq = (typeof savedState?.oldestSeq === 'number') ? savedState.oldestSeq : null;
       this.pruneYeaftMessageWindow(next);
+
+      // Session activation is atomic: commit its owning Agent conversation and
+      // both visible pointers before history de-duplication can return early.
+      // Otherwise selecting a Session whose request is already in flight leaves
+      // the previous Agent conversation visible and the new filter projects an
+      // empty pane until the user clicks again.
+      if (targetAgentId && next) {
+        this.yeaftSessionAgentById = {
+          ...(this.yeaftSessionAgentById || {}),
+          [next]: targetAgentId,
+        };
+        let targetConversationId = this.yeaftConversationIdsByAgent?.[targetAgentId] || null;
+        if (!targetConversationId) {
+          targetConversationId = `yeaft-local-${targetAgentId}-${Date.now()}`;
+          this.yeaftConversationIdsByAgent = {
+            ...(this.yeaftConversationIdsByAgent || {}),
+            [targetAgentId]: targetConversationId,
+          };
+        }
+        this.yeaftConversationId = targetConversationId;
+        if (!this.messagesMap[targetConversationId]) this.messagesMap[targetConversationId] = [];
+        if (this.currentView === 'yeaft') this.activeConversations = [targetConversationId];
+      }
+      try {
+        const gs = window.Pinia?.useSessionsStore?.() || (window.__useSessionsStore && window.__useSessionsStore());
+        if (gs && typeof gs.setActive === 'function') gs.setActive(next, targetAgentId || null);
+      } catch (_) {}
+      this.syncActiveYeaftHistoryLoad();
 
       // If a restore/snapshot path forces the current session while an initial
       // history request is already in flight, keep the UI flags in sync but do
@@ -5136,22 +5295,6 @@ export const useChatStore = defineStore('chat', {
       // doesn't swallow the frame; the assignment then makes same-tick reads
       // see the new owner).
       if (targetAgentId && next) {
-        this.yeaftSessionAgentById = {
-          ...(this.yeaftSessionAgentById || {}),
-          [next]: targetAgentId,
-        };
-        let targetConversationId = this.yeaftConversationIdsByAgent?.[targetAgentId] || null;
-        if (!targetConversationId) {
-          targetConversationId = `yeaft-local-${targetAgentId}-${Date.now()}`;
-          this.yeaftConversationIdsByAgent = {
-            ...(this.yeaftConversationIdsByAgent || {}),
-            [targetAgentId]: targetConversationId,
-          };
-        }
-        this.yeaftConversationId = targetConversationId;
-        if (!this.messagesMap[targetConversationId]) this.messagesMap[targetConversationId] = [];
-        if (this.currentView === 'yeaft') this.activeConversations = [targetConversationId];
-
         const latestSeq = Number.isFinite(savedState?.latestSeq) ? savedState.latestSeq : null;
         const payload = {
           type: 'yeaft_load_history',
@@ -5179,35 +5322,36 @@ export const useChatStore = defineStore('chat', {
               syncingAfterSeq: null,
             },
           };
-          this.yeaftLoadingMoreHistory = false;
+          this.syncActiveYeaftHistoryLoad();
           return;
         }
+        let historyRequest = null;
         if (!shouldReplayRecent && hasLoadedWindow) {
           if (savedState?.syncingAfterSeq === latestSeq) return;
+          historyRequest = this.beginYeaftHistoryLoad({
+            agentId: targetAgentId,
+            sessionId: next,
+            mode: 'delta',
+            preserveLoaded: true,
+            latestSeq,
+          });
           this.yeaftSessionHistoryState = {
             ...this.yeaftSessionHistoryState,
             [sessionKey]: {
-              ...(savedState || { hasMore: false, oldestSeq: null, count: 0 }),
-              loaded: true,
-              loading: false,
+              ...this.yeaftSessionHistoryState[sessionKey],
               syncingAfterSeq: latestSeq,
-              latestSeq,
             },
           };
-          this.yeaftLoadingMoreHistory = false;
         } else {
-          this.yeaftSessionHistoryState = {
-            ...this.yeaftSessionHistoryState,
-            [sessionKey]: {
-              ...(savedState || { hasMore: false, oldestSeq: null, count: 0 }),
-              loaded: false,
-              loading: true,
-              syncingAfterSeq: null,
-              latestSeq: shouldReplayRecent ? null : latestSeq,
-            },
-          };
-          this.yeaftLoadingMoreHistory = true;
+          historyRequest = this.beginYeaftHistoryLoad({
+            agentId: targetAgentId,
+            sessionId: next,
+            mode: 'recent',
+            preserveLoaded: false,
+            latestSeq: shouldReplayRecent ? null : latestSeq,
+          });
         }
+        if (historyRequest) payload.requestId = historyRequest.requestId;
         this.sendWsMessage(payload);
       }
     },
@@ -5772,7 +5916,7 @@ export const useChatStore = defineStore('chat', {
     // =====================
     // Conversation lifecycle
     // =====================
-    selectAgent(agentId) { convHelpers.selectAgent(this, agentId); },
+    selectAgent(agentId) { return convHelpers.selectAgent(this, agentId); },
     createConversation(workDir, agentId = null, disallowedTools = null, options = undefined) { convHelpers.createConversation(this, workDir, agentId, disallowedTools, options); },
     resumeConversation(claudeSessionId, workDir, agentId = null, disallowedToolsOrOptions = null, maybeOptions = null) { convHelpers.resumeConversation(this, claudeSessionId, workDir, agentId, disallowedToolsOrOptions, maybeOptions); },
     selectConversation(conversationId, agentId) { convHelpers.selectConversation(this, conversationId, agentId); },
@@ -6236,14 +6380,13 @@ export const useChatStore = defineStore('chat', {
       // live streaming row and preventing the refresh button from showing an
       // empty conversation during the round trip.
 
-      const { [sessionKey]: _oldState, ...rest } = this.yeaftSessionHistoryState || {};
-      this.yeaftSessionHistoryState = {
-        ...rest,
-        [sessionKey]: { loaded: false, loading: true, hasMore: false, oldestSeq: null, latestSeq: null, count: 0 },
-      };
-      this.yeaftHasMoreHistory = false;
-      this.yeaftOldestLoadedSeq = null;
-      this.yeaftLoadingMoreHistory = true;
+      const historyRequest = this.beginYeaftHistoryLoad({
+        agentId: targetAgentId,
+        sessionId,
+        mode: 'recent',
+        preserveLoaded: false,
+      });
+      if (!historyRequest) return false;
 
       const perfTraceId = createPerfTraceId();
       this.yeaftHistoryPerfTraceBySession = {
@@ -6255,6 +6398,7 @@ export const useChatStore = defineStore('chat', {
         agentId: targetAgentId,
         limit: YEAFT_RECENT_TURNS,
         sessionId,
+        requestId: historyRequest.requestId,
         perfTraceId,
       };
       recordPerfTrace(this, {
@@ -6282,15 +6426,15 @@ export const useChatStore = defineStore('chat', {
         ? Math.floor(turns)
         : getYeaftWindowLoadStepTurns()));
 
-      this.yeaftLoadingMoreHistory = true;
       const sessionKey = yeaftHistoryIdentityKey(targetAgentId, sessionId);
-      this.yeaftSessionHistoryState = {
-        ...this.yeaftSessionHistoryState,
-        [sessionKey]: {
-          ...(this.yeaftSessionHistoryState[sessionKey] || {}),
-          loading: true,
-        },
-      };
+      const historyRequest = this.beginYeaftHistoryLoad({
+        agentId: targetAgentId,
+        sessionId,
+        mode: 'older',
+        preserveLoaded: true,
+        latestSeq: this.yeaftSessionHistoryState[sessionKey]?.latestSeq ?? null,
+      });
+      if (!historyRequest) return;
       const perfTraceId = createPerfTraceId();
       this.yeaftHistoryPerfTraceBySession = {
         ...(this.yeaftHistoryPerfTraceBySession || {}),
@@ -6300,6 +6444,7 @@ export const useChatStore = defineStore('chat', {
         type: 'yeaft_load_more_history',
         agentId: targetAgentId,
         sessionId,
+        requestId: historyRequest.requestId,
         beforeSeq: this.yeaftOldestLoadedSeq,
         turns: requestedTurns,
         perfTraceId,

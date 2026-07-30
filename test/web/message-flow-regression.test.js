@@ -62,6 +62,7 @@ globalThis.Pinia = {
   useSessionsStore: () => runtimeSessionsStore,
 };
 const { useChatStore } = await import('../../web/stores/chat.js');
+const { useSessionsStore } = await import('../../web/stores/sessions.js');
 const { default: SessionCreateModal } = await import('../../web/components/SessionCreateModal.js');
 const { default: ChatPage } = await import('../../web/components/ChatPage.js');
 const { default: YeaftSidebar } = await import('../../web/components/YeaftSidebar.js');
@@ -70,6 +71,8 @@ const {
   handleConversationResumed,
   handleSyncMessagesResult,
 } = await import('../../web/stores/helpers/handlers/conversationHandler.js');
+const { handleAgentSelected } = await import('../../web/stores/helpers/handlers/agentHandler.js');
+const { handleMessage } = await import('../../web/stores/helpers/messageHandler.js');
 
 import {
   buildYeaftMessageTurnSpans,
@@ -758,6 +761,331 @@ describe('message flow regressions', () => {
       { id: 'shared', agentId: 'agent-b' },
     ];
     const store = useChatStore();
+    const productionSendWsMessage = store.sendWsMessage;
+    store.sendWsMessage = vi.fn();
+    store.agents = [
+      { id: 'agent-a', name: 'Agent A', online: true },
+      { id: 'agent-b', name: 'Agent B', online: true },
+    ];
+    store.currentAgent = 'agent-old';
+    const requestA = store.selectAgent('agent-a');
+    const requestB = store.selectAgent('agent-b');
+    store.activateYeaftAgent('agent-b', store.agents[1]);
+    expect(requestA).not.toBe(requestB);
+    expect(handleAgentSelected(store, {
+      type: 'agent_selected', requestId: requestA, agentId: 'agent-a', agentName: 'Agent A', conversations: [],
+    })).toBe(false);
+    expect(store.currentAgent).toBe('agent-b');
+    expect(handleAgentSelected(store, {
+      type: 'agent_selected', requestId: requestB, agentId: 'agent-b', agentName: 'Agent B', conversations: [],
+    })).toBe(true);
+    expect(store.currentAgent).toBe('agent-b');
+    expect(store.pendingAgentSelection).toBeNull();
+
+    const legacyRequest = store.selectAgent('agent-a');
+    expect(legacyRequest).toBeTruthy();
+    expect(handleAgentSelected(store, {
+      type: 'agent_selected', agentId: 'agent-b', agentName: 'Agent B', conversations: [],
+    })).toBe(false);
+    expect(handleAgentSelected(store, {
+      type: 'agent_selected', agentId: 'agent-a', agentName: 'Agent A', conversations: [],
+    })).toBe(true);
+    expect(store.currentAgent).toBe('agent-a');
+
+    store.currentAgent = 'agent-a';
+    store.sendWsMessage = vi.fn(() => false);
+    expect(store.selectAgent('agent-b')).toBeNull();
+    expect(store.pendingAgentSelection).toBeNull();
+    expect(store.agentSwitching).toBe(false);
+    store.pendingAgentSelection = { agentId: 'agent-b', requestId: 'failed-agent' };
+    store.agentSwitching = true;
+    expect(handleAgentSelected(store, {
+      type: 'agent_selected', agentId: 'agent-b', requestId: 'failed-agent', ok: false,
+    })).toBe(false);
+    expect(store.pendingAgentSelection).toBeNull();
+    expect(store.agentSwitching).toBe(false);
+
+    vi.useFakeTimers();
+    store.conversations = [{ id: 'chat-one' }];
+    store.yeaftSessionInventoryCompleteSupported = true;
+    store.sendWsMessage = vi.fn(() => true);
+    const inventoryRequest = store.requestYeaftSessionInventory();
+    expect(inventoryRequest).toMatch(/^session_inventory_/);
+    expect(store.sendWsMessage).toHaveBeenLastCalledWith({
+      type: 'get_agents', requestId: inventoryRequest, conversationIds: ['chat-one'],
+    });
+    expect(store.yeaftSessionHydrateError).toBeNull();
+    vi.advanceTimersByTime(15_000);
+    expect(store.yeaftSessionHydrateRequestId).toBeNull();
+    expect(store.yeaftSessionHydrateSlices).toEqual([]);
+    expect(store.yeaftSessionHydrateError).toBe('session_inventory_timeout');
+    expect(store._yeaftSessionInventorySocketQuarantined).toBe(false);
+    const staleTimeoutState = {
+      yeaftSessionInventoryCompleteSupported: true,
+      yeaftSessionHydrateRequestId: null,
+      yeaftSessionHydrateSlices: [],
+      _hasHandledYeaftSessionHydrate: false,
+      yeaftSessionHydrateError: 'session_inventory_timeout',
+    };
+    handleMessage(staleTimeoutState, {
+      type: 'yeaft_session_hydrate_complete', requestId: inventoryRequest, ok: true,
+    });
+    expect(staleTimeoutState.yeaftSessionHydrateError).toBe('session_inventory_timeout');
+    vi.useRealTimers();
+
+    const hydrateSessions = {
+      live: [],
+      applySnapshot: vi.fn(function applySnapshot(rows, agentId) {
+        this.live.push({ agentId, rows });
+      }),
+      resetInventory: vi.fn(function resetInventory() { this.live = []; }),
+      beginInventoryCommit: vi.fn(function beginInventoryCommit(sessionId, agentId) {
+        this.live = [];
+        this.preferred = { sessionId, agentId };
+      }),
+    };
+    const hydrateStore = {
+      _lastPongAt: 0,
+      currentAgent: 'agent-b',
+      yeaftActiveSessionFilter: 'same',
+      resolveYeaftSessionAgentId: vi.fn(() => 'agent-b'),
+      yeaftSessionInventoryCompleteSupported: true,
+      yeaftSessionHydrateRequestId: 'inventory-2',
+      yeaftSessionHydrateSlices: [],
+      _hasHandledYeaftSessionHydrate: false,
+      yeaftSessionHydrateError: null,
+    };
+    const previousSessionsStore = globalThis.Pinia.useSessionsStore;
+    globalThis.Pinia.useSessionsStore = () => hydrateSessions;
+    vi.useFakeTimers();
+    try {
+      handleMessage(hydrateStore, {
+        type: 'yeaft_session_hydrate', requestId: 'inventory-1', agentId: 'agent-a', sessions: [{ id: 'stale' }],
+      });
+      handleMessage(hydrateStore, {
+        type: 'yeaft_session_hydrate', requestId: 'inventory-2', agentId: 'agent-a', sessions: [{ id: 'one' }],
+      });
+      handleMessage(hydrateStore, {
+        type: 'yeaft_session_hydrate', requestId: 'inventory-2', agentId: 'agent-b', sessions: [{ id: 'two' }],
+      });
+      expect(hydrateSessions.applySnapshot).not.toHaveBeenCalled();
+      handleMessage(hydrateStore, {
+        type: 'yeaft_session_hydrate_complete', requestId: 'inventory-1', ok: true,
+      });
+      expect(hydrateStore._hasHandledYeaftSessionHydrate).toBe(false);
+      handleMessage(hydrateStore, {
+        type: 'yeaft_session_hydrate_complete', requestId: 'inventory-2', ok: true,
+      });
+      expect(hydrateSessions.beginInventoryCommit).toHaveBeenCalledWith('same', 'agent-b');
+      expect(hydrateSessions.live).toEqual([
+        { agentId: 'agent-b', rows: [{ id: 'two' }] },
+        { agentId: 'agent-a', rows: [{ id: 'one' }] },
+      ]);
+      expect(hydrateStore._hasHandledYeaftSessionHydrate).toBe(true);
+
+      const legacySessions = useSessionsStore();
+      legacySessions.resetInventory();
+      legacySessions.applySnapshot([{ id: 'session-b', name: 'Session B' }], 'agent-b');
+      legacySessions.setActive('session-b', 'agent-b');
+      globalThis.Pinia.useSessionsStore = () => legacySessions;
+      const previousChatStore = globalThis.Pinia.useChatStore;
+      globalThis.Pinia.useChatStore = () => store;
+      store.currentView = 'yeaft';
+      store.currentAgent = 'agent-b';
+      store.yeaftActiveSessionFilter = 'session-b';
+      store.yeaftSessionAgentById = { 'session-b': 'agent-b' };
+      store.yeaftSessionInventoryCompleteSupported = false;
+      store.yeaftSessionHydrateRequestId = null;
+      store.yeaftSessionHydrateSlices = [];
+      store._hasHandledYeaftSessionHydrate = false;
+      store.sendWsMessage.mockClear();
+      const legacyRequest = store.requestYeaftSessionInventory();
+      expect(store.requestYeaftSessionInventory()).toBe(legacyRequest);
+      expect(store.sendWsMessage).toHaveBeenCalledTimes(1);
+      const setFilterSpy = vi.spyOn(store, 'setActiveSessionFilter');
+      try {
+        // Old Servers broadcast agent_list before any Session slice. That frame
+        // is not a completion boundary, even when the first slice is slow.
+        handleMessage(store, { type: 'agent_list', agents: [] });
+        vi.advanceTimersByTime(550);
+        expect(store.yeaftSessionHydrateRequestId).toBe(legacyRequest);
+        expect(store._hasHandledYeaftSessionHydrate).toBe(false);
+        expect(legacySessions.activeSession).toMatchObject({ id: 'session-b', agentId: 'agent-b' });
+        expect(store.yeaftActiveSessionFilter).toBe('session-b');
+        expect(store.currentAgent).toBe('agent-b');
+        expect(setFilterSpy).not.toHaveBeenCalled();
+
+        handleMessage(store, {
+          type: 'yeaft_session_hydrate', agentId: 'agent-a', sessions: [{ id: 'session-a', name: 'Session A' }],
+        });
+        expect(legacySessions.activeSessionId).toBe('session-b');
+        vi.advanceTimersByTime(300);
+        handleMessage(store, {
+          type: 'yeaft_session_hydrate', agentId: 'agent-b', sessions: [{ id: 'session-b', name: 'Session B' }],
+        });
+        vi.advanceTimersByTime(499);
+        expect(legacySessions.activeSessionId).toBe('session-b');
+        expect(store.yeaftActiveSessionFilter).toBe('session-b');
+        expect(store.currentAgent).toBe('agent-b');
+        expect(setFilterSpy).not.toHaveBeenCalled();
+
+        vi.advanceTimersByTime(1);
+        expect(store.yeaftSessionHydrateRequestId).toBeNull();
+        expect(store._hasHandledYeaftSessionHydrate).toBe(true);
+        expect(store._yeaftSessionInventorySocketQuarantined).toBe(true);
+        expect(legacySessions.sessionOrder.map((key) => {
+          const row = legacySessions.sessions[key];
+          return `${row.agentId}:${row.id}`;
+        })).toEqual([
+          'agent-b:session-b',
+          'agent-a:session-a',
+        ]);
+        expect(legacySessions.activeSession).toMatchObject({ id: 'session-b', agentId: 'agent-b' });
+        expect(store.yeaftActiveSessionFilter).toBe('session-b');
+        expect(store.currentAgent).toBe('agent-b');
+        expect(setFilterSpy).not.toHaveBeenCalled();
+
+        // Model the next authenticated legacy socket for the zero-slice unit
+        // path. The production reconnect boundary after quiet completion is
+        // exercised with real socket callbacks below.
+        store._yeaftSessionInventorySocketQuarantined = false;
+
+        // A zero-slice legacy response is indistinguishable from a delayed first
+        // slice. Preserve the live cache until the bounded request timeout rather
+        // than manufacturing an empty authoritative inventory after 500ms.
+        store.sendWsMessage.mockClear();
+        const emptyLegacyRequest = store.requestYeaftSessionInventory();
+        expect(store.requestYeaftSessionInventory()).toBe(emptyLegacyRequest);
+        expect(store.sendWsMessage).toHaveBeenCalledTimes(1);
+        handleMessage(store, { type: 'agent_list', agents: [] });
+        // The completed request's still-pending 15s timeout must not retire this
+        // newer owner. Only the timeout created for emptyLegacyRequest may do so.
+        vi.advanceTimersByTime(13_650);
+        expect(store.yeaftSessionHydrateRequestId).toBe(emptyLegacyRequest);
+        vi.advanceTimersByTime(1_350);
+        expect(store.yeaftSessionHydrateRequestId).toBeNull();
+        expect(store.yeaftSessionHydrateError).toBe('session_inventory_timeout');
+        expect(store._yeaftSessionInventorySocketQuarantined).toBe(true);
+        expect(legacySessions.activeSession).toMatchObject({ id: 'session-b', agentId: 'agent-b' });
+        expect(store.yeaftActiveSessionFilter).toBe('session-b');
+        expect(store.currentAgent).toBe('agent-b');
+
+        handleMessage(store, {
+          type: 'yeaft_session_hydrate', agentId: 'agent-a', sessions: [{ id: 'late', name: 'Late' }],
+        });
+        vi.advanceTimersByTime(500);
+        expect(legacySessions.sessionById('late', 'agent-a')).toBeNull();
+        expect(legacySessions.activeSession).toMatchObject({ id: 'session-b', agentId: 'agent-b' });
+
+        // Drive the complete production attack sequence through real sockets:
+        // request A quiet-commits, a normal refresh replaces its socket before
+        // opening request B, then A's saved callback attempts a late slice.
+        const previousWebSocket = globalThis.WebSocket;
+        const previousStartHeartbeat = store.startHeartbeat;
+        const previousStopHeartbeat = store.stopHeartbeat;
+        const sockets = [];
+        class InventorySocket {
+          static CONNECTING = 0;
+          static OPEN = 1;
+          static CLOSED = 3;
+          constructor(url) {
+            this.url = url;
+            this.readyState = InventorySocket.CONNECTING;
+            this.sent = [];
+            Vue.markRaw(this);
+            sockets.push(this);
+          }
+          send(payload) { this.sent.push(JSON.parse(payload)); }
+          close() { this.readyState = InventorySocket.CLOSED; }
+        }
+        try {
+          globalThis.WebSocket = InventorySocket;
+          store.sendWsMessage = productionSendWsMessage;
+          store.startHeartbeat = vi.fn();
+          store.stopHeartbeat = vi.fn();
+          store.ws = null;
+          store.sessionKey = null;
+          store.reconnectAttempts = 0;
+          store.reconnectTimer = null;
+
+          store.connect();
+          const socketA = sockets[0];
+          socketA.readyState = InventorySocket.OPEN;
+          socketA.onopen();
+          socketA.onmessage({ data: JSON.stringify({
+            type: 'auth_result', success: true, yeaftSessionInventoryComplete: false,
+          }) });
+          const requestA = store.yeaftSessionHydrateRequestId;
+          expect(requestA).toMatch(/^session_inventory_/);
+          const staleSocketMessage = socketA.onmessage;
+          socketA.onmessage({ data: JSON.stringify({
+            type: 'yeaft_session_hydrate',
+            agentId: 'agent-b',
+            sessions: [{ id: 'session-b', name: 'Session B from A' }],
+          }) });
+          vi.advanceTimersByTime(500);
+
+          expect(store.yeaftSessionHydrateRequestId).toBeNull();
+          expect(store._yeaftSessionInventorySocketQuarantined).toBe(true);
+          expect(store.ws).toBe(socketA);
+          expect(socketA.readyState).toBe(InventorySocket.OPEN);
+          expect(socketA.onmessage).toBe(staleSocketMessage);
+          expect(sockets).toHaveLength(1);
+
+          expect(store.requestYeaftSessionInventory()).toBeNull();
+          expect(sockets).toHaveLength(2);
+          expect(socketA.readyState).toBe(InventorySocket.CLOSED);
+          expect(socketA.onmessage).toBeNull();
+
+          const socketB = sockets[1];
+          socketB.readyState = InventorySocket.OPEN;
+          socketB.onopen();
+          socketB.onmessage({ data: JSON.stringify({
+            type: 'auth_result', success: true, yeaftSessionInventoryComplete: false,
+          }) });
+          const requestB = store.yeaftSessionHydrateRequestId;
+          expect(requestB).toMatch(/^session_inventory_/);
+          expect(requestB).not.toBe(requestA);
+          socketB.onmessage({ data: JSON.stringify({
+            type: 'yeaft_session_hydrate',
+            agentId: 'agent-b',
+            sessions: [{ id: 'session-b', name: 'Session B from B' }],
+          }) });
+
+          staleSocketMessage({ data: JSON.stringify({
+            type: 'yeaft_session_hydrate',
+            agentId: 'agent-a',
+            sessions: [{ id: 'stale-a', name: 'Stale A' }],
+          }) });
+          vi.advanceTimersByTime(500);
+
+          expect(legacySessions.sessionById('stale-a', 'agent-a')).toBeNull();
+          expect(legacySessions.sessionById('session-b', 'agent-b')).toMatchObject({ name: 'Session B from B' });
+          expect(legacySessions.activeSession).toMatchObject({ id: 'session-b', agentId: 'agent-b' });
+          expect(store.yeaftActiveSessionFilter).toBe('session-b');
+          expect(store.currentAgent).toBe('agent-b');
+          expect(store.yeaftSessionHydrateRequestId).toBeNull();
+          expect(store._yeaftSessionInventorySocketQuarantined).toBe(true);
+        } finally {
+          store.ws = null;
+          store.yeaftSessionHydrateRequestId = null;
+          store.yeaftSessionHydrateSlices = [];
+          store._yeaftSessionInventorySocketQuarantined = false;
+          store.sendWsMessage = vi.fn(() => true);
+          store.startHeartbeat = previousStartHeartbeat;
+          store.stopHeartbeat = previousStopHeartbeat;
+          globalThis.WebSocket = previousWebSocket;
+        }
+      } finally {
+        setFilterSpy.mockRestore();
+        if (previousChatStore) globalThis.Pinia.useChatStore = previousChatStore;
+        else delete globalThis.Pinia.useChatStore;
+      }
+    } finally {
+      vi.useRealTimers();
+      globalThis.Pinia.useSessionsStore = previousSessionsStore;
+    }
+
     store.sessionCatalog = [
       {
         catalogKey: 'yeaft:agent-a:shared',

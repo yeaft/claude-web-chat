@@ -548,6 +548,13 @@ export async function handleAgentOutput(agentId, agent, msg) {
           bytes: Buffer.byteLength(JSON.stringify(msg)),
         });
       }
+      // History request completions are client-scoped; live Session output stays
+      // broadcast to every authenticated tab owned by this user.
+      const hasRequestedClient = typeof msg._requestClientId === 'string' && !!msg._requestClientId;
+      const requestedClient = hasRequestedClient ? webClients.get(msg._requestClientId) : null;
+      const outputClients = hasRequestedClient
+        ? (requestedClient ? [[msg._requestClientId, requestedClient]] : [])
+        : webClients;
       // Forward Yeaft Session output to all authenticated clients of this agent's owner.
       // Payload carries { conversationId, data } (assistant output frame) or { event } (metadata).
       //
@@ -572,12 +579,13 @@ export async function handleAgentOutput(agentId, agent, msg) {
       // pass through whatever was stamped, including empty strings. IDs
       // are non-empty in practice, but we don't want the relay silently
       // eating a legitimate "" or 0 if one ever shows up.
-      for (const [cId, c] of webClients) {
+      for (const [cId, c] of outputClients) {
         if (c.authenticated && (CONFIG.skipAuth || c.userId === agent.ownerId)) {
           await sendToWebClient(c, {
             type: 'yeaft_output',
             conversationId: msg.conversationId,
             ...(msg.perfTraceId != null ? { perfTraceId: msg.perfTraceId } : {}),
+            ...(msg.requestId != null ? { requestId: msg.requestId } : {}),
             // Stamp the source agent so the web sessions store can keep
             // per-agent rosters (cross-agent listing in the unified
             // sidebar). Older web bundles ignore the extra field.
@@ -695,13 +703,19 @@ export async function handleAgentOutput(agentId, agent, msg) {
           detail: { mode: msg.mode || 'older', count: messages.length },
         });
       }
-      for (const [cId, c] of webClients) {
+      const hasRequestedClient = typeof msg._requestClientId === 'string' && !!msg._requestClientId;
+      const requestedClient = hasRequestedClient ? webClients.get(msg._requestClientId) : null;
+      const historyClients = hasRequestedClient
+        ? (requestedClient ? [[msg._requestClientId, requestedClient]] : [])
+        : webClients;
+      for (const [cId, c] of historyClients) {
         if (c.authenticated && (CONFIG.skipAuth || c.userId === agent.ownerId)) {
           await sendToWebClient(c, {
             type: 'yeaft_history_chunk',
             agentId,
             conversationId: msg.conversationId,
             ...(msg.perfTraceId != null ? { perfTraceId: msg.perfTraceId } : {}),
+            ...(msg.requestId != null ? { requestId: msg.requestId } : {}),
             ...(msg.sessionId != null ? { sessionId: msg.sessionId } : {}),
             messages,
             mode: msg.mode || 'older',
