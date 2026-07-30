@@ -1517,6 +1517,86 @@ describe('message flow regressions', () => {
     expect(store.messagesMap[localConversationId]).toBeUndefined();
     expect(store.processingConversations).toEqual({ [bridgeConversationId]: true });
     expect(store.executionStatusMap[bridgeConversationId].currentTool).toEqual({ name: 'Bash' });
+
+    // After an Agent restart, the browser can still own visible state under the
+    // previous real bridge id while the new process emits history before
+    // session_ready. The chunk must not overwrite the only migration source.
+    const restartedConversationId = 'yeaft-agent-a-restarted';
+    const restartPendingId = 'u_restart_pending';
+    store.messagesMap[bridgeConversationId].push({
+      id: restartPendingId,
+      messageId: restartPendingId,
+      clientMessageId: restartPendingId,
+      type: 'user',
+      content: 'pending across restart',
+      sessionId: 'visible-session',
+      turnId: restartPendingId,
+      timestamp: 3,
+    });
+    store.processingConversations = { [bridgeConversationId]: true };
+    store.executionStatusMap = {
+      [bridgeConversationId]: {
+        currentTool: { name: 'Grep' },
+        toolHistory: [],
+        lastActivity: 3,
+      },
+    };
+    const restartWatchdog = setTimeout(() => {}, 60_000);
+    store._processingWatchdogs = { [bridgeConversationId]: restartWatchdog };
+    store._yeaftWatchdogConvs = new Set([bridgeConversationId]);
+    const restartRequest = store.beginYeaftHistoryLoad({
+      agentId: 'agent-a',
+      sessionId: 'visible-session',
+      mode: 'delta',
+      preserveLoaded: true,
+    });
+    store.handleMessage({
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-a',
+      conversationId: restartedConversationId,
+      sessionId: 'visible-session',
+      requestId: restartRequest.requestId,
+      mode: 'delta',
+      messages: [{
+        id: 'restart-persisted-row',
+        role: 'assistant',
+        content: 'persisted after restart',
+        sessionId: 'visible-session',
+        ts: 4,
+      }],
+      latestSeq: 2,
+      hasMore: false,
+    });
+    expect(store.yeaftConversationId).toBe(bridgeConversationId);
+    expect(store.yeaftConversationIdsByAgent['agent-a']).toBe(bridgeConversationId);
+    expect(store.messagesMap[restartedConversationId]).toEqual([
+      expect.objectContaining({ id: 'restart-persisted-row' }),
+    ]);
+
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      sessionId: 'visible-session',
+      event: {
+        type: 'session_ready',
+        conversationId: restartedConversationId,
+        sessionId: 'visible-session',
+        tasks: [],
+      },
+    });
+    expect(store.yeaftConversationId).toBe(restartedConversationId);
+    expect(store.yeaftConversationIdsByAgent['agent-a']).toBe(restartedConversationId);
+    expect(store.messagesMap[restartedConversationId]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: restartPendingId, content: 'pending across restart' }),
+      expect.objectContaining({ id: 'restart-persisted-row', content: 'persisted after restart' }),
+    ]));
+    expect(store.processingConversations).toEqual({ [restartedConversationId]: true });
+    expect(store.executionStatusMap[restartedConversationId].currentTool).toEqual({ name: 'Grep' });
+    expect(store.executionStatusMap[bridgeConversationId]).toBeUndefined();
+    expect(store._processingWatchdogs[bridgeConversationId]).toBeUndefined();
+    expect(store._yeaftWatchdogConvs.has(bridgeConversationId)).toBe(false);
+    expect(store._processingWatchdogs[restartedConversationId]).toBeTruthy();
+    expect(store._yeaftWatchdogConvs.has(restartedConversationId)).toBe(true);
+    clearTimeout(store._processingWatchdogs[restartedConversationId]);
     storeFactories.clear();
 
     const routedStore = makeStore();

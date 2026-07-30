@@ -202,23 +202,21 @@ function promoteVisibleYeaftHistoryConversation(store, msg, sessionId, conversat
   if (activeIdentity.sessionId !== (sessionId || null)) return;
   if (activeIdentity.agentId && activeIdentity.agentId !== agentId) return;
 
-  // Keep the transport cache independent from the visible source. A background
-  // Session may already have moved this map to the real id while the page still
-  // owns optimistic rows under its explicit local placeholder.
-  store.yeaftConversationIdsByAgent = {
-    ...(store.yeaftConversationIdsByAgent || {}),
-    [agentId]: conversationId,
-  };
-
   const visibleConversationId = store.yeaftConversationId || null;
   if (visibleConversationId === conversationId) {
     if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
+    store.yeaftConversationIdsByAgent = {
+      ...(store.yeaftConversationIdsByAgent || {}),
+      [agentId]: conversationId,
+    };
     store.activeConversations = [conversationId];
     return;
   }
 
   // Only a visible local placeholder for this Agent is a valid migration source.
-  // A different real conversation is not safe to replace from a history frame.
+  // A different real conversation is not safe to replace from a history frame,
+  // and its per-Agent map entry must remain intact so late session_ready metadata
+  // can migrate old bridge state after an Agent restart changes conversationId.
   const localConversationId = visibleLocalYeaftConversationId(store, agentId);
   if (!localConversationId) return;
 
@@ -235,6 +233,10 @@ function promoteVisibleYeaftHistoryConversation(store, msg, sessionId, conversat
     store.executionStatusMap[conversationId] = store.executionStatusMap[localConversationId];
     delete store.executionStatusMap[localConversationId];
   }
+  store.yeaftConversationIdsByAgent = {
+    ...(store.yeaftConversationIdsByAgent || {}),
+    [agentId]: conversationId,
+  };
   store.yeaftConversationId = conversationId;
   store.activeConversations = [conversationId];
 }
