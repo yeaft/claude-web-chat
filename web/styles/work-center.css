@@ -33,8 +33,14 @@
   text-align: left;
 }
 
-.sidebar-work-center-trigger:hover {
+.sidebar-work-center-trigger:hover:not(:disabled) {
   color: var(--text-secondary);
+}
+
+.sidebar-work-center-trigger:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .sidebar-work-center-trigger.active {

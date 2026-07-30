@@ -1002,6 +1002,26 @@ export const useChatStore = defineStore('chat', {
     // plain state shape, and so the three getters below share the
     // canonical implementation instead of each open-coding the ternary.
     activeConversationId: (state) => selectActiveConversationId(state),
+    activeSessionRoute(state) {
+      if (state.currentView === 'yeaft') {
+        const sessionId = resolveActiveYeaftSessionId(state);
+        if (!sessionId) return null;
+        return {
+          runtimeProvider: 'yeaft',
+          agentId: resolveAgentIdForSession(state, sessionId),
+          sessionId,
+        };
+      }
+      const conversationId = selectActiveConversationId(state);
+      if (!conversationId) return null;
+      const conversation = state.conversations.find(row => row?.id === conversationId && row.type !== 'yeaft');
+      if (!conversation) return null;
+      return {
+        runtimeProvider: conversation.provider === 'copilot' ? 'copilot' : 'claude-code',
+        agentId: conversation.agentId || state.currentAgent || null,
+        sessionId: conversationId,
+      };
+    },
     // ★ Multi-column: compatibility shim — reads messagesMap for primary conversation
     messages(state) {
       const convId = this.activeConversationId;
@@ -1401,8 +1421,16 @@ export const useChatStore = defineStore('chat', {
     // Work Center
     // =====================
     enterWorkCenter(agentId = null) {
-      const target = agentId || this.currentAgent || this.agents.find(agent => agent.online)?.id || null;
-      if (!target) return;
+      const compatibleAgents = this.agents.filter(agent => agent?.online
+        && Array.isArray(agent.capabilities) && agent.capabilities.includes('work_center'));
+      const target = compatibleAgents.some(agent => agent.id === agentId)
+        ? agentId
+        : (compatibleAgents[0]?.id || null);
+      if (!target) {
+        this.workCenterOpen = false;
+        this.workCenterAgentId = null;
+        return false;
+      }
       if (this.currentAgent !== target) {
         this.selectAgent(target);
         this.currentAgent = target;
@@ -1412,6 +1440,7 @@ export const useChatStore = defineStore('chat', {
       this.workCenterAgentId = target;
       this.workCenterOpen = true;
       this.listWorkItems(target).catch(() => {});
+      return true;
     },
     leaveWorkCenter() {
       this.workCenterOpen = false;

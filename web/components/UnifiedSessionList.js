@@ -6,7 +6,7 @@ export default {
   name: 'UnifiedSessionList',
   props: {
     sessions: { type: Array, default: () => [] },
-    activeCatalogKey: { type: String, default: null },
+    activeRoute: { type: Object, default: null },
     processingConversations: { type: Object, default: () => ({}) },
     isYeaftSessionProcessing: { type: Function, default: null },
     agents: { type: Array, default: () => [] },
@@ -46,13 +46,11 @@ export default {
     },
   },
   watch: {
-    activeCatalogKey: {
+    activeRoute: {
       immediate: true,
-      handler(catalogKey) {
-        const active = this.sessions.find(row => row.catalogKey === catalogKey);
-        if (active && SESSION_PROVIDERS.includes(active.runtimeProvider)) {
-          this.selectedProvider = active.runtimeProvider;
-        }
+      deep: true,
+      handler() {
+        this.syncSelectedProvider();
       },
     },
   },
@@ -100,6 +98,26 @@ export default {
     },
     isAvailable(row) {
       return row?.availability !== 'offline';
+    },
+    routeMatches(row, route = this.activeRoute) {
+      if (!row?.routeRef || !route) return false;
+      return row.routeRef.runtimeProvider === route.runtimeProvider
+        && row.routeRef.sessionId === route.sessionId
+        && (!route.agentId || row.routeRef.agentId === route.agentId);
+    },
+    syncSelectedProvider() {
+      const provider = this.activeRoute?.runtimeProvider;
+      if (SESSION_PROVIDERS.includes(provider)) this.selectedProvider = provider;
+    },
+    workCenterTargetId() {
+      const compatible = this.onlineWorkCenterAgents;
+      return compatible.some(agent => agent.id === this.workCenterAgentId)
+        ? this.workCenterAgentId
+        : (compatible[0]?.id || null);
+    },
+    openWorkCenter() {
+      const target = this.workCenterTargetId();
+      if (target) this.$emit('open-work-center', target);
     },
     selectProvider(provider) {
       if (!SESSION_PROVIDERS.includes(provider)) return;
@@ -217,7 +235,7 @@ export default {
         <button type="button" role="tab" class="sidebar-surface-option"
                 :class="{ active: workCenterOpen }" :aria-selected="workCenterOpen ? 'true' : 'false'"
                 :disabled="onlineWorkCenterAgents.length === 0"
-                @click="$emit('open-work-center', workCenterAgentId || onlineWorkCenterAgents[0]?.id || null)">
+                @click="openWorkCenter">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>
           <span>{{ $t('workCenter.title') }}</span>
         </button>
@@ -250,7 +268,7 @@ export default {
               :tabindex="isAvailable(row) ? 0 : -1"
               :aria-disabled="isAvailable(row) ? undefined : 'true'"
               class="session-item yeaft-session-draggable"
-              :class="{ active: row.catalogKey === activeCatalogKey, pinned: row.pinned, processing: isProcessing(row), 'agent-offline': !isAvailable(row), dragging: draggedKey === row.catalogKey, 'drag-over': dragOverKey === row.catalogKey }"
+              :class="{ active: routeMatches(row), pinned: row.pinned, processing: isProcessing(row), 'agent-offline': !isAvailable(row), dragging: draggedKey === row.catalogKey, 'drag-over': dragOverKey === row.catalogKey }"
               draggable="true"
               @click="select(row)"
               @keydown.enter.prevent="select(row)"

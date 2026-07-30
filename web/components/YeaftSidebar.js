@@ -82,7 +82,7 @@ export default {
       <UnifiedSessionList
         v-if="chatStore && chatStore.sessionCatalogLoaded"
         :sessions="chatStore.sessionCatalog"
-        :active-catalog-key="chatStore.activeCatalogKey"
+        :active-route="chatStore.activeSessionRoute"
         :processing-conversations="chatStore.processingConversations"
         :is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"
         :agents="chatStore.agents"

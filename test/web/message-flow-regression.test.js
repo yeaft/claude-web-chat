@@ -11,6 +11,7 @@ import {
   maxDbMessageId,
 } from '../../web/stores/helpers/messages.js';
 import UnifiedSessionList from '../../web/components/UnifiedSessionList.js';
+import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
 import {
   beginCatalogMutation,
@@ -62,7 +63,11 @@ globalThis.Pinia = {
 const { useChatStore } = await import('../../web/stores/chat.js');
 const { default: ChatPage } = await import('../../web/components/ChatPage.js');
 const { default: YeaftSidebar } = await import('../../web/components/YeaftSidebar.js');
-const { handleSyncMessagesResult } = await import('../../web/stores/helpers/handlers/conversationHandler.js');
+const {
+  handleConversationCreated,
+  handleConversationResumed,
+  handleSyncMessagesResult,
+} = await import('../../web/stores/helpers/handlers/conversationHandler.js');
 
 import {
   buildYeaftMessageTurnSpans,
@@ -131,41 +136,46 @@ describe('message flow regressions', () => {
     expect(store.messagesMap['conv-1'][0]).not.toHaveProperty('turnEndAt');
   });
 
-  it('uses the largest persisted DB id when a streaming row is at the tail and routes provider-specific creates', () => {
+  it('derives the active provider from create and resume canonical state while preserving DB cursor selection', () => {
     expect(maxDbMessageId([
       { id: 'optimistic-user', dbMessageId: 17 },
       { id: 'streaming-assistant-uuid', isStreaming: true },
     ])).toBe(17);
+    storeFactories.clear();
+    const store = useChatStore();
+    store.agents = [{ id: 'agent-a', name: 'Agent A', online: true }];
+    store.panels = [];
+    store.sendWsMessage = vi.fn(() => true);
+    store.addMessage = vi.fn();
+    store.saveOpenSessions = vi.fn();
+    store.formatDbMessageForHistoryHydration = vi.fn(row => row);
 
-    const chatContext = {
-      store: {
-        openUnifiedSessionCreate: false,
-        enterYeaft: vi.fn(),
-        enterWorkCenter: vi.fn(),
-      },
-      convModalProvider: 'claude-code',
-      openConversationModal: vi.fn(),
-    };
-    ChatPage.methods.onUnifiedCreate.call(chatContext, 'copilot');
-    expect(chatContext.convModalProvider).toBe('copilot');
-    expect(chatContext.openConversationModal).toHaveBeenCalledWith({ preserveProvider: true });
-    ChatPage.methods.onUnifiedCreate.call(chatContext, 'yeaft');
-    expect(chatContext.store.openUnifiedSessionCreate).toBe(true);
-    expect(chatContext.store.enterYeaft).toHaveBeenCalled();
+    handleConversationCreated(store, {
+      conversationId: 'created-copilot',
+      agentId: 'agent-a',
+      workDir: '/repo',
+      provider: 'copilot',
+    });
+    expect(store.activeSessionRoute).toEqual({
+      runtimeProvider: 'copilot',
+      agentId: 'agent-a',
+      sessionId: 'created-copilot',
+    });
 
-    const yeaftContext = {
-      chatStore: {
-        openUnifiedChatCreate: false,
-        leaveYeaft: vi.fn(),
-      },
-      store: null,
-      onOpenSessionCreate: vi.fn(),
-    };
-    YeaftSidebar.methods.onUnifiedCreate.call(yeaftContext, 'copilot');
-    expect(yeaftContext.chatStore.openUnifiedChatCreate).toBe('copilot');
-    expect(yeaftContext.chatStore.leaveYeaft).toHaveBeenCalled();
-    YeaftSidebar.methods.onUnifiedCreate.call(yeaftContext, 'yeaft');
-    expect(yeaftContext.onOpenSessionCreate).toHaveBeenCalled();
+    handleConversationResumed(store, {
+      conversationId: 'resumed-claude',
+      claudeSessionId: 'runtime-1',
+      agentId: 'agent-a',
+      workDir: '/repo',
+      provider: 'claude-code',
+      dbMessages: [],
+    });
+    expect(store.activeSessionRoute).toEqual({
+      runtimeProvider: 'claude-code',
+      agentId: 'agent-a',
+      sessionId: 'resumed-claude',
+    });
+    storeFactories.clear();
   });
 
   it('keeps Work Center inputs available and detail layouts responsive', async () => {
@@ -224,8 +234,8 @@ describe('message flow regressions', () => {
     const sidebar = mount(UnifiedSessionList, {
       attachTo: document.body,
       props: {
-        sessions: catalogRows,
-        activeCatalogKey: catalogRows[0].catalogKey,
+        sessions: [],
+        activeRoute: { runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: 'visible' },
         processingConversations: { visible: true },
         isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'user_1770305719:server-instance',
         agents: [{ id: 'user_1770305719:server-instance', name: 'server', online: true, capabilities: ['work_center'] }],
@@ -234,11 +244,24 @@ describe('message flow regressions', () => {
     });
     expect(sidebar.findAll('.sidebar-surface-option')).toHaveLength(2);
     expect(sidebar.findAll('.sidebar-provider-tab')).toHaveLength(3);
-    expect(sidebar.findAll('.session-item')).toHaveLength(1);
-    expect(sidebar.text()).toContain('Pinned');
-    expect(sidebar.text()).not.toContain('Offline');
+    expect(sidebar.findAll('.session-item')).toHaveLength(0);
+    expect(sidebar.findAll('.sidebar-provider-tab')[1].classes()).toContain('active');
+    await sidebar.setProps({ sessions: catalogRows });
+    expect(sidebar.findAll('.session-item')).toHaveLength(2);
+    expect(sidebar.text()).toContain('Visible');
+    expect(sidebar.text()).not.toContain('Pinned');
     expect(sidebar.findAll('.session-item.processing')).toHaveLength(1);
     expect(sidebar.findAll('.processing-dot')).toHaveLength(1);
+    expect(sidebar.find('.session-item.active').text()).toContain('Visible');
+    await sidebar.setProps({
+      activeRoute: {
+        runtimeProvider: 'yeaft',
+        agentId: 'user_1770305719:server-instance',
+        sessionId: 'pinned',
+      },
+    });
+    expect(sidebar.findAll('.sidebar-provider-tab')[0].classes()).toContain('active');
+    expect(sidebar.findAll('.session-item')).toHaveLength(1);
     const firstRow = sidebar.findAll('.session-item')[0];
     expect(firstRow.get('.session-item-header').text()).toContain('Pinned');
     expect(firstRow.get('.session-item-header').text()).not.toContain('server');
@@ -269,6 +292,7 @@ describe('message flow regressions', () => {
     expect(sidebar.find('.sidebar-create-session').text()).toContain('sidebar.sessions.new');
     await sidebar.find('.sidebar-create-session').trigger('click');
     expect(sidebar.emitted('create').at(-1)).toEqual(['copilot']);
+    await sidebar.setProps({ workCenterAgentId: 'stale-agent' });
     await sidebar.findAll('.sidebar-surface-option')[1].trigger('click');
     expect(sidebar.emitted('open-work-center').at(-1)).toEqual(['user_1770305719:server-instance']);
     await sidebar.setProps({ workCenterOpen: true, workCenterAgentId: 'user_1770305719:server-instance' });
@@ -277,7 +301,13 @@ describe('message flow regressions', () => {
     expect(sidebar.findAll('.sidebar-provider-tab')).toHaveLength(0);
     await sidebar.findAll('.sidebar-surface-option')[0].trigger('click');
     expect(sidebar.emitted('close-work-center')).toHaveLength(1);
-    await sidebar.setProps({ workCenterOpen: false });
+    await sidebar.setProps({ workCenterOpen: false, agents: [] });
+    expect(sidebar.findAll('.sidebar-surface-option')[1].attributes('disabled')).toBeDefined();
+    await sidebar.findAll('.sidebar-surface-option')[1].trigger('click');
+    expect(sidebar.emitted('open-work-center')).toHaveLength(1);
+    await sidebar.setProps({
+      agents: [{ id: 'user_1770305719:server-instance', name: 'server', online: true, capabilities: ['work_center'] }],
+    });
 
     const dataTransfer = {
       value: '',
@@ -303,7 +333,11 @@ describe('message flow regressions', () => {
       attachTo: document.body,
       props: {
         sessions: catalogRows,
-        activeCatalogKey: catalogRows[0].catalogKey,
+        activeRoute: {
+          runtimeProvider: 'yeaft',
+          agentId: 'user_1770305719:server-instance',
+          sessionId: 'pinned',
+        },
         processingConversations: { visible: true },
         isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'user_1770305719:server-instance',
         agents: [{ id: 'user_1770305719:server-instance', name: 'server', online: true, capabilities: ['work_center'] }],
@@ -410,11 +444,114 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).not.toContain("emitAction('split', row)");
     expect(UnifiedSessionList.template).toContain("$t('common.close')");
     expect(UnifiedSessionList.methods.providerLabel({ runtimeProvider: 'copilot' })).toBe('Copilot');
+    const fallbackWorkCenter = mount(SidebarWorkCenter, {
+      props: { agents: [] },
+      global: { mocks: { $t: key => key } },
+    });
+    expect(fallbackWorkCenter.get('.sidebar-work-center-trigger').attributes('disabled')).toBeDefined();
+    await fallbackWorkCenter.get('.sidebar-work-center-trigger').trigger('click');
+    expect(fallbackWorkCenter.emitted('open')).toBeUndefined();
+    fallbackWorkCenter.unmount();
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(() => Promise.resolve({ json: () => Promise.resolve({ version: '' }) }));
+    const parentStore = Vue.reactive({
+      sessionSidebarOpen: false,
+      sidebarCollapsed: false,
+      isSplitMode: false,
+      workbenchExpanded: false,
+      runningSubagentCount: 0,
+      connectionState: 'connected',
+      sessionCatalogLoaded: true,
+      sessionCatalog: catalogRows,
+      activeSessionRoute: { runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: 'visible' },
+      processingConversations: {},
+      isYeaftSessionProcessing: () => false,
+      agents: [{ id: 'agent-a', name: 'Agent A', online: true, capabilities: ['work_center'] }],
+      workCenterOpen: false,
+      workCenterAgentId: 'stale-agent',
+      currentView: 'chat',
+      activeConversationId: 'visible',
+      conversations: [],
+      folders: [],
+      listFoldersForAgent: vi.fn(() => Promise.resolve([])),
+      theme: 'light',
+      openUnifiedSessionCreate: false,
+      openUnifiedChatCreate: false,
+      enterWorkCenter: vi.fn(),
+      leaveWorkCenter: vi.fn(),
+      openCatalogSession: vi.fn(),
+      enterYeaft: vi.fn(),
+      leaveYeaft: vi.fn(),
+    });
+    storeFactories.set('chat', parentStore);
+    globalThis.Pinia.useChatStore = () => parentStore;
+    const shellStub = { template: '<aside><slot name="collapsed"/><slot/></aside>' };
+    const chatPage = mount(ChatPage, {
+      global: {
+        mocks: { $t: key => key },
+        stubs: {
+          SessionSidebarShell: shellStub,
+          ChatHeader: true,
+          MessageList: true,
+          ChatInput: true,
+          WorkbenchPanel: true,
+          WorkCenterPage: true,
+          SettingsPanel: true,
+          ExpertPanel: true,
+          SubAgentPanel: true,
+          BtwOverlay: true,
+          SplitPane: true,
+          ModernSelect: true,
+          SidebarModeToggle: true,
+          SidebarAgentHeader: true,
+          SidebarWorkCenter: true,
+        },
+      },
+    });
+    await chatPage.findAll('.sidebar-provider-tab')[1].trigger('click');
+    await chatPage.get('.sidebar-create-session').trigger('click');
+    expect(chatPage.vm.convModalProvider).toBe('copilot');
+    expect(chatPage.vm.showConversationModal).toBe(true);
+    await chatPage.findAll('.sidebar-surface-option')[1].trigger('click');
+    expect(parentStore.enterWorkCenter).toHaveBeenCalledWith('agent-a');
+    chatPage.unmount();
+
+    parentStore.currentView = 'yeaft';
+    parentStore.activeSessionRoute = {
+      runtimeProvider: 'yeaft',
+      agentId: 'user_1770305719:server-instance',
+      sessionId: 'pinned',
+    };
+    parentStore.openUnifiedChatCreate = false;
+    const yeaftSidebar = mount(YeaftSidebar, {
+      global: {
+        mocks: { $t: key => key },
+        stubs: {
+          SessionSidebarShell: shellStub,
+          SessionCreateModal: true,
+          SidebarModeToggle: true,
+          SidebarAgentHeader: true,
+          SidebarWorkCenter: true,
+        },
+      },
+    });
+    await yeaftSidebar.findAll('.sidebar-provider-tab')[1].trigger('click');
+    await yeaftSidebar.get('.sidebar-create-session').trigger('click');
+    expect(parentStore.openUnifiedChatCreate).toBe('copilot');
+    expect(parentStore.leaveYeaft).toHaveBeenCalled();
+    yeaftSidebar.unmount();
+    globalThis.fetch = originalFetch;
+    delete globalThis.Pinia.useChatStore;
+    storeFactories.clear();
+
     expect(chatPageSource).toContain('@create="onUnifiedCreate"');
     expect(chatPageSource).toContain('@open-work-center="openWorkCenter"');
     expect(chatPageSource).toContain('@action="onUnifiedSessionAction"');
     expect(yeaftSidebarSource).toContain('@create="onUnifiedCreate"');
     expect(yeaftSidebarSource).toContain('@open-work-center="onOpenWorkCenter"');
+    expect(chatPageSource).toContain(':active-route="store.activeSessionRoute"');
+    expect(yeaftSidebarSource).toContain(':active-route="chatStore.activeSessionRoute"');
     expect(chatPageSource).toContain(':processing-conversations="store.processingConversations"');
     expect(chatPageSource).toContain(':agents="store.agents"');
     expect(yeaftSidebarSource).toContain(':is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"');
@@ -573,14 +710,44 @@ describe('message flow regressions', () => {
         availability: 'online',
       },
     ];
+    store.yeaftActiveSessionFilter = 'shared';
+    store.currentAgent = 'agent-a';
+    store.currentView = 'yeaft';
+    expect(store.activeSessionRoute).toEqual({
+      runtimeProvider: 'yeaft',
+      agentId: 'agent-a',
+      sessionId: 'shared',
+    });
+    store.currentView = 'chat';
+    store.conversations = [{ id: 'created-chat', agentId: 'agent-b', provider: 'copilot', type: 'chat' }];
+    store.activeConversations = ['created-chat'];
+    expect(store.activeSessionRoute).toEqual({
+      runtimeProvider: 'copilot',
+      agentId: 'agent-b',
+      sessionId: 'created-chat',
+    });
+    store.currentView = 'yeaft';
     store.activeVpTurns = {};
     store.stoppingVpTurnIds = {};
     store.vpStatuses = {};
     store.yeaftProcessingSessions = {};
-    store.yeaftActiveSessionFilter = 'shared';
-    store.currentAgent = 'agent-a';
     store.yeaftConversationId = 'conv-a';
     store.messagesMap = { 'conv-a': [] };
+
+    store.agents = [
+      { id: 'stale-agent', online: false, capabilities: ['work_center'] },
+      { id: 'agent-b', online: true, capabilities: ['work_center'] },
+    ];
+    store.workCenterAgentId = 'stale-agent';
+    store.workCenterOpen = true;
+    store.selectAgent = vi.fn();
+    store.listWorkItems = vi.fn(() => Promise.resolve([]));
+    expect(store.enterWorkCenter('stale-agent')).toBe(true);
+    expect(store.workCenterAgentId).toBe('agent-b');
+    store.agents = [];
+    expect(store.enterWorkCenter('stale-agent')).toBe(false);
+    expect(store.workCenterOpen).toBe(false);
+    expect(store.workCenterAgentId).toBe(null);
 
     const wrapper = mount(UnifiedSessionList, {
       attachTo: document.body,

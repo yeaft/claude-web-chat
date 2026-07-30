@@ -107,7 +107,7 @@ export default {
         <UnifiedSessionList
           v-if="store.sessionCatalogLoaded"
           :sessions="store.sessionCatalog"
-          :active-catalog-key="store.activeCatalogKey"
+          :active-route="store.activeSessionRoute"
           :processing-conversations="store.processingConversations"
           :is-yeaft-session-processing="store.isYeaftSessionProcessing"
           :agents="store.agents"
