@@ -214,35 +214,51 @@
 }
 
 .work-center-agent-picker {
+  position: relative;
   display: inline-flex;
   min-width: 0;
+  max-width: 200px;
   align-items: center;
-  gap: 7px;
-  padding: 0 8px;
-  border-radius: 8px;
-  background: var(--bg-input);
   color: var(--text-muted);
 }
 
-.work-center-agent-picker:focus-within {
-  box-shadow: 0 0 0 2px var(--focus-ring);
+.work-center-agent-picker > .work-center-agent-dot {
+  position: absolute;
+  left: 10px;
+  z-index: 1;
+  pointer-events: none;
 }
 
-.work-center-agent-picker select {
-  min-width: 0;
+.work-center-agent-picker .modern-select {
+  min-width: 112px;
   max-width: 180px;
-  height: 30px;
-  padding: 0 22px 0 0;
-  border: 0;
-  background-color: transparent;
-  color: var(--text-secondary);
   font-size: 12px;
+}
+
+.work-center-agent-picker .modern-select-trigger {
+  min-height: 32px;
+  padding: 6px 28px 6px 26px;
+  border-color: var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
   font-weight: 500;
 }
 
-.work-center-agent-picker select:focus {
-  outline: 0;
-  box-shadow: none;
+.work-center-agent-picker .modern-select-trigger:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: var(--sidebar-hover);
+}
+
+.work-center-agent-menu.modern-select-menu {
+  border-radius: 10px;
+  padding: 4px;
+}
+
+.work-center-agent-menu .modern-select-option {
+  padding: 7px 30px 7px 10px;
+  border-radius: 7px;
+  font-size: 12px;
 }
 
 .work-center-header-actions {
@@ -3123,7 +3139,7 @@
     font-size: 20px;
   }
 
-  .work-center-agent-picker select {
+  .work-center-agent-picker .modern-select {
     max-width: 120px;
   }
 
