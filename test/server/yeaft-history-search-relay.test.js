@@ -56,6 +56,21 @@ describe('Yeaft Session history search relay', () => {
       beforeSeq: 42,
       _requestClientId: 'client-1',
     }));
+
+    forwardToAgent.mockClear();
+    await handleClientConversation('client-1', client, {
+      type: 'yeaft_load_history',
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      requestId: 'history-1',
+      limit: 5,
+    }, allow);
+    expect(forwardToAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({
+      type: 'yeaft_load_history',
+      sessionId: 'sess-1',
+      requestId: 'history-1',
+      _requestClientId: 'client-1',
+    }));
   });
 
   it('does not fall back to currentAgent or forward an unowned Session', async () => {

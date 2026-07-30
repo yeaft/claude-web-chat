@@ -1067,9 +1067,11 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         type: 'yeaft_load_history',
         limit: msg.limit,
         sessionId: msg.sessionId || null,
+        ...(typeof msg.requestId === 'string' ? { requestId: msg.requestId } : {}),
         ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
         ...(Number.isFinite(msg.afterSeq) ? { afterSeq: msg.afterSeq } : {}),
         ...(typeof msg.afterMessageId === 'string' ? { afterMessageId: msg.afterMessageId } : {}),
+        _requestClientId: clientId,
       };
       if (forwarded.perfTraceId) {
         recordPerfTraceEvent({
@@ -1152,9 +1154,11 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       await forwardToAgent(moreAgentId, {
         type: 'yeaft_load_more_history',
         sessionId: msg.sessionId || null,
+        requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
         beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
         turns: typeof msg.turns === 'number' ? msg.turns : 20,
         ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
+        _requestClientId: clientId,
       });
       break;
     }

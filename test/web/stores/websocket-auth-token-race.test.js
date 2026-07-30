@@ -22,6 +22,7 @@ function createStore() {
     reconnectAttempts: 0,
     connectionState: 'disconnected',
     authenticated: false,
+    _hasHandledAgentList: true,
     serverEncryptionRequired: false,
     chatHistoryRequestIdSupported: true,
     chatHistoryConnectionGeneration: 4,
@@ -116,6 +117,7 @@ describe('websocket auth token races', () => {
     expect(sockets[0].url).toContain('token=old-token');
     expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token', 1);
     expect(authStore.token).toBe('new-token');
+    expect(store._hasHandledAgentList).toBe(false);
   });
 
   it('restores encrypted outbound mode before reconnecting to a legacy Server', async () => {

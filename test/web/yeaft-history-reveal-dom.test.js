@@ -51,6 +51,7 @@ beforeAll(async () => {
 
 function primeStore() {
   const store = useChatStore();
+  store._hasHandledAgentList = true;
   store.currentView = 'yeaft';
   store.currentAgent = 'agent-a';
   store.currentAgentInfo = {

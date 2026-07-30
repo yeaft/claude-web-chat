@@ -1323,7 +1323,7 @@ function projectVisibleHistoryChunkMessages(messages = []) {
     }));
 }
 
-function emitHistoryChunk({ sessionId, messages, mode = 'older', oldestSeq = null, hasMore = false, latestSeq = null, afterSeq = null, turns = null, perfTraceId = null }) {
+function emitHistoryChunk({ sessionId, messages, mode = 'older', oldestSeq = null, hasMore = false, latestSeq = null, afterSeq = null, turns = null, requestId = null, requestClientId = null, perfTraceId = null }) {
   const projectedMessages = projectVisibleHistoryChunkMessages(messages);
   // Empty deltas still carry the authoritative safe cursor and clear the
   // browser's syncingAfterSeq fence. Dropping this envelope leaves Session
@@ -1332,6 +1332,8 @@ function emitHistoryChunk({ sessionId, messages, mode = 'older', oldestSeq = nul
     type: 'yeaft_history_chunk',
     conversationId: yeaftConversationId,
     ...(perfTraceId ? { perfTraceId } : {}),
+    ...(requestId ? { requestId } : {}),
+    ...(requestClientId ? { _requestClientId: requestClientId } : {}),
     sessionId,
     mode,
     messages: projectedMessages,
@@ -1394,7 +1396,7 @@ function emitLegacyHistoryOutputFrames(replayEntries) {
   }
 }
 
-function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, mode = 'recent', perfTraceId = null }) {
+function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, mode = 'recent', requestId = null, requestClientId = null, perfTraceId = null }) {
   const visiblePage = sessionId
     ? loadVisibleGroupHistoryPage(store, sessionId, limit, beforeSeq)
     : { messages: limit > 0 ? (store.loadRecent?.(limit) || []) : [], oldestSeq: null, hasMore: false };
@@ -1416,6 +1418,8 @@ function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, m
       hasMore: visiblePage.hasMore,
       latestSeq: Number.isFinite(latestSeq) ? latestSeq : null,
       turns: limit,
+      requestId,
+      requestClientId,
       perfTraceId,
     });
     sendSessionEvent({
@@ -1423,10 +1427,11 @@ function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, m
       mode,
       count: replayEntries.length,
       sessionId,
+      requestId,
       hasMore: visiblePage.hasMore,
       oldestSeq: visiblePage.oldestSeq,
       latestSeq: Number.isFinite(latestSeq) ? latestSeq : null,
-    }, { sessionId, perfTraceId });
+    }, { sessionId, requestId, requestClientId, perfTraceId });
     return;
   }
 
@@ -1440,10 +1445,11 @@ function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, m
     mode,
     count: replayEntries.length,
     sessionId,
+    requestId,
     hasMore: visiblePage.hasMore,
     oldestSeq: visiblePage.oldestSeq,
     latestSeq: Number.isFinite(latestSeq) ? latestSeq : null,
-  }, perfTraceId ? { sessionId, perfTraceId } : undefined);
+  }, { sessionId, requestId, requestClientId, perfTraceId });
 }
 
 /**
@@ -2729,11 +2735,13 @@ function mergedStatusForProjectRuntime(runtime, ownerSession = session) {
 }
 
 /** Send a Yeaft Session metadata event over the legacy-compatible envelope. */
-function sendSessionEvent(event, { sessionId, chatId, vpId, turnId, threadId, perfTraceId } = {}) {
+function sendSessionEvent(event, { sessionId, chatId, vpId, turnId, threadId, requestId, requestClientId, perfTraceId } = {}) {
   sendToServer({
     type: 'yeaft_output',
     conversationId: yeaftConversationId,
     ...(perfTraceId ? { perfTraceId } : {}),
+    ...(requestId ? { requestId } : {}),
+    ...(requestClientId ? { _requestClientId: requestClientId } : {}),
     ...(sessionId ? { sessionId } : {}),
     ...(chatId ? { chatId } : {}),
     ...(vpId ? { vpId } : {}),
@@ -6371,6 +6379,8 @@ export function handleYeaftModelSwitch(msg) {
  */
 export async function handleYeaftLoadHistory(msg) {
   const sessionId = (msg && typeof msg.sessionId === 'string' && msg.sessionId) || null;
+  const requestId = typeof msg?.requestId === 'string' && msg.requestId ? msg.requestId : null;
+  const requestClientId = typeof msg?._requestClientId === 'string' && msg._requestClientId ? msg._requestClientId : null;
   const perfTraceId = typeof msg?.perfTraceId === 'string' && msg.perfTraceId.trim() ? msg.perfTraceId.trim() : null;
   const perfStart = perfNowMs();
   const tracePerf = (phase, extra = {}) => {
@@ -6424,6 +6434,8 @@ export async function handleYeaftLoadHistory(msg) {
         mode: 'delta',
         latestSeq: delta.latestSeq,
         afterSeq,
+        requestId,
+        requestClientId,
         perfTraceId,
       });
       traceDuration('history.emit_chunk', emitStart, { detail: { mode: 'delta', count: projectedMessages.length } });
@@ -6432,9 +6444,10 @@ export async function handleYeaftLoadHistory(msg) {
         mode: 'delta',
         count: projectedMessages.length,
         sessionId,
+        requestId,
         latestSeq: delta.latestSeq,
         afterSeq,
-      }, { sessionId, perfTraceId });
+      }, { sessionId, requestId, requestClientId, perfTraceId });
       return;
     }
 
@@ -6474,6 +6487,8 @@ export async function handleYeaftLoadHistory(msg) {
         hasMore: visiblePage.hasMore,
         latestSeq,
         turns: limit,
+        requestId,
+        requestClientId,
         perfTraceId,
       });
       traceDuration('history.emit_chunk', emitStart, { detail: { mode: 'recent', count: replayEntries.length } });
@@ -6508,10 +6523,11 @@ export async function handleYeaftLoadHistory(msg) {
       count: replayEntries.length,
       hasCompactSummary: hasCompactSummaryFlag,
       sessionId,
+      requestId,
       hasMore,
       oldestSeq,
       latestSeq,
-    }, { sessionId, perfTraceId });
+    }, { sessionId, requestId, requestClientId, perfTraceId });
   };
 
   if (!session) {
@@ -6557,13 +6573,15 @@ export async function handleYeaftLoadHistory(msg) {
         mode: 'delta',
         latestSeq: delta.latestSeq,
         afterSeq,
+        requestId,
+        requestClientId,
         perfTraceId,
       });
       traceDuration('history.emit_chunk', emitStart, { detail: { mode: 'delta', count: projectedMessages.length, cold: true } });
-      sendSessionEvent({ type: 'history_loaded', mode: 'delta', count: projectedMessages.length, sessionId, latestSeq: delta.latestSeq, afterSeq }, { sessionId, perfTraceId });
+      sendSessionEvent({ type: 'history_loaded', mode: 'delta', count: projectedMessages.length, sessionId, requestId, latestSeq: delta.latestSeq, afterSeq }, { sessionId, requestId, requestClientId, perfTraceId });
     } else if (!metadataOnly) {
       const replayStart = perfNowMs();
-      emitVisibleHistoryReplay({ store: coldStore, sessionId, limit, mode: 'recent', perfTraceId });
+      emitVisibleHistoryReplay({ store: coldStore, sessionId, limit, mode: 'recent', requestId, requestClientId, perfTraceId });
       traceDuration('history.cold_replay', replayStart, { detail: { mode: 'recent', limit } });
     }
     historyAlreadyReplayed = true;
@@ -6735,6 +6753,8 @@ export async function handleYeaftLoadHistoryWindow(msg) {
 
 export async function handleYeaftLoadMoreHistory(msg) {
   const sessionId = (msg && typeof msg.sessionId === 'string' && msg.sessionId) || null;
+  const requestId = typeof msg?.requestId === 'string' && msg.requestId ? msg.requestId : null;
+  const requestClientId = typeof msg?._requestClientId === 'string' && msg._requestClientId ? msg._requestClientId : null;
   const perfTraceId = typeof msg?.perfTraceId === 'string' && msg.perfTraceId.trim() ? msg.perfTraceId.trim() : null;
   const perfStart = perfNowMs();
   const tracePerf = (phase, extra = {}) => {
@@ -6744,7 +6764,7 @@ export async function handleYeaftLoadMoreHistory(msg) {
   const traceDuration = (phase, start, extra = {}) => tracePerf(phase, { durationMs: perfNowMs() - start, ...extra });
   tracePerf('history_more.received');
   if (!sessionId) {
-    emitHistoryChunk({ sessionId, messages: [], mode: 'older', oldestSeq: null, hasMore: false, perfTraceId });
+    emitHistoryChunk({ sessionId, messages: [], mode: 'older', oldestSeq: null, hasMore: false, requestId, requestClientId, perfTraceId });
     traceDuration('history_more.handler_total', perfStart, { ok: false, detail: { missingSessionId: true } });
     return;
   }
@@ -6778,6 +6798,8 @@ export async function handleYeaftLoadMoreHistory(msg) {
     oldestSeq: result.oldestSeq,
     hasMore: !!result.hasMore,
     turns,
+    requestId,
+    requestClientId,
     perfTraceId,
   });
   traceDuration('history_more.emit_chunk', emitStart, { detail: { count: result.messages?.length || 0 } });

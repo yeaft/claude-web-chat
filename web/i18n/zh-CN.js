@@ -366,6 +366,8 @@ export default {
   // Chat - Session lifecycle
   'chat.session.creating': '正在创建会话...',
   'chat.session.loadingHistory': '正在加载会话历史...',
+  'yeaft.historyLoad.error': '会话历史暂时无法加载，消息仍安全保存在 Agent 中。',
+  'yeaft.historyLoad.retry': '重新加载',
   'chat.session.closed': '会话已关闭',
   'chat.session.agentOffline': 'Agent 已离线，该会话将在 Agent 重新上线后恢复。',
   'chat.execution.cancelled': '执行已取消',

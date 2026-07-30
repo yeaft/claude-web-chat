@@ -381,7 +381,12 @@ describe('Yeaft load-history first paint', () => {
         { role: 'assistant', content: '', sessionId: 'session-fast', speakerVpId: 'vp-linus', toolCalls: [{ id: 'tool-1', name: 'Bash', input: { command: 'echo ok' } }] },
       ]);
 
-      const pending = handleYeaftLoadHistory({ sessionId: 'session-fast', limit: 1 });
+      const pending = handleYeaftLoadHistory({
+        sessionId: 'session-fast',
+        limit: 1,
+        requestId: 'history-request-1',
+        _requestClientId: 'web-client-1',
+      });
       await flushMicrotasks();
 
       expect(loadSession).toHaveBeenCalledTimes(1);
@@ -389,6 +394,8 @@ describe('Yeaft load-history first paint', () => {
       expect(chunk).toMatchObject({
         type: 'yeaft_history_chunk',
         sessionId: 'session-fast',
+        requestId: 'history-request-1',
+        _requestClientId: 'web-client-1',
         mode: 'recent',
         hasMore: true,
         messages: [
@@ -399,11 +406,14 @@ describe('Yeaft load-history first paint', () => {
       const historyDone = sent.find(m => m.event?.type === 'history_loaded');
       expect(historyDone).toMatchObject({
         type: 'yeaft_output',
+        requestId: 'history-request-1',
+        _requestClientId: 'web-client-1',
         event: {
           type: 'history_loaded',
           mode: 'recent',
           count: 2,
           sessionId: 'session-fast',
+          requestId: 'history-request-1',
           hasMore: true,
         },
       });

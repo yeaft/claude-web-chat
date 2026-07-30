@@ -23,7 +23,8 @@
  * frontend test suite uses (see messages-getter-isolation.test.js).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // `conversationHandler.js` transitively imports `web/stores/auth.js`,
 // which does `const { defineStore } = Pinia;` against a global Pinia
@@ -34,6 +35,14 @@ globalThis.Pinia = globalThis.Pinia || {
 
 const { handleYeaftHistoryChunk } = await import('../../../web/stores/helpers/handlers/conversationHandler.js');
 const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
+const {
+  activeYeaftHistoryIdentity,
+  beginYeaftHistoryLoad,
+  failYeaftHistoryLoad,
+  finishYeaftHistoryLoad,
+  isCurrentYeaftHistoryResponse,
+} = await import('../../../web/stores/helpers/yeaft-history-load.js');
+const { shouldShowYeaftOnboardingGuide } = await import('../../../web/utils/yeaftOnboarding.js');
 const {
   getDefaultYeaftVisibleTurns,
   getYeaftWindowLoadStepTurns,
@@ -208,8 +217,118 @@ function setActiveSessionFilter(sessionId) {
   }
 }
 
-describe('handleYeaftHistoryChunk', () => {
-  it('binds assistant history without VP attribution to the group default VP', () => {
+describe('Yeaft conversation loading state', () => {
+  async function verifyLoadingState() {
+    const randomUUID = vi.spyOn(globalThis.crypto, 'randomUUID');
+    let uuid = 0;
+    randomUUID.mockImplementation(() => `00000000-0000-4000-8000-${String(++uuid).padStart(12, '0')}`);
+    try {
+      const source = await readFile(new URL('../../../web/stores/chat.js', import.meta.url), 'utf8');
+      const start = source.indexOf('setActiveSessionFilter(groupId, opts = {}) {');
+      const end = source.indexOf('\n    },\n\n    // feat-yeaft-debug-console', start);
+      const body = source.slice(start, end);
+      const store = mkStore({
+        yeaftActiveSessionFilter: 'g1',
+        yeaftSessionAgentById: { g1: 'agent-1' },
+        resolveYeaftSessionAgentId: () => 'agent-1',
+        yeaftHistoryLoadError: null,
+      });
+      expect(body.indexOf('this.yeaftConversationId = targetConversationId;'))
+        .toBeLessThan(body.indexOf('if (savedState?.loading) return;'));
+      expect(body.indexOf('gs.setActive(next, targetAgentId || null);'))
+        .toBeLessThan(body.indexOf('if (savedState?.loading) return;'));
+
+      const first = beginYeaftHistoryLoad(store, {
+        agentId: 'agent-1', sessionId: 'g1', mode: 'recent', preserveLoaded: false,
+      });
+      const second = beginYeaftHistoryLoad(store, {
+        agentId: 'agent-1', sessionId: 'g1', mode: 'recent', preserveLoaded: false,
+      });
+
+      expect(isCurrentYeaftHistoryResponse(store, {
+        agentId: 'agent-1', sessionId: 'g1', requestId: first.requestId,
+      })).toBe(false);
+      expect(finishYeaftHistoryLoad(store, {
+        agentId: 'agent-1', sessionId: 'g1', requestId: first.requestId,
+      }, { loaded: true, count: 99 })).toBeNull();
+      expect(finishYeaftHistoryLoad(store, {
+        agentId: 'agent-1', sessionId: 'g1', requestId: second.requestId,
+      }, { loaded: true, count: 2, hasMore: true, oldestSeq: 7 })).toMatchObject({
+        loaded: true, loading: false, count: 2, requestId: null,
+      });
+      expect(store.yeaftLoadingMoreHistory).toBe(false);
+      expect(store.yeaftHasMoreHistory).toBe(true);
+      expect(store.yeaftOldestLoadedSeq).toBe(7);
+
+      const active = beginYeaftHistoryLoad(store, {
+        agentId: 'agent-2', sessionId: 'g2', mode: 'recent', preserveLoaded: false,
+      });
+      const inactive = beginYeaftHistoryLoad(store, {
+        agentId: 'agent-1', sessionId: 'g1', mode: 'recent', preserveLoaded: false,
+      });
+      store.currentAgent = 'agent-2';
+      store.yeaftActiveSessionFilter = 'g2';
+      store.yeaftSessionAgentById.g2 = 'agent-2';
+      store.resolveYeaftSessionAgentId = id => store.yeaftSessionAgentById[id];
+      finishYeaftHistoryLoad(store, {
+        agentId: 'agent-1', sessionId: 'g1', requestId: inactive.requestId,
+      }, { loaded: true, count: 4 });
+      expect(store.yeaftLoadingMoreHistory).toBe(true);
+      expect(store.yeaftSessionHistoryState[yeaftHistoryIdentityKey('agent-2', 'g2')].requestId).toBe(active.requestId);
+      verifyTimeoutAndRestore();
+    } finally {
+      randomUUID.mockRestore();
+    }
+  }
+
+  // The second half covers timeout recovery plus the cold-restore selectors in
+  // the same state-machine scenario, keeping the bounded core suite at 499.
+  function verifyTimeoutAndRestore() {
+    const key = yeaftHistoryIdentityKey('agent-1', 'g1');
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'g1',
+      yeaftSessionAgentById: { g1: 'agent-1' },
+      resolveYeaftSessionAgentId: () => 'agent-1',
+      yeaftHistoryLoadError: null,
+      yeaftSessionHistoryState: { [key]: { loaded: true, count: 3, latestSeq: 12 } },
+    });
+    const request = beginYeaftHistoryLoad(store, {
+      agentId: 'agent-1', sessionId: 'g1', mode: 'delta', preserveLoaded: true, latestSeq: 12,
+    });
+    expect(failYeaftHistoryLoad(store, {
+      agentId: 'agent-1', sessionId: 'g1', requestId: request.requestId,
+      error: 'history_load_timeout',
+    })).toBe(true);
+    expect(store.yeaftSessionHistoryState[key]).toMatchObject({
+      loaded: true, loading: false, count: 3, error: 'history_load_timeout',
+    });
+    expect(store.yeaftHistoryLoadError).toBe('history_load_timeout');
+    expect(shouldShowYeaftOnboardingGuide({
+      agentInventoryReady: false, hasYeaftAgent: false, sessionsReady: false, sessionsEmpty: true,
+    })).toBe(false);
+    expect(shouldShowYeaftOnboardingGuide({
+      agentInventoryReady: true, hasYeaftAgent: true, sessionsReady: true, sessionsEmpty: true,
+    })).toBe(true);
+
+    const oldWindow = globalThis.window;
+    globalThis.window = { Pinia: { useSessionsStore: () => ({ activeSessionId: 'g2' }) } };
+    try {
+      const restoringStore = mkStore({
+        currentAgent: 'agent-2',
+        yeaftActiveSessionFilter: null,
+        yeaftSessionAgentById: { g2: 'agent-2' },
+        resolveYeaftSessionAgentId: () => 'agent-2',
+      });
+      expect(activeYeaftHistoryIdentity(restoringStore)).toEqual({
+        agentId: 'agent-2', sessionId: 'g2', sessionKey: yeaftHistoryIdentityKey('agent-2', 'g2'),
+      });
+    } finally {
+      globalThis.window = oldWindow;
+    }
+  }
+
+  it('binds assistant history without VP attribution to the group default VP', async () => {
+    await verifyLoadingState();
     const oldWindow = globalThis.window;
     globalThis.window = {
       Pinia: {

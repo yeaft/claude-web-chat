@@ -26,8 +26,10 @@ export default {
       <!-- Message refresh — replays current Yeaft session history without a full page reload. -->
       <button
         class="yeaft-reload-btn"
+        :class="{ 'is-loading': loadingMoreHistory }"
         @click="$emit('reload-messages')"
         :disabled="loadingMoreHistory"
+        :aria-busy="loadingMoreHistory ? 'true' : 'false'"
         :title="$t('yeaft.reloadMessages')"
         :aria-label="$t('yeaft.reloadMessages')"
       >

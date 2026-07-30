@@ -235,6 +235,14 @@ export default {
         />
 
         <div class="yeaft-conversation-body">
+          <div
+            v-if="!showSettings && !showOnboardingGuide && store.yeaftHistoryLoadError && store.yeaftVisibleMessages.length === 0"
+          class="yeaft-history-load-error"
+          role="alert"
+          >
+            <span>{{ $t('yeaft.historyLoad.error') }}</span>
+            <button type="button" class="btn-secondary" @click="reloadMessages">{{ $t('yeaft.historyLoad.retry') }}</button>
+          </div>
         <!-- H2.f.6: YeaftFeatureDetailView removed — cross-thread aggregation
              retired with the multi-thread engine; the task-detail view had
              no message data source after H2.f.1, so it's been deleted.
@@ -318,13 +326,23 @@ export default {
           </div>
         </section>
 
+        <div
+          v-if="!showSettings && !showOnboardingGuide && !store._hasHandledAgentList"
+          class="initial-message-loading yeaft-conversation-bootstrap-loading"
+          role="status"
+          aria-live="polite"
+        >
+          <div class="initial-message-loading-spinner" aria-hidden="true"></div>
+          <div class="initial-message-loading-text">{{ $t('chat.session.loadingHistory') }}</div>
+        </div>
+
         <!-- Messages Area — reuse standard MessageList for identical rendering -->
         <!-- task-fix-empty-group: hero state replaces MessageList when the
              active group has no roster — gives the user a single, clear
              next step instead of a blank canvas. The modal still pops on
              top for groups the user hasn't dismissed yet. -->
         <div
-          v-if="!showSettings && !showOnboardingGuide && isActiveGroupEmpty"
+          v-if="!showSettings && !showOnboardingGuide && store._hasHandledAgentList && isActiveGroupEmpty && store.yeaftVisibleMessages.length === 0 && !store.yeaftInitialHistoryLoading && !store.yeaftHistoryLoadError"
           class="yeaft-empty-group-hero"
         >
           <div class="yeaft-empty-group-hero__icon" aria-hidden="true">
@@ -340,7 +358,7 @@ export default {
         </div>
         <MessageList
           ref="messageListRef"
-          v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty"
+          v-if="!showSettings && !showOnboardingGuide && store._hasHandledAgentList && (!isActiveGroupEmpty || store.yeaftVisibleMessages.length > 0 || store.yeaftInitialHistoryLoading) && !(store.yeaftHistoryLoadError && store.yeaftVisibleMessages.length === 0)"
           @quote-message="setMessageQuote"
           @edit-message-as-new="editMessageAsNew"
         />
@@ -1268,6 +1286,7 @@ export default {
     const showOnboardingGuide = Vue.computed(() => {
       const gs = sessionsStore();
       return shouldShowYeaftOnboardingGuide({
+        agentInventoryReady: store._hasHandledAgentList === true,
         hasYeaftAgent: hasUsableYeaftAgent(store),
         sessionsReady: !!(gs && gs.hasLoadedSnapshot),
         sessionsEmpty: !!(gs && gs.isEmpty),

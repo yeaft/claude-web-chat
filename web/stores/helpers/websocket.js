@@ -223,6 +223,7 @@ export function connect(store) {
     }
     console.log('[WS] Disconnected:', event.code, event.reason);
     store.authenticated = false;
+    store._hasHandledAgentList = false;
     const wasUpdating = store.connectionState === 'updating';
     store.connectionState = wasUpdating ? 'updating' : 'disconnected';
     store.stopHeartbeat();
