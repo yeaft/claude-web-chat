@@ -360,9 +360,10 @@ export default {
       const translated = this.$t ? this.$t(key) : key;
       return translated && translated !== key ? translated : fallback;
     },
-    agentName(agentId) {
-      const agent = this.agents.find(item => item.id === agentId);
-      return agent?.name || agentId || this.tr('workCenter.agent', 'Agent');
+    selectWorkCenterAgent(event) {
+      const nextAgentId = event?.target?.value || '';
+      if (!nextAgentId || nextAgentId === this.agentId) return;
+      this.store.enterWorkCenter(nextAgentId);
     },
     statusLabel(status) {
       return this.tr(`workCenter.status.${status}`, String(status || '').replace('_', ' '));
@@ -1062,10 +1063,14 @@ export default {
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 18h18v-2H3v2Zm0-5h18v-2H3v2Zm0-7v2h18V6H3Z"/></svg>
               </button>
               <h1>{{ tr('workCenter.title', 'Work Center') }}</h1>
-              <span class="work-center-agent-context">
+              <label class="work-center-agent-picker">
                 <span class="work-center-agent-dot" aria-hidden="true"></span>
-                {{ agentName(agentId) }}
-              </span>
+                <select :value="agentId" :aria-label="tr('workCenter.selectAgent', 'Select Agent')" @change="selectWorkCenterAgent">
+                  <option v-for="agent in onlineAgents" :key="agent.id" :value="agent.id">
+                    {{ agent.name || agent.id }}
+                  </option>
+                </select>
+              </label>
             </div>
             <div class="work-center-header-actions">
               <button class="work-center-icon-button" type="button" @click="settingsOpen = true"

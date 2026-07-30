@@ -232,6 +232,11 @@ describe('message flow regressions', () => {
     expect(firstRow.get('.session-item-header').text()).toContain('Pinned');
     expect(firstRow.get('.session-item-header').text()).not.toContain('server');
     expect(firstRow.get('.session-info .session-agent').text()).toBe('server');
+    expect(sidebar.findAll('.session-info .session-provider').map(item => item.text())).toEqual([
+      'Yeaft',
+      'provider.copilot',
+      'provider.copilot',
+    ]);
     expect(sidebar.text()).not.toContain('user_1770305719');
     expect(UnifiedSessionList.methods.agentLabel.call({ agents: [] }, {
       runtimeProvider: 'yeaft',
@@ -405,6 +410,8 @@ describe('message flow regressions', () => {
     expect(sidebarCss).not.toMatch(/\.sidebar-provider-tab\s*\{/s);
     expect(sidebarCss).not.toMatch(/\.sidebar-provider-group\s*\{/s);
     expect(sidebarCss).toMatch(/\.sidebar-session-toolbar\s*\{[^}]*min-height:\s*38px/s);
+    expect(sidebarCss).toMatch(/\.sidebar-session-title\s*\{[^}]*font-size:\s*15px/s);
+    expect(sidebarCss).toMatch(/\.session-item \.title\s*\{[^}]*font-size:\s*13px/s);
     expect(sidebarCss).toMatch(/\.sidebar-tool-button:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/s);
     const fallbackWorkCenter = mount(SidebarWorkCenter, {
       props: { agents: [] },
@@ -613,6 +620,9 @@ describe('message flow regressions', () => {
     expect(component).toContain('if (!canSend.value) return;');
     expect(component).not.toContain('if (isStopVisible.value || !canSend.value) return;');
     expect(workCenter).toContain('@change="onWorkItemMessageAttachmentInput"');
+    expect(workCenter).toContain('@change="selectWorkCenterAgent"');
+    expect(workCenter).toContain("this.store.enterWorkCenter(nextAgentId)");
+    expect(workCenterCss).toMatch(/\.work-center-agent-picker\s*\{[^}]*background:\s*var\(--bg-input\)/s);
     expect(workCenter).toContain('workItemMessageAttachments.length === 0');
     expect(workCenter).toContain('work-center-detail-close');
     expect(workCenter).not.toContain('class="work-center-action-content-summary"');
@@ -939,6 +949,10 @@ describe('message flow regressions', () => {
     const selects = modal.findAll('select.resume-input');
     expect(selects[0].element.value).toBe('agent-a');
     expect(selects[1].element.value).toBe('copilot');
+    expect(modal.get('.yeaft-session-create-heading h2').text()).toBe('yeaft.session.create.title');
+    expect(modal.get('.yeaft-session-create-heading p').text()).toBe('yeaft.session.create.subtitle');
+    expect(modal.findAll('.yeaft-session-create-fields > .resume-control-row')).toHaveLength(4);
+    expect(modal.get('.yeaft-create-submit').classes()).toContain('btn-primary');
     expect(modal.find('.resume-control-row-vp').exists()).toBe(false);
     await selects[1].setValue('yeaft');
     expect(modal.find('.resume-control-row-vp').exists()).toBe(true);
