@@ -61,6 +61,7 @@ globalThis.Pinia = {
   useSessionsStore: () => runtimeSessionsStore,
 };
 const { useChatStore } = await import('../../web/stores/chat.js');
+const { useSessionsStore } = await import('../../web/stores/sessions.js');
 const { default: SessionCreateModal } = await import('../../web/components/SessionCreateModal.js');
 const { default: ChatPage } = await import('../../web/components/ChatPage.js');
 const { default: YeaftSidebar } = await import('../../web/components/YeaftSidebar.js');
@@ -777,15 +778,71 @@ describe('message flow regressions', () => {
       ]);
       expect(hydrateStore._hasHandledYeaftSessionHydrate).toBe(true);
 
-      hydrateStore.yeaftSessionInventoryCompleteSupported = false;
-      hydrateStore._hasHandledYeaftSessionHydrate = false;
-      hydrateStore._legacyYeaftSessionInventoryReset = false;
-      handleMessage(hydrateStore, {
-        type: 'yeaft_session_hydrate', agentId: 'agent-a', sessions: [{ id: 'legacy' }],
-      });
-      expect(hydrateStore._hasHandledYeaftSessionHydrate).toBe(false);
-      vi.advanceTimersByTime(500);
-      expect(hydrateStore._hasHandledYeaftSessionHydrate).toBe(true);
+      const legacySessions = useSessionsStore();
+      legacySessions.resetInventory();
+      legacySessions.applySnapshot([{ id: 'session-b', name: 'Session B' }], 'agent-b');
+      legacySessions.setActive('session-b', 'agent-b');
+      globalThis.Pinia.useSessionsStore = () => legacySessions;
+      const previousChatStore = globalThis.Pinia.useChatStore;
+      globalThis.Pinia.useChatStore = () => store;
+      store.currentView = 'yeaft';
+      store.currentAgent = 'agent-b';
+      store.yeaftActiveSessionFilter = 'session-b';
+      store.yeaftSessionAgentById = { 'session-b': 'agent-b' };
+      store.yeaftSessionInventoryCompleteSupported = false;
+      store.yeaftSessionHydrateRequestId = 'legacy-inventory';
+      store.yeaftSessionHydrateSlices = [];
+      store._hasHandledYeaftSessionHydrate = false;
+      const setFilterSpy = vi.spyOn(store, 'setActiveSessionFilter');
+      try {
+        handleMessage(store, {
+          type: 'yeaft_session_hydrate', agentId: 'agent-a', sessions: [{ id: 'session-a', name: 'Session A' }],
+        });
+        expect(legacySessions.activeSessionId).toBe('session-b');
+        expect(store.yeaftActiveSessionFilter).toBe('session-b');
+        expect(store.currentAgent).toBe('agent-b');
+        expect(setFilterSpy).not.toHaveBeenCalled();
+
+        handleMessage(store, {
+          type: 'yeaft_session_hydrate', agentId: 'agent-b', sessions: [{ id: 'session-b', name: 'Session B' }],
+        });
+        vi.advanceTimersByTime(499);
+        expect(legacySessions.activeSessionId).toBe('session-b');
+        expect(store.yeaftActiveSessionFilter).toBe('session-b');
+        expect(store.currentAgent).toBe('agent-b');
+        expect(setFilterSpy).not.toHaveBeenCalled();
+
+        vi.advanceTimersByTime(1);
+        expect(store._hasHandledYeaftSessionHydrate).toBe(true);
+        expect(legacySessions.sessionOrder.map((key) => {
+          const row = legacySessions.sessions[key];
+          return `${row.agentId}:${row.id}`;
+        })).toEqual([
+          'agent-b:session-b',
+          'agent-a:session-a',
+        ]);
+        expect(legacySessions.activeSession).toMatchObject({ id: 'session-b', agentId: 'agent-b' });
+        expect(store.yeaftActiveSessionFilter).toBe('session-b');
+        expect(store.currentAgent).toBe('agent-b');
+        expect(setFilterSpy).not.toHaveBeenCalled();
+
+        handleMessage(store, { type: 'agent_list', agents: [] });
+        vi.advanceTimersByTime(500);
+        expect(legacySessions.activeSession).toMatchObject({ id: 'session-b', agentId: 'agent-b' });
+        expect(store.yeaftActiveSessionFilter).toBe('session-b');
+        expect(store.currentAgent).toBe('agent-b');
+
+        handleMessage(store, {
+          type: 'yeaft_session_hydrate', agentId: 'agent-a', sessions: [{ id: 'late', name: 'Late' }],
+        });
+        vi.advanceTimersByTime(500);
+        expect(legacySessions.sessionById('late', 'agent-a')).toBeNull();
+        expect(legacySessions.activeSession).toMatchObject({ id: 'session-b', agentId: 'agent-b' });
+      } finally {
+        setFilterSpy.mockRestore();
+        if (previousChatStore) globalThis.Pinia.useChatStore = previousChatStore;
+        else delete globalThis.Pinia.useChatStore;
+      }
     } finally {
       vi.useRealTimers();
       globalThis.Pinia.useSessionsStore = previousSessionsStore;

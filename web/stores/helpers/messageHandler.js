@@ -42,22 +42,64 @@ function sessionsStore() {
     || (window.__useSessionsStore && window.__useSessionsStore());
 }
 
-function resetLegacyYeaftSessionInventory(store, sessions) {
-  if (store._legacyYeaftSessionInventoryReset) return;
-  if (typeof sessions?.resetInventory === 'function') sessions.resetInventory();
-  store._legacyYeaftSessionInventoryReset = true;
+function bufferYeaftSessionInventorySlice(store, msg) {
+  const agentId = msg.agentId || null;
+  const slices = Array.isArray(store.yeaftSessionHydrateSlices)
+    ? store.yeaftSessionHydrateSlices.filter(slice => slice.agentId !== agentId)
+    : [];
+  store.yeaftSessionHydrateSlices = [...slices, {
+    agentId,
+    sessions: Array.isArray(msg.sessions) ? msg.sessions : [],
+  }];
+}
+
+function preferredYeaftSessionInventoryIdentity(store) {
+  let sessionId = store.yeaftActiveSessionFilter || null;
+  if (!sessionId) {
+    try { sessionId = localStorage.getItem('lastViewedYeaftSession') || null; }
+    catch (_) {}
+  }
+  const agentId = sessionId && typeof store.resolveYeaftSessionAgentId === 'function'
+    ? store.resolveYeaftSessionAgentId(sessionId)
+    : store.currentAgent || null;
+  return { sessionId, agentId };
+}
+
+// New Servers send an explicit completion frame. Older Servers do not, so the
+// quiet timer below synthesizes that boundary. Both paths commit the same
+// buffered snapshot and never expose per-Agent slices to the live store.
+function commitBufferedYeaftSessionInventory(store) {
+  const sessions = sessionsStore();
+  const preferred = preferredYeaftSessionInventoryIdentity(store);
+  if (typeof sessions?.beginInventoryCommit === 'function') {
+    sessions.beginInventoryCommit(preferred.sessionId, preferred.agentId);
+  } else if (typeof sessions?.resetInventory === 'function') {
+    sessions.resetInventory();
+  }
+  const slices = Array.isArray(store.yeaftSessionHydrateSlices)
+    ? store.yeaftSessionHydrateSlices
+    : [];
+  const orderedSlices = preferred.agentId
+    ? [
+        ...slices.filter(slice => slice.agentId === preferred.agentId),
+        ...slices.filter(slice => slice.agentId !== preferred.agentId),
+      ]
+    : slices;
+  if (orderedSlices.length === 0) sessions?.applySnapshot?.([], null);
+  for (const slice of orderedSlices) {
+    sessions?.applySnapshot?.(slice.sessions || [], slice.agentId || null);
+  }
+  store.yeaftSessionHydrateSlices = [];
 }
 
 function scheduleLegacyYeaftSessionInventoryComplete(store) {
-  if (store.yeaftSessionInventoryCompleteSupported !== false) return;
+  const requestId = store.yeaftSessionHydrateRequestId || null;
+  if (store.yeaftSessionInventoryCompleteSupported !== false || !requestId) return;
   clearTimeout(store._legacyYeaftSessionHydrateTimer);
   store._legacyYeaftSessionHydrateTimer = setTimeout(() => {
+    if (store.yeaftSessionHydrateRequestId !== requestId) return;
     store._legacyYeaftSessionHydrateTimer = null;
-    const sessions = sessionsStore();
-    if (sessions && sessions.hasLoadedSnapshot !== true
-        && typeof sessions.applySnapshot === 'function') {
-      sessions.applySnapshot([], null);
-    }
+    commitBufferedYeaftSessionInventory(store);
     store._hasHandledYeaftSessionHydrate = true;
     store.yeaftSessionHydrateRequestId = null;
     store.yeaftSessionHydrateError = null;
@@ -157,7 +199,6 @@ export function handleMessage(store, msg) {
         }
         store.yeaftSessionInventoryCompleteSupported = msg.yeaftSessionInventoryComplete === true;
         store.yeaftSessionHydrateSlices = [];
-        store._legacyYeaftSessionInventoryReset = false;
         store._hasHandledYeaftSessionHydrate = false;
         store.yeaftSessionHydrateError = null;
 
@@ -187,8 +228,8 @@ export function handleMessage(store, msg) {
 
     case 'agent_list':
       handleAgentList(store, msg);
-      if (store.yeaftSessionInventoryCompleteSupported === false) {
-        resetLegacyYeaftSessionInventory(store, sessionsStore());
+      if (store.yeaftSessionInventoryCompleteSupported === false
+          && store.yeaftSessionHydrateRequestId) {
         scheduleLegacyYeaftSessionInventoryComplete(store);
       }
       if (store.workCenterOpen && store.workCenterAgentId) {
@@ -199,20 +240,12 @@ export function handleMessage(store, msg) {
     case 'yeaft_session_hydrate': {
       if (store.yeaftSessionInventoryCompleteSupported === true
           && (!msg.requestId || msg.requestId !== store.yeaftSessionHydrateRequestId)) break;
+      if (store.yeaftSessionInventoryCompleteSupported !== true
+          && !store.yeaftSessionHydrateRequestId) break;
       if (msg.requestId && store.yeaftSessionHydrateRequestId
           && msg.requestId !== store.yeaftSessionHydrateRequestId) break;
-      const sessions = sessionsStore();
-      if (store.yeaftSessionInventoryCompleteSupported === true) {
-        const slices = Array.isArray(store.yeaftSessionHydrateSlices)
-          ? store.yeaftSessionHydrateSlices.filter(slice => slice.agentId !== (msg.agentId || null))
-          : [];
-        store.yeaftSessionHydrateSlices = [...slices, {
-          agentId: msg.agentId || null,
-          sessions: Array.isArray(msg.sessions) ? msg.sessions : [],
-        }];
-      } else {
-        resetLegacyYeaftSessionInventory(store, sessions);
-        if (sessions) sessions.applySnapshot(msg.sessions || [], msg.agentId || null);
+      bufferYeaftSessionInventorySlice(store, msg);
+      if (store.yeaftSessionInventoryCompleteSupported !== true) {
         scheduleLegacyYeaftSessionInventoryComplete(store);
       }
       break;
@@ -226,35 +259,8 @@ export function handleMessage(store, msg) {
           && msg.requestId !== store.yeaftSessionHydrateRequestId) break;
       clearTimeout(store._legacyYeaftSessionHydrateTimer);
       store._legacyYeaftSessionHydrateTimer = null;
-      if (msg.ok !== false) {
-        const sessions = sessionsStore();
-        let preferredSessionId = store.yeaftActiveSessionFilter || null;
-        if (!preferredSessionId) {
-          try { preferredSessionId = localStorage.getItem('lastViewedYeaftSession') || null; }
-          catch (_) {}
-        }
-        const preferredAgentId = preferredSessionId && typeof store.resolveYeaftSessionAgentId === 'function'
-          ? store.resolveYeaftSessionAgentId(preferredSessionId)
-          : store.currentAgent || null;
-        if (typeof sessions?.beginInventoryCommit === 'function') {
-          sessions.beginInventoryCommit(preferredSessionId, preferredAgentId);
-        } else if (typeof sessions?.resetInventory === 'function') {
-          sessions.resetInventory();
-        }
-        const slices = Array.isArray(store.yeaftSessionHydrateSlices)
-          ? store.yeaftSessionHydrateSlices
-          : [];
-        const orderedSlices = preferredAgentId
-          ? [
-              ...slices.filter(slice => slice.agentId === preferredAgentId),
-              ...slices.filter(slice => slice.agentId !== preferredAgentId),
-            ]
-          : slices;
-        for (const slice of orderedSlices) {
-          sessions?.applySnapshot(slice.sessions || [], slice.agentId || null);
-        }
-      }
-      store.yeaftSessionHydrateSlices = [];
+      if (msg.ok !== false) commitBufferedYeaftSessionInventory(store);
+      else store.yeaftSessionHydrateSlices = [];
       store.yeaftSessionHydrateRequestId = null;
       store._hasHandledYeaftSessionHydrate = msg.ok !== false;
       store.yeaftSessionHydrateError = msg.ok === false

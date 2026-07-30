@@ -144,7 +144,6 @@ export function connect(store) {
   store.yeaftSessionHydrateRequestId = null;
   store.yeaftSessionHydrateSlices = [];
   store.yeaftSessionHydrateError = null;
-  store._legacyYeaftSessionInventoryReset = false;
   store.pendingAgentSelection = null;
   store.agentSwitching = false;
 
@@ -246,7 +245,6 @@ export function connect(store) {
     store.yeaftSessionHydrateRequestId = null;
     store.yeaftSessionHydrateSlices = [];
     store.yeaftSessionHydrateError = null;
-    store._legacyYeaftSessionInventoryReset = false;
     store.pendingAgentSelection = null;
     store.agentSwitching = false;
     const wasUpdating = store.connectionState === 'updating';

@@ -2317,10 +2317,11 @@ export const useChatStore = defineStore('chat', {
       return resolveAgentIdForSession(this, sessionId);
     },
     requestYeaftSessionInventory() {
+      clearTimeout(this._legacyYeaftSessionHydrateTimer);
+      this._legacyYeaftSessionHydrateTimer = null;
       const requestId = `session_inventory_${crypto.randomUUID()}`;
       this.yeaftSessionHydrateRequestId = requestId;
       this.yeaftSessionHydrateSlices = [];
-      this._legacyYeaftSessionInventoryReset = false;
       this._hasHandledAgentList = false;
       this._hasHandledYeaftSessionHydrate = false;
       this.yeaftSessionHydrateError = null;
