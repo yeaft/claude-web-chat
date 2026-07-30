@@ -4241,8 +4241,10 @@ export class Engine {
       return lastActivityAt === null || now - lastActivityAt >= timeoutMs;
     });
     for (const taskId of taskIds) {
-      this.#pendingAsyncTaskIds.delete(taskId);
-      this.#asyncTaskToolMeta.delete(taskId);
+      // Keep ownership visible while the coordinator decides whether this is a
+      // real defer. If a terminal event already won and removed the task, the
+      // coordinator can reject a stale timeout callback instead of scheduling
+      // a duplicate rescue.
       try {
         if (typeof this.#asyncTaskCoordinator?.onDeferred === 'function') {
           this.#asyncTaskCoordinator.onDeferred(taskId, this);
@@ -4250,6 +4252,8 @@ export class Engine {
           this.#asyncTaskCoordinator?.onUnregister?.(taskId, this);
         }
       } catch { /* best-effort */ }
+      this.#pendingAsyncTaskIds.delete(taskId);
+      this.#asyncTaskToolMeta.delete(taskId);
     }
     if (taskIds.length > 0) {
       console.warn(`[Engine] async task wait silent for ${timeoutMs}ms; deferring ${taskIds.join(', ')}`);

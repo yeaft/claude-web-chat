@@ -521,6 +521,7 @@ function buildAsyncTaskCoordinator() {
       });
     },
     onDeferred(taskId, engine) {
+      if (!engine?.ownsPendingAsyncTask?.(taskId)) return;
       if (!deleteOwnerIfMatch(taskId, engine)) return;
       const sessionId = engine?.sessionId || null;
       const task = sessionId && session?.taskManager?.getTask?.(sessionId, taskId);

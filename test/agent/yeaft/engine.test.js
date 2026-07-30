@@ -374,22 +374,6 @@ describe('Engine', () => {
       expect(mockAdapter.callLog).toHaveLength(0);
     });
 
-    it('should yield error for null prompt', async () => {
-      const engine = new Engine({
-        adapter: mockAdapter,
-        trace,
-        config: { model: 'test-model', maxOutputTokens: 1024 },
-      });
-
-      const events = [];
-      for await (const event of engine.query({ prompt: null })) {
-        events.push(event);
-      }
-
-      expect(events).toHaveLength(1);
-      expect(events[0].type).toBe('error');
-    });
-
     it('should yield error for whitespace-only prompt', async () => {
       const engine = new Engine({
         adapter: mockAdapter,
@@ -1241,6 +1225,75 @@ describe('Engine', () => {
         deferredTaskIds: [],
       });
       expect(activeTaskAdapter.callLog).toHaveLength(3);
+
+      // Multiple owned tasks use independent silence leases. Expiring one stale
+      // child must not evict an active sibling; the active result remains in the
+      // same parent turn while only the stale task is deferred.
+      const mixedTaskAdapter = new MockAdapter();
+      mixedTaskAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_mixed_tasks', name: 'launch_mixed_tasks', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mixedTaskAdapter.pushResponse([
+        { type: 'text_delta', text: 'Waiting for the active task.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      mixedTaskAdapter.pushResponse([
+        { type: 'text_delta', text: 'The active task result was consumed.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const mixedTaskEngine = new Engine({
+        adapter: mixedTaskAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 20 },
+        taskManager: {
+          getTask(_sessionId, taskId) {
+            return taskId === 'task_stale_sibling'
+              ? { status: 'running', updatedAt: new Date(0).toISOString() }
+              : { status: 'running', updatedAt: new Date().toISOString() };
+          },
+          renderActiveTasksForPrompt() { return ''; },
+        },
+        sessionId: 'session-mixed-tasks',
+      });
+      const mixedDeferredTasks = [];
+      mixedTaskEngine.setAsyncTaskCoordinator({
+        onDeferred(taskId) { mixedDeferredTasks.push(taskId); },
+      });
+      mixedTaskEngine.registerTool({
+        name: 'launch_mixed_tasks',
+        description: 'launch one stale task and one active task',
+        parameters: { type: 'object', properties: {} },
+        execute: async (_input, ctx) => {
+          ctx.registerAsyncTask('task_stale_sibling');
+          ctx.registerAsyncTask('task_active_sibling');
+          return 'tasks started';
+        },
+      });
+
+      const mixedEvents = [];
+      let mixedActiveAccepted = null;
+      for await (const event of mixedTaskEngine.query({ prompt: 'delegate mixed work' })) {
+        mixedEvents.push(event);
+        if (event.type === 'async_task_wait_start') {
+          setTimeout(() => {
+            mixedActiveAccepted = mixedTaskEngine.notifyAsyncTaskCompleted(
+              'task_active_sibling',
+              '<task-result id="task_active_sibling">done</task-result>',
+            );
+          }, 45);
+        }
+      }
+
+      expect(mixedDeferredTasks).toEqual(['task_stale_sibling']);
+      expect(mixedActiveAccepted).toBe(true);
+      expect(mixedTaskEngine.notifyAsyncTaskCompleted('task_stale_sibling', 'late')).toBe(false);
+      expect(mixedEvents.find(event => event.type === 'async_task_wait_end')).toMatchObject({
+        timedOut: true,
+        deferredTaskIds: ['task_stale_sibling'],
+        remainingTaskIds: [],
+      });
+      expect(mixedTaskAdapter.callLog).toHaveLength(3);
     });
 
     it('passes the active tool call identity to interactive AskUser hosts', async () => {

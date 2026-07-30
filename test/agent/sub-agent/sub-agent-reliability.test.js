@@ -75,6 +75,7 @@ import {
   getAgentRegistry,
   tickAgent,
 } from '../../../agent/yeaft/tools/agent.js';
+import { startSubAgent } from '../../../agent/yeaft/sub-agent/runner.js';
 import agentTool from '../../../agent/yeaft/tools/agent.js';
 import sendMessage from '../../../agent/yeaft/tools/send-message.js';
 import waitAgent from '../../../agent/yeaft/tools/wait-agent.js';
@@ -319,12 +320,19 @@ describe('wait-agent envelope shape', () => {
     // ownership. Force child-registry setup to throw and require immediate
     // TaskManager completion.
     const taskEvents = [];
+    let failedTaskStatus = 'running';
     const taskManager = {
       startTask() {
-        return { id: 'task-spawn-failure', status: 'running' };
+        return { id: 'task-spawn-failure', status: failedTaskStatus };
       },
       completeTask(sessionId, taskId, opts) {
+        if (failedTaskStatus !== 'running') return { id: taskId, status: failedTaskStatus };
+        failedTaskStatus = opts.status;
         taskEvents.push({ sessionId, taskId, opts });
+        return { id: taskId, status: failedTaskStatus };
+      },
+      getTask(_sessionId, taskId) {
+        return { id: taskId, status: failedTaskStatus };
       },
       setTaskLogPath() {},
     };
@@ -350,6 +358,40 @@ describe('wait-agent envelope shape', () => {
       taskId: 'task-spawn-failure',
       opts: expect.objectContaining({ status: 'failed' }),
     }]);
+    taskManager.completeTask('session-failure', 'task-spawn-failure', { status: 'failed' });
+    expect(taskEvents).toHaveLength(1);
+    expect(taskManager.getTask('session-failure', 'task-spawn-failure')).toMatchObject({ status: 'failed' });
+    const failedAgent = agents.get(spawnFailure.agentId);
+    expect(failedAgent).toMatchObject({
+      status: STATUS.FAILED,
+      error: 'Windows runner setup failed',
+      __driverStarted: false,
+      subEngine: null,
+      outputLog: null,
+      outputFile: null,
+    });
+
+    const rollbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yeaft-runner-startup-'));
+    const partialAgent = {
+      id: 'agent-partial-startup',
+      name: 'partial-startup',
+      mission: 'fail after output log creation',
+      status: STATUS.CREATED,
+    };
+    const partialDeps = mkDeps(new TextAdapter(), { subAgentLogDir: rollbackDir });
+    Object.defineProperty(partialDeps, 'language', {
+      configurable: true,
+      get() { throw new Error('preamble setup failed'); },
+    });
+    expect(() => startSubAgent(partialAgent, partialDeps)).toThrow('preamble setup failed');
+    expect(partialAgent).toMatchObject({
+      __driverStarted: false,
+      subEngine: null,
+      subVpPersona: null,
+      outputLog: null,
+      outputFile: null,
+    });
+    fs.rmSync(rollbackDir, { recursive: true, force: true });
   });
 
   it('sessionless scoped tools still isolate different parent VPs', async () => {
