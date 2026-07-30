@@ -1528,7 +1528,7 @@ terminal result CHECK 明确同时覆盖 settled 与 superseded：supersede 是�
 - 提前接管同样要求持久 instance registry 已原子写入与旧 `ownerId + ownerBootId + ownerLeaseEpoch` 精确匹配的 terminal exit proof，并且 execution fence subsystem 已证明旧 owner 的外发能力被更高 fence epoch撤销。接管必须保存 `reclaimProofRef + reclaimedFromOwnerBootId + reclaimedFromOwnerLeaseEpoch + reclaimedExecutionFenceEpoch`；authority-fenced分类还保存外部 fence proof/token。attempt CAS同时验证proof、当前旧owner identity和全部dispatch policy snapshot。
 - reclaim 复用原 attempt ID，替换owner/boot、递增ownerLeaseEpoch与`dispatchFenceEpoch`并回到active。旧owner之后的renew/finalize/callback因attempt lease/fence epoch stale而拒绝；旧owner尝试新dispatch时也必须在16.15节授权事务失败。任何接管前已发出的外部动作仍进入Operation审计/reconciliation，不能当作未发生。
 - settling 只有在同一事务即将调用 finalize/restore时短暂存在；正常事务失败整笔 rollback为active。若数据库因崩溃留下 settling行，启动扫描仍须满足数据库 lease过期或完整 exit+execution-fence proof，不能仅因boot不同直接reclaim。
-- 所有 finalize/restore caller 校验 `attemptId + purpose + ownerId + ownerBootId + ownerLeaseEpoch + dispatchFenceEpoch + externalDispatchPolicyHash + leaseExpiresAt > dbNow + status=settling + commandIdentity`，并确认没有 status=required/prepared 的 intent、没有 authorized/sending/unknown send-attempt、没有 prepared/dispatching/unknown logical dispatch/fence advance，也没有未解决 callback reconciliation。read-only intent 也必须先 satisfied/cancelled；不能因“无副作用”跳过完成证据。旧owner、旧boot、旧dispatch fence/policy、旧lease epoch、过期lease和已settled/superseded行均无副作用。
+- 所有 finalize/restore caller 校验 `attemptId + purpose + ownerId + ownerBootId + ownerLeaseEpoch + dispatchFenceEpoch + externalDispatchPolicyHash + leaseExpiresAt > dbNow + status=settling + commandIdentity`，并确认没有 status=required/prepared 的 intent、没有 `authorized/sending/unknown` send-attempt、没有 `prepared/dispatching/unknown` logical dispatch/fence advance，也没有未解决 callback/reconciliation conflict。`reconciled` send-attempt 是保留完整审计证据的 non-blocking terminal state；只有 16.15 节统一事务和逐 sibling proof 才能写入。read-only intent 也必须先 satisfied/cancelled；不能因“无副作用”跳过完成证据。旧owner、旧boot、旧dispatch fence/policy、旧lease epoch、过期lease和已settled/superseded行均无副作用。
 
 SQLite partial unique：
 
@@ -1640,6 +1640,7 @@ WHERE status IN ('pending', 'claimed');
   aggregateStatus: 'prepared' | 'dispatching' | 'confirmed' | 'failed' | 'unknown' | 'superseded',
   nextAttemptNumber,
   confirmedAttemptId: null,
+  confirmationProofRef: null,
   externalEffectRef: null,
   preparedAt,
   resolvedAt: null,
@@ -1660,18 +1661,36 @@ WHERE status IN ('pending', 'claimed');
   authorityContractHash,
   idempotencyKey,
   authorityFenceToken: null,
-  status: 'authorized' | 'sending' | 'confirmed' | 'failed' | 'unknown' | 'superseded',
+  status: 'authorized' | 'sending' | 'confirmed' | 'failed' | 'unknown' | 'superseded' | 'reconciled',
   callbackIdentity: null,
   responseBytes: null,
   responseHash: null,
   externalEffectRef: null,
+  reconciledBySendAttemptId: null,
+  reconciliationProofRef: null,
+  reconciliationEventId: null,
   authorizedAt,
   sentAt: null,
   resolvedAt: null,
+  reconciledAt: null,
 }
 ```
 
-`ExternalRecoverySendAttempt` 必须用 SQL CHECK 保证 `dispatch_id` 与 `fence_advance_id` 恰有一个非空；`(dispatch_id,attempt_number)` 和 `(fence_advance_id,attempt_number)` 分别 partial unique。owner/boot/lease/fence、envelope bytes/hash、request/contract/key/token 在插入后不可修改；状态和 callback/result 只能由绑定该 attempt ID 的 CAS 单调推进。logical dispatch 的 owner字段只记录 prepared-by 历史，reclaim 后不改写；旧、新 owner 的 envelope 永远落在不同 send-attempt 行。
+`ExternalRecoverySendAttempt` 必须用 SQL CHECK 保证 `dispatch_id` 与 `fence_advance_id` 恰有一个非空；`(dispatch_id,attempt_number)` 和 `(fence_advance_id,attempt_number)` 分别 partial unique。owner/boot/lease/fence、envelope bytes/hash、request/contract/key/token 在插入后不可修改；状态和 callback/result 只能由绑定该 attempt ID 的 CAS 推进。logical dispatch 的 owner字段只记录 prepared-by 历史，reclaim 后不改写；旧、新 owner 的 envelope 永远落在不同 send-attempt 行。
+
+数据库还必须强制 reconciliation terminal identity：
+
+```sql
+CHECK (
+  status != 'reconciled'
+  OR (reconciled_by_send_attempt_id IS NOT NULL
+      AND reconciliation_proof_ref IS NOT NULL
+      AND reconciliation_event_id IS NOT NULL
+      AND reconciled_at IS NOT NULL)
+)
+```
+
+`authorized/sending/unknown → reconciled` 只能由 `reconcileExternalRecoveryLogicalResult()` 写入。普通 callback、adapter 和清理任务不能直接写 reconciled。logical aggregate 的 `confirmed → unknown` 与 intent 的 `satisfied → prepared` 不是一般重试状态转换；只允许同一 reconciliation 事务在迟到 evidence 与既有 proof 冲突时执行，并必须写 conflict Event、推进 Operation/WorkItem safety revisions。
 
 分类来自 CancellationAttempt 的持久 `externalDispatchPolicy`；按 `kind + authorityId + protocol/model/tool version` 找到冻结entry并复制其`contractHash`为`authorityContractHash`。运行期adapter不能读取当前配置后重新分类，也不能自行把未知操作降级为“幂等”或“只读”。默认分类是最保守的`exclusive_unfenceable_effect`：
 
@@ -1716,7 +1735,18 @@ operation/run/task identity 使用 NOT NULL 规范化 key 或生成列参与唯�
 
 数据库检查不能消除“授权事务提交后、网络 send 前进程暂停”的窗口，因此安全性由 frozen safetyClass 补齐：read-only重复无副作用；idempotent effect即使旧/new owner都发送也由authority同key同bytes收敛为同一effect；authority-fenced effect由外部token拒绝旧envelope；exclusive-unfenceable effect禁止仅凭expiry产生新owner，所以旧envelope与新owner永不并存。任何 adapter/authority 不满足其声明合同时，记录policy violation、把相关Operation转hazardous_orphan并阻止后续自动恢复。
 
-callback/result 先按 `sendAttemptId + dispatchId/fenceAdvanceId + attemptNumber + envelopeHash + requestHash + authorityContractHash + idempotencyKey + callbackIdentity` 幂等写 send-attempt 行，再重算 logical aggregate，并通过 `mutateOperationSafety()` 进入审计/reconciliation。callback 必须携带或可查询验证 external fence token/authority epoch；它不能直接修改 Run、Operation 或 WorkItem 投影。只有该 send-attempt 仍匹配当前 attempt owner lease/fence、logical request 且结果确定时才可正常收敛并将 intent 置 satisfied；旧 owner/旧 fence 的 callback保留在其send-attempt行作为证据并触发reconciliation，不能覆盖新owner attempt、丢弃事实或恢复旧owner执行权。
+callback/result 先按 `sendAttemptId + dispatchId/fenceAdvanceId + attemptNumber + envelopeHash + requestHash + authorityContractHash + idempotencyKey + callbackIdentity` 幂等写对应 send-attempt 行，随后调用普通 dispatch 与 fence advance 共用的 `reconcileExternalRecoveryLogicalResult()`；callback 不能自行推进 logical aggregate、intent、Run、Operation 或 WorkItem 投影。
+
+`reconcileExternalRecoveryLogicalResult({ logicalType, logicalId, confirmedSendAttemptId, authorityQueryProofRef, coveredSiblingIds })` 在单一 `BEGIN IMMEDIATE` 中锁定 WorkItem、CancellationAttempt、intent（普通 dispatch）、logical row、全部 sibling send-attempt 和 reconciliation Event identity。它先验证 confirming attempt 或 authority query proof 的权威性，再逐个验证 `coveredSiblingIds`：
+
+- 普通 read-only/idempotent sibling 必须与 confirming logical row 具有相同 `requestHash + idempotencyKey + semanticTargetHash + authorityContractHash`；authority query proof还必须明确列出外部effect/result identity及覆盖的send-attempt ID。same key/different bytes/target、different key或不同contract绝不覆盖。
+- authority-fenced sibling 必须属于同一 logical target/contract/key，且其 token 小于等于 proof 已激活的 confirmed token；authority proof 必须证明所有低 token 请求被拒绝，或确认同一 target/effect 已由该 token 唯一收敛。
+- exclusive-unfenceable sibling 不能仅凭另一个 attempt 成功而覆盖；只有 authority query 能把该 sibling 的 request/callback identity 与已确认的同一外部effect逐一对应时才可 reconciliation。
+- 每个被覆盖 sibling 的 immutable envelope、callback、response、externalEffectRef 保持原样；事务只把 `authorized/sending/unknown` CAS 为 `reconciled`，写 `reconciledBySendAttemptId/reconciliationProofRef/reconciliationEventId/reconciledAt`。`confirmed/failed/superseded/reconciled` sibling不被重写。
+
+如果所有 `authorized/sending/unknown` sibling 都被 proof 覆盖，且此前 `reconciled` sibling 的 proof 仍有效、没有 pending/conflict reconciliation，事务才可原子把 logical aggregate 置 confirmed、写 confirmed attempt/proof、intent 置 satisfied（普通 dispatch），并写 `external_recovery.logical_reconciled` Event、推进相关 revisions；finalize gate随后不再把 reconciled sibling视为 blocker。若任一 sibling未被覆盖，已覆盖 sibling可转reconciled，但logical aggregate保持unknown、intent保持prepared，事务写明确 reconciliation conflict；未覆盖 sibling继续blocking。部分proof不能把logical row冒充confirmed。后续proof可与同一logical row下未失效的历史逐-sibling proof取并集，但事务必须重验每份proof的request/key/target/contract、authority epoch和callback evidence；不能因sibling已是reconciled就跳过重验。
+
+迟到callback到达已reconciled sibling时，只按callback identity追加不可变evidence并重新验证原proof：一致则幂等；若response/effect与proof冲突，写reconciliation conflict、把logical aggregate/intent降回unknown/prepared并通过`mutateOperationSafety()`阻塞finalize，但不删除或改写旧envelope，也不恢复旧owner执行权。该conflict只能由后续新的authority query/confirmed attempt proof显式覆盖冲突callback与对应sibling后，在同一`reconcileExternalRecoveryLogicalResult()`事务标记resolved；事务随后重验全部历史/新增proof，全部sibling仍被覆盖且无其他conflict时才可再次confirmed/satisfied。重复reconciliation使用稳定Event identity幂等；崩溃重开可从send-attempt、callback、proof和conflict记录重放同一事务。
 
 ### 16.16 ReclaimFenceAdvance
 
@@ -1740,6 +1770,7 @@ callback/result 先按 `sendAttemptId + dispatchId/fenceAdvanceId + attemptNumbe
   aggregateStatus: 'prepared' | 'dispatching' | 'confirmed' | 'failed' | 'unknown' | 'superseded',
   nextAttemptNumber,
   confirmedSendAttemptId: null,
+  confirmationProofRef: null,
   authorityProofRef: null,
   preparedAt,
   resolvedAt: null,
@@ -1770,7 +1801,7 @@ WHERE aggregate_status IN ('prepared', 'dispatching', 'unknown');
 
 fence advance 使用专用 `beginReclaimFenceAdvanceNetworkSend(sendAttemptId, controllerId, controllerBootId)`。该窄权限 CAS 不要求 attempt owner lease，但必须验证：send-attempt 只绑定 fenceAdvanceId；advance/attempt/workItem identity 完整；expected old owner/boot/lease epoch 与 attempt 当前行一致；`leaseExpiresAt <= dbNow` 或匹配的 terminal exit proof 仍有效；expected/target dispatch fence 分别等于 attempt 当前 epoch 和 `current+1`；policy hash与 authority contract 重算一致；request 只含 authority/token/target epoch，不含 provider/tool cancel、probe、release、revoke或任意业务 payload；status=authorized。CAS 将 send-attempt 置为 sending 并返回持久 envelope bytes。controllerId/boot只作审计，不能改变 attempt owner或获得普通 recovery dispatch 权限。
 
-authority合同必须保证同idempotency key+target epoch重复调用幂等，且一旦target激活便拒绝所有低epoch请求。多个 Controller/Watcher 可因崩溃重试同一 advance，但只能创建递增的 send-attempt，全部 envelope 保持同 request/key/target；authority 收敛为同一 token。回调只能终结对应send-attempt行，再重算advance aggregate；`confirmReclaimFenceAdvance()`查询/验证authority proof后，在SQLite事务中把logical advance置confirmed并记录confirmedSendAttemptId。多个required authority分别推进；任一failed/unknown时reclaim保持blocked。
+authority合同必须保证同idempotency key+target epoch重复调用幂等，且一旦target激活便拒绝所有低epoch请求。多个 Controller/Watcher 可因崩溃重试同一 advance，但只能创建递增的 send-attempt，全部 envelope 保持同 request/key/target；authority 收敛为同一 token。回调先终结对应send-attempt；`confirmReclaimFenceAdvance()`查询/验证authority proof后，必须调用同一个 `reconcileExternalRecoveryLogicalResult(logicalType='fence_advance', ...)`。只有proof逐个覆盖同一advance下全部`authorized/sending/unknown` sibling时，事务才把advance aggregate置confirmed、写confirmedSendAttemptId/confirmationProofRef，并将其他covered sibling置reconciled；未覆盖 sibling继续blocking且advance保持unknown。多个required authority分别推进；任一advance failed/unknown或存在未reconciled sibling时reclaim保持blocked。
 
 只有所有涉及`authority_fenced_effect`的required authority都confirmed同一target epoch、没有exclusive-unfenceable阻塞，`reclaimCancellationAttempt()` 才能在同一SQLite事务验证proof集合、把attempt `dispatchFenceEpoch`推进到target、替换owner/boot并递增ownerLeaseEpoch。旧owner准备过的普通ExternalRecoveryDispatch因外部authority低token被拒绝；advance对象本身不能被adapter解释成业务dispatch。进程在authority成功与本地proof落盘之间崩溃时，恢复器按稳定key查询同一advance，不创建新target或不同key。
 
@@ -2403,7 +2434,7 @@ Operation 的 effect、execution、grant universe 与 resource release 使用不
 4. 判断 provider/tool/process 与每个外部 authority 是否仍可查询；
 5. 核对最后 safe checkpoint、request hash、ActionEntry high watermarks和 response CAS；
 6. orphaned execution 无法证明 process gone 或完整 fence时写 `hazardous_orphan`；effect observation降为 provisional/unknown；manifest/release 保持实际部分状态，不伪造 closed/released；
-7. 按ExternalRecoveryDispatch分类幂等收敛pending grant attempt、authority closure和release attempt；外部成功而本地未确认的记录按同一dispatch ID/key/request hash查询并补写proof，exclusive unknown不得自动重发；
+7. 按 ExternalRecoveryDispatch 分类幂等收敛 pending grant attempt、authority closure 和 release attempt；外部成功而本地未确认时，查询 proof 必须绑定同一 logical ID/key/request/target/contract 及明确 sibling IDs，并调用 `reconcileExternalRecoveryLogicalResult()`。proof 覆盖的 unknown sibling 转 reconciled；未覆盖 sibling保持blocking。exclusive unknown不得自动重发或由另一attempt成功推定已解决；
 8. 处理迟到 evidence reconciliation；不复用旧 runId静默重跑；同一逻辑 EngineTurn只有在幂等/人工裁决允许时增加 attempt；
 9. 只有 `operationSafeToProceed` 成立时创建 recovery Run 或允许 Start；迟到旧 Run/turn/Operation 写请求不能直接覆盖权威状态，但其事实证据不得丢弃。
 
@@ -3018,6 +3049,11 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 - frozen policy payload/hash在重启后可重算；篡改payload/hash、当前registry降级分类、未知kind/authority或缺versioned contract均转blocked/exclusive，不能外发。schema17–22迁移后首个attempt冻结当前versioned policy；legacy unknown external action不被迁为弱分类；
 - authority-fenced reclaim覆盖多个authority：每个ReclaimFenceAdvance使用稳定key/target，A成功B失败时DB owner不切换；崩溃后查询A并补proof、以原key重试B。全部confirmed后reclaim单事务推进attempt fence和owner。重复advance、same key/different target、不同key同target及旧target callback均不能产生第二个epoch或切换owner；
 - fence advance 网络发送必须走 `beginReclaimFenceAdvanceNetworkSend()`，不得走要求当前owner lease的普通 `beginExternalRecoveryNetworkSend()`。覆盖 lease 已过期、旧owner仍写在attempt行、两个Controller并发发送、authorized后暂停、authority成功本地未落盘、重复send-attempt和controller重启；所有外发只能是同key/同target/同bytes的token advance，不能携带业务payload或授予普通dispatch权限；
+- 普通 dispatch：attempt 1=`unknown`，attempt 2同logical ID/key/request/target/contract=`confirmed`。`reconcileExternalRecoveryLogicalResult()` 必须原子写logical confirmed、intent satisfied、confirmedAttempt/proof，并把attempt 1转`reconciled`且保留原envelope/callback/response；finalize blocker归零。事务在logical更新、sibling reconciliation、intent更新或Event之间崩溃时整笔rollback，重放产生同一结果；
+- authority query确认同一logical effect时，proof必须显式列出覆盖的unknown sibling IDs。覆盖全部则按上条收敛；只覆盖部分则仅对应sibling可reconciled，logical仍unknown、intent仍prepared、finalize继续blocked；
+- same key/different request bytes或semantic target、different key重表达同一identity、不同authority contract/fence token的成功attempt都不能覆盖旧unknown sibling；logical不能confirmed。exclusive-unfenceable unknown只有逐sibling query proof可收敛；
+- fence advance同样覆盖attempt 1 unknown→attempt 2同key/target confirmed；旧unknown send-attempt必须转reconciled后advance才confirmed。多authority A已confirmed、B仍unknown时reclaim继续blocked；B查询/重试confirmed并reconcile其siblings后才允许owner/fence切换；
+- reconciled sibling迟到callback：与proof一致时幂等附加evidence；冲突时写reconciliation conflict、logical/intent降回unknown/prepared、`operationSafeToProceed=false`，不能恢复旧owner或删除旧证据。覆盖重复callback、重复reconciliation、stale Event identity和Agent崩溃重开；
 - recovery turn command 混入 reply/contract/action/control/openRequest/complete 必须整体拒绝；普通 Coordinator、用户、Executor 和浏览器直接调用 `restore_terminal_safety` 必须在 mutation 前拒绝且无 Event；
 - `resultingLifecycle=done` 缺 acceptance result、重复/未知 criterion、越权 evidence、未清 pending recovery state或 payload safety hash 与服务端重算不一致时拒绝；`needs_attention` 没有任何失败/阻塞风险时拒绝，防止无依据降级；
 - terminal lifecycle + safety safe 投影 Closed；terminal lifecycle + reconciling/unsafe 投影 Needs attention。恢复 done、转 needs_attention、再次 late invalidation 的 Event/DTO/cache revision和 lane必须同步；断线重连、列表缓存和详情缓存都以 safetyRevision/terminal snapshot epoch 失效；
@@ -3053,7 +3089,7 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 - 重复 migration 受 legacySourceKey ledger 唯一约束，不重复 entry/turn/event；
 - active legacy Run 不盲目继续；其 Operation 按 26.6 节保守导入，无法证明的 effect 为 provisional/unknown、execution 为 hazardous_orphan、manifest inventory incomplete、resource saga held，并阻止 wake；
 - legacy `known`/Run terminal 不能证明 final observation、execution cutoff 或 closed capability universe；缺 authority/grant/resource inventory 时创建 quarantine manifest/authority record；
-- migration 对 observation/cutoff、capability universe/manifest、逐lease saga、partial unique `operation_effect` request、CancellationAttempt通用/purpose partial unique、command+source identity、terminal result snapshot、ready-event live unique、intent/dispatch/send-attempt/fence-advance CHECK与unique、以及policy payload/hash做计数与不变量校验；相同 legacySourceKey 重放不重复 grant、lease attempt、reconciliation evidence、attempt、ready event、dispatch、fence advance或request；
+- migration 对 observation/cutoff、capability universe/manifest、逐lease saga、partial unique `operation_effect` request、CancellationAttempt通用/purpose partial unique、command+source identity、terminal result snapshot、ready-event live unique、intent/dispatch/send-attempt/fence-advance CHECK与unique、policy payload/hash及send reconciliation字段做计数与不变量校验；相同 legacySourceKey 重放不重复 grant、lease attempt、reconciliation evidence/Event、attempt、ready event、dispatch、send attempt、fence advance或request。legacy数据不伪造`reconciled`状态；只有迁移后取得逐sibling authority proof才能写入；
 - 用真实schema17/18/19/20/21/22 fixture验证迁移后attempt/ready-event表为空且WorkItem schema没有attempt pointer；随后触发 initial_cancel 与 terminal safety restore，验证各自产生独立规范化行，settled/superseded 历史永久保留，重复 migration/open/Stop/ready event 不重复行或 command/source identity；
 - 专用 prototype 嵌套对象转换 fixture 覆盖无法证明 owner lease时只迁为 ready/superseded，绝不迁为 active/settling；purpose epoch CHECK、通用/purpose live partial unique、terminal result CHECK和历史审计全部通过；
 - shadow migration 校验失败整笔 rollback，成功切换只有完整旧/新模型；
