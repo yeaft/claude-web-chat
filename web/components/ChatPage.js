@@ -13,6 +13,7 @@ import SidebarAgentHeader from './SidebarAgentHeader.js';
 import SidebarWorkCenter from './SidebarWorkCenter.js';
 import SessionSidebarShell from './SessionSidebarShell.js';
 import UnifiedSessionList from './UnifiedSessionList.js';
+import SessionCreateModal from './SessionCreateModal.js';
 import WorkCenterPage from './WorkCenterPage.js';
 import { shortenPath as shortenPathUtil } from '../utils/path-display.js';
 import { getLastPathSegment as _getLastPathSegment, formatResumeDate } from '../utils/path-segments.js';
@@ -22,7 +23,7 @@ import { collapseSidebar } from '../utils/sidebar-collapse.js';
 
 export default {
   name: 'ChatPage',
-  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, WorkCenterPage, SettingsPanel, ExpertPanel, SubAgentPanel, BtwOverlay, SplitPane, ModernSelect, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell, UnifiedSessionList },
+  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, WorkCenterPage, SettingsPanel, ExpertPanel, SubAgentPanel, BtwOverlay, SplitPane, ModernSelect, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell, UnifiedSessionList, SessionCreateModal },
   template: `
     <div class="chat-page" :class="{ 'show-sidebar': store.sessionSidebarOpen }">
 
@@ -45,7 +46,7 @@ export default {
               <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/>
             </svg>
           </button>
-          <button class="collapsed-icon-btn" @click="openConversationModal" :disabled="onlineAgentCount === 0" :title="$t('chat.sidebar.newConv')">
+          <button class="collapsed-icon-btn" @click="onUnifiedCreate" :disabled="onlineAgentCount === 0" :title="$t('chat.sidebar.newConv')">
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           </button>
           <div class="collapsed-spacer"></div>
@@ -75,6 +76,9 @@ export default {
                 :disabled="onlineAgentCount === 0"
                 @flip="onModeFlip"
               />
+              <button class="sidebar-icon-btn sidebar-work-center-header-btn" :class="{ active: store.workCenterOpen }" :disabled="workCenterAgents.length === 0" @click="openWorkCenter()" :title="$t('workCenter.title')" :aria-label="$t('workCenter.title')">
+                <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>
+              </button>
               <button class="sidebar-icon-btn" @click="onSidebarCollapse" :title="$t('chat.sidebar.collapse')">
                 <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 18h13v-2H3v2zm0-5h10v-2H3v2zm0-7v2h13V6H3zm18 9.59L17.42 12 21 8.41 19.59 7l-5 5 5 5L21 15.59z"/></svg>
               </button>
@@ -113,10 +117,8 @@ export default {
           :is-yeaft-session-processing="store.isYeaftSessionProcessing"
           :agents="store.agents"
           :work-center-open="store.workCenterOpen"
-          :work-center-agent-id="store.workCenterAgentId"
           @select="store.openCatalogSession"
           @create="onUnifiedCreate"
-          @open-work-center="openWorkCenter"
           @close-work-center="store.leaveWorkCenter"
           @action="onUnifiedSessionAction"
         />
@@ -269,7 +271,7 @@ export default {
           <div class="chat-body" :class="{ 'expert-panel-open': store.activeRightPanel }">
             <div class="chat-body-main">
               <MessageList
-                @new-conversation="openConversationModal"
+                @new-conversation="onUnifiedCreate"
                 @resume-conversation="openConversationModalResume"
                 @open-settings="showSettingsPanel = true"
               />
@@ -309,7 +311,14 @@ export default {
 
 
 
-      <!-- Unified Conversation Modal (New + Resume) -->
+      <SessionCreateModal
+        v-if="unifiedSessionCreateOpen"
+        :initial-provider="unifiedSessionCreateProvider"
+        @close="unifiedSessionCreateOpen = false"
+        @created="unifiedSessionCreateOpen = false"
+      />
+
+      <!-- Legacy Conversation Modal (resume and pre-catalog fallback) -->
       <div class="modal-overlay" v-if="showConversationModal" @click.self="closeConversationModal">
         <div class="modal resume-modal">
           <!-- Top Controls -->
@@ -490,6 +499,8 @@ export default {
       upgradingAgents: {},
       // Unified conversation modal state
       showConversationModal: false,
+      unifiedSessionCreateOpen: false,
+      unifiedSessionCreateProvider: 'yeaft',
       convModalAgent: '',
       convModalWorkDir: '',
       convModalProvider: 'claude-code',
@@ -543,6 +554,9 @@ export default {
     onlineAgentCount() {
       return this.onlineAgents.length;
     },
+    workCenterAgents() {
+      return this.onlineAgents.filter(agent => Array.isArray(agent.capabilities) && agent.capabilities.includes('work_center'));
+    },
     isMobileView() {
       return this.windowWidth <= 768;
     },
@@ -587,17 +601,15 @@ export default {
       return this.store.isYeaftSessionUnread(row.routeRef?.sessionId, row.routeRef?.agentId);
     },
 
-    onUnifiedCreate(provider) {
-      if (provider === 'yeaft') {
-        this.store.openUnifiedSessionCreate = true;
-        this.store.enterYeaft();
-        return;
-      }
-      this.convModalProvider = provider === 'copilot' ? 'copilot' : 'claude-code';
-      this.openConversationModal({ preserveProvider: true });
+    onUnifiedCreate(provider = 'yeaft') {
+      this.unifiedSessionCreateProvider = ['yeaft', 'copilot', 'claude-code'].includes(provider) ? provider : 'yeaft';
+      this.unifiedSessionCreateOpen = true;
     },
-    openWorkCenter(agentId) {
-      if (agentId) this.store.enterWorkCenter(agentId);
+    openWorkCenter(agentId = null) {
+      const target = this.workCenterAgents.find(agent => agent.id === agentId)
+        || this.workCenterAgents.find(agent => agent.id === this.store.workCenterAgentId)
+        || this.workCenterAgents[0];
+      if (target) this.store.enterWorkCenter(target.id);
     },
     onUnifiedSessionAction({ action, row, title, sessions } = {}) {
       if (!row?.routeRef) return;
