@@ -537,8 +537,9 @@
   padding: 0 8px;
 }
 
-/* Primary sidebar navigation: conversation/work-center surface switch,
-   provider tabs, one explicit action row, then the selected list. */
+/* Primary sidebar navigation: keep both levels visually quiet. The surface
+   switch uses a longer marker; provider tabs use a short marker so the two
+   navigation levels remain distinct without nesting pills inside pills. */
 .sidebar-navigation {
   flex: 1 1 auto;
   display: flex;
@@ -550,11 +551,9 @@
 .sidebar-surface-switch {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 2px;
-  margin: 4px 12px 14px;
-  padding: 3px;
-  border-radius: 10px;
-  background: var(--bg-input-wrapper);
+  gap: 12px;
+  margin: 0 12px 12px;
+  padding: 0 2px;
 }
 
 .sidebar-surface-option,
@@ -568,19 +567,29 @@
 }
 
 .sidebar-surface-option {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
   min-width: 0;
-  padding: 8px 6px;
-  border-radius: 8px;
+  min-height: 42px;
+  padding: 8px 4px 10px;
+  border-radius: 6px;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .sidebar-surface-option:hover:not(:disabled) {
   color: var(--text-primary);
+  background: var(--sidebar-hover);
+}
+
+.sidebar-surface-option:focus-visible,
+.sidebar-provider-tab:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
 }
 
 .sidebar-surface-option:disabled {
@@ -591,28 +600,41 @@
 
 .sidebar-surface-option.active {
   color: var(--text-primary);
-  background: var(--bg-main);
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--text-primary) 10%, transparent);
+  background: transparent;
+  font-weight: 600;
+}
+
+.sidebar-surface-option.active::after {
+  content: '';
+  position: absolute;
+  right: 12px;
+  bottom: 0;
+  left: 12px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent-blue);
 }
 
 .sidebar-provider-tabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 2px;
-  padding: 0 12px;
+  gap: 8px;
+  padding: 0 14px;
 }
 
 .sidebar-provider-tab {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 5px;
   min-width: 0;
-  padding: 8px 4px;
-  border-radius: 8px;
+  padding: 7px 2px 10px;
+  border-radius: 4px;
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .sidebar-provider-tab:hover {
@@ -622,12 +644,25 @@
 
 .sidebar-provider-tab.active {
   color: var(--text-primary);
-  background: var(--session-active);
+  background: transparent;
+  font-weight: 600;
+}
+
+.sidebar-provider-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: 1px;
+  left: 50%;
+  width: 16px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent-blue);
+  transform: translateX(-50%);
 }
 
 .sidebar-provider-count {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
 

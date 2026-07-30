@@ -149,6 +149,7 @@ describe('message flow regressions', () => {
     const chatStoreSource = readFileSync(resolve(import.meta.dirname, '../../web/stores/chat.js'), 'utf8');
     const chatPageSource = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatPage.js'), 'utf8');
     const yeaftSidebarSource = readFileSync(resolve(import.meta.dirname, '../../web/components/YeaftSidebar.js'), 'utf8');
+    const sidebarCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/sidebar.css'), 'utf8');
 
     const first = chatRouteRef({ id: 'conversation-1', agentId: 'agent-a', provider: 'copilot' });
     const moved = chatRouteRef({ id: 'conversation-1', agentId: 'agent-b', provider: 'copilot' });
@@ -411,6 +412,11 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).not.toContain("emitAction('split', row)");
     expect(UnifiedSessionList.template).toContain("$t('common.close')");
     expect(UnifiedSessionList.methods.providerLabel({ runtimeProvider: 'copilot' })).toBe('Copilot');
+    expect(sidebarCss).not.toMatch(/\.sidebar-surface-switch\s*\{[^}]*background:/s);
+    expect(sidebarCss).not.toMatch(/\.sidebar-provider-tab\.active\s*\{[^}]*background:\s*var\(--session-active\)/s);
+    expect(sidebarCss).toMatch(/\.sidebar-surface-option\.active::after\s*\{[^}]*background:\s*var\(--accent-blue\)/s);
+    expect(sidebarCss).toMatch(/\.sidebar-provider-tab\.active::after\s*\{[^}]*width:\s*16px/s);
+    expect(sidebarCss).toMatch(/\.sidebar-surface-option:focus-visible,[^}]*outline:\s*2px solid var\(--accent-blue\)/s);
     const fallbackWorkCenter = mount(SidebarWorkCenter, {
       props: { agents: [] },
       global: { mocks: { $t: key => key } },
@@ -513,6 +519,7 @@ describe('message flow regressions', () => {
     storeFactories.clear();
 
     expect(chatPageSource).toContain('@create="onUnifiedCreate"');
+    expect(chatPageSource).not.toContain('</template>\n      </main>');
     expect(chatPageSource).toContain('@open-work-center="openWorkCenter"');
     expect(yeaftSidebarSource).toContain(':is-session-unread="isCatalogSessionUnread"');
     expect(chatPageSource).toContain('@action="onUnifiedSessionAction"');
