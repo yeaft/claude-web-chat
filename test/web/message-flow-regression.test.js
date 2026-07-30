@@ -412,10 +412,11 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).not.toContain("emitAction('split', row)");
     expect(UnifiedSessionList.template).toContain("$t('common.close')");
     expect(UnifiedSessionList.methods.providerLabel({ runtimeProvider: 'copilot' })).toBe('Copilot');
-    expect(sidebarCss).not.toMatch(/\.sidebar-surface-switch\s*\{[^}]*background:/s);
-    expect(sidebarCss).not.toMatch(/\.sidebar-provider-tab\.active\s*\{[^}]*background:\s*var\(--session-active\)/s);
-    expect(sidebarCss).toMatch(/\.sidebar-surface-option\.active::after\s*\{[^}]*background:\s*var\(--accent-blue\)/s);
-    expect(sidebarCss).toMatch(/\.sidebar-provider-tab\.active::after\s*\{[^}]*width:\s*16px/s);
+    expect(sidebarCss).toMatch(/\.sidebar-surface-switch\s*\{[^}]*border-radius:\s*13px[^}]*background:\s*var\(--bg-input-wrapper\)/s);
+    expect(sidebarCss).toMatch(/\.sidebar-surface-option\.active\s*\{[^}]*background:\s*var\(--bg-main\)[^}]*font-weight:\s*600/s);
+    expect(sidebarCss).toMatch(/\.sidebar-provider-tab\.active\s*\{[^}]*background:\s*var\(--session-active\)[^}]*font-weight:\s*600/s);
+    expect(sidebarCss).not.toMatch(/\.sidebar-surface-option\.active::after/);
+    expect(sidebarCss).not.toMatch(/\.sidebar-provider-tab\.active::after/);
     expect(sidebarCss).toMatch(/\.sidebar-surface-option:focus-visible,[^}]*outline:\s*2px solid var\(--accent-blue\)/s);
     const fallbackWorkCenter = mount(SidebarWorkCenter, {
       props: { agents: [] },
