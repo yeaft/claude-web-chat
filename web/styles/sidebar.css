@@ -556,7 +556,7 @@
 
 .sidebar-session-title {
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
 }
 
@@ -942,7 +942,7 @@
 }
 
 .session-item .title {
-  font-size: 15px;
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1138,10 +1138,10 @@
   font-size: 11px;
 }
 
-.session-agent {
+.session-agent,
+.session-provider,
+.session-availability {
   flex-shrink: 0;
-  color: var(--primary-color);
-  background: var(--primary-color-transparent, rgba(217, 119, 6, 0.15));
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 10px;
@@ -1149,6 +1149,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.session-agent {
+  color: var(--text-primary);
+  background: var(--bg-input-wrapper);
+}
+
+.session-provider {
+  color: var(--accent-blue);
+  background: var(--accent-bg);
+}
+
+.session-availability {
+  color: var(--text-muted);
+  background: var(--sidebar-hover);
 }
 
 .new-chat-btn:disabled {

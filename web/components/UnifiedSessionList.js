@@ -47,10 +47,15 @@ export default {
       if (registeredAgent?.name) return registeredAgent.name;
       return row?.agentName && row.agentName !== agentId ? row.agentName : '';
     },
-    secondaryLabel(row) {
-      const parts = [this.agentLabel(row)].filter(Boolean);
-      if (row.availability === 'offline') parts.push(this.$t('settings.dashboard.offline'));
-      return parts.join(' · ');
+    providerLabel(row) {
+      const provider = row?.runtimeProvider || row?.routeRef?.runtimeProvider || '';
+      if (provider === 'yeaft') return 'Yeaft';
+      if (provider === 'copilot') return this.$t('provider.copilot');
+      if (provider === 'claude-code') return this.$t('provider.claudeCode');
+      return provider;
+    },
+    availabilityLabel(row) {
+      return row?.availability === 'offline' ? this.$t('settings.dashboard.offline') : '';
     },
     isProcessing(row) {
       const sessionId = row?.routeRef?.sessionId;
@@ -242,7 +247,9 @@ export default {
                 </span>
                 <span class="session-info">
                   <span class="session-path" v-if="row.workDir">{{ shortPath(row.workDir) }}</span>
-                  <span class="session-agent" v-if="secondaryLabel(row)">{{ secondaryLabel(row) }}</span>
+                  <span class="session-agent" v-if="agentLabel(row)">{{ agentLabel(row) }}</span>
+                  <span class="session-provider" v-if="providerLabel(row)">{{ providerLabel(row) }}</span>
+                  <span class="session-availability" v-if="availabilityLabel(row)">{{ availabilityLabel(row) }}</span>
                 </span>
               </span>
             </div>

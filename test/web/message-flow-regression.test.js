@@ -151,6 +151,9 @@ describe('message flow regressions', () => {
     const chatPageSource = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatPage.js'), 'utf8');
     const yeaftSidebarSource = readFileSync(resolve(import.meta.dirname, '../../web/components/YeaftSidebar.js'), 'utf8');
     const sidebarCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/sidebar.css'), 'utf8');
+    const variables = readFileSync(resolve(import.meta.dirname, '../../web/styles/variables.css'), 'utf8');
+    const lightThemeVariables = variables.match(/:root\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+    const darkThemeVariables = variables.match(/\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/)?.[1] || '';
 
     const first = chatRouteRef({ id: 'conversation-1', agentId: 'agent-a', provider: 'copilot' });
     const moved = chatRouteRef({ id: 'conversation-1', agentId: 'agent-b', provider: 'copilot' });
@@ -232,6 +235,14 @@ describe('message flow regressions', () => {
     expect(firstRow.get('.session-item-header').text()).toContain('Pinned');
     expect(firstRow.get('.session-item-header').text()).not.toContain('server');
     expect(firstRow.get('.session-info .session-agent').text()).toBe('server');
+    expect(sidebar.findAll('.session-info .session-provider').map(item => item.text())).toEqual([
+      'Yeaft',
+      'provider.copilot',
+      'provider.copilot',
+    ]);
+    expect(UnifiedSessionList.methods.providerLabel.call({ $t: key => key }, {
+      runtimeProvider: 'claude-code',
+    })).toBe('provider.claudeCode');
     expect(sidebar.text()).not.toContain('user_1770305719');
     expect(UnifiedSessionList.methods.agentLabel.call({ agents: [] }, {
       runtimeProvider: 'yeaft',
@@ -405,6 +416,23 @@ describe('message flow regressions', () => {
     expect(sidebarCss).not.toMatch(/\.sidebar-provider-tab\s*\{/s);
     expect(sidebarCss).not.toMatch(/\.sidebar-provider-group\s*\{/s);
     expect(sidebarCss).toMatch(/\.sidebar-session-toolbar\s*\{[^}]*min-height:\s*38px/s);
+    expect(sidebarCss).toMatch(/\.sidebar-session-title\s*\{[^}]*font-size:\s*15px/s);
+    expect(sidebarCss).toMatch(/\.session-item \.title\s*\{[^}]*font-size:\s*13px/s);
+    const badgeTokenMatches = [
+      ...sidebarCss.matchAll(/\.session-(?:agent|provider)\s*\{([\s\S]*?)\}/g),
+    ];
+    expect(badgeTokenMatches).toHaveLength(2);
+    for (const [, declaration] of badgeTokenMatches) {
+      const tokenNames = [...declaration.matchAll(/var\((--[\w-]+)/g)].map(match => match[1]);
+      expect(tokenNames).toHaveLength(2);
+      for (const tokenName of tokenNames) {
+        const tokenPattern = new RegExp(`${tokenName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*[^;]+;`);
+        expect(lightThemeVariables).toMatch(tokenPattern);
+        expect(darkThemeVariables).toMatch(tokenPattern);
+      }
+    }
+    expect(sidebarCss).toMatch(/\.session-agent\s*\{[^}]*color:\s*var\(--text-primary\);[^}]*background:\s*var\(--bg-input-wrapper\);/s);
+    expect(sidebarCss).toMatch(/\.session-provider\s*\{[^}]*color:\s*var\(--accent-blue\);[^}]*background:\s*var\(--accent-bg\);/s);
     expect(sidebarCss).toMatch(/\.sidebar-tool-button:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/s);
     const fallbackWorkCenter = mount(SidebarWorkCenter, {
       props: { agents: [] },
@@ -604,7 +632,6 @@ describe('message flow regressions', () => {
 
     const workCenter = readFileSync(resolve(import.meta.dirname, '../../web/components/WorkCenterPage.js'), 'utf8');
     const workCenterCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/work-center.css'), 'utf8');
-    const variables = readFileSync(resolve(import.meta.dirname, '../../web/styles/variables.css'), 'utf8');
 
     expect(component).toContain('v-if="isStopVisible"');
     expect(component).not.toContain('v-else\n          type="button"\n          class="send-btn"');
@@ -613,6 +640,9 @@ describe('message flow regressions', () => {
     expect(component).toContain('if (!canSend.value) return;');
     expect(component).not.toContain('if (isStopVisible.value || !canSend.value) return;');
     expect(workCenter).toContain('@change="onWorkItemMessageAttachmentInput"');
+    expect(workCenter).toContain('@change="selectWorkCenterAgent"');
+    expect(workCenter).toContain("this.store.enterWorkCenter(nextAgentId)");
+    expect(workCenterCss).toMatch(/\.work-center-agent-picker\s*\{[^}]*background:\s*var\(--bg-input\)/s);
     expect(workCenter).toContain('workItemMessageAttachments.length === 0');
     expect(workCenter).toContain('work-center-detail-close');
     expect(workCenter).not.toContain('class="work-center-action-content-summary"');
@@ -939,6 +969,10 @@ describe('message flow regressions', () => {
     const selects = modal.findAll('select.resume-input');
     expect(selects[0].element.value).toBe('agent-a');
     expect(selects[1].element.value).toBe('copilot');
+    expect(modal.get('.yeaft-session-create-heading h2').text()).toBe('yeaft.session.create.title');
+    expect(modal.get('.yeaft-session-create-heading p').text()).toBe('yeaft.session.create.subtitle');
+    expect(modal.findAll('.yeaft-session-create-fields > .resume-control-row')).toHaveLength(4);
+    expect(modal.get('.yeaft-create-submit').classes()).toContain('btn-primary');
     expect(modal.find('.resume-control-row-vp').exists()).toBe(false);
     await selects[1].setValue('yeaft');
     expect(modal.find('.resume-control-row-vp').exists()).toBe(true);

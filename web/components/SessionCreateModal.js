@@ -85,7 +85,13 @@ export default {
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
           </button>
 
-          <div class="resume-control-row">
+          <header class="yeaft-session-create-heading">
+            <h2>{{ $t('yeaft.session.create.title') }}</h2>
+            <p>{{ $t('yeaft.session.create.subtitle') }}</p>
+          </header>
+
+          <div class="yeaft-session-create-fields">
+            <div class="resume-control-row">
             <label class="resume-control-label">{{ $t('yeaft.session.create.agentLabel') }}</label>
             <select v-model="form.agentId" class="resume-input">
               <option v-for="a in agentOptions" :key="a.id" :value="a.id" :disabled="!a.online">
@@ -139,6 +145,7 @@ export default {
               >
                 <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
               </button>
+            </div>
             </div>
           </div>
 
@@ -312,7 +319,7 @@ export default {
 
         <div class="resume-modal-footer">
           <button
-            class="modern-btn"
+            class="modern-btn btn-primary yeaft-create-submit"
             type="button"
             @click="onSubmit"
             :disabled="busy || !canSubmit"
