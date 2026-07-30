@@ -383,6 +383,38 @@ describe('Yeaft conversation loading state', () => {
       expect(activeYeaftHistoryIdentity(restoringStore)).toEqual({
         agentId: 'agent-2', sessionId: 'g2', sessionKey: yeaftHistoryIdentityKey('agent-2', 'g2'),
       });
+
+      const localConversationId = 'yeaft-local-agent-2-restore';
+      const bridgeConversationId = 'yeaft-agent-2-restore';
+      restoringStore.yeaftConversationId = localConversationId;
+      restoringStore.yeaftConversationIdsByAgent = { 'agent-2': bridgeConversationId };
+      restoringStore.activeConversations = [localConversationId];
+      restoringStore.messagesMap = {
+        [localConversationId]: [{
+          id: 'restore-pending',
+          messageId: 'restore-pending',
+          clientMessageId: 'restore-pending',
+          type: 'user',
+          content: 'restore pending',
+          sessionId: 'g2',
+        }],
+      };
+      handleYeaftHistoryChunk(restoringStore, {
+        agentId: 'agent-2',
+        conversationId: bridgeConversationId,
+        sessionId: 'g2',
+        mode: 'recent',
+        messages: [{ id: 'restore-history', role: 'assistant', content: 'restored', sessionId: 'g2' }],
+        oldestSeq: 1,
+        latestSeq: 1,
+        hasMore: false,
+      });
+      expect(restoringStore.yeaftConversationId).toBe(bridgeConversationId);
+      expect(restoringStore.messagesMap[bridgeConversationId].map(row => row.id)).toEqual([
+        'restore-pending',
+        'restore-history',
+      ]);
+      expect(restoringStore.messagesMap[localConversationId]).toBeUndefined();
     } finally {
       globalThis.window = oldWindow;
     }
@@ -1483,6 +1515,7 @@ describe('Yeaft conversation loading state', () => {
     expect(store.messagesMap['conv-b']).toEqual([expect.objectContaining({ content: 'B' })]);
     expect(store.yeaftConversationId).toBe('conv-b');
     expect(store.yeaftConversationIdsByAgent).toEqual({ 'agent-a': 'conv-a', 'agent-b': 'conv-b' });
+
     expect(store.yeaftSessionHistoryState[agentAKey]).toEqual(expect.objectContaining({
       loading: false, latestSeq: 1, hasMore: false, oldestSeq: 1,
     }));
@@ -1492,6 +1525,23 @@ describe('Yeaft conversation loading state', () => {
     expect(store.yeaftHasMoreHistory).toBe(true);
     expect(store.yeaftOldestLoadedSeq).toBe(10);
     expect(store.yeaftLoadingMoreHistory).toBe(true);
+
+    handleYeaftHistoryChunk(store, {
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-b',
+      conversationId: 'conv-b-replacement',
+      sessionId,
+      mode: 'delta',
+      messages: [{ id: '000021-b', role: 'assistant', content: 'replacement', sessionId }],
+      latestSeq: 21,
+      hasMore: false,
+    });
+    expect(store.yeaftConversationId).toBe('conv-b');
+    expect(store.activeConversations || []).not.toContain('conv-b-replacement');
+    expect(store.messagesMap['conv-b']).toEqual([expect.objectContaining({ content: 'B' })]);
+    expect(store.messagesMap['conv-b-replacement']).toEqual([
+      expect.objectContaining({ content: 'replacement', sessionId }),
+    ]);
   });
 
   it('accepts inactive empty-string sessionId chunks without treating them as active unscoped history', () => {

@@ -9,6 +9,7 @@ import { maxDbMessageId, mergeMessagesByStableId } from '../messages.js';
 import { summarizeHistoricalToolMessages } from '../tool-window.js';
 import { t } from '../../../utils/i18n.js';
 import { recordPerfTrace, measureNextPaint } from '../perfTrace.js';
+import { activeYeaftHistoryIdentity } from '../yeaft-history-load.js';
 import { yeaftHistoryIdentityKey } from '../yeaft-history-identity.js';
 
 /** Filter out empty user messages — tool_result artifacts stored as empty user records in DB */
@@ -183,46 +184,57 @@ function isInternalControlHistoryContent(content) {
     || /^\[system note\] You have called \S+ with the same arguments \d+ times\./.test(text);
 }
 
+function visibleLocalYeaftConversationId(store, agentId) {
+  const conversationId = typeof store.yeaftConversationId === 'string'
+    ? store.yeaftConversationId
+    : '';
+  if (conversationId.startsWith(`yeaft-local-${agentId}-`)) return conversationId;
+  // Legacy single-Agent placeholders predate the embedded Agent id.
+  if (/^yeaft-local-\d/.test(conversationId)) return conversationId;
+  return null;
+}
+
 function promoteVisibleYeaftHistoryConversation(store, msg, sessionId, conversationId) {
   const agentId = msg.agentId || (sessionId && store.yeaftSessionAgentById?.[sessionId]) || null;
   if (!agentId || !conversationId || store.currentView !== 'yeaft') return;
-  if ((store.yeaftActiveSessionFilter || null) !== (sessionId || null)) return;
 
-  const resolveOwner = typeof store.resolveYeaftSessionAgentId === 'function'
-    ? store.resolveYeaftSessionAgentId(sessionId)
-    : store.yeaftSessionAgentById?.[sessionId] || store.currentAgent || null;
-  if (resolveOwner && resolveOwner !== agentId) return;
+  const activeIdentity = activeYeaftHistoryIdentity(store);
+  if (activeIdentity.sessionId !== (sessionId || null)) return;
+  if (activeIdentity.agentId && activeIdentity.agentId !== agentId) return;
 
-  const visibleConversationId = store.yeaftConversationId ? String(store.yeaftConversationId) : '';
-  const fallbackLocalConversationId = visibleConversationId.startsWith(`yeaft-local-${agentId}-`)
-    ? store.yeaftConversationId
-    : null;
-  const previousConversationId = store.yeaftConversationIdsByAgent?.[agentId]
-    || fallbackLocalConversationId;
-  if (previousConversationId && previousConversationId !== conversationId) {
-    const existingRows = store.messagesMap[previousConversationId] || [];
-    const targetRows = store.messagesMap[conversationId] || [];
-    store.messagesMap[conversationId] = mergeMessagesByStableId(targetRows, existingRows);
-    sortYeaftRowsByTimestamp(store.messagesMap[conversationId]);
-    if (String(previousConversationId).startsWith('yeaft-local-')) {
-      delete store.messagesMap[previousConversationId];
-    }
-    if (store.processingConversations?.[previousConversationId]) {
-      store.processingConversations[conversationId] = true;
-      delete store.processingConversations[previousConversationId];
-    }
-    if (store.executionStatusMap?.[previousConversationId]) {
-      store.executionStatusMap[conversationId] = store.executionStatusMap[previousConversationId];
-      delete store.executionStatusMap[previousConversationId];
-    }
-  } else if (!store.messagesMap[conversationId]) {
-    store.messagesMap[conversationId] = [];
-  }
-
+  // Keep the transport cache independent from the visible source. A background
+  // Session may already have moved this map to the real id while the page still
+  // owns optimistic rows under its explicit local placeholder.
   store.yeaftConversationIdsByAgent = {
     ...(store.yeaftConversationIdsByAgent || {}),
     [agentId]: conversationId,
   };
+
+  const visibleConversationId = store.yeaftConversationId || null;
+  if (visibleConversationId === conversationId) {
+    if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
+    store.activeConversations = [conversationId];
+    return;
+  }
+
+  // Only a visible local placeholder for this Agent is a valid migration source.
+  // A different real conversation is not safe to replace from a history frame.
+  const localConversationId = visibleLocalYeaftConversationId(store, agentId);
+  if (!localConversationId) return;
+
+  const localRows = store.messagesMap[localConversationId] || [];
+  const targetRows = store.messagesMap[conversationId] || [];
+  store.messagesMap[conversationId] = mergeMessagesByStableId(targetRows, localRows);
+  sortYeaftRowsByTimestamp(store.messagesMap[conversationId]);
+  delete store.messagesMap[localConversationId];
+  if (store.processingConversations?.[localConversationId]) {
+    store.processingConversations[conversationId] = true;
+    delete store.processingConversations[localConversationId];
+  }
+  if (store.executionStatusMap?.[localConversationId]) {
+    store.executionStatusMap[conversationId] = store.executionStatusMap[localConversationId];
+    delete store.executionStatusMap[localConversationId];
+  }
   store.yeaftConversationId = conversationId;
   store.activeConversations = [conversationId];
 }
@@ -943,8 +955,11 @@ export function handleYeaftHistoryChunk(store, msg) {
       [sessionKey]: nextState,
     };
   }
-  const activeSessionId = store.yeaftActiveSessionFilter ?? null;
-  const activeKey = yeaftHistoryIdentityKey(msg.agentId ? store.currentAgent : null, activeSessionId);
+  const activeIdentity = activeYeaftHistoryIdentity(store);
+  const activeSessionMatches = activeIdentity.sessionId === (msgSessionId || null);
+  const activeAgentMatches = !msg.agentId || !activeIdentity.agentId || msg.agentId === activeIdentity.agentId;
+  const isActiveHistoryChunk = activeSessionMatches && activeAgentMatches;
+  const legacyActiveKey = yeaftHistoryIdentityKey(null, activeIdentity.sessionId);
   if (msg.perfTraceId) {
     recordPerfTrace(store, {
       traceId: msg.perfTraceId,
@@ -963,14 +978,16 @@ export function handleYeaftHistoryChunk(store, msg) {
       detail: { mode, insertedRows },
     });
   }
-  if (sessionKey === activeKey) {
+  if (isActiveHistoryChunk) {
     store.yeaftHasMoreHistory = nextState.hasMore;
     if (typeof msg.oldestSeq === 'number') {
       store.yeaftOldestLoadedSeq = msg.oldestSeq;
     }
     store.yeaftLoadingMoreHistory = false;
-  } else if (store.yeaftLoadingMoreHistory && sessionKey !== activeKey) {
-    const activeState = store.yeaftSessionHistoryState?.[activeKey] || null;
+  } else if (store.yeaftLoadingMoreHistory) {
+    const activeState = store.yeaftSessionHistoryState?.[activeIdentity.sessionKey]
+      || store.yeaftSessionHistoryState?.[legacyActiveKey]
+      || null;
     store.yeaftLoadingMoreHistory = !!activeState?.loading;
   }
 }

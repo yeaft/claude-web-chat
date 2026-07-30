@@ -1406,25 +1406,137 @@ describe('message flow regressions', () => {
     wrapper.unmount();
   });
 
-  it('stamps background agent messages without promoting that conversation', () => {
-    const store = makeStore();
-    store.yeaftConversationIdsByAgent = {
+  it('keeps background Yeaft output routed while promoting the visible local conversation', () => {
+    storeFactories.clear();
+    runtimeSessionsStore.sessionList = [
+      { id: 'visible-session', agentId: 'agent-a' },
+      { id: 'background-session', agentId: 'agent-a' },
+    ];
+    runtimeSessionsStore.activeSessionId = 'visible-session';
+    runtimeSessionsStore.activeAgentId = 'agent-a';
+
+    const store = useChatStore();
+    store.sendWsMessage = vi.fn(() => true);
+    const localConversationId = 'yeaft-local-agent-a-cold';
+    const bridgeConversationId = 'yeaft-agent-a-cold';
+    const optimisticId = 'u_local_pending';
+    store.currentView = 'yeaft';
+    store.currentAgent = 'agent-a';
+    store.yeaftActiveSessionFilter = 'visible-session';
+    store.yeaftSessionAgentById = {
+      'visible-session': 'agent-a',
+      'background-session': 'agent-a',
+    };
+    store.yeaftConversationId = localConversationId;
+    store.yeaftConversationIdsByAgent = { 'agent-a': localConversationId };
+    store.activeConversations = [localConversationId];
+    store.messagesMap = {
+      [localConversationId]: [{
+        id: optimisticId,
+        messageId: optimisticId,
+        clientMessageId: optimisticId,
+        type: 'user',
+        content: 'pending send',
+        sessionId: 'visible-session',
+        turnId: optimisticId,
+        timestamp: 1,
+      }],
+    };
+    store.processingConversations = { [localConversationId]: true };
+    store.executionStatusMap = {
+      [localConversationId]: {
+        currentTool: { name: 'Bash' },
+        toolHistory: [],
+        lastActivity: 1,
+      },
+    };
+
+    // A background Session can reveal the real bridge id first. This updates
+    // the Agent transport cache but must leave the visible local source intact.
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: bridgeConversationId,
+      sessionId: 'background-session',
+      data: {
+        type: 'assistant',
+        message: { id: 'background-row', content: 'background answer' },
+      },
+    });
+    expect(store.yeaftConversationIdsByAgent['agent-a']).toBe(bridgeConversationId);
+    expect(store.yeaftConversationId).toBe(localConversationId);
+
+    const request = store.beginYeaftHistoryLoad({
+      agentId: 'agent-a',
+      sessionId: 'visible-session',
+      mode: 'recent',
+      preserveLoaded: false,
+    });
+    store.handleMessage({
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-a',
+      conversationId: bridgeConversationId,
+      sessionId: 'visible-session',
+      requestId: request.requestId,
+      mode: 'recent',
+      messages: [{
+        id: 'persisted-row',
+        role: 'assistant',
+        content: 'persisted answer',
+        sessionId: 'visible-session',
+        ts: 2,
+      }],
+      oldestSeq: 1,
+      latestSeq: 1,
+      hasMore: false,
+    });
+
+    expect(store.yeaftConversationId).toBe(bridgeConversationId);
+    expect(store.activeConversations).toEqual([bridgeConversationId]);
+    expect(store.messagesMap[bridgeConversationId]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: optimisticId, content: 'pending send' }),
+      expect.objectContaining({ id: 'persisted-row', content: 'persisted answer' }),
+    ]));
+    expect(store.messagesMap[localConversationId]).toBeUndefined();
+    expect(store.processingConversations).toEqual({ [bridgeConversationId]: true });
+    expect(store.executionStatusMap[bridgeConversationId].currentTool).toEqual({ name: 'Bash' });
+    expect(store.executionStatusMap[localConversationId]).toBeUndefined();
+
+    // Metadata arriving after the chunk is an idempotent refresh, not a second
+    // migration that recreates the local key or loses processing state.
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      sessionId: 'visible-session',
+      event: {
+        type: 'session_ready',
+        conversationId: bridgeConversationId,
+        sessionId: 'visible-session',
+        tasks: [],
+      },
+    });
+    expect(store.yeaftConversationId).toBe(bridgeConversationId);
+    expect(store.messagesMap[localConversationId]).toBeUndefined();
+    expect(store.processingConversations).toEqual({ [bridgeConversationId]: true });
+    expect(store.executionStatusMap[bridgeConversationId].currentTool).toEqual({ name: 'Bash' });
+    storeFactories.clear();
+
+    const routedStore = makeStore();
+    routedStore.yeaftConversationIdsByAgent = {
       'agent-1': 'conv-1',
       'agent-2': 'conv-2',
     };
-    store.messagesMap['conv-2'] = [];
-    store._currentYeaftSessionId = 'session-2';
-    store._currentYeaftVpId = 'vp-2';
-    store._currentYeaftTurnId = 'turn-2';
+    routedStore.messagesMap['conv-2'] = [];
+    routedStore._currentYeaftSessionId = 'session-2';
+    routedStore._currentYeaftVpId = 'vp-2';
+    routedStore._currentYeaftTurnId = 'turn-2';
 
-    addMessageToConversation(store, 'conv-2', {
+    addMessageToConversation(routedStore, 'conv-2', {
       id: 'msg-2',
       type: 'assistant',
       content: 'background',
     });
 
-    expect(store.yeaftConversationId).toBe('conv-1');
-    expect(store.messagesMap['conv-2'][0]).toMatchObject({
+    expect(routedStore.yeaftConversationId).toBe('conv-1');
+    expect(routedStore.messagesMap['conv-2'][0]).toMatchObject({
       sessionId: 'session-2',
       vpId: 'vp-2',
       turnId: 'turn-2',
