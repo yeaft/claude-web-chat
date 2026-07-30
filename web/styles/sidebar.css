@@ -537,6 +537,142 @@
   padding: 0 8px;
 }
 
+/* Primary sidebar navigation: conversation/work-center surface switch,
+   provider tabs, one explicit action row, then the selected list. */
+.sidebar-navigation {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sidebar-surface-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  margin: 4px 12px 14px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--bg-input-wrapper);
+}
+
+.sidebar-surface-option,
+.sidebar-provider-tab,
+.sidebar-create-session {
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.sidebar-surface-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 8px 6px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sidebar-surface-option:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.sidebar-surface-option:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.sidebar-surface-option.active {
+  color: var(--text-primary);
+  background: var(--bg-main);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--text-primary) 10%, transparent);
+}
+
+.sidebar-provider-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  padding: 0 12px;
+}
+
+.sidebar-provider-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 8px 4px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.sidebar-provider-tab:hover {
+  color: var(--text-primary);
+  background: var(--sidebar-hover);
+}
+
+.sidebar-provider-tab.active {
+  color: var(--text-primary);
+  background: var(--session-active);
+}
+
+.sidebar-provider-count {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-provider-tab.active .sidebar-provider-count {
+  color: var(--accent-blue);
+}
+
+.sidebar-session-actions {
+  padding: 8px 12px 10px;
+}
+
+.sidebar-create-session {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 9px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.sidebar-create-session:hover:not(:disabled) {
+  background: var(--sidebar-hover);
+}
+
+.sidebar-create-session:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.sidebar-session-results,
+.sidebar-work-center-results {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.sidebar-work-center-results {
+  padding-top: 2px;
+}
+
 /* Session Tab Bar */
 .session-tab-bar {
   display: flex;

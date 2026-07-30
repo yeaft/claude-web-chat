@@ -130,6 +130,12 @@ export default {
   'chat.agent.yeaft': 'Yeaft Chat',
   'sidebar.toggle.chat': 'Switch to Chat',
   'sidebar.toggle.yeaft': 'Switch to Yeaft',
+  'sidebar.surface.label': 'Sidebar view',
+  'sidebar.surface.sessions': 'Sessions',
+  'sidebar.provider.label': 'Session provider',
+  'sidebar.provider.claude': 'Claude',
+  'sidebar.sessions.new': 'New session',
+  'sidebar.sessions.emptyProvider': 'No sessions for this provider',
 
   // ============ Yeaft Page ============
   'yeaft.back': 'Back',
