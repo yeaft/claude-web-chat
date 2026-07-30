@@ -19,7 +19,7 @@ import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { TaskManager } from '../../../agent/yeaft/tasks/manager.js';
 import { TASK_RESULT_DELIVERY } from '../../../agent/yeaft/tasks/store.js';
 import bashTool from '../../../agent/yeaft/tools/bash.js';
-import agentTool, { _resetAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
+import agentTool, { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
 import ctx from '../../../agent/context.js';
 
 class RecordingAdapter {
@@ -780,5 +780,143 @@ describe('task result re-entry', () => {
       __testSetSession(null);
       await __testResetVpState();
     }
+
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-task-startup-failure-'));
+    const sessionId = 'session-task-startup-failure';
+    const vpId = 'vp-task-startup-failure';
+    const failedResult = 'Windows runner setup failed';
+    const parentAdapter = new RecordingAdapter([
+      [
+        { type: 'tool_call', id: 'call_spawn_failure', name: 'SpawnAgent', input: {
+          name: 'startup-failure-child',
+          mission: 'Fail during child registry setup.',
+        } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ],
+      [
+        { type: 'text_delta', text: 'The startup failure was handled.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
+    ]);
+    const taskManager = new TaskManager({ yeaftDir: tempDir });
+    const persisted = [];
+    const conversationStore = {
+      append(record) {
+        const row = { id: `startup-row-${persisted.length + 1}`, ...record };
+        persisted.push(row);
+        return row;
+      },
+      update(message, patch) {
+        const index = persisted.findIndex(row => row.id === message.id);
+        if (index < 0) return null;
+        persisted[index] = { ...persisted[index], ...patch };
+        return persisted[index];
+      },
+      loadRecentBySession() { return []; },
+      readCompactSummary() { return ''; },
+    };
+    const registry = new ToolRegistry();
+    let childRegistryCalls = 0;
+    registry.register({
+      ...agentTool,
+      execute: (input, toolCtx) => agentTool.execute(input, {
+        ...toolCtx,
+        parentEngineDeps: {
+          ...toolCtx.parentEngineDeps,
+          parentToolRegistry: {
+            getAllTools() {
+              childRegistryCalls += 1;
+              throw new Error(failedResult);
+            },
+          },
+        },
+      }),
+    });
+    const config = {
+      model: 'test-model',
+      maxOutputTokens: 1024,
+      asyncTaskWaitTimeoutMs: 20,
+      _readOnly: true,
+      language: 'en',
+    };
+    const sessionLike = {
+      adapter: parentAdapter,
+      trace: new NullTrace(),
+      config,
+      conversationStore,
+      memoryIndex: null,
+      amsRegistry: null,
+      toolRegistry: registry,
+      skillManager: null,
+      mcpManager: null,
+      yeaftDir: tempDir,
+      taskManager,
+      toolStats: null,
+    };
+    __testSetSession(sessionLike);
+    installYeaftRuntimeBridge(sessionLike);
+    const engine = new Engine({
+      adapter: parentAdapter,
+      trace: sessionLike.trace,
+      config,
+      conversationStore,
+      toolRegistry: registry,
+      yeaftDir: tempDir,
+      taskManager,
+      sessionId,
+      vpId,
+    });
+    engine.setAsyncTaskCoordinator(__testHooks.asyncTaskCoordinatorForTest());
+    engine.setSubAgentEventSink(() => {});
+    const terminalEvents = [];
+    const bridgeSink = taskManager.onEvent;
+    let failedTaskId = null;
+    taskManager.setEventSink(event => {
+      if (event?.event === 'started' && event.task?.kind === 'sub_agent') {
+        failedTaskId = event.task.id;
+      }
+      if (event?.event === 'completed' && event.task) terminalEvents.push(event);
+      bridgeSink?.(event);
+    });
+
+    const events = await collectEngineEvents(engine, {
+      prompt: 'Start the child that fails synchronously.',
+      messages: [],
+      sessionId,
+      senderVpId: vpId,
+      threadId: 'main',
+    });
+    expect(childRegistryCalls).toBe(1);
+    expect(failedTaskId).toBeTruthy();
+    expect(events.filter(event => event.type === 'async_task_wait_start')).toHaveLength(0);
+    expect(events.filter(event => event.type === 'async_task_wait_end')).toHaveLength(0);
+    expect(taskManager.listActiveTasks(sessionId)).toEqual([]);
+    expect(taskManager.getTask(sessionId, failedTaskId)).toMatchObject({
+      status: 'failed',
+      resultDelivery: TASK_RESULT_DELIVERY.MODEL_REENTRY,
+    });
+    expect(engine.hasPendingAsyncTasks()).toBe(false);
+    expect(engine.ownsPendingAsyncTask(failedTaskId)).toBe(false);
+    expect(__testHooks.asyncTaskOwnerForTest(failedTaskId)).toBeNull();
+    expect(terminalEvents.filter(event => event.task.id === failedTaskId)).toHaveLength(1);
+    expect(readTaskEvents(taskManager, sessionId).filter(event => (
+      event.event === 'completed' && event.taskId === failedTaskId
+    ))).toHaveLength(1);
+    const providerFailureDeliveries = parentAdapter.streamCalls.filter(call => {
+      const wire = JSON.stringify(call.messages);
+      return wire.includes(failedTaskId) && wire.includes(failedResult);
+    });
+    expect(providerFailureDeliveries).toHaveLength(1);
+    expect(parentAdapter.streamCalls).toHaveLength(2);
+    const failedAgent = Array.from(getAgentRegistry().values())
+      .find(agent => agent.taskId === failedTaskId);
+    expect(failedAgent).toMatchObject({
+      status: 'failed',
+      error: failedResult,
+      __driverStarted: false,
+      subEngine: null,
+      outputLog: null,
+      outputFile: null,
+    });
   });
 });

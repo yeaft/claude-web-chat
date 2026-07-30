@@ -7331,4 +7331,7 @@ export const __testHooks = {
   asyncTaskCoordinatorForTest() {
     return buildAsyncTaskCoordinator();
   },
+  asyncTaskOwnerForTest(taskId) {
+    return asyncTaskOwners.get(taskId) || null;
+  },
 };

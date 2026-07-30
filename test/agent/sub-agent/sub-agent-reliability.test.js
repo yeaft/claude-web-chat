@@ -315,62 +315,6 @@ describe('wait-agent envelope shape', () => {
     const ownWait = JSON.parse(await waitAgent.execute({ agent_id: 'agent-owned-b' }, ctxB));
     expect(ownWait.result).toBe('visible result');
 
-    // A synchronous runner setup failure used to leave the model-reentry task
-    // running forever after the parent had already registered same-turn
-    // ownership. Force child-registry setup to throw and require immediate
-    // TaskManager completion.
-    const taskEvents = [];
-    let failedTaskStatus = 'running';
-    const taskManager = {
-      startTask() {
-        return { id: 'task-spawn-failure', status: failedTaskStatus };
-      },
-      completeTask(sessionId, taskId, opts) {
-        if (failedTaskStatus !== 'running') return { id: taskId, status: failedTaskStatus };
-        failedTaskStatus = opts.status;
-        taskEvents.push({ sessionId, taskId, opts });
-        return { id: taskId, status: failedTaskStatus };
-      },
-      getTask(_sessionId, taskId) {
-        return { id: taskId, status: failedTaskStatus };
-      },
-      setTaskLogPath() {},
-    };
-    const spawnFailure = JSON.parse(await agentTool.execute({
-      name: 'spawn-failure',
-      mission: 'fail during runner setup',
-    }, {
-      taskManager,
-      registerAsyncTask() {},
-      parentEngineDeps: {
-        ...mkDeps(new TextAdapter()),
-        parentSessionId: 'session-failure',
-        parentVpId: 'vp-failure',
-        parentThreadId: 'main',
-        taskManager,
-        get parentToolRegistry() { throw new Error('Windows runner setup failed'); },
-      },
-    }));
-
-    expect(spawnFailure.error).toMatch(/Failed to start sub-agent/);
-    expect(taskEvents).toEqual([{
-      sessionId: 'session-failure',
-      taskId: 'task-spawn-failure',
-      opts: expect.objectContaining({ status: 'failed' }),
-    }]);
-    taskManager.completeTask('session-failure', 'task-spawn-failure', { status: 'failed' });
-    expect(taskEvents).toHaveLength(1);
-    expect(taskManager.getTask('session-failure', 'task-spawn-failure')).toMatchObject({ status: 'failed' });
-    const failedAgent = agents.get(spawnFailure.agentId);
-    expect(failedAgent).toMatchObject({
-      status: STATUS.FAILED,
-      error: 'Windows runner setup failed',
-      __driverStarted: false,
-      subEngine: null,
-      outputLog: null,
-      outputFile: null,
-    });
-
     const rollbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yeaft-runner-startup-'));
     const partialAgent = {
       id: 'agent-partial-startup',
@@ -384,6 +328,9 @@ describe('wait-agent envelope shape', () => {
       get() { throw new Error('preamble setup failed'); },
     });
     expect(() => startSubAgent(partialAgent, partialDeps)).toThrow('preamble setup failed');
+    const partialLogPath = path.join(rollbackDir, 'agent-partial-startup.log');
+    expect(fs.existsSync(partialLogPath)).toBe(true);
+    expect(fs.readFileSync(partialLogPath, 'utf8')).toContain('sub_agent_spawned');
     expect(partialAgent).toMatchObject({
       __driverStarted: false,
       subEngine: null,
