@@ -103,6 +103,10 @@ function scheduleLegacyYeaftSessionInventoryComplete(store) {
     store._hasHandledYeaftSessionHydrate = true;
     store.yeaftSessionHydrateRequestId = null;
     store.yeaftSessionHydrateError = null;
+    // A quiet window is only a heuristic boundary. Keep this socket available
+    // for normal traffic, but never reuse its identity-less inventory namespace:
+    // late slices from this completed request cannot be distinguished from the next.
+    store._yeaftSessionInventorySocketQuarantined = true;
   }, LEGACY_YEAFT_SESSION_INVENTORY_QUIET_MS);
 }
 

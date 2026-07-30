@@ -2320,8 +2320,8 @@ export const useChatStore = defineStore('chat', {
     requestYeaftSessionInventory() {
       // Legacy Servers do not echo requestId, so overlapping requests cannot be
       // separated safely. Reuse the current owner until its slice quiet-window
-      // commits. After a timeout, replace the socket before retrying: an old
-      // request can still deliver identity-less slices on its original socket.
+      // commits. After either a quiet commit or timeout, replace the socket before
+      // another request: the old request may still deliver identity-less slices.
       if (this.yeaftSessionInventoryCompleteSupported === false
           && this.yeaftSessionHydrateRequestId) {
         return this.yeaftSessionHydrateRequestId;

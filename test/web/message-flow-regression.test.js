@@ -931,6 +931,7 @@ describe('message flow regressions', () => {
         vi.advanceTimersByTime(1);
         expect(store.yeaftSessionHydrateRequestId).toBeNull();
         expect(store._hasHandledYeaftSessionHydrate).toBe(true);
+        expect(store._yeaftSessionInventorySocketQuarantined).toBe(true);
         expect(legacySessions.sessionOrder.map((key) => {
           const row = legacySessions.sessions[key];
           return `${row.agentId}:${row.id}`;
@@ -942,6 +943,11 @@ describe('message flow regressions', () => {
         expect(store.yeaftActiveSessionFilter).toBe('session-b');
         expect(store.currentAgent).toBe('agent-b');
         expect(setFilterSpy).not.toHaveBeenCalled();
+
+        // Model the next authenticated legacy socket for the zero-slice unit
+        // path. The production reconnect boundary after quiet completion is
+        // exercised with real socket callbacks below.
+        store._yeaftSessionInventorySocketQuarantined = false;
 
         // A zero-slice legacy response is indistinguishable from a delayed first
         // slice. Preserve the live cache until the bounded request timeout rather
@@ -971,8 +977,8 @@ describe('message flow regressions', () => {
         expect(legacySessions.activeSession).toMatchObject({ id: 'session-b', agentId: 'agent-b' });
 
         // Drive the complete production attack sequence through real sockets:
-        // request A times out, Retry replaces the socket and opens request B,
-        // then A's saved callback attempts to inject a late identity-less slice.
+        // request A quiet-commits, a normal refresh replaces its socket before
+        // opening request B, then A's saved callback attempts a late slice.
         const previousWebSocket = globalThis.WebSocket;
         const previousStartHeartbeat = store.startHeartbeat;
         const previousStopHeartbeat = store.stopHeartbeat;
@@ -1011,11 +1017,23 @@ describe('message flow regressions', () => {
           const requestA = store.yeaftSessionHydrateRequestId;
           expect(requestA).toMatch(/^session_inventory_/);
           const staleSocketMessage = socketA.onmessage;
+          socketA.onmessage({ data: JSON.stringify({
+            type: 'yeaft_session_hydrate',
+            agentId: 'agent-b',
+            sessions: [{ id: 'session-b', name: 'Session B from A' }],
+          }) });
+          vi.advanceTimersByTime(500);
 
-          vi.advanceTimersByTime(15_000);
+          expect(store.yeaftSessionHydrateRequestId).toBeNull();
           expect(store._yeaftSessionInventorySocketQuarantined).toBe(true);
+          expect(store.ws).toBe(socketA);
+          expect(socketA.readyState).toBe(InventorySocket.OPEN);
+          expect(socketA.onmessage).toBe(staleSocketMessage);
+          expect(sockets).toHaveLength(1);
+
           expect(store.requestYeaftSessionInventory()).toBeNull();
           expect(sockets).toHaveLength(2);
+          expect(socketA.readyState).toBe(InventorySocket.CLOSED);
           expect(socketA.onmessage).toBeNull();
 
           const socketB = sockets[1];
@@ -1027,6 +1045,11 @@ describe('message flow regressions', () => {
           const requestB = store.yeaftSessionHydrateRequestId;
           expect(requestB).toMatch(/^session_inventory_/);
           expect(requestB).not.toBe(requestA);
+          socketB.onmessage({ data: JSON.stringify({
+            type: 'yeaft_session_hydrate',
+            agentId: 'agent-b',
+            sessions: [{ id: 'session-b', name: 'Session B from B' }],
+          }) });
 
           staleSocketMessage({ data: JSON.stringify({
             type: 'yeaft_session_hydrate',
@@ -1036,11 +1059,12 @@ describe('message flow regressions', () => {
           vi.advanceTimersByTime(500);
 
           expect(legacySessions.sessionById('stale-a', 'agent-a')).toBeNull();
-          expect(legacySessions.sessionById('session-b', 'agent-b')).toBeTruthy();
+          expect(legacySessions.sessionById('session-b', 'agent-b')).toMatchObject({ name: 'Session B from B' });
           expect(legacySessions.activeSession).toMatchObject({ id: 'session-b', agentId: 'agent-b' });
           expect(store.yeaftActiveSessionFilter).toBe('session-b');
           expect(store.currentAgent).toBe('agent-b');
-          expect(store.yeaftSessionHydrateRequestId).toBe(requestB);
+          expect(store.yeaftSessionHydrateRequestId).toBeNull();
+          expect(store._yeaftSessionInventorySocketQuarantined).toBe(true);
         } finally {
           store.ws = null;
           store.yeaftSessionHydrateRequestId = null;
