@@ -172,6 +172,7 @@ index.js     — 入口，把所有内置工具聚合成 createFullRegistry()
 - 持久 shell task 的 `resultDelivery` 是 `status_only`：它不阻塞前台模型回合，终止 / 取消只更新 task 状态，不自动触发新的模型回合；只有显式 `model_reentry` 的结果型异步 task 才把终态送回模型
 - `TaskManager` 按 Session 持久化任务状态和日志；agent 重启后仍标记未完成任务为 `orphaned`，不会假装进程还可控
 - `SpawnAgent` 走 `sub-agent/runner.js`，每个子 Agent 有独立 output log、liveness 计数器、预算上限和 terminal 状态
+- parent Engine 可以在同一 turn 等待 result-producing task，但只等待有活动的任务；连续 120 秒无任务活动就释放 same-turn ownership，让当前 VP 正常终态，后续 task completion 通过既有 rescue turn 回流，不能无限阻塞 `vp_turn_end`
 - 子 Agent 终止 / idle 通知会进入 `sub-agent/notifications.js` 队列；`WaitAgent` 可按 agentId drain，Engine 在 parent 下一次 user-driven turn 前也会把 pending notification 注入上下文并在 turn 成功后 acknowledge
 - sub-agent terminal notification 语义上是 parent re-entry control context，不是用户原始输入；改这条链路时要避免把它当作用户手写文本做长期语义记忆或展示
 

@@ -440,6 +440,14 @@ use it as the default workflow or call it repeatedly in a loop.`,
         }
         startSubAgent(agent, deps);
       } catch (err) {
+        if (agent.taskId && ctx?.taskManager?.completeTask) {
+          try {
+            ctx.taskManager.completeTask(callerScope.sessionId || ctx?.sessionId || 'default', agent.taskId, {
+              status: 'failed',
+              error: err && err.message ? err.message : String(err),
+            });
+          } catch { /* task terminal delivery is best-effort */ }
+        }
         agent.status = STATUS.FAILED;
         agent.error = err && err.message ? err.message : String(err);
         agent.diagnostics.push({ type: 'spawn_error', error: agent.error, at: Date.now() });

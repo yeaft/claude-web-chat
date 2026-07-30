@@ -76,7 +76,7 @@ import { getAgentRegistry, agentBelongsToScope } from './tools/agent.js';
 import { isPromptableAgentStatus } from './sub-agent/status.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
 import { recordAgentSessionCreated, recordAgentTurn } from '../metrics.js';
-import { TASK_RESULT_DELIVERY, taskResultDeliveryFor } from './tasks/store.js';
+import { TASK_RESULT_DELIVERY, isTerminalTaskStatus, taskResultDeliveryFor } from './tasks/store.js';
 
 const LEGACY_SKILL_COMMAND_PREFIX = 'skill:';
 const YEAFT_SKILL_COMMAND_PREFIX = 'yeaft-skills:';
@@ -487,6 +487,7 @@ function retireCachedVpEngine(key, {
  *   onUnregister: (taskId: string, engine: import('./engine.js').Engine) => void,
  *   onConsumed: (taskId: string, engine: import('./engine.js').Engine) => void,
  *   onUndelivered: (taskId: string, delivery: object, engine: import('./engine.js').Engine) => void,
+ *   onDeferred: (taskId: string, engine: import('./engine.js').Engine) => void,
  * }}
  */
 function buildAsyncTaskCoordinator() {
@@ -517,6 +518,21 @@ function buildAsyncTaskCoordinator() {
         content: delivery?.content,
         taskKind: delivery?.taskKind,
         taskStatus: delivery?.taskStatus,
+      });
+    },
+    onDeferred(taskId, engine) {
+      if (!deleteOwnerIfMatch(taskId, engine)) return;
+      const sessionId = engine?.sessionId || null;
+      const task = sessionId && session?.taskManager?.getTask?.(sessionId, taskId);
+      if (!task || !isTerminalTaskStatus(task.status)) return;
+      scheduleTaskResultRescue({
+        taskId,
+        sessionId: task.sessionId || sessionId,
+        vpId: task.ownerVpId || engine?.vpId || null,
+        threadId: task.source?.threadId || task.runtime?.threadId || engine?.currentThreadId || 'main',
+        content: formatTaskResultForVp(task),
+        taskKind: task.kind,
+        taskStatus: task.status,
       });
     },
   };
@@ -4024,6 +4040,12 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'async_task_wait_end':
+      if (event.timedOut) {
+        console.warn(
+          '[Yeaft] same-turn async task wait timed out; continuing the VP turn and deferring task results:',
+          Array.isArray(event.deferredTaskIds) ? event.deferredTaskIds : [],
+        );
+      }
       if (!event.aborted && typeof hctx.resetQueryTimer === 'function') hctx.resetQueryTimer();
       sendSessionEvent({
         type: 'vp_async_task_wait_end',
@@ -4032,6 +4054,8 @@ function handleEngineEvent(event, hctx) {
         loopNumber: event.loopNumber,
         aborted: Boolean(event.aborted),
         remainingTaskIds: Array.isArray(event.remainingTaskIds) ? event.remainingTaskIds : [],
+        timedOut: Boolean(event.timedOut),
+        deferredTaskIds: Array.isArray(event.deferredTaskIds) ? event.deferredTaskIds : [],
         ts: Date.now(),
       }, envelope);
       break;
@@ -7302,5 +7326,8 @@ export const __testHooks = {
   },
   queuedTurnIds() {
     return Array.from(vpInboxes.values()).flatMap((inbox) => Array.isArray(inbox) ? inbox.map((entry) => entry.turnId) : []);
+  },
+  asyncTaskCoordinatorForTest() {
+    return buildAsyncTaskCoordinator();
   },
 };

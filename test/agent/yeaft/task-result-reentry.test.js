@@ -325,6 +325,39 @@ describe('task result re-entry', () => {
     expect(rendered).toContain('Review passed');
     expect(rendered).toContain('This is an asynchronous tool result from a background task, not a user message');
 
+    // If a terminal event wins the race immediately before the engine's
+    // silence timeout, notifyAsyncTaskCompleted may already have accepted it.
+    // onDeferred must not enqueue a duplicate rescue after ownership is gone.
+    const deferredCoordinator = __testHooks.asyncTaskCoordinatorForTest();
+    const deferredEngine = {
+      sessionId,
+      vpId,
+      currentThreadId: 'main',
+      ownsPendingAsyncTask: () => true,
+      notifyAsyncTaskCompleted: () => true,
+    };
+    deferredCoordinator.onRegister('task_terminal_race', deferredEngine);
+    taskManager.emit({
+      type: 'yeaft_task_event',
+      event: 'completed',
+      task: {
+        id: 'task_terminal_race',
+        sessionId,
+        ownerVpId: vpId,
+        kind: 'sub_agent',
+        title: 'Terminal race',
+        status: 'succeeded',
+        resultDelivery: 'model_reentry',
+        source: { threadId: 'main' },
+        result: { summary: 'Already accepted in same turn' },
+        log: { preview: 'accepted' },
+      },
+    });
+    deferredCoordinator.onDeferred('task_terminal_race', deferredEngine);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await drainVpDriversWithin();
+    expect(adapter.streamCalls).toHaveLength(4);
+
     const internalRows = persisted.filter(row => row.internal === true);
     expect(internalRows).toHaveLength(1);
     expect(internalRows[0]).toMatchObject({

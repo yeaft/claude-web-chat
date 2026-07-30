@@ -313,6 +313,43 @@ describe('wait-agent envelope shape', () => {
     expect(listed.agents.map(a => a.id)).toEqual(['agent-owned-b']);
     const ownWait = JSON.parse(await waitAgent.execute({ agent_id: 'agent-owned-b' }, ctxB));
     expect(ownWait.result).toBe('visible result');
+
+    // A synchronous runner setup failure used to leave the model-reentry task
+    // running forever after the parent had already registered same-turn
+    // ownership. Force child-registry setup to throw and require immediate
+    // TaskManager completion.
+    const taskEvents = [];
+    const taskManager = {
+      startTask() {
+        return { id: 'task-spawn-failure', status: 'running' };
+      },
+      completeTask(sessionId, taskId, opts) {
+        taskEvents.push({ sessionId, taskId, opts });
+      },
+      setTaskLogPath() {},
+    };
+    const spawnFailure = JSON.parse(await agentTool.execute({
+      name: 'spawn-failure',
+      mission: 'fail during runner setup',
+    }, {
+      taskManager,
+      registerAsyncTask() {},
+      parentEngineDeps: {
+        ...mkDeps(new TextAdapter()),
+        parentSessionId: 'session-failure',
+        parentVpId: 'vp-failure',
+        parentThreadId: 'main',
+        taskManager,
+        get parentToolRegistry() { throw new Error('Windows runner setup failed'); },
+      },
+    }));
+
+    expect(spawnFailure.error).toMatch(/Failed to start sub-agent/);
+    expect(taskEvents).toEqual([{
+      sessionId: 'session-failure',
+      taskId: 'task-spawn-failure',
+      opts: expect.objectContaining({ status: 'failed' }),
+    }]);
   });
 
   it('sessionless scoped tools still isolate different parent VPs', async () => {

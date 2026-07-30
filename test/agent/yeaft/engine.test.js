@@ -1125,6 +1125,122 @@ describe('Engine', () => {
       expect(secondCall.messages[1].toolCalls).toHaveLength(1);
       expect(secondCall.messages[2].role).toBe('tool');
       expect(secondCall.messages[2].toolCallId).toBe('call_1');
+
+      // A result-producing task can outlive the visible turn. If its terminal
+      // event is lost, the parent must eventually release same-turn ownership
+      // and finish; the task keeps running and its later completion can use the
+      // bridge's existing rescue-turn path.
+      const stalledTaskAdapter = new MockAdapter();
+      stalledTaskAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_stalled_task', name: 'launch_stalled_task', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      stalledTaskAdapter.pushResponse([
+        { type: 'text_delta', text: 'The delegated task is still running.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const stalledTaskEngine = new Engine({
+        adapter: stalledTaskAdapter,
+        trace,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          asyncTaskWaitTimeoutMs: 20,
+        },
+      });
+      const deferredTasks = [];
+      stalledTaskEngine.setAsyncTaskCoordinator({
+        onDeferred(taskId) { deferredTasks.push(taskId); },
+      });
+      stalledTaskEngine.registerTool({
+        name: 'launch_stalled_task',
+        description: 'launch a task whose terminal event never arrives',
+        parameters: { type: 'object', properties: {} },
+        execute: async (_input, ctx) => {
+          ctx.registerAsyncTask('task_stalled');
+          return 'task started';
+        },
+      });
+
+      const stalledEvents = [];
+      await Promise.race([
+        (async () => {
+          for await (const event of stalledTaskEngine.query({ prompt: 'delegate this work' })) {
+            stalledEvents.push(event);
+          }
+        })(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('async task wait stayed pinned')), 500)),
+      ]);
+
+      expect(stalledEvents).toContainEqual(expect.objectContaining({
+        type: 'async_task_wait_end',
+        timedOut: true,
+        deferredTaskIds: ['task_stalled'],
+      }));
+      expect(stalledEvents).toContainEqual(expect.objectContaining({
+        type: 'turn_end',
+        stopReason: 'end_turn',
+        terminal: true,
+      }));
+      expect(stalledEvents.at(-1)).toMatchObject({ type: 'turn_close' });
+      expect(stalledTaskEngine.hasPendingAsyncTasks()).toBe(false);
+      expect(stalledTaskEngine.notifyAsyncTaskCompleted('task_stalled', 'late result')).toBe(false);
+      expect(deferredTasks).toEqual(['task_stalled']);
+
+      // Long-running child work is not itself a stall. TaskManager activity
+      // refreshes the silence deadline; a completion after the first timeout
+      // window must still resume in the same turn.
+      const activeTaskAdapter = new MockAdapter();
+      activeTaskAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_active_task', name: 'launch_active_task', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      activeTaskAdapter.pushResponse([
+        { type: 'text_delta', text: 'The delegated result was consumed.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const activeTaskEngine = new Engine({
+        adapter: activeTaskAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 20 },
+        taskManager: {
+          getTask() {
+            return { status: 'running', updatedAt: new Date().toISOString() };
+          },
+          renderActiveTasksForPrompt() { return ''; },
+        },
+        sessionId: 'session-active-task',
+      });
+      activeTaskEngine.registerTool({
+        name: 'launch_active_task',
+        description: 'launch a task that keeps reporting activity',
+        parameters: { type: 'object', properties: {} },
+        execute: async (_input, ctx) => {
+          ctx.registerAsyncTask('task_active');
+          return 'task started';
+        },
+      });
+
+      const activeEvents = [];
+      let activeCompletionAccepted = null;
+      for await (const event of activeTaskEngine.query({ prompt: 'delegate active work' })) {
+        activeEvents.push(event);
+        if (event.type === 'async_task_wait_start') {
+          setTimeout(() => {
+            activeCompletionAccepted = activeTaskEngine.notifyAsyncTaskCompleted(
+              'task_active',
+              '<task-result id="task_active">done</task-result>',
+            );
+          }, 45);
+        }
+      }
+
+      expect(activeCompletionAccepted).toBe(true);
+      expect(activeEvents.find(event => event.type === 'async_task_wait_end')).toMatchObject({
+        timedOut: false,
+        deferredTaskIds: [],
+      });
+      expect(activeTaskAdapter.callLog).toHaveLength(3);
     });
 
     it('passes the active tool call identity to interactive AskUser hosts', async () => {
