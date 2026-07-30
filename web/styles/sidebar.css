@@ -821,6 +821,11 @@
 .processing-dot {
   background: var(--text-secondary);
   animation: pulse 1.5s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.session-item-header > .processing-dot {
+  margin-right: 0;
 }
 
 .unread-dot {
@@ -863,6 +868,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.session-item-main {
+  display: block;
+  min-width: 0;
+  width: 100%;
 }
 
 .session-actions {
@@ -935,6 +946,13 @@
   z-index: 200;
   padding: 4px;
   animation: fadeSlideDown 0.12s ease-out;
+}
+
+.session-menu.session-menu-floating {
+  position: fixed;
+  right: auto;
+  margin-top: 0;
+  z-index: 1000;
 }
 
 .session-menu-item {

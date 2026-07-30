@@ -91,8 +91,10 @@ export default {
         v-if="chatStore && chatStore.sessionCatalogLoaded"
         :sessions="chatStore.sessionCatalog"
         :active-catalog-key="chatStore.activeCatalogKey"
-        :is-session-processing="isCatalogSessionProcessing"
         :is-session-unread="isCatalogSessionUnread"
+        :processing-conversations="chatStore.processingConversations"
+        :is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"
+        :agents="chatStore.agents"
         @select="chatStore.openCatalogSession"
         @create-chat="onOpenChatCreate"
         @create-yeaft="onOpenSessionCreate"
@@ -125,7 +127,7 @@ export default {
                 v-for="s in sessionList"
                 :key="s.kind + ':' + sessionDragKey(s.raw)"
                 class="session-item yeaft-session-draggable"
-                :class="{ active: s.active, pinned: s.pinned, processing: s.processing || isSessionProcessing(s.id), dragging: draggedSessionKey === sessionDragKey(s.raw), 'drag-over': dragOverSessionKey === sessionDragKey(s.raw) }"
+                :class="{ active: s.active, pinned: s.pinned, processing: s.processing || isSessionProcessing(s.id, s.raw?.agentId || null), dragging: draggedSessionKey === sessionDragKey(s.raw), 'drag-over': dragOverSessionKey === sessionDragKey(s.raw) }"
                 draggable="true"
                 @dragstart="onSessionDragStart(s.raw, $event)"
                 @dragover.prevent="onSessionDragOver(s.raw, $event)"
@@ -138,7 +140,7 @@ export default {
                 <div class="session-item-header">
                   <span v-if="s.pinned" class="session-pin-icon"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg></span>
                   <span v-if="chatStore && chatStore.isYeaftSessionUnread(s.id, s.raw.agentId)" class="unread-dot" aria-hidden="true"></span>
-                  <span v-else-if="s.processing || isSessionProcessing(s.id)" class="processing-dot" aria-hidden="true"></span>
+                  <span v-else-if="s.processing || isSessionProcessing(s.id, s.raw?.agentId || null)" class="processing-dot" aria-hidden="true"></span>
                   <div class="title" :title="groupDisplayName(s.raw)">
                     <span>{{ groupDisplayName(s.raw) }}</span>
                   </div>
@@ -403,15 +405,12 @@ export default {
       }
       return fallback;
     },
-    isSessionProcessing(sessionId) {
+    isSessionProcessing(sessionId, agentId = null) {
       const s = this.chatStore || this.store;
       if (!s || !sessionId) return false;
-      if (typeof s.isYeaftSessionProcessing === 'function') return s.isYeaftSessionProcessing(sessionId);
-      return !!s.yeaftProcessingSessions?.[sessionId];
-    },
-    isCatalogSessionProcessing(row) {
-      if (row?.runtimeProvider !== 'yeaft') return false;
-      return this.isSessionProcessing(row.routeRef?.sessionId);
+      return typeof s.isYeaftSessionProcessing === 'function'
+        ? s.isYeaftSessionProcessing(sessionId, agentId)
+        : false;
     },
     isCatalogSessionUnread(row) {
       if (row?.runtimeProvider !== 'yeaft') return false;
@@ -465,9 +464,6 @@ export default {
         this.openGroupSettings({ id: sessionId, agentId }, 'session');
       } else if (runtimeProvider === 'yeaft' && action === 'remove') {
         this.onRemoveFromList({ id: sessionId, agentId });
-      } else if (action === 'split') {
-        s?.leaveYeaft?.();
-        s?.splitToPanel?.(sessionId);
       } else if (action === 'remove') {
         if (confirm(this.$t('chat.delete.confirm'))) {
           s?.leaveYeaft?.();

@@ -321,11 +321,11 @@ server {
 ```bash
 npm install -g @yeaft/webchat-agent
 
-# 前台运行
-yeaft-agent --server wss://your-server.com --name worker-1 --secret your-secret
+# 前台运行。--name 可省略，默认使用计算机名，其中非法字符替换为 "-"。
+yeaft-agent --server wss://your-server.com --secret your-secret
 
 # 或安装为系统服务（开机自启、崩溃自重启）
-yeaft-agent install --server wss://your-server.com --name worker-1 --secret your-secret
+yeaft-agent install --server wss://your-server.com --secret your-secret
 
 # 管理已安装的服务
 yeaft-agent status                 # 查看运行状态

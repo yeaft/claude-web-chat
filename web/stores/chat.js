@@ -38,6 +38,11 @@ import { normalizeSessionMessageQuote } from '../utils/session-message-quote.js'
 import { markTurnResponseKinds } from '../utils/turn-response.js';
 import { yeaftHistoryIdentityKey } from './helpers/yeaft-history-identity.js';
 import {
+  yeaftAgentSessionIdentityPrefix,
+  yeaftSessionIdentityKey,
+  yeaftTurnIdentityKey,
+} from './helpers/yeaft-session-identity.js';
+import {
   getDefaultYeaftVisibleTurns,
   getYeaftWindowLoadStepTurns,
   buildYeaftMessageTurnSpans,
@@ -51,13 +56,116 @@ const { defineStore } = Pinia;
 // which prevents Vue computed from treating each call as a new value.
 const EMPTY_ARRAY = Object.freeze([]);
 
-// vp-status (2026-05-15): composite key used by the `vpStatuses` map.
-// Mirrors the agent broker's `keyOf` (see vp-status-broker.js): the
-// same vpId can appear in multiple groups, so keying by vpId alone
-// would conflate concurrent VP turns across groups. Null/undefined
-// groupId is normalized to empty string so cross-group lookups stay
-// deterministic.
-const vpStatusKey = (groupId, vpId) => `${groupId || ''}::${vpId}`;
+// UI status mirrors are Agent-scoped. The broker key is Session + VP inside
+// one Agent process; the Web aggregates multiple Agent processes, so omitting
+// agentId conflates identical Session/VP ids across Agents.
+const vpStatusKey = (agentId, sessionId, vpId) => `${agentId || ''}::${sessionId || ''}::${vpId}`;
+
+function yeaftSessionOwnerIds(state, sessionId) {
+  const owners = new Set();
+  if (!sessionId) return owners;
+  for (const row of state?.sessionCatalog || []) {
+    if (row?.runtimeProvider !== 'yeaft' || row?.routeRef?.sessionId !== sessionId) continue;
+    if (row.routeRef.agentId) owners.add(row.routeRef.agentId);
+  }
+  if (owners.size === 0) {
+    const sessionsStore = getSessionsStore();
+    for (const row of sessionsStore?.sessionList || []) {
+      if (row?.id === sessionId && row?.agentId) owners.add(row.agentId);
+    }
+  }
+  return owners;
+}
+
+function uniqueYeaftSessionOwner(state, sessionId) {
+  const owners = yeaftSessionOwnerIds(state, sessionId);
+  return owners.size === 1 ? owners.values().next().value : null;
+}
+
+function hasUniqueLegacyYeaftSessionOwner(state, sessionId, agentId) {
+  return !!agentId && uniqueYeaftSessionOwner(state, sessionId) === agentId;
+}
+
+function matchesYeaftRuntimeIdentity(row, sessionId, agentId) {
+  if (!row || row.sessionId !== sessionId) return false;
+  return agentId ? row.agentId === agentId : !row.agentId;
+}
+
+function isYeaftSessionProcessingState(state, sessionId, agentId = null) {
+  if (!sessionId) return false;
+  const resolvedAgentId = agentId || resolveAgentIdForSession(state, sessionId);
+  const processingKey = yeaftSessionIdentityKey(resolvedAgentId, sessionId);
+  if (processingKey && state.yeaftProcessingSessions?.[processingKey]) return true;
+  if (state.yeaftProcessingSessions?.[sessionId]
+      && hasUniqueLegacyYeaftSessionOwner(state, sessionId, resolvedAgentId)) return true;
+  for (const info of Object.values(state.activeVpTurns || {})) {
+    if (matchesYeaftRuntimeIdentity(info, sessionId, resolvedAgentId)) return true;
+  }
+  for (const status of Object.values(state.vpStatuses || {})) {
+    if (!matchesYeaftRuntimeIdentity(status, sessionId, resolvedAgentId)) continue;
+    if (YEAFT_RUNNING_VP_STATES.has(status?.state)) return true;
+  }
+  return false;
+}
+
+function projectYeaftProcessingSnapshot(state, agentId, statuses, scopedSessionId = null) {
+  let next = { ...(state.yeaftProcessingSessions || {}) };
+  if (agentId) {
+    const prefix = yeaftAgentSessionIdentityPrefix(agentId);
+    next = Object.fromEntries(Object.entries(next).filter(([key]) => (
+      scopedSessionId ? key !== yeaftSessionIdentityKey(agentId, scopedSessionId) : !key.startsWith(prefix)
+    )));
+    if (scopedSessionId) {
+      if (hasUniqueLegacyYeaftSessionOwner(state, scopedSessionId, agentId)) delete next[scopedSessionId];
+    } else {
+      for (const key of Object.keys(next)) {
+        if (hasUniqueLegacyYeaftSessionOwner(state, key, agentId)) delete next[key];
+      }
+    }
+  } else if (scopedSessionId) {
+    delete next[scopedSessionId];
+  } else {
+    next = {};
+  }
+  for (const row of statuses || []) {
+    const sessionId = row?.sessionId || row?.groupId || null;
+    if (!sessionId || !YEAFT_RUNNING_VP_STATES.has(row?.state)) continue;
+    const key = yeaftSessionIdentityKey(agentId, sessionId) || sessionId;
+    next[key] = true;
+  }
+  return next;
+}
+
+function yeaftTurnStateKey(state, agentId, turnId) {
+  const scopedKey = yeaftTurnIdentityKey(agentId, turnId);
+  if (scopedKey && state?.activeVpTurns?.[scopedKey]) return scopedKey;
+  if (state?.activeVpTurns?.[turnId]
+      && (!agentId || !state.activeVpTurns[turnId]?.agentId || state.activeVpTurns[turnId].agentId === agentId)) return turnId;
+  return scopedKey || turnId || '';
+}
+
+function clearYeaftAgentRuntimeState(state, agentId) {
+  if (!agentId) {
+    state.activeVpTurns = {};
+    state.stoppingVpTurnIds = {};
+    state.vpStatuses = {};
+    state.yeaftProcessingSessions = {};
+    return;
+  }
+  state.activeVpTurns = Object.fromEntries(
+    Object.entries(state.activeVpTurns || {}).filter(([, row]) => row?.agentId && row.agentId !== agentId)
+  );
+  state.stoppingVpTurnIds = Object.fromEntries(
+    Object.entries(state.stoppingVpTurnIds || {}).filter(([turnId]) => state.activeVpTurns?.[turnId])
+  );
+  state.vpStatuses = Object.fromEntries(
+    Object.entries(state.vpStatuses || {}).filter(([, row]) => row?.agentId && row.agentId !== agentId)
+  );
+  const prefix = yeaftAgentSessionIdentityPrefix(agentId);
+  state.yeaftProcessingSessions = Object.fromEntries(
+    Object.entries(state.yeaftProcessingSessions || {}).filter(([key]) => !key.startsWith(prefix))
+  );
+}
 
 // Bootstrap pane window when no delta cursor is known yet (cold start, or
 // a session the UI has never seen). User-confirmed: 5 turns is the sweet
@@ -428,9 +536,9 @@ export const useChatStore = defineStore('chat', {
     customConversationTitles: {},
     // Per-conversation 处理状态：conversationId -> true (使用对象而非 Set 以确保响应式)
     processingConversations: {},
-    // Per-Yeaft-session processing state: sessionId -> true. Chat uses the
-    // virtual conversation id for active dots; Yeaft needs session scope so a
-    // running turn in session A does not light up every session row.
+    // Per-Yeaft-session processing state: `${agentId}\u001f${sessionId}` -> true.
+    // A bare sessionId is accepted only as a legacy wire fallback when the
+    // catalog proves exactly one Agent owns that id.
     yeaftProcessingSessions: {},
     // Session completion notifications live only for the current Web client.
     // A terminal end_turn received while another Session is open marks the
@@ -1142,16 +1250,7 @@ export const useChatStore = defineStore('chat', {
       if (state.currentView === 'yeaft') {
         const sessionId = resolveActiveYeaftSessionId(state);
         if (!sessionId) return false;
-        if (state.yeaftProcessingSessions?.[sessionId]) return true;
-        for (const info of Object.values(state.activeVpTurns || {})) {
-          if (info?.sessionId === sessionId) return true;
-        }
-        for (const status of Object.values(state.vpStatuses || {})) {
-          const statusSessionId = status?.sessionId || status?.groupId || null;
-          if (statusSessionId !== sessionId) continue;
-          if (YEAFT_RUNNING_VP_STATES.has(status?.state)) return true;
-        }
-        return false;
+        return isYeaftSessionProcessingState(state, sessionId, resolveAgentIdForSession(state, sessionId));
       }
       return state.currentConversation ? !!state.processingConversations[state.currentConversation] : false;
     },
@@ -1229,19 +1328,9 @@ export const useChatStore = defineStore('chat', {
       return state.compactStatus?.conversationId === conversationId
         && state.compactStatus?.status === 'compacting';
     },
-    isYeaftSessionProcessing: (state) => (sessionId) => {
-      if (!sessionId) return false;
-      if (state.yeaftProcessingSessions?.[sessionId]) return true;
-      for (const info of Object.values(state.activeVpTurns || {})) {
-        if (info?.sessionId === sessionId) return true;
-      }
-      for (const status of Object.values(state.vpStatuses || {})) {
-        const statusSessionId = status?.sessionId || status?.groupId || null;
-        if (statusSessionId !== sessionId) continue;
-        if (YEAFT_RUNNING_VP_STATES.has(status?.state)) return true;
-      }
-      return false;
-    },
+    isYeaftSessionProcessing: (state) => (sessionId, agentId = null) => (
+      isYeaftSessionProcessingState(state, sessionId, agentId)
+    ),
     isYeaftSessionUnread: (state) => (sessionId, agentId = null) => {
       if (!sessionId) return false;
       const ownerAgentId = resolveAgentIdForSession(state, sessionId, agentId);
@@ -2568,9 +2657,10 @@ export const useChatStore = defineStore('chat', {
         this.addMessageToConversation(activeYeaftConvId, localMsg);
         this.processingConversations[activeYeaftConvId] = true;
         if (groupId) {
+          const processingKey = yeaftSessionIdentityKey(targetAgentId, groupId);
           this.yeaftProcessingSessions = {
             ...this.yeaftProcessingSessions,
-            [groupId]: true,
+            ...(processingKey ? { [processingKey]: true } : {}),
           };
         }
         this._turnCompletedConvs?.delete(activeYeaftConvId);
@@ -3216,7 +3306,8 @@ export const useChatStore = defineStore('chat', {
         // `llm_retry` remains visible while the replacement request is silent.
         // Its first real output frame proves recovery, so clear only the retry
         // annotation; the turn itself stays active until vp_turn_end.
-        if (msg.turnId && this.activeVpTurns?.[msg.turnId]?.retryAttempt) {
+        const frameTurnKey = msg.turnId ? yeaftTurnStateKey(this, msg.agentId || null, msg.turnId) : '';
+        if (frameTurnKey && this.activeVpTurns?.[frameTurnKey]?.retryAttempt) {
           const {
             retryAttempt: _retryAttempt,
             retryMax: _retryMax,
@@ -3224,10 +3315,10 @@ export const useChatStore = defineStore('chat', {
             retryReason: _retryReason,
             retryRecoveryMode: _retryRecoveryMode,
             ...activeTurn
-          } = this.activeVpTurns[msg.turnId];
+          } = this.activeVpTurns[frameTurnKey];
           this.activeVpTurns = {
             ...this.activeVpTurns,
-            [msg.turnId]: activeTurn,
+            [frameTurnKey]: activeTurn,
           };
         }
         const conversationId = msg.conversationId || this.yeaftConversationId;
@@ -3280,10 +3371,12 @@ export const useChatStore = defineStore('chat', {
           // Inbound envelopes now carry `sessionId` (legacy `groupId` is
           // accepted as a fallback for older agents that haven't been
           // upgraded yet — drop after the next major version).
+          const prevAgentId = this._currentYeaftAgentId;
           const prevGroup = this._currentYeaftSessionId;
           const prevVpId = this._currentYeaftVpId;
           const prevTurnId = this._currentYeaftTurnId;
           const prevThreadId = this._currentYeaftThreadId;
+          if (frameAgentId) this._currentYeaftAgentId = frameAgentId;
           if (msgSessionId != null) this._currentYeaftSessionId = msgSessionId;
           if (msg.vpId) this._currentYeaftVpId = msg.vpId;
           if (msg.turnId) this._currentYeaftTurnId = msg.turnId;
@@ -3347,6 +3440,7 @@ export const useChatStore = defineStore('chat', {
               }
             }
           } finally {
+            this._currentYeaftAgentId = prevAgentId;
             this._currentYeaftSessionId = prevGroup;
             this._currentYeaftVpId = prevVpId;
             this._currentYeaftTurnId = prevTurnId;
@@ -3783,14 +3877,15 @@ export const useChatStore = defineStore('chat', {
 
         case 'llm_retry': {
           if (!msg.turnId) break;
-          const active = this.activeVpTurns?.[msg.turnId];
+          const turnKey = yeaftTurnStateKey(this, msg.agentId || null, msg.turnId);
+          const active = this.activeVpTurns?.[turnKey];
           if (!active) break;
           const retryReason = event.reason === 'stream_idle_timeout'
             ? 'stream_idle_timeout'
             : 'transient_error';
           this.activeVpTurns = {
             ...this.activeVpTurns,
-            [msg.turnId]: {
+            [turnKey]: {
               ...active,
               retryAttempt: event.attempt || 0,
               retryMax: event.maxRetries || 0,
@@ -4206,9 +4301,12 @@ export const useChatStore = defineStore('chat', {
         // typing — usually 0–5.
         case 'vp_turn_start': {
           if (!event.turnId || !event.vpId) break;
+          const turnKey = yeaftTurnIdentityKey(msg.agentId || null, event.turnId) || event.turnId;
           this.activeVpTurns = {
             ...this.activeVpTurns,
-            [event.turnId]: {
+            [turnKey]: {
+              agentId: msg.agentId || null,
+              turnId: event.turnId,
               vpId: event.vpId,
               sessionId: event.sessionId || null,
               threadId: event.threadId || null,
@@ -4217,24 +4315,29 @@ export const useChatStore = defineStore('chat', {
             },
           };
           if (event.sessionId) {
+            const processingKey = yeaftSessionIdentityKey(msg.agentId || null, event.sessionId);
             this.yeaftProcessingSessions = {
               ...this.yeaftProcessingSessions,
-              [event.sessionId]: true,
+              ...(processingKey ? { [processingKey]: true } : { [event.sessionId]: true }),
             };
           }
           break;
         }
         case 'vp_turn_end': {
           if (!event.turnId) break;
-          const endedSessionId = event.sessionId || this.activeVpTurns?.[event.turnId]?.sessionId || null;
+          const turnKey = yeaftTurnStateKey(this, msg.agentId || null, event.turnId);
+          const endedSessionId = event.sessionId || this.activeVpTurns?.[turnKey]?.sessionId || null;
           if (event.reason === 'end_turn' && endedSessionId) {
             this.markYeaftSessionUnread(endedSessionId, msg.agentId || null);
           }
-          const { [event.turnId]: _removed, ...rest } = this.activeVpTurns;
+          const { [turnKey]: _removed, ...rest } = this.activeVpTurns;
           this.activeVpTurns = rest;
-          const { [event.turnId]: _stopped, ...stoppingRest } = this.stoppingVpTurnIds;
+          const { [turnKey]: _stopped, ...stoppingRest } = this.stoppingVpTurnIds;
           this.stoppingVpTurnIds = stoppingRest;
-          this.clearYeaftSessionProcessingIfIdle(event.sessionId || _removed?.sessionId || null);
+          this.clearYeaftSessionProcessingIfIdle(
+            event.sessionId || _removed?.sessionId || null,
+            { agentId: msg.agentId || _removed?.agentId || null },
+          );
           // Per-message lifecycle: flip every in-flight assistant message
           // owned by this VP/turn from 'pending' to the terminal status
           // carried on `event.reason` (end_turn → completed; route_forward
@@ -4288,11 +4391,16 @@ export const useChatStore = defineStore('chat', {
           if (event.turnId) explicitTurnIds.push(event.turnId);
           const targetSessionId = event.sessionId || null;
           const targetVpId = event.vpId || null;
-          const removeIds = new Set(explicitTurnIds);
+          const removeIds = new Set();
+          for (const turnId of explicitTurnIds) {
+            const turnKey = yeaftTurnStateKey(this, msg.agentId || null, turnId);
+            const row = this.activeVpTurns?.[turnKey] || null;
+            if (!row || matchesYeaftRuntimeIdentity(row, row.sessionId, msg.agentId || null)) removeIds.add(turnKey);
+          }
           if (targetVpId) {
             for (const [turnId, info] of Object.entries(this.activeVpTurns || {})) {
               if (!info || info.vpId !== targetVpId) continue;
-              if (targetSessionId && info.sessionId !== targetSessionId) continue;
+              if (!matchesYeaftRuntimeIdentity(info, targetSessionId, msg.agentId || null)) continue;
               removeIds.add(turnId);
             }
           }
@@ -4308,23 +4416,31 @@ export const useChatStore = defineStore('chat', {
           }
           this.activeVpTurns = activeRest;
           this.stoppingVpTurnIds = stoppingRest;
-          this.clearYeaftSessionProcessingIfIdle(removedSessionId || null);
+          this.clearYeaftSessionProcessingIfIdle(removedSessionId || null, { agentId: msg.agentId || null });
           break;
         }
         case 'yeaft_aborted': {
           const sessionId = event.sessionId || msg.sessionId || null;
           if (sessionId) {
             this.activeVpTurns = Object.fromEntries(
-              Object.entries(this.activeVpTurns || {}).filter(([, info]) => info?.sessionId !== sessionId)
+              Object.entries(this.activeVpTurns || {}).filter(([, info]) => (
+                !matchesYeaftRuntimeIdentity(info, sessionId, msg.agentId || null)
+              ))
             );
             this.stoppingVpTurnIds = Object.fromEntries(
               Object.entries(this.stoppingVpTurnIds || {}).filter(([turnId]) => this.activeVpTurns?.[turnId])
             );
-            this.clearYeaftSessionProcessingIfIdle(sessionId);
+            this.vpStatuses = Object.fromEntries(
+              Object.entries(this.vpStatuses || {}).filter(([, status]) => (
+                !matchesYeaftRuntimeIdentity(status, sessionId, msg.agentId || null)
+              ))
+            );
+            this.clearYeaftSessionProcessingIfIdle(sessionId, {
+              agentId: msg.agentId || null,
+              ignoreStatuses: true,
+            });
           } else if (event.all) {
-            this.activeVpTurns = {};
-            this.stoppingVpTurnIds = {};
-            this.yeaftProcessingSessions = {};
+            clearYeaftAgentRuntimeState(this, msg.agentId || null);
           }
           break;
         }
@@ -4367,15 +4483,15 @@ export const useChatStore = defineStore('chat', {
         // `messages[].isStreaming` any more — that flag is a UI artifact
         // and was the root cause of the "stuck on streaming" bug.
         //
-        // Key format mirrors the broker's: `${groupId}::${vpId}`. Keying
-        // by vpId alone would corrupt the table when the same VP sits
-        // in two groups (last-write-wins between the two transitions).
-        // See vp-status-broker.js `keyOf` for the canonical form.
+        // The Web adds the Agent id to the broker's Session + VP key because
+        // it aggregates multiple Agent brokers in one state table.
         case 'vp_status_changed': {
           if (!event.vpId || !event.state) break;
           const sessionId = event.sessionId || null;
-          const k = vpStatusKey(sessionId, event.vpId);
+          const agentId = msg.agentId || null;
+          const k = vpStatusKey(agentId, sessionId, event.vpId);
           const nextStatus = {
+            agentId,
             state: event.state,
             since: event.since || Date.now(),
             turnId: event.turnId || null,
@@ -4388,14 +4504,15 @@ export const useChatStore = defineStore('chat', {
             [k]: nextStatus,
           };
           if (sessionId && YEAFT_RUNNING_VP_STATES.has(event.state)) {
+            const processingKey = yeaftSessionIdentityKey(agentId, sessionId);
             this.yeaftProcessingSessions = {
               ...this.yeaftProcessingSessions,
-              [sessionId]: true,
+              ...(processingKey ? { [processingKey]: true } : { [sessionId]: true }),
             };
           } else if (sessionId) {
-            this.clearYeaftSessionProcessingIfIdle(sessionId);
+            this.clearYeaftSessionProcessingIfIdle(sessionId, { agentId });
           }
-          this.restoreActiveYeaftSessionFromStatuses([nextStatus]);
+          this.restoreActiveYeaftSessionFromStatuses([nextStatus], agentId);
           break;
         }
         case 'vp_status_snapshot': {
@@ -4409,12 +4526,20 @@ export const useChatStore = defineStore('chat', {
           const statuses = Array.isArray(event.statuses) ? event.statuses : [];
           const eventSessionId = event.sessionId;
           if (eventSessionId == null) {
-            const next = {};
+            const next = { ...(this.vpStatuses || {}) };
+            if (msg.agentId) {
+              for (const [k, row] of Object.entries(next)) {
+                if (!row?.agentId || row.agentId === msg.agentId) delete next[k];
+              }
+            } else {
+              for (const k of Object.keys(next)) delete next[k];
+            }
             for (const row of statuses) {
               if (!row || !row.vpId) continue;
               const rowSessionId = row.sessionId || row.groupId || null;
-              const k = vpStatusKey(rowSessionId, row.vpId);
+              const k = vpStatusKey(msg.agentId || null, rowSessionId, row.vpId);
               next[k] = {
+                agentId: msg.agentId || null,
                 state: row.state,
                 since: row.since || Date.now(),
                 turnId: row.turnId || null,
@@ -4431,13 +4556,15 @@ export const useChatStore = defineStore('chat', {
             // by key shape) means a stray null-session leak in the table
             // doesn't haunt subsequent scoped reconnects.
             for (const [k, v] of Object.entries(merged)) {
-              if (v && v.sessionId === eventSessionId) delete merged[k];
+              if (v && v.sessionId === eventSessionId
+                  && (!msg.agentId || !v.agentId || v.agentId === msg.agentId)) delete merged[k];
             }
             for (const row of statuses) {
               if (!row || !row.vpId) continue;
               const rowSessionId = row.sessionId || row.groupId || null;
-              const k = vpStatusKey(rowSessionId, row.vpId);
+              const k = vpStatusKey(msg.agentId || null, rowSessionId, row.vpId);
               merged[k] = {
+                agentId: msg.agentId || null,
                 state: row.state,
                 since: row.since || Date.now(),
                 turnId: row.turnId || null,
@@ -4448,7 +4575,13 @@ export const useChatStore = defineStore('chat', {
             }
             this.vpStatuses = merged;
           }
-          this.restoreActiveYeaftSessionFromStatuses(statuses);
+          this.yeaftProcessingSessions = projectYeaftProcessingSnapshot(
+            this,
+            msg.agentId || null,
+            statuses,
+            eventSessionId == null ? null : eventSessionId,
+          );
+          this.restoreActiveYeaftSessionFromStatuses(statuses, msg.agentId || null);
           break;
         }
 
@@ -4883,7 +5016,7 @@ export const useChatStore = defineStore('chat', {
       return true;
     },
 
-    restoreActiveYeaftSessionFromStatuses(statuses = []) {
+    restoreActiveYeaftSessionFromStatuses(statuses = [], sourceAgentId = null) {
       if (this.yeaftActiveSessionFilter) return null;
       const rows = Array.isArray(statuses) ? statuses : [];
       const running = rows
@@ -4891,10 +5024,12 @@ export const useChatStore = defineStore('chat', {
         .sort((a, b) => (b.updatedAt || b.since || 0) - (a.updatedAt || a.since || 0));
       const sessionId = running[0]?.sessionId || running[0]?.groupId || null;
       if (!sessionId) return null;
-      this.setActiveSessionFilter(sessionId, { force: true });
+      const agentId = sourceAgentId || running[0]?.agentId || uniqueYeaftSessionOwner(this, sessionId);
+      if (!agentId) return null;
+      this.setActiveSessionFilter(sessionId, { agentId, force: true });
       try {
         const gs = window.Pinia?.useSessionsStore?.() || (window.__useSessionsStore && window.__useSessionsStore());
-        if (gs && typeof gs.setActive === 'function') gs.setActive(sessionId);
+        if (gs && typeof gs.setActive === 'function') gs.setActive(sessionId, agentId);
       } catch (_) {}
       return sessionId;
     },
@@ -5854,19 +5989,25 @@ export const useChatStore = defineStore('chat', {
         console.warn('[chat] failed to persist pinnedSessions:', e?.message || e);
       }
     },
-    clearYeaftSessionProcessingIfIdle(sessionId, { ignoreStatuses = false } = {}) {
+    clearYeaftSessionProcessingIfIdle(sessionId, { agentId = null, ignoreStatuses = false } = {}) {
       if (!sessionId) return;
-      const hasActiveTurn = Object.values(this.activeVpTurns || {}).some((info) => info?.sessionId === sessionId);
+      const resolvedAgentId = agentId || resolveAgentIdForSession(this, sessionId);
+      const hasActiveTurn = Object.values(this.activeVpTurns || {}).some((info) => (
+        matchesYeaftRuntimeIdentity(info, sessionId, resolvedAgentId)
+      ));
       if (hasActiveTurn) return;
       if (!ignoreStatuses) {
-        const hasRunningStatus = Object.values(this.vpStatuses || {}).some((status) => {
-          const statusSessionId = status?.sessionId || status?.groupId || null;
-          return statusSessionId === sessionId && YEAFT_RUNNING_VP_STATES.has(status?.state);
-        });
+        const hasRunningStatus = Object.values(this.vpStatuses || {}).some((status) => (
+          matchesYeaftRuntimeIdentity(status, sessionId, resolvedAgentId)
+          && YEAFT_RUNNING_VP_STATES.has(status?.state)
+        ));
         if (hasRunningStatus) return;
       }
-      const { [sessionId]: _removed, ...rest } = this.yeaftProcessingSessions || {};
-      this.yeaftProcessingSessions = rest;
+      const processingKey = yeaftSessionIdentityKey(resolvedAgentId, sessionId);
+      const next = { ...(this.yeaftProcessingSessions || {}) };
+      if (processingKey) delete next[processingKey];
+      if (hasUniqueLegacyYeaftSessionOwner(this, sessionId, resolvedAgentId)) delete next[sessionId];
+      this.yeaftProcessingSessions = next;
     },
     sendMessage(text, attachments = [], options = {}) { convHelpers.sendMessage(this, text, attachments, options); },
     cancelExecution() { convHelpers.cancelExecution(this); },
@@ -5886,13 +6027,11 @@ export const useChatStore = defineStore('chat', {
         type: 'yeaft_abort_all',
         agentId: this.currentAgent,
       });
-      // Legacy/global stop path: clear every local Yeaft running flag.
-      if (this.yeaftConversationId) {
-        delete this.processingConversations[this.yeaftConversationId];
-      }
-      this.activeVpTurns = {};
-      this.stoppingVpTurnIds = {};
-      this.yeaftProcessingSessions = {};
+      // Clear only this Agent's local runtime slice. The Web may be showing
+      // same-id Sessions from other Agents in the unified catalog.
+      const activeConversationId = this.yeaftConversationIdsByAgent?.[this.currentAgent] || this.yeaftConversationId;
+      if (activeConversationId) delete this.processingConversations[activeConversationId];
+      clearYeaftAgentRuntimeState(this, this.currentAgent);
     },
     cancelYeaftSession(sessionId) {
       const targetAgentId = resolveAgentIdForSession(this, sessionId);
@@ -5903,12 +6042,22 @@ export const useChatStore = defineStore('chat', {
         sessionId,
       });
       this.activeVpTurns = Object.fromEntries(
-        Object.entries(this.activeVpTurns || {}).filter(([, info]) => info?.sessionId !== sessionId)
+        Object.entries(this.activeVpTurns || {}).filter(([, info]) => (
+          !matchesYeaftRuntimeIdentity(info, sessionId, targetAgentId)
+        ))
       );
       this.stoppingVpTurnIds = Object.fromEntries(
         Object.entries(this.stoppingVpTurnIds || {}).filter(([turnId]) => this.activeVpTurns?.[turnId])
       );
-      this.clearYeaftSessionProcessingIfIdle(sessionId);
+      this.vpStatuses = Object.fromEntries(
+        Object.entries(this.vpStatuses || {}).filter(([, status]) => (
+          !matchesYeaftRuntimeIdentity(status, sessionId, targetAgentId)
+        ))
+      );
+      this.clearYeaftSessionProcessingIfIdle(sessionId, {
+        agentId: targetAgentId,
+        ignoreStatuses: true,
+      });
     },
     /**
      * Per-VP stop: abort a single VP turn by turnId without affecting siblings.
@@ -5922,9 +6071,10 @@ export const useChatStore = defineStore('chat', {
       // abort always hit the active page agent.
       const targetAgentId = resolveAgentIdForSession(this, sessionId);
       if (!targetAgentId || !turnId) return;
+      const turnKey = yeaftTurnStateKey(this, targetAgentId, turnId);
       this.stoppingVpTurnIds = {
         ...this.stoppingVpTurnIds,
-        [turnId]: Date.now(),
+        [turnKey]: Date.now(),
       };
       const msg = {
         type: 'yeaft_abort_turn',
@@ -5944,23 +6094,24 @@ export const useChatStore = defineStore('chat', {
       const map = this.activeVpTurns || {};
       let bestTurnId = null;
       let bestStartedAt = -Infinity;
-      for (const [turnId, info] of Object.entries(map)) {
+      for (const [turnKey, info] of Object.entries(map)) {
         if (!info || info.vpId !== vpId) continue;
-        if (targetSessionId && info.sessionId && info.sessionId !== targetSessionId) continue;
+        if (!matchesYeaftRuntimeIdentity(info, targetSessionId, targetAgentId)) continue;
         const ts = (typeof info.startedAt === 'number') ? info.startedAt : 0;
         if (ts >= bestStartedAt) {
           bestStartedAt = ts;
-          bestTurnId = turnId;
+          bestTurnId = turnKey;
         }
       }
       if (!bestTurnId) {
-        const status = this.vpStatuses?.[vpStatusKey(targetSessionId, vpId)] || null;
+        const status = this.vpStatuses?.[vpStatusKey(targetAgentId, targetSessionId, vpId)] || null;
         if (status?.turnId && !['idle', 'offline'].includes(status.state)) {
           bestTurnId = status.turnId;
         }
       }
       if (bestTurnId) {
-        this.cancelVpTurn(bestTurnId, { sessionId: targetSessionId, vpId });
+        const rawTurnId = map[bestTurnId]?.turnId || bestTurnId;
+        this.cancelVpTurn(rawTurnId, { sessionId: targetSessionId, vpId });
         return true;
       }
       this.sendWsMessage({

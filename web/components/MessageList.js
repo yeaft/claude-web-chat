@@ -929,7 +929,11 @@ export default {
 
       const finishTurn = () => {
         if (currentTurn) {
-          currentTurn.isActive = !!(currentTurn.turnId && store.activeVpTurns?.[currentTurn.turnId]);
+          currentTurn.isActive = !!(currentTurn.turnId && Object.values(store.activeVpTurns || {}).some((row) => (
+            ((row?.turnId || null) === currentTurn.turnId
+              || (!row?.turnId && store.activeVpTurns?.[currentTurn.turnId] === row))
+            && (!store.currentAgent || !row?.agentId || row.agentId === store.currentAgent)
+          )));
           finalizeTurnResponseSegments(currentTurn);
           // Has the VP produced anything the user/group can see?
           // Tools are NOT user-visible content — they're internal

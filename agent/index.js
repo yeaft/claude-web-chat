@@ -2,7 +2,7 @@ import { assertNodeVersion } from './check-node-version.js';
 assertNodeVersion({ component: '@yeaft/webchat-agent' });
 
 import 'dotenv/config';
-import { platform, homedir } from 'os';
+import { homedir } from 'os';
 import { createAssetOutbox } from './yeaft/asset-outbox.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, chmodSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
@@ -10,7 +10,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import ctx from './context.js';
-import { DEFAULT_INSTANCE_ID, getDefaultYeaftDir, validateInstanceId, getConfigPath, loadServiceConfig } from './service.js';
+import { getDefaultAgentName, getDefaultYeaftDir, resolveRuntimeIdentity, getConfigPath, loadServiceConfig } from './service.js';
 import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
@@ -33,12 +33,13 @@ ctx.pkgName = pkg.name;
 // 配置文件路径（向后兼容：先查当前目录 .claude-agent.json）
 const LOCAL_CONFIG_FILE = join(process.cwd(), '.claude-agent.json');
 const IS_LOCAL_RUN = process.env.YEAFT_LOCAL_RUN === 'true';
+const DEFAULT_AGENT_NAME = getDefaultAgentName();
 
 // 加载或创建配置
 function loadConfig() {
   const defaults = {
     serverUrl: 'ws://localhost:3456',
-    agentName: `Worker-${platform()}-${process.pid}`,
+    agentName: DEFAULT_AGENT_NAME,
     workDir: process.cwd(),
     reconnectInterval: 5000,
     agentSecret: 'agent-shared-secret'
@@ -74,7 +75,7 @@ function saveConfig(config) {
 }
 
 const fileConfig = loadConfig();
-const INSTANCE_ID = validateInstanceId(process.env.YEAFT_AGENT_INSTANCE || fileConfig.instanceId || DEFAULT_INSTANCE_ID);
+const { agentName: AGENT_NAME, instanceId: INSTANCE_ID } = resolveRuntimeIdentity(fileConfig);
 
 // task-fix (5-bugs): the Yeaft web-bridge reads `ctx.CONFIG.yeaftDir`
 // for every group / VP / memory operation. If unset, `path.join(undefined, …)`
@@ -95,7 +96,7 @@ try {
 const CONFIG = {
   instanceId: INSTANCE_ID,
   serverUrl: process.env.SERVER_URL || fileConfig.serverUrl,
-  agentName: process.env.AGENT_NAME || fileConfig.agentName,
+  agentName: AGENT_NAME,
   workDir: process.env.WORK_DIR || fileConfig.workDir || process.cwd(),
   yeaftDir: YEAFT_DIR,
   reconnectInterval: fileConfig.reconnectInterval,
