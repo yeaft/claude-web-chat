@@ -86,21 +86,20 @@ export default {
           </button>
 
           <div class="resume-control-row">
-            <label class="resume-control-label">{{ $t('modal.newConv.provider') }}</label>
-            <select v-model="form.provider" class="resume-input">
-              <option value="yeaft">Yeaft</option>
-              <option value="copilot">{{ $t('provider.copilot') }}</option>
-              <option value="claude-code">{{ $t('provider.claudeCode') }}</option>
-            </select>
-          </div>
-
-          <!-- Agent (only when more than one online agent) -->
-          <div class="resume-control-row" v-if="agentOptions.length > 1">
             <label class="resume-control-label">{{ $t('yeaft.session.create.agentLabel') }}</label>
             <select v-model="form.agentId" class="resume-input">
               <option v-for="a in agentOptions" :key="a.id" :value="a.id" :disabled="!a.online">
                 {{ a.name || a.id }}{{ a.online ? '' : ' (offline)' }}
               </option>
+            </select>
+          </div>
+
+          <div class="resume-control-row">
+            <label class="resume-control-label">{{ $t('modal.newConv.provider') }}</label>
+            <select v-model="form.provider" class="resume-input">
+              <option value="yeaft">Yeaft</option>
+              <option value="copilot">{{ $t('provider.copilot') }}</option>
+              <option value="claude-code">{{ $t('provider.claudeCode') }}</option>
             </select>
           </div>
 

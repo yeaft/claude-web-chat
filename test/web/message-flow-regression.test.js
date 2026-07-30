@@ -912,6 +912,7 @@ describe('message flow regressions', () => {
 
   it('uses one provider-aware create form and only shows the VP picker for Yeaft', async () => {
     const originalPinia = globalThis.Pinia;
+    const originalWindowPinia = window.Pinia;
     const chat = Vue.reactive({
       agents: [{ id: 'agent-a', name: 'Agent A', online: true, workDir: '/repo' }],
       currentAgent: 'agent-a',
@@ -923,27 +924,33 @@ describe('message flow regressions', () => {
       selectAgent: vi.fn(),
       createConversation: vi.fn(),
     });
-    globalThis.Pinia = {
+    const modalPinia = {
       ...originalPinia,
       useChatStore: () => chat,
       useVpStore: () => ({ vpList: [{ vpId: 'omni' }], lastSnapshotAt: 1, lastVpSnapshotAgentId: 'agent-a', vpLabel: id => id }),
       useSessionsStore: () => runtimeSessionsStore,
     };
+    globalThis.Pinia = modalPinia;
+    window.Pinia = modalPinia;
     const modal = mount(SessionCreateModal, {
       attachTo: document.body,
       props: { initialProvider: 'copilot' },
       global: { mocks: { $t: key => key }, stubs: { Teleport: true, VpAvatar: true } },
     });
-    expect(modal.get('select.resume-input').element.value).toBe('copilot');
+    await Vue.nextTick();
+    const selects = modal.findAll('select.resume-input');
+    expect(selects[0].element.value).toBe('agent-a');
+    expect(selects[1].element.value).toBe('copilot');
     expect(modal.find('.resume-control-row-vp').exists()).toBe(false);
-    await modal.get('select.resume-input').setValue('yeaft');
+    await selects[1].setValue('yeaft');
     expect(modal.find('.resume-control-row-vp').exists()).toBe(true);
-    await modal.get('select.resume-input').setValue('claude-code');
+    await selects[1].setValue('claude-code');
     modal.vm.form.workDir = '/repo';
     await modal.vm.onSubmit();
     expect(chat.createConversation).toHaveBeenCalledWith('/repo', 'agent-a', null, { provider: 'claude-code' });
     modal.unmount();
     globalThis.Pinia = originalPinia;
+    window.Pinia = originalWindowPinia;
   });
 
   it('stamps background agent messages without promoting that conversation', () => {
