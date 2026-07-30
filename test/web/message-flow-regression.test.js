@@ -151,6 +151,9 @@ describe('message flow regressions', () => {
     const chatPageSource = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatPage.js'), 'utf8');
     const yeaftSidebarSource = readFileSync(resolve(import.meta.dirname, '../../web/components/YeaftSidebar.js'), 'utf8');
     const sidebarCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/sidebar.css'), 'utf8');
+    const variables = readFileSync(resolve(import.meta.dirname, '../../web/styles/variables.css'), 'utf8');
+    const lightThemeVariables = variables.match(/:root\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+    const darkThemeVariables = variables.match(/\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/)?.[1] || '';
 
     const first = chatRouteRef({ id: 'conversation-1', agentId: 'agent-a', provider: 'copilot' });
     const moved = chatRouteRef({ id: 'conversation-1', agentId: 'agent-b', provider: 'copilot' });
@@ -237,6 +240,9 @@ describe('message flow regressions', () => {
       'provider.copilot',
       'provider.copilot',
     ]);
+    expect(UnifiedSessionList.methods.providerLabel.call({ $t: key => key }, {
+      runtimeProvider: 'claude-code',
+    })).toBe('provider.claudeCode');
     expect(sidebar.text()).not.toContain('user_1770305719');
     expect(UnifiedSessionList.methods.agentLabel.call({ agents: [] }, {
       runtimeProvider: 'yeaft',
@@ -412,6 +418,21 @@ describe('message flow regressions', () => {
     expect(sidebarCss).toMatch(/\.sidebar-session-toolbar\s*\{[^}]*min-height:\s*38px/s);
     expect(sidebarCss).toMatch(/\.sidebar-session-title\s*\{[^}]*font-size:\s*15px/s);
     expect(sidebarCss).toMatch(/\.session-item \.title\s*\{[^}]*font-size:\s*13px/s);
+    const badgeTokenMatches = [
+      ...sidebarCss.matchAll(/\.session-(?:agent|provider)\s*\{([\s\S]*?)\}/g),
+    ];
+    expect(badgeTokenMatches).toHaveLength(2);
+    for (const [, declaration] of badgeTokenMatches) {
+      const tokenNames = [...declaration.matchAll(/var\((--[\w-]+)/g)].map(match => match[1]);
+      expect(tokenNames).toHaveLength(2);
+      for (const tokenName of tokenNames) {
+        const tokenPattern = new RegExp(`${tokenName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*[^;]+;`);
+        expect(lightThemeVariables).toMatch(tokenPattern);
+        expect(darkThemeVariables).toMatch(tokenPattern);
+      }
+    }
+    expect(sidebarCss).toMatch(/\.session-agent\s*\{[^}]*color:\s*var\(--text-primary\);[^}]*background:\s*var\(--bg-input-wrapper\);/s);
+    expect(sidebarCss).toMatch(/\.session-provider\s*\{[^}]*color:\s*var\(--accent-blue\);[^}]*background:\s*var\(--accent-bg\);/s);
     expect(sidebarCss).toMatch(/\.sidebar-tool-button:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/s);
     const fallbackWorkCenter = mount(SidebarWorkCenter, {
       props: { agents: [] },
@@ -611,7 +632,6 @@ describe('message flow regressions', () => {
 
     const workCenter = readFileSync(resolve(import.meta.dirname, '../../web/components/WorkCenterPage.js'), 'utf8');
     const workCenterCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/work-center.css'), 'utf8');
-    const variables = readFileSync(resolve(import.meta.dirname, '../../web/styles/variables.css'), 'utf8');
 
     expect(component).toContain('v-if="isStopVisible"');
     expect(component).not.toContain('v-else\n          type="button"\n          class="send-btn"');
