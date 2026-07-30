@@ -147,7 +147,6 @@ export default {
               </button>
             </div>
             </div>
-          </div>
 
           <!-- VP roster (yeaft-specific) — collapsed-by-default picker.
                Trigger shows the current selection summary (names if ≤3, else
@@ -235,6 +234,7 @@ export default {
                 </div>
               </template>
             </div>
+          </div>
           </div>
         </div>
 

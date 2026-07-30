@@ -252,10 +252,18 @@
 
 .work-center-agent-menu.modern-select-menu {
   border-radius: 10px;
-  padding: 4px;
+  padding: 6px;
+}
+
+.work-center-agent-menu .modern-select-list {
+  max-height: min(164px, var(--modern-select-list-max-height, 164px));
 }
 
 .work-center-agent-menu .modern-select-option {
+  display: flex;
+  min-height: 32px;
+  box-sizing: border-box;
+  align-items: center;
   padding: 7px 30px 7px 10px;
   border-radius: 7px;
   font-size: 12px;
