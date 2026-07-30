@@ -547,7 +547,7 @@ Approve: push branch `fix/payment-idempotency`   [×]
 - target 失效时不丢正文和附件。
 - stale target 不会自动降级成 Coordinator 消息。
 - UI 提供“改发 Coordinator”或重新选择 Action。
-- WorkItem cancelling/done/cancelled 时发送端拒绝；done/cancelled 提示先重新打开，cancelling 提示等待停止收敛。
+- WorkItem cancelling/done/cancelled 时业务发送端拒绝。`done/cancelled + safetyStatus=safe` 提示先重新打开；`done/cancelled + reconciling/unsafe` 显示 safety warning 和结构化 recovery controls，不提示先 reopen；cancelling 提示等待停止或继续 recovery-only 处理。
 
 ### 8.6 可见投递状态
 
@@ -887,7 +887,7 @@ Stop 不是撤销。用户如果只是想补充方向，应发消息或 Pause，
   authorizedUserId,
   createdBy: { type: 'coordinator' | 'recovery' | 'system', id },
   kind: 'question' | 'approval' | 'confirmation',
-  resolutionType: null | 'engine_turn_dispatch' | 'operation_effect',
+  resolutionType: null | 'engine_turn_dispatch' | 'operation_effect' | 'supplemental_authority',
   prompt,
   details,
   expectedIdentity: null | {
@@ -901,6 +901,13 @@ Stop 不是撤销。用户如果只是想补充方向，应发消息或 Pause，
     grantManifestHash: null,
     capabilityUniverseGeneration: null,
     capabilityUniverseHash: null,
+    safetyRevision: null,
+    recoveryAdmissionEpoch: null,
+    terminalSafetySnapshotEpoch: null,
+    terminalSafetySnapshotStatus: null,
+    supplementalGeneration: null,
+    effectiveManifestHash: null,
+    authorityIdentity: null,
     cancellationEpoch,
   },
   status: 'pending' | 'answered' | 'approved' | 'rejected' | 'expired' | 'cancelled',
@@ -981,12 +988,16 @@ Approval 必须描述：
   requestRevision,
   operationRevision,
   cancellationEpoch,
+  safetyRevision,
+  recoveryAdmissionEpoch,
+  terminalSafetySnapshotEpoch,
+  terminalSafetySnapshotStatus,
   memoryRevision,
   inputEventIds: [],
 }
 ```
 
-模型返回后，事务提交前重新比较。任何相关 revision 变化，旧决定都不能提交。
+模型返回后，事务提交前重新比较。任何相关 revision、recovery admission epoch 或 terminal snapshot epoch/status 变化，旧决定都不能提交。普通 CoordinatorTurn 不能跨入 recovery epoch；recovery-mode CoordinatorTurn 也不能在 snapshot 已恢复/再次失效后提交。
 
 ### 15.3 可提交命令
 
@@ -1031,6 +1042,10 @@ Approval 必须描述：
     grantManifestHash,
     capabilityUniverseGeneration,
     capabilityUniverseHash,
+    safetyRevision,
+    recoveryAdmissionEpoch,
+    terminalSafetySnapshotEpoch,
+    terminalSafetySnapshotStatus,
     cancellationEpoch,
   }],
   openRequests: [],
@@ -1095,11 +1110,36 @@ Executor 可以返回结果、证据、风险、问题和建议，但不能直�
   runRevision,
   requestRevision,
   operationRevision,
+  safetyRevision,
   cancellationEpoch,
   title,
   goal,
   acceptanceCriteria: [],
   status: 'draft' | 'active' | 'needs_attention' | 'cancelling' | 'done' | 'cancelled',
+  safetyStatus: 'safe' | 'reconciling' | 'unsafe',
+  safetyCauseRefs: [],
+  recoveryAdmission: {
+    status: 'closed' | 'open',
+    epoch,
+    allowedOps: [],
+    openedAt: null,
+    closedAt: null,
+  },
+  terminalSafetySnapshot: null | {
+    epoch,
+    lifecycleStatus: 'done' | 'cancelled',
+    status: 'current' | 'invalidated' | 'restoring',
+    workItemRevision,
+    operationRevision,
+    requestRevision,
+    safetyRevision,
+    cancellationEpoch,
+    operationSafetyHash,
+    causeRefs: [],
+    validatedAt,
+    invalidatedAt: null,
+    restoredFromEpoch: null,
+  },
   reuseMemory,
   origin,
   finalResult: null,
@@ -1109,9 +1149,29 @@ Executor 可以返回结果、证据、风险、问题和建议，但不能直�
 }
 ```
 
-没有单一 `currentActionId/currentRunId`。
+没有单一 `currentActionId/currentRunId`。`status` 只描述业务生命周期；`safetyStatus` 独立描述当前事实是否仍支持该生命周期投影。`done/cancelled + reconciling/unsafe` 是合法且必须可见的组合，不得为了保持“终态”外观隐藏安全失效。
 
-### 16.3 ConversationEntry
+`recoveryAdmission.allowedOps` 只能取 `resolve_operation`、`resolve_supplemental_authority`、`get_human_request`、只读查询，以及系统内部的 `reconcile_operation`、`probe_execution`、`close_grant_acquisition`、`enforce_authority_fence`、`advance_release_saga`、`advance_supplemental_release`。它永远不允许业务 message、Action Start、创建 Action、reopen 或 complete。用户/Coordinator 只能通过已有 pending resolution request 调用公开的 recovery mutation；其余项都是经过 owner/identity fence 的系统恢复 mutation。
+
+### 16.3 终态安全失效与恢复
+
+`done/cancelled` 是业务生命周期终态，不是永不失效的安全断言。任何 Operation reconciliation、迟到 effect、迟到 grant/lease、authority callback 或 migration repair 使 `operationSafeToProceed` 从 true 变为 false 时，处理该事实的同一个 `BEGIN IMMEDIATE` 事务必须：
+
+1. 按稳定 evidence/discovery ID 幂等写入 Operation reconciliation 或 supplemental inventory，更新 Operation 状态并推进 `operationRevision`；
+2. 锁定 WorkItem，校验当前 lifecycle、`workItemRevision + operationRevision + safetyRevision + cancellationEpoch`；
+3. 将 `safetyStatus` 置为 `reconciling`；如果存在 unknown authority、无法关闭 acquisition、无法建立 cutoff/fence 或没有已知恢复路径，则置为 `unsafe`；
+4. 推进 `safetyRevision` 和 WorkItem revision，把当前 `terminalSafetySnapshot.status` 置为 `invalidated`，写 `invalidatedAt`、cause refs，并保留原 `lifecycleStatus`、finalResult 和验收历史；
+5. 打开新的 `recoveryAdmission.epoch`，其 allowed ops 只能是 recovery-only 集合；恢复类 HumanRequest 按新 safety/recovery epoch 创建或 rebind；
+6. 写唯一 `work_item.terminal_safety_invalidated` Event 和高优先级 Conversation warning；向用户发送 terminal-safety notification，并投递一个**恢复模式** Coordinator mailbox event。恢复模式 CoordinatorTurn 只能提交 `resolveOperations`、打开恢复请求和 recovery summary，不能回复业务消息、修改合同、创建/启动 Action 或 complete；
+7. 使 Work Center 列表和 WorkItem header 立即显示 `Done — safety review required` 或 `Cancelled — safety review required`，并把卡片投影到 Needs attention，而不是继续放在 Closed。composer 和 Action 控制仍保持只读，只有结构化 recovery controls 可用。
+
+该事务不能等待用户打开 WorkItem 或发起 reopen；事实一旦进入持久层，canonical DTO、列表投影和通知必须同步失效。并发的 late facts 复用同一 recovery epoch，追加 cause refs 并推进 revisions，不重复创建 warning/request；事实发生在 active/needs_attention/cancelling WorkItem 时也推进 safetyRevision 和 warning，但不伪造 terminal snapshot。
+
+安全恢复使用独立 fenced 事务。它必须校验 `lifecycleStatus + terminalSnapshotEpoch + workItemRevision + operationRevision + requestRevision + safetyRevision + recoveryAdmission.epoch + cancellationEpoch`，确认全部 Run 已终态、每个 blocking Operation 重新满足 `operationSafeToProceed`、supplemental inventory 已 resolved/clear、没有 pending recovery request/reconciliation/mailbox event。然后重新计算 `operationSafetyHash`。对 cancelled，可关闭 recovery admission、写新的 current terminal snapshot 并恢复 `safetyStatus=safe`。对 done，还必须让恢复模式 Coordinator 基于最新 evidence 重算 acceptance results、finalResult hash 和 residual risks；只有业务终态仍有效时才能恢复 done。若验收已失效，事务把 lifecycle 转为 `needs_attention`、保留旧 finalResult 为历史证据并恢复普通 Coordinator admission，不能把错误结果重新标成 done。
+
+恢复成功写 `work_item.terminal_safety_restored` Event 和 Conversation status，关闭 recovery admission，并把卡片移回 Closed；任一 identity 或 revision 漂移都整笔无副作用。`terminalSafetySnapshot` 每次失效/恢复都生成新 epoch，不原地擦除旧安全历史。
+
+### 16.4 ConversationEntry
 
 ```js
 {
@@ -1128,7 +1188,7 @@ Executor 可以返回结果、证据、风险、问题和建议，但不能直�
 }
 ```
 
-### 16.4 WorkItemMessage
+### 16.5 WorkItemMessage
 
 ```js
 {
@@ -1150,7 +1210,7 @@ Executor 可以返回结果、证据、风险、问题和建议，但不能直�
 }
 ```
 
-### 16.5 Action
+### 16.6 Action
 
 ```js
 {
@@ -1174,11 +1234,11 @@ Executor 可以返回结果、证据、风险、问题和建议，但不能直�
 }
 ```
 
-### 16.6 ActionEntry
+### 16.7 ActionEntry
 
 单独 append-only 表，以 `(actionId, sequence)` 唯一排序。message 和 control 共享序列。
 
-### 16.7 EngineTurn
+### 16.8 EngineTurn
 
 ```js
 {
@@ -1206,7 +1266,7 @@ Executor 可以返回结果、证据、风险、问题和建议，但不能直�
 
 数据库必须保证 `(runId, ordinal)` 唯一、每个 ActionEntry 最多关联一个 EngineTurn，并以 response CAS 防止迟到 attempt 覆盖已确认结果。`requestBodyRef/requestHash` 在 `prepared` 后不可修改；dispatch 重试只能增加同一个 turn 的 attempt，不能重新归约 entries 或换 request body。`legacy_imported` 仅表示迁移来的历史事实，从未声称新系统实际 dispatch 过该请求。
 
-### 16.8 Run
+### 16.9 Run
 
 ```js
 {
@@ -1241,7 +1301,7 @@ Executor 可以返回结果、证据、风险、问题和建议，但不能直�
 }
 ```
 
-### 16.9 RunResult
+### 16.10 RunResult
 
 ```js
 {
@@ -1265,7 +1325,7 @@ Executor 可以返回结果、证据、风险、问题和建议，但不能直�
 }
 ```
 
-### 16.10 ContentRef
+### 16.11 ContentRef
 
 ```js
 {
@@ -1280,7 +1340,7 @@ Executor 可以返回结果、证据、风险、问题和建议，但不能直�
 }
 ```
 
-### 16.11 Event
+### 16.12 Event
 
 创建、投递、claim、Run 开始、安全边界、控制、工具副作用、终态、批准、supersede、恢复和完成都写 append-only Event。
 
@@ -1374,16 +1434,25 @@ Executor 可以返回结果、证据、风险、问题和建议，但不能直�
 
 Run 结果不能直接把 WorkItem 改为 done。Run 终态后仍存活的 Operation 继续按自身 lease/revision 更新；每次状态变化推进 WorkItem `operationRevision`，追加 Event 和 mailbox invalidation，但不能修改 RunResult。默认情况下，这些 Operation 会阻止同一 Action 新 Run、自动 wake 和 WorkItem complete。
 
+所有可能改变 Operation effect observation、reconciliation、execution/cutoff、grant/supplemental inventory、authority fence 或 release saga 的入口，必须调用同一个 transaction-aware `mutateOperationSafety()`。该 mutation 在写入前后分别计算 `operationSafeToProceed`，推进 Operation/WorkItem `operationRevision`，并在同一 `BEGIN IMMEDIATE` 中执行以下规则：
+
+- `false → false`：持久化实际进展和 cause refs；若 WorkItem 已在 recovery epoch，推进 `safetyRevision`，但不重复创建 warning、request 或 Coordinator recovery turn；
+- `false → true`：只标记该 Operation 已收敛；WorkItem 级恢复仍必须等待全部 Run、Operation、request、reconciliation 和 recovery mailbox 通过 16.3 节 fenced restore；
+- `true → false`：若 WorkItem 是 `done/cancelled` 且 terminal snapshot current，原子执行 16.3 节 terminal-safety invalidation；若 WorkItem 是 active/needs_attention/cancelling，则推进 `safetyRevision`、写 warning/Event 并保持原 admission；
+- 任一 stale identity、旧 release callback 或旧 recovery epoch 不能跳过该 mutation；外部事实可进入 reconciliation/supplemental inventory，但权威投影只能由该 mutation 更新。
+
+因此 Operation 更新、终态安全失效、canonical DTO revision 和用户可见告警不存在“先更新 Operation，稍后再修 WorkItem”的崩溃窗口。
+
 ### 17.7 WorkItem stop/cancel
 
 `stop_work_item` 不是依次调用每个 Action Stop。它先在单一 `BEGIN IMMEDIATE` 事务中建立全 WorkItem 取消边界：
 
 1. 校验 `clientCommandId + workItemId + expectedWorkItemRevision` 并做幂等去重；
-2. 将 WorkItem 置为 `cancelling` 并推进 `cancellationEpoch`、WorkItem/action-entry/run/request/operation revisions；
+2. 将 WorkItem 置为 `cancelling`，确认 `safetyStatus=safe` 或复用当前 recovery epoch，并推进 `cancellationEpoch`、WorkItem/action-entry/run/request/operation/safety revisions；
 3. 通过 WorkItem cancellation gate 关闭所有 Action 的新 message/start admission，但不篡改 Action 自身的 open/superseded/closed 历史；并发到达的 message/start/complete 必须在同一 revision fence 下失败，不得部分写入；
 4. 对全部 queued/running/dispatch_unknown/pausing/stopping active Run 推进 lease epoch，并创建或幂等复用 `(runId, cancellationEpoch)` cancellation attempt。尚未 dispatch 的 queued Run（包括仅有 `prepared` EngineTurn）和 `dispatch_unknown` Run 没有可继续接受的执行实体：在本事务立即写 immutable `cancelled` 或 `interrupted` RunResult；后者保留 `providerInvocation=unknown`。真实 running/pausing/stopping process 的 Run 先置为非终态 `stopping`，由 cancellation watchdog 收敛。迟到 provider/tool/result 不能通过旧 lease改写 Run/turn，但其中的 effect/grant/resource 事实必须进入 Operation reconciliation；既有 waiting/paused/completed/failed/stopped RunResult 保持不可变；
 5. 把所有未绑定 ActionEntry 置为 `cancelled` 并保留审计；已 `bound` 的 entries 保持原 EngineTurn 身份。对应 turn 已 responded 则保留 consumed；prepared 可直接 cancelled；dispatching/unknown 在逻辑上置为 cancelled、entries 置为 cancelled，并永久记录 `providerInvocation=unknown`；迟到 response 不能恢复 turn/entry，但必须解析并持久化其中的 Operation evidence/reconciliation；所有情况都不能重新排队；
-6. 取消普通 pending HumanRequest 和全部 `engine_turn_dispatch` request，关闭用户/Executor 到 Coordinator 的新工作 admission，并写对应 terminal mailbox/event；`operation_effect` request 只在匹配当前 effectCutoff 的 final observation 提交时消费。effect 为 pending/unknown、observation provisional、cutoff 缺失/变化或 reconciliation pending/conflict 时，按新 cancellation epoch/execution epoch/cutoff 原子 rebind同一 pending行；仅 effectStatus 看起来 terminal 不能消费或删除 request；内部 Run/Operation 终态仍追加审计 mailbox event，但 cancelling/cancelled状态不触发新的 CoordinatorTurn；
+6. 取消普通 pending HumanRequest 和全部 `engine_turn_dispatch` request，关闭用户/Executor 到 Coordinator 的新工作 admission，并写对应 terminal mailbox/event；`operation_effect` request 只在匹配当前 effectCutoff 的 final observation 提交时消费。effect 为 pending/unknown、observation provisional、cutoff 缺失/变化或 reconciliation pending/conflict 时，按新 cancellation epoch/execution epoch/cutoff 原子 rebind 同一 pending 行；仅 effectStatus 看起来 terminal 不能消费或删除 request。内部 Run/Operation 终态只追加审计 mailbox event，不触发普通 CoordinatorTurn；但 `mutateOperationSafety()` 使 terminal snapshot 从 current 失效时，必须按 16.3 节投递唯一 recovery-mode CoordinatorTurn，不能被本条抑制；
 7. 对 `executionStatus=running` 的 Operation 写 `cancel_requested`并推进 execution epoch；已有 `hazardous_orphan` 不得降级，`not_started/quiescent/fenced` 不得被 Stop 改坏。Stop 时的 effect probe 在 execution尚无 cutoff 时只能写 provisional observation；无法确认写 unknown。随后关闭 grant acquisition、收敛 pending grant attempts、建立 quiescent/fence cutoff，再基于 cutoff重新 probe或请求用户确认。任何 effect 更新都不得假装 execution已静默，也不能跳过 manifest closure；
 8. 写唯一 Conversation control entry 和 `work_item.cancel_requested` Event。
 
@@ -1394,7 +1463,7 @@ Run 结果不能直接把 WorkItem 改为 done。Run 终态后仍存活的 Opera
 - provider/tool 不可取消、Agent 崩溃后不可查询或超过 deadline：不无限等待，CAS 写 `interrupted` RunResult；对应 Operation 的 effect 无法确认时写 `effectStatus=unknown`，execution 无法证明静默且无法强制 fence 时写 `executionStatus=hazardous_orphan`，并继续持有/隔离其排他资源；
 - watchdog 重启后从 durable deadline 继续，重复 Stop 复用同一 cancellation attempt，不延长 deadline、不重复 terminal RunResult。
 
-逻辑 Run 终结不表示物理副作用或执行实体已收敛。只要任一 blocking Operation 不满足 `operationSafeToProceed`，或仍有 pending `operation_effect` request，WorkItem 保持 `cancelling`；对外写入只允许 `resolve_operation` 和重复幂等 Stop，只读查询始终允许，系统 recovery probe、cancellation watchdog、authority fence 和 terminal CAS 继续运行；message、Start、reopen 或 complete 一律拒绝。Run 不会再成为无限等待条件，因为每个 active Run 都由上述确定性 terminalizer 收敛。全部 Run 已终态、每个 blocking Operation 都满足 `operationSafeToProceed` 且 effect resolution request 已消费后，fenced 事务才置为 `cancelled`。Stop 不回滚 applied effect，也不删除消息、entry、request 或 mailbox 审计。
+逻辑 Run 终结不表示物理副作用或执行实体已收敛。只要任一 blocking Operation 不满足 `operationSafeToProceed`，或仍有 pending `operation_effect` request，WorkItem 保持 `cancelling`；对外写入只允许 `resolve_operation` 和重复幂等 Stop，只读查询始终允许，系统 recovery probe、cancellation watchdog、authority fence 和 terminal CAS 继续运行；message、Start、reopen 或 complete 一律拒绝。Run 不会再成为无限等待条件，因为每个 active Run 都由上述确定性 terminalizer 收敛。全部 Run 已终态、每个 blocking Operation 都满足 `operationSafeToProceed`，所有 effect/supplemental resolution request、reconciliation 和 recovery mailbox event 已消费后，fenced 事务才可置为 `cancelled`。该事务校验 WorkItem/operation/request/safety revisions 与 recovery epoch，写 `terminalSafetySnapshot.lifecycleStatus=cancelled,status=current`、新的 `operationSafetyHash`、`safetyStatus=safe`，关闭 recovery admission，并写 `work_item.cancelled`；任何迟到事实并发胜出都会使 CAS 失败。Stop 不回滚 applied effect，也不删除消息、entry、request 或 mailbox 审计。
 
 `cancelled` WorkItem 默认拒绝全部新输入和执行。正常状态下它的每个 blocking Operation 都满足 `operationSafeToProceed`，且没有 pending resolution request；显式 reopen 通过 23.3 节的完整 fence 后才回到 active。若这些不变量不成立，reopen 失败并进入恢复诊断，不能改成 needs-attention 绕过取消边界。reopen 不恢复 cancelled entries、requests、mailbox events 或旧 Runs；仍 `open` 的 Action 可以接收一条新的 message/start 并创建新 Run，superseded/closed Action 永不复活。
 
@@ -1409,9 +1478,12 @@ Run 结果不能直接把 WorkItem 改为 done。Run 终态后仍存活的 Opera
 - Run revision；
 - Request revision；
 - Operation revision；
-- cancellation epoch。
+- safety revision；
+- recovery admission epoch；
+- cancellation epoch；
+- terminal safety snapshot epoch/status（若已有）。
 
-如果 Action message 先提交，complete 因 revision 变化失败；如果 complete 先提交，后续 message 以 `work_item_closed` 拒绝并保留客户端 draft。不能出现消息已经接受但 WorkItem 同时 done。
+complete 提交时还必须确认 `safetyStatus=safe`、`recoveryAdmission.status=closed`、每个 blocking Operation 满足 `operationSafeToProceed`、没有 supplemental/reconciliation/recovery request/mailbox，并原子写 `terminalSafetySnapshot.lifecycleStatus=done,status=current` 与 `operationSafetyHash`。如果 Action message 或迟到 Operation fact 先提交，complete 因 revision/safety fence 变化失败；如果 complete 先提交，后续 message 以 `work_item_closed` 拒绝，而后续外部事实必须通过 `mutateOperationSafety()` 原子失效 terminal snapshot。不能出现消息已接受或安全事实已失效但 WorkItem 仍被权威投影为安全 done。
 
 ---
 
@@ -1616,12 +1688,15 @@ Session 和 Work Center memory 不合并。只搜索显式授权的 Session snap
   executionStatus: 'not_started' | 'running' | 'cancel_requested' | 'quiescent' | 'fenced' | 'hazardous_orphan',
   executionEpoch,
   effectCutoff: null | {
+    status: 'current' | 'stale',
     cutoffHash,
     executionEpoch,
     closureType: 'not_started' | 'quiescent' | 'authority_fence',
     processIdentity: null,
     grantManifestGeneration,
     grantManifestHash,
+    effectiveManifestHash,
+    supplementalGeneration,
     capabilityUniverseGeneration,
     capabilityUniverseHash,
     fenceEpoch: null,
@@ -1634,6 +1709,7 @@ Session 和 Work Center memory 不合并。只搜索显式授权的 Session snap
   grantManifest: {
     generation,
     status: 'open' | 'closing' | 'closed',
+    safetyStatus: 'current' | 'stale',
     policySnapshotHash,
     capabilityUniverseGeneration,
     capabilityUniverseHash,
@@ -1672,12 +1748,15 @@ Session 和 Work Center memory 不合并。只搜索显式授权的 Session snap
   },
   resourceLeaseIds: [],
   resourceRelease: {
-    status: 'held' | 'releasing' | 'partially_released' | 'released',
+    status: 'held' | 'releasing' | 'partially_released' | 'released' | 'stale',
+    lastProvenStatus: null | 'held' | 'releasing' | 'partially_released' | 'released',
     releaseSetGeneration,
     grantManifestGeneration,
     grantManifestHash,
     capabilityUniverseGeneration,
     capabilityUniverseHash,
+    effectiveManifestHash,
+    supplementalGeneration,
     requiredLeaseIds: [],
     leases: [{
       leaseId,
@@ -1694,11 +1773,66 @@ Session 和 Work Center memory 不合并。只搜索显式授权的 Session snap
     revision,
     releasedAt: null,
   },
+  supplementalInventory: {
+    generation,
+    quarantineEpoch,
+    status: 'clear' | 'quarantined' | 'closing' | 'releasing' | 'resolved' | 'unknown_authority',
+    effectiveManifestHash: null,
+    baseManifestGeneration,
+    baseManifestHash,
+    acquisitionGateStatus: 'open' | 'closing' | 'closed' | 'failed',
+    acquisitionClosureProofRef: null,
+    authorityMappingRequestIds: [],
+    discoveries: [{
+      supplementalId,
+      sourceEvidenceId,
+      kind: 'grant' | 'lease' | 'credential' | 'capability' | 'resource',
+      authorityId: null,
+      authorityIdentity,
+      grantId: null,
+      leaseId: null,
+      parentGrantId: null,
+      issuerEpoch: null,
+      leaseEpoch: null,
+      credentialGeneration: null,
+      resourceSetGeneration: null,
+      capabilityId: null,
+      target,
+      discoveredAt,
+      status: 'recorded' | 'quarantined' | 'revocation_requested' | 'revoked' | 'release_requested' | 'released' | 'unknown_authority',
+      attempt,
+      idempotencyKey,
+      proofRef: null,
+    }],
+    recoveryReleaseSets: [{
+      generation,
+      sourceSupplementalIds: [],
+      effectiveManifestHash,
+      status: 'held' | 'releasing' | 'partially_released' | 'released',
+      items: [{
+        supplementalId,
+        kind: 'grant_revocation' | 'credential_revocation' | 'lease_release' | 'resource_release',
+        authorityId: null,
+        externalId,
+        issuerOrLeaseEpoch: null,
+        resourceSetGeneration: null,
+        status: 'held' | 'requested' | 'released' | 'revoked' | 'failed' | 'unknown_authority',
+        attempt,
+        idempotencyKey,
+        proofRef: null,
+      }],
+      revision,
+    }],
+    revision,
+    resolvedAt: null,
+  },
   authorityFence: null | {
     fenceEpoch,
-    status: 'pending' | 'enforced' | 'failed',
+    status: 'pending' | 'enforced' | 'failed' | 'stale',
     grantManifestGeneration,
     grantManifestHash,
+    effectiveManifestHash,
+    supplementalGeneration,
     capabilityUniverseGeneration,
     capabilityUniverseHash,
     authorityClosureProofRefs: [],
@@ -1739,6 +1873,23 @@ Operation 创建时从冻结的 tool/permission/resource policy 生成权威 cap
 
 `executionStatus=quiescent` 只允许可信 cancel acknowledgement、稳定 process identity 的 process-gone 探测或正常 terminal tool/task result写入；它仍要求 acquisition gate 已 closed，防止遗留 credential refresh。`executionStatus=fenced` 不等于“用户相信它停了”，而是每个 required authority 的 closure proof 与 grant manifest generation/hash 都被验证，且 fence 精确覆盖 manifest 中全部 active/pending grant ID、issuer epoch、credential generation 和 resource set generation。只更新数据库 ownerLeaseEpoch 或只列 `coveredCapabilities` 不能形成 fence。无法关闭 acquisition、完整冻结 manifest或覆盖全部 grant 的实体必须是 `hazardous_orphan`。
 
+#### Supplemental / quarantine inventory
+
+closed manifest、enforced fence 或 released saga 之后发现未登记/超 universe 的 grant、credential、lease、capability 或 resource 时，不能修改旧 manifest 假装它当时已知，也不能重新开放业务 acquisition。发现事实的事务必须先按 `(operationId, sourceEvidenceId, authorityIdentity, externalId/target)` 幂等追加 `supplementalInventory.discovery`；未知 external ID 仍以 authority identity、target、issuer/lease epoch 和 evidence hash 建稳定 synthetic ID。
+
+同一事务必须：
+
+1. 推进 supplemental generation 与 Operation/WorkItem revisions；将 `supplementalInventory.status` 置为 quarantined 或 unknown_authority；
+2. 将 base manifest、旧 effectCutoff、authorityFence 和 resourceRelease aggregate 标记 stale，保存 `lastProvenStatus` 但使其不再满足安全谓词；
+3. 计算新的 append-only `effectiveManifestHash = hash(base manifest generation/hash + supplemental generation + ordered discoveries)`；旧 manifest hash 保持不可变；
+4. 把 execution 置为 hazardous_orphan，effect observation 降为 provisional/unknown并进入 reconciliation；触发 16.3 节 terminal-safety invalidation；
+5. 用独立 supplemental acquisition gate 关闭该 authority identity 的 refresh、derived-token、lease renewal 和新派生能力。已知 authority 记录 closure proof；未知 authority 创建唯一 `supplemental_authority` HumanRequest，WorkItem 保持 safetyStatus=unsafe，禁止用户用 effect decision 声称已隔离；
+6. 基于当前全部 unresolved supplemental discoveries 冻结新的 recovery-only release set。该集合只允许 revoke/release/quarantine，不能签发业务 grant。每项保存 authority identity、external ID、issuer/lease epoch、resource-set generation、attempt、idempotency key 和 proof。
+
+recovery release set 采用与主 release saga 相同的逐项物理状态机；重复 callback 和重启按 supplemental ID + generation + attempt 幂等收敛。发现第二个迟到对象时推进 generation 并建立包含所有未解决对象的新 set；已证明 revoked/released 的旧项引用原 proof，不重新执行，未完成项继承原 idempotency key/attempt。旧 set 保留历史并标记 superseded，不能删除或覆盖。
+
+只有所有 supplemental authority acquisition gate 都 closed、未知 authority 已由用户映射到可信 authority 或明确保持不可解除的 quarantine、全部 discoveries 都有 revocation/release proof、最新 recovery set 为 released、reconciliation clear，才能把 supplemental inventory 写为 resolved。系统随后基于 effective manifest 重建 cutoff/fence 和主 release aggregate；`operationSafeToProceed` 使用 effective manifest 与 supplemental generation，不能回退使用 base manifest 的旧 released/enforced 投影。未知 authority 不能自动变 safe；若无法建立 authority 和隔离 proof，Operation 永久保持 hazardous quarantine，WorkItem 继续 recovery-only admission。
+
 #### 逐 lease release saga
 
 外部 authority 的物理 release 不能由 SQLite 整笔回滚。系统先冻结 `requiredLeaseIds` 与 `releaseSetGeneration`；每个 lease 用稳定 idempotency key 和期望 authority/lease epoch 写 `release_requested`，事务提交后调用对应 authority，再用 proof CAS 写该 lease 的 `released/failed/unknown`。进程在外部成功与本地确认之间崩溃时，恢复器按 idempotency key查询 authority 并补写 proof；不得重新创建不同 attempt。聚合状态从各 lease 投影为 `held/releasing/partially_released/released`，准确反映部分物理释放，绝不声称外部动作能随数据库 rollback。只有 manifest 已 closed、release set 等于当前全部 required leases、每项都是 released 且 proof 的 authority/epoch/generation 匹配，聚合才可写 released。没有排他资源的 Operation 创建时直接为 released。
@@ -1758,15 +1909,21 @@ executionSafe = executionStatus ∈ {not_started, quiescent}
              OR (executionStatus = fenced
                  AND authorityFence.status = enforced)
 grantUniverseSafe = grantManifest.status = closed
+                 AND grantManifest.safetyStatus = current
                  AND inventoryComplete
                  AND pendingGrantAttemptIds 为空
                  AND required authority closure proofs 完整
                  AND capability universe generation/hash 与冻结 policy 精确相等
+                 AND supplementalInventory.status ∈ {clear, resolved}
+                 AND supplemental acquisition closures/recovery release proofs 完整
+                 AND effectiveManifestHash 匹配当前 supplemental generation
+                 AND effectCutoff/authorityFence 绑定 effective manifest/supplemental generation
                  AND fenced 时 authorityFence universe/manifest generation/hash/grants 精确相等
 resourcesSafe = resourceRelease.status = released
-             AND releaseSetGeneration 对应冻结 manifest
-             AND requiredLeaseIds 与 manifest/resource inventory 精确相等
-             AND 每个 lease 都有匹配 authority/epoch/generation 的 release proof
+             AND resourceRelease 不是 stale
+             AND releaseSetGeneration 对应 effective manifest
+             AND requiredLeaseIds 与 base + supplemental resource inventory 精确相等
+             AND 每个主/supplemental item 都有匹配 authority/epoch/generation 的 release/revocation proof
 operationSafeToProceed = effectSafe AND executionSafe AND grantUniverseSafe AND resourcesSafe
 ```
 
@@ -1836,7 +1993,8 @@ Coordinator 可提出 complete，但确定性代码必须确认：
 - 没有 pending HumanRequest；
 - 每个 blocking Operation 都满足 `operationSafeToProceed`；
 - 没有未处理 Coordinator mailbox event；
-- Coordinator snapshot 中的 `operationRevision` 与事务内权威值一致；
+- Coordinator snapshot 中的 `operationRevision + safetyRevision + recoveryAdmission.epoch` 与事务内权威值一致；
+- `safetyStatus=safe`、`recoveryAdmission.status=closed`，不存在 invalidated/restoring terminal snapshot；
 - 所有 revisions 匹配；
 - 每条验收条件有结果；
 - 最终摘要、证据和残余风险完整。
@@ -1845,20 +2003,21 @@ Coordinator 可提出 complete，但确定性代码必须确认：
 
 ### 23.2 完成后的 Action
 
-WorkItem done 后：
+WorkItem `done + safetyStatus=safe` 后：
 
 - composer 变只读；
 - Action 历史仍可查看；
 - Start/Pause/Stop 和“发送给 Action”禁用；
 - Action admission 历史不被批量改写；
-- 新消息必须先显式重新打开 WorkItem。
+- 新消息必须先显式重新打开 WorkItem；
+- 若 safetyStatus 变为 reconciling/unsafe，仍保持业务 composer/Action 控制只读，但显示 recovery-only controls、warning 和 Needs attention 投影，不要求先 reopen。
 
 ### 23.3 重新打开
 
 重新打开事务：
 
 - 只接受 `done/cancelled`；`cancelling` 必须先通过 Operation resolution 和 terminalizer 收敛，reopen 请求直接拒绝且无副作用；
-- 校验 `expectedWorkItemRevision + operationRevision + requestRevision + cancellationEpoch`，并再次确认每个 blocking Operation 都满足 `operationSafeToProceed`，且没有 pending resolution request；
+- 校验 `expectedWorkItemRevision + operationRevision + requestRevision + safetyRevision + recoveryAdmission.epoch + terminalSafetySnapshot.epoch/status + cancellationEpoch`；只接受 `safetyStatus=safe`、recovery admission closed、terminal snapshot current、每个 blocking Operation 满足 `operationSafeToProceed`，且没有 pending resolution/reconciliation/recovery mailbox；
 - 保存 control ConversationEntry；
 - WorkItem 回到 active，重新打开 Coordinator mailbox admission；
 - 原 finalResult 保留；
@@ -1909,6 +2068,7 @@ WorkItem done 后：
 - `control_action`
 - `resolve_engine_turn`
 - `resolve_operation`
+- `resolve_supplemental_authority`
 - `stop_work_item`
 - `reopen_work_item`
 - `delete_work_item`
@@ -1990,12 +2150,45 @@ WorkItem done 后：
     grantManifestHash,
     capabilityUniverseGeneration,
     capabilityUniverseHash,
+    safetyRevision,
+    recoveryAdmissionEpoch,
+    terminalSafetySnapshotEpoch,
+    terminalSafetySnapshotStatus,
     cancellationEpoch,
   },
 }
 ```
 
 服务端验证 caller 是 request owner 用户，或该请求当前 Coordinator snapshot 的 fenced decision。裁决按 22.3 节执行同一事务；没有可验证 effect evidence 时保持 `effectStatus=unknown` 并返回明确错误，不消费 request。execution 没有当前 cutoff，或 expected cutoff/epoch/manifest generation 不匹配时，只能写 provisional observation并保留/rebind request；匹配 cutoff 的 final observation 才消费 request。成功不修改 executionStatus、grantManifest、authorityFence 或 resource release，也不直接允许 Start/wake/reopen/complete；所有入口仍必须通过 `operationSafeToProceed`。
+
+`resolve_supplemental_authority` 只处理 payload `requestId` 绑定的 pending `supplemental_authority` HumanRequest：
+
+```js
+{
+  clientCommandId,
+  workItemId,
+  operationId,
+  requestId,
+  decision: 'map_authority' | 'confirm_unresolvable_quarantine',
+  authorityId: null,
+  authorityProofRefs: [],
+  expected: {
+    operationRevision,
+    requestRevision,
+    safetyRevision,
+    recoveryAdmissionEpoch,
+    terminalSafetySnapshotEpoch,
+    terminalSafetySnapshotStatus,
+    supplementalGeneration,
+    quarantineEpoch,
+    effectiveManifestHash,
+    authorityIdentity,
+    cancellationEpoch,
+  },
+}
+```
+
+`map_authority` 只能把未知 authority identity 映射到项目已配置且当前 owner 可验证的 authority，并保存 identity/ownership proof；它不签发 grant、不恢复业务 acquisition、不直接撤销/释放外部资源。成功事务消费 request、推进 request/operation/safety revisions，保持 WorkItem recovery-only admission，并由系统基于同一 supplemental generation 启动 acquisition closure 与 recovery release set。`confirm_unresolvable_quarantine` 只确认该 authority 当前无法解析，保持 `safetyStatus=unsafe`、hazardous quarantine 和 held/stale resources；它不能让 `operationSafeToProceed` 成立。重复/冲突命令按完整 expected identity 幂等或无副作用。
 
 `stop_work_item`：
 
@@ -2022,10 +2215,12 @@ WorkItem done 后：
 
 ### 24.4 事件
 
+`list_work_items` 与 `get_work_item` 的 canonical DTO 必须包含 lifecycle status、`safetyStatus/safetyRevision/safetyCauseRefs`、recovery admission、terminal snapshot epoch/status、pending recovery request count 和 redacted supplemental/quarantine summary。lane projection 规则固定：terminal lifecycle + safety safe → Closed；terminal lifecycle + safety reconciling/unsafe → Needs attention；active/cancelling 保持原 lane 但显示 safety warning。前端不得仅按 lifecycle status 决定 lane 或只读提示。
+
 `work_center_event` 是可丢失 invalidation 通知，不是事实源：
 
-- 带 WorkItem/action/run/operation/content revisions 和 cancellation epoch；
-- 浏览器按 revision fence 刷新；
+- 带 WorkItem/action/run/operation/request/safety/content revisions、recovery admission epoch、terminal snapshot epoch/status 和 cancellation epoch；
+- 浏览器按全部 revision fence 刷新；`safetyRevision` 增长必须失效列表与详情缓存，即使 lifecycle status 未变化；
 - 重连后重新 list/get；
 - 广播只含 redacted summary；
 - 原始 tool output 和敏感路径不广播。
@@ -2147,8 +2342,9 @@ schema 17–22 没有目标模型的独立 Operation 表，迁移只能从 Run m
 6. 任一不变量失败则整笔 rollback，旧 schema 和 scheduler 保持原状；
 7. 全部验证通过后在同一事务切换 schema version/table view，停用旧 graph scheduler；提交后只会看到完整旧模型或完整新模型，不存在半迁移；
 8. 重启或重复打开数据库时，schema version 和 migration ledger 令迁移成为 no-op；禁止重复 ActionEntry、EngineTurn、ConversationEntry、Operation、quarantine record 或 Event；
-9. 每个迁移 WorkItem 进入 needs_attention，并创建一条 migration CoordinatorTurn/Conversation summary，列出 blocked/rejected occurrence、unknown effect、hazardous execution 和 held resources；
-10. 提交后的产品回滚使用迁移前备份和明确 downgrade 工具，不通过删除新行假装恢复。
+9. 每个迁移 WorkItem 创建一条 migration CoordinatorTurn/Conversation summary，列出 blocked/rejected occurrence、unknown effect、hazardous execution 和 held resources。非终态 lifecycle 进入 `needs_attention`；legacy lifecycle 若是 done/cancelled，则保留该 lifecycle history，同时创建 `safetyStatus=reconciling/unsafe`、invalidated terminal snapshot 和 recovery-only admission，仅将列表 lane 投影到 Needs attention，不能把旧终态直接视为安全；
+10. 迁移中的 late grant/lease、unknown authority 和部分外部 release 全部按 supplemental inventory/recovery release set 导入；相同 legacySourceKey/sourceEvidenceId 重放不得重复 discovery、authority request、release attempt、warning 或 recovery epoch；
+11. 提交后的产品回滚使用迁移前备份和明确 downgrade 工具，不通过删除新行假装恢复。
 
 `reopen_work_item` 不是迁移重试机制；重复 reopen 只改变 WorkItem admission，不得重新导入或复活任何 legacy occurrence。
 
@@ -2186,6 +2382,7 @@ WorkCenterPage
 
 每个 WorkItem 保存：
 
+- canonical lifecycle/safety projection revision、recovery admission epoch 和 terminal snapshot epoch；
 - Conversation cursor 和 scroll position；
 - composer text/attachments/target；
 - ContentPane stack；
@@ -2250,7 +2447,7 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 - 消息在本地恰好绑定到一个 durable EngineTurn，不能因恢复绑定到第二个 turn；
 - completed/failed/paused Action 收到消息后创建新 Run；
 - superseded/closed Action 拒绝且保留 draft；
-- WorkItem done 与 message 竞态只有一个事务胜出。
+- WorkItem done 与 message 竞态只有一个事务胜出；done 提交后到达的 Operation fact 不走 message admission，而是通过 `mutateOperationSafety()` 原子失效 terminal snapshot。
 
 ### 29.2 控制竞态
 
@@ -2262,7 +2459,7 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 - stop 推进 lease，迟到 Run 结果被拒绝；
 - stop 后任一 effect unresolved、execution unsafe 或 resource held 都阻止 message auto-start；
 - background task 在 Pause 后仍明确展示，originating RunResult 保持不可变；
-- `effectStatus=pending/unknown`、`executionStatus=running/cancel_requested/hazardous_orphan` 或 `resourceRelease.status=held` 的 blocking Operation 阻止 Start、message wake 和 complete；
+- 任一 blocking Operation 不满足 `operationSafeToProceed` 时阻止 Start、message wake、complete、cancelled 和 reopen；测试必须覆盖 effect provisional/unknown、unsafe execution、stale manifest/fence、supplemental unresolved，以及 release held/releasing/partially_released/stale；
 - detached read-only Operation 只有无写资源 lease、execution 不再产生受保护副作用且输出不参与验收时才可放行；
 - 后台 Operation 迟到结果受 operation revision、owner lease、execution epoch、cutoff、manifest generation/hash 和 fence epoch 约束；stale writer 不能直接覆盖权威状态，但 evidence 必须进入 durable reconciliation；
 - 对 `confirm_applied/confirm_not_applied/confirm_failed_no_effect × running/cancel_requested/hazardous_orphan` 的 9 个组合，裁决都只能写 provisional observation、保留同一 pending request，不能满足 `operationSafeToProceed`；
@@ -2284,7 +2481,7 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 - `dispatch_unknown` 阻止新 Run、wake 和 complete；`resolve_engine_turn` 的裁决 CAS 只能在同一 Run/turn 采用已验证查询结果、明确允许新 attempt 或取消；
 - EngineTurn 首次 unknown 与重启扫描并发只创建一个 pending `engine_turn_dispatch` request；重复扫描不推进 identity；
 - 两个用户、用户与 Coordinator 的冲突/重复裁决只有一个事务生效，stale requestId/request revision/requestHash/attempt/run revision/cancellation epoch 无副作用；
-- Stop 与 `resolve_engine_turn` 并发只有一个事务生效；Stop 胜出后 request 被取消，迟到裁决和 provider response 只能进冷审计；
+- Stop 与 `resolve_engine_turn` 并发只有一个事务生效；Stop 胜出后 request 被取消，迟到裁决不能恢复 turn/entry，provider response 的 turn 结果进入冷审计，但其中的 Operation effect/grant/resource evidence 必须进入 durable reconciliation；
 - responded response CAS 后恢复不重复 provider 调用；
 - provider failure 不把 message 绑定到第二个 EngineTurn；
 - tool-call batch 完整后才注入新消息；
@@ -2317,7 +2514,7 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 - shared root 写租约生效；
 - 非 Git 并行写串行；
 - direct Action message 不能扩大 tool roots；
-- effect unresolved、execution unsafe 或 resource held 的 blocking Operation 阻止 Start；
+- 任一 blocking Operation 不满足 `operationSafeToProceed` 时阻止 Start；
 - 未授权 Session 不可搜索；
 - 同 workDir 不自动授权；
 - VP private 不被其他 VP直接读取；
@@ -2326,15 +2523,23 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 
 ### 29.6 WorkItem stop、完成与迁移
 
+- 对 lifecycle `done` 和 `cancelled` 分别注入三类迟到事实：cutoff 前冲突 evidence、cutoff 后新 effect、late grant/lease。每个 case 都必须在写事实的同一事务把 current terminal snapshot invalidated、推进 safety/work-item/operation revisions、打开唯一 recovery epoch、写 warning/Event/notification，并把 canonical DTO/lane 从 Closed 投影到 Needs attention；不得等待 reopen；
+- terminal safety invalidation 后业务 composer/Action controls 继续只读，但 recovery-only request/probe/fence/release 可执行；普通 CoordinatorTurn 不能跨入 recovery epoch，只有唯一 recovery-mode turn 可提交受限命令；
+- 多个并发 late facts 复用同一 recovery epoch，追加 cause refs；重复 evidence/discovery 不重复 warning、request、notification 或 Coordinator recovery turn；
+- 对 cancelled，全部 Operation/supplemental/reconciliation 收敛后用完整 revision/snapshot fence 恢复 safety safe 和 Closed；对 done，恢复模式 Coordinator 必须重算 acceptance/finalResult，验收失效时 lifecycle 转 needs_attention 而不是恢复错误 done；
+- terminal lifecycle + safety safe 投影 Closed；terminal lifecycle + reconciling/unsafe 投影 Needs attention。断线重连、列表缓存和详情缓存都以 safetyRevision/terminal snapshot epoch 失效；
+- released 主 saga 后发现 late lease：旧 aggregate 立刻 stale，新 discovery 进入 append-only supplemental inventory，冻结 recovery-only release set，全部 proof 前 `operationSafeToProceed=false`；
+- closed manifest 后发现 late derived token/grant：旧 cutoff/fence/manifest safety 投影 stale，关闭 supplemental acquisition，保留 parent/issuer/credential/resource-set identity，不能重新开放业务 acquisition；
+- unknown authority 创建唯一 `supplemental_authority` request；map 后只启动 closure/release，unresolvable 保持 unsafe quarantine。重复 callback、第二个 late object 和 Agent 崩溃恢复都复用 generation/idempotency key，已 released/revoked 项不重复执行；
 - pending/bound ActionEntry 阻止 WorkItem done；
 - queued/running/dispatch_unknown/pausing/stopping Run 阻止 done；
-- effect unresolved、execution unsafe 或 resource held 的 blocking Operation 阻止 done；
+- 任一 blocking Operation 不满足 `operationSafeToProceed` 时阻止 done；
 - stop 与并发 message/start/complete 只有一个事务胜出，不产生部分输入；
 - stop 单事务推进 WorkItem cancellation epoch 和全部 active Run lease epoch；
 - stop 保留 terminal Run；queued Run、仅有 prepared EngineTurn 的 Run 和 dispatch_unknown Run 在取消事务内立即产生 cancelled/interrupted RunResult；真实 running Run 经 cancellation attempt/watchdog 收敛；
 - Agent 在 stop 提交后崩溃，重启 watchdog 仍使用原 durable deadline；超时或 owner/process 不可查询时确定性写 interrupted，不永久停在 stopping；
 - 重复 Stop 复用 `(runId, cancellationEpoch)` attempt，不延长 deadline、不重复 RunResult/Conversation/Event；
-- stop 与 cancel acknowledgement、正常完成、迟到 provider response 并发时，旧 lease 结果只能进冷审计，terminal RunResult 只有一个；
+- stop 与 cancel acknowledgement、正常完成、迟到 provider response 并发时，terminal RunResult 只有一个；旧 lease 不能改写 Run/turn，但其中的 Operation effect/grant/resource evidence 必须幂等进入 reconciliation/supplemental inventory；
 - stop 把所有未绑定 ActionEntry、pending HumanRequest 和新工作 mailbox admission 收敛为 cancelled audit；bound EngineTurn 按 responded/prepared/dispatching/unknown 分别裁决，迟到 response 不能复活 entry；
 - stop 后 Operation 的 effect observation、execution cutoff、grant manifest 和逐 lease release saga 分别收敛；running 只能前进到 cancel_requested，hazardous_orphan 不得降级；活 execution 下的 effect decision 保持 provisional 并保留/rebind同一 request；
 - 三个 `confirm_applied/confirm_not_applied/confirm_failed_no_effect` 在 execution 仍为 `running/cancel_requested/hazardous_orphan` 时必须保持 resource held，并拒绝 cancelled、reopen、Start 和 new Run；只有新 cutoff 上的 final observation 才可消费 request；
