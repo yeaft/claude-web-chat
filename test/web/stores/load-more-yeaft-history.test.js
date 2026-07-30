@@ -238,6 +238,67 @@ describe('Yeaft conversation loading state', () => {
       expect(body.indexOf('gs.setActive(next, targetAgentId || null);'))
         .toBeLessThan(body.indexOf('if (savedState?.loading) return;'));
 
+      // Cold runtime boot emits the history chunk before session_ready. The
+      // chunk already carries the authoritative bridge conversationId, so the
+      // active Session must paint from it immediately instead of remaining on
+      // the empty local placeholder until metadata finishes loading.
+      const localConversationId = 'yeaft-local-agent-1-cold';
+      const bridgeConversationId = 'yeaft-agent-1-cold';
+      const coldStore = mkStore({
+        currentAgent: 'agent-1',
+        yeaftConversationId: localConversationId,
+        yeaftConversationIdsByAgent: { 'agent-1': localConversationId },
+        yeaftSessionAgentById: { g1: 'agent-1' },
+        yeaftActiveSessionFilter: 'g1',
+        activeConversations: [localConversationId],
+        processingConversations: { [localConversationId]: true },
+        executionStatusMap: { [localConversationId]: { status: 'processing' } },
+        messagesMap: {
+          [localConversationId]: [{
+            id: 'local-pending',
+            messageId: 'local-pending',
+            clientMessageId: 'local-pending',
+            type: 'user',
+            content: 'pending send',
+            sessionId: 'g1',
+          }],
+        },
+        resolveYeaftSessionAgentId: () => 'agent-1',
+        yeaftHistoryLoadError: null,
+      });
+      coldStore.isCurrentYeaftHistoryResponse = msg => isCurrentYeaftHistoryResponse(coldStore, msg);
+      coldStore.finishYeaftHistoryLoad = (msg, patch) => finishYeaftHistoryLoad(coldStore, msg, patch);
+      const coldRequest = beginYeaftHistoryLoad(coldStore, {
+        agentId: 'agent-1', sessionId: 'g1', mode: 'recent', preserveLoaded: false,
+      });
+      handleYeaftHistoryChunk(coldStore, {
+        agentId: 'agent-1',
+        conversationId: bridgeConversationId,
+        sessionId: 'g1',
+        requestId: coldRequest.requestId,
+        mode: 'recent',
+        messages: [{ id: 'm0001', role: 'assistant', content: 'persisted answer', sessionId: 'g1' }],
+        oldestSeq: 1,
+        latestSeq: 1,
+        hasMore: false,
+      });
+      expect(coldStore.yeaftConversationId).toBe(bridgeConversationId);
+      expect(coldStore.yeaftConversationIdsByAgent['agent-1']).toBe(bridgeConversationId);
+      expect(coldStore.activeConversations).toEqual([bridgeConversationId]);
+      expect(coldStore.messagesMap[bridgeConversationId].map(row => row.id)).toEqual([
+        'local-pending',
+        'm0001',
+      ]);
+      expect(visibleMessages(coldStore).map(row => row.content)).toEqual([
+        'pending send',
+        'persisted answer',
+      ]);
+      expect(coldStore.messagesMap[localConversationId]).toBeUndefined();
+      expect(coldStore.processingConversations).toEqual({ [bridgeConversationId]: true });
+      expect(coldStore.executionStatusMap).toEqual({
+        [bridgeConversationId]: { status: 'processing' },
+      });
+
       const first = beginYeaftHistoryLoad(store, {
         agentId: 'agent-1', sessionId: 'g1', mode: 'recent', preserveLoaded: false,
       });
@@ -322,6 +383,38 @@ describe('Yeaft conversation loading state', () => {
       expect(activeYeaftHistoryIdentity(restoringStore)).toEqual({
         agentId: 'agent-2', sessionId: 'g2', sessionKey: yeaftHistoryIdentityKey('agent-2', 'g2'),
       });
+
+      const localConversationId = 'yeaft-local-agent-2-restore';
+      const bridgeConversationId = 'yeaft-agent-2-restore';
+      restoringStore.yeaftConversationId = localConversationId;
+      restoringStore.yeaftConversationIdsByAgent = { 'agent-2': bridgeConversationId };
+      restoringStore.activeConversations = [localConversationId];
+      restoringStore.messagesMap = {
+        [localConversationId]: [{
+          id: 'restore-pending',
+          messageId: 'restore-pending',
+          clientMessageId: 'restore-pending',
+          type: 'user',
+          content: 'restore pending',
+          sessionId: 'g2',
+        }],
+      };
+      handleYeaftHistoryChunk(restoringStore, {
+        agentId: 'agent-2',
+        conversationId: bridgeConversationId,
+        sessionId: 'g2',
+        mode: 'recent',
+        messages: [{ id: 'restore-history', role: 'assistant', content: 'restored', sessionId: 'g2' }],
+        oldestSeq: 1,
+        latestSeq: 1,
+        hasMore: false,
+      });
+      expect(restoringStore.yeaftConversationId).toBe(bridgeConversationId);
+      expect(restoringStore.messagesMap[bridgeConversationId].map(row => row.id)).toEqual([
+        'restore-pending',
+        'restore-history',
+      ]);
+      expect(restoringStore.messagesMap[localConversationId]).toBeUndefined();
     } finally {
       globalThis.window = oldWindow;
     }
@@ -1420,6 +1513,9 @@ describe('Yeaft conversation loading state', () => {
       expect.objectContaining({ content: 'A', sessionId }),
     ]));
     expect(store.messagesMap['conv-b']).toEqual([expect.objectContaining({ content: 'B' })]);
+    expect(store.yeaftConversationId).toBe('conv-b');
+    expect(store.yeaftConversationIdsByAgent).toEqual({ 'agent-a': 'conv-a', 'agent-b': 'conv-b' });
+
     expect(store.yeaftSessionHistoryState[agentAKey]).toEqual(expect.objectContaining({
       loading: false, latestSeq: 1, hasMore: false, oldestSeq: 1,
     }));
@@ -1429,6 +1525,23 @@ describe('Yeaft conversation loading state', () => {
     expect(store.yeaftHasMoreHistory).toBe(true);
     expect(store.yeaftOldestLoadedSeq).toBe(10);
     expect(store.yeaftLoadingMoreHistory).toBe(true);
+
+    handleYeaftHistoryChunk(store, {
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-b',
+      conversationId: 'conv-b-replacement',
+      sessionId,
+      mode: 'delta',
+      messages: [{ id: '000021-b', role: 'assistant', content: 'replacement', sessionId }],
+      latestSeq: 21,
+      hasMore: false,
+    });
+    expect(store.yeaftConversationId).toBe('conv-b');
+    expect(store.activeConversations || []).not.toContain('conv-b-replacement');
+    expect(store.messagesMap['conv-b']).toEqual([expect.objectContaining({ content: 'B' })]);
+    expect(store.messagesMap['conv-b-replacement']).toEqual([
+      expect.objectContaining({ content: 'replacement', sessionId }),
+    ]);
   });
 
   it('accepts inactive empty-string sessionId chunks without treating them as active unscoped history', () => {

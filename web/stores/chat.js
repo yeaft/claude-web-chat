@@ -3692,6 +3692,8 @@ export const useChatStore = defineStore('chat', {
           // conversation blindly: with multiple machines, B's session_ready can
           // arrive while A's cache is still the global yeaftConversationId.
           if (localConvId && localConvId !== agentConvId) {
+            const migrateProcessingWatchdog = !retainVisibleSource
+              && !!this._processingWatchdogs?.[localConvId];
             const existingMsgs = this.messagesMap[localConvId] || [];
             const targetMsgs = this.messagesMap[agentConvId] || [];
             this.messagesMap[agentConvId] = msgHelpers
@@ -3709,6 +3711,12 @@ export const useChatStore = defineStore('chat', {
             if (this.executionStatusMap[localConvId]) {
               this.executionStatusMap[agentConvId] = this.executionStatusMap[localConvId];
               if (!retainVisibleSource) delete this.executionStatusMap[localConvId];
+            }
+            if (migrateProcessingWatchdog) {
+              watchdogHelpers.stopProcessingWatchdog(this, localConvId);
+              if (this.processingConversations[agentConvId]) {
+                watchdogHelpers.startYeaftWatchdog(this, agentConvId);
+              }
             }
           } else if (!this.messagesMap[agentConvId]) {
             this.messagesMap[agentConvId] = [];
