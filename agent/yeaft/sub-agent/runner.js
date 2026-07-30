@@ -137,88 +137,105 @@ export function startSubAgent(agent, deps = {}) {
   if (agent.__driverStarted) return; // idempotent
   agent.__driverStarted = true;
 
-  // Build sub-engine wired to the parent's adapter/stores/config but with
-  // a restricted toolset. We DO NOT pass a conversationStore: sub-agent
-  // turns must not pollute the user-facing conversation history. The
-  // memory stores are shared so memory recall still works for the
-  // sub-agent (matches parent VP persona memory).
-  const childRegistry = buildChildToolRegistry(deps.parentToolRegistry);
-  const subEngine = new Engine({
-    adapter: deps.adapter,
-    trace: deps.trace,
-    config: { ...deps.config, _readOnly: true },
-    conversationStore: null,
-    memoryStore: deps.memoryStore || null,
-    memoryShardStore: deps.memoryShardStore || null,
-    toolRegistry: childRegistry,
-    skillManager: deps.skillManager || null,
-    mcpManager: deps.mcpManager || null,
-    yeaftDir: deps.yeaftDir || null,
-    toolStats: deps.toolStats || null,
-    taskManager: deps.taskManager || null,
-  });
-  // Same-turn result plumbing: inherit the parent's coordinator so any
-  // result-producing child task launched from this sub-agent uses the shared
-  // owner map. Persistent shell tasks remain status-only and do not register.
-  if (deps.asyncTaskCoordinator && typeof subEngine.setAsyncTaskCoordinator === 'function') {
-    subEngine.setAsyncTaskCoordinator(deps.asyncTaskCoordinator);
-  }
-
-  agent.subEngine = subEngine;
-  agent.engineMessages = agent.engineMessages || [];
-  agent.liveness = agent.liveness || makeLiveness();
-  agent.parentVpId = deps.parentVpId || null;
-  agent.parentSessionId = deps.parentSessionId || null;
-  agent.parentThreadId = deps.parentThreadId || 'main';
-  agent.outputLog = createOutputLog(agent.id, deps.subAgentLogDir);
-  agent.outputFile = agent.outputLog.path;
-  if (agent.taskId && deps.taskManager && agent.parentSessionId) {
-    try { deps.taskManager.setTaskLogPath(agent.parentSessionId, agent.taskId, agent.outputFile); } catch { /* ignore */ }
-  }
-  agent.outputLog.write({ type: 'sub_agent_spawned', agentId: agent.id, agentName: agent.name, mission: agent.mission || agent.task || '' });
-
-  // Compose the system-prompt-overlay we want injected.
-  const preamble = buildSpawnedPreamble({
-    parentName: deps.parentName || 'parent',
-    parentVpId: deps.parentVpId || null,
-    agentName: agent.name,
-    mission: agent.mission || agent.task || '',
-    language: deps.language || deps.config?.language || 'en',
-  });
-
-  const baseVpPersona =
-    deps.parentVpPersona && typeof deps.parentVpPersona === 'object'
-      ? { ...deps.parentVpPersona }
-      : {};
-  baseVpPersona.persona =
-    [(baseVpPersona.persona || '').trim(), preamble.trim()]
-      .filter(Boolean)
-      .join('\n\n');
-  if (!baseVpPersona.displayName || !String(baseVpPersona.displayName).trim()) {
-    baseVpPersona.displayName = `${deps.parentName || 'Parent'}/${agent.name || 'sub-agent'}`;
-  }
-  baseVpPersona.subAgent = {
-    parentVpId: deps.parentVpId || null,
-    agentId: agent.id,
-    agentName: agent.name,
-  };
-
-  agent.subVpPersona = baseVpPersona;
-
-  // Background driver — pumps queued user messages through engine.query
-  // turn by turn until the agent reaches a terminal state.
-  driveSubAgent(agent, subEngine, baseVpPersona, deps).catch((err) => {
-    // The driver normally handles its own failures (stream try/catch +
-    // terminal transition). This .catch covers genuinely unexpected
-    // throws between turns (e.g. inside dequeueNextUserPrompt) so we
-    // never leave a zombie record without a terminal status.
-    if (isTerminalAgentStatus(agent.status)) return;
-    transitionTerminal(agent, STATUS.FAILED, {
-      error: err && err.message ? err.message : String(err),
-      diagnostic: 'driver_error',
-      deps,
+  let subEngine = null;
+  let outputLog = null;
+  try {
+    // Build sub-engine wired to the parent's adapter/stores/config but with
+    // a restricted toolset. We DO NOT pass a conversationStore: sub-agent
+    // turns must not pollute the user-facing conversation history. The
+    // memory stores are shared so memory recall still works for the
+    // sub-agent (matches parent VP persona memory).
+    const childRegistry = buildChildToolRegistry(deps.parentToolRegistry);
+    subEngine = new Engine({
+      adapter: deps.adapter,
+      trace: deps.trace,
+      config: { ...deps.config, _readOnly: true },
+      conversationStore: null,
+      memoryStore: deps.memoryStore || null,
+      memoryShardStore: deps.memoryShardStore || null,
+      toolRegistry: childRegistry,
+      skillManager: deps.skillManager || null,
+      mcpManager: deps.mcpManager || null,
+      yeaftDir: deps.yeaftDir || null,
+      toolStats: deps.toolStats || null,
+      taskManager: deps.taskManager || null,
     });
-  });
+    // Same-turn result plumbing: inherit the parent's coordinator so any
+    // result-producing child task launched from this sub-agent uses the shared
+    // owner map. Persistent shell tasks remain status-only and do not register.
+    if (deps.asyncTaskCoordinator && typeof subEngine.setAsyncTaskCoordinator === 'function') {
+      subEngine.setAsyncTaskCoordinator(deps.asyncTaskCoordinator);
+    }
+
+    agent.subEngine = subEngine;
+    agent.engineMessages = agent.engineMessages || [];
+    agent.liveness = agent.liveness || makeLiveness();
+    agent.parentVpId = deps.parentVpId || null;
+    agent.parentSessionId = deps.parentSessionId || null;
+    agent.parentThreadId = deps.parentThreadId || 'main';
+    outputLog = createOutputLog(agent.id, deps.subAgentLogDir);
+    agent.outputLog = outputLog;
+    agent.outputFile = outputLog.path;
+    if (agent.taskId && deps.taskManager && agent.parentSessionId) {
+      try { deps.taskManager.setTaskLogPath(agent.parentSessionId, agent.taskId, agent.outputFile); } catch { /* ignore */ }
+    }
+    outputLog.write({ type: 'sub_agent_spawned', agentId: agent.id, agentName: agent.name, mission: agent.mission || agent.task || '' });
+
+    // Compose the system-prompt-overlay we want injected.
+    const preamble = buildSpawnedPreamble({
+      parentName: deps.parentName || 'parent',
+      parentVpId: deps.parentVpId || null,
+      agentName: agent.name,
+      mission: agent.mission || agent.task || '',
+      language: deps.language ?? deps.config?.language ?? 'en',
+    });
+
+    const baseVpPersona =
+      deps.parentVpPersona && typeof deps.parentVpPersona === 'object'
+        ? { ...deps.parentVpPersona }
+        : {};
+    baseVpPersona.persona =
+      [(baseVpPersona.persona || '').trim(), preamble.trim()]
+        .filter(Boolean)
+        .join('\n\n');
+    if (!baseVpPersona.displayName || !String(baseVpPersona.displayName).trim()) {
+      baseVpPersona.displayName = `${deps.parentName || 'Parent'}/${agent.name || 'sub-agent'}`;
+    }
+    baseVpPersona.subAgent = {
+      parentVpId: deps.parentVpId || null,
+      agentId: agent.id,
+      agentName: agent.name,
+    };
+
+    agent.subVpPersona = baseVpPersona;
+
+    // Background driver — pumps queued user messages through engine.query
+    // turn by turn until the agent reaches a terminal state.
+    driveSubAgent(agent, subEngine, baseVpPersona, deps).catch((err) => {
+      // The driver normally handles its own failures (stream try/catch +
+      // terminal transition). This .catch covers genuinely unexpected
+      // throws between turns (e.g. inside dequeueNextUserPrompt) so we
+      // never leave a zombie record without a terminal status.
+      if (isTerminalAgentStatus(agent.status)) return;
+      transitionTerminal(agent, STATUS.FAILED, {
+        error: err && err.message ? err.message : String(err),
+        diagnostic: 'driver_error',
+        deps,
+      });
+    });
+  } catch (err) {
+    // Startup is transactional. Nothing owns these resources until the driver
+    // promise has been scheduled; a synchronous failure must leave the record
+    // restartable and release every partially-created handle.
+    try { outputLog?.close(); } catch { /* best-effort rollback */ }
+    try { subEngine?.retireAsyncTasks?.('sub_agent_startup_failed', { rescue: false }); } catch { /* best-effort rollback */ }
+    agent.outputLog = null;
+    agent.outputFile = null;
+    agent.subEngine = null;
+    agent.subVpPersona = null;
+    agent.__driverStarted = false;
+    throw err;
+  }
 }
 
 /**

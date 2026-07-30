@@ -237,6 +237,35 @@ describe('Yeaft load-history first paint', () => {
       threadId: 'main',
     }, handlerCtx);
     expect(markEngineTerminal).toHaveBeenCalledWith('error', { message: 'provider exploded' });
+
+    sent.length = 0;
+    const waitWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      __testHandleEngineEvent({
+        type: 'async_task_wait_end',
+        turnId: 'turn-stalled-task',
+        threadId: 'main',
+        loopNumber: 2,
+        aborted: false,
+        remainingTaskIds: [],
+        timedOut: true,
+        deferredTaskIds: ['task-stalled'],
+      }, handlerCtx);
+      expect(handlerCtx.resetQueryTimer).toHaveBeenCalled();
+      expect(waitWarn).toHaveBeenCalledWith(
+        expect.stringContaining('async task wait timed out'),
+        ['task-stalled'],
+      );
+      expect(sent).toContainEqual(expect.objectContaining({
+        event: expect.objectContaining({
+          type: 'vp_async_task_wait_end',
+          timedOut: true,
+          deferredTaskIds: ['task-stalled'],
+        }),
+      }));
+    } finally {
+      waitWarn.mockRestore();
+    }
   });
 
   it('preserves TodoWrite through the real store page and history wire projection', () => {

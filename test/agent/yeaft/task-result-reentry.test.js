@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -14,10 +14,12 @@ import {
   installYeaftRuntimeBridge,
 } from '../../../agent/yeaft/web-bridge.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { Engine } from '../../../agent/yeaft/engine.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { TaskManager } from '../../../agent/yeaft/tasks/manager.js';
 import { TASK_RESULT_DELIVERY } from '../../../agent/yeaft/tasks/store.js';
 import bashTool from '../../../agent/yeaft/tools/bash.js';
+import agentTool, { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
 import ctx from '../../../agent/context.js';
 
 class RecordingAdapter {
@@ -134,6 +136,36 @@ async function drainVpDriversWithin(timeoutMs = 2000) {
   }
 }
 
+async function collectEngineEvents(engine, query, timeoutMs = 2000) {
+  const events = [];
+  let timer = null;
+  try {
+    await Promise.race([
+      (async () => {
+        for await (const event of engine.query(query)) events.push(event);
+      })(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Engine query did not finish')), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  return events;
+}
+
+function readTaskEvents(taskManager, sessionId) {
+  try {
+    return readFileSync(taskManager.store.eventPath(sessionId), 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
 describe('task result re-entry', () => {
   let tempDir = null;
   let originalMessageBuffer = [];
@@ -141,6 +173,7 @@ describe('task result re-entry', () => {
   beforeEach(() => {
     originalMessageBuffer = ctx.messageBuffer.slice();
     ctx.messageBuffer.length = 0;
+    _resetAgentRegistry();
   });
 
   afterEach(async () => {
@@ -149,6 +182,7 @@ describe('task result re-entry', () => {
     __testHooks.resetRuntimeFactoriesForTest();
     __testSetSession(null);
     await __testResetVpState();
+    _resetAgentRegistry();
     ctx.messageBuffer.splice(0, ctx.messageBuffer.length, ...originalMessageBuffer);
     if (tempDir) rmSync(tempDir, { recursive: true, force: true });
     tempDir = null;
@@ -578,5 +612,311 @@ describe('task result re-entry', () => {
     expect(chatStore.yeaftActiveTasksBySession[restartSessionId]).toEqual(visibleRestartTasks);
     expect(adapter.streamCalls).toHaveLength(7);
     expect(persisted.filter(row => row.internal === true)).toHaveLength(4);
+  });
+
+  it('delivers terminal-first and defer-first completions exactly once with real Engine and TaskManager', async () => {
+    for (const completionDelayMs of [0, 35]) {
+      tempDir = mkdtempSync(join(tmpdir(), 'yeaft-task-race-'));
+      const sessionId = `session-task-race-${completionDelayMs}`;
+    const vpId = 'vp-task-race';
+    const resultText = `race-result-${completionDelayMs}`;
+    const childAdapter = completionDelayMs > 0
+      ? {
+          streamCalls: [],
+          async *stream(params) {
+            this.streamCalls.push({ messages: JSON.parse(JSON.stringify(params.messages || [])) });
+            await new Promise(resolve => setTimeout(resolve, completionDelayMs));
+            yield { type: 'text_delta', text: resultText };
+            yield { type: 'stop', stopReason: 'end_turn' };
+          },
+          async call() { return { text: 'ok', usage: {} }; },
+        }
+      : new RecordingAdapter([[
+          { type: 'text_delta', text: resultText },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]]);
+    const parentAdapter = new RecordingAdapter([
+      [
+        { type: 'tool_call', id: 'call_spawn', name: 'SpawnAgent', input: {
+          name: `race-child-${completionDelayMs}`,
+          mission: 'Return the race result.',
+        } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ],
+      [
+        { type: 'text_delta', text: 'The task is running.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
+      [
+        { type: 'text_delta', text: 'The task result was delivered.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
+    ]);
+    const taskManager = new TaskManager({ yeaftDir: tempDir });
+    const persisted = [];
+    const conversationStore = {
+      append(record) {
+        const row = { id: `race-row-${persisted.length + 1}`, ...record };
+        persisted.push(row);
+        return row;
+      },
+      update(message, patch) {
+        const index = persisted.findIndex(row => row.id === message.id);
+        if (index < 0) return null;
+        persisted[index] = { ...persisted[index], ...patch };
+        return persisted[index];
+      },
+      loadRecentBySession() { return []; },
+      readCompactSummary() { return ''; },
+    };
+    const registry = new ToolRegistry();
+    registry.register({
+      ...agentTool,
+      execute: (input, toolCtx) => agentTool.execute(input, {
+        ...toolCtx,
+        parentEngineDeps: {
+          ...toolCtx.parentEngineDeps,
+          adapter: childAdapter,
+          subAgentLogDir: join(tempDir, 'sub-agent-logs'),
+        },
+      }),
+    });
+    const config = {
+      model: 'test-model',
+      maxOutputTokens: 1024,
+      asyncTaskWaitTimeoutMs: 20,
+      _readOnly: true,
+      language: 'en',
+      subAgentLogDir: join(tempDir, 'sub-agent-logs'),
+    };
+    const sessionLike = {
+      adapter: parentAdapter,
+      trace: new NullTrace(),
+      config,
+      conversationStore,
+      memoryIndex: null,
+      amsRegistry: null,
+      toolRegistry: registry,
+      skillManager: null,
+      mcpManager: null,
+      yeaftDir: tempDir,
+      taskManager,
+      toolStats: null,
+    };
+    __testSetSession(sessionLike);
+    installYeaftRuntimeBridge(sessionLike);
+    const engine = new Engine({
+      adapter: parentAdapter,
+      trace: sessionLike.trace,
+      config,
+      conversationStore,
+      toolRegistry: registry,
+      yeaftDir: tempDir,
+      taskManager,
+      sessionId,
+      vpId,
+    });
+    const coordinator = __testHooks.asyncTaskCoordinatorForTest();
+    engine.setAsyncTaskCoordinator(coordinator);
+    engine.setSubAgentEventSink(() => {});
+
+    const terminalEvents = [];
+    const bridgeSink = taskManager.onEvent;
+    let taskId = null;
+    taskManager.setEventSink(event => {
+      if (event?.event === 'started' && event.task?.kind === 'sub_agent') {
+        taskId = event.task.id;
+      }
+      if (event?.event === 'completed' && event.task) terminalEvents.push(event);
+      bridgeSink?.(event);
+    });
+    const eventsPromise = collectEngineEvents(engine, {
+      prompt: 'Run the task.',
+      messages: [],
+      sessionId,
+      senderVpId: vpId,
+      threadId: 'main',
+    });
+    while (!taskId) {
+      taskId = taskManager.listActiveTasks(sessionId)
+        .find(task => task.kind === 'sub_agent')?.id || null;
+      if (!taskId) await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    const events = await eventsPromise;
+    const completionDeadline = Date.now() + 1000;
+    while (terminalEvents.length === 0 && Date.now() < completionDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await drainVpDriversWithin();
+    const providerDeliveries = parentAdapter.streamCalls.filter(call => {
+      const wire = JSON.stringify(call.messages);
+      return wire.includes(taskId) && wire.includes(resultText);
+    });
+    const rescueRows = persisted.filter(row => (
+      row.internal === true
+      && String(row.content || '').includes(taskId)
+      && String(row.content || '').includes(resultText)
+    ));
+    // A rescue row is the durable transcript for the same provider request,
+    // not a second model delivery. Exactly once means exactly one provider
+    // input containing this taskId; defer-first additionally persists one
+    // internal rescue row.
+    expect(providerDeliveries).toHaveLength(1);
+    expect(rescueRows).toHaveLength(completionDelayMs > 0 ? 1 : 0);
+    const waitEnd = events.filter(event => event.type === 'async_task_wait_end');
+    expect(waitEnd).toHaveLength(1);
+    expect(waitEnd[0]).toMatchObject(completionDelayMs > 0
+      ? { timedOut: true, deferredTaskIds: [taskId] }
+      : { timedOut: false, deferredTaskIds: [] });
+      expect(terminalEvents.filter(event => event.task.id === taskId)).toHaveLength(1);
+      expect(readTaskEvents(taskManager, sessionId).filter(event => (
+        event.event === 'completed' && event.taskId === taskId
+      ))).toHaveLength(1);
+      rmSync(tempDir, { recursive: true, force: true });
+      tempDir = null;
+      _resetAgentRegistry();
+      __testSetSession(null);
+      await __testResetVpState();
+    }
+
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-task-startup-failure-'));
+    const sessionId = 'session-task-startup-failure';
+    const vpId = 'vp-task-startup-failure';
+    const failedResult = 'Windows runner setup failed';
+    const parentAdapter = new RecordingAdapter([
+      [
+        { type: 'tool_call', id: 'call_spawn_failure', name: 'SpawnAgent', input: {
+          name: 'startup-failure-child',
+          mission: 'Fail during child registry setup.',
+        } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ],
+      [
+        { type: 'text_delta', text: 'The startup failure was handled.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
+    ]);
+    const taskManager = new TaskManager({ yeaftDir: tempDir });
+    const persisted = [];
+    const conversationStore = {
+      append(record) {
+        const row = { id: `startup-row-${persisted.length + 1}`, ...record };
+        persisted.push(row);
+        return row;
+      },
+      update(message, patch) {
+        const index = persisted.findIndex(row => row.id === message.id);
+        if (index < 0) return null;
+        persisted[index] = { ...persisted[index], ...patch };
+        return persisted[index];
+      },
+      loadRecentBySession() { return []; },
+      readCompactSummary() { return ''; },
+    };
+    const registry = new ToolRegistry();
+    let childRegistryCalls = 0;
+    registry.register({
+      ...agentTool,
+      execute: (input, toolCtx) => agentTool.execute(input, {
+        ...toolCtx,
+        parentEngineDeps: {
+          ...toolCtx.parentEngineDeps,
+          parentToolRegistry: {
+            getAllTools() {
+              childRegistryCalls += 1;
+              throw new Error(failedResult);
+            },
+          },
+        },
+      }),
+    });
+    const config = {
+      model: 'test-model',
+      maxOutputTokens: 1024,
+      asyncTaskWaitTimeoutMs: 20,
+      _readOnly: true,
+      language: 'en',
+    };
+    const sessionLike = {
+      adapter: parentAdapter,
+      trace: new NullTrace(),
+      config,
+      conversationStore,
+      memoryIndex: null,
+      amsRegistry: null,
+      toolRegistry: registry,
+      skillManager: null,
+      mcpManager: null,
+      yeaftDir: tempDir,
+      taskManager,
+      toolStats: null,
+    };
+    __testSetSession(sessionLike);
+    installYeaftRuntimeBridge(sessionLike);
+    const engine = new Engine({
+      adapter: parentAdapter,
+      trace: sessionLike.trace,
+      config,
+      conversationStore,
+      toolRegistry: registry,
+      yeaftDir: tempDir,
+      taskManager,
+      sessionId,
+      vpId,
+    });
+    engine.setAsyncTaskCoordinator(__testHooks.asyncTaskCoordinatorForTest());
+    engine.setSubAgentEventSink(() => {});
+    const terminalEvents = [];
+    const bridgeSink = taskManager.onEvent;
+    let failedTaskId = null;
+    taskManager.setEventSink(event => {
+      if (event?.event === 'started' && event.task?.kind === 'sub_agent') {
+        failedTaskId = event.task.id;
+      }
+      if (event?.event === 'completed' && event.task) terminalEvents.push(event);
+      bridgeSink?.(event);
+    });
+
+    const events = await collectEngineEvents(engine, {
+      prompt: 'Start the child that fails synchronously.',
+      messages: [],
+      sessionId,
+      senderVpId: vpId,
+      threadId: 'main',
+    });
+    expect(childRegistryCalls).toBe(1);
+    expect(failedTaskId).toBeTruthy();
+    expect(events.filter(event => event.type === 'async_task_wait_start')).toHaveLength(0);
+    expect(events.filter(event => event.type === 'async_task_wait_end')).toHaveLength(0);
+    expect(taskManager.listActiveTasks(sessionId)).toEqual([]);
+    expect(taskManager.getTask(sessionId, failedTaskId)).toMatchObject({
+      status: 'failed',
+      resultDelivery: TASK_RESULT_DELIVERY.MODEL_REENTRY,
+    });
+    expect(engine.hasPendingAsyncTasks()).toBe(false);
+    expect(engine.ownsPendingAsyncTask(failedTaskId)).toBe(false);
+    expect(__testHooks.asyncTaskOwnerForTest(failedTaskId)).toBeNull();
+    expect(terminalEvents.filter(event => event.task.id === failedTaskId)).toHaveLength(1);
+    expect(readTaskEvents(taskManager, sessionId).filter(event => (
+      event.event === 'completed' && event.taskId === failedTaskId
+    ))).toHaveLength(1);
+    const providerFailureDeliveries = parentAdapter.streamCalls.filter(call => {
+      const wire = JSON.stringify(call.messages);
+      return wire.includes(failedTaskId) && wire.includes(failedResult);
+    });
+    expect(providerFailureDeliveries).toHaveLength(1);
+    expect(parentAdapter.streamCalls).toHaveLength(2);
+    const failedAgent = Array.from(getAgentRegistry().values())
+      .find(agent => agent.taskId === failedTaskId);
+    expect(failedAgent).toMatchObject({
+      status: 'failed',
+      error: failedResult,
+      __driverStarted: false,
+      subEngine: null,
+      outputLog: null,
+      outputFile: null,
+    });
   });
 });

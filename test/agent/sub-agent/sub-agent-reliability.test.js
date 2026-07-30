@@ -75,6 +75,7 @@ import {
   getAgentRegistry,
   tickAgent,
 } from '../../../agent/yeaft/tools/agent.js';
+import { startSubAgent } from '../../../agent/yeaft/sub-agent/runner.js';
 import agentTool from '../../../agent/yeaft/tools/agent.js';
 import sendMessage from '../../../agent/yeaft/tools/send-message.js';
 import waitAgent from '../../../agent/yeaft/tools/wait-agent.js';
@@ -313,6 +314,31 @@ describe('wait-agent envelope shape', () => {
     expect(listed.agents.map(a => a.id)).toEqual(['agent-owned-b']);
     const ownWait = JSON.parse(await waitAgent.execute({ agent_id: 'agent-owned-b' }, ctxB));
     expect(ownWait.result).toBe('visible result');
+
+    const rollbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yeaft-runner-startup-'));
+    const partialAgent = {
+      id: 'agent-partial-startup',
+      name: 'partial-startup',
+      mission: 'fail after output log creation',
+      status: STATUS.CREATED,
+    };
+    const partialDeps = mkDeps(new TextAdapter(), { subAgentLogDir: rollbackDir });
+    Object.defineProperty(partialDeps, 'language', {
+      configurable: true,
+      get() { throw new Error('preamble setup failed'); },
+    });
+    expect(() => startSubAgent(partialAgent, partialDeps)).toThrow('preamble setup failed');
+    const partialLogPath = path.join(rollbackDir, 'agent-partial-startup.log');
+    expect(fs.existsSync(partialLogPath)).toBe(true);
+    expect(fs.readFileSync(partialLogPath, 'utf8')).toContain('sub_agent_spawned');
+    expect(partialAgent).toMatchObject({
+      __driverStarted: false,
+      subEngine: null,
+      subVpPersona: null,
+      outputLog: null,
+      outputFile: null,
+    });
+    fs.rmSync(rollbackDir, { recursive: true, force: true });
   });
 
   it('sessionless scoped tools still isolate different parent VPs', async () => {
