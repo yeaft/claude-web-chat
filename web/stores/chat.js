@@ -491,6 +491,7 @@ export const useChatStore = defineStore('chat', {
     yeaftSessionHydrateRequestId: null,
     yeaftSessionHydrateSlices: [],
     yeaftSessionHydrateError: null,
+    _yeaftSessionInventorySocketQuarantined: false,
     sessionKey: null, // Uint8Array for encryption
     // feat-ws-plaintext-negotiation: defaults `true` (= assume old
     // server, keep encrypting outbound for back-compat). Cleared to
@@ -2319,10 +2320,15 @@ export const useChatStore = defineStore('chat', {
     requestYeaftSessionInventory() {
       // Legacy Servers do not echo requestId, so overlapping requests cannot be
       // separated safely. Reuse the current owner until its slice quiet-window
-      // commits or the bounded request timeout releases it.
+      // commits. After a timeout, replace the socket before retrying: an old
+      // request can still deliver identity-less slices on its original socket.
       if (this.yeaftSessionInventoryCompleteSupported === false
           && this.yeaftSessionHydrateRequestId) {
         return this.yeaftSessionHydrateRequestId;
+      }
+      if (this._yeaftSessionInventorySocketQuarantined) {
+        this.manualReconnect();
+        return null;
       }
       clearTimeout(this._legacyYeaftSessionHydrateTimer);
       this._legacyYeaftSessionHydrateTimer = null;
@@ -2349,6 +2355,9 @@ export const useChatStore = defineStore('chat', {
         this.yeaftSessionHydrateRequestId = null;
         this.yeaftSessionHydrateSlices = [];
         this.yeaftSessionHydrateError = 'session_inventory_timeout';
+        if (this.yeaftSessionInventoryCompleteSupported !== true) {
+          this._yeaftSessionInventorySocketQuarantined = true;
+        }
       }, YEAFT_SESSION_INVENTORY_TIMEOUT_MS);
       return requestId;
     },

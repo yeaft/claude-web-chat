@@ -144,6 +144,7 @@ export function connect(store) {
   store.yeaftSessionHydrateRequestId = null;
   store.yeaftSessionHydrateSlices = [];
   store.yeaftSessionHydrateError = null;
+  store._yeaftSessionInventorySocketQuarantined = false;
   store.pendingAgentSelection = null;
   store.agentSwitching = false;
 

@@ -26,6 +26,7 @@ function createStore() {
     _hasHandledYeaftSessionHydrate: true,
     yeaftSessionInventoryCompleteSupported: true,
     yeaftSessionHydrateRequestId: 'old-inventory',
+    _yeaftSessionInventorySocketQuarantined: true,
     serverEncryptionRequired: false,
     chatHistoryRequestIdSupported: true,
     chatHistoryConnectionGeneration: 4,
@@ -105,6 +106,7 @@ describe('websocket auth token races', () => {
     expect(store._hasHandledYeaftSessionHydrate).toBe(false);
     expect(store.yeaftSessionInventoryCompleteSupported).toBeNull();
     expect(store.yeaftSessionHydrateRequestId).toBeNull();
+    expect(store._yeaftSessionInventorySocketQuarantined).toBe(false);
     expect(store.serverEncryptionRequired).toBe(true);
     expect(store.chatHistoryRequestIdSupported).toBe(null);
     expect(store.chatHistoryConnectionGeneration).toBe(5);
