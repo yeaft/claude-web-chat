@@ -77,7 +77,53 @@ function primeStore() {
 describe('Yeaft history outline state', () => {
   beforeEach(() => vi.useFakeTimers());
 
+  it('keeps background end_turn unread until that Agent Session is opened', () => {
+    const store = primeStore();
+    store.activeVpTurns = {
+      'turn-unread': { sessionId: 'other', vpId: 'linus', isStreaming: true },
+    };
+    store.yeaftSessionAgentById = { same: 'agent-a', other: 'agent-b' };
 
+    store.handleYeaftOutput({
+      agentId: 'agent-b',
+      conversationId: 'conv-b',
+      event: {
+        type: 'vp_turn_end',
+        reason: 'end_turn',
+        turnId: 'turn-unread',
+        sessionId: 'other',
+        vpId: 'linus',
+      },
+    });
+
+    expect(store.isYeaftSessionUnread('other', 'agent-b')).toBe(true);
+    expect(store.isYeaftSessionUnread('other', 'agent-a')).toBe(false);
+    store.setActiveSessionFilter('other', { agentId: 'agent-b' });
+    expect(store.isYeaftSessionUnread('other', 'agent-b')).toBe(false);
+  });
+
+  it('does not mark the visible Session or aborted turns unread', () => {
+    const store = primeStore();
+    expect(store.markYeaftSessionUnread('same', 'agent-a')).toBe(false);
+    store.yeaftActiveSessionFilter = 'same';
+    store.yeaftSessionAgentById = { same: 'agent-a', other: 'agent-a' };
+    store.activeVpTurns = {
+      'turn-aborted': { sessionId: 'other', vpId: 'linus', isStreaming: true },
+    };
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: {
+        type: 'vp_turn_end',
+        reason: 'aborted',
+        turnId: 'turn-aborted',
+        sessionId: 'other',
+        vpId: 'linus',
+      },
+    });
+    expect(store.isYeaftSessionUnread('same', 'agent-a')).toBe(false);
+    expect(store.isYeaftSessionUnread('other', 'agent-a')).toBe(false);
+  });
 
   it('sends sender-only searches and rejects stale sender responses', () => {
     const store = primeStore();

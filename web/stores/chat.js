@@ -19,6 +19,7 @@ import {
   cancelChatHistoryRequest,
   chatCatalogKey,
   finishCatalogMutation,
+  yeaftCatalogKey,
 } from './helpers/session-catalog.js';
 import {
   applyWorkItemSummary,
@@ -539,6 +540,11 @@ export const useChatStore = defineStore('chat', {
     // A bare sessionId is accepted only as a legacy wire fallback when the
     // catalog proves exactly one Agent owns that id.
     yeaftProcessingSessions: {},
+    // Session completion notifications live only for the current Web client.
+    // A terminal end_turn received while another Session is open marks the
+    // source Session unread until the user opens it. Key by catalog identity so
+    // equal sessionIds owned by different Agents never clear each other.
+    yeaftUnreadSessionKeys: {},
     theme: localStorage.getItem('theme') || (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
     themeFollowSystem: !localStorage.getItem('theme'),
     locale: localStorage.getItem('locale') || 'zh-CN',
@@ -1325,6 +1331,12 @@ export const useChatStore = defineStore('chat', {
     isYeaftSessionProcessing: (state) => (sessionId, agentId = null) => (
       isYeaftSessionProcessingState(state, sessionId, agentId)
     ),
+    isYeaftSessionUnread: (state) => (sessionId, agentId = null) => {
+      if (!sessionId) return false;
+      const ownerAgentId = resolveAgentIdForSession(state, sessionId, agentId);
+      if (!ownerAgentId) return false;
+      return !!state.yeaftUnreadSessionKeys?.[yeaftCatalogKey(ownerAgentId, sessionId)];
+    },
     // 是否显示恢复提示
     showRecoveryBanner: (state) => {
       return state.pendingRecovery && !state.recoveryDismissed && !state.currentConversation;
@@ -4314,6 +4326,10 @@ export const useChatStore = defineStore('chat', {
         case 'vp_turn_end': {
           if (!event.turnId) break;
           const turnKey = yeaftTurnStateKey(this, msg.agentId || null, event.turnId);
+          const endedSessionId = event.sessionId || this.activeVpTurns?.[turnKey]?.sessionId || null;
+          if (event.reason === 'end_turn' && endedSessionId) {
+            this.markYeaftSessionUnread(endedSessionId, msg.agentId || null);
+          }
           const { [turnKey]: _removed, ...rest } = this.activeVpTurns;
           this.activeVpTurns = rest;
           const { [turnKey]: _stopped, ...stoppingRest } = this.stoppingVpTurnIds;
@@ -4973,6 +4989,33 @@ export const useChatStore = defineStore('chat', {
     // on disk after a refresh/re-entry; switching back to that group must
     // still ask the agent for authoritative history unless this group has
     // already completed a history load in the current UI lifecycle.
+    markYeaftSessionUnread(sessionId, agentId = null) {
+      if (!sessionId) return false;
+      const ownerAgentId = resolveAgentIdForSession(this, sessionId, agentId);
+      if (!ownerAgentId) return false;
+      const catalogKey = yeaftCatalogKey(ownerAgentId, sessionId);
+      const visible = this.currentView === 'yeaft'
+        && this.yeaftActiveSessionFilter === sessionId
+        && resolveAgentIdForSession(this, sessionId) === ownerAgentId;
+      if (visible || this.yeaftUnreadSessionKeys?.[catalogKey]) return false;
+      this.yeaftUnreadSessionKeys = {
+        ...this.yeaftUnreadSessionKeys,
+        [catalogKey]: true,
+      };
+      return true;
+    },
+
+    markYeaftSessionRead(sessionId, agentId = null) {
+      if (!sessionId) return false;
+      const ownerAgentId = resolveAgentIdForSession(this, sessionId, agentId);
+      if (!ownerAgentId) return false;
+      const catalogKey = yeaftCatalogKey(ownerAgentId, sessionId);
+      if (!this.yeaftUnreadSessionKeys?.[catalogKey]) return false;
+      const { [catalogKey]: _read, ...remainingUnread } = this.yeaftUnreadSessionKeys;
+      this.yeaftUnreadSessionKeys = remainingUnread;
+      return true;
+    },
+
     restoreActiveYeaftSessionFromStatuses(statuses = [], sourceAgentId = null) {
       if (this.yeaftActiveSessionFilter) return null;
       const rows = Array.isArray(statuses) ? statuses : [];
@@ -5022,6 +5065,7 @@ export const useChatStore = defineStore('chat', {
       } else if (targetAgentId && next) {
         this.activateYeaftAgent(targetAgentId);
       }
+      if (targetAgentId && next) this.markYeaftSessionRead(next, targetAgentId);
       if (!force && next === prev) return;
 
       const sessionKey = yeaftHistoryIdentityKey(targetAgentId, next);

@@ -340,9 +340,12 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).toContain(":tabindex=\"isAvailable(row) ? 0 : -1\"");
     expect(UnifiedSessionList.methods.isAvailable({ availability: 'offline' })).toBe(false);
     expect(UnifiedSessionList.template).toContain("emitAction('remove', row)");
+    expect(UnifiedSessionList.template).toContain('v-if="isSessionUnread(row)" class="unread-dot"');
+    expect(UnifiedSessionList.template).toContain('v-else-if="isProcessing(row)" class="processing-dot"');
     expect(UnifiedSessionList.template).not.toContain("emitAction('split', row)");
     expect(UnifiedSessionList.template).toContain("$t('common.close')");
     expect(UnifiedSessionList.methods.providerLabel({ runtimeProvider: 'copilot' })).toBe('Copilot');
+    expect(yeaftSidebarSource).toContain(':is-session-unread="isCatalogSessionUnread"');
     expect(chatPageSource).toContain('@create-chat="openConversationModal"');
     expect(chatPageSource).toContain('@action="onUnifiedSessionAction"');
     expect(yeaftSidebarSource).toContain('@create-yeaft="onOpenSessionCreate"');
