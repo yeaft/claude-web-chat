@@ -108,6 +108,7 @@ export default {
           v-if="store.sessionCatalogLoaded"
           :sessions="store.sessionCatalog"
           :active-route="store.activeSessionRoute"
+          :is-session-unread="isCatalogSessionUnread"
           :processing-conversations="store.processingConversations"
           :is-yeaft-session-processing="store.isYeaftSessionProcessing"
           :agents="store.agents"
@@ -580,6 +581,10 @@ export default {
     },
     sortByActivity(conversations) {
       return sortSessionsByActivity(conversations);
+    },
+    isCatalogSessionUnread(row) {
+      if (row?.runtimeProvider !== 'yeaft') return false;
+      return this.store.isYeaftSessionUnread(row.routeRef?.sessionId, row.routeRef?.agentId);
     },
 
     onUnifiedCreate(provider) {

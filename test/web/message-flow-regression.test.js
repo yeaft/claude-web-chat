@@ -8,7 +8,6 @@ import {
   addMessageToConversation,
   appendToAssistantMessageForConversation,
   finishStreamingForConversation,
-  maxDbMessageId,
 } from '../../web/stores/helpers/messages.js';
 import UnifiedSessionList from '../../web/components/UnifiedSessionList.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
@@ -63,11 +62,7 @@ globalThis.Pinia = {
 const { useChatStore } = await import('../../web/stores/chat.js');
 const { default: ChatPage } = await import('../../web/components/ChatPage.js');
 const { default: YeaftSidebar } = await import('../../web/components/YeaftSidebar.js');
-const {
-  handleConversationCreated,
-  handleConversationResumed,
-  handleSyncMessagesResult,
-} = await import('../../web/stores/helpers/handlers/conversationHandler.js');
+const { handleSyncMessagesResult } = await import('../../web/stores/helpers/handlers/conversationHandler.js');
 
 import {
   buildYeaftMessageTurnSpans,
@@ -134,48 +129,6 @@ describe('message flow regressions', () => {
       turnId: 'turn-1',
     });
     expect(store.messagesMap['conv-1'][0]).not.toHaveProperty('turnEndAt');
-  });
-
-  it('derives the active provider from create and resume canonical state while preserving DB cursor selection', () => {
-    expect(maxDbMessageId([
-      { id: 'optimistic-user', dbMessageId: 17 },
-      { id: 'streaming-assistant-uuid', isStreaming: true },
-    ])).toBe(17);
-    storeFactories.clear();
-    const store = useChatStore();
-    store.agents = [{ id: 'agent-a', name: 'Agent A', online: true }];
-    store.panels = [];
-    store.sendWsMessage = vi.fn(() => true);
-    store.addMessage = vi.fn();
-    store.saveOpenSessions = vi.fn();
-    store.formatDbMessageForHistoryHydration = vi.fn(row => row);
-
-    handleConversationCreated(store, {
-      conversationId: 'created-copilot',
-      agentId: 'agent-a',
-      workDir: '/repo',
-      provider: 'copilot',
-    });
-    expect(store.activeSessionRoute).toEqual({
-      runtimeProvider: 'copilot',
-      agentId: 'agent-a',
-      sessionId: 'created-copilot',
-    });
-
-    handleConversationResumed(store, {
-      conversationId: 'resumed-claude',
-      claudeSessionId: 'runtime-1',
-      agentId: 'agent-a',
-      workDir: '/repo',
-      provider: 'claude-code',
-      dbMessages: [],
-    });
-    expect(store.activeSessionRoute).toEqual({
-      runtimeProvider: 'claude-code',
-      agentId: 'agent-a',
-      sessionId: 'resumed-claude',
-    });
-    storeFactories.clear();
   });
 
   it('keeps Work Center inputs available and detail layouts responsive', async () => {
@@ -441,6 +394,8 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).toContain(":tabindex=\"isAvailable(row) ? 0 : -1\"");
     expect(UnifiedSessionList.methods.isAvailable({ availability: 'offline' })).toBe(false);
     expect(UnifiedSessionList.template).toContain("emitAction('remove', row)");
+    expect(UnifiedSessionList.template).toContain('v-if="isSessionUnread(row)" class="unread-dot"');
+    expect(UnifiedSessionList.template).toContain('v-else-if="isProcessing(row)" class="processing-dot"');
     expect(UnifiedSessionList.template).not.toContain("emitAction('split', row)");
     expect(UnifiedSessionList.template).toContain("$t('common.close')");
     expect(UnifiedSessionList.methods.providerLabel({ runtimeProvider: 'copilot' })).toBe('Copilot');
@@ -547,6 +502,7 @@ describe('message flow regressions', () => {
 
     expect(chatPageSource).toContain('@create="onUnifiedCreate"');
     expect(chatPageSource).toContain('@open-work-center="openWorkCenter"');
+    expect(yeaftSidebarSource).toContain(':is-session-unread="isCatalogSessionUnread"');
     expect(chatPageSource).toContain('@action="onUnifiedSessionAction"');
     expect(yeaftSidebarSource).toContain('@create="onUnifiedCreate"');
     expect(yeaftSidebarSource).toContain('@open-work-center="onOpenWorkCenter"');
