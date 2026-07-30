@@ -907,10 +907,8 @@ describe('message flow regressions', () => {
     expect(runtimeSessionsStore.activeSessionId).toBeNull();
     expect(runtimeSessionsStore.activeAgentId).toBeNull();
 
-    wrapper.unmount();
-  });
-
-  it('uses one provider-aware create form and only shows the VP picker for Yeaft', async () => {
+    // Session creation stays on the existing modal, with Agent before Provider
+    // and VP selection exposed only for the Yeaft provider.
     const originalPinia = globalThis.Pinia;
     const originalWindowPinia = window.Pinia;
     const chat = Vue.reactive({
@@ -951,6 +949,8 @@ describe('message flow regressions', () => {
     modal.unmount();
     globalThis.Pinia = originalPinia;
     window.Pinia = originalWindowPinia;
+
+    wrapper.unmount();
   });
 
   it('stamps background agent messages without promoting that conversation', () => {
