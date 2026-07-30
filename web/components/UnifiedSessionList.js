@@ -1,7 +1,5 @@
 import { shortenPath } from '../utils/path-display.js';
 
-const SESSION_PROVIDERS = ['yeaft', 'copilot', 'claude-code'];
-
 export default {
   name: 'UnifiedSessionList',
   props: {
@@ -12,13 +10,10 @@ export default {
     isYeaftSessionProcessing: { type: Function, default: null },
     agents: { type: Array, default: () => [] },
     workCenterOpen: { type: Boolean, default: false },
-    workCenterAgentId: { type: String, default: null },
-    preferredProvider: { type: String, default: 'yeaft' },
   },
-  emits: ['select', 'create', 'action', 'open-work-center', 'close-work-center'],
+  emits: ['select', 'create', 'action', 'close-work-center'],
   data() {
     return {
-      selectedProvider: SESSION_PROVIDERS.includes(this.preferredProvider) ? this.preferredProvider : 'yeaft',
       activeMenuKey: null,
       editingKey: null,
       editingTitle: '',
@@ -31,29 +26,7 @@ export default {
     availableSessions() {
       return this.sessions.filter(row => this.isAvailable(row));
     },
-    visibleSessions() {
-      return this.availableSessions.filter(row => row.runtimeProvider === this.selectedProvider);
-    },
-    providerTabs() {
-      return SESSION_PROVIDERS.map(provider => ({
-        provider,
-        label: this.providerLabel({ runtimeProvider: provider }),
-        count: this.availableSessions.filter(row => row.runtimeProvider === provider).length,
-      }));
-    },
-    onlineWorkCenterAgents() {
-      return this.agents.filter(agent => agent?.online
-        && Array.isArray(agent.capabilities) && agent.capabilities.includes('work_center'));
-    },
-  },
-  watch: {
-    activeRoute: {
-      immediate: true,
-      deep: true,
-      handler() {
-        this.syncSelectedProvider();
-      },
-    },
+
   },
   mounted() {
     document.addEventListener('pointerdown', this.onDocumentPointerDown, true);
@@ -68,11 +41,6 @@ export default {
     window.removeEventListener('resize', this.closeMenu);
   },
   methods: {
-    providerLabel(row) {
-      if (row.runtimeProvider === 'yeaft') return 'Yeaft';
-      if (row.runtimeProvider === 'copilot') return 'Copilot';
-      return this.$t ? this.$t('sidebar.provider.claude') : 'Claude';
-    },
     agentLabel(row) {
       const agentId = row?.routeRef?.agentId || row?.agentId || '';
       const registeredAgent = this.agents.find(agent => agent?.id === agentId);
@@ -106,35 +74,14 @@ export default {
         && row.routeRef.sessionId === route.sessionId
         && (!route.agentId || row.routeRef.agentId === route.agentId);
     },
-    syncSelectedProvider() {
-      const provider = this.activeRoute?.runtimeProvider;
-      if (SESSION_PROVIDERS.includes(provider)) this.selectedProvider = provider;
-    },
-    workCenterTargetId() {
-      const compatible = this.onlineWorkCenterAgents;
-      return compatible.some(agent => agent.id === this.workCenterAgentId)
-        ? this.workCenterAgentId
-        : (compatible[0]?.id || null);
-    },
-    openWorkCenter() {
-      const target = this.workCenterTargetId();
-      if (target) this.$emit('open-work-center', target);
-    },
-    selectProvider(provider) {
-      if (!SESSION_PROVIDERS.includes(provider)) return;
-      this.closeMenu();
-      this.selectedProvider = provider;
-      if (this.workCenterOpen) this.$emit('close-work-center');
-    },
-    showSessions() {
-      if (this.workCenterOpen) this.$emit('close-work-center');
-    },
     createSession() {
-      this.$emit('create', this.selectedProvider);
+      if (this.workCenterOpen) this.$emit('close-work-center');
+      this.$emit('create');
     },
     select(row) {
       if (!this.isAvailable(row)) return;
       this.closeMenu();
+      if (this.workCenterOpen) this.$emit('close-work-center');
       this.$emit('select', row);
     },
     closeMenu() {
@@ -209,7 +156,7 @@ export default {
       this.draggedKey = null;
       this.dragOverKey = null;
       if (!fromKey || fromKey === toKey) return;
-      const ordered = [...this.visibleSessions];
+      const ordered = this.availableSessions.filter(item => item.runtimeProvider === row.runtimeProvider);
       const fromIndex = ordered.findIndex(item => item.catalogKey === fromKey);
       const toIndex = ordered.findIndex(item => item.catalogKey === toKey);
       if (fromIndex < 0 || toIndex < 0) return;
@@ -226,50 +173,29 @@ export default {
   },
   template: `
     <div class="us-scroll us-scroll-flush sidebar-navigation">
-      <div class="sidebar-surface-switch" role="tablist" :aria-label="$t('sidebar.surface.label')">
-        <button type="button" role="tab" class="sidebar-surface-option"
-                :class="{ active: !workCenterOpen }" :aria-selected="!workCenterOpen ? 'true' : 'false'"
-                @click="showSessions">
-          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
-          <span>{{ $t('sidebar.surface.sessions') }}</span>
-        </button>
-        <button type="button" role="tab" class="sidebar-surface-option"
-                :class="{ active: workCenterOpen }" :aria-selected="workCenterOpen ? 'true' : 'false'"
-                :disabled="onlineWorkCenterAgents.length === 0"
-                @click="openWorkCenter">
-          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>
-          <span>{{ $t('workCenter.title') }}</span>
+      <div class="sidebar-session-toolbar">
+        <span class="sidebar-session-title">{{ $t('sidebar.surface.sessions') }}</span>
+        <span class="sidebar-session-count">{{ availableSessions.length }}</span>
+        <span class="sidebar-toolbar-spacer"></span>
+        <button type="button" class="sidebar-tool-button sidebar-create-trigger"
+                :disabled="agents.every(agent => !agent?.online)"
+                :title="$t('sidebar.sessions.new')"
+                :aria-label="$t('sidebar.sessions.new')"
+                @click="createSession">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
         </button>
       </div>
 
-      <template v-if="!workCenterOpen">
-        <div class="sidebar-provider-tabs" role="tablist" :aria-label="$t('sidebar.provider.label')">
-          <button v-for="tab in providerTabs" :key="tab.provider" type="button" role="tab"
-                  class="sidebar-provider-tab" :class="{ active: selectedProvider === tab.provider }"
-                  :aria-selected="selectedProvider === tab.provider ? 'true' : 'false'"
-                  @click="selectProvider(tab.provider)">
-            <span>{{ tab.label }}</span>
-            <span v-if="tab.count" class="sidebar-provider-count">{{ tab.count }}</span>
-          </button>
-        </div>
-
-        <div class="sidebar-session-actions">
-          <button type="button" class="sidebar-create-session" :disabled="agents.every(agent => !agent?.online)" @click="createSession">
-            <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-            <span>{{ $t('sidebar.sessions.new') }}</span>
-          </button>
-        </div>
-
-        <div class="session-panels sidebar-session-results">
-          <div class="session-panel-list">
+      <div class="session-panels sidebar-session-results">
+        <div class="session-panel-list">
             <div
-              v-for="row in visibleSessions"
+              v-for="row in availableSessions"
               :key="row.catalogKey"
               :role="isAvailable(row) ? 'button' : undefined"
               :tabindex="isAvailable(row) ? 0 : -1"
               :aria-disabled="isAvailable(row) ? undefined : 'true'"
               class="session-item yeaft-session-draggable"
-              :class="{ active: routeMatches(row), pinned: row.pinned, processing: isProcessing(row), unread: isSessionUnread(row), 'agent-offline': !isAvailable(row), dragging: draggedKey === row.catalogKey, 'drag-over': dragOverKey === row.catalogKey }"
+              :class="{ active: !workCenterOpen && routeMatches(row), pinned: row.pinned, processing: isProcessing(row), unread: isSessionUnread(row), 'agent-offline': !isAvailable(row), dragging: draggedKey === row.catalogKey, 'drag-over': dragOverKey === row.catalogKey }"
               draggable="true"
               @click="select(row)"
               @keydown.enter.prevent="select(row)"
@@ -320,25 +246,7 @@ export default {
                 </span>
               </span>
             </div>
-            <div v-if="visibleSessions.length === 0" class="session-empty-hint">{{ $t('sidebar.sessions.emptyProvider') }}</div>
-          </div>
-        </div>
-      </template>
-
-      <div v-else class="session-panels sidebar-work-center-results">
-        <div class="session-panel-list">
-          <button v-for="agent in onlineWorkCenterAgents" :key="agent.id" type="button"
-                  class="session-item sidebar-work-center-agent"
-                  :class="{ active: workCenterAgentId === agent.id }"
-                  @click="$emit('open-work-center', agent.id)">
-            <span class="session-item-header">
-              <span class="sidebar-work-center-agent-status" aria-hidden="true"></span>
-              <span class="title sidebar-work-center-agent-name">{{ agent.name || agent.id }}</span>
-            </span>
-          </button>
-          <p v-if="onlineWorkCenterAgents.length === 0" class="sidebar-work-center-empty">
-            {{ $t('workCenter.noAvailableAgents') }}
-          </p>
+          <div v-if="availableSessions.length === 0" class="session-empty-hint">{{ $t('sidebar.sessions.emptyProvider') }}</div>
         </div>
       </div>
     </div>

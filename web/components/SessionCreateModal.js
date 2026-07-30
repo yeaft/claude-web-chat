@@ -72,6 +72,9 @@ export function resolveVpRosterPopupLayout(anchorRect, boundaryRect, viewportRec
 export default {
   name: 'SessionCreateModal',
   components: { VpAvatar },
+  props: {
+    initialProvider: { type: String, default: 'yeaft' },
+  },
   emits: ['close', 'created'],
   template: `
     <Teleport to="body">
@@ -81,6 +84,15 @@ export default {
           <button class="resume-close-btn" type="button" @click="requestClose" :aria-label="$t('yeaft.session.create.close')">
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
           </button>
+
+          <div class="resume-control-row">
+            <label class="resume-control-label">{{ $t('modal.newConv.provider') }}</label>
+            <select v-model="form.provider" class="resume-input">
+              <option value="yeaft">Yeaft</option>
+              <option value="copilot">{{ $t('provider.copilot') }}</option>
+              <option value="claude-code">{{ $t('provider.claudeCode') }}</option>
+            </select>
+          </div>
 
           <!-- Agent (only when more than one online agent) -->
           <div class="resume-control-row" v-if="agentOptions.length > 1">
@@ -135,7 +147,7 @@ export default {
                Trigger shows the current selection summary (names if ≤3, else
                "N selected"); clicking opens the full list below. Mirrors the
                Copilot model picker pattern from ChatPage. -->
-          <div class="resume-control-row resume-control-row-vp">
+          <div v-if="isYeaftProvider" class="resume-control-row resume-control-row-vp">
             <label class="resume-control-label">{{ $t('yeaft.session.create.vpPicker') }}</label>
             <div class="yeaft-roster" ref="vpRosterRoot">
               <div v-if="vpList.length === 0 && vpLibraryEmpty" class="yeaft-roster-empty">
@@ -229,7 +241,7 @@ export default {
             </div>
             <div class="resume-panel-list">
               <div
-                v-for="folder in folderAggregates"
+                v-for="folder in createFolderRows"
                 :key="folder.path"
                 class="resume-list-item folder-item-compact"
                 @click="selectFolder(folder.path)"
@@ -237,7 +249,7 @@ export default {
                 <div class="item-path">{{ folder.path }}</div>
                 <span class="item-badge">{{ folder.count }}</span>
               </div>
-              <div class="resume-panel-empty" v-if="folderAggregates.length === 0">
+              <div class="resume-panel-empty" v-if="createFolderRows.length === 0">
                 {{ $t('yeaft.session.create.noWorkDirs') }}
               </div>
             </div>
@@ -264,7 +276,7 @@ export default {
               <button
                 class="refresh-btn-mini"
                 type="button"
-                @click="loadRestoreCandidates"
+                @click="loadProviderSessions"
                 :disabled="restoreScanning"
                 :title="$t('common.refresh')"
               >
@@ -275,7 +287,7 @@ export default {
               <div class="git-loading restore-loading" v-if="restoreScanning"><span class="spinner-mini"></span> {{ $t('common.loading') }}</div>
               <template v-else>
                 <div
-                  v-for="session in sessionsInDir"
+                  v-for="session in createSessionRows"
                   :key="session.id"
                   class="resume-list-item session-item-compact"
                   :class="{ 'is-busy': restoring === session.id, 'is-disabled': restoring && restoring !== session.id }"
@@ -284,7 +296,7 @@ export default {
                   <div class="item-name">{{ session.name || session.id }}</div>
                   <div class="item-time">{{ formatDate(session.createdAt) }}</div>
                 </div>
-                <div class="resume-panel-empty" v-if="sessionsInDir.length === 0 && !restoreError">
+                <div class="resume-panel-empty" v-if="createSessionRows.length === 0 && !restoreError">
                   {{ $t('yeaft.restore.modal.empty') }}
                 </div>
                 <div class="resume-panel-empty" v-if="restoreError">
@@ -353,6 +365,7 @@ export default {
   data() {
     return {
       form: {
+        provider: ['yeaft', 'copilot', 'claude-code'].includes(this.initialProvider) ? this.initialProvider : 'yeaft',
         name: '',
         // Pre-checked once vpList hydrates (see applyDefaultSelection).
         vpIds: [],
@@ -417,6 +430,7 @@ export default {
       } catch (_) {}
       return null;
     },
+    isYeaftProvider() { return this.form.provider === 'yeaft'; },
     vpList() { return this.vpStore?.vpList || []; },
     vpDomainSections() { return buildVpDomainSections(this.vpList); },
     vpListSignature() {
@@ -502,8 +516,26 @@ export default {
         .filter(s => s && s.id)
         .map(s => ({ ...s, inSidebar: inSidebar.has(s.id) }));
     },
+    chatFolderRows() {
+      return (this.chat?.folders || []).map(folder => ({
+        path: folder.path || folder.name || '',
+        count: Number(folder.sessionCount) || 0,
+      })).filter(folder => folder.path);
+    },
+    createFolderRows() {
+      return this.isYeaftProvider ? this.folderAggregates : this.chatFolderRows;
+    },
+    createSessionRows() {
+      if (this.isYeaftProvider) return this.sessionsInDir;
+      return (this.chat?.historySessions || []).map(session => ({
+        ...session,
+        id: session.sessionId,
+        name: session.title,
+        createdAt: session.lastModified,
+      }));
+    },
     canSubmit() {
-      if (this.form.vpIds.length === 0) return false;
+      if (this.isYeaftProvider && this.form.vpIds.length === 0) return false;
       if (!this.form.agentId) return false;
       const a = this.agentOptions.find(x => x.id === this.form.agentId);
       return !!(a && a.online);
@@ -574,9 +606,21 @@ export default {
     // a different agent from the dropdown, since the VP library is
     // per-agent (one agent's VPs are not the other's). Also re-scan
     // the disk panel because the workdir registry is per-agent too.
+    'form.provider'(next, prev) {
+      if (next === prev) return;
+      this.form.workDir = '';
+      this.scannedSessions = [];
+      this.restoreError = '';
+      if (next === 'yeaft') {
+        this.subscribeVpsFor(this.form.agentId);
+        this.applyDefaultSelection();
+      } else if (this.form.agentId) {
+        this.chat?.listFoldersForAgent?.(this.form.agentId, next);
+      }
+    },
     'form.agentId'(next, prev) {
       if (next === prev) return;
-      this.subscribeVpsFor(next);
+      if (this.isYeaftProvider) this.subscribeVpsFor(next);
       // VP list is per-agent — clear stale selection so the user
       // doesn't accidentally create a session with a VP that doesn't
       // exist on the newly-targeted agent.
@@ -587,12 +631,13 @@ export default {
       // intentionally skipped and vpListSignature will not change. Re-apply the
       // default immediately so a cold modal does not get stuck on "no VP" after
       // the async agent roster seeds form.agentId.
-      this.applyDefaultSelection();
+      if (this.isYeaftProvider) this.applyDefaultSelection();
       // Reset scanned-from-disk state; workDir + agent both contribute
       // to which sessions are visible.
       this.scannedSessions = [];
       this.restoreError = '';
-      if ((this.form.workDir || '').trim()) this.loadRestoreCandidates();
+      if (!this.isYeaftProvider && next) this.chat?.listFoldersForAgent?.(next, this.form.provider);
+      if ((this.form.workDir || '').trim()) this.loadProviderSessions();
     },
     // fix-session-restore-modal-unify: auto-load the "Restore from disk"
     // list whenever the user enters a workdir (matches the old standalone
@@ -606,7 +651,7 @@ export default {
       this.scannedSessions = [];
       const trimmed = (next || '').trim();
       if (!trimmed) return;
-      this.loadRestoreCandidates();
+      this.loadProviderSessions();
     },
   },
   beforeUnmount() {
@@ -732,6 +777,12 @@ export default {
         return;
       }
       chat.sendWsMessage({ type: 'yeaft_vp_subscribe', agentId: target });
+    },
+    loadProviderSessions() {
+      if (this.isYeaftProvider) return this.loadRestoreCandidates();
+      const workDir = (this.form.workDir || '').trim();
+      if (!workDir || !this.form.agentId) return;
+      this.chat?.listHistorySessionsForAgent?.(this.form.agentId, workDir, this.form.provider);
     },
     /**
      * fix-session-restore-modal-unify: scan the workdir for on-disk
@@ -916,11 +967,24 @@ export default {
      */
     selectSession(session) {
       if (!session || !session.id) return;
+      if (!this.isYeaftProvider) {
+        const workDir = session.workDir || (this.form.workDir || '').trim() || this.defaultWorkDir;
+        this.chat?.selectAgent?.(this.form.agentId);
+        this.chat._pendingSessionTitle = session.name || session.title || null;
+        this.chat?.resumeConversation?.(session.id, workDir, this.form.agentId, this.chatProviderOptions());
+        this.$emit('close');
+        return;
+      }
       if (session.inSidebar) {
         this.resumeExisting(session);
       } else {
         this.onRestoreClick(session);
       }
+    },
+    chatProviderOptions() {
+      const options = { provider: this.form.provider };
+      if (this.form.provider === 'copilot') options.providerOptions = { allowAllTools: true };
+      return options;
     },
     resumeExisting(session) {
       if (!session || !session.id) return;
@@ -990,7 +1054,19 @@ export default {
       this.submitError = '';
       this.busy = true;
       try {
-        if (!this.chat || typeof this.chat.createYeaftSession !== 'function') {
+        if (!this.chat) {
+          this.submitError = this.$t('yeaft.session.error.unknown', { message: 'store unavailable' });
+          return;
+        }
+        if (!this.isYeaftProvider) {
+          const workDir = this.form.workDir.trim() || this.defaultWorkDir;
+          this.chat.selectAgent?.(this.form.agentId);
+          this.chat.createConversation?.(workDir, this.form.agentId, null, this.chatProviderOptions());
+          this.$emit('created', { provider: this.form.provider, workDir });
+          this.$emit('close');
+          return;
+        }
+        if (typeof this.chat.createYeaftSession !== 'function') {
           this.submitError = this.$t('yeaft.session.error.unknown', { message: 'store unavailable' });
           return;
         }

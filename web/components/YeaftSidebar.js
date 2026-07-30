@@ -69,6 +69,9 @@ export default {
           />
           <div class="sidebar-header-actions">
             <SidebarModeToggle v-if="!chatStore || !chatStore.sessionCatalogLoaded" view="yeaft" @flip="onModeFlip" />
+            <button class="sidebar-icon-btn sidebar-work-center-header-btn" :class="{ active: chatStore && chatStore.workCenterOpen }" :disabled="workCenterAgents.length === 0" :title="tr('workCenter.title', 'Work Center')" :aria-label="tr('workCenter.title', 'Work Center')" @click="onOpenWorkCenter()">
+              <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>
+            </button>
             <button class="sidebar-icon-btn" :title="tr('chat.sidebar.collapse', 'Collapse')" @click="$emit('toggle-sidebar')">
               <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 18h13v-2H3v2zm0-5h10v-2H3v2zm0-7v2h13V6H3zm18 9.59L17.42 12 21 8.41 19.59 7l-5 5 5 5L21 15.59z"/></svg>
             </button>
@@ -88,11 +91,8 @@ export default {
         :is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"
         :agents="chatStore.agents"
         :work-center-open="chatStore.workCenterOpen"
-        :work-center-agent-id="chatStore.workCenterAgentId"
-        preferred-provider="yeaft"
         @select="chatStore.openCatalogSession"
         @create="onUnifiedCreate"
-        @open-work-center="onOpenWorkCenter"
         @close-work-center="chatStore.leaveWorkCenter"
         @action="onUnifiedSessionAction"
       />
@@ -360,6 +360,9 @@ export default {
     onlineAgentCount() {
       return this.onlineAgents.length;
     },
+    workCenterAgents() {
+      return this.onlineAgents.filter(agent => Array.isArray(agent.capabilities) && agent.capabilities.includes('work_center'));
+    },
     currentAgentName() {
       const s = this.chatStore || this.store;
       if (!s || !Array.isArray(s.agents)) return '';
@@ -433,9 +436,12 @@ export default {
         this.$emit('back');
       }
     },
-    onOpenWorkCenter(agentId) {
+    onOpenWorkCenter(agentId = null) {
       const s = this.chatStore || this.store;
-      if (s && typeof s.enterWorkCenter === 'function') s.enterWorkCenter(agentId);
+      const target = this.workCenterAgents.find(agent => agent.id === agentId)
+        || this.workCenterAgents.find(agent => agent.id === s?.workCenterAgentId)
+        || this.workCenterAgents[0];
+      if (target && s && typeof s.enterWorkCenter === 'function') s.enterWorkCenter(target.id);
     },
     // task-334m: session-create + selection handlers.
     onGroupCreated(_group) {
@@ -447,16 +453,7 @@ export default {
     // onSessionRestored are gone (folded into SessionCreateModal's own
     // `created` flow).
     onOpenSessionCreate() { this.sessionCreateOpen = true; },
-    onUnifiedCreate(provider) {
-      if (provider === 'yeaft') {
-        this.onOpenSessionCreate();
-        return;
-      }
-      const s = this.chatStore || this.store;
-      if (!s) return;
-      s.openUnifiedChatCreate = provider;
-      s.leaveYeaft();
-    },
+    onUnifiedCreate() { this.onOpenSessionCreate(); },
     onUnifiedSessionAction({ action, row, title, sessions } = {}) {
       if (!row?.routeRef) return;
       const s = this.chatStore || this.store;
