@@ -8,6 +8,7 @@ import {
   addMessageToConversation,
   appendToAssistantMessageForConversation,
   finishStreamingForConversation,
+  maxDbMessageId,
 } from '../../web/stores/helpers/messages.js';
 import UnifiedSessionList from '../../web/components/UnifiedSessionList.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
@@ -62,7 +63,11 @@ globalThis.Pinia = {
 const { useChatStore } = await import('../../web/stores/chat.js');
 const { default: ChatPage } = await import('../../web/components/ChatPage.js');
 const { default: YeaftSidebar } = await import('../../web/components/YeaftSidebar.js');
-const { handleSyncMessagesResult } = await import('../../web/stores/helpers/handlers/conversationHandler.js');
+const {
+  handleConversationCreated,
+  handleConversationResumed,
+  handleSyncMessagesResult,
+} = await import('../../web/stores/helpers/handlers/conversationHandler.js');
 
 import {
   buildYeaftMessageTurnSpans,
@@ -129,6 +134,13 @@ describe('message flow regressions', () => {
       turnId: 'turn-1',
     });
     expect(store.messagesMap['conv-1'][0]).not.toHaveProperty('turnEndAt');
+  });
+
+  it('keeps the largest persisted DB id when a streaming row is at the tail', () => {
+    expect(maxDbMessageId([
+      { id: 'optimistic-user', dbMessageId: 17 },
+      { id: 'streaming-assistant-uuid', isStreaming: true },
+    ])).toBe(17);
   });
 
   it('keeps Work Center inputs available and detail layouts responsive', async () => {
@@ -682,6 +694,34 @@ describe('message flow regressions', () => {
       agentId: 'agent-b',
       sessionId: 'created-chat',
     });
+    store.conversations = [];
+    store.activeConversations = [];
+    store.panels = [];
+    store.sendWsMessage = vi.fn(() => true);
+    store.addMessage = vi.fn();
+    store.saveOpenSessions = vi.fn();
+    store.formatDbMessageForHistoryHydration = vi.fn(row => row);
+    handleConversationCreated(store, {
+      conversationId: 'created-copilot',
+      agentId: 'agent-a',
+      workDir: '/repo',
+      provider: 'copilot',
+    });
+    expect(store.activeSessionRoute?.runtimeProvider).toBe('copilot');
+    handleConversationResumed(store, {
+      conversationId: 'resumed-claude',
+      claudeSessionId: 'runtime-1',
+      agentId: 'agent-a',
+      workDir: '/repo',
+      provider: 'claude-code',
+      dbMessages: [],
+    });
+    expect(store.activeSessionRoute).toEqual({
+      runtimeProvider: 'claude-code',
+      agentId: 'agent-a',
+      sessionId: 'resumed-claude',
+    });
+
     store.currentView = 'yeaft';
     store.activeVpTurns = {};
     store.stoppingVpTurnIds = {};

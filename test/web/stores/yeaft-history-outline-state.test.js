@@ -77,7 +77,7 @@ function primeStore() {
 describe('Yeaft history outline state', () => {
   beforeEach(() => vi.useFakeTimers());
 
-  it('keeps background end_turn unread until that Agent Session is opened', () => {
+  it('sends sender-only searches, rejects stale responses, and tracks unread Sessions', () => {
     const store = primeStore();
     store.activeVpTurns = {
       'turn-unread': { sessionId: 'other', vpId: 'linus', isStreaming: true },
@@ -102,12 +102,9 @@ describe('Yeaft history outline state', () => {
     expect(store.isYeaftSessionUnread('other', 'agent-b')).toBe(false);
 
     store.currentAgent = 'agent-a';
+    store.currentView = 'yeaft';
     store.yeaftActiveSessionFilter = 'same';
-    store.yeaftSessionAgentById = { same: 'agent-a' };
-    store.yeaftUnreadSessions = {};
-    store.activeVpTurns = {};
     expect(store.markYeaftSessionUnread('same', 'agent-a')).toBe(false);
-    store.yeaftActiveSessionFilter = 'same';
     store.yeaftSessionAgentById = { same: 'agent-a', other: 'agent-a' };
     store.activeVpTurns = {
       'turn-aborted': { sessionId: 'other', vpId: 'linus', isStreaming: true },
@@ -125,13 +122,9 @@ describe('Yeaft history outline state', () => {
     });
     expect(store.isYeaftSessionUnread('same', 'agent-a')).toBe(false);
     expect(store.isYeaftSessionUnread('other', 'agent-a')).toBe(false);
-  });
 
-  it('sends sender-only searches and rejects stale sender responses', () => {
-    const store = primeStore();
     store.currentAgentInfo.capabilities.push('session_history_search');
     store.agents[0].capabilities.push('session_history_search');
-
     expect(store.searchYeaftHistory('', { senderKey: 'vp:linus' })).toBe(true);
     const first = store._sent.at(-1);
     expect(first).toMatchObject({
