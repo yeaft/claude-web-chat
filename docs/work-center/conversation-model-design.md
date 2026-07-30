@@ -777,12 +777,12 @@ queued → cancelled
 ### 12.3 Provider dispatch 崩溃窗口
 
 - `prepared` 后、`dispatching` 前崩溃：网络调用尚未开始，可以安全 dispatch 同一个 `turnId` 和 request hash；
-- `dispatching` 后、response 持久化前崩溃：先把 turn 收敛为 `unknown`；只有 provider 能按稳定 request key 查询结果或保证同 key 幂等时，才能自动 reconcile/retry；
-- provider 不支持查询或幂等时：不得自动再发请求，EngineTurn 置为 `unknown`，Run 进入非终态 `dispatch_unknown`，Action 显示 needs attention，entry 保持绑定到该 turn；用户或 Coordinator 必须显式选择“确认并采用已查询结果”“确认未执行并允许同一 turn 再 dispatch”或“取消该 turn/Run”，不能新建另一个 turn 偷偷重复消费；
+- `dispatching` 后、response 持久化前崩溃：恢复事务锁定 EngineTurn；只有 provider 能按稳定 request key 查询结果或保证同 key 幂等时，才能自动 reconcile/retry；否则在同一 `BEGIN IMMEDIATE` 中把 turn 置为 `unknown`、Run 置为 `dispatch_unknown`、创建唯一 pending `engine_turn_dispatch` HumanRequest、推进 run/request revisions，并写 Conversation/Event；
+- provider 不支持查询或幂等时：不得自动再发请求，entry 保持绑定到该 turn；request owner 用户或 Coordinator 必须显式选择“确认并采用已查询结果”“确认未执行并允许同一 turn 再 dispatch”或“取消该 turn/Run”，不能新建另一个 turn 偷偷重复消费；
 - `responded` 后崩溃：恢复直接使用已持久 response，不再次调用 provider；
 - adapter 必须显式声明 dispatch capability，未知能力按最保守的 non-idempotent 处理。
 
-裁决事务必须校验 `workItemId + actionId + runId + turnId + requestHash + dispatchAttempt + expectedRunRevision`。采用已查询结果时写 response CAS 并恢复同一 Run；允许再 dispatch 时只给同一 Run/turn 分配新的 lease epoch 和 dispatch attempt，不改 request/entries；取消时把 turn 和 Run 收敛为 cancelled/failed 并保留 unknown effect 审计。`dispatch_unknown` 未裁决期间阻止 Action Start、message wake、WorkItem Stop 以外的控制和 complete。
+裁决事务必须校验 `workItemId + actionId + runId + turnId + requestHash + dispatchAttempt + requestId + expectedRequestRevision + expectedRunRevision + cancellationEpoch`。采用已查询结果时写 response CAS 并恢复同一 Run；允许再 dispatch 时只给同一 Run/turn 分配新的 lease epoch 和 dispatch attempt，不改 request/entries；取消时把 turn 和 Run 收敛为 cancelled/failed 并保留 unknown effect 审计。所有分支在同一事务消费 resolution request、推进 request/run revisions 并写 Conversation/Event；两个用户、用户与 Coordinator、Stop 与裁决并发时只有一个 CAS 成功。`dispatch_unknown` 未裁决期间阻止 Action Start、message wake、WorkItem Stop 以外的控制和 complete。
 
 因此产品承诺是“ActionEntry 在本地只绑定一个逻辑 EngineTurn”，不是“任意 provider 的网络调用物理上恰好一次”。
 
@@ -877,21 +877,43 @@ Stop 不是撤销。用户如果只是想补充方向，应发消息或 Pause，
 
 ```js
 {
-  id,
+  id: requestId,
   workItemId,
   actionId: null,
+  runId: null,
+  turnId: null,
+  operationId: null,
   coordinatorTurnId: null,
+  authorizedUserId,
+  createdBy: { type: 'coordinator' | 'recovery' | 'system', id },
   kind: 'question' | 'approval' | 'confirmation',
+  resolutionType: null | 'engine_turn_dispatch' | 'operation_effect',
   prompt,
   details,
-  operationId: null,
+  expectedIdentity: null | {
+    requestHash: null,
+    dispatchAttempt: null,
+    operationRevision: null,
+    ownerLeaseEpoch: null,
+    cancellationEpoch,
+  },
   status: 'pending' | 'answered' | 'approved' | 'rejected' | 'expired' | 'cancelled',
   revision,
   openedAt,
   resolvedAt: null,
   resolutionMessageId: null,
+  resolutionCommandId: null,
 }
 ```
+
+恢复类 HumanRequest 不是普通提示卡。数据库必须保证每个 unresolved EngineTurn/Operation 最多存在一个 pending resolution request：
+
+- `engine_turn_dispatch` 唯一键是 `(turnId, requestHash, dispatchAttempt, status=pending)`；
+- `operation_effect` 唯一键是 `(operationId, operationRevision, status=pending)`；
+- 创建、状态对象转为 `unknown`、推进 WorkItem `requestRevision`、写 Conversation/Event 必须在同一个 `BEGIN IMMEDIATE` 事务；
+- request 的 `expectedIdentity` 是创建时的冻结身份，resolve wire 还必须提交 `requestId + expectedRequestRevision`；
+- 重启扫描只能幂等补建缺失 request，不能为同一 unknown identity 创建第二张卡；
+- request 被 Stop、另一个裁决或状态自动探测消费后，任何迟到回复都无副作用。
 
 ### 14.1 Action 问题
 
@@ -988,6 +1010,16 @@ Approval 必须描述：
     command: 'start' | 'pause' | 'stop' | 'close' | 'supersede',
     reason,
   }],
+  resolveOperations: [{
+    operationId,
+    requestId,
+    decision: 'confirm_applied' | 'confirm_not_applied' | 'confirm_failed_no_effect',
+    evidenceRefs: [],
+    expectedOperationRevision,
+    expectedRequestRevision,
+    expectedOwnerLeaseEpoch,
+    cancellationEpoch,
+  }],
   openRequests: [],
   acceptedSharedKnowledge: [],
   complete: null | {
@@ -998,6 +1030,8 @@ Approval 必须描述：
   },
 }
 ```
+
+`resolveOperations` 不是第二套授权入口。CoordinatorTurn 提交时，服务端必须为每个元素派生稳定 command identity `coordinatorTurnId:operationId:requestId`，再规范化为与 `resolve_operation` wire 完全相同的 payload，并在 CoordinatorTurn 的同一个外层 `BEGIN IMMEDIATE` 中调用 22.3 节权威 mutation 的 transaction-aware 内部实现；wire 入口只是为同一内部实现建立自己的外层事务。两者都不能绕过 pending request、evidence、owner lease、operation/request revision 或 cancellation epoch fence。整个 CoordinatorTurn 仍受 15.2 节 snapshot CAS；任一 resolution stale 时，外层事务整体 rollback，不得部分提交 reply、其他 resolution 或 complete。
 
 没有 dependency、stage、graph、next action pointer 或 workflow template。
 
@@ -1175,6 +1209,13 @@ Executor 可以返回结果、证据、风险、问题和建议，但不能直�
   consumedThroughSequence,
   engineTurnCount,
   sideEffectState: 'none' | 'known' | 'unknown',
+  cancellation: null | {
+    cancellationEpoch,
+    status: 'requested' | 'acknowledged' | 'process_gone' | 'uncontrollable' | 'timed_out',
+    requestedAt,
+    deadlineAt,
+    resolvedAt: null,
+  },
   resultRef: null,
   createdAt,
   startedAt: null,
@@ -1317,15 +1358,22 @@ Run 结果不能直接把 WorkItem 改为 done。Run 终态后仍存活的 Opera
 1. 校验 `clientCommandId + workItemId + expectedWorkItemRevision` 并做幂等去重；
 2. 将 WorkItem 置为 `cancelling` 并推进 `cancellationEpoch`、WorkItem/action-entry/run/request/operation revisions；
 3. 通过 WorkItem cancellation gate 关闭所有 Action 的新 message/start admission，但不篡改 Action 自身的 open/superseded/closed 历史；并发到达的 message/start/complete 必须在同一 revision fence 下失败，不得部分写入；
-4. 对全部 queued/running/dispatch_unknown/pausing/stopping active Run 推进 lease epoch；未开始的 Run 直接写 immutable `cancelled` RunResult，已执行的 Run 置为非终态 `stopping`，迟到 provider/tool/result 全部受旧 epoch 拒绝；既有 waiting/paused/completed/failed/stopped RunResult 保持不可变；
+4. 对全部 queued/running/dispatch_unknown/pausing/stopping active Run 推进 lease epoch，并创建或幂等复用 `(runId, cancellationEpoch)` cancellation attempt。尚未 dispatch 的 queued Run（包括仅有 `prepared` EngineTurn）和 `dispatch_unknown` Run 没有可继续接受的执行实体：在本事务立即写 immutable `cancelled` 或 `interrupted` RunResult；后者保留 `providerInvocation=unknown`。真实 running/pausing/stopping process 的 Run 先置为非终态 `stopping`，由 cancellation watchdog 收敛。迟到 provider/tool/result 全部受旧 epoch 拒绝；既有 waiting/paused/completed/failed/stopped RunResult 保持不可变；
 5. 把所有未绑定 ActionEntry 置为 `cancelled` 并保留审计；已 `bound` 的 entries 保持原 EngineTurn 身份。对应 turn 已 responded 则保留 consumed；prepared 可直接 cancelled；dispatching/unknown 在逻辑上置为 cancelled、entries 置为 cancelled，并永久记录 `providerInvocation=unknown`，任何迟到 response 只进冷审计、不能恢复 turn 或 entry；所有情况都不能重新排队；
-6. 取消 pending HumanRequest，关闭用户/Executor 到 Coordinator 的新工作 admission，并写对应 terminal mailbox/event；内部 Run/Operation 终态仍追加审计 mailbox event，但 cancelling/cancelled 状态不触发新的 CoordinatorTurn；
-7. 对 `planned/started` Operation 写 `cancel_requested`；可确认未执行的标为 `cancelled`，已确认完成的保持 `confirmed`，无法确认的标为 `unknown`；
+6. 取消普通 pending HumanRequest 和全部 `engine_turn_dispatch` request，关闭用户/Executor 到 Coordinator 的新工作 admission，并写对应 terminal mailbox/event；Operation resolution request 只有在其 Operation 同事务终态化时才消费，否则按新 cancellation epoch 原子 rebind 或重建唯一 request；内部 Run/Operation 终态仍追加审计 mailbox event，但 cancelling/cancelled 状态不触发新的 CoordinatorTurn；
+7. 对 `planned/started` Operation 写 `cancel_requested`；可确认未执行的标为 `cancelled`，已确认完成的保持 `confirmed`，无法确认的标为 `unknown`，并在同一事务创建或 rebind 唯一 pending `operation_effect` HumanRequest；
 8. 写唯一 Conversation control entry 和 `work_item.cancel_requested` Event。
 
-事务提交后才请求中止 provider、tool 和后台 task。物理取消结果按 Operation/Run 自身 CAS 逐步回写；只要存在 active/cancel_requested Operation 或尚未终结的 Run，WorkItem 保持 `cancelling`。全部收敛后再用一个 fenced 事务置为 `cancelled`，写 `work_item.cancelled`。Stop 不回滚 confirmed effect，也不删除消息、entry、request 或 mailbox 审计。
+事务提交后才请求中止 provider、tool 和后台 task。每个真实 process cancellation attempt 持久化 `requestedAt/deadlineAt/status`；watchdog 以 `runId + cancellationEpoch + leaseEpoch` 探测 owner registry、Task/Operation 记录和 OS 进程：
 
-`cancelled` WorkItem 默认拒绝全部新输入和执行。显式 reopen 只能在没有 active/cancel_requested/unknown Operation 时直接回到 active；否则保持 needs attention，要求用户先裁决副作用。reopen 不恢复 cancelled entries、requests、mailbox events 或旧 Runs；仍 `open` 的 Action 可以接收一条新的 message/start 并创建新 Run，superseded/closed Action 永不复活。
+- 收到明确 cancel acknowledgement 或确认进程不存在：CAS 写 `cancelled` RunResult；
+- 进程已经完成但结果在旧 epoch：结果只进冷审计，逻辑 Run 写 `interrupted`；
+- provider/tool 不可取消、Agent 崩溃后不可查询或超过 deadline：不无限等待，CAS 写 `interrupted` RunResult，并把可能仍存活的副作用持久化为 blocking `cancel_requested/unknown` Operation；
+- watchdog 重启后从 durable deadline 继续，重复 Stop 复用同一 cancellation attempt，不延长 deadline、不重复 terminal RunResult。
+
+逻辑 Run 终结不表示物理副作用已收敛。只要存在 active/cancel_requested/unknown Operation 或 pending `operation_effect` request，WorkItem 保持 `cancelling`；对外写入只允许 `resolve_operation` 和重复幂等 Stop，只读查询始终允许，系统 recovery probe、cancellation watchdog 和 terminal CAS 继续运行；message、Start、reopen 或 complete 一律拒绝。Run 不会再成为无限等待条件，因为每个 active Run 都由上述确定性 terminalizer 收敛。全部 Run 已终态、Operation 都已进入 `confirmed/cancelled/failed` 且 resolution request 已消费后，fenced 事务才置为 `cancelled`。Stop 不回滚 confirmed effect，也不删除消息、entry、request 或 mailbox 审计。
+
+`cancelled` WorkItem 默认拒绝全部新输入和执行。正常状态下它已经没有 active/cancel_requested/unknown Operation 或 pending resolution request，显式 reopen 通过 23.3 节的完整 fence 后才回到 active；若这些不变量不成立，reopen 失败并进入恢复诊断，不能改成 needs-attention 绕过取消边界。reopen 不恢复 cancelled entries、requests、mailbox events 或旧 Runs；仍 `open` 的 Action 可以接收一条新的 message/start 并创建新 Run，superseded/closed Action 永不复活。
 
 ### 17.8 Completion 竞态
 
@@ -1542,7 +1590,24 @@ Operation 是独立于 immutable RunResult 的 durable lifecycle。`originatingR
 - 后台任务晚于 originating Run 结束时，结果只更新 Operation、artifact、Event 和 Coordinator mailbox；RunResult 保持不变；
 - Stop 或 lease 失效后的后台迟到结果必须匹配 `operationId + revision + ownerLeaseEpoch`，不能覆盖更晚的 cancelled/unknown 裁决。
 
-### 22.3 Runner 重启
+### 22.3 Operation resolution
+
+Operation 从 `unknown/cancel_requested` 退出只有两条权威路径：
+
+1. **自动 probe**：恢复器先持久化 probe attempt 与预期 `operationId + revision + ownerLeaseEpoch + cancellationEpoch`；探测结果必须包含稳定 target/effect identity 和 evidence hash。一个 `BEGIN IMMEDIATE` CAS 只能执行以下转换：确认已发生 → `confirmed`；确认未发生 → `cancelled`；确认失败且无副作用 → `failed`。若存在 pending `operation_effect` request，同一事务消费该 request 并推进 request revision。探测不确定时保持 `unknown`，不得释放 blocking gate。
+2. **人工裁决**：Operation 首次进入 `unknown`，或 `cancel_requested` 超过取消探测期限仍无法确认时，在同一事务创建唯一 pending `operation_effect` HumanRequest、推进 operation/request revisions，并写 Conversation/Event。用户或 Coordinator 通过 `resolve_operation` 提交结构化 decision 和 evidence；普通消息不能改变 Operation 状态。
+
+裁决事务必须校验 `workItemId + actionId + operationId + requestId + expectedOperationRevision + expectedRequestRevision + expectedOwnerLeaseEpoch + cancellationEpoch`，并原子：消费 request；写 `confirmed/cancelled/failed` 终态；推进 Operation/WorkItem/request revisions；释放该 Operation 的资源 leases；写 evidence、Conversation 和 Event。终态后，旧 task/tool/probe/result 只能进入冷审计，不能覆盖状态、重新获取资源或修改 originating RunResult。重复 `clientCommandId` 返回原结果；两个用户、用户与 Coordinator、自动 probe 与人工裁决、Stop/reopen/complete 并发时只有一个 CAS 成功。
+
+允许 decision：
+
+- `confirm_applied` → `confirmed`，要求能证明目标和实际 effect；
+- `confirm_not_applied` → `cancelled`，要求能证明 effect 没有发生；
+- `confirm_failed_no_effect` → `failed`，要求能证明失败且无残留副作用。
+
+没有足够证据时只能保持 `unknown`。不存在“忽略 unknown 并继续”的 decision；需要承担重复副作用风险时，应先通过新的 approval/Operation 执行显式补偿或重试，而不是篡改旧 Operation。
+
+### 22.4 Runner 重启
 
 恢复时：
 
@@ -1593,14 +1658,17 @@ WorkItem done 后：
 
 重新打开事务：
 
+- 只接受 `done/cancelled`；`cancelling` 必须先通过 Operation resolution 和 terminalizer 收敛，reopen 请求直接拒绝且无副作用；
+- 校验 `expectedWorkItemRevision + operationRevision + requestRevision + cancellationEpoch`，并再次确认没有 active/cancel_requested/unknown Operation 或 pending resolution request；
 - 保存 control ConversationEntry；
-- 没有 blocking unresolved Operation 时 WorkItem 回到 active；否则进入 needs_attention；
-- 重新打开 Coordinator mailbox admission，使副作用裁决可以继续；
+- WorkItem 回到 active，重新打开 Coordinator mailbox admission；
 - 原 finalResult 保留；
 - Coordinator 接收 reopen 事件；
 - 仍 open 的旧 Action可再次定向；
 - superseded/closed Action 不能复活；
 - Coordinator 可创建新 Action。
+
+若持久库出现 `cancelled` 同时仍有 unresolved Operation 的不变量破坏，reopen 必须失败并进入恢复诊断，不能借 `needs_attention` 绕过 cancellation gate。
 
 ---
 
@@ -1641,6 +1709,7 @@ WorkItem done 后：
 - `post_work_item_message`
 - `control_action`
 - `resolve_engine_turn`
+- `resolve_operation`
 - `stop_work_item`
 - `reopen_work_item`
 - `delete_work_item`
@@ -1686,9 +1755,11 @@ WorkItem done 后：
   actionId,
   runId,
   turnId,
+  requestId,
   decision: 'adopt_queried_response' | 'confirm_not_executed_and_redispatch' | 'cancel',
   queriedResponseRef: null,
   expected: {
+    requestRevision,
     requestHash,
     dispatchAttempt,
     runRevision,
@@ -1697,7 +1768,29 @@ WorkItem done 后：
 }
 ```
 
-只有 pending dispatch-resolution HumanRequest 的 owner 用户或 Coordinator fenced decision 可以调用。`adopt_queried_response` 要求可验证 provider response identity/hash；`confirm_not_executed_and_redispatch` 要求用户明确承担重复调用风险且仍使用同一 turn/request hash；`cancel` 把 turn 和 entries/Run 收敛为 cancelled/failed 并保留 unknown-effect audit。一个 `BEGIN IMMEDIATE` 事务校验完整 expected identity、消费 HumanRequest、更新 turn/Run/entries/revisions、写 Conversation/Event；重复 `clientCommandId` 返回原结果，迟到或冲突 decision 无副作用。
+只有 payload `requestId` 指向 pending `engine_turn_dispatch` HumanRequest 的 owner 用户，或带相同 request identity 的 Coordinator fenced decision 可以调用。`adopt_queried_response` 要求可验证 provider response identity/hash；`confirm_not_executed_and_redispatch` 要求用户明确承担重复调用风险且仍使用同一 turn/request hash；`cancel` 把 turn 和 entries/Run 收敛为 cancelled/failed 并保留 unknown-effect audit。一个 `BEGIN IMMEDIATE` 事务校验完整 expected identity、消费 HumanRequest、更新 turn/Run/entries/request revisions、写 Conversation/Event；重复 `clientCommandId` 返回原结果，迟到或冲突 decision 无副作用。
+
+`resolve_operation` 只处理 payload `requestId` 绑定的 pending `operation_effect` HumanRequest：
+
+```js
+{
+  clientCommandId,
+  workItemId,
+  actionId,
+  operationId,
+  requestId,
+  decision: 'confirm_applied' | 'confirm_not_applied' | 'confirm_failed_no_effect',
+  evidenceRefs: [],
+  expected: {
+    operationRevision,
+    requestRevision,
+    ownerLeaseEpoch,
+    cancellationEpoch,
+  },
+}
+```
+
+服务端验证 caller 是 request owner 用户，或该请求当前 Coordinator snapshot 的 fenced decision。裁决按 22.3 节执行同一事务；没有可验证 evidence 时保持 unknown 并返回明确错误，不消费 request。成功后才允许 Start/wake/reopen/complete 重新评估门禁。
 
 `stop_work_item`：
 
@@ -1948,6 +2041,9 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 - planned/started/cancel_requested/unknown blocking Operation 阻止 Start、message wake 和 complete；
 - detached read-only Operation 只有无写资源 lease 且输出不参与验收时才可放行；
 - 后台 Operation 迟到结果受 operation revision/owner lease fence，不能覆盖 cancelled/unknown；
+- 自动 probe 与人工 `resolve_operation` 冲突时只有一个 CAS 生效，失败方不消费 request、不释放资源 lease；
+- 两个用户、用户与 Coordinator 的 Operation 裁决冲突只有一个成功；stale operation/request revision、owner lease epoch 或 cancellation epoch 无副作用；
+- `resolve_operation` 与 Stop、reopen、complete 并发由同一 revisions/cancellation fence 串行，不能一边解除 gate 一边提交旧 complete；cancelling 状态的 reopen 始终拒绝；
 - Agent 重启后 ActionEntry high watermark 不倒退。
 
 ### 29.3 Run 与 Engine
@@ -1958,7 +2054,9 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 - `prepared` 前后崩溃安全 dispatch 同一 request hash，不重新归约 entries；
 - `dispatching` 后崩溃时，无 provider 幂等/查询能力就进入 `dispatch_unknown` 且不自动重发；
 - `dispatch_unknown` 阻止新 Run、wake 和 complete；`resolve_engine_turn` 的裁决 CAS 只能在同一 Run/turn 采用已验证查询结果、明确允许新 attempt 或取消；
-- 两个冲突/重复裁决只有一个事务生效，stale requestHash/attempt/run revision/cancellation epoch 无副作用；
+- EngineTurn 首次 unknown 与重启扫描并发只创建一个 pending `engine_turn_dispatch` request；重复扫描不推进 identity；
+- 两个用户、用户与 Coordinator 的冲突/重复裁决只有一个事务生效，stale requestId/request revision/requestHash/attempt/run revision/cancellation epoch 无副作用；
+- Stop 与 `resolve_engine_turn` 并发只有一个事务生效；Stop 胜出后 request 被取消，迟到裁决和 provider response 只能进冷审计；
 - responded response CAS 后恢复不重复 provider 调用；
 - provider failure 不把 message 绑定到第二个 EngineTurn；
 - tool-call batch 完整后才注入新消息；
@@ -2005,11 +2103,14 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 - planned/started/cancel_requested/unknown blocking Operation 阻止 done；
 - stop 与并发 message/start/complete 只有一个事务胜出，不产生部分输入；
 - stop 单事务推进 WorkItem cancellation epoch 和全部 active Run lease epoch；
-- stop 保留 terminal Run，queued Run 产生 cancelled RunResult，running/dispatch_unknown Run 收敛为 interrupted/cancelled 并保留 unknown audit，迟到结果被拒绝；
+- stop 保留 terminal Run；queued Run、仅有 prepared EngineTurn 的 Run 和 dispatch_unknown Run 在取消事务内立即产生 cancelled/interrupted RunResult；真实 running Run 经 cancellation attempt/watchdog 收敛；
+- Agent 在 stop 提交后崩溃，重启 watchdog 仍使用原 durable deadline；超时或 owner/process 不可查询时确定性写 interrupted，不永久停在 stopping；
+- 重复 Stop 复用 `(runId, cancellationEpoch)` attempt，不延长 deadline、不重复 RunResult/Conversation/Event；
+- stop 与 cancel acknowledgement、正常完成、迟到 provider response 并发时，旧 lease 结果只能进冷审计，terminal RunResult 只有一个；
 - stop 把所有未绑定 ActionEntry、pending HumanRequest 和新工作 mailbox admission 收敛为 cancelled audit；bound EngineTurn 按 responded/prepared/dispatching/unknown 分别裁决，迟到 response 不能复活 entry；
 - stop 后后台 Operation 按 confirmed/cancelled/unknown 收敛，物理完成前 WorkItem 保持 cancelling；
 - reopen 后 open Action可接收新 entry 并创建新 Run，superseded/closed Action 不复活；
-- unresolved Operation 令 reopen 进入 needs_attention 而不是自动执行；
+- cancelling WorkItem 的 unresolved Operation 只允许 resolve_operation；全部裁决并进入 cancelled 后才允许 reopen；
 - 真实 schema 17/18/19/20/21/22 fixture 经完整版本链导入 Action threads、Runs 和 legacy EngineTurns；
 - 相同正文、不同 eventId/inputId occurrence 分别保留，附件不按正文折叠；
 - superseded occurrence 只进 rejected audit，rebound 不得复活它；
@@ -2031,7 +2132,7 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 2. **Runner 协议**：durable provider dispatch、safe checkpoint、entry bound/consumed high watermark、Run lease、消息注入。
 3. **控制命令**：Pause/Start/Stop、WorkItem cancellation epoch、Operation liveness gate、恢复。
 4. **Coordinator 合同**：create/control/message Action，不包含 graph。
-5. **Wire**：单一 WorkItem message 入口、Action control、unknown EngineTurn resolution、ContentRef 读取。
+5. **Wire**：单一 WorkItem message 入口、Action control、unknown EngineTurn/Operation resolution、ContentRef 读取。
 6. **Web 双栏**：Conversation + ContentPane、target selector、pane stack。
 7. **Content 类型**：Action、Run、live/snapshot file、diff、log、attachment。
 8. **Workspace/memory/source grants**：身份验证和权限边界。
@@ -2066,12 +2167,13 @@ ContentPane 切换不能清除 composer；composer target 切换不能隐式改�
 
 - [x] Action 是持久线程，Run 是一次执行。
 - [x] running Action 的新消息在安全边界绑定到唯一 durable EngineTurn。
-- [x] provider dispatch 的幂等/未知边界和恢复裁决已明确。
+- [x] provider dispatch 的幂等/未知边界、唯一 HumanRequest 和 fenced 恢复裁决已明确。
 - [x] 非 running open Action 的消息默认触发新 Run。
 - [x] Start 不伪造用户消息。
 - [x] Pause 不承诺撤销副作用，跨 Run Operation liveness 独立持久化。
 - [x] WorkItem Stop 具有全局 admission/lease/cancellation 原子边界。
-- [x] blocking unresolved Operation 阻止 Start、wake 和 complete。
+- [x] blocking unresolved Operation 阻止 Start、wake 和 complete，并有唯一 probe/人工裁决出口。
+- [x] Coordinator Operation 裁决与 wire 复用同一权威 mutation，不存在旁路。
 - [x] legacy input occurrence、superseded/rebound/consumed 与重复迁移合同已定义。
 - [x] 没有 DAG、依赖图、stage 或 workflow template。
 
