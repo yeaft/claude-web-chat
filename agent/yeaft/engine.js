@@ -81,6 +81,9 @@ const MAX_CONTINUE_TURNS = 3;
 /** Bound the best-effort post-turn AMS LLM call independently of the user turn. */
 const AMS_ADJUST_TIMEOUT_MS = 30_000;
 
+/** Maximum silence while a visible turn waits for a result-producing task. */
+const DEFAULT_ASYNC_TASK_WAIT_TIMEOUT_MS = 120_000;
+
 // ─── LLM retry policy defaults ──────────────────────────────────
 // Hard-coded floor / ceiling for retry behaviour. The engine reads the
 // effective policy from `config.llmRetry` so users can dial these via
@@ -629,6 +632,7 @@ export class Engine {
    *   onUnregister?: (taskId:string, engine:Engine) => void,
    *   onConsumed?: (taskId:string, engine:Engine) => void,
    *   onUndelivered?: (taskId:string, delivery:object, engine:Engine) => void,
+   *   onDeferred?: (taskId:string, engine:Engine) => void,
    * } | null}
    */
   #asyncTaskCoordinator = null;
@@ -3209,14 +3213,17 @@ export class Engine {
       if ((stopReason !== 'tool_use' || toolCalls.length === 0)
           && this.#pendingAsyncTaskIds.size > 0
           && !signal?.aborted) {
+        const asyncTaskWaitTimeoutMs = this.#asyncTaskWaitTimeoutMs();
+        const deferredTaskIds = [];
         // Drop into a wait loop. The loop wakes on (a) any task
         // terminal event delivered via `notifyAsyncTaskCompleted`, (b)
         // a fresh user append (which is honored as a higher priority
         // user input), or (c) abort. On wake we re-check: if either
         // queue has content, drain + splice + continue the outer loop.
         // If both queues are empty AND we still have pending tasks AND
-        // we're not aborted, we just keep waiting. This is the only
-        // place query() can block on something other than the LLM stream.
+        // we're not aborted, wait only until the oldest tracked task has
+        // been silent for the bounded window. Stale ownership is then
+        // released so a later terminal event uses the rescue-turn path.
         yield {
           type: 'async_task_wait_start',
           turnId: queryTurnId,
@@ -3237,7 +3244,10 @@ export class Engine {
                && this.#pendingUserMessages.length === 0
                && !this.#externalUserWakePending) {
           if (this.#pendingAsyncTaskIds.size === 0) break;
-          await this.#waitForAsyncWake(signal);
+          const waitMs = this.#nextAsyncTaskWaitMs(asyncTaskWaitTimeoutMs);
+          if (await this.#waitForAsyncWake(signal, waitMs) === 'timeout') {
+            deferredTaskIds.push(...this.#deferExpiredAsyncTasks(asyncTaskWaitTimeoutMs));
+          }
         }
         yield {
           type: 'async_task_wait_end',
@@ -3246,6 +3256,8 @@ export class Engine {
           threadId,
           aborted: Boolean(signal?.aborted),
           remainingTaskIds: Array.from(this.#pendingAsyncTaskIds),
+          timedOut: deferredTaskIds.length > 0,
+          deferredTaskIds,
         };
         if (signal?.aborted) {
           yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
@@ -4186,6 +4198,69 @@ export class Engine {
     try { this.#asyncTaskCoordinator?.onRegister?.(taskId, this); } catch { /* coord must not throw into tools */ }
   }
 
+  #asyncTaskWaitTimeoutMs() {
+    const configured = Number(this.#config?.asyncTaskWaitTimeoutMs);
+    if (!Number.isFinite(configured)) return DEFAULT_ASYNC_TASK_WAIT_TIMEOUT_MS;
+    return Math.max(1, Math.min(60 * 60_000, Math.floor(configured)));
+  }
+
+  #asyncTaskLastActivityAt(taskId) {
+    if (!this.#taskManager || typeof this.#taskManager.getTask !== 'function') return null;
+    const sessionId = this.#sessionId || 'default';
+    let task = null;
+    try { task = this.#taskManager.getTask(sessionId, taskId); } catch { return null; }
+    if (!task || task.status !== 'running') return 0;
+    const updatedAt = Date.parse(task.updatedAt || task.startedAt || task.createdAt || '');
+    return Number.isFinite(updatedAt) ? updatedAt : 0;
+  }
+
+  #nextAsyncTaskWaitMs(timeoutMs) {
+    const now = Date.now();
+    let next = timeoutMs;
+    for (const taskId of this.#pendingAsyncTaskIds) {
+      const lastActivityAt = this.#asyncTaskLastActivityAt(taskId);
+      if (lastActivityAt === null) continue;
+      next = Math.min(next, Math.max(1, lastActivityAt + timeoutMs - now));
+    }
+    return Math.max(1, next);
+  }
+
+  /**
+   * Release stale same-turn ownership without stopping the underlying tasks.
+   * Active sub-agents refresh TaskManager.updatedAt from their event stream, so
+   * the timeout measures silence rather than total runtime. A later terminal
+   * event misses the owner map and uses the bridge rescue path.
+   * @param {number} timeoutMs
+   * @returns {string[]}
+   */
+  #deferExpiredAsyncTasks(timeoutMs) {
+    if (this.#pendingAsyncTaskIds.size === 0) return [];
+    const now = Date.now();
+    const taskIds = Array.from(this.#pendingAsyncTaskIds).filter((taskId) => {
+      const lastActivityAt = this.#asyncTaskLastActivityAt(taskId);
+      return lastActivityAt === null || now - lastActivityAt >= timeoutMs;
+    });
+    for (const taskId of taskIds) {
+      // Keep ownership visible while the coordinator decides whether this is a
+      // real defer. If a terminal event already won and removed the task, the
+      // coordinator can reject a stale timeout callback instead of scheduling
+      // a duplicate rescue.
+      try {
+        if (typeof this.#asyncTaskCoordinator?.onDeferred === 'function') {
+          this.#asyncTaskCoordinator.onDeferred(taskId, this);
+        } else {
+          this.#asyncTaskCoordinator?.onUnregister?.(taskId, this);
+        }
+      } catch { /* best-effort */ }
+      this.#pendingAsyncTaskIds.delete(taskId);
+      this.#asyncTaskToolMeta.delete(taskId);
+    }
+    if (taskIds.length > 0) {
+      console.warn(`[Engine] async task wait silent for ${timeoutMs}ms; deferring ${taskIds.join(', ')}`);
+    }
+    return taskIds;
+  }
+
   #wakeAsyncTaskWaiters() {
     if (this.#asyncTaskWaiters.length === 0) return;
     const waiters = this.#asyncTaskWaiters.splice(0);
@@ -4196,30 +4271,42 @@ export class Engine {
 
   /**
    * Wait for *any* of: an async task terminal event, a fresh user append,
-   * or signal abort. Resolves immediately if any of those is already
-   * pending. The loop re-evaluates conditions on wake — multiple
-   * concurrent tasks all wake the same waiter once, then the loop drains
-   * everything in one iteration and decides whether to keep waiting.
+   * signal abort, or the current silence budget. The loop re-evaluates all
+   * queues and task activity on every wake.
    * @param {AbortSignal|null|undefined} signal
-   * @returns {Promise<void>}
+   * @param {number} timeoutMs
+   * @returns {Promise<'wake'|'timeout'>}
    */
-  #waitForAsyncWake(signal) {
+  #waitForAsyncWake(signal, timeoutMs) {
     return new Promise((resolve) => {
+      let settled = false;
+      let timer = null;
+      let onAbort = null;
       // Fast paths — anything already pending releases instantly. This is
       // the common case when a task finished between adapter loops.
-      if (this.#pendingTaskResultMessages.length > 0) return resolve();
-      if (this.#pendingTaskResultUpdates.length > 0) return resolve();
-      if (this.#pendingUserMessages.length > 0) return resolve();
-      if (this.#externalUserWakePending) return resolve();
-      if (signal?.aborted) return resolve();
-      this.#asyncTaskWaiters.push(resolve);
+      if (this.#pendingTaskResultMessages.length > 0) return resolve('wake');
+      if (this.#pendingTaskResultUpdates.length > 0) return resolve('wake');
+      if (this.#pendingUserMessages.length > 0) return resolve('wake');
+      if (this.#externalUserWakePending) return resolve('wake');
+      if (signal?.aborted) return resolve('wake');
+      const finish = (reason) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (signal && onAbort) {
+          try { signal.removeEventListener('abort', onAbort); } catch { /* ignore */ }
+        }
+        const idx = this.#asyncTaskWaiters.indexOf(wake);
+        if (idx >= 0) this.#asyncTaskWaiters.splice(idx, 1);
+        resolve(reason);
+      };
+      const wake = () => finish('wake');
+      this.#asyncTaskWaiters.push(wake);
+      timer = setTimeout(() => finish('timeout'), Math.max(1, Number(timeoutMs) || 1));
+      timer.unref?.();
       if (signal && typeof signal.addEventListener === 'function') {
-        // Best-effort abort wakeup; the loop re-checks signal.aborted.
-        const onAbort = () => {
-          // Splice the resolver out of the wait queue so it can't double-fire.
-          const idx = this.#asyncTaskWaiters.indexOf(resolve);
-          if (idx >= 0) this.#asyncTaskWaiters.splice(idx, 1);
-          try { resolve(); } catch { /* ignore */ }
+        onAbort = () => {
+          try { finish('wake'); } catch { /* ignore */ }
         };
         try { signal.addEventListener('abort', onAbort, { once: true }); } catch { /* old runtimes */ }
       }
