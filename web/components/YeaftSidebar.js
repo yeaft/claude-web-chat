@@ -79,30 +79,33 @@ export default {
         </div>
       </div>
 
-      <SidebarWorkCenter
-        :agents="chatStore ? chatStore.agents : []"
-        :active-agent-id="chatStore ? chatStore.workCenterAgentId : null"
-        :collapsed="false"
-        :active="chatStore ? chatStore.workCenterOpen : false"
-        @open="onOpenWorkCenter"
-      />
-
       <UnifiedSessionList
         v-if="chatStore && chatStore.sessionCatalogLoaded"
         :sessions="chatStore.sessionCatalog"
-        :active-catalog-key="chatStore.activeCatalogKey"
+        :active-route="chatStore.activeSessionRoute"
         :is-session-unread="isCatalogSessionUnread"
         :processing-conversations="chatStore.processingConversations"
         :is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"
         :agents="chatStore.agents"
+        :work-center-open="chatStore.workCenterOpen"
+        :work-center-agent-id="chatStore.workCenterAgentId"
+        preferred-provider="yeaft"
         @select="chatStore.openCatalogSession"
-        @create-chat="onOpenChatCreate"
-        @create-yeaft="onOpenSessionCreate"
+        @create="onUnifiedCreate"
+        @open-work-center="onOpenWorkCenter"
+        @close-work-center="chatStore.leaveWorkCenter"
         @action="onUnifiedSessionAction"
       />
 
       <div v-else class="us-scroll us-scroll-flush">
         <!-- Legacy Yeaft list stays available until the catalog snapshot arrives. -->
+        <SidebarWorkCenter
+          :agents="chatStore ? chatStore.agents : []"
+          :active-agent-id="chatStore ? chatStore.workCenterAgentId : null"
+          :collapsed="false"
+          :active="chatStore ? chatStore.workCenterOpen : false"
+          @open="onOpenWorkCenter"
+        />
         <div class="session-tab-bar">
           <div class="session-tab session-tab-solo active">
             <svg class="session-tab-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
@@ -444,10 +447,14 @@ export default {
     // onSessionRestored are gone (folded into SessionCreateModal's own
     // `created` flow).
     onOpenSessionCreate() { this.sessionCreateOpen = true; },
-    onOpenChatCreate() {
+    onUnifiedCreate(provider) {
+      if (provider === 'yeaft') {
+        this.onOpenSessionCreate();
+        return;
+      }
       const s = this.chatStore || this.store;
       if (!s) return;
-      s.openUnifiedChatCreate = true;
+      s.openUnifiedChatCreate = provider;
       s.leaveYeaft();
     },
     onUnifiedSessionAction({ action, row, title, sessions } = {}) {

@@ -40,7 +40,8 @@ export default {
     <section class="sidebar-work-center" :class="{ collapsed, active }">
       <div class="session-tab-bar sidebar-work-center-tab-bar">
         <button class="session-tab session-tab-solo sidebar-work-center-trigger" type="button" @click="toggle"
-                :class="{ active }" :aria-expanded="expanded ? 'true' : 'false'">
+                :class="{ active }" :disabled="onlineAgents.length === 0"
+                :aria-expanded="expanded ? 'true' : 'false'">
           <svg class="session-tab-icon sidebar-work-center-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
             <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>
           </svg>

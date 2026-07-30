@@ -104,6 +104,25 @@ export default {
 
         </div>
 
+        <UnifiedSessionList
+          v-if="store.sessionCatalogLoaded"
+          :sessions="store.sessionCatalog"
+          :active-route="store.activeSessionRoute"
+          :is-session-unread="isCatalogSessionUnread"
+          :processing-conversations="store.processingConversations"
+          :is-yeaft-session-processing="store.isYeaftSessionProcessing"
+          :agents="store.agents"
+          :work-center-open="store.workCenterOpen"
+          :work-center-agent-id="store.workCenterAgentId"
+          @select="store.openCatalogSession"
+          @create="onUnifiedCreate"
+          @open-work-center="openWorkCenter"
+          @close-work-center="store.leaveWorkCenter"
+          @action="onUnifiedSessionAction"
+        />
+
+        <template v-else>
+        <!-- Legacy sidebar stays available until the catalog snapshot arrives. -->
         <SidebarWorkCenter
           :agents="store.agents"
           :active-agent-id="store.workCenterAgentId"
@@ -111,23 +130,6 @@ export default {
           :active="store.workCenterOpen"
           @open="store.enterWorkCenter"
         />
-
-        <UnifiedSessionList
-          v-if="store.sessionCatalogLoaded"
-          :sessions="store.sessionCatalog"
-          :active-catalog-key="store.activeCatalogKey"
-          :is-session-unread="isCatalogSessionUnread"
-          :processing-conversations="store.processingConversations"
-          :is-yeaft-session-processing="store.isYeaftSessionProcessing"
-          :agents="store.agents"
-          @select="store.openCatalogSession"
-          @create-chat="openConversationModal"
-          @create-yeaft="openUnifiedSessionCreate"
-          @action="onUnifiedSessionAction"
-        />
-
-        <template v-else>
-        <!-- Legacy sidebar stays available until the catalog snapshot arrives. -->
         <div class="session-tab-bar">
           <div class="session-tab active session-tab-solo">
             <svg class="session-tab-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
@@ -289,7 +291,6 @@ export default {
               @close="store.activeRightPanel = null"
             />
           </div>
-        </template>
       </main>
 
       <!-- Multi-panel mode: SplitPane ×N -->
@@ -479,6 +480,7 @@ export default {
           </div>
         </div>
       </div>
+    </div>
   `,
   data() {
     return {
@@ -585,9 +587,17 @@ export default {
       return this.store.isYeaftSessionUnread(row.routeRef?.sessionId, row.routeRef?.agentId);
     },
 
-    openUnifiedSessionCreate() {
-      this.store.openUnifiedSessionCreate = true;
-      this.store.enterYeaft();
+    onUnifiedCreate(provider) {
+      if (provider === 'yeaft') {
+        this.store.openUnifiedSessionCreate = true;
+        this.store.enterYeaft();
+        return;
+      }
+      this.convModalProvider = provider === 'copilot' ? 'copilot' : 'claude-code';
+      this.openConversationModal({ preserveProvider: true });
+    },
+    openWorkCenter(agentId) {
+      if (agentId) this.store.enterWorkCenter(agentId);
     },
     onUnifiedSessionAction({ action, row, title, sessions } = {}) {
       if (!row?.routeRef) return;
@@ -607,8 +617,9 @@ export default {
         this.store.openCatalogSession(row);
       }
     },
-    openConversationModal() {
+    openConversationModal({ preserveProvider = false } = {}) {
       this.showConversationModal = true;
+      if (!preserveProvider) this.convModalProvider = 'claude-code';
       this.convModalAgent = '';
       this.convModalWorkDir = '';
       this.selectedResumeSession = null;
@@ -1000,8 +1011,10 @@ export default {
   },
   mounted() {
     if (this.store.openUnifiedChatCreate) {
+      const provider = this.store.openUnifiedChatCreate;
       this.store.openUnifiedChatCreate = false;
-      this.openConversationModal();
+      this.convModalProvider = provider === 'copilot' ? 'copilot' : 'claude-code';
+      this.openConversationModal({ preserveProvider: true });
     }
     this._clickOutsideHandler = (e) => {
       if (!e.target.closest('.agent-selector')) {
