@@ -130,6 +130,12 @@ export default {
   'chat.agent.yeaft': 'Yeaft 对话',
   'sidebar.toggle.chat': '切换到 Chat',
   'sidebar.toggle.yeaft': '切换到 Yeaft',
+  'sidebar.surface.label': '侧栏视图',
+  'sidebar.surface.sessions': '会话',
+  'sidebar.provider.label': '会话 Provider',
+  'sidebar.provider.claude': 'Claude',
+  'sidebar.sessions.new': '新建会话',
+  'sidebar.sessions.emptyProvider': '此 Provider 暂无会话',
 
   // ============ Yeaft 页面 ============
   'yeaft.back': '返回',
