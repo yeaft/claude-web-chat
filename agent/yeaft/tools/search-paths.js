@@ -6,6 +6,12 @@ export const SEARCH_SKIP_DIRS = new Set([
   'vendor', 'target', '.gradle', '.idea', '.vscode',
 ]);
 
+export const SEARCH_SKIP_GLOBS = Object.freeze([
+  ...[...SEARCH_SKIP_DIRS].flatMap(name => [`!${name}/**`, `!**/${name}/**`]),
+  '!.yeaft/worktrees/**',
+  '!**/.yeaft/worktrees/**',
+]);
+
 const TYPE_EXTENSIONS = {
   js: ['.js', '.jsx', '.mjs', '.cjs'], ts: ['.ts', '.tsx', '.mts', '.cts'],
   py: ['.py'], rust: ['.rs'], go: ['.go'], java: ['.java'],

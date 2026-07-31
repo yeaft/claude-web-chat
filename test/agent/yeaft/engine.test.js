@@ -28,6 +28,7 @@ import {
 import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
 import { createOutputCollector, runRipgrep, nodeGrep } from '../../../agent/yeaft/tools/grep.js';
 import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
+import { SEARCH_SKIP_DIRS } from '../../../agent/yeaft/tools/search-paths.js';
 
 // ─── Mock Adapter ─────────────────────────────────────────────
 
@@ -3046,6 +3047,36 @@ describe('managed CLI setup and fast tool integration', () => {
     });
   }
 
+  async function verifyRipgrepFilteredLongLineFraming() {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    let killCalls = 0;
+    child.kill = () => { killCalls += 1; };
+    const pending = runRipgrep('needle', process.cwd(), {
+      fixedStrings: true,
+      filesOnly: false,
+      glob: '**/*.js',
+      maxResults: 10,
+      byteBudget: 32768,
+      cwd: process.cwd(),
+      structured: true,
+    }, () => child);
+    child.stdout.write(Buffer.from(`a.txt\u0000${'x'.repeat(17000)}`));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(killCalls).toBe(0);
+    child.stdout.write(Buffer.from('tail\nb.js\u00001:needle\n'));
+    child.stdout.end();
+    child.stderr.end();
+    child.emit('close', 0);
+    await expect(pending).resolves.toMatchObject({
+      records: [{ path: 'b.js', suffix: '1:needle', kind: 'match' }],
+      resultCount: 1,
+      truncated: false,
+    });
+    expect(killCalls).toBe(0);
+  }
+
   async function verifyRipgrepLongLineStopsDuringCapture() {
     const child = new EventEmitter();
     child.stdout = new PassThrough();
@@ -3158,6 +3189,7 @@ describe('managed CLI setup and fast tool integration', () => {
     await verifyWindowsProcessTreeTermination();
     verifyGrepExactBudget();
     await verifyRipgrepRecordFraming();
+    await verifyRipgrepFilteredLongLineFraming();
     await verifyRipgrepLongLineStopsDuringCapture();
     await verifyRipgrepAbortReentry();
     const yeaftDir = tempDir('cli-path');
@@ -3313,6 +3345,20 @@ describe('managed CLI setup and fast tool integration', () => {
       }
 
       writeFileSync(join(parityRoot, 'src', 'a[0-9].js'), 'needle\n');
+      for (const directory of SEARCH_SKIP_DIRS) {
+        mkdirSync(join(parityRoot, directory), { recursive: true });
+        writeFileSync(join(parityRoot, directory, 'hit.js'), 'needle\n');
+      }
+      const skipInput = {
+        pattern: 'needle', path: parityRoot, glob: '**/*.js',
+        output_mode: 'files_with_matches', fixed_strings: true, head_limit: 50,
+      };
+      expect(await registry.execute('Grep', skipInput, fastCtx))
+        .toBe(await registry.execute('Grep', skipInput, fallbackCtx));
+      for (const directory of SEARCH_SKIP_DIRS) {
+        expect(await registry.execute('Grep', skipInput, fastCtx))
+          .not.toContain(`${directory}/hit.js`);
+      }
       const literalBracketInput = {
         pattern: 'needle', path: parityRoot, glob: 'a[0-9].js',
         output_mode: 'files_with_matches', fixed_strings: true,
@@ -3336,15 +3382,49 @@ describe('managed CLI setup and fast tool integration', () => {
         expect(fast).toContain('C:/a.js');
         expect(fast).toContain('src/line\nbreak.js');
       }
-      writeFileSync(join(parityRoot, 'src', 'context.js'), 'zero\nneedle\ntwo\n');
-      for (const contextOptions of [{ context: 1 }, { before: 1 }, { after: 1 }]) {
+      writeFileSync(join(parityRoot, 'src', 'context.js'), 'zero\r\nneedle\r\ntwo\r\n');
+      for (const contextOptions of [{}, { context: 1 }, { before: 1 }, { after: 1 }]) {
         const input = {
           pattern: 'needle', path: parityRoot, glob: '**/*.js',
           output_mode: 'content', fixed_strings: true, head_limit: 20,
           ...contextOptions,
         };
-        expect(await registry.execute('Grep', input, fastCtx))
-          .toBe(await registry.execute('Grep', input, fallbackCtx));
+        const fast = await registry.execute('Grep', input, fastCtx);
+        const fallback = await registry.execute('Grep', input, fallbackCtx);
+        expect(fast).toBe(fallback);
+        expect(fast).not.toContain('\r');
+      }
+      writeFileSync(join(parityRoot, 'src', 'count.js'), 'needle needle\nneedle\n');
+      const countInput = {
+        pattern: 'needle', path: parityRoot, glob: 'count.js',
+        output_mode: 'count', fixed_strings: true,
+      };
+      expect(await registry.execute('Grep', countInput, fastCtx)).toBe('src/count.js:2');
+      expect(await registry.execute('Grep', countInput, fastCtx))
+        .toBe(await registry.execute('Grep', countInput, fallbackCtx));
+
+      writeFileSync(join(parityRoot, 'src', 'multiline.js'), 'alpha\nbeta\nalpha\nbeta\n');
+      for (const outputMode of ['files_with_matches', 'count', 'content']) {
+        for (const search of [
+          { pattern: 'alpha.*beta', fixed_strings: false, expectedCount: 1 },
+          { pattern: 'alpha\nbeta', fixed_strings: true, expectedCount: 2 },
+        ]) {
+          const input = {
+            ...search, path: parityRoot, glob: 'multiline.js',
+            output_mode: outputMode, multiline: true, head_limit: 20,
+          };
+          const fast = await registry.execute('Grep', input, fastCtx);
+          const fallback = await registry.execute('Grep', input, fallbackCtx);
+          const expected = outputMode === 'files_with_matches'
+            ? 'src/multiline.js'
+            : outputMode === 'count'
+              ? `src/multiline.js:${search.expectedCount}`
+              : [1, 2, 3, 4]
+                  .map(line => `src/multiline.js:${line}:${line % 2 ? 'alpha' : 'beta'}`)
+                  .join('\n');
+          expect(fast).toBe(expected);
+          expect(fast).toBe(fallback);
+        }
       }
       for (const headLimit of [1, 2]) {
         const input = {
@@ -3377,6 +3457,41 @@ describe('managed CLI setup and fast tool integration', () => {
       });
       expect(orderingFast).toBe('a/a.js\n\n... (more results omitted)');
       expect(orderingFast).toBe(orderingFallback);
+      const budgetRoot = tempDir('grep-render-budget');
+      mkdirSync(join(budgetRoot, 'src'));
+      const exactFirstMatch = `${'界'.repeat(5455)}aa`;
+      const exactSecondMatch = `${'界'.repeat(5455)}a`;
+      writeFileSync(join(budgetRoot, 'src', 'a.js'), `needle${exactFirstMatch}\n`);
+      writeFileSync(join(budgetRoot, 'src', 'b.js'), `needle${exactSecondMatch}\n`);
+      const budgetBinDir = managedCliBinDir(budgetRoot);
+      mkdirSync(budgetBinDir, { recursive: true });
+      writeFileSync(join(budgetBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      const budgetInput = {
+        pattern: 'needle', path: budgetRoot, glob: '**/*.js',
+        output_mode: 'content', fixed_strings: true, head_limit: 2,
+      };
+      const budgetContexts = [budgetRoot, join(budgetRoot, 'fallback')];
+      for (const yeaftDir of budgetContexts) {
+        const output = await registry.execute('Grep', budgetInput, {
+          cwd: budgetRoot, yeaftDir, managedCliReady: Promise.resolve([]),
+        });
+        expect(Buffer.byteLength(output)).toBe(32768);
+        expect(output).not.toContain('[Output truncated]');
+        expect(output).not.toContain('\ufffd');
+      }
+
+      const longMatch = '界'.repeat(5451);
+      writeFileSync(join(budgetRoot, 'src', 'a.js'), `needle${longMatch}\n`);
+      writeFileSync(join(budgetRoot, 'src', 'b.js'), `needle${longMatch}\n`);
+      writeFileSync(join(budgetRoot, 'src', 'c.js'), 'needle\n');
+      for (const yeaftDir of budgetContexts) {
+        const output = await registry.execute('Grep', budgetInput, {
+          cwd: budgetRoot, yeaftDir, managedCliReady: Promise.resolve([]),
+        });
+        expect(Buffer.byteLength(output)).toBe(32768);
+        expect(output).toContain('[Output truncated]');
+        expect(output).not.toContain('\ufffd');
+      }
       const fastGlob = await registry.execute('Glob', { pattern: '**/*.js', path: parityRoot }, fastCtx);
       const fallbackGlob = await registry.execute('Glob', { pattern: '**/*.js', path: parityRoot }, fallbackCtx);
       expect(fastGlob).toBe(fallbackGlob);

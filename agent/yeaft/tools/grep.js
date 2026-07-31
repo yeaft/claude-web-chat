@@ -14,6 +14,7 @@ import { resolve, join, relative, extname } from 'path';
 import { managedCliToolReady, resolveManagedCliCommand } from '../managed-cli.js';
 import {
   createSearchPathMatcher,
+  SEARCH_SKIP_GLOBS,
   isAbortError,
   isSkippedSearchDirectory,
   throwIfAborted,
@@ -206,17 +207,7 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
     // User glob and type semantics are defined by the shared matcher below.
     // Do not pass either positive filter to rg: rg's glob dialect and type
     // registry are broader, so either filter could discard a fallback match.
-    args.push(
-      '--glob', '!**/node_modules/**',
-      '--glob', '!**/.git/**',
-      '--glob', '!**/__pycache__/**',
-      '--glob', '!**/.next/**',
-      '--glob', '!**/dist/**',
-      '--glob', '!**/build/**',
-      '--glob', '!**/.cache/**',
-      '--glob', '!.yeaft/worktrees/**',
-      '--glob', '!**/.yeaft/worktrees/**',
-    );
+    for (const skipGlob of SEARCH_SKIP_GLOBS) args.push('--glob', skipGlob);
     if (options.filesOnly) args.push('-l');
     if (options.count) args.push('-c');
     if (options.context) args.push('-C', String(options.context));
@@ -248,6 +239,7 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
     let stderrTruncated = false;
     let resultCount = 0;
     let pendingPath = null;
+    let discardSuffix = false;
     let stoppedForLimit = false;
     let stopRequested = false;
     let settled = false;
@@ -277,6 +269,14 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
 
     function drainStdout(final = false) {
       while (!stdoutTruncated && !stoppedForLimit) {
+        if (discardSuffix) {
+          const boundary = pendingStdout.indexOf('\n');
+          if (boundary < 0) break;
+          pendingStdout = pendingStdout.slice(boundary + 1);
+          pendingPath = null;
+          discardSuffix = false;
+          continue;
+        }
         if (pendingPath == null) {
           const boundary = pendingStdout.indexOf('\0');
           if (boundary < 0) break;
@@ -295,8 +295,12 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
         captureSuffix(suffix);
       }
       if (final && !stdoutTruncated && !stoppedForLimit) {
-        if (pendingPath != null && pendingStdout) captureSuffix(pendingStdout.replace(/\r$/, ''));
+        if (pendingPath != null && pendingStdout && !discardSuffix) {
+          captureSuffix(pendingStdout.replace(/\r$/, ''));
+        }
         pendingStdout = '';
+        pendingPath = null;
+        discardSuffix = false;
       }
     }
 
@@ -304,9 +308,16 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
       if (stdoutTruncated || stoppedForLimit) return;
       pendingStdout += stdoutDecoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       drainStdout();
-      if (pendingPath != null && Buffer.byteLength(pendingStdout, 'utf8') > MAX_LINE_BYTES) {
-        captureSuffix(truncateUtf8(pendingStdout, MAX_LINE_BYTES + 1));
-        pendingStdout = '';
+      if (pendingPath != null && !discardSuffix
+        && Buffer.byteLength(pendingStdout, 'utf8') > MAX_LINE_BYTES) {
+        if (matchesPath(pendingPath)) {
+          captureSuffix(truncateUtf8(pendingStdout, MAX_LINE_BYTES + 1));
+          pendingStdout = '';
+        } else {
+          discardSuffix = true;
+          drainStdout();
+          if (discardSuffix) pendingStdout = '';
+        }
       }
     }
 
@@ -380,7 +391,8 @@ export async function nodeGrep(pattern, searchPath, options) {
   const regexSource = options.fixedStrings
     ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     : pattern;
-  const regex = new RegExp(regexSource, options.caseInsensitive ? 'gi' : 'g');
+  const regexFlags = `${options.caseInsensitive ? 'i' : ''}g${options.multiline ? 's' : ''}`;
+  const regex = new RegExp(regexSource, regexFlags);
   const output = createOutputCollector(options.byteBudget || SEARCH_RESULT_BYTES);
   const records = [];
   const maxResults = Math.max(1, options.maxResults || 500);
@@ -406,34 +418,75 @@ export async function nodeGrep(pattern, searchPath, options) {
       const fileStat = await stat(fullPath);
       throwIfAborted(options.signal);
       if (fileStat.size > 1024 * 1024) return [];
-      const content = decodeTextFile(await readFile(fullPath));
+      const decoded = decodeTextFile(await readFile(fullPath));
       throwIfAborted(options.signal);
-      if (content == null) return [];
+      if (decoded == null) return [];
+      const content = decoded.replace(/\r\n?/g, '\n');
       const relPath = relative(searchPath, fullPath).replace(/\\/g, '/');
-      regex.lastIndex = 0;
-      if (options.filesOnly) {
-        return regex.test(content) ? [createGrepRecord(relPath)] : [];
-      }
-      if (options.count) {
-        const matches = content.match(regex);
-        return matches ? [createGrepRecord(relPath, String(matches.length))] : [];
-      }
-
       const lines = content.split('\n');
       if (lines.at(-1) === '') lines.pop();
-      const matches = [];
-      for (let i = 0; i < lines.length; i += 1) {
+      const matchedLines = new Set();
+      const matchStartLines = new Set();
+
+      if (options.multiline && lines.length > 0) {
+        const lineStarts = [];
+        let offset = 0;
+        for (const line of lines) {
+          lineStarts.push(offset);
+          offset += line.length + 1;
+        }
+        const lineAtOffset = value => {
+          let low = 0;
+          let high = lineStarts.length - 1;
+          while (low < high) {
+            const middle = Math.ceil((low + high) / 2);
+            if (lineStarts[middle] <= value) low = middle;
+            else high = middle - 1;
+          }
+          return low;
+        };
         regex.lastIndex = 0;
-        if (regex.test(lines[i])) matches.push(i);
+        let match;
+        while ((match = regex.exec(content)) !== null) {
+          const startLine = lineAtOffset(match.index);
+          const lastOffset = match[0].length > 0
+            ? match.index + match[0].length - 1
+            : match.index;
+          const endLine = lineAtOffset(lastOffset);
+          matchStartLines.add(startLine);
+          for (let line = startLine; line <= endLine; line += 1) matchedLines.add(line);
+          if (match[0].length === 0) {
+            if (regex.lastIndex >= content.length) break;
+            regex.lastIndex += content.codePointAt(regex.lastIndex) > 0xffff ? 2 : 1;
+          }
+        }
+      } else {
+        for (let line = 0; line < lines.length; line += 1) {
+          regex.lastIndex = 0;
+          if (regex.test(lines[line])) {
+            matchedLines.add(line);
+            matchStartLines.add(line);
+          }
+        }
       }
+
+      if (options.filesOnly) {
+        return matchStartLines.size > 0 ? [createGrepRecord(relPath)] : [];
+      }
+      if (options.count) {
+        return matchStartLines.size > 0
+          ? [createGrepRecord(relPath, String(matchStartLines.size))]
+          : [];
+      }
+
       const beforeLines = Math.max(0, Number(options.before ?? options.context ?? 0));
       const afterLines = Math.max(0, Number(options.after ?? options.context ?? 0));
       const selected = new Map();
-      for (const matchIndex of matches) {
+      for (const matchIndex of matchedLines) {
         const start = Math.max(0, matchIndex - beforeLines);
         const end = Math.min(lines.length - 1, matchIndex + afterLines);
         for (let i = start; i <= end; i += 1) {
-          const kind = i === matchIndex ? 'match' : 'context';
+          const kind = matchedLines.has(i) ? 'match' : 'context';
           if (kind === 'match' || !selected.has(i)) selected.set(i, kind);
         }
       }
@@ -701,17 +754,18 @@ Guidelines:
         output = '', records = [], resultCount = 0, truncated = false,
       } = result || {};
       if (records.length === 0 && !output.trim()) return '(no matches)';
-      if (truncated) return boundToolOutput(output.trim());
+      if (truncated) return output.trim();
       const visibleRecords = [...records]
         .sort(compareGrepRecords)
         .slice(0, headLimit);
-      const rendered = visibleRecords
-        .map(record => renderGrepRecord(record, options))
-        .join('\n');
-      if (resultCount > headLimit) {
-        return boundToolOutput(rendered + '\n\n... (more results omitted)');
+      const finalOutput = createOutputCollector(SEARCH_RESULT_BYTES);
+      for (const record of visibleRecords) {
+        if (!finalOutput.add(renderGrepRecord(record, options))) break;
       }
-      return boundToolOutput(rendered);
+      if (!finalOutput.truncated && resultCount > headLimit) {
+        finalOutput.add('\n... (more results omitted)');
+      }
+      return finalOutput.toString();
     } catch (err) {
       if (isAbortError(err)) throw err;
       return formatGrepError(err.message);
