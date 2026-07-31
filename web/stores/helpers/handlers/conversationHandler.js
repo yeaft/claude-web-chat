@@ -979,7 +979,7 @@ export function handleYeaftHistoryChunk(store, msg) {
         syncingAfterSeq: null,
       };
   if (msg.requestId && typeof store.finishYeaftHistoryLoad === 'function') {
-    store.finishYeaftHistoryLoad(msg, nextState);
+    store.finishYeaftHistoryLoad(msg, nextState, 'chunk');
   } else if (store.yeaftSessionHistoryState) {
     store.yeaftSessionHistoryState = {
       ...store.yeaftSessionHistoryState,

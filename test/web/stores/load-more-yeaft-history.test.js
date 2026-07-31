@@ -314,7 +314,13 @@ describe('Yeaft conversation loading state', () => {
       }, { loaded: true, count: 99 })).toBeNull();
       expect(finishYeaftHistoryLoad(store, {
         agentId: 'agent-1', sessionId: 'g1', requestId: second.requestId,
-      }, { loaded: true, count: 2, hasMore: true, oldestSeq: 7 })).toMatchObject({
+      }, { loaded: true, count: 2, hasMore: true, oldestSeq: 7 }, 'completion')).toMatchObject({
+        loaded: false, loading: true, count: 0, requestId: second.requestId,
+        completionSeen: true,
+      });
+      expect(finishYeaftHistoryLoad(store, {
+        agentId: 'agent-1', sessionId: 'g1', requestId: second.requestId,
+      }, { loaded: true, count: 2, hasMore: true, oldestSeq: 7 }, 'chunk')).toMatchObject({
         loaded: true, loading: false, count: 2, requestId: null,
       });
       expect(store.yeaftLoadingMoreHistory).toBe(false);
