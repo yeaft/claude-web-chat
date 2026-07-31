@@ -132,15 +132,33 @@ function reconcilePreferredExactSession(state) {
   state._preferredExactSessionIdentity = null;
 
   const exactRow = state.sessions[preferred.key] || null;
-  if (exactRow?.id === preferred.sessionId && exactRow.agentId === preferred.agentId) {
+  const chat = _getChatStoreSafe();
+  const exactRowExists = exactRow?.id === preferred.sessionId
+    && exactRow.agentId === preferred.agentId;
+  const canActivateVisibleRow = chat?.currentView !== 'yeaft'
+    || typeof chat.setActiveSessionFilter === 'function';
+  if (exactRowExists && canActivateVisibleRow) {
     state.activeSessionId = preferred.sessionId;
     state.activeSessionKey = preferred.key;
-    return false;
+    if (chat?.currentView === 'yeaft') {
+      chat.setActiveSessionFilter(preferred.sessionId, {
+        agentId: preferred.agentId,
+        force: true,
+      });
+    } else if (chat) {
+      chat.yeaftActiveSessionFilter = preferred.sessionId;
+      chat.yeaftSessionAgentById = {
+        ...(chat.yeaftSessionAgentById || {}),
+        [preferred.sessionId]: preferred.agentId,
+      };
+      try { localStorage.setItem('lastViewedYeaftSession', preferred.key); }
+      catch (_) {}
+    }
+    return true;
   }
 
   state.activeSessionId = null;
   state.activeSessionKey = null;
-  const chat = _getChatStoreSafe();
   if (chat?.yeaftActiveSessionFilter === preferred.sessionId) {
     chat.yeaftActiveSessionFilter = null;
   }

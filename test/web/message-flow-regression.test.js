@@ -926,12 +926,118 @@ describe('message flow regressions', () => {
       expect(duplicateSessions.activeSession).toMatchObject({ id: 'same', agentId: 'agent-b' });
       expect(duplicateStore.resolveYeaftSessionAgentId).not.toHaveBeenCalled();
 
+      // An exact persisted owner that still exists must be restored through the
+      // same atomic Chat activation seam as a user click. Updating only the
+      // Sessions pointer leaves Agent A visible while the next message routes to
+      // Agent B and lands in B's hidden optimistic conversation.
+      duplicateSessions.resetInventory();
+      const previousExactOwnerChatStore = globalThis.Pinia.useChatStore;
+      globalThis.Pinia.useChatStore = () => store;
+      localStorage.setItem('lastViewedYeaftSession', 'agent-b\u001fsame');
+      store.currentView = 'yeaft';
+      store.currentAgent = 'agent-a';
+      store.currentAgentInfo = { id: 'agent-a' };
+      store.agents = [
+        { id: 'agent-a', name: 'Agent A', online: true },
+        { id: 'agent-b', name: 'Agent B', online: true },
+      ];
+      store.yeaftActiveSessionFilter = 'same';
+      store.yeaftSessionAgentById = { same: 'agent-a' };
+      store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-exact-a', 'agent-b': 'conv-exact-b' };
+      store.yeaftConversationId = 'conv-exact-a';
+      store.activeConversations = ['conv-exact-a'];
+      store.messagesMap = { 'conv-exact-a': [], 'conv-exact-b': [] };
+      store.yeaftSessionHistoryState = {};
+      store._yeaftHistoryLoad = null;
+      store.sendWsMessage = vi.fn(() => true);
+      store.yeaftSessionInventoryCompleteSupported = true;
+      store.yeaftSessionHydrateRequestId = 'inventory-exact-owner-present';
+      store.yeaftSessionHydrateSlices = [];
+      store._hasHandledYeaftSessionHydrate = false;
+      store.yeaftSessionHydrateError = null;
+      handleMessage(store, {
+        type: 'yeaft_session_hydrate',
+        requestId: 'inventory-exact-owner-present',
+        agentId: 'agent-a',
+        sessions: [{ id: 'same', name: 'Agent A same' }],
+      });
+      handleMessage(store, {
+        type: 'yeaft_session_hydrate',
+        requestId: 'inventory-exact-owner-present',
+        agentId: 'agent-b',
+        sessions: [{ id: 'same', name: 'Agent B same' }],
+      });
+      handleMessage(store, {
+        type: 'yeaft_session_hydrate_complete',
+        requestId: 'inventory-exact-owner-present',
+        ok: true,
+      });
+      expect(duplicateSessions.activeSessionKey).toBe('agent-b\u001fsame');
+      expect(duplicateSessions.activeSession).toMatchObject({ id: 'same', agentId: 'agent-b' });
+      expect(store.currentAgent).toBe('agent-b');
+      expect(store.yeaftActiveSessionFilter).toBe('same');
+      expect(store.yeaftSessionAgentById.same).toBe('agent-b');
+      expect(store.yeaftConversationId).toBe('conv-exact-b');
+      expect(store.activeConversations).toEqual(['conv-exact-b']);
+      expect(localStorage.getItem('lastViewedYeaftSession')).toBe('agent-b\u001fsame');
+      const restoredExactOwnerHistoryFrames = store.sendWsMessage.mock.calls
+        .map(call => call[0])
+        .filter(msg => msg.type === 'yeaft_load_history');
+      expect(restoredExactOwnerHistoryFrames).toEqual([
+        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same' }),
+      ]);
+      store.handleMessage({
+        type: 'yeaft_history_chunk',
+        agentId: 'agent-b',
+        sessionId: 'same',
+        conversationId: 'conv-exact-b',
+        requestId: restoredExactOwnerHistoryFrames[0].requestId,
+        mode: 'recent',
+        messages: [],
+        latestSeq: 0,
+        oldestSeq: null,
+        hasMore: false,
+      });
+      store.sendWsMessage.mockClear();
+      store.sendYeaftSessionMessage({ groupId: 'same', text: 'restore exact owner' });
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_session_send')).toEqual([
+        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same', text: 'restore exact owner' }),
+      ]);
+      expect(store.messagesMap['conv-exact-b']).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'user', content: 'restore exact owner' }),
+      ]));
+      expect(store.messagesMap['conv-exact-a']).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: 'restore exact owner' }),
+      ]));
+      clearTimeout(store._processingWatchdogs['conv-exact-b']);
+
+      // If the visible Chat store cannot perform that atomic activation, fail
+      // closed instead of committing only the Sessions pointer.
+      duplicateSessions.resetInventory();
+      localStorage.setItem('lastViewedYeaftSession', 'agent-b\u001fsame');
+      const noAtomicActivationStore = {
+        currentView: 'yeaft',
+        yeaftActiveSessionFilter: 'same',
+        yeaftSessionAgentById: { same: 'agent-b' },
+        pinnedSessions: [],
+        applyServerPinSnapshot: vi.fn(),
+      };
+      globalThis.Pinia.useChatStore = () => noAtomicActivationStore;
+      duplicateSessions.beginInventoryCommit('same', 'agent-b');
+      duplicateSessions.applySnapshot([{ id: 'same', name: 'Agent B same' }], 'agent-b');
+      expect(duplicateSessions.activeSessionKey).toBeNull();
+      expect(duplicateSessions.activeSessionId).toBeNull();
+      expect(noAtomicActivationStore.yeaftActiveSessionFilter).toBeNull();
+      // The completed inventory may retain truthful routing metadata; it must
+      // not turn that metadata into an active or persisted selection.
+      expect(noAtomicActivationStore.yeaftSessionAgentById.same).toBe('agent-b');
+      expect(localStorage.getItem('lastViewedYeaftSession')).toBeNull();
+      globalThis.Pinia.useChatStore = () => store;
+
       // A persisted composite identity is authoritative. If its exact owner is
       // absent from the complete inventory, do not silently bind the same bare
       // id to another Agent. Clear selection and wait for an explicit click.
       duplicateSessions.resetInventory();
-      const previousExactOwnerChatStore = globalThis.Pinia.useChatStore;
-      globalThis.Pinia.useChatStore = () => store;
       localStorage.setItem('lastViewedYeaftSession', 'agent-b\u001fsame');
       store.currentView = 'yeaft';
       store.currentAgent = 'agent-b';
@@ -1400,7 +1506,13 @@ describe('message flow regressions', () => {
         expect(legacySessions.activeSession).toMatchObject({ id: 'session-b', agentId: 'agent-b' });
         expect(store.yeaftActiveSessionFilter).toBe('session-b');
         expect(store.currentAgent).toBe('agent-b');
-        expect(setFilterSpy).not.toHaveBeenCalled();
+        expect(setFilterSpy).toHaveBeenCalledTimes(1);
+        expect(setFilterSpy).toHaveBeenLastCalledWith(
+          'session-b',
+          { agentId: 'agent-b', force: true },
+        );
+        expect(store.yeaftConversationId).toBe('conv-agent-b');
+        expect(store.activeConversations).toEqual(['conv-agent-b']);
 
         // Model the next authenticated legacy socket for the zero-slice unit
         // path. The production reconnect boundary after quiet completion is
