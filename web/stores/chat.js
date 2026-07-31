@@ -4318,7 +4318,12 @@ export const useChatStore = defineStore('chat', {
           // so the store can track which agent the cached roster belongs
           // to and the modal can detect agent switches that need a
           // fresh subscribe.
-          if (vp) vp.applySnapshot(event, msg.agentId || null);
+          if (vp) vp.applySnapshot(event, msg.agentId || null, msg.requestId || null);
+          break;
+        }
+        case 'vp_snapshot_error': {
+          const vp = window.Pinia?.useVpStore?.() || (window.__useVpStore && window.__useVpStore());
+          if (vp) vp.failSnapshot(msg.agentId || null, msg.requestId || null, event.error || event.message || 'VP library request failed');
           break;
         }
         case 'vp_updated': {
@@ -4326,13 +4331,13 @@ export const useChatStore = defineStore('chat', {
           // manual.reload) is surfaced through the store for 334-ui-b badge
           // refresh cues. Missing reason is tolerated (back-compat).
           const vp = window.Pinia?.useVpStore?.() || (window.__useVpStore && window.__useVpStore());
-          if (vp && event.vp) vp.upsert(event.vp, event.reason);
+          if (vp && event.vp) vp.upsert(event.vp, event.reason, msg.agentId || null);
           break;
         }
         case 'vp_removed': {
           // task-334h: live diff. Reason is always 'file.removed' on-wire.
           const vp = window.Pinia?.useVpStore?.() || (window.__useVpStore && window.__useVpStore());
-          if (vp && event.vpId) vp.remove(event.vpId, event.reason);
+          if (vp && event.vpId) vp.remove(event.vpId, event.reason, msg.agentId || null);
           break;
         }
 

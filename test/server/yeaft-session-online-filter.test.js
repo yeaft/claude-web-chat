@@ -223,6 +223,21 @@ describe('Yeaft Session online Agent filtering', () => {
       ws: { readyState: 1 }, ownerId: 'user-1', conversations: new Map(),
     });
 
+    const vpClient = { userId: 'user-1', sent: [] };
+    await handleClientConversation('client-vp', vpClient, {
+      type: 'yeaft_vp_subscribe', agentId: 'missing-agent', requestId: 'vp-offline',
+    }, allow);
+    expect(vpClient.sent).toEqual([{
+      type: 'yeaft_output',
+      agentId: 'missing-agent',
+      requestId: 'vp-offline',
+      event: {
+        type: 'vp_snapshot_error',
+        error: 'The selected Agent is offline.',
+      },
+    }]);
+    expect(forwardToAgent).not.toHaveBeenCalledWith('missing-agent', expect.anything());
+
     client.sent = [];
     await handleClientConversation('client-1', client, {
       type: 'select_agent', agentId: 'agent-online', requestId: 'agent-select-1',
