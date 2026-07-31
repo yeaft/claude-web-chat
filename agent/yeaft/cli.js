@@ -40,6 +40,7 @@ import { loadSessionConfig, resolveSessionConfig } from './sessions/session-conf
 import { validateSessionId } from './sessions/ids.js';
 import { createJsonlWriter, JsonlInput, runStreamTurn, runStreamSessionTurn } from './stdio-protocol.js';
 import { createCliSessionRunner } from './cli-session-runner.js';
+import { ensureManagedCliTools, prependManagedCliBinToPath, summarizeManagedCliResults } from './managed-cli.js';
 
 // ─── Argument parsing ──────────────────────────────────────────
 
@@ -65,6 +66,7 @@ export function parseArgs(argv) {
     outputFormat: 'text',
     print: false,
     prompt: null,
+    managedCliReady: Promise.resolve([]),
   };
 
   const rest = argv.slice(2);
@@ -346,6 +348,7 @@ async function runREPL(config, args) {
     skipMCP: args.skipMCP,
     skipSkills: args.skipSkills,
     configOverrides: effectiveConfig,
+    managedCliReady: args.managedCliReady,
   });
 
   const { engine, conversationStore, trace, skillManager, mcpManager, toolRegistry } = session;
@@ -797,6 +800,7 @@ async function runStreamJson(config, args) {
       ...effectiveConfig,
       ...(effectiveConfig.modelEffort ? { modelEffort: effectiveConfig.modelEffort } : {}),
     },
+    managedCliReady: args.managedCliReady,
   });
   const { engine, conversationStore, skillManager, toolRegistry } = loaded;
   const sessionRunner = createCliSessionRunner({ loaded, sessionId, workDir });
@@ -885,6 +889,7 @@ async function runOnce(config, args) {
     skipMCP: args.skipMCP,
     skipSkills: args.skipSkills,
     configOverrides: effectiveConfig,
+    managedCliReady: args.managedCliReady,
   });
 
   const { engine, conversationStore } = session;
@@ -993,7 +998,6 @@ async function main() {
     language: args.language,
     debug: args.debug || undefined,
   });
-
   // Handle --trace queries (no LLM needed, no session needed)
   if (args.trace) {
     await handleTraceQuery(args, config);
@@ -1010,8 +1014,24 @@ async function main() {
     return;
   }
 
+  const prepareManagedCli = () => {
+    prependManagedCliBinToPath(config.dir);
+    args.managedCliReady = ensureManagedCliTools({ yeaftDir: config.dir })
+      .then(results => {
+        if (results.some(result => result.status === 'installed')) {
+          console.error(`[Yeaft] managed CLI tools: ${summarizeManagedCliResults(results)}`);
+        }
+        return results;
+      })
+      .catch(error => {
+        console.error(`[Yeaft] managed CLI setup failed; using built-in fallbacks: ${error?.message || error}`);
+        return [];
+      });
+  };
+
   // Handle interactive mode
   if (args.interactive) {
+    prepareManagedCli();
     await runREPL(config, args);
     return;
   }
@@ -1023,6 +1043,7 @@ async function main() {
     if (!args.prompt && args.inputFormat !== 'stream-json' && process.stdin.isTTY) {
       throw new Error('stream-json output requires a prompt, piped stdin, or --input-format stream-json');
     }
+    prepareManagedCli();
     await runStreamJson(config, args);
     return;
   }
@@ -1032,6 +1053,7 @@ async function main() {
 
   // Handle prompt (from args or stdin)
   if (args.prompt) {
+    prepareManagedCli();
     await runOnce(config, args);
     return;
   }
@@ -1044,6 +1066,7 @@ async function main() {
     }
     args.prompt = input.trim();
     if (args.prompt) {
+      prepareManagedCli();
       await runOnce(config, args);
       return;
     }

@@ -524,6 +524,9 @@ export class Engine {
 
   /** @type {string|null} */
   #yeaftDir;
+
+  /** @type {Promise<Array>|null} */
+  #managedCliReady;
   /** @type {string|null} — set when this engine is bound to a specific group (per-VP fan-out path). */
   #sessionId = null;
   /** @type {string|null} — set when this engine is bound to a specific VP (per-VP fan-out path). */
@@ -716,9 +719,10 @@ export class Engine {
    *   mcpManager?: import('./mcp.js').MCPManager,
    *   yeaftDir?: string,
    *   toolStats?: import('./stats/tool-usage.js').ToolUsageStats,
+   *   managedCliReady?: Promise<Array>,
    * }} params
    */
-  constructor({ adapter, trace, config, conversationStore, memoryIndex, amsRegistry, toolRegistry, skillManager, mcpManager, yeaftDir, toolStats = null, taskManager = null, sessionId = null, vpId = null, chatId = null }) {
+  constructor({ adapter, trace, config, conversationStore, memoryIndex, amsRegistry, toolRegistry, skillManager, mcpManager, yeaftDir, toolStats = null, taskManager = null, sessionId = null, vpId = null, chatId = null, managedCliReady = null }) {
     this.#adapter = adapter;
     this.#trace = trace;
     this.#config = config;
@@ -732,6 +736,7 @@ export class Engine {
     this.#skillManager = skillManager || null;
     this.#mcpManager = mcpManager || null;
     this.#yeaftDir = yeaftDir || null;
+    this.#managedCliReady = managedCliReady || null;
     this.#toolStats = toolStats || null;
     // Per-VP fan-out (2026-06-01): engine instances in the group path are
     // keyed by ${sessionId}::${vpId}::${threadId}, so binding the engine to
@@ -1260,6 +1265,7 @@ export class Engine {
     return {
       signal,
       yeaftDir: this.#yeaftDir,
+      managedCliReady: this.#managedCliReady,
       runtimePlatform: getRuntimePlatformInfo(),
       // Group-scoped working directory. Threaded from #runQuery({ workDir })
       // → set by web-bridge runVpTurn from sessionMeta.workDir. Tools read
@@ -1338,6 +1344,7 @@ export class Engine {
         skillManager: this.#skillManager,
         mcpManager: this.#mcpManager,
         yeaftDir: this.#yeaftDir,
+        managedCliReady: this.#managedCliReady,
         parentName: vpCtx?.senderVpId || 'parent',
         parentVpId: vpCtx?.senderVpId || null,
         parentVpPersona: vpCtx?.vpPersona || null,

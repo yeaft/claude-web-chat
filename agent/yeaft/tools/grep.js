@@ -11,6 +11,7 @@ import { readdir, readFile, stat } from 'fs/promises';
 import { StringDecoder } from 'string_decoder';
 import { existsSync } from 'fs';
 import { resolve, join, relative, extname } from 'path';
+import { resolveManagedCliCommand } from '../managed-cli.js';
 
 /** Max output lines. */
 const MAX_LINES = 250;
@@ -25,7 +26,6 @@ const MAX_CAPTURE_BYTES = MAX_OUTPUT_BYTES - Buffer.byteLength(OUTPUT_TRUNCATED_
 const MAX_LINE_BYTES = 16 * 1024;
 const FALLBACK_CONCURRENCY = 8;
 const SKIP_DIRS = new Set(['node_modules', '.git', '__pycache__', '.next', 'dist', 'build', '.cache']);
-let ripgrepAvailability;
 
 /** Binary extensions to skip. */
 const BINARY_EXTS = new Set([
@@ -112,28 +112,10 @@ function createOutputCollector(maxBytes = MAX_OUTPUT_BYTES) {
 /**
  * Check if ripgrep is available.
  */
-export function setRipgrepAvailabilityForTests(value) {
-  ripgrepAvailability = value;
-}
-
-function hasRipgrep() {
-  if (typeof ripgrepAvailability === 'boolean') return Promise.resolve(ripgrepAvailability);
-  if (ripgrepAvailability) return ripgrepAvailability;
-  ripgrepAvailability = new Promise((resolve) => {
-    const proc = spawn('rg', ['--version'], { stdio: 'pipe', windowsHide: true });
-    proc.on('close', (code) => resolve(code === 0));
-    proc.on('error', () => resolve(false));
-  }).then((available) => {
-    ripgrepAvailability = available;
-    return available;
-  });
-  return ripgrepAvailability;
-}
-
 /**
  * Run ripgrep and return results.
  */
-export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
+export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, command = 'rg') {
   return new Promise((resolve, reject) => {
     const args = [pattern, searchPath, '--no-heading', '--line-number', '--color', 'never'];
     if (options.caseInsensitive) args.push('-i');
@@ -147,7 +129,7 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
     if (options.after) args.push('-A', String(options.after));
     if (options.multiline) args.push('-U', '--multiline-dotall');
 
-    const proc = spawnProcess('rg', args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const proc = spawnProcess(command, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     const requestedBudget = Number(options.byteBudget);
     const stdoutBudget = Number.isFinite(requestedBudget) && requestedBudget >= 0
       ? Math.min(requestedBudget, MAX_OUTPUT_BYTES)
@@ -497,10 +479,15 @@ Guidelines:
 
     try {
       let result;
-      const rgAvailable = await hasRipgrep();
+      await ctx?.managedCliReady;
+      const rgCommand = resolveManagedCliCommand('rg', { yeaftDir: ctx?.yeaftDir });
 
-      if (rgAvailable) {
-        result = await runRipgrep(pattern, absPath, options);
+      if (rgCommand) {
+        try {
+          result = await runRipgrep(pattern, absPath, options, spawn, rgCommand);
+        } catch {
+          result = await nodeGrep(pattern, absPath, options);
+        }
       } else {
         result = await nodeGrep(pattern, absPath, options);
       }

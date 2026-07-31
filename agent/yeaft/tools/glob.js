@@ -1,14 +1,16 @@
 /**
  * glob.js — Find files by pattern matching.
  *
- * Uses Node.js glob patterns to find files matching a pattern.
- * Results are sorted by modification time (newest first).
+ * Uses fd for traversal when available and the same local glob matcher in both
+ * fast and fallback paths. Results are sorted by modification time (newest first).
  */
 
 import { defineTool } from './types.js';
 import { readdir, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve, join, relative } from 'path';
+import { resolveManagedCliCommand } from '../managed-cli.js';
+import { runProcess } from './process-runner.js';
 
 const STAT_CONCURRENCY = 32;
 const SKIP_DIRS = new Set([
@@ -64,6 +66,36 @@ async function* walkDir(dir, baseDir, maxDepth = 10, depth = 0) {
       yield { path: relPath, isDir: false };
     }
   }
+}
+
+async function listFilesWithFd(fdCommand, baseDir, signal) {
+  const args = [
+    '.', baseDir,
+    '--type', 'file',
+    '--type', 'symlink',
+    '--hidden',
+    '--no-ignore',
+    '--color', 'never',
+    '--max-depth', '11',
+    '--print0',
+  ];
+  for (const skipped of SKIP_DIRS) args.push('--exclude', skipped);
+  args.push('--exclude', '.yeaft/worktrees');
+  const result = await runProcess(fdCommand, args, {
+    cwd: baseDir,
+    signal,
+    timeoutMs: 120_000,
+    maxBytes: 16 * 1024 * 1024,
+  });
+  if (result.timedOut) throw new Error('fd timed out');
+  if (result.truncated) throw new Error('fd output exceeded the tool limit');
+  if (result.code !== 0) {
+    throw new Error(result.stderr.trim() || `fd exited with code ${result.code}`);
+  }
+  return result.stdout
+    .split('\0')
+    .filter(Boolean)
+    .map(path => relative(baseDir, resolve(baseDir, path)));
 }
 
 export default defineTool({
@@ -134,9 +166,22 @@ Guidelines:
     }
 
     try {
-      const paths = [];
-      for await (const entry of walkDir(baseDir, baseDir)) {
-        if (!entry.isDir && matchGlob(pattern, entry.path)) paths.push(entry.path);
+      let paths;
+      await ctx?.managedCliReady;
+      const fdCommand = resolveManagedCliCommand('fd', { yeaftDir: ctx?.yeaftDir });
+      if (fdCommand) {
+        try {
+          paths = (await listFilesWithFd(fdCommand, baseDir, ctx?.signal))
+            .filter(path => matchGlob(pattern, path));
+        } catch {
+          paths = null;
+        }
+      }
+      if (!paths) {
+        paths = [];
+        for await (const entry of walkDir(baseDir, baseDir)) {
+          if (!entry.isDir && matchGlob(pattern, entry.path)) paths.push(entry.path);
+        }
       }
 
       // Exact newest-first semantics require every matching mtime. Batch the

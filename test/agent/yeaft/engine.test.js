@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { delimiter, join } from 'path';
 import { tmpdir } from 'os';
+import { gzipSync } from 'node:zlib';
 import { ActiveMemorySet } from '../../../agent/yeaft/memory/ams.js';
 import { filterMemoryPromptTextForPrompt } from '../../../agent/yeaft/memory/prompt-cleanup.js';
 import { Engine, buildResidentEntries, selectResidentTopicScopes } from '../../../agent/yeaft/engine.js';
@@ -13,6 +16,14 @@ import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js'
 import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
 import todoWriteTool from '../../../agent/yeaft/tools/todo-write.js';
 import startPlanTool from '../../../agent/yeaft/tools/start-plan.js';
+import {
+  ensureManagedCliTools,
+  extractManagedCliBinary,
+  managedCliBinDir,
+  prependManagedCliBinToPath,
+  resolveManagedCliCommand,
+} from '../../../agent/yeaft/managed-cli.js';
+import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
 
 // ─── Mock Adapter ─────────────────────────────────────────────
 
@@ -108,23 +119,19 @@ describe('Engine memory prompt hygiene', () => {
     expect(snap.onDemand.map(seg => seg.body)).toEqual(['A distinct implementation detail remains available.']);
   });
 
-  it('does not let over-budget resident candidates suppress onDemand memory', () => {
-    const ams = new ActiveMemorySet({
+  it('keeps onDemand memory when resident entries are over budget or only prefixes', () => {
+    const overBudget = new ActiveMemorySet({
       budget: { total: 100, resident: 1, recent: 1, onDemand: 80 },
     });
     const repeated = 'Budget-sensitive Dream memory detail should remain available from onDemand when the resident copy is too large for the resident budget.';
-    ams.setResident([{ scope: 'sessions/s1', summary: repeated }]);
-    ams.setOnDemand([
+    overBudget.setResident([{ scope: 'sessions/s1', summary: repeated }]);
+    overBudget.setOnDemand([
       { id: 'od-1', scope: 'sessions/s1/topic/dream', body: repeated, kind: 'context', tags: [], sourceMessages: [] },
     ]);
+    const overBudgetSnap = overBudget.snapshot();
+    expect(overBudgetSnap.resident).toEqual([]);
+    expect(overBudgetSnap.onDemand.map(seg => seg.body)).toEqual([repeated]);
 
-    const snap = ams.snapshot();
-
-    expect(snap.resident).toEqual([]);
-    expect(snap.onDemand.map(seg => seg.body)).toEqual([repeated]);
-  });
-
-  it('keeps detailed onDemand memory when resident summary is only a prefix', () => {
     const ams = new ActiveMemorySet({
       budget: { total: 1000, resident: 300, recent: 100, onDemand: 600 },
     });
@@ -2841,5 +2848,191 @@ describe('Engine', () => {
       expect(zhPlan).toContain('在同一个 assistant response 中发出 `TodoWrite`');
       expect(zhPlan).toContain('只有第一步必须询问用户时才在计划后停下');
     });
+  });
+});
+const managedCliTempDirs = [];
+
+function tempDir(name) {
+  const dir = mkdtempSync(join(tmpdir(), `yeaft-${name}-`));
+  managedCliTempDirs.push(dir);
+  return dir;
+}
+
+function tarArchive(path, content) {
+  const data = Buffer.from(content);
+  const header = Buffer.alloc(512);
+  header.write(path, 0, 100, 'utf8');
+  header.write('0000755\0', 100, 8, 'ascii');
+  header.write('0000000\0', 108, 8, 'ascii');
+  header.write('0000000\0', 116, 8, 'ascii');
+  header.write(`${data.length.toString(8).padStart(11, '0')}\0`, 124, 12, 'ascii');
+  header.fill(32, 148, 156);
+  header[156] = 48;
+  header.write('ustar\0', 257, 6, 'ascii');
+  const checksum = [...header].reduce((sum, byte) => sum + byte, 0);
+  header.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+  return gzipSync(Buffer.concat([
+    header,
+    data,
+    Buffer.alloc((512 - data.length % 512) % 512),
+    Buffer.alloc(1024),
+  ]));
+}
+
+function emptyPathEnv() {
+  return { ...process.env, PATH: '' };
+}
+
+function zipArchive(path, content) {
+  const name = Buffer.from(path);
+  const data = Buffer.from(content);
+  const local = Buffer.alloc(30 + name.length + data.length);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(0, 6);
+  local.writeUInt16LE(0, 8);
+  local.writeUInt32LE(data.length, 18);
+  local.writeUInt32LE(data.length, 22);
+  local.writeUInt16LE(name.length, 26);
+  name.copy(local, 30);
+  data.copy(local, 30 + name.length);
+
+  const central = Buffer.alloc(46 + name.length);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(0, 8);
+  central.writeUInt16LE(0, 10);
+  central.writeUInt32LE(data.length, 20);
+  central.writeUInt32LE(data.length, 24);
+  central.writeUInt16LE(name.length, 28);
+  name.copy(central, 46);
+
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length, 12);
+  end.writeUInt32LE(local.length, 16);
+  return Buffer.concat([local, central, end]);
+}
+
+afterEach(() => {
+  for (const dir of managedCliTempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('managed CLI setup and fast tool integration', () => {
+  it('keeps platform install boundaries and uses managed binaries with fallbacks', async () => {
+    const yeaftDir = tempDir('cli-path');
+    const systemBin = join(yeaftDir, 'system-bin');
+    mkdirSync(systemBin);
+    const fdfind = join(systemBin, 'fdfind');
+    writeFileSync(fdfind, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const env = { PATH: systemBin };
+    const binDir = prependManagedCliBinToPath(yeaftDir, env);
+    prependManagedCliBinToPath(yeaftDir, env);
+    expect(env.PATH.split(delimiter)).toEqual([binDir, systemBin]);
+    const windowsEnv = { Path: systemBin };
+    prependManagedCliBinToPath(yeaftDir, windowsEnv, 'win32');
+    expect(windowsEnv.PATH).toBe(windowsEnv.Path);
+    expect(resolveManagedCliCommand('fd', { yeaftDir, env, platform: 'linux' })).toBe(fdfind);
+
+    const tar = tarArchive('ripgrep-15.2.0/rg', '#!/bin/sh\necho ripgrep 15.2.0\n');
+    expect(extractManagedCliBinary(tar, 'ripgrep.tar.gz', 'rg', 'linux').toString())
+      .toContain('ripgrep 15.2.0');
+    const zip = zipArchive('fd-v10.3.0/fd.exe', Buffer.from('MZ-test-binary'));
+    expect(extractManagedCliBinary(zip, 'fd.zip', 'fd', 'win32').toString())
+      .toBe('MZ-test-binary');
+
+    let unsupportedRequests = 0;
+    const unsupported = await ensureManagedCliTools({
+      yeaftDir: tempDir('cli-unsupported'),
+      platform: 'aix',
+      arch: 'ppc64',
+      env: emptyPathEnv(),
+      force: true,
+      fetchFn: async () => {
+        unsupportedRequests += 1;
+        throw new Error('must not download');
+      },
+    });
+    expect(unsupported.every(result => result.status === 'unsupported')).toBe(true);
+    expect(unsupportedRequests).toBe(0);
+
+    const flightDir = tempDir('cli-single-flight');
+    let flightRequests = 0;
+    const flightOptions = {
+      yeaftDir: flightDir,
+      platform: 'linux',
+      arch: 'x64',
+      env: emptyPathEnv(),
+      force: true,
+      fetchFn: async () => {
+        flightRequests += 1;
+        await new Promise(resolve => setTimeout(resolve, 20));
+        return new Response(Buffer.from('invalid archive'));
+      },
+    };
+    const [left, right] = await Promise.all([
+      ensureManagedCliTools(flightOptions),
+      ensureManagedCliTools(flightOptions),
+    ]);
+    expect(left).toEqual(right);
+    expect(flightRequests).toBe(3);
+
+    const cooldownDir = tempDir('cli-cooldown');
+    let cooldownRequests = 0;
+    const cooldownOptions = {
+      yeaftDir: cooldownDir,
+      platform: 'linux',
+      arch: 'x64',
+      env: emptyPathEnv(),
+      now: () => 1000,
+      fetchFn: async () => {
+        cooldownRequests += 1;
+        return new Response(Buffer.from('not an official archive'));
+      },
+    };
+    const first = await ensureManagedCliTools({ ...cooldownOptions, force: true });
+    const second = await ensureManagedCliTools(cooldownOptions);
+    expect(first.every(result => result.status === 'failed')).toBe(true);
+    expect(second.every(result => result.status === 'cooldown')).toBe(true);
+    expect(cooldownRequests).toBe(3);
+
+    const root = tempDir('fast-tools');
+    mkdirSync(join(root, 'large'));
+    mkdirSync(join(root, 'small'));
+    writeFileSync(join(root, 'large', 'a.bin'), Buffer.alloc(2048));
+    writeFileSync(join(root, 'small', 'b.bin'), Buffer.alloc(32));
+    const registry = createFullRegistry();
+    const fallbackOutput = await registry.execute('DiskUsage', { path: root, depth: 2, limit: 2 }, {
+      cwd: root,
+      yeaftDir: join(root, '.fallback'),
+      managedCliReady: Promise.resolve([]),
+    });
+    expect(registry.getToolNames()).toContain('DiskUsage');
+    expect(fallbackOutput).toContain('large');
+    expect(fallbackOutput.trim().split('\n')).toHaveLength(4);
+
+    if (process.platform !== 'win32') {
+      const toolDir = join(root, '.yeaft');
+      const toolBinDir = managedCliBinDir(toolDir);
+      const log = join(root, 'calls.log');
+      mkdirSync(toolBinDir, { recursive: true });
+      writeFileSync(join(toolBinDir, 'rg'), `#!/bin/sh\necho rg >> ${JSON.stringify(log)}\nprintf 'src/a.js:1:needle\\n'\n`, { mode: 0o755 });
+      writeFileSync(join(toolBinDir, 'fd'), `#!/bin/sh\necho fd >> ${JSON.stringify(log)}\nprintf 'src/a.js\\0src/b.txt\\0'\n`, { mode: 0o755 });
+      const ctx = { cwd: root, yeaftDir: toolDir, managedCliReady: Promise.resolve([]) };
+      expect(await registry.execute('Grep', { pattern: 'needle', path: root }, ctx))
+        .toContain('src/a.js:1:needle');
+      const globOutput = await registry.execute('Glob', { pattern: '**/*.js', path: root }, ctx);
+      expect(globOutput).toContain('src/a.js');
+      expect(globOutput).not.toContain('b.txt');
+      expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['rg', 'fd']);
+
+      const rg = resolveManagedCliCommand('rg', { yeaftDir: toolDir, env: emptyPathEnv() });
+      expect(execFileSync(rg, ['--version'], { encoding: 'utf8' })).toContain('src/a.js');
+      expect(createHash('sha256').update(readFileSync(rg)).digest('hex')).toHaveLength(64);
+      expect(existsSync(rg)).toBe(true);
+    }
   });
 });

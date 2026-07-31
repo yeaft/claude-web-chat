@@ -14,6 +14,7 @@ import { getDefaultAgentName, getDefaultYeaftDir, resolveRuntimeIdentity, getCon
 import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
+import { ensureManagedCliTools, prependManagedCliBinToPath, summarizeManagedCliResults } from './yeaft/managed-cli.js';
 
 const execAsync = promisify(exec);
 
@@ -84,6 +85,7 @@ const { agentName: AGENT_NAME, instanceId: INSTANCE_ID } = resolveRuntimeIdentit
 // default (`~/.yeaft`) here and make sure the directory exists before the
 // WebSocket connection goes live, so downstream code can assume a real path.
 const YEAFT_DIR = process.env.YEAFT_DIR || fileConfig.yeaftDir || getDefaultYeaftDir(INSTANCE_ID);
+prependManagedCliBinToPath(YEAFT_DIR);
 try {
   if (!existsSync(YEAFT_DIR)) {
     mkdirSync(YEAFT_DIR, { recursive: true });
@@ -350,10 +352,21 @@ process.on('SIGTERM', async () => {
 
 // 启动 - 先确保依赖，再检测能力，预热 models.dev 缓存，再连接
 (async () => {
+  let managedCliReady = Promise.resolve([]);
   if (process.env.YEAFT_SKIP_STARTUP_INSTALLS !== 'true') {
     await ensureDependencies();
     await ensureYeaftSkills();
+    managedCliReady = ensureManagedCliTools({ yeaftDir: YEAFT_DIR })
+      .then(results => {
+        console.log(`[Startup] managed CLI tools: ${summarizeManagedCliResults(results)}`);
+        return results;
+      })
+      .catch(error => {
+        console.warn(`[Startup] managed CLI setup failed; using built-in fallbacks: ${error?.message || error}`);
+        return [];
+      });
   }
+  ctx.managedCliReady = managedCliReady;
   ctx.agentCapabilities = await detectCapabilities();
   // Prime the models.dev community catalog so the Yeaft engine's *synchronous*
   // hot path (engine.js / config.js / cli.js all read context-window inline)
