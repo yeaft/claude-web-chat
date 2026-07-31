@@ -9,6 +9,7 @@ import { t } from '../../utils/i18n.js';
 import { stopProcessingWatchdog, startLegacyWatchdog } from './watchdog.js';
 import { clearSessionLoading } from './session.js';
 import { applyDebugRawRequestDelta } from '../../components/yeaft-debug-helpers.js';
+import { parseYeaftSessionIdentity } from './yeaft-session-identity.js';
 import { handleAgentList, handleAgentSelected } from './handlers/agentHandler.js';
 import {
   handleConversationCreated,
@@ -54,15 +55,23 @@ function bufferYeaftSessionInventorySlice(store, msg) {
 }
 
 function preferredYeaftSessionInventoryIdentity(store) {
-  let sessionId = store.yeaftActiveSessionFilter || null;
-  if (!sessionId) {
-    try { sessionId = localStorage.getItem('lastViewedYeaftSession') || null; }
-    catch (_) {}
+  const sessions = sessionsStore();
+  let persistedIdentity = null;
+  try { persistedIdentity = localStorage.getItem('lastViewedYeaftSession') || null; }
+  catch (_) {}
+  const persisted = parseYeaftSessionIdentity(persistedIdentity);
+  const activeSessionId = store.yeaftActiveSessionFilter || sessions?.activeSessionId || null;
+  if (activeSessionId) {
+    const activeRow = sessions?.activeSessionKey
+      ? sessions.sessions?.[sessions.activeSessionKey]
+      : null;
+    if (activeRow?.id === activeSessionId && activeRow.agentId) {
+      return { sessionId: activeSessionId, agentId: activeRow.agentId };
+    }
+    if (persisted.sessionId === activeSessionId && persisted.agentId) return persisted;
+    return { sessionId: activeSessionId, agentId: null };
   }
-  const agentId = sessionId && typeof store.resolveYeaftSessionAgentId === 'function'
-    ? store.resolveYeaftSessionAgentId(sessionId)
-    : store.currentAgent || null;
-  return { sessionId, agentId };
+  return persisted;
 }
 
 // New Servers send an explicit completion frame. Older Servers do not, so the
@@ -86,9 +95,11 @@ function commitBufferedYeaftSessionInventory(store) {
       ]
     : slices;
   if (orderedSlices.length === 0) sessions?.applySnapshot?.([], null);
-  for (const slice of orderedSlices) {
-    sessions?.applySnapshot?.(slice.sessions || [], slice.agentId || null);
-  }
+  orderedSlices.forEach((slice, index) => {
+    sessions?.applySnapshot?.(slice.sessions || [], slice.agentId || null, {
+      deferActivation: index < orderedSlices.length - 1,
+    });
+  });
   store.yeaftSessionHydrateSlices = [];
 }
 
@@ -379,7 +390,9 @@ export function handleMessage(store, msg) {
       break;
 
     case 'yeaft_asset_ready': {
-      const conversationId = msg.conversationId || store.yeaftConversationId;
+      const conversationId = msg.conversationId
+        || store.yeaftConversationIdsByAgent?.[msg.agentId]
+        || store.yeaftConversationId;
       if (!conversationId || !msg.image) break;
       if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
       const duplicate = store.messagesMap[conversationId].some(row =>

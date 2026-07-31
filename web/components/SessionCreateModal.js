@@ -31,6 +31,7 @@
 import VpAvatar from './VpAvatar.js';
 import { getLastPathSegment, formatResumeDate } from '../utils/path-segments.js';
 import { buildVpDomainSections } from '../utils/vp-domains.js';
+import { yeaftSessionIdentityKey } from '../stores/helpers/yeaft-session-identity.js';
 import { folderPickerData, folderPickerMethods } from './mixins/folder-picker-mixin.js';
 
 const OMNI_VP_ID = 'omni';
@@ -533,13 +534,20 @@ export default {
       return Array.from(map.values()).sort((a, b) => a.path.localeCompare(b.path));
     },
     sessionsInDir() {
-      const inSidebar = new Set(
-        (this.sessionsStore?.sessionList || []).map(s => s && s.id).filter(Boolean)
-      );
+      const selectedAgentId = this.form.agentId || null;
       const list = Array.isArray(this.scannedSessions) ? this.scannedSessions : [];
       return list
         .filter(s => s && s.id)
-        .map(s => ({ ...s, inSidebar: inSidebar.has(s.id) }));
+        .map((session) => {
+          const agentId = session.agentId || selectedAgentId;
+          const sessionKey = yeaftSessionIdentityKey(agentId, session.id);
+          const inSidebar = !!(sessionKey && this.sessionsStore?.sessions?.[sessionKey]);
+          return {
+            ...session,
+            ...(agentId ? { agentId } : {}),
+            inSidebar,
+          };
+        });
     },
     chatFolderRows() {
       return (this.chat?.folders || []).map(folder => ({
@@ -939,14 +947,14 @@ export default {
           // Mirror resumeExisting / onSubmit: pin currentAgent +
           // sessionsStore.active + chat filter to the restored session so
           // the user doesn't get bounced back to whatever was active.
-          const owner = restored && restored.agentId;
+          const owner = restored?.agentId || session.agentId || agentId;
           if (owner && chat.currentAgent !== owner
               && typeof chat.selectAgent === 'function') {
             chat.selectAgent(owner);
           }
-          if (this.sessionsStore) this.sessionsStore.setActive(restored.id || session.id);
+          if (this.sessionsStore) this.sessionsStore.setActive(restored.id || session.id, owner);
           if (typeof chat.setActiveSessionFilter === 'function') {
-            chat.setActiveSessionFilter(restored.id || session.id, { force: true });
+            chat.setActiveSessionFilter(restored.id || session.id, { agentId: owner, force: true });
           }
           this.$emit('created', restored);
           this.$emit('close');
@@ -1036,23 +1044,24 @@ export default {
     resumeExisting(session) {
       if (!session || !session.id) return;
       const chat = this.chat;
+      const owner = session.agentId || this.form.agentId || null;
       // 1. Cross-agent route — if the session belongs to a different
       //    agent than the one currently selected, switch first so any
       //    subsequent CRUD/messaging hits the owning agent. Mirrors
       //    YeaftSidebar.onSelectGroup.
-      if (session.agentId && chat && chat.currentAgent !== session.agentId
+      if (owner && chat && chat.currentAgent !== owner
           && typeof chat.selectAgent === 'function') {
-        chat.selectAgent(session.agentId);
+        chat.selectAgent(owner);
       }
       // 2. UI pointer (which session the main pane shows).
-      if (this.sessionsStore) this.sessionsStore.setActive(session.id);
+      if (this.sessionsStore) this.sessionsStore.setActive(session.id, owner);
       // 3. The action that actually fires `yeaft_load_history` and
       //    sets `yeaftActiveSessionFilter`. Without this, the modal
       //    closes but the main pane stays empty — that's the bug
       //    users reported as "resume doesn't work". `force: true` so
       //    it re-fires even when re-picking the currently-active id.
       if (chat && typeof chat.setActiveSessionFilter === 'function') {
-        chat.setActiveSessionFilter(session.id, { force: true });
+        chat.setActiveSessionFilter(session.id, { agentId: owner, force: true });
       }
       this.$emit('close');
     },
@@ -1152,15 +1161,15 @@ export default {
           const chat = this.chat;
           const created = res.session || res.group || null;
           const id = created && created.id;
-          const owner = created && created.agentId;
+          const owner = created?.agentId || this.form.agentId || null;
           if (id) {
             if (owner && chat && chat.currentAgent !== owner
                 && typeof chat.selectAgent === 'function') {
               chat.selectAgent(owner);
             }
-            if (this.sessionsStore) this.sessionsStore.setActive(id);
+            if (this.sessionsStore) this.sessionsStore.setActive(id, owner);
             if (chat && typeof chat.setActiveSessionFilter === 'function') {
-              chat.setActiveSessionFilter(id, { force: true });
+              chat.setActiveSessionFilter(id, { agentId: owner, force: true });
             }
           }
           this.$emit('created', created);

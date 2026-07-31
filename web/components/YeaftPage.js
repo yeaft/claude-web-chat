@@ -1436,7 +1436,12 @@ export default {
       const gs = sessionsStore();
       const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
       if (!sessionId) return [];
-      const map = store.yeaftActiveTasksBySession?.[sessionId] || {};
+      const activeSession = typeof gs?.sessionById === 'function'
+        ? gs.sessionById(sessionId, store.currentAgent || null)
+        : null;
+      const agentId = activeSession?.agentId || store.currentAgent || null;
+      const taskKey = agentId ? `${agentId}\u001f${sessionId}` : sessionId;
+      const map = store.yeaftActiveTasksBySession?.[taskKey] || {};
       return visibleSessionStatusTasks(map);
     });
 
@@ -1536,7 +1541,7 @@ export default {
 
     const onCancelTaskFromTimeline = (task) => {
       if (!task?.id || !task.sessionId || typeof store.cancelYeaftTask !== 'function') return false;
-      return store.cancelYeaftTask({ sessionId: task.sessionId, taskId: task.id });
+      return store.cancelYeaftTask({ agentId: task.agentId, sessionId: task.sessionId, taskId: task.id });
     };
 
     return {

@@ -326,11 +326,17 @@ export default {
     activeSessionId() {
       return this.chatStore?.yeaftActiveSessionFilter || this.sessionsStore?.activeSessionId || null;
     },
+    activeSessionKey() {
+      const activeKey = this.sessionsStore?.activeSessionKey || null;
+      const activeRow = activeKey ? this.sessionsStore?.sessions?.[activeKey] : null;
+      return activeRow?.id === this.activeSessionId ? activeKey : null;
+    },
     // Phase 4: chat container removed. Session list is just sessions now.
     sessionList() {
       return buildYeaftSidebarSessionList({
         sessions: this.sessionsStore?.sessionList || [],
         activeSessionId: this.activeSessionId,
+        activeSessionKey: this.activeSessionKey,
         pinnedSessionIds: this.chatStore?.pinnedSessions || [],
         onlineAgentIds: Array.isArray(this.onlineAgents)
           ? this.onlineAgents.map(agent => agent.id)
@@ -498,7 +504,8 @@ export default {
       this.$emit('select-group', g);
     },
     sessionDragKey(g) {
-      return g && g.agentId && g.id ? `${g.agentId}\u001f${g.id}` : '';
+      if (!g || !g.id) return '';
+      return g.agentId ? `${g.agentId}\u001f${g.id}` : `legacy\u001f${g.id}`;
     },
     onSessionDragStart(g, evt) {
       const key = this.sessionDragKey(g);

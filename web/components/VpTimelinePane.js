@@ -457,7 +457,7 @@ export default {
       if (command) lines.push(`${$t('yeaft.sessionStatus.task.command')}: ${command}`);
       return lines.join('\n');
     };
-    const taskStopKey = (task) => `${task?.sessionId || ''}::${task?.id || ''}`;
+    const taskStopKey = (task) => `${task?.agentId || ''}\u001f${task?.sessionId || ''}::${task?.id || ''}`;
     const isTaskCancellable = (task) => task?.kind === 'shell' && task?.status === 'running' && !!task?.runtime?.pid;
     const isTaskStopping = (task) => !!(task?.id && props.stoppingTasksById?.[taskStopKey(task)]);
 
