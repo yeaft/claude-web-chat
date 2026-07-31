@@ -55,22 +55,23 @@ function bufferYeaftSessionInventorySlice(store, msg) {
 }
 
 function preferredYeaftSessionInventoryIdentity(store) {
-  const activeSessionId = store.yeaftActiveSessionFilter || null;
-  if (activeSessionId) {
-    const agentId = typeof store.resolveYeaftSessionAgentId === 'function'
-      ? store.resolveYeaftSessionAgentId(activeSessionId)
-      : store.currentAgent || null;
-    return { sessionId: activeSessionId, agentId };
-  }
-
+  const sessions = sessionsStore();
   let persistedIdentity = null;
   try { persistedIdentity = localStorage.getItem('lastViewedYeaftSession') || null; }
   catch (_) {}
-  const parsed = parseYeaftSessionIdentity(persistedIdentity);
-  const agentId = parsed.agentId || (parsed.sessionId && typeof store.resolveYeaftSessionAgentId === 'function'
-    ? store.resolveYeaftSessionAgentId(parsed.sessionId)
-    : store.currentAgent || null);
-  return { sessionId: parsed.sessionId, agentId };
+  const persisted = parseYeaftSessionIdentity(persistedIdentity);
+  const activeSessionId = store.yeaftActiveSessionFilter || sessions?.activeSessionId || null;
+  if (activeSessionId) {
+    const activeRow = sessions?.activeSessionKey
+      ? sessions.sessions?.[sessions.activeSessionKey]
+      : null;
+    if (activeRow?.id === activeSessionId && activeRow.agentId) {
+      return { sessionId: activeSessionId, agentId: activeRow.agentId };
+    }
+    if (persisted.sessionId === activeSessionId && persisted.agentId) return persisted;
+    return { sessionId: activeSessionId, agentId: null };
+  }
+  return persisted;
 }
 
 // New Servers send an explicit completion frame. Older Servers do not, so the
@@ -94,9 +95,11 @@ function commitBufferedYeaftSessionInventory(store) {
       ]
     : slices;
   if (orderedSlices.length === 0) sessions?.applySnapshot?.([], null);
-  for (const slice of orderedSlices) {
-    sessions?.applySnapshot?.(slice.sessions || [], slice.agentId || null);
-  }
+  orderedSlices.forEach((slice, index) => {
+    sessions?.applySnapshot?.(slice.sessions || [], slice.agentId || null, {
+      deferActivation: index < orderedSlices.length - 1,
+    });
+  });
   store.yeaftSessionHydrateSlices = [];
 }
 

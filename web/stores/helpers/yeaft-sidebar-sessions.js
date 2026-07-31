@@ -15,12 +15,16 @@ import { sessionActivityTime } from './session-order.js';
  * @param {object} params
  * @param {Array<object>} params.sessions
  * @param {string|null|undefined} params.activeSessionId
+ * @param {string|null|undefined} params.activeSessionKey
  * @param {Array<string>} params.pinnedSessionIds
  * @param {Array<string>|undefined} params.onlineAgentIds
  * @returns {Array<{kind:string,id:string,raw:object,pinned:boolean,active:boolean}>}
  */
-export function buildYeaftSidebarSessionList({ sessions, activeSessionId, pinnedSessionIds, onlineAgentIds } = {}) {
+export function buildYeaftSidebarSessionList(params = {}) {
+  const { sessions, activeSessionId, activeSessionKey, pinnedSessionIds, onlineAgentIds } = params;
   const activeId = activeSessionId || null;
+  const activeKey = activeSessionKey || null;
+  const hasActiveKey = Object.prototype.hasOwnProperty.call(params, 'activeSessionKey');
   const pinnedOrder = Array.isArray(pinnedSessionIds) ? pinnedSessionIds : [];
   const onlineAgents = Array.isArray(onlineAgentIds) ? new Set(onlineAgentIds.filter(Boolean)) : null;
   const pinnedIndex = new Map();
@@ -33,12 +37,13 @@ export function buildYeaftSidebarSessionList({ sessions, activeSessionId, pinned
     if (!session || !session.id) continue;
     if (onlineAgents && session.agentId && !onlineAgents.has(session.agentId)) continue;
     const id = String(session.id);
+    const sessionKey = session.agentId ? `${session.agentId}\u001f${id}` : id;
     rows.push({
       kind: 'session',
       id,
       raw: session,
       pinned: !!session.pinned || (!session.agentId && pinnedIndex.has(id)),
-      active: id === activeId,
+      active: hasActiveKey ? sessionKey === activeKey : id === activeId,
       processing: !!session.running || !!session.active || !!session.isRunning || !!session.isActive,
       _manualOrder: Number.isFinite(session.sortOrder) ? session.sortOrder : Number.MAX_SAFE_INTEGER,
       _activityTime: sessionActivityTime(session),

@@ -16,6 +16,7 @@ import WorkCenterPage from '../../web/components/WorkCenterPage.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
 import { migrateYeaftConversationState } from '../../web/stores/helpers/yeaft-conversation-state.js';
 import { resolveTimelineSession } from '../../web/stores/helpers/vp-timeline.js';
+import { buildYeaftSidebarSessionList } from '../../web/stores/helpers/yeaft-sidebar-sessions.js';
 import {
   beginCatalogMutation,
   beginChatHistoryRequest,
@@ -849,8 +850,8 @@ describe('message flow regressions', () => {
 
     const hydrateSessions = {
       live: [],
-      applySnapshot: vi.fn(function applySnapshot(rows, agentId) {
-        this.live.push({ agentId, rows });
+      applySnapshot: vi.fn(function applySnapshot(rows, agentId, options = {}) {
+        this.live.push({ agentId, rows, options });
       }),
       resetInventory: vi.fn(function resetInventory() { this.live = []; }),
       beginInventoryCommit: vi.fn(function beginInventoryCommit(sessionId, agentId) {
@@ -890,10 +891,11 @@ describe('message flow regressions', () => {
       handleMessage(hydrateStore, {
         type: 'yeaft_session_hydrate_complete', requestId: 'inventory-2', ok: true,
       });
-      expect(hydrateSessions.beginInventoryCommit).toHaveBeenCalledWith('same', 'agent-b');
+      expect(hydrateSessions.beginInventoryCommit).toHaveBeenCalledWith('same', null);
+      expect(hydrateStore.resolveYeaftSessionAgentId).not.toHaveBeenCalled();
       expect(hydrateSessions.live).toEqual([
-        { agentId: 'agent-b', rows: [{ id: 'two' }] },
-        { agentId: 'agent-a', rows: [{ id: 'one' }] },
+        { agentId: 'agent-a', rows: [{ id: 'one' }], options: { deferActivation: true } },
+        { agentId: 'agent-b', rows: [{ id: 'two' }], options: { deferActivation: false } },
       ]);
       expect(hydrateStore._hasHandledYeaftSessionHydrate).toBe(true);
 
@@ -903,7 +905,7 @@ describe('message flow regressions', () => {
       localStorage.setItem('lastViewedYeaftSession', 'agent-b\u001fsame');
       const duplicateStore = {
         currentAgent: 'agent-a',
-        yeaftActiveSessionFilter: null,
+        yeaftActiveSessionFilter: 'same',
         resolveYeaftSessionAgentId: vi.fn(() => 'agent-a'),
         yeaftSessionInventoryCompleteSupported: true,
         yeaftSessionHydrateRequestId: 'inventory-duplicate',
@@ -925,7 +927,8 @@ describe('message flow regressions', () => {
       expect(duplicateStore.resolveYeaftSessionAgentId).not.toHaveBeenCalled();
       localStorage.removeItem('lastViewedYeaftSession');
 
-      // Legacy bare ids remain readable, but only through the owner resolver.
+      // A persisted bare id carries no owner authority. The complete inventory
+      // may recover it only when exactly one stamped owner exists.
       duplicateSessions.resetInventory();
       localStorage.setItem('lastViewedYeaftSession', 'legacy-only');
       const legacyIdentityStore = {
@@ -938,14 +941,74 @@ describe('message flow regressions', () => {
         _hasHandledYeaftSessionHydrate: false,
         yeaftSessionHydrateError: null,
       };
+      const previousInventoryChatStore = globalThis.Pinia.useChatStore;
+      const inventoryChatStore = {
+        currentView: 'yeaft',
+        yeaftActiveSessionFilter: null,
+        yeaftSessionAgentById: {},
+        pinnedSessions: [],
+        setActiveSessionFilter: vi.fn((sessionId, options = {}) => {
+          inventoryChatStore.yeaftActiveSessionFilter = sessionId;
+          duplicateSessions.setActive(sessionId, options.agentId || null);
+        }),
+        applyServerPinSnapshot: vi.fn(),
+      };
+      globalThis.Pinia.useChatStore = () => inventoryChatStore;
       handleMessage(legacyIdentityStore, {
         type: 'yeaft_session_hydrate', requestId: 'inventory-legacy-id', agentId: 'agent-b', sessions: [{ id: 'legacy-only' }],
       });
       handleMessage(legacyIdentityStore, {
         type: 'yeaft_session_hydrate_complete', requestId: 'inventory-legacy-id', ok: true,
       });
-      expect(legacyIdentityStore.resolveYeaftSessionAgentId).toHaveBeenCalledWith('legacy-only');
+      expect(legacyIdentityStore.resolveYeaftSessionAgentId).not.toHaveBeenCalled();
       expect(duplicateSessions.activeSessionKey).toBe('agent-b\u001flegacy-only');
+      expect(inventoryChatStore.setActiveSessionFilter).toHaveBeenLastCalledWith(
+        'legacy-only',
+        { agentId: 'agent-b', force: true },
+      );
+
+      duplicateSessions.resetInventory();
+      inventoryChatStore.yeaftActiveSessionFilter = null;
+      inventoryChatStore.setActiveSessionFilter.mockClear();
+      legacyIdentityStore.yeaftSessionHydrateRequestId = 'inventory-legacy-ambiguous';
+      legacyIdentityStore.yeaftSessionHydrateSlices = [];
+      legacyIdentityStore._hasHandledYeaftSessionHydrate = false;
+      handleMessage(legacyIdentityStore, {
+        type: 'yeaft_session_hydrate', requestId: 'inventory-legacy-ambiguous', agentId: 'agent-a', sessions: [{ id: 'legacy-only' }],
+      });
+      handleMessage(legacyIdentityStore, {
+        type: 'yeaft_session_hydrate', requestId: 'inventory-legacy-ambiguous', agentId: 'agent-b', sessions: [{ id: 'legacy-only' }],
+      });
+      handleMessage(legacyIdentityStore, {
+        type: 'yeaft_session_hydrate_complete', requestId: 'inventory-legacy-ambiguous', ok: true,
+      });
+      expect(legacyIdentityStore.resolveYeaftSessionAgentId).not.toHaveBeenCalled();
+      expect(duplicateSessions.activeSessionKey).toBeNull();
+      expect(duplicateSessions.activeSessionId).toBeNull();
+      expect(duplicateSessions.sessionList.filter(row => row.id === 'legacy-only')).toHaveLength(2);
+      expect(inventoryChatStore.setActiveSessionFilter).not.toHaveBeenCalled();
+      expect(inventoryChatStore.yeaftActiveSessionFilter).toBeNull();
+
+      duplicateSessions.resetInventory();
+      inventoryChatStore.setActiveSessionFilter.mockClear();
+      inventoryChatStore.yeaftActiveSessionFilter = null;
+      localStorage.setItem('lastViewedYeaftSession', 'legacy-only');
+      legacyIdentityStore.yeaftSessionHydrateRequestId = 'inventory-legacy-wire';
+      legacyIdentityStore.yeaftSessionHydrateSlices = [];
+      legacyIdentityStore._hasHandledYeaftSessionHydrate = false;
+      handleMessage(legacyIdentityStore, {
+        type: 'yeaft_session_hydrate', requestId: 'inventory-legacy-wire', sessions: [{ id: 'legacy-only' }],
+      });
+      handleMessage(legacyIdentityStore, {
+        type: 'yeaft_session_hydrate_complete', requestId: 'inventory-legacy-wire', ok: true,
+      });
+      expect(duplicateSessions.inventoryIdentityMode).toBe('legacy-bare');
+      expect(duplicateSessions.activeSessionKey).toBe('legacy-only');
+      expect(inventoryChatStore.setActiveSessionFilter.mock.calls).toEqual([
+        ['legacy-only', { force: true }],
+      ]);
+      if (previousInventoryChatStore) globalThis.Pinia.useChatStore = previousInventoryChatStore;
+      else delete globalThis.Pinia.useChatStore;
       localStorage.removeItem('lastViewedYeaftSession');
 
       const legacySessions = useSessionsStore();
@@ -973,16 +1036,150 @@ describe('message flow regressions', () => {
         id: 'legacy-extra', agentId: null,
       });
 
+      legacySessions.setActive('legacy-bare', 'agent-a');
+      legacySessions.applySnapshotUpsert({ id: 'legacy-bare', name: 'Agent A same' }, 'agent-a');
       legacySessions.applySnapshotUpsert({ id: 'stamped', name: 'Stamped' }, 'agent-a');
       expect(legacySessions.inventoryIdentityMode).toBe('agent-scoped');
       expect(legacySessions.sessions['legacy-bare']).toMatchObject({
         id: 'legacy-bare', agentId: null,
       });
-      expect(legacySessions.sessionById('legacy-bare', 'agent-a')).toBeNull();
+      expect(legacySessions.sessionOrder).not.toContain('legacy-bare');
+      expect(legacySessions.sessionList).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'legacy-bare', agentId: null }),
+      ]));
+      expect(legacySessions.activeSessionKey).toBe('agent-a\u001flegacy-bare');
+      expect(legacySessions.activeSession).toMatchObject({
+        id: 'legacy-bare', agentId: 'agent-a', name: 'Agent A same',
+      });
+      const scopedSidebarRows = buildYeaftSidebarSessionList({
+        sessions: legacySessions.sessionList,
+        activeSessionId: legacySessions.activeSessionId,
+        activeSessionKey: legacySessions.activeSessionKey,
+        pinnedSessionIds: [],
+      });
+      expect(scopedSidebarRows.filter(row => row.id === 'legacy-bare')).toEqual([
+        expect.objectContaining({ active: true, raw: expect.objectContaining({ agentId: 'agent-a' }) }),
+      ]);
+      expect(scopedSidebarRows[0].raw.agentId && scopedSidebarRows[0].id).toBeTruthy();
+      expect(legacySessions.sessionById('legacy-bare', 'agent-a')).toMatchObject({
+        id: 'legacy-bare', agentId: 'agent-a',
+      });
       expect(legacySessions.sessionById('legacy-bare', 'agent-b')).toBeNull();
       expect(legacySessions.sessionById('stamped', 'agent-a')).toMatchObject({
         id: 'stamped', agentId: 'agent-a',
       });
+
+      // Before any user selects the unique replacement, a second stamped owner
+      // makes the retired bare identity ambiguous. Clear the automatic active
+      // pointer and do not let a bare lookup choose either owner.
+      localStorage.setItem('lastViewedYeaftSession', 'agent-a\u001flegacy-bare');
+      legacySessions.applySnapshotUpsert({ id: 'legacy-bare', name: 'Agent B same' }, 'agent-b');
+      expect(localStorage.getItem('lastViewedYeaftSession')).toBeNull();
+      expect(legacySessions.sessionOrder.filter(key => legacySessions.sessions[key]?.id === 'legacy-bare')).toEqual([
+        'agent-a\u001flegacy-bare',
+        'agent-b\u001flegacy-bare',
+      ]);
+      expect(legacySessions.sessionList.filter(row => row.id === 'legacy-bare')).toHaveLength(2);
+      expect(legacySessions.sessionList.some(row => !row.agentId)).toBe(false);
+      const ambiguousSidebarRows = buildYeaftSidebarSessionList({
+        sessions: legacySessions.sessionList,
+        activeSessionId: legacySessions.activeSessionId,
+        activeSessionKey: legacySessions.activeSessionKey,
+        pinnedSessionIds: [],
+      });
+      expect(ambiguousSidebarRows.filter(row => row.active)).toHaveLength(0);
+      expect(legacySessions.activeSessionKey).toBeNull();
+      expect(legacySessions.activeSessionId).toBeNull();
+      legacySessions.setActive('legacy-bare');
+      expect(legacySessions.activeSessionKey).toBeNull();
+
+      // Once the ambiguous B candidate is authoritatively removed, the sole A
+      // candidate is again safe to recover as the retired bare active identity.
+      legacySessions.applySnapshot([], 'agent-b');
+      expect(legacySessions.activeSessionKey).toBe('agent-a\u001flegacy-bare');
+      expect(legacySessions.activeSessionId).toBe('legacy-bare');
+      const recoveredSidebarRows = buildYeaftSidebarSessionList({
+        sessions: legacySessions.sessionList,
+        activeSessionId: legacySessions.activeSessionId,
+        activeSessionKey: legacySessions.activeSessionKey,
+        pinnedSessionIds: [],
+      });
+      expect(recoveredSidebarRows.filter(row => row.active)).toEqual([
+        expect.objectContaining({ raw: expect.objectContaining({ agentId: 'agent-a' }) }),
+      ]);
+
+      // The migrated exact identity must drive history and the next send. The
+      // retired bare cache entry is not allowed to fall back to currentAgent.
+      globalThis.Pinia.useSessionsStore = () => legacySessions;
+      const previousChatStoreForRouting = globalThis.Pinia.useChatStore;
+      globalThis.Pinia.useChatStore = () => store;
+      store.currentView = 'yeaft';
+      store.currentAgent = 'agent-b';
+      store.currentAgentInfo = { id: 'agent-b' };
+      store.agents = [
+        { id: 'agent-a', name: 'Agent A', online: true },
+        { id: 'agent-b', name: 'Agent B', online: true },
+      ];
+      store.yeaftActiveSessionFilter = null;
+      store.yeaftSessionAgentById = {};
+      store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-agent-a', 'agent-b': 'conv-agent-b' };
+      store.yeaftConversationId = 'conv-agent-b';
+      store.activeConversations = ['conv-agent-b'];
+      store.messagesMap = { 'conv-agent-a': [], 'conv-agent-b': [] };
+      store.yeaftSessionHistoryState = {};
+      store.sendWsMessage = vi.fn(() => true);
+      store.setActiveSessionFilter('legacy-bare', { agentId: 'agent-a', force: true });
+      expect(legacySessions.activeSessionKey).toBe('agent-a\u001flegacy-bare');
+      const migratedHistoryFrames = store.sendWsMessage.mock.calls
+        .map(call => call[0])
+        .filter(msg => msg.type === 'yeaft_load_history');
+      expect(migratedHistoryFrames).toEqual([
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'legacy-bare' }),
+      ]);
+      store.handleMessage({
+        type: 'yeaft_history_chunk',
+        agentId: 'agent-a',
+        sessionId: 'legacy-bare',
+        conversationId: 'conv-agent-a',
+        requestId: migratedHistoryFrames[0].requestId,
+        mode: 'recent',
+        messages: [],
+        latestSeq: 0,
+        oldestSeq: null,
+        hasMore: false,
+      });
+      store.sendWsMessage.mockClear();
+      store.sendYeaftSessionMessage({ groupId: 'legacy-bare', text: 'route migrated identity' });
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_session_send')).toEqual([
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'legacy-bare', text: 'route migrated identity' }),
+      ]);
+      expect(store.messagesMap['conv-agent-a']).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'user', content: 'route migrated identity' }),
+      ]));
+      expect(store.messagesMap['conv-agent-b']).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: 'route migrated identity' }),
+      ]));
+      clearTimeout(store._processingWatchdogs['conv-agent-a']);
+      if (previousChatStoreForRouting) globalThis.Pinia.useChatStore = previousChatStoreForRouting;
+      else delete globalThis.Pinia.useChatStore;
+
+      // An explicit user selection is authoritative after automatic migration.
+      // Adding another same-id owner must not erase that exact selection.
+      legacySessions.applySnapshotUpsert({ id: 'legacy-bare', name: 'Agent B same' }, 'agent-b');
+      expect(legacySessions.activeSessionKey).toBe('agent-a\u001flegacy-bare');
+      legacySessions.setActive('legacy-bare', 'agent-b');
+      expect(legacySessions.activeSessionKey).toBe('agent-b\u001flegacy-bare');
+      const explicitlySelectedRows = buildYeaftSidebarSessionList({
+        sessions: legacySessions.sessionList,
+        activeSessionId: legacySessions.activeSessionId,
+        activeSessionKey: legacySessions.activeSessionKey,
+        pinnedSessionIds: [],
+      });
+      expect(explicitlySelectedRows.filter(row => row.active)).toEqual([
+        expect.objectContaining({ raw: expect.objectContaining({ agentId: 'agent-b' }) }),
+      ]);
+      expect(YeaftSidebar.methods.sessionDragKey({ id: 'legacy-only', agentId: null }))
+        .toBe('legacy\u001flegacy-only');
       legacySessions.applyRosterChange({ sessionId: 'rejected-legacy-delta', roster: ['omni'] });
       legacySessions.applySnapshotUpsert({ id: 'rejected-legacy-upsert', name: 'Rejected' });
       legacySessions.applyCrudResult({

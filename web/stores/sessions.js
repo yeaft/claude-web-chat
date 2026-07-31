@@ -15,6 +15,7 @@
  */
 
 import { compareSessionsByActivity } from './helpers/session-order.js';
+import { parseYeaftSessionIdentity } from './helpers/yeaft-session-identity.js';
 
 const MANUAL_SESSION_ORDER_KEY = 'yeaft-session-order-by-agent';
 const MANUAL_SESSION_ORDER_ALL_KEY = 'yeaft-session-order-global';
@@ -71,7 +72,10 @@ function findSessionKey(state, sessionId, agentId = null) {
   const id = normalizeSessionId(sessionId);
   if (!id) return '';
   const directKey = storeKeyFor(agentId, id);
-  if (directKey && state.sessions[directKey]) return directKey;
+  const directRow = directKey ? state.sessions[directKey] : null;
+  if (directRow && (agentId || directRow.agentId || state.inventoryIdentityMode === 'legacy-bare')) {
+    return directKey;
+  }
   // An explicit Agent is authoritative for agent-scoped inventory. The one
   // exception is an accepted legacy whole-store snapshot: older producers
   // cannot stamp an owner, so the bare row is the only available identity.
@@ -81,7 +85,15 @@ function findSessionKey(state, sessionId, agentId = null) {
       ? id
       : '';
   }
-  if (state.sessions[id]) return id;
+  const bareRow = state.sessions[id];
+  if (bareRow) {
+    if (bareRow.agentId || state.inventoryIdentityMode === 'legacy-bare') return id;
+    // A retired bare row may remain in the internal cache after the source
+    // switches to Agent-scoped identity. It may only resolve to the already
+    // active exact row; it must never choose a new owner.
+    const activeRow = state.activeSessionKey ? state.sessions[state.activeSessionKey] : null;
+    return activeRow?.agentId && activeRow.id === id ? state.activeSessionKey : '';
+  }
   if (state.activeSessionKey && state.sessions[state.activeSessionKey]?.id === id) return state.activeSessionKey;
   const keys = state.sessionOrder.filter(key => state.sessions[key]?.id === id);
   const chat = _getChatStoreSafe();
@@ -97,11 +109,76 @@ function normalizeActiveKey(state, sessionId, agentId = null) {
 }
 
 function enterAgentScopedInventory(state) {
-  // Keep legacy rows as non-authoritative cache entries. A scoped source proves
-  // that owner identity now matters, but it does not prove which Agent owned a
-  // previously bare row. The mode fence disables ambiguous fallback and all
-  // ownerless mutations without guessing or deleting data.
+  if (state.inventoryIdentityMode === 'legacy-bare') {
+    const activeRow = state.activeSessionKey ? state.sessions[state.activeSessionKey] : null;
+    const bareActiveRow = activeRow && !activeRow.agentId
+      ? activeRow
+      : (state.activeSessionId ? state.sessions[state.activeSessionId] : null);
+    state._retiredBareActiveSessionId = bareActiveRow && !bareActiveRow.agentId
+      ? bareActiveRow.id || null
+      : null;
+    state.sessionOrder = state.sessionOrder.filter(key => state.sessions[key]?.agentId);
+    if (state._retiredBareActiveSessionId) {
+      state.activeSessionId = null;
+      state.activeSessionKey = null;
+    }
+  }
   state.inventoryIdentityMode = 'agent-scoped';
+}
+
+function reconcileRetiredBareActiveSession(state) {
+  const sessionId = state._retiredBareActiveSessionId || null;
+  if (!sessionId) return false;
+  const chat = _getChatStoreSafe();
+  if (state.inventoryIdentityMode === 'legacy-bare') {
+    const bareRow = state.sessions[sessionId];
+    state._retiredBareActiveSessionId = null;
+    if (!bareRow || bareRow.agentId) return false;
+    state.activeSessionId = sessionId;
+    state.activeSessionKey = sessionId;
+    if (chat?.currentView === 'yeaft' && typeof chat.setActiveSessionFilter === 'function') {
+      chat.setActiveSessionFilter(sessionId, { force: true });
+    } else if (chat) {
+      chat.yeaftActiveSessionFilter = sessionId;
+    }
+    return true;
+  }
+  const candidates = state.sessionOrder.filter(key => {
+    const row = state.sessions[key];
+    return row?.agentId && row.id === sessionId;
+  });
+  if (candidates.length === 1) {
+    const activeKey = candidates[0];
+    const alreadyResolved = state.activeSessionId === sessionId
+      && state.activeSessionKey === activeKey;
+    const agentId = state.sessions[activeKey]?.agentId || null;
+    state.activeSessionId = sessionId;
+    state.activeSessionKey = activeKey;
+    if (alreadyResolved) return true;
+    if (chat?.currentView === 'yeaft' && typeof chat.setActiveSessionFilter === 'function') {
+      chat.setActiveSessionFilter(sessionId, { agentId, force: true });
+      // `setActiveSessionFilter()` calls back into `setActive()`, which clears
+      // the migration marker as if this were an explicit user choice. Restore
+      // it until a user really chooses an exact row; a later second candidate
+      // must still be able to turn this automatic migration into fail-closed.
+      state._retiredBareActiveSessionId = sessionId;
+    } else if (chat) {
+      chat.yeaftActiveSessionFilter = sessionId;
+    }
+    return true;
+  }
+  state.activeSessionId = null;
+  state.activeSessionKey = null;
+  if (chat?.yeaftActiveSessionFilter === sessionId) {
+    chat.yeaftActiveSessionFilter = null;
+  }
+  try {
+    const persisted = localStorage.getItem('lastViewedYeaftSession') || '';
+    if (parseYeaftSessionIdentity(persisted).sessionId === sessionId) {
+      localStorage.removeItem('lastViewedYeaftSession');
+    }
+  } catch (_) {}
+  return true;
 }
 
 function normalizeOrderList(ids) {
@@ -195,6 +272,7 @@ export const useSessionsStore = defineStore('sessions', {
     activeSessionKey: null,
     /** @type {'empty'|'legacy-bare'|'agent-scoped'} */
     inventoryIdentityMode: 'empty',
+    _retiredBareActiveSessionId: null,
     lastSnapshotAt: 0,
     /**
      * Most recent CRUD result for the UI to surface as toast/modal error.
@@ -282,8 +360,9 @@ export const useSessionsStore = defineStore('sessions', {
      * to stamp it), falls back to the legacy whole-store replacement
      * for back-compat.
      */
-    applySnapshot(sessions, agentId = null) {
+    applySnapshot(sessions, agentId = null, { deferActivation = false } = {}) {
       const arr = Array.isArray(sessions) ? sessions : [];
+      let retiredIdentityReconciled = false;
       if (!agentId) {
         // Legacy path — single-agent stores only. Once this inventory has
         // observed an Agent-scoped source, never downgrade it merely because
@@ -403,7 +482,19 @@ export const useSessionsStore = defineStore('sessions', {
         }
         this.sessionOrder = nextOrder;
       }
+      if (!deferActivation) {
+        retiredIdentityReconciled = reconcileRetiredBareActiveSession(this);
+      }
       this.lastSnapshotAt = Date.now();
+      const chat = _getChatStoreSafe();
+      if (chat && agentId) {
+        const nextSessionAgents = { ...(chat.yeaftSessionAgentById || {}) };
+        for (const s of arr) {
+          if (s && s.id && !nextSessionAgents[s.id]) nextSessionAgents[s.id] = agentId;
+        }
+        chat.yeaftSessionAgentById = nextSessionAgents;
+      }
+      if (!deferActivation && !retiredIdentityReconciled) {
       // fix-yeaft-session-server-persistence: prefer the user's
       // last-viewed yeaft session over a blind `sessionOrder[0]`
       // fall-back. This is what stops "switch agent + reload" from
@@ -434,7 +525,8 @@ export const useSessionsStore = defineStore('sessions', {
       if (this.activeSessionId && !findSessionKey(this, this.activeSessionId, activeAgentId)) {
         this.activeSessionId = fallbackActiveId;
         this.activeSessionKey = fallbackActiveKey || null;
-      } else if (!this.activeSessionId && this.sessionOrder.length > 0) {
+      } else if (!this.activeSessionId && this.sessionOrder.length > 0
+          && !this._retiredBareActiveSessionId) {
         this.activeSessionId = fallbackActiveId;
         this.activeSessionKey = fallbackActiveKey || null;
       } else if (this.activeSessionId) {
@@ -446,15 +538,7 @@ export const useSessionsStore = defineStore('sessions', {
       // already visible, go through chat.setActiveSessionFilter() instead of
       // assigning the field directly: the first default selection must trigger
       // the same history/model bootstrap as a manual sidebar click.
-      const chat = _getChatStoreSafe();
-      if (chat) {
-        if (agentId) {
-          const nextSessionAgents = { ...(chat.yeaftSessionAgentById || {}) };
-          for (const s of arr) {
-            if (s && s.id && !nextSessionAgents[s.id]) nextSessionAgents[s.id] = agentId;
-          }
-          chat.yeaftSessionAgentById = nextSessionAgents;
-        }
+      if (chat && !this._retiredBareActiveSessionId) {
         const selectedSessionId = this.activeSessionId || fallbackActiveId;
         let nextFilterId = null;
         if (chat.yeaftActiveSessionFilter && !findSessionKey(this, chat.yeaftActiveSessionFilter)) {
@@ -463,13 +547,16 @@ export const useSessionsStore = defineStore('sessions', {
           nextFilterId = selectedSessionId;
         }
         if (nextFilterId) {
+          const nextFilterKey = normalizeActiveKey(this, nextFilterId);
+          const nextFilterAgentId = nextFilterKey ? this.sessions[nextFilterKey]?.agentId || null : null;
           if (chat.currentView === 'yeaft' && typeof chat.setActiveSessionFilter === 'function') {
-            chat.setActiveSessionFilter(nextFilterId, { force: true });
+            chat.setActiveSessionFilter(nextFilterId, { agentId: nextFilterAgentId, force: true });
           } else {
             chat.yeaftActiveSessionFilter = nextFilterId;
           }
-          this.activeSessionKey = normalizeActiveKey(this, nextFilterId) || this.activeSessionKey;
+          this.activeSessionKey = nextFilterKey || this.activeSessionKey;
         }
+      }
       }
       // fix-yeaft-session-list-and-menu: mirror server-decorated pin
       // state from this snapshot into chatStore.pinnedSessions so the
@@ -526,6 +613,7 @@ export const useSessionsStore = defineStore('sessions', {
         }, agentId);
         this.sessions[key] = stub;
         this.sessionOrder.push(key);
+        reconcileRetiredBareActiveSession(this);
         return;
       }
       this.sessions[key] = {
@@ -535,6 +623,7 @@ export const useSessionsStore = defineStore('sessions', {
         defaultVpId: payload.defaultVpId != null ? payload.defaultVpId : prev.defaultVpId,
         announcement: typeof payload.announcement === 'string' ? payload.announcement : prev.announcement,
       };
+      reconcileRetiredBareActiveSession(this);
     },
 
     /** Record a `group_crud_result` for UI feedback. */
@@ -591,6 +680,7 @@ export const useSessionsStore = defineStore('sessions', {
         ...this._normalize(session, effectiveAgentId, isPinnedRow(prev)),
       };
       if (!existed) this.sessionOrder.push(key);
+      reconcileRetiredBareActiveSession(this);
       return key;
     },
 
@@ -599,6 +689,7 @@ export const useSessionsStore = defineStore('sessions', {
       if (sessionId && key && this.sessions[key]) {
         this.activeSessionId = sessionId;
         this.activeSessionKey = key;
+        this._retiredBareActiveSessionId = null;
       } else {
         this.activeSessionId = null;
         this.activeSessionKey = null;
@@ -684,14 +775,17 @@ export const useSessionsStore = defineStore('sessions', {
       this.activeSessionId = null;
       this.activeSessionKey = null;
       this.inventoryIdentityMode = 'empty';
+      this._retiredBareActiveSessionId = null;
       this.lastSnapshotAt = 0;
     },
 
     beginInventoryCommit(preferredSessionId = null, preferredAgentId = null) {
       this.resetInventory();
-      if (preferredSessionId) {
+      if (preferredSessionId && preferredAgentId) {
         this.activeSessionId = preferredSessionId;
-        this.activeSessionKey = storeKeyFor(preferredAgentId, preferredSessionId) || preferredSessionId;
+        this.activeSessionKey = storeKeyFor(preferredAgentId, preferredSessionId);
+      } else if (preferredSessionId) {
+        this._retiredBareActiveSessionId = preferredSessionId;
       }
     },
 
