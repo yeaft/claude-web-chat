@@ -51,6 +51,7 @@ function mapRow(row) {
     announcement: row.announcement || '',
     createdAt: row.created_at || null,
     updatedAt: row.updated_at,
+    metadataUpdatedAt: row.metadata_updated_at || null,
     isArchived: row.is_archived === 1,
     // fix-yeaft-session-list-and-menu: persisted pin state. Decorated
     // onto outgoing snapshots in server/handlers/agent-output.js so the
@@ -90,6 +91,14 @@ export const yeaftSessionDb = {
       now,
       0,
     );
+    if (session.metadataUpdatedAt) {
+      stmts.touchYeaftSessionMetadata.run(
+        session.metadataUpdatedAt,
+        session.id,
+        userId || null,
+        agentId,
+      );
+    }
   },
 
   /**

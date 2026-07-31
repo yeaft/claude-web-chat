@@ -10,7 +10,7 @@ import { loadSession } from '../../../agent/yeaft/session.js';
 import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
-import { registerSessionWorkDir, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
+import { registerSessionWorkDir, renameSession, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
 import {
   createProject,
   deleteProject,
@@ -140,6 +140,32 @@ describe('Yeaft session-scoped model config', () => {
     expect(config).toEqual({ model: 'agent/gpt-5', modelEffort: 'low' });
   });
 
+
+  it('advances Session metadata time for rename and settings changes', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-07-29T10:00:00.000Z'));
+      const root = makeDir();
+      const sessionId = 'session-metadata-time';
+      createSession(sessionsRoot(root), {
+        id: sessionId,
+        name: 'Original',
+        roster: [],
+        defaultVpId: null,
+      }).close();
+      expect(snapshotSessions(root)[0].metadataUpdatedAt).toBe('2026-07-29T10:00:00.000Z');
+
+      vi.setSystemTime(new Date('2026-07-29T11:00:00.000Z'));
+      renameSession(root, sessionId, 'Renamed');
+      expect(snapshotSessions(root)[0].metadataUpdatedAt).toBe('2026-07-29T11:00:00.000Z');
+
+      vi.setSystemTime(new Date('2026-07-29T12:00:00.000Z'));
+      updateSessionConfig(root, sessionId, { model: 'agent/gpt-5' });
+      expect(snapshotSessions(root)[0].metadataUpdatedAt).toBe('2026-07-29T12:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('writes Session config only to the user-level root', () => {
     const root = makeDir();
