@@ -592,6 +592,35 @@ export class WorkCenterService {
     this.#drainFailureRecoveryQueue();
   }
 
+  #scanCoordinatorProviderRecoveries() {
+    if (this.shuttingDown || !this.coordinator) return;
+    this.store.recoverCoordinatorProviderTurns();
+    this.store.recoverCoordinatorMailbox();
+    for (const recoverable of this.store.getRecoverableCoordinatorTurns?.() || []) {
+      const claim = this.store.claimCoordinatorTurn(
+        recoverable.workItemId, recoverable.turnId, this.ownerBootId,
+      );
+      if (!claim) continue;
+      const started = this.store.resumeCoordinatorTurn(
+        recoverable.workItemId, recoverable.turnId, claim,
+      );
+      if (!started) continue;
+      const turn = this.coordinator.resume(started, {
+        text: recoverable.text || '',
+        recovery: Boolean(recoverable.recovery),
+        addedAttachments: Array.isArray(recoverable.addedAttachments)
+          ? recoverable.addedAttachments : [],
+        onUpdate: (type, detail) => this.#emit({ type, workItem: detail }),
+      });
+      turn?.task?.catch?.(() => {});
+    }
+  }
+
+  #scanRecoveries() {
+    this.#scanCoordinatorProviderRecoveries();
+    this.#scanFailureRecoveries();
+  }
+
   #scanFailureRecoveries() {
     if (this.shuttingDown || !this.coordinator) return;
     const now = Date.now();
@@ -653,28 +682,10 @@ export class WorkCenterService {
   }
 
   start() {
-    for (const recoverable of this.store.getRecoverableCoordinatorTurns?.() || []) {
-      const claim = this.store.claimCoordinatorTurn(
-        recoverable.workItemId, recoverable.turnId, this.ownerBootId,
-      );
-      if (!claim) continue;
-      const started = this.store.resumeCoordinatorTurn(
-        recoverable.workItemId, recoverable.turnId, claim,
-      );
-      if (!started) continue;
-      const task = this.coordinator.resume(started, {
-        text: recoverable.text || '',
-        recovery: Boolean(recoverable.recovery),
-        addedAttachments: Array.isArray(recoverable.addedAttachments)
-          ? recoverable.addedAttachments : [],
-        onUpdate: (type, detail) => this.#emit({ type, workItem: detail }),
-      }).task;
-      task?.catch?.(() => {});
-    }
-    this.#scanFailureRecoveries();
+    this.#scanRecoveries();
     if (!this.recoveryTimer) {
       this.recoveryTimer = setInterval(
-        () => this.#scanFailureRecoveries(),
+        () => this.#scanRecoveries(),
         this.recoveryPollIntervalMs,
       );
       this.recoveryTimer.unref?.();

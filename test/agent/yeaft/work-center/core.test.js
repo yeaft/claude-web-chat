@@ -3140,6 +3140,165 @@ describe('Work Center core', () => {
       await ownerB.shutdown();
       rmSync(dualOwnerDir, { recursive: true, force: true });
     }
+
+    for (const providerStatus of ['prepared', 'responded']) {
+      const expiryDir = mkdtempSync(join(tmpdir(), `yeaft-coordinator-expiry-${providerStatus}-`));
+      const expiryDb = join(expiryDir, 'work-center.db');
+      let expiryNow = 1_000;
+      const expiryStore = new WorkItemStore(expiryDb, { now: () => expiryNow });
+      const expiryController = new WorkflowController(expiryStore);
+      const expiryItem = expiryController.create(createInput({
+        id: `coordinator-expiry-${providerStatus}`, workDir: expiryDir, start: false,
+      }));
+      const expiryBefore = expiryStore.getWorkItemDetail(expiryItem.id);
+      const responseText = JSON.stringify({
+        reply: `Recovered ${providerStatus} after lease expiry.`,
+        decision: {
+          kind: 'answer', reason: 'Expired owner was replaced',
+          contractPatch: null, guidance: [], actions: [],
+        },
+      });
+      const seedExpiryCoordinator = new WorkItemCoordinator({
+        store: expiryStore,
+        ownerBootId: 'dead-owner',
+        claimLeaseMs: 100,
+        runtimeProvider: async () => ({
+          config: {
+            primaryModel: 'provider/model',
+            availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }],
+          },
+          adapter: { call: async () => new Promise(() => {}) },
+        }),
+        policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
+        registry: {
+          listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }],
+        },
+      });
+      const seededExpiry = seedExpiryCoordinator.message(expiryItem.id, {
+        text: `Recover ${providerStatus}`,
+        revision: expiryBefore.revision,
+        planRevision: expiryBefore.planRevision,
+        ledgerRevision: expiryBefore.ledgerRevision,
+        coordinatorRevision: expiryBefore.coordinatorRevision,
+      });
+      let providerTurn;
+      for (let index = 0; index < 200; index += 1) {
+        providerTurn = expiryStore.db.prepare(`SELECT * FROM coordinator_provider_turns
+          WHERE work_item_id = ?`).get(expiryItem.id);
+        if (providerTurn?.status === 'prepared') break;
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      expect(providerTurn).toMatchObject({ status: 'prepared' });
+      const seededTurnId = providerTurn.coordinator_turn_id;
+      const seededMailbox = expiryStore.db.prepare(`SELECT * FROM coordinator_mailbox_entries
+        WHERE json_extract(payload, '$.turnId') = ?`).get(seededTurnId);
+      const deadClaim = {
+        mailboxId: seededMailbox.id,
+        ownerBootId: 'dead-owner',
+        claimEpoch: Number(seededMailbox.claim_epoch),
+      };
+      if (providerStatus === 'responded') {
+        expiryStore.dispatchCoordinatorProviderTurn(providerTurn.id, deadClaim);
+        expiryStore.respondCoordinatorProviderTurn(
+          providerTurn.id, providerTurn.request_hash, { text: responseText }, deadClaim,
+        );
+      }
+      await seedExpiryCoordinator.shutdown();
+      expiryStore.db.prepare(`UPDATE coordinator_provider_turns SET status = ?,
+        dispatched_at = CASE WHEN ? = 'responded' THEN dispatched_at ELSE NULL END,
+        response = CASE WHEN ? = 'responded' THEN response ELSE NULL END,
+        response_hash = CASE WHEN ? = 'responded' THEN response_hash ELSE NULL END,
+        responded_at = CASE WHEN ? = 'responded' THEN responded_at ELSE NULL END,
+        error = NULL WHERE id = ?`).run(
+        providerStatus, providerStatus, providerStatus, providerStatus, providerStatus, providerTurn.id,
+      );
+      expiryStore.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'claimed',
+        claim_owner = 'dead-owner', claim_epoch = 1, claimed_at = 1000,
+        lease_expires_at = 1100, acked_at = NULL WHERE id = ?`).run(seededMailbox.id);
+      const thinkingMessages = expiryStore.getWorkItemDetail(expiryItem.id).messages.map(message => (
+        message.turnId === seededTurnId && message.role === 'assistant'
+          ? { ...message, status: 'thinking', error: undefined } : message
+      ));
+      expiryStore.db.prepare('UPDATE work_items SET messages = ? WHERE id = ?').run(
+        JSON.stringify(thinkingMessages), expiryItem.id,
+      );
+      expiryStore.close();
+
+      let expiryProviderCalls = 0;
+      const recoveryStore = new WorkItemStore(expiryDb, { now: () => expiryNow });
+      const recoveryCoordinator = new WorkItemCoordinator({
+        store: recoveryStore,
+        ownerBootId: `new-owner-${providerStatus}`,
+        claimLeaseMs: 100,
+        runtimeProvider: async () => ({
+          config: {
+            primaryModel: 'provider/model',
+            availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }],
+          },
+          adapter: { call: async request => {
+            request.onRequestStart?.();
+            expiryProviderCalls += 1;
+            return { text: responseText };
+          } },
+        }),
+        policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
+        registry: {
+          listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }],
+        },
+      });
+      const recoveryService = new WorkCenterService({
+        yeaftDir: expiryDir,
+        store: recoveryStore,
+        controller: new WorkflowController(recoveryStore),
+        coordinator: recoveryCoordinator,
+        runner: null,
+        ownerBootId: `new-owner-${providerStatus}`,
+        pollIntervalMs: 5,
+        settingsReader: () => ({}),
+      });
+      try {
+        recoveryService.start();
+        await new Promise(resolve => setTimeout(resolve, 20));
+        expect(expiryProviderCalls).toBe(0);
+        expect(recoveryStore.getWorkItemDetail(expiryItem.id).messages.at(-1))
+          .toMatchObject({ status: 'thinking' });
+        expect(recoveryStore.db.prepare(`SELECT status, claim_owner, claim_epoch
+          FROM coordinator_mailbox_entries WHERE json_extract(payload, '$.turnId') = ?`)
+          .get(seededTurnId)).toMatchObject({
+            status: 'claimed', claim_owner: 'dead-owner', claim_epoch: 1,
+          });
+
+        expiryNow = 1_200;
+        for (let index = 0; index < 200; index += 1) {
+          if (recoveryStore.getWorkItemDetail(expiryItem.id).messages.at(-1)?.status === 'completed') break;
+          await new Promise(resolve => setTimeout(resolve, 5));
+        }
+        expect(expiryProviderCalls).toBe(providerStatus === 'prepared' ? 1 : 0);
+        expect(recoveryStore.getWorkItemDetail(expiryItem.id).messages.at(-1)).toMatchObject({
+          status: 'completed', text: `Recovered ${providerStatus} after lease expiry.`,
+        });
+        expect(recoveryStore.db.prepare(`SELECT status, claim_owner, claim_epoch
+          FROM coordinator_mailbox_entries WHERE json_extract(payload, '$.turnId') = ?`)
+          .get(seededTurnId)).toMatchObject({
+            status: 'acked', claim_owner: `new-owner-${providerStatus}`, claim_epoch: 2,
+          });
+        expect(recoveryStore.getCoordinatorProviderTurn(providerTurn.id)).toMatchObject({
+          status: 'responded', claimOwner: `new-owner-${providerStatus}`, claimEpoch: 2,
+        });
+        expect(recoveryStore.failCoordinatorTurn(
+          seededTurnId, new Error('Expired owner must not overwrite recovered success'), {
+            workItemId: expiryItem.id,
+            claim: deadClaim,
+          },
+        )).toBeNull();
+        expect(recoveryStore.getWorkItemDetail(expiryItem.id).messages.at(-1)).toMatchObject({
+          status: 'completed', text: `Recovered ${providerStatus} after lease expiry.`,
+        });
+      } finally {
+        await recoveryService.shutdown();
+        rmSync(expiryDir, { recursive: true, force: true });
+      }
+    }
   }, 30_000);
 
   it('claims a ready Action exactly once and fences stale terminal submissions', () => {

@@ -2909,7 +2909,7 @@ export class WorkItemStore {
   getRecoverableCoordinatorTurns() {
     return this.db.prepare(`SELECT w.id AS work_item_id, c.payload FROM coordinator_mailbox_entries c
       JOIN work_items w ON w.id = c.work_item_id
-      WHERE (c.status = 'pending' OR (c.status = 'claimed' AND c.lease_expires_at > ?))
+      WHERE c.status IN ('pending', 'claimed')
         AND EXISTS (SELECT 1 FROM json_each(w.messages) message
           WHERE json_extract(message.value, '$.turnId') = json_extract(c.payload, '$.turnId')
             AND json_extract(message.value, '$.role') = 'assistant'
@@ -2917,7 +2917,7 @@ export class WorkItemStore {
         AND EXISTS (SELECT 1 FROM coordinator_provider_turns p
           WHERE p.coordinator_turn_id = json_extract(c.payload, '$.turnId')
             AND p.status IN ('prepared', 'dispatching', 'responded'))
-      ORDER BY c.created_at`).all(this.now()).map(row => ({
+      ORDER BY c.created_at`).all().map(row => ({
         workItemId: row.work_item_id,
         ...parseJson(row.payload, {}),
       }));
