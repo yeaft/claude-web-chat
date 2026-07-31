@@ -30,7 +30,7 @@ import { getLlmConfig, updateLlmConfig, getYeaftSettings, updateYeaftSettings, g
 import { loadConfig } from '../yeaft/config.js';
 import { discoverLlmModels } from '../llm-model-discovery.js';
 import { fetchModelsDev } from '../yeaft/llm/models-dev.js';
-import { handleYeaftSessionSend, handleYeaftAskUserAnswer, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftModeSwitch, handleYeaftModelSwitch, resetYeaftSession, refreshLiveSessionConfig, handleYeaftLoadHistory, handleYeaftLoadHistoryOutline, handleYeaftSearchHistory, handleYeaftLoadHistoryWindow, handleYeaftLoadMoreHistory, handleYeaftAbortThread, handleYeaftAbortAll, handleYeaftAbortTurn, handleYeaftVpSubscribe, handleYeaftVpCreate, handleYeaftVpUpdate, handleYeaftVpDelete, handleYeaftVpRead, handleYeaftListSessions, handleYeaftCreateSession, handleYeaftRenameSession, handleYeaftUpdateSession, handleYeaftUpdateSessionConfig, handleYeaftArchiveSession, handleYeaftDeleteSession, handleYeaftSessionAddMember, handleYeaftSessionRemoveMember, handleYeaftSessionSetDefaultVp, handleYeaftScanWorkdirSessions, handleYeaftRestoreSession, handleYeaftDreamTrigger, handleYeaftFetchToolStats, handleYeaftFetchDebugHistory, handleYeaftMcpList, handleYeaftMcpAdd, handleYeaftMcpRemove, handleYeaftMcpReload, broadcastLanguageChange, broadcastYeaftSessionSnapshotEager, broadcastYeaftVpSnapshotEager, preloadYeaftSkillSlashCommands } from '../yeaft/web-bridge.js';
+import { handleYeaftSessionSend, handleYeaftAskUserAnswer, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftModeSwitch, handleYeaftModelSwitch, resetYeaftSession, refreshLiveSessionConfig, handleYeaftLoadHistory, handleYeaftLoadHistoryOutline, handleYeaftSearchHistory, handleYeaftLoadHistoryWindow, handleYeaftLoadMoreHistory, handleYeaftAbortThread, handleYeaftAbortAll, handleYeaftAbortTurn, handleYeaftVpSubscribe, handleYeaftVpCreate, handleYeaftVpUpdate, handleYeaftVpDelete, handleYeaftVpRead, handleYeaftListSessions, handleYeaftProjectMutation, handleYeaftCreateSession, handleYeaftRenameSession, handleYeaftUpdateSession, handleYeaftUpdateSessionConfig, handleYeaftArchiveSession, handleYeaftDeleteSession, handleYeaftSessionAddMember, handleYeaftSessionRemoveMember, handleYeaftSessionSetDefaultVp, handleYeaftScanWorkdirSessions, handleYeaftRestoreSession, handleYeaftDreamTrigger, handleYeaftFetchToolStats, handleYeaftFetchDebugHistory, handleYeaftMcpList, handleYeaftMcpAdd, handleYeaftMcpRemove, handleYeaftMcpReload, broadcastLanguageChange, broadcastYeaftSessionSnapshotEager, broadcastYeaftVpSnapshotEager, preloadYeaftSkillSlashCommands } from '../yeaft/web-bridge.js';
 import { startYeaftStatusRefresh, forceRefreshYeaftStatus } from '../yeaft/status-cache.js';
 import { handleWorkCenterRequest } from '../yeaft/work-center/bridge.js';
 
@@ -504,6 +504,10 @@ export async function handleMessage(msg) {
     case 'yeaft_session_chat':
     case 'unify_group_chat':
       await handleYeaftSessionSend(msg);
+      break;
+
+    case 'yeaft_project_mutation':
+      handleYeaftProjectMutation(msg);
       break;
 
     case 'yeaft_load_history':

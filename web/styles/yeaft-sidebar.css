@@ -59,6 +59,37 @@
 
 /* Mobile slide-away behavior. Width is owned exclusively by the shared
    SessionSidebarShell token so Chat and Yeaft stay identical. */
+/* Codex-style unified navigation: Projects group Yeaft Sessions; Recents keeps all providers. */
+.sidebar-primary-actions { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px; }
+.sidebar-primary-action, .sidebar-search-field { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text-primary); font: inherit; }
+.sidebar-primary-action { cursor: pointer; text-align: left; }
+.sidebar-primary-action:hover, .sidebar-search-field:focus-within, .sidebar-project-header:hover, .sidebar-project-header.drag-over, .recents-section.drag-over { background: var(--sidebar-hover); }
+.sidebar-primary-action svg, .sidebar-search-field svg { width: 17px; height: 17px; flex: 0 0 auto; color: var(--text-secondary); }
+.sidebar-search-field input[type="search"] { width: 100%; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text-primary); font: inherit; }
+.sidebar-search-field input[type="search"]::placeholder { color: var(--text-muted); }
+.sidebar-section { padding: 4px 8px 10px; }
+.sidebar-section + .sidebar-section { margin-top: 2px; }
+.sidebar-section-heading { display: flex; align-items: center; min-height: 34px; padding: 0 6px 0 10px; color: var(--text-secondary); font-size: 13px; font-weight: 600; }
+.sidebar-section-heading > span:first-child { flex: 1; }
+.sidebar-section-empty { padding: 8px 10px 12px; color: var(--text-muted); font-size: 12px; }
+.sidebar-project, .sidebar-project-header { position: relative; }
+.sidebar-project-header { display: flex; align-items: center; border-radius: 8px; }
+.sidebar-project-toggle { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; min-height: 34px; padding: 0 4px; border: 0; background: transparent; color: var(--text-primary); font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
+.sidebar-project-toggle > span:not(.sidebar-project-count) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-project-chevron, .sidebar-project-icon { width: 15px; height: 15px; flex: 0 0 auto; color: var(--text-secondary); }
+.sidebar-project-chevron { transition: transform 0.15s ease; }
+.sidebar-project-chevron.collapsed { transform: rotate(-90deg); }
+.sidebar-project-count { margin-left: auto; color: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.sidebar-project-header > .session-dots-btn { opacity: 0; }
+.sidebar-project-header:hover > .session-dots-btn, .sidebar-project-header > .session-dots-btn.menu-open { opacity: 1; }
+.sidebar-project-sessions { padding-left: 17px; }
+.sidebar-session-row { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; border: 0; color: var(--text-primary); text-align: left; }
+.sidebar-session-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.sidebar-session-meta { overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-session-row .session-menu, .sidebar-project-header .session-menu { top: 30px; }
+.sidebar-session-row[draggable="true"] { cursor: grab; }
+.sidebar-session-row[draggable="true"]:active { cursor: grabbing; }
+
 @media (max-width: 768px) {
   .yeaft-sidebar {
     box-shadow: 4px 0 16px rgba(0, 0, 0, 0.2);
