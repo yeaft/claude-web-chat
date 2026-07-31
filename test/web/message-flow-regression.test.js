@@ -1596,6 +1596,82 @@ describe('message flow regressions', () => {
     expect(store._yeaftWatchdogConvs.has(bridgeConversationId)).toBe(false);
     expect(store._processingWatchdogs[restartedConversationId]).toBeTruthy();
     expect(store._yeaftWatchdogConvs.has(restartedConversationId)).toBe(true);
+
+    // A delayed bootstrap can transiently report an empty recent window while
+    // this Session already has visible cached history. Treat the reply as a
+    // completed refresh, but never let it erase the pane the user is reading.
+    const rowsBeforeEmptyRefresh = store.messagesMap[restartedConversationId]
+      .filter(row => row.sessionId === 'visible-session')
+      .map(row => ({ id: row.id, content: row.content }));
+    const stateBeforeEmptyRefresh = store.yeaftSessionHistoryState['agent-a\u001fvisible-session'];
+    const emptyRefreshRequest = store.beginYeaftHistoryLoad({
+      agentId: 'agent-a',
+      sessionId: 'visible-session',
+      mode: 'recent',
+      preserveLoaded: false,
+    });
+    expect(store.yeaftSessionHistoryState['agent-a\u001fvisible-session']).toEqual(expect.objectContaining({
+      loaded: true,
+      loading: true,
+      hasMore: stateBeforeEmptyRefresh.hasMore,
+      oldestSeq: stateBeforeEmptyRefresh.oldestSeq,
+      latestSeq: stateBeforeEmptyRefresh.latestSeq,
+      count: stateBeforeEmptyRefresh.count,
+      syncingAfterSeq: null,
+    }));
+    store.handleMessage({
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-a',
+      conversationId: restartedConversationId,
+      sessionId: 'visible-session',
+      requestId: emptyRefreshRequest.requestId,
+      mode: 'recent',
+      messages: [],
+      oldestSeq: null,
+      latestSeq: null,
+      hasMore: false,
+    });
+    expect(store.messagesMap[restartedConversationId]
+      .filter(row => row.sessionId === 'visible-session')
+      .map(row => ({ id: row.id, content: row.content }))).toEqual(rowsBeforeEmptyRefresh);
+    expect(store.yeaftSessionHistoryState['agent-a\u001fvisible-session']).toEqual(expect.objectContaining({
+      loaded: true,
+      loading: false,
+      requestId: null,
+      hasMore: stateBeforeEmptyRefresh.hasMore,
+      oldestSeq: stateBeforeEmptyRefresh.oldestSeq,
+      latestSeq: stateBeforeEmptyRefresh.latestSeq,
+      count: stateBeforeEmptyRefresh.count,
+    }));
+
+    const emptySessionRequest = store.beginYeaftHistoryLoad({
+      agentId: 'agent-a',
+      sessionId: 'never-had-messages',
+      mode: 'recent',
+      preserveLoaded: false,
+    });
+    store.handleMessage({
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-a',
+      conversationId: restartedConversationId,
+      sessionId: 'never-had-messages',
+      requestId: emptySessionRequest.requestId,
+      mode: 'recent',
+      messages: [],
+      oldestSeq: null,
+      latestSeq: null,
+      hasMore: false,
+    });
+    expect(store.messagesMap[restartedConversationId]
+      .filter(row => row.sessionId === 'never-had-messages')).toEqual([]);
+    expect(store.yeaftSessionHistoryState['agent-a\u001fnever-had-messages']).toEqual(expect.objectContaining({
+      loaded: true,
+      loading: false,
+      count: 0,
+      hasMore: false,
+      requestId: null,
+    }));
+
     clearTimeout(store._processingWatchdogs[restartedConversationId]);
     storeFactories.clear();
 

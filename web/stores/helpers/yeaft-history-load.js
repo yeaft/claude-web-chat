@@ -43,7 +43,13 @@ export function beginYeaftHistoryLoad(store, {
   const requestId = `yeaft_history_${generation}_${crypto.randomUUID()}`;
   const next = {
     ...previous,
-    loaded: preserveLoaded ? !!previous.loaded : false,
+    // Refreshes are stale-while-revalidate. Once a Session has a committed
+    // history window, starting a recent replay must not make that window look
+    // unloaded or clear its pagination metadata before the replacement lands.
+    // A first-ever load still starts with loaded=false because `previous` is
+    // empty. `preserveLoaded` remains relevant for delta/older callers that may
+    // begin from a partially initialized state.
+    loaded: !!previous.loaded,
     loading: true,
     error: null,
     requestId,
@@ -53,10 +59,15 @@ export function beginYeaftHistoryLoad(store, {
     latestSeq: Number.isFinite(latestSeq) ? latestSeq : (previous.latestSeq ?? null),
   };
   if (!preserveLoaded) {
-    next.hasMore = false;
-    next.oldestSeq = null;
-    next.count = 0;
+    // A recent replay supersedes any delta request. Keep committed pagination,
+    // but always retire the delta in-flight fence so a failed/empty replay
+    // cannot permanently block the next catch-up.
     next.syncingAfterSeq = null;
+    if (!previous.loaded) {
+      next.hasMore = false;
+      next.oldestSeq = null;
+      next.count = 0;
+    }
   }
   store.yeaftSessionHistoryState = {
     ...(store.yeaftSessionHistoryState || {}),

@@ -156,6 +156,20 @@ function isOptimisticYeaftUserRow(row) {
 }
 
 function replaceYeaftRecentHistoryRows(existingRows, incomingRows, sessionId) {
+  const hasVisibleCachedRows = existingRows.some(row => (
+    row && (sessionId == null || rowSessionId(row) === sessionId)
+  ));
+  // An empty recent projection is not a safe deletion signal. Background
+  // bootstrap/reconnect reads can transiently return no visible rows while the
+  // browser already has a committed Session window; replacing in that state
+  // makes the pane go blank until the next switch or manual reload. There is no
+  // history-delete operation on this wire, so keep stale rows and let a later
+  // non-empty recent response replace them atomically. A genuinely empty Session
+  // still completes its first load because it has no cached rows to preserve.
+  if (incomingRows.length === 0 && hasVisibleCachedRows) {
+    return { insertedRows: 0, preservedEmpty: true };
+  }
+
   const newestIncomingTs = incomingRows.reduce((max, row) => Math.max(max, row?.timestamp || 0), 0);
   const preserved = existingRows.filter((row) => {
     if (!row) return false;
@@ -174,7 +188,7 @@ function replaceYeaftRecentHistoryRows(existingRows, incomingRows, sessionId) {
   });
   existingRows.splice(0, existingRows.length, ...preserved);
   upsertYeaftHistoryRows(existingRows, incomingRows);
-  return incomingRows.length;
+  return { insertedRows: incomingRows.length, preservedEmpty: false };
 }
 
 function isInternalControlHistoryContent(content) {
@@ -659,8 +673,9 @@ export function handleSyncMessagesResult(store, msg) {
  * that session's cached rows, and delta chunks append.
  *
  * Always clears `yeaftLoadingMoreHistory` — even on an empty / error
- * chunk — so the spinner doesn't get stuck. Always overwrites
- * `yeaftHasMoreHistory` from the server's authoritative value.
+ * chunk — so the spinner doesn't get stuck. Non-empty recent and older pages
+ * update pagination from the server; an empty recent refresh preserves an
+ * already committed window because this wire does not represent deletion.
  */
 export function handleYeaftHistoryWindow(store, msg) {
   const sessionId = msg.sessionId ?? null;
@@ -911,8 +926,15 @@ export function handleYeaftHistoryChunk(store, msg) {
   const { formatted, acceptedHistoryMessages } = formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, store.messagesMap[convId]);
 
   let insertedRows = 0;
+  let preservedEmptyRecent = false;
   if (mode === 'recent') {
-    insertedRows = replaceYeaftRecentHistoryRows(store.messagesMap[convId], formatted, msgSessionId ?? null);
+    const recentResult = replaceYeaftRecentHistoryRows(
+      store.messagesMap[convId],
+      formatted,
+      msgSessionId ?? null,
+    );
+    insertedRows = recentResult.insertedRows;
+    preservedEmptyRecent = recentResult.preservedEmpty;
   } else if (formatted.length > 0) {
     if (mode === 'older') {
       store.messagesMap[convId].splice(0, 0, ...formatted);
@@ -941,12 +963,19 @@ export function handleYeaftHistoryChunk(store, msg) {
         count: (prevState.count || 0) + insertedRows,
       }
     : {
+        ...(preservedEmptyRecent ? prevState : {}),
         loaded: true,
         loading: false,
-        hasMore: !!msg.hasMore,
-        oldestSeq: (typeof msg.oldestSeq === 'number') ? msg.oldestSeq : store.yeaftOldestLoadedSeq,
-        count: mode === 'older' ? (prevState.count || 0) + insertedRows : acceptedHistoryMessages,
-        latestSeq: nextLatest,
+        hasMore: preservedEmptyRecent ? !!prevState.hasMore : !!msg.hasMore,
+        oldestSeq: preservedEmptyRecent
+          ? (Number.isFinite(prevState.oldestSeq) ? prevState.oldestSeq : store.yeaftOldestLoadedSeq)
+          : ((typeof msg.oldestSeq === 'number') ? msg.oldestSeq : store.yeaftOldestLoadedSeq),
+        count: mode === 'older'
+          ? (prevState.count || 0) + insertedRows
+          : (preservedEmptyRecent ? (prevState.count || 0) : acceptedHistoryMessages),
+        latestSeq: preservedEmptyRecent && !Number.isFinite(msg.latestSeq)
+          ? (prevState.latestSeq ?? null)
+          : nextLatest,
         syncingAfterSeq: null,
       };
   if (msg.requestId && typeof store.finishYeaftHistoryLoad === 'function') {
@@ -969,7 +998,13 @@ export function handleYeaftHistoryChunk(store, msg) {
       agentId: msg.agentId || null,
       sessionId: msgSessionId || null,
       messageType: msg.type,
-      detail: { mode, formattedCount: formatted.length, insertedRows, acceptedHistoryMessages },
+      detail: {
+        mode,
+        formattedCount: formatted.length,
+        insertedRows,
+        acceptedHistoryMessages,
+        preservedEmptyRecent,
+      },
     });
     measureNextPaint(store, {
       traceId: msg.perfTraceId,
