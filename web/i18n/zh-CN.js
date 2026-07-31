@@ -744,6 +744,8 @@ export default {
   'yeaft.session.create.untitled': '未命名会话',
   'yeaft.session.create.rosterEmpty': '暂无可用 VP — 请先到角色库创建。',
   'yeaft.session.create.rosterLoading': 'VP 加载中…',
+  'yeaft.session.create.rosterError': '无法从当前 Agent 加载 VP。',
+  'yeaft.session.create.rosterRetry': '重试',
   'yeaft.vp.domain.general': '通用与协作',
   'yeaft.vp.domain.productDesign': '产品与体验设计',
   'yeaft.vp.domain.softwareSystems': '软件与系统',

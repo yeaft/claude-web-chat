@@ -4318,7 +4318,12 @@ export const useChatStore = defineStore('chat', {
           // so the store can track which agent the cached roster belongs
           // to and the modal can detect agent switches that need a
           // fresh subscribe.
-          if (vp) vp.applySnapshot(event, msg.agentId || null);
+          if (vp) vp.applySnapshot(event, msg.agentId || null, msg.requestId || null);
+          break;
+        }
+        case 'vp_snapshot_error': {
+          const vp = window.Pinia?.useVpStore?.() || (window.__useVpStore && window.__useVpStore());
+          if (vp) vp.failSnapshot(msg.agentId || null, msg.requestId || null, event.error || event.message || 'VP library request failed');
           break;
         }
         case 'vp_updated': {

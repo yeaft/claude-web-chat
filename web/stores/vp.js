@@ -147,6 +147,11 @@ export const useVpStore = defineStore('vp', {
     vpOrder: [],      // insertion order
     emptyLibrary: false,
     lastSnapshotAt: 0,
+    /** @type {'idle'|'loading'|'ready'|'error'} */
+    snapshotStatus: 'idle',
+    snapshotAgentId: null,
+    snapshotRequestId: null,
+    snapshotError: '',
     /**
      * fix-session-restore-modal-unify: which agent the last snapshot came
      * from. Multi-agent deployments need this so callers (e.g.
@@ -263,7 +268,10 @@ export const useVpStore = defineStore('vp', {
      *   so consumers can detect when their cached roster is from a
      *   *different* agent than the one currently being targeted.
      */
-    applySnapshot(payload, agentId = null) {
+    applySnapshot(payload, agentId = null, requestId = null) {
+      const hasScopedRequest = !!this.snapshotRequestId;
+      if (hasScopedRequest && agentId && this.snapshotAgentId && agentId !== this.snapshotAgentId) return false;
+      if (hasScopedRequest && requestId && requestId !== this.snapshotRequestId) return false;
       this.vps = {};
       this.vpOrder = [];
       const arr = (payload && Array.isArray(payload.vps)) ? payload.vps : [];
@@ -271,6 +279,28 @@ export const useVpStore = defineStore('vp', {
       this.emptyLibrary = !!(payload && payload.emptyLibrary);
       this.lastSnapshotAt = Date.now();
       this.lastVpSnapshotAgentId = agentId || null;
+      this.snapshotStatus = 'ready';
+      this.snapshotAgentId = agentId || null;
+      this.snapshotRequestId = requestId || null;
+      this.snapshotError = '';
+      return true;
+    },
+
+    beginSnapshot(agentId, requestId) {
+      this.snapshotStatus = 'loading';
+      this.snapshotAgentId = agentId || null;
+      this.snapshotRequestId = requestId || null;
+      this.snapshotError = '';
+    },
+
+    failSnapshot(agentId, requestId, error = '') {
+      if (!this.snapshotRequestId || !requestId || requestId !== this.snapshotRequestId) return false;
+      if (agentId && this.snapshotAgentId && agentId !== this.snapshotAgentId) return false;
+      this.snapshotStatus = 'error';
+      this.snapshotAgentId = agentId || this.snapshotAgentId || null;
+      this.snapshotRequestId = requestId || this.snapshotRequestId || null;
+      this.snapshotError = String(error || 'VP library request failed');
+      return true;
     },
 
     /** Insert or merge a single VP record (live-diff — 334h). */

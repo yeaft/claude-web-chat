@@ -154,11 +154,16 @@ describe('message flow regressions', () => {
     const chatStoreSource = readFileSync(resolve(import.meta.dirname, '../../web/stores/chat.js'), 'utf8');
     const chatPageSource = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatPage.js'), 'utf8');
     const yeaftSidebarSource = readFileSync(resolve(import.meta.dirname, '../../web/components/YeaftSidebar.js'), 'utf8');
+    const vpAvatarSource = readFileSync(resolve(import.meta.dirname, '../../web/components/VpAvatar.js'), 'utf8');
+    const vpCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/yeaft-vp.css'), 'utf8');
     const sidebarCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/sidebar.css'), 'utf8');
     const variables = readFileSync(resolve(import.meta.dirname, '../../web/styles/variables.css'), 'utf8');
     const lightThemeVariables = variables.match(/:root\s*\{([\s\S]*?)\n\}/)?.[1] || '';
     const darkThemeVariables = variables.match(/\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/)?.[1] || '';
     expect(sidebarCss).toMatch(/\.unread-dot\s*\{[^}]*background:\s*var\(--success\)/);
+    expect(vpAvatarSource).not.toContain('/assets/avatars/');
+    expect(vpAvatarSource).not.toContain('<img');
+    expect(vpCss).not.toContain('.vp-avatar-img');
 
     const first = chatRouteRef({ id: 'conversation-1', agentId: 'agent-a', provider: 'copilot' });
     const moved = chatRouteRef({ id: 'conversation-1', agentId: 'agent-b', provider: 'copilot' });
@@ -1400,6 +1405,57 @@ describe('message flow regressions', () => {
     await modal.vm.onSubmit();
     expect(chat.createConversation).toHaveBeenCalledWith('/repo', 'agent-a', null, { provider: 'claude-code' });
     modal.unmount();
+
+    const coldVpStore = Vue.reactive({
+      vpList: [],
+      vpOrder: [],
+      emptyLibrary: false,
+      lastSnapshotAt: 0,
+      lastVpSnapshotAgentId: null,
+      snapshotStatus: 'idle',
+      snapshotAgentId: null,
+      snapshotRequestId: null,
+      snapshotError: '',
+      beginSnapshot(agentId, requestId) {
+        this.snapshotStatus = 'loading';
+        this.snapshotAgentId = agentId;
+        this.snapshotRequestId = requestId;
+      },
+      failSnapshot(agentId, requestId, error) {
+        if (requestId !== this.snapshotRequestId) return false;
+        this.snapshotStatus = 'error';
+        this.snapshotAgentId = agentId;
+        this.snapshotError = error;
+        return true;
+      },
+    });
+    chat.sendWsMessage.mockReturnValue(true);
+    const coldModalPinia = { ...modalPinia, useVpStore: () => coldVpStore };
+    globalThis.Pinia = coldModalPinia;
+    window.Pinia = coldModalPinia;
+    const coldModal = mount(SessionCreateModal, {
+      attachTo: document.body,
+      global: { mocks: { $t: key => key }, stubs: { Teleport: true, VpAvatar: true } },
+    });
+    await Vue.nextTick();
+    expect(chat.sendWsMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: 'yeaft_vp_subscribe',
+      agentId: 'agent-a',
+      requestId: expect.stringMatching(/^vp_snapshot_/),
+    }));
+    expect(coldVpStore.snapshotStatus).toBe('loading');
+    coldVpStore.failSnapshot('agent-a', coldVpStore.snapshotRequestId, 'offline');
+    await Vue.nextTick();
+    expect(coldModal.find('.yeaft-roster-error').exists()).toBe(true);
+    expect(coldModal.find('.yeaft-roster-error').text()).toContain('yeaft.session.create.rosterError');
+    await coldModal.get('.yeaft-roster-retry').trigger('click');
+    expect(chat.sendWsMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: 'yeaft_vp_subscribe',
+      agentId: 'agent-a',
+      requestId: expect.stringMatching(/^vp_snapshot_/),
+    }));
+    coldModal.unmount();
+
     globalThis.Pinia = originalPinia;
     window.Pinia = originalWindowPinia;
 

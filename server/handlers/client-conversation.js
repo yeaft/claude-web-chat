@@ -36,6 +36,18 @@ function emptyYeaftToolStats(reason = '') {
   return payload;
 }
 
+async function sendVpSnapshotError(client, msg, error) {
+  await sendToWebClient(client, {
+    type: 'yeaft_output',
+    agentId: msg?.agentId || null,
+    requestId: msg?.requestId || null,
+    event: {
+      type: 'vp_snapshot_error',
+      error,
+    },
+  });
+}
+
 async function broadcastSessionPin(userId, payload) {
   for (const [, target] of webClients) {
     if (!target?.authenticated) continue;
@@ -1347,12 +1359,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
             await sendToWebClient(client, emptyYeaftToolStats('No agent selected.'));
           } else if (relayType === 'yeaft_dream_trigger') {
             await sendToWebClient(client, skippedYeaftDreamResult(msg, 'no-agent-selected'));
+          } else if (relayType === 'yeaft_vp_subscribe') {
+            await sendVpSnapshotError(client, msg, 'No Agent is available for the VP library.');
           } else {
-            // fix-session-restore-modal-unify: every prior swallow was
-            // invisible — the user-facing symptom (e.g. VP roster stuck
-            // on "加载中...") doesn't point back to "the server has no
-            // agent to route this to." A WARN log is one grep away
-            // from the root cause next time this happens.
             console.warn(
               `[Server] swallowed yeaft message ${relayType} (no agent resolved)`
               + ` userId=${client.userId || '?'}`
@@ -1365,6 +1374,8 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
             await sendToWebClient(client, emptyYeaftToolStats('Agent is not available.'));
           } else if (relayType === 'yeaft_dream_trigger') {
             await sendToWebClient(client, skippedYeaftDreamResult(msg, 'agent-not-available'));
+          } else if (relayType === 'yeaft_vp_subscribe') {
+            await sendVpSnapshotError(client, msg, 'The selected Agent is not available.');
           }
           return true;
         }
@@ -1376,6 +1387,10 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           }
           if (relayType === 'yeaft_dream_trigger') {
             await sendToWebClient(client, skippedYeaftDreamResult(msg, 'agent-offline'));
+            return true;
+          }
+          if (relayType === 'yeaft_vp_subscribe') {
+            await sendVpSnapshotError(client, msg, 'The selected Agent is offline.');
             return true;
           }
         }

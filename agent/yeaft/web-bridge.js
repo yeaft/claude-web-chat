@@ -2284,6 +2284,10 @@ export async function __testResetVpState() {
   sessionContexts.clear();
   vpCurrentTodos.clear();
   threadClassifier = defaultClassifyThread;
+  if (_vpUnsubscribe) {
+    try { _vpUnsubscribe(); } catch { /* ignore */ }
+    _vpUnsubscribe = null;
+  }
   yeaftConversationId = null;
   lastYeaftSlashCommandSnapshot = null;
   // Per-group compact in-flight + pending state lives on the session's
@@ -2834,17 +2838,28 @@ function configuredVpPaths() {
   };
 }
 
-export function handleYeaftVpSubscribe(_msg) {
+export function handleYeaftVpSubscribe(msg = {}) {
   if (_vpUnsubscribe) {
     try { _vpUnsubscribe(); } catch { /* ignore */ }
     _vpUnsubscribe = null;
   }
   const { libDir } = configuredVpPaths();
+  const requestId = typeof msg.requestId === 'string' && msg.requestId ? msg.requestId : null;
   _vpUnsubscribe = handleVpSubscribe(
-    sendSessionEvent,
+    event => sendSessionEvent(event, event?.type === 'vp_snapshot' && requestId ? { requestId } : undefined),
     undefined,
     libDir ? { dir: libDir } : {},
   );
+}
+
+/**
+ * Seed and publish the Agent-owned VP library as soon as the Agent registers.
+ * Session creation must not wait for a Session runtime or a first user message:
+ * stock VPs ship with the Agent and are cheap synchronous files to materialize.
+ * Later explicit subscriptions still refresh the same authoritative library.
+ */
+export function broadcastYeaftVpSnapshotEager() {
+  handleYeaftVpSubscribe();
 }
 
 /**

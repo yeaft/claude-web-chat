@@ -6,7 +6,7 @@ import ctx from '../../../agent/context.js';
 import { loadConfig, normalizeLlmRetry } from '../../../agent/yeaft/config.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
-import { __testGetOrCreateVpEngine, __testHooks, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
+import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { registerSessionWorkDir, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
@@ -194,7 +194,39 @@ describe('Yeaft session-scoped model config', () => {
   });
 
 
-  it('loads runtime config from agent root while storing message history under the user-level root', async () => {
+  it('seeds stock VPs before loading the user-level runtime', async () => {
+    const seedRoot = makeDir();
+    const previousTransport = {
+      ws: ctx.ws,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+    };
+    const send = vi.fn();
+    ctx.CONFIG = { yeaftDir: seedRoot };
+    ctx.ws = { readyState: 1, send };
+    ctx.serverEncryptionRequired = false;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
+
+    try {
+      handleYeaftVpSubscribe({ requestId: 'vp-cold-start' });
+      await vi.waitFor(() => expect(send).toHaveBeenCalled());
+      const frames = send.mock.calls.map(([raw]) => JSON.parse(raw));
+      const snapshot = frames.find(frame => frame.event?.type === 'vp_snapshot');
+      expect(snapshot.requestId).toBe('vp-cold-start');
+      expect(snapshot.event.emptyLibrary).toBe(false);
+      expect(snapshot.event.vps).toHaveLength(34);
+      expect(snapshot.event.vps.some(vp => vp.vpId === 'omni')).toBe(true);
+      expect(existsSync(join(seedRoot, 'virtual-persons', 'omni', 'role.md'))).toBe(true);
+    } finally {
+      await __testResetVpState();
+      ctx.ws = previousTransport.ws;
+      ctx.serverEncryptionRequired = previousTransport.serverEncryptionRequired;
+      ctx.outboundSendQueue = previousTransport.outboundSendQueue;
+      ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
+    }
+
     const root = makeDir();
     const workDir = mkdtempSync(join(tmpdir(), 'yeaft-session-config-workdir-'));
     writeFileSync(join(root, 'config.json'), JSON.stringify({

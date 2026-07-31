@@ -158,6 +158,12 @@ export default {
               <div v-if="vpList.length === 0 && vpLibraryEmpty" class="yeaft-roster-empty">
                 {{ $t('yeaft.session.create.rosterEmpty') }}
               </div>
+              <div v-else-if="vpList.length === 0 && vpLibraryError" class="yeaft-roster-empty yeaft-roster-error" role="alert">
+                <span>{{ $t('yeaft.session.create.rosterError') }}</span>
+                <button type="button" class="btn-secondary yeaft-roster-retry" @click="retryVpSnapshot">
+                  {{ $t('yeaft.session.create.rosterRetry') }}
+                </button>
+              </div>
               <div v-else-if="vpList.length === 0" class="yeaft-roster-empty">
                 {{ $t('yeaft.session.create.rosterLoading') }}
               </div>
@@ -415,6 +421,7 @@ export default {
       restoreScanning: false,
       restoring: null,
       restoreError: '',
+      vpSnapshotTimer: null,
     };
   },
   computed: {
@@ -445,8 +452,15 @@ export default {
     vpLibraryEmpty() {
       const s = this.vpStore;
       if (!s) return false;
+      if (s.snapshotAgentId && s.snapshotAgentId !== this.form.agentId) return false;
+      if (s.snapshotStatus === 'error') return false;
       if (s.emptyLibrary === true) return true;
       return !!(s.lastSnapshotAt && s.lastSnapshotAt > 0 && (s.vpOrder?.length || 0) === 0);
+    },
+    vpLibraryError() {
+      const s = this.vpStore;
+      if (!s || s.snapshotStatus !== 'error') return false;
+      return !s.snapshotAgentId || s.snapshotAgentId === this.form.agentId;
     },
     agentOptions() {
       const s = this.chat;
@@ -669,6 +683,7 @@ export default {
     document.removeEventListener('click', this.handleOutsideRosterClick, true);
     if (this._vpRosterLayoutFrame) cancelAnimationFrame(this._vpRosterLayoutFrame);
     if (this._folderPickerTimer) clearTimeout(this._folderPickerTimer);
+    if (this.vpSnapshotTimer) clearTimeout(this.vpSnapshotTimer);
   },
   methods: {
     toggleVpRoster() {
@@ -764,25 +779,41 @@ export default {
      * If nothing resolves, we WARN loudly — silent failure is what made
      * the original bug a multi-file root-cause hunt.
      */
-    subscribeVpsFor(agentId) {
+    subscribeVpsFor(agentId, { force = false } = {}) {
       const chat = this.chat;
-      if (!chat || typeof chat.sendWsMessage !== 'function') return;
-      const target = agentId || chat.currentAgent || null;
-      if (!target) {
-        console.warn(
-          '[SessionCreateModal] cannot subscribe to VP library — no agent resolved'
-          + ' (form.agentId / chat.currentAgent all null)'
-        );
-        return;
-      }
+      const target = agentId || chat?.currentAgent || null;
       const vp = this.vpStore;
-      // Skip re-subscribing when we already have a fresh snapshot from the
-      // exact agent we're targeting. `lastVpSnapshotAgentId` is `null` on
-      // legacy single-agent paths, so we re-subscribe in that case too.
-      if (vp && vp.lastSnapshotAt > 0 && vp.lastVpSnapshotAgentId === target) {
-        return;
+      if (!chat || typeof chat.sendWsMessage !== 'function' || !target) {
+        const requestId = `vp_snapshot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        vp?.beginSnapshot?.(target, requestId);
+        vp?.failSnapshot?.(target, requestId, 'No online Agent is available.');
+        return false;
       }
-      chat.sendWsMessage({ type: 'yeaft_vp_subscribe', agentId: target });
+      // Eager Agent registration normally hydrates this cache before the modal
+      // opens. Reuse only a ready snapshot from the exact target Agent.
+      if (!force && vp && vp.lastSnapshotAt > 0 && vp.lastVpSnapshotAgentId === target) {
+        if (this.vpSnapshotTimer) clearTimeout(this.vpSnapshotTimer);
+        this.vpSnapshotTimer = null;
+        return true;
+      }
+      const requestId = `vp_snapshot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      vp?.beginSnapshot?.(target, requestId);
+      const sent = chat.sendWsMessage({ type: 'yeaft_vp_subscribe', agentId: target, requestId });
+      if (sent === false) {
+        vp?.failSnapshot?.(target, requestId, 'WebSocket is not connected.');
+        return false;
+      }
+      if (this.vpSnapshotTimer) clearTimeout(this.vpSnapshotTimer);
+      this.vpSnapshotTimer = setTimeout(() => {
+        this.vpSnapshotTimer = null;
+        if (vp?.snapshotStatus === 'loading' && vp.snapshotRequestId === requestId) {
+          vp.failSnapshot(target, requestId, 'VP library request timed out.');
+        }
+      }, 10_000);
+      return true;
+    },
+    retryVpSnapshot() {
+      this.subscribeVpsFor(this.form.agentId, { force: true });
     },
     loadProviderSessions() {
       if (this.isYeaftProvider) return this.loadRestoreCandidates();
