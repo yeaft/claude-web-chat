@@ -895,6 +895,57 @@ describe('message flow regressions', () => {
       ]);
       expect(hydrateStore._hasHandledYeaftSessionHydrate).toBe(true);
 
+      const duplicateSessions = useSessionsStore();
+      duplicateSessions.resetInventory();
+      globalThis.Pinia.useSessionsStore = () => duplicateSessions;
+      localStorage.setItem('lastViewedYeaftSession', 'agent-b\u001fsame');
+      const duplicateStore = {
+        currentAgent: 'agent-a',
+        yeaftActiveSessionFilter: null,
+        resolveYeaftSessionAgentId: vi.fn(() => 'agent-a'),
+        yeaftSessionInventoryCompleteSupported: true,
+        yeaftSessionHydrateRequestId: 'inventory-duplicate',
+        yeaftSessionHydrateSlices: [],
+        _hasHandledYeaftSessionHydrate: false,
+        yeaftSessionHydrateError: null,
+      };
+      handleMessage(duplicateStore, {
+        type: 'yeaft_session_hydrate', requestId: 'inventory-duplicate', agentId: 'agent-a', sessions: [{ id: 'same' }],
+      });
+      handleMessage(duplicateStore, {
+        type: 'yeaft_session_hydrate', requestId: 'inventory-duplicate', agentId: 'agent-b', sessions: [{ id: 'same' }],
+      });
+      handleMessage(duplicateStore, {
+        type: 'yeaft_session_hydrate_complete', requestId: 'inventory-duplicate', ok: true,
+      });
+      expect(duplicateSessions.activeSessionKey).toBe('agent-b\u001fsame');
+      expect(duplicateSessions.activeSession).toMatchObject({ id: 'same', agentId: 'agent-b' });
+      expect(duplicateStore.resolveYeaftSessionAgentId).not.toHaveBeenCalled();
+      localStorage.removeItem('lastViewedYeaftSession');
+
+      // Legacy bare ids remain readable, but only through the owner resolver.
+      duplicateSessions.resetInventory();
+      localStorage.setItem('lastViewedYeaftSession', 'legacy-only');
+      const legacyIdentityStore = {
+        currentAgent: 'agent-a',
+        yeaftActiveSessionFilter: null,
+        resolveYeaftSessionAgentId: vi.fn(() => 'agent-b'),
+        yeaftSessionInventoryCompleteSupported: true,
+        yeaftSessionHydrateRequestId: 'inventory-legacy-id',
+        yeaftSessionHydrateSlices: [],
+        _hasHandledYeaftSessionHydrate: false,
+        yeaftSessionHydrateError: null,
+      };
+      handleMessage(legacyIdentityStore, {
+        type: 'yeaft_session_hydrate', requestId: 'inventory-legacy-id', agentId: 'agent-b', sessions: [{ id: 'legacy-only' }],
+      });
+      handleMessage(legacyIdentityStore, {
+        type: 'yeaft_session_hydrate_complete', requestId: 'inventory-legacy-id', ok: true,
+      });
+      expect(legacyIdentityStore.resolveYeaftSessionAgentId).toHaveBeenCalledWith('legacy-only');
+      expect(duplicateSessions.activeSessionKey).toBe('agent-b\u001flegacy-only');
+      localStorage.removeItem('lastViewedYeaftSession');
+
       const legacySessions = useSessionsStore();
       legacySessions.resetInventory();
       legacySessions.applySnapshot([{ id: 'session-b', name: 'Session B' }], 'agent-b');
@@ -1717,6 +1768,133 @@ describe('message flow regressions', () => {
     });
     expect(store.yeaftConversationIdsByAgent['agent-a']).toBe(bridgeConversationId);
     expect(store.yeaftConversationId).toBe(localConversationId);
+    expect(store._yeaftPendingConversationPromotions['agent-a']).toEqual({
+      sourceConversationId: localConversationId,
+      targetConversationId: bridgeConversationId,
+    });
+
+    // A visible live frame can be the next authoritative event; history is not
+    // required to finalize the source cleanup and watchdog transfer.
+    const liveSourceWatchdog = setTimeout(() => {}, 60_000);
+    store._processingWatchdogs = { [localConversationId]: liveSourceWatchdog };
+    store._yeaftWatchdogConvs = new Set([localConversationId]);
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: bridgeConversationId,
+      sessionId: 'visible-session',
+      data: {
+        type: 'text_delta',
+        message: { id: 'visible-live-row' },
+        text: 'visible live answer',
+      },
+    });
+    expect(store.yeaftConversationId).toBe(bridgeConversationId);
+    expect(store.messagesMap[localConversationId]).toBeUndefined();
+    expect(store.processingConversations).toEqual({ [bridgeConversationId]: true });
+    expect(store.executionStatusMap[localConversationId]).toBeUndefined();
+    expect(store.executionStatusMap[bridgeConversationId].currentTool).toBeNull();
+    expect(store._processingWatchdogs[localConversationId]).toBeUndefined();
+    expect(store._processingWatchdogs[bridgeConversationId]).toBeTruthy();
+    expect(store._yeaftWatchdogConvs.has(localConversationId)).toBe(false);
+    expect(store._yeaftWatchdogConvs.has(bridgeConversationId)).toBe(true);
+    expect(store._yeaftPendingConversationPromotions['agent-a']).toBeUndefined();
+    clearTimeout(store._processingWatchdogs[bridgeConversationId]);
+
+    // If the target already received live runtime before visible authority, that
+    // newer target state wins; finalization only removes the retained source.
+    const ownedSourceId = 'yeaft-local-agent-a-owned-source';
+    const ownedTargetId = 'yeaft-agent-a-owned-target';
+    store.yeaftConversationId = ownedSourceId;
+    store.activeConversations = [ownedSourceId];
+    store.yeaftConversationIdsByAgent = { 'agent-a': ownedSourceId };
+    store.messagesMap[ownedSourceId] = [{
+      id: 'owned-source-row', type: 'user', content: 'old source', sessionId: 'visible-session', timestamp: 2,
+    }];
+    store.processingConversations = { [ownedSourceId]: true };
+    store.executionStatusMap = {
+      [ownedSourceId]: { currentTool: { name: 'OldTool' }, toolHistory: [], lastActivity: 2 },
+    };
+    store._processingWatchdogs = { [ownedSourceId]: setTimeout(() => {}, 60_000) };
+    store._yeaftWatchdogConvs = new Set([ownedSourceId]);
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: ownedTargetId,
+      sessionId: 'background-session',
+      data: { type: 'text_delta', message: { id: 'owned-background-row' }, text: 'background live' },
+    });
+    store.processingConversations[ownedTargetId] = true;
+    store.executionStatusMap[ownedTargetId] = {
+      currentTool: { name: 'NewTool' }, toolHistory: [], lastActivity: 4,
+    };
+    store._processingWatchdogs[ownedTargetId] = setTimeout(() => {}, 60_000);
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: ownedTargetId,
+      sessionId: 'visible-session',
+      data: { type: 'text_delta', message: { id: 'owned-visible-row' }, text: 'visible live' },
+    });
+    expect(store.processingConversations).toEqual({ [ownedTargetId]: true });
+    expect(store.executionStatusMap[ownedSourceId]).toBeUndefined();
+    expect(store.executionStatusMap[ownedTargetId].currentTool).toEqual({ name: 'NewTool' });
+    expect(store._processingWatchdogs[ownedSourceId]).toBeUndefined();
+    expect(store._processingWatchdogs[ownedTargetId]).toBeTruthy();
+    expect(store._yeaftWatchdogConvs.has(ownedTargetId)).toBe(true);
+    clearTimeout(store._processingWatchdogs[ownedTargetId]);
+
+    // Recreate the same background-first ordering so session_ready, rather than
+    // history or data output, proves it can also finalize the promotion.
+    const readySourceId = 'yeaft-local-agent-a-ready';
+    const readyTargetId = 'yeaft-agent-a-ready';
+    store.yeaftConversationId = readySourceId;
+    store.activeConversations = [readySourceId];
+    store.yeaftConversationIdsByAgent = { 'agent-a': readySourceId };
+    store.messagesMap[readySourceId] = [{
+      id: 'ready-pending', type: 'user', content: 'pending before ready', sessionId: 'visible-session', timestamp: 3,
+    }];
+    store.processingConversations = { [readySourceId]: true };
+    store.executionStatusMap = {
+      [readySourceId]: { currentTool: { name: 'Grep' }, toolHistory: [], lastActivity: 3 },
+    };
+    store._processingWatchdogs = { [readySourceId]: setTimeout(() => {}, 60_000) };
+    store._yeaftWatchdogConvs = new Set([readySourceId]);
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: readyTargetId,
+      sessionId: 'background-session',
+      data: { type: 'assistant', message: { id: 'ready-background-row', content: 'background before ready' } },
+    });
+    expect(store.yeaftConversationId).toBe(readySourceId);
+    expect(store._yeaftPendingConversationPromotions['agent-a']).toEqual({
+      sourceConversationId: readySourceId,
+      targetConversationId: readyTargetId,
+    });
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      sessionId: 'visible-session',
+      event: {
+        type: 'session_ready', conversationId: readyTargetId, sessionId: 'visible-session', tasks: [],
+      },
+    });
+    expect(store.yeaftConversationId).toBe(readyTargetId);
+    expect(store.messagesMap[readySourceId]).toBeUndefined();
+    expect(store.processingConversations).toEqual({ [readyTargetId]: true });
+    expect(store.executionStatusMap[readySourceId]).toBeUndefined();
+    expect(store.executionStatusMap[readyTargetId].currentTool).toBeNull();
+    expect(store._processingWatchdogs[readySourceId]).toBeUndefined();
+    expect(store._processingWatchdogs[readyTargetId]).toBeTruthy();
+    expect(store._yeaftPendingConversationPromotions['agent-a']).toBeUndefined();
+    clearTimeout(store._processingWatchdogs[readyTargetId]);
+
+    // Continue the existing history-order matrix from its original bridge id.
+    store.yeaftConversationId = bridgeConversationId;
+    store.activeConversations = [bridgeConversationId];
+    store.yeaftConversationIdsByAgent = { 'agent-a': bridgeConversationId };
+    store.processingConversations = { [bridgeConversationId]: true };
+    store.executionStatusMap = {
+      [bridgeConversationId]: { currentTool: { name: 'Bash' }, toolHistory: [], lastActivity: 1 },
+    };
+    store._processingWatchdogs = {};
+    store._yeaftWatchdogConvs = new Set();
 
     const request = store.beginYeaftHistoryLoad({
       agentId: 'agent-a',

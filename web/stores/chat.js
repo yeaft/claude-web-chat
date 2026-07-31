@@ -10,7 +10,12 @@ import * as convHelpers from './helpers/conversation.js';
 import * as sessionHelpers from './helpers/session.js';
 import * as watchdogHelpers from './helpers/watchdog.js';
 import * as yeaftViewHelpers from './helpers/yeaft-view.js';
-import { migrateYeaftConversationState } from './helpers/yeaft-conversation-state.js';
+import {
+  clearYeaftConversationPromotion,
+  migrateYeaftConversationState,
+  pendingYeaftConversationPromotion,
+  rememberYeaftConversationPromotion,
+} from './helpers/yeaft-conversation-state.js';
 import { incVpTyping, decVpTyping } from './helpers/vp-typing.js';
 import { selectActiveConversationId } from './helpers/active-conv.js';
 import { trimDebugRetention } from './helpers/debug-retention.js';
@@ -840,6 +845,7 @@ export const useChatStore = defineStore('chat', {
     workCenterCreateDraft: null,
     yeaftConversationId: null,     // 当前 Yeaft agent 的虚拟 conversationId（从 agent session_ready 获取）
     yeaftConversationIdsByAgent: {}, // { [agentId]: conversationId } 跨机器 agent 的 Yeaft message cache 隔离
+    _yeaftPendingConversationPromotions: {}, // { [agentId]: { sourceConversationId, targetConversationId } }
     yeaftSessionAgentById: {},      // Legacy bare-session owner cache; activeSessionKey wins when ids collide.
     yeaftModel: null,              // agent/default Yeaft 模型名；Session override lives in sessions[].config.model
     yeaftModelEffort: null,        // agent/default effort；Session override lives in sessions[].config.modelEffort
@@ -3477,15 +3483,22 @@ export const useChatStore = defineStore('chat', {
           const previousAgentConvId = frameAgentId && this.yeaftConversationIdsByAgent
             ? this.yeaftConversationIdsByAgent[frameAgentId]
             : null;
-          const retainVisibleSource = !outputIsVisible && previousAgentConvId === this.yeaftConversationId;
-          if (this.currentView === 'yeaft' && frameAgentId && previousAgentConvId && previousAgentConvId !== conversationId) {
+          const pendingPromotion = pendingYeaftConversationPromotion(this, frameAgentId, conversationId);
+          const promotionSourceId = pendingPromotion?.sourceConversationId || previousAgentConvId;
+          const retainVisibleSource = !outputIsVisible && promotionSourceId === this.yeaftConversationId;
+          if (this.currentView === 'yeaft' && frameAgentId && promotionSourceId && promotionSourceId !== conversationId) {
             // An inactive same-agent Session can be the first frame carrying
             // the real bridge id. Copy the visible placeholder into that cache,
-            // but keep the source alive until an active/user-driven transition
-            // moves the explicit visible pointer.
-            migrateYeaftConversationState(this, previousAgentConvId, conversationId, {
-              removeSource: !retainVisibleSource && String(previousAgentConvId).startsWith('yeaft-local-'),
-            });
+            // but keep the source alive until an authoritative visible frame
+            // finalizes every runtime slot and watchdog under the new id.
+            const removeSource = !retainVisibleSource
+              && (!!pendingPromotion || String(promotionSourceId).startsWith('yeaft-local-'));
+            migrateYeaftConversationState(this, promotionSourceId, conversationId, { removeSource });
+            if (retainVisibleSource) {
+              rememberYeaftConversationPromotion(this, frameAgentId, promotionSourceId, conversationId);
+            } else if (removeSource) {
+              clearYeaftConversationPromotion(this, frameAgentId, conversationId);
+            }
           }
           if (frameAgentId) {
             this.yeaftConversationIdsByAgent = {
@@ -3692,16 +3705,24 @@ export const useChatStore = defineStore('chat', {
           const localConvId = previousAgentConvId || fallbackLocalConvId;
           const readySessionId = event.sessionId || msg.sessionId || null;
           const readyIsVisible = isVisibleYeaftOutput(this, readySessionId, statusAgentId);
-          const retainVisibleSource = !readyIsVisible && localConvId === this.yeaftConversationId;
+          const pendingPromotion = pendingYeaftConversationPromotion(this, statusAgentId, agentConvId);
+          const promotionSourceId = pendingPromotion?.sourceConversationId || localConvId;
+          const retainVisibleSource = !readyIsVisible && promotionSourceId === this.yeaftConversationId;
 
           // Migrate messages from this agent's local placeholder to this
           // agent's conversationId. Do not merge the last globally-active
           // conversation blindly: with multiple machines, B's session_ready can
           // arrive while A's cache is still the global yeaftConversationId.
-          if (localConvId && localConvId !== agentConvId) {
-            migrateYeaftConversationState(this, localConvId, agentConvId, {
-              removeSource: !retainVisibleSource,
+          if (promotionSourceId && promotionSourceId !== agentConvId) {
+            const removeSource = !retainVisibleSource;
+            migrateYeaftConversationState(this, promotionSourceId, agentConvId, {
+              removeSource,
             });
+            if (retainVisibleSource) {
+              rememberYeaftConversationPromotion(this, statusAgentId, promotionSourceId, agentConvId);
+            } else if (removeSource) {
+              clearYeaftConversationPromotion(this, statusAgentId, agentConvId);
+            }
           } else if (!this.messagesMap[agentConvId]) {
             this.messagesMap[agentConvId] = [];
           }

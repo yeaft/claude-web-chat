@@ -9,6 +9,7 @@ import { t } from '../../utils/i18n.js';
 import { stopProcessingWatchdog, startLegacyWatchdog } from './watchdog.js';
 import { clearSessionLoading } from './session.js';
 import { applyDebugRawRequestDelta } from '../../components/yeaft-debug-helpers.js';
+import { parseYeaftSessionIdentity } from './yeaft-session-identity.js';
 import { handleAgentList, handleAgentSelected } from './handlers/agentHandler.js';
 import {
   handleConversationCreated,
@@ -54,15 +55,22 @@ function bufferYeaftSessionInventorySlice(store, msg) {
 }
 
 function preferredYeaftSessionInventoryIdentity(store) {
-  let sessionId = store.yeaftActiveSessionFilter || null;
-  if (!sessionId) {
-    try { sessionId = localStorage.getItem('lastViewedYeaftSession') || null; }
-    catch (_) {}
+  const activeSessionId = store.yeaftActiveSessionFilter || null;
+  if (activeSessionId) {
+    const agentId = typeof store.resolveYeaftSessionAgentId === 'function'
+      ? store.resolveYeaftSessionAgentId(activeSessionId)
+      : store.currentAgent || null;
+    return { sessionId: activeSessionId, agentId };
   }
-  const agentId = sessionId && typeof store.resolveYeaftSessionAgentId === 'function'
-    ? store.resolveYeaftSessionAgentId(sessionId)
-    : store.currentAgent || null;
-  return { sessionId, agentId };
+
+  let persistedIdentity = null;
+  try { persistedIdentity = localStorage.getItem('lastViewedYeaftSession') || null; }
+  catch (_) {}
+  const parsed = parseYeaftSessionIdentity(persistedIdentity);
+  const agentId = parsed.agentId || (parsed.sessionId && typeof store.resolveYeaftSessionAgentId === 'function'
+    ? store.resolveYeaftSessionAgentId(parsed.sessionId)
+    : store.currentAgent || null);
+  return { sessionId: parsed.sessionId, agentId };
 }
 
 // New Servers send an explicit completion frame. Older Servers do not, so the

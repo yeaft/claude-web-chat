@@ -3,7 +3,11 @@
  */
 
 import { isRecentlyClosed, stopProcessingWatchdog } from '../watchdog.js';
-import { migrateYeaftConversationState } from '../yeaft-conversation-state.js';
+import {
+  clearYeaftConversationPromotion,
+  migrateYeaftConversationState,
+  pendingYeaftConversationPromotion,
+} from '../yeaft-conversation-state.js';
 import { clearSessionLoading } from '../session.js';
 import { sameUserMessage } from '../dedup.js';
 import { maxDbMessageId } from '../messages.js';
@@ -218,7 +222,15 @@ function promoteVisibleYeaftHistoryConversation(store, msg, sessionId, conversat
   if (activeIdentity.agentId && activeIdentity.agentId !== agentId) return;
 
   const visibleConversationId = store.yeaftConversationId || null;
-  if (visibleConversationId === conversationId) {
+  const pendingPromotion = pendingYeaftConversationPromotion(store, agentId, conversationId);
+  if (pendingPromotion) {
+    migrateYeaftConversationState(store, pendingPromotion.sourceConversationId, conversationId, {
+      removeSource: true,
+    });
+    clearYeaftConversationPromotion(store, agentId, conversationId);
+    store.yeaftConversationId = conversationId;
+  }
+  if (visibleConversationId === conversationId || pendingPromotion) {
     if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
     store.yeaftConversationIdsByAgent = {
       ...(store.yeaftConversationIdsByAgent || {}),
