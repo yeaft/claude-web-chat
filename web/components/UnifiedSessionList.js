@@ -132,8 +132,7 @@ export default {
     },
     isRowOnline(row) {
       if (row?.availability !== 'online') return false;
-      const agent = this.agents.find(item => item.id === row?.routeRef?.agentId);
-      return !agent || !!agent.online;
+      return this.isAgentOnline(row?.routeRef?.agentId);
     },
     canEditProject(project) {
       return this.isAgentOnline(project?.agentId);
@@ -170,6 +169,11 @@ export default {
       this.openMenuKey = null;
       if (this.workCenterOpen) this.$emit('close-work-center');
       this.$emit('select', row);
+    },
+    selectRowFromKeyboard(row, event) {
+      if (event?.target !== event?.currentTarget) return;
+      event.preventDefault();
+      this.selectRow(row);
     },
     runAction(action, row) {
       this.openMenuKey = null;
@@ -353,8 +357,8 @@ export default {
                 @dragstart="startDrag(row, $event)"
                 @dragend="finishDrag"
                 @click="selectRow(row)"
-                @keydown.enter.prevent="selectRow(row)"
-                @keydown.space.prevent="selectRow(row)"
+                @keydown.enter="selectRowFromKeyboard(row, $event)"
+                @keydown.space="selectRowFromKeyboard(row, $event)"
               >
                 <span class="sidebar-session-copy">
                   <span class="title" :title="row.title">
@@ -396,8 +400,8 @@ export default {
             @dragstart="startDrag(row, $event)"
             @dragend="finishDrag"
             @click="selectRow(row)"
-            @keydown.enter.prevent="selectRow(row)"
-            @keydown.space.prevent="selectRow(row)"
+            @keydown.enter="selectRowFromKeyboard(row, $event)"
+            @keydown.space="selectRowFromKeyboard(row, $event)"
           >
             <span class="sidebar-session-copy">
               <span class="title" :title="row.title">

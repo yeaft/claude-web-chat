@@ -230,6 +230,7 @@ describe('message flow regressions', () => {
         isSessionUnread: row => row.catalogKey === 'chat:visible',
         workCenterOpen: true,
         agents: [
+          { id: 'agent-a', name: 'Agent A', online: true },
           { id: 'user_1770305719:server-instance', name: 'server', online: true, capabilities: ['work_center'] },
           { id: 'agent-b', name: 'Agent B', online: false },
         ],
@@ -276,7 +277,7 @@ describe('message flow regressions', () => {
     expect(dispatchProjectAction).toHaveBeenCalledWith({
       action: 'create',
       name: 'Workspace',
-      agentId: 'user_1770305719:server-instance',
+      agentId: 'agent-a',
     });
     finishCreate({ ok: true });
     await Promise.all([firstCreate, duplicateCreate]);
@@ -315,8 +316,17 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.methods.providerLabel({ runtimeProvider: 'claude-code' })).toBe('Claude');
     expect(sidebar.text()).not.toContain('user_1770305719');
     expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(1);
-    expect(sidebar.findAll('.session-item .session-dots-btn')).toHaveLength(1);
-    await sidebar.get('.session-item .session-dots-btn').trigger('click');
+    expect(sidebar.findAll('.session-item .session-dots-btn')).toHaveLength(3);
+    const selectCountBeforeSettingsKeyboard = sidebar.emitted('select')?.length || 0;
+    const pinnedSettingsButton = firstRow.get('.session-dots-btn');
+    await pinnedSettingsButton.trigger('keydown', { key: 'Enter' });
+    expect(sidebar.emitted('select')?.length || 0).toBe(selectCountBeforeSettingsKeyboard);
+    expect(sidebar.find('.session-menu').exists()).toBe(false);
+    await pinnedSettingsButton.trigger('click');
+    expect(sidebar.find('.session-menu').exists()).toBe(true);
+    await pinnedSettingsButton.trigger('keydown', { key: ' ' });
+    expect(sidebar.emitted('select')?.length || 0).toBe(selectCountBeforeSettingsKeyboard);
+    expect(sidebar.find('.session-menu').exists()).toBe(true);
     expect(sidebar.get('.sidebar-session-menu-info').text()).toContain('server');
     expect(sidebar.get('.sidebar-session-menu-info').text()).toContain('Yeaft');
     expect(sidebar.find('.sidebar-session-menu-divider').exists()).toBe(true);
@@ -346,6 +356,29 @@ describe('message flow regressions', () => {
     expect(sidebar.emitted('create').at(-1)).toEqual([]);
     const offlineRow = sidebar.findAll('.session-item').find(item => item.text().includes('Offline'));
     expect(offlineRow).toBeUndefined();
+    await sidebar.setProps({
+      sessions: [catalogRows[0]],
+      agents: [{ id: 'agent-a', name: 'Agent A', online: true }],
+    });
+    expect(sidebar.findAll('.session-item')).toHaveLength(0);
+    await sidebar.setProps({
+      sessions: [catalogRows[0]],
+      agents: [{ id: 'user_1770305719:server-instance', name: 'server', online: false }],
+    });
+    expect(sidebar.findAll('.session-item')).toHaveLength(0);
+    await sidebar.setProps({
+      sessions: [{ ...catalogRows[0], availability: 'offline' }],
+      agents: [{ id: 'user_1770305719:server-instance', name: 'server', online: true }],
+    });
+    expect(sidebar.findAll('.session-item')).toHaveLength(0);
+    await sidebar.setProps({
+      sessions: catalogRows,
+      agents: [
+        { id: 'agent-a', name: 'Agent A', online: true },
+        { id: 'user_1770305719:server-instance', name: 'server', online: true, capabilities: ['work_center'] },
+        { id: 'agent-b', name: 'Agent B', online: false },
+      ],
+    });
     const originalPrompt = window.prompt;
     const originalConfirm = window.confirm;
     window.prompt = vi.fn();
@@ -1125,6 +1158,10 @@ describe('message flow regressions', () => {
       attachTo: document.body,
       props: {
         sessions: store.sessionCatalog,
+        agents: [
+          { id: 'agent-a', online: true },
+          { id: 'agent-b', online: true },
+        ],
         isYeaftSessionProcessing: store.isYeaftSessionProcessing,
       },
       global: { mocks: { $t: key => key } },
