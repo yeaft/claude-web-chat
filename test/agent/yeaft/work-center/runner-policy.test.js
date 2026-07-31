@@ -81,6 +81,27 @@ describe('Work Center tool policy', () => {
     expect(transitions).toHaveLength(2);
     expect(transitions[0]).toMatchObject({ phase: 'start', name: 'FileWrite' });
     expect(transitions[1]).toMatchObject({ phase: 'complete', effectStatus: 'applied' });
+
+    const failedTransitions = [];
+    const failingRegistry = createWorkItemToolRegistry({
+      workDir,
+      isRunActive: () => true,
+      runTools: [{
+        name: 'FailingWrite',
+        isReadOnly: () => false,
+        isConcurrencySafe: () => false,
+        async execute() { throw new Error('write outcome uncertain'); },
+      }],
+      operationLifecycle: name => {
+        failedTransitions.push({ phase: 'start', name });
+        return { complete: (effectStatus, result) => failedTransitions.push({ phase: 'complete', effectStatus, result }) };
+      },
+    });
+    await expect(failingRegistry.execute('FailingWrite', {}, {})).rejects.toThrow(/uncertain/);
+    expect(failedTransitions).toEqual([
+      { phase: 'start', name: 'FailingWrite' },
+      { phase: 'complete', effectStatus: 'unknown', result: { error: 'write outcome uncertain' } },
+    ]);
   });
 
   it('rejects background or redirected Bash before execution', async () => {
