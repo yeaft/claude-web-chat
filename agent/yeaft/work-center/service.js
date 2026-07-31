@@ -633,6 +633,8 @@ export class WorkCenterService {
       const task = this.coordinator.resume(started, {
         text: recoverable.text || '',
         recovery: Boolean(recoverable.recovery),
+        addedAttachments: Array.isArray(recoverable.addedAttachments)
+          ? recoverable.addedAttachments : [],
         onUpdate: (type, detail) => this.#emit({ type, workItem: detail }),
       }).task;
       task?.catch?.(() => {});

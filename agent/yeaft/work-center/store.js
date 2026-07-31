@@ -2825,7 +2825,22 @@ export class WorkItemStore {
       message.turnId === turnId && message.role === 'assistant' && message.status === 'thinking'
     ));
     if (!assistant) return null;
-    return { turnId, detail };
+    return {
+      turnId,
+      detail,
+      fence: {
+        workItemId,
+        revision: detail.revision,
+        planRevision: detail.planRevision,
+        ledgerRevision: detail.ledgerRevision,
+        coordinatorRevision: detail.coordinatorRevision,
+        status: detail.status,
+        actionFence: coordinatorActionFence(
+          (detail.actions || []).filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status)),
+        ),
+        recovery: assistant.recovery ? { ...assistant.recovery } : null,
+      },
+    };
   }
 
   beginCoordinatorTurn(id, text, expected = {}, options = {}) {

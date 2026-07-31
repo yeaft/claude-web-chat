@@ -574,10 +574,13 @@ export class WorkItemCoordinator {
   }
 
   resume(started, options = {}) {
-    if (!started?.turnId || !started?.detail) throw new Error('Coordinator provider recovery target is invalid');
+    if (!started?.turnId || !started?.detail || !started?.fence) {
+      throw new Error('Coordinator provider recovery target is invalid');
+    }
     return this.#scheduleTurn(started, {
       text: typeof options.text === 'string' ? options.text : '',
       recovery: options.recovery === true,
+      addedAttachments: Array.isArray(options.addedAttachments) ? options.addedAttachments : [],
       options,
     });
   }
