@@ -1017,12 +1017,12 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         const titleAgent = agents.get(settingsAgentId);
         const titleConvInfo = titleAgent?.conversations.get(settingsConvId);
         if (msg.title) {
-          sessionDb.update(settingsConvId, { title: msg.title, isCustomTitle: 1 });
+          sessionDb.update(settingsConvId, { title: msg.title, isCustomTitle: 1, metadataChanged: true });
           if (titleConvInfo) { titleConvInfo.title = msg.title; titleConvInfo.customTitle = true; }
         } else {
           // Clearing the custom title returns the session to auto-naming
           // mode — the next user prompt repopulates the title.
-          sessionDb.update(settingsConvId, { isCustomTitle: 0 });
+          sessionDb.update(settingsConvId, { isCustomTitle: 0, metadataChanged: true });
           if (titleConvInfo) { titleConvInfo.customTitle = false; }
         }
       }

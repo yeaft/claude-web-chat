@@ -541,7 +541,7 @@ export function renameSession(yeaftDir, sessionId, newName) {
   if (!name) throw new SessionCrudError('invalid_name', sessionId);
   const handle = requireSession(yeaftDir, sessionId);
   const meta = handle.getMeta();
-  handle.saveMeta({ ...meta, name });
+  handle.saveMeta({ ...meta, name, metadataUpdatedAt: new Date().toISOString() });
   const next = handle.getMeta();
   handle.close();
   return next;
@@ -561,7 +561,7 @@ export function updateSessionAnnouncement(yeaftDir, sessionId, text) {
   const announcement = text.trim();
   const handle = requireSession(yeaftDir, sessionId);
   const meta = handle.getMeta();
-  handle.saveMeta({ ...meta, announcement });
+  handle.saveMeta({ ...meta, announcement, metadataUpdatedAt: new Date().toISOString() });
   const next = handle.getMeta();
   handle.close();
   return next;
@@ -577,7 +577,10 @@ export function updateSessionAnnouncement(yeaftDir, sessionId, text) {
 export function updateSessionConfig(yeaftDir, sessionId, partial) {
   const handle = requireSession(yeaftDir, sessionId);
   try {
-    return saveSessionConfig(yeaftDir, sessionId, partial || {});
+    const saved = saveSessionConfig(yeaftDir, sessionId, partial || {});
+    const meta = handle.getMeta();
+    handle.saveMeta({ ...meta, metadataUpdatedAt: new Date().toISOString() });
+    return saved;
   } finally {
     handle.close();
   }
@@ -708,7 +711,7 @@ export function addMember(yeaftDir, sessionId, vpId) {
   try {
     const meta = handle.getMeta();
     const next = rosterAdd(meta, vpId);
-    handle.saveMeta(next);
+    handle.saveMeta({ ...next, metadataUpdatedAt: new Date().toISOString() });
     return handle.getMeta();
   } finally {
     handle.close();
@@ -728,7 +731,7 @@ export function removeMember(yeaftDir, sessionId, vpId) {
       return meta;
     }
     const next = rosterRemove(meta, vpId);
-    handle.saveMeta(next);
+    handle.saveMeta({ ...next, metadataUpdatedAt: new Date().toISOString() });
     return handle.getMeta();
   } finally {
     handle.close();
@@ -741,7 +744,7 @@ export function setSessionDefaultVp(yeaftDir, sessionId, vpId) {
   try {
     const meta = handle.getMeta();
     const next = setDefaultVp(meta, vpId);
-    handle.saveMeta(next);
+    handle.saveMeta({ ...next, metadataUpdatedAt: new Date().toISOString() });
     return handle.getMeta();
   } finally {
     handle.close();

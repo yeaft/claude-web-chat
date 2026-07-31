@@ -639,8 +639,10 @@ export const useChatStore = defineStore('chat', {
     chatHistoryRequestIdSupported: null,
     chatHistoryConnectionGeneration: 0,
     sessionCatalog: [],
+    sessionProjects: [],
     sessionCatalogLoaded: false,
     sessionCatalogMutationRequests: {},
+    projectMutationRequests: {},
     activeCatalogKey: null,
     openUnifiedSessionCreate: false,
     openUnifiedChatCreate: false,
@@ -2026,6 +2028,34 @@ export const useChatStore = defineStore('chat', {
       const result = await this.workCenterRequest('delete', { id, revision }, target);
       this.removeWorkItemState(target, id);
       return result;
+    },
+    async postWorkItemMessage(id, text, targetRef, revision, attachments = [], agentId = null, fence = {}) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const clientMessageId = typeof fence.clientMessageId === 'string' && fence.clientMessageId
+        ? fence.clientMessageId
+        : globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+      const current = this.workCenterDetailByAgent[target]?.id === id
+        ? this.workCenterDetailByAgent[target] : null;
+      const detail = await this.workCenterRequest('post_work_item_message', {
+        id,
+        clientMessageId,
+        text,
+        target: targetRef,
+        revision,
+        planRevision: Number.isInteger(Number(fence.planRevision))
+          ? Number(fence.planRevision) : Number(current?.planRevision) || 0,
+        ledgerRevision: Number.isInteger(Number(fence.ledgerRevision))
+          ? Number(fence.ledgerRevision) : Number(current?.ledgerRevision) || 0,
+        coordinatorRevision: Number.isInteger(Number(fence.coordinatorRevision))
+          ? Number(fence.coordinatorRevision) : Number(current?.coordinatorRevision) || 0,
+        attachments: Array.isArray(attachments) ? attachments : [],
+      }, target);
+      if (targetRef?.kind === 'coordinator') {
+        if (!detail?.accepted) throw new Error('Work Center Coordinator did not accept the message');
+        return detail;
+      }
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
+      return detail;
     },
     async sendWorkItemMessage(id, text, revision, attachments = [], agentId = null, fence = {}) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
@@ -3662,6 +3692,10 @@ export const useChatStore = defineStore('chat', {
       if (!event) return;
 
       switch (event.type) {
+        case 'project_mutation_result':
+          this.finishProjectMutation(event, msg.agentId || null);
+          break;
+
         case 'ask_user_question': {
           const conversationId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId);
           if (!conversationId || !event.requestId) break;
@@ -4449,6 +4483,12 @@ export const useChatStore = defineStore('chat', {
           // reload before any agent connects.
           const gs = window.Pinia?.useSessionsStore?.() || (window.__useSessionsStore && window.__useSessionsStore());
           const rows = event.sessions || [];
+          if (Array.isArray(event.projects) && msg.agentId) {
+            this.sessionProjects = [
+              ...this.sessionProjects.filter(project => project.agentId !== msg.agentId),
+              ...event.projects.map(project => ({ ...project, agentId: msg.agentId })),
+            ];
+          }
           if (event.type !== 'yeaft_session_hydrate'
               && this.yeaftSessionHydrateRequestId
               && this.yeaftSessionInventoryCompleteSupported === true) {
@@ -5758,14 +5798,76 @@ export const useChatStore = defineStore('chat', {
       this.activeRightPanel = value;
     },
 
-    applySessionCatalogSnapshot(rows) {
+    applySessionCatalogSnapshot(rows, projects = null) {
       const seen = new Set();
       this.sessionCatalog = (Array.isArray(rows) ? rows : []).filter(row => {
         if (!row?.catalogKey || seen.has(row.catalogKey)) return false;
         seen.add(row.catalogKey);
         return true;
-      });
+      }).map(row => ({ ...row }));
+      if (Array.isArray(projects)) {
+        this.sessionProjects = projects.filter(project => project?.id && project?.agentId);
+        const membership = new Map();
+        for (const project of this.sessionProjects) {
+          for (const sessionId of project.sessionIds || []) membership.set(`${project.agentId}\u001f${sessionId}`, project.id);
+        }
+        this.sessionCatalog = this.sessionCatalog.map(row => (
+          row.runtimeProvider === 'yeaft'
+            ? { ...row, projectId: membership.get(`${row.routeRef?.agentId}\u001f${row.routeRef?.sessionId}`) || null }
+            : row
+        ));
+      }
       this.sessionCatalogLoaded = true;
+    },
+    mutateProject(op, payload = {}, agentId = null) {
+      const targetAgentId = agentId || payload.agentId || this.currentAgent;
+      if (!targetAgentId) return Promise.resolve({ ok: false, error: { code: 'missing_agent' } });
+      const targetAgent = this.agents.find(agent => agent.id === targetAgentId);
+      if (!targetAgent?.online) return Promise.resolve({ ok: false, error: { code: 'agent_offline' } });
+      const requestId = `project_${crypto.randomUUID()}`;
+      return new Promise(resolve => {
+        const timer = setTimeout(() => {
+          delete this.projectMutationRequests[requestId];
+          resolve({ ok: false, error: { code: 'timeout' } });
+        }, 10000);
+        this.projectMutationRequests[requestId] = {
+          resolve: result => { clearTimeout(timer); resolve(result); },
+        };
+        const sent = this.sendWsMessage({
+          type: 'yeaft_project_mutation',
+          agentId: targetAgentId,
+          requestId,
+          op,
+          ...payload,
+        });
+        if (!sent) {
+          clearTimeout(timer);
+          delete this.projectMutationRequests[requestId];
+          resolve({ ok: false, error: { code: 'send_failed' } });
+        }
+      });
+    },
+    finishProjectMutation(event, agentId = null) {
+      if (!event?.requestId) return false;
+      const pending = this.projectMutationRequests[event.requestId] || null;
+      if (pending) delete this.projectMutationRequests[event.requestId];
+      if (event.ok && Array.isArray(event.projects) && agentId) {
+        this.sessionProjects = [
+          ...this.sessionProjects.filter(project => project.agentId !== agentId),
+          ...event.projects.map(project => ({ ...project, agentId })),
+        ];
+        const membership = new Map();
+        for (const project of event.projects) {
+          for (const sessionId of project.sessionIds || []) membership.set(sessionId, project.id);
+        }
+        this.sessionCatalog = this.sessionCatalog.map(row => (
+          row.runtimeProvider === 'yeaft' && row.routeRef?.agentId === agentId
+            ? { ...row, projectId: membership.get(row.routeRef.sessionId) || null }
+            : row
+        ));
+      }
+      pending?.resolve(event);
+      return !!pending;
     },
     toggleCatalogSessionPin(row) {
       if (!row?.catalogKey || !row?.routeRef

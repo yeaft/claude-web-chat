@@ -5,11 +5,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import ctx from '../../../agent/context.js';
 import { loadConfig, normalizeLlmRetry } from '../../../agent/yeaft/config.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { estimateTokens } from '../../../agent/yeaft/dream/segment.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
 import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
-import { registerSessionWorkDir, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
+import { registerSessionWorkDir, renameSession, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
+import {
+  createProject,
+  deleteProject,
+  loadProjects,
+  moveSessionToProject,
+  removeSessionFromProjects,
+  renameProject,
+  sharedSessionIdsForProject,
+} from '../../../agent/yeaft/projects/store.js';
 
 const roots = [];
 const originalConfig = ctx.CONFIG;
@@ -50,7 +60,7 @@ afterEach(() => {
 });
 
 describe('Yeaft session-scoped model config', () => {
-  it('keeps model and effort isolated per Session', () => {
+  it('keeps model and effort isolated per Session', async () => {
     expect(normalizeLlmRetry(null, null)).toMatchObject({
       maxRetries: 3,
       streamIdleTimeoutMs: 90_000,
@@ -77,6 +87,43 @@ describe('Yeaft session-scoped model config', () => {
     expect(configB.model).toBe('github-copilot/claude-opus-4.8');
     expect(configB.primaryModel).toBe('github-copilot/claude-opus-4.8');
     expect(configB.modelEffort).toBe('max');
+
+    const alpha = createProject(root, 'Alpha');
+    const beta = createProject(root, 'Beta');
+    moveSessionToProject(root, 'session-a', alpha.id);
+    moveSessionToProject(root, 'session-b', alpha.id);
+    moveSessionToProject(root, 'session-a', beta.id);
+    expect(loadProjects(root)).toEqual([
+      expect.objectContaining({ id: alpha.id, sessionIds: ['session-b'] }),
+      expect.objectContaining({ id: beta.id, sessionIds: ['session-a'] }),
+    ]);
+    moveSessionToProject(root, 'session-b', beta.id);
+    expect(sharedSessionIdsForProject(root, 'session-a')).toEqual(['session-b']);
+    const siblingSummary = join(root, 'memory', 'sessions', 'session-b');
+    mkdirSync(siblingSummary, { recursive: true });
+    writeFileSync(join(siblingSummary, 'summary.zh.md'), '共享发布决策\n');
+    expect(await __testHooks.sharedProjectContext(root, 'session-a', { language: 'zh' }))
+      .toBe('[Session session-b]\n共享发布决策');
+    rmSync(join(siblingSummary, 'summary.zh.md'));
+    writeFileSync(join(siblingSummary, 'summary.md'), 'English fallback decision\n');
+    expect(await __testHooks.sharedProjectContext(root, 'session-a', { language: 'zh' }))
+      .toBe('[Session session-b]\nEnglish fallback decision');
+    writeFileSync(join(siblingSummary, 'memory.md'), 'private transcript and tool output\n');
+    expect(await __testHooks.sharedProjectContext(root, 'session-a', { language: 'zh' }))
+      .not.toContain('private transcript and tool output');
+    writeFileSync(join(siblingSummary, 'summary.md'), 'x'.repeat(32_000));
+    const smallBudgetContext = await __testHooks.sharedProjectContext(root, 'session-a', { tokenBudget: 64 });
+    expect(smallBudgetContext).toContain('[Summary truncated to Project context budget]');
+    expect(estimateTokens(smallBudgetContext)).toBeLessThanOrEqual(64);
+    const defaultBudgetContext = await __testHooks.sharedProjectContext(root, 'session-a');
+    expect(defaultBudgetContext).toContain('[Summary truncated to Project context budget]');
+    expect(estimateTokens(defaultBudgetContext)).toBeLessThanOrEqual(4096);
+    expect(estimateTokens(defaultBudgetContext)).toBeGreaterThan(64);
+    renameProject(root, beta.id, 'Beta 2');
+    removeSessionFromProjects(root, 'session-a');
+    expect(loadProjects(root)[1]).toEqual(expect.objectContaining({ name: 'Beta 2', sessionIds: ['session-b'] }));
+    deleteProject(root, beta.id);
+    expect(loadProjects(root).map(project => project.id)).toEqual([alpha.id]);
   });
 
 
@@ -93,6 +140,32 @@ describe('Yeaft session-scoped model config', () => {
     expect(config).toEqual({ model: 'agent/gpt-5', modelEffort: 'low' });
   });
 
+
+  it('advances Session metadata time for rename and settings changes', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-07-29T10:00:00.000Z'));
+      const root = makeDir();
+      const sessionId = 'session-metadata-time';
+      createSession(sessionsRoot(root), {
+        id: sessionId,
+        name: 'Original',
+        roster: [],
+        defaultVpId: null,
+      }).close();
+      expect(snapshotSessions(root)[0].metadataUpdatedAt).toBe('2026-07-29T10:00:00.000Z');
+
+      vi.setSystemTime(new Date('2026-07-29T11:00:00.000Z'));
+      renameSession(root, sessionId, 'Renamed');
+      expect(snapshotSessions(root)[0].metadataUpdatedAt).toBe('2026-07-29T11:00:00.000Z');
+
+      vi.setSystemTime(new Date('2026-07-29T12:00:00.000Z'));
+      updateSessionConfig(root, sessionId, { model: 'agent/gpt-5' });
+      expect(snapshotSessions(root)[0].metadataUpdatedAt).toBe('2026-07-29T12:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('writes Session config only to the user-level root', () => {
     const root = makeDir();

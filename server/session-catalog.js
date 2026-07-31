@@ -56,7 +56,7 @@ export function projectSessionCatalog({
       pinned: meta.pinned ?? session.is_pinned === 1,
       sortRank: meta.sortRank ?? null,
       createdAt: session.created_at || null,
-      updatedAt: session.updated_at || null,
+      metadataUpdatedAt: session.metadata_updated_at ?? session.created_at ?? null,
     });
   }
 
@@ -75,17 +75,14 @@ export function projectSessionCatalog({
       pinned: meta.pinned ?? !!session.pinned,
       sortRank: meta.sortRank ?? session.sortOrder ?? null,
       createdAt: session.createdAt || null,
-      updatedAt: session.updatedAt || null,
+      metadataUpdatedAt: session.metadataUpdatedAt ?? session.createdAt ?? null,
     });
   }
 
   return rows.sort((left, right) => {
     if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
-    const leftRank = Number.isFinite(left.sortRank) ? left.sortRank : Number.MAX_SAFE_INTEGER;
-    const rightRank = Number.isFinite(right.sortRank) ? right.sortRank : Number.MAX_SAFE_INTEGER;
-    if (leftRank !== rightRank) return leftRank - rightRank;
-    const creationDelta = timestampValue(right.createdAt) - timestampValue(left.createdAt);
-    if (creationDelta !== 0) return creationDelta;
+    const metadataDelta = timestampValue(right.metadataUpdatedAt) - timestampValue(left.metadataUpdatedAt);
+    if (metadataDelta !== 0) return metadataDelta;
     return left.catalogKey.localeCompare(right.catalogKey);
   });
 }
