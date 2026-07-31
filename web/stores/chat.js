@@ -3832,6 +3832,7 @@ export const useChatStore = defineStore('chat', {
             totalTokens: 0,
             loopCount: 0,
             memoryLoaded: null,
+            memoryLoadedMeta: null,
             memoryAdjust: null,
             tools: [],
             detailsLoaded: true,
@@ -3869,6 +3870,7 @@ export const useChatStore = defineStore('chat', {
             [event.turnId]: {
               ...prev,
               memoryLoaded: Array.isArray(event.loaded) ? event.loaded : [],
+              memoryLoadedMeta: event.meta || null,
             },
           };
           break;
