@@ -455,6 +455,7 @@ async function openWorkCenter(chatPage, mockAgent, items = [OPEN_ITEM]) {
   }
   await chatPage.evaluate(({ agentId, items: boardItems, settings, runtime }) => {
     const store = window.Pinia.useChatStore();
+    store.hydrateWorkCenterBrowserState();
     store.workCenterAgentId = agentId;
     store.workCenterOpen = true;
     store.workCenterItemsByAgent[agentId] = boardItems;
@@ -559,8 +560,14 @@ test.describe('Work Center responsive UI', () => {
       return Object.keys(store.workCenterMessageOutbox || {}).length;
     })).toBe(0);
 
+    const firstUpload = await chatPage.evaluate(async () => {
+      const formData = new FormData();
+      formData.append('files', new File(['initial staged bytes'], 'initial-note.txt', { type: 'text/plain' }));
+      const response = await fetch('/api/upload', { method: 'POST', body: formData });
+      return (await response.json()).files[0];
+    });
     const lostResponseRequest = mockAgent.waitForMessage('work_center_request');
-    chatPage.evaluate(({ agentId, item }) => {
+    chatPage.evaluate(({ agentId, item, attachment }) => {
       const store = window.Pinia.useChatStore();
       store.workCenterAgentId = agentId;
       store.workCenterDetailByAgent[agentId] = item;
@@ -569,14 +576,15 @@ test.describe('Work Center responsive UI', () => {
         'Retry this durable message after reload',
         { kind: 'action', actionId: 'action-1', generation: 1 },
         item.revision,
-        [],
+        [attachment],
         agentId,
         { planRevision: item.planRevision, ledgerRevision: item.ledgerRevision, coordinatorRevision: 0 },
       ).catch(() => {});
-    }, { agentId: mockAgent.agentId, item: OPEN_ITEM_DETAIL });
+    }, { agentId: mockAgent.agentId, item: OPEN_ITEM_DETAIL, attachment: firstUpload });
     const firstAttempt = await lostResponseRequest;
     const durableClientMessageId = firstAttempt.payload.clientMessageId;
     expect(durableClientMessageId).toEqual(expect.any(String));
+    expect(firstAttempt.payload.attachments[0].fileId).toBe(firstUpload.fileId);
     await expect.poll(() => chatPage.evaluate(id => {
       const store = window.Pinia.useChatStore();
       return Object.values(store.workCenterMessageOutbox || {})
@@ -589,23 +597,62 @@ test.describe('Work Center responsive UI', () => {
       const store = window.Pinia?.useChatStore?.();
       return (store?.agents || []).some(agent => agent.id === agentId && agent.online === true);
     }, mockAgent.agentId);
-    const retryRequestPromise = mockAgent.waitForMessage('work_center_request');
-    const retryResponse = chatPage.evaluate(({ agentId, item }) => {
+    const messagesBeforeExpiredRetry = mockAgent.messages('work_center_request').length;
+    const expiredRetry = chatPage.evaluate(({ agentId, item }) => {
       const store = window.Pinia.useChatStore();
+      store.hydrateWorkCenterBrowserState();
       store.workCenterAgentId = agentId;
       store.workCenterDetailByAgent[agentId] = item;
+      const envelope = store.loadWorkCenterMessageEnvelope(agentId, item.id);
+      store.replaceWorkCenterMessageEnvelopeAttachments(agentId, item.id, [{
+        ...envelope.attachments[0], fileId: 'expired-file-id',
+      }]);
       return store.postWorkItemMessage(
-        item.id,
-        'Retry this durable message after reload',
-        { kind: 'action', actionId: 'action-1', generation: 1 },
-        item.revision,
-        [],
-        agentId,
-        { planRevision: item.planRevision, ledgerRevision: item.ledgerRevision, coordinatorRevision: 0 },
+        item.id, envelope.text, envelope.target, envelope.revision,
+        envelope.attachments, agentId,
+        {
+          planRevision: envelope.planRevision,
+          ledgerRevision: envelope.ledgerRevision,
+          coordinatorRevision: envelope.coordinatorRevision,
+        },
       );
     }, { agentId: mockAgent.agentId, item: OPEN_ITEM_DETAIL });
+    await expect(expiredRetry).rejects.toThrow(/attachment expired/i);
+    expect(mockAgent.messages('work_center_request')).toHaveLength(messagesBeforeExpiredRetry);
+
+    const replacement = await chatPage.evaluate(async () => {
+      const formData = new FormData();
+      formData.append('files', new File(['replacement staged bytes'], 'replacement-note.txt', { type: 'text/plain' }));
+      const response = await fetch('/api/upload', { method: 'POST', body: formData });
+      return (await response.json()).files[0];
+    });
+    const retryRequestPromise = mockAgent.waitForMessage('work_center_request');
+    const retryResponse = chatPage.evaluate(({ agentId, item, attachment }) => {
+      const store = window.Pinia.useChatStore();
+      const envelope = store.replaceWorkCenterMessageEnvelopeAttachments(
+        agentId, item.id, [attachment],
+      );
+      return store.postWorkItemMessage(
+        item.id, envelope.text, envelope.target, envelope.revision,
+        envelope.attachments, agentId,
+        {
+          planRevision: envelope.planRevision,
+          ledgerRevision: envelope.ledgerRevision,
+          coordinatorRevision: envelope.coordinatorRevision,
+        },
+      );
+    }, { agentId: mockAgent.agentId, item: OPEN_ITEM_DETAIL, attachment: replacement });
     const retryRequest = await retryRequestPromise;
-    expect(retryRequest.payload.clientMessageId).toBe(durableClientMessageId);
+    expect(retryRequest.payload).toMatchObject({
+      clientMessageId: durableClientMessageId,
+      text: 'Retry this durable message after reload',
+      target: { kind: 'action', actionId: 'action-1', generation: 1 },
+      revision: 1,
+      planRevision: 2,
+      ledgerRevision: 4,
+      coordinatorRevision: 0,
+    });
+    expect(retryRequest.payload.attachments[0].fileId).toBe(replacement.fileId);
     mockAgent.send({
       type: 'work_center_event',
       event: {
@@ -862,6 +909,78 @@ test.describe('Work Center responsive UI', () => {
       coordinatorRevision: 0,
     });
     await expect(workItemComposer).toHaveValue('');
+
+    await workItemComposer.fill('Recover this request after its staged attachment expires');
+    await conversation.locator('.work-center-item-message-input input[type="file"]').setInputFiles({
+      name: 'expired-note.txt', mimeType: 'text/plain',
+      buffer: Buffer.from('expired staged attachment'),
+    });
+    await expect(conversation.locator('.work-center-message-draft-attachments'))
+      .toContainText('expired-note.txt');
+    const expiredAttemptPromise = mockAgent.__workCenterTransport.next();
+    await conversation.locator('.send-btn').click();
+    const expiredAttempt = await expiredAttemptPromise;
+    expect(expiredAttempt.op).toBe('post_work_item_message');
+    const expiredClientMessageId = expiredAttempt.payload.clientMessageId;
+    const expiredFileId = expiredAttempt.payload.attachments[0].fileId;
+    expect(expiredClientMessageId).toEqual(expect.any(String));
+    await mockAgent.__workCenterTransport.reject(
+      expiredAttempt, 'WorkItem attachment expired; upload it again',
+    );
+    await expect(conversation.locator('.work-center-error'))
+      .toContainText('WorkItem attachment expired; upload it again');
+    const pendingActions = conversation.locator('.work-center-stale-target', {
+      hasText: 'An unconfirmed request is locked to its original identity.',
+    });
+    await expect(pendingActions).toBeVisible();
+    await expect(pendingActions.getByText('Replace attachments')).toBeVisible();
+    await expect(pendingActions.getByRole('button', { name: 'Discard pending request' })).toBeVisible();
+    await expect(workItemComposer).toBeDisabled();
+
+    await pendingActions.locator('input[type="file"]').setInputFiles({
+      name: 'replacement-note.txt', mimeType: 'text/plain',
+      buffer: Buffer.from('replacement staged attachment'),
+    });
+    await expect(conversation.locator('.work-center-message-draft-attachments'))
+      .toContainText('replacement-note.txt');
+    const retryAttemptPromise = mockAgent.__workCenterTransport.next();
+    await conversation.locator('.send-btn').click();
+    const retryAttempt = await retryAttemptPromise;
+    expect(retryAttempt.op).toBe('post_work_item_message');
+    expect(retryAttempt.payload).toMatchObject({
+      id: OPEN_ITEM.id,
+      clientMessageId: expiredClientMessageId,
+      text: 'Recover this request after its staged attachment expires',
+      target: { kind: 'coordinator' },
+      revision: 1,
+      planRevision: 2,
+      ledgerRevision: 4,
+      coordinatorRevision: 0,
+    });
+    expect(retryAttempt.payload.attachments[0].fileId).not.toBe(expiredFileId);
+    expect(retryAttempt.payload.attachments[0].name).toBe('replacement-note.txt');
+    await mockAgent.__workCenterTransport.resolve(retryAttempt, {
+      accepted: true, turnId: 'turn-replaced-attachment',
+    });
+    await expect(pendingActions).toHaveCount(0);
+    await expect(workItemComposer).toBeEnabled();
+    await expect(workItemComposer).toHaveValue('');
+
+    await workItemComposer.fill('Discard this pending request but keep the editable text');
+    const discardAttemptPromise = mockAgent.__workCenterTransport.next();
+    await conversation.locator('.send-btn').click();
+    const discardAttempt = await discardAttemptPromise;
+    expect(discardAttempt.payload.clientMessageId).not.toBe(expiredClientMessageId);
+    await mockAgent.__workCenterTransport.reject(discardAttempt, 'Response was lost');
+    await expect(pendingActions).toBeVisible();
+    await pendingActions.getByRole('button', { name: 'Discard pending request' }).click();
+    await expect(pendingActions).toHaveCount(0);
+    await expect(workItemComposer).toBeEnabled();
+    await expect(workItemComposer)
+      .toHaveValue('Discard this pending request but keep the editable text');
+    await workItemComposer.fill('Discarded request is editable again');
+    await expect(workItemComposer).toHaveValue('Discarded request is editable again');
+    await workItemComposer.fill('');
 
     await action.locator('.work-center-action-summary').click();
     const actionDetail = chatPage.locator('.work-center-action-detail-pane');

@@ -18,6 +18,14 @@ import { migrateYeaftConversationState } from '../../web/stores/helpers/yeaft-co
 import { resolveTimelineSession } from '../../web/stores/helpers/vp-timeline.js';
 import { buildYeaftSidebarSessionList } from '../../web/stores/helpers/yeaft-sidebar-sessions.js';
 import {
+  bindWorkCenterBrowserOwner,
+  clearWorkCenterBrowserOwner,
+  currentWorkCenterBrowserOwner,
+  readWorkCenterBrowserState,
+  WORK_CENTER_BROWSER_STORAGE_KEYS,
+  writeWorkCenterDrafts,
+} from '../../web/stores/helpers/work-center-browser-state.js';
+import {
   beginCatalogMutation,
   beginChatHistoryRequest,
   cancelChatHistoryRequest,
@@ -772,6 +780,68 @@ describe('message flow regressions', () => {
       { id: 'shared', agentId: 'agent-b' },
     ];
     const store = useChatStore();
+    clearWorkCenterBrowserOwner();
+    bindWorkCenterBrowserOwner('owner-a');
+    expect(store.hydrateWorkCenterBrowserState()).toBe(true);
+    expect(store.saveWorkCenterComposerDraft('agent-a', 'work-item-owner', {
+      text: 'owner A private draft',
+      target: { kind: 'coordinator' },
+    })).toBe(true);
+    const ownerAEnvelope = store.prepareWorkCenterMessageEnvelope({
+      agentId: 'agent-a', workItemId: 'work-item-owner',
+      target: { kind: 'coordinator' }, text: 'owner A durable outbox',
+      attachments: [{ fileId: 'old-file', name: 'old.txt', mimeType: 'text/plain', size: 3 }],
+      revision: 1, planRevision: 2, ledgerRevision: 3, coordinatorRevision: 4,
+    });
+    const ownerAFence = { ...store._workCenterBrowserFence };
+    expect(ownerAEnvelope.clientMessageId).toEqual(expect.any(String));
+    const replacedOwnerAEnvelope = store.replaceWorkCenterMessageEnvelopeAttachments(
+      'agent-a', 'work-item-owner',
+      [{ fileId: 'new-file', name: 'new.txt', mimeType: 'text/plain', size: 4 }],
+    );
+    expect(replacedOwnerAEnvelope).toEqual({
+      ...ownerAEnvelope,
+      attachments: [{ fileId: 'new-file', name: 'new.txt', mimeType: 'text/plain', size: 4 }],
+    });
+    expect(replacedOwnerAEnvelope).toMatchObject({
+      clientMessageId: ownerAEnvelope.clientMessageId,
+      target: ownerAEnvelope.target,
+      text: ownerAEnvelope.text,
+      revision: 1,
+      planRevision: 2,
+      ledgerRevision: 3,
+      coordinatorRevision: 4,
+      createdAt: ownerAEnvelope.createdAt,
+    });
+    store.workCenterComposerDrafts = {};
+    store.workCenterMessageOutbox = {};
+    store._workCenterBrowserFence = null;
+    expect(store.hydrateWorkCenterBrowserState()).toBe(true);
+    expect(store.loadWorkCenterComposerDraft('agent-a', 'work-item-owner'))
+      .toMatchObject({ text: 'owner A private draft' });
+    expect(store.loadWorkCenterMessageEnvelope('agent-a', 'work-item-owner'))
+      .toMatchObject({ clientMessageId: ownerAEnvelope.clientMessageId });
+
+    bindWorkCenterBrowserOwner('owner-b');
+    expect(store.workCenterComposerDrafts).toEqual({});
+    expect(store.workCenterMessageOutbox).toEqual({});
+    expect(writeWorkCenterDrafts({ leaked: { text: 'stale A write' } }, ownerAFence)).toBe(false);
+    expect(store.saveWorkCenterComposerDraft('agent-a', 'work-item-owner', {
+      text: 'stale Pinia write', target: { kind: 'coordinator' },
+    })).toBe(false);
+    expect(globalThis.localStorage.getItem(WORK_CENTER_BROWSER_STORAGE_KEYS.drafts)).toBe(null);
+    expect(globalThis.localStorage.getItem(WORK_CENTER_BROWSER_STORAGE_KEYS.outbox)).toBe(null);
+
+    globalThis.localStorage.setItem(
+      WORK_CENTER_BROWSER_STORAGE_KEYS.drafts,
+      JSON.stringify({ legacy: { text: 'unowned legacy draft' } }),
+    );
+    store._workCenterBrowserFence = null;
+    expect(store.hydrateWorkCenterBrowserState()).toBe(true);
+    expect(readWorkCenterBrowserState(currentWorkCenterBrowserOwner()).drafts).toEqual({});
+    expect(globalThis.localStorage.getItem(WORK_CENTER_BROWSER_STORAGE_KEYS.drafts)).toBe(null);
+    clearWorkCenterBrowserOwner();
+
     const productionSendWsMessage = store.sendWsMessage;
     store.sendWsMessage = vi.fn();
     store.agents = [
@@ -2369,6 +2439,7 @@ describe('message flow regressions', () => {
     store.yeaftConversationId = 'conv-a';
     store.messagesMap = { 'conv-a': [] };
 
+    bindWorkCenterBrowserOwner('owner-b');
     store.agents = [
       { id: 'stale-agent', online: false, capabilities: ['work_center'] },
       { id: 'agent-b', online: true, capabilities: ['work_center'] },
