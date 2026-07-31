@@ -102,14 +102,12 @@ describe('Work Center tool policy', () => {
       { phase: 'start', name: 'FailingWrite' },
       { phase: 'complete', effectStatus: 'unknown', result: { error: 'write outcome uncertain' } },
     ]);
-  });
 
-  it('rejects background or redirected Bash before execution', async () => {
-    const registry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
-    await expect(registry.execute('Bash', {
+    const policyRegistry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
+    await expect(policyRegistry.execute('Bash', {
       command: 'echo nope', cwd: outsideDir, background: false,
     }, {})).rejects.toThrow(/cwd is fixed/);
-    await expect(registry.execute('Bash', {
+    await expect(policyRegistry.execute('Bash', {
       command: 'echo nope', cwd: workDir, background: true,
     }, {})).rejects.toThrow(/background Bash/);
   });
