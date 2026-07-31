@@ -4491,7 +4491,7 @@ export const useChatStore = defineStore('chat', {
         case 'group_roster_changed':
         case 'session_roster_changed': {
           const gs = window.Pinia?.useSessionsStore?.() || (window.__useSessionsStore && window.__useSessionsStore());
-          if (gs) gs.applyRosterChange(event);
+          if (gs) gs.applyRosterChange(event, msg.agentId || null);
           break;
         }
         case 'group_crud_result':

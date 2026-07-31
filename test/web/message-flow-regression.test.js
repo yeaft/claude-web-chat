@@ -15,6 +15,7 @@ import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
 import WorkCenterPage from '../../web/components/WorkCenterPage.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
 import { migrateYeaftConversationState } from '../../web/stores/helpers/yeaft-conversation-state.js';
+import { resolveTimelineSession } from '../../web/stores/helpers/vp-timeline.js';
 import {
   beginCatalogMutation,
   beginChatHistoryRequest,
@@ -948,6 +949,113 @@ describe('message flow regressions', () => {
       localStorage.removeItem('lastViewedYeaftSession');
 
       const legacySessions = useSessionsStore();
+      legacySessions.resetInventory();
+      legacySessions.applySnapshot([{
+        id: 'legacy-bare', name: 'Legacy bare', roster: ['omni'], defaultVpId: 'omni',
+      }], null);
+      expect(legacySessions.sessions['legacy-bare']).toMatchObject({
+        id: 'legacy-bare', agentId: null, roster: ['omni'],
+      });
+      expect(legacySessions.sessionById('legacy-bare', 'agent-a')).toMatchObject({
+        id: 'legacy-bare', agentId: null, roster: ['omni'],
+      });
+      expect(resolveTimelineSession(legacySessions, 'legacy-bare', 'agent-a')).toMatchObject({
+        id: 'legacy-bare', roster: ['omni'],
+      });
+      legacySessions.applyRosterChange({
+        sessionId: 'legacy-bare', roster: ['omni', 'reviewer'], defaultVpId: 'omni',
+      });
+      legacySessions.applySnapshotUpsert({ id: 'legacy-extra', name: 'Legacy extra' });
+      expect(legacySessions.sessionById('legacy-bare', 'agent-a')).toMatchObject({
+        roster: ['omni', 'reviewer'],
+      });
+      expect(legacySessions.sessionById('legacy-extra', 'agent-a')).toMatchObject({
+        id: 'legacy-extra', agentId: null,
+      });
+
+      legacySessions.applySnapshotUpsert({ id: 'stamped', name: 'Stamped' }, 'agent-a');
+      expect(legacySessions.inventoryIdentityMode).toBe('agent-scoped');
+      expect(legacySessions.sessions['legacy-bare']).toMatchObject({
+        id: 'legacy-bare', agentId: null,
+      });
+      expect(legacySessions.sessionById('legacy-bare', 'agent-a')).toBeNull();
+      expect(legacySessions.sessionById('legacy-bare', 'agent-b')).toBeNull();
+      expect(legacySessions.sessionById('stamped', 'agent-a')).toMatchObject({
+        id: 'stamped', agentId: 'agent-a',
+      });
+      legacySessions.applyRosterChange({ sessionId: 'rejected-legacy-delta', roster: ['omni'] });
+      legacySessions.applySnapshotUpsert({ id: 'rejected-legacy-upsert', name: 'Rejected' });
+      legacySessions.applyCrudResult({
+        ok: true, op: 'create', session: { id: 'rejected-ownerless-create', name: 'Rejected create' },
+      });
+      legacySessions.applyCrudResult({
+        ok: true, op: 'restore', session: { id: 'rejected-ownerless-restore', name: 'Rejected restore' },
+      });
+      legacySessions.applyCrudResult({
+        ok: true, op: 'update_config', sessionId: 'stamped', config: { model: 'wrong' },
+      });
+      legacySessions.applyCrudResult({ ok: true, op: 'delete', sessionId: 'stamped' });
+      legacySessions.applyPinState('stamped', true);
+      expect(legacySessions.sessions['rejected-legacy-delta']).toBeUndefined();
+      expect(legacySessions.sessions['rejected-legacy-upsert']).toBeUndefined();
+      expect(legacySessions.sessions['rejected-ownerless-create']).toBeUndefined();
+      expect(legacySessions.sessions['rejected-ownerless-restore']).toBeUndefined();
+      expect(legacySessions.sessionById('stamped', 'agent-a')).toMatchObject({
+        id: 'stamped', agentId: 'agent-a', config: {}, pinned: false,
+      });
+
+      legacySessions.applyPinState('stamped', true, 'agent-a');
+      expect(legacySessions.sessionById('stamped', 'agent-a')).toMatchObject({ pinned: true });
+      legacySessions.applyCrudResult({
+        ok: true, op: 'update_config', sessionId: 'stamped', config: { model: 'agent-a/model' },
+      }, 'agent-a');
+      expect(legacySessions.sessionById('stamped', 'agent-a')).toMatchObject({
+        config: { model: 'agent-a/model' },
+      });
+      legacySessions.applyCrudResult({
+        ok: true, op: 'create', session: { id: 'owned-create', name: 'Owned create' },
+      }, 'agent-a');
+      expect(legacySessions.sessionById('owned-create', 'agent-a')).toMatchObject({
+        id: 'owned-create', agentId: 'agent-a',
+      });
+      legacySessions.applyCrudResult({ ok: true, op: 'delete', sessionId: 'owned-create' }, 'agent-a');
+      expect(legacySessions.sessionById('owned-create', 'agent-a')).toBeNull();
+
+      legacySessions.resetInventory();
+      legacySessions.applySnapshot([], 'agent-a');
+      legacySessions.applySnapshot([{ id: 'rejected-after-empty-scoped' }], null);
+      expect(legacySessions.sessions['rejected-after-empty-scoped']).toBeUndefined();
+      expect(legacySessions.inventoryIdentityMode).toBe('agent-scoped');
+      store.handleYeaftOutput({
+        agentId: 'agent-a',
+        event: {
+          type: 'session_roster_changed',
+          sessionId: 'stamped-from-envelope',
+          roster: ['omni'],
+          defaultVpId: 'omni',
+        },
+      });
+      expect(legacySessions.sessions['agent-a\u001fstamped-from-envelope']).toMatchObject({
+        id: 'stamped-from-envelope', agentId: 'agent-a', roster: ['omni'],
+      });
+
+      legacySessions.resetInventory();
+      expect(legacySessions.inventoryIdentityMode).toBe('empty');
+      legacySessions.applySnapshot([], null);
+      expect(legacySessions.inventoryIdentityMode).toBe('legacy-bare');
+      legacySessions.applyRosterChange({
+        sessionId: 'legacy-after-empty-snapshot', roster: ['omni'], defaultVpId: 'omni',
+      });
+      expect(legacySessions.sessionById('legacy-after-empty-snapshot', 'agent-a')).toMatchObject({
+        id: 'legacy-after-empty-snapshot', agentId: null, roster: ['omni'],
+      });
+
+      legacySessions.resetInventory();
+      legacySessions.applySnapshot([{ id: 'same', name: 'Agent A same' }], 'agent-a');
+      expect(legacySessions.sessionById('same', 'agent-b')).toBeNull();
+      legacySessions.setActive('same', 'agent-b');
+      expect(legacySessions.activeSessionKey).toBeNull();
+
       legacySessions.resetInventory();
       legacySessions.applySnapshot([{ id: 'session-b', name: 'Session B' }], 'agent-b');
       legacySessions.setActive('session-b', 'agent-b');

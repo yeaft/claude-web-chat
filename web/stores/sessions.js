@@ -72,16 +72,18 @@ function findSessionKey(state, sessionId, agentId = null) {
   if (!id) return '';
   const directKey = storeKeyFor(agentId, id);
   if (directKey && state.sessions[directKey]) return directKey;
-  // An explicit Agent is authoritative. Falling through here could select a
-  // different Agent's same-id Session and route the next send across owners.
-  if (agentId) return '';
+  // An explicit Agent is authoritative for agent-scoped inventory. The one
+  // exception is an accepted legacy whole-store snapshot: older producers
+  // cannot stamp an owner, so the bare row is the only available identity.
+  if (agentId) {
+    const bareRow = state.sessions[id];
+    return state.inventoryIdentityMode === 'legacy-bare' && bareRow && !bareRow.agentId
+      ? id
+      : '';
+  }
   if (state.sessions[id]) return id;
   if (state.activeSessionKey && state.sessions[state.activeSessionKey]?.id === id) return state.activeSessionKey;
   const keys = state.sessionOrder.filter(key => state.sessions[key]?.id === id);
-  if (agentId) {
-    const byAgent = keys.find(key => state.sessions[key]?.agentId === agentId);
-    if (byAgent) return byAgent;
-  }
   const chat = _getChatStoreSafe();
   if (chat?.currentAgent) {
     const current = keys.find(key => state.sessions[key]?.agentId === chat.currentAgent);
@@ -92,6 +94,14 @@ function findSessionKey(state, sessionId, agentId = null) {
 
 function normalizeActiveKey(state, sessionId, agentId = null) {
   return findSessionKey(state, sessionId, agentId) || '';
+}
+
+function enterAgentScopedInventory(state) {
+  // Keep legacy rows as non-authoritative cache entries. A scoped source proves
+  // that owner identity now matters, but it does not prove which Agent owned a
+  // previously bare row. The mode fence disables ambiguous fallback and all
+  // ownerless mutations without guessing or deleting data.
+  state.inventoryIdentityMode = 'agent-scoped';
 }
 
 function normalizeOrderList(ids) {
@@ -183,6 +193,8 @@ export const useSessionsStore = defineStore('sessions', {
     activeSessionId: null,
     /** @type {string|null} */
     activeSessionKey: null,
+    /** @type {'empty'|'legacy-bare'|'agent-scoped'} */
+    inventoryIdentityMode: 'empty',
     lastSnapshotAt: 0,
     /**
      * Most recent CRUD result for the UI to surface as toast/modal error.
@@ -273,14 +285,15 @@ export const useSessionsStore = defineStore('sessions', {
     applySnapshot(sessions, agentId = null) {
       const arr = Array.isArray(sessions) ? sessions : [];
       if (!agentId) {
-        // Legacy path — single-agent stores only. In a mixed deployment
-        // where one upgraded agent stamps agentId and one legacy agent
-        // doesn't, the legacy whole-replace would obliterate the
-        // upgraded agent's rows. Guard: if any current row already
-        // carries an agentId, treat this unstamped snapshot as
-        // unsafe and skip it rather than nuke cross-agent state.
+        // Legacy path — single-agent stores only. Once this inventory has
+        // observed an Agent-scoped source, never downgrade it merely because
+        // the current scoped snapshot is empty or all stamped rows were deleted.
+        if (this.inventoryIdentityMode === 'agent-scoped') return;
         const hasStampedRow = Object.values(this.sessions).some(s => s && s.agentId);
-        if (hasStampedRow) return;
+        if (hasStampedRow) {
+          this.inventoryIdentityMode = 'agent-scoped';
+          return;
+        }
         const nextMap = {};
         const nextOrder = [];
         for (const s of arr) {
@@ -291,9 +304,11 @@ export const useSessionsStore = defineStore('sessions', {
         }
         this.sessions = nextMap;
         this.sessionOrder = nextOrder;
+        this.inventoryIdentityMode = 'legacy-bare';
       } else {
         // Per-agent replacement: drop only rows owned by this agent,
         // then merge in the new ones, preserving snapshot order.
+        enterAgentScopedInventory(this);
         const nextMap = { ...this.sessions };
         const incomingKeys = new Set();
         for (const s of arr) {
@@ -493,11 +508,13 @@ export const useSessionsStore = defineStore('sessions', {
     },
 
     /** Apply a `group_roster_changed` delta (in-place merge). */
-    applyRosterChange(payload) {
+    applyRosterChange(payload, envelopeAgentId = null) {
       if (!payload) return;
       const sessionId = payload.sessionId || payload.groupId;
       if (!sessionId) return;
-      const agentId = payload.agentId || null;
+      const agentId = envelopeAgentId || payload.agentId || null;
+      if (agentId) enterAgentScopedInventory(this);
+      else if (this.inventoryIdentityMode !== 'legacy-bare') return;
       const key = findSessionKey(this, sessionId, agentId) || storeKeyFor(agentId, sessionId);
       const prev = this.sessions[key];
       if (!prev) {
@@ -527,18 +544,22 @@ export const useSessionsStore = defineStore('sessions', {
       if (result.requestId && this.pending[result.requestId]) {
         delete this.pending[result.requestId];
       }
-      if (result.ok && result.op === 'list' && Array.isArray(result.sessions)) {
-        this.applySnapshot(result.sessions, agentId);
-      }
       const session = result.session || result.group || null;
+      const mutationAgentId = agentId || result.agentId || session?.agentId || null;
+      if (result.ok && result.op === 'list' && Array.isArray(result.sessions)) {
+        this.applySnapshot(result.sessions, mutationAgentId);
+      }
       if (result.ok && (result.op === 'create' || result.op === 'restore') && session && session.id) {
-        this.applySnapshotUpsert(session, agentId);
-        this.setActive(session.id, agentId);
+        const key = this.applySnapshotUpsert(session, mutationAgentId);
+        if (key) this.setActive(session.id, mutationAgentId);
       }
       const opSessionId = result.sessionId || result.groupId;
-      const opKey = opSessionId ? findSessionKey(this, opSessionId, agentId) : '';
-      if (result.ok && (result.op === 'archive' || result.op === 'delete') && opSessionId) {
-        if (opKey) delete this.sessions[opKey];
+      const allowOwnerlessMutation = this.inventoryIdentityMode === 'legacy-bare';
+      const opKey = opSessionId && (mutationAgentId || allowOwnerlessMutation)
+        ? findSessionKey(this, opSessionId, mutationAgentId)
+        : '';
+      if (result.ok && (result.op === 'archive' || result.op === 'delete') && opSessionId && opKey) {
+        delete this.sessions[opKey];
         this.sessionOrder = this.sessionOrder.filter(id => id !== opKey);
         if (this.activeSessionKey === opKey || this.activeSessionId === opSessionId) {
           this.activeSessionKey = this.sessionOrder[0] || null;
@@ -558,8 +579,10 @@ export const useSessionsStore = defineStore('sessions', {
 
     /** Insert or merge a single session record. */
     applySnapshotUpsert(session, agentId = null) {
-      if (!session || !session.id) return;
+      if (!session || !session.id) return '';
       const effectiveAgentId = agentId || session.agentId || null;
+      if (effectiveAgentId) enterAgentScopedInventory(this);
+      else if (this.inventoryIdentityMode !== 'legacy-bare') return '';
       const key = findSessionKey(this, session.id, effectiveAgentId) || storeKeyFor(effectiveAgentId, session.id);
       const existed = !!this.sessions[key];
       const prev = this.sessions[key] || {};
@@ -568,6 +591,7 @@ export const useSessionsStore = defineStore('sessions', {
         ...this._normalize(session, effectiveAgentId, isPinnedRow(prev)),
       };
       if (!existed) this.sessionOrder.push(key);
+      return key;
     },
 
     setActive(sessionId, agentId = null) {
@@ -635,6 +659,7 @@ export const useSessionsStore = defineStore('sessions', {
      * snapshot reconciliation, and stable pinned-first movement.
      */
     applyPinState(sessionId, pinned, agentId = null) {
+      if (!agentId && this.inventoryIdentityMode !== 'legacy-bare') return;
       const key = findSessionKey(this, sessionId, agentId);
       if (!sessionId || !key || !this.sessions[key]) return;
       this.sessions[key] = {
@@ -658,6 +683,7 @@ export const useSessionsStore = defineStore('sessions', {
       this.sessionOrder = [];
       this.activeSessionId = null;
       this.activeSessionKey = null;
+      this.inventoryIdentityMode = 'empty';
       this.lastSnapshotAt = 0;
     },
 
