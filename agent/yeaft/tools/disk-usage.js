@@ -1,4 +1,4 @@
-import { lstat, readdir } from 'node:fs/promises';
+import { lstat, readdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { basename, join, relative, resolve } from 'node:path';
 import { defineTool } from './types.js';
@@ -73,7 +73,12 @@ async function measurePath(path, baseDir, depth, level, rows, signal) {
   throwIfAborted(signal);
   const rootSymlink = entryStat.isSymbolicLink() && level === 0;
   if (entryStat.isSymbolicLink() && !rootSymlink) {
-    if (level <= depth) {
+    let targetIsDirectory = false;
+    try { targetIsDirectory = (await stat(path)).isDirectory(); } catch (error) {
+      if (isAbortError(error)) throw error;
+    }
+    throwIfAborted(signal);
+    if (targetIsDirectory && level <= depth) {
       rows.push({
         path: relative(baseDir, path),
         size: entryStat.size,

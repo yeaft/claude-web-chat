@@ -136,6 +136,184 @@ function rewriteMultilineAnchors(source) {
   return result;
 }
 
+function hasGroupScopedModifiers(source) {
+  let escaped = false;
+  let inClass = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (character === '[' && !inClass) {
+      inClass = true;
+      continue;
+    }
+    if (character === ']' && inClass) {
+      inClass = false;
+      continue;
+    }
+    if (inClass || character !== '(' || source[index + 1] !== '?') continue;
+    let modifierEnd = index + 2;
+    while (/[A-Za-z-]/.test(source[modifierEnd] || '')) modifierEnd += 1;
+    if (modifierEnd > index + 2 && source[modifierEnd] === ':') return true;
+  }
+  return false;
+}
+
+function hasPythonNamedCapture(source) {
+  let escaped = false;
+  let inClass = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (character === '[' && !inClass) {
+      inClass = true;
+      continue;
+    }
+    if (character === ']' && inClass) {
+      inClass = false;
+      continue;
+    }
+    if (!inClass && source.startsWith('(?P<', index)) return true;
+  }
+  return false;
+}
+
+function stripLeadingInlineModifiers(source) {
+  let remaining = source;
+  while (true) {
+    const match = remaining.match(/^\(\?([ims]*)(?:-([ims]*))?\)/);
+    if (!match || (!match[1] && !match[2])) return remaining;
+    remaining = remaining.slice(match[0].length);
+  }
+}
+
+function regexCanMatchEmpty(source) {
+  let index = 0;
+
+  function skipClass() {
+    index += 1;
+    let escaped = false;
+    while (index < source.length) {
+      const character = source[index];
+      index += 1;
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === ']') break;
+    }
+  }
+
+  function parseGroup(prefixLength, assertion = false) {
+    index += prefixLength;
+    const nullable = parseDisjunction(')');
+    if (source[index] === ')') index += 1;
+    return assertion ? true : nullable;
+  }
+
+  function parseAtom() {
+    const character = source[index];
+    if (character === '^' || character === '$') {
+      index += 1;
+      return true;
+    }
+    if (character === '\\') {
+      index += 1;
+      const escaped = source[index] || '';
+      index += escaped ? 1 : 0;
+      if (escaped === 'b' || escaped === 'B' || /[1-9]/.test(escaped)) return true;
+      if (escaped === 'k' && source[index] === '<') {
+        const end = source.indexOf('>', index + 1);
+        index = end < 0 ? source.length : end + 1;
+        return true;
+      }
+      if ((escaped === 'p' || escaped === 'P') && source[index] === '{') {
+        const end = source.indexOf('}', index + 1);
+        index = end < 0 ? source.length : end + 1;
+      }
+      return false;
+    }
+    if (character === '[') {
+      skipClass();
+      return false;
+    }
+    if (character !== '(') {
+      index += 1;
+      return false;
+    }
+    if (source.startsWith('(?:', index)) return parseGroup(3);
+    if (source.startsWith('(?=', index) || source.startsWith('(?!', index)) {
+      return parseGroup(3, true);
+    }
+    if (source.startsWith('(?<=', index) || source.startsWith('(?<!', index)) {
+      return parseGroup(4, true);
+    }
+    if (source.startsWith('(?<', index) || source.startsWith('(?P<', index)) {
+      const nameStart = index + (source.startsWith('(?P<', index) ? 4 : 3);
+      const nameEnd = source.indexOf('>', nameStart);
+      if (nameEnd >= 0) {
+        index = nameEnd + 1;
+        const nullable = parseDisjunction(')');
+        if (source[index] === ')') index += 1;
+        return nullable;
+      }
+    }
+    return parseGroup(1);
+  }
+
+  function parseTerm() {
+    const atomNullable = parseAtom();
+    const quantifier = source.slice(index).match(/^(?:([*?+])|\{(\d+)(?:,(\d*)?)?\})(?:[?+])?/);
+    if (!quantifier) return atomNullable;
+    index += quantifier[0].length;
+    if ((quantifier[1] && quantifier[1] !== '+') || Number(quantifier[2]) === 0) return true;
+    return atomNullable;
+  }
+
+  function parseSequence(stopCharacter) {
+    let nullable = true;
+    while (index < source.length && source[index] !== '|' && source[index] !== stopCharacter) {
+      nullable = parseTerm() && nullable;
+    }
+    return nullable;
+  }
+
+  function parseDisjunction(stopCharacter = null) {
+    let nullable = parseSequence(stopCharacter);
+    while (source[index] === '|') {
+      index += 1;
+      nullable = parseSequence(stopCharacter) || nullable;
+    }
+    return nullable;
+  }
+
+  return parseDisjunction();
+}
+
+function validateGrepPattern(pattern, fixedStrings) {
+  if (fixedStrings) return;
+  if (hasGroupScopedModifiers(pattern)) {
+    throw new Error('group-scoped regex modifiers are unsupported');
+  }
+  if (hasPythonNamedCapture(pattern)) {
+    throw new Error('Python-style named capture groups are unsupported');
+  }
+  if (regexCanMatchEmpty(stripLeadingInlineModifiers(pattern))) {
+    throw new Error('regexes that can match empty text are unsupported');
+  }
+}
+
 function formatGrepError(message) {
   const errorMessage = `Grep failed: ${message}`;
   const serialized = JSON.stringify({ error: errorMessage });
@@ -434,8 +612,9 @@ export async function nodeGrep(pattern, searchPath, options) {
     regexFlags.add('s');
   }
   if (!options.fixedStrings) {
-    const inlineFlags = regexSource.match(/^\(\?([ims]*)(?:-([ims]*))?\)/);
-    if (inlineFlags && (inlineFlags[1] || inlineFlags[2])) {
+    while (true) {
+      const inlineFlags = regexSource.match(/^\(\?([ims]*)(?:-([ims]*))?\)/);
+      if (!inlineFlags || (!inlineFlags[1] && !inlineFlags[2])) break;
       for (const flag of inlineFlags[1]) regexFlags.add(flag);
       for (const flag of inlineFlags[2] || '') regexFlags.delete(flag);
       regexSource = regexSource.slice(inlineFlags[0].length);
@@ -786,6 +965,7 @@ Guidelines:
 
     try {
       throwIfAborted(ctx?.signal);
+      validateGrepPattern(pattern, fixed_strings);
       let result;
       let rgCommand = resolveManagedCliCommand('rg', { yeaftDir: ctx?.yeaftDir });
       if (!rgCommand) {
