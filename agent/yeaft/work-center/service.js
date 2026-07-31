@@ -60,6 +60,14 @@ function parseBoardCursor(value) {
   }
 }
 
+function removeUnpersistedAttachmentFiles(root, workItemId, addedAttachments, detail) {
+  if (!Array.isArray(addedAttachments) || addedAttachments.length === 0) return;
+  const persistedIds = new Set((Array.isArray(detail?.attachments) ? detail.attachments : [])
+    .map(attachment => attachment?.id).filter(Boolean));
+  const unpersisted = addedAttachments.filter(attachment => !persistedIds.has(attachment?.id));
+  if (unpersisted.length > 0) removeWorkItemAttachmentFiles(root, workItemId, unpersisted);
+}
+
 function listBoardItems(store, payload) {
   const limit = Math.min(Math.max(Number(payload.limit) || 100, 1), 200);
   const cursor = parseBoardCursor(payload.cursor);
@@ -320,9 +328,14 @@ export class WorkCenterService {
         const clientMessageId = requiredString(payload.clientMessageId, 'clientMessageId');
         const target = payload.target && typeof payload.target === 'object' ? payload.target : {};
         if (target.kind === 'coordinator') {
+          const receipt = this.store.getCoordinatorClientMessageReceipt(payload.id, clientMessageId);
+          if (receipt) return { accepted: true, turnId: receipt.turnId || null, duplicate: true };
           return this.handle('work_item_message', { ...payload, clientMessageId }, requestContext);
         }
         if (target.kind === 'action') {
+          if (this.store.hasActionInputClientMessage(payload.id, target.actionId, clientMessageId)) {
+            return this.store.getWorkItemDetail(payload.id);
+          }
           return this.handle('action_input', {
             ...payload,
             clientMessageId,
@@ -380,7 +393,12 @@ export class WorkCenterService {
           }, {
             onUpdate: (type, nextWorkItem) => {
               this.watcher.abortInvalidWorkItemRuns(id);
-              this.#emit({ type, workItem: nextWorkItem });
+              this.#emit({
+                type,
+                clientMessageId: typeof payload.clientMessageId === 'string'
+                  ? payload.clientMessageId : null,
+                workItem: nextWorkItem,
+              });
             },
           });
         } catch (error) {
@@ -393,6 +411,7 @@ export class WorkCenterService {
           } catch {}
           throw error;
         }
+        removeUnpersistedAttachmentFiles(this.attachmentRoot, id, addedAttachments, turn.detail);
         turn.task.catch(() => {});
         return { accepted: true, turnId: turn.detail.messages?.at(-1)?.turnId || null };
       }
@@ -445,9 +464,15 @@ export class WorkCenterService {
           } catch {}
           throw error;
         }
+        removeUnpersistedAttachmentFiles(this.attachmentRoot, id, addedAttachments, detail);
         this.watcher.abortInvalidWorkItemRuns(id);
         this.watcher.notifyActionInput(id, payload.actionId);
-        this.#emit({ type: 'action.input_added', workItem: detail });
+        this.#emit({
+          type: 'action.input_added',
+          actionId: payload.actionId,
+          clientMessageId: typeof payload.clientMessageId === 'string' ? payload.clientMessageId : null,
+          workItem: detail,
+        });
         return detail;
       }
       case 'guide': {

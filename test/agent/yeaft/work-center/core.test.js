@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
@@ -2727,9 +2727,11 @@ describe('Work Center core', () => {
       ownerBootId: 'coordinator-attachment',
       settingsReader: () => ({}),
     });
-    const attachmentAccepted = await attachmentService.handle('work_item_message', {
+    const coordinatorAttachmentPayload = {
       id: attachmentItem.id,
+      clientMessageId: 'coordinator-attachment-message',
       text: 'Use both files.',
+      target: { kind: 'coordinator' },
       revision: attachmentBefore.revision,
       planRevision: attachmentBefore.planRevision,
       ledgerRevision: attachmentBefore.ledgerRevision,
@@ -2738,7 +2740,10 @@ describe('Work Center core', () => {
         { name: 'screen.png', mimeType: 'image/png', data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64') },
         { name: 'notes.txt', mimeType: 'text/plain', data: Buffer.from('bounded attachment context').toString('base64') },
       ],
-    });
+    };
+    const attachmentAccepted = await attachmentService.handle(
+      'post_work_item_message', coordinatorAttachmentPayload,
+    );
     expect(attachmentAccepted).toMatchObject({ accepted: true, turnId: expect.any(String) });
     for (let index = 0; index < 20 && !attachmentCall; index += 1) await new Promise(resolve => setTimeout(resolve, 0));
     expect(attachmentCall?.messages?.[0]?.content).toEqual(expect.arrayContaining([
@@ -2759,6 +2764,85 @@ describe('Work Center core', () => {
       ],
     });
     expect(projectWorkItemDetail(attachmentDetail).messages.at(-2).attachments).toHaveLength(2);
+    const coordinatorAttachmentDirectory = join(attachmentRoot, attachmentItem.id);
+    const coordinatorAttachmentFileCount = readdirSync(coordinatorAttachmentDirectory).length;
+    expect(await attachmentService.handle(
+      'post_work_item_message', coordinatorAttachmentPayload,
+    )).toMatchObject({ accepted: true, turnId: attachmentAccepted.turnId, duplicate: true });
+    expect(store.getWorkItemDetail(attachmentItem.id).attachments).toHaveLength(2);
+    expect(readdirSync(coordinatorAttachmentDirectory)).toHaveLength(coordinatorAttachmentFileCount);
+    const coordinatorLoser = await attachmentService.handle('work_item_message', {
+      ...coordinatorAttachmentPayload,
+      files: [{
+        name: 'coordinator-loser.txt', mimeType: 'text/plain',
+        data: Buffer.from('concurrent coordinator loser').toString('base64'),
+      }],
+    });
+    expect(coordinatorLoser).toMatchObject({ accepted: true });
+    expect(store.getWorkItemDetail(attachmentItem.id).attachments).toHaveLength(2);
+    expect(readdirSync(coordinatorAttachmentDirectory)).toHaveLength(coordinatorAttachmentFileCount);
+    expect(store.db.prepare(`SELECT COUNT(*) AS count FROM coordinator_mailbox_entries
+      WHERE work_item_id = ? AND source_key = ?`).get(
+      attachmentItem.id,
+      `client:message:${attachmentItem.id}:${coordinatorAttachmentPayload.clientMessageId}`,
+    ).count).toBe(1);
+
+    const actionAttachmentItem = controller.create(createInput({
+      id: 'action-attachment-idempotency',
+    }));
+    const actionAttachmentDetail = store.getWorkItemDetail(actionAttachmentItem.id);
+    const actionAttachment = actionAttachmentDetail.actions[0];
+    const actionAttachmentPayload = {
+      id: actionAttachmentItem.id,
+      clientMessageId: 'action-attachment-message',
+      text: 'Attach this once.',
+      target: { kind: 'action', actionId: actionAttachment.id, generation: actionAttachment.generation },
+      revision: actionAttachmentDetail.revision,
+      files: [{
+        name: 'action-note.txt', mimeType: 'text/plain',
+        data: Buffer.from('one durable action attachment').toString('base64'),
+      }],
+    };
+    const firstActionAttachment = await attachmentService.handle(
+      'post_work_item_message', actionAttachmentPayload,
+    );
+    const actionAttachmentDirectory = join(attachmentRoot, actionAttachmentItem.id);
+    const actionAttachmentFileCount = readdirSync(actionAttachmentDirectory).length;
+    const duplicateActionAttachment = await attachmentService.handle(
+      'post_work_item_message', actionAttachmentPayload,
+    );
+    expect(duplicateActionAttachment.id).toBe(firstActionAttachment.id);
+    expect(store.getWorkItemDetail(actionAttachmentItem.id).attachments).toHaveLength(1);
+    expect(readdirSync(actionAttachmentDirectory)).toHaveLength(actionAttachmentFileCount);
+    const actionLoser = await attachmentService.handle('action_input', {
+      id: actionAttachmentItem.id,
+      clientMessageId: actionAttachmentPayload.clientMessageId,
+      text: actionAttachmentPayload.text,
+      actionId: actionAttachment.id,
+      revision: actionAttachmentDetail.revision,
+      generation: actionAttachment.generation,
+      files: [{
+        name: 'action-loser.txt', mimeType: 'text/plain',
+        data: Buffer.from('concurrent action loser').toString('base64'),
+      }],
+    });
+    expect(actionLoser.id).toBe(firstActionAttachment.id);
+    expect(store.getWorkItemDetail(actionAttachmentItem.id).attachments).toHaveLength(1);
+    expect(readdirSync(actionAttachmentDirectory)).toHaveLength(actionAttachmentFileCount);
+    expect(store.db.prepare(`SELECT COUNT(*) AS count FROM events WHERE work_item_id = ?
+      AND type = 'action.input_added' AND json_extract(data, '$.clientMessageId') = ?`).get(
+      actionAttachmentItem.id, actionAttachmentPayload.clientMessageId,
+    ).count).toBe(1);
+    expect(projectWorkCenterEvent({
+      type: 'action.input_added',
+      actionId: actionAttachment.id,
+      clientMessageId: actionAttachmentPayload.clientMessageId,
+      workItem: duplicateActionAttachment,
+    })).toMatchObject({
+      type: 'action.input_added',
+      actionId: actionAttachment.id,
+      clientMessageId: actionAttachmentPayload.clientMessageId,
+    });
 
     const boundedContext = (id, contents, byteBudget = 32 * 1024) => {
       const attachments = persistWorkItemAttachments(contents.map((content, index) => ({

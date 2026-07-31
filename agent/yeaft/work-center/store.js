@@ -1614,6 +1614,17 @@ export class WorkItemStore {
     return Number(result.lastInsertRowid);
   }
 
+  getCoordinatorClientMessageReceipt(workItemId, clientMessageId) {
+    if (typeof clientMessageId !== 'string' || !clientMessageId) return null;
+    const sourceKey = `client:message:${workItemId}:${clientMessageId}`;
+    const actionReceipt = this.db.prepare('SELECT action_id FROM action_entries WHERE source_key = ?')
+      .get(sourceKey);
+    if (actionReceipt) throw new Error('clientMessageId already belongs to an Action message');
+    const row = this.db.prepare(`SELECT payload FROM coordinator_mailbox_entries
+      WHERE work_item_id = ? AND source_key = ?`).get(workItemId, sourceKey);
+    return row ? parseJson(row.payload, {}) : null;
+  }
+
   hasActionInputClientMessage(workItemId, actionId, clientMessageId) {
     if (typeof clientMessageId !== 'string' || !clientMessageId) return false;
     const sourceKey = `client:message:${workItemId}:${clientMessageId}`;
@@ -1744,6 +1755,7 @@ export class WorkItemStore {
       }
       const eventId = this.appendEvent(id, 'action.input_added', {
         inputId,
+        clientMessageId,
         text: input,
         attachments: projectedAttachments,
       }, { actionId: action.id, runId: eventRunId, actionGeneration: eventGeneration });
@@ -3069,6 +3081,7 @@ export class WorkItemStore {
       if (Number(changed.changes) !== 1) throw new Error('Coordinator turn lost its revision fence');
       this.appendEvent(id, automaticRecovery ? 'coordinator.recovery_started' : 'coordinator.turn_started', {
         turnId,
+        clientMessageId,
         status: 'thinking',
         coordinatorRevision,
         addedAttachmentCount: projectedAttachments.length,
