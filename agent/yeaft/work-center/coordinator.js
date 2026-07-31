@@ -573,6 +573,15 @@ export class WorkItemCoordinator {
     });
   }
 
+  resume(started, options = {}) {
+    if (!started?.turnId || !started?.detail) throw new Error('Coordinator provider recovery target is invalid');
+    return this.#scheduleTurn(started, {
+      text: typeof options.text === 'string' ? options.text : '',
+      recovery: options.recovery === true,
+      options,
+    });
+  }
+
   recover(id, options = {}) {
     if (this.shuttingDown) throw new Error('Work Center Coordinator is shutting down');
     const detail = this.store.getWorkItemDetail(id);
@@ -693,19 +702,42 @@ export class WorkItemCoordinator {
               const content = attachmentContext.promptParts.length > 0
                 ? [{ type: 'text', text: latestMessage }, ...attachmentContext.promptParts]
                 : latestMessage;
-              result = await Promise.race([
+              const requestBody = {
+                model: resolved.model,
+                system: coordinatorSystemPrompt(language),
+                messages: [{ role: 'user', content }],
+                maxTokens: Math.min(
+                  resolveMaxOutputTokens(resolved.model, runtime.config),
+                  COORDINATOR_MAX_OUTPUT_TOKENS,
+                ),
+                effort: resolved.effort,
+                effortSource: resolved.source,
+                effortContext: { scenario: 'work-center-coordinator' },
+              };
+              const providerTurn = this.store.prepareCoordinatorProviderTurn(
+                started.detail.id, started.turnId, attemptCount, requestBody,
+              );
+              if (providerTurn.status === 'unknown') {
+                throw new Error('Coordinator provider dispatch outcome is unknown and requires review');
+              }
+              if (providerTurn.status === 'responded') {
+                result = providerTurn.response;
+              } else {
+                result = await Promise.race([
                 runtime.adapter.call({
-                  model: resolved.model,
-                  system: coordinatorSystemPrompt(language),
-                  messages: [{ role: 'user', content }],
-                  maxTokens: Math.min(
-                    resolveMaxOutputTokens(resolved.model, runtime.config),
-                    COORDINATOR_MAX_OUTPUT_TOKENS,
-                  ),
-                  effort: resolved.effort,
-                  effortSource: resolved.source,
-                  effortContext: { scenario: 'work-center-coordinator' },
+                  ...requestBody,
                   signal: abortController.signal,
+                  onRequestStart: () => {
+                    if (!this.store.dispatchCoordinatorProviderTurn(providerTurn.id)) {
+                      throw new Error('Coordinator provider turn lost its dispatch fence');
+                    }
+                  },
+                }).then(response => {
+                  const persisted = this.store.respondCoordinatorProviderTurn(
+                    providerTurn.id, providerTurn.requestHash, response,
+                  );
+                  if (!persisted) throw new Error('Coordinator provider response lost its CAS fence');
+                  return response;
                 }),
                 new Promise((_, reject) => {
                   abortController.signal.addEventListener('abort', () => {
@@ -713,6 +745,7 @@ export class WorkItemCoordinator {
                   }, { once: true });
                 }),
               ]);
+              }
             } catch (error) {
               if (abortController.signal.aborted || this.shuttingDown) throw error;
               throw coordinatorExecutionError(error, 'provider', language);

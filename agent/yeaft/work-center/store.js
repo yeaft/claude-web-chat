@@ -783,6 +783,7 @@ export class WorkItemStore {
     this.db.exec('PRAGMA foreign_keys = ON;');
     this.#initSchema();
     this.recoverCoordinatorMailbox();
+    this.recoverCoordinatorProviderTurns();
     this.recoverOperations();
     this.recoverEngineTurns();
     this.recoverInterruptedCoordinatorTurns();
@@ -1313,6 +1314,76 @@ export class WorkItemStore {
     return Number(this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'pending',
       claim_owner = NULL, claimed_at = NULL, lease_expires_at = NULL, updated_at = ?
       WHERE status = 'claimed' AND lease_expires_at <= ?`).run(now, now).changes);
+  }
+
+  prepareCoordinatorProviderTurn(workItemId, coordinatorTurnId, attemptNumber, requestBody) {
+    return withTransaction(this.db, () => {
+      const existing = this.db.prepare(`SELECT * FROM coordinator_provider_turns
+        WHERE coordinator_turn_id = ? AND attempt_number = ?`).get(coordinatorTurnId, attemptNumber);
+      const requestHash = createHash('sha256').update(stableJson(requestBody), 'utf8').digest('hex');
+      if (existing) {
+        if (existing.request_hash !== requestHash) {
+          throw new Error('Prepared Coordinator provider request changed before dispatch');
+        }
+        return this.#mapCoordinatorProviderTurn(existing);
+      }
+      const now = this.now();
+      const id = durableId('coordinator-provider-turn');
+      this.db.prepare(`INSERT INTO coordinator_provider_turns
+        (id, work_item_id, coordinator_turn_id, attempt_number, status, request_body, request_hash,
+         prepared_at, updated_at) VALUES (?, ?, ?, ?, 'prepared', ?, ?, ?, ?)`).run(
+        id, workItemId, coordinatorTurnId, attemptNumber,
+        stringify(requestBody), requestHash, now, now,
+      );
+      return this.getCoordinatorProviderTurn(id);
+    });
+  }
+
+  #mapCoordinatorProviderTurn(row) {
+    return {
+      id: row.id,
+      workItemId: row.work_item_id,
+      coordinatorTurnId: row.coordinator_turn_id,
+      attemptNumber: Number(row.attempt_number),
+      status: row.status,
+      requestBody: parseJson(row.request_body, {}),
+      requestHash: row.request_hash,
+      response: parseJson(row.response, null),
+      responseHash: row.response_hash || null,
+      error: row.error || null,
+    };
+  }
+
+  getCoordinatorProviderTurn(id) {
+    const row = this.db.prepare('SELECT * FROM coordinator_provider_turns WHERE id = ?').get(id);
+    return row ? this.#mapCoordinatorProviderTurn(row) : null;
+  }
+
+  dispatchCoordinatorProviderTurn(id) {
+    const existing = this.getCoordinatorProviderTurn(id);
+    if (existing?.status === 'dispatching') return existing;
+    const now = this.now();
+    const changed = this.db.prepare(`UPDATE coordinator_provider_turns SET status = 'dispatching',
+      dispatched_at = ?, updated_at = ? WHERE id = ? AND status = 'prepared'`).run(now, now, id);
+    return Number(changed.changes) === 1 ? this.getCoordinatorProviderTurn(id) : null;
+  }
+
+  respondCoordinatorProviderTurn(id, requestHash, response) {
+    const now = this.now();
+    const responseHash = createHash('sha256').update(stableJson(response), 'utf8').digest('hex');
+    const changed = this.db.prepare(`UPDATE coordinator_provider_turns SET status = 'responded',
+      response = ?, response_hash = ?, responded_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'dispatching' AND request_hash = ?`).run(
+      stringify(response), responseHash, now, now, id, requestHash,
+    );
+    return Number(changed.changes) === 1 ? this.getCoordinatorProviderTurn(id) : null;
+  }
+
+  recoverCoordinatorProviderTurns() {
+    const now = this.now();
+    return Number(this.db.prepare(`UPDATE coordinator_provider_turns SET status = 'unknown',
+      error = 'Coordinator provider dispatch outcome is unknown after Agent restart', updated_at = ?
+      WHERE status = 'dispatching'`).run(now).changes);
   }
 
   createOperation(input = {}) {
@@ -2728,6 +2799,33 @@ export class WorkItemStore {
 
   listActionEvents(actionId) {
     return this.db.prepare(`SELECT * FROM events WHERE action_id = ? ORDER BY id`).all(actionId).map(mapEvent);
+  }
+
+  getRecoverableCoordinatorTurns() {
+    return this.db.prepare(`SELECT w.id AS work_item_id, c.payload FROM coordinator_mailbox_entries c
+      JOIN work_items w ON w.id = c.work_item_id
+      WHERE c.status = 'pending'
+        AND EXISTS (SELECT 1 FROM json_each(w.messages) message
+          WHERE json_extract(message.value, '$.turnId') = json_extract(c.payload, '$.turnId')
+            AND json_extract(message.value, '$.role') = 'assistant'
+            AND json_extract(message.value, '$.status') = 'thinking')
+        AND EXISTS (SELECT 1 FROM coordinator_provider_turns p
+          WHERE p.coordinator_turn_id = json_extract(c.payload, '$.turnId')
+            AND p.status IN ('prepared', 'responded'))
+      ORDER BY c.created_at`).all().map(row => ({
+        workItemId: row.work_item_id,
+        ...parseJson(row.payload, {}),
+      }));
+  }
+
+  resumeCoordinatorTurn(workItemId, turnId) {
+    const detail = this.getWorkItemDetail(workItemId);
+    if (!detail) return null;
+    const assistant = [...(detail.messages || [])].reverse().find(message => (
+      message.turnId === turnId && message.role === 'assistant' && message.status === 'thinking'
+    ));
+    if (!assistant) return null;
+    return { turnId, detail };
   }
 
   beginCoordinatorTurn(id, text, expected = {}, options = {}) {
@@ -4290,6 +4388,9 @@ export class WorkItemStore {
 
   recoverInterruptedCoordinatorTurns() {
     return withTransaction(this.db, () => {
+      const recoverableTurnIds = new Set(
+        this.getRecoverableCoordinatorTurns().map(turn => turn.turnId),
+      );
       const now = this.now();
       let recovered = 0;
       for (const row of this.db.prepare(`SELECT id, messages, coordinator_revision FROM work_items
@@ -4298,6 +4399,7 @@ export class WorkItemStore {
         const messages = parseJson(row.messages, []);
         const index = messages.length - 1;
         if (index < 0 || messages[index]?.role !== 'assistant' || messages[index]?.status !== 'thinking') continue;
+        if (recoverableTurnIds.has(messages[index].turnId)) continue;
         messages[index] = {
           ...messages[index],
           status: 'failed',

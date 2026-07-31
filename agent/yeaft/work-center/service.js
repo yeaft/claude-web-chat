@@ -627,6 +627,16 @@ export class WorkCenterService {
   }
 
   start() {
+    for (const recoverable of this.store.getRecoverableCoordinatorTurns?.() || []) {
+      const started = this.store.resumeCoordinatorTurn(recoverable.workItemId, recoverable.turnId);
+      if (!started) continue;
+      const task = this.coordinator.resume(started, {
+        text: recoverable.text || '',
+        recovery: Boolean(recoverable.recovery),
+        onUpdate: (type, detail) => this.#emit({ type, workItem: detail }),
+      }).task;
+      task?.catch?.(() => {});
+    }
     this.#scanFailureRecoveries();
     if (!this.recoveryTimer) {
       this.recoveryTimer = setInterval(

@@ -66,6 +66,23 @@ describe('Work Center tool policy', () => {
     });
   });
 
+  it('persists non-read-only tool execution through the Operation lifecycle', async () => {
+    const transitions = [];
+    const registry = createWorkItemToolRegistry({
+      workDir,
+      isRunActive: () => true,
+      operationLifecycle: (name, input) => {
+        transitions.push({ phase: 'start', name, input });
+        return { complete: (effectStatus, result) => transitions.push({ phase: 'complete', effectStatus, result }) };
+      },
+    });
+    await registry.execute('FileWrite', { file_path: 'tracked.txt', content: 'tracked' }, {});
+    await registry.execute('FileRead', { file_path: 'tracked.txt' }, {});
+    expect(transitions).toHaveLength(2);
+    expect(transitions[0]).toMatchObject({ phase: 'start', name: 'FileWrite' });
+    expect(transitions[1]).toMatchObject({ phase: 'complete', effectStatus: 'applied' });
+  });
+
   it('rejects background or redirected Bash before execution', async () => {
     const registry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
     await expect(registry.execute('Bash', {

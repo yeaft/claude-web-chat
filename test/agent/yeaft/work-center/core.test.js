@@ -179,6 +179,32 @@ describe('Work Center core', () => {
     expect(store.getWorkItemDetail(item.id).events.find(event => event.type === 'run.claimed'))
       .toMatchObject({ actionGeneration: first.action.generation });
 
+    const coordinatorRequest = { model: 'provider/model', messages: [{ role: 'user', content: 'decide' }] };
+    const preparedCoordinatorTurn = store.prepareCoordinatorProviderTurn(
+      item.id, 'coordinator-provider-restart', 1, coordinatorRequest,
+    );
+    expect(store.prepareCoordinatorProviderTurn(
+      item.id, 'coordinator-provider-restart', 1, coordinatorRequest,
+    )).toEqual(preparedCoordinatorTurn);
+    expect(() => store.prepareCoordinatorProviderTurn(
+      item.id, 'coordinator-provider-restart', 1, { ...coordinatorRequest, model: 'other' },
+    )).toThrow(/changed before dispatch/);
+    expect(store.dispatchCoordinatorProviderTurn(preparedCoordinatorTurn.id))
+      .toMatchObject({ status: 'dispatching' });
+    expect(store.recoverCoordinatorProviderTurns()).toBe(1);
+    expect(store.getCoordinatorProviderTurn(preparedCoordinatorTurn.id)).toMatchObject({
+      status: 'unknown',
+      error: 'Coordinator provider dispatch outcome is unknown after Agent restart',
+    });
+    const respondedCoordinatorTurn = store.prepareCoordinatorProviderTurn(
+      item.id, 'coordinator-provider-responded', 1, coordinatorRequest,
+    );
+    store.dispatchCoordinatorProviderTurn(respondedCoordinatorTurn.id);
+    expect(store.respondCoordinatorProviderTurn(
+      respondedCoordinatorTurn.id, respondedCoordinatorTurn.requestHash, { text: 'decision' },
+    )).toMatchObject({ status: 'responded', response: { text: 'decision' } });
+    expect(store.recoverCoordinatorProviderTurns()).toBe(0);
+
     const operationItem = controller.create(createInput({ id: 'operation-claim-fence', workDir: dir }));
     const operationAction = store.getWorkItemDetail(operationItem.id).actions[0];
     store.createOperation({
@@ -1271,7 +1297,7 @@ describe('Work Center core', () => {
       store,
       runtimeProvider: async () => ({
         config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-        adapter: { call: () => new Promise(resolve => { resolveCall = resolve; }) },
+        adapter: { call: request => { request.onRequestStart?.(); return new Promise(resolve => { resolveCall = resolve; }); } },
       }),
       policyProvider: async () => ({ modelPolicy: { mode: 'primary' }, actionModelPolicies: { triage: { effort: 'high' } } }),
       registry: {
@@ -1295,6 +1321,9 @@ describe('Work Center core', () => {
     expect(turn.detail.messages.at(-1).turnId).toBeTruthy();
     for (let index = 0; index < 10 && !resolveCall; index += 1) await new Promise(resolve => setTimeout(resolve, 0));
     expect(resolveCall).toBeTypeOf('function');
+    expect(store.db.prepare(`SELECT status, attempt_number FROM coordinator_provider_turns
+      WHERE coordinator_turn_id = ?`).get(turn.detail.messages.at(-1).turnId))
+      .toEqual({ status: 'dispatching', attempt_number: 1 });
     resolveCall({ text: JSON.stringify({
       reply: 'I replaced the impossible gate with a bounded validation Action and kept delivery downstream.',
       decision: {
@@ -1323,6 +1352,10 @@ describe('Work Center core', () => {
       },
     }) });
     const replanned = await turn.task;
+    expect(store.db.prepare(`SELECT status, response_hash FROM coordinator_provider_turns
+      WHERE coordinator_turn_id = ?`).get(turn.detail.messages.at(-1).turnId)).toMatchObject({
+      status: 'responded', response_hash: expect.any(String),
+    });
 
     expect(replanned).toMatchObject({
       planRevision: before.planRevision + 1,
@@ -1398,6 +1431,7 @@ describe('Work Center core', () => {
     coordinator.runtimeProvider = async () => ({
       config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
       adapter: { call: async request => {
+          request.onRequestStart?.();
         correctionCalls += 1;
         if (correctionCalls === 1) {
           return { text: JSON.stringify({
@@ -1436,12 +1470,12 @@ describe('Work Center core', () => {
         primaryModel: 'provider/model', language: 'zh-CN',
         availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }],
       },
-      adapter: { call: async () => ({ text: JSON.stringify({
+      adapter: { call: async request => { request.onRequestStart?.(); return ({ text: JSON.stringify({
         reply: '这段回复缺少有效控制决定。',
         decision: {
           kind: 'invalid', reason: 'invalid', contractPatch: null, guidance: [], actions: [],
         },
-      }) }) },
+      }) }); } },
     });
     const invalidBefore = store.getWorkItemDetail(item.id);
     const invalidTurn = coordinator.message(item.id, {
@@ -1462,7 +1496,7 @@ describe('Work Center core', () => {
     let resolveLate;
     coordinator.runtimeProvider = async () => ({
       config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-      adapter: { call: () => new Promise(resolve => { resolveLate = resolve; }) },
+      adapter: { call: request => { request.onRequestStart?.(); return new Promise(resolve => { resolveLate = resolve; }); } },
     });
     const staleTurn = coordinator.message(item.id, {
       text: 'What is happening now?',
@@ -1494,7 +1528,7 @@ describe('Work Center core', () => {
     let resolveCancelled;
     coordinator.runtimeProvider = async () => ({
       config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-      adapter: { call: () => new Promise(resolve => { resolveCancelled = resolve; }) },
+      adapter: { call: request => { request.onRequestStart?.(); return new Promise(resolve => { resolveCancelled = resolve; }); } },
     });
     const cancelledTurn = coordinator.message(cancellable.id, {
       text: 'Please change this goal.',
@@ -1591,6 +1625,7 @@ describe('Work Center core', () => {
         runtimeProvider: async () => ({
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
           adapter: { call: async request => {
+          request.onRequestStart?.();
             recoveryCalls.push(request.messages[0].content);
             const dependency = recoveryCalls.length === 1
               ? 'missing-stage'
@@ -1643,7 +1678,8 @@ describe('Work Center core', () => {
         store: recoveryStore,
         runtimeProvider: async () => ({
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-          adapter: { call: async () => {
+          adapter: { call: async request => {
+          request.onRequestStart?.();
             undecidableCalls += 1;
             return { text: JSON.stringify({
               reply: 'The failure is recorded.',
@@ -1701,6 +1737,7 @@ describe('Work Center core', () => {
         runtimeProvider: async () => ({
           config: { primaryModel: 'provider/model', language: 'zh-CN', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
           adapter: { call: async request => {
+          request.onRequestStart?.();
             localizedSystem = request.system;
             return { text: JSON.stringify({
               reply: '需要你补充部署目标。',
@@ -1801,7 +1838,7 @@ describe('Work Center core', () => {
           }
           return {
             config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-            adapter: { call: async () => ({ text: JSON.stringify({
+            adapter: { call: async request => { request.onRequestStart?.(); return ({ text: JSON.stringify({
               reply: 'The provider recovered, so the failed review will continue automatically.',
               decision: {
                 kind: 'guide_actions',
@@ -1813,7 +1850,7 @@ describe('Work Center core', () => {
                 }],
                 actions: [],
               },
-            }) }) },
+            }) }); } },
           };
         },
         policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
@@ -1872,6 +1909,7 @@ describe('Work Center core', () => {
         runtimeProvider: async () => ({
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
           adapter: { call: async request => {
+          request.onRequestStart?.();
             largeHistoryAdapterCalls += 1;
             const content = request.messages[0].content;
             const prefix = 'Current WorkItem snapshot:\n';
@@ -1971,7 +2009,8 @@ describe('Work Center core', () => {
         }
         return {
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-          adapter: { call: async () => {
+          adapter: { call: async request => {
+          request.onRequestStart?.();
             coordinatorCalls += 1;
             return { text: JSON.stringify({
               reply: 'The failed review will run again with the blocker evidence.',
@@ -2079,6 +2118,7 @@ describe('Work Center core', () => {
       runtimeProvider: async () => ({
         config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
         adapter: { call: async request => {
+          request.onRequestStart?.();
           longIdentitySnapshot = request.messages[0].content.match(/Current WorkItem snapshot:\n([\s\S]*?)\n\nAutomatic failure recovery trigger:/)?.[1] || '';
           const snapshot = JSON.parse(longIdentitySnapshot);
           const failedProjection = snapshot.actions.find(action => action.status === 'failed');
@@ -2122,14 +2162,16 @@ describe('Work Center core', () => {
         name: 'missing VP',
         runtime: async () => ({
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-          adapter: { call: async () => { throw new Error('adapter must not run without a VP'); } },
+          adapter: { call: async request => {
+          request.onRequestStart?.(); throw new Error('adapter must not run without a VP'); } },
         }),
         vps: [],
         diagnostic: /no available VPs/i,
       },
       {
         name: 'missing model',
-        runtime: async () => ({ config: { availableModels: [] }, adapter: { call: async () => { throw new Error('adapter must not run without a model'); } } }),
+        runtime: async () => ({ config: { availableModels: [] }, adapter: { call: async request => {
+          request.onRequestStart?.(); throw new Error('adapter must not run without a model'); } } }),
         vps: [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }],
         diagnostic: /no configured model/i,
       },
@@ -2175,7 +2217,8 @@ describe('Work Center core', () => {
         });
         const runtime = testCase.runtime || (async () => ({
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-          adapter: { call: async () => {
+          adapter: { call: async request => {
+          request.onRequestStart?.();
             providerCalls += 1;
             throw testCase.providerError;
           } },
@@ -2276,7 +2319,8 @@ describe('Work Center core', () => {
         store: transientStore,
         runtimeProvider: async () => ({
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-          adapter: { call: async () => {
+          adapter: { call: async request => {
+          request.onRequestStart?.();
             calls += 1;
             throw providerError;
           } },
@@ -2532,6 +2576,7 @@ describe('Work Center core', () => {
       runtimeProvider: async () => ({
         config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
         adapter: { call: async request => {
+          request.onRequestStart?.();
           restartCoordinatorCalls += 1;
           coordinatorInFlight += 1;
           maxCoordinatorInFlight = Math.max(maxCoordinatorInFlight, coordinatorInFlight);
@@ -2632,6 +2677,7 @@ describe('Work Center core', () => {
       runtimeProvider: async () => ({
         config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
         adapter: { call: async request => {
+          request.onRequestStart?.();
           attachmentCall = request;
           return { text: JSON.stringify({
             reply: 'The screenshot and note are attached to this WorkItem.',

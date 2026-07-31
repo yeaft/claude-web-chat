@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-export const WORK_CENTER_SCHEMA_VERSION = 32;
+export const WORK_CENTER_SCHEMA_VERSION = 33;
 
 const MIGRATIONS = [
   ['23-conversation-stream', migrateConversationStream],
@@ -13,6 +13,7 @@ const MIGRATIONS = [
   ['30-backfill-projections', backfillLegacyProjections],
   ['31-reliability-guards', migrateReliabilityGuards],
   ['32-engine-turn-status-contract', migrateEngineTurnStatusContract],
+  ['33-coordinator-provider-turns', migrateCoordinatorProviderTurns],
 ];
 
 const MIGRATION_ALIASES = new Map([
@@ -386,6 +387,39 @@ function migrateEngineTurnStatusContract(db, now) {
   `);
   const foreignKeyViolations = db.prepare('PRAGMA foreign_key_check').all();
   if (foreignKeyViolations.length > 0) throw new Error('EngineTurn status migration violated foreign keys');
+}
+
+function migrateCoordinatorProviderTurns(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS coordinator_provider_turns (
+      id TEXT PRIMARY KEY,
+      work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+      coordinator_turn_id TEXT NOT NULL,
+      attempt_number INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('prepared', 'dispatching', 'responded', 'unknown', 'cancelled')),
+      request_body TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      response TEXT,
+      response_hash TEXT,
+      error TEXT,
+      prepared_at INTEGER NOT NULL,
+      dispatched_at INTEGER,
+      responded_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(coordinator_turn_id, attempt_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_coordinator_provider_turns_recovery
+      ON coordinator_provider_turns(status, updated_at);
+    CREATE TRIGGER IF NOT EXISTS trg_coordinator_provider_request_immutable
+    BEFORE UPDATE ON coordinator_provider_turns
+    WHEN NEW.work_item_id IS NOT OLD.work_item_id OR
+      NEW.coordinator_turn_id IS NOT OLD.coordinator_turn_id OR
+      NEW.attempt_number IS NOT OLD.attempt_number OR
+      NEW.request_body IS NOT OLD.request_body OR NEW.request_hash IS NOT OLD.request_hash
+    BEGIN
+      SELECT RAISE(ABORT, 'prepared Coordinator provider request is immutable');
+    END;
+  `);
 }
 
 function migrateReliabilityGuards(db) {

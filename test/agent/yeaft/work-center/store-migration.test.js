@@ -410,7 +410,7 @@ describe('Work Center store migration', () => {
           data: expect.objectContaining({ reason: 'schema19_legacy_repair' }),
         }),
       ]));
-      expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value).toBe('32');
+      expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value).toBe('33');
 
       const claim = store.claimReadyAction('repaired-boot', 60_000);
       expect(claim).toMatchObject({
@@ -986,7 +986,7 @@ describe('Work Center store migration', () => {
       snapshotOccurrences: reviewRepairSnapshot.userContext.guidance
         .filter(entry => entry.text === reviewRepairSentinel).length,
     }).toEqual({
-      schemaVersion: '32',
+      schemaVersion: '33',
       generation: reviewRepairParentAction.generation + 1,
       inputIds: reviewRepairSourceEvents.map(event => `legacy-event:${event.id}`),
       attachmentNames: reviewRepairAttachmentNames,
@@ -1710,7 +1710,7 @@ describe('Work Center store migration', () => {
     store = new WorkItemStore(resetInputDbPath, { now: () => 3_000 });
     resetInputController = new WorkflowController(store);
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('32');
+      .toBe('33');
     expect(store.getAction(resetInputAction.id)).toEqual(resetActionBeforeReopen);
     expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
       action_spec_hash, consumed_at, superseded_at FROM pending_action_inputs
@@ -1921,7 +1921,7 @@ describe('Work Center store migration', () => {
     store = new WorkItemStore(replanInputDbPath, { now: () => 3_000 });
     replanInputController = new WorkflowController(store);
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('32');
+      .toBe('33');
     expect(store.getAction(replanInputAction.id)).toEqual(replanOldActionBeforeReopen);
     expect(store.getAction(replannedValidate.id)).toEqual(replanNewActionBeforeReopen);
     expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
@@ -2015,7 +2015,7 @@ describe('Work Center store migration', () => {
 
     store = new WorkItemStore(terminalInputDbPath, { now: () => 3_000 });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('32');
+      .toBe('33');
     expect(store.getWorkItem(terminalInputItem.id).status).toBe('done');
     expect(store.getAction(terminalInputAction.id)).toEqual(terminalActionBeforeReopen);
     expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
@@ -2362,7 +2362,7 @@ describe('Work Center store migration', () => {
 
     store = new WorkItemStore(rollbackDbPath, { now: () => 2_000 });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('32');
+      .toBe('33');
     expect(store.getAction(rollbackClaim.action.id).instruction).not.toContain(LEGACY_INSTRUCTION);
     store.close();
     store = null;
@@ -2426,7 +2426,7 @@ describe('Work Center store migration', () => {
 
     store = new WorkItemStore(schema31DbPath, { now: () => 2_000 });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('32');
+      .toBe('33');
     expect(store.getEngineTurn(schema31Turn.id)).toMatchObject({
       status: 'unknown',
       error: 'Legacy provider dispatch outcome is unknown after schema upgrade',

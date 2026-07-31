@@ -265,7 +265,7 @@ export function workItemToolPolicySnapshot(workDir, attachmentRefs = [], mcpTool
   };
 }
 
-function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive) {
+function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle = null) {
   return {
     ...tool,
     async execute(input, ctx) {
@@ -273,12 +273,22 @@ function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunAct
       const checkedInput = tool.name.startsWith('mcp__')
         ? input
         : assertToolInput(tool.name, input, canonicalDir, canonicalAttachmentFiles);
-      const output = await tool.execute(checkedInput, {
-        ...ctx,
-        cwd: canonicalDir,
-        workDir: canonicalDir,
-        imageAllowlist: canonicalAttachmentFiles.map(file => file.root),
-      });
+      const trackOperation = typeof operationLifecycle === 'function'
+        && tool.isReadOnly?.(checkedInput) !== true;
+      const operation = trackOperation ? operationLifecycle(tool.name, checkedInput) : null;
+      let output;
+      try {
+        output = await tool.execute(checkedInput, {
+          ...ctx,
+          cwd: canonicalDir,
+          workDir: canonicalDir,
+          imageAllowlist: canonicalAttachmentFiles.map(file => file.root),
+        });
+      } catch (error) {
+        operation?.complete('unknown', { error: String(error?.message || error) });
+        throw error;
+      }
+      operation?.complete('applied', { outputHash: hashMainlineSnapshot({ output: String(output || '') }) });
       if (!isRunActive()) throw new Error('Work Center Run lease was lost during tool execution');
       if (['FileRead', 'ViewImage'].includes(tool.name) && typeof output === 'string') {
         const withoutFilePaths = canonicalAttachmentFiles.reduce(
@@ -512,7 +522,9 @@ export function createSubmitWorkItemReplanTool({ vps, workItem, action, actions,
   });
 }
 
-export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRunActive, mcpTools = [], runTools = [] }) {
+export function createWorkItemToolRegistry({
+  workDir, attachmentFiles = [], isRunActive, mcpTools = [], runTools = [], operationLifecycle = null,
+}) {
   const canonicalDir = canonicalWorkDir(path.resolve(workDir));
   const canonicalAttachmentFiles = attachmentFiles.map(file => ({
     ...file,
@@ -522,14 +534,20 @@ export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRu
   const hasAttachments = canonicalAttachmentFiles.length > 0;
   for (const tool of allTools) {
     if (!WORK_ITEM_TOOL_ALLOWLIST.has(tool.name) || (hasAttachments && tool.name === 'Bash')) continue;
-    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
+    registry.register(wrapWorkItemTool(
+      tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle,
+    ));
   }
   for (const tool of mcpTools) {
     if (!tool?.name?.startsWith('mcp__')) continue;
-    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
+    registry.register(wrapWorkItemTool(
+      tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle,
+    ));
   }
   for (const tool of runTools) {
-    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
+    registry.register(wrapWorkItemTool(
+      tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle,
+    ));
   }
   return registry;
 }
@@ -1016,12 +1034,38 @@ export class WorkItemRunner {
       attachmentContext.files.map(file => file.ref),
       [...mcpToolNames, ...runToolNames],
     );
+    let operationOrdinal = 0;
+    const operationLifecycle = (toolName, input) => {
+      operationOrdinal += 1;
+      const idempotencyKey = `${run.id}:tool:${operationOrdinal}`;
+      this.store.createOperation({
+        workItemId: workItem.id,
+        actionId: action.id,
+        runId: run.id,
+        operationType: toolName,
+        idempotencyKey,
+        replayPolicy: 'never_automatic',
+        payload: { inputHash: hashMainlineSnapshot(input) },
+      });
+      const claimed = this.store.claimOperation(idempotencyKey, ownerBootId, run.leaseEpoch, false);
+      if (!claimed) throw new Error(`Work Center could not claim Operation ${idempotencyKey}`);
+      return {
+        complete: (effectStatus, result) => {
+          if (!this.store.completeOperation(
+            idempotencyKey, ownerBootId, run.leaseEpoch, effectStatus, result,
+          )) {
+            throw new Error(`Work Center Operation ${idempotencyKey} lost its execution fence`);
+          }
+        },
+      };
+    };
     const toolRegistry = createWorkItemToolRegistry({
       workDir,
       attachmentFiles: attachmentContext.files,
       isRunActive,
       mcpTools: workspaceRuntime.mcpTools,
       runTools,
+      operationLifecycle,
     });
     const config = {
       ...runtime.config,
