@@ -278,6 +278,7 @@ export function registerAuthRoutes(app, { requireAuth, checkRateLimit }) {
         const params = new URLSearchParams({
           token: result.token,
           sessionKey: result.sessionKey,
+          userId: result.userId || '',
           role: result.role
         });
         return res.redirect(`/#/sso-complete?${params.toString()}`);

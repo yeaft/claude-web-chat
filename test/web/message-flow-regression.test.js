@@ -15,6 +15,14 @@ import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
 import WorkCenterPage from '../../web/components/WorkCenterPage.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
 import {
+  bindWorkCenterBrowserOwner,
+  clearWorkCenterBrowserOwner,
+  currentWorkCenterBrowserOwner,
+  readWorkCenterBrowserState,
+  WORK_CENTER_BROWSER_STORAGE_KEYS,
+  writeWorkCenterDrafts,
+} from '../../web/stores/helpers/work-center-browser-state.js';
+import {
   beginCatalogMutation,
   beginChatHistoryRequest,
   cancelChatHistoryRequest,
@@ -760,6 +768,48 @@ describe('message flow regressions', () => {
       { id: 'shared', agentId: 'agent-b' },
     ];
     const store = useChatStore();
+    clearWorkCenterBrowserOwner();
+    bindWorkCenterBrowserOwner('owner-a');
+    expect(store.hydrateWorkCenterBrowserState()).toBe(true);
+    expect(store.saveWorkCenterComposerDraft('agent-a', 'work-item-owner', {
+      text: 'owner A private draft',
+      target: { kind: 'coordinator' },
+    })).toBe(true);
+    const ownerAEnvelope = store.prepareWorkCenterMessageEnvelope({
+      agentId: 'agent-a', workItemId: 'work-item-owner',
+      target: { kind: 'coordinator' }, text: 'owner A durable outbox', revision: 1,
+    });
+    const ownerAFence = { ...store._workCenterBrowserFence };
+    expect(ownerAEnvelope.clientMessageId).toEqual(expect.any(String));
+    store.workCenterComposerDrafts = {};
+    store.workCenterMessageOutbox = {};
+    store._workCenterBrowserFence = null;
+    expect(store.hydrateWorkCenterBrowserState()).toBe(true);
+    expect(store.loadWorkCenterComposerDraft('agent-a', 'work-item-owner'))
+      .toMatchObject({ text: 'owner A private draft' });
+    expect(store.loadWorkCenterMessageEnvelope('agent-a', 'work-item-owner'))
+      .toMatchObject({ clientMessageId: ownerAEnvelope.clientMessageId });
+
+    bindWorkCenterBrowserOwner('owner-b');
+    expect(store.workCenterComposerDrafts).toEqual({});
+    expect(store.workCenterMessageOutbox).toEqual({});
+    expect(writeWorkCenterDrafts({ leaked: { text: 'stale A write' } }, ownerAFence)).toBe(false);
+    expect(store.saveWorkCenterComposerDraft('agent-a', 'work-item-owner', {
+      text: 'stale Pinia write', target: { kind: 'coordinator' },
+    })).toBe(false);
+    expect(globalThis.localStorage.getItem(WORK_CENTER_BROWSER_STORAGE_KEYS.drafts)).toBe(null);
+    expect(globalThis.localStorage.getItem(WORK_CENTER_BROWSER_STORAGE_KEYS.outbox)).toBe(null);
+
+    globalThis.localStorage.setItem(
+      WORK_CENTER_BROWSER_STORAGE_KEYS.drafts,
+      JSON.stringify({ legacy: { text: 'unowned legacy draft' } }),
+    );
+    store._workCenterBrowserFence = null;
+    expect(store.hydrateWorkCenterBrowserState()).toBe(true);
+    expect(readWorkCenterBrowserState(currentWorkCenterBrowserOwner()).drafts).toEqual({});
+    expect(globalThis.localStorage.getItem(WORK_CENTER_BROWSER_STORAGE_KEYS.drafts)).toBe(null);
+    clearWorkCenterBrowserOwner();
+
     const productionSendWsMessage = store.sendWsMessage;
     store.sendWsMessage = vi.fn();
     store.agents = [
@@ -1153,6 +1203,7 @@ describe('message flow regressions', () => {
     store.yeaftConversationId = 'conv-a';
     store.messagesMap = { 'conv-a': [] };
 
+    bindWorkCenterBrowserOwner('owner-b');
     store.agents = [
       { id: 'stale-agent', online: false, capabilities: ['work_center'] },
       { id: 'agent-b', online: true, capabilities: ['work_center'] },

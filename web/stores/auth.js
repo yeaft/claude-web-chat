@@ -2,6 +2,10 @@
  * Authentication store for managing login state
  */
 import { decodeKey } from '../utils/encryption.js';
+import {
+  bindWorkCenterBrowserOwner,
+  clearWorkCenterBrowserOwner,
+} from './helpers/work-center-browser-state.js';
 
 const { defineStore } = Pinia;
 
@@ -33,6 +37,7 @@ export const useAuthStore = defineStore('auth', {
     isAuthenticated: false,
     token: null,
     sessionKey: null, // Uint8Array for encryption
+    userId: null,
     role: null, // 'admin' | 'pro'
 
     // Login flow state
@@ -98,7 +103,9 @@ export const useAuthStore = defineStore('auth', {
         );
 
         if (this.skipAuth) {
-          // In skip auth mode, we're automatically authenticated
+          // In skip auth mode, one local browser owner is the complete auth boundary.
+          this.userId = 'skip-auth';
+          bindWorkCenterBrowserOwner(this.userId);
           this.authGeneration += 1;
           this.isAuthenticated = true;
           this.loginStep = 'authenticated';
@@ -157,6 +164,8 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -238,6 +247,8 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -293,6 +304,8 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -348,6 +361,8 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -388,6 +403,8 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -552,6 +569,8 @@ export const useAuthStore = defineStore('auth', {
             this.token = data.token;
             this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
             this.role = data.role || 'pro';
+            this.userId = data.userId || null;
+            bindWorkCenterBrowserOwner(this.userId);
             this.authGeneration += 1;
             this.isAuthenticated = true;
             this.loginStep = 'authenticated';
@@ -647,10 +666,13 @@ export const useAuthStore = defineStore('auth', {
       const token = params.get('token');
       const sessionKey = params.get('sessionKey');
       const role = params.get('role');
+      const userId = params.get('userId');
       if (!token) return false;
       this.token = token;
       this.sessionKey = sessionKey ? decodeKey(sessionKey) : null;
       this.role = role || 'pro';
+      this.userId = userId || null;
+      bindWorkCenterBrowserOwner(this.userId);
       this.authGeneration += 1;
       this.isAuthenticated = true;
       this.loginStep = 'authenticated';
@@ -723,6 +745,9 @@ export const useAuthStore = defineStore('auth', {
         if (!res.ok) return false;
 
         const profile = await res.json().catch(() => ({}));
+        if (requestGeneration !== this.authGeneration || this.token !== requestToken) {
+          return this.isAuthenticated;
+        }
         const freshToken = res.headers?.get?.('X-New-Token');
         const storedToken = localStorage.getItem('authToken');
         if (freshToken && this.token === requestToken && (!storedToken || storedToken === requestToken)) {
@@ -730,6 +755,8 @@ export const useAuthStore = defineStore('auth', {
           localStorage.setItem('authToken', freshToken);
         }
         if (profile?.role) this.role = profile.role;
+        this.userId = profile?.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
         return true;
       } catch (err) {
         console.warn('[Auth] Session refresh failed:', err.message || err);
@@ -854,10 +881,13 @@ export const useAuthStore = defineStore('auth', {
         if (requestGeneration !== this.authGeneration) return this.isAuthenticated;
         const headerToken = res.headers?.get?.('X-New-Token');
         const activeToken = this.getActiveToken();
+        if (activeToken !== token) return this.isAuthenticated;
         const freshToken = headerToken && (!activeToken || activeToken === token) ? headerToken : activeToken || token;
         this.token = freshToken;
         if (freshToken && freshToken !== token) localStorage.setItem('authToken', freshToken);
         this.role = profile?.role || 'pro';
+        this.userId = profile?.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -970,11 +1000,13 @@ export const useAuthStore = defineStore('auth', {
      * Reset state
      */
     reset() {
+      clearWorkCenterBrowserOwner();
       this.authGeneration += 1;
       this.stopSessionRefresh();
       this.isAuthenticated = false;
       this.token = null;
       this.sessionKey = null;
+      this.userId = null;
       this.role = null;
       this.loginStep = 'credentials';
       this.tempToken = null;

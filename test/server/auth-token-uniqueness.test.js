@@ -78,6 +78,7 @@ describe('session token issuance', () => {
     createSsoOnlyUser('sso-only-admin-token', 'admin');
     const login = completeLogin('sso-only-admin-token', generateSessionKey(), 'admin');
 
+    expect(login.userId).toBe(getUserByUsername('sso-only-admin-token').id);
     expect(verifyToken(login.token)).toMatchObject({
       valid: true,
       username: 'sso-only-admin-token',

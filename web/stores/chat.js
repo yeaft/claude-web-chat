@@ -1,4 +1,12 @@
 import { useAuthStore } from './auth.js';
+import {
+  currentWorkCenterBrowserOwner,
+  isWorkCenterBrowserFenceCurrent,
+  readWorkCenterBrowserState,
+  subscribeWorkCenterBrowserOwner,
+  writeWorkCenterDrafts,
+  writeWorkCenterOutbox,
+} from './helpers/work-center-browser-state.js';
 import { setLocale, getLocale } from '../utils/i18n.js';
 
 // Helper modules
@@ -199,22 +207,6 @@ const YEAFT_CATALOG_STATUS_FIELDS = Object.freeze([
 ]);
 const YEAFT_RETIRED_CATALOG_EPOCH_LIMIT = 8;
 const YEAFT_ASK_TERMINAL_CACHE_LIMIT = 64;
-const WORK_CENTER_DRAFT_STORAGE_KEY = 'yeaft-work-center-composer-drafts-v1';
-const WORK_CENTER_OUTBOX_STORAGE_KEY = 'yeaft-work-center-message-outbox-v1';
-
-function readLocalRecord(key) {
-  try {
-    const parsed = JSON.parse(globalThis.localStorage?.getItem(key) || '{}');
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function writeLocalRecord(key, value) {
-  try { globalThis.localStorage?.setItem(key, JSON.stringify(value || {})); } catch {}
-}
-
 function workCenterClientMessageKey(agentId, workItemId) {
   return `${agentId || ''}:${workItemId || ''}`;
 }
@@ -887,8 +879,10 @@ export const useChatStore = defineStore('chat', {
     _workCenterActionRequestDetailsGeneration: {},
 
     workCenterPending: {},
-    workCenterComposerDrafts: readLocalRecord(WORK_CENTER_DRAFT_STORAGE_KEY),
-    workCenterMessageOutbox: readLocalRecord(WORK_CENTER_OUTBOX_STORAGE_KEY),
+    workCenterComposerDrafts: {},
+    workCenterMessageOutbox: {},
+    _workCenterBrowserFence: null,
+    _workCenterBrowserUnsubscribe: null,
     workCenterCreateDraft: null,
     yeaftConversationId: null,     // 当前 Yeaft agent 的虚拟 conversationId（从 agent session_ready 获取）
     yeaftConversationIdsByAgent: {}, // { [agentId]: conversationId } 跨机器 agent 的 Yeaft message cache 隔离
@@ -1525,6 +1519,7 @@ export const useChatStore = defineStore('chat', {
     // Work Center
     // =====================
     enterWorkCenter(agentId = null) {
+      if (!this.hydrateWorkCenterBrowserState()) return false;
       const compatibleAgents = this.agents.filter(agent => agent?.online
         && Array.isArray(agent.capabilities) && agent.capabilities.includes('work_center'));
       const target = compatibleAgents.some(agent => agent.id === agentId)
@@ -1562,13 +1557,41 @@ export const useChatStore = defineStore('chat', {
       };
       this.enterWorkCenter(agentId);
     },
+    hydrateWorkCenterBrowserState() {
+      if (!this._workCenterBrowserUnsubscribe) {
+        this._workCenterBrowserUnsubscribe = subscribeWorkCenterBrowserOwner(() => {
+          if (!isWorkCenterBrowserFenceCurrent(this._workCenterBrowserFence)) {
+            this.clearWorkCenterBrowserState();
+          }
+        });
+      }
+      const fence = currentWorkCenterBrowserOwner();
+      if (!fence) {
+        this._workCenterBrowserFence = null;
+        this.workCenterComposerDrafts = {};
+        this.workCenterMessageOutbox = {};
+        return false;
+      }
+      if (!isWorkCenterBrowserFenceCurrent(this._workCenterBrowserFence)) {
+        const persisted = readWorkCenterBrowserState(fence);
+        this._workCenterBrowserFence = fence;
+        this.workCenterComposerDrafts = persisted.drafts;
+        this.workCenterMessageOutbox = persisted.outbox;
+      }
+      return true;
+    },
+    clearWorkCenterBrowserState() {
+      this._workCenterBrowserFence = null;
+      this.workCenterComposerDrafts = {};
+      this.workCenterMessageOutbox = {};
+    },
     workCenterComposerKey(agentId, workItemId) {
       return workCenterClientMessageKey(agentId, workItemId);
     },
     saveWorkCenterComposerDraft(agentId, workItemId, draft = {}) {
       const key = workCenterClientMessageKey(agentId, workItemId);
       if (!agentId || !workItemId) return;
-      this.workCenterComposerDrafts = {
+      const next = {
         ...(this.workCenterComposerDrafts || {}),
         [key]: {
           text: String(draft.text || ''),
@@ -1577,7 +1600,9 @@ export const useChatStore = defineStore('chat', {
           error: String(draft.error || ''),
         },
       };
-      writeLocalRecord(WORK_CENTER_DRAFT_STORAGE_KEY, this.workCenterComposerDrafts);
+      if (!writeWorkCenterDrafts(next, this._workCenterBrowserFence)) return false;
+      this.workCenterComposerDrafts = next;
+      return true;
     },
     loadWorkCenterComposerDraft(agentId, workItemId) {
       return this.workCenterComposerDrafts?.[workCenterClientMessageKey(agentId, workItemId)] || null;
@@ -1586,8 +1611,9 @@ export const useChatStore = defineStore('chat', {
       const key = workCenterClientMessageKey(agentId, workItemId);
       const next = { ...(this.workCenterComposerDrafts || {}) };
       delete next[key];
+      if (!writeWorkCenterDrafts(next, this._workCenterBrowserFence)) return false;
       this.workCenterComposerDrafts = next;
-      writeLocalRecord(WORK_CENTER_DRAFT_STORAGE_KEY, next);
+      return true;
     },
     prepareWorkCenterMessageEnvelope(input = {}) {
       const payload = workCenterEnvelopePayload(input);
@@ -1599,8 +1625,9 @@ export const useChatStore = defineStore('chat', {
         clientMessageId: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
         createdAt: Date.now(),
       };
-      this.workCenterMessageOutbox = { ...(this.workCenterMessageOutbox || {}), [key]: envelope };
-      writeLocalRecord(WORK_CENTER_OUTBOX_STORAGE_KEY, this.workCenterMessageOutbox);
+      const next = { ...(this.workCenterMessageOutbox || {}), [key]: envelope };
+      if (!writeWorkCenterOutbox(next, this._workCenterBrowserFence)) return null;
+      this.workCenterMessageOutbox = next;
       return envelope;
     },
     loadWorkCenterMessageEnvelope(agentId, workItemId) {
@@ -1610,8 +1637,9 @@ export const useChatStore = defineStore('chat', {
       const key = workCenterClientMessageKey(agentId, workItemId);
       const next = { ...(this.workCenterMessageOutbox || {}) };
       delete next[key];
+      if (!writeWorkCenterOutbox(next, this._workCenterBrowserFence)) return false;
       this.workCenterMessageOutbox = next;
-      writeLocalRecord(WORK_CENTER_OUTBOX_STORAGE_KEY, next);
+      return true;
     },
     confirmWorkCenterMessageEnvelope(agentId, workItemId, clientMessageId) {
       const key = workCenterClientMessageKey(agentId, workItemId);
@@ -1619,8 +1647,8 @@ export const useChatStore = defineStore('chat', {
       if (!envelope || envelope.clientMessageId !== clientMessageId) return false;
       const next = { ...(this.workCenterMessageOutbox || {}) };
       delete next[key];
+      if (!writeWorkCenterOutbox(next, this._workCenterBrowserFence)) return false;
       this.workCenterMessageOutbox = next;
-      writeLocalRecord(WORK_CENTER_OUTBOX_STORAGE_KEY, next);
       this.removeWorkCenterComposerDraft(agentId, workItemId);
       return true;
     },
@@ -2146,6 +2174,7 @@ export const useChatStore = defineStore('chat', {
         ledgerRevision: fence.ledgerRevision,
         coordinatorRevision: fence.coordinatorRevision,
       });
+      if (!envelope) throw new Error('Work Center browser owner changed; reopen Work Center and try again');
       const clientMessageId = envelope.clientMessageId;
       const current = this.workCenterDetailByAgent[target]?.id === id
         ? this.workCenterDetailByAgent[target] : null;
@@ -7031,6 +7060,7 @@ export const useChatStore = defineStore('chat', {
       this.activeSubagentId = null;
       this.activeRightPanel = null;
       this.pinnedSessions = [];
+      this.clearWorkCenterBrowserState();
       if (this.ws) {
         this.ws.close();
       }
