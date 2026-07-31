@@ -567,9 +567,10 @@ export function handleAgentSelected(store, msg) {
         store.pendingRecovery = null;
       }
     }
-  }
 
-  // ★ Restore split-screen panels from localStorage (independent of conversation restore)
-  restorePanels(store);
+    // Split panels are ordinary Chat state. Restoring them during a Yeaft ACK
+    // would reintroduce Chat conversations and history into the Yeaft view.
+    restorePanels(store);
+  }
   return true;
 }

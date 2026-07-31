@@ -85,6 +85,7 @@ const { handleAgentSelected } = await import('../../web/stores/helpers/handlers/
 const { handleMessage } = await import('../../web/stores/helpers/messageHandler.js');
 const { createInitialConversationViewState } = await import('../../web/stores/helpers/yeaft-view.js');
 const { createFileOperations } = await import('../../web/components/files/fileOperations.js');
+const { createGitOperations } = await import('../../web/components/git/gitOperations.js');
 
 import {
   buildYeaftMessageTurnSpans,
@@ -1178,6 +1179,7 @@ describe('message flow regressions', () => {
       // any workbench action can use the restored conversation/workDir.
       const previousPreferredConversationView = localStorage.getItem('yeaft-preferred-conversation-view');
       const previousLastViewedConversation = localStorage.getItem('lastViewedConversation');
+      const previousPanels = localStorage.getItem('panels');
       const previousStoreLastViewedConversation = store.lastViewedConversation;
       const productionRequestYeaftSessionBootstrap = store.requestYeaftSessionBootstrap;
       localStorage.setItem('yeaft-preferred-conversation-view', 'yeaft');
@@ -1213,7 +1215,10 @@ describe('message flow regressions', () => {
             name: 'Agent A',
             online: true,
             workDir: '/repo-a',
-            conversations: [{ id: 'chat-cold-a', workDir: '/repo-a' }],
+            conversations: [
+              { id: 'chat-cold-a', workDir: '/repo-a' },
+              { id: 'chat-cold-a-2', workDir: '/repo-a' },
+            ],
           },
         ],
       });
@@ -1222,8 +1227,16 @@ describe('message flow regressions', () => {
       expect(store.currentAgentInfo).toMatchObject({ id: 'agent-b', workDir: '/repo-b' });
       expect(store.conversations).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: 'chat-cold-a', agentId: 'agent-a', workDir: '/repo-a' }),
+        expect.objectContaining({ id: 'chat-cold-a-2', agentId: 'agent-a', workDir: '/repo-a' }),
       ]));
 
+      const persistedAgentAPanels = [
+        { id: 'panel-a-1', conversationId: 'chat-cold-a' },
+        { id: 'panel-a-2', conversationId: 'chat-cold-a-2' },
+      ];
+      localStorage.setItem('panels', JSON.stringify(persistedAgentAPanels));
+      store.panels = [];
+      store.activePanelId = null;
       store.pendingAgentSelection = { agentId: 'agent-b', requestId: 'cold-agent-b-selection' };
       store.agentSwitching = true;
       store.sendWsMessage.mockClear();
@@ -1240,6 +1253,8 @@ describe('message flow regressions', () => {
       expect(store.currentAgent).toBe('agent-b');
       expect(store.yeaftConversationId).toBe('conv-cold-b');
       expect(store.activeConversations).toEqual(['conv-cold-b']);
+      expect(store.panels).toEqual([]);
+      expect(store.activePanelId).toBeNull();
       expect(store.currentWorkDir).toBeNull();
       expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => (
         msg.type === 'select_conversation'
@@ -1247,6 +1262,108 @@ describe('message flow regressions', () => {
         || msg.type === 'refresh_conversation'
       ))).toEqual([]);
 
+      // The same ACK may arrive before session_ready has supplied a Yeaft bridge
+      // conversation. Persisted A panels still belong to Chat and must not become
+      // the compatibility currentConversation or seed Chat history on Agent B.
+      store.panels = [];
+      store.activePanelId = null;
+      store.activeConversations = [];
+      store.yeaftConversationId = null;
+      store.yeaftSessionReady = false;
+      store.currentWorkDir = null;
+      store.messagesMap['chat-cold-a'] = [];
+      store.messagesMap['chat-cold-a-2'] = [];
+      store.pendingAgentSelection = { agentId: 'agent-b', requestId: 'pre-ready-agent-b-selection' };
+      store.agentSwitching = true;
+      store.sendWsMessage.mockClear();
+      expect(handleAgentSelected(store, {
+        type: 'agent_selected',
+        ok: true,
+        requestId: 'pre-ready-agent-b-selection',
+        agentId: 'agent-b',
+        agentName: 'Agent B',
+        workDir: '/repo-b',
+        conversations: [],
+      })).toBe(true);
+      expect(store.currentView).toBe('yeaft');
+      expect(store.currentAgent).toBe('agent-b');
+      expect(store.currentConversation).toBeNull();
+      expect(store.activeConversations).toEqual([]);
+      expect(store.panels).toEqual([]);
+      expect(store.activePanelId).toBeNull();
+      expect(store.currentWorkDir).toBeNull();
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => (
+        msg.type === 'select_conversation'
+        || msg.type === 'sync_messages'
+        || msg.type === 'refresh_conversation'
+      ))).toEqual([]);
+
+      // A real reconnect edge must not amplify an A panel into Agent B's server
+      // conversation context. recoveryDismissed isolates this panel-derived path
+      // from the older explicit last-viewed recovery state machine.
+      store.sendWsMessage.mockClear();
+      store._yeaftReconnectCatchUpPending = true;
+      store.recoveryDismissed = true;
+      handleMessage(store, {
+        type: 'agent_list',
+        agents: [
+          { id: 'agent-b', name: 'Agent B', online: true, workDir: '/repo-b', conversations: [] },
+          {
+            id: 'agent-a', name: 'Agent A', online: true, workDir: '/repo-a',
+            conversations: [
+              { id: 'chat-cold-a', workDir: '/repo-a' },
+              { id: 'chat-cold-a-2', workDir: '/repo-a' },
+            ],
+          },
+        ],
+      });
+      expect(store.currentConversation).toBeNull();
+      expect(store.panels).toEqual([]);
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => (
+        msg.type === 'select_conversation'
+        || msg.type === 'sync_messages'
+        || msg.type === 'refresh_conversation'
+      ))).toEqual([]);
+
+      // With no Yeaft bridge conversation yet, workbench actions must use the
+      // explicit Agent-level explorer identity, never an A Chat conversation.
+      store.sendWsMessage.mockClear();
+      globalThis.Vue = Vue;
+      const preReadyFileOperations = createFileOperations(store, {
+        getEffectiveWorkDir: () => '/repo-b',
+        treePath: Vue.ref(''),
+      });
+      preReadyFileOperations.newFileType.value = 'file';
+      preReadyFileOperations.newFileName.value = 'ack-owner.txt';
+      preReadyFileOperations.confirmNewFile();
+      const gitOperating = Vue.ref(false);
+      const preReadyGitOperations = createGitOperations(store, {
+        effectiveGitWorkDir: Vue.ref('/repo-b'),
+        gitOperating,
+        gitOpFeedback: Vue.ref(null),
+        commitMessage: Vue.ref(''),
+      });
+      preReadyGitOperations.loadGitStatus(Vue.ref(false), Vue.ref(''));
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => (
+        msg.type === 'create_file' || msg.type === 'git_status'
+      ))).toEqual([
+        expect.objectContaining({
+          type: 'create_file', agentId: 'agent-b', conversationId: '_explorer', workDir: '/repo-b',
+        }),
+        expect.objectContaining({
+          type: 'git_status', agentId: 'agent-b', conversationId: '_explorer', workDir: '/repo-b',
+        }),
+      ]);
+      expect(store.currentConversation).toBeNull();
+      preReadyFileOperations.cleanup();
+      preReadyGitOperations.cleanup();
+      delete globalThis.Vue;
+      store.recoveryDismissed = false;
+
+      // Restore the bridge-ready state before exercising the cold Chat return.
+      store.yeaftConversationId = 'conv-cold-b';
+      store.activeConversations = ['conv-cold-b'];
+      store.yeaftSessionReady = true;
       store.sendWsMessage.mockClear();
       store.leaveYeaft();
       const coldAgentASelection = store.pendingAgentSelection;
@@ -1337,6 +1454,13 @@ describe('message flow regressions', () => {
       } else {
         localStorage.setItem('lastViewedConversation', previousLastViewedConversation);
       }
+      if (previousPanels == null) {
+        localStorage.removeItem('panels');
+      } else {
+        localStorage.setItem('panels', previousPanels);
+      }
+      store.panels = [];
+      store.activePanelId = null;
       store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-entry-a', 'agent-b': 'conv-entry-b' };
       store.yeaftConversationId = 'conv-entry-a';
       store.conversations = [{
