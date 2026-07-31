@@ -158,10 +158,13 @@ describe('message flow regressions', () => {
     const vpAvatarSource = readFileSync(resolve(import.meta.dirname, '../../web/components/VpAvatar.js'), 'utf8');
     const vpCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/yeaft-vp.css'), 'utf8');
     const sidebarCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/sidebar.css'), 'utf8');
+    const yeaftSidebarCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/yeaft-sidebar.css'), 'utf8');
     const variables = readFileSync(resolve(import.meta.dirname, '../../web/styles/variables.css'), 'utf8');
     const lightThemeVariables = variables.match(/:root\s*\{([\s\S]*?)\n\}/)?.[1] || '';
     const darkThemeVariables = variables.match(/\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/)?.[1] || '';
     expect(sidebarCss).toMatch(/\.unread-dot\s*\{[^}]*background:\s*var\(--success\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-actions\s*\{[^}]*padding:\s*6px 8px 4px/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\s*\{[^}]*background:\s*transparent/);
     expect(vpAvatarSource).not.toContain('/assets/avatars/');
     expect(vpAvatarSource).not.toContain('<img');
     expect(vpCss).not.toContain('.vp-avatar-img');
@@ -232,6 +235,7 @@ describe('message flow regressions', () => {
       global: { mocks: { $t: key => key } },
     });
     expect(sidebar.findAll('.sidebar-primary-actions')).toHaveLength(1);
+    expect(sidebar.find('input[type="search"]').exists()).toBe(false);
     expect(sidebar.findAll('.sidebar-tool-button')).toHaveLength(1);
     expect(sidebar.findAll('.sidebar-section')).toHaveLength(2);
     expect(sidebar.findAll('.session-item')).toHaveLength(0);
@@ -244,6 +248,34 @@ describe('message flow regressions', () => {
     ]))).toEqual({ 'Online project': '1', 'Offline project': '0' });
     expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(1);
     expect(sidebar.get('.session-dots-btn').attributes('aria-label')).toBe('sidebar.projects.menu');
+
+    await sidebar.get('.sidebar-tool-button').trigger('click');
+    const projectCreateInput = sidebar.get('.sidebar-project-create input');
+    expect(document.activeElement).toBe(projectCreateInput.element);
+    await projectCreateInput.setValue('   ');
+    expect(sidebar.get('.sidebar-project-create-confirm').attributes('disabled')).toBeDefined();
+    await sidebar.get('.sidebar-project-create').trigger('keydown', { key: 'Escape' });
+    expect(sidebar.find('.sidebar-project-create').exists()).toBe(false);
+
+    await sidebar.get('.sidebar-tool-button').trigger('click');
+    await sidebar.get('.sidebar-project-create input').setValue('  Workspace  ');
+    let finishCreate;
+    const createResult = new Promise(resolve => { finishCreate = resolve; });
+    const dispatchProjectAction = vi.fn(() => createResult);
+    sidebar.vm.dispatchProjectAction = dispatchProjectAction;
+    const firstCreate = sidebar.vm.submitProjectCreate();
+    const duplicateCreate = sidebar.vm.submitProjectCreate();
+    expect(dispatchProjectAction).toHaveBeenCalledTimes(1);
+    expect(dispatchProjectAction).toHaveBeenCalledWith({
+      action: 'create',
+      name: 'Workspace',
+      agentId: 'user_1770305719:server-instance',
+    });
+    finishCreate({ ok: true });
+    await Promise.all([firstCreate, duplicateCreate]);
+    await Vue.nextTick();
+    expect(sidebar.find('.sidebar-project-create').exists()).toBe(false);
+
     const projectToggles = sidebar.findAll('.sidebar-project-toggle');
     await projectToggles[0].trigger('click');
     expect(sidebar.findAll('.sidebar-project-sessions')).toHaveLength(1);

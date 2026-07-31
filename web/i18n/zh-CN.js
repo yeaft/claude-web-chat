@@ -136,7 +136,6 @@ export default {
   'sidebar.provider.claude': 'Claude',
   'sidebar.sessions.new': '新建会话',
   'sidebar.sessions.newChat': '新建聊天',
-  'sidebar.sessions.search': '搜索聊天',
   'sidebar.sessions.emptyProvider': '此 Provider 暂无会话',
   'sidebar.sessions.menu': '会话菜单',
   'sidebar.projects.title': '项目',
@@ -152,7 +151,7 @@ export default {
   'sidebar.projects.remove': '移出项目',
   'sidebar.projects.moveTo': '移到 {name}',
   'sidebar.recents.title': '最近',
-  'sidebar.recents.empty': '没有匹配的聊天',
+  'sidebar.recents.empty': '暂无聊天',
 
   // ============ Yeaft 页面 ============
   'yeaft.back': '返回',
