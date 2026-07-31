@@ -9,7 +9,7 @@ import { defineTool } from './types.js';
 import { readdir, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve, join, relative } from 'path';
-import { resolveManagedCliCommand } from '../managed-cli.js';
+import { managedCliToolReady, resolveManagedCliCommand } from '../managed-cli.js';
 import { runProcess } from './process-runner.js';
 
 const STAT_CONCURRENCY = 32;
@@ -167,8 +167,11 @@ Guidelines:
 
     try {
       let paths;
-      await ctx?.managedCliReady;
-      const fdCommand = resolveManagedCliCommand('fd', { yeaftDir: ctx?.yeaftDir });
+      let fdCommand = resolveManagedCliCommand('fd', { yeaftDir: ctx?.yeaftDir });
+      if (!fdCommand) {
+        await managedCliToolReady(ctx?.managedCliReady, 'fd');
+        fdCommand = resolveManagedCliCommand('fd', { yeaftDir: ctx?.yeaftDir });
+      }
       if (fdCommand) {
         try {
           paths = (await listFilesWithFd(fdCommand, baseDir, ctx?.signal))

@@ -352,18 +352,22 @@ async function installOne(name, options) {
   }
 }
 
-export async function ensureManagedCliTools(options = {}) {
+export function ensureManagedCliTools(options = {}) {
   const yeaftDir = resolve(options.yeaftDir || DEFAULT_ROOT);
   const platform = options.platform || process.platform;
   const arch = options.arch || process.arch;
   const env = options.env || process.env;
-  if (options.skipInstall || env.YEAFT_SKIP_MANAGED_CLI_INSTALLS === 'true') {
-    return Object.keys(TOOL_SPECS).map(name => ({ name, status: 'skipped' }));
-  }
 
   prependManagedCliBinToPath(yeaftDir, env, platform);
   const flightKey = `${yeaftDir}:${platform}:${arch}`;
   if (installFlights.has(flightKey)) return installFlights.get(flightKey);
+
+  const toolReady = Object.fromEntries(Object.keys(TOOL_SPECS).map(name => {
+    let resolveReady;
+    const promise = new Promise(resolveTool => { resolveReady = resolveTool; });
+    return [name, { promise, resolve: resolveReady }];
+  }));
+  const skipInstall = options.skipInstall || env.YEAFT_SKIP_MANAGED_CLI_INSTALLS === 'true';
 
   const flight = (async () => {
     mkdirSync(yeaftDir, { recursive: true, mode: 0o755 });
@@ -371,22 +375,37 @@ export async function ensureManagedCliTools(options = {}) {
     const state = readState(yeaftDir);
     const failures = state.failures && typeof state.failures === 'object' ? { ...state.failures } : {};
     const fetchFn = options.fetchFn || globalThis.fetch;
-    if (typeof fetchFn !== 'function') throw new Error('fetch is unavailable');
     const timeoutMs = Number.isFinite(options.timeoutMs)
       ? Math.max(1000, options.timeoutMs)
       : DOWNLOAD_TIMEOUT_MS;
 
     const results = await Promise.all(Object.keys(TOOL_SPECS).map(async name => {
-      const existing = resolveManagedCliCommand(name, { yeaftDir, platform, env });
-      if (existing) return { name, status: 'available', path: existing };
-      const failure = failures[name];
-      if (!options.force && Number.isFinite(failure?.at) && now - failure.at < FAILURE_COOLDOWN_MS) {
-        return { name, status: 'cooldown', reason: failure.reason };
-      }
+      let result;
       try {
-        return await installOne(name, { yeaftDir, platform, arch, env, fetchFn, timeoutMs });
-      } catch (error) {
-        return { name, status: 'failed', reason: error?.message || String(error) };
+        if (skipInstall) {
+          result = { name, status: 'skipped' };
+        } else {
+          const existing = resolveManagedCliCommand(name, { yeaftDir, platform, env });
+          if (existing) {
+            result = { name, status: 'available', path: existing };
+          } else {
+            const failure = failures[name];
+            if (!options.force && Number.isFinite(failure?.at) && now - failure.at < FAILURE_COOLDOWN_MS) {
+              result = { name, status: 'cooldown', reason: failure.reason };
+            } else if (typeof fetchFn !== 'function') {
+              result = { name, status: 'failed', reason: 'fetch is unavailable' };
+            } else {
+              try {
+                result = await installOne(name, { yeaftDir, platform, arch, env, fetchFn, timeoutMs });
+              } catch (error) {
+                result = { name, status: 'failed', reason: error?.message || String(error) };
+              }
+            }
+          }
+        }
+        return result;
+      } finally {
+        toolReady[name].resolve(result || { name, status: 'failed', reason: 'setup did not complete' });
       }
     }));
 
@@ -405,12 +424,21 @@ export async function ensureManagedCliTools(options = {}) {
     return results;
   })();
 
+  flight.toolReady = Object.fromEntries(
+    Object.entries(toolReady).map(([name, entry]) => [name, entry.promise]),
+  );
   installFlights.set(flightKey, flight);
-  try {
-    return await flight;
-  } finally {
+  flight.finally(() => {
+    for (const [name, entry] of Object.entries(toolReady)) {
+      entry.resolve({ name, status: 'failed', reason: 'setup did not complete' });
+    }
     installFlights.delete(flightKey);
-  }
+  }).catch(() => {});
+  return flight;
+}
+
+export function managedCliToolReady(ready, name) {
+  return ready?.toolReady?.[name] || ready || Promise.resolve([]);
 }
 
 export function summarizeManagedCliResults(results) {

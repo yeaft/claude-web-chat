@@ -2,7 +2,7 @@ import { lstat, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { basename, join, relative, resolve } from 'node:path';
 import { defineTool } from './types.js';
-import { resolveManagedCliCommand } from '../managed-cli.js';
+import { managedCliToolReady, resolveManagedCliCommand } from '../managed-cli.js';
 import { runProcess } from './process-runner.js';
 
 const FALLBACK_CONCURRENCY = 16;
@@ -41,7 +41,7 @@ function flattenDustTree(root, baseDir, depth, limit) {
 
 async function runDust(command, baseDir, { depth, limit, signal }) {
   const result = await runProcess(command, [
-    '--json',
+    '--output-json',
     '--depth', String(depth),
     '--number-of-lines', String(limit),
     '--apparent-size',
@@ -156,8 +156,11 @@ The root total is shown first, followed by the largest descendants. Symlinks are
 
     try {
       let rows;
-      await ctx?.managedCliReady;
-      const dustCommand = resolveManagedCliCommand('dust', { yeaftDir: ctx?.yeaftDir });
+      let dustCommand = resolveManagedCliCommand('dust', { yeaftDir: ctx?.yeaftDir });
+      if (!dustCommand) {
+        await managedCliToolReady(ctx?.managedCliReady, 'dust');
+        dustCommand = resolveManagedCliCommand('dust', { yeaftDir: ctx?.yeaftDir });
+      }
       if (dustCommand) {
         try {
           rows = await runDust(dustCommand, baseDir, { depth, limit, signal: ctx?.signal });

@@ -24,6 +24,8 @@ import {
   resolveManagedCliCommand,
 } from '../../../agent/yeaft/managed-cli.js';
 import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
+import { runRipgrep, nodeGrep } from '../../../agent/yeaft/tools/grep.js';
+import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
 
 // ─── Mock Adapter ─────────────────────────────────────────────
 
@@ -2922,7 +2924,73 @@ afterEach(() => {
 });
 
 describe('managed CLI setup and fast tool integration', () => {
-  it('keeps platform install boundaries and uses managed binaries with fallbacks', async () => {
+  async function verifyProcessTermination() {
+    const preAborted = new AbortController();
+    preAborted.abort();
+    await expect(runProcess(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], {
+      signal: preAborted.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+
+    if (process.platform !== 'win32') {
+      const termResistant = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)";
+      const startedAt = Date.now();
+      const timedOut = await runProcess(process.execPath, ['-e', termResistant], {
+        timeoutMs: 50,
+        killGraceMs: 25,
+      });
+      expect(timedOut).toMatchObject({ code: 124, timedOut: true });
+      expect(Date.now() - startedAt).toBeLessThan(1000);
+
+      const controller = new AbortController();
+      const pending = runProcess(process.execPath, ['-e', termResistant], {
+        signal: controller.signal,
+        killGraceMs: 25,
+      });
+      setTimeout(() => controller.abort(), 50);
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    }
+  }
+
+  async function verifyRipgrepParity() {
+    if (process.platform === 'win32') return;
+    const root = tempDir('grep-semantic-parity');
+    const binDir = join(root, 'bin');
+    mkdirSync(join(root, '.hidden'), { recursive: true });
+    mkdirSync(join(root, 'node_modules'), { recursive: true });
+    mkdirSync(join(root, '.yeaft', 'worktrees', 'ignored'), { recursive: true });
+    mkdirSync(binDir);
+    writeFileSync(join(root, 'a.txt'), 'needle\n');
+    writeFileSync(join(root, '.hidden', 'h.txt'), 'needle\n');
+    writeFileSync(join(root, 'node_modules', 'n.txt'), 'needle\n');
+    writeFileSync(join(root, '.yeaft', 'worktrees', 'ignored', 'w.txt'), 'needle\n');
+    const rgPath = join(binDir, 'rg');
+    const capturedArgs = join(tmpdir(), `yeaft-rg-args-${process.pid}-${Date.now()}.txt`);
+    writeFileSync(rgPath, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(capturedArgs)}\nprintf 'a.txt\\n.hidden/h.txt\\n'\n`, { mode: 0o755 });
+    const options = {
+      caseInsensitive: false,
+      fixedStrings: true,
+      filesOnly: true,
+      count: false,
+      multiline: false,
+      maxResults: 50,
+      byteBudget: 32 * 1024,
+      cwd: root,
+    };
+    const fast = (await runRipgrep('needle', root, options, undefined, rgPath)).trim().split('\n').sort();
+    const fallback = (await nodeGrep('needle', root, options)).trim().split('\n').sort();
+    expect(fast).toEqual(fallback);
+    expect(fast).toEqual(['.hidden/h.txt', 'a.txt']);
+    const args = readFileSync(capturedArgs, 'utf8').trim().split('\n');
+    expect(args).toContain('--hidden');
+    expect(args).toContain('--no-ignore');
+    expect(args).toContain('!**/node_modules/**');
+    expect(args).toContain('!.yeaft/worktrees/**');
+    expect(args).toContain('!**/.yeaft/worktrees/**');
+    rmSync(capturedArgs, { force: true });
+  }
+
+  it('keeps process, platform, and fast-tool fallback boundaries', async () => {
+    await verifyProcessTermination();
     const yeaftDir = tempDir('cli-path');
     const systemBin = join(yeaftDir, 'system-bin');
     mkdirSync(systemBin);
@@ -3021,18 +3089,31 @@ describe('managed CLI setup and fast tool integration', () => {
       mkdirSync(toolBinDir, { recursive: true });
       writeFileSync(join(toolBinDir, 'rg'), `#!/bin/sh\necho rg >> ${JSON.stringify(log)}\nprintf 'src/a.js:1:needle\\n'\n`, { mode: 0o755 });
       writeFileSync(join(toolBinDir, 'fd'), `#!/bin/sh\necho fd >> ${JSON.stringify(log)}\nprintf 'src/a.js\\0src/b.txt\\0'\n`, { mode: 0o755 });
-      const ctx = { cwd: root, yeaftDir: toolDir, managedCliReady: Promise.resolve([]) };
-      expect(await registry.execute('Grep', { pattern: 'needle', path: root }, ctx))
-        .toContain('src/a.js:1:needle');
-      const globOutput = await registry.execute('Glob', { pattern: '**/*.js', path: root }, ctx);
+      writeFileSync(join(toolBinDir, 'dust'), `#!/bin/sh\necho dust >> ${JSON.stringify(log)}\nprintf '{"size":"2080B","name":${JSON.stringify(root)},"children":[{"size":"2048B","name":${JSON.stringify(join(root, 'large'))},"children":[]}]}'\n`, { mode: 0o755 });
+      const neverReady = new Promise(() => {});
+      const ctx = { cwd: root, yeaftDir: toolDir, managedCliReady: neverReady };
+      expect(await Promise.race([
+        registry.execute('Grep', { pattern: 'needle', path: root }, ctx),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Grep waited for unrelated installs')), 500)),
+      ])).toContain('src/a.js:1:needle');
+      const globOutput = await Promise.race([
+        registry.execute('Glob', { pattern: '**/*.js', path: root }, ctx),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Glob waited for unrelated installs')), 500)),
+      ]);
       expect(globOutput).toContain('src/a.js');
       expect(globOutput).not.toContain('b.txt');
-      expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['rg', 'fd']);
+      const dustOutput = await Promise.race([
+        registry.execute('DiskUsage', { path: root, depth: 2, limit: 2 }, ctx),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('DiskUsage waited for unrelated installs')), 500)),
+      ]);
+      expect(dustOutput).toContain('large');
+      expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['rg', 'fd', 'dust']);
 
       const rg = resolveManagedCliCommand('rg', { yeaftDir: toolDir, env: emptyPathEnv() });
       expect(execFileSync(rg, ['--version'], { encoding: 'utf8' })).toContain('src/a.js');
       expect(createHash('sha256').update(readFileSync(rg)).digest('hex')).toHaveLength(64);
       expect(existsSync(rg)).toBe(true);
     }
+    await verifyRipgrepParity();
   });
 });

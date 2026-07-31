@@ -1016,17 +1016,14 @@ async function main() {
 
   const prepareManagedCli = () => {
     prependManagedCliBinToPath(config.dir);
-    args.managedCliReady = ensureManagedCliTools({ yeaftDir: config.dir })
-      .then(results => {
-        if (results.some(result => result.status === 'installed')) {
-          console.error(`[Yeaft] managed CLI tools: ${summarizeManagedCliResults(results)}`);
-        }
-        return results;
-      })
-      .catch(error => {
-        console.error(`[Yeaft] managed CLI setup failed; using built-in fallbacks: ${error?.message || error}`);
-        return [];
-      });
+    args.managedCliReady = ensureManagedCliTools({ yeaftDir: config.dir });
+    args.managedCliReady.then(results => {
+      if (results.some(result => result.status === 'installed')) {
+        console.error(`[Yeaft] managed CLI tools: ${summarizeManagedCliResults(results)}`);
+      }
+    }).catch(error => {
+      console.error(`[Yeaft] managed CLI setup failed; using built-in fallbacks: ${error?.message || error}`);
+    });
   };
 
   // Handle interactive mode

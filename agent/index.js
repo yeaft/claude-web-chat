@@ -356,15 +356,12 @@ process.on('SIGTERM', async () => {
   if (process.env.YEAFT_SKIP_STARTUP_INSTALLS !== 'true') {
     await ensureDependencies();
     await ensureYeaftSkills();
-    managedCliReady = ensureManagedCliTools({ yeaftDir: YEAFT_DIR })
-      .then(results => {
-        console.log(`[Startup] managed CLI tools: ${summarizeManagedCliResults(results)}`);
-        return results;
-      })
-      .catch(error => {
-        console.warn(`[Startup] managed CLI setup failed; using built-in fallbacks: ${error?.message || error}`);
-        return [];
-      });
+    managedCliReady = ensureManagedCliTools({ yeaftDir: YEAFT_DIR });
+    managedCliReady.then(results => {
+      console.log(`[Startup] managed CLI tools: ${summarizeManagedCliResults(results)}`);
+    }).catch(error => {
+      console.warn(`[Startup] managed CLI setup failed; using built-in fallbacks: ${error?.message || error}`);
+    });
   }
   ctx.managedCliReady = managedCliReady;
   ctx.agentCapabilities = await detectCapabilities();

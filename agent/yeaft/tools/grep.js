@@ -11,7 +11,7 @@ import { readdir, readFile, stat } from 'fs/promises';
 import { StringDecoder } from 'string_decoder';
 import { existsSync } from 'fs';
 import { resolve, join, relative, extname } from 'path';
-import { resolveManagedCliCommand } from '../managed-cli.js';
+import { managedCliToolReady, resolveManagedCliCommand } from '../managed-cli.js';
 
 /** Max output lines. */
 const MAX_LINES = 250;
@@ -117,7 +117,24 @@ function createOutputCollector(maxBytes = MAX_OUTPUT_BYTES) {
  */
 export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, command = 'rg') {
   return new Promise((resolve, reject) => {
-    const args = [pattern, searchPath, '--no-heading', '--line-number', '--color', 'never'];
+    const relativeTarget = options.cwd ? relative(options.cwd, searchPath) : null;
+    const searchTarget = relativeTarget === '' ? null : (relativeTarget ?? searchPath);
+    const args = [
+      '--no-heading',
+      '--line-number',
+      '--color', 'never',
+      '--hidden',
+      '--no-ignore',
+      '--glob', '!**/node_modules/**',
+      '--glob', '!**/.git/**',
+      '--glob', '!**/__pycache__/**',
+      '--glob', '!**/.next/**',
+      '--glob', '!**/dist/**',
+      '--glob', '!**/build/**',
+      '--glob', '!**/.cache/**',
+      '--glob', '!.yeaft/worktrees/**',
+      '--glob', '!**/.yeaft/worktrees/**',
+    ];
     if (options.caseInsensitive) args.push('-i');
     if (options.fixedStrings) args.push('-F');
     if (options.glob) args.push('--glob', options.glob);
@@ -128,8 +145,14 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
     if (options.before) args.push('-B', String(options.before));
     if (options.after) args.push('-A', String(options.after));
     if (options.multiline) args.push('-U', '--multiline-dotall');
+    args.push('--', pattern);
+    if (searchTarget) args.push(searchTarget);
 
-    const proc = spawnProcess(command, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const proc = spawnProcess(command, args, {
+      cwd: options.cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
     const requestedBudget = Number(options.byteBudget);
     const stdoutBudget = Number.isFinite(requestedBudget) && requestedBudget >= 0
       ? Math.min(requestedBudget, MAX_OUTPUT_BYTES)
@@ -475,12 +498,16 @@ Guidelines:
       multiline,
       maxResults: headLimit,
       byteBudget: SEARCH_RESULT_BYTES,
+      cwd: absPath,
     };
 
     try {
       let result;
-      await ctx?.managedCliReady;
-      const rgCommand = resolveManagedCliCommand('rg', { yeaftDir: ctx?.yeaftDir });
+      let rgCommand = resolveManagedCliCommand('rg', { yeaftDir: ctx?.yeaftDir });
+      if (!rgCommand) {
+        await managedCliToolReady(ctx?.managedCliReady, 'rg');
+        rgCommand = resolveManagedCliCommand('rg', { yeaftDir: ctx?.yeaftDir });
+      }
 
       if (rgCommand) {
         try {

@@ -23,7 +23,7 @@ function buildVpPersona(vpId, loaded) {
   };
 }
 
-function createEngine(loaded, sessionId, vpId) {
+export function createCliVpEngine(loaded, sessionId, vpId) {
   const effectiveConfig = resolveSessionConfig(
     loaded.config,
     loadSessionConfig(loaded.yeaftDir, sessionId),
@@ -41,6 +41,7 @@ function createEngine(loaded, sessionId, vpId) {
     yeaftDir: loaded.yeaftDir,
     toolStats: loaded.toolStats || null,
     taskManager: loaded.taskManager || null,
+    managedCliReady: loaded.managedCliReady || null,
     sessionId,
     vpId,
   });
@@ -58,7 +59,7 @@ export function createCliSessionRunner({
   loaded,
   sessionId,
   workDir = process.cwd(),
-  engineFactory = createEngine,
+  engineFactory = createCliVpEngine,
   personaFactory = buildVpPersona,
 } = {}) {
   if (!loaded || !sessionId) return null;
