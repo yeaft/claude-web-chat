@@ -60,13 +60,11 @@
 /* Mobile slide-away behavior. Width is owned exclusively by the shared
    SessionSidebarShell token so Chat and Yeaft stay identical. */
 /* Codex-style unified navigation: Projects group Yeaft Sessions; Recents keeps all providers. */
-.sidebar-primary-actions { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px; }
-.sidebar-primary-action, .sidebar-search-field { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text-primary); font: inherit; }
+.sidebar-primary-actions { display: flex; flex-direction: column; padding: 6px 8px 4px; }
+.sidebar-primary-action { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text-primary); font: inherit; }
 .sidebar-primary-action { cursor: pointer; text-align: left; }
-.sidebar-primary-action:hover, .sidebar-search-field:focus-within, .sidebar-project-header:hover, .sidebar-project-header.drag-over, .recents-section.drag-over { background: var(--sidebar-hover); }
-.sidebar-primary-action svg, .sidebar-search-field svg { width: 17px; height: 17px; flex: 0 0 auto; color: var(--text-secondary); }
-.sidebar-search-field input[type="search"] { width: 100%; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text-primary); font: inherit; }
-.sidebar-search-field input[type="search"]::placeholder { color: var(--text-muted); }
+.sidebar-primary-action:hover, .sidebar-project-header:hover, .sidebar-project-header.drag-over, .recents-section.drag-over { background: var(--sidebar-hover); }
+.sidebar-primary-action svg { width: 17px; height: 17px; flex: 0 0 auto; color: var(--text-secondary); }
 .sidebar-section { padding: 4px 8px 10px; }
 .sidebar-section + .sidebar-section { margin-top: 2px; }
 .sidebar-section-heading { display: flex; align-items: center; min-height: 34px; padding: 0 6px 0 10px; color: var(--text-secondary); font-size: 13px; font-weight: 600; }
@@ -82,8 +80,13 @@
 .sidebar-project-count { margin-left: auto; color: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .sidebar-project-header > .session-dots-btn { opacity: 0; }
 .sidebar-project-header:hover > .session-dots-btn, .sidebar-project-header > .session-dots-btn.menu-open { opacity: 1; }
+.sidebar-project-create { display: flex; align-items: center; gap: 4px; padding: 2px 4px 6px 10px; }
+.sidebar-project-create input[type="text"] { flex: 1; min-width: 0; height: 30px; padding: 4px 8px; }
+.sidebar-project-create-confirm, .sidebar-project-create-cancel { min-height: 30px; padding: 0 7px; border: 0; border-radius: 6px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.sidebar-project-create-confirm:hover:not(:disabled), .sidebar-project-create-cancel:hover:not(:disabled) { background: var(--sidebar-hover); color: var(--text-primary); }
+.sidebar-project-create-confirm:disabled, .sidebar-project-create-cancel:disabled { opacity: 0.45; cursor: default; }
 .sidebar-project-sessions { padding-left: 17px; }
-.sidebar-session-row { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; border: 0; color: var(--text-primary); text-align: left; }
+.sidebar-session-row { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent; color: var(--text-primary); text-align: left; }
 .sidebar-session-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
 .sidebar-session-meta { overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-session-row .session-menu, .sidebar-project-header .session-menu { top: 30px; }

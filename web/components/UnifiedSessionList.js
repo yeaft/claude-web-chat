@@ -28,12 +28,14 @@ export default {
   },
   data() {
     return {
-      query: '',
       collapsedProjects: {},
       openMenuKey: null,
       openProjectMenuKey: null,
       draggedRow: null,
       dragTargetProjectId: null,
+      projectCreateOpen: false,
+      projectCreateName: '',
+      projectCreateSubmitting: false,
     };
   },
   mounted() {
@@ -45,9 +47,6 @@ export default {
     document.removeEventListener('keydown', this.closeMenusFromKeyboard);
   },
   computed: {
-    queryText() {
-      return this.query.trim().toLowerCase();
-    },
     projectStore() {
       try { return window.Pinia?.useChatStore?.() || null; } catch { return null; }
     },
@@ -75,7 +74,7 @@ export default {
         const key = projectIdentityKey(project);
         if (project && out.has(key)) out.get(key).push(row);
       }
-      for (const [id, rows] of out) out.set(id, sortRows(rows).filter(row => this.matchesQuery(row)));
+      for (const [id, rows] of out) out.set(id, sortRows(rows));
       return out;
     },
     recentRows() {
@@ -84,15 +83,13 @@ export default {
           const key = `${row.routeRef?.agentId}\u001f${row.routeRef?.sessionId}`;
           if (this.projectBySessionKey.has(key)) return false;
         }
-        return this.matchesQuery(row);
+        return true;
       }));
     },
-    visibleProjectRows() {
-      if (!this.queryText) return this.projectRows;
-      return this.projectRows.filter(project => (
-        project.name.toLowerCase().includes(this.queryText)
-        || (this.rowsByProject.get(projectIdentityKey(project)) || []).length > 0
-      ));
+    projectCreateAgentId() {
+      return this.agents.find(agent => agent.id === this.activeRoute?.agentId && agent.online)?.id
+        || this.agents.find(agent => agent.online)?.id
+        || null;
     },
   },
   methods: {
@@ -105,11 +102,7 @@ export default {
       if (event?.key !== 'Escape') return;
       this.openMenuKey = null;
       this.openProjectMenuKey = null;
-    },
-    matchesQuery(row) {
-      if (!this.queryText) return true;
-      return [row.title, row.agentName, row.workDir, row.runtimeProvider]
-        .some(value => String(value || '').toLowerCase().includes(this.queryText));
+      this.cancelProjectCreate();
     },
     isActive(row) {
       const route = row?.routeRef;
@@ -144,7 +137,7 @@ export default {
       return this.isAgentOnline(row.routeRef.agentId);
     },
     isProjectCollapsed(project) {
-      return this.collapsedProjects[projectIdentityKey(project)] === true && !this.queryText;
+      return this.collapsedProjects[projectIdentityKey(project)] === true;
     },
     toggleProject(project) {
       const key = projectIdentityKey(project);
@@ -192,29 +185,48 @@ export default {
     },
     dispatchProjectAction(payload) {
       const ownerAgentId = payload?.agentId || payload?.project?.agentId || payload?.row?.routeRef?.agentId || null;
-      if (!this.isAgentOnline(ownerAgentId)) return;
+      if (!this.isAgentOnline(ownerAgentId)) return false;
       this.$emit('project-action', payload);
       const store = this.projectStore;
-      if (!store?.mutateProject) return;
+      if (!store?.mutateProject) return true;
       const { action, project, row, name, agentId: explicitAgentId } = payload;
       const agentId = explicitAgentId || project?.agentId || row?.routeRef?.agentId || store.currentAgent;
-      if (action === 'create') store.mutateProject('create', { name }, agentId);
-      else if (action === 'rename') store.mutateProject('rename', { projectId: project.id, name }, agentId);
-      else if (action === 'delete') store.mutateProject('delete', { projectId: project.id }, agentId);
-      else if (action === 'move-session' && row?.routeRef?.sessionId) {
-        store.mutateProject('move_session', {
+      if (action === 'create') return store.mutateProject('create', { name }, agentId);
+      if (action === 'rename') return store.mutateProject('rename', { projectId: project.id, name }, agentId);
+      if (action === 'delete') return store.mutateProject('delete', { projectId: project.id }, agentId);
+      if (action === 'move-session' && row?.routeRef?.sessionId) {
+        return store.mutateProject('move_session', {
           sessionId: row.routeRef.sessionId,
           projectId: project?.id || null,
         }, agentId);
       }
+      return false;
     },
     createProject() {
-      const agentId = this.agents.find(agent => agent.id === this.activeRoute?.agentId && agent.online)?.id
-        || this.agents.find(agent => agent.online)?.id
-        || null;
-      if (!agentId) return;
-      const name = window.prompt(this.$t('sidebar.projects.namePrompt'));
-      if (name?.trim()) this.dispatchProjectAction({ action: 'create', name: name.trim(), agentId });
+      if (!this.projectCreateAgentId || this.projectCreateSubmitting) return;
+      this.projectCreateOpen = true;
+      this.projectCreateName = '';
+      this.$nextTick(() => this.$refs.projectCreateInput?.focus?.());
+    },
+    cancelProjectCreate() {
+      if (this.projectCreateSubmitting) return;
+      this.projectCreateOpen = false;
+      this.projectCreateName = '';
+    },
+    async submitProjectCreate() {
+      const name = this.projectCreateName.trim();
+      const agentId = this.projectCreateAgentId;
+      if (!name || !agentId || this.projectCreateSubmitting) return;
+      this.projectCreateSubmitting = true;
+      try {
+        const result = await this.dispatchProjectAction({ action: 'create', name, agentId });
+        if (result?.ok !== false) {
+          this.projectCreateOpen = false;
+          this.projectCreateName = '';
+        }
+      } finally {
+        this.projectCreateSubmitting = false;
+      }
     },
     renameProject(project) {
       if (!this.canEditProject(project)) return;
@@ -277,23 +289,32 @@ export default {
           <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 4h16v13H7l-3 3V4zm2 2v9.17L6.17 15H18V6H6zm5 2h2v2h2v2h-2v2h-2v-2H9v-2h2V8z"/></svg>
           <span>{{ $t('sidebar.sessions.newChat') }}</span>
         </button>
-        <label class="sidebar-search-field">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m19.6 21-6.3-6.3a7.5 7.5 0 1 1 1.4-1.4L21 19.6 19.6 21ZM5 9.5A4.5 4.5 0 1 0 14 9.5 4.5 4.5 0 0 0 5 9.5Z"/></svg>
-          <input v-model="query" type="search" :placeholder="$t('sidebar.sessions.search')" />
-        </label>
       </div>
 
       <div class="sidebar-session-results">
         <section class="sidebar-section projects-section">
           <div class="sidebar-section-heading">
             <span>{{ $t('sidebar.projects.title') }}</span>
-            <button type="button" class="sidebar-tool-button" @click="createProject" :disabled="!agents.some(agent => agent.online)" :title="$t('sidebar.projects.new')" :aria-label="$t('sidebar.projects.new')">
+            <button type="button" class="sidebar-tool-button" @click="createProject" :disabled="!projectCreateAgentId || projectCreateOpen" :title="$t('sidebar.projects.new')" :aria-label="$t('sidebar.projects.new')">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"/></svg>
             </button>
           </div>
 
-          <div v-if="visibleProjectRows.length === 0" class="sidebar-section-empty">{{ $t('sidebar.projects.empty') }}</div>
-          <div v-for="project in visibleProjectRows" :key="projectKey(project)" class="sidebar-project">
+          <form v-if="projectCreateOpen" class="sidebar-project-create" @submit.prevent="submitProjectCreate" @keydown.escape.stop.prevent="cancelProjectCreate">
+            <input
+              ref="projectCreateInput"
+              v-model="projectCreateName"
+              type="text"
+              :placeholder="$t('sidebar.projects.namePrompt')"
+              :aria-label="$t('sidebar.projects.namePrompt')"
+              :disabled="projectCreateSubmitting"
+            />
+            <button type="submit" class="sidebar-project-create-confirm" :disabled="!projectCreateName.trim() || projectCreateSubmitting" :aria-label="$t('common.confirm')">{{ $t('common.confirm') }}</button>
+            <button type="button" class="sidebar-project-create-cancel" :disabled="projectCreateSubmitting" @click="cancelProjectCreate" :aria-label="$t('common.cancel')">{{ $t('common.cancel') }}</button>
+          </form>
+
+          <div v-if="projectRows.length === 0 && !projectCreateOpen" class="sidebar-section-empty">{{ $t('sidebar.projects.empty') }}</div>
+          <div v-for="project in projectRows" :key="projectKey(project)" class="sidebar-project">
             <div
               class="sidebar-project-header"
               :class="{ 'drag-over': dragTargetProjectId === projectKey(project) }"
