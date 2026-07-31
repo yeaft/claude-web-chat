@@ -1,4 +1,5 @@
 import { mergeMessagesByStableId } from './messages.js';
+import { retireYeaftConversation } from './yeaft-conversation-generation.js';
 import { startYeaftWatchdog, stopProcessingWatchdog } from './watchdog.js';
 
 function mergeRows(store, sourceConversationId, targetConversationId) {
@@ -18,9 +19,13 @@ function copyRuntimeValue(value) {
   return { ...value };
 }
 
-function moveMapEntry(map, sourceConversationId, targetConversationId, { removeSource, transferRuntime }) {
-  if (!map || !Object.prototype.hasOwnProperty.call(map, sourceConversationId)) return;
-  if (transferRuntime) {
+function hasMapEntry(map, conversationId) {
+  return !!map && Object.prototype.hasOwnProperty.call(map, conversationId);
+}
+
+function moveMapEntry(map, sourceConversationId, targetConversationId, { removeSource }) {
+  if (!hasMapEntry(map, sourceConversationId)) return;
+  if (!hasMapEntry(map, targetConversationId)) {
     map[targetConversationId] = removeSource
       ? map[sourceConversationId]
       : copyRuntimeValue(map[sourceConversationId]);
@@ -59,50 +64,63 @@ export function clearYeaftConversationPromotion(store, agentId, targetConversati
   return pending;
 }
 
+export function retargetYeaftConversationPromotion(store, agentId, targetConversationId) {
+  const pending = pendingYeaftConversationPromotion(store, agentId);
+  if (!pending || !targetConversationId || pending.targetConversationId === targetConversationId) return null;
+  migrateYeaftConversationState(store, pending.targetConversationId, targetConversationId, {
+    removeSource: true,
+  });
+  retireYeaftConversation(store, agentId, pending.targetConversationId);
+  rememberYeaftConversationPromotion(store, agentId, pending.sourceConversationId, targetConversationId);
+  return pending;
+}
+
 export function migrateYeaftConversationState(store, sourceConversationId, targetConversationId, {
   removeSource = true,
 } = {}) {
   if (!sourceConversationId || !targetConversationId || sourceConversationId === targetConversationId) return false;
 
   mergeRows(store, sourceConversationId, targetConversationId);
-  const targetHasProcessing = Object.prototype.hasOwnProperty.call(store.processingConversations || {}, targetConversationId);
-  const targetHasExecution = Object.prototype.hasOwnProperty.call(store.executionStatusMap || {}, targetConversationId);
-  const targetHasHealth = Object.prototype.hasOwnProperty.call(store.sessionHealth || {}, targetConversationId);
-  const targetOwnsRuntime = targetHasProcessing || targetHasExecution;
-  const transferRuntime = !removeSource || !targetOwnsRuntime;
-  moveMapEntry(store.processingConversations, sourceConversationId, targetConversationId, { removeSource, transferRuntime });
-  moveMapEntry(store.executionStatusMap, sourceConversationId, targetConversationId, { removeSource, transferRuntime });
-  const sourceHealth = store.sessionHealth?.[sourceConversationId];
-  moveMapEntry(store.refreshingSessionMap, sourceConversationId, targetConversationId, { removeSource, transferRuntime });
-  moveMapEntry(store._closedAt, sourceConversationId, targetConversationId, { removeSource, transferRuntime });
-  moveMapEntry(store._autoRefreshed, sourceConversationId, targetConversationId, { removeSource, transferRuntime });
+  moveMapEntry(store.processingConversations, sourceConversationId, targetConversationId, { removeSource });
+  moveMapEntry(store.executionStatusMap, sourceConversationId, targetConversationId, { removeSource });
+  moveMapEntry(store.refreshingSessionMap, sourceConversationId, targetConversationId, { removeSource });
+  moveMapEntry(store._closedAt, sourceConversationId, targetConversationId, { removeSource });
+  moveMapEntry(store._autoRefreshed, sourceConversationId, targetConversationId, { removeSource });
+  moveMapEntry(store.sessionHealth, sourceConversationId, targetConversationId, { removeSource });
 
   if (store._turnCompletedConvs?.has(sourceConversationId)) {
-    if (transferRuntime) store._turnCompletedConvs.add(targetConversationId);
+    store._turnCompletedConvs.add(targetConversationId);
     if (removeSource) store._turnCompletedConvs.delete(sourceConversationId);
   }
 
   const sourceUsesYeaftWatchdog = !!store._yeaftWatchdogConvs?.has(sourceConversationId);
-  const hadWatchdog = !!store._processingWatchdogs?.[sourceConversationId];
-  if (removeSource && hadWatchdog) stopProcessingWatchdog(store, sourceConversationId);
+  const hadSourceWatchdog = !!store._processingWatchdogs?.[sourceConversationId];
+  if (removeSource && hadSourceWatchdog) stopProcessingWatchdog(store, sourceConversationId);
   if (removeSource && store._pongTimeouts?.[sourceConversationId]) {
     clearTimeout(store._pongTimeouts[sourceConversationId]);
     delete store._pongTimeouts[sourceConversationId];
   }
-  if (hadWatchdog && removeSource && transferRuntime && store.processingConversations?.[targetConversationId]) {
-    startYeaftWatchdog(store, targetConversationId);
-  } else if (sourceUsesYeaftWatchdog && removeSource && targetOwnsRuntime
-      && store.processingConversations?.[targetConversationId]) {
+  const shouldRestoreYeaftWatchdog = removeSource
+    && (hadSourceWatchdog || sourceUsesYeaftWatchdog)
+    && !!store.processingConversations?.[targetConversationId];
+  if (shouldRestoreYeaftWatchdog) {
     if (store._processingWatchdogs?.[targetConversationId]) {
       store._yeaftWatchdogConvs?.add(targetConversationId);
     } else {
+      const targetHadHealth = hasMapEntry(store.sessionHealth, targetConversationId);
+      const targetHealth = store.sessionHealth?.[targetConversationId];
+      const targetHadAutoRefresh = hasMapEntry(store._autoRefreshed, targetConversationId);
+      const targetAutoRefreshed = store._autoRefreshed?.[targetConversationId];
       startYeaftWatchdog(store, targetConversationId);
+      if (targetHadHealth) {
+        if (!store.sessionHealth) store.sessionHealth = {};
+        store.sessionHealth[targetConversationId] = targetHealth;
+      }
+      if (targetHadAutoRefresh) {
+        if (!store._autoRefreshed) store._autoRefreshed = {};
+        store._autoRefreshed[targetConversationId] = targetAutoRefreshed;
+      }
     }
-  }
-  if (sourceHealth) {
-    if (!store.sessionHealth) store.sessionHealth = {};
-    if (!targetHasHealth) store.sessionHealth[targetConversationId] = sourceHealth;
-    if (removeSource) delete store.sessionHealth[sourceConversationId];
   }
 
   if (removeSource && store.messagesMap) delete store.messagesMap[sourceConversationId];

@@ -15,7 +15,13 @@ import {
   migrateYeaftConversationState,
   pendingYeaftConversationPromotion,
   rememberYeaftConversationPromotion,
+  retargetYeaftConversationPromotion,
 } from './helpers/yeaft-conversation-state.js';
+import {
+  isRetiredYeaftConversation,
+  retireYeaftConversation,
+  reviveYeaftConversation,
+} from './helpers/yeaft-conversation-generation.js';
 import { incVpTyping, decVpTyping } from './helpers/vp-typing.js';
 import { selectActiveConversationId } from './helpers/active-conv.js';
 import { trimDebugRetention } from './helpers/debug-retention.js';
@@ -846,6 +852,7 @@ export const useChatStore = defineStore('chat', {
     yeaftConversationId: null,     // 当前 Yeaft agent 的虚拟 conversationId（从 agent session_ready 获取）
     yeaftConversationIdsByAgent: {}, // { [agentId]: conversationId } 跨机器 agent 的 Yeaft message cache 隔离
     _yeaftPendingConversationPromotions: {}, // { [agentId]: { sourceConversationId, targetConversationId } }
+    _yeaftRetiredConversationIdsByAgent: {}, // { [agentId]: string[] }, bounded bridge-generation fence
     yeaftSessionAgentById: {},      // Legacy bare-session owner cache; activeSessionKey wins when ids collide.
     yeaftModel: null,              // agent/default Yeaft 模型名；Session override lives in sessions[].config.model
     yeaftModelEffort: null,        // agent/default effort；Session override lives in sessions[].config.modelEffort
@@ -3436,6 +3443,14 @@ export const useChatStore = defineStore('chat', {
     },
     handleYeaftOutput(msg) {
       if (!msg) return;
+      const envelopeAgentId = msg.agentId || this.yeaftAgentId || this.currentAgent || null;
+      const envelopeConversationId = msg.conversationId || msg.event?.conversationId || null;
+      const retiredEnvelopeConversation = isRetiredYeaftConversation(
+        this,
+        envelopeAgentId,
+        envelopeConversationId,
+      );
+      if (msg.data && retiredEnvelopeConversation) return;
       if (msg.perfTraceId) {
         recordPerfTrace(this, {
           traceId: msg.perfTraceId,
@@ -3457,6 +3472,8 @@ export const useChatStore = defineStore('chat', {
 
       // ── Assistant output frame data: dispatch through the shared pipeline ──
       if (msg.data) {
+        const frameAgentId = msg.agentId || this.yeaftAgentId || this.currentAgent || null;
+        const conversationId = resolveYeaftEnvelopeConversationId(this, frameAgentId, msg.conversationId);
         // `llm_retry` remains visible while the replacement request is silent.
         // Its first real output frame proves recovery, so clear only the retry
         // annotation; the turn itself stays active until vp_turn_end.
@@ -3475,14 +3492,23 @@ export const useChatStore = defineStore('chat', {
             [frameTurnKey]: activeTurn,
           };
         }
-        const conversationId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId);
         if (conversationId) {
-          const frameAgentId = msg.agentId || this.yeaftAgentId || this.currentAgent || null;
           const msgSessionId = msg.sessionId ?? msg.groupId ?? null;
           const outputIsVisible = isVisibleYeaftOutput(this, msgSessionId, frameAgentId);
           const previousAgentConvId = frameAgentId && this.yeaftConversationIdsByAgent
             ? this.yeaftConversationIdsByAgent[frameAgentId]
             : null;
+          const pendingForAgent = pendingYeaftConversationPromotion(this, frameAgentId);
+          if (pendingForAgent && pendingForAgent.targetConversationId !== conversationId) {
+            retargetYeaftConversationPromotion(this, frameAgentId, conversationId);
+          } else if (!pendingForAgent && previousAgentConvId && previousAgentConvId !== conversationId
+              && !String(previousAgentConvId).startsWith('yeaft-local-')) {
+            migrateYeaftConversationState(this, previousAgentConvId, conversationId, {
+              removeSource: previousAgentConvId !== this.yeaftConversationId,
+            });
+            retireYeaftConversation(this, frameAgentId, previousAgentConvId);
+          }
+          reviveYeaftConversation(this, frameAgentId, conversationId);
           const pendingPromotion = pendingYeaftConversationPromotion(this, frameAgentId, conversationId);
           const promotionSourceId = pendingPromotion?.sourceConversationId || previousAgentConvId;
           const retainVisibleSource = !outputIsVisible && promotionSourceId === this.yeaftConversationId;
@@ -3694,6 +3720,7 @@ export const useChatStore = defineStore('chat', {
         case 'session_ready': {
           const agentConvId = event.conversationId;
           const statusAgentId = msg.agentId || this.currentAgent;
+          if (isRetiredYeaftConversation(this, statusAgentId, agentConvId)) break;
           const previousAgentConvId = statusAgentId && this.yeaftConversationIdsByAgent
             ? this.yeaftConversationIdsByAgent[statusAgentId]
             : null;
@@ -3705,6 +3732,14 @@ export const useChatStore = defineStore('chat', {
           const localConvId = previousAgentConvId || fallbackLocalConvId;
           const readySessionId = event.sessionId || msg.sessionId || null;
           const readyIsVisible = isVisibleYeaftOutput(this, readySessionId, statusAgentId);
+          const pendingForAgent = pendingYeaftConversationPromotion(this, statusAgentId);
+          if (pendingForAgent && pendingForAgent.targetConversationId !== agentConvId) {
+            retargetYeaftConversationPromotion(this, statusAgentId, agentConvId);
+          } else if (!pendingForAgent && previousAgentConvId && previousAgentConvId !== agentConvId
+              && !String(previousAgentConvId).startsWith('yeaft-local-')) {
+            retireYeaftConversation(this, statusAgentId, previousAgentConvId);
+          }
+          reviveYeaftConversation(this, statusAgentId, agentConvId);
           const pendingPromotion = pendingYeaftConversationPromotion(this, statusAgentId, agentConvId);
           const promotionSourceId = pendingPromotion?.sourceConversationId || localConvId;
           const retainVisibleSource = !readyIsVisible && promotionSourceId === this.yeaftConversationId;

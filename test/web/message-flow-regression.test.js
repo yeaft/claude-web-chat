@@ -14,6 +14,7 @@ import UnifiedSessionList from '../../web/components/UnifiedSessionList.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
 import WorkCenterPage from '../../web/components/WorkCenterPage.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
+import { migrateYeaftConversationState } from '../../web/stores/helpers/yeaft-conversation-state.js';
 import {
   beginCatalogMutation,
   beginChatHistoryRequest,
@@ -1593,6 +1594,107 @@ describe('message flow regressions', () => {
     expect(scopedVpStore.vpList.map(vp => vp.vpId)).toEqual(['b-only']);
     scopedModal.unmount();
 
+    // The create/resume modal must preserve the full Agent + Session identity.
+    // Duplicate ids are legal across Agents; selecting B must never reuse A's
+    // active key or route history through A while select_agent is in flight.
+    storeFactories.clear();
+    const exactSessionsStore = useSessionsStore();
+    const exactChatStore = useChatStore();
+    const exactVpStore = Vue.reactive({
+      vpList: [{ vpId: 'omni' }],
+      vpOrder: ['omni'],
+      emptyLibrary: false,
+      lastSnapshotAt: 1,
+      lastVpSnapshotAgentId: 'agent-b',
+      snapshotStatus: 'ready',
+      snapshotAgentId: 'agent-b',
+      vpLabel: id => id,
+    });
+    const exactModalPinia = {
+      ...originalPinia,
+      useChatStore: () => exactChatStore,
+      useSessionsStore: () => exactSessionsStore,
+      useVpStore: () => exactVpStore,
+    };
+    globalThis.Pinia = exactModalPinia;
+    window.Pinia = exactModalPinia;
+    exactChatStore.sendWsMessage = vi.fn(() => true);
+    exactChatStore.currentView = 'chat';
+    exactChatStore.currentAgent = 'agent-a';
+    exactChatStore.currentAgentInfo = { id: 'agent-a' };
+    exactChatStore.agents = [
+      { id: 'agent-a', name: 'Agent A', online: true, workDir: '/repo-a' },
+      { id: 'agent-b', name: 'Agent B', online: true, workDir: '/repo-b' },
+    ];
+    exactSessionsStore.resetInventory();
+    exactSessionsStore.applySnapshot([{ id: 'grp_default', name: 'A default', workDir: '/repo-a' }], 'agent-a');
+    exactSessionsStore.applySnapshot([{ id: 'grp_default', name: 'B default', workDir: '/repo-b' }], 'agent-b');
+    exactSessionsStore.setActive('grp_default', 'agent-a');
+    exactChatStore.currentView = 'yeaft';
+    exactChatStore.yeaftActiveSessionFilter = 'grp_default';
+    exactChatStore.yeaftSessionAgentById = { grp_default: 'agent-a' };
+    exactChatStore.yeaftConversationIdsByAgent = { 'agent-a': 'conv-a', 'agent-b': 'conv-b' };
+    exactChatStore.yeaftConversationId = 'conv-a';
+    exactChatStore.activeConversations = ['conv-a'];
+    exactChatStore.messagesMap = { 'conv-a': [], 'conv-b': [] };
+    exactChatStore.yeaftSessionHistoryState = {};
+    localStorage.setItem('lastViewedYeaftSession', 'agent-a\u001fgrp_default');
+
+    const exactModal = mount(SessionCreateModal, {
+      attachTo: document.body,
+      global: { mocks: { $t: key => key }, stubs: { Teleport: true, VpAvatar: true } },
+    });
+    await Vue.nextTick();
+    exactModal.vm.form.agentId = 'agent-b';
+    await Vue.nextTick();
+    exactModal.vm.scannedSessions = [{
+      id: 'grp_default', name: 'B default', agentId: 'agent-b', workDir: '/repo-b',
+    }];
+    await Vue.nextTick();
+
+    exactSessionsStore.applySnapshot([], 'agent-b');
+    await Vue.nextTick();
+    expect(exactModal.vm.sessionsInDir[0].inSidebar).toBe(false);
+    exactSessionsStore.applySnapshot([{ id: 'grp_default', name: 'B default', workDir: '/repo-b' }], 'agent-b');
+    exactSessionsStore.setActive('grp_default', 'agent-a');
+    exactChatStore.currentAgent = 'agent-a';
+    exactChatStore.currentAgentInfo = { id: 'agent-a' };
+    exactChatStore.yeaftActiveSessionFilter = 'grp_default';
+    exactChatStore.yeaftSessionAgentById = { grp_default: 'agent-a' };
+    exactChatStore.yeaftConversationId = 'conv-a';
+    exactChatStore.activeConversations = ['conv-a'];
+    exactChatStore.sendWsMessage.mockClear();
+    exactModal.vm.resumeExisting(exactModal.vm.sessionsInDir[0]);
+    expect(exactSessionsStore.activeSessionKey).toBe('agent-b\u001fgrp_default');
+    expect(exactChatStore.currentAgent).toBe('agent-b');
+    expect(exactChatStore.yeaftConversationId).toBe('conv-b');
+    expect(exactChatStore.activeConversations).toEqual(['conv-b']);
+    expect(localStorage.getItem('lastViewedYeaftSession')).toBe('agent-b\u001fgrp_default');
+    expect(exactChatStore.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_load_history')).toEqual([
+      expect.objectContaining({ agentId: 'agent-b', sessionId: 'grp_default' }),
+    ]);
+
+    const setActiveSpy = vi.spyOn(exactSessionsStore, 'setActive');
+    const setFilterSpy = vi.spyOn(exactChatStore, 'setActiveSessionFilter');
+    exactChatStore.sessionCrudRequest = vi.fn(() => Promise.resolve({
+      ok: true, session: { id: 'grp_default', name: 'Restored default' },
+    }));
+    await exactModal.vm.onRestoreClick({ id: 'grp_default', name: 'Disk default' });
+    expect(setActiveSpy).toHaveBeenLastCalledWith('grp_default', 'agent-b');
+    expect(setFilterSpy).toHaveBeenLastCalledWith('grp_default', { agentId: 'agent-b', force: true });
+
+    exactModal.vm.form.vpIds = ['omni'];
+    exactModal.vm.form.defaultVpId = 'omni';
+    exactChatStore.createYeaftSession = vi.fn(() => Promise.resolve({
+      ok: true, session: { id: 'grp_default', name: 'Created default', agentId: 'agent-b' },
+    }));
+    await exactModal.vm.onSubmit();
+    expect(setActiveSpy).toHaveBeenLastCalledWith('grp_default', 'agent-b');
+    expect(setFilterSpy).toHaveBeenLastCalledWith('grp_default', { agentId: 'agent-b', force: true });
+    setActiveSpy.mockRestore();
+    setFilterSpy.mockRestore();
+    exactModal.unmount();
+
     globalThis.Pinia = originalPinia;
     window.Pinia = originalWindowPinia;
 
@@ -1841,6 +1943,96 @@ describe('message flow regressions', () => {
     expect(store._yeaftWatchdogConvs.has(ownedTargetId)).toBe(true);
     clearTimeout(store._processingWatchdogs[ownedTargetId]);
 
+    // Runtime slots have independent target authority. A target execution frame
+    // must not suppress source processing or its watchdog during finalization.
+    const executionOwnedSourceId = 'yeaft-local-agent-a-execution-owned-source';
+    const executionOwnedTargetId = 'yeaft-agent-a-execution-owned-target';
+    const executionOwnedStore = {
+      messagesMap: { [executionOwnedSourceId]: [], [executionOwnedTargetId]: [] },
+      processingConversations: { [executionOwnedSourceId]: true },
+      executionStatusMap: {
+        [executionOwnedSourceId]: { currentTool: { name: 'OldTool' } },
+        [executionOwnedTargetId]: { currentTool: { name: 'NewTool' } },
+      },
+      sessionHealth: {
+        [executionOwnedSourceId]: { status: 'source-health' },
+        [executionOwnedTargetId]: { status: 'target-health' },
+      },
+      refreshingSessionMap: {
+        [executionOwnedSourceId]: true,
+        [executionOwnedTargetId]: false,
+      },
+      _closedAt: { [executionOwnedSourceId]: 11 },
+      _autoRefreshed: {
+        [executionOwnedSourceId]: false,
+        [executionOwnedTargetId]: true,
+      },
+      _turnCompletedConvs: new Set([executionOwnedSourceId]),
+      _processingWatchdogs: { [executionOwnedSourceId]: setTimeout(() => {}, 60_000) },
+      _pongTimeouts: { [executionOwnedSourceId]: setTimeout(() => {}, 60_000) },
+      _yeaftWatchdogConvs: new Set([executionOwnedSourceId]),
+    };
+    migrateYeaftConversationState(executionOwnedStore, executionOwnedSourceId, executionOwnedTargetId);
+    expect(executionOwnedStore.processingConversations).toEqual({ [executionOwnedTargetId]: true });
+    expect(executionOwnedStore.executionStatusMap).toEqual({
+      [executionOwnedTargetId]: { currentTool: { name: 'NewTool' } },
+    });
+    expect(executionOwnedStore.sessionHealth).toEqual({
+      [executionOwnedTargetId]: { status: 'target-health' },
+    });
+    expect(executionOwnedStore.refreshingSessionMap).toEqual({ [executionOwnedTargetId]: false });
+    expect(executionOwnedStore._closedAt).toEqual({ [executionOwnedTargetId]: 11 });
+    expect(executionOwnedStore._autoRefreshed).toEqual({ [executionOwnedTargetId]: true });
+    expect([...executionOwnedStore._turnCompletedConvs]).toEqual([executionOwnedTargetId]);
+    expect(executionOwnedStore._processingWatchdogs[executionOwnedSourceId]).toBeUndefined();
+    expect(executionOwnedStore._pongTimeouts[executionOwnedSourceId]).toBeUndefined();
+    expect(executionOwnedStore._processingWatchdogs[executionOwnedTargetId]).toBeTruthy();
+    expect(executionOwnedStore._yeaftWatchdogConvs.has(executionOwnedTargetId)).toBe(true);
+    clearTimeout(executionOwnedStore._processingWatchdogs[executionOwnedTargetId]);
+
+    // The inverse mix is equally important: target processing must not suppress
+    // source execution or the other source-only lifecycle slots.
+    const processingOwnedSourceId = 'yeaft-local-agent-a-processing-owned-source';
+    const processingOwnedTargetId = 'yeaft-agent-a-processing-owned-target';
+    const processingOwnedStore = {
+      messagesMap: { [processingOwnedSourceId]: [], [processingOwnedTargetId]: [] },
+      processingConversations: {
+        [processingOwnedSourceId]: true,
+        [processingOwnedTargetId]: true,
+      },
+      executionStatusMap: {
+        [processingOwnedSourceId]: { currentTool: { name: 'SourceTool' } },
+      },
+      sessionHealth: {
+        [processingOwnedSourceId]: { status: 'source-health' },
+      },
+      refreshingSessionMap: { [processingOwnedSourceId]: true },
+      _closedAt: {
+        [processingOwnedSourceId]: 21,
+        [processingOwnedTargetId]: 22,
+      },
+      _autoRefreshed: { [processingOwnedSourceId]: true },
+      _turnCompletedConvs: new Set([processingOwnedSourceId]),
+      _processingWatchdogs: { [processingOwnedSourceId]: setTimeout(() => {}, 60_000) },
+      _yeaftWatchdogConvs: new Set([processingOwnedSourceId]),
+    };
+    migrateYeaftConversationState(processingOwnedStore, processingOwnedSourceId, processingOwnedTargetId);
+    expect(processingOwnedStore.processingConversations).toEqual({ [processingOwnedTargetId]: true });
+    expect(processingOwnedStore.executionStatusMap).toEqual({
+      [processingOwnedTargetId]: { currentTool: { name: 'SourceTool' } },
+    });
+    expect(processingOwnedStore.sessionHealth).toEqual({
+      [processingOwnedTargetId]: { status: 'source-health' },
+    });
+    expect(processingOwnedStore.refreshingSessionMap).toEqual({ [processingOwnedTargetId]: true });
+    expect(processingOwnedStore._closedAt).toEqual({ [processingOwnedTargetId]: 22 });
+    expect(processingOwnedStore._autoRefreshed).toEqual({ [processingOwnedTargetId]: true });
+    expect([...processingOwnedStore._turnCompletedConvs]).toEqual([processingOwnedTargetId]);
+    expect(processingOwnedStore._processingWatchdogs[processingOwnedSourceId]).toBeUndefined();
+    expect(processingOwnedStore._processingWatchdogs[processingOwnedTargetId]).toBeTruthy();
+    expect(processingOwnedStore._yeaftWatchdogConvs.has(processingOwnedTargetId)).toBe(true);
+    clearTimeout(processingOwnedStore._processingWatchdogs[processingOwnedTargetId]);
+
     // Recreate the same background-first ordering so session_ready, rather than
     // history or data output, proves it can also finalize the promotion.
     const readySourceId = 'yeaft-local-agent-a-ready';
@@ -1884,6 +2076,127 @@ describe('message flow regressions', () => {
     expect(store._processingWatchdogs[readyTargetId]).toBeTruthy();
     expect(store._yeaftPendingConversationPromotions['agent-a']).toBeUndefined();
     clearTimeout(store._processingWatchdogs[readyTargetId]);
+
+    // A newer bridge generation retargets the pending visible source and retires
+    // the old target. Late data, session_ready, and history frames from that old
+    // generation may not reclaim the Agent map or visible transcript.
+    const generationSourceId = 'yeaft-local-agent-a-generation-source';
+    const generationTargetOneId = 'yeaft-agent-a-generation-one';
+    const generationTargetTwoId = 'yeaft-agent-a-generation-two';
+    store.currentView = 'yeaft';
+    store.currentAgent = 'agent-a';
+    store.yeaftActiveSessionFilter = 'visible-session';
+    runtimeSessionsStore.setActive('visible-session', 'agent-a');
+    store.yeaftConversationId = generationSourceId;
+    store.activeConversations = [generationSourceId];
+    store.yeaftConversationIdsByAgent = { 'agent-a': generationSourceId };
+    store.messagesMap = {
+      ...store.messagesMap,
+      [generationSourceId]: [{
+        id: 'generation-source-row', type: 'user', content: 'pending generation', sessionId: 'visible-session', timestamp: 5,
+      }],
+    };
+    store.processingConversations = { [generationSourceId]: true };
+    store.executionStatusMap = {
+      [generationSourceId]: { currentTool: { name: 'SourceTool' }, toolHistory: [], lastActivity: 5 },
+    };
+    store._processingWatchdogs = { [generationSourceId]: setTimeout(() => {}, 60_000) };
+    store._yeaftWatchdogConvs = new Set([generationSourceId]);
+    store._yeaftPendingConversationPromotions = {};
+    store._yeaftRetiredConversationIdsByAgent = {};
+    store.yeaftSessionHistoryState = {};
+
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: generationTargetOneId,
+      sessionId: 'background-session',
+      data: { type: 'assistant', message: { id: 'generation-one-row', content: 'generation one' } },
+    });
+    expect(store._yeaftPendingConversationPromotions['agent-a']).toEqual({
+      sourceConversationId: generationSourceId,
+      targetConversationId: generationTargetOneId,
+    });
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      sessionId: 'visible-session',
+      event: {
+        type: 'session_ready', conversationId: generationTargetTwoId, sessionId: 'visible-session', tasks: [],
+      },
+    });
+    expect(store.yeaftConversationIdsByAgent['agent-a']).toBe(generationTargetTwoId);
+    expect(store.yeaftConversationId).toBe(generationTargetTwoId);
+    expect(store.activeConversations).toEqual([generationTargetTwoId]);
+    expect(store._yeaftPendingConversationPromotions['agent-a']).toBeUndefined();
+    expect(store.messagesMap[generationSourceId]).toBeUndefined();
+    expect(store.messagesMap[generationTargetOneId]).toBeUndefined();
+    expect(store.messagesMap[generationTargetTwoId]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'generation-source-row' }),
+      expect.objectContaining({ id: 'generation-one-row' }),
+    ]));
+
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: generationTargetOneId,
+      sessionId: 'visible-session',
+      data: { type: 'assistant', message: { id: 'late-generation-one-data', content: 'late old data' } },
+    });
+    expect(store.yeaftConversationIdsByAgent['agent-a']).toBe(generationTargetTwoId);
+    expect(store.yeaftConversationId).toBe(generationTargetTwoId);
+    expect(store.activeConversations).toEqual([generationTargetTwoId]);
+
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      sessionId: 'visible-session',
+      event: {
+        type: 'session_ready', conversationId: generationTargetOneId, sessionId: 'visible-session', tasks: [],
+      },
+    });
+    expect(store.yeaftConversationIdsByAgent['agent-a']).toBe(generationTargetTwoId);
+    expect(store.yeaftConversationId).toBe(generationTargetTwoId);
+    expect(store.activeConversations).toEqual([generationTargetTwoId]);
+
+    store.activeVpTurns = {
+      'agent-a\u001fgeneration-turn': {
+        agentId: 'agent-a', turnId: 'generation-turn', vpId: 'omni', sessionId: 'visible-session', isStreaming: true,
+      },
+    };
+    store.yeaftProcessingSessions = { 'agent-a\u001fvisible-session': true };
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: generationTargetOneId,
+      sessionId: 'visible-session',
+      event: {
+        type: 'vp_turn_end',
+        turnId: 'generation-turn',
+        vpId: 'omni',
+        sessionId: 'visible-session',
+        reason: 'end_turn',
+      },
+    });
+    expect(store.activeVpTurns['agent-a\u001fgeneration-turn']).toBeUndefined();
+    expect(store.yeaftProcessingSessions['agent-a\u001fvisible-session']).toBeUndefined();
+    expect(store.yeaftConversationIdsByAgent['agent-a']).toBe(generationTargetTwoId);
+    expect(store.yeaftConversationId).toBe(generationTargetTwoId);
+
+    store.handleMessage({
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-a',
+      conversationId: generationTargetOneId,
+      sessionId: 'visible-session',
+      mode: 'delta',
+      messages: [{
+        id: 'late-generation-one-history', role: 'assistant', content: 'late old history', sessionId: 'visible-session', ts: 6,
+      }],
+      latestSeq: 6,
+      hasMore: false,
+    });
+    expect(store.yeaftConversationIdsByAgent['agent-a']).toBe(generationTargetTwoId);
+    expect(store.yeaftConversationId).toBe(generationTargetTwoId);
+    expect(store.activeConversations).toEqual([generationTargetTwoId]);
+    expect(store.messagesMap[generationTargetTwoId]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'late-generation-one-history' }),
+    ]));
+    clearTimeout(store._processingWatchdogs[generationTargetTwoId]);
 
     // Continue the existing history-order matrix from its original bridge id.
     store.yeaftConversationId = bridgeConversationId;

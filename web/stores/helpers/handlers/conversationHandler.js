@@ -7,7 +7,9 @@ import {
   clearYeaftConversationPromotion,
   migrateYeaftConversationState,
   pendingYeaftConversationPromotion,
+  retargetYeaftConversationPromotion,
 } from '../yeaft-conversation-state.js';
+import { isRetiredYeaftConversation } from '../yeaft-conversation-generation.js';
 import { clearSessionLoading } from '../session.js';
 import { sameUserMessage } from '../dedup.js';
 import { maxDbMessageId } from '../messages.js';
@@ -222,6 +224,19 @@ function promoteVisibleYeaftHistoryConversation(store, msg, sessionId, conversat
   if (activeIdentity.agentId && activeIdentity.agentId !== agentId) return;
 
   const visibleConversationId = store.yeaftConversationId || null;
+  if (isRetiredYeaftConversation(store, agentId, conversationId)) {
+    const currentConversationId = store.yeaftConversationIdsByAgent?.[agentId] || null;
+    if (currentConversationId && currentConversationId !== conversationId) {
+      migrateYeaftConversationState(store, conversationId, currentConversationId, {
+        removeSource: conversationId !== store.yeaftConversationId,
+      });
+    }
+    return;
+  }
+  const pendingForAgent = pendingYeaftConversationPromotion(store, agentId);
+  if (pendingForAgent && pendingForAgent.targetConversationId !== conversationId) {
+    retargetYeaftConversationPromotion(store, agentId, conversationId);
+  }
   const pendingPromotion = pendingYeaftConversationPromotion(store, agentId, conversationId);
   if (pendingPromotion) {
     migrateYeaftConversationState(store, pendingPromotion.sourceConversationId, conversationId, {
@@ -882,6 +897,15 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
 
 export function handleYeaftHistoryChunk(store, msg) {
   const msgSessionId = msg.sessionId != null ? msg.sessionId : msg.groupId;
+  const retiredAgentId = msg.agentId || (msgSessionId && store.yeaftSessionAgentById?.[msgSessionId]) || null;
+  if (isRetiredYeaftConversation(store, retiredAgentId, msg.conversationId)) {
+    const currentConversationId = store.yeaftConversationIdsByAgent?.[retiredAgentId] || null;
+    if (!currentConversationId || currentConversationId === msg.conversationId) return;
+    migrateYeaftConversationState(store, msg.conversationId, currentConversationId, {
+      removeSource: msg.conversationId !== store.yeaftConversationId,
+    });
+    msg = { ...msg, conversationId: currentConversationId };
+  }
   if (msg.requestId && typeof store.isCurrentYeaftHistoryResponse === 'function'
       && !store.isCurrentYeaftHistoryResponse(msg)) return;
   const mode = msg.mode === 'recent' || msg.mode === 'delta' ? msg.mode : 'older';
