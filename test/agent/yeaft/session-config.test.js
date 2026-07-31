@@ -59,7 +59,7 @@ afterEach(() => {
 });
 
 describe('Yeaft session-scoped model config', () => {
-  it('keeps model and effort isolated per Session', () => {
+  it('keeps model and effort isolated per Session', async () => {
     expect(normalizeLlmRetry(null, null)).toMatchObject({
       maxRetries: 3,
       streamIdleTimeoutMs: 90_000,
@@ -100,8 +100,19 @@ describe('Yeaft session-scoped model config', () => {
     expect(sharedSessionIdsForProject(root, 'session-a')).toEqual(['session-b']);
     const siblingSummary = join(root, 'memory', 'sessions', 'session-b');
     mkdirSync(siblingSummary, { recursive: true });
-    writeFileSync(join(siblingSummary, 'summary.md'), '<!-- updatedAt: 2026-07-31 -->\nShared release decision\n');
-    expect(__testHooks.sharedProjectContext(root, 'session-a')).toContain('[Session session-b]\nShared release decision');
+    writeFileSync(join(siblingSummary, 'summary.zh.md'), '共享发布决策\n');
+    expect(await __testHooks.sharedProjectContext(root, 'session-a', { language: 'zh' }))
+      .toBe('[Session session-b]\n共享发布决策');
+    rmSync(join(siblingSummary, 'summary.zh.md'));
+    writeFileSync(join(siblingSummary, 'summary.md'), 'English fallback decision\n');
+    expect(await __testHooks.sharedProjectContext(root, 'session-a', { language: 'zh' }))
+      .toBe('[Session session-b]\nEnglish fallback decision');
+    writeFileSync(join(siblingSummary, 'memory.md'), 'private transcript and tool output\n');
+    expect(await __testHooks.sharedProjectContext(root, 'session-a', { language: 'zh' }))
+      .not.toContain('private transcript and tool output');
+    writeFileSync(join(siblingSummary, 'summary.md'), 'x'.repeat(2000));
+    expect((await __testHooks.sharedProjectContext(root, 'session-a', { tokenBudget: 64 })).length)
+      .toBeLessThan(400);
     renameProject(root, beta.id, 'Beta 2');
     removeSessionFromProjects(root, 'session-a');
     expect(loadProjects(root)[1]).toEqual(expect.objectContaining({ name: 'Beta 2', sessionIds: ['session-b'] }));

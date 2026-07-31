@@ -9,6 +9,10 @@ function sortRows(rows) {
   });
 }
 
+function projectIdentityKey(project) {
+  return `${project?.agentId || ''}\u001f${project?.id || ''}`;
+}
+
 export default {
   name: 'UnifiedSessionList',
   emits: ['select', 'create', 'action', 'project-action', 'close-work-center'],
@@ -27,7 +31,7 @@ export default {
       query: '',
       collapsedProjects: {},
       openMenuKey: null,
-      openProjectMenuId: null,
+      openProjectMenuKey: null,
       draggedRow: null,
       dragTargetProjectId: null,
     };
@@ -64,11 +68,12 @@ export default {
       return out;
     },
     rowsByProject() {
-      const out = new Map(this.projectRows.map(project => [project.id, []]));
+      const out = new Map(this.projectRows.map(project => [projectIdentityKey(project), []]));
       for (const row of this.sessions) {
         if (row.runtimeProvider !== 'yeaft') continue;
         const project = this.projectBySessionKey.get(`${row.routeRef?.agentId}\u001f${row.routeRef?.sessionId}`);
-        if (project && out.has(project.id)) out.get(project.id).push(row);
+        const key = projectIdentityKey(project);
+        if (project && out.has(key)) out.get(key).push(row);
       }
       for (const [id, rows] of out) out.set(id, sortRows(rows).filter(row => this.matchesQuery(row)));
       return out;
@@ -86,7 +91,7 @@ export default {
       if (!this.queryText) return this.projectRows;
       return this.projectRows.filter(project => (
         project.name.toLowerCase().includes(this.queryText)
-        || (this.rowsByProject.get(project.id) || []).length > 0
+        || (this.rowsByProject.get(projectIdentityKey(project)) || []).length > 0
       ));
     },
   },
@@ -94,12 +99,12 @@ export default {
     closeMenusFromDocument(event) {
       if (event?.target?.closest?.('.session-menu, .session-dots-btn')) return;
       this.openMenuKey = null;
-      this.openProjectMenuId = null;
+      this.openProjectMenuKey = null;
     },
     closeMenusFromKeyboard(event) {
       if (event?.key !== 'Escape') return;
       this.openMenuKey = null;
-      this.openProjectMenuId = null;
+      this.openProjectMenuKey = null;
     },
     matchesQuery(row) {
       if (!this.queryText) return true;
@@ -125,15 +130,29 @@ export default {
     isUnread(row) {
       return typeof this.isSessionUnread === 'function' ? !!this.isSessionUnread(row) : false;
     },
-    isProjectCollapsed(projectId) {
-      return this.collapsedProjects[projectId] === true && !this.queryText;
+    projectKey(project) {
+      return projectIdentityKey(project);
     },
-    toggleProject(projectId) {
+    isAgentOnline(agentId) {
+      return !!agentId && this.agents.some(agent => agent.id === agentId && agent.online);
+    },
+    canEditProject(project) {
+      return this.isAgentOnline(project?.agentId);
+    },
+    canEditRow(row) {
+      if (!row?.routeRef?.agentId || row.availability !== 'online') return false;
+      return this.isAgentOnline(row.routeRef.agentId);
+    },
+    isProjectCollapsed(project) {
+      return this.collapsedProjects[projectIdentityKey(project)] === true && !this.queryText;
+    },
+    toggleProject(project) {
+      const key = projectIdentityKey(project);
       this.collapsedProjects = {
         ...this.collapsedProjects,
-        [projectId]: !this.collapsedProjects[projectId],
+        [key]: !this.collapsedProjects[key],
       };
-      this.openProjectMenuId = null;
+      this.openProjectMenuKey = null;
     },
     providerLabel(row) {
       if (row.runtimeProvider === 'yeaft') return 'Yeaft';
@@ -144,7 +163,7 @@ export default {
       const timestamp = new Date(row.updatedAt || row.createdAt || 0).getTime();
       if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
       const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-      if (seconds < 60) return 'now';
+      if (seconds < 60) return this.$t('chat.time.justNow');
       if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
       if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
       if (seconds < 604800) return `${Math.floor(seconds / 86400)}d`;
@@ -156,6 +175,7 @@ export default {
     },
     runAction(action, row) {
       this.openMenuKey = null;
+      if (!this.canEditRow(row)) return;
       if (action === 'rename') {
         const title = window.prompt(this.$t('yeaft.session.renamePrompt', { name: row.title }), row.title);
         if (!title?.trim() || title.trim() === row.title) return;
@@ -166,6 +186,8 @@ export default {
       this.$emit('action', { action: normalizedAction, row });
     },
     dispatchProjectAction(payload) {
+      const ownerAgentId = payload?.agentId || payload?.project?.agentId || payload?.row?.routeRef?.agentId || null;
+      if (!this.isAgentOnline(ownerAgentId)) return;
       this.$emit('project-action', payload);
       const store = this.projectStore;
       if (!store?.mutateProject) return;
@@ -190,24 +212,27 @@ export default {
       if (name?.trim()) this.dispatchProjectAction({ action: 'create', name: name.trim(), agentId });
     },
     renameProject(project) {
+      if (!this.canEditProject(project)) return;
       const name = window.prompt(this.$t('sidebar.projects.renamePrompt'), project.name);
-      this.openProjectMenuId = null;
+      this.openProjectMenuKey = null;
       if (name?.trim() && name.trim() !== project.name) {
         this.dispatchProjectAction({ action: 'rename', project, name: name.trim() });
       }
     },
     deleteProject(project) {
-      this.openProjectMenuId = null;
+      if (!this.canEditProject(project)) return;
+      this.openProjectMenuKey = null;
       if (window.confirm(this.$t('sidebar.projects.deleteConfirm', { name: project.name }))) {
         this.dispatchProjectAction({ action: 'delete', project });
       }
     },
     moveRow(row, project = null) {
       this.openMenuKey = null;
+      if (!this.canEditRow(row) || (project && !this.canEditProject(project))) return;
       this.dispatchProjectAction({ action: 'move-session', row, project });
     },
     startDrag(row, event) {
-      if (row.runtimeProvider !== 'yeaft' || row.availability !== 'online') return;
+      if (row.runtimeProvider !== 'yeaft' || !this.canEditRow(row)) return;
       this.draggedRow = row;
       event.dataTransfer.effectAllowed = 'move';
       event.dataTransfer.setData('text/plain', row.catalogKey);
@@ -216,7 +241,7 @@ export default {
       if (!this.draggedRow || project.agentId !== this.draggedRow.routeRef?.agentId) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = 'move';
-      this.dragTargetProjectId = project.id;
+      this.dragTargetProjectId = projectIdentityKey(project);
     },
     dropOnProject(project, event) {
       event.preventDefault();
@@ -263,36 +288,36 @@ export default {
           </div>
 
           <div v-if="visibleProjectRows.length === 0" class="sidebar-section-empty">{{ $t('sidebar.projects.empty') }}</div>
-          <div v-for="project in visibleProjectRows" :key="project.agentId + ':' + project.id" class="sidebar-project">
+          <div v-for="project in visibleProjectRows" :key="projectKey(project)" class="sidebar-project">
             <div
               class="sidebar-project-header"
-              :class="{ 'drag-over': dragTargetProjectId === project.id }"
+              :class="{ 'drag-over': dragTargetProjectId === projectKey(project) }"
               @dragover="dragOverProject(project, $event)"
               @dragleave="dragTargetProjectId = null"
               @drop="dropOnProject(project, $event)"
             >
-              <button type="button" class="sidebar-project-toggle" @click="toggleProject(project.id)">
-                <svg class="sidebar-project-chevron" :class="{ collapsed: isProjectCollapsed(project.id) }" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m7 10 5 5 5-5H7z"/></svg>
+              <button type="button" class="sidebar-project-toggle" @click="toggleProject(project)">
+                <svg class="sidebar-project-chevron" :class="{ collapsed: isProjectCollapsed(project) }" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m7 10 5 5 5-5H7z"/></svg>
                 <svg class="sidebar-project-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 6h7l2 2h9v10H3V6zm2 2v8h14v-6h-8l-2-2H5z"/></svg>
                 <span>{{ project.name }}</span>
-                <span class="sidebar-project-count">{{ (rowsByProject.get(project.id) || []).length }}</span>
+                <span class="sidebar-project-count">{{ (rowsByProject.get(projectKey(project)) || []).length }}</span>
               </button>
-              <button type="button" class="session-dots-btn" :class="{ 'menu-open': openProjectMenuId === project.id }" @click.stop="openProjectMenuId = openProjectMenuId === project.id ? null : project.id" aria-label="Project menu">
+              <button v-if="canEditProject(project)" type="button" class="session-dots-btn" :class="{ 'menu-open': openProjectMenuKey === projectKey(project) }" @click.stop="openProjectMenuKey = openProjectMenuKey === projectKey(project) ? null : projectKey(project)" :aria-label="$t('sidebar.projects.menu')">
                 <svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
               </button>
-              <div v-if="openProjectMenuId === project.id" class="session-menu">
+              <div v-if="openProjectMenuKey === projectKey(project)" class="session-menu">
                 <button class="session-menu-item" @click.stop="renameProject(project)">{{ $t('sidebar.projects.rename') }}</button>
                 <button class="session-menu-item danger" @click.stop="deleteProject(project)">{{ $t('sidebar.projects.delete') }}</button>
               </div>
             </div>
-            <div v-if="!isProjectCollapsed(project.id)" class="sidebar-project-sessions">
+            <div v-if="!isProjectCollapsed(project)" class="sidebar-project-sessions">
               <button
-                v-for="row in rowsByProject.get(project.id) || []"
+                v-for="row in rowsByProject.get(projectKey(project)) || []"
                 :key="row.catalogKey"
                 type="button"
                 class="session-item sidebar-session-row"
                 :class="{ active: isActive(row), processing: isProcessing(row), 'agent-offline': row.availability !== 'online' }"
-                :draggable="row.runtimeProvider === 'yeaft' && row.availability === 'online'"
+                :draggable="row.runtimeProvider === 'yeaft' && canEditRow(row)"
                 @dragstart="startDrag(row, $event)"
                 @dragend="finishDrag"
                 @click="selectRow(row)"
@@ -300,8 +325,8 @@ export default {
                 <span v-if="isProcessing(row)" class="processing-dot"></span>
                 <span v-else-if="isUnread(row)" class="unread-dot"></span>
                 <span class="sidebar-session-copy"><span class="title">{{ row.title }}</span><span class="sidebar-session-meta">{{ providerLabel(row) }}<span v-if="relativeTime(row)"> · {{ relativeTime(row) }}</span></span></span>
-                <span class="session-actions">
-                  <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="openMenuKey = openMenuKey === row.catalogKey ? null : row.catalogKey" aria-label="Session menu"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
+                <span v-if="canEditRow(row)" class="session-actions">
+                  <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="openMenuKey = openMenuKey === row.catalogKey ? null : row.catalogKey" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
                   <div v-if="openMenuKey === row.catalogKey" class="session-menu">
                     <button class="session-menu-item" @click.stop="runAction('pin', row)">{{ row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin') }}</button>
                     <button class="session-menu-item" @click.stop="runAction('rename', row)">{{ $t('chat.sidebar.renameConv') }}</button>
@@ -310,7 +335,7 @@ export default {
                   </div>
                 </span>
               </button>
-              <div v-if="(rowsByProject.get(project.id) || []).length === 0" class="sidebar-section-empty">{{ $t('sidebar.projects.noSessions') }}</div>
+              <div v-if="(rowsByProject.get(projectKey(project)) || []).length === 0" class="sidebar-section-empty">{{ $t('sidebar.projects.noSessions') }}</div>
             </div>
           </div>
         </section>
@@ -323,7 +348,7 @@ export default {
             type="button"
             class="session-item sidebar-session-row"
             :class="{ active: isActive(row), processing: isProcessing(row), 'agent-offline': row.availability !== 'online' }"
-            :draggable="row.runtimeProvider === 'yeaft' && row.availability === 'online'"
+            :draggable="row.runtimeProvider === 'yeaft' && canEditRow(row)"
             @dragstart="startDrag(row, $event)"
             @dragend="finishDrag"
             @click="selectRow(row)"
@@ -332,8 +357,8 @@ export default {
             <span v-else-if="isUnread(row)" class="unread-dot"></span>
             <svg v-if="row.pinned" class="session-pin-icon" viewBox="0 0 24 24"><path fill="currentColor" d="m14 4 6 6-2 2-1-1-3 3v4l-2 2-3-5-5-3 2-2h4l3-3-1-1 2-2z"/></svg>
             <span class="sidebar-session-copy"><span class="title">{{ row.title }}</span><span class="sidebar-session-meta">{{ providerLabel(row) }}<span v-if="relativeTime(row)"> · {{ relativeTime(row) }}</span></span></span>
-            <span class="session-actions">
-              <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="openMenuKey = openMenuKey === row.catalogKey ? null : row.catalogKey" aria-label="Session menu"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
+            <span v-if="canEditRow(row)" class="session-actions">
+              <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="openMenuKey = openMenuKey === row.catalogKey ? null : row.catalogKey" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
               <div v-if="openMenuKey === row.catalogKey" class="session-menu">
                 <button class="session-menu-item" @click.stop="runAction('pin', row)">{{ row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin') }}</button>
                 <button class="session-menu-item" @click.stop="runAction('rename', row)">{{ $t('chat.sidebar.renameConv') }}</button>

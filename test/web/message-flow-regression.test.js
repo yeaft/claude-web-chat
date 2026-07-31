@@ -219,7 +219,14 @@ describe('message flow regressions', () => {
         activeRoute: { runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: 'visible' },
         processingConversations: { visible: true },
         isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'user_1770305719:server-instance',
-        agents: [{ id: 'user_1770305719:server-instance', name: 'server', online: true, capabilities: ['work_center'] }],
+        agents: [
+          { id: 'user_1770305719:server-instance', name: 'server', online: true, capabilities: ['work_center'] },
+          { id: 'agent-b', name: 'Agent B', online: false },
+        ],
+        projects: [
+          { id: 'project-same', agentId: 'user_1770305719:server-instance', name: 'Online project', sessionIds: ['pinned'] },
+          { id: 'project-same', agentId: 'agent-b', name: 'Offline project', sessionIds: [] },
+        ],
       },
       global: { mocks: { $t: key => key } },
     });
@@ -229,6 +236,21 @@ describe('message flow regressions', () => {
     expect(sidebar.findAll('.session-item')).toHaveLength(0);
     await sidebar.setProps({ sessions: catalogRows });
     expect(sidebar.findAll('.session-item')).toHaveLength(4);
+    expect(sidebar.findAll('.sidebar-project')).toHaveLength(2);
+    expect(Object.fromEntries(sidebar.findAll('.sidebar-project').map(item => [
+      item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
+      item.get('.sidebar-project-count').text(),
+    ]))).toEqual({ 'Online project': '1', 'Offline project': '0' });
+    expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(1);
+    expect(sidebar.get('.session-dots-btn').attributes('aria-label')).toBe('sidebar.projects.menu');
+    const projectToggles = sidebar.findAll('.sidebar-project-toggle');
+    await projectToggles[0].trigger('click');
+    expect(sidebar.findAll('.sidebar-project-sessions')).toHaveLength(1);
+    expect(Object.fromEntries(sidebar.findAll('.sidebar-project').map(item => [
+      item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
+      item.get('.sidebar-project-count').text(),
+    ]))).toEqual({ 'Online project': '1', 'Offline project': '0' });
+    await projectToggles[0].trigger('click');
     expect(sidebar.get('.session-dots-btn svg path').attributes('d')).toContain('M6 10');
     expect(sidebar.text()).toContain('Visible');
     expect(sidebar.text()).toContain('Pinned');
@@ -247,7 +269,30 @@ describe('message flow regressions', () => {
     expect(firstRow.get('.sidebar-session-copy').text()).toContain('Pinned');
     expect(firstRow.get('.sidebar-session-copy').text()).not.toContain('server');
     expect(UnifiedSessionList.methods.providerLabel({ runtimeProvider: 'claude-code' })).toBe('Claude');
+    expect(UnifiedSessionList.methods.relativeTime.call({ $t: key => key }, { updatedAt: new Date().toISOString() }))
+      .toBe('chat.time.justNow');
     expect(sidebar.text()).not.toContain('user_1770305719');
+    expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(1);
+    expect(sidebar.findAll('.session-item .session-dots-btn')).toHaveLength(1);
+    const offlineRow = sidebar.findAll('.session-item').find(item => item.text().includes('Offline'));
+    expect(offlineRow).toBeTruthy();
+    expect(offlineRow.find('.session-dots-btn').exists()).toBe(false);
+    expect(offlineRow.attributes('draggable')).toBe('false');
+    await offlineRow.trigger('click');
+    expect(sidebar.emitted('select').at(-1)[0]).toMatchObject({ catalogKey: 'chat:offline' });
+    const originalPrompt = window.prompt;
+    const originalConfirm = window.confirm;
+    window.prompt = vi.fn();
+    window.confirm = vi.fn();
+    UnifiedSessionList.methods.renameProject.call(sidebar.vm, { id: 'project-same', agentId: 'agent-b', name: 'Offline project' });
+    UnifiedSessionList.methods.deleteProject.call(sidebar.vm, { id: 'project-same', agentId: 'agent-b', name: 'Offline project' });
+    UnifiedSessionList.methods.runAction.call(sidebar.vm, 'rename', catalogRows[1]);
+    expect(window.prompt).not.toHaveBeenCalled();
+    expect(window.confirm).not.toHaveBeenCalled();
+    if (originalPrompt) window.prompt = originalPrompt;
+    else delete window.prompt;
+    if (originalConfirm) window.confirm = originalConfirm;
+    else delete window.confirm;
     await sidebar.setProps({ processingConversations: {}, isYeaftSessionProcessing: () => false });
     expect(sidebar.findAll('.processing-dot')).toHaveLength(0);
     await sidebar.find('.sidebar-primary-action').trigger('click');
@@ -259,7 +304,25 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).toContain("moveRow(row, project)");
     expect(UnifiedSessionList.template).toContain('sidebar-primary-actions');
     expect(UnifiedSessionList.template).toContain('sidebar-session-meta');
+    const documentAdd = vi.spyOn(document, 'addEventListener');
+    const documentRemove = vi.spyOn(document, 'removeEventListener');
     sidebar.unmount();
+    const lifecycleSidebar = mount(UnifiedSessionList, {
+      props: { sessions: catalogRows, agents: [{ id: 'agent-a', online: true }] },
+      global: { mocks: { $t: key => key } },
+    });
+    expect(documentAdd).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
+    expect(documentAdd).toHaveBeenCalledWith('keydown', expect.any(Function));
+    await lifecycleSidebar.find('.session-dots-btn').trigger('click');
+    expect(lifecycleSidebar.find('.session-menu').exists()).toBe(true);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await Vue.nextTick();
+    expect(lifecycleSidebar.find('.session-menu').exists()).toBe(false);
+    lifecycleSidebar.unmount();
+    expect(documentRemove).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
+    expect(documentRemove).toHaveBeenCalledWith('keydown', expect.any(Function));
+    documentAdd.mockRestore();
+    documentRemove.mockRestore();
     const fallbackWorkCenter = mount(SidebarWorkCenter, {
       props: { agents: [] },
       global: { mocks: { $t: key => key } },

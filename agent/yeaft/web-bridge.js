@@ -73,7 +73,8 @@ import {
   removeSessionFromProjects,
   renameProject,
 } from './projects/store.js';
-import { readSummary } from './memory/summary-store.js';
+import { readSummary as readScopeSummary } from './memory/store.js';
+import { estimateTokens } from './dream/segment.js';
 import { imageMetadataForPersistence } from './image-assets.js';
 import { sliceLastNTurns } from './turn-utils.js';
 import { pairSanitize } from './pair-sanitize.js';
@@ -3018,16 +3019,42 @@ function decorateSessionsWithRuntimeState(sessions) {
   });
 }
 
-function sharedProjectContext(yeaftDir, sessionId) {
+const PROJECT_CONTEXT_MAX_SIBLINGS = 8;
+const PROJECT_CONTEXT_MAX_TOKENS = 4096;
+
+async function sharedProjectContext(yeaftDir, sessionId, options = {}) {
   const project = loadProjects(yeaftDir).find(row => row.sessionIds.includes(sessionId));
   if (!project) return '';
   const memoryRoot = join(yeaftDir, 'memory');
+  const language = options.language || 'en';
+  const configuredBudget = Number.isFinite(options.tokenBudget) && options.tokenBudget > 0
+    ? options.tokenBudget
+    : PROJECT_CONTEXT_MAX_TOKENS;
+  const tokenBudget = Math.min(configuredBudget, PROJECT_CONTEXT_MAX_TOKENS);
   const rows = [];
-  for (const siblingId of project.sessionIds.filter(id => id !== sessionId)) {
-    const summary = readSummary(memoryRoot, `sessions/${siblingId}`)
-      || readSummary(memoryRoot, `session/${siblingId}`)
-      || readSummary(memoryRoot, `group/${siblingId}`);
-    if (summary) rows.push(`[Session ${siblingId}]\n${summary}`);
+  let usedTokens = 0;
+  const siblingIds = project.sessionIds
+    .filter(id => id !== sessionId)
+    .slice(0, PROJECT_CONTEXT_MAX_SIBLINGS);
+  for (const siblingId of siblingIds) {
+    const summary = await readScopeSummary(
+      { kind: 'session', id: siblingId },
+      { root: memoryRoot, language },
+    ).catch(() => '');
+    if (!summary) continue;
+    const header = `[Session ${siblingId}]\n`;
+    const block = `${header}${summary}`;
+    const blockTokens = estimateTokens(block);
+    if (usedTokens + blockTokens <= tokenBudget) {
+      rows.push(block);
+      usedTokens += blockTokens;
+      continue;
+    }
+    const remainingTokens = tokenBudget - usedTokens - estimateTokens(header);
+    if (remainingTokens > 0) {
+      rows.push(`${header}${summary.slice(0, remainingTokens * 4)}\n[Summary truncated to Project context budget]`);
+    }
+    break;
   }
   return rows.join('\n\n');
 }
@@ -5119,7 +5146,10 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         threadId,
       });
       if (queryOpts) {
-        const projectContext = sharedProjectContext(ctx.CONFIG?.yeaftDir, sessionId);
+        const projectContext = await sharedProjectContext(ctx.CONFIG?.yeaftDir, sessionId, {
+          language: session?.config?.language,
+          tokenBudget: Math.max(512, Math.floor((session?.config?.messageTokenBudget || 32768) / 8)),
+        });
         if (projectContext) {
           const sharedBlock = `[Project Shared Context]\nRead-only memory summaries from sibling Sessions in the same Project. Preserve each source Session identity.\n\n${projectContext}`;
           queryOpts.sessionAnnouncement = queryOpts.sessionAnnouncement
