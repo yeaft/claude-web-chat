@@ -72,39 +72,29 @@ describe('Yeaft memory pre-flow scopes', () => {
     expect(result.formatted).not.toContain('This session must not leak into s1.');
   });
 
-  it('limits picked recall entries to the default concise prompt size', () => {
-    const result = runMemoryPreflow(fakeIndex(Array.from({ length: 12 }, (_, index) => ({
+  it('limits picked recall entries by default and honors a larger caller limit', () => {
+    const rows = Array.from({ length: 12 }, (_, index) => ({
       scope: 'sessions/s1',
       body: `Dream relevance memory ${index}`,
       rank: index,
-    }))), {
+    }));
+    const load = pickLimit => runMemoryPreflow(fakeIndex(rows), {
       sessionId: 's1',
       vpId: 'linus',
       userMsg: 'Dream relevance memory',
       budgetTokens: 1000,
+      ...(pickLimit == null ? {} : { pickLimit }),
     });
 
-    expect(result.entries).toHaveLength(8);
-    expect(result.entries.map(entry => entry.body)).toEqual(Array.from({ length: 8 }, (_, index) => `Dream relevance memory ${index}`));
-    expect(result.entries[0].score).toEqual(expect.any(Number));
-    expect(result.meta.droppedCount).toBe(4);
-  });
+    const concise = load();
+    expect(concise.entries).toHaveLength(8);
+    expect(concise.entries.map(entry => entry.body)).toEqual(Array.from({ length: 8 }, (_, index) => `Dream relevance memory ${index}`));
+    expect(concise.entries[0].score).toEqual(expect.any(Number));
+    expect(concise.meta.droppedCount).toBe(4);
 
-  it('allows callers to raise the recall entry limit for unusually dense turns', () => {
-    const result = runMemoryPreflow(fakeIndex(Array.from({ length: 12 }, (_, index) => ({
-      scope: 'sessions/s1',
-      body: `Dense Dream relevance memory ${index}`,
-      rank: index,
-    }))), {
-      sessionId: 's1',
-      vpId: 'linus',
-      userMsg: 'Dense Dream relevance memory',
-      budgetTokens: 1000,
-      pickLimit: 10,
-    });
-
-    expect(result.entries).toHaveLength(10);
-    expect(result.meta.droppedCount).toBe(2);
+    const expanded = load(10);
+    expect(expanded.entries).toHaveLength(10);
+    expect(expanded.meta.droppedCount).toBe(2);
   });
 
   it('filters foreign current sessions/* VP scopes from recall', () => {

@@ -202,6 +202,60 @@ function observeVirtualScroll(wrapper) {
   return scrollToKey;
 }
 
+async function expectSilentTransportPromotion(wrapper, store) {
+  await flushPromises();
+  await Vue.nextTick();
+
+  const before = wrapper.getComponent({ name: 'VirtualTranscript' });
+  const beforeElement = before.element;
+  const beforeRow = before.get('.virtual-transcript-item').element;
+  const existingRows = store.messagesMap['conv-a'];
+  const sessionKey = yeaftHistoryIdentityKey('agent-a', 'same');
+  store.yeaftSessionHistoryState = {
+    [sessionKey]: {
+      loaded: true,
+      loading: true,
+      mode: 'recent',
+      hasMore: true,
+      oldestSeq: 50,
+      latestSeq: 61,
+      count: existingRows.length,
+    },
+  };
+  store.yeaftLoadingMoreHistory = true;
+  expect(wrapper.find('.loading-more').exists()).toBe(false);
+
+  store.messagesMap['conv-b'] = existingRows.slice();
+  store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-b' };
+  store.yeaftConversationId = 'conv-b';
+  store.activeConversations = ['conv-b'];
+  await flushPromises();
+  await Vue.nextTick();
+
+  const after = wrapper.getComponent({ name: 'VirtualTranscript' });
+  expect(after.element).toBe(beforeElement);
+  expect(after.get('.virtual-transcript-item').element).toBe(beforeRow);
+  expect(wrapper.find('.loading-more').exists()).toBe(false);
+  expect(store.messages.map(row => row.content)).toEqual(existingRows.slice(-5).map(row => row.content));
+
+  store.yeaftSessionHistoryState[sessionKey].mode = 'older';
+  await Vue.nextTick();
+  expect(wrapper.find('.loading-more').exists()).toBe(true);
+
+  store.yeaftSessionHistoryState[sessionKey] = {
+    ...store.yeaftSessionHistoryState[sessionKey],
+    loading: false,
+    mode: 'recent',
+  };
+  store.yeaftLoadingMoreHistory = false;
+  store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-a' };
+  store.yeaftConversationId = 'conv-a';
+  store.activeConversations = ['conv-a'];
+  delete store.messagesMap['conv-b'];
+  await flushPromises();
+  await Vue.nextTick();
+}
+
 describe('Yeaft history result rendered reveal', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
@@ -227,6 +281,7 @@ describe('Yeaft history result rendered reveal', () => {
     const store = primeStore();
     const revealWindow = vi.spyOn(store, 'revealYeaftHistoryResult');
     const wrapper = mountPage();
+    await expectSilentTransportPromotion(wrapper, store);
     const messageList = wrapper.getComponent({ name: 'MessageList' });
     const scroller = messageList.get('main.chat-container').element;
     let scrollTop = 920;

@@ -182,7 +182,7 @@ export default {
           <div class="initial-message-loading-spinner" aria-hidden="true"></div>
           <div class="initial-message-loading-text">{{ initialMessagesLoadingText || $t('chat.session.loadingHistory') }}</div>
         </div>
-        <div v-else-if="(store.loadingMoreMessages && store.currentView !== 'yeaft') || store.yeaftLoadingMoreHistory" class="loading-more">{{ $t('message.loadingMore') }}</div>
+        <div v-else-if="(store.loadingMoreMessages && store.currentView !== 'yeaft') || showYeaftOlderHistoryLoading" class="loading-more">{{ $t('message.loadingMore') }}</div>
         <div v-else-if="(store.hasMoreMessages && store.currentView !== 'yeaft') || store.yeaftHasMoreHistory || store.hasHiddenYeaftMessages" class="load-more-hint" @click="onClickLoadMore">{{ $t('message.loadMore') }}</div>
         <VirtualTranscript
           :key="virtualTranscriptIdentity"
@@ -798,14 +798,21 @@ export default {
       if (gs.activeSessionId && typeof gs.sessionById === 'function' && gs.sessionById(gs.activeSessionId, store.currentAgent || null)) return gs.activeSessionId;
       return null;
     });
-    const virtualTranscriptIdentity = Vue.computed(() => [
-      store.activeConversationId || '',
-      store.currentView || '',
-      store.currentAgent || '',
-      store.currentView === 'yeaft'
-        ? (store.yeaftActiveSessionFilter || activeYeaftSessionId.value || '__all__')
-        : '',
-    ].join('\u001f'));
+    const virtualTranscriptIdentity = Vue.computed(() => {
+      const view = store.currentView || '';
+      const agentId = store.currentAgent || '';
+      if (view === 'yeaft') {
+        // A Yeaft bridge conversation id is transport state. Cold history and
+        // session_ready may promote local/old ids while the user is still reading
+        // the same Session; keying Vue by that id destroys and recreates the whole
+        // virtual transcript, producing a visible refresh and a transient blank
+        // pane. User navigation identity is Agent + Session, which changes only
+        // when the user actually switches context.
+        const sessionId = store.yeaftActiveSessionFilter || activeYeaftSessionId.value || '__all__';
+        return [view, agentId, sessionId].join('\u001f');
+      }
+      return [view, agentId, store.activeConversationId || ''].join('\u001f');
+    });
 
     // Issue C (2026-05-12) — IM-style dual-column layout gate.
     // The user explicitly scoped this to Yeaft Session conversations only:
@@ -1334,6 +1341,15 @@ export default {
       if (store.currentView === 'yeaft') return !!store.yeaftInitialHistoryLoading;
       return !!store.sessionLoading;
     });
+
+    // Recent/delta loads are background synchronization. Rendering the shared
+    // "loading more" row for them makes an otherwise stable Session visibly
+    // flash on open/reconnect. Only an explicit older-page request owns that UI.
+    const showYeaftOlderHistoryLoading = Vue.computed(() => (
+      store.currentView === 'yeaft'
+      && !!store.yeaftLoadingMoreHistory
+      && store.activeYeaftHistoryState?.mode === 'older'
+    ));
 
     const initialMessagesLoadingText = Vue.computed(() => (
       store.currentView === 'yeaft' ? '' : (store.sessionLoadingText || '')
@@ -2122,6 +2138,7 @@ export default {
       nowMs,
       showTypingDots,
       showInitialMessagesLoading,
+      showYeaftOlderHistoryLoading,
       showSessionLoadingOverlay,
       initialMessagesLoadingText,
       previewShowTypingDots,

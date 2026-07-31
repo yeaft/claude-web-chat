@@ -216,18 +216,15 @@ describe('Engine memory prompt hygiene', () => {
     );
 
     expect(filtered).toBe('- Stable preference: user wants Dream memory topic labels compact.');
-  });
 
-  it('keeps related transient markdown bullets alongside stable bullets', () => {
-    const filtered = filterMemoryPromptTextForPrompt(
+    const related = filterMemoryPromptTextForPrompt(
       [
         '- Stable preference: user wants Dream memory topic labels compact.',
         '- Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
       ].join('\n'),
       '继续 billing dashboard export 的 work item',
     );
-
-    expect(filtered).toBe([
+    expect(related).toBe([
       '- Stable preference: user wants Dream memory topic labels compact.',
       '- Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
     ].join('\n'));
@@ -1017,10 +1014,8 @@ describe('Engine', () => {
       ]));
       const topicLoaded = loaded.resident.find(entry => entry.scope === 'sessions/g1/topic/dream/recall');
       expect(topicLoaded.summary).toContain('完整摘要细节'.repeat(800));
-    });
 
-    it('emits debug memory content from the actual AMS prompt snapshot', async () => {
-      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-memory-debug-'));
+      const debugYeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-memory-debug-'));
       try {
         const memoryRows = [
           {
@@ -1057,46 +1052,46 @@ describe('Engine', () => {
           { type: 'stop', stopReason: 'end_turn' },
         ]);
 
-        const engine = new Engine({
+        const debugEngine = new Engine({
           adapter: mockAdapter,
           trace,
-          yeaftDir,
+          yeaftDir: debugYeaftDir,
           sessionId: 'g1',
           config: { model: 'claude-test', maxOutputTokens: 2048, language: 'en' },
           memoryIndex,
-          amsRegistry: new AmsRegistry({ yeaftDir, config: {} }),
+          amsRegistry: new AmsRegistry({ yeaftDir: debugYeaftDir, config: {} }),
         });
 
-        const events = [];
-        for await (const event of engine.query({
+        const debugEvents = [];
+        for await (const event of debugEngine.query({
           prompt: 'optimize Dream memory relevance',
           sessionId: 'g1',
           vpPersona: { vpId: 'vp1', name: 'VP One' },
         })) {
-          events.push(event);
+          debugEvents.push(event);
         }
 
-        const system = mockAdapter.callLog[0].system;
-        expect(system).toContain('Dream relevance loaded memory item 1.');
-        expect(system).toContain('Dream relevance loaded memory item 7.');
-        expect(system).not.toContain('billing dashboard export');
-        expect(system).not.toContain('Dream relevance loaded memory item 8.');
+        const debugSystem = mockAdapter.callLog.at(-1).system;
+        expect(debugSystem).toContain('Dream relevance loaded memory item 1.');
+        expect(debugSystem).toContain('Dream relevance loaded memory item 7.');
+        expect(debugSystem).not.toContain('billing dashboard export');
+        expect(debugSystem).not.toContain('Dream relevance loaded memory item 8.');
 
-        const loaded = events.find(e => e.type === 'memory_used');
-        expect(loaded).toBeTruthy();
-        expect(loaded.meta).toMatchObject({ recallLimit: 8, recallCandidates: 10 });
-        expect(loaded.loaded).toHaveLength(7);
-        expect(loaded.loaded[0]).toMatchObject({
+        const memoryUsed = debugEvents.find(e => e.type === 'memory_used');
+        expect(memoryUsed).toBeTruthy();
+        expect(memoryUsed.meta).toMatchObject({ recallLimit: 8, recallCandidates: 10 });
+        expect(memoryUsed.loaded).toHaveLength(7);
+        expect(memoryUsed.loaded[0]).toMatchObject({
           id: 'dream-relevance-1',
           layer: 'onDemand',
           scope: 'sessions/g1',
           label: 'session',
           body: 'Dream relevance loaded memory item 1.',
         });
-        expect(loaded.loaded[0].score).toEqual(expect.any(Number));
-        expect(loaded.loaded.map(entry => entry.body).join('\n')).not.toContain('billing dashboard export');
+        expect(memoryUsed.loaded[0].score).toEqual(expect.any(Number));
+        expect(memoryUsed.loaded.map(entry => entry.body).join('\n')).not.toContain('billing dashboard export');
       } finally {
-        rmSync(yeaftDir, { recursive: true, force: true });
+        rmSync(debugYeaftDir, { recursive: true, force: true });
       }
     });
 

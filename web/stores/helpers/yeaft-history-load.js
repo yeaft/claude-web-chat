@@ -43,7 +43,13 @@ export function beginYeaftHistoryLoad(store, {
   const requestId = `yeaft_history_${generation}_${crypto.randomUUID()}`;
   const next = {
     ...previous,
-    loaded: preserveLoaded ? !!previous.loaded : false,
+    // Refreshes are stale-while-revalidate. Once a Session has a committed
+    // history window, starting a recent replay must not make that window look
+    // unloaded or clear its pagination metadata before the replacement lands.
+    // A first-ever load still starts with loaded=false because `previous` is
+    // empty. `preserveLoaded` remains relevant for delta/older callers that may
+    // begin from a partially initialized state.
+    loaded: !!previous.loaded,
     loading: true,
     error: null,
     requestId,
@@ -52,11 +58,17 @@ export function beginYeaftHistoryLoad(store, {
     requestedAt: Date.now(),
     latestSeq: Number.isFinite(latestSeq) ? latestSeq : (previous.latestSeq ?? null),
   };
+  delete next.completionSeen;
   if (!preserveLoaded) {
-    next.hasMore = false;
-    next.oldestSeq = null;
-    next.count = 0;
+    // A recent replay supersedes any delta request. Keep committed pagination,
+    // but always retire the delta in-flight fence so a failed/empty replay
+    // cannot permanently block the next catch-up.
     next.syncingAfterSeq = null;
+    if (!previous.loaded) {
+      next.hasMore = false;
+      next.oldestSeq = null;
+      next.count = 0;
+    }
   }
   store.yeaftSessionHistoryState = {
     ...(store.yeaftSessionHistoryState || {}),
@@ -79,20 +91,36 @@ export function isCurrentYeaftHistoryResponse(store, msg = {}) {
   return pendingRequestId === null;
 }
 
-export function finishYeaftHistoryLoad(store, msg = {}, patch = {}) {
+export function finishYeaftHistoryLoad(store, msg = {}, patch = {}, frame = 'chunk') {
   if (!isCurrentYeaftHistoryResponse(store, msg)) return null;
   const sessionId = msg.sessionId ?? msg.groupId ?? null;
   const agentId = msg.agentId || store?.yeaftSessionAgentById?.[sessionId] || null;
   const sessionKey = yeaftHistoryIdentityKey(agentId, sessionId);
   const previous = loadState(store, sessionKey) || {};
+  const responseRequestId = normalizeRequestId(msg.requestId);
+  const completionBeforeChunk = responseRequestId !== null && frame === 'completion';
   const next = {
     ...previous,
-    ...patch,
-    loading: false,
+    ...(completionBeforeChunk ? {} : patch),
+    ...(completionBeforeChunk ? { completionSeen: true } : {}),
     error: null,
-    requestId: null,
-    completedAt: Date.now(),
   };
+  if (completionBeforeChunk) {
+    // `history_loaded` is metadata, not the data commit. The encrypted server
+    // relay can deliver this small frame before the compressed chunk, so retain
+    // the request fence until the chunk arrives. Ignoring the patch here also
+    // avoids double-counting a delta when its chunk applies the same metadata.
+    next.loading = true;
+    next.requestId = responseRequestId;
+  } else {
+    // The chunk is the authoritative commit point. It can retire the request
+    // without waiting for a completion frame, preserving older-history and
+    // legacy Agent paths that emit only a chunk.
+    next.loading = false;
+    next.requestId = null;
+    next.completedAt = Date.now();
+    delete next.completionSeen;
+  }
   store.yeaftSessionHistoryState = {
     ...(store.yeaftSessionHistoryState || {}),
     [sessionKey]: next,

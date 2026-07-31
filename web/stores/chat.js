@@ -2377,8 +2377,8 @@ export const useChatStore = defineStore('chat', {
       }, YEAFT_HISTORY_LOAD_TIMEOUT_MS);
       return request;
     },
-    finishYeaftHistoryLoad(msg, patch = {}) {
-      return finishYeaftHistoryLoad(this, msg, patch);
+    finishYeaftHistoryLoad(msg, patch = {}, frame = 'chunk') {
+      return finishYeaftHistoryLoad(this, msg, patch, frame);
     },
     isCurrentYeaftHistoryResponse(msg) {
       return isCurrentYeaftHistoryResponse(this, msg);
@@ -4286,7 +4286,7 @@ export const useChatStore = defineStore('chat', {
                   syncingAfterSeq: null,
                 };
             const completedState = historyResponse.requestId
-              ? this.finishYeaftHistoryLoad(historyResponse, nextState)
+              ? this.finishYeaftHistoryLoad(historyResponse, nextState, 'completion')
               : null;
             if (!completedState) {
               this.yeaftSessionHistoryState = {
@@ -4303,7 +4303,7 @@ export const useChatStore = defineStore('chat', {
                 this.yeaftHasMoreHistory = nextState.hasMore;
                 this.yeaftOldestLoadedSeq = nextState.oldestSeq;
               }
-              this.yeaftLoadingMoreHistory = false;
+              this.yeaftLoadingMoreHistory = !!completedState?.loading;
             } else if (this.yeaftLoadingMoreHistory) {
               const activeState = this.yeaftSessionHistoryState[activeKey] || null;
               this.yeaftLoadingMoreHistory = !!activeState?.loading;
