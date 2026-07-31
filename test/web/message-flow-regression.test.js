@@ -630,10 +630,10 @@ describe('message flow regressions', () => {
     workCenterPage.unmount();
     delete globalThis.Vue;
     delete globalThis.Pinia.useChatStore;
-    expect(workCenter).toContain('workItemMessageAttachments.length === 0');
+    expect(workCenter).toContain('workItemMessageAttachments.length > 0');
     expect(workCenter).toContain('work-center-detail-close');
     expect(workCenter).not.toContain('class="work-center-action-content-summary"');
-    expect(workCenterCss).toContain('grid-template-columns: minmax(0, 1fr) minmax(400px, 440px);');
+    expect(workCenterCss).toContain('grid-template-columns: minmax(0, 1fr) minmax(400px, 1fr);');
     expect(workCenterCss).toMatch(/\.work-center-detail-close\s*\{[\s\S]*?position: absolute;[\s\S]*?right: 16px;/);
     expect(workCenterCss).toMatch(/\.work-center-action-description\s*\{[\s\S]*?white-space: nowrap;/);
     expect(workCenter).not.toContain('coordinatorRequestedSelectedActionInput');
@@ -643,12 +643,12 @@ describe('message flow regressions', () => {
     expect(workCenter).toContain(":class=\"{ 'showing-detail': narrowPane !== 'items' }\"");
     expect(workCenterCss).toMatch(/\.work-center-shell\.showing-detail\s*\{[\s\S]*?padding-top: 10px;/);
     expect(workCenterCss).toMatch(/\.work-center-detail-heading\s*\{[\s\S]*?padding: 10px 56px 12px 24px;/);
-    expect(workCenterCss).toMatch(/\.work-center-action-detail-header,[\s\S]*?\.work-center-action-composer\s*\{[\s\S]*?width: 100%;/);
+    expect(workCenterCss).toMatch(/\.work-center-action-detail-header,[\s\S]*?\.work-center-action-detail-scroll\s*\{[\s\S]*?width: 100%;/);
     expect(workCenterCss).not.toContain('width: min(100%, 1120px);');
     expect(variables).toContain('--work-center-conversation-column-width: 1200px;');
     expect(variables).toContain('--work-center-conversation-gutter: clamp(20px, 3vw, 40px);');
-    expect(workCenterCss).toMatch(/@container work-center \(max-width: 1120px\)\s*\{[\s\S]*?\.work-center-detail-layout\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);/);
-    expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-action-detail-pane\s*\{[\s\S]*?--work-center-conversation-gutter: var\(--work-center-conversation-gutter-compact\);/);
+    expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-detail-layout\s*\{[\s\S]*?display: block;/);
+    expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-mobile-pane-tabs\s*\{[\s\S]*?display: grid;/);
 
     const turnBlock = readFileSync(resolve(import.meta.dirname, '../../web/components/VpTurnBlock.js'), 'utf8');
     const chatStore = readFileSync(resolve(import.meta.dirname, '../../web/stores/chat.js'), 'utf8');
