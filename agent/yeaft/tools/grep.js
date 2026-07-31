@@ -125,6 +125,12 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
       '--color', 'never',
       '--hidden',
       '--no-ignore',
+    ];
+    if (options.caseInsensitive) args.push('-i');
+    if (options.fixedStrings) args.push('-F');
+    if (options.glob) args.push('--glob', options.glob);
+    if (options.type) args.push('--type', options.type);
+    args.push(
       '--glob', '!**/node_modules/**',
       '--glob', '!**/.git/**',
       '--glob', '!**/__pycache__/**',
@@ -134,11 +140,7 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
       '--glob', '!**/.cache/**',
       '--glob', '!.yeaft/worktrees/**',
       '--glob', '!**/.yeaft/worktrees/**',
-    ];
-    if (options.caseInsensitive) args.push('-i');
-    if (options.fixedStrings) args.push('-F');
-    if (options.glob) args.push('--glob', options.glob);
-    if (options.type) args.push('--type', options.type);
+    );
     if (options.filesOnly) args.push('-l');
     if (options.count) args.push('-c');
     if (options.context) args.push('-C', String(options.context));
@@ -320,7 +322,9 @@ export async function nodeGrep(pattern, searchPath, options) {
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory()) {
         const relPath = relative(searchPath, fullPath).replace(/\\/g, '/');
-        if (!SKIP_DIRS.has(entry.name) && relPath !== '.yeaft/worktrees' && !relPath.startsWith('.yeaft/worktrees/')) directories.push(fullPath);
+        const isYeaftWorktree = relPath === '.yeaft/worktrees'
+          || relPath.endsWith('/.yeaft/worktrees');
+        if (!SKIP_DIRS.has(entry.name) && !isYeaftWorktree) directories.push(fullPath);
       } else files.push(fullPath);
     }
     for (let i = 0; i < files.length && !stopped; i += FALLBACK_CONCURRENCY) {

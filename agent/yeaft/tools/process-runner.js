@@ -12,15 +12,11 @@ function abortError(signal) {
   return error;
 }
 
-function killProcessTree(proc, signal) {
+function killProcessTree(proc, signal, platform, spawnProcessSync) {
   if (!proc.pid) return;
-  if (process.platform === 'win32') {
-    if (signal === 'SIGTERM') {
-      try { proc.kill(); } catch {}
-      return;
-    }
+  if (platform === 'win32') {
     try {
-      spawnSync('taskkill', ['/pid', String(proc.pid), '/t', '/f'], {
+      spawnProcessSync('taskkill', ['/pid', String(proc.pid), '/t', '/f'], {
         stdio: 'ignore',
         windowsHide: true,
         timeout: 5000,
@@ -40,12 +36,15 @@ function killProcessTree(proc, signal) {
  *
  * @param {string} command
  * @param {string[]} args
- * @param {{ cwd?: string, signal?: AbortSignal, timeoutMs?: number, maxBytes?: number, env?: NodeJS.ProcessEnv, killGraceMs?: number, forceSettleMs?: number }} [options]
+ * @param {{ cwd?: string, signal?: AbortSignal, timeoutMs?: number, maxBytes?: number, env?: NodeJS.ProcessEnv, killGraceMs?: number, forceSettleMs?: number, platform?: NodeJS.Platform, spawnProcess?: typeof spawn, spawnProcessSync?: typeof spawnSync }} [options]
  */
 export function runProcess(command, args, options = {}) {
   if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
 
   return new Promise((resolve, reject) => {
+    const platform = options.platform || process.platform;
+    const spawnProcess = options.spawnProcess || spawn;
+    const spawnProcessSync = options.spawnProcessSync || spawnSync;
     const maxBytes = Number.isFinite(options.maxBytes)
       ? Math.max(0, options.maxBytes)
       : DEFAULT_MAX_BYTES;
@@ -55,12 +54,12 @@ export function runProcess(command, args, options = {}) {
     const forceSettleMs = Number.isFinite(options.forceSettleMs)
       ? Math.max(1, options.forceSettleMs)
       : DEFAULT_FORCE_SETTLE_MS;
-    const proc = spawn(command, args, {
+    const proc = spawnProcess(command, args, {
       cwd: options.cwd,
       env: options.env || process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      detached: process.platform !== 'win32',
+      detached: platform !== 'win32',
     });
     const stdout = [];
     const stderr = [];
@@ -105,14 +104,25 @@ export function runProcess(command, args, options = {}) {
     const forceStop = () => {
       if (settled || forceRequested) return;
       forceRequested = true;
-      killProcessTree(proc, 'SIGKILL');
+      killProcessTree(proc, 'SIGKILL', platform, spawnProcessSync);
       forceSettleTimer = setTimeout(() => finish(null), forceSettleMs);
       forceSettleTimer.unref?.();
     };
     const stop = () => {
       if (settled || stopRequested) return;
       stopRequested = true;
-      killProcessTree(proc, 'SIGTERM');
+      if (platform === 'win32') {
+        // taskkill must run while the parent PID still identifies the tree.
+        // It is already forceful, so do not wait for the direct child to exit.
+        forceRequested = true;
+        killProcessTree(proc, 'SIGKILL', platform, spawnProcessSync);
+        if (!settled) {
+          forceSettleTimer = setTimeout(() => finish(null), forceSettleMs);
+          forceSettleTimer.unref?.();
+        }
+        return;
+      }
+      killProcessTree(proc, 'SIGTERM', platform, spawnProcessSync);
       forceTimer = setTimeout(forceStop, killGraceMs);
       forceTimer.unref?.();
     };
@@ -156,7 +166,7 @@ export function runProcess(command, args, options = {}) {
         // The direct child is gone. Kill any process that remained in its
         // detached group before releasing the tool call.
         forceRequested = true;
-        killProcessTree(proc, 'SIGKILL');
+        killProcessTree(proc, 'SIGKILL', platform, spawnProcessSync);
       }
       finish(code);
     });

@@ -5,6 +5,8 @@ import { existsSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync
 import { delimiter, join } from 'path';
 import { tmpdir } from 'os';
 import { gzipSync } from 'node:zlib';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { ActiveMemorySet } from '../../../agent/yeaft/memory/ams.js';
 import { filterMemoryPromptTextForPrompt } from '../../../agent/yeaft/memory/prompt-cleanup.js';
 import { Engine, buildResidentEntries, selectResidentTopicScopes } from '../../../agent/yeaft/engine.js';
@@ -2951,21 +2953,52 @@ describe('managed CLI setup and fast tool integration', () => {
     }
   }
 
+  async function verifyWindowsProcessTreeTermination() {
+    const calls = [];
+    const child = new EventEmitter();
+    child.pid = 4242;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => calls.push('proc.kill');
+    const spawnProcess = () => child;
+    const spawnProcessSync = (command, args) => {
+      calls.push(`${command} ${args.join(' ')}`);
+      child.emit('close', 1);
+      return { status: 0 };
+    };
+
+    const result = await runProcess('ignored.exe', [], {
+      timeoutMs: 1,
+      platform: 'win32',
+      spawnProcess,
+      spawnProcessSync,
+    });
+    expect(result).toMatchObject({ code: 124, timedOut: true });
+    expect(calls).toEqual(['taskkill /pid 4242 /t /f']);
+    child.emit('error', new Error('late process error'));
+    child.emit('close', 0);
+    expect(calls).toEqual(['taskkill /pid 4242 /t /f']);
+  }
+
   async function verifyRipgrepParity() {
     if (process.platform === 'win32') return;
     const root = tempDir('grep-semantic-parity');
     const binDir = join(root, 'bin');
     mkdirSync(join(root, '.hidden'), { recursive: true });
     mkdirSync(join(root, 'node_modules'), { recursive: true });
+    mkdirSync(join(root, '.git'), { recursive: true });
     mkdirSync(join(root, '.yeaft', 'worktrees', 'ignored'), { recursive: true });
+    mkdirSync(join(root, 'src', '.yeaft', 'worktrees', 'ignored'), { recursive: true });
     mkdirSync(binDir);
-    writeFileSync(join(root, 'a.txt'), 'needle\n');
+    writeFileSync(join(root, 'src', 'a.txt'), 'needle\n');
     writeFileSync(join(root, '.hidden', 'h.txt'), 'needle\n');
     writeFileSync(join(root, 'node_modules', 'n.txt'), 'needle\n');
+    writeFileSync(join(root, '.git', 'g.txt'), 'needle\n');
     writeFileSync(join(root, '.yeaft', 'worktrees', 'ignored', 'w.txt'), 'needle\n');
+    writeFileSync(join(root, 'src', '.yeaft', 'worktrees', 'ignored', 'w.txt'), 'needle\n');
     const rgPath = join(binDir, 'rg');
     const capturedArgs = join(tmpdir(), `yeaft-rg-args-${process.pid}-${Date.now()}.txt`);
-    writeFileSync(rgPath, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(capturedArgs)}\nprintf 'a.txt\\n.hidden/h.txt\\n'\n`, { mode: 0o755 });
+    writeFileSync(rgPath, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(capturedArgs)}\nprintf 'src/a.txt\\n.hidden/h.txt\\n'\n`, { mode: 0o755 });
     const options = {
       caseInsensitive: false,
       fixedStrings: true,
@@ -2979,18 +3012,27 @@ describe('managed CLI setup and fast tool integration', () => {
     const fast = (await runRipgrep('needle', root, options, undefined, rgPath)).trim().split('\n').sort();
     const fallback = (await nodeGrep('needle', root, options)).trim().split('\n').sort();
     expect(fast).toEqual(fallback);
-    expect(fast).toEqual(['.hidden/h.txt', 'a.txt']);
+    expect(fast).toEqual(['.hidden/h.txt', 'src/a.txt']);
     const args = readFileSync(capturedArgs, 'utf8').trim().split('\n');
     expect(args).toContain('--hidden');
     expect(args).toContain('--no-ignore');
     expect(args).toContain('!**/node_modules/**');
     expect(args).toContain('!.yeaft/worktrees/**');
     expect(args).toContain('!**/.yeaft/worktrees/**');
+    options.glob = '**/*.txt';
+    const filteredFallback = (await nodeGrep('needle', root, options)).trim().split('\n').sort();
+    expect(filteredFallback).toEqual(['.hidden/h.txt', 'src/a.txt']);
+    await runRipgrep('needle', root, options, undefined, rgPath);
+    const filteredArgs = readFileSync(capturedArgs, 'utf8').trim().split('\n');
+    expect(filteredArgs.lastIndexOf('**/*.txt')).toBeLessThan(filteredArgs.indexOf('!**/node_modules/**'));
+    expect(filteredArgs.lastIndexOf('**/*.txt')).toBeLessThan(filteredArgs.indexOf('!.yeaft/worktrees/**'));
+    expect(filteredArgs.lastIndexOf('**/*.txt')).toBeLessThan(filteredArgs.indexOf('!**/.yeaft/worktrees/**'));
     rmSync(capturedArgs, { force: true });
   }
 
   it('keeps process, platform, and fast-tool fallback boundaries', async () => {
     await verifyProcessTermination();
+    await verifyWindowsProcessTreeTermination();
     const yeaftDir = tempDir('cli-path');
     const systemBin = join(yeaftDir, 'system-bin');
     mkdirSync(systemBin);
