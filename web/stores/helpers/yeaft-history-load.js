@@ -19,9 +19,18 @@ export function activeYeaftHistoryIdentity(store) {
     } catch (_) {}
   }
   if (!sessionId) return { agentId: store?.currentAgent || null, sessionId: null, sessionKey: '' };
-  const agentId = typeof store?.resolveYeaftSessionAgentId === 'function'
-    ? store.resolveYeaftSessionAgentId(sessionId)
-    : store?.currentAgent || null;
+  const agentId = (() => {
+    try {
+      const sessions = typeof window !== 'undefined' && window.Pinia?.useSessionsStore?.();
+      const activeSession = sessions?.activeSessionKey
+        ? sessions.sessions?.[sessions.activeSessionKey]
+        : null;
+      if (activeSession?.id === sessionId && activeSession.agentId) return activeSession.agentId;
+    } catch (_) {}
+    return typeof store?.resolveYeaftSessionAgentId === 'function'
+      ? store.resolveYeaftSessionAgentId(sessionId)
+      : store?.currentAgent || null;
+  })();
   return {
     agentId,
     sessionId,
