@@ -563,11 +563,7 @@
 }
 
 .work-center-body[data-pane="items"] .work-center-detail,
-.work-center-body[data-pane="items"] .work-center-action-detail-pane,
-.work-center-body[data-pane="actions"] .work-center-list,
-.work-center-body[data-pane="actions"] .work-center-action-detail-pane,
-.work-center-body[data-pane="action"] .work-center-list,
-.work-center-body[data-pane="action"] .work-center-detail {
+.work-center-body[data-pane="work-item"] .work-center-list {
   display: none;
 }
 
@@ -908,12 +904,31 @@
   gap: 8px;
 }
 
+.work-center-mobile-pane-tabs {
+  display: none;
+}
+
 .work-center-detail-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(400px, 440px);
+  grid-template-columns: minmax(0, 1fr) minmax(400px, 1fr);
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+.work-center-conversation-pane,
+.work-center-content-pane {
+  min-width: 0;
+  min-height: 0;
+}
+
+.work-center-conversation-pane {
+  display: flex;
+  flex-direction: column;
+}
+
+.work-center-content-pane {
+  border-left: 1px solid var(--border-light);
 }
 
 .work-center-detail-layout.without-workflow {
@@ -940,6 +955,15 @@
 .work-center-workflow {
   padding: 18px 18px 28px;
   background: var(--bg-main);
+}
+
+.work-center-content-pane:has(.work-center-action-detail-pane) {
+  padding: 0;
+  overflow: hidden;
+}
+
+.work-center-content-pane > .work-center-action-detail-pane {
+  height: 100%;
 }
 
 .work-center-detail-layout.without-workflow .work-center-detail-main {
@@ -1372,8 +1396,7 @@
 
 .work-center-action-detail-header,
 .work-center-action-view-switch,
-.work-center-action-detail-scroll,
-.work-center-action-composer {
+.work-center-action-detail-scroll {
   width: 100%;
 }
 
@@ -1594,7 +1617,6 @@
 }
 
 .work-center-action-message header,
-.work-center-action-composer-footer,
 .work-center-request-summary,
 .work-center-request-loop-summary {
   display: flex;
@@ -1911,79 +1933,44 @@
   line-height: 1.45;
 }
 
-.work-center-action-composer {
-  flex: 0 0 auto;
-  max-height: min(46vh, 320px);
-  padding: 10px var(--work-center-conversation-gutter) 18px;
-  background: var(--bg-main);
-  overflow-y: auto;
-  scrollbar-gutter: stable;
-}
-
-.work-center-action-composer-column {
-  gap: 8px;
-}
-
-.work-center-action-input-wrapper {
-  width: 100%;
-  max-width: none;
-  margin: 0;
-  align-items: flex-end;
-  gap: 8px;
-  padding: 10px 10px 10px 12px;
-  border-radius: 18px;
-}
-
-.work-center-action-input-wrapper textarea {
-  min-height: 24px;
-  max-height: 144px;
-  padding: 0;
-  font-size: 14px;
-  line-height: 1.55;
-  overflow-y: hidden;
-}
-
-.work-center-action-input-wrapper .attach-btn,
-.work-center-action-input-wrapper .send-btn {
-  width: 34px;
-  height: 34px;
-}
-
-.work-center-action-input-wrapper .work-center-attachment-picker {
-  position: relative;
-  padding: 0;
-  color: var(--text-secondary);
-}
-
-.work-center-action-input-wrapper .work-center-attachment-picker input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  opacity: 0;
-}
-
-.work-center-action-composer-footer {
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.work-center-action-composer-hint {
-  padding: 0 10px;
-  color: var(--text-muted);
-  font-size: 10px;
-  line-height: 1.4;
-}
-
-.work-center-action-composer-hint strong {
-  color: var(--text-secondary);
-  font-weight: 600;
-}
-
 .work-center-conversation {
   display: grid;
   gap: 12px;
   margin-top: 32px;
+}
+
+.work-center-composer-target {
+  display: flex;
+  width: min(100%, 920px);
+  align-items: center;
+  gap: 10px;
+  margin: 0 auto;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.work-center-composer-target select {
+  min-width: 0;
+  max-width: min(100%, 360px);
+  padding: 6px 28px 6px 9px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 500;
+}
+
+.work-center-action-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.work-center-target-action {
+  white-space: nowrap;
 }
 
 .work-center-conversation-heading {
@@ -3077,26 +3064,10 @@
 }
 
 @container work-center (max-width: 1120px) {
-  .work-center-detail-layout {
-    grid-template-columns: minmax(0, 1fr);
-    overflow-y: auto;
-  }
-
-  .work-center-detail-main,
-  .work-center-workflow {
-    overflow: visible;
-  }
-
   .work-center-detail-main,
   .work-center-detail-layout.without-workflow .work-center-detail-main {
     padding-right: 24px;
     padding-left: 24px;
-  }
-
-  .work-center-workflow {
-    margin: 0 24px 28px;
-    padding: 16px 12px;
-    border-radius: 10px;
   }
 }
 
@@ -3255,6 +3226,54 @@
     min-height: 300px;
   }
 
+  .work-center-mobile-pane-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    margin: 0 18px 12px;
+    padding: 4px;
+    border-radius: 9px;
+    background: var(--bg-sidebar);
+  }
+
+  .work-center-mobile-pane-tabs button {
+    padding: 8px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .work-center-mobile-pane-tabs button.active {
+    background: var(--session-active);
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .work-center-detail-layout {
+    display: block;
+  }
+
+  .work-center-detail-layout[data-mobile-pane="conversation"] .work-center-content-pane,
+  .work-center-detail-layout[data-mobile-pane="content"] .work-center-conversation-pane {
+    display: none;
+  }
+
+  .work-center-detail-main,
+  .work-center-content-pane {
+    height: 100%;
+    overflow-y: auto;
+  }
+
+  .work-center-content-pane {
+    margin: 0;
+    border-left: 0;
+    border-radius: 0;
+  }
+
   .work-center-detail-heading {
     padding: 20px 58px 16px 18px;
   }
@@ -3268,11 +3287,6 @@
   .work-center-detail-layout.without-workflow .work-center-detail-main {
     padding-right: 18px;
     padding-left: 18px;
-  }
-
-  .work-center-workflow {
-    margin-right: 18px;
-    margin-left: 18px;
   }
 
   .work-center-breadcrumbs {
@@ -3325,14 +3339,6 @@
 
   .work-center-request-tool-detail {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .work-center-action-composer {
-    padding: 8px var(--work-center-conversation-gutter) calc(12px + env(safe-area-inset-bottom, 0px));
-  }
-
-  .work-center-action-composer-hint {
-    padding: 0 4px;
   }
 
   .work-center-action-summary {

@@ -32,11 +32,13 @@ export default {
       selectedId: null,
       selectedActionId: null,
       narrowPane: 'items',
+      mobileWorkItemPane: 'conversation',
+      contentStack: [{ type: 'action-list' }],
+      composerDrafts: {},
+      staleComposerTarget: null,
+      composerTargetValue: 'coordinator',
       actionDetailTab: 'messages',
-      actionInputSending: false,
-      actionInputError: '',
       actionInputRequestGeneration: 0,
-      actionComposerGeneration: 0,
       actionRunOpenGeneration: 0,
       workItemMessage: '',
       workItemMessageAttachments: [],
@@ -59,15 +61,12 @@ export default {
       deletingWorkItemIds: {},
       deleteWorkItemError: '',
       boardQueryTimer: null,
-      actionGuidance: '',
       expandedActions: {},
       actionsExpanded: false,
       workDirTouched: false,
       startTouched: false,
       createAttachments: [],
-      guidanceAttachments: [],
       attachmentsUploading: false,
-      guidanceAttachmentsUploading: false,
       previewingAttachmentId: null,
       attachmentPreviewError: '',
       attachmentPreviewGeneration: 0,
@@ -101,6 +100,10 @@ export default {
     runtime() { return this.store.workCenterRuntimeByAgent[this.agentId] || null; },
     workItemTypes() { return Array.isArray(this.runtime?.workItemTypes) ? this.runtime.workItemTypes : []; },
     workItemAttachmentsSupported() { return this.runtime?.workItemAttachments === true; },
+    canonicalMessageWireSupported() {
+      return this.agents.find(agent => agent?.id === this.agentId)?.capabilities
+        ?.includes('work_center_message_v2') === true;
+    },
     createDefaultWorkDir() {
       return this.settings?.defaultWorkDir || this.runtime?.defaultWorkDir || '';
     },
@@ -126,6 +129,59 @@ export default {
       const actions = Array.isArray(this.selected?.actions) ? this.selected.actions : [];
       return actions.find(action => action.id === this.selectedActionId) || null;
     },
+    contentRef() {
+      return this.contentStack[this.contentStack.length - 1] || { type: 'action-list' };
+    },
+    contentIsActionList() {
+      return this.contentRef.type === 'action-list';
+    },
+    composerTargetIsCoordinator() {
+      return this.composerTargetValue === 'coordinator';
+    },
+    composerTargetAction() {
+      if (!this.composerTargetValue.startsWith('action:')) return null;
+      const actionId = this.composerTargetValue.slice('action:'.length);
+      const actions = Array.isArray(this.selected?.actions) ? this.selected.actions : [];
+      return actions.find(action => action.id === actionId) || null;
+    },
+    composerTargetIsStale() {
+      return this.composerTargetValue !== 'coordinator' && !this.composerTargetAction;
+    },
+    composerTargetOptions() {
+      const actions = Array.isArray(this.selected?.actions) ? this.selected.actions : [];
+      return [
+        { value: 'coordinator', label: this.tr('workCenter.coordinator', 'Coordinator'), disabled: false },
+        ...actions.map(action => ({
+          value: `action:${action.id}`,
+          label: this.$t('workCenter.composerTargetAction', {
+            sequence: this.actionSequence(action),
+            name: action.brief?.objective || this.actionLabel(action.type),
+          }),
+          disabled: !this.canMessageAction(action),
+        })),
+      ];
+    },
+    composerTargetLabel() {
+      return this.composerTargetAction
+        ? (this.composerTargetAction.brief?.objective || this.actionLabel(this.composerTargetAction.type))
+        : this.tr('workCenter.coordinator', 'Coordinator');
+    },
+    composerPlaceholder() {
+      return this.composerTargetAction
+        ? this.$t('workCenter.actionChatPlaceholder', { name: this.composerTargetLabel })
+        : this.tr('workCenter.conversationPlaceholder', 'Message about this work item');
+    },
+    composerTargetUnavailable() {
+      if (this.coordinatorReadOnly) return true;
+      if (this.composerTargetIsCoordinator) return this.coordinatorThinking;
+      if (!this.composerTargetAction) return true;
+      return !this.canMessageAction(this.composerTargetAction);
+    },
+    composerCanSend() {
+      return !this.workItemMessageSending && !this.workItemMessageAttachmentsUploading
+        && !this.composerTargetUnavailable
+        && (!!this.workItemMessage.trim() || this.workItemMessageAttachments.length > 0);
+    },
     actionRequestKey() {
       return this.selected?.id && this.selectedAction?.id
         ? workCenterActionRequestScopeKey(
@@ -144,11 +200,6 @@ export default {
           this.selectedAction.id,
           this.selectedAction.generation,
         )
-        : '';
-    },
-    actionComposerScope() {
-      return this.selected?.id && this.selectedAction?.id
-        ? `${this.agentId}:${this.selected.id}:${this.selectedAction.id}:${this.actionComposerGeneration}`
         : '';
     },
     workItemComposerScope() {
@@ -282,8 +333,9 @@ export default {
         this.saving = false;
         this.selectedId = null;
         this.selectedActionId = null;
-        this.resetActionComposer?.();
         this.resetWorkItemComposer?.();
+        this.resetContentStack?.();
+        this.composerTargetValue = 'coordinator';
         this.narrowPane = 'items';
         this.previewingAttachmentId = null;
         this.attachmentPreviewError = '';
@@ -322,16 +374,18 @@ export default {
       handler(detail) {
         if (!detail || detail.id !== this.selectedId) return;
         const actions = Array.isArray(detail.actions) ? detail.actions : [];
-        if (!actions.some(action => action.id === this.selectedActionId)) {
-          const nextActionId = detail.currentActionId || actions[0]?.id || null;
-          if (nextActionId !== this.selectedActionId) {
-            invalidateActionRunOpen(this);
-            this.resetActionComposer();
-            this.previewingAttachmentId = null;
-            this.attachmentPreviewError = '';
-            this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
-          }
-          this.selectedActionId = nextActionId;
+        if (this.selectedActionId && !actions.some(action => action.id === this.selectedActionId)) {
+          invalidateActionRunOpen(this);
+          this.selectedActionId = null;
+          this.resetContentStack();
+          this.previewingAttachmentId = null;
+          this.attachmentPreviewError = '';
+          this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
+        }
+        if (this.composerTargetAction == null && this.composerTargetValue !== 'coordinator') {
+          this.staleComposerTarget = this.composerTargetValue;
+        } else {
+          this.staleComposerTarget = null;
         }
       },
     },
@@ -339,8 +393,11 @@ export default {
   beforeUnmount() {
     invalidateActionRunOpen(this);
     if (this.boardQueryTimer) clearTimeout(this.boardQueryTimer);
+    window.removeEventListener('popstate', this.restoreWorkCenterUrl);
   },
   mounted() {
+    window.addEventListener('popstate', this.restoreWorkCenterUrl);
+    this.restoreWorkCenterUrl();
     const draft = this.store.workCenterCreateDraft;
     if (!draft) return;
     this.form = {
@@ -459,14 +516,124 @@ export default {
       return action?.assignedVp?.name || action?.assignedVp?.id
         || this.tr('workCenter.assignment.planned', 'Planned assignment');
     },
-    resetActionComposer() {
-      this.actionComposerGeneration += 1;
-      this.actionInputRequestGeneration += 1;
-      this.actionGuidance = '';
-      this.actionInputError = '';
-      this.guidanceAttachments = [];
-      this.guidanceAttachmentsUploading = false;
-      this.actionInputSending = false;
+    sameContentRef(left, right) {
+      return left?.type === right?.type
+        && left?.actionId === right?.actionId
+        && left?.runId === right?.runId
+        && left?.resourceId === right?.resourceId;
+    },
+    resetContentStack(contentRefs = [{ type: 'action-list' }]) {
+      const refs = Array.isArray(contentRefs) ? contentRefs : [contentRefs];
+      const stack = refs[0]?.type === 'action-list' ? refs : [{ type: 'action-list' }, ...refs];
+      this.contentStack = stack.length > 0 ? stack : [{ type: 'action-list' }];
+      const actionRef = [...this.contentStack].reverse().find(ref => ref.type === 'action');
+      this.selectedActionId = this.contentRef.actionId || actionRef?.actionId || null;
+    },
+    pushContentRef(contentRef, { replace = false, syncUrl = true } = {}) {
+      const current = this.contentRef;
+      if (this.sameContentRef(current, contentRef)) {
+        this.mobileWorkItemPane = 'content';
+        return;
+      }
+      this.contentStack = contentRef.type === 'action-list'
+        ? [{ type: 'action-list' }]
+        : [...this.contentStack, contentRef];
+      this.selectedActionId = contentRef.actionId || this.selectedActionId;
+      this.mobileWorkItemPane = 'content';
+      if (syncUrl) this.syncWorkCenterUrl(replace);
+    },
+    popContentRef() {
+      if (this.contentStack.length <= 1) return;
+      this.contentStack = this.contentStack.slice(0, -1);
+      const actionRef = [...this.contentStack].reverse().find(ref => ref.type === 'action');
+      this.selectedActionId = actionRef?.actionId || null;
+      this.mobileWorkItemPane = 'content';
+      this.syncWorkCenterUrl();
+    },
+    contentRefParam(contentRef) {
+      if (contentRef.type === 'action' && contentRef.actionId) return `action:${contentRef.actionId}`;
+      if (contentRef.type === 'run' && contentRef.actionId && contentRef.runId) {
+        return `run:${contentRef.actionId}:${contentRef.runId}`;
+      }
+      if (contentRef.type === 'attachment' && contentRef.resourceId) {
+        return `attachment:${contentRef.actionId || '-'}:${contentRef.resourceId}`;
+      }
+      return 'action-list';
+    },
+    contentStackParam() {
+      return this.contentStack.map(ref => this.contentRefParam(ref)).join('/');
+    },
+    parseContentRef(value) {
+      const text = String(value || '');
+      if (text === 'action-list') return { type: 'action-list' };
+      if (text.startsWith('action:')) return { type: 'action', actionId: text.slice('action:'.length) };
+      if (text.startsWith('run:')) {
+        const [, actionId, runId] = text.split(':');
+        return { type: 'run', actionId, runId };
+      }
+      if (text.startsWith('attachment:')) {
+        const [, actionId, resourceId] = text.split(':');
+        return { type: 'attachment', actionId: actionId === '-' ? null : actionId, resourceId };
+      }
+      return { type: 'action-list' };
+    },
+    parseContentStack(value) {
+      const refs = String(value || '').split('/').filter(Boolean)
+        .map(part => this.parseContentRef(part));
+      return refs.length > 0 ? refs : [{ type: 'action-list' }];
+    },
+    syncWorkCenterUrl(replace = false) {
+      const url = new URL(window.location.href);
+      if (this.selectedId) {
+        url.searchParams.set('workAgentId', this.agentId || '');
+        url.searchParams.set('workItemId', this.selectedId);
+        url.searchParams.set('workContent', this.contentStackParam());
+      } else {
+        url.searchParams.delete('workAgentId');
+        url.searchParams.delete('workItemId');
+        url.searchParams.delete('workContent');
+      }
+      const next = `${url.pathname}${url.search}${url.hash}`;
+      if (`${window.location.pathname}${window.location.search}${window.location.hash}` === next) return;
+      const state = {
+        ...window.history.state,
+        workCenter: !!this.selectedId,
+        workCenterContent: !!this.selectedId && this.contentStack.length > 1,
+      };
+      window.history[replace ? 'replaceState' : 'pushState'](state, '', next);
+    },
+    async restoreWorkCenterUrl() {
+      const params = new URLSearchParams(window.location.search);
+      const workAgentId = params.get('workAgentId');
+      const workItemId = params.get('workItemId');
+      if (!workItemId || (workAgentId && workAgentId !== this.agentId)) {
+        if (this.selectedId) this.showItemsPane({ syncUrl: false });
+        return;
+      }
+      const contentStack = this.parseContentStack(params.get('workContent'));
+      const contentRef = contentStack.at(-1);
+      if (this.selectedId !== workItemId || this.detail?.id !== workItemId) {
+        this.openWorkItem(workItemId, { syncUrl: false, contentRefs: contentStack });
+        this.detailLoading = true;
+        try {
+          await this.store.getWorkItem(workItemId, this.agentId);
+        } catch (error) {
+          if (this.selectedId === workItemId) this.detailError = error?.message || String(error);
+        } finally {
+          if (this.selectedId === workItemId) this.detailLoading = false;
+        }
+      }
+      const actionId = contentRef.actionId
+        || [...contentStack].reverse().find(ref => ref.type === 'action')?.actionId;
+      if (actionId && !this.selected?.actions?.some(action => action.id === actionId)) {
+        this.resetContentStack();
+        this.syncWorkCenterUrl(true);
+        return;
+      }
+      this.resetContentStack(contentStack);
+      this.narrowPane = 'work-item';
+      this.mobileWorkItemPane = contentRef.type === 'action-list' ? 'conversation' : 'content';
+      if (actionId) this.loadLatestActionMessages(this.selectedAction);
     },
     resetWorkItemComposer() {
       this.workItemComposerGeneration += 1;
@@ -476,13 +643,41 @@ export default {
       this.workItemMessageError = '';
       this.workItemMessageSending = false;
     },
-    openWorkItem(itemId) {
+    draftKey(itemId = this.selectedId, agentId = this.agentId) {
+      return itemId ? `${agentId || ''}:${itemId}` : '';
+    },
+    saveComposerDraft() {
+      const key = this.draftKey();
+      if (!key) return;
+      this.composerDrafts = {
+        ...this.composerDrafts,
+        [key]: {
+          text: this.workItemMessage,
+          attachments: [...this.workItemMessageAttachments],
+          target: this.composerTargetValue,
+          error: this.workItemMessageError,
+        },
+      };
+    },
+    restoreComposerDraft(itemId) {
+      const draft = this.composerDrafts[this.draftKey(itemId)] || null;
+      this.workItemMessage = draft?.text || '';
+      this.workItemMessageAttachments = [...(draft?.attachments || [])];
+      this.composerTargetValue = draft?.target || 'coordinator';
+      this.workItemMessageError = draft?.error || '';
+      this.staleComposerTarget = null;
+      this.workItemMessageSending = false;
+      this.workItemMessageAttachmentsUploading = false;
+      this.workItemComposerGeneration += 1;
+    },
+    openWorkItem(itemId, { syncUrl = true, contentRefs = [{ type: 'action-list' }] } = {}) {
+      this.saveComposerDraft();
       invalidateActionRunOpen(this);
       this.selectedId = itemId;
-      this.selectedActionId = null;
-      this.narrowPane = 'actions';
-      this.resetActionComposer();
-      this.resetWorkItemComposer();
+      this.narrowPane = 'work-item';
+      this.mobileWorkItemPane = 'conversation';
+      this.resetContentStack(contentRefs);
+      this.restoreComposerDraft(itemId);
       this.expandedActions = {};
       this.actionsExpanded = false;
       this.detailError = '';
@@ -490,15 +685,13 @@ export default {
       this.previewingAttachmentId = null;
       this.attachmentPreviewError = '';
       this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
+      if (syncUrl) this.syncWorkCenterUrl();
     },
     async selectItem(item) {
       this.openWorkItem(item.id);
       this.detailLoading = true;
       try {
-        const detail = await this.store.getWorkItem(item.id, this.agentId);
-        if (this.selectedId === item.id) {
-          this.selectedActionId = detail?.currentActionId || detail?.actions?.[0]?.id || null;
-        }
+        await this.store.getWorkItem(item.id, this.agentId);
       } catch (error) {
         if (this.selectedId === item.id) this.detailError = error?.message || String(error);
       } finally {
@@ -508,13 +701,11 @@ export default {
     selectAction(action) {
       if (this.selectedActionId !== action.id) {
         invalidateActionRunOpen(this);
-        this.resetActionComposer();
         this.previewingAttachmentId = null;
         this.attachmentPreviewError = '';
         this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
       }
-      this.selectedActionId = action.id;
-      this.narrowPane = 'action';
+      this.pushContentRef({ type: 'action', actionId: action.id });
       this.loadLatestActionMessages(action);
     },
     loadLatestActionMessages(action = this.selectedAction) {
@@ -534,11 +725,34 @@ export default {
         this.agentId,
       ).catch(() => null);
     },
-    showItemsPane() {
+    showItemsPane({ syncUrl = true } = {}) {
+      this.saveComposerDraft();
       this.narrowPane = 'items';
+      this.selectedId = null;
+      this.resetContentStack();
+      this.composerTargetValue = 'coordinator';
+      this.resetWorkItemComposer();
+      if (syncUrl) this.syncWorkCenterUrl();
     },
     showActionsPane() {
-      this.narrowPane = 'actions';
+      this.mobileWorkItemPane = 'content';
+      if (!this.contentIsActionList) this.popContentRef();
+    },
+    canMessageAction(action) {
+      if (!action || ['done', 'cancelled'].includes(this.selected?.status)) return false;
+      return ['idle', 'ready', 'running', 'paused', 'waiting', 'failed', 'completed', 'stopped']
+        .includes(action.status) && action.admissionStatus !== 'blocked';
+    },
+    chooseCoordinatorTarget() {
+      this.composerTargetValue = 'coordinator';
+      this.staleComposerTarget = null;
+    },
+    setComposerTargetForAction(action = this.selectedAction) {
+      if (!action?.id || !this.canMessageAction(action)) return;
+      this.composerTargetValue = `action:${action.id}`;
+      this.staleComposerTarget = null;
+      this.mobileWorkItemPane = 'conversation';
+      this.$nextTick(() => this.$refs.workItemComposerInput?.focus());
     },
     loadEarlierActionMessages() {
       if (!this.selected?.id || !this.selectedAction?.id || this.actionMessagesNextCursor == null) return null;
@@ -602,6 +816,7 @@ export default {
         scope.agentId,
       ).catch(() => null);
       if (!detail || !scopeIsCurrent()) return resolve?.(null);
+      this.pushContentRef({ type: 'run', actionId: scope.actionId, runId: scope.runId });
       return resolve?.(request);
     },
     actionHasDetail(action) {
@@ -710,45 +925,6 @@ export default {
     removeCreateAttachment(index) {
       this.createAttachments = this.createAttachments.filter((_attachment, itemIndex) => itemIndex !== index);
     },
-    async onGuidanceAttachmentInput(event) {
-      if (!this.workItemAttachmentsSupported) {
-        event.target.value = '';
-        throw new Error(this.tr('workCenter.attachmentsUnsupported', 'The selected Agent does not support Work Item attachments.'));
-      }
-      const files = Array.from(event.target.files || []);
-      event.target.value = '';
-      if (files.length === 0) return;
-      const scope = this.actionComposerScope;
-      if (!scope) return;
-      const existingCount = Array.isArray(this.selected?.attachments) ? this.selected.attachments.length : 0;
-      const remaining = Math.max(0, 10 - existingCount - this.guidanceAttachments.length);
-      const selected = files.slice(0, remaining);
-      if (selected.length === 0) return;
-      this.guidanceAttachmentsUploading = true;
-      this.actionInputError = '';
-      try {
-        const formData = new FormData();
-        for (const file of selected) formData.append('files', file, file.name || 'attachment');
-        const authStore = Pinia.useAuthStore();
-        const token = authStore.getActiveToken?.() || authStore.token || null;
-        const headers = token ? { Authorization: `Bearer ${token}` } : {};
-        const response = await fetch('/api/upload', { method: 'POST', headers, body: formData });
-        if (!response.ok) throw new Error(this.tr('workCenter.attachmentsUploadFailed', 'Attachment upload failed'));
-        const result = await response.json();
-        if (this.actionComposerScope !== scope) return;
-        this.guidanceAttachments = [
-          ...this.guidanceAttachments,
-          ...(Array.isArray(result.files) ? result.files : []),
-        ].slice(0, Math.max(0, 10 - existingCount));
-      } catch (error) {
-        if (this.actionComposerScope === scope) this.actionInputError = error?.message || String(error);
-      } finally {
-        if (this.actionComposerScope === scope) this.guidanceAttachmentsUploading = false;
-      }
-    },
-    removeGuidanceAttachment(index) {
-      this.guidanceAttachments = this.guidanceAttachments.filter((_attachment, itemIndex) => itemIndex !== index);
-    },
     async onWorkItemMessageAttachmentInput(event) {
       if (!this.workItemAttachmentsSupported) {
         event.target.value = '';
@@ -792,6 +968,11 @@ export default {
     },
     async previewAttachment(attachment, trigger = null) {
       if (!this.selected?.id || !attachment?.id || this.previewingAttachmentId) return;
+      this.pushContentRef({
+        type: 'attachment',
+        actionId: this.selectedActionId || null,
+        resourceId: attachment.id,
+      });
       const agentId = this.agentId;
       const workItemId = this.selected.id;
       const actionId = this.selectedActionId || '';
@@ -888,7 +1069,6 @@ export default {
         }, requestAgentId);
         if (this.agentId !== requestAgentId || this.createGeneration !== requestGeneration) return;
         this.openWorkItem(detail.id);
-        this.selectedActionId = detail.currentActionId || detail.actions?.[0]?.id || null;
         this.form = {
           requirement: '',
           workDir: '',
@@ -911,11 +1091,11 @@ export default {
       await this.store.startWorkItem(this.selected.id, this.agentId);
     },
     async sendSelectedWorkItemMessage() {
-      if (!this.selected
-          || (!this.workItemMessage.trim() && this.workItemMessageAttachments.length === 0)
-          || this.workItemMessageSending || this.workItemMessageAttachmentsUploading
-          || this.coordinatorThinking || this.coordinatorReadOnly) return;
+      if (!this.selected || !this.composerCanSend) return;
       const scope = this.workItemComposerScope;
+      const targetValue = this.composerTargetValue;
+      const targetAction = this.composerTargetAction;
+      if (!this.composerTargetIsCoordinator && !targetAction) return;
       const itemId = this.selected.id;
       const revision = this.selected.revision;
       const text = this.workItemMessage.trim();
@@ -925,96 +1105,51 @@ export default {
         mimeType: attachment.mimeType,
         size: attachment.size,
       }));
+      const requestGeneration = (Number(this.actionInputRequestGeneration) || 0) + 1;
+      this.actionInputRequestGeneration = requestGeneration;
       this.workItemMessageSending = true;
       this.workItemMessageError = '';
       try {
-        await this.store.sendWorkItemMessage(itemId, text, revision, attachments, this.agentId, {
+        const fence = {
           planRevision: this.selected.planRevision,
           ledgerRevision: this.selected.ledgerRevision,
           coordinatorRevision: this.selected.coordinatorRevision,
-        });
-        if (this.workItemComposerScope === scope && this.workItemMessage.trim() === text) {
+        };
+        if (this.canonicalMessageWireSupported) {
+          await this.store.postWorkItemMessage(
+            itemId,
+            text,
+            targetAction
+              ? { kind: 'action', actionId: targetAction.id, generation: targetAction.generation }
+              : { kind: 'coordinator' },
+            revision,
+            attachments,
+            this.agentId,
+            fence,
+          );
+        } else if (targetAction) {
+          await this.store.sendWorkItemActionInput(
+            itemId, text, targetAction.id, revision, targetAction.generation, attachments, this.agentId,
+          );
+        } else {
+          await this.store.sendWorkItemMessage(itemId, text, revision, attachments, this.agentId, fence);
+        }
+        if (this.workItemComposerScope === scope
+            && this.actionInputRequestGeneration === requestGeneration
+            && this.composerTargetValue === targetValue
+            && this.workItemMessage.trim() === text) {
           this.workItemMessage = '';
           this.workItemMessageAttachments = [];
           this.$nextTick(() => this.resizeWorkItemComposer(this.$refs.workItemComposerInput, true));
         }
       } catch (error) {
-        if (this.workItemComposerScope === scope) this.workItemMessageError = error?.message || String(error);
-      } finally {
-        if (this.workItemComposerScope === scope) this.workItemMessageSending = false;
-      }
-    },
-    async retrySelectedAction() {
-      if (!this.selected || this.selectedAction?.status !== 'failed' || this.actionInputSending) return;
-      const scope = this.actionComposerScope;
-      this.actionInputSending = true;
-      this.actionInputError = '';
-      try {
-        await this.store.retryWorkItemAction(
-          this.selected.id, this.selectedAction.id, this.selected.revision,
-          this.selectedAction.generation, this.agentId,
-        );
-      } catch (error) {
-        if (this.actionComposerScope === scope) this.actionInputError = error?.message || String(error);
-      } finally {
-        if (this.actionComposerScope === scope) this.actionInputSending = false;
-      }
-    },
-    async guideSelectedAction() {
-      if (!this.selected || !this.selectedAction
-        || (!this.actionGuidance.trim() && this.guidanceAttachments.length === 0)) return;
-      if (!['ready', 'running', 'waiting', 'failed'].includes(this.selectedAction.status)) return;
-      const scope = this.actionComposerScope;
-      const itemId = this.selected.id;
-      const actionId = this.selectedAction.id;
-      const revision = this.selected.revision;
-      const text = this.actionGuidance.trim();
-      const attachments = this.guidanceAttachments.map(attachment => ({
-        fileId: attachment.fileId,
-        name: attachment.name,
-        mimeType: attachment.mimeType,
-        size: attachment.size,
-      }));
-      const requestGeneration = (Number(this.actionInputRequestGeneration) || 0) + 1;
-      this.actionInputRequestGeneration = requestGeneration;
-      this.actionGuidance = '';
-      this.guidanceAttachments = [];
-      this.actionInputSending = true;
-      this.actionInputError = '';
-      try {
-        const next = await this.store.sendWorkItemActionInput(
-          itemId, text, actionId, revision, this.selectedAction.generation, attachments, this.agentId,
-        );
-        if (this.selected?.id !== itemId) return;
-        if (this.actionInputRequestGeneration !== requestGeneration) return;
-        const responseStillMatches = next?.id === itemId
-          && next?.actions?.some(action => action?.id === actionId);
-        this.guidanceAttachments = [];
-        this.$nextTick(() => {
-          const input = this.$el?.querySelector?.('.work-center-action-input-wrapper textarea');
-          if (input) {
-            input.style.height = '24px';
-            input.style.overflowY = 'hidden';
-          }
-        });
-        const nextActionId = responseStillMatches ? actionId : (next?.currentActionId || this.selectedActionId);
-        if (nextActionId !== this.selectedActionId) {
-          this.resetActionComposer();
-          this.previewingAttachmentId = null;
-          this.attachmentPreviewError = '';
-          this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
-        }
-        this.selectedActionId = nextActionId;
-      } catch (error) {
-        if (this.actionInputRequestGeneration === requestGeneration) {
-          if (!this.actionGuidance) this.actionGuidance = text;
-          if (this.guidanceAttachments.length === 0) {
-            this.guidanceAttachments = attachments.map(attachment => ({ ...attachment }));
-          }
-          this.actionInputError = error?.message || String(error);
+        if (this.workItemComposerScope === scope && this.actionInputRequestGeneration === requestGeneration) {
+          this.workItemMessageError = error?.message || String(error);
         }
       } finally {
-        if (this.actionInputRequestGeneration === requestGeneration) this.actionInputSending = false;
+        if (this.workItemComposerScope === scope && this.actionInputRequestGeneration === requestGeneration) {
+          this.workItemMessageSending = false;
+        }
       }
     },
     workItemCanDelete(item) {
@@ -1034,11 +1169,7 @@ export default {
         if (result?.cleanupWarning) this.deleteWorkItemError = result.cleanupWarning;
         if (this.selectedId === item.id) {
           invalidateActionRunOpen(this);
-          this.selectedId = null;
-          this.selectedActionId = null;
-          this.narrowPane = 'items';
-          this.resetActionComposer();
-          this.resetWorkItemComposer();
+          this.showItemsPane();
         }
       } catch (error) {
         this.deleteWorkItemError = error?.message || String(error);
@@ -1100,8 +1231,7 @@ export default {
           <nav v-if="narrowPane !== 'items' && selected" class="work-center-breadcrumbs" :aria-label="tr('workCenter.breadcrumbs', 'Work Center navigation')">
             <button type="button" @click="showItemsPane">{{ tr('workCenter.workItems', 'Work items') }}</button>
             <span aria-hidden="true">/</span>
-            <button v-if="narrowPane === 'action'" type="button" @click="showActionsPane">{{ selected.title }}</button>
-            <span v-else aria-current="page">{{ selected.title }}</span>
+            <span aria-current="page">{{ selected.title }}</span>
           </nav>
 
           <div v-if="narrowPane === 'items'" class="work-center-toolbar">
@@ -1216,8 +1346,12 @@ export default {
                 <button class="work-center-icon-button work-center-detail-close" type="button" @click="showItemsPane" :title="tr('workCenter.closeWorkItem', 'Close details')" :aria-label="tr('workCenter.closeWorkItem', 'Close details')">
                   <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4l-6.3 6.31-1.42-1.42L9.17 12l-6.3-6.29 1.42-1.42 6.3 6.31 6.3-6.31 1.41 1.42Z"/></svg>
                 </button>
-                <div class="work-center-detail-layout" :class="{ 'without-workflow': !selected.actions?.length }">
-                  <div class="work-center-detail-main">
+                <div class="work-center-mobile-pane-tabs" role="tablist" :aria-label="tr('workCenter.workItemPanes', 'Work item panes')">
+                  <button type="button" role="tab" :aria-selected="mobileWorkItemPane === 'conversation' ? 'true' : 'false'" :class="{ active: mobileWorkItemPane === 'conversation' }" @click="mobileWorkItemPane = 'conversation'">{{ tr('workCenter.conversation', 'Conversation') }}</button>
+                  <button type="button" role="tab" :aria-selected="mobileWorkItemPane === 'content' ? 'true' : 'false'" :class="{ active: mobileWorkItemPane === 'content' }" @click="mobileWorkItemPane = 'content'">{{ tr('workCenter.contentPane', 'Content') }}</button>
+                </div>
+                <div class="work-center-detail-layout" :data-mobile-pane="mobileWorkItemPane">
+                  <div class="work-center-detail-main work-center-conversation-pane">
                     <div class="work-center-detail-overview">
                       <dl class="work-center-detail-meta">
                         <div><dt>{{ tr('workCenter.updated', 'Updated') }}</dt><dd>{{ time(selected.updatedAt) || '—' }}</dd></div>
@@ -1240,7 +1374,7 @@ export default {
                       <div v-if="selected.status === 'waiting' && selected.waitingReason" class="work-center-section work-center-resume">
                         <h3>{{ tr('workCenter.resumeAnswer', 'Answer the waiting question') }}</h3>
                         <p>{{ selected.waitingReason }}</p>
-                        <small class="work-center-muted">{{ tr('workCenter.answerInActionDetail', 'Open the current Action and respond in the input below.') }}</small>
+                        <small class="work-center-muted">{{ tr('workCenter.answerWithTarget', 'Choose the relevant target in the Conversation composer, then reply.') }}</small>
                       </div>
 
                       <section class="work-center-section work-center-description">
@@ -1295,6 +1429,17 @@ export default {
                       <p v-if="workItemMessageError" class="work-center-error" role="alert">{{ workItemMessageError }}</p>
                       <p v-if="coordinatorReadOnly" class="work-center-conversation-readonly">{{ tr('workCenter.conversationReadOnly', 'This work item is closed. The conversation remains available.') }}</p>
                       <template v-else>
+                        <label class="work-center-composer-target">
+                          <span>{{ tr('workCenter.sendTo', 'Send to') }}</span>
+                          <select v-model="composerTargetValue" data-testid="work-center-composer-target" :aria-label="tr('workCenter.composerTarget', 'Message target')">
+                            <option v-if="composerTargetIsStale" :value="composerTargetValue" disabled>{{ tr('workCenter.targetUnavailable', 'Selected Action is no longer available') }}</option>
+                            <option v-for="option in composerTargetOptions" :key="option.value" :value="option.value" :disabled="option.disabled">{{ option.label }}</option>
+                          </select>
+                        </label>
+                        <p v-if="composerTargetIsStale" class="work-center-error work-center-stale-target" role="alert">
+                          {{ tr('workCenter.targetUnavailableHelp', 'Choose another target before sending. This draft was not redirected.') }}
+                          <button type="button" class="btn-ghost" @click="chooseCoordinatorTarget">{{ tr('workCenter.sendToCoordinatorInstead', 'Send to Coordinator instead') }}</button>
+                        </p>
                         <div v-if="workItemMessageAttachments.length" class="work-center-attachment-list work-center-message-draft-attachments">
                           <span v-for="(attachment, index) in workItemMessageAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
                             <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
@@ -1307,9 +1452,9 @@ export default {
                             <input type="file" multiple :aria-label="tr('workCenter.addAttachments', 'Add files')" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv" @change="onWorkItemMessageAttachmentInput">
                           </label>
                           <div class="textarea-wrapper">
-                            <textarea ref="workItemComposerInput" :value="workItemMessage" rows="1" :disabled="coordinatorThinking" :placeholder="tr('workCenter.conversationPlaceholder', 'Message about this work item')" @input="onWorkItemMessageInput" @keydown="onWorkItemMessageKeydown"></textarea>
+                            <textarea ref="workItemComposerInput" :value="workItemMessage" rows="1" :disabled="composerTargetUnavailable" :placeholder="composerPlaceholder" @input="onWorkItemMessageInput" @keydown="onWorkItemMessageKeydown"></textarea>
                           </div>
-                          <button class="send-btn" type="button" @click="sendSelectedWorkItemMessage" :disabled="workItemMessageSending || workItemMessageAttachmentsUploading || coordinatorThinking || (!workItemMessage.trim() && workItemMessageAttachments.length === 0)" :title="tr('workCenter.sendMessage', 'Send message')" :aria-label="tr('workCenter.sendMessage', 'Send message')">
+                          <button class="send-btn" type="button" @click="sendSelectedWorkItemMessage" :disabled="!composerCanSend" :title="$t('workCenter.sendToTarget', { target: composerTargetLabel })" :aria-label="$t('workCenter.sendToTarget', { target: composerTargetLabel })">
                             <svg v-if="!workItemMessageSending" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
                             <span v-else class="work-center-send-spinner" aria-hidden="true"></span>
                           </button>
@@ -1320,7 +1465,8 @@ export default {
 
                   </div>
 
-                  <aside class="work-center-workflow" v-if="selected.actions?.length" :aria-label="tr('workCenter.actionFlow', 'Action flow')">
+                  <aside class="work-center-workflow work-center-content-pane" :aria-label="tr('workCenter.contentPane', 'Content')">
+                    <template v-if="contentIsActionList">
                     <div class="work-center-action-list-heading">
                       <div>
                         <h3>{{ tr('workCenter.actionFlow', 'Action flow') }}</h3>
@@ -1357,6 +1503,32 @@ export default {
                         </button>
                       </article>
                     </div>
+                    <p v-if="!selected.actions?.length" class="work-center-action-empty">{{ tr('workCenter.noActions', 'No Actions yet.') }}</p>
+                    </template>
+                    <WorkCenterActionDetail
+                      v-else
+                      :action="selectedAction"
+                      :selected="selected"
+                      :messages="actionMessages"
+                      :messages-next-cursor="actionMessagesNextCursor"
+                      :messages-loading="actionMessagesLoading"
+                      :messages-error="actionMessagesError"
+                      :requests="actionRequests"
+                      :request-details="actionRequestDetails"
+                      :request-details-loading="actionRequestDetailsLoading"
+                      :request-details-error="actionRequestDetailsError"
+                      :requests-loading="actionRequestsLoading"
+                      :requests-error="actionRequestsError"
+                      :previewing-attachment-id="previewingAttachmentId"
+                      :attachment-error="attachmentPreviewError"
+                      @back="showActionsPane"
+                      @target-action="setComposerTargetForAction"
+                      @load-earlier-messages="loadEarlierActionMessages"
+                      @refresh-requests="refreshActionRequests"
+                      @select-request="loadActionRequest"
+                      @open-run="openActionRun"
+                      @open-attachment="previewAttachment"
+                    />
                   </aside>
                 </div>
                 <div v-if="!['done','cancelled'].includes(selected.status)" class="work-center-detail-controls">
@@ -1371,39 +1543,6 @@ export default {
               </div>
             </section>
 
-            <WorkCenterActionDetail
-              :action="selectedAction"
-              :selected="selected"
-              :messages="actionMessages"
-              :messages-next-cursor="actionMessagesNextCursor"
-              :messages-loading="actionMessagesLoading"
-              :messages-error="actionMessagesError"
-              :requests="actionRequests"
-              :request-details="actionRequestDetails"
-              :request-details-loading="actionRequestDetailsLoading"
-              :request-details-error="actionRequestDetailsError"
-              :requests-loading="actionRequestsLoading"
-              :requests-error="actionRequestsError"
-              :composer-text="actionGuidance"
-              :composer-attachments="guidanceAttachments"
-              :uploading="guidanceAttachmentsUploading"
-              :sending="actionInputSending"
-              :composer-error="actionInputError"
-              :attachments-supported="workItemAttachmentsSupported"
-              :previewing-attachment-id="previewingAttachmentId"
-              :attachment-error="attachmentPreviewError"
-              @back="showActionsPane"
-              @update:composer-text="actionGuidance = $event"
-              @load-earlier-messages="loadEarlierActionMessages"
-              @refresh-requests="refreshActionRequests"
-              @select-request="loadActionRequest"
-              @open-run="openActionRun"
-              @attachment-input="onGuidanceAttachmentInput"
-              @remove-attachment="removeGuidanceAttachment"
-              @open-attachment="previewAttachment"
-              @send="guideSelectedAction"
-              @retry="retrySelectedAction"
-            />
           </div>
         </div>
     </main>

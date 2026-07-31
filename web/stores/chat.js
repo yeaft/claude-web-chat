@@ -2002,6 +2002,34 @@ export const useChatStore = defineStore('chat', {
       this.removeWorkItemState(target, id);
       return result;
     },
+    async postWorkItemMessage(id, text, targetRef, revision, attachments = [], agentId = null, fence = {}) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const clientMessageId = typeof fence.clientMessageId === 'string' && fence.clientMessageId
+        ? fence.clientMessageId
+        : globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+      const current = this.workCenterDetailByAgent[target]?.id === id
+        ? this.workCenterDetailByAgent[target] : null;
+      const detail = await this.workCenterRequest('post_work_item_message', {
+        id,
+        clientMessageId,
+        text,
+        target: targetRef,
+        revision,
+        planRevision: Number.isInteger(Number(fence.planRevision))
+          ? Number(fence.planRevision) : Number(current?.planRevision) || 0,
+        ledgerRevision: Number.isInteger(Number(fence.ledgerRevision))
+          ? Number(fence.ledgerRevision) : Number(current?.ledgerRevision) || 0,
+        coordinatorRevision: Number.isInteger(Number(fence.coordinatorRevision))
+          ? Number(fence.coordinatorRevision) : Number(current?.coordinatorRevision) || 0,
+        attachments: Array.isArray(attachments) ? attachments : [],
+      }, target);
+      if (targetRef?.kind === 'coordinator') {
+        if (!detail?.accepted) throw new Error('Work Center Coordinator did not accept the message');
+        return detail;
+      }
+      await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
+      return detail;
+    },
     async sendWorkItemMessage(id, text, revision, attachments = [], agentId = null, fence = {}) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const current = this.workCenterDetailByAgent[target]?.id === id

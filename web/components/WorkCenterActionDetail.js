@@ -16,16 +16,10 @@ export default {
     requestDetailsError: { type: Object, default: () => ({}) },
     requestsLoading: { type: Boolean, default: false },
     requestsError: { type: String, default: '' },
-    composerText: { type: String, default: '' },
-    composerAttachments: { type: Array, default: () => [] },
-    uploading: { type: Boolean, default: false },
-    sending: { type: Boolean, default: false },
-    composerError: { type: String, default: '' },
-    attachmentsSupported: { type: Boolean, default: false },
     previewingAttachmentId: { type: String, default: null },
     attachmentError: { type: String, default: '' },
   },
-  emits: ['back', 'update:composerText', 'load-earlier-messages', 'select-request', 'refresh-requests', 'open-run', 'attachment-input', 'remove-attachment', 'open-attachment', 'send', 'retry'],
+  emits: ['back', 'target-action', 'load-earlier-messages', 'select-request', 'refresh-requests', 'open-run', 'open-attachment'],
   data() {
     return {
       activeView: 'conversation',
@@ -39,25 +33,10 @@ export default {
       return this.action?.assignedVp?.name || this.action?.assignedVp?.id
         || this.action?.requiredRole || this.tr('workCenter.actionExecutorPending', 'Executor pending');
     },
-    canCompose() {
+    canTargetAction() {
       if (!this.action || ['done', 'cancelled'].includes(this.selected?.status)) return false;
-      return ['ready', 'running', 'waiting', 'failed'].includes(this.action.status);
-    },
-    canRetry() {
-      return this.action?.status === 'failed' && !this.uploading && !this.sending;
-    },
-    composerHint() {
-      if (this.action?.status === 'waiting') {
-        return this.tr('workCenter.actionInputResumeHint', 'Your input resumes this Action with the additional context.');
-      }
-      if (this.action?.status === 'failed') {
-        return this.tr('workCenter.actionInputRetryHint', 'Send corrected instructions or files to rerun this Action, or retry unchanged.');
-      }
-      return this.tr('workCenter.actionInputContinueHint', 'Direct intervention for this Action only.');
-    },
-    canSend() {
-      return !this.uploading && !this.sending
-        && (!!this.composerText.trim() || this.composerAttachments.length > 0);
+      return ['idle', 'ready', 'running', 'paused', 'waiting', 'failed', 'completed', 'stopped']
+        .includes(this.action.status) && this.action.admissionStatus !== 'blocked';
     },
     hasMessages() {
       return this.messages.length > 0;
@@ -69,10 +48,6 @@ export default {
     waitingQuestion() {
       if (this.action?.status !== 'waiting') return '';
       return String(this.action?.canonicalResult?.waitingReason || '').trim();
-    },
-    composerDescriptionIds() {
-      return [this.waitingQuestion ? 'work-center-action-waiting-question' : null,
-        'work-center-action-composer-hint'].filter(Boolean).join(' ');
     },
     currentGenerationRequests() {
       const generation = Math.max(1, Number(this.action?.generation) || 1);
@@ -91,10 +66,6 @@ export default {
       const current = Math.max(1, Number(generation) || 1);
       const previous = Math.max(1, Number(previousGeneration) || 1);
       if (current !== previous) this.resetActionView();
-    },
-    composerText(value) {
-      if (value) return;
-      this.$nextTick(() => this.resizeComposerInput(this.$refs.composerInput, true));
     },
     messages: {
       deep: true,
@@ -246,22 +217,6 @@ export default {
     toolHasDetail(tool) {
       return tool?.input != null || tool?.output != null;
     },
-    resizeComposerInput(input, reset = false) {
-      if (!input) return;
-      input.style.height = 'auto';
-      const nextHeight = reset ? 24 : Math.min(input.scrollHeight, 144);
-      input.style.height = `${nextHeight}px`;
-      input.style.overflowY = input.scrollHeight > 144 ? 'auto' : 'hidden';
-    },
-    onComposerInput(event) {
-      this.$emit('update:composerText', event.target.value);
-      this.resizeComposerInput(event.target, !event.target.value);
-    },
-    onComposerKeydown(event) {
-      if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
-      event.preventDefault();
-      if (this.canSend) this.$emit('send');
-    },
     refreshRequests() {
       this.$emit('refresh-requests');
     },
@@ -276,9 +231,14 @@ export default {
           </div>
           <h2>{{ action.brief?.objective || tr('workCenter.actionDetails', 'Action details') }}</h2>
         </div>
-        <button class="work-center-icon-button" type="button" @click="$emit('back')" :title="tr('common.close', 'Close')" :aria-label="tr('common.close', 'Close')">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4l-6.3 6.31-1.42-1.42L9.17 12l-6.3-6.29 1.42-1.42 6.3 6.31 6.3-6.31 1.41 1.42Z"/></svg>
-        </button>
+        <div class="work-center-action-header-actions">
+          <button v-if="canTargetAction" class="btn-secondary work-center-target-action" type="button" @click="$emit('target-action')">
+            {{ tr('workCenter.targetThisAction', 'Send to this Action') }}
+          </button>
+          <button class="work-center-icon-button" type="button" @click="$emit('back')" :title="tr('workCenter.backToActions', 'Back to Actions')" :aria-label="tr('workCenter.backToActions', 'Back to Actions')">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2Z"/></svg>
+          </button>
+        </div>
       </header>
 
       <nav class="work-center-action-view-switch" role="tablist" :aria-label="tr('workCenter.actionViews', 'Action views')">
@@ -308,7 +268,7 @@ export default {
             <p v-if="action.failure.error">{{ action.failure.error }}</p>
             <p v-if="action.failure.summary && action.failure.summary !== action.failure.error">{{ action.failure.summary }}</p>
             <small v-if="action.failure.failedAt">{{ tr('workCenter.failedAt', 'Failed at') }} · {{ time(action.failure.failedAt) }}</small>
-            <small v-if="canCompose">{{ tr('workCenter.actionFailureRecovery', 'Add corrected instructions or files below to rerun this Action. The Execution view shows retained tool evidence.') }}</small>
+            <small v-if="canTargetAction">{{ tr('workCenter.actionFailureRecovery', 'Target this Action in the Conversation composer to send corrected instructions. The Execution view shows retained tool evidence.') }}</small>
           </section>
           <details v-if="hasActionBrief" class="work-center-action-brief-disclosure">
             <summary>{{ tr('workCenter.actionBrief', 'Task brief') }}</summary>
@@ -408,37 +368,6 @@ export default {
           </div>
         </section>
       </div>
-
-      <footer v-if="canCompose" class="work-center-action-composer">
-        <div class="work-center-action-conversation-column work-center-action-composer-column">
-        <p v-if="composerError" class="work-center-error" role="alert">{{ composerError }}</p>
-        <div v-if="composerAttachments.length" class="work-center-attachment-list">
-          <span v-for="(attachment, index) in composerAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
-            <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
-            <button type="button" @click="$emit('remove-attachment', index)" :aria-label="tr('workCenter.removeAttachment', 'Remove from draft')">×</button>
-          </span>
-        </div>
-        <div class="input-wrapper work-center-action-input-wrapper">
-          <label v-if="attachmentsSupported" class="attach-btn work-center-attachment-picker" :title="tr('workCenter.addAttachments', 'Add files')">
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
-            <input type="file" multiple :aria-label="tr('workCenter.addAttachments', 'Add files')" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv" @change="$emit('attachment-input', $event)">
-          </label>
-          <div class="textarea-wrapper">
-            <textarea ref="composerInput" :value="composerText" rows="1" :placeholder="$t('workCenter.actionChatPlaceholder', { name: executorName })" :aria-describedby="composerDescriptionIds" @input="onComposerInput" @keydown="onComposerKeydown"></textarea>
-          </div>
-          <button class="send-btn" type="button" @click="$emit('send')" :disabled="!canSend" :title="sending ? tr('workCenter.sendingInput', 'Sending…') : (action.status === 'failed' ? tr('workCenter.sendAndRetryAction', 'Send and retry Action') : tr('workCenter.sendInput', 'Send input'))">
-            <svg v-if="!sending" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-            <span v-else class="work-center-send-spinner" aria-hidden="true"></span>
-          </button>
-        </div>
-        <div class="work-center-action-composer-footer">
-          <small id="work-center-action-composer-hint" class="work-center-action-composer-hint"><strong>{{ executorName }}</strong><span aria-hidden="true"> · </span>{{ uploading ? tr('workCenter.attachmentsUploading', 'Uploading…') : composerHint }}</small>
-          <button v-if="canRetry" class="btn-secondary" type="button" @click="$emit('retry')">
-            {{ tr('workCenter.retryAction', 'Retry Action') }}
-          </button>
-        </div>
-        </div>
-      </footer>
     </section>
     <section v-else class="work-center-action-detail-pane work-center-detail-empty"><strong>{{ tr('workCenter.selectAction', 'Select an Action to inspect its execution') }}</strong></section>
   `,

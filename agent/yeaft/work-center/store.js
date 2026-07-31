@@ -6,8 +6,13 @@ import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
 import { currentActionInputEventIds, runMatchesActionIdentity } from './action-identity.js';
 import { canonicalActionInstruction, withoutActionInputContext } from './workflow.js';
+import {
+  WORK_CENTER_SCHEMA_VERSION,
+  durableId,
+  migrateDurableWorkCenterModel,
+} from './durable-model.js';
 
-const SCHEMA_VERSION = 22;
+const SCHEMA_VERSION = WORK_CENTER_SCHEMA_VERSION;
 const UNFINISHED_ACTION_STATUSES = "'ready','running','waiting','failed'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -227,6 +232,9 @@ function mapRun(row) {
     workItemId: row.work_item_id,
     ownerBootId: row.owner_boot_id,
     leaseEpoch: row.lease_epoch,
+    ordinal: Math.max(1, Number(row.ordinal) || 1),
+    terminalStatus: row.terminal_status || null,
+    terminalAt: row.terminal_at || null,
     status: row.status,
     startedAt: row.started_at,
     expiresAt: row.expires_at,
@@ -774,6 +782,9 @@ export class WorkItemStore {
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA foreign_keys = ON;');
     this.#initSchema();
+    this.recoverCoordinatorMailbox();
+    this.recoverOperations();
+    this.recoverEngineTurns();
     this.recoverInterruptedCoordinatorTurns();
   }
 
@@ -939,6 +950,9 @@ export class WorkItemStore {
     const storedSchemaVersion = Number(
       this.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get()?.value,
     ) || 0;
+    if (storedSchemaVersion > SCHEMA_VERSION) {
+      throw new Error(`Work Center database schema ${storedSchemaVersion} is newer than supported schema ${SCHEMA_VERSION}`);
+    }
 
     // The feature shipped first as an unmerged PR, but keep the store tolerant
     // of databases created by review builds.
@@ -1129,14 +1143,293 @@ export class WorkItemStore {
         }
         if (storedSchemaVersion < 20) reconcilePendingActionInputIdentity(this.db, this.now());
         if (storedSchemaVersion < 22) repairReviewBuildActionInputIdentity(this.db, this.now());
-        this.db.prepare(`INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
-          ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
       });
     }
+    withTransaction(this.db, () => {
+      migrateDurableWorkCenterModel(this.db, this.now(), storedSchemaVersion || SCHEMA_VERSION);
+      this.db.prepare(`INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
+    });
   }
 
   close() {
     this.db.close();
+  }
+
+  #nextConversationSequence(conversationId) {
+    return Number(this.db.prepare(`SELECT COALESCE(MAX(sequence), 0) + 1 AS value
+      FROM conversation_entries WHERE conversation_id = ?`).get(conversationId)?.value) || 1;
+  }
+
+  #nextActionEntrySequence(actionId) {
+    return Number(this.db.prepare(`SELECT COALESCE(MAX(sequence), 0) + 1 AS value
+      FROM action_entries WHERE action_id = ?`).get(actionId)?.value) || 1;
+  }
+
+  #appendConversationEntry(workItemId, entry, sourceKey) {
+    const now = this.now();
+    const conversationId = `work-item:${workItemId}`;
+    this.db.prepare(`INSERT INTO conversations
+      (id, work_item_id, status, created_at, updated_at) VALUES (?, ?, 'active', ?, ?)
+      ON CONFLICT(work_item_id) DO UPDATE SET updated_at = excluded.updated_at`).run(
+      conversationId, workItemId, now, now,
+    );
+    const existing = this.db.prepare('SELECT id FROM conversation_entries WHERE source_key = ?').get(sourceKey);
+    if (existing) {
+      this.db.prepare(`UPDATE conversation_entries SET status = ?, text = ?, attachments = ?,
+        payload = ?, updated_at = ? WHERE id = ?`).run(
+        entry.status || 'completed',
+        entry.text || '',
+        stringify(Array.isArray(entry.attachments) ? entry.attachments : []),
+        stringify(entry),
+        Number(entry.updatedAt) || Number(entry.createdAt) || now,
+        existing.id,
+      );
+      return existing.id;
+    }
+    const id = entry.id || durableId('conversation-entry');
+    this.db.prepare(`INSERT INTO conversation_entries
+      (id, conversation_id, work_item_id, sequence, kind, role, status, text, attachments,
+       turn_id, source_key, payload, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      id,
+      conversationId,
+      workItemId,
+      this.#nextConversationSequence(conversationId),
+      entry.kind || 'message',
+      entry.role || null,
+      entry.status || 'completed',
+      entry.text || '',
+      stringify(Array.isArray(entry.attachments) ? entry.attachments : []),
+      entry.turnId || null,
+      sourceKey,
+      stringify(entry),
+      Number(entry.createdAt) || now,
+      Number(entry.updatedAt) || Number(entry.createdAt) || now,
+    );
+    return id;
+  }
+
+  #appendActionEntry(input, sourceKey) {
+    const append = () => {
+      const existing = this.db.prepare('SELECT * FROM action_entries WHERE source_key = ?').get(sourceKey);
+      if (existing) return existing;
+      const now = this.now();
+      const status = input.status || 'pending';
+      const id = input.id || durableId('action-entry');
+      this.db.prepare(`INSERT INTO action_entries
+        (id, work_item_id, action_id, run_id, sequence, kind, role, status, text, attachments,
+         source_key, payload, created_at, updated_at, consumed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        id,
+        input.workItemId,
+        input.actionId,
+        input.runId || null,
+        this.#nextActionEntrySequence(input.actionId),
+        input.kind || 'message',
+        input.role || null,
+        status,
+        input.text || '',
+        stringify(Array.isArray(input.attachments) ? input.attachments : []),
+        sourceKey,
+        stringify(input.payload || {}),
+        Number(input.createdAt) || now,
+        now,
+        status === 'consumed' ? now : null,
+      );
+      return this.db.prepare('SELECT * FROM action_entries WHERE id = ?').get(id);
+    };
+    return this.db.isTransaction ? append() : withTransaction(this.db, append);
+  }
+
+  appendActionControl(workItemId, actionId, command, options = {}) {
+    if (!['start', 'pause', 'stop'].includes(command)) {
+      throw new Error(`Unsupported Action control command: ${command}`);
+    }
+    const action = this.getAction(actionId);
+    if (!action || action.workItemId !== workItemId) return null;
+    const sourceKey = options.sourceKey || durableId(`action-control-${command}`);
+    return this.#appendActionEntry({
+      workItemId,
+      actionId,
+      runId: options.runId || action.currentRunId || null,
+      kind: 'control',
+      role: options.source || 'user',
+      status: options.status || 'pending',
+      text: options.reason || '',
+      payload: { command, reason: options.reason || '', source: options.source || 'user' },
+      createdAt: options.createdAt,
+    }, sourceKey);
+  }
+
+  enqueueCoordinatorMailbox(workItemId, kind, payload = {}, sourceKey = durableId('mailbox-source')) {
+    const enqueue = () => {
+      const existing = this.db.prepare(`SELECT * FROM coordinator_mailbox_entries
+        WHERE source_key = ?`).get(sourceKey);
+      if (existing) return existing;
+      const now = this.now();
+      const sequence = Number(this.db.prepare(`SELECT COALESCE(MAX(sequence), 0) + 1 AS value
+        FROM coordinator_mailbox_entries WHERE work_item_id = ?`).get(workItemId)?.value) || 1;
+      const id = durableId('coordinator-mailbox');
+      this.db.prepare(`INSERT INTO coordinator_mailbox_entries
+        (id, work_item_id, sequence, kind, status, source_key, payload, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)`).run(
+        id, workItemId, sequence, kind, sourceKey, stringify(payload), now, now,
+      );
+      return this.db.prepare('SELECT * FROM coordinator_mailbox_entries WHERE id = ?').get(id);
+    };
+    return this.db.isTransaction ? enqueue() : withTransaction(this.db, enqueue);
+  }
+
+  claimCoordinatorMailbox(workItemId, owner, leaseMs = 60_000) {
+    return withTransaction(this.db, () => {
+      const now = this.now();
+      const row = this.db.prepare(`SELECT * FROM coordinator_mailbox_entries
+        WHERE work_item_id = ? AND (status = 'pending'
+          OR (status = 'claimed' AND lease_expires_at <= ?))
+        ORDER BY sequence LIMIT 1`).get(workItemId, now);
+      if (!row) return null;
+      const changed = this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'claimed',
+        claim_owner = ?, claim_epoch = claim_epoch + 1, claimed_at = ?, lease_expires_at = ?,
+        updated_at = ? WHERE id = ? AND claim_epoch = ?`).run(
+        owner, now, now + leaseMs, now, row.id, row.claim_epoch,
+      );
+      if (Number(changed.changes) !== 1) return null;
+      const claimed = this.db.prepare('SELECT * FROM coordinator_mailbox_entries WHERE id = ?').get(row.id);
+      return { ...claimed, payload: parseJson(claimed.payload, {}) };
+    });
+  }
+
+  ackCoordinatorMailbox(id, owner, claimEpoch) {
+    const now = this.now();
+    const changed = this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'acked',
+      acked_at = ?, updated_at = ? WHERE id = ? AND status = 'claimed' AND claim_owner = ?
+      AND claim_epoch = ?`).run(now, now, id, owner, claimEpoch);
+    return Number(changed.changes) === 1;
+  }
+
+  recoverCoordinatorMailbox() {
+    const now = this.now();
+    return Number(this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'pending',
+      claim_owner = NULL, claimed_at = NULL, lease_expires_at = NULL, updated_at = ?
+      WHERE status = 'claimed' AND lease_expires_at <= ?`).run(now, now).changes);
+  }
+
+  createOperation(input = {}) {
+    const replayPolicy = input.replayPolicy || 'never_automatic';
+    if (!input.idempotencyKey) throw new Error('Operation idempotencyKey is required');
+    if (!['safe', 'probe_first', 'never_automatic'].includes(replayPolicy)) {
+      throw new Error(`Unsupported Operation replay policy: ${replayPolicy}`);
+    }
+    const now = this.now();
+    const id = input.id || durableId('operation');
+    this.db.prepare(`INSERT INTO operations
+      (id, work_item_id, action_id, run_id, engine_turn_id, operation_type, idempotency_key,
+       replay_policy, effect_status, execution_status, payload, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(idempotency_key) DO NOTHING`).run(
+      id, input.workItemId, input.actionId || null, input.runId || null, input.engineTurnId || null,
+      input.operationType || 'unknown', input.idempotencyKey, replayPolicy,
+      input.effectStatus || 'pending', input.executionStatus || 'not_started',
+      stringify(input.payload || {}), now, now,
+    );
+    return this.getOperationByKey(input.idempotencyKey);
+  }
+
+  getOperation(id) {
+    const row = this.db.prepare('SELECT * FROM operations WHERE id = ?').get(id);
+    return row ? this.#mapOperation(row) : null;
+  }
+
+  getOperationByKey(idempotencyKey) {
+    const row = this.db.prepare('SELECT * FROM operations WHERE idempotency_key = ?').get(idempotencyKey);
+    return row ? this.#mapOperation(row) : null;
+  }
+
+  #mapOperation(row) {
+    return {
+      id: row.id,
+      workItemId: row.work_item_id,
+      actionId: row.action_id || null,
+      runId: row.run_id || null,
+      engineTurnId: row.engine_turn_id || null,
+      operationType: row.operation_type,
+      idempotencyKey: row.idempotency_key,
+      replayPolicy: row.replay_policy,
+      concurrencyPolicy: row.concurrency_policy,
+      effectStatus: row.effect_status,
+      executionStatus: row.execution_status,
+      effectCutoff: parseJson(row.effect_cutoff, null),
+      grantManifest: parseJson(row.grant_manifest, {}),
+      resourceRelease: parseJson(row.resource_release, {}),
+      supplementalInventory: parseJson(row.supplemental_inventory, {}),
+      payload: parseJson(row.payload, {}),
+      result: parseJson(row.result, null),
+    };
+  }
+
+  operationSafeToProceed(operationOrKey) {
+    const operation = typeof operationOrKey === 'string'
+      ? this.getOperationByKey(operationOrKey) : operationOrKey;
+    if (!operation) return false;
+    const effectSafe = ['applied', 'not_applied', 'failed_no_effect'].includes(operation.effectStatus);
+    const executionSafe = ['not_started', 'quiescent'].includes(operation.executionStatus)
+      || (operation.executionStatus === 'fenced' && operation.effectCutoff?.status === 'current');
+    const manifest = operation.grantManifest || {};
+    const grantSafe = manifest.status === 'closed' && manifest.safetyStatus === 'current'
+      && manifest.inventoryComplete === true
+      && (manifest.pendingGrantAttemptIds || []).length === 0
+      && (manifest.authorityClosures || []).every(closure => closure.status === 'closed');
+    const release = operation.resourceRelease || {};
+    const resourcesSafe = release.status === 'released'
+      && (release.leases || []).every(lease => ['released', 'expired'].includes(lease.status));
+    const supplemental = operation.supplementalInventory || {};
+    const supplementalSafe = ['clear', 'resolved'].includes(supplemental.status || 'clear');
+    return effectSafe && executionSafe && grantSafe && resourcesSafe && supplementalSafe;
+  }
+
+  #hasBlockingOperation(workItemId, actionId = null) {
+    const rows = this.db.prepare(`SELECT idempotency_key FROM operations
+      WHERE work_item_id = ? AND concurrency_policy = 'blocking'
+        AND (? IS NULL OR action_id IS NULL OR action_id = ?)`)
+      .all(workItemId, actionId, actionId);
+    return rows.some(row => !this.operationSafeToProceed(row.idempotency_key));
+  }
+
+  claimOperation(idempotencyKey, ownerBootId, leaseEpoch, automatic = true) {
+    return withTransaction(this.db, () => {
+      const operation = this.getOperationByKey(idempotencyKey);
+      if (!operation || operation.executionStatus !== 'not_started') return null;
+      if (automatic && operation.replayPolicy !== 'safe') return null;
+      const now = this.now();
+      const changed = this.db.prepare(`UPDATE operations SET execution_status = 'running',
+        owner_boot_id = ?, owner_lease_epoch = ?, claimed_at = ?, updated_at = ?
+        WHERE idempotency_key = ? AND execution_status = 'not_started'`).run(
+        ownerBootId, leaseEpoch, now, now, idempotencyKey,
+      );
+      return Number(changed.changes) === 1 ? this.getOperationByKey(idempotencyKey) : null;
+    });
+  }
+
+  completeOperation(idempotencyKey, ownerBootId, leaseEpoch, effectStatus, result = null) {
+    if (!['applied', 'not_applied', 'failed_no_effect', 'unknown'].includes(effectStatus)) return false;
+    const now = this.now();
+    const changed = this.db.prepare(`UPDATE operations SET effect_status = ?, execution_status = ?,
+      effect_cutoff = ?, result = ?, completed_at = ?, updated_at = ? WHERE idempotency_key = ?
+      AND execution_status = 'running' AND owner_boot_id = ? AND owner_lease_epoch = ?`).run(
+      effectStatus,
+      'quiescent',
+      stringify({ status: 'current', closureType: 'quiescent', closedAt: now }),
+      stringify(result), now, now, idempotencyKey, ownerBootId, leaseEpoch,
+    );
+    return Number(changed.changes) === 1;
+  }
+
+  recoverOperations() {
+    const now = this.now();
+    return Number(this.db.prepare(`UPDATE operations SET execution_status = 'hazardous_orphan',
+      effect_status = CASE WHEN effect_status = 'pending' THEN 'unknown' ELSE effect_status END,
+      updated_at = ? WHERE execution_status IN ('running', 'cancel_requested')`).run(now).changes);
   }
 
   appendEvent(workItemId, type, data = {}, refs = {}) {
@@ -1157,8 +1450,30 @@ export class WorkItemStore {
     return Number(result.lastInsertRowid);
   }
 
-  addActionInput(id, input, expected, attachments = null, addedAttachments = []) {
+  hasActionInputClientMessage(workItemId, actionId, clientMessageId) {
+    if (typeof clientMessageId !== 'string' || !clientMessageId) return false;
+    const sourceKey = `client:message:${workItemId}:${clientMessageId}`;
+    const coordinatorReceipt = this.db.prepare(`SELECT 1 FROM coordinator_mailbox_entries
+      WHERE source_key = ?`).get(sourceKey);
+    if (coordinatorReceipt) throw new Error('clientMessageId already belongs to a Coordinator message');
+    const entry = this.db.prepare('SELECT action_id FROM action_entries WHERE source_key = ?').get(sourceKey)
+      || this.db.prepare(`SELECT action_id FROM events WHERE work_item_id = ?
+        AND type = 'action.input_added' AND json_extract(data, '$.clientMessageId') = ?`).get(
+        workItemId, clientMessageId,
+      );
+    if (!entry) return false;
+    if (entry.action_id !== actionId) throw new Error('clientMessageId already belongs to another Action');
+    return true;
+  }
+
+  addActionInput(id, input, expected, attachments = null, addedAttachments = [], clientMessageId = null) {
     return withTransaction(this.db, () => {
+      const sourceKey = typeof clientMessageId === 'string' && clientMessageId
+        ? `client:message:${id}:${clientMessageId}` : null;
+      if (sourceKey) {
+        const existing = this.db.prepare('SELECT id FROM action_entries WHERE source_key = ?').get(sourceKey);
+        if (existing) return this.getWorkItemDetail(id);
+      }
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
       const expectedGeneration = Number(expected.generation);
@@ -1282,6 +1597,31 @@ export class WorkItemStore {
           input,
           stringify(projectedAttachments),
         );
+        this.#appendActionEntry({
+          workItemId: id,
+          actionId: action.id,
+          runId: action.currentRunId,
+          kind: 'message',
+          role: 'user',
+          status: 'pending',
+          text: input,
+          attachments: projectedAttachments,
+          payload: { eventId, inputId, actionGeneration: eventGeneration, actionSpecHash: eventSpecHash },
+          createdAt: now,
+        }, sourceKey || `pending_action_inputs:event:${eventId}`);
+      } else if (sourceKey) {
+        this.#appendActionEntry({
+          workItemId: id,
+          actionId: action.id,
+          runId: null,
+          kind: 'message',
+          role: 'user',
+          status: 'consumed',
+          text: input,
+          attachments: projectedAttachments,
+          payload: { eventId, inputId, actionGeneration: eventGeneration, actionSpecHash: eventSpecHash },
+          createdAt: now,
+        }, sourceKey);
       }
       return this.getWorkItemDetail(id);
     });
@@ -1290,27 +1630,242 @@ export class WorkItemStore {
   listPendingActionInputs(actionId, runId, ownerBootId, leaseEpoch) {
     const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
     if (!active || active.action_id !== actionId) return [];
-    return this.db.prepare(`SELECT * FROM pending_action_inputs
-      WHERE action_id = ? AND run_id = ? AND action_generation = ? AND action_spec_hash = ?
-        AND consumed_at IS NULL AND superseded_at IS NULL ORDER BY event_id`).all(
+    return this.db.prepare(`SELECT p.*, ae.id AS action_entry_id, ae.sequence AS action_entry_sequence
+      FROM pending_action_inputs p
+      LEFT JOIN action_entries ae ON CAST(json_extract(ae.payload, '$.eventId') AS INTEGER) = p.event_id
+        AND ae.action_id = p.action_id
+      WHERE p.action_id = ? AND p.run_id = ? AND p.action_generation = ? AND p.action_spec_hash = ?
+        AND p.consumed_at IS NULL AND p.superseded_at IS NULL ORDER BY p.event_id`).all(
       actionId, runId, active.action_generation, active.action_spec_hash,
     ).map(row => ({
       id: String(row.event_id),
+      actionEntryId: row.action_entry_id || null,
+      sequence: row.action_entry_sequence == null ? null : Number(row.action_entry_sequence),
       text: row.text || '',
       attachments: parseJson(row.attachments, []),
     }));
   }
 
-  acknowledgeActionInput(eventId, actionId, runId, ownerBootId, leaseEpoch) {
+  prepareEngineTurn(actionId, runId, ownerBootId, leaseEpoch, inputs = [], request = {}) {
     return withTransaction(this.db, () => {
       const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
-      if (!active || active.action_id !== actionId) return false;
-      const result = this.db.prepare(`UPDATE pending_action_inputs SET consumed_at = ?
-        WHERE event_id = ? AND action_id = ? AND run_id = ? AND action_generation = ?
-          AND action_spec_hash = ? AND consumed_at IS NULL AND superseded_at IS NULL`).run(
-        this.now(), Number(eventId), actionId, runId, active.action_generation, active.action_spec_hash,
+      if (!active || active.action_id !== actionId) return null;
+      const eventIds = inputs.map(input => Number(input?.id ?? input)).filter(Number.isInteger);
+      const normalizedEventIds = [...new Set(eventIds)].sort((left, right) => left - right);
+      const reusable = this.db.prepare(`SELECT id FROM engine_turns
+        WHERE run_id = ? AND status = 'prepared' ORDER BY ordinal DESC LIMIT 1`).get(runId);
+      if (reusable) {
+        const turn = this.getEngineTurn(reusable.id);
+        const requestBody = request.requestBody && typeof request.requestBody === 'object'
+          ? request.requestBody : {};
+        const requestHash = createHash('sha256').update(stableJson(requestBody), 'utf8').digest('hex');
+        if (turn.requestHash !== requestHash) {
+          throw new Error('Prepared EngineTurn request changed before provider dispatch');
+        }
+        return turn;
+      }
+      const entries = [];
+      for (const eventId of normalizedEventIds) {
+        const row = this.db.prepare(`SELECT p.*, ae.id AS action_entry_id,
+          ae.sequence AS action_entry_sequence FROM pending_action_inputs p
+          JOIN action_entries ae ON CAST(json_extract(ae.payload, '$.eventId') AS INTEGER) = p.event_id
+            AND ae.action_id = p.action_id
+          WHERE p.event_id = ? AND p.action_id = ? AND p.run_id = ? AND p.action_generation = ?
+            AND p.action_spec_hash = ? AND p.consumed_at IS NULL AND p.superseded_at IS NULL
+            AND ae.status = 'pending' AND ae.engine_turn_id IS NULL`).get(
+          eventId, actionId, runId, active.action_generation, active.action_spec_hash,
+        );
+        if (row) entries.push(row);
+      }
+      if (entries.length !== normalizedEventIds.length) return null;
+      const requestBody = request.requestBody && typeof request.requestBody === 'object'
+        ? request.requestBody
+        : { actionEntryIds: entries.map(row => row.action_entry_id) };
+      const requestHash = createHash('sha256').update(stableJson(requestBody), 'utf8').digest('hex');
+      const ordinal = Number(this.db.prepare(`SELECT COALESCE(MAX(ordinal), 0) + 1 AS value
+        FROM engine_turns WHERE run_id = ?`).get(runId)?.value) || 1;
+      const turnId = durableId('engine-turn');
+      const requestKey = `run:${runId}:turn:${ordinal}`;
+      const claimedThroughSequence = Math.max(
+        0,
+        ...entries.map(row => Number(row.action_entry_sequence) || 0),
       );
-      return Number(result.changes) === 1;
+      const entryIds = entries.map(row => row.action_entry_id);
+      const now = this.now();
+      this.db.prepare(`INSERT INTO engine_turns
+        (id, work_item_id, action_id, run_id, ordinal, status, owner_boot_id, lease_epoch,
+         input_entry_ids, message_entry_ids, claimed_through_sequence, request_body, request_hash,
+         request_key, dispatch_capability, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        turnId, active.work_item_id, actionId, runId, ordinal, ownerBootId, leaseEpoch,
+        stringify(entryIds), stringify(entryIds), claimedThroughSequence, stringify(requestBody),
+        requestHash, requestKey, request.dispatchCapability || 'unknown', now, now,
+      );
+      const bind = this.db.prepare(`UPDATE action_entries SET status = 'bound', engine_turn_id = ?,
+        run_id = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND engine_turn_id IS NULL`);
+      for (const row of entries) {
+        const changed = bind.run(turnId, runId, now, row.action_entry_id);
+        if (Number(changed.changes) !== 1) throw new Error('ActionEntry changed before EngineTurn prepare');
+      }
+      this.appendEvent(active.work_item_id, 'engine_turn.prepared', {
+        turnId, ordinal, requestHash, actionEntryIds: entryIds,
+      }, { actionId, runId });
+      return this.getEngineTurn(turnId);
+    });
+  }
+
+  getEngineTurn(turnId) {
+    const row = this.db.prepare('SELECT * FROM engine_turns WHERE id = ?').get(turnId);
+    if (!row) return null;
+    return {
+      id: row.id,
+      workItemId: row.work_item_id,
+      actionId: row.action_id,
+      runId: row.run_id,
+      ordinal: Number(row.ordinal),
+      status: row.status,
+      ownerBootId: row.owner_boot_id,
+      leaseEpoch: Number(row.lease_epoch),
+      inputEntryIds: parseJson(row.input_entry_ids, []),
+      requestBody: parseJson(row.request_body, {}),
+      requestHash: row.request_hash,
+      requestKey: row.request_key,
+      dispatchAttempt: Number(row.dispatch_attempt) || 0,
+      dispatchCapability: row.dispatch_capability || 'unknown',
+      claimedAt: row.claimed_at || null,
+      dispatchedAt: row.dispatched_at || null,
+      response: parseJson(row.response, null),
+      responseHash: row.response_hash || null,
+      consumedAt: row.consumed_at || null,
+      error: row.error || null,
+    };
+  }
+
+  claimEngineTurn(turnId, ownerBootId, leaseEpoch) {
+    return withTransaction(this.db, () => {
+      const turn = this.getEngineTurn(turnId);
+      if (!turn || turn.ownerBootId !== ownerBootId || turn.leaseEpoch !== leaseEpoch) return null;
+      if (!this.#activeRunRow(turn.runId, ownerBootId, leaseEpoch, true)) return null;
+      if (turn.status === 'dispatching') return turn;
+      if (turn.status !== 'prepared') return null;
+      const now = this.now();
+      const changed = this.db.prepare(`UPDATE engine_turns SET status = 'dispatching',
+        dispatch_attempt = dispatch_attempt + 1, claimed_at = COALESCE(claimed_at, ?),
+        dispatched_at = ?, updated_at = ? WHERE id = ? AND status = 'prepared'`).run(
+        now, now, now, turnId,
+      );
+      if (Number(changed.changes) !== 1) return null;
+      this.appendEvent(turn.workItemId, 'engine_turn.dispatching', {
+        turnId, requestHash: turn.requestHash, dispatchAttempt: turn.dispatchAttempt + 1,
+      }, { actionId: turn.actionId, runId: turn.runId });
+      return this.getEngineTurn(turnId);
+    });
+  }
+
+  consumeEngineTurn(turnId, ownerBootId, leaseEpoch, result = {}) {
+    return withTransaction(this.db, () => {
+      const turn = this.getEngineTurn(turnId);
+      if (!turn || turn.status !== 'dispatching' || turn.ownerBootId !== ownerBootId
+          || turn.leaseEpoch !== leaseEpoch) return false;
+      const now = this.now();
+      const response = {
+        text: String(result.responseText || ''),
+        stopReason: result.stopReason || null,
+        toolCalls: Array.isArray(result.toolCalls) ? result.toolCalls : [],
+        thinkingBlocks: Array.isArray(result.thinkingBlocks) ? result.thinkingBlocks : [],
+      };
+      const responseHash = createHash('sha256').update(stableJson(response), 'utf8').digest('hex');
+      const consumed = this.db.prepare(`UPDATE engine_turns SET status = 'responded', response = ?,
+        response_hash = ?, responded_at = ?, consumed_at = ?,
+        consumed_through_sequence = claimed_through_sequence, updated_at = ?
+        WHERE id = ? AND status = 'dispatching' AND dispatch_attempt = ? AND request_hash = ?`).run(
+        stringify(response), responseHash, now, now, now, turnId, turn.dispatchAttempt, turn.requestHash,
+      );
+      if (Number(consumed.changes) !== 1) return false;
+      this.db.prepare(`UPDATE action_entries SET status = 'consumed', consumed_at = ?, updated_at = ?
+        WHERE engine_turn_id = ? AND status = 'bound'`).run(now, now, turnId);
+      const eventIds = this.db.prepare(`SELECT CAST(json_extract(payload, '$.eventId') AS INTEGER) AS event_id
+        FROM action_entries WHERE engine_turn_id = ? AND json_extract(payload, '$.eventId') IS NOT NULL`)
+        .all(turnId).map(row => row.event_id);
+      const acknowledge = this.db.prepare(`UPDATE pending_action_inputs SET consumed_at = ?
+        WHERE event_id = ? AND action_id = ? AND run_id = ? AND consumed_at IS NULL AND superseded_at IS NULL`);
+      for (const eventId of eventIds) acknowledge.run(now, eventId, turn.actionId, turn.runId);
+      this.appendEvent(turn.workItemId, 'engine_turn.responded', {
+        turnId, requestHash: turn.requestHash, responseHash, dispatchAttempt: turn.dispatchAttempt,
+      }, { actionId: turn.actionId, runId: turn.runId });
+      return true;
+    });
+  }
+
+  failEngineTurn(turnId, ownerBootId, leaseEpoch, error) {
+    return withTransaction(this.db, () => {
+      const turn = this.getEngineTurn(turnId);
+      if (!turn || turn.ownerBootId !== ownerBootId || turn.leaseEpoch !== leaseEpoch) {
+        return { allowRetry: false, status: 'stale' };
+      }
+      if (turn.status === 'prepared') return { allowRetry: true, status: 'prepared' };
+      if (turn.status !== 'dispatching') return { allowRetry: false, status: turn.status };
+      const now = this.now();
+      const message = String(error?.message || error || 'Provider dispatch failed').slice(0, 8_000);
+      const changed = this.db.prepare(`UPDATE engine_turns SET status = 'unknown', error = ?,
+        updated_at = ? WHERE id = ? AND status = 'dispatching' AND dispatch_attempt = ?`).run(
+        message, now, turnId, turn.dispatchAttempt,
+      );
+      if (Number(changed.changes) !== 1) return { allowRetry: false, status: 'stale' };
+      this.db.prepare(`UPDATE runs SET status = 'dispatch_unknown', accepting_input = 0,
+        ended_at = ?, error = ? WHERE id = ? AND status = 'running'
+        AND owner_boot_id = ? AND lease_epoch = ?`).run(
+        now, message, turn.runId, ownerBootId, leaseEpoch,
+      );
+      this.db.prepare(`UPDATE actions SET status = 'failed', current_run_id = NULL,
+        updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ?
+        AND lease_epoch = ?`).run(now, turn.actionId, turn.runId, leaseEpoch);
+      this.db.prepare(`UPDATE work_items SET status = 'needs_attention', current_action_id = ?,
+        current_run_id = NULL, updated_at = ? WHERE id = ? AND status = 'running'`).run(
+        turn.actionId, now, turn.workItemId,
+      );
+      this.appendEvent(turn.workItemId, 'engine_turn.dispatch_unknown', {
+        turnId, requestHash: turn.requestHash, dispatchAttempt: turn.dispatchAttempt, error: message,
+      }, { actionId: turn.actionId, runId: turn.runId });
+      return { allowRetry: false, status: 'unknown' };
+    });
+  }
+
+  recoverEngineTurns() {
+    return withTransaction(this.db, () => {
+      const now = this.now();
+      const recoverable = this.db.prepare(`SELECT id FROM engine_turns WHERE status = 'prepared'`).all();
+      const dispatching = this.db.prepare(`SELECT * FROM engine_turns WHERE status = 'dispatching'`).all();
+      for (const row of dispatching) {
+        const turn = this.getEngineTurn(row.id);
+        const message = 'Provider dispatch outcome is unknown after Agent restart';
+        this.db.prepare(`UPDATE engine_turns SET status = 'unknown', error = ?, updated_at = ?
+          WHERE id = ? AND status = 'dispatching'`).run(message, now, turn.id);
+        this.db.prepare(`UPDATE runs SET status = 'dispatch_unknown', accepting_input = 0,
+          ended_at = ?, error = ? WHERE id = ? AND status = 'running'`).run(now, message, turn.runId);
+        this.db.prepare(`UPDATE actions SET status = 'failed', current_run_id = NULL,
+          updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ?`).run(
+          now, turn.actionId, turn.runId,
+        );
+        this.db.prepare(`UPDATE work_items SET status = 'needs_attention', current_action_id = ?,
+          current_run_id = NULL, updated_at = ? WHERE id = ? AND status = 'running'`).run(
+          turn.actionId, now, turn.workItemId,
+        );
+        this.appendEvent(turn.workItemId, 'engine_turn.dispatch_unknown', {
+          turnId: turn.id, requestHash: turn.requestHash,
+          dispatchAttempt: turn.dispatchAttempt, error: message,
+        }, { actionId: turn.actionId, runId: turn.runId });
+      }
+      return recoverable.map(row => this.getEngineTurn(row.id));
+    });
+  }
+
+  acknowledgeActionInput(eventId, actionId, runId, ownerBootId, leaseEpoch) {
+    const prepared = this.prepareEngineTurn(actionId, runId, ownerBootId, leaseEpoch, [eventId]);
+    if (!prepared) return false;
+    const claimed = this.claimEngineTurn(prepared.id, ownerBootId, leaseEpoch);
+    return !!claimed && this.consumeEngineTurn(prepared.id, ownerBootId, leaseEpoch, {
+      responseText: '', stopReason: 'legacy_acknowledge',
     });
   }
 
@@ -2177,6 +2732,19 @@ export class WorkItemStore {
 
   beginCoordinatorTurn(id, text, expected = {}, options = {}) {
     return withTransaction(this.db, () => {
+      const clientMessageId = typeof options.clientMessageId === 'string' && options.clientMessageId
+        ? options.clientMessageId : null;
+      if (clientMessageId) {
+        const sourceKey = `client:message:${id}:${clientMessageId}`;
+        const existingAction = this.db.prepare('SELECT 1 FROM action_entries WHERE source_key = ?').get(sourceKey);
+        if (existingAction) throw new Error('clientMessageId already belongs to an Action message');
+        const existing = this.db.prepare(`SELECT payload FROM coordinator_mailbox_entries
+          WHERE source_key = ?`).get(sourceKey);
+        if (existing) {
+          const payload = parseJson(existing.payload, {});
+          return { turnId: payload.turnId, detail: this.getWorkItemDetail(id), duplicate: true };
+        }
+      }
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
       if (['done', 'cancelled'].includes(workItem.status)) {
@@ -2242,6 +2810,21 @@ export class WorkItemStore {
         createdAt: now, updatedAt: now, decision: null,
         ...(recovery ? { recovery: { ...recovery } } : {}),
       };
+      if (userMessage) {
+        this.#appendConversationEntry(
+          id,
+          userMessage,
+          clientMessageId ? `client:conversation:${id}:${clientMessageId}` : `coordinator:turn:${turnId}:user`,
+        );
+      }
+      this.#appendConversationEntry(id, assistantMessage, `coordinator:turn:${turnId}:assistant`);
+      this.enqueueCoordinatorMailbox(id, automaticRecovery ? 'recovery' : 'message', {
+        turnId,
+        text,
+        recovery,
+        clientMessageId,
+        addedAttachments: projectedAttachments,
+      }, clientMessageId ? `client:message:${id}:${clientMessageId}` : `coordinator:turn:${turnId}`);
       const messages = [...(workItem.messages || []), ...(userMessage ? [userMessage] : []), assistantMessage]
         .slice(-100);
       const coordinatorRevision = workItem.coordinatorRevision + 1;
@@ -2355,11 +2938,6 @@ export class WorkItemStore {
           || this.db.prepare(`SELECT id FROM runs WHERE action_id = ? AND status = 'failed'
             ORDER BY ended_at DESC, started_at DESC LIMIT 1`).get(action.id)?.id;
         if (!resultRunId) throw new Error('Coordinator human request requires a failed Run');
-        const changedRun = this.db.prepare(`UPDATE runs SET waiting_reason = ?
-          WHERE id = ? AND action_id = ? AND status = 'failed'`).run(question, resultRunId, action.id);
-        if (Number(changedRun.changes) !== 1) {
-          throw new Error('Coordinator human request lost the failed Run fence');
-        }
         affectedActionIds = [action.id];
         this.appendEvent(workItem.id, 'action.waiting', {
           reason: question,
@@ -2488,6 +3066,17 @@ export class WorkItemStore {
           affectedActionIds,
         },
       };
+      this.#appendConversationEntry(
+        workItem.id,
+        messages[assistantIndex],
+        `coordinator:turn:${turnId}:assistant`,
+      );
+      const mailbox = this.db.prepare(`SELECT * FROM coordinator_mailbox_entries
+        WHERE json_extract(payload, '$.turnId') = ?`).get(turnId);
+      if (mailbox && mailbox.status !== 'acked') {
+        this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'acked', acked_at = ?,
+          updated_at = ? WHERE id = ?`).run(now, now, mailbox.id);
+      }
       const current = this.getWorkItem(workItem.id);
       const coordinatorRevision = current.coordinatorRevision + 1;
       const changed = decision.kind === 'answer'
@@ -2530,6 +3119,17 @@ export class WorkItemStore {
         ...messages[index], status: 'failed', updatedAt: now,
         error: String(error?.message || error || 'Coordinator failed').slice(0, 8_000),
       };
+      this.#appendConversationEntry(
+        workItem.id,
+        messages[index],
+        `coordinator:turn:${turnId}:assistant`,
+      );
+      const mailbox = this.db.prepare(`SELECT * FROM coordinator_mailbox_entries
+        WHERE json_extract(payload, '$.turnId') = ?`).get(turnId);
+      if (mailbox && mailbox.status !== 'acked') {
+        this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'acked', acked_at = ?,
+          updated_at = ? WHERE id = ?`).run(now, now, mailbox.id);
+      }
       const changed = this.db.prepare(`UPDATE work_items SET messages = ?, coordinator_revision = coordinator_revision + 1,
         updated_at = ? WHERE id = ? AND coordinator_revision = ?`).run(
         stringify(messages), now, workItem.id, workItem.coordinatorRevision,
@@ -2861,6 +3461,20 @@ export class WorkItemStore {
 
   retryWorkItemAtomic(id, makeAction, options = {}) {
     return withTransaction(this.db, () => {
+      const clientMessageId = typeof options.inputEvent?.clientMessageId === 'string'
+        ? options.inputEvent.clientMessageId : null;
+      if (clientMessageId) {
+        const existing = this.db.prepare(`SELECT action_id FROM events WHERE work_item_id = ?
+          AND type = 'action.input_added' AND json_extract(data, '$.clientMessageId') = ?`).get(
+          id, clientMessageId,
+        );
+        if (existing) {
+          if (existing.action_id !== options.inputEvent.targetActionId) {
+            throw new Error('clientMessageId already belongs to another Action');
+          }
+          return this.getWorkItemDetail(id);
+        }
+      }
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
       const graphMode = isGraphWorkItem(workItem);
@@ -3005,6 +3619,12 @@ export class WorkItemStore {
                   AND a.workspace_mode != 'read' AND running.workspace_mode != 'read'))
           )
           AND NOT EXISTS (
+            SELECT 1 FROM operations unsafe_operation
+            WHERE unsafe_operation.work_item_id = w.id
+              AND unsafe_operation.concurrency_policy = 'blocking'
+              AND unsafe_operation.effect_status NOT IN ('applied', 'not_applied', 'failed_no_effect')
+          )
+          AND NOT EXISTS (
             SELECT 1 FROM runs deferred
             WHERE deferred.action_id = a.id
               AND deferred.failure_kind = 'resource_deferred'
@@ -3019,6 +3639,7 @@ export class WorkItemStore {
           )
         ORDER BY a.updated_at ASC, a.sequence ASC LIMIT 1`).get();
       if (!row) return null;
+      if (this.#hasBlockingOperation(row.work_item_id, row.id)) return null;
       const now = this.now();
       let action = mapAction(row);
       const readyInputs = this.db.prepare(`SELECT p.* FROM pending_action_inputs p
@@ -3034,6 +3655,9 @@ export class WorkItemStore {
       action = promoteReadyActionInputs(this.db, action, readyInputs, now, 'run_claim');
       const runId = randomUUID();
       const leaseEpoch = Number(action.leaseEpoch) + 1;
+      const priorOrdinal = this.db.prepare(`SELECT MAX(ordinal) AS value FROM runs
+        WHERE action_id = ?`).get(action.id);
+      const runOrdinal = Math.max(0, Number(priorOrdinal?.value) || 0) + 1;
       const priorProgress = this.db.prepare(`SELECT MAX(progress_revision) AS value FROM runs
         WHERE action_id = ?`).get(action.id);
       const progressRevision = Math.max(0, Number(priorProgress?.value) || 0) + 1;
@@ -3061,14 +3685,15 @@ export class WorkItemStore {
         );
       if (Number(changedWorkItem.changes) !== 1) throw new Error('WorkItem claim lost its Action fence');
       this.db.prepare(`INSERT INTO runs
-        (id, action_id, work_item_id, owner_boot_id, lease_epoch, status, started_at,
+        (id, action_id, work_item_id, owner_boot_id, lease_epoch, ordinal, status, started_at,
          expires_at, evidence, progress_revision, action_generation, action_spec_hash, action_attempt)
-        VALUES (?, ?, ?, ?, ?, 'running', ?, ?, '[]', ?, ?, ?, ?)`).run(
+        VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, '[]', ?, ?, ?, ?)`).run(
         runId,
         action.id,
         action.workItemId,
         ownerBootId,
         leaseEpoch,
+        runOrdinal,
         now,
         now + leaseMs,
         progressRevision,
@@ -3583,6 +4208,9 @@ export class WorkItemStore {
         }, this.#nextSequence(workItem.id), now);
       }
       let workItemStatus = transition.workItemStatus;
+      if (workItemStatus === 'done' && this.#hasBlockingOperation(workItem.id)) {
+        throw new Error('WorkItem has an unsafe blocking Operation and cannot complete');
+      }
       let currentActionId = nextAction?.id ?? (transition.keepCurrentAction ? action.id : null);
       let changedWorkItem;
       if (transition.planConflict) {
@@ -3682,6 +4310,12 @@ export class WorkItemStore {
           stringify(messages), now, row.id, row.coordinator_revision,
         );
         if (Number(changed.changes) !== 1) continue;
+        const turnId = messages[index].turnId || null;
+        if (turnId) {
+          this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'acked', acked_at = ?,
+            claim_owner = NULL, claimed_at = NULL, lease_expires_at = NULL, updated_at = ?
+            WHERE json_extract(payload, '$.turnId') = ? AND status != 'acked'`).run(now, now, turnId);
+        }
         this.appendEvent(row.id, 'coordinator.turn_interrupted', {
           turnId: messages[index].turnId || null,
           error: messages[index].error,

@@ -315,6 +315,47 @@ export class WorkCenterService {
         this.#emit({ type: 'work_item.deleted', workItem: { id, revision: deleted.revision } });
         return { id, deleted: true, cleanupWarning };
       }
+      case 'post_work_item_message': {
+        const clientMessageId = requiredString(payload.clientMessageId, 'clientMessageId');
+        const target = payload.target && typeof payload.target === 'object' ? payload.target : {};
+        if (target.kind === 'coordinator') {
+          return this.handle('work_item_message', { ...payload, clientMessageId }, requestContext);
+        }
+        if (target.kind === 'action') {
+          return this.handle('action_input', {
+            ...payload,
+            clientMessageId,
+            actionId: target.actionId,
+            generation: target.generation,
+          }, requestContext);
+        }
+        if (target.kind === 'request') {
+          const id = requiredString(payload.id, 'id');
+          const workItem = this.#requiredItem(id);
+          const action = this.#requiredAction(workItem, target.actionId);
+          if (action.status === 'failed' && !String(payload.text || '').trim()
+              && (!Array.isArray(payload.files) || payload.files.length === 0)) {
+            const detail = this.controller.retry(id, {
+              expected: {
+                actionId: action.id,
+                revision: payload.revision,
+                generation: target.generation,
+                statuses: ['failed'],
+              },
+            });
+            this.watcher.abortInvalidWorkItemRuns(id);
+            this.#emit({ type: 'action.retried', workItem: detail });
+            return detail;
+          }
+          return this.handle('action_input', {
+            ...payload,
+            clientMessageId,
+            actionId: target.actionId,
+            generation: target.generation,
+          }, requestContext);
+        }
+        throw new Error('WorkItem message target is invalid');
+      }
       case 'work_item_message': {
         if (!this.coordinator) throw new Error('Work Center Coordinator is unavailable');
         const id = requiredString(payload.id, 'id');
@@ -332,6 +373,7 @@ export class WorkCenterService {
             planRevision: payload.planRevision,
             ledgerRevision: payload.ledgerRevision,
             coordinatorRevision: payload.coordinatorRevision,
+            clientMessageId: typeof payload.clientMessageId === 'string' ? payload.clientMessageId : null,
             addedAttachments,
             attachments: [...(workItem.attachments || []), ...addedAttachments],
           }, {
@@ -387,6 +429,7 @@ export class WorkCenterService {
             actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
             revision: payload.revision,
             generation,
+            clientMessageId: typeof payload.clientMessageId === 'string' ? payload.clientMessageId : null,
             addedAttachmentCount: addedAttachments.length,
             addedAttachments,
             attachments: [...(workItem.attachments || []), ...addedAttachments],

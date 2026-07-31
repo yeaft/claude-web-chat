@@ -558,8 +558,12 @@ export class WorkItemCoordinator {
     }, {
       attachments: input.attachments,
       addedAttachments,
+      clientMessageId: input.clientMessageId,
     });
     if (!started) throw new Error(`WorkItem not found: ${id}`);
+    if (started.duplicate) {
+      return { detail: started.detail, task: Promise.resolve(started.detail), duplicate: true };
+    }
     options.onUpdate?.('coordinator.turn_started', started.detail);
     return this.#scheduleTurn(started, {
       text: promptText,

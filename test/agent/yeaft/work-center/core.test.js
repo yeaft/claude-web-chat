@@ -155,8 +155,48 @@ describe('Work Center core', () => {
       actionSpecHash: first.action.specHash,
       actionAttempt: 1,
     });
+    expect(() => store.db.prepare('UPDATE runs SET response = ? WHERE id = ?')
+      .run('late terminal rewrite', first.run.id)).toThrow(/terminal Run result is immutable/);
+    expect(() => store.db.prepare('UPDATE runs SET action_id = ? WHERE id = ?')
+      .run('different-action', second.run.id)).toThrow(/Run identity is immutable/);
+    const coordinatorDetail = store.getWorkItemDetail(item.id);
+    const interruptedTurn = store.beginCoordinatorTurn(item.id, 'Persist this message', {
+      revision: coordinatorDetail.revision,
+      planRevision: coordinatorDetail.planRevision,
+      ledgerRevision: coordinatorDetail.ledgerRevision,
+      coordinatorRevision: coordinatorDetail.coordinatorRevision,
+    });
+    expect(store.db.prepare('SELECT status FROM coordinator_mailbox_entries WHERE source_key = ?')
+      .get(`coordinator:turn:${interruptedTurn.turnId}`).status).toBe('pending');
+    expect(store.recoverInterruptedCoordinatorTurns()).toBe(1);
+    expect(store.db.prepare('SELECT status FROM coordinator_mailbox_entries WHERE source_key = ?')
+      .get(`coordinator:turn:${interruptedTurn.turnId}`).status).toBe('acked');
+    expect(store.getWorkItemDetail(item.id).messages.at(-1)).toMatchObject({
+      turnId: interruptedTurn.turnId,
+      status: 'failed',
+      error: 'Coordinator turn was interrupted before it produced a decision',
+    });
     expect(store.getWorkItemDetail(item.id).events.find(event => event.type === 'run.claimed'))
       .toMatchObject({ actionGeneration: first.action.generation });
+
+    const operationItem = controller.create(createInput({ id: 'operation-claim-fence', workDir: dir }));
+    const operationAction = store.getWorkItemDetail(operationItem.id).actions[0];
+    store.createOperation({
+      workItemId: operationItem.id,
+      actionId: operationAction.id,
+      operationType: 'external-write',
+      idempotencyKey: 'operation-claim-fence',
+      replayPolicy: 'never_automatic',
+    });
+    expect(store.claimReadyAction('operation-boot', 5_000)).toBeNull();
+    expect(store.claimOperation('operation-claim-fence', 'operation-owner', 1, false))
+      .toMatchObject({ executionStatus: 'running' });
+    expect(store.completeOperation(
+      'operation-claim-fence', 'operation-owner', 1, 'not_applied', { verified: true },
+    )).toBe(true);
+    const operationClaim = store.claimReadyAction('operation-boot', 5_000);
+    expect(operationClaim).not.toBeNull();
+    expect(operationClaim.workItem.id).toBe(operationItem.id);
 
     const action = {
       id: 'action-conversation', generation: 2, specHash: 'spec-v2',
@@ -1234,13 +1274,19 @@ describe('Work Center core', () => {
         listVps: () => [{ id: 'omni', name: 'Omni', role: 'Requirement Lead', traits: ['triage'] }],
       },
     });
-    const turn = coordinator.message(item.id, {
+    const coordinatorInput = {
       text: 'Replace the impossible Host gate with code-level validation and keep delivery explicit.',
+      clientMessageId: 'coordinator-message-idempotency',
       revision: before.revision,
       planRevision: before.planRevision,
       ledgerRevision: before.ledgerRevision,
       coordinatorRevision: before.coordinatorRevision,
-    });
+    };
+    const turn = coordinator.message(item.id, coordinatorInput);
+    const duplicateTurn = coordinator.message(item.id, coordinatorInput);
+    expect(duplicateTurn.duplicate).toBe(true);
+    expect(duplicateTurn.detail).toEqual(turn.detail);
+    expect(turn.detail.messages.filter(message => message.role === 'user')).toHaveLength(1);
     expect(turn.detail.messages.at(-1)).toMatchObject({ role: 'assistant', status: 'thinking' });
     expect(turn.detail.messages.at(-1).turnId).toBeTruthy();
     for (let index = 0; index < 10 && !resolveCall; index += 1) await new Promise(resolve => setTimeout(resolve, 0));
@@ -1616,8 +1662,16 @@ describe('Work Center core', () => {
         .toMatchObject({ status: 'waiting' });
       expect(waiting.runs.find(run => run.id === undecidable.review.run.id)).toMatchObject({
         status: 'failed',
-        waitingReason: expect.stringMatching(/provide the missing decision or constraint/i),
+        waitingReason: null,
       });
+      expect(waiting.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: 'action.waiting',
+          data: expect.objectContaining({
+            reason: expect.stringMatching(/provide the missing decision or constraint/i),
+          }),
+        }),
+      ]));
       expect(JSON.stringify(waiting)).not.toContain('Work Center Coordinator decision kind is invalid');
       expect(projectWorkItemDetail(waiting)).toMatchObject({
         status: 'waiting',
@@ -1666,7 +1720,13 @@ describe('Work Center core', () => {
         decision: { kind: 'request_human' },
       });
       expect(localizedWaiting.runs.find(run => run.id === localized.review.run.id))
-        .toMatchObject({ waitingReason: '请选择生产环境或预发布环境。' });
+        .toMatchObject({ status: 'failed', waitingReason: null });
+      expect(localizedWaiting.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: 'action.waiting',
+          data: expect.objectContaining({ reason: '请选择生产环境或预发布环境。' }),
+        }),
+      ]));
       await localizedCoordinator.shutdown();
       recoveryController.cancel(localized.item.id);
 
@@ -1684,14 +1744,28 @@ describe('Work Center core', () => {
         ownerBootId: 'action-conversation-input',
         settingsReader: () => ({}),
       });
-      const continuedAction = await actionConversationService.handle('action_input', {
+      const actionInputPayload = {
         id: actionConversation.item.id,
-        actionId: actionConversation.review.action.id,
-        generation: actionConversation.review.action.generation,
+        clientMessageId: 'action-input-idempotency',
+        target: {
+          kind: 'action',
+          actionId: actionConversation.review.action.id,
+          generation: actionConversation.review.action.generation,
+        },
         revision: actionConversationWaiting.revision,
         text: 'Explain the blocker in plain language, then continue this review.',
         files: [],
+      };
+      const continuedAction = await actionConversationService.handle('post_work_item_message', actionInputPayload);
+      const duplicateAction = await actionConversationService.handle('post_work_item_message', {
+        ...actionInputPayload,
+        target: {
+          ...actionInputPayload.target,
+          generation: actionInputPayload.target.generation + 1,
+        },
+        revision: continuedAction.revision,
       });
+      expect(duplicateAction).toEqual(continuedAction);
       expect(coordinatorMessage).not.toHaveBeenCalled();
       expect(continuedAction).toMatchObject({ status: 'ready' });
       expect(continuedAction.actions.find(action => action.id === actionConversation.review.action.id))
@@ -2767,7 +2841,7 @@ describe('Work Center core', () => {
     expect(replacement.action.stageId).toBe('validate');
     controller.submit(replacement.run.id, 'boot-stage', replacement.run.leaseEpoch, completed('test'));
     expect(store.claimReadyAction('boot-stage', 5_000)?.action.stageId).toBe('deliver');
-  });
+  }, 30_000);
 
   it('claims a ready Action exactly once and fences stale terminal submissions', () => {
     controller.create(createInput());

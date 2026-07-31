@@ -1136,6 +1136,7 @@ export class WorkItemRunner {
     if (typeof registerInputWake === 'function') {
       registerInputWake(() => engine.wakeForPendingUserMessage?.());
     }
+    const pendingEntriesById = new Map();
     const drainPendingUserMessages = () => {
       const pending = this.store.listPendingActionInputs?.(
         action.id, run.id, ownerBootId, run.leaseEpoch,
@@ -1149,12 +1150,48 @@ export class WorkItemRunner {
         const content = [item.text, attachmentLines.length > 0
           ? `Additional WorkItem attachments:\n${attachmentLines.join('\n')}` : '']
           .filter(Boolean).join('\n\n');
-        if (!content || !this.store.acknowledgeActionInput?.(
-          item.id, action.id, run.id, ownerBootId, run.leaseEpoch,
-        )) continue;
-        accepted.push({ content, preview: item.text || '[attachments]' });
+        if (!content) continue;
+        pendingEntriesById.set(String(item.id), item);
+        accepted.push({
+          content,
+          preview: item.text || '[attachments]',
+          durableInputId: String(item.id),
+        });
       }
       return accepted;
+    };
+    const prepareProviderRequest = ({ entries, system, messages, model }) => {
+      const durableEntries = entries
+        .filter(entry => entry?.durableInputId)
+        .map(entry => pendingEntriesById.get(String(entry.durableInputId)))
+        .filter(Boolean);
+      const requestBody = { model, system, messages };
+      const turn = this.store.prepareEngineTurn?.(
+        action.id, run.id, ownerBootId, run.leaseEpoch, durableEntries,
+        { requestBody, dispatchCapability: 'unknown' },
+      );
+      if (!turn) throw new Error('Work Center could not persist the next provider turn');
+      return turn;
+    };
+    const startProviderRequest = turn => {
+      if (!turn) return;
+      const claimed = this.store.claimEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch);
+      if (!claimed) throw new Error('Work Center provider turn lost its Run lease before dispatch');
+    };
+    const finishProviderRequest = (turn, result) => {
+      if (!turn) return;
+      if (!this.store.consumeEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch, result)) {
+        throw new Error('Work Center provider response lost its EngineTurn fence');
+      }
+    };
+    const failProviderRequest = (turn, error) => {
+      if (!turn) return;
+      const failure = this.store.failEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch, error);
+      if (failure && failure.allowRetry === false) {
+        error.retryable = false;
+        error.workItemFailureKind = 'provider_dispatch_unknown';
+        error.workItemFailureCode = 'engine_turn_dispatch_unknown';
+      }
     };
     try {
       const prompt = v2Execution
@@ -1180,9 +1217,14 @@ export class WorkItemRunner {
         workDir,
         userAlreadyPersisted: true,
         drainPendingUserMessages,
+        prepareProviderRequest,
+        startProviderRequest,
+        finishProviderRequest,
+        failProviderRequest,
         closePendingUserInput: () => this.store.closeRunInput(
           run.id, ownerBootId, run.leaseEpoch,
         ),
+
         collabToolPolicy: 'single-vp',
       })) {
         if (event?.type === 'loop') {

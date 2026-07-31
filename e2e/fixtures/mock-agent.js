@@ -20,7 +20,7 @@ export class MockAgent {
       id: this.clientId,
       name: this.agentName,
       workDir: '/tmp/test',
-      capabilities: 'terminal,file_editor,work_center,work_item_attachments,plaintext-ok',
+      capabilities: 'terminal,file_editor,work_center,work_center_message_v2,work_item_attachments,plaintext-ok',
     });
     const wsUrl = `${this.serverUrl.replace('http', 'ws')}?${params}`;
     this.ws = new WebSocket(wsUrl);
