@@ -194,21 +194,29 @@ export function normalizeToolOutput(output) {
   return text;
 }
 
-export function isToolErrorOutput(output) {
+function parseToolErrorOutput(output) {
   const text = normalizeToolOutput(output).trim();
-  if (!text.startsWith('{')) return false;
+  if (!text.startsWith('{')) return null;
   try {
     const parsed = JSON.parse(text);
-    return Boolean(
-      parsed
+    return parsed
       && typeof parsed === 'object'
       && !Array.isArray(parsed)
       && typeof parsed.error === 'string'
-      && parsed.error.trim(),
-    );
+      && parsed.error.trim()
+      ? parsed
+      : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export function isToolErrorOutput(output) {
+  return parseToolErrorOutput(output) !== null;
+}
+
+export function toolErrorEffect(output) {
+  return parseToolErrorOutput(output)?.errorEffect === 'none' ? 'none' : 'unknown';
 }
 
 function truncateUtf8(text, maxBytes) {
