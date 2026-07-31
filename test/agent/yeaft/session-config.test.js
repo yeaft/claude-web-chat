@@ -141,46 +141,36 @@ describe('Yeaft session-scoped model config', () => {
   });
 
 
-  it('advances Session metadata time for rename and settings changes', () => {
+  it('writes Session config only to the user-level root', () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date('2026-07-29T10:00:00.000Z'));
       const root = makeDir();
-      const sessionId = 'session-metadata-time';
-      createSession(sessionsRoot(root), {
-        id: sessionId,
-        name: 'Original',
-        roster: [],
-        defaultVpId: null,
-      }).close();
-      expect(snapshotSessions(root)[0].metadataUpdatedAt).toBe('2026-07-29T10:00:00.000Z');
+      const workDir = tempRoot('yeaft-session-config-workdir-');
+      const { projectYeaftDir, sessionId } = createProjectSessionArtifact(root, workDir, 'session-workdir-update');
+      writeFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'project/stale', modelEffort: 'low' }, null, 2)}\n`);
+      expect(snapshotSessions(root).find(session => session.id === sessionId).metadataUpdatedAt)
+        .toBe('2026-07-29T10:00:00.000Z');
 
       vi.setSystemTime(new Date('2026-07-29T11:00:00.000Z'));
       renameSession(root, sessionId, 'Renamed');
-      expect(snapshotSessions(root)[0].metadataUpdatedAt).toBe('2026-07-29T11:00:00.000Z');
+      expect(snapshotSessions(root).find(session => session.id === sessionId).metadataUpdatedAt)
+        .toBe('2026-07-29T11:00:00.000Z');
 
       vi.setSystemTime(new Date('2026-07-29T12:00:00.000Z'));
-      updateSessionConfig(root, sessionId, { model: 'agent/gpt-5' });
-      expect(snapshotSessions(root)[0].metadataUpdatedAt).toBe('2026-07-29T12:00:00.000Z');
+      const saved = updateSessionConfig(root, sessionId, { model: 'agent/claude-haiku', modelEffort: 'max' });
+
+      expect(saved).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
+      expect(loadSessionConfig(root, sessionId)).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
+      expect(JSON.parse(readFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), 'utf8')))
+        .toEqual({ model: 'project/stale', modelEffort: 'low' });
+      expect(JSON.parse(readFileSync(join(root, 'sessions', sessionId, 'config.json'), 'utf8')))
+        .toEqual({ model: 'agent/claude-haiku', modelEffort: 'max', modelSource: 'explicit' });
+      expect(snapshotSessions(root).find(session => session.id === sessionId).metadataUpdatedAt)
+        .toBe('2026-07-29T12:00:00.000Z');
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it('writes Session config only to the user-level root', () => {
-    const root = makeDir();
-    const workDir = tempRoot('yeaft-session-config-workdir-');
-    const { projectYeaftDir, sessionId } = createProjectSessionArtifact(root, workDir, 'session-workdir-update');
-    writeFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'project/stale', modelEffort: 'low' }, null, 2)}\n`);
-
-    const saved = updateSessionConfig(root, sessionId, { model: 'agent/claude-haiku', modelEffort: 'max' });
-
-    expect(saved).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
-    expect(loadSessionConfig(root, sessionId)).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
-    expect(JSON.parse(readFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), 'utf8')))
-      .toEqual({ model: 'project/stale', modelEffort: 'low' });
-    expect(JSON.parse(readFileSync(join(root, 'sessions', sessionId, 'config.json'), 'utf8')))
-      .toEqual({ model: 'agent/claude-haiku', modelEffort: 'max', modelSource: 'explicit' });
   });
 
 
