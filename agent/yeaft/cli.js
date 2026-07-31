@@ -38,7 +38,8 @@ import { ConversationStore } from './conversation/persist.js';
 import { snapshotSessions } from './sessions/session-crud.js';
 import { loadSessionConfig, resolveSessionConfig } from './sessions/session-config.js';
 import { validateSessionId } from './sessions/ids.js';
-import { createJsonlWriter, JsonlInput, runStreamTurn } from './stdio-protocol.js';
+import { createJsonlWriter, JsonlInput, runStreamTurn, runStreamSessionTurn } from './stdio-protocol.js';
+import { createCliSessionRunner } from './cli-session-runner.js';
 
 // ─── Argument parsing ──────────────────────────────────────────
 
@@ -333,16 +334,28 @@ function handleDeleteGroup(config, sessionId) {
 // ─── REPL ──────────────────────────────────────────────────────
 
 async function runREPL(config, args) {
-  // Use loadSession() to wire all subsystems
+  const workDir = resolve(args.workDir || process.cwd());
+  const persisted = args.sessionId ? loadSessionConfig(config.dir, args.sessionId) : {};
+  const effectiveConfig = resolveSessionConfig(config, persisted);
   const session = await loadSession({
-    model: args.model || config.model,
-    language: args.language || config.language,
-    debug: args.debug || config.debug,
+    dir: config.dir,
+    workDir,
+    model: args.model || effectiveConfig.model,
+    language: args.language || effectiveConfig.language,
+    debug: args.debug || effectiveConfig.debug,
     skipMCP: args.skipMCP,
     skipSkills: args.skipSkills,
+    configOverrides: effectiveConfig,
   });
 
   const { engine, conversationStore, trace, skillManager, mcpManager, toolRegistry } = session;
+  const sessionRunner = args.sessionId
+    ? createCliSessionRunner({ loaded: session, sessionId: args.sessionId, workDir })
+    : null;
+  if (args.sessionId && !sessionRunner) {
+    await session.shutdown();
+    throw new Error(`Session not found: ${args.sessionId}`);
+  }
 
   // Load persisted conversation as initial messages. `loadRecent` is now
   // turn-based (one user round-trip = one turn; multi-VP fan-out collapses
@@ -655,9 +668,28 @@ async function runREPL(config, args) {
       return;
     }
 
-    // Regular input → engine.query
+    // Regular input → Session fan-out or legacy single Engine.
     try {
       let responseText = '';
+      if (sessionRunner) {
+        const outcome = await sessionRunner.run(input, {
+          modelEffort: args.modelEffort || session.config.modelEffort || null,
+          onEvent: ({ vpId, event }) => {
+            if (event.type === 'text_delta') {
+              responseText += event.text || '';
+              process.stdout.write(`\n[${vpId}] ${event.text || ''}`);
+            } else if (event.type === 'tool_start') {
+              process.stderr.write(`\n[${vpId}] ${event.name}...\n`);
+            } else if (event.type === 'error') {
+              process.stderr.write(`\n[${vpId}] Error: ${event.error?.message || event.error}\n`);
+            }
+          },
+        });
+        console.log();
+        if (outcome.results.some(result => result.error)) process.exitCode = 1;
+        rl.prompt();
+        return;
+      }
 
       for await (const event of engine.query({
         prompt: input,
@@ -721,6 +753,7 @@ async function runREPL(config, args) {
   });
 
   rl.on('close', async () => {
+    await sessionRunner?.close();
     await session.shutdown();
     console.log('\nBye!');
     process.exit(0);
@@ -766,6 +799,7 @@ async function runStreamJson(config, args) {
     },
   });
   const { engine, conversationStore, skillManager, toolRegistry } = loaded;
+  const sessionRunner = createCliSessionRunner({ loaded, sessionId, workDir });
   const todoState = { value: [] };
 
   write({
@@ -788,8 +822,7 @@ async function runStreamJson(config, args) {
       ...(message.toolCallId && { toolCallId: message.toolCallId }),
       ...(message.toolCalls && { toolCalls: message.toolCalls }),
     }));
-    return runStreamTurn({
-      engine,
+    const turnOptions = {
       prompt,
       messages: priorMessages,
       sessionId,
@@ -800,7 +833,10 @@ async function runStreamJson(config, args) {
       write,
       getCurrentTodos: () => todoState.value.slice(),
       setCurrentTodos: todos => { todoState.value = Array.isArray(todos) ? todos.slice() : []; },
-    });
+    };
+    return sessionRunner
+      ? runStreamSessionTurn({ runner: sessionRunner, ...turnOptions })
+      : runStreamTurn({ engine, ...turnOptions });
   };
 
   let lastResult = null;
@@ -820,6 +856,7 @@ async function runStreamJson(config, args) {
     }
   } finally {
     input?.close();
+    await sessionRunner?.close();
     await loaded.shutdown();
     console.log = originalConsole.log;
     console.info = originalConsole.info;
@@ -836,18 +873,42 @@ async function runOnce(config, args) {
     return;
   }
 
-  // Use loadSession() to wire all subsystems
+  const workDir = resolve(args.workDir || process.cwd());
+  const persisted = args.sessionId ? loadSessionConfig(config.dir, args.sessionId) : {};
+  const effectiveConfig = resolveSessionConfig(config, persisted);
   const session = await loadSession({
-    model: args.model || config.model,
-    language: args.language || config.language,
-    debug: args.debug || config.debug,
+    dir: config.dir,
+    workDir,
+    model: args.model || effectiveConfig.model,
+    language: args.language || effectiveConfig.language,
+    debug: args.debug || effectiveConfig.debug,
     skipMCP: args.skipMCP,
     skipSkills: args.skipSkills,
+    configOverrides: effectiveConfig,
   });
 
   const { engine, conversationStore } = session;
+  const sessionRunner = args.sessionId
+    ? createCliSessionRunner({ loaded: session, sessionId: args.sessionId, workDir })
+    : null;
 
   try {
+    if (args.sessionId && !sessionRunner) {
+      throw new Error(`Session not found: ${args.sessionId}`);
+    }
+    if (sessionRunner) {
+      const outcome = await sessionRunner.run(args.prompt, {
+        modelEffort: args.modelEffort || session.config.modelEffort || null,
+        onEvent: ({ vpId, event }) => {
+          if (event.type === 'text_delta') process.stdout.write(`\n[${vpId}] ${event.text || ''}`);
+          else if (event.type === 'tool_start') process.stderr.write(`\n[${vpId}] ${event.name}...\n`);
+          else if (event.type === 'error') process.stderr.write(`\n[${vpId}] Error: ${event.error?.message || event.error}\n`);
+        },
+      });
+      console.log();
+      if (outcome.results.some(result => result.error)) process.exitCode = 1;
+      return;
+    }
     // Load recent conversation as context
     const priorMessages = conversationStore.loadRecent(20).map(m => ({
       role: m.role,
@@ -903,6 +964,7 @@ async function runOnce(config, args) {
     // Final newline after streaming text
     console.log();
   } finally {
+    await sessionRunner?.close();
     await session.shutdown();
   }
 }
