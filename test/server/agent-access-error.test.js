@@ -25,11 +25,35 @@ describe('resolveAgentAccessError', () => {
     expect(resolveAgentAccessError('agent-missing', 'user-1', 'user')).toBe('Agent not found or offline');
   });
 
-  it('keeps real ownership failures as access denied', () => {
+  it('keeps real ownership failures as access denied', async () => {
     CONFIG.skipAuth = false;
     agents.set('agent-1', { ownerId: 'user-1', ws: { readyState: 1 } });
 
     expect(resolveAgentAccessError('agent-1', 'user-2', 'user')).toBe('Agent access denied');
+
+    const forwarded = [];
+    agents.set('agent-foreign', {
+      ownerId: 'user-2',
+      ws: { readyState: 1, send: payload => forwarded.push(JSON.parse(payload)) },
+    });
+    const client = {
+      userId: 'user-1', role: 'user', currentAgent: null, authenticated: true,
+      ws: { readyState: 1, send() {}, close() {} },
+    };
+    const accessChecks = [];
+    const handled = await handleClientConversation('project-access-client', client, {
+      type: 'yeaft_project_mutation',
+      agentId: 'agent-foreign',
+      requestId: 'project-denied',
+      op: 'delete',
+      projectId: 'project-1',
+    }, async agentId => {
+      accessChecks.push(agentId);
+      return false;
+    });
+    expect(handled).toBe(true);
+    expect(accessChecks).toEqual(['agent-foreign']);
+    expect(forwarded).toEqual([]);
   });
 
   it('accepts an owned online agent', () => {
