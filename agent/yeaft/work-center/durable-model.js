@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-export const WORK_CENTER_SCHEMA_VERSION = 34;
+export const WORK_CENTER_SCHEMA_VERSION = 35;
 
 const MIGRATIONS = [
   ['23-conversation-stream', migrateConversationStream],
@@ -15,6 +15,7 @@ const MIGRATIONS = [
   ['32-engine-turn-status-contract', migrateEngineTurnStatusContract],
   ['33-coordinator-provider-turns', migrateCoordinatorProviderTurns],
   ['34-engine-turn-status-repair', repairEngineTurnStatusContract],
+  ['35-coordinator-provider-claims', migrateCoordinatorProviderClaims],
 ];
 
 const MIGRATION_ALIASES = new Map([
@@ -459,6 +460,21 @@ function migrateCoordinatorProviderTurns(db) {
     BEGIN
       SELECT RAISE(ABORT, 'prepared Coordinator provider request is immutable');
     END;
+  `);
+}
+
+function migrateCoordinatorProviderClaims(db) {
+  for (const [column, definition] of [
+    ['claim_owner', 'TEXT'],
+    ['claim_epoch', 'INTEGER NOT NULL DEFAULT 0'],
+  ]) {
+    if (!hasColumn(db, 'coordinator_provider_turns', column)) {
+      db.exec(`ALTER TABLE coordinator_provider_turns ADD COLUMN ${column} ${definition}`);
+    }
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_coordinator_provider_turns_claim
+      ON coordinator_provider_turns(coordinator_turn_id, claim_owner, claim_epoch, status);
   `);
 }
 

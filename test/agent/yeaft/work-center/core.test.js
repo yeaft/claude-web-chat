@@ -180,28 +180,47 @@ describe('Work Center core', () => {
       .toMatchObject({ actionGeneration: first.action.generation });
 
     const coordinatorRequest = { model: 'provider/model', messages: [{ role: 'user', content: 'decide' }] };
+    const restartDetail = store.getWorkItemDetail(item.id);
+    const restartTurn = store.beginCoordinatorTurn(item.id, 'Restart provider', {
+      revision: restartDetail.revision, planRevision: restartDetail.planRevision,
+      ledgerRevision: restartDetail.ledgerRevision, coordinatorRevision: restartDetail.coordinatorRevision,
+    });
+    const restartClaim = store.claimCoordinatorTurn(item.id, restartTurn.turnId, 'provider-restart-owner');
     const preparedCoordinatorTurn = store.prepareCoordinatorProviderTurn(
-      item.id, 'coordinator-provider-restart', 1, coordinatorRequest,
+      item.id, restartTurn.turnId, 1, coordinatorRequest, restartClaim,
     );
     expect(store.prepareCoordinatorProviderTurn(
-      item.id, 'coordinator-provider-restart', 1, coordinatorRequest,
+      item.id, restartTurn.turnId, 1, coordinatorRequest, restartClaim,
     )).toEqual(preparedCoordinatorTurn);
     expect(() => store.prepareCoordinatorProviderTurn(
-      item.id, 'coordinator-provider-restart', 1, { ...coordinatorRequest, model: 'other' },
+      item.id, restartTurn.turnId, 1, { ...coordinatorRequest, model: 'other' }, restartClaim,
     )).toThrow(/changed before dispatch/);
-    expect(store.dispatchCoordinatorProviderTurn(preparedCoordinatorTurn.id))
+    expect(store.dispatchCoordinatorProviderTurn(preparedCoordinatorTurn.id, restartClaim))
       .toMatchObject({ status: 'dispatching' });
+    store.db.prepare(`UPDATE coordinator_mailbox_entries SET lease_expires_at = 0
+      WHERE id = ?`).run(restartClaim.mailboxId);
     expect(store.recoverCoordinatorProviderTurns()).toBe(1);
     expect(store.getCoordinatorProviderTurn(preparedCoordinatorTurn.id)).toMatchObject({
       status: 'unknown',
       error: 'Coordinator provider dispatch outcome is unknown after Agent restart',
     });
-    const respondedCoordinatorTurn = store.prepareCoordinatorProviderTurn(
-      item.id, 'coordinator-provider-responded', 1, coordinatorRequest,
+    expect(store.recoverInterruptedCoordinatorTurns()).toBe(1);
+    const respondedDetail = store.getWorkItemDetail(item.id);
+    const respondedTurn = store.beginCoordinatorTurn(item.id, 'Persist provider response', {
+      revision: respondedDetail.revision, planRevision: respondedDetail.planRevision,
+      ledgerRevision: respondedDetail.ledgerRevision,
+      coordinatorRevision: respondedDetail.coordinatorRevision,
+    });
+    const respondedClaim = store.claimCoordinatorTurn(
+      item.id, respondedTurn.turnId, 'provider-response-owner',
     );
-    store.dispatchCoordinatorProviderTurn(respondedCoordinatorTurn.id);
+    const respondedCoordinatorTurn = store.prepareCoordinatorProviderTurn(
+      item.id, respondedTurn.turnId, 1, coordinatorRequest, respondedClaim,
+    );
+    store.dispatchCoordinatorProviderTurn(respondedCoordinatorTurn.id, respondedClaim);
     expect(store.respondCoordinatorProviderTurn(
-      respondedCoordinatorTurn.id, respondedCoordinatorTurn.requestHash, { text: 'decision' },
+      respondedCoordinatorTurn.id, respondedCoordinatorTurn.requestHash,
+      { text: 'decision' }, respondedClaim,
     )).toMatchObject({ status: 'responded', response: { text: 'decision' } });
     expect(store.recoverCoordinatorProviderTurns()).toBe(0);
 
@@ -1899,13 +1918,16 @@ describe('Work Center core', () => {
             coordinatorRevision: historyDetail.coordinatorRevision,
           },
         );
-        recoveryStore.completeCoordinatorTurn(historyTurn.turnId, {
+        const claimedHistoryTurn = recoveryStore.claimStartedCoordinatorTurn(
+          historyTurn, `history-owner-${index}`,
+        );
+        recoveryStore.completeCoordinatorTurn(claimedHistoryTurn.turnId, {
           reply: `${'A'.repeat(7_890)}-${index}`,
           decision: {
             kind: 'answer', reason: 'Persist a valid long Coordinator exchange',
             contractPatch: null, guidance: [], actions: [],
           },
-        }, historyTurn.fence);
+        }, claimedHistoryTurn.fence);
       }
       let largeHistoryAdapterCalls = 0;
       let recoverySnapshot = null;
@@ -2438,7 +2460,8 @@ describe('Work Center core', () => {
         stageId: failedBranch.action.stageId,
       },
     });
-    expect(() => restartStore.completeCoordinatorTurn(bypassTurn.turnId, {
+    const claimedBypassTurn = restartStore.claimStartedCoordinatorTurn(bypassTurn, 'bypass-owner');
+    expect(() => restartStore.completeCoordinatorTurn(claimedBypassTurn.turnId, {
       reply: 'Retry both branches.',
       decision: {
         kind: 'guide_actions',
@@ -2450,7 +2473,7 @@ describe('Work Center core', () => {
         ],
         actions: [],
       },
-    }, bypassTurn.fence)).toThrow(/only the fenced Action identity/i);
+    }, claimedBypassTurn.fence)).toThrow(/only the fenced Action identity/i);
     expect(restartStore.getWorkItemDetail(mixedItem.id)).toMatchObject({
       status: 'waiting',
       currentActionId: waitingBranch.action.id,
@@ -2462,7 +2485,7 @@ describe('Work Center core', () => {
     restartStore.failCoordinatorTurn(
       bypassTurn.turnId,
       new Error('Rejected cross-Action recovery guidance'),
-      bypassTurn.fence,
+      claimedBypassTurn.fence,
     );
 
     const forgedDir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-recovery-forged-fence-'));
@@ -2533,6 +2556,7 @@ describe('Work Center core', () => {
           stageId: failedA.stageId,
         },
       });
+      const claimedForgedTurn = forgedStore.claimStartedCoordinatorTurn(forgedTurn, 'forged-owner');
       const persistedBeforeForgery = forgedStore.getWorkItemDetail(forgedItem.id);
       expect(persistedBeforeForgery.messages.at(-1)).toMatchObject({
         turnId: forgedTurn.turnId,
@@ -2544,7 +2568,7 @@ describe('Work Center core', () => {
         },
       });
       const forgedFence = {
-        ...forgedTurn.fence,
+        ...claimedForgedTurn.fence,
         recovery: {
           actionId: failedB.id,
           actionGeneration: failedB.generation,
@@ -2565,7 +2589,7 @@ describe('Work Center core', () => {
       forgedStore.failCoordinatorTurn(
         forgedTurn.turnId,
         new Error('Rejected forged recovery identity'),
-        forgedTurn.fence,
+        claimedForgedTurn.fence,
       );
     } finally {
       forgedStore.close();
@@ -2800,7 +2824,7 @@ describe('Work Center core', () => {
     }).toThrow(/shutting down/i);
   });
 
-  it('preserves execution ownership, recovers durable turns, and schedules same-stage replacements', () => {
+  it('preserves execution ownership, recovers durable turns, and schedules same-stage replacements', async () => {
     const linear = controller.create(createInput({ id: 'linear-running' }));
     const claimed = store.claimReadyAction('boot-linear', 5_000);
     const before = store.getWorkItemDetail(linear.id);
@@ -2809,10 +2833,11 @@ describe('Work Center core', () => {
       revision: before.revision, planRevision: before.planRevision,
       ledgerRevision: before.ledgerRevision, coordinatorRevision: before.coordinatorRevision,
     });
-    const answered = store.completeCoordinatorTurn(answerTurn.turnId, {
+    const claimedAnswerTurn = store.claimStartedCoordinatorTurn(answerTurn, 'answer-owner');
+    const answered = store.completeCoordinatorTurn(claimedAnswerTurn.turnId, {
       reply: 'The current Action still owns its Run.',
       decision: { kind: 'answer', reason: 'Status question', contractPatch: null, guidance: [], actions: [] },
-    }, answerTurn.fence);
+    }, claimedAnswerTurn.fence);
     expect(answered).toMatchObject({
       status: 'running', currentActionId: claimed.action.id, currentRunId: claimed.run.id,
     });
@@ -2827,10 +2852,11 @@ describe('Work Center core', () => {
       revision: draftBefore.revision, planRevision: draftBefore.planRevision,
       ledgerRevision: draftBefore.ledgerRevision, coordinatorRevision: draftBefore.coordinatorRevision,
     });
-    expect(store.completeCoordinatorTurn(draftTurn.turnId, {
+    const claimedDraftTurn = store.claimStartedCoordinatorTurn(draftTurn, 'draft-answer-owner');
+    expect(store.completeCoordinatorTurn(claimedDraftTurn.turnId, {
       reply: 'Starting creates the first Action.',
       decision: { kind: 'answer', reason: 'Draft question', contractPatch: null, guidance: [], actions: [] },
-    }, draftTurn.fence)).toMatchObject({ status: 'draft', currentActionId: null, currentRunId: null });
+    }, claimedDraftTurn.fence)).toMatchObject({ status: 'draft', currentActionId: null, currentRunId: null });
 
     const dbPath = join(dir, 'coordinator-reopen.db');
     const persisted = new WorkItemStore(dbPath, { now: () => now });
@@ -2877,6 +2903,7 @@ describe('Work Center core', () => {
       revision: graphBefore.revision, planRevision: graphBefore.planRevision,
       ledgerRevision: graphBefore.ledgerRevision, coordinatorRevision: graphBefore.coordinatorRevision,
     });
+    const claimedReplanTurn = store.claimStartedCoordinatorTurn(replanTurn, 'same-stage-replan-owner');
     const mutation = applyCoordinatorReplan({
       workItem: graphBefore, actions: graphBefore.actions, availableVpIds: [],
       proposal: {
@@ -2887,15 +2914,148 @@ describe('Work Center core', () => {
         ],
       },
     });
-    store.completeCoordinatorTurn(replanTurn.turnId, {
+    store.completeCoordinatorTurn(claimedReplanTurn.turnId, {
       reply: 'The stage responsibilities are bounded.',
       decision: { kind: 'replan', reason: mutation.reason, contractPatch: null, guidance: [], actions: [] },
       mutation,
-    }, replanTurn.fence);
+    }, claimedReplanTurn.fence);
     const replacement = store.claimReadyAction('boot-stage', 5_000);
     expect(replacement.action.stageId).toBe('validate');
     controller.submit(replacement.run.id, 'boot-stage', replacement.run.leaseEpoch, completed('test'));
     expect(store.claimReadyAction('boot-stage', 5_000)?.action.stageId).toBe('deliver');
+
+    const dualOwnerDir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-coordinator-dual-owner-'));
+    const dualOwnerDb = join(dualOwnerDir, 'work-center.db');
+    const seedStore = new WorkItemStore(dualOwnerDb);
+    const seedController = new WorkflowController(seedStore);
+    const dualOwnerItem = seedController.create(createInput({
+      id: 'coordinator-dual-owner', workDir: dualOwnerDir, start: false,
+    }));
+    const dualOwnerBefore = seedStore.getWorkItemDetail(dualOwnerItem.id);
+    const seedCoordinator = new WorkItemCoordinator({
+      store: seedStore,
+      ownerBootId: 'seed-owner',
+      claimLeaseMs: 3_600_000,
+      runtimeProvider: async () => ({
+        config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+        adapter: { call: async () => new Promise(() => {}) },
+      }),
+      policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
+      registry: { listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }] },
+    });
+    const seeded = seedCoordinator.message(dualOwnerItem.id, {
+      text: 'Recover this Coordinator request once.',
+      revision: dualOwnerBefore.revision,
+      planRevision: dualOwnerBefore.planRevision,
+      ledgerRevision: dualOwnerBefore.ledgerRevision,
+      coordinatorRevision: dualOwnerBefore.coordinatorRevision,
+    });
+    let seededProvider;
+    for (let index = 0; index < 200; index += 1) {
+      seededProvider = seedStore.db.prepare(`SELECT * FROM coordinator_provider_turns
+        WHERE work_item_id = ?`).get(dualOwnerItem.id);
+      if (seededProvider?.status === 'prepared') break;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    expect(seededProvider).toMatchObject({ status: 'prepared' });
+    const seedMailbox = seedStore.db.prepare(`SELECT * FROM coordinator_mailbox_entries
+      WHERE json_extract(payload, '$.turnId') = ?`).get(
+      seedStore.getWorkItemDetail(dualOwnerItem.id).messages.at(-1).turnId,
+    );
+    const seededTurnId = JSON.parse(seedMailbox.payload).turnId;
+    expect(seededProvider.coordinator_turn_id).toBe(seededTurnId);
+    await seedCoordinator.shutdown();
+    seedStore.db.prepare(`UPDATE coordinator_provider_turns SET status = 'prepared', dispatched_at = NULL,
+      response = NULL, response_hash = NULL, responded_at = NULL, error = NULL WHERE id = ?`).run(seededProvider.id);
+    seedStore.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'pending', claim_owner = NULL,
+      claimed_at = NULL, lease_expires_at = NULL, acked_at = NULL WHERE id = ?`).run(seedMailbox.id);
+    const thinkingMessages = seedStore.getWorkItemDetail(dualOwnerItem.id).messages.map(message => (
+      message.turnId === seededTurnId && message.role === 'assistant'
+        ? { ...message, status: 'thinking', error: undefined } : message
+    ));
+    seedStore.db.prepare(`UPDATE work_items SET messages = ? WHERE id = ?`).run(
+      JSON.stringify(thinkingMessages), dualOwnerItem.id,
+    );
+    const recoverySnapshot = seedStore.getWorkItemDetail(dualOwnerItem.id);
+    seedStore.close();
+
+    let providerCalls = 0;
+    const makeRecoveryService = ownerBootId => {
+      const recoveryStore = new WorkItemStore(dualOwnerDb);
+      const recoveryCoordinator = new WorkItemCoordinator({
+        store: recoveryStore,
+        ownerBootId,
+        runtimeProvider: async () => ({
+          config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+          adapter: { call: async request => {
+            request.onRequestStart?.();
+            providerCalls += 1;
+            await new Promise(resolve => setTimeout(resolve, 15));
+            return { text: JSON.stringify({
+              reply: 'Recovered exactly once.',
+              decision: { kind: 'answer', reason: 'Single durable owner', contractPatch: null, guidance: [], actions: [] },
+            }) };
+          } },
+        }),
+        policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
+        registry: { listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }] },
+      });
+      return new WorkCenterService({
+        yeaftDir: dualOwnerDir,
+        store: recoveryStore,
+        controller: new WorkflowController(recoveryStore),
+        coordinator: recoveryCoordinator,
+        runner: null,
+        ownerBootId,
+        pollIntervalMs: 60_000,
+        settingsReader: () => ({}),
+      });
+    };
+    const ownerA = makeRecoveryService('recovery-owner-a');
+    const ownerB = makeRecoveryService('recovery-owner-b');
+    try {
+      ownerA.start();
+      ownerB.start();
+      for (let index = 0; index < 200; index += 1) {
+        const detail = ownerA.store.getWorkItemDetail(dualOwnerItem.id);
+        if (detail.messages.at(-1)?.status === 'completed') break;
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      const durable = ownerA.store.getWorkItemDetail(dualOwnerItem.id);
+      expect(providerCalls).toBe(1);
+      expect(durable.messages.at(-1)).toMatchObject({
+        turnId: seededTurnId, status: 'completed', text: 'Recovered exactly once.',
+      });
+      const journal = ownerA.store.db.prepare(`SELECT status, claim_owner, claim_epoch
+        FROM coordinator_provider_turns WHERE coordinator_turn_id = ?`).get(seededTurnId);
+      expect(journal).toMatchObject({ status: 'responded', claim_epoch: 2 });
+      const loser = journal.claim_owner === 'recovery-owner-a' ? ownerB.store : ownerA.store;
+      expect(loser.failCoordinatorTurn(
+        seededTurnId, new Error('Losing owner must not overwrite durable success'), {
+          workItemId: dualOwnerItem.id,
+          revision: recoverySnapshot.revision,
+          planRevision: recoverySnapshot.planRevision,
+          ledgerRevision: recoverySnapshot.ledgerRevision,
+          coordinatorRevision: recoverySnapshot.coordinatorRevision,
+          status: recoverySnapshot.status,
+          actionFence: '',
+          claim: {
+            mailboxId: seedMailbox.id,
+            ownerBootId: journal.claim_owner === 'recovery-owner-a'
+              ? 'recovery-owner-b' : 'recovery-owner-a',
+            claimEpoch: 1,
+          },
+        },
+      )).toBeNull();
+      expect(ownerA.store.getWorkItemDetail(dualOwnerItem.id).messages.at(-1))
+        .toMatchObject({ status: 'completed', text: 'Recovered exactly once.' });
+      expect(ownerA.store.db.prepare(`SELECT status FROM coordinator_mailbox_entries
+        WHERE id = ?`).get(seedMailbox.id)).toEqual({ status: 'acked' });
+    } finally {
+      await ownerA.shutdown();
+      await ownerB.shutdown();
+      rmSync(dualOwnerDir, { recursive: true, force: true });
+    }
   }, 30_000);
 
   it('claims a ready Action exactly once and fences stale terminal submissions', () => {

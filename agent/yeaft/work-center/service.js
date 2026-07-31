@@ -106,6 +106,7 @@ export class WorkCenterService {
       listAvailableVpIds: options.listAvailableVpIds,
     });
     this.coordinator = options.coordinator || null;
+    if (this.coordinator) this.coordinator.ownerBootId = this.ownerBootId;
     this.onEvent = typeof options.onEvent === 'function' ? options.onEvent : () => {};
     this.recoveryTasks = new Map();
     this.recoveryQueue = new Map();
@@ -628,7 +629,13 @@ export class WorkCenterService {
 
   start() {
     for (const recoverable of this.store.getRecoverableCoordinatorTurns?.() || []) {
-      const started = this.store.resumeCoordinatorTurn(recoverable.workItemId, recoverable.turnId);
+      const claim = this.store.claimCoordinatorTurn(
+        recoverable.workItemId, recoverable.turnId, this.ownerBootId,
+      );
+      if (!claim) continue;
+      const started = this.store.resumeCoordinatorTurn(
+        recoverable.workItemId, recoverable.turnId, claim,
+      );
       if (!started) continue;
       const task = this.coordinator.resume(started, {
         text: recoverable.text || '',
