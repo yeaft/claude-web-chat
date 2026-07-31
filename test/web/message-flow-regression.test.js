@@ -777,10 +777,30 @@ describe('message flow regressions', () => {
     })).toBe(true);
     const ownerAEnvelope = store.prepareWorkCenterMessageEnvelope({
       agentId: 'agent-a', workItemId: 'work-item-owner',
-      target: { kind: 'coordinator' }, text: 'owner A durable outbox', revision: 1,
+      target: { kind: 'coordinator' }, text: 'owner A durable outbox',
+      attachments: [{ fileId: 'old-file', name: 'old.txt', mimeType: 'text/plain', size: 3 }],
+      revision: 1, planRevision: 2, ledgerRevision: 3, coordinatorRevision: 4,
     });
     const ownerAFence = { ...store._workCenterBrowserFence };
     expect(ownerAEnvelope.clientMessageId).toEqual(expect.any(String));
+    const replacedOwnerAEnvelope = store.replaceWorkCenterMessageEnvelopeAttachments(
+      'agent-a', 'work-item-owner',
+      [{ fileId: 'new-file', name: 'new.txt', mimeType: 'text/plain', size: 4 }],
+    );
+    expect(replacedOwnerAEnvelope).toEqual({
+      ...ownerAEnvelope,
+      attachments: [{ fileId: 'new-file', name: 'new.txt', mimeType: 'text/plain', size: 4 }],
+    });
+    expect(replacedOwnerAEnvelope).toMatchObject({
+      clientMessageId: ownerAEnvelope.clientMessageId,
+      target: ownerAEnvelope.target,
+      text: ownerAEnvelope.text,
+      revision: 1,
+      planRevision: 2,
+      ledgerRevision: 3,
+      coordinatorRevision: 4,
+      createdAt: ownerAEnvelope.createdAt,
+    });
     store.workCenterComposerDrafts = {};
     store.workCenterMessageOutbox = {};
     store._workCenterBrowserFence = null;

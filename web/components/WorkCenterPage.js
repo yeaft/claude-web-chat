@@ -45,6 +45,7 @@ export default {
       workItemMessageSending: false,
       workItemMessageError: '',
       workItemComposerGeneration: 0,
+      preserveComposerOnEnvelopeClear: false,
       detailLoading: false,
       detailError: '',
       createOpen: false,
@@ -190,6 +191,13 @@ export default {
     },
     composerDraftLocked() {
       return !!this.pendingMessageEnvelope && !this.composerTargetIsStale;
+    },
+    pendingEnvelopeHasAttachments() {
+      return Array.isArray(this.pendingMessageEnvelope?.attachments)
+        && this.pendingMessageEnvelope.attachments.length > 0;
+    },
+    pendingEnvelopeAttachmentRecovery() {
+      return this.composerDraftLocked && this.pendingEnvelopeHasAttachments;
     },
     actionRequestKey() {
       return this.selected?.id && this.selectedAction?.id
@@ -380,6 +388,12 @@ export default {
     },
     pendingMessageEnvelope(next, previous) {
       if (!previous || next || previous.workItemId !== this.selectedId) return;
+      if (this.preserveComposerOnEnvelopeClear) {
+        this.preserveComposerOnEnvelopeClear = false;
+        this.workItemMessageError = '';
+        this.workItemMessageSending = false;
+        return;
+      }
       this.workItemMessage = '';
       this.workItemMessageAttachments = [];
       this.workItemMessageError = '';
@@ -972,6 +986,19 @@ export default {
     removeCreateAttachment(index) {
       this.createAttachments = this.createAttachments.filter((_attachment, itemIndex) => itemIndex !== index);
     },
+    discardPendingMessageEnvelope() {
+      if (!this.selectedId || !this.pendingMessageEnvelope) return;
+      this.actionInputRequestGeneration = (Number(this.actionInputRequestGeneration) || 0) + 1;
+      this.preserveComposerOnEnvelopeClear = true;
+      if (!this.store.discardWorkCenterMessageEnvelope(this.agentId, this.selectedId)) {
+        this.preserveComposerOnEnvelopeClear = false;
+        return;
+      }
+      this.workItemMessageAttachments = [];
+      this.workItemMessageError = '';
+      this.workItemMessageSending = false;
+      this.saveComposerDraft();
+    },
     async onWorkItemMessageAttachmentInput(event) {
       if (!this.workItemAttachmentsSupported) {
         event.target.value = '';
@@ -983,8 +1010,10 @@ export default {
       if (files.length === 0) return;
       const scope = this.workItemComposerScope;
       if (!scope) return;
+      const replacingPending = this.pendingEnvelopeAttachmentRecovery;
       const existingCount = Array.isArray(this.selected?.attachments) ? this.selected.attachments.length : 0;
-      const remaining = Math.max(0, 10 - existingCount - this.workItemMessageAttachments.length);
+      const remaining = Math.max(0, 10 - existingCount
+        - (replacingPending ? 0 : this.workItemMessageAttachments.length));
       const selected = files.slice(0, remaining);
       if (selected.length === 0) return;
       this.workItemMessageAttachmentsUploading = true;
@@ -999,11 +1028,25 @@ export default {
         if (!response.ok) throw new Error(this.tr('workCenter.attachmentsUploadFailed', 'Attachment upload failed'));
         const result = await response.json();
         if (this.workItemComposerScope !== scope) return;
-        this.workItemMessageAttachments = [
-          ...this.workItemMessageAttachments,
-          ...(Array.isArray(result.files) ? result.files : []),
-        ].slice(0, Math.max(0, 10 - existingCount));
-        this.saveComposerDraft();
+        const uploaded = (Array.isArray(result.files) ? result.files : [])
+          .slice(0, Math.max(0, 10 - existingCount));
+        if (replacingPending) {
+          const replaced = this.store.replaceWorkCenterMessageEnvelopeAttachments(
+            this.agentId, this.selectedId, uploaded,
+          );
+          if (!replaced) throw new Error(this.tr(
+            'workCenter.pendingEnvelopeChanged',
+            'The pending request changed; reopen this Work Item and try again.',
+          ));
+          this.workItemMessageAttachments = [...replaced.attachments];
+          this.workItemMessageError = '';
+        } else {
+          this.workItemMessageAttachments = [
+            ...this.workItemMessageAttachments,
+            ...uploaded,
+          ].slice(0, Math.max(0, 10 - existingCount));
+          this.saveComposerDraft();
+        }
       } catch (error) {
         if (this.workItemComposerScope === scope) this.workItemMessageError = error?.message || String(error);
       } finally {
@@ -1480,6 +1523,16 @@ export default {
                         </article>
                       </div>
                       <p v-if="workItemMessageError" class="work-center-error" role="alert">{{ workItemMessageError }}</p>
+                      <div v-if="pendingMessageEnvelope" class="work-center-stale-target" role="status">
+                        <span>{{ tr('workCenter.pendingEnvelopeLocked', 'An unconfirmed request is locked to its original identity.') }}</span>
+                        <label v-if="pendingEnvelopeHasAttachments" class="btn-secondary">
+                          {{ tr('workCenter.replacePendingAttachments', 'Replace attachments') }}
+                          <input type="file" multiple class="sr-only" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv" @change="onWorkItemMessageAttachmentInput">
+                        </label>
+                        <button type="button" class="btn-ghost" @click="discardPendingMessageEnvelope">
+                          {{ tr('workCenter.discardPendingEnvelope', 'Discard pending request') }}
+                        </button>
+                      </div>
                       <p v-if="coordinatorReadOnly" class="work-center-conversation-readonly">{{ tr('workCenter.conversationReadOnly', 'This work item is closed. The conversation remains available.') }}</p>
                       <template v-else>
                         <label class="work-center-composer-target">

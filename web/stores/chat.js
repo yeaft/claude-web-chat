@@ -1633,6 +1633,24 @@ export const useChatStore = defineStore('chat', {
     loadWorkCenterMessageEnvelope(agentId, workItemId) {
       return this.workCenterMessageOutbox?.[workCenterClientMessageKey(agentId, workItemId)] || null;
     },
+    replaceWorkCenterMessageEnvelopeAttachments(agentId, workItemId, attachments = []) {
+      const key = workCenterClientMessageKey(agentId, workItemId);
+      const envelope = this.workCenterMessageOutbox?.[key];
+      if (!envelope) return null;
+      const replacement = {
+        ...envelope,
+        attachments: Array.isArray(attachments) ? attachments.map(attachment => ({
+          fileId: attachment?.fileId || '',
+          name: attachment?.name || '',
+          mimeType: attachment?.mimeType || '',
+          size: Math.max(0, Number(attachment?.size) || 0),
+        })) : [],
+      };
+      const next = { ...(this.workCenterMessageOutbox || {}), [key]: replacement };
+      if (!writeWorkCenterOutbox(next, this._workCenterBrowserFence)) return null;
+      this.workCenterMessageOutbox = next;
+      return replacement;
+    },
     discardWorkCenterMessageEnvelope(agentId, workItemId) {
       const key = workCenterClientMessageKey(agentId, workItemId);
       const next = { ...(this.workCenterMessageOutbox || {}) };
@@ -2162,6 +2180,9 @@ export const useChatStore = defineStore('chat', {
       return result;
     },
     async postWorkItemMessage(id, text, targetRef, revision, attachments = [], agentId = null, fence = {}) {
+      if (!this.hydrateWorkCenterBrowserState()) {
+        throw new Error('Work Center browser owner is unavailable; sign in again and retry');
+      }
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const envelope = this.prepareWorkCenterMessageEnvelope({
         agentId: target,
