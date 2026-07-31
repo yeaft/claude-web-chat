@@ -188,6 +188,10 @@ describe('Work Center core', () => {
       idempotencyKey: 'operation-claim-fence',
       replayPolicy: 'never_automatic',
     });
+    const safeItem = controller.create(createInput({ id: 'operation-safe-sibling', workDir: dir }));
+    const safeClaim = store.claimReadyAction('operation-boot', 5_000);
+    expect(safeClaim?.workItem.id).toBe(safeItem.id);
+    controller.cancel(safeItem.id);
     expect(store.claimReadyAction('operation-boot', 5_000)).toBeNull();
     expect(store.claimOperation('operation-claim-fence', 'operation-owner', 1, false))
       .toMatchObject({ executionStatus: 'running' });

@@ -3572,7 +3572,7 @@ export class WorkItemStore {
 
   claimReadyAction(ownerBootId, leaseMs = 60_000) {
     return withTransaction(this.db, () => {
-      const row = this.db.prepare(`SELECT a.* FROM actions a
+      const rows = this.db.prepare(`SELECT a.* FROM actions a
         JOIN work_items w ON w.id = a.work_item_id
         WHERE a.status = 'ready' AND a.current_run_id IS NULL
           AND NOT EXISTS (
@@ -3637,9 +3637,9 @@ export class WorkItemStore {
                   AND blocker_item.workspace_key = w.workspace_key
               )
           )
-        ORDER BY a.updated_at ASC, a.sequence ASC LIMIT 1`).get();
+        ORDER BY a.updated_at ASC, a.sequence ASC`).all();
+      const row = rows.find(candidate => !this.#hasBlockingOperation(candidate.work_item_id, candidate.id));
       if (!row) return null;
-      if (this.#hasBlockingOperation(row.work_item_id, row.id)) return null;
       const now = this.now();
       let action = mapAction(row);
       const readyInputs = this.db.prepare(`SELECT p.* FROM pending_action_inputs p
