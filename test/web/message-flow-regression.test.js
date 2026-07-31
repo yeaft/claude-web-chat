@@ -257,6 +257,7 @@ describe('message flow regressions', () => {
     expect(sidebar.findAll('.session-item')).toHaveLength(3);
     expect(sidebar.findAll('.session-item').some(item => item.text().includes('Offline'))).toBe(false);
     expect(sidebar.findAll('.sidebar-project')).toHaveLength(2);
+    expect(sidebar.findAll('.sidebar-project-unread')).toHaveLength(1);
     expect(Object.fromEntries(sidebar.findAll('.sidebar-project').map(item => [
       item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
       item.get('.sidebar-project-count').text(),
@@ -294,6 +295,7 @@ describe('message flow regressions', () => {
     const projectToggles = sidebar.findAll('.sidebar-project-toggle');
     await projectToggles[0].trigger('click');
     expect(sidebar.findAll('.sidebar-project-sessions')).toHaveLength(1);
+    expect(sidebar.findAll('.sidebar-project-unread')).toHaveLength(1);
     expect(Object.fromEntries(sidebar.findAll('.sidebar-project').map(item => [
       item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
       item.get('.sidebar-project-count').text(),
@@ -376,11 +378,13 @@ describe('message flow regressions', () => {
       agents: [{ id: 'user_1770305719:server-instance', name: 'server', online: false }],
     });
     expect(sidebar.findAll('.session-item')).toHaveLength(0);
+    expect(sidebar.findAll('.sidebar-project-unread')).toHaveLength(1);
     await sidebar.setProps({
       sessions: [{ ...catalogRows[0], availability: 'offline' }],
       agents: [{ id: 'user_1770305719:server-instance', name: 'server', online: true }],
     });
     expect(sidebar.findAll('.session-item')).toHaveLength(0);
+    expect(sidebar.findAll('.sidebar-project-unread')).toHaveLength(1);
     await sidebar.setProps({
       sessions: catalogRows,
       agents: [

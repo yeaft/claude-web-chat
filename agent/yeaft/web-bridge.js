@@ -3110,6 +3110,7 @@ function sendSessionRosterChanged(session) {
     roster: session.roster,
     defaultVpId: session.defaultVpId,
     workDir: session.workDir || '',
+    metadataUpdatedAt: session.metadataUpdatedAt || session.createdAt || null,
   };
   sendSessionEvent({ type: 'session_roster_changed', ...payload });
 }

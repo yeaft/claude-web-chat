@@ -70,15 +70,21 @@ export default {
       }
       return out;
     },
-    rowsByProject() {
+    projectSessionRows() {
       const out = new Map(this.projectRows.map(project => [projectIdentityKey(project), []]));
       for (const row of this.sessions) {
-        if (row.runtimeProvider !== 'yeaft' || !this.isRowOnline(row)) continue;
+        if (row.runtimeProvider !== 'yeaft') continue;
         const project = this.projectBySessionKey.get(`${row.routeRef?.agentId}\u001f${row.routeRef?.sessionId}`);
         const key = projectIdentityKey(project);
         if (project && out.has(key)) out.get(key).push(row);
       }
-      for (const [id, rows] of out) out.set(id, sortRows(rows));
+      return out;
+    },
+    rowsByProject() {
+      const out = new Map();
+      for (const [id, rows] of this.projectSessionRows) {
+        out.set(id, sortRows(rows.filter(row => this.isRowOnline(row))));
+      }
       return out;
     },
     recentRows() {
@@ -129,7 +135,7 @@ export default {
       return typeof this.isSessionUnread === 'function' ? !!this.isSessionUnread(row) : false;
     },
     isProjectUnread(project) {
-      const rows = this.rowsByProject.get(projectIdentityKey(project)) || [];
+      const rows = this.projectSessionRows.get(projectIdentityKey(project)) || [];
       return rows.some(row => this.isUnread(row));
     },
     projectKey(project) {

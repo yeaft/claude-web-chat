@@ -11,6 +11,7 @@ const getByUser = vi.fn(() => []);
 const getByAgent = vi.fn(() => []);
 const getForAgent = vi.fn(() => null);
 const reconcileFromSnapshot = vi.fn();
+const upsertFromSnapshot = vi.fn();
 const getChatSession = vi.fn(() => null);
 const updateChatSession = vi.fn();
 const applySessionUiMetadataBatch = vi.fn(() => true);
@@ -41,6 +42,7 @@ vi.mock('../../server/database.js', () => ({
     getByAgent,
     getForAgent,
     reconcileFromSnapshot,
+    upsertFromSnapshot,
     setOrderForUser: vi.fn(() => true),
   },
   sessionUiMetadataDb: {
@@ -74,6 +76,7 @@ afterEach(() => {
   getByAgent.mockReset();
   getByAgent.mockReturnValue([]);
   reconcileFromSnapshot.mockClear();
+  upsertFromSnapshot.mockClear();
   sendToWebClient.mockClear();
   forwardToAgent.mockClear();
   broadcastAgentList.mockClear();
@@ -560,5 +563,37 @@ describe('Yeaft Session online Agent filtering', () => {
       { id: 'same-id', name: 'Renamed' },
     ]);
     expect(broadcastSessionCatalog).toHaveBeenCalledTimes(1);
+
+    getForAgent.mockReturnValue({
+      id: 'same-id',
+      name: 'Before',
+      roster: ['omni'],
+      defaultVpId: 'omni',
+      workDir: '/repo',
+      config: {},
+      announcement: '',
+      createdAt: '2026-07-29T10:00:00.000Z',
+      metadataUpdatedAt: '2026-07-29T10:00:00.000Z',
+    });
+    broadcastSessionCatalog.mockClear();
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_output',
+      conversationId: 'yeaft-agent-a',
+      event: {
+        type: 'session_roster_changed',
+        sessionId: 'same-id',
+        name: 'After',
+        roster: ['omni', 'reviewer'],
+        defaultVpId: 'reviewer',
+        metadataUpdatedAt: '2026-07-29T11:00:00.000Z',
+      },
+    });
+    expect(upsertFromSnapshot).toHaveBeenCalledWith('user-1', 'agent-a', expect.objectContaining({
+      id: 'same-id',
+      roster: ['omni', 'reviewer'],
+      defaultVpId: 'reviewer',
+      metadataUpdatedAt: '2026-07-29T11:00:00.000Z',
+    }));
+    expect(broadcastSessionCatalog).toHaveBeenCalledWith('user-1');
   });
 });
