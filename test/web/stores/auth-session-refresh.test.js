@@ -309,10 +309,29 @@ describe('auth store session restore and refresh', () => {
   });
 
   it('starts SSO binding for a cookie-only session without putting a token in the URL', async () => {
-    globalThis.localStorage = createLocalStorage();
-    globalThis.fetch = vi.fn(async () => jsonResponse({
-      body: { success: true, authorizeUrl: 'https://provider.test/auth', state: 'state-1' },
-    }));
+    const ownerARecords = {
+      ownerId: 'user-a',
+      records: { 'agent-a:item-a': { text: 'same owner QR draft' } },
+    };
+    globalThis.localStorage = createLocalStorage({
+      'yeaft-work-center-composer-drafts-v1': JSON.stringify(ownerARecords),
+    });
+    const responses = [
+      jsonResponse({
+        body: { success: true, authorizeUrl: 'https://provider.test/auth', state: 'state-bind' },
+      }),
+      jsonResponse({
+        body: {
+          status: 'login', token: 'token-a', sessionKey: null, userId: 'user-a', role: 'pro',
+        },
+      }),
+      jsonResponse({
+        body: {
+          status: 'login', token: 'token-b', sessionKey: null, userId: 'user-b', role: 'pro',
+        },
+      }),
+    ];
+    globalThis.fetch = vi.fn(async () => responses.shift());
     const auth = await loadAuthStore();
     auth.isAuthenticated = true;
 
@@ -321,6 +340,37 @@ describe('auth store session restore and refresh', () => {
     expect(started).toBe(true);
     expect(globalThis.fetch).toHaveBeenCalledWith('/api/auth/sso/github/start-qr?intent=bind');
     expect(globalThis.fetch.mock.calls[0][0]).not.toContain('token=');
+
+    auth.qrPanel = {
+      provider: 'github', intent: 'login', state: 'state-user-a', status: 'pending', error: null,
+    };
+    auth._startQrPoll();
+    await auth._qrPollTick();
+    expect(auth).toMatchObject({
+      isAuthenticated: true, token: 'token-a', userId: 'user-a', loginStep: 'authenticated',
+    });
+    expect(globalThis.localStorage.getItem('yeaft-work-center-composer-drafts-v1'))
+      .toBe(JSON.stringify(ownerARecords));
+    const browserState = await import('../../../web/stores/helpers/work-center-browser-state.js');
+    const ownerAFence = browserState.currentWorkCenterBrowserOwner();
+    expect(ownerAFence).toMatchObject({ ownerId: 'user-a' });
+    expect(browserState.readWorkCenterBrowserState(ownerAFence).drafts)
+      .toEqual(ownerARecords.records);
+
+    auth.qrPanel = {
+      provider: 'github', intent: 'login', state: 'state-user-b', status: 'pending', error: null,
+    };
+    auth._startQrPoll();
+    await auth._qrPollTick();
+    expect(auth).toMatchObject({
+      isAuthenticated: true, token: 'token-b', userId: 'user-b', loginStep: 'authenticated',
+    });
+    expect(globalThis.localStorage.getItem('yeaft-work-center-composer-drafts-v1')).toBe(null);
+    const ownerBFence = browserState.currentWorkCenterBrowserOwner();
+    expect(ownerBFence).toMatchObject({ ownerId: 'user-b' });
+    expect(browserState.readWorkCenterBrowserState(ownerBFence).drafts).toEqual({});
+    expect(globalThis.localStorage.removeItem)
+      .toHaveBeenCalledWith('yeaft-work-center-message-outbox-v1');
     auth.cancelSsoQr();
   });
 

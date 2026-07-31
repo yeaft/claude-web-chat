@@ -239,7 +239,13 @@ export function registerAuthRoutes(app, { requireAuth, checkRateLimit }) {
     if (!r) return res.json({ status: 'pending' });
     if (r.kind === 'login') {
       setSessionCookie(req, res, r.token);
-      return res.json({ status: 'login', token: r.token, sessionKey: r.sessionKey, role: r.role });
+      return res.json({
+        status: 'login',
+        token: r.token,
+        sessionKey: r.sessionKey,
+        userId: r.userId,
+        role: r.role,
+      });
     }
     if (r.kind === 'bind') {
       return res.json({ status: 'bind', provider: r.provider });
