@@ -19,6 +19,8 @@ import { extractKeywords } from './keywords.js';
 import { approxTokens } from './budget.js';
 import { isVpForeign } from './store.js';
 
+export const DEFAULT_PICK_LIMIT = 8;
+
 /**
  * @typedef {object} PreflowOptions
  * @property {string}        userMsg
@@ -27,6 +29,7 @@ import { isVpForeign } from './store.js';
  * @property {string[]}     [currentTags]        tags from the current group/feature context
  * @property {number}       [topK]               max FTS rows to fetch (default 50)
  * @property {number}       [budgetTokens]       onDemand budget (caller-supplied)
+ * @property {number}       [pickLimit]          max picked segments (default 8)
  */
 
 /**
@@ -54,6 +57,8 @@ export function runPreflow(index, opts) {
   const topK = Number.isFinite(opts.topK) && opts.topK > 0 ? opts.topK : 50;
   const budgetTokens = Number.isFinite(opts.budgetTokens) && opts.budgetTokens > 0
     ? opts.budgetTokens : Infinity;
+  const pickLimit = Number.isFinite(opts.pickLimit) && opts.pickLimit > 0
+    ? Math.floor(opts.pickLimit) : DEFAULT_PICK_LIMIT;
 
   const keywords = extractKeywords(userMsg);
   if (keywords.length === 0) {
@@ -80,7 +85,7 @@ export function runPreflow(index, opts) {
   let dropped = 0;
   for (const h of reranked) {
     const tk = approxTokens(h.body);
-    if (cost + tk <= budgetTokens) {
+    if (picked.length < pickLimit && cost + tk <= budgetTokens) {
       picked.push(toSegment(h));
       cost += tk;
     } else {
@@ -152,7 +157,7 @@ export function rerank(hits, ctx) {
       return { ...h, _score: score };
     })
     .sort((a, b) => a._score - b._score)
-    .map(({ _score, ...rest }) => rest);
+    .map(({ _score, ...rest }) => ({ ...rest, score: _score }));
 }
 
 function toSegment(h) {
@@ -163,6 +168,7 @@ function toSegment(h) {
     tags: h.tags,
     sourceMessages: h.sourceMessages,
     body: h.body,
+    score: typeof h.score === 'number' ? h.score : (typeof h.rank === 'number' ? h.rank : undefined),
     createdAt: h.createdAt,
     updatedAt: h.updatedAt,
   };

@@ -1019,6 +1019,87 @@ describe('Engine', () => {
       expect(topicLoaded.summary).toContain('完整摘要细节'.repeat(800));
     });
 
+    it('emits debug memory content from the actual AMS prompt snapshot', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-memory-debug-'));
+      try {
+        const memoryRows = [
+          {
+            id: 'billing-work-item',
+            scope: 'sessions/g1',
+            kind: 'context',
+            tags: ['billing'],
+            body: 'Work Item #884: billing dashboard export is in progress and awaiting review.',
+            rank: 0,
+          },
+          ...Array.from({ length: 9 }, (_, index) => ({
+            id: `dream-relevance-${index + 1}`,
+            scope: 'sessions/g1',
+            kind: 'context',
+            tags: ['dream', 'memory'],
+            body: `Dream relevance loaded memory item ${index + 1}.`,
+            rank: index + 1,
+          })),
+        ];
+        const memoryIndex = {
+          search({ scopeFilter }) {
+            return memoryRows
+              .filter(row => scopeFilter.includes(row.scope))
+              .map(row => ({
+                ...row,
+                sourceMessages: [],
+                createdAt: '2026-07-01T00:00:00.000Z',
+                updatedAt: '2026-07-01T00:00:00.000Z',
+              }));
+          },
+        };
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          yeaftDir,
+          sessionId: 'g1',
+          config: { model: 'claude-test', maxOutputTokens: 2048, language: 'en' },
+          memoryIndex,
+          amsRegistry: new AmsRegistry({ yeaftDir, config: {} }),
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'optimize Dream memory relevance',
+          sessionId: 'g1',
+          vpPersona: { vpId: 'vp1', name: 'VP One' },
+        })) {
+          events.push(event);
+        }
+
+        const system = mockAdapter.callLog[0].system;
+        expect(system).toContain('Dream relevance loaded memory item 1.');
+        expect(system).toContain('Dream relevance loaded memory item 7.');
+        expect(system).not.toContain('billing dashboard export');
+        expect(system).not.toContain('Dream relevance loaded memory item 8.');
+
+        const loaded = events.find(e => e.type === 'memory_used');
+        expect(loaded).toBeTruthy();
+        expect(loaded.meta).toMatchObject({ recallLimit: 8, recallCandidates: 10 });
+        expect(loaded.loaded).toHaveLength(7);
+        expect(loaded.loaded[0]).toMatchObject({
+          id: 'dream-relevance-1',
+          layer: 'onDemand',
+          scope: 'sessions/g1',
+          label: 'session',
+          body: 'Dream relevance loaded memory item 1.',
+        });
+        expect(loaded.loaded[0].score).toEqual(expect.any(Number));
+        expect(loaded.loaded.map(entry => entry.body).join('\n')).not.toContain('billing dashboard export');
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
     it('should pass model and system prompt to adapter', async () => {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'Hi' },

@@ -2611,7 +2611,14 @@
 }
 
 .yeaft-debug-mem-list li {
-  padding: 2px 0;
+  padding: 6px 0;
+}
+
+.yeaft-debug-mem-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .yeaft-debug-mem-list code {
@@ -2624,9 +2631,28 @@
 }
 
 .yeaft-debug-mem-meta {
-  margin-left: 8px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+.yeaft-debug-mem-body {
+  margin: 4px 0 0 0;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--code-bg, var(--bg-input-wrapper));
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.yeaft-debug-mem-tags {
+  display: inline-block;
+  margin-top: 4px;
+  color: var(--text-muted);
 }
 
 /* Error body — render as a code block, not flowing text. Long JSON

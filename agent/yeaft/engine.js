@@ -84,6 +84,8 @@ const AMS_ADJUST_TIMEOUT_MS = 30_000;
 /** Maximum silence while a visible turn waits for a result-producing task. */
 const DEFAULT_ASYNC_TASK_WAIT_TIMEOUT_MS = 120_000;
 
+const DEFAULT_MEMORY_RECALL_LIMIT = 8;
+
 // ─── LLM retry policy defaults ──────────────────────────────────
 // Hard-coded floor / ceiling for retry behaviour. The engine reads the
 // effective policy from `config.llmRetry` so users can dial these via
@@ -440,6 +442,47 @@ export function buildResidentEntries(args) {
 
 function isZhRuntimeLanguage(language) {
   return String(language || '').toLowerCase().startsWith('zh');
+}
+
+function resolveMemoryRecallLimit(config) {
+  const raw = config?.memoryRecallLimit ?? config?.dreamMemoryRecallLimit;
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_MEMORY_RECALL_LIMIT;
+  return Math.max(1, Math.floor(raw));
+}
+
+function loadedMemoryDebugEntries(snapshot) {
+  const snap = snapshot || {};
+  return [
+    ...loadedResidentDebugEntries(snap.resident || []),
+    ...loadedSegmentDebugEntries(snap.recent || [], 'recent'),
+    ...loadedSegmentDebugEntries(snap.onDemand || [], 'onDemand'),
+  ];
+}
+
+function loadedResidentDebugEntries(entries) {
+  return (entries || []).map((entry, index) => ({
+    id: `resident:${entry.scope || index}`,
+    layer: 'resident',
+    scope: entry.scope || null,
+    label: memoryScopeLabel(entry.scope || ''),
+    kind: 'summary',
+    score: null,
+    tags: [],
+    body: entry.summary || '',
+  })).filter(entry => entry.body);
+}
+
+function loadedSegmentDebugEntries(segments, layer) {
+  return (segments || []).map((seg, index) => ({
+    id: seg.id || `${layer}:${index}`,
+    layer,
+    scope: seg.scope || null,
+    label: memoryScopeLabel(seg.scope || ''),
+    kind: seg.kind || null,
+    score: typeof seg.score === 'number' ? seg.score : null,
+    tags: Array.isArray(seg.tags) ? seg.tags : [],
+    body: seg.body || '',
+  })).filter(entry => entry.body);
 }
 
 export class Engine {
@@ -906,6 +949,7 @@ export class Engine {
    *   ownVpId: string|null,
    *   scopes: string[],
    *   snapshotBlock: string,
+ *   snapshot: import('./memory/ams.js').AmsSnapshot,
  *   residentEntries: Array<{scope:string, summary:string}>,
    * } | null}
    */
@@ -938,14 +982,15 @@ export class Engine {
     ams.setOnDemand(segs);
 
     // (c) Snapshot — render the AMS layers as a single prompt block.
-    const snapshotBlock = this.#renderAmsSnapshot(ams, this.#config.language || 'en', args.userMsg || '');
+    const snapshot = ams.snapshot({ userMsg: args.userMsg || '' });
+    const snapshotBlock = this.#renderAmsSnapshot(snapshot, this.#config.language || 'en');
 
     const scopes = buildRelevantScopes({
       sessionId: args.sessionId,
       vpId: ownVpId,
     });
 
-    return { ams, sessionKey, ownVpId, scopes, snapshotBlock, residentEntries };
+    return { ams, sessionKey, ownVpId, scopes, snapshotBlock, snapshot, residentEntries };
   }
 
   /**
@@ -953,13 +998,11 @@ export class Engine {
    * injection. Mirrors the heading style of the existing memory blocks
    * so the LLM sees a consistent layout.
    *
-   * @param {import('./memory/ams.js').ActiveMemorySet} ams
+   * @param {import('./memory/ams.js').AmsSnapshot} snap
    * @param {string} [language]
-   * @param {string} [userMsg]
    * @returns {string}
    */
-  #renderAmsSnapshot(ams, language = 'en', userMsg = '') {
-    const snap = ams.snapshot({ userMsg });
+  #renderAmsSnapshot(snap, language = 'en') {
     if (!snap) return '';
     const parts = [];
     if (snap.resident.length === 0 && snap.recent.length === 0 && snap.onDemand.length === 0) {
@@ -1342,7 +1385,7 @@ export class Engine {
    * @returns {Promise<{ profile: string, entries: object[], formatted: string }|null>}
    */
   async #recallMemory(prompt, ctx = {}) {
-    const memory = { profile: '', entries: [], formatted: '' };
+    const memory = { profile: '', entries: [], formatted: '', meta: {} };
     if (!this.#memoryIndex) return memory;
     try {
       const result = runMemoryPreflow(this.#memoryIndex, {
@@ -1351,11 +1394,13 @@ export class Engine {
         chatId: ctx.chatId || this.#chatId,
         vpId: ctx.vpId,
         extraScopes: ctx.extraScopes,
+        pickLimit: resolveMemoryRecallLimit(this.#config),
         fallbackOnEmpty: true,
       });
       memory.profile = result.profile || '';
       memory.entries = result.entries || [];
       memory.formatted = result.formatted || '';
+      memory.meta = result.meta || {};
     } catch {
       // Fail soft — empty injection.
     }
@@ -2029,6 +2074,7 @@ export class Engine {
     if (amsContext && amsContext.snapshotBlock) {
       memoryInjection = amsContext.snapshotBlock;
     }
+    const loadedMemoryForDebug = loadedMemoryDebugEntries(amsContext?.snapshot);
 
     // Diagnostic payload for the Dream debug panel. The full AMS Resident
     // layer can include user and per-VP summaries, but the browser-facing
@@ -2282,19 +2328,20 @@ export class Engine {
       yield { type: 'skill_error', turnId: queryTurnId, skillName: explicitSkillName, message: skillResolutionError };
     }
 
-    // Surface memory recall to the debug panel right after turn_open.
-    // recallResult was loaded above; emit a structured `memory_used`
-    // event so the UI can show "loaded N segments" without parsing
-    // the legacy `recall` event (which only carried entryCount).
-    if (recallResult && Array.isArray(recallResult.entries) && recallResult.entries.length > 0) {
+    // Surface the exact memory that entered the prompt. This must be based on
+    // the AMS snapshot, not raw FTS candidates, otherwise debug can claim memory
+    // was loaded even when prompt cleanup, dedupe, or token budget dropped it.
+    if (loadedMemoryForDebug.length > 0) {
       yield {
         type: 'memory_used',
         turnId: queryTurnId,
-        loaded: recallResult.entries.map(e => ({
-          id: e && e.id || null,
-          score: e && typeof e.score === 'number' ? e.score : null,
-          kind: e && e.kind || null,
-        })),
+        loaded: loadedMemoryForDebug,
+        meta: {
+          recallLimit: resolveMemoryRecallLimit(this.#config),
+          recallCandidates: Number.isFinite(recallResult?.meta?.hitCount)
+            ? recallResult.meta.hitCount
+            : (recallResult && Array.isArray(recallResult.entries) ? recallResult.entries.length : 0),
+        },
       };
     }
 
