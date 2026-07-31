@@ -139,6 +139,8 @@ export default {
   'sidebar.sessions.emptyProvider': '此 Provider 暂无会话',
   'sidebar.sessions.menu': '会话菜单',
   'sidebar.sessions.unread': '未读',
+  'sidebar.sessions.pinned': '已置顶',
+  'sidebar.sessions.processing': '正在回复',
   'sidebar.sessions.agent': 'Agent',
   'sidebar.sessions.provider': 'Provider',
   'sidebar.projects.title': '项目',

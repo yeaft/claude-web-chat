@@ -44,6 +44,9 @@ export const sessionDb = {
       now,
       id
     );
+    if (updates.metadataChanged === true) {
+      stmts.touchSessionMetadata.run(now, id);
+    }
   },
 
   setActive(id, active) {

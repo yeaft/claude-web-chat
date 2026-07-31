@@ -1,11 +1,15 @@
+function timestampValue(value) {
+  const parsed = typeof value === 'number' ? value : Date.parse(value || '');
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function sortRows(rows) {
   return [...rows].sort((left, right) => {
     if (!!left.pinned !== !!right.pinned) return left.pinned ? -1 : 1;
-    const leftRank = Number.isFinite(left.sortRank) ? left.sortRank : Number.MAX_SAFE_INTEGER;
-    const rightRank = Number.isFinite(right.sortRank) ? right.sortRank : Number.MAX_SAFE_INTEGER;
-    if (leftRank !== rightRank) return leftRank - rightRank;
-    return new Date(right.updatedAt || right.createdAt || 0).getTime()
-      - new Date(left.updatedAt || left.createdAt || 0).getTime();
+    const metadataDelta = timestampValue(right.metadataUpdatedAt || right.createdAt)
+      - timestampValue(left.metadataUpdatedAt || left.createdAt);
+    if (metadataDelta !== 0) return metadataDelta;
+    return String(left.catalogKey || '').localeCompare(String(right.catalogKey || ''));
   });
 }
 
@@ -66,15 +70,21 @@ export default {
       }
       return out;
     },
-    rowsByProject() {
+    projectSessionRows() {
       const out = new Map(this.projectRows.map(project => [projectIdentityKey(project), []]));
       for (const row of this.sessions) {
-        if (row.runtimeProvider !== 'yeaft' || !this.isRowOnline(row)) continue;
+        if (row.runtimeProvider !== 'yeaft') continue;
         const project = this.projectBySessionKey.get(`${row.routeRef?.agentId}\u001f${row.routeRef?.sessionId}`);
         const key = projectIdentityKey(project);
         if (project && out.has(key)) out.get(key).push(row);
       }
-      for (const [id, rows] of out) out.set(id, sortRows(rows));
+      return out;
+    },
+    rowsByProject() {
+      const out = new Map();
+      for (const [id, rows] of this.projectSessionRows) {
+        out.set(id, sortRows(rows.filter(row => this.isRowOnline(row))));
+      }
       return out;
     },
     recentRows() {
@@ -123,6 +133,10 @@ export default {
     },
     isUnread(row) {
       return typeof this.isSessionUnread === 'function' ? !!this.isSessionUnread(row) : false;
+    },
+    isProjectUnread(project) {
+      const rows = this.projectSessionRows.get(projectIdentityKey(project)) || [];
+      return rows.some(row => this.isUnread(row));
     },
     projectKey(project) {
       return projectIdentityKey(project);
@@ -335,6 +349,7 @@ export default {
                 <svg class="sidebar-project-chevron" :class="{ collapsed: isProjectCollapsed(project) }" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m7 10 5 5 5-5H7z"/></svg>
                 <svg class="sidebar-project-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 6h7l2 2h9v10H3V6zm2 2v8h14v-6h-8l-2-2H5z"/></svg>
                 <span>{{ project.name }}</span>
+                <span v-if="isProjectUnread(project)" class="sidebar-session-unread sidebar-project-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
                 <span class="sidebar-project-count">{{ (rowsByProject.get(projectKey(project)) || []).length }}</span>
               </button>
               <button v-if="canEditProject(project)" type="button" class="session-dots-btn" :class="{ 'menu-open': openProjectMenuKey === projectKey(project) }" @click.stop="openProjectMenuKey = openProjectMenuKey === projectKey(project) ? null : projectKey(project)" :aria-label="$t('sidebar.projects.menu')">
@@ -360,8 +375,10 @@ export default {
                 @keydown.enter="selectRowFromKeyboard(row, $event)"
                 @keydown.space="selectRowFromKeyboard(row, $event)"
               >
+                <span v-if="row.pinned" class="session-pin-icon" :aria-label="$t('sidebar.sessions.pinned')"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg></span>
                 <span class="sidebar-session-copy">
                   <span class="title" :title="row.title">
+                    <span v-if="isProcessing(row)" class="processing-dot" :aria-label="$t('sidebar.sessions.processing')"></span>
                     <span class="sidebar-session-title-text">{{ row.title }}</span>
                     <span v-if="isUnread(row)" class="sidebar-session-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
                   </span>
@@ -403,8 +420,10 @@ export default {
             @keydown.enter="selectRowFromKeyboard(row, $event)"
             @keydown.space="selectRowFromKeyboard(row, $event)"
           >
+            <span v-if="row.pinned" class="session-pin-icon" :aria-label="$t('sidebar.sessions.pinned')"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg></span>
             <span class="sidebar-session-copy">
               <span class="title" :title="row.title">
+                <span v-if="isProcessing(row)" class="processing-dot" :aria-label="$t('sidebar.sessions.processing')"></span>
                 <span class="sidebar-session-title-text">{{ row.title }}</span>
                 <span v-if="isUnread(row)" class="sidebar-session-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
               </span>
