@@ -38,7 +38,7 @@ function killProcessTree(proc, signal, platform, spawnProcessSync) {
  *
  * @param {string} command
  * @param {string[]} args
- * @param {{ cwd?: string, signal?: AbortSignal, timeoutMs?: number, maxBytes?: number, env?: NodeJS.ProcessEnv, killGraceMs?: number, forceSettleMs?: number, platform?: NodeJS.Platform, spawnProcess?: typeof spawn, spawnProcessSync?: typeof spawnSync }} [options]
+ * @param {{ cwd?: string, signal?: AbortSignal, timeoutMs?: number, maxBytes?: number, env?: NodeJS.ProcessEnv, preserveCarriageReturns?: boolean, killGraceMs?: number, forceSettleMs?: number, platform?: NodeJS.Platform, spawnProcess?: typeof spawn, spawnProcessSync?: typeof spawnSync }} [options]
  */
 export function runProcess(command, args, options = {}) {
   if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
@@ -83,10 +83,12 @@ export function runProcess(command, args, options = {}) {
       if (forceSettleTimer) clearTimeout(forceSettleTimer);
       options.signal?.removeEventListener('abort', onAbort);
     };
-    const decode = chunks => new StringDecoder('utf8')
-      .end(Buffer.concat(chunks))
-      .replaceAll('\ufffd', '?')
-      .replace(/\r/g, '');
+    const decode = (chunks, preserveCarriageReturns = false) => {
+      const value = new StringDecoder('utf8')
+        .end(Buffer.concat(chunks))
+        .replaceAll('\ufffd', '?');
+      return preserveCarriageReturns ? value : value.replace(/\r/g, '');
+    };
     const finish = code => {
       if (settled) return;
       settled = true;
@@ -97,7 +99,7 @@ export function runProcess(command, args, options = {}) {
       }
       resolve({
         code: timedOut ? 124 : (code ?? 1),
-        stdout: decode(stdout),
+        stdout: decode(stdout, options.preserveCarriageReturns),
         stderr: decode(stderr),
         truncated,
         timedOut,

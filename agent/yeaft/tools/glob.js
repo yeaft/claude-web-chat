@@ -82,6 +82,7 @@ async function listFilesWithFd(fdCommand, baseDir, signal) {
     signal,
     timeoutMs: 120_000,
     maxBytes: 16 * 1024 * 1024,
+    preserveCarriageReturns: true,
   });
   if (result.timedOut) throw new Error('fd timed out');
   if (result.truncated) throw new Error('fd output exceeded the tool limit');

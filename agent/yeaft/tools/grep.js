@@ -100,6 +100,42 @@ function compareGrepRecords(left, right) {
   return left.suffix < right.suffix ? -1 : 1;
 }
 
+function rewriteMultilineAnchors(source) {
+  let result = '';
+  let escaped = false;
+  let inClass = false;
+  for (const character of source) {
+    if (escaped) {
+      result += character;
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      result += character;
+      escaped = true;
+      continue;
+    }
+    if (character === '[' && !inClass) {
+      inClass = true;
+      result += character;
+      continue;
+    }
+    if (character === ']' && inClass) {
+      inClass = false;
+      result += character;
+      continue;
+    }
+    if (!inClass && character === '^') {
+      result += '(?:(?<![\\s\\S])|(?<=\\n))';
+    } else if (!inClass && character === '$') {
+      result += '(?:(?![\\s\\S])|(?=\\n))';
+    } else {
+      result += character;
+    }
+  }
+  return result;
+}
+
 function formatGrepError(message) {
   const errorMessage = `Grep failed: ${message}`;
   const serialized = JSON.stringify({ error: errorMessage });
@@ -388,11 +424,28 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
  */
 export async function nodeGrep(pattern, searchPath, options) {
   throwIfAborted(options.signal);
-  const regexSource = options.fixedStrings
+  let regexSource = options.fixedStrings
     ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     : pattern;
-  const regexFlags = `${options.caseInsensitive ? 'i' : ''}g${options.multiline ? 's' : ''}`;
-  const regex = new RegExp(regexSource, regexFlags);
+  const regexFlags = new Set(['g']);
+  if (options.caseInsensitive) regexFlags.add('i');
+  if (options.multiline) {
+    regexFlags.add('m');
+    regexFlags.add('s');
+  }
+  if (!options.fixedStrings) {
+    const inlineFlags = regexSource.match(/^\(\?([ims]*)(?:-([ims]*))?\)/);
+    if (inlineFlags && (inlineFlags[1] || inlineFlags[2])) {
+      for (const flag of inlineFlags[1]) regexFlags.add(flag);
+      for (const flag of inlineFlags[2] || '') regexFlags.delete(flag);
+      regexSource = regexSource.slice(inlineFlags[0].length);
+    }
+    if (regexFlags.has('m')) {
+      regexSource = rewriteMultilineAnchors(regexSource);
+      regexFlags.delete('m');
+    }
+  }
+  const regex = new RegExp(regexSource, [...regexFlags].join(''));
   const output = createOutputCollector(options.byteBudget || SEARCH_RESULT_BYTES);
   const records = [];
   const maxResults = Math.max(1, options.maxResults || 500);
@@ -421,17 +474,18 @@ export async function nodeGrep(pattern, searchPath, options) {
       const decoded = decodeTextFile(await readFile(fullPath));
       throwIfAborted(options.signal);
       if (decoded == null) return [];
-      const content = decoded.replace(/\r\n?/g, '\n');
+      const content = decoded;
       const relPath = relative(searchPath, fullPath).replace(/\\/g, '/');
-      const lines = content.split('\n');
-      if (lines.at(-1) === '') lines.pop();
+      const rawLines = content.split('\n');
+      if (rawLines.at(-1) === '') rawLines.pop();
+      const lines = rawLines.map(line => line.replace(/\r/g, ''));
       const matchedLines = new Set();
       const matchStartLines = new Set();
 
       if (options.multiline && lines.length > 0) {
         const lineStarts = [];
         let offset = 0;
-        for (const line of lines) {
+        for (const line of rawLines) {
           lineStarts.push(offset);
           offset += line.length + 1;
         }
@@ -461,9 +515,9 @@ export async function nodeGrep(pattern, searchPath, options) {
           }
         }
       } else {
-        for (let line = 0; line < lines.length; line += 1) {
+        for (let line = 0; line < rawLines.length; line += 1) {
           regex.lastIndex = 0;
-          if (regex.test(lines[line])) {
+          if (regex.test(rawLines[line])) {
             matchedLines.add(line);
             matchStartLines.add(line);
           }

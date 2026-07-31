@@ -71,8 +71,18 @@ async function measurePath(path, baseDir, depth, level, rows, signal) {
     return 0;
   }
   throwIfAborted(signal);
-  if (entryStat.isSymbolicLink()) return entryStat.size;
-  if (!entryStat.isDirectory()) return entryStat.size;
+  const rootSymlink = entryStat.isSymbolicLink() && level === 0;
+  if (entryStat.isSymbolicLink() && !rootSymlink) {
+    if (level <= depth) {
+      rows.push({
+        path: relative(baseDir, path),
+        size: entryStat.size,
+        level,
+      });
+    }
+    return entryStat.size;
+  }
+  if (!rootSymlink && !entryStat.isDirectory()) return entryStat.size;
 
   let entries;
   try { entries = await readdir(path, { withFileTypes: true }); } catch (error) {
