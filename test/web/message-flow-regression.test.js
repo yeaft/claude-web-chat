@@ -165,6 +165,11 @@ describe('message flow regressions', () => {
     expect(sidebarCss).toMatch(/\.unread-dot\s*\{[^}]*background:\s*var\(--success\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-actions\s*\{[^}]*padding:\s*6px 8px 4px/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\s*\{[^}]*background:\s*transparent/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-title-text\s*\{[^}]*flex:\s*1[^}]*text-overflow:\s*ellipsis/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-unread\s*\{[^}]*background:\s*var\(--success\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\[draggable="true"\][^}]*\{[^}]*cursor:\s*default/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-project-create\s*\{[^}]*background:\s*var\(--bg-input-wrapper\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-menu-divider\s*\{[^}]*background:\s*var\(--border-light\)/);
     expect(vpAvatarSource).not.toContain('/assets/avatars/');
     expect(vpAvatarSource).not.toContain('<img');
     expect(vpCss).not.toContain('.vp-avatar-img');
@@ -222,8 +227,10 @@ describe('message flow regressions', () => {
         activeRoute: { runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: 'visible' },
         processingConversations: { visible: true },
         isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'user_1770305719:server-instance',
+        isSessionUnread: row => row.catalogKey === 'chat:visible',
         workCenterOpen: true,
         agents: [
+          { id: 'agent-a', name: 'Agent A', online: true },
           { id: 'user_1770305719:server-instance', name: 'server', online: true, capabilities: ['work_center'] },
           { id: 'agent-b', name: 'Agent B', online: false },
         ],
@@ -240,7 +247,8 @@ describe('message flow regressions', () => {
     expect(sidebar.findAll('.sidebar-section')).toHaveLength(2);
     expect(sidebar.findAll('.session-item')).toHaveLength(0);
     await sidebar.setProps({ sessions: catalogRows });
-    expect(sidebar.findAll('.session-item')).toHaveLength(4);
+    expect(sidebar.findAll('.session-item')).toHaveLength(3);
+    expect(sidebar.findAll('.session-item').some(item => item.text().includes('Offline'))).toBe(false);
     expect(sidebar.findAll('.sidebar-project')).toHaveLength(2);
     expect(Object.fromEntries(sidebar.findAll('.sidebar-project').map(item => [
       item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
@@ -269,7 +277,7 @@ describe('message flow regressions', () => {
     expect(dispatchProjectAction).toHaveBeenCalledWith({
       action: 'create',
       name: 'Workspace',
-      agentId: 'user_1770305719:server-instance',
+      agentId: 'agent-a',
     });
     finishCreate({ ok: true });
     await Promise.all([firstCreate, duplicateCreate]);
@@ -288,7 +296,9 @@ describe('message flow regressions', () => {
     expect(sidebar.text()).toContain('Visible');
     expect(sidebar.text()).toContain('Pinned');
     expect(sidebar.findAll('.session-item.processing')).toHaveLength(2);
-    expect(sidebar.findAll('.processing-dot')).toHaveLength(2);
+    expect(sidebar.findAll('.processing-dot')).toHaveLength(0);
+    expect(sidebar.findAll('.sidebar-session-meta')).toHaveLength(0);
+    expect(sidebar.findAll('.sidebar-session-unread')).toHaveLength(1);
     expect(sidebar.find('.session-item.active').text()).toContain('Visible');
     await sidebar.setProps({
       activeRoute: {
@@ -297,17 +307,29 @@ describe('message flow regressions', () => {
         sessionId: 'pinned',
       },
     });
-    expect(sidebar.findAll('.session-item')).toHaveLength(4);
+    expect(sidebar.findAll('.session-item')).toHaveLength(3);
     const firstRow = sidebar.findAll('.session-item')[0];
     expect(firstRow.get('.sidebar-session-copy').text()).toContain('Pinned');
     expect(firstRow.get('.sidebar-session-copy').text()).not.toContain('server');
+    expect(firstRow.attributes('role')).toBe('button');
+    expect(firstRow.attributes('tabindex')).toBe('0');
     expect(UnifiedSessionList.methods.providerLabel({ runtimeProvider: 'claude-code' })).toBe('Claude');
-    expect(UnifiedSessionList.methods.relativeTime.call({ $t: key => key }, { updatedAt: new Date().toISOString() }))
-      .toBe('chat.time.justNow');
     expect(sidebar.text()).not.toContain('user_1770305719');
     expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(1);
-    expect(sidebar.findAll('.session-item .session-dots-btn')).toHaveLength(1);
-    await sidebar.get('.session-item .session-dots-btn').trigger('click');
+    expect(sidebar.findAll('.session-item .session-dots-btn')).toHaveLength(3);
+    const selectCountBeforeSettingsKeyboard = sidebar.emitted('select')?.length || 0;
+    const pinnedSettingsButton = firstRow.get('.session-dots-btn');
+    await pinnedSettingsButton.trigger('keydown', { key: 'Enter' });
+    expect(sidebar.emitted('select')?.length || 0).toBe(selectCountBeforeSettingsKeyboard);
+    expect(sidebar.find('.session-menu').exists()).toBe(false);
+    await pinnedSettingsButton.trigger('click');
+    expect(sidebar.find('.session-menu').exists()).toBe(true);
+    await pinnedSettingsButton.trigger('keydown', { key: ' ' });
+    expect(sidebar.emitted('select')?.length || 0).toBe(selectCountBeforeSettingsKeyboard);
+    expect(sidebar.find('.session-menu').exists()).toBe(true);
+    expect(sidebar.get('.sidebar-session-menu-info').text()).toContain('server');
+    expect(sidebar.get('.sidebar-session-menu-info').text()).toContain('Yeaft');
+    expect(sidebar.find('.sidebar-session-menu-divider').exists()).toBe(true);
     const settingsAction = sidebar.findAll('.session-menu-item')
       .find(item => item.text() === 'yeaft.session.openSettings');
     expect(settingsAction).toBeTruthy();
@@ -333,12 +355,30 @@ describe('message flow regressions', () => {
     expect(sidebar.emitted('close-work-center').at(-1)).toEqual([]);
     expect(sidebar.emitted('create').at(-1)).toEqual([]);
     const offlineRow = sidebar.findAll('.session-item').find(item => item.text().includes('Offline'));
-    expect(offlineRow).toBeTruthy();
-    expect(offlineRow.find('.session-dots-btn').exists()).toBe(false);
-    expect(offlineRow.attributes('draggable')).toBe('false');
-    await offlineRow.trigger('click');
-    expect(sidebar.emitted('close-work-center').at(-1)).toEqual([]);
-    expect(sidebar.emitted('select').at(-1)[0]).toMatchObject({ catalogKey: 'chat:offline' });
+    expect(offlineRow).toBeUndefined();
+    await sidebar.setProps({
+      sessions: [catalogRows[0]],
+      agents: [{ id: 'agent-a', name: 'Agent A', online: true }],
+    });
+    expect(sidebar.findAll('.session-item')).toHaveLength(0);
+    await sidebar.setProps({
+      sessions: [catalogRows[0]],
+      agents: [{ id: 'user_1770305719:server-instance', name: 'server', online: false }],
+    });
+    expect(sidebar.findAll('.session-item')).toHaveLength(0);
+    await sidebar.setProps({
+      sessions: [{ ...catalogRows[0], availability: 'offline' }],
+      agents: [{ id: 'user_1770305719:server-instance', name: 'server', online: true }],
+    });
+    expect(sidebar.findAll('.session-item')).toHaveLength(0);
+    await sidebar.setProps({
+      sessions: catalogRows,
+      agents: [
+        { id: 'agent-a', name: 'Agent A', online: true },
+        { id: 'user_1770305719:server-instance', name: 'server', online: true, capabilities: ['work_center'] },
+        { id: 'agent-b', name: 'Agent B', online: false },
+      ],
+    });
     const originalPrompt = window.prompt;
     const originalConfirm = window.confirm;
     window.prompt = vi.fn();
@@ -361,7 +401,8 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).toContain("runAction('settings', row)");
     expect(UnifiedSessionList.template).toContain("moveRow(row, project)");
     expect(UnifiedSessionList.template).toContain('sidebar-primary-actions');
-    expect(UnifiedSessionList.template).toContain('sidebar-session-meta');
+    expect(UnifiedSessionList.template).not.toContain('sidebar-session-meta');
+    expect(UnifiedSessionList.template).not.toContain('processing-dot');
     const documentAdd = vi.spyOn(document, 'addEventListener');
     const documentRemove = vi.spyOn(document, 'removeEventListener');
     sidebar.unmount();
@@ -1117,6 +1158,10 @@ describe('message flow regressions', () => {
       attachTo: document.body,
       props: {
         sessions: store.sessionCatalog,
+        agents: [
+          { id: 'agent-a', online: true },
+          { id: 'agent-b', online: true },
+        ],
         isYeaftSessionProcessing: store.isYeaftSessionProcessing,
       },
       global: { mocks: { $t: key => key } },
@@ -1131,7 +1176,7 @@ describe('message flow regressions', () => {
     expect(store.yeaftProcessingSessions).toEqual({
       [yeaftSessionIdentityKey('agent-a', 'shared')]: true,
     });
-    expect(wrapper.findAll('.processing-dot')).toHaveLength(1);
+    expect(wrapper.findAll('.processing-dot')).toHaveLength(0);
     expect(wrapper.findAll('.session-item')[0].classes()).toContain('processing');
     expect(wrapper.findAll('.session-item')[1].classes()).not.toContain('processing');
 
@@ -1149,7 +1194,7 @@ describe('message flow regressions', () => {
     await Vue.nextTick();
     expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(false);
     expect(store.isYeaftSessionProcessing('shared', 'agent-b')).toBe(true);
-    expect(wrapper.findAll('.processing-dot')).toHaveLength(1);
+    expect(wrapper.findAll('.processing-dot')).toHaveLength(0);
     expect(wrapper.findAll('.session-item')[0].classes()).not.toContain('processing');
     expect(wrapper.findAll('.session-item')[1].classes()).toContain('processing');
 
@@ -1184,7 +1229,7 @@ describe('message flow regressions', () => {
     await Vue.nextTick();
     expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(false);
     expect(store.isYeaftSessionProcessing('shared', 'agent-b')).toBe(true);
-    expect(wrapper.findAll('.processing-dot')).toHaveLength(1);
+    expect(wrapper.findAll('.processing-dot')).toHaveLength(0);
     expect(wrapper.findAll('.session-item')[1].classes()).toContain('processing');
 
     store.handleYeaftOutput({
