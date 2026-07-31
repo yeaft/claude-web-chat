@@ -169,8 +169,13 @@ export default {
       if (seconds < 604800) return `${Math.floor(seconds / 86400)}d`;
       return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
     },
+    createSession() {
+      if (this.workCenterOpen) this.$emit('close-work-center');
+      this.$emit('create');
+    },
     selectRow(row) {
       this.openMenuKey = null;
+      if (this.workCenterOpen) this.$emit('close-work-center');
       this.$emit('select', row);
     },
     runAction(action, row) {
@@ -268,7 +273,7 @@ export default {
   template: `
     <nav class="sidebar-navigation" :aria-label="$t('sidebar.surface.sessions')">
       <div class="sidebar-primary-actions">
-        <button type="button" class="sidebar-primary-action" @click="$emit('create')">
+        <button type="button" class="sidebar-primary-action" @click="createSession">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 4h16v13H7l-3 3V4zm2 2v9.17L6.17 15H18V6H6zm5 2h2v2h2v2h-2v2h-2v-2H9v-2h2V8z"/></svg>
           <span>{{ $t('sidebar.sessions.newChat') }}</span>
         </button>
@@ -330,6 +335,7 @@ export default {
                   <div v-if="openMenuKey === row.catalogKey" class="session-menu">
                     <button class="session-menu-item" @click.stop="runAction('pin', row)">{{ row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin') }}</button>
                     <button class="session-menu-item" @click.stop="runAction('rename', row)">{{ $t('chat.sidebar.renameConv') }}</button>
+                    <button class="session-menu-item" @click.stop="runAction('settings', row)">{{ $t('yeaft.session.openSettings') }}</button>
                     <button class="session-menu-item" @click.stop="moveRow(row, null)">{{ $t('sidebar.projects.remove') }}</button>
                     <button class="session-menu-item danger" @click.stop="runAction('delete', row)">{{ $t('common.delete') }}</button>
                   </div>
@@ -363,6 +369,7 @@ export default {
                 <button class="session-menu-item" @click.stop="runAction('pin', row)">{{ row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin') }}</button>
                 <button class="session-menu-item" @click.stop="runAction('rename', row)">{{ $t('chat.sidebar.renameConv') }}</button>
                 <template v-if="row.runtimeProvider === 'yeaft'">
+                  <button class="session-menu-item" @click.stop="runAction('settings', row)">{{ $t('yeaft.session.openSettings') }}</button>
                   <button v-for="project in projectRows.filter(item => item.agentId === row.routeRef.agentId)" :key="project.id" class="session-menu-item" @click.stop="moveRow(row, project)">{{ $t('sidebar.projects.moveTo', { name: project.name }) }}</button>
                 </template>
                 <button class="session-menu-item danger" @click.stop="runAction('delete', row)">{{ $t('common.delete') }}</button>

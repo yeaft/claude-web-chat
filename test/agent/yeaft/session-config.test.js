@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import ctx from '../../../agent/context.js';
 import { loadConfig, normalizeLlmRetry } from '../../../agent/yeaft/config.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { estimateTokens } from '../../../agent/yeaft/dream/segment.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
 import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
@@ -110,9 +111,14 @@ describe('Yeaft session-scoped model config', () => {
     writeFileSync(join(siblingSummary, 'memory.md'), 'private transcript and tool output\n');
     expect(await __testHooks.sharedProjectContext(root, 'session-a', { language: 'zh' }))
       .not.toContain('private transcript and tool output');
-    writeFileSync(join(siblingSummary, 'summary.md'), 'x'.repeat(2000));
-    expect((await __testHooks.sharedProjectContext(root, 'session-a', { tokenBudget: 64 })).length)
-      .toBeLessThan(400);
+    writeFileSync(join(siblingSummary, 'summary.md'), 'x'.repeat(32_000));
+    const smallBudgetContext = await __testHooks.sharedProjectContext(root, 'session-a', { tokenBudget: 64 });
+    expect(smallBudgetContext).toContain('[Summary truncated to Project context budget]');
+    expect(estimateTokens(smallBudgetContext)).toBeLessThanOrEqual(64);
+    const defaultBudgetContext = await __testHooks.sharedProjectContext(root, 'session-a');
+    expect(defaultBudgetContext).toContain('[Summary truncated to Project context budget]');
+    expect(estimateTokens(defaultBudgetContext)).toBeLessThanOrEqual(4096);
+    expect(estimateTokens(defaultBudgetContext)).toBeGreaterThan(64);
     renameProject(root, beta.id, 'Beta 2');
     removeSessionFromProjects(root, 'session-a');
     expect(loadProjects(root)[1]).toEqual(expect.objectContaining({ name: 'Beta 2', sessionIds: ['session-b'] }));

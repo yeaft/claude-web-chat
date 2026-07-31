@@ -3021,6 +3021,7 @@ function decorateSessionsWithRuntimeState(sessions) {
 
 const PROJECT_CONTEXT_MAX_SIBLINGS = 8;
 const PROJECT_CONTEXT_MAX_TOKENS = 4096;
+const PROJECT_CONTEXT_TRUNCATION_NOTICE = '\n[Summary truncated to Project context budget]';
 
 async function sharedProjectContext(yeaftDir, sessionId, options = {}) {
   const project = loadProjects(yeaftDir).find(row => row.sessionIds.includes(sessionId));
@@ -3031,8 +3032,7 @@ async function sharedProjectContext(yeaftDir, sessionId, options = {}) {
     ? options.tokenBudget
     : PROJECT_CONTEXT_MAX_TOKENS;
   const tokenBudget = Math.min(configuredBudget, PROJECT_CONTEXT_MAX_TOKENS);
-  const rows = [];
-  let usedTokens = 0;
+  let context = '';
   const siblingIds = project.sessionIds
     .filter(id => id !== sessionId)
     .slice(0, PROJECT_CONTEXT_MAX_SIBLINGS);
@@ -3042,21 +3042,29 @@ async function sharedProjectContext(yeaftDir, sessionId, options = {}) {
       { root: memoryRoot, language },
     ).catch(() => '');
     if (!summary) continue;
+    const separator = context ? '\n\n' : '';
     const header = `[Session ${siblingId}]\n`;
-    const block = `${header}${summary}`;
-    const blockTokens = estimateTokens(block);
-    if (usedTokens + blockTokens <= tokenBudget) {
-      rows.push(block);
-      usedTokens += blockTokens;
+    const fullContext = `${context}${separator}${header}${summary}`;
+    if (estimateTokens(fullContext) <= tokenBudget) {
+      context = fullContext;
       continue;
     }
-    const remainingTokens = tokenBudget - usedTokens - estimateTokens(header);
-    if (remainingTokens > 0) {
-      rows.push(`${header}${summary.slice(0, remainingTokens * 4)}\n[Summary truncated to Project context budget]`);
+
+    const prefix = `${context}${separator}${header}`;
+    if (estimateTokens(`${prefix}${PROJECT_CONTEXT_TRUNCATION_NOTICE}`) <= tokenBudget) {
+      let low = 0;
+      let high = summary.length;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        const candidate = `${prefix}${summary.slice(0, middle)}${PROJECT_CONTEXT_TRUNCATION_NOTICE}`;
+        if (estimateTokens(candidate) <= tokenBudget) low = middle;
+        else high = middle - 1;
+      }
+      context = `${prefix}${summary.slice(0, low)}${PROJECT_CONTEXT_TRUNCATION_NOTICE}`;
     }
     break;
   }
-  return rows.join('\n\n');
+  return context;
 }
 
 function sendSessionCrudResult(payload) {
