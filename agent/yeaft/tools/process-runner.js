@@ -6,8 +6,10 @@ const DEFAULT_KILL_GRACE_MS = 250;
 const DEFAULT_FORCE_SETTLE_MS = 1000;
 
 function abortError(signal) {
-  if (signal?.reason instanceof Error) return signal.reason;
-  const error = new Error('The operation was aborted');
+  if (signal?.reason instanceof Error && signal.reason.name === 'AbortError') return signal.reason;
+  const error = new Error(
+    signal?.reason instanceof Error ? signal.reason.message : 'The operation was aborted',
+  );
   error.name = 'AbortError';
   return error;
 }

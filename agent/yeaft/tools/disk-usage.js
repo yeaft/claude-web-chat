@@ -4,6 +4,7 @@ import { basename, join, relative, resolve } from 'node:path';
 import { defineTool } from './types.js';
 import { managedCliToolReady, resolveManagedCliCommand } from '../managed-cli.js';
 import { runProcess } from './process-runner.js';
+import { isAbortError, throwIfAborted, waitForAbortable } from './search-paths.js';
 
 const FALLBACK_CONCURRENCY = 16;
 const MAX_LIMIT = 200;
@@ -62,16 +63,26 @@ async function runDust(command, baseDir, { depth, limit, signal }) {
   return flattenDustTree(JSON.parse(result.stdout), baseDir, depth, limit);
 }
 
-async function measurePath(path, baseDir, depth, level, rows) {
+async function measurePath(path, baseDir, depth, level, rows, signal) {
+  throwIfAborted(signal);
   let entryStat;
-  try { entryStat = await lstat(path); } catch { return 0; }
+  try { entryStat = await lstat(path); } catch (error) {
+    if (isAbortError(error)) throw error;
+    return 0;
+  }
+  throwIfAborted(signal);
   if (entryStat.isSymbolicLink()) return entryStat.size;
   if (!entryStat.isDirectory()) return entryStat.size;
 
   let entries;
-  try { entries = await readdir(path, { withFileTypes: true }); } catch { return 0; }
+  try { entries = await readdir(path, { withFileTypes: true }); } catch (error) {
+    if (isAbortError(error)) throw error;
+    return 0;
+  }
+  throwIfAborted(signal);
   let size = entryStat.size;
   for (let index = 0; index < entries.length; index += FALLBACK_CONCURRENCY) {
+    throwIfAborted(signal);
     const batch = entries.slice(index, index + FALLBACK_CONCURRENCY);
     const sizes = await Promise.all(batch.map(entry => measurePath(
       join(path, entry.name),
@@ -79,6 +90,7 @@ async function measurePath(path, baseDir, depth, level, rows) {
       depth,
       level + 1,
       rows,
+      signal,
     )));
     size += sizes.reduce((sum, value) => sum + value, 0);
   }
@@ -92,9 +104,9 @@ async function measurePath(path, baseDir, depth, level, rows) {
   return size;
 }
 
-async function nodeDiskUsage(baseDir, depth, limit) {
+async function nodeDiskUsage(baseDir, depth, limit, signal) {
   const rows = [];
-  await measurePath(baseDir, baseDir, depth, 0, rows);
+  await measurePath(baseDir, baseDir, depth, 0, rows, signal);
   const total = rows.find(row => row.level === 0);
   const children = rows
     .filter(row => row.level > 0)
@@ -155,22 +167,25 @@ The root total is shown first, followed by the largest descendants. Symlinks are
     if (!existsSync(baseDir)) return JSON.stringify({ error: `Directory not found: ${baseDir}` });
 
     try {
+      throwIfAborted(ctx?.signal);
       let rows;
       let dustCommand = resolveManagedCliCommand('dust', { yeaftDir: ctx?.yeaftDir });
       if (!dustCommand) {
-        await managedCliToolReady(ctx?.managedCliReady, 'dust');
+        await waitForAbortable(managedCliToolReady(ctx?.managedCliReady, 'dust'), ctx?.signal);
         dustCommand = resolveManagedCliCommand('dust', { yeaftDir: ctx?.yeaftDir });
       }
       if (dustCommand) {
         try {
           rows = await runDust(dustCommand, baseDir, { depth, limit, signal: ctx?.signal });
-        } catch {
+        } catch (error) {
+          if (isAbortError(error)) throw error;
           rows = null;
         }
       }
-      if (!rows) rows = await nodeDiskUsage(baseDir, depth, limit);
+      if (!rows) rows = await nodeDiskUsage(baseDir, depth, limit, ctx?.signal);
       return formatRows(baseDir, rows);
     } catch (error) {
+      if (isAbortError(error)) throw error;
       return JSON.stringify({ error: `Disk usage scan failed: ${error.message}` });
     }
   },

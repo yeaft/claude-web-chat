@@ -11,13 +11,16 @@ import { existsSync } from 'fs';
 import { resolve, join, relative } from 'path';
 import { managedCliToolReady, resolveManagedCliCommand } from '../managed-cli.js';
 import { runProcess } from './process-runner.js';
+import {
+  createSearchPathMatcher,
+  isAbortError,
+  isSkippedSearchDirectory,
+  SEARCH_SKIP_DIRS,
+  throwIfAborted,
+  waitForAbortable,
+} from './search-paths.js';
 
 const STAT_CONCURRENCY = 32;
-const SKIP_DIRS = new Set([
-  'node_modules', '.git', '__pycache__', '.next', '.nuxt',
-  'dist', 'build', '.cache', '.venv', 'venv', '.tox',
-  'vendor', 'target', '.gradle', '.idea', '.vscode',
-]);
 
 /**
  * Simple glob pattern matcher (supports * and **).
@@ -26,42 +29,35 @@ const SKIP_DIRS = new Set([
  * @returns {boolean}
  */
 function matchGlob(pattern, str) {
-  // Convert glob pattern to regex
-  // IMPORTANT: escape dots FIRST before replacing glob chars to avoid
-  // corrupting regex tokens like [^/]* and .*
-  let regex = pattern
-    .replace(/\\/g, '/')
-    .replace(/\./g, '\\.')     // Escape dots first (before glob replacements)
-    .replace(/\*\*/g, '<<<GLOBSTAR>>>')
-    .replace(/\*/g, '[^/]*')
-    .replace(/<<<GLOBSTAR>>>/g, '.*')
-    .replace(/\?/g, '[^/]');
-  regex = '^' + regex + '$';
-  return new RegExp(regex).test(str.replace(/\\/g, '/'));
+  return createSearchPathMatcher({ glob: pattern })(str);
 }
 
 /**
  * Recursively walk a directory, yielding relative paths.
  */
-async function* walkDir(dir, baseDir, maxDepth = 10, depth = 0) {
+async function* walkDir(dir, baseDir, signal, maxDepth = 10, depth = 0) {
+  throwIfAborted(signal);
   if (depth > maxDepth) return;
 
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) throw error;
     return;
   }
+  throwIfAborted(signal);
 
   for (const entry of entries) {
+    throwIfAborted(signal);
     const fullPath = join(dir, entry.name);
     const relPath = relative(baseDir, fullPath);
 
     if (entry.isDirectory()) {
       const normalized = relPath.replace(/\\/g, '/');
-      if (SKIP_DIRS.has(entry.name) || normalized === '.yeaft/worktrees' || normalized.startsWith('.yeaft/worktrees/')) continue;
+      if (isSkippedSearchDirectory(normalized, entry.name)) continue;
       yield { path: relPath, isDir: true };
-      yield* walkDir(fullPath, baseDir, maxDepth, depth + 1);
+      yield* walkDir(fullPath, baseDir, signal, maxDepth, depth + 1);
     } else {
       yield { path: relPath, isDir: false };
     }
@@ -79,8 +75,8 @@ async function listFilesWithFd(fdCommand, baseDir, signal) {
     '--max-depth', '11',
     '--print0',
   ];
-  for (const skipped of SKIP_DIRS) args.push('--exclude', skipped);
-  args.push('--exclude', '.yeaft/worktrees');
+  for (const skipped of SEARCH_SKIP_DIRS) args.push('--exclude', skipped);
+  args.push('--exclude', '.yeaft/worktrees', '--exclude', '**/.yeaft/worktrees/**');
   const result = await runProcess(fdCommand, args, {
     cwd: baseDir,
     signal,
@@ -166,23 +162,25 @@ Guidelines:
     }
 
     try {
+      throwIfAborted(ctx?.signal);
       let paths;
       let fdCommand = resolveManagedCliCommand('fd', { yeaftDir: ctx?.yeaftDir });
       if (!fdCommand) {
-        await managedCliToolReady(ctx?.managedCliReady, 'fd');
+        await waitForAbortable(managedCliToolReady(ctx?.managedCliReady, 'fd'), ctx?.signal);
         fdCommand = resolveManagedCliCommand('fd', { yeaftDir: ctx?.yeaftDir });
       }
       if (fdCommand) {
         try {
           paths = (await listFilesWithFd(fdCommand, baseDir, ctx?.signal))
             .filter(path => matchGlob(pattern, path));
-        } catch {
+        } catch (error) {
+          if (isAbortError(error)) throw error;
           paths = null;
         }
       }
       if (!paths) {
         paths = [];
-        for await (const entry of walkDir(baseDir, baseDir)) {
+        for await (const entry of walkDir(baseDir, baseDir, ctx?.signal)) {
           if (!entry.isDir && matchGlob(pattern, entry.path)) paths.push(entry.path);
         }
       }
@@ -191,11 +189,15 @@ Guidelines:
       // metadata reads instead of serializing one syscall per path.
       const matches = [];
       for (let i = 0; i < paths.length; i += STAT_CONCURRENCY) {
+        throwIfAborted(ctx?.signal);
         matches.push(...await Promise.all(paths.slice(i, i + STAT_CONCURRENCY).map(async (path) => {
+          throwIfAborted(ctx?.signal);
           try {
             const fileStat = await stat(join(baseDir, path));
+            throwIfAborted(ctx?.signal);
             return { path, mtime: fileStat.mtimeMs };
-          } catch {
+          } catch (error) {
+            if (isAbortError(error)) throw error;
             return { path, mtime: 0 };
           }
         })));
@@ -205,6 +207,7 @@ Guidelines:
 
       return trimmed.map(m => m.path).join('\n') || '(no matches)';
     } catch (err) {
+      if (isAbortError(err)) throw err;
       return JSON.stringify({ error: `Glob search failed: ${err.message}` });
     }
   },

@@ -3024,9 +3024,11 @@ describe('managed CLI setup and fast tool integration', () => {
     expect(filteredFallback).toEqual(['.hidden/h.txt', 'src/a.txt']);
     await runRipgrep('needle', root, options, undefined, rgPath);
     const filteredArgs = readFileSync(capturedArgs, 'utf8').trim().split('\n');
-    expect(filteredArgs.lastIndexOf('**/*.txt')).toBeLessThan(filteredArgs.indexOf('!**/node_modules/**'));
-    expect(filteredArgs.lastIndexOf('**/*.txt')).toBeLessThan(filteredArgs.indexOf('!.yeaft/worktrees/**'));
-    expect(filteredArgs.lastIndexOf('**/*.txt')).toBeLessThan(filteredArgs.indexOf('!**/.yeaft/worktrees/**'));
+    expect(filteredArgs).toContain('**/*.txt');
+    expect(filteredArgs.indexOf('**/*.txt')).toBeLessThan(filteredArgs.indexOf('!**/node_modules/**'));
+    expect(filteredArgs).toContain('!**/node_modules/**');
+    expect(filteredArgs).toContain('!.yeaft/worktrees/**');
+    expect(filteredArgs).toContain('!**/.yeaft/worktrees/**');
     rmSync(capturedArgs, { force: true });
   }
 
@@ -3155,6 +3157,74 @@ describe('managed CLI setup and fast tool integration', () => {
       expect(execFileSync(rg, ['--version'], { encoding: 'utf8' })).toContain('src/a.js');
       expect(createHash('sha256').update(readFileSync(rg)).digest('hex')).toHaveLength(64);
       expect(existsSync(rg)).toBe(true);
+    }
+    const parityRoot = tempDir('search-backend-parity');
+    mkdirSync(join(parityRoot, 'src', '.yeaft', 'worktrees', 'nested'), { recursive: true });
+    mkdirSync(join(parityRoot, '.yeaft', 'worktrees', 'root'), { recursive: true });
+    writeFileSync(join(parityRoot, 'root.txt'), 'needle\n');
+    writeFileSync(join(parityRoot, 'src', 'a.js'), 'needle\n');
+    writeFileSync(join(parityRoot, 'src', 'a.txt'), 'needle\n');
+    writeFileSync(join(parityRoot, 'src', '.yeaft', 'worktrees', 'nested', 'nested.js'), 'needle\n');
+    writeFileSync(join(parityRoot, '.yeaft', 'worktrees', 'root', 'root.js'), 'needle\n');
+    const realBinDir = managedCliBinDir(parityRoot);
+    mkdirSync(realBinDir, { recursive: true });
+    const realRg = process.env.YEAFT_TEST_RG;
+    const realFd = process.env.YEAFT_TEST_FD;
+    if (realRg && realFd) {
+      writeFileSync(join(realBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      writeFileSync(join(realBinDir, 'fd'), readFileSync(realFd), { mode: 0o755 });
+      const fastCtx = { cwd: parityRoot, yeaftDir: parityRoot, managedCliReady: Promise.resolve([]) };
+      const fallbackCtx = { cwd: parityRoot, yeaftDir: join(parityRoot, 'fallback'), managedCliReady: Promise.resolve([]) };
+      for (const filters of [
+        { glob: '**/*.txt', type: 'js' },
+        { glob: 'src/**', type: 'js' },
+        { glob: '*.{js,txt}' },
+        { glob: '**/*.txt' },
+      ]) {
+        const input = { pattern: 'needle', path: parityRoot, output_mode: 'files_with_matches', fixed_strings: true, ...filters };
+        const fast = (await registry.execute('Grep', input, fastCtx)).split('\n').sort();
+        const fallback = (await registry.execute('Grep', input, fallbackCtx)).split('\n').sort();
+        expect(fast).toEqual(fallback);
+      }
+      expect(await registry.execute('Glob', { pattern: '**/*.js', path: parityRoot }, fastCtx)).toBe('src/a.js');
+      expect(await registry.execute('Glob', { pattern: '**/*.js', path: parityRoot }, fallbackCtx)).toBe('src/a.js');
+    }
+
+    for (const name of ['Grep', 'Glob', 'DiskUsage']) {
+      const controller = new AbortController();
+      controller.abort();
+      const input = name === 'Grep'
+        ? { pattern: 'needle', path: parityRoot }
+        : name === 'Glob' ? { pattern: '**/*', path: parityRoot } : { path: parityRoot };
+      await expect(registry.execute(name, input, {
+        cwd: parityRoot,
+        yeaftDir: join(parityRoot, 'fallback'),
+        managedCliReady: Promise.resolve([]),
+        signal: controller.signal,
+      })).rejects.toMatchObject({ name: 'AbortError' });
+    }
+
+    if (process.platform !== 'win32') {
+      const abortDir = tempDir('search-mid-abort');
+      const abortBinDir = managedCliBinDir(abortDir);
+      mkdirSync(abortBinDir, { recursive: true });
+      for (const name of ['rg', 'fd', 'dust']) {
+        writeFileSync(join(abortBinDir, name), '#!/bin/sh\ntrap "exit 130" TERM\nwhile :; do :; done\n', { mode: 0o755 });
+      }
+      for (const name of ['Grep', 'Glob', 'DiskUsage']) {
+        const controller = new AbortController();
+        const input = name === 'Grep'
+          ? { pattern: 'needle', path: abortDir }
+          : name === 'Glob' ? { pattern: '**/*', path: abortDir } : { path: abortDir };
+        const pending = registry.execute(name, input, {
+          cwd: abortDir,
+          yeaftDir: abortDir,
+          managedCliReady: Promise.resolve([]),
+          signal: controller.signal,
+        });
+        setTimeout(() => controller.abort('user'), 20);
+        await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      }
     }
     await verifyRipgrepParity();
   });

@@ -12,6 +12,13 @@ import { StringDecoder } from 'string_decoder';
 import { existsSync } from 'fs';
 import { resolve, join, relative, extname } from 'path';
 import { managedCliToolReady, resolveManagedCliCommand } from '../managed-cli.js';
+import {
+  createSearchPathMatcher,
+  isAbortError,
+  isSkippedSearchDirectory,
+  throwIfAborted,
+  waitForAbortable,
+} from './search-paths.js';
 
 /** Max output lines. */
 const MAX_LINES = 250;
@@ -25,7 +32,6 @@ const MAX_CAPTURE_BYTES = MAX_OUTPUT_BYTES - Buffer.byteLength(OUTPUT_TRUNCATED_
 /** Keep one pathological source line from consuming the whole output budget. */
 const MAX_LINE_BYTES = 16 * 1024;
 const FALLBACK_CONCURRENCY = 8;
-const SKIP_DIRS = new Set(['node_modules', '.git', '__pycache__', '.next', 'dist', 'build', '.cache']);
 
 /** Binary extensions to skip. */
 const BINARY_EXTS = new Set([
@@ -57,6 +63,29 @@ function truncateUtf8(text, maxBytes) {
 function boundToolOutput(text) {
   if (Buffer.byteLength(text, 'utf8') <= MAX_OUTPUT_BYTES) return text;
   return truncateUtf8(text, MAX_CAPTURE_BYTES) + OUTPUT_TRUNCATED_MARKER;
+}
+
+function normalizeRipgrepPath(searchPath, path) {
+  const normalized = String(path || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!normalized.startsWith('/') && !/^[A-Za-z]:\//.test(normalized)) return normalized;
+  return relative(searchPath, normalized).replace(/\\/g, '/');
+}
+
+function parseRipgrepLine(line, searchPath, options) {
+  let path;
+  let suffix = '';
+  if (options.filesOnly) {
+    path = line;
+  } else if (options.count) {
+    const match = line.match(/^(.*?)(:\d+)$/);
+    if (match) [, path, suffix] = match;
+  } else {
+    const match = line.match(/^(.*?)([:\-]\d+[:\-].*)$/);
+    if (match) [, path, suffix] = match;
+  }
+  if (path == null) return null;
+  const normalized = normalizeRipgrepPath(searchPath, path);
+  return { path: normalized, output: normalized + suffix };
 }
 
 function formatGrepError(message) {
@@ -116,6 +145,7 @@ function createOutputCollector(maxBytes = MAX_OUTPUT_BYTES) {
  * Run ripgrep and return results.
  */
 export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, command = 'rg') {
+  throwIfAborted(options.signal);
   return new Promise((resolve, reject) => {
     const relativeTarget = options.cwd ? relative(options.cwd, searchPath) : null;
     const searchTarget = relativeTarget === '' ? null : (relativeTarget ?? searchPath);
@@ -128,8 +158,11 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
     ];
     if (options.caseInsensitive) args.push('-i');
     if (options.fixedStrings) args.push('-F');
-    if (options.glob) args.push('--glob', options.glob);
+    // Let rg narrow to one user filter, then apply the shared matcher to its
+    // output. Passing both --glob and --type makes rg treat the last include as
+    // an override instead of the required intersection.
     if (options.type) args.push('--type', options.type);
+    else if (options.glob) args.push('--glob', options.glob);
     args.push(
       '--glob', '!**/node_modules/**',
       '--glob', '!**/.git/**',
@@ -159,14 +192,16 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
     const stdoutBudget = Number.isFinite(requestedBudget) && requestedBudget >= 0
       ? Math.min(requestedBudget, MAX_OUTPUT_BYTES)
       : MAX_OUTPUT_BYTES;
-    const stdoutMarker = truncateUtf8(OUTPUT_TRUNCATED_MARKER, stdoutBudget);
-    const stdoutChunks = [];
+    const stdout = createOutputCollector(stdoutBudget);
+    const matchesPath = createSearchPathMatcher(options);
+    const stdoutDecoder = new StringDecoder('utf8');
     const stderrChunks = [];
-    let stdoutBytes = 0;
+    let pendingStdout = '';
     let stderrBytes = 0;
     let stdoutTruncated = false;
     let stderrTruncated = false;
-    let stdoutLines = 0;
+    let resultCount = 0;
+    let includeContinuation = false;
     let stoppedForLimit = false;
     let stopRequested = false;
     let settled = false;
@@ -177,32 +212,31 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
       try { proc.kill(); } catch {}
     }
 
+    function captureLine(line) {
+      if (!line || stoppedForLimit || stdoutTruncated) return;
+      const parsed = parseRipgrepLine(line, searchPath, options);
+      if (parsed) {
+        includeContinuation = matchesPath(parsed.path);
+        if (!includeContinuation) return;
+        resultCount += 1;
+        if (!stdout.add(parsed.output)) stdoutTruncated = true;
+      } else if (includeContinuation && line !== '--') {
+        if (!stdout.add(line)) stdoutTruncated = true;
+      }
+      if (resultCount >= Math.max(1, options.maxResults || 500)) stoppedForLimit = true;
+      if (stdoutTruncated || stoppedForLimit) stop();
+    }
+
     function captureStdout(chunk) {
       if (stdoutTruncated || stoppedForLimit) return;
-      let buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      const maxResults = Math.max(1, options.maxResults || 500);
-      let cursor = 0;
-      while (stdoutLines < maxResults) {
-        const newline = buffer.indexOf(0x0a, cursor);
-        if (newline === -1) break;
-        stdoutLines += 1;
-        cursor = newline + 1;
+      pendingStdout += stdoutDecoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      let newline;
+      while ((newline = pendingStdout.indexOf('\n')) >= 0) {
+        const line = pendingStdout.slice(0, newline).replace(/\r$/, '');
+        pendingStdout = pendingStdout.slice(newline + 1);
+        captureLine(line);
+        if (stdoutTruncated || stoppedForLimit) break;
       }
-      if (stdoutLines >= maxResults) {
-        buffer = buffer.subarray(0, cursor);
-        stoppedForLimit = true;
-      }
-
-      const remaining = stdoutBudget - stdoutBytes;
-      if (buffer.length > remaining) {
-        if (remaining > 0) stdoutChunks.push(buffer.subarray(0, remaining));
-        stdoutBytes = stdoutBudget;
-        stdoutTruncated = true;
-      } else {
-        stdoutChunks.push(buffer);
-        stdoutBytes += buffer.length;
-      }
-      if (stdoutTruncated || stoppedForLimit) stop();
     }
 
     function captureStderr(chunk) {
@@ -227,21 +261,39 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
       return truncateUtf8(decoded, maxTextBytes) + boundedMarker;
     }
 
+    const cleanup = () => options.signal?.removeEventListener('abort', onAbort);
+    const onAbort = () => {
+      if (settled) return;
+      stop();
+      settled = true;
+      cleanup();
+      try { throwIfAborted(options.signal); } catch (error) { reject(error); }
+    };
+
     proc.stdout.on('data', captureStdout);
     proc.stderr.on('data', captureStderr);
     proc.on('close', (code) => {
       if (settled) return;
       settled = true;
-      const stdout = decodeCaptured(stdoutChunks, stdoutBudget, stdoutTruncated, stdoutMarker);
+      cleanup();
+      if (!stdoutTruncated && !stoppedForLimit) {
+        pendingStdout += stdoutDecoder.end();
+        captureLine(pendingStdout.replace(/\r$/, ''));
+      }
+      const output = stdout.toString();
       const stderr = decodeCaptured(stderrChunks, MAX_OUTPUT_BYTES, stderrTruncated);
-      if (code === 0 || code === 1 || stoppedForLimit || stdoutTruncated) resolve(stdout);
-      else reject(new Error(stderr || `rg exited with code ${code}`));
+      if (code === 0 || code === 1 || stoppedForLimit || stdoutTruncated) {
+        resolve(output);
+      } else reject(new Error(stderr || `rg exited with code ${code}`));
     });
     proc.on('error', (err) => {
       if (settled || stopRequested) return;
       settled = true;
+      cleanup();
       reject(err);
     });
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
   });
 }
 
@@ -249,36 +301,19 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
  * Fallback: Node.js grep implementation.
  */
 export async function nodeGrep(pattern, searchPath, options) {
+  throwIfAborted(options.signal);
   const regexSource = options.fixedStrings
     ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     : pattern;
   const regex = new RegExp(regexSource, options.caseInsensitive ? 'gi' : 'g');
   const output = createOutputCollector(options.byteBudget || SEARCH_RESULT_BYTES);
   const maxResults = Math.max(1, options.maxResults || 500);
+  const matchesPath = createSearchPathMatcher(options);
   let resultCount = 0;
   let stopped = false;
 
-  function compileGlob(glob) {
-    const escaped = glob.replace(/\\/g, '/')
-      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-      .replace(/\*\*/g, '\0').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')
-      .replace(/\0/g, '.*');
-    return new RegExp(`^${escaped}$`);
-  }
-  const globMatcher = options.glob ? compileGlob(options.glob) : null;
-  const typeExtensions = {
-    js: ['.js', '.jsx', '.mjs', '.cjs'], ts: ['.ts', '.tsx', '.mts', '.cts'],
-    py: ['.py'], rust: ['.rs'], go: ['.go'], java: ['.java'],
-    json: ['.json'], yaml: ['.yaml', '.yml'], markdown: ['.md', '.markdown'],
-    html: ['.html', '.htm'], css: ['.css'], shell: ['.sh', '.bash', '.zsh'],
-  };
-
   function matchesFilters(fullPath) {
-    const relPath = relative(searchPath, fullPath).replace(/\\/g, '/');
-    if (globMatcher && !globMatcher.test(relPath) && !globMatcher.test(relPath.split('/').pop())) return false;
-    if (!options.type) return true;
-    const extensions = typeExtensions[options.type];
-    return Boolean(extensions?.includes(extname(fullPath).toLowerCase()));
+    return matchesPath(relative(searchPath, fullPath).replace(/\\/g, '/'));
   }
 
   function addResult(value) {
@@ -287,11 +322,14 @@ export async function nodeGrep(pattern, searchPath, options) {
   }
 
   async function searchFile(fullPath) {
+    throwIfAborted(options.signal);
     if (stopped || !matchesFilters(fullPath) || BINARY_EXTS.has(extname(fullPath).toLowerCase())) return;
     try {
       const fileStat = await stat(fullPath);
+      throwIfAborted(options.signal);
       if (fileStat.size > 1024 * 1024 || stopped) return;
       const content = decodeTextFile(await readFile(fullPath));
+      throwIfAborted(options.signal);
       if (content == null) return;
       const relPath = relative(searchPath, fullPath);
       regex.lastIndex = 0;
@@ -307,36 +345,44 @@ export async function nodeGrep(pattern, searchPath, options) {
           if (regex.test(lines[i])) addResult(`${relPath}:${i + 1}:${lines[i]}`);
         }
       }
-    } catch {
+    } catch (error) {
+      if (isAbortError(error)) throw error;
       // Skip unreadable files.
     }
   }
 
   async function searchDir(dir) {
+    throwIfAborted(options.signal);
     if (stopped) return;
     let entries;
-    try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+    try { entries = await readdir(dir, { withFileTypes: true }); } catch (error) {
+      if (isAbortError(error)) throw error;
+      return;
+    }
+    throwIfAborted(options.signal);
     const files = [];
     const directories = [];
     for (const entry of entries) {
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory()) {
         const relPath = relative(searchPath, fullPath).replace(/\\/g, '/');
-        const isYeaftWorktree = relPath === '.yeaft/worktrees'
-          || relPath.endsWith('/.yeaft/worktrees');
-        if (!SKIP_DIRS.has(entry.name) && !isYeaftWorktree) directories.push(fullPath);
+        if (!isSkippedSearchDirectory(relPath, entry.name)) directories.push(fullPath);
       } else files.push(fullPath);
     }
     for (let i = 0; i < files.length && !stopped; i += FALLBACK_CONCURRENCY) {
+      throwIfAborted(options.signal);
       await Promise.all(files.slice(i, i + FALLBACK_CONCURRENCY).map(searchFile));
     }
     for (const child of directories) {
+      throwIfAborted(options.signal);
       if (stopped) break;
       await searchDir(child);
     }
   }
 
+  throwIfAborted(options.signal);
   const rootStat = await stat(searchPath);
+  throwIfAborted(options.signal);
   if (rootStat.isDirectory()) await searchDir(searchPath);
   else await searchFile(searchPath);
   return output.toString();
@@ -503,20 +549,23 @@ Guidelines:
       maxResults: headLimit,
       byteBudget: SEARCH_RESULT_BYTES,
       cwd: absPath,
+      signal: ctx?.signal,
     };
 
     try {
+      throwIfAborted(ctx?.signal);
       let result;
       let rgCommand = resolveManagedCliCommand('rg', { yeaftDir: ctx?.yeaftDir });
       if (!rgCommand) {
-        await managedCliToolReady(ctx?.managedCliReady, 'rg');
+        await waitForAbortable(managedCliToolReady(ctx?.managedCliReady, 'rg'), ctx?.signal);
         rgCommand = resolveManagedCliCommand('rg', { yeaftDir: ctx?.yeaftDir });
       }
 
       if (rgCommand) {
         try {
           result = await runRipgrep(pattern, absPath, options, spawn, rgCommand);
-        } catch {
+        } catch (error) {
+          if (isAbortError(error)) throw error;
           result = await nodeGrep(pattern, absPath, options);
         }
       } else {
@@ -538,6 +587,7 @@ Guidelines:
 
       return boundToolOutput(result.trim());
     } catch (err) {
+      if (isAbortError(err)) throw err;
       return formatGrepError(err.message);
     }
   },
