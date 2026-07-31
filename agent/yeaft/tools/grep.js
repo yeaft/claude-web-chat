@@ -67,18 +67,36 @@ function boundToolOutput(text) {
 
 function normalizeRipgrepPath(searchPath, path) {
   const normalized = String(path || '').replace(/\\/g, '/').replace(/^\.\//, '');
-  if (!normalized.startsWith('/') && !/^[A-Za-z]:\//.test(normalized)) return normalized;
+  const normalizedSearchPath = String(searchPath || '').replace(/\\/g, '/');
+  const isAbsolute = normalized.startsWith('/')
+    || (/^[A-Za-z]:\//.test(normalized) && /^[A-Za-z]:\//.test(normalizedSearchPath));
+  if (!isAbsolute) return normalized;
   return relative(searchPath, normalized).replace(/\\/g, '/');
 }
 
-function parseRipgrepRecord(record, searchPath, options) {
-  const separator = record.indexOf('\0');
-  if (separator < 0) return null;
-  const path = normalizeRipgrepPath(searchPath, record.slice(0, separator));
-  if (options.filesOnly) return { path, output: path };
-  const suffix = record.slice(separator + 1);
-  const separatorAfterPath = suffix[0] === '-' ? '' : ':';
-  return { path, output: path + separatorAfterPath + suffix };
+function createGrepRecord(path, suffix = '', kind = 'match') {
+  return { path, suffix, kind };
+}
+
+function renderGrepRecord(record, options) {
+  if (options.filesOnly) return record.path;
+  const separatorAfterPath = record.kind === 'context' ? '-' : ':';
+  return record.path + separatorAfterPath + record.suffix;
+}
+
+function compareSearchPaths(left, right) {
+  return Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'));
+}
+
+function compareGrepRecords(left, right) {
+  if (left.path !== right.path) return compareSearchPaths(left.path, right.path);
+  const leftLine = Number.parseInt(left.suffix, 10);
+  const rightLine = Number.parseInt(right.suffix, 10);
+  if (Number.isFinite(leftLine) && Number.isFinite(rightLine) && leftLine !== rightLine) {
+    return leftLine - rightLine;
+  }
+  if (left.suffix === right.suffix) return 0;
+  return left.suffix < right.suffix ? -1 : 1;
 }
 
 function formatGrepError(message) {
@@ -107,27 +125,60 @@ function formatGrepError(message) {
   return result;
 }
 
-function createOutputCollector(maxBytes = MAX_OUTPUT_BYTES) {
+export function createOutputCollector(maxBytes = MAX_OUTPUT_BYTES) {
   const parts = [];
-  const contentBytes = Math.max(0, maxBytes - Buffer.byteLength(OUTPUT_TRUNCATED_MARKER, 'utf8'));
+  const marker = truncateUtf8(OUTPUT_TRUNCATED_MARKER, maxBytes);
+  const markerBytes = Buffer.byteLength(marker, 'utf8');
   let bytes = 0;
   let truncated = false;
+
+  function truncateExistingParts(contentBytes) {
+    let remaining = contentBytes;
+    const bounded = [];
+    for (const part of parts) {
+      if (remaining <= 0) break;
+      const value = truncateUtf8(part, remaining);
+      if (value) bounded.push(value);
+      remaining -= Buffer.byteLength(value, 'utf8');
+    }
+    parts.length = 0;
+    parts.push(...bounded);
+    bytes = contentBytes - remaining;
+  }
+
+  function markTruncated(part = '') {
+    if (truncated) return;
+    truncated = true;
+    const contentBytes = Math.max(0, maxBytes - markerBytes);
+    truncateExistingParts(contentBytes);
+    const remaining = contentBytes - bytes;
+    if (remaining > 0 && part) {
+      const bounded = truncateUtf8(part, remaining);
+      if (bounded) {
+        parts.push(bounded);
+        bytes += Buffer.byteLength(bounded, 'utf8');
+      }
+    }
+  }
+
   return {
     add(value) {
       if (truncated) return false;
       const normalized = String(value).replace(/\r/g, '');
       const line = truncateUtf8(normalized, MAX_LINE_BYTES);
       const lineWasTruncated = Buffer.byteLength(normalized, 'utf8') > Buffer.byteLength(line, 'utf8');
-      const separator = parts.length > 0 ? '\n' : '';
-      const remaining = contentBytes - bytes - Buffer.byteLength(separator, 'utf8');
-      if (remaining <= 0) { truncated = true; return false; }
-      const bounded = truncateUtf8(line, remaining);
-      parts.push(separator + bounded);
-      bytes += Buffer.byteLength(separator + bounded, 'utf8');
-      if (lineWasTruncated || bounded !== line) truncated = true;
-      return !truncated;
+      const part = (parts.length > 0 ? '\n' : '') + line;
+      const partBytes = Buffer.byteLength(part, 'utf8');
+      if (lineWasTruncated || bytes + partBytes > maxBytes) {
+        markTruncated(part);
+        return false;
+      }
+      parts.push(part);
+      bytes += partBytes;
+      return true;
     },
-    toString() { return parts.join('') + (truncated ? OUTPUT_TRUNCATED_MARKER : ''); },
+    get truncated() { return truncated; },
+    toString() { return parts.join('') + (truncated ? marker : ''); },
   };
 }
 
@@ -152,11 +203,9 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
     ];
     if (options.caseInsensitive) args.push('-i');
     if (options.fixedStrings) args.push('-F');
-    // Let rg narrow to one user filter, then apply the shared matcher to its
-    // output. Passing both --glob and --type makes rg treat the last include as
-    // an override instead of the required intersection.
-    if (options.type) args.push('--type', options.type);
-    else if (options.glob) args.push('--glob', options.glob);
+    // User glob and type semantics are defined by the shared matcher below.
+    // Do not pass either positive filter to rg: rg's glob dialect and type
+    // registry are broader, so either filter could discard a fallback match.
     args.push(
       '--glob', '!**/node_modules/**',
       '--glob', '!**/.git/**',
@@ -173,7 +222,9 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
     if (options.context) args.push('-C', String(options.context));
     if (options.before) args.push('-B', String(options.before));
     if (options.after) args.push('-A', String(options.after));
+    if (options.context || options.before || options.after) args.push('--no-context-separator');
     if (options.multiline) args.push('-U', '--multiline-dotall');
+    args.push('--sort', 'path');
     args.push('--', pattern);
     if (searchTarget) args.push(searchTarget);
 
@@ -187,6 +238,7 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
       ? Math.min(requestedBudget, MAX_OUTPUT_BYTES)
       : MAX_OUTPUT_BYTES;
     const stdout = createOutputCollector(stdoutBudget);
+    const records = [];
     const matchesPath = createSearchPathMatcher(options);
     const stdoutDecoder = new StringDecoder('utf8');
     const stderrChunks = [];
@@ -195,7 +247,7 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
     let stdoutTruncated = false;
     let stderrTruncated = false;
     let resultCount = 0;
-    let includeContinuation = false;
+    let pendingPath = null;
     let stoppedForLimit = false;
     let stopRequested = false;
     let settled = false;
@@ -206,32 +258,55 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
       try { proc.kill(); } catch {}
     }
 
-    function captureLine(line) {
-      if (!line || stoppedForLimit || stdoutTruncated) return;
-      const parsed = parseRipgrepRecord(line, searchPath, options);
-      if (parsed) {
-        includeContinuation = matchesPath(parsed.path);
-        if (!includeContinuation) return;
-        resultCount += 1;
-        if (!stdout.add(parsed.output)) stdoutTruncated = true;
-      } else if (includeContinuation && line !== '--') {
-        if (!stdout.add(line)) stdoutTruncated = true;
-      }
+    function captureRecord(record) {
+      if (stoppedForLimit || stdoutTruncated || !matchesPath(record.path)) return;
+      resultCount += 1;
+      records.push(record);
+      if (!stdout.add(renderGrepRecord(record, options))) stdoutTruncated = true;
       if (resultCount >= Math.max(1, options.maxResults || 500)) stoppedForLimit = true;
       if (stdoutTruncated || stoppedForLimit) stop();
+    }
+
+    function captureSuffix(suffix) {
+      if (pendingPath == null) return;
+      let kind = 'match';
+      if (!options.count && suffix.match(/^\d+-/)) kind = 'context';
+      captureRecord(createGrepRecord(pendingPath, suffix, kind));
+      pendingPath = null;
+    }
+
+    function drainStdout(final = false) {
+      while (!stdoutTruncated && !stoppedForLimit) {
+        if (pendingPath == null) {
+          const boundary = pendingStdout.indexOf('\0');
+          if (boundary < 0) break;
+          pendingPath = normalizeRipgrepPath(searchPath, pendingStdout.slice(0, boundary));
+          pendingStdout = pendingStdout.slice(boundary + 1);
+          if (options.filesOnly) {
+            captureRecord(createGrepRecord(pendingPath));
+            pendingPath = null;
+          }
+          continue;
+        }
+        const boundary = pendingStdout.indexOf('\n');
+        if (boundary < 0) break;
+        const suffix = pendingStdout.slice(0, boundary).replace(/\r$/, '');
+        pendingStdout = pendingStdout.slice(boundary + 1);
+        captureSuffix(suffix);
+      }
+      if (final && !stdoutTruncated && !stoppedForLimit) {
+        if (pendingPath != null && pendingStdout) captureSuffix(pendingStdout.replace(/\r$/, ''));
+        pendingStdout = '';
+      }
     }
 
     function captureStdout(chunk) {
       if (stdoutTruncated || stoppedForLimit) return;
       pendingStdout += stdoutDecoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      const delimiter = options.filesOnly ? '\0' : '\n';
-      let boundary;
-      while ((boundary = pendingStdout.indexOf(delimiter)) >= 0) {
-        let record = pendingStdout.slice(0, boundary).replace(/\r$/, '');
-        pendingStdout = pendingStdout.slice(boundary + 1);
-        if (options.filesOnly) record += '\0';
-        captureLine(record);
-        if (stdoutTruncated || stoppedForLimit) break;
+      drainStdout();
+      if (pendingPath != null && Buffer.byteLength(pendingStdout, 'utf8') > MAX_LINE_BYTES) {
+        captureSuffix(truncateUtf8(pendingStdout, MAX_LINE_BYTES + 1));
+        pendingStdout = '';
       }
     }
 
@@ -260,10 +335,12 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
     const cleanup = () => options.signal?.removeEventListener('abort', onAbort);
     const onAbort = () => {
       if (settled) return;
-      stop();
       settled = true;
       cleanup();
-      try { throwIfAborted(options.signal); } catch (error) { reject(error); }
+      let abort;
+      try { throwIfAborted(options.signal); } catch (error) { abort = error; }
+      stop();
+      reject(abort);
     };
 
     proc.stdout.on('data', captureStdout);
@@ -274,12 +351,14 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
       cleanup();
       if (!stdoutTruncated && !stoppedForLimit) {
         pendingStdout += stdoutDecoder.end();
-        captureLine(pendingStdout.replace(/\r$/, ''));
+        drainStdout(true);
       }
       const output = stdout.toString();
       const stderr = decodeCaptured(stderrChunks, MAX_OUTPUT_BYTES, stderrTruncated);
       if (code === 0 || code === 1 || stoppedForLimit || stdoutTruncated) {
-        resolve(output);
+        resolve(options.structured
+          ? { output, records, resultCount, truncated: stdout.truncated }
+          : output);
       } else reject(new Error(stderr || `rg exited with code ${code}`));
     });
     proc.on('error', (err) => {
@@ -303,6 +382,7 @@ export async function nodeGrep(pattern, searchPath, options) {
     : pattern;
   const regex = new RegExp(regexSource, options.caseInsensitive ? 'gi' : 'g');
   const output = createOutputCollector(options.byteBudget || SEARCH_RESULT_BYTES);
+  const records = [];
   const maxResults = Math.max(1, options.maxResults || 500);
   const matchesPath = createSearchPathMatcher(options);
   let resultCount = 0;
@@ -312,38 +392,65 @@ export async function nodeGrep(pattern, searchPath, options) {
     return matchesPath(relative(searchPath, fullPath).replace(/\\/g, '/'));
   }
 
-  function addResult(value) {
+  function addResult(record) {
+    if (stopped) return;
     resultCount += 1;
-    if (!output.add(value) || resultCount >= maxResults) stopped = true;
+    records.push(record);
+    if (!output.add(renderGrepRecord(record, options)) || resultCount >= maxResults) stopped = true;
   }
 
-  async function searchFile(fullPath) {
+  async function collectFileRecords(fullPath) {
     throwIfAborted(options.signal);
-    if (stopped || !matchesFilters(fullPath) || BINARY_EXTS.has(extname(fullPath).toLowerCase())) return;
+    if (!matchesFilters(fullPath) || BINARY_EXTS.has(extname(fullPath).toLowerCase())) return [];
     try {
       const fileStat = await stat(fullPath);
       throwIfAborted(options.signal);
-      if (fileStat.size > 1024 * 1024 || stopped) return;
+      if (fileStat.size > 1024 * 1024) return [];
       const content = decodeTextFile(await readFile(fullPath));
       throwIfAborted(options.signal);
-      if (content == null) return;
-      const relPath = relative(searchPath, fullPath);
+      if (content == null) return [];
+      const relPath = relative(searchPath, fullPath).replace(/\\/g, '/');
       regex.lastIndex = 0;
       if (options.filesOnly) {
-        if (regex.test(content)) addResult(relPath);
-      } else if (options.count) {
+        return regex.test(content) ? [createGrepRecord(relPath)] : [];
+      }
+      if (options.count) {
         const matches = content.match(regex);
-        if (matches) addResult(`${relPath}:${matches.length}`);
-      } else {
-        const lines = content.split('\n');
-        for (let i = 0; i < lines.length && !stopped; i += 1) {
-          regex.lastIndex = 0;
-          if (regex.test(lines[i])) addResult(`${relPath}:${i + 1}:${lines[i]}`);
+        return matches ? [createGrepRecord(relPath, String(matches.length))] : [];
+      }
+
+      const lines = content.split('\n');
+      if (lines.at(-1) === '') lines.pop();
+      const matches = [];
+      for (let i = 0; i < lines.length; i += 1) {
+        regex.lastIndex = 0;
+        if (regex.test(lines[i])) matches.push(i);
+      }
+      const beforeLines = Math.max(0, Number(options.before ?? options.context ?? 0));
+      const afterLines = Math.max(0, Number(options.after ?? options.context ?? 0));
+      const selected = new Map();
+      for (const matchIndex of matches) {
+        const start = Math.max(0, matchIndex - beforeLines);
+        const end = Math.min(lines.length - 1, matchIndex + afterLines);
+        for (let i = start; i <= end; i += 1) {
+          const kind = i === matchIndex ? 'match' : 'context';
+          if (kind === 'match' || !selected.has(i)) selected.set(i, kind);
         }
       }
+      return [...selected.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .slice(0, maxResults)
+        .map(([lineIndex, kind]) => {
+          const lineSeparator = kind === 'context' ? '-' : ':';
+          return createGrepRecord(
+            relPath,
+            `${lineIndex + 1}${lineSeparator}${lines[lineIndex]}`,
+            kind,
+          );
+        });
     } catch (error) {
       if (isAbortError(error)) throw error;
-      // Skip unreadable files.
+      return [];
     }
   }
 
@@ -356,32 +463,53 @@ export async function nodeGrep(pattern, searchPath, options) {
       return;
     }
     throwIfAborted(options.signal);
-    const files = [];
-    const directories = [];
+    entries.sort((left, right) => compareSearchPaths(left.name, right.name));
+    let pendingFiles = [];
+
+    async function flushFiles() {
+      for (let i = 0; i < pendingFiles.length && !stopped; i += FALLBACK_CONCURRENCY) {
+        throwIfAborted(options.signal);
+        const batches = await Promise.all(
+          pendingFiles.slice(i, i + FALLBACK_CONCURRENCY).map(collectFileRecords),
+        );
+        for (const batch of batches) {
+          for (const record of batch) {
+            addResult(record);
+            if (stopped) break;
+          }
+          if (stopped) break;
+        }
+      }
+      pendingFiles = [];
+    }
+
     for (const entry of entries) {
-      const fullPath = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        const relPath = relative(searchPath, fullPath).replace(/\\/g, '/');
-        if (!isSkippedSearchDirectory(relPath, entry.name)) directories.push(fullPath);
-      } else files.push(fullPath);
-    }
-    for (let i = 0; i < files.length && !stopped; i += FALLBACK_CONCURRENCY) {
-      throwIfAborted(options.signal);
-      await Promise.all(files.slice(i, i + FALLBACK_CONCURRENCY).map(searchFile));
-    }
-    for (const child of directories) {
       throwIfAborted(options.signal);
       if (stopped) break;
-      await searchDir(child);
+      const fullPath = join(dir, entry.name);
+      if (!entry.isDirectory()) {
+        pendingFiles.push(fullPath);
+        continue;
+      }
+      const relPath = relative(searchPath, fullPath).replace(/\\/g, '/');
+      if (isSkippedSearchDirectory(relPath, entry.name)) continue;
+      await flushFiles();
+      if (!stopped) await searchDir(fullPath);
     }
+    await flushFiles();
   }
 
   throwIfAborted(options.signal);
   const rootStat = await stat(searchPath);
   throwIfAborted(options.signal);
   if (rootStat.isDirectory()) await searchDir(searchPath);
-  else await searchFile(searchPath);
-  return output.toString();
+  else {
+    for (const record of await collectFileRecords(searchPath)) addResult(record);
+  }
+  const result = output.toString();
+  return options.structured
+    ? { output: result, records, resultCount, truncated: output.truncated }
+    : result;
 }
 
 export default defineTool({
@@ -542,10 +670,11 @@ Guidelines:
       before,
       after,
       multiline,
-      maxResults: headLimit,
+      maxResults: headLimit + 1,
       byteBudget: SEARCH_RESULT_BYTES,
       cwd: absPath,
       signal: ctx?.signal,
+      structured: true,
     };
 
     try {
@@ -568,20 +697,21 @@ Guidelines:
         result = await nodeGrep(pattern, absPath, options);
       }
 
-      if (!result || !result.trim()) {
-        return '(no matches)';
+      const {
+        output = '', records = [], resultCount = 0, truncated = false,
+      } = result || {};
+      if (records.length === 0 && !output.trim()) return '(no matches)';
+      if (truncated) return boundToolOutput(output.trim());
+      const visibleRecords = [...records]
+        .sort(compareGrepRecords)
+        .slice(0, headLimit);
+      const rendered = visibleRecords
+        .map(record => renderGrepRecord(record, options))
+        .join('\n');
+      if (resultCount > headLimit) {
+        return boundToolOutput(rendered + '\n\n... (more results omitted)');
       }
-
-      // Limit output lines, then enforce the byte budget at the actual tool
-      // boundary so prefixes, JSON escaping, and result markers are included.
-      const lines = result.trim().split('\n');
-      if (lines.length > headLimit) {
-        return boundToolOutput(
-          lines.slice(0, headLimit).join('\n') + `\n\n... (${lines.length - headLimit} more results)`,
-        );
-      }
-
-      return boundToolOutput(result.trim());
+      return boundToolOutput(rendered);
     } catch (err) {
       if (isAbortError(err)) throw err;
       return formatGrepError(err.message);
