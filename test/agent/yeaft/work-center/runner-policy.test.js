@@ -66,12 +66,48 @@ describe('Work Center tool policy', () => {
     });
   });
 
-  it('rejects background or redirected Bash before execution', async () => {
-    const registry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
-    await expect(registry.execute('Bash', {
+  it('persists non-read-only tool execution through the Operation lifecycle', async () => {
+    const transitions = [];
+    const registry = createWorkItemToolRegistry({
+      workDir,
+      isRunActive: () => true,
+      operationLifecycle: (name, input) => {
+        transitions.push({ phase: 'start', name, input });
+        return { complete: (effectStatus, result) => transitions.push({ phase: 'complete', effectStatus, result }) };
+      },
+    });
+    await registry.execute('FileWrite', { file_path: 'tracked.txt', content: 'tracked' }, {});
+    await registry.execute('FileRead', { file_path: 'tracked.txt' }, {});
+    expect(transitions).toHaveLength(2);
+    expect(transitions[0]).toMatchObject({ phase: 'start', name: 'FileWrite' });
+    expect(transitions[1]).toMatchObject({ phase: 'complete', effectStatus: 'applied' });
+
+    const failedTransitions = [];
+    const failingRegistry = createWorkItemToolRegistry({
+      workDir,
+      isRunActive: () => true,
+      runTools: [{
+        name: 'FailingWrite',
+        isReadOnly: () => false,
+        isConcurrencySafe: () => false,
+        async execute() { throw new Error('write outcome uncertain'); },
+      }],
+      operationLifecycle: name => {
+        failedTransitions.push({ phase: 'start', name });
+        return { complete: (effectStatus, result) => failedTransitions.push({ phase: 'complete', effectStatus, result }) };
+      },
+    });
+    await expect(failingRegistry.execute('FailingWrite', {}, {})).rejects.toThrow(/uncertain/);
+    expect(failedTransitions).toEqual([
+      { phase: 'start', name: 'FailingWrite' },
+      { phase: 'complete', effectStatus: 'unknown', result: { error: 'write outcome uncertain' } },
+    ]);
+
+    const policyRegistry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
+    await expect(policyRegistry.execute('Bash', {
       command: 'echo nope', cwd: outsideDir, background: false,
     }, {})).rejects.toThrow(/cwd is fixed/);
-    await expect(registry.execute('Bash', {
+    await expect(policyRegistry.execute('Bash', {
       command: 'echo nope', cwd: workDir, background: true,
     }, {})).rejects.toThrow(/background Bash/);
   });

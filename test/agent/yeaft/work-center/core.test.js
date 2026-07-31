@@ -155,8 +155,78 @@ describe('Work Center core', () => {
       actionSpecHash: first.action.specHash,
       actionAttempt: 1,
     });
+    expect(() => store.db.prepare('UPDATE runs SET response = ? WHERE id = ?')
+      .run('late terminal rewrite', first.run.id)).toThrow(/terminal Run result is immutable/);
+    expect(() => store.db.prepare('UPDATE runs SET action_id = ? WHERE id = ?')
+      .run('different-action', second.run.id)).toThrow(/Run identity is immutable/);
+    const coordinatorDetail = store.getWorkItemDetail(item.id);
+    const interruptedTurn = store.beginCoordinatorTurn(item.id, 'Persist this message', {
+      revision: coordinatorDetail.revision,
+      planRevision: coordinatorDetail.planRevision,
+      ledgerRevision: coordinatorDetail.ledgerRevision,
+      coordinatorRevision: coordinatorDetail.coordinatorRevision,
+    });
+    expect(store.db.prepare('SELECT status FROM coordinator_mailbox_entries WHERE source_key = ?')
+      .get(`coordinator:turn:${interruptedTurn.turnId}`).status).toBe('pending');
+    expect(store.recoverInterruptedCoordinatorTurns()).toBe(1);
+    expect(store.db.prepare('SELECT status FROM coordinator_mailbox_entries WHERE source_key = ?')
+      .get(`coordinator:turn:${interruptedTurn.turnId}`).status).toBe('acked');
+    expect(store.getWorkItemDetail(item.id).messages.at(-1)).toMatchObject({
+      turnId: interruptedTurn.turnId,
+      status: 'failed',
+      error: 'Coordinator turn was interrupted before it produced a decision',
+    });
     expect(store.getWorkItemDetail(item.id).events.find(event => event.type === 'run.claimed'))
       .toMatchObject({ actionGeneration: first.action.generation });
+
+    const coordinatorRequest = { model: 'provider/model', messages: [{ role: 'user', content: 'decide' }] };
+    const preparedCoordinatorTurn = store.prepareCoordinatorProviderTurn(
+      item.id, 'coordinator-provider-restart', 1, coordinatorRequest,
+    );
+    expect(store.prepareCoordinatorProviderTurn(
+      item.id, 'coordinator-provider-restart', 1, coordinatorRequest,
+    )).toEqual(preparedCoordinatorTurn);
+    expect(() => store.prepareCoordinatorProviderTurn(
+      item.id, 'coordinator-provider-restart', 1, { ...coordinatorRequest, model: 'other' },
+    )).toThrow(/changed before dispatch/);
+    expect(store.dispatchCoordinatorProviderTurn(preparedCoordinatorTurn.id))
+      .toMatchObject({ status: 'dispatching' });
+    expect(store.recoverCoordinatorProviderTurns()).toBe(1);
+    expect(store.getCoordinatorProviderTurn(preparedCoordinatorTurn.id)).toMatchObject({
+      status: 'unknown',
+      error: 'Coordinator provider dispatch outcome is unknown after Agent restart',
+    });
+    const respondedCoordinatorTurn = store.prepareCoordinatorProviderTurn(
+      item.id, 'coordinator-provider-responded', 1, coordinatorRequest,
+    );
+    store.dispatchCoordinatorProviderTurn(respondedCoordinatorTurn.id);
+    expect(store.respondCoordinatorProviderTurn(
+      respondedCoordinatorTurn.id, respondedCoordinatorTurn.requestHash, { text: 'decision' },
+    )).toMatchObject({ status: 'responded', response: { text: 'decision' } });
+    expect(store.recoverCoordinatorProviderTurns()).toBe(0);
+
+    const operationItem = controller.create(createInput({ id: 'operation-claim-fence', workDir: dir }));
+    const operationAction = store.getWorkItemDetail(operationItem.id).actions[0];
+    store.createOperation({
+      workItemId: operationItem.id,
+      actionId: operationAction.id,
+      operationType: 'external-write',
+      idempotencyKey: 'operation-claim-fence',
+      replayPolicy: 'never_automatic',
+    });
+    const safeItem = controller.create(createInput({ id: 'operation-safe-sibling', workDir: dir }));
+    const safeClaim = store.claimReadyAction('operation-boot', 5_000);
+    expect(safeClaim?.workItem.id).toBe(safeItem.id);
+    controller.cancel(safeItem.id);
+    expect(store.claimReadyAction('operation-boot', 5_000)).toBeNull();
+    expect(store.claimOperation('operation-claim-fence', 'operation-owner', 1, false))
+      .toMatchObject({ executionStatus: 'running' });
+    expect(store.completeOperation(
+      'operation-claim-fence', 'operation-owner', 1, 'not_applied', { verified: true },
+    )).toBe(true);
+    const operationClaim = store.claimReadyAction('operation-boot', 5_000);
+    expect(operationClaim).not.toBeNull();
+    expect(operationClaim.workItem.id).toBe(operationItem.id);
 
     const action = {
       id: 'action-conversation', generation: 2, specHash: 'spec-v2',
@@ -1227,24 +1297,33 @@ describe('Work Center core', () => {
       store,
       runtimeProvider: async () => ({
         config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-        adapter: { call: () => new Promise(resolve => { resolveCall = resolve; }) },
+        adapter: { call: request => { request.onRequestStart?.(); return new Promise(resolve => { resolveCall = resolve; }); } },
       }),
       policyProvider: async () => ({ modelPolicy: { mode: 'primary' }, actionModelPolicies: { triage: { effort: 'high' } } }),
       registry: {
         listVps: () => [{ id: 'omni', name: 'Omni', role: 'Requirement Lead', traits: ['triage'] }],
       },
     });
-    const turn = coordinator.message(item.id, {
+    const coordinatorInput = {
       text: 'Replace the impossible Host gate with code-level validation and keep delivery explicit.',
+      clientMessageId: 'coordinator-message-idempotency',
       revision: before.revision,
       planRevision: before.planRevision,
       ledgerRevision: before.ledgerRevision,
       coordinatorRevision: before.coordinatorRevision,
-    });
+    };
+    const turn = coordinator.message(item.id, coordinatorInput);
+    const duplicateTurn = coordinator.message(item.id, coordinatorInput);
+    expect(duplicateTurn.duplicate).toBe(true);
+    expect(duplicateTurn.detail).toEqual(turn.detail);
+    expect(turn.detail.messages.filter(message => message.role === 'user')).toHaveLength(1);
     expect(turn.detail.messages.at(-1)).toMatchObject({ role: 'assistant', status: 'thinking' });
     expect(turn.detail.messages.at(-1).turnId).toBeTruthy();
     for (let index = 0; index < 10 && !resolveCall; index += 1) await new Promise(resolve => setTimeout(resolve, 0));
     expect(resolveCall).toBeTypeOf('function');
+    expect(store.db.prepare(`SELECT status, attempt_number FROM coordinator_provider_turns
+      WHERE coordinator_turn_id = ?`).get(turn.detail.messages.at(-1).turnId))
+      .toEqual({ status: 'dispatching', attempt_number: 1 });
     resolveCall({ text: JSON.stringify({
       reply: 'I replaced the impossible gate with a bounded validation Action and kept delivery downstream.',
       decision: {
@@ -1273,6 +1352,10 @@ describe('Work Center core', () => {
       },
     }) });
     const replanned = await turn.task;
+    expect(store.db.prepare(`SELECT status, response_hash FROM coordinator_provider_turns
+      WHERE coordinator_turn_id = ?`).get(turn.detail.messages.at(-1).turnId)).toMatchObject({
+      status: 'responded', response_hash: expect.any(String),
+    });
 
     expect(replanned).toMatchObject({
       planRevision: before.planRevision + 1,
@@ -1348,6 +1431,7 @@ describe('Work Center core', () => {
     coordinator.runtimeProvider = async () => ({
       config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
       adapter: { call: async request => {
+          request.onRequestStart?.();
         correctionCalls += 1;
         if (correctionCalls === 1) {
           return { text: JSON.stringify({
@@ -1386,12 +1470,12 @@ describe('Work Center core', () => {
         primaryModel: 'provider/model', language: 'zh-CN',
         availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }],
       },
-      adapter: { call: async () => ({ text: JSON.stringify({
+      adapter: { call: async request => { request.onRequestStart?.(); return ({ text: JSON.stringify({
         reply: '这段回复缺少有效控制决定。',
         decision: {
           kind: 'invalid', reason: 'invalid', contractPatch: null, guidance: [], actions: [],
         },
-      }) }) },
+      }) }); } },
     });
     const invalidBefore = store.getWorkItemDetail(item.id);
     const invalidTurn = coordinator.message(item.id, {
@@ -1412,7 +1496,7 @@ describe('Work Center core', () => {
     let resolveLate;
     coordinator.runtimeProvider = async () => ({
       config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-      adapter: { call: () => new Promise(resolve => { resolveLate = resolve; }) },
+      adapter: { call: request => { request.onRequestStart?.(); return new Promise(resolve => { resolveLate = resolve; }); } },
     });
     const staleTurn = coordinator.message(item.id, {
       text: 'What is happening now?',
@@ -1444,7 +1528,7 @@ describe('Work Center core', () => {
     let resolveCancelled;
     coordinator.runtimeProvider = async () => ({
       config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-      adapter: { call: () => new Promise(resolve => { resolveCancelled = resolve; }) },
+      adapter: { call: request => { request.onRequestStart?.(); return new Promise(resolve => { resolveCancelled = resolve; }); } },
     });
     const cancelledTurn = coordinator.message(cancellable.id, {
       text: 'Please change this goal.',
@@ -1541,6 +1625,7 @@ describe('Work Center core', () => {
         runtimeProvider: async () => ({
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
           adapter: { call: async request => {
+          request.onRequestStart?.();
             recoveryCalls.push(request.messages[0].content);
             const dependency = recoveryCalls.length === 1
               ? 'missing-stage'
@@ -1593,7 +1678,8 @@ describe('Work Center core', () => {
         store: recoveryStore,
         runtimeProvider: async () => ({
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-          adapter: { call: async () => {
+          adapter: { call: async request => {
+          request.onRequestStart?.();
             undecidableCalls += 1;
             return { text: JSON.stringify({
               reply: 'The failure is recorded.',
@@ -1616,8 +1702,16 @@ describe('Work Center core', () => {
         .toMatchObject({ status: 'waiting' });
       expect(waiting.runs.find(run => run.id === undecidable.review.run.id)).toMatchObject({
         status: 'failed',
-        waitingReason: expect.stringMatching(/provide the missing decision or constraint/i),
+        waitingReason: null,
       });
+      expect(waiting.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: 'action.waiting',
+          data: expect.objectContaining({
+            reason: expect.stringMatching(/provide the missing decision or constraint/i),
+          }),
+        }),
+      ]));
       expect(JSON.stringify(waiting)).not.toContain('Work Center Coordinator decision kind is invalid');
       expect(projectWorkItemDetail(waiting)).toMatchObject({
         status: 'waiting',
@@ -1643,6 +1737,7 @@ describe('Work Center core', () => {
         runtimeProvider: async () => ({
           config: { primaryModel: 'provider/model', language: 'zh-CN', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
           adapter: { call: async request => {
+          request.onRequestStart?.();
             localizedSystem = request.system;
             return { text: JSON.stringify({
               reply: '需要你补充部署目标。',
@@ -1666,7 +1761,13 @@ describe('Work Center core', () => {
         decision: { kind: 'request_human' },
       });
       expect(localizedWaiting.runs.find(run => run.id === localized.review.run.id))
-        .toMatchObject({ waitingReason: '请选择生产环境或预发布环境。' });
+        .toMatchObject({ status: 'failed', waitingReason: null });
+      expect(localizedWaiting.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: 'action.waiting',
+          data: expect.objectContaining({ reason: '请选择生产环境或预发布环境。' }),
+        }),
+      ]));
       await localizedCoordinator.shutdown();
       recoveryController.cancel(localized.item.id);
 
@@ -1684,14 +1785,28 @@ describe('Work Center core', () => {
         ownerBootId: 'action-conversation-input',
         settingsReader: () => ({}),
       });
-      const continuedAction = await actionConversationService.handle('action_input', {
+      const actionInputPayload = {
         id: actionConversation.item.id,
-        actionId: actionConversation.review.action.id,
-        generation: actionConversation.review.action.generation,
+        clientMessageId: 'action-input-idempotency',
+        target: {
+          kind: 'action',
+          actionId: actionConversation.review.action.id,
+          generation: actionConversation.review.action.generation,
+        },
         revision: actionConversationWaiting.revision,
         text: 'Explain the blocker in plain language, then continue this review.',
         files: [],
+      };
+      const continuedAction = await actionConversationService.handle('post_work_item_message', actionInputPayload);
+      const duplicateAction = await actionConversationService.handle('post_work_item_message', {
+        ...actionInputPayload,
+        target: {
+          ...actionInputPayload.target,
+          generation: actionInputPayload.target.generation + 1,
+        },
+        revision: continuedAction.revision,
       });
+      expect(duplicateAction).toEqual(continuedAction);
       expect(coordinatorMessage).not.toHaveBeenCalled();
       expect(continuedAction).toMatchObject({ status: 'ready' });
       expect(continuedAction.actions.find(action => action.id === actionConversation.review.action.id))
@@ -1723,7 +1838,7 @@ describe('Work Center core', () => {
           }
           return {
             config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-            adapter: { call: async () => ({ text: JSON.stringify({
+            adapter: { call: async request => { request.onRequestStart?.(); return ({ text: JSON.stringify({
               reply: 'The provider recovered, so the failed review will continue automatically.',
               decision: {
                 kind: 'guide_actions',
@@ -1735,7 +1850,7 @@ describe('Work Center core', () => {
                 }],
                 actions: [],
               },
-            }) }) },
+            }) }); } },
           };
         },
         policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
@@ -1794,6 +1909,7 @@ describe('Work Center core', () => {
         runtimeProvider: async () => ({
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
           adapter: { call: async request => {
+          request.onRequestStart?.();
             largeHistoryAdapterCalls += 1;
             const content = request.messages[0].content;
             const prefix = 'Current WorkItem snapshot:\n';
@@ -1893,7 +2009,8 @@ describe('Work Center core', () => {
         }
         return {
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-          adapter: { call: async () => {
+          adapter: { call: async request => {
+          request.onRequestStart?.();
             coordinatorCalls += 1;
             return { text: JSON.stringify({
               reply: 'The failed review will run again with the blocker evidence.',
@@ -2001,6 +2118,7 @@ describe('Work Center core', () => {
       runtimeProvider: async () => ({
         config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
         adapter: { call: async request => {
+          request.onRequestStart?.();
           longIdentitySnapshot = request.messages[0].content.match(/Current WorkItem snapshot:\n([\s\S]*?)\n\nAutomatic failure recovery trigger:/)?.[1] || '';
           const snapshot = JSON.parse(longIdentitySnapshot);
           const failedProjection = snapshot.actions.find(action => action.status === 'failed');
@@ -2044,14 +2162,16 @@ describe('Work Center core', () => {
         name: 'missing VP',
         runtime: async () => ({
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-          adapter: { call: async () => { throw new Error('adapter must not run without a VP'); } },
+          adapter: { call: async request => {
+          request.onRequestStart?.(); throw new Error('adapter must not run without a VP'); } },
         }),
         vps: [],
         diagnostic: /no available VPs/i,
       },
       {
         name: 'missing model',
-        runtime: async () => ({ config: { availableModels: [] }, adapter: { call: async () => { throw new Error('adapter must not run without a model'); } } }),
+        runtime: async () => ({ config: { availableModels: [] }, adapter: { call: async request => {
+          request.onRequestStart?.(); throw new Error('adapter must not run without a model'); } } }),
         vps: [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }],
         diagnostic: /no configured model/i,
       },
@@ -2097,7 +2217,8 @@ describe('Work Center core', () => {
         });
         const runtime = testCase.runtime || (async () => ({
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-          adapter: { call: async () => {
+          adapter: { call: async request => {
+          request.onRequestStart?.();
             providerCalls += 1;
             throw testCase.providerError;
           } },
@@ -2198,7 +2319,8 @@ describe('Work Center core', () => {
         store: transientStore,
         runtimeProvider: async () => ({
           config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
-          adapter: { call: async () => {
+          adapter: { call: async request => {
+          request.onRequestStart?.();
             calls += 1;
             throw providerError;
           } },
@@ -2454,6 +2576,7 @@ describe('Work Center core', () => {
       runtimeProvider: async () => ({
         config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
         adapter: { call: async request => {
+          request.onRequestStart?.();
           restartCoordinatorCalls += 1;
           coordinatorInFlight += 1;
           maxCoordinatorInFlight = Math.max(maxCoordinatorInFlight, coordinatorInFlight);
@@ -2554,6 +2677,7 @@ describe('Work Center core', () => {
       runtimeProvider: async () => ({
         config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
         adapter: { call: async request => {
+          request.onRequestStart?.();
           attachmentCall = request;
           return { text: JSON.stringify({
             reply: 'The screenshot and note are attached to this WorkItem.',
@@ -2767,7 +2891,7 @@ describe('Work Center core', () => {
     expect(replacement.action.stageId).toBe('validate');
     controller.submit(replacement.run.id, 'boot-stage', replacement.run.leaseEpoch, completed('test'));
     expect(store.claimReadyAction('boot-stage', 5_000)?.action.stageId).toBe('deliver');
-  });
+  }, 30_000);
 
   it('claims a ready Action exactly once and fences stale terminal submissions', () => {
     controller.create(createInput());

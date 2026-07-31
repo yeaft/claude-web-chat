@@ -12,7 +12,7 @@ import {
 
 const REQUEST_TIMEOUT_MS = 60_000;
 const pendingRequests = new Map();
-const WORK_ITEM_ATTACHMENT_OPS = new Set(['create', 'work_item_message', 'action_input', 'guide']);
+const WORK_ITEM_ATTACHMENT_OPS = new Set(['create', 'post_work_item_message', 'work_item_message', 'action_input', 'guide']);
 
 export function workCenterOpAcceptsAttachments(op) {
   return WORK_ITEM_ATTACHMENT_OPS.has(op);
