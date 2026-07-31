@@ -925,6 +925,94 @@ describe('message flow regressions', () => {
       expect(duplicateSessions.activeSessionKey).toBe('agent-b\u001fsame');
       expect(duplicateSessions.activeSession).toMatchObject({ id: 'same', agentId: 'agent-b' });
       expect(duplicateStore.resolveYeaftSessionAgentId).not.toHaveBeenCalled();
+
+      // A persisted composite identity is authoritative. If its exact owner is
+      // absent from the complete inventory, do not silently bind the same bare
+      // id to another Agent. Clear selection and wait for an explicit click.
+      duplicateSessions.resetInventory();
+      const previousExactOwnerChatStore = globalThis.Pinia.useChatStore;
+      globalThis.Pinia.useChatStore = () => store;
+      localStorage.setItem('lastViewedYeaftSession', 'agent-b\u001fsame');
+      store.currentView = 'yeaft';
+      store.currentAgent = 'agent-b';
+      store.currentAgentInfo = { id: 'agent-b' };
+      store.agents = [
+        { id: 'agent-a', name: 'Agent A', online: true },
+        { id: 'agent-b', name: 'Agent B', online: true },
+      ];
+      store.yeaftActiveSessionFilter = 'same';
+      store.yeaftSessionAgentById = { same: 'agent-b' };
+      store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-exact-a', 'agent-b': 'conv-exact-b' };
+      store.yeaftConversationId = 'conv-exact-b';
+      store.activeConversations = ['conv-exact-b'];
+      store.messagesMap = { 'conv-exact-a': [], 'conv-exact-b': [] };
+      store.yeaftSessionHistoryState = {};
+      store._yeaftHistoryLoad = null;
+      store.sendWsMessage = vi.fn(() => true);
+      store.yeaftSessionInventoryCompleteSupported = true;
+      store.yeaftSessionHydrateRequestId = 'inventory-exact-owner-absent';
+      store.yeaftSessionHydrateSlices = [];
+      store._hasHandledYeaftSessionHydrate = false;
+      store.yeaftSessionHydrateError = null;
+      handleMessage(store, {
+        type: 'yeaft_session_hydrate',
+        requestId: 'inventory-exact-owner-absent',
+        agentId: 'agent-a',
+        sessions: [{ id: 'same', name: 'Agent A same' }],
+      });
+      handleMessage(store, {
+        type: 'yeaft_session_hydrate_complete',
+        requestId: 'inventory-exact-owner-absent',
+        ok: true,
+      });
+      expect(duplicateSessions.activeSessionKey).toBeNull();
+      expect(duplicateSessions.activeSessionId).toBeNull();
+      expect(store.yeaftActiveSessionFilter).toBeNull();
+      expect(store.currentAgent).toBe('agent-b');
+      expect(store.yeaftConversationId).toBe('conv-exact-b');
+      expect(store.activeConversations).toEqual(['conv-exact-b']);
+      expect(localStorage.getItem('lastViewedYeaftSession')).toBeNull();
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => (
+        msg.type === 'yeaft_load_history' || msg.type === 'yeaft_session_send'
+      ))).toEqual([]);
+      expect(store.messagesMap['conv-exact-a']).toEqual([]);
+      expect(store.messagesMap['conv-exact-b']).toEqual([]);
+
+      // Explicit user selection is the only legal cross-owner transition.
+      store.setActiveSessionFilter('same', { agentId: 'agent-a', force: true });
+      expect(duplicateSessions.activeSessionKey).toBe('agent-a\u001fsame');
+      const exactOwnerHistoryFrames = store.sendWsMessage.mock.calls
+        .map(call => call[0])
+        .filter(msg => msg.type === 'yeaft_load_history');
+      expect(exactOwnerHistoryFrames).toEqual([
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'same' }),
+      ]);
+      store.handleMessage({
+        type: 'yeaft_history_chunk',
+        agentId: 'agent-a',
+        sessionId: 'same',
+        conversationId: 'conv-exact-a',
+        requestId: exactOwnerHistoryFrames[0].requestId,
+        mode: 'recent',
+        messages: [],
+        latestSeq: 0,
+        oldestSeq: null,
+        hasMore: false,
+      });
+      store.sendWsMessage.mockClear();
+      store.sendYeaftSessionMessage({ groupId: 'same', text: 'explicit owner transition' });
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_session_send')).toEqual([
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'same', text: 'explicit owner transition' }),
+      ]);
+      expect(store.messagesMap['conv-exact-a']).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'user', content: 'explicit owner transition' }),
+      ]));
+      expect(store.messagesMap['conv-exact-b']).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: 'explicit owner transition' }),
+      ]));
+      clearTimeout(store._processingWatchdogs['conv-exact-a']);
+      if (previousExactOwnerChatStore) globalThis.Pinia.useChatStore = previousExactOwnerChatStore;
+      else delete globalThis.Pinia.useChatStore;
       localStorage.removeItem('lastViewedYeaftSession');
 
       // A persisted bare id carries no owner authority. The complete inventory

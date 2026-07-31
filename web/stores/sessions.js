@@ -126,6 +126,41 @@ function enterAgentScopedInventory(state) {
   state.inventoryIdentityMode = 'agent-scoped';
 }
 
+function reconcilePreferredExactSession(state) {
+  const preferred = state._preferredExactSessionIdentity || null;
+  if (!preferred) return false;
+  state._preferredExactSessionIdentity = null;
+
+  const exactRow = state.sessions[preferred.key] || null;
+  if (exactRow?.id === preferred.sessionId && exactRow.agentId === preferred.agentId) {
+    state.activeSessionId = preferred.sessionId;
+    state.activeSessionKey = preferred.key;
+    return false;
+  }
+
+  state.activeSessionId = null;
+  state.activeSessionKey = null;
+  const chat = _getChatStoreSafe();
+  if (chat?.yeaftActiveSessionFilter === preferred.sessionId) {
+    chat.yeaftActiveSessionFilter = null;
+  }
+  if (chat?.yeaftSessionAgentById?.[preferred.sessionId] === preferred.agentId) {
+    const nextSessionAgents = { ...chat.yeaftSessionAgentById };
+    delete nextSessionAgents[preferred.sessionId];
+    chat.yeaftSessionAgentById = nextSessionAgents;
+  }
+  try {
+    const persisted = parseYeaftSessionIdentity(
+      localStorage.getItem('lastViewedYeaftSession') || '',
+    );
+    if (persisted.agentId === preferred.agentId
+        && persisted.sessionId === preferred.sessionId) {
+      localStorage.removeItem('lastViewedYeaftSession');
+    }
+  } catch (_) {}
+  return true;
+}
+
 function reconcileRetiredBareActiveSession(state) {
   const sessionId = state._retiredBareActiveSessionId || null;
   if (!sessionId) return false;
@@ -273,6 +308,7 @@ export const useSessionsStore = defineStore('sessions', {
     /** @type {'empty'|'legacy-bare'|'agent-scoped'} */
     inventoryIdentityMode: 'empty',
     _retiredBareActiveSessionId: null,
+    _preferredExactSessionIdentity: null,
     lastSnapshotAt: 0,
     /**
      * Most recent CRUD result for the UI to surface as toast/modal error.
@@ -483,7 +519,8 @@ export const useSessionsStore = defineStore('sessions', {
         this.sessionOrder = nextOrder;
       }
       if (!deferActivation) {
-        retiredIdentityReconciled = reconcileRetiredBareActiveSession(this);
+        retiredIdentityReconciled = reconcilePreferredExactSession(this)
+          || reconcileRetiredBareActiveSession(this);
       }
       this.lastSnapshotAt = Date.now();
       const chat = _getChatStoreSafe();
@@ -776,14 +813,21 @@ export const useSessionsStore = defineStore('sessions', {
       this.activeSessionKey = null;
       this.inventoryIdentityMode = 'empty';
       this._retiredBareActiveSessionId = null;
+      this._preferredExactSessionIdentity = null;
       this.lastSnapshotAt = 0;
     },
 
     beginInventoryCommit(preferredSessionId = null, preferredAgentId = null) {
       this.resetInventory();
       if (preferredSessionId && preferredAgentId) {
+        const key = storeKeyFor(preferredAgentId, preferredSessionId);
         this.activeSessionId = preferredSessionId;
-        this.activeSessionKey = storeKeyFor(preferredAgentId, preferredSessionId);
+        this.activeSessionKey = key;
+        this._preferredExactSessionIdentity = {
+          sessionId: preferredSessionId,
+          agentId: preferredAgentId,
+          key,
+        };
       } else if (preferredSessionId) {
         this._retiredBareActiveSessionId = preferredSessionId;
       }
