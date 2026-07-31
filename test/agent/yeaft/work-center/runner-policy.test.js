@@ -116,8 +116,13 @@ describe('Work Center tool policy', () => {
       isReadOnly: () => false, isConcurrencySafe: () => false,
       async execute() { return 'mutated'; },
     }];
+    const aliasedTool = {
+      name: 'AliasedWrite', aliases: ['LegacyWrite'], errorOutput: null, sideEffectScope: 'external',
+      isReadOnly: () => false, isConcurrencySafe: () => false,
+      async execute() { return 'aliased'; },
+    };
     const registry = createWorkItemToolRegistry({
-      workDir, isRunActive: () => true, runTools: controlTools,
+      workDir, isRunActive: () => true, runTools: [...controlTools, aliasedTool],
       mcpTools, operationLifecycle: recordLifecycle,
     });
 
@@ -132,11 +137,13 @@ describe('Work Center tool policy', () => {
     }, {});
     expect(JSON.parse(missingEdit)).toMatchObject({ errorEffect: 'none', error: expect.stringMatching(/File not found/) });
     await registry.execute('mcp__test__mutate', {}, {});
+    await registry.execute('LegacyWrite', {}, {});
     await expect(registry.execute('FailingWrite', {}, {})).rejects.toThrow(/uncertain/);
     await registry.execute('ReturnedUnknownWrite', {}, {});
 
     expect(transitions.filter(entry => entry.phase === 'start').map(entry => entry.name)).toEqual([
-      'FileWrite', 'FileEdit', 'FileEdit', 'mcp__test__mutate', 'FailingWrite', 'ReturnedUnknownWrite',
+      'FileWrite', 'FileEdit', 'FileEdit', 'mcp__test__mutate', 'AliasedWrite',
+      'FailingWrite', 'ReturnedUnknownWrite',
     ]);
     expect(transitions.filter(entry => entry.phase === 'complete').map(entry => ({
       name: entry.name, effectStatus: entry.effectStatus,
@@ -145,6 +152,7 @@ describe('Work Center tool policy', () => {
       { name: 'FileEdit', effectStatus: 'applied' },
       { name: 'FileEdit', effectStatus: 'failed_no_effect' },
       { name: 'mcp__test__mutate', effectStatus: 'applied' },
+      { name: 'AliasedWrite', effectStatus: 'applied' },
       { name: 'FailingWrite', effectStatus: 'unknown' },
       { name: 'ReturnedUnknownWrite', effectStatus: 'unknown' },
     ]);
@@ -303,7 +311,117 @@ describe('Work Center tool policy', () => {
     expect(afterImplementation.actions.find(action => action.stageId === 'deliver'))
       .toMatchObject({ status: 'ready' });
     expect(store.claimReadyAction('blocked-by-unknown-operation', 5_000)).toBeNull();
+
+    const timeoutItem = controller.create({
+      id: 'timeout-operation-fence', title: 'Fence late writes',
+      goal: 'Do not dispatch a later mutator after timeout',
+      acceptanceCriteria: ['Late mutators stay fenced'],
+      workflowTemplate: 'software-change', workDir, start: true,
+    });
+    const timeoutClaim = store.claimReadyAction('timeout-owner', 5_000);
+    let fastWriteCalls = 0;
+    const slowPath = join(workDir, 'timeout-order.txt');
+    const slowWrite = {
+      name: 'SlowWrite', timeoutMs: 5, errorOutput: null, sideEffectScope: 'external',
+      isReadOnly: () => false, isConcurrencySafe: () => false,
+      async execute() {
+        await new Promise(resolve => setTimeout(resolve, 60));
+        writeFileSync(slowPath, 'slow-old');
+        return 'slow';
+      },
+    };
+    const fastWrite = {
+      name: 'FastWrite', errorOutput: null, sideEffectScope: 'external',
+      isReadOnly: () => false, isConcurrencySafe: () => false,
+      async execute() {
+        fastWriteCalls += 1;
+        writeFileSync(slowPath, 'fast-new');
+        return 'fast';
+      },
+    };
+    let timeoutOrdinal = 0;
+    const timeoutRegistry = createWorkItemToolRegistry({
+      workDir, isRunActive: () => store.isActiveRun(
+        timeoutClaim.run.id, 'timeout-owner', timeoutClaim.run.leaseEpoch,
+      ),
+      runTools: [slowWrite, fastWrite],
+      operationLifecycle: (name, input) => {
+        timeoutOrdinal += 1;
+        const key = `${timeoutClaim.run.id}:tool:${timeoutOrdinal}`;
+        const claimedOperation = store.createAndClaimOperation({
+          workItemId: timeoutItem.id,
+          actionId: timeoutClaim.action.id,
+          runId: timeoutClaim.run.id,
+          operationType: name,
+          idempotencyKey: key,
+          replayPolicy: 'never_automatic',
+          payload: { input },
+        }, 'timeout-owner', timeoutClaim.run.leaseEpoch, false);
+        expect(claimedOperation).not.toBeNull();
+        return {
+          complete: (effectStatus, result) => store.completeOperation(
+            key, 'timeout-owner', timeoutClaim.run.leaseEpoch, effectStatus, result,
+          ),
+        };
+      },
+    });
+    const timeoutAdapter = {
+      responses: [[
+        { type: 'tool_call', id: 'slow', name: 'SlowWrite', input: {} },
+        { type: 'tool_call', id: 'fast', name: 'FastWrite', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]],
+      async *stream() {
+        for (const event of this.responses.shift()) yield event;
+      },
+    };
+    const timeoutEngine = new Engine({
+      adapter: timeoutAdapter, trace: new NullTrace(),
+      config: { model: 'provider/model', maxOutputTokens: 1_024 },
+      toolRegistry: timeoutRegistry,
+    });
+    const timeoutEvents = [];
+    await expect(async () => {
+      for await (const event of timeoutEngine.query({ prompt: 'Run both writes', workDir })) {
+        timeoutEvents.push(event);
+      }
+    }).rejects.toMatchObject({ name: 'ToolExecutionTimeoutError' });
+    expect(timeoutEvents).toContainEqual(expect.objectContaining({
+      type: 'tool_end', id: 'slow', isError: true,
+    }));
+    expect(fastWriteCalls).toBe(0);
+    expect(store.interruptRun(
+      timeoutClaim.run.id, 'timeout-owner', timeoutClaim.run.leaseEpoch, 'fatal tool timeout',
+    )).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 80));
+    expect(readFileSync(slowPath, 'utf8')).toBe('slow-old');
+    expect(store.getOperationByKey(`${timeoutClaim.run.id}:tool:1`)).toMatchObject({
+      effectStatus: 'unknown', executionStatus: 'hazardous_orphan',
+      effectCutoff: { status: 'stale', closureType: 'late_completion' },
+    });
+    expect(store.claimReadyAction('blocked-after-timeout', 5_000)).toBeNull();
+
+    const crashItem = controller.create({
+      id: 'operation-create-crash', title: 'Recover unclaimed operation',
+      goal: 'Do not deadlock after create-before-claim crash', acceptanceCriteria: [],
+      workflowTemplate: 'software-change', workDir, start: true,
+    });
+    const crashClaim = store.claimReadyAction('crash-owner', 5_000);
+    store.createOperation({
+      workItemId: crashItem.id, actionId: crashClaim.action.id, runId: crashClaim.run.id,
+      operationType: 'CrashBeforeClaim', idempotencyKey: 'create-before-claim-crash',
+      replayPolicy: 'never_automatic',
+    });
     store.close();
+    const reopened = new WorkItemStore(join(workDir, 'work-center.db'));
+    expect(reopened.getOperationByKey('create-before-claim-crash')).toMatchObject({
+      effectStatus: 'failed_no_effect', executionStatus: 'quiescent',
+      effectCutoff: { closureType: 'recovered_before_dispatch' },
+    });
+    expect(reopened.recoverInterruptedRuns('post-crash-owner')).toBeGreaterThanOrEqual(1);
+    expect(reopened.claimReadyAction('post-crash-owner', 5_000))
+      .toMatchObject({ workItem: { id: crashItem.id } });
+    reopened.close();
 
     for (const tool of controlTools.slice(0, 4)) {
       const controlRegistry = createWorkItemToolRegistry({
