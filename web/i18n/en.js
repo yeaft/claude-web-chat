@@ -139,6 +139,8 @@ export default {
   'sidebar.sessions.emptyProvider': 'No sessions for this provider',
   'sidebar.sessions.menu': 'Session menu',
   'sidebar.sessions.unread': 'Unread',
+  'sidebar.sessions.pinned': 'Pinned',
+  'sidebar.sessions.processing': 'Reply in progress',
   'sidebar.sessions.agent': 'Agent',
   'sidebar.sessions.provider': 'Provider',
   'sidebar.projects.title': 'Projects',

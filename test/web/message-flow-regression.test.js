@@ -194,6 +194,8 @@ describe('message flow regressions', () => {
         workDir: '/repo',
         pinned: true,
         availability: 'online',
+        createdAt: '2026-07-29T10:00:00.000Z',
+        metadataUpdatedAt: '2026-07-29T10:00:00.000Z',
       },
       {
         catalogKey: 'chat:offline',
@@ -210,6 +212,9 @@ describe('message flow regressions', () => {
         title: 'Visible',
         pinned: false,
         availability: 'online',
+        createdAt: '2026-07-29T09:00:00.000Z',
+        metadataUpdatedAt: '2026-07-29T09:00:00.000Z',
+        updatedAt: '2026-07-31T23:00:00.000Z',
       },
       {
         catalogKey: 'chat:visible-2',
@@ -218,6 +223,8 @@ describe('message flow regressions', () => {
         title: 'Visible 2',
         pinned: false,
         availability: 'online',
+        createdAt: '2026-07-29T08:00:00.000Z',
+        metadataUpdatedAt: '2026-07-29T11:00:00.000Z',
       },
     ];
     const sidebar = mount(UnifiedSessionList, {
@@ -227,7 +234,7 @@ describe('message flow regressions', () => {
         activeRoute: { runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: 'visible' },
         processingConversations: { visible: true },
         isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'user_1770305719:server-instance',
-        isSessionUnread: row => row.catalogKey === 'chat:visible',
+        isSessionUnread: row => row.catalogKey === 'chat:visible' || row.catalogKey.endsWith(':pinned'),
         workCenterOpen: true,
         agents: [
           { id: 'agent-a', name: 'Agent A', online: true },
@@ -295,10 +302,13 @@ describe('message flow regressions', () => {
     expect(sidebar.get('.session-dots-btn svg path').attributes('d')).toContain('M6 10');
     expect(sidebar.text()).toContain('Visible');
     expect(sidebar.text()).toContain('Pinned');
+    expect(sidebar.findAll('.session-item').map(item => item.get('.sidebar-session-title-text').text())).toEqual(['Pinned', 'Visible 2', 'Visible']);
     expect(sidebar.findAll('.session-item.processing')).toHaveLength(2);
-    expect(sidebar.findAll('.processing-dot')).toHaveLength(0);
+    expect(sidebar.findAll('.processing-dot')).toHaveLength(2);
+    expect(sidebar.findAll('.session-pin-icon')).toHaveLength(1);
     expect(sidebar.findAll('.sidebar-session-meta')).toHaveLength(0);
-    expect(sidebar.findAll('.sidebar-session-unread')).toHaveLength(1);
+    expect(sidebar.findAll('.sidebar-session-unread')).toHaveLength(3);
+    expect(sidebar.find('.sidebar-project-unread').exists()).toBe(true);
     expect(sidebar.find('.session-item.active').text()).toContain('Visible');
     await sidebar.setProps({
       activeRoute: {
@@ -402,7 +412,7 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).toContain("moveRow(row, project)");
     expect(UnifiedSessionList.template).toContain('sidebar-primary-actions');
     expect(UnifiedSessionList.template).not.toContain('sidebar-session-meta');
-    expect(UnifiedSessionList.template).not.toContain('processing-dot');
+    expect(UnifiedSessionList.template).toContain('processing-dot');
     const documentAdd = vi.spyOn(document, 'addEventListener');
     const documentRemove = vi.spyOn(document, 'removeEventListener');
     sidebar.unmount();
@@ -1176,7 +1186,7 @@ describe('message flow regressions', () => {
     expect(store.yeaftProcessingSessions).toEqual({
       [yeaftSessionIdentityKey('agent-a', 'shared')]: true,
     });
-    expect(wrapper.findAll('.processing-dot')).toHaveLength(0);
+    expect(wrapper.findAll('.processing-dot')).toHaveLength(1);
     expect(wrapper.findAll('.session-item')[0].classes()).toContain('processing');
     expect(wrapper.findAll('.session-item')[1].classes()).not.toContain('processing');
 
@@ -1194,7 +1204,7 @@ describe('message flow regressions', () => {
     await Vue.nextTick();
     expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(false);
     expect(store.isYeaftSessionProcessing('shared', 'agent-b')).toBe(true);
-    expect(wrapper.findAll('.processing-dot')).toHaveLength(0);
+    expect(wrapper.findAll('.processing-dot')).toHaveLength(1);
     expect(wrapper.findAll('.session-item')[0].classes()).not.toContain('processing');
     expect(wrapper.findAll('.session-item')[1].classes()).toContain('processing');
 
@@ -1229,7 +1239,7 @@ describe('message flow regressions', () => {
     await Vue.nextTick();
     expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(false);
     expect(store.isYeaftSessionProcessing('shared', 'agent-b')).toBe(true);
-    expect(wrapper.findAll('.processing-dot')).toHaveLength(0);
+    expect(wrapper.findAll('.processing-dot')).toHaveLength(1);
     expect(wrapper.findAll('.session-item')[1].classes()).toContain('processing');
 
     store.handleYeaftOutput({
