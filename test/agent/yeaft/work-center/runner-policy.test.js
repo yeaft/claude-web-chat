@@ -12,7 +12,16 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { Engine } from '../../../../agent/yeaft/engine.js';
+import { NullTrace } from '../../../../agent/yeaft/debug-trace.js';
+import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
+import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
+import { resolvePlanningWorkflowSnapshot } from '../../../../agent/yeaft/work-center/workflow.js';
 import {
+  createProposeWorkItemActionsTool,
+  createRequestWorkItemReplanTool,
+  createSubmitWorkItemPlanTool,
+  createSubmitWorkItemReplanTool,
   createWorkItemToolRegistry,
   parseStructuredResult,
   workItemToolPolicySnapshot,
@@ -66,42 +75,245 @@ describe('Work Center tool policy', () => {
     });
   });
 
-  it('persists non-read-only tool execution through the Operation lifecycle', async () => {
+  it('persists external side effects and excludes Run-local control tools', async () => {
     const transitions = [];
-    const registry = createWorkItemToolRegistry({
-      workDir,
-      isRunActive: () => true,
-      operationLifecycle: (name, input) => {
-        transitions.push({ phase: 'start', name, input });
-        return { complete: (effectStatus, result) => transitions.push({ phase: 'complete', effectStatus, result }) };
-      },
-    });
-    await registry.execute('FileWrite', { file_path: 'tracked.txt', content: 'tracked' }, {});
-    await registry.execute('FileRead', { file_path: 'tracked.txt' }, {});
-    expect(transitions).toHaveLength(2);
-    expect(transitions[0]).toMatchObject({ phase: 'start', name: 'FileWrite' });
-    expect(transitions[1]).toMatchObject({ phase: 'complete', effectStatus: 'applied' });
-
-    const failedTransitions = [];
-    const failingRegistry = createWorkItemToolRegistry({
-      workDir,
-      isRunActive: () => true,
-      runTools: [{
-        name: 'FailingWrite',
-        isReadOnly: () => false,
-        isConcurrencySafe: () => false,
+    const recordLifecycle = (name, input) => {
+      transitions.push({ phase: 'start', name, input });
+      return { complete: (effectStatus, result) => transitions.push({ phase: 'complete', name, effectStatus, result }) };
+    };
+    const controlTools = [
+      createSubmitWorkItemPlanTool({
+        vps: [{ id: 'omni', role: 'developer' }],
+        workItem: { title: 'Plan', goal: 'Plan safely', acceptanceCriteria: ['Safe'] },
+        collector: { value: null }, isRunActive: () => true,
+      }),
+      createProposeWorkItemActionsTool({
+        vps: [{ id: 'omni', role: 'developer' }],
+        workItem: { planRevision: 1 }, actions: [], collector: { value: null }, isRunActive: () => true,
+      }),
+      createRequestWorkItemReplanTool({
+        workItem: { planRevision: 1 }, collector: { value: null }, isRunActive: () => true,
+      }),
+      createSubmitWorkItemReplanTool({
+        vps: [{ id: 'omni', role: 'developer' }],
+        workItem: { planRevision: 1 },
+        action: { context: [{ type: 'replan-barrier', candidateActionIds: [] }] },
+        actions: [], collector: { value: null }, isRunActive: () => true,
+      }),
+      {
+        name: 'FailingWrite', errorOutput: null, sideEffectScope: 'external',
+        isReadOnly: () => false, isConcurrencySafe: () => false,
         async execute() { throw new Error('write outcome uncertain'); },
+      },
+      {
+        name: 'ReturnedUnknownWrite', errorOutput: 'json-error-envelope', sideEffectScope: 'external',
+        isReadOnly: () => false, isConcurrencySafe: () => false,
+        async execute() { return JSON.stringify({ error: 'write may have happened' }); },
+      },
+    ];
+    const mcpTools = [{
+      name: 'mcp__test__mutate', errorOutput: null,
+      isReadOnly: () => false, isConcurrencySafe: () => false,
+      async execute() { return 'mutated'; },
+    }];
+    const registry = createWorkItemToolRegistry({
+      workDir, isRunActive: () => true, runTools: controlTools,
+      mcpTools, operationLifecycle: recordLifecycle,
+    });
+
+    await registry.execute('FileWrite', { file_path: 'tracked.txt', content: 'tracked' }, {});
+    await registry.execute('FileEdit', {
+      file_path: 'tracked.txt', old_string: 'tracked', new_string: 'edited', replace_all: false,
+    }, {});
+    await registry.execute('FileRead', { file_path: 'tracked.txt' }, {});
+    expect(readFileSync(join(workDir, 'tracked.txt'), 'utf8')).toBe('edited');
+    const missingEdit = await registry.execute('FileEdit', {
+      file_path: 'missing.txt', old_string: 'old', new_string: 'new', replace_all: false,
+    }, {});
+    expect(JSON.parse(missingEdit)).toMatchObject({ errorEffect: 'none', error: expect.stringMatching(/File not found/) });
+    await registry.execute('mcp__test__mutate', {}, {});
+    await expect(registry.execute('FailingWrite', {}, {})).rejects.toThrow(/uncertain/);
+    await registry.execute('ReturnedUnknownWrite', {}, {});
+
+    expect(transitions.filter(entry => entry.phase === 'start').map(entry => entry.name)).toEqual([
+      'FileWrite', 'FileEdit', 'FileEdit', 'mcp__test__mutate', 'FailingWrite', 'ReturnedUnknownWrite',
+    ]);
+    expect(transitions.filter(entry => entry.phase === 'complete').map(entry => ({
+      name: entry.name, effectStatus: entry.effectStatus,
+    }))).toEqual([
+      { name: 'FileWrite', effectStatus: 'applied' },
+      { name: 'FileEdit', effectStatus: 'applied' },
+      { name: 'FileEdit', effectStatus: 'failed_no_effect' },
+      { name: 'mcp__test__mutate', effectStatus: 'applied' },
+      { name: 'FailingWrite', effectStatus: 'unknown' },
+      { name: 'ReturnedUnknownWrite', effectStatus: 'unknown' },
+    ]);
+    expect(controlTools.slice(0, 4).map(tool => tool.sideEffectScope)).toEqual(['run', 'run', 'run', 'run']);
+
+    const adapter = {
+      responses: [
+        [
+          { type: 'tool_call', id: 'missing-edit', name: 'FileEdit', input: {
+            file_path: 'engine-missing.txt', old_string: 'old', new_string: 'new', replace_all: false,
+          } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ],
+        [{ type: 'text_delta', text: 'Handled.' }, { type: 'stop', stopReason: 'end_turn' }],
+      ],
+      async *stream() {
+        for (const event of this.responses.shift()) yield event;
+      },
+    };
+    const engine = new Engine({
+      adapter, trace: new NullTrace(), config: { model: 'provider/model', maxOutputTokens: 1_024 },
+      toolRegistry: registry,
+    });
+    const events = [];
+    for await (const event of engine.query({ prompt: 'Edit a missing file', workDir })) events.push(event);
+    expect(events.find(event => event.type === 'tool_end' && event.id === 'missing-edit'))
+      .toMatchObject({ isError: true });
+
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store, { listAvailableVpIds: () => ['omni'] });
+    const workItem = controller.create({
+      id: 'plan-self-correction',
+      title: 'Correct an invalid plan',
+      goal: 'Let the planner correct its graph in one Run',
+      acceptanceCriteria: ['The corrected plan can execute'],
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+      workDir,
+      start: true,
+    });
+    const claim = store.claimReadyAction('planner-boot', 5_000);
+    const planAction = (id, type, dependsOnActionIds) => ({
+      id, name: id, type,
+      objective: `Complete ${id}`,
+      approach: `Use repository evidence to complete ${id}`,
+      expectedOutcome: `${id} is complete`,
+      candidateVpIds: ['omni'], assignmentReason: 'Use the available planner',
+      dependsOnActionIds, workspaceMode: type === 'deliver' ? 'shared' : 'read',
+    });
+    const planInput = {
+      summary: 'A corrected plan is ready.',
+      evidence: ['The complete graph was validated.'],
+      acceptanceChecks: [{
+        criterion: 'The corrected plan can execute', status: 'passed', evidence: 'Validated graph',
       }],
-      operationLifecycle: name => {
-        failedTransitions.push({ phase: 'start', name });
-        return { complete: (effectStatus, result) => failedTransitions.push({ phase: 'complete', effectStatus, result }) };
+      contractPatch: {
+        title: 'Correct an invalid plan',
+        goal: 'Let the planner correct its graph in one Run',
+        acceptanceCriteria: ['The corrected plan can execute'],
+      },
+      workItemType: 'plan-correction',
+      actions: [
+        planAction('implement', 'implement', []),
+        planAction('deliver', 'deliver', ['implement']),
+      ],
+    };
+    const plannerAdapter = {
+      responses: [
+        [
+          { type: 'tool_call', id: 'invalid-plan', name: 'SubmitWorkItemPlan', input: {
+            ...planInput,
+            actions: [
+              planAction('implement', 'implement', ['missing-dependency']),
+              planAction('deliver', 'deliver', ['implement']),
+            ],
+          } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ],
+        [
+          { type: 'tool_call', id: 'valid-plan', name: 'SubmitWorkItemPlan', input: planInput },
+          { type: 'stop', stopReason: 'tool_use' },
+        ],
+      ],
+      async *stream(params) {
+        params.onRequestStart?.();
+        for (const event of this.responses.shift()) yield event;
+      },
+    };
+    const runner = new WorkItemRunner({
+      store,
+      runtimeProvider: async () => ({
+        defaultWorkDir: workDir,
+        config: { model: 'provider/model', maxOutputTokens: 1_024, projectDocMaxBytes: 0 },
+        adapter: plannerAdapter,
+      }),
+      registry: {
+        listVps: () => [{ id: 'omni', name: 'Omni', role: 'planner', traits: ['triage', 'implement'] }],
+        getVp: id => id === 'omni'
+          ? { id: 'omni', name: 'Omni', role: 'planner', traits: ['triage', 'implement'] }
+          : null,
       },
     });
-    await expect(failingRegistry.execute('FailingWrite', {}, {})).rejects.toThrow(/uncertain/);
-    expect(failedTransitions).toEqual([
-      { phase: 'start', name: 'FailingWrite' },
-      { phase: 'complete', effectStatus: 'unknown', result: { error: 'write outcome uncertain' } },
-    ]);
+    const planned = await runner.run({
+      ...claim, ownerBootId: 'planner-boot', signal: new AbortController().signal,
+    });
+    const plannedDetail = controller.submit(
+      claim.run.id, 'planner-boot', claim.run.leaseEpoch, planned,
+    );
+    expect(plannedDetail).toMatchObject({ id: workItem.id, status: 'ready' });
+    expect(store.db.prepare('SELECT COUNT(*) AS count FROM operations WHERE work_item_id = ?')
+      .get(workItem.id).count).toBe(0);
+    const executionClaim = store.claimReadyAction('executor-boot', 5_000);
+    expect(executionClaim)
+      .toMatchObject({ workItem: { id: workItem.id }, action: { stageId: 'implement' } });
+    const operationKey = `${executionClaim.run.id}:tool:1`;
+    const fencedRegistry = createWorkItemToolRegistry({
+      workDir,
+      isRunActive: () => store.isActiveRun(
+        executionClaim.run.id, 'executor-boot', executionClaim.run.leaseEpoch,
+      ),
+      runTools: [controlTools[4]],
+      operationLifecycle: (name, input) => {
+        store.createOperation({
+          workItemId: workItem.id,
+          actionId: executionClaim.action.id,
+          runId: executionClaim.run.id,
+          operationType: name,
+          idempotencyKey: operationKey,
+          replayPolicy: 'never_automatic',
+          payload: { input },
+        });
+        expect(store.claimOperation(
+          operationKey, 'executor-boot', executionClaim.run.leaseEpoch, false,
+        )).not.toBeNull();
+        return {
+          complete: (effectStatus, result) => expect(store.completeOperation(
+            operationKey, 'executor-boot', executionClaim.run.leaseEpoch, effectStatus, result,
+          )).toBe(true),
+        };
+      },
+    });
+    await expect(fencedRegistry.execute('FailingWrite', {}, {})).rejects.toThrow(/uncertain/);
+    expect(store.getOperationByKey(operationKey)).toMatchObject({
+      effectStatus: 'unknown', executionStatus: 'quiescent',
+    });
+    const afterImplementation = controller.submit(
+      executionClaim.run.id, 'executor-boot', executionClaim.run.leaseEpoch,
+      {
+        outcome: 'completed', response: 'Implementation complete.', summary: 'Implementation complete.',
+        evidence: ['implementation evidence'],
+        acceptanceChecks: [{
+          criterion: 'The corrected plan can execute', status: 'deferred', evidence: 'Delivery verifies it',
+        }],
+      },
+    );
+    expect(afterImplementation.actions.find(action => action.stageId === 'deliver'))
+      .toMatchObject({ status: 'ready' });
+    expect(store.claimReadyAction('blocked-by-unknown-operation', 5_000)).toBeNull();
+    store.close();
+
+    for (const tool of controlTools.slice(0, 4)) {
+      const controlRegistry = createWorkItemToolRegistry({
+        workDir, isRunActive: () => true,
+        runTools: [tool], operationLifecycle: recordLifecycle,
+      });
+      try { await controlRegistry.execute(tool.name, {}, {}); } catch {}
+    }
+    expect(transitions.filter(entry => entry.phase === 'start').map(entry => entry.name))
+      .not.toEqual(expect.arrayContaining(controlTools.slice(0, 4).map(tool => tool.name)));
 
     const policyRegistry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
     await expect(policyRegistry.execute('Bash', {
