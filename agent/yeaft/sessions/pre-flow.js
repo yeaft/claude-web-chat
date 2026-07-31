@@ -259,6 +259,7 @@ export function formatPickedForInjection(picked) {
  * @property {string[]}       [currentTags]        Contextual tags for rerank
  * @property {number}         [topK]               Max FTS rows fetched (default 50)
  * @property {number}         [budgetTokens]       Token budget for picked segments
+ * @property {number}         [pickLimit]          Max picked segments (default 8)
  * @property {boolean}        [fallbackOnEmpty]    Include bounded recent scoped segments when FTS has no hits
  * @property {number}         [fallbackPerScope]   Max fallback segments per scope
  */
@@ -353,6 +354,7 @@ export function runMemoryPreflow(index, opts) {
     currentTags: opts.currentTags || [],
     topK: opts.topK,
     budgetTokens: opts.budgetTokens,
+    pickLimit: opts.pickLimit,
   });
 
   let fallbackUsed = false;
@@ -362,6 +364,7 @@ export function runMemoryPreflow(index, opts) {
       ownVpId: opts.vpId || null,
       budgetTokens: opts.budgetTokens,
       perScope: opts.fallbackPerScope,
+      pickLimit: opts.pickLimit,
     });
     if (fallback.length > 0) {
       fallbackUsed = true;
@@ -400,6 +403,7 @@ function fallbackScopedSegments(index, opts) {
   const scopes = prioritizeFallbackScopes(filterScopes(opts.relevantScopes || [], opts.ownVpId || null));
   const perScope = Number.isFinite(opts.perScope) && opts.perScope > 0 ? Math.floor(opts.perScope) : 2;
   const budgetTokens = Number.isFinite(opts.budgetTokens) && opts.budgetTokens > 0 ? opts.budgetTokens : 1200;
+  const pickLimit = Number.isFinite(opts.pickLimit) && opts.pickLimit > 0 ? Math.floor(opts.pickLimit) : 8;
   const buckets = [];
   for (const scope of scopes) {
     let segs = [];
@@ -419,6 +423,7 @@ function fallbackScopedSegments(index, opts) {
       if (!seg) continue;
       const tk = approxTokens(seg.body || '');
       if (tk <= 0 || cost + tk > budgetTokens) continue;
+      if (out.length >= pickLimit) return out;
       out.push(seg);
       cost += tk;
     }

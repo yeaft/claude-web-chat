@@ -3978,6 +3978,7 @@ function handleEngineEvent(event, hctx) {
         type: 'memory_used',
         turnId: event.turnId,
         loaded: event.loaded || [],
+        meta: event.meta || null,
       }, envelope);
       break;
 
