@@ -1240,6 +1240,9 @@ describe('Work Center core', () => {
       workDir: dir,
       isRunActive: () => true,
       runTools: [replanTool],
+      operationLifecycle: () => {
+        throw new Error('Run-local replan tools must not create an external Operation');
+      },
     });
     const beforeRejectedAddition = store.getWorkItemDetail(largeReplanItem.id);
     await expect(replanRegistry.execute('SubmitWorkItemReplan', {
@@ -1276,6 +1279,8 @@ describe('Work Center core', () => {
     expect(appliedLargeReplan.actions.filter(action => (
       acceptedAdditions.some(added => added.id === action.stageId) && action.status === 'ready'
     ))).toHaveLength(8);
+    expect(store.claimReadyAction('boot-large-replan-after-correction', 5_000))
+      .toMatchObject({ workItem: { id: largeReplanItem.id } });
     controller.cancel(largeReplanItem.id);
 
     const workflowSnapshot = resolvePlanningWorkflowSnapshot({});

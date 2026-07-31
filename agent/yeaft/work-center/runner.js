@@ -1,5 +1,5 @@
 import { Engine } from '../engine.js';
-import { ToolRegistry } from '../tools/registry.js';
+import { ToolRegistry, isToolErrorOutput, toolErrorEffect } from '../tools/registry.js';
 import { defineTool } from '../tools/types.js';
 import { allTools } from '../tools/index.js';
 import { parsePatch } from '../tools/apply-patch.js';
@@ -274,6 +274,7 @@ function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunAct
         ? input
         : assertToolInput(tool.name, input, canonicalDir, canonicalAttachmentFiles);
       const trackOperation = typeof operationLifecycle === 'function'
+        && tool.sideEffectScope !== 'run'
         && tool.isReadOnly?.(checkedInput) !== true;
       const operation = trackOperation ? operationLifecycle(tool.name, checkedInput) : null;
       let output;
@@ -288,7 +289,12 @@ function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunAct
         operation?.complete('unknown', { error: String(error?.message || error) });
         throw error;
       }
-      operation?.complete('applied', { outputHash: hashMainlineSnapshot({ output: String(output || '') }) });
+      const outputHash = hashMainlineSnapshot({ output: String(output || '') });
+      const returnedError = tool.errorOutput === 'json-error-envelope' && isToolErrorOutput(output);
+      const effectStatus = returnedError
+        ? toolErrorEffect(output) === 'none' ? 'failed_no_effect' : 'unknown'
+        : 'applied';
+      operation?.complete(effectStatus, { outputHash });
       if (!isRunActive()) throw new Error('Work Center Run lease was lost during tool execution');
       if (['FileRead', 'ViewImage'].includes(tool.name) && typeof output === 'string') {
         const withoutFilePaths = canonicalAttachmentFiles.reduce(
@@ -386,6 +392,7 @@ export function createSubmitWorkItemPlanTool({
     },
     isConcurrencySafe: () => false,
     isReadOnly: () => false,
+    sideEffectScope: 'run',
   });
 }
 
@@ -444,6 +451,7 @@ export function createProposeWorkItemActionsTool({
       ctx.requestEndTurn?.({ kind: 'work_item_actions_proposed', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId, actionCount: input.actions.length });
     },
+    sideEffectScope: 'run',
   });
 }
 
@@ -465,6 +473,7 @@ export function createRequestWorkItemReplanTool({ workItem, collector, isRunActi
       ctx.requestEndTurn?.({ kind: 'work_item_replan_requested', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId });
     },
+    sideEffectScope: 'run',
   });
 }
 
@@ -519,6 +528,7 @@ export function createSubmitWorkItemReplanTool({ vps, workItem, action, actions,
     },
     isConcurrencySafe: () => false,
     isReadOnly: () => false,
+    sideEffectScope: 'run',
   });
 }
 
