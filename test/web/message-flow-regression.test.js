@@ -83,6 +83,7 @@ const {
 } = await import('../../web/stores/helpers/handlers/conversationHandler.js');
 const { handleAgentSelected } = await import('../../web/stores/helpers/handlers/agentHandler.js');
 const { handleMessage } = await import('../../web/stores/helpers/messageHandler.js');
+const { createInitialConversationViewState } = await import('../../web/stores/helpers/yeaft-view.js');
 const { createFileOperations } = await import('../../web/components/files/fileOperations.js');
 
 import {
@@ -1169,6 +1170,185 @@ describe('message flow regressions', () => {
       store._savedActiveConversations = null;
       store.enterYeaft();
       assertChatIdentityRestored(false);
+
+      // A cold persisted Yeaft view has no live Chat snapshot yet. The first
+      // online Agent may legitimately be B while the last Chat conversation is
+      // owned by A. A B acknowledgement must stay inside the Yeaft control plane,
+      // and leaving Yeaft must derive A's full identity from the Chat row before
+      // any workbench action can use the restored conversation/workDir.
+      const previousPreferredConversationView = localStorage.getItem('yeaft-preferred-conversation-view');
+      const previousLastViewedConversation = localStorage.getItem('lastViewedConversation');
+      const previousStoreLastViewedConversation = store.lastViewedConversation;
+      const productionRequestYeaftSessionBootstrap = store.requestYeaftSessionBootstrap;
+      localStorage.setItem('yeaft-preferred-conversation-view', 'yeaft');
+      localStorage.setItem('lastViewedConversation', 'chat-cold-a');
+      Object.assign(store, createInitialConversationViewState(localStorage));
+      store.lastViewedConversation = 'chat-cold-a';
+      store.currentAgent = null;
+      store.currentAgentInfo = null;
+      store.currentWorkDir = null;
+      store.agents = [];
+      store.conversations = [];
+      store.activeConversations = ['conv-cold-b'];
+      store.yeaftConversationId = 'conv-cold-b';
+      store.yeaftConversationIdsByAgent = { 'agent-b': 'conv-cold-b' };
+      store.messagesMap = { 'chat-cold-a': [], 'conv-cold-b': [] };
+      store.pendingAgentSelection = null;
+      store.agentSwitching = false;
+      store._hasHandledAgentList = false;
+      store._yeaftAgentSeen = null;
+      store.yeaftSessionReady = true;
+      store.yeaftModel = 'agent-b/model';
+      store.yeaftStatus = { skills: [], mcpServers: [], tools: [] };
+      store.requestYeaftSessionBootstrap = vi.fn();
+      store.sendWsMessage = vi.fn(() => true);
+      handleMessage(store, {
+        type: 'agent_list',
+        agents: [
+          {
+            id: 'agent-b', name: 'Agent B', online: true, workDir: '/repo-b', conversations: [],
+          },
+          {
+            id: 'agent-a',
+            name: 'Agent A',
+            online: true,
+            workDir: '/repo-a',
+            conversations: [{ id: 'chat-cold-a', workDir: '/repo-a' }],
+          },
+        ],
+      });
+      expect(store.currentView).toBe('yeaft');
+      expect(store.currentAgent).toBe('agent-b');
+      expect(store.currentAgentInfo).toMatchObject({ id: 'agent-b', workDir: '/repo-b' });
+      expect(store.conversations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'chat-cold-a', agentId: 'agent-a', workDir: '/repo-a' }),
+      ]));
+
+      store.pendingAgentSelection = { agentId: 'agent-b', requestId: 'cold-agent-b-selection' };
+      store.agentSwitching = true;
+      store.sendWsMessage.mockClear();
+      expect(handleAgentSelected(store, {
+        type: 'agent_selected',
+        ok: true,
+        requestId: 'cold-agent-b-selection',
+        agentId: 'agent-b',
+        agentName: 'Agent B',
+        workDir: '/repo-b',
+        conversations: [],
+      })).toBe(true);
+      expect(store.currentView).toBe('yeaft');
+      expect(store.currentAgent).toBe('agent-b');
+      expect(store.yeaftConversationId).toBe('conv-cold-b');
+      expect(store.activeConversations).toEqual(['conv-cold-b']);
+      expect(store.currentWorkDir).toBeNull();
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => (
+        msg.type === 'select_conversation'
+        || msg.type === 'sync_messages'
+        || msg.type === 'refresh_conversation'
+      ))).toEqual([]);
+
+      store.sendWsMessage.mockClear();
+      store.leaveYeaft();
+      const coldAgentASelection = store.pendingAgentSelection;
+      expect(coldAgentASelection).toMatchObject({ agentId: 'agent-a' });
+      expect(store.currentView).toBe('chat');
+      expect(store.currentAgent).toBe('agent-a');
+      expect(store.currentAgentInfo).toMatchObject({ id: 'agent-a', workDir: '/repo-a' });
+      expect(store.currentConversation).toBe('chat-cold-a');
+      expect(store.activeSessionRoute).toMatchObject({ agentId: 'agent-a', sessionId: 'chat-cold-a' });
+      expect(store.effectiveWorkDir).toBe('/repo-a');
+      expect(handleAgentSelected(store, {
+        type: 'agent_selected',
+        ok: true,
+        requestId: coldAgentASelection.requestId,
+        agentId: 'agent-a',
+        agentName: 'Agent A',
+        workDir: '/repo-a',
+        conversations: [{ id: 'chat-cold-a', workDir: '/repo-a' }],
+      })).toBe(true);
+      expect(store.pendingAgentSelection).toBeNull();
+      expect(store.currentAgent).toBe('agent-a');
+      expect(store.currentConversation).toBe('chat-cold-a');
+
+      store.sendWsMessage.mockClear();
+      globalThis.Vue = Vue;
+      const coldFileOperations = createFileOperations(store, {
+        getEffectiveWorkDir: () => store.effectiveWorkDir,
+        treePath: Vue.ref(''),
+      });
+      coldFileOperations.newFileType.value = 'file';
+      coldFileOperations.newFileName.value = 'cold-owner.txt';
+      coldFileOperations.confirmNewFile();
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'create_file')).toEqual([
+        expect.objectContaining({
+          agentId: 'agent-a',
+          conversationId: 'chat-cold-a',
+          workDir: '/repo-a',
+          filePath: '/repo-a/cold-owner.txt',
+        }),
+      ]);
+      coldFileOperations.cleanup();
+      delete globalThis.Vue;
+
+      // A persisted Chat row is not enough by itself. If its owner is absent or
+      // offline, fail closed instead of pairing that conversation/workDir with
+      // the currently active Yeaft Agent.
+      localStorage.setItem('yeaft-preferred-conversation-view', 'yeaft');
+      localStorage.setItem('lastViewedConversation', 'chat-offline-a');
+      Object.assign(store, createInitialConversationViewState(localStorage));
+      store.lastViewedConversation = 'chat-offline-a';
+      store.currentAgent = 'agent-b';
+      store.currentAgentInfo = { id: 'agent-b', name: 'Agent B', workDir: '/repo-b' };
+      store.currentWorkDir = null;
+      store.agents = [
+        { id: 'agent-b', name: 'Agent B', online: true, workDir: '/repo-b' },
+        { id: 'agent-a', name: 'Agent A', online: false, workDir: '/repo-a' },
+      ];
+      store.conversations = [{
+        id: 'chat-offline-a', agentId: 'agent-a', agentName: 'Agent A', workDir: '/repo-a',
+      }];
+      store.activeConversations = ['conv-cold-b'];
+      store.yeaftConversationId = 'conv-cold-b';
+      store.pendingAgentSelection = null;
+      store.agentSwitching = false;
+      store.sendWsMessage.mockClear();
+      store.leaveYeaft();
+      expect(store.currentView).toBe('chat');
+      expect(store.currentAgent).toBe('agent-b');
+      expect(store.currentConversation).toBeNull();
+      expect(store.currentWorkDir).toBeNull();
+      expect(store.pendingAgentSelection).toBeNull();
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => (
+        msg.type === 'select_agent'
+        || msg.type === 'select_conversation'
+        || msg.type === 'sync_messages'
+        || msg.type === 'refresh_conversation'
+      ))).toEqual([]);
+
+      store.requestYeaftSessionBootstrap = productionRequestYeaftSessionBootstrap;
+      store.lastViewedConversation = previousStoreLastViewedConversation;
+      if (previousPreferredConversationView == null) {
+        localStorage.removeItem('yeaft-preferred-conversation-view');
+      } else {
+        localStorage.setItem('yeaft-preferred-conversation-view', previousPreferredConversationView);
+      }
+      if (previousLastViewedConversation == null) {
+        localStorage.removeItem('lastViewedConversation');
+      } else {
+        localStorage.setItem('lastViewedConversation', previousLastViewedConversation);
+      }
+      store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-entry-a', 'agent-b': 'conv-entry-b' };
+      store.yeaftConversationId = 'conv-entry-a';
+      store.conversations = [{
+        id: 'chat-entry-a', agentId: 'agent-a', agentName: 'Agent A', workDir: '/repo-a',
+      }];
+      store.messagesMap = {
+        'chat-entry-a': [{ id: 'chat-a', type: 'user', content: 'chat A' }],
+        'conv-entry-a': [],
+        'conv-entry-b': [],
+      };
+      store.pendingAgentSelection = null;
+      store.agentSwitching = false;
 
       // A caller that explicitly selects an Agent remains authoritative. These
       // call sites defer bootstrap while they establish the target Session, so

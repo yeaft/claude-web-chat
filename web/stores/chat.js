@@ -1471,6 +1471,19 @@ export const useChatStore = defineStore('chat', {
     activateChatView({ persistPreference = false } = {}) {
       const pendingChatRestoreConversationId = this._pendingChatRestoreConversationId;
       this._pendingChatRestoreConversationId = null;
+      const pendingChatConversation = pendingChatRestoreConversationId
+        ? this.conversations.find(conversation => conversation.id === pendingChatRestoreConversationId)
+        : null;
+      const pendingChatAgent = pendingChatConversation?.agentId
+        ? this.agents.find(agent => agent.id === pendingChatConversation.agentId && agent.online)
+        : null;
+      if (!this._savedChatIdentity && pendingChatConversation && pendingChatAgent) {
+        this._savedChatIdentity = {
+          agentId: pendingChatAgent.id,
+          agentInfo: { ...pendingChatAgent },
+          workDir: pendingChatConversation.workDir || pendingChatAgent.workDir || null,
+        };
+      }
       this.currentView = 'chat';
       if (persistPreference) {
         yeaftViewHelpers.persistPreferredConversationView('chat');
@@ -1483,8 +1496,7 @@ export const useChatStore = defineStore('chat', {
         this.selectAgent(chatIdentity.agentId);
       }
       yeaftViewHelpers.applyLeaveYeaftTransition(this);
-      if (pendingChatRestoreConversationId
-          && this.conversations.some(conversation => conversation.id === pendingChatRestoreConversationId)) {
+      if (pendingChatRestoreConversationId && pendingChatConversation && pendingChatAgent) {
         this.autoRestoreConversation(pendingChatRestoreConversationId);
         this.sendWsMessage({
           type: 'refresh_conversation',

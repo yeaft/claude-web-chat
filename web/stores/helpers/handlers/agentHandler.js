@@ -543,27 +543,29 @@ export function handleAgentSelected(store, msg) {
   }
 
   // A Yeaft conversation id belongs to the Agent bridge, not the ordinary
-  // Chat conversation registry. Re-affirm the Agent catalog without sending
-  // a bogus `select_conversation` frame for that virtual transport id.
-  if (store.currentView !== 'yeaft' && isSameAgent && store.currentConversation) {
-    const currentConv = store.conversations.find(c => c.id === store.currentConversation);
-    store.currentWorkDir = currentConv?.workDir || store.currentWorkDir || msg.workDir;
-    console.log('[Reconnect] Restoring conversation selection:', store.currentConversation);
-    clearSessionLoading(store);
-    store.sendWsMessage({
-      type: 'select_conversation',
-      conversationId: store.currentConversation
-    });
+  // Chat conversation registry. Re-affirm the Agent catalog without mutating
+  // hidden Chat selection, workDir or history state.
+  if (store.currentView !== 'yeaft') {
+    if (isSameAgent && store.currentConversation) {
+      const currentConv = store.conversations.find(c => c.id === store.currentConversation);
+      store.currentWorkDir = currentConv?.workDir || store.currentWorkDir || msg.workDir;
+      console.log('[Reconnect] Restoring conversation selection:', store.currentConversation);
+      clearSessionLoading(store);
+      store.sendWsMessage({
+        type: 'select_conversation',
+        conversationId: store.currentConversation
+      });
 
-  } else {
-    store.activeConversations = [];
-    store.currentWorkDir = msg.workDir;
+    } else {
+      store.activeConversations = [];
+      store.currentWorkDir = msg.workDir;
 
-    const lastViewed = store.lastViewedConversation || localStorage.getItem('lastViewedConversation');
-    if (lastViewed && store.conversations.find(c => c.id === lastViewed)) {
-      console.log('[AutoRestore] Restoring last viewed conversation:', lastViewed);
-      store.autoRestoreConversation(lastViewed);
-      store.pendingRecovery = null;
+      const lastViewed = store.lastViewedConversation || localStorage.getItem('lastViewedConversation');
+      if (lastViewed && store.conversations.find(c => c.id === lastViewed)) {
+        console.log('[AutoRestore] Restoring last viewed conversation:', lastViewed);
+        store.autoRestoreConversation(lastViewed);
+        store.pendingRecovery = null;
+      }
     }
   }
 
