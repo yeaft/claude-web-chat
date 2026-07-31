@@ -528,9 +528,33 @@ export async function handleAgentOutput(agentId, agent, msg) {
     case 'session_output': {
       const data = hydrateInlinePreviewData(msg.data);
       const event = syncYeaftSessionMetadata(agentId, agent, msg.event);
+      let catalogChanged = false;
       if (event?.type === 'yeaft_status') {
         agent.yeaftStatus = event;
         await broadcastAgentList();
+      }
+      if (event?.type === 'session_roster_changed' && agent.ownerId && event.sessionId) {
+        try {
+          const existing = yeaftSessionDb.getForAgent(agent.ownerId, agentId, event.sessionId);
+          if (existing) {
+            yeaftSessionDb.upsertFromSnapshot(agent.ownerId, agentId, {
+              id: event.sessionId,
+              name: event.name != null ? event.name : (existing.name || event.sessionId),
+              roster: Array.isArray(event.roster) ? event.roster : (existing.roster || []),
+              defaultVpId: event.defaultVpId != null ? event.defaultVpId : (existing.defaultVpId || null),
+              workDir: existing.workDir || '',
+              config: existing.config || {},
+              announcement: typeof event.announcement === 'string'
+                ? event.announcement
+                : (existing.announcement || ''),
+              createdAt: existing.createdAt || Date.now(),
+              metadataUpdatedAt: event.metadataUpdatedAt || existing.metadataUpdatedAt || existing.createdAt || null,
+            });
+            catalogChanged = true;
+          }
+        } catch (e) {
+          console.warn(`[Server] yeaft roster persist failed for agent ${agentId}:`, e?.message || e);
+        }
       }
       if (msg.perfTraceId) {
         recordPerfTraceEvent({
@@ -614,6 +638,7 @@ export async function handleAgentOutput(agentId, agent, msg) {
           }
         }
       }
+      if (catalogChanged) await broadcastSessionCatalog(agent.ownerId);
       break;
     }
 
@@ -859,8 +884,10 @@ export async function handleAgentOutput(agentId, agent, msg) {
                 ? msg.announcement
                 : (existing?.announcement || ''),
               createdAt: existing?.createdAt || Date.now(),
+              metadataUpdatedAt: msg.metadataUpdatedAt || existing?.metadataUpdatedAt || existing?.createdAt || null,
             };
             yeaftSessionDb.upsertFromSnapshot(agent.ownerId, agentId, merged);
+            await broadcastSessionCatalog(agent.ownerId);
           }
         }
       } catch (e) {

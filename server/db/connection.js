@@ -45,6 +45,7 @@ db.exec(`
     title TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
+    metadata_updated_at INTEGER,
     is_active INTEGER DEFAULT 1
   );
 
@@ -153,6 +154,7 @@ const migrations = [
   `ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'`,
   `ALTER TABLE messages ADD COLUMN metadata TEXT`,
   `ALTER TABLE sessions ADD COLUMN is_pinned INTEGER DEFAULT 0`,
+  `ALTER TABLE sessions ADD COLUMN metadata_updated_at INTEGER`,
   `ALTER TABLE users ADD COLUMN aad_oid TEXT`,
   // fix-chat-title-sticky: persist the "user manually renamed this session"
   // bit so it survives agent reconnect / server restart / DB rehydration.
@@ -214,6 +216,7 @@ const yeaftSessionsTable = `
     announcement TEXT,
     created_at INTEGER,
     updated_at INTEGER NOT NULL,
+    metadata_updated_at INTEGER,
     is_archived INTEGER DEFAULT 0,
     is_pinned INTEGER DEFAULT 0,
     sort_order INTEGER,
@@ -291,6 +294,7 @@ const yeaftMigrations = [
   // between chat and yeaft.
   `ALTER TABLE yeaft_sessions ADD COLUMN is_pinned INTEGER DEFAULT 0`,
   `ALTER TABLE yeaft_sessions ADD COLUMN sort_order INTEGER`,
+  `ALTER TABLE yeaft_sessions ADD COLUMN metadata_updated_at INTEGER`,
 ];
 for (const migration of yeaftMigrations) {
   try { db.exec(migration); } catch (_) { /* column exists */ }
@@ -529,6 +533,10 @@ export const stmts = {
       is_custom_title = COALESCE(?, is_custom_title),
       updated_at = ?
     WHERE id = ?
+  `),
+
+  touchSessionMetadata: db.prepare(`
+    UPDATE sessions SET metadata_updated_at = ? WHERE id = ?
   `),
 
   updateSessionActive: db.prepare(`
@@ -891,6 +899,11 @@ export const stmts = {
       created_at = COALESCE(yeaft_sessions.created_at, excluded.created_at),
       updated_at = excluded.updated_at,
       is_archived = excluded.is_archived
+  `),
+
+  touchYeaftSessionMetadata: db.prepare(`
+    UPDATE yeaft_sessions SET metadata_updated_at = ?
+    WHERE id = ? AND user_id IS ? AND agent_id = ?
   `),
 
   getYeaftSession: db.prepare(`
