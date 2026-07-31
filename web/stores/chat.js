@@ -4331,13 +4331,13 @@ export const useChatStore = defineStore('chat', {
           // manual.reload) is surfaced through the store for 334-ui-b badge
           // refresh cues. Missing reason is tolerated (back-compat).
           const vp = window.Pinia?.useVpStore?.() || (window.__useVpStore && window.__useVpStore());
-          if (vp && event.vp) vp.upsert(event.vp, event.reason);
+          if (vp && event.vp) vp.upsert(event.vp, event.reason, msg.agentId || null);
           break;
         }
         case 'vp_removed': {
           // task-334h: live diff. Reason is always 'file.removed' on-wire.
           const vp = window.Pinia?.useVpStore?.() || (window.__useVpStore && window.__useVpStore());
-          if (vp && event.vpId) vp.remove(event.vpId, event.reason);
+          if (vp && event.vpId) vp.remove(event.vpId, event.reason, msg.agentId || null);
           break;
         }
 

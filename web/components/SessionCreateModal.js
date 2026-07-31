@@ -444,16 +444,21 @@ export default {
       return null;
     },
     isYeaftProvider() { return this.form.provider === 'yeaft'; },
-    vpList() { return this.vpStore?.vpList || []; },
+    vpLibraryReady() {
+      const s = this.vpStore;
+      return !!(s
+        && s.snapshotStatus === 'ready'
+        && s.snapshotAgentId === this.form.agentId
+        && s.lastVpSnapshotAgentId === this.form.agentId);
+    },
+    vpList() { return this.vpLibraryReady ? (this.vpStore?.vpList || []) : []; },
     vpDomainSections() { return buildVpDomainSections(this.vpList); },
     vpListSignature() {
       return (this.vpList || []).map(vp => vp && vp.vpId).filter(Boolean).join(',');
     },
     vpLibraryEmpty() {
       const s = this.vpStore;
-      if (!s) return false;
-      if (s.snapshotAgentId && s.snapshotAgentId !== this.form.agentId) return false;
-      if (s.snapshotStatus === 'error') return false;
+      if (!s || !this.vpLibraryReady) return false;
       if (s.emptyLibrary === true) return true;
       return !!(s.lastSnapshotAt && s.lastSnapshotAt > 0 && (s.vpOrder?.length || 0) === 0);
     },
@@ -555,7 +560,7 @@ export default {
       }));
     },
     canSubmit() {
-      if (this.isYeaftProvider && this.form.vpIds.length === 0) return false;
+      if (this.isYeaftProvider && (!this.vpLibraryReady || this.form.vpIds.length === 0)) return false;
       if (!this.form.agentId) return false;
       const a = this.agentOptions.find(x => x.id === this.form.agentId);
       return !!(a && a.online);
@@ -789,9 +794,14 @@ export default {
         vp?.failSnapshot?.(target, requestId, 'No online Agent is available.');
         return false;
       }
-      // Eager Agent registration normally hydrates this cache before the modal
-      // opens. Reuse only a ready snapshot from the exact target Agent.
-      if (!force && vp && vp.lastSnapshotAt > 0 && vp.lastVpSnapshotAgentId === target) {
+      // The only reusable roster is the current ready scope. Historical source
+      // metadata is insufficient: after A→B, `lastVpSnapshotAgentId === A` may
+      // still be true while B owns the pending request.
+      const reusable = !force
+        && vp?.snapshotStatus === 'ready'
+        && vp.snapshotAgentId === target
+        && vp.lastVpSnapshotAgentId === target;
+      if (reusable) {
         if (this.vpSnapshotTimer) clearTimeout(this.vpSnapshotTimer);
         this.vpSnapshotTimer = null;
         return true;
