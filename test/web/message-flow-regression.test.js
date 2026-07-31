@@ -926,12 +926,181 @@ describe('message flow regressions', () => {
       expect(duplicateSessions.activeSession).toMatchObject({ id: 'same', agentId: 'agent-b' });
       expect(duplicateStore.resolveYeaftSessionAgentId).not.toHaveBeenCalled();
 
+      // Restoring an exact Session while Chat is visible must remain non-invasive
+      // until the user enters Yeaft. The ordinary, argument-free entry edge must
+      // then adopt that exact owner before selecting a visible conversation or
+      // sending either Session data-plane or Agent control-plane frames.
+      duplicateSessions.resetInventory();
+      const previousExactOwnerChatStore = globalThis.Pinia.useChatStore;
+      globalThis.Pinia.useChatStore = () => store;
+      const productionLoadOpenedSessions = store.loadOpenedYeaftSessionsForConnectedAgents;
+      store.loadOpenedYeaftSessionsForConnectedAgents = vi.fn();
+      localStorage.setItem('lastViewedYeaftSession', 'agent-b\u001fsame');
+      store.currentView = 'chat';
+      store._yeaftTransitionActive = false;
+      store._savedActiveConversations = null;
+      store.currentAgent = 'agent-a';
+      store.currentAgentInfo = { id: 'agent-a', name: 'Agent A' };
+      store.agents = [
+        { id: 'agent-a', name: 'Agent A', online: true },
+        { id: 'agent-b', name: 'Agent B', online: true },
+      ];
+      store.yeaftActiveSessionFilter = 'same';
+      store.yeaftSessionAgentById = { same: 'agent-a' };
+      store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-entry-a', 'agent-b': 'conv-entry-b' };
+      store.yeaftConversationId = 'conv-entry-a';
+      store.activeConversations = ['chat-entry-a'];
+      store.messagesMap = {
+        'chat-entry-a': [{ id: 'chat-a', type: 'user', content: 'chat A' }],
+        'conv-entry-a': [],
+        'conv-entry-b': [],
+      };
+      store.yeaftSessionHistoryState = {};
+      store._yeaftHistoryLoad = null;
+      store.yeaftSessionReady = false;
+      store.yeaftModel = null;
+      store.yeaftStatus = null;
+      store.yeaftBootstrapMetaLoadingKey = null;
+      store.pendingAgentSelection = null;
+      store.agentSwitching = false;
+      store.sendWsMessage = vi.fn(() => true);
+      store.yeaftSessionInventoryCompleteSupported = true;
+      store.yeaftSessionHydrateRequestId = 'inventory-exact-owner-off-view';
+      store.yeaftSessionHydrateSlices = [];
+      store._hasHandledYeaftSessionHydrate = false;
+      store.yeaftSessionHydrateError = null;
+      handleMessage(store, {
+        type: 'yeaft_session_hydrate',
+        requestId: 'inventory-exact-owner-off-view',
+        agentId: 'agent-a',
+        sessions: [{ id: 'same', name: 'Agent A same' }],
+      });
+      handleMessage(store, {
+        type: 'yeaft_session_hydrate',
+        requestId: 'inventory-exact-owner-off-view',
+        agentId: 'agent-b',
+        sessions: [{ id: 'same', name: 'Agent B same' }],
+      });
+      handleMessage(store, {
+        type: 'yeaft_session_hydrate_complete',
+        requestId: 'inventory-exact-owner-off-view',
+        ok: true,
+      });
+      expect(duplicateSessions.activeSessionKey).toBe('agent-b\u001fsame');
+      expect(store.currentView).toBe('chat');
+      expect(store.currentAgent).toBe('agent-a');
+      expect(store.currentAgentInfo).toMatchObject({ id: 'agent-a' });
+      expect(store.yeaftConversationId).toBe('conv-entry-a');
+      expect(store.activeConversations).toEqual(['chat-entry-a']);
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => (
+        msg.type === 'yeaft_load_history' || msg.type === 'select_agent'
+      ))).toEqual([]);
+
+      store.enterYeaft();
+      expect(store.currentView).toBe('yeaft');
+      expect(store.currentAgent).toBe('agent-b');
+      expect(store.currentAgentInfo).toMatchObject({ id: 'agent-b' });
+      expect(store.yeaftActiveSessionFilter).toBe('same');
+      expect(store.yeaftSessionAgentById.same).toBe('agent-b');
+      expect(store.yeaftConversationId).toBe('conv-entry-b');
+      expect(store.activeConversations).toEqual(['conv-entry-b']);
+      const ordinaryEntryHistoryFrames = store.sendWsMessage.mock.calls
+        .map(call => call[0])
+        .filter(msg => msg.type === 'yeaft_load_history');
+      expect(ordinaryEntryHistoryFrames).toEqual([
+        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same' }),
+      ]);
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'select_agent')).toEqual([
+        expect.objectContaining({ agentId: 'agent-b' }),
+      ]);
+
+      store.handleMessage({
+        type: 'yeaft_history_chunk',
+        agentId: 'agent-b',
+        sessionId: 'same',
+        conversationId: 'conv-entry-b',
+        requestId: ordinaryEntryHistoryFrames[0].requestId,
+        mode: 'recent',
+        messages: [{
+          id: 'entry-history-b', role: 'assistant', content: 'from B', sessionId: 'same', ts: 2,
+        }],
+        latestSeq: 1,
+        oldestSeq: 1,
+        hasMore: false,
+      });
+      expect(store.yeaftConversationId).toBe('conv-entry-b');
+      expect(store.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'entry-history-b', content: 'from B', sessionId: 'same' }),
+      ]));
+
+      store.handleYeaftOutput({
+        agentId: 'agent-b',
+        sessionId: 'same',
+        event: {
+          type: 'session_ready',
+          conversationId: 'conv-entry-b',
+          sessionId: 'same',
+          model: 'agent-b/model',
+          availableModels: ['agent-b/model'],
+          tasks: [],
+        },
+      });
+      expect(store.currentAgent).toBe('agent-b');
+      expect(store.currentAgentInfo).toMatchObject({ id: 'agent-b' });
+      expect(store.yeaftConversationId).toBe('conv-entry-b');
+      expect(store.activeConversations).toEqual(['conv-entry-b']);
+      expect(store.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'entry-history-b', content: 'from B' }),
+      ]));
+
+      store.sendWsMessage.mockClear();
+      store.sendYeaftSessionMessage({ groupId: 'same', text: 'ordinary entry routes to B' });
+      await store.switchYeaftModel('agent-b/next-model');
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_session_send')).toEqual([
+        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same', text: 'ordinary entry routes to B' }),
+      ]);
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_model_switch')).toEqual([
+        expect.objectContaining({ agentId: 'agent-b', model: 'agent-b/next-model' }),
+      ]);
+      expect(store.messagesMap['conv-entry-b']).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'user', content: 'ordinary entry routes to B' }),
+      ]));
+      expect(store.messagesMap['conv-entry-a']).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: 'ordinary entry routes to B' }),
+      ]));
+      clearTimeout(store._processingWatchdogs['conv-entry-b']);
+      store.pendingAgentSelection = null;
+      store.agentSwitching = false;
+
+      // A caller that explicitly selects an Agent remains authoritative. These
+      // call sites defer bootstrap while they establish the target Session, so
+      // the exact B identity must not override the requested Agent A or emit B
+      // history during this intermediate entry step.
+      store.sendWsMessage.mockClear();
+      store.currentView = 'chat';
+      store._yeaftTransitionActive = false;
+      store._savedActiveConversations = null;
+      store.activeConversations = ['chat-entry-a'];
+      store.enterYeaft('agent-a', { deferBootstrap: true });
+      expect(store.currentAgent).toBe('agent-a');
+      expect(store.currentAgentInfo).toMatchObject({ id: 'agent-a' });
+      expect(store.yeaftConversationId).toBe('conv-entry-a');
+      expect(store.activeConversations).toEqual(['conv-entry-a']);
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'select_agent')).toEqual([
+        expect.objectContaining({ agentId: 'agent-a' }),
+      ]);
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_load_history')).toEqual([]);
+      store.pendingAgentSelection = null;
+      store.agentSwitching = false;
+      store._yeaftTransitionActive = false;
+      store._savedActiveConversations = null;
+      store.loadOpenedYeaftSessionsForConnectedAgents = productionLoadOpenedSessions;
+
       // An exact persisted owner that still exists must be restored through the
       // same atomic Chat activation seam as a user click. Updating only the
       // Sessions pointer leaves Agent A visible while the next message routes to
       // Agent B and lands in B's hidden optimistic conversation.
       duplicateSessions.resetInventory();
-      const previousExactOwnerChatStore = globalThis.Pinia.useChatStore;
       globalThis.Pinia.useChatStore = () => store;
       localStorage.setItem('lastViewedYeaftSession', 'agent-b\u001fsame');
       store.currentView = 'yeaft';

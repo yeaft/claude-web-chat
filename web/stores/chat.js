@@ -2422,9 +2422,15 @@ export const useChatStore = defineStore('chat', {
       // and leak yeaft messages into the Chat view.
       //
       // The agent the Yeaft page operates on is `currentAgent` — the single
-      // client/server-synced pointer. Pick an explicit agent, else keep the
-      // current one, else fall back to the first online agent.
-      let targetAgentId = agentId || this.currentAgent || null;
+      // client/server-synced pointer. An explicit caller remains authoritative;
+      // ordinary Chat → Yeaft entry must otherwise adopt the exact active
+      // Session owner before falling back to the Chat Agent. Inventory restore
+      // intentionally does not switch currentAgent while Chat is still visible.
+      const activeSessionId = resolveActiveYeaftSessionId(this);
+      const activeSessionAgentId = !agentId && activeSessionId
+        ? resolveAgentIdForSession(this, activeSessionId)
+        : null;
+      let targetAgentId = agentId || activeSessionAgentId || this.currentAgent || null;
       if (!targetAgentId) {
         const online = this.agents.find(a => a.online);
         if (online) targetAgentId = online.id;
