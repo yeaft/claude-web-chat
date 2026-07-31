@@ -71,21 +71,14 @@ function normalizeRipgrepPath(searchPath, path) {
   return relative(searchPath, normalized).replace(/\\/g, '/');
 }
 
-function parseRipgrepLine(line, searchPath, options) {
-  let path;
-  let suffix = '';
-  if (options.filesOnly) {
-    path = line;
-  } else if (options.count) {
-    const match = line.match(/^(.*?)(:\d+)$/);
-    if (match) [, path, suffix] = match;
-  } else {
-    const match = line.match(/^(.*?)([:\-]\d+[:\-].*)$/);
-    if (match) [, path, suffix] = match;
-  }
-  if (path == null) return null;
-  const normalized = normalizeRipgrepPath(searchPath, path);
-  return { path: normalized, output: normalized + suffix };
+function parseRipgrepRecord(record, searchPath, options) {
+  const separator = record.indexOf('\0');
+  if (separator < 0) return null;
+  const path = normalizeRipgrepPath(searchPath, record.slice(0, separator));
+  if (options.filesOnly) return { path, output: path };
+  const suffix = record.slice(separator + 1);
+  const separatorAfterPath = suffix[0] === '-' ? '' : ':';
+  return { path, output: path + separatorAfterPath + suffix };
 }
 
 function formatGrepError(message) {
@@ -155,6 +148,7 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
       '--color', 'never',
       '--hidden',
       '--no-ignore',
+      '--null',
     ];
     if (options.caseInsensitive) args.push('-i');
     if (options.fixedStrings) args.push('-F');
@@ -214,7 +208,7 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
 
     function captureLine(line) {
       if (!line || stoppedForLimit || stdoutTruncated) return;
-      const parsed = parseRipgrepLine(line, searchPath, options);
+      const parsed = parseRipgrepRecord(line, searchPath, options);
       if (parsed) {
         includeContinuation = matchesPath(parsed.path);
         if (!includeContinuation) return;
@@ -230,11 +224,13 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
     function captureStdout(chunk) {
       if (stdoutTruncated || stoppedForLimit) return;
       pendingStdout += stdoutDecoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      let newline;
-      while ((newline = pendingStdout.indexOf('\n')) >= 0) {
-        const line = pendingStdout.slice(0, newline).replace(/\r$/, '');
-        pendingStdout = pendingStdout.slice(newline + 1);
-        captureLine(line);
+      const delimiter = options.filesOnly ? '\0' : '\n';
+      let boundary;
+      while ((boundary = pendingStdout.indexOf(delimiter)) >= 0) {
+        let record = pendingStdout.slice(0, boundary).replace(/\r$/, '');
+        pendingStdout = pendingStdout.slice(boundary + 1);
+        if (options.filesOnly) record += '\0';
+        captureLine(record);
         if (stdoutTruncated || stoppedForLimit) break;
       }
     }

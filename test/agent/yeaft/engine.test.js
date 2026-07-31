@@ -2998,7 +2998,7 @@ describe('managed CLI setup and fast tool integration', () => {
     writeFileSync(join(root, 'src', '.yeaft', 'worktrees', 'ignored', 'w.txt'), 'needle\n');
     const rgPath = join(binDir, 'rg');
     const capturedArgs = join(tmpdir(), `yeaft-rg-args-${process.pid}-${Date.now()}.txt`);
-    writeFileSync(rgPath, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(capturedArgs)}\nprintf 'src/a.txt\\n.hidden/h.txt\\n'\n`, { mode: 0o755 });
+    writeFileSync(rgPath, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(capturedArgs)}\nprintf 'src/a.txt\\000.hidden/h.txt\\000'\n`, { mode: 0o755 });
     const options = {
       caseInsensitive: false,
       fixedStrings: true,
@@ -3131,7 +3131,7 @@ describe('managed CLI setup and fast tool integration', () => {
       const toolBinDir = managedCliBinDir(toolDir);
       const log = join(root, 'calls.log');
       mkdirSync(toolBinDir, { recursive: true });
-      writeFileSync(join(toolBinDir, 'rg'), `#!/bin/sh\necho rg >> ${JSON.stringify(log)}\nprintf 'src/a.js:1:needle\\n'\n`, { mode: 0o755 });
+      writeFileSync(join(toolBinDir, 'rg'), `#!/bin/sh\necho rg >> ${JSON.stringify(log)}\nprintf 'src/a.js\\000'\n`, { mode: 0o755 });
       writeFileSync(join(toolBinDir, 'fd'), `#!/bin/sh\necho fd >> ${JSON.stringify(log)}\nprintf 'src/a.js\\0src/b.txt\\0'\n`, { mode: 0o755 });
       writeFileSync(join(toolBinDir, 'dust'), `#!/bin/sh\necho dust >> ${JSON.stringify(log)}\nprintf '{"size":"2080B","name":${JSON.stringify(root)},"children":[{"size":"2048B","name":${JSON.stringify(join(root, 'large'))},"children":[]}]}'\n`, { mode: 0o755 });
       const neverReady = new Promise(() => {});
@@ -3139,7 +3139,7 @@ describe('managed CLI setup and fast tool integration', () => {
       expect(await Promise.race([
         registry.execute('Grep', { pattern: 'needle', path: root }, ctx),
         new Promise((_, reject) => setTimeout(() => reject(new Error('Grep waited for unrelated installs')), 500)),
-      ])).toContain('src/a.js:1:needle');
+      ])).toContain('src/a.js');
       const globOutput = await Promise.race([
         registry.execute('Glob', { pattern: '**/*.js', path: root }, ctx),
         new Promise((_, reject) => setTimeout(() => reject(new Error('Glob waited for unrelated installs')), 500)),
