@@ -34,7 +34,6 @@ export default {
       narrowPane: 'items',
       mobileWorkItemPane: 'conversation',
       contentStack: [{ type: 'action-list' }],
-      composerDrafts: {},
       staleComposerTarget: null,
       composerTargetValue: 'coordinator',
       actionDetailTab: 'messages',
@@ -140,9 +139,11 @@ export default {
     },
     composerTargetAction() {
       if (!this.composerTargetValue.startsWith('action:')) return null;
-      const actionId = this.composerTargetValue.slice('action:'.length);
+      const [, actionId, generationText] = this.composerTargetValue.split(':');
+      const generation = Number(generationText);
       const actions = Array.isArray(this.selected?.actions) ? this.selected.actions : [];
-      return actions.find(action => action.id === actionId) || null;
+      return actions.find(action => action.id === actionId
+        && Number(action.generation) === generation) || null;
     },
     composerTargetIsStale() {
       return this.composerTargetValue !== 'coordinator' && !this.composerTargetAction;
@@ -152,7 +153,7 @@ export default {
       return [
         { value: 'coordinator', label: this.tr('workCenter.coordinator', 'Coordinator'), disabled: false },
         ...actions.map(action => ({
-          value: `action:${action.id}`,
+          value: `action:${action.id}:${action.generation}`,
           label: this.$t('workCenter.composerTargetAction', {
             sequence: this.actionSequence(action),
             name: action.brief?.objective || this.actionLabel(action.type),
@@ -181,6 +182,14 @@ export default {
       return !this.workItemMessageSending && !this.workItemMessageAttachmentsUploading
         && !this.composerTargetUnavailable
         && (!!this.workItemMessage.trim() || this.workItemMessageAttachments.length > 0);
+    },
+    pendingMessageEnvelope() {
+      return this.selected?.id
+        ? this.store.loadWorkCenterMessageEnvelope(this.agentId, this.selected.id)
+        : null;
+    },
+    composerDraftLocked() {
+      return !!this.pendingMessageEnvelope && !this.composerTargetIsStale;
     },
     actionRequestKey() {
       return this.selected?.id && this.selectedAction?.id
@@ -369,6 +378,14 @@ export default {
         if (log) log.scrollTop = log.scrollHeight;
       });
     },
+    pendingMessageEnvelope(next, previous) {
+      if (!previous || next || previous.workItemId !== this.selectedId) return;
+      this.workItemMessage = '';
+      this.workItemMessageAttachments = [];
+      this.workItemMessageError = '';
+      this.workItemMessageSending = false;
+      this.$nextTick(() => this.resizeWorkItemComposer(this.$refs.workItemComposerInput, true));
+    },
     detail: {
       deep: true,
       handler(detail) {
@@ -465,6 +482,7 @@ export default {
     },
     onWorkItemMessageInput(event) {
       this.workItemMessage = event.target.value;
+      this.saveComposerDraft();
       this.resizeWorkItemComposer(event.target, !event.target.value);
     },
     onWorkItemMessageKeydown(event) {
@@ -643,27 +661,38 @@ export default {
       this.workItemMessageError = '';
       this.workItemMessageSending = false;
     },
-    draftKey(itemId = this.selectedId, agentId = this.agentId) {
-      return itemId ? `${agentId || ''}:${itemId}` : '';
+    draftTarget() {
+      const action = this.composerTargetAction;
+      return action
+        ? { kind: 'action', actionId: action.id, generation: Number(action.generation) }
+        : this.composerTargetValue === 'coordinator'
+          ? { kind: 'coordinator' }
+          : (() => {
+              const [, actionId = '', generationText = '0'] = this.composerTargetValue.split(':');
+              return { kind: 'action', actionId, generation: Number(generationText) || 0 };
+            })();
+    },
+    targetValue(target) {
+      if (typeof target === 'string' && target.startsWith('action:')) return target;
+      return target?.kind === 'action'
+        ? `action:${target.actionId}:${target.generation}`
+        : 'coordinator';
     },
     saveComposerDraft() {
-      const key = this.draftKey();
-      if (!key) return;
-      this.composerDrafts = {
-        ...this.composerDrafts,
-        [key]: {
-          text: this.workItemMessage,
-          attachments: [...this.workItemMessageAttachments],
-          target: this.composerTargetValue,
-          error: this.workItemMessageError,
-        },
-      };
+      if (!this.selectedId || !this.agentId) return;
+      this.store.saveWorkCenterComposerDraft(this.agentId, this.selectedId, {
+        text: this.workItemMessage,
+        attachments: [...this.workItemMessageAttachments],
+        target: this.draftTarget(),
+        error: this.workItemMessageError,
+      });
     },
     restoreComposerDraft(itemId) {
-      const draft = this.composerDrafts[this.draftKey(itemId)] || null;
+      const envelope = this.store.loadWorkCenterMessageEnvelope(this.agentId, itemId);
+      const draft = envelope || this.store.loadWorkCenterComposerDraft(this.agentId, itemId);
       this.workItemMessage = draft?.text || '';
       this.workItemMessageAttachments = [...(draft?.attachments || [])];
-      this.composerTargetValue = draft?.target || 'coordinator';
+      this.composerTargetValue = this.targetValue(draft?.target);
       this.workItemMessageError = draft?.error || '';
       this.staleComposerTarget = null;
       this.workItemMessageSending = false;
@@ -744,13 +773,31 @@ export default {
         .includes(action.status) && action.admissionStatus !== 'blocked';
     },
     chooseCoordinatorTarget() {
+      if (this.pendingMessageEnvelope) {
+        this.store.discardWorkCenterMessageEnvelope(this.agentId, this.selectedId);
+      }
       this.composerTargetValue = 'coordinator';
       this.staleComposerTarget = null;
+      this.saveComposerDraft();
+    },
+    onComposerTargetChange() {
+      if (this.pendingMessageEnvelope) {
+        this.store.discardWorkCenterMessageEnvelope(this.agentId, this.selectedId);
+      }
+      this.staleComposerTarget = this.composerTargetAction == null
+        && this.composerTargetValue !== 'coordinator'
+        ? this.composerTargetValue : null;
+      this.saveComposerDraft();
     },
     setComposerTargetForAction(action = this.selectedAction) {
       if (!action?.id || !this.canMessageAction(action)) return;
-      this.composerTargetValue = `action:${action.id}`;
+      const nextValue = `action:${action.id}:${action.generation}`;
+      if (this.pendingMessageEnvelope && this.composerTargetValue !== nextValue) {
+        this.store.discardWorkCenterMessageEnvelope(this.agentId, this.selectedId);
+      }
+      this.composerTargetValue = nextValue;
       this.staleComposerTarget = null;
+      this.saveComposerDraft();
       this.mobileWorkItemPane = 'conversation';
       this.$nextTick(() => this.$refs.workItemComposerInput?.focus());
     },
@@ -956,6 +1003,7 @@ export default {
           ...this.workItemMessageAttachments,
           ...(Array.isArray(result.files) ? result.files : []),
         ].slice(0, Math.max(0, 10 - existingCount));
+        this.saveComposerDraft();
       } catch (error) {
         if (this.workItemComposerScope === scope) this.workItemMessageError = error?.message || String(error);
       } finally {
@@ -965,6 +1013,7 @@ export default {
     removeWorkItemMessageAttachment(index) {
       this.workItemMessageAttachments = this.workItemMessageAttachments
         .filter((_attachment, itemIndex) => itemIndex !== index);
+      this.saveComposerDraft();
     },
     async previewAttachment(attachment, trigger = null) {
       if (!this.selected?.id || !attachment?.id || this.previewingAttachmentId) return;
@@ -1109,6 +1158,7 @@ export default {
       this.actionInputRequestGeneration = requestGeneration;
       this.workItemMessageSending = true;
       this.workItemMessageError = '';
+      this.saveComposerDraft();
       try {
         const fence = {
           planRevision: this.selected.planRevision,
@@ -1137,14 +1187,17 @@ export default {
         if (this.workItemComposerScope === scope
             && this.actionInputRequestGeneration === requestGeneration
             && this.composerTargetValue === targetValue
-            && this.workItemMessage.trim() === text) {
+            && this.workItemMessage.trim() === text
+            && !this.store.loadWorkCenterMessageEnvelope(this.agentId, itemId)) {
           this.workItemMessage = '';
           this.workItemMessageAttachments = [];
+          this.store.removeWorkCenterComposerDraft(this.agentId, itemId);
           this.$nextTick(() => this.resizeWorkItemComposer(this.$refs.workItemComposerInput, true));
         }
       } catch (error) {
         if (this.workItemComposerScope === scope && this.actionInputRequestGeneration === requestGeneration) {
           this.workItemMessageError = error?.message || String(error);
+          this.saveComposerDraft();
         }
       } finally {
         if (this.workItemComposerScope === scope && this.actionInputRequestGeneration === requestGeneration) {
@@ -1431,7 +1484,7 @@ export default {
                       <template v-else>
                         <label class="work-center-composer-target">
                           <span>{{ tr('workCenter.sendTo', 'Send to') }}</span>
-                          <select v-model="composerTargetValue" data-testid="work-center-composer-target" :aria-label="tr('workCenter.composerTarget', 'Message target')">
+                          <select v-model="composerTargetValue" data-testid="work-center-composer-target" :aria-label="tr('workCenter.composerTarget', 'Message target')" :disabled="composerDraftLocked" @change="onComposerTargetChange">
                             <option v-if="composerTargetIsStale" :value="composerTargetValue" disabled>{{ tr('workCenter.targetUnavailable', 'Selected Action is no longer available') }}</option>
                             <option v-for="option in composerTargetOptions" :key="option.value" :value="option.value" :disabled="option.disabled">{{ option.label }}</option>
                           </select>
@@ -1443,16 +1496,16 @@ export default {
                         <div v-if="workItemMessageAttachments.length" class="work-center-attachment-list work-center-message-draft-attachments">
                           <span v-for="(attachment, index) in workItemMessageAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
                             <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
-                            <button type="button" @click="removeWorkItemMessageAttachment(index)" :aria-label="tr('workCenter.removeAttachment', 'Remove from draft')">×</button>
+                            <button type="button" @click="removeWorkItemMessageAttachment(index)" :disabled="composerDraftLocked" :aria-label="tr('workCenter.removeAttachment', 'Remove from draft')">×</button>
                           </span>
                         </div>
                         <div class="input-wrapper work-center-item-message-input">
                           <label v-if="workItemAttachmentsSupported" class="attach-btn work-center-attachment-picker" :title="tr('workCenter.addAttachments', 'Add files')">
                             <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
-                            <input type="file" multiple :aria-label="tr('workCenter.addAttachments', 'Add files')" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv" @change="onWorkItemMessageAttachmentInput">
+                            <input type="file" multiple :disabled="composerDraftLocked" :aria-label="tr('workCenter.addAttachments', 'Add files')" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv" @change="onWorkItemMessageAttachmentInput">
                           </label>
                           <div class="textarea-wrapper">
-                            <textarea ref="workItemComposerInput" :value="workItemMessage" rows="1" :disabled="composerTargetUnavailable" :placeholder="composerPlaceholder" @input="onWorkItemMessageInput" @keydown="onWorkItemMessageKeydown"></textarea>
+                            <textarea ref="workItemComposerInput" :value="workItemMessage" rows="1" :disabled="composerTargetUnavailable || composerDraftLocked" :placeholder="composerPlaceholder" @input="onWorkItemMessageInput" @keydown="onWorkItemMessageKeydown"></textarea>
                           </div>
                           <button class="send-btn" type="button" @click="sendSelectedWorkItemMessage" :disabled="!composerCanSend" :title="$t('workCenter.sendToTarget', { target: composerTargetLabel })" :aria-label="$t('workCenter.sendToTarget', { target: composerTargetLabel })">
                             <svg v-if="!workItemMessageSending" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
