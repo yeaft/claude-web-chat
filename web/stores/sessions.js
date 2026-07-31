@@ -394,9 +394,12 @@ export const useSessionsStore = defineStore('sessions', {
       let lastViewed = null;
       try { lastViewed = localStorage.getItem('lastViewedYeaftSession') || null; }
       catch (_) {}
-      // Only trust lastViewed when it belongs to this agent's snapshot —
-      // cross-agent fallback is the "create-in-B reverts to A" regression.
-      const lastViewedKey = lastViewed ? findSessionKey(this, lastViewed, agentId) : '';
+      // New values persist the full Agent + Session key. Bare Session ids remain
+      // readable for older browsers, but are resolved only inside this snapshot.
+      const storedLastViewedSession = lastViewed ? this.sessions[lastViewed] : null;
+      const lastViewedKey = storedLastViewedSession
+        ? lastViewed
+        : (lastViewed ? findSessionKey(this, lastViewed, agentId) : '');
       const lastViewedSession = lastViewedKey ? this.sessions[lastViewedKey] : null;
       const lastViewedMatchesAgent = lastViewedSession
         && (!agentId || lastViewedSession.agentId === agentId);
@@ -407,7 +410,7 @@ export const useSessionsStore = defineStore('sessions', {
       const firstVisibleSession = this.sessionList[0] || null;
       const firstVisibleSessionId = firstVisibleSession?.id || null;
       const firstVisibleSessionKey = firstVisibleSessionId ? findSessionKey(this, firstVisibleSessionId, firstVisibleSession?.raw?.agentId || null) : '';
-      const fallbackActiveId = runningSessionId || (lastViewedMatchesAgent ? lastViewed : null) || firstVisibleSessionId;
+      const fallbackActiveId = runningSessionId || (lastViewedMatchesAgent ? lastViewedSession.id : null) || firstVisibleSessionId;
       const fallbackActiveKey = runningSessionKey || (lastViewedMatchesAgent ? lastViewedKey : '') || firstVisibleSessionKey || normalizeActiveKey(this, fallbackActiveId, agentId);
       const activeAgentId = this.activeSessionKey ? this.sessions[this.activeSessionKey]?.agentId : null;
       if (this.activeSessionId && !findSessionKey(this, this.activeSessionId, activeAgentId)) {

@@ -10,6 +10,7 @@ import * as convHelpers from './helpers/conversation.js';
 import * as sessionHelpers from './helpers/session.js';
 import * as watchdogHelpers from './helpers/watchdog.js';
 import * as yeaftViewHelpers from './helpers/yeaft-view.js';
+import { migrateYeaftConversationState } from './helpers/yeaft-conversation-state.js';
 import { incVpTyping, decVpTyping } from './helpers/vp-typing.js';
 import { selectActiveConversationId } from './helpers/active-conv.js';
 import { trimDebugRetention } from './helpers/debug-retention.js';
@@ -345,8 +346,8 @@ function taskUpdatedTime(task) {
   return Number.isFinite(ms) ? ms : 0;
 }
 
-function taskStopKey(sessionId, taskId) {
-  return `${sessionId || ''}::${taskId || ''}`;
+function taskStopKey(agentId, sessionId, taskId) {
+  return `${yeaftSessionIdentityKey(agentId, sessionId)}::${taskId || ''}`;
 }
 
 function keepRecentSessionTasks(tasksById) {
@@ -387,6 +388,8 @@ function resolveAgentIdForSession(state, sessionId, explicitAgentId = null) {
   if (explicitAgentId) return explicitAgentId;
   if (sessionId) {
     const gs = getSessionsStore();
+    const activeSession = gs?.activeSessionKey ? gs.sessions?.[gs.activeSessionKey] : null;
+    if (activeSession?.id === sessionId && activeSession.agentId) return activeSession.agentId;
     const sess = gs && typeof gs.sessionById === 'function' ? gs.sessionById(sessionId, state?.currentAgent || null) : null;
     if (sess && sess.agentId) return sess.agentId;
     const mapped = state?.yeaftSessionAgentById ? state.yeaftSessionAgentById[sessionId] : null;
@@ -436,6 +439,13 @@ function resolveActiveDreamDebugSessionId(state) {
   const gs = getSessionsStore();
   if (gs?.sessions?.grp_default) return 'grp_default';
   return null;
+}
+
+function resolveYeaftEnvelopeConversationId(state, agentId, conversationId = null) {
+  if (conversationId) return conversationId;
+  return (agentId && state?.yeaftConversationIdsByAgent?.[agentId])
+    || state?.yeaftConversationId
+    || null;
 }
 
 function resolveYeaftConversationIdForSession(state, sessionId = null) {
@@ -830,7 +840,7 @@ export const useChatStore = defineStore('chat', {
     workCenterCreateDraft: null,
     yeaftConversationId: null,     // 当前 Yeaft agent 的虚拟 conversationId（从 agent session_ready 获取）
     yeaftConversationIdsByAgent: {}, // { [agentId]: conversationId } 跨机器 agent 的 Yeaft message cache 隔离
-    yeaftSessionAgentById: {},      // { [sessionId]: agentId } 用 active session 反查所属 agent 的 conversationId
+    yeaftSessionAgentById: {},      // Legacy bare-session owner cache; activeSessionKey wins when ids collide.
     yeaftModel: null,              // agent/default Yeaft 模型名；Session override lives in sessions[].config.model
     yeaftModelEffort: null,        // agent/default effort；Session override lives in sessions[].config.modelEffort
     yeaftSessionReady: false,     // Session 是否已初始化
@@ -841,8 +851,8 @@ export const useChatStore = defineStore('chat', {
     yeaftModelsRefreshing: false, // 当前 agent 的 model/status 后台刷新状态
     yeaftModelRefreshError: null, // 当前 agent 最近一次 refresh 错误（保留旧模型列表）
     yeaftYeaftDir: null,          // agent 的 ~/.yeaft 绝对路径（session_ready 携带）— Yeaft workbench 的默认 workDir
-    yeaftActiveTasksBySession: {}, // { [sessionId]: { [taskId]: running or recent terminal task snapshot } }
-    yeaftStoppingTasksById: {}, // { [`${sessionId}::${taskId}`]: true } UI-side pending stop requests
+    yeaftActiveTasksBySession: {}, // { [`${agentId}\u001f${sessionId}`]: { [taskId]: task snapshot } }
+    yeaftStoppingTasksById: {}, // { [`${agentId}\u001f${sessionId}::${taskId}`]: true }
     // 2026-05-13: tool-call usage stats for the Yeaft debug drawer.
     // Populated by `fetchYeaftToolStats()` → backend → `yeaft_tool_stats`
     // case in handleYeaftOutput. Shape:
@@ -2386,7 +2396,7 @@ export const useChatStore = defineStore('chat', {
     syncActiveYeaftHistoryLoad() {
       return syncActiveYeaftHistoryLoad(this);
     },
-    enterYeaft(agentId = null) {
+    enterYeaft(agentId = null, { deferBootstrap = false } = {}) {
       const previousAgentId = this.currentAgent;
       // Capture the chat-side activeConversations snapshot BEFORE flipping
       // currentView. The transition helper is idempotent: if we're
@@ -2486,7 +2496,9 @@ export const useChatStore = defineStore('chat', {
       // a redundant second catch-up on the next routine agent_list.
       this._yeaftReconnectCatchUpPending = false;
       this.loadOpenedYeaftSessionsForConnectedAgents(null, { force: true });
-      this.requestYeaftSessionBootstrap({ forceSessionReady: true, catchUpHistory: true, forceHistoryReplay: true });
+      if (!deferBootstrap) {
+        this.requestYeaftSessionBootstrap({ forceSessionReady: true, catchUpHistory: true, forceHistoryReplay: true });
+      }
     },
 
     loadOpenedYeaftSessionsForConnectedAgents(agentIds = null, { force = false } = {}) {
@@ -2838,14 +2850,14 @@ export const useChatStore = defineStore('chat', {
       this.sendWsMessage(wsMsg);
     },
 
-    cancelYeaftTask({ sessionId, taskId }) {
+    cancelYeaftTask({ agentId = null, sessionId, taskId }) {
       const targetSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
       const targetTaskId = typeof taskId === 'string' ? taskId.trim() : '';
-      const targetAgentId = resolveAgentIdForSession(this, targetSessionId);
+      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
       if (!targetAgentId || !targetSessionId || !targetTaskId) return false;
       this.yeaftStoppingTasksById = {
         ...this.yeaftStoppingTasksById,
-        [taskStopKey(targetSessionId, targetTaskId)]: true,
+        [taskStopKey(targetAgentId, targetSessionId, targetTaskId)]: true,
       };
       this.sendWsMessage({
         type: 'yeaft_task_cancel',
@@ -3457,7 +3469,7 @@ export const useChatStore = defineStore('chat', {
             [frameTurnKey]: activeTurn,
           };
         }
-        const conversationId = msg.conversationId || this.yeaftConversationId;
+        const conversationId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId);
         if (conversationId) {
           const frameAgentId = msg.agentId || this.yeaftAgentId || this.currentAgent || null;
           const msgSessionId = msg.sessionId ?? msg.groupId ?? null;
@@ -3467,18 +3479,13 @@ export const useChatStore = defineStore('chat', {
             : null;
           const retainVisibleSource = !outputIsVisible && previousAgentConvId === this.yeaftConversationId;
           if (this.currentView === 'yeaft' && frameAgentId && previousAgentConvId && previousAgentConvId !== conversationId) {
-            const existingMsgs = this.messagesMap[previousAgentConvId] || [];
-            const targetMsgs = this.messagesMap[conversationId] || [];
-            this.messagesMap[conversationId] = msgHelpers
-              .mergeMessagesByStableId(targetMsgs, existingMsgs)
-              .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
             // An inactive same-agent Session can be the first frame carrying
             // the real bridge id. Copy the visible placeholder into that cache,
             // but keep the source alive until an active/user-driven transition
             // moves the explicit visible pointer.
-            if (!retainVisibleSource && String(previousAgentConvId).startsWith('yeaft-local-')) {
-              delete this.messagesMap[previousAgentConvId];
-            }
+            migrateYeaftConversationState(this, previousAgentConvId, conversationId, {
+              removeSource: !retainVisibleSource && String(previousAgentConvId).startsWith('yeaft-local-'),
+            });
           }
           if (frameAgentId) {
             this.yeaftConversationIdsByAgent = {
@@ -3592,7 +3599,7 @@ export const useChatStore = defineStore('chat', {
 
       switch (event.type) {
         case 'ask_user_question': {
-          const conversationId = msg.conversationId || this.yeaftConversationId;
+          const conversationId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId);
           if (!conversationId || !event.requestId) break;
           const identity = askUserEventIdentity(msg, event, conversationId);
           const linkPrompt = () => {
@@ -3657,7 +3664,7 @@ export const useChatStore = defineStore('chat', {
 
         case 'ask_user_answered':
         case 'ask_user_expired': {
-          const conversationId = msg.conversationId || this.yeaftConversationId;
+          const conversationId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId);
           if (!conversationId || !event.requestId) break;
           const messages = this.messagesMap[conversationId] || [];
           const identity = askUserEventIdentity(msg, event, conversationId);
@@ -3692,32 +3699,9 @@ export const useChatStore = defineStore('chat', {
           // conversation blindly: with multiple machines, B's session_ready can
           // arrive while A's cache is still the global yeaftConversationId.
           if (localConvId && localConvId !== agentConvId) {
-            const migrateProcessingWatchdog = !retainVisibleSource
-              && !!this._processingWatchdogs?.[localConvId];
-            const existingMsgs = this.messagesMap[localConvId] || [];
-            const targetMsgs = this.messagesMap[agentConvId] || [];
-            this.messagesMap[agentConvId] = msgHelpers
-              .mergeMessagesByStableId(targetMsgs, existingMsgs)
-              .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-            if (!retainVisibleSource && localConvId.startsWith('yeaft-local-')) {
-              delete this.messagesMap[localConvId];
-            }
-            // Migrate processing state
-            if (this.processingConversations[localConvId]) {
-              this.processingConversations[agentConvId] = true;
-              if (!retainVisibleSource) delete this.processingConversations[localConvId];
-            }
-            // Migrate execution status
-            if (this.executionStatusMap[localConvId]) {
-              this.executionStatusMap[agentConvId] = this.executionStatusMap[localConvId];
-              if (!retainVisibleSource) delete this.executionStatusMap[localConvId];
-            }
-            if (migrateProcessingWatchdog) {
-              watchdogHelpers.stopProcessingWatchdog(this, localConvId);
-              if (this.processingConversations[agentConvId]) {
-                watchdogHelpers.startYeaftWatchdog(this, agentConvId);
-              }
-            }
+            migrateYeaftConversationState(this, localConvId, agentConvId, {
+              removeSource: !retainVisibleSource,
+            });
           } else if (!this.messagesMap[agentConvId]) {
             this.messagesMap[agentConvId] = [];
           }
@@ -3744,19 +3728,26 @@ export const useChatStore = defineStore('chat', {
           }
           const readyTasks = Array.isArray(event.tasks) ? event.tasks : [];
           const nextTasks = {};
-          // session_ready is authoritative for running tasks, but terminal task
-          // events may arrive immediately before it during Agent restart. Keep
-          // the bounded terminal history while replacing stale running rows.
-          for (const [sessionId, tasksById] of Object.entries(this.yeaftActiveTasksBySession || {})) {
-            const terminalTasks = Object.fromEntries(Object.entries(tasksById || {}).filter(([, task]) => (
-              task?.id && YEAFT_TERMINAL_TASK_STATUSES.has(task.status)
+          // session_ready is authoritative only for the Agent that emitted it.
+          // Preserve other Agents' running rows and this Agent's bounded terminal
+          // history while replacing this Agent's stale running snapshot.
+          for (const [sessionKey, tasksById] of Object.entries(this.yeaftActiveTasksBySession || {})) {
+            const retainedTasks = Object.fromEntries(Object.entries(tasksById || {}).filter(([, task]) => (
+              task?.id && (
+                (task.agentId && task.agentId !== statusAgentId)
+                || YEAFT_TERMINAL_TASK_STATUSES.has(task.status)
+              )
             )));
-            const retained = keepRecentSessionTasks(terminalTasks);
-            if (Object.keys(retained).length > 0) nextTasks[sessionId] = retained;
+            const retained = keepRecentSessionTasks(retainedTasks);
+            if (Object.keys(retained).length > 0) nextTasks[sessionKey] = retained;
           }
           for (const task of readyTasks) {
             if (!task?.id || !task.sessionId || task.status !== 'running') continue;
-            nextTasks[task.sessionId] = { ...(nextTasks[task.sessionId] || {}), [task.id]: task };
+            const sessionKey = yeaftHistoryIdentityKey(statusAgentId, task.sessionId);
+            nextTasks[sessionKey] = {
+              ...(nextTasks[sessionKey] || {}),
+              [task.id]: { ...task, agentId: statusAgentId },
+            };
           }
           this.yeaftActiveTasksBySession = nextTasks;
           // Background Session replay only updates its own cached metadata.
@@ -4064,7 +4055,7 @@ export const useChatStore = defineStore('chat', {
           // We store the latest state keyed by conversationId + trigger
           // + loopRange so the UI can swap "thinking…" placeholder for
           // the rendered card.
-          const convId = msg.conversationId || this.yeaftConversationId || 'unknown';
+          const convId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId) || 'unknown';
           const range = Array.isArray(event.loopRange) ? event.loopRange : [0, 0];
           const key = `${convId}:${event.trigger}:${range[0]}-${range[1]}`;
           // Anchor the card to the current tail of the message list so
@@ -4113,19 +4104,22 @@ export const useChatStore = defineStore('chat', {
         case 'yeaft_task_event': {
           const task = event.task;
           if (!task?.id || !task.sessionId) break;
+          const taskAgentId = msg.agentId || resolveAgentIdForSession(this, task.sessionId);
+          const taskSessionKey = yeaftHistoryIdentityKey(taskAgentId, task.sessionId);
+          const scopedTask = { ...task, agentId: taskAgentId };
           const bySession = { ...this.yeaftActiveTasksBySession };
-          const current = { ...(bySession[task.sessionId] || {}) };
+          const current = { ...(bySession[taskSessionKey] || {}) };
           if (task.status === 'running' || YEAFT_TERMINAL_TASK_STATUSES.has(task.status)) {
-            current[task.id] = task;
+            current[task.id] = scopedTask;
           } else {
             delete current[task.id];
           }
           const retained = keepRecentSessionTasks(current);
-          if (Object.keys(retained).length > 0) bySession[task.sessionId] = retained;
-          else delete bySession[task.sessionId];
+          if (Object.keys(retained).length > 0) bySession[taskSessionKey] = retained;
+          else delete bySession[taskSessionKey];
           this.yeaftActiveTasksBySession = bySession;
           if (task.status !== 'running') {
-            const { [taskStopKey(task.sessionId, task.id)]: _done, ...rest } = this.yeaftStoppingTasksById || {};
+            const { [taskStopKey(taskAgentId, task.sessionId, task.id)]: _done, ...rest } = this.yeaftStoppingTasksById || {};
             this.yeaftStoppingTasksById = rest;
           }
           break;
@@ -4134,18 +4128,20 @@ export const useChatStore = defineStore('chat', {
         case 'yeaft_task_cancel_result': {
           const taskId = event.taskId || event.task?.id || null;
           const sessionId = event.task?.sessionId || event.sessionId || msg.sessionId || null;
+          const taskAgentId = msg.agentId || resolveAgentIdForSession(this, sessionId);
           if (taskId && sessionId && event.success === false) {
-            const { [taskStopKey(sessionId, taskId)]: _done, ...rest } = this.yeaftStoppingTasksById || {};
+            const { [taskStopKey(taskAgentId, sessionId, taskId)]: _done, ...rest } = this.yeaftStoppingTasksById || {};
             this.yeaftStoppingTasksById = rest;
           }
           const task = event.task;
           if (task?.id && task.sessionId) {
+            const taskSessionKey = yeaftHistoryIdentityKey(taskAgentId, task.sessionId);
             const bySession = { ...this.yeaftActiveTasksBySession };
-            const current = { ...(bySession[task.sessionId] || {}) };
-            current[task.id] = task;
+            const current = { ...(bySession[taskSessionKey] || {}) };
+            current[task.id] = { ...task, agentId: taskAgentId };
             const retained = keepRecentSessionTasks(current);
-            if (Object.keys(retained).length > 0) bySession[task.sessionId] = retained;
-            else delete bySession[task.sessionId];
+            if (Object.keys(retained).length > 0) bySession[taskSessionKey] = retained;
+            else delete bySession[taskSessionKey];
             this.yeaftActiveTasksBySession = bySession;
           }
           break;
@@ -4158,7 +4154,7 @@ export const useChatStore = defineStore('chat', {
           // We accumulate per-agent state into a single card keyed by
           // ${convId}:${agentId} — anchored to the message present at the
           // first emit so MessageList can render it inline.
-          const convId = msg.conversationId || this.yeaftConversationId || 'unknown';
+          const convId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId) || 'unknown';
           const agentId = event.agentId;
           if (!agentId) break;
           const payload = event.payload || {};
@@ -4385,6 +4381,9 @@ export const useChatStore = defineStore('chat', {
             break;
           }
           const prevGroupId = gs ? (gs.activeSessionId || null) : null;
+          const prevAgentId = gs?.activeSessionKey
+            ? gs.sessions?.[gs.activeSessionKey]?.agentId || null
+            : null;
           // msg.agentId is stamped on yeaft_output envelopes by the
           // server relay (since v0.1.882). Pass it through so the
           // sessions store can keep per-agent rosters in the unified
@@ -4396,16 +4395,20 @@ export const useChatStore = defineStore('chat', {
             this.yeaftSessionHydrateError = null;
           }
           const newGroupId = gs ? (gs.activeSessionId || null) : null;
+          const newAgentId = gs?.activeSessionKey
+            ? gs.sessions?.[gs.activeSessionKey]?.agentId || null
+            : null;
           // Bug 1: after enterYeaft the group snapshot may arrive *after*
           // initial history load (which happened with groupId:null), so
           // reload history for the correct group when activeGroupId changes.
           if (this.currentView === 'yeaft' && newGroupId) {
-            const targetAgentId = resolveAgentIdForSession(this, newGroupId, msg.agentId || null);
+            const targetAgentId = newAgentId || resolveAgentIdForSession(this, newGroupId, msg.agentId || null);
             const sessionKey = yeaftHistoryIdentityKey(targetAgentId, newGroupId);
             const sessionState = this.yeaftSessionHistoryState[sessionKey] || null;
             this.setActiveSessionFilter(newGroupId, {
               agentId: targetAgentId,
-              force: msgHelpers.shouldForceHydrateActiveYeaftSession(newGroupId, prevGroupId, sessionState),
+              force: prevAgentId !== targetAgentId
+                || msgHelpers.shouldForceHydrateActiveYeaftSession(newGroupId, prevGroupId, sessionState),
             });
           }
           break;
@@ -4533,7 +4536,7 @@ export const useChatStore = defineStore('chat', {
           };
           const nextStatus = reasonToStatus[event.reason] || 'completed';
           const stampedAt = Date.now();
-          const conv = msg.conversationId || this.yeaftConversationId;
+          const conv = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId);
           if (conv && Array.isArray(this.messagesMap[conv])) {
             const rows = this.messagesMap[conv];
             let mutated = markTurnResponseKinds(rows, event);
@@ -4642,14 +4645,14 @@ export const useChatStore = defineStore('chat', {
           // the Chat view (cross-mode state leak). The conversationId rides
           // on the yeaft_output envelope (msg.conversationId) — fall back to
           // the current Yeaft session id if absent.
-          const convId = msg.conversationId || this.yeaftConversationId;
+          const convId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId);
           if (!convId) break;
           this.yeaftVpTyping = incVpTyping(this.yeaftVpTyping, convId, event.vpId);
           break;
         }
         case 'vp_typing_end': {
           if (!event.vpId) break;
-          const convId = msg.conversationId || this.yeaftConversationId;
+          const convId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId);
           if (!convId) break;
           this.yeaftVpTyping = decVpTyping(this.yeaftVpTyping, convId, event.vpId);
           break;
@@ -5222,17 +5225,6 @@ export const useChatStore = defineStore('chat', {
         && !!this.currentAgent && targetAgentId !== this.currentAgent;
       const force = !!opts.force || ownerChanged;
       this.yeaftActiveSessionFilter = next;
-      // fix-yeaft-session-server-persistence: remember the
-      // last-viewed yeaft session so reload + cross-agent switch
-      // restore it instead of arbitrarily landing on sessionOrder[0]
-      // (which manufactures the "phantom default group" bug the user
-      // reported). localStorage-only — mirrors how chat does
-      // `lastViewedConversation`.
-      try {
-        if (next) localStorage.setItem('lastViewedYeaftSession', next);
-        else localStorage.removeItem('lastViewedYeaftSession');
-      } catch (_) {}
-
       // Agent selection and catalog projection are one operation. Do this
       // before every history early-return so an already-loaded Session cannot
       // keep rendering the previous Agent's model catalog.
@@ -5275,6 +5267,9 @@ export const useChatStore = defineStore('chat', {
       try {
         const gs = window.Pinia?.useSessionsStore?.() || (window.__useSessionsStore && window.__useSessionsStore());
         if (gs && typeof gs.setActive === 'function') gs.setActive(next, targetAgentId || null);
+        const activeKey = gs?.activeSessionKey || null;
+        if (activeKey) localStorage.setItem('lastViewedYeaftSession', activeKey);
+        else localStorage.removeItem('lastViewedYeaftSession');
       } catch (_) {}
       this.syncActiveYeaftHistoryLoad();
 
@@ -5591,9 +5586,13 @@ export const useChatStore = defineStore('chat', {
     clearYeaftMessages() {
       const oldConvId = this.yeaftConversationId;
       if (oldConvId) {
+        watchdogHelpers.stopProcessingWatchdog(this, oldConvId);
         delete this.messagesMap[oldConvId];
         delete this.processingConversations[oldConvId];
         delete this.executionStatusMap[oldConvId];
+        delete this.refreshingSessionMap[oldConvId];
+        if (this._closedAt) delete this._closedAt[oldConvId];
+        this._turnCompletedConvs?.delete(oldConvId);
       }
       // Create a fresh local conversationId for the current Yeaft agent.
       this.yeaftConversationId = this.currentAgent
@@ -5752,12 +5751,11 @@ export const useChatStore = defineStore('chat', {
       const { runtimeProvider, agentId, sessionId } = descriptor.routeRef;
       this.activeCatalogKey = descriptor.catalogKey;
       if (runtimeProvider === 'yeaft') {
-        this.enterYeaft(agentId);
+        // A catalog row already identifies the exact Agent + Session. Enter the
+        // target Agent without bootstrapping the previously-visible Session, then
+        // commit the target identity before issuing its one history request.
+        this.enterYeaft(agentId, { deferBootstrap: true });
         this.setActiveSessionFilter(sessionId, { agentId, force: true });
-        try {
-          const sessions = window.Pinia?.useSessionsStore?.();
-          sessions?.setActive?.(sessionId, agentId);
-        } catch (_) {}
         return true;
       }
       if (runtimeProvider !== 'claude-code' && runtimeProvider !== 'copilot') return false;

@@ -3,9 +3,10 @@
  */
 
 import { isRecentlyClosed, stopProcessingWatchdog } from '../watchdog.js';
+import { migrateYeaftConversationState } from '../yeaft-conversation-state.js';
 import { clearSessionLoading } from '../session.js';
 import { sameUserMessage } from '../dedup.js';
-import { maxDbMessageId, mergeMessagesByStableId } from '../messages.js';
+import { maxDbMessageId } from '../messages.js';
 import { summarizeHistoricalToolMessages } from '../tool-window.js';
 import { t } from '../../../utils/i18n.js';
 import { recordPerfTrace, measureNextPaint } from '../perfTrace.js';
@@ -234,19 +235,9 @@ function promoteVisibleYeaftHistoryConversation(store, msg, sessionId, conversat
   const localConversationId = visibleLocalYeaftConversationId(store, agentId);
   if (!localConversationId) return;
 
-  const localRows = store.messagesMap[localConversationId] || [];
-  const targetRows = store.messagesMap[conversationId] || [];
-  store.messagesMap[conversationId] = mergeMessagesByStableId(targetRows, localRows);
-  sortYeaftRowsByTimestamp(store.messagesMap[conversationId]);
-  delete store.messagesMap[localConversationId];
-  if (store.processingConversations?.[localConversationId]) {
-    store.processingConversations[conversationId] = true;
-    delete store.processingConversations[localConversationId];
-  }
-  if (store.executionStatusMap?.[localConversationId]) {
-    store.executionStatusMap[conversationId] = store.executionStatusMap[localConversationId];
-    delete store.executionStatusMap[localConversationId];
-  }
+  migrateYeaftConversationState(store, localConversationId, conversationId, {
+    removeSource: true,
+  });
   store.yeaftConversationIdsByAgent = {
     ...(store.yeaftConversationIdsByAgent || {}),
     [agentId]: conversationId,

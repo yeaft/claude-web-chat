@@ -48,12 +48,18 @@ const runtimeSessionsStore = Vue.reactive({
   sessionList: [],
   activeSessionId: null,
   activeAgentId: null,
+  activeSessionKey: null,
+  sessions: {},
   sessionById(sessionId, agentId = null) {
     return this.sessionList.find(row => row.id === sessionId && (!agentId || row.agentId === agentId)) || null;
   },
   setActive(sessionId, agentId = null) {
     this.activeSessionId = sessionId;
     this.activeAgentId = agentId;
+    this.activeSessionKey = agentId && sessionId ? `${agentId}\u001f${sessionId}` : sessionId;
+    if (this.activeSessionKey && !this.sessions[this.activeSessionKey]) {
+      this.sessions[this.activeSessionKey] = { id: sessionId, agentId };
+    }
   },
 });
 globalThis.Pinia = {
@@ -1316,6 +1322,7 @@ describe('message flow regressions', () => {
     store.currentAgent = 'agent-a';
     runtimeSessionsStore.activeSessionId = null;
     runtimeSessionsStore.activeAgentId = null;
+    runtimeSessionsStore.activeSessionKey = null;
     store.handleYeaftOutput({
       agentId: 'agent-b',
       event: {
@@ -1332,6 +1339,7 @@ describe('message flow regressions', () => {
     store.currentAgent = 'agent-a';
     runtimeSessionsStore.activeSessionId = null;
     runtimeSessionsStore.activeAgentId = null;
+    runtimeSessionsStore.activeSessionKey = null;
     store.handleYeaftOutput({
       event: {
         type: 'vp_status_snapshot',
@@ -1538,6 +1546,117 @@ describe('message flow regressions', () => {
     window.Pinia = originalWindowPinia;
 
     wrapper.unmount();
+  });
+
+  it('opens an exact cross-Agent Session without loading the previous Agent and migrates the full runtime state', () => {
+    storeFactories.clear();
+    runtimeSessionsStore.sessionList = [
+      { id: 'session-a', agentId: 'agent-a' },
+      { id: 'session-b', agentId: 'agent-b' },
+    ];
+    runtimeSessionsStore.sessions = {
+      'agent-a\u001fsession-a': { id: 'session-a', agentId: 'agent-a' },
+      'agent-b\u001fsession-b': { id: 'session-b', agentId: 'agent-b' },
+    };
+    runtimeSessionsStore.setActive('session-a', 'agent-a');
+
+    const store = useChatStore();
+    store.sendWsMessage = vi.fn(() => true);
+    store.loadOpenedYeaftSessionsForConnectedAgents = vi.fn();
+    store.currentView = 'yeaft';
+    store.currentAgent = 'agent-a';
+    store.currentAgentInfo = { id: 'agent-a' };
+    store.agents = [{ id: 'agent-a', online: true }, { id: 'agent-b', online: true }];
+    store.yeaftActiveSessionFilter = 'session-a';
+    store.yeaftSessionAgentById = { 'session-a': 'agent-a', 'session-b': 'agent-b' };
+    store.yeaftConversationIdsByAgent = {
+      'agent-a': 'conv-a',
+      'agent-b': 'yeaft-local-agent-b-cold',
+    };
+    store.yeaftConversationId = 'conv-a';
+    store.activeConversations = ['conv-a'];
+    store.messagesMap = { 'conv-a': [], 'yeaft-local-agent-b-cold': [] };
+
+    store.openCatalogSession({
+      catalogKey: 'yeaft:agent-b:session-b',
+      routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-b', sessionId: 'session-b' },
+    });
+
+    expect(store.sendWsMessage.mock.calls.map(call => call[0])).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'yeaft_load_history', agentId: 'agent-a', sessionId: 'session-a' }),
+    ]));
+    expect(store.sendWsMessage.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'yeaft_load_history', agentId: 'agent-b', sessionId: 'session-b' }),
+    ]));
+    expect(store.currentAgent).toBe('agent-b');
+    expect(runtimeSessionsStore.activeSessionKey).toBe('agent-b\u001fsession-b');
+    expect(localStorage.getItem('lastViewedYeaftSession')).toBe('agent-b\u001fsession-b');
+
+    const localConversationId = 'yeaft-local-agent-b-cold';
+    const bridgeConversationId = 'yeaft-agent-b-real';
+    store.messagesMap[localConversationId] = [{
+      id: 'pending-b', type: 'user', content: 'pending B', sessionId: 'session-b',
+      timestamp: Date.now() + 60_000,
+    }];
+    store.processingConversations = { [localConversationId]: true };
+    store.executionStatusMap = { [localConversationId]: { currentTool: { name: 'Bash' } } };
+    store.sessionHealth = { [localConversationId]: { status: 'agent-offline' } };
+    store.refreshingSessionMap = { [localConversationId]: true };
+    store._closedAt = { [localConversationId]: 1 };
+    store._turnCompletedConvs = new Set([localConversationId]);
+    store._processingWatchdogs = { [localConversationId]: setTimeout(() => {}, 60_000) };
+    store._yeaftWatchdogConvs = new Set([localConversationId]);
+    const request = store.beginYeaftHistoryLoad({
+      agentId: 'agent-b', sessionId: 'session-b', mode: 'recent', preserveLoaded: false,
+    });
+    store.handleMessage({
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-b',
+      conversationId: bridgeConversationId,
+      sessionId: 'session-b',
+      requestId: request.requestId,
+      mode: 'recent',
+      messages: [{ id: 'persisted-b', role: 'assistant', content: 'persisted B', sessionId: 'session-b', ts: 2 }],
+      latestSeq: 1,
+      hasMore: false,
+    });
+
+    expect(store.yeaftConversationId).toBe(bridgeConversationId);
+    expect(store.messagesMap[bridgeConversationId]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'pending-b' }),
+      expect.objectContaining({ id: 'persisted-b' }),
+    ]));
+    expect(store.processingConversations).toEqual({ [bridgeConversationId]: true });
+    expect(store.executionStatusMap[bridgeConversationId].currentTool).toEqual({ name: 'Bash' });
+    expect(store.sessionHealth[bridgeConversationId]).toEqual({ status: 'agent-offline' });
+    expect(store.refreshingSessionMap[bridgeConversationId]).toBe(true);
+    expect(store._closedAt[bridgeConversationId]).toBe(1);
+    expect(store._turnCompletedConvs.has(bridgeConversationId)).toBe(true);
+    expect(store._processingWatchdogs[localConversationId]).toBeUndefined();
+    expect(store._processingWatchdogs[bridgeConversationId]).toBeTruthy();
+    clearTimeout(store._processingWatchdogs[bridgeConversationId]);
+
+    store.yeaftActiveTasksBySession = {
+      'agent-a\u001fsession-a': {
+        'task-a': { id: 'task-a', sessionId: 'session-a', agentId: 'agent-a', status: 'running' },
+      },
+    };
+    store.handleYeaftOutput({
+      agentId: 'agent-b',
+      sessionId: 'session-b',
+      event: {
+        type: 'session_ready',
+        conversationId: bridgeConversationId,
+        sessionId: 'session-b',
+        tasks: [{ id: 'task-b', sessionId: 'session-b', status: 'running' }],
+      },
+    });
+    expect(store.yeaftActiveTasksBySession['agent-a\u001fsession-a']['task-a']).toEqual(expect.objectContaining({
+      agentId: 'agent-a', status: 'running',
+    }));
+    expect(store.yeaftActiveTasksBySession['agent-b\u001fsession-b']['task-b']).toEqual(expect.objectContaining({
+      agentId: 'agent-b', status: 'running',
+    }));
   });
 
   it('keeps background Yeaft output routed while promoting the visible local conversation', () => {

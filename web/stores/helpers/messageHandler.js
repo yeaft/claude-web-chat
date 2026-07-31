@@ -379,7 +379,9 @@ export function handleMessage(store, msg) {
       break;
 
     case 'yeaft_asset_ready': {
-      const conversationId = msg.conversationId || store.yeaftConversationId;
+      const conversationId = msg.conversationId
+        || store.yeaftConversationIdsByAgent?.[msg.agentId]
+        || store.yeaftConversationId;
       if (!conversationId || !msg.image) break;
       if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
       const duplicate = store.messagesMap[conversationId].some(row =>

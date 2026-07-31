@@ -52,7 +52,14 @@ describe('Yeaft load-history first paint', () => {
     ctx.CONFIG = null;
   });
 
-  it('filters internal and model-only user-role rows in the visible-history fallback path', () => {
+  it('filters internal rows and uses a collision-resistant virtual conversation id', () => {
+    const firstConversationId = __testHooks.ensureYeaftConversationIdForTest();
+    __testHooks.setYeaftConversationIdForTest(null);
+    const secondConversationId = __testHooks.ensureYeaftConversationIdForTest();
+    expect(firstConversationId).toMatch(/^yeaft-[0-9a-f-]{36}$/);
+    expect(secondConversationId).toMatch(/^yeaft-[0-9a-f-]{36}$/);
+    expect(secondConversationId).not.toBe(firstConversationId);
+
     const hctx = {
       assistantTextParts: [],
       toolCallsAccum: [],
@@ -162,9 +169,7 @@ describe('Yeaft load-history first paint', () => {
       'visible a',
       'In docs, <task-result> is just prose',
     ]);
-  });
 
-  it('preserves Session message quotes in the history wire projection', () => {
     const quote = {
       id: 'm0001', role: 'assistant', author: 'Linus', content: 'Prior answer',
       todos: [{ content: 'Verify', status: 'completed' }],
@@ -172,7 +177,6 @@ describe('Yeaft load-history first paint', () => {
     const projected = __testHooks.projectVisibleHistoryChunkMessages([
       { id: 'm0002', role: 'user', content: 'Follow up', sessionId: 'session-fast', quote },
     ]);
-
     expect(projected[0]).toMatchObject({ id: 'm0002', quote });
   });
 
