@@ -153,21 +153,6 @@
   letter-spacing: -0.04em;
 }
 
-/* Illustrated portrait layer. Sits on top of the palette disk background
- * with a transparent SVG, so per-VP color identity still shows through
- * any empty pixels. Rendered only when `vpId` is in the known-set
- * (KNOWN_AVATAR_IDS in VpAvatar.js); unknown IDs and load failures fall
- * back to .vp-avatar-letter. */
-.vp-avatar-img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  object-fit: cover;
-  pointer-events: none;
-  -webkit-user-drag: none;
-}
-
 .vp-avatar-status-dot {
   position: absolute;
   right: -1px;

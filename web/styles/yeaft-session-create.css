@@ -134,6 +134,21 @@
   padding: 6px 4px;
 }
 
+.yeaft-roster-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--error);
+  font-style: normal;
+}
+
+.yeaft-roster-retry {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
 .yeaft-roster-list {
   margin: 0;
   display: flex;

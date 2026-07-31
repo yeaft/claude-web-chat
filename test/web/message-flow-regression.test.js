@@ -63,6 +63,7 @@ globalThis.Pinia = {
 };
 const { useChatStore } = await import('../../web/stores/chat.js');
 const { useSessionsStore } = await import('../../web/stores/sessions.js');
+const { useVpStore } = await import('../../web/stores/vp.js');
 const { default: SessionCreateModal } = await import('../../web/components/SessionCreateModal.js');
 const { default: ChatPage } = await import('../../web/components/ChatPage.js');
 const { default: YeaftSidebar } = await import('../../web/components/YeaftSidebar.js');
@@ -154,11 +155,16 @@ describe('message flow regressions', () => {
     const chatStoreSource = readFileSync(resolve(import.meta.dirname, '../../web/stores/chat.js'), 'utf8');
     const chatPageSource = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatPage.js'), 'utf8');
     const yeaftSidebarSource = readFileSync(resolve(import.meta.dirname, '../../web/components/YeaftSidebar.js'), 'utf8');
+    const vpAvatarSource = readFileSync(resolve(import.meta.dirname, '../../web/components/VpAvatar.js'), 'utf8');
+    const vpCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/yeaft-vp.css'), 'utf8');
     const sidebarCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/sidebar.css'), 'utf8');
     const variables = readFileSync(resolve(import.meta.dirname, '../../web/styles/variables.css'), 'utf8');
     const lightThemeVariables = variables.match(/:root\s*\{([\s\S]*?)\n\}/)?.[1] || '';
     const darkThemeVariables = variables.match(/\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/)?.[1] || '';
     expect(sidebarCss).toMatch(/\.unread-dot\s*\{[^}]*background:\s*var\(--success\)/);
+    expect(vpAvatarSource).not.toContain('/assets/avatars/');
+    expect(vpAvatarSource).not.toContain('<img');
+    expect(vpCss).not.toContain('.vp-avatar-img');
 
     const first = chatRouteRef({ id: 'conversation-1', agentId: 'agent-a', provider: 'copilot' });
     const moved = chatRouteRef({ id: 'conversation-1', agentId: 'agent-b', provider: 'copilot' });
@@ -1355,7 +1361,15 @@ describe('message flow regressions', () => {
     const modalPinia = {
       ...originalPinia,
       useChatStore: () => chat,
-      useVpStore: () => ({ vpList: [{ vpId: 'omni' }], lastSnapshotAt: 1, lastVpSnapshotAgentId: 'agent-a', vpLabel: id => id }),
+      useVpStore: () => ({
+        vpList: [{ vpId: 'omni' }],
+        vpOrder: ['omni'],
+        lastSnapshotAt: 1,
+        lastVpSnapshotAgentId: 'agent-a',
+        snapshotStatus: 'ready',
+        snapshotAgentId: 'agent-a',
+        vpLabel: id => id,
+      }),
       useSessionsStore: () => runtimeSessionsStore,
     };
     globalThis.Pinia = modalPinia;
@@ -1400,6 +1414,126 @@ describe('message flow regressions', () => {
     await modal.vm.onSubmit();
     expect(chat.createConversation).toHaveBeenCalledWith('/repo', 'agent-a', null, { provider: 'claude-code' });
     modal.unmount();
+
+    const coldVpStore = Vue.reactive({
+      vpList: [],
+      vpOrder: [],
+      emptyLibrary: false,
+      lastSnapshotAt: 0,
+      lastVpSnapshotAgentId: null,
+      snapshotStatus: 'idle',
+      snapshotAgentId: null,
+      snapshotRequestId: null,
+      snapshotError: '',
+      beginSnapshot(agentId, requestId) {
+        this.snapshotStatus = 'loading';
+        this.snapshotAgentId = agentId;
+        this.snapshotRequestId = requestId;
+      },
+      failSnapshot(agentId, requestId, error) {
+        if (requestId !== this.snapshotRequestId) return false;
+        this.snapshotStatus = 'error';
+        this.snapshotAgentId = agentId;
+        this.snapshotError = error;
+        return true;
+      },
+    });
+    chat.sendWsMessage.mockReturnValue(true);
+    const coldModalPinia = { ...modalPinia, useVpStore: () => coldVpStore };
+    globalThis.Pinia = coldModalPinia;
+    window.Pinia = coldModalPinia;
+    const coldModal = mount(SessionCreateModal, {
+      attachTo: document.body,
+      global: { mocks: { $t: key => key }, stubs: { Teleport: true, VpAvatar: true } },
+    });
+    await Vue.nextTick();
+    expect(chat.sendWsMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: 'yeaft_vp_subscribe',
+      agentId: 'agent-a',
+      requestId: expect.stringMatching(/^vp_snapshot_/),
+    }));
+    expect(coldVpStore.snapshotStatus).toBe('loading');
+    coldVpStore.failSnapshot('agent-a', coldVpStore.snapshotRequestId, 'offline');
+    await Vue.nextTick();
+    expect(coldModal.find('.yeaft-roster-error').exists()).toBe(true);
+    expect(coldModal.find('.yeaft-roster-error').text()).toContain('yeaft.session.create.rosterError');
+    await coldModal.get('.yeaft-roster-retry').trigger('click');
+    expect(chat.sendWsMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: 'yeaft_vp_subscribe',
+      agentId: 'agent-a',
+      requestId: expect.stringMatching(/^vp_snapshot_/),
+    }));
+    coldModal.unmount();
+
+    // The create roster is scoped to the selected Agent. A pending B request
+    // must hide A rows and disable creation; switching back to A establishes a
+    // fresh request scope, so a delayed B response cannot overwrite A again.
+    storeFactories.delete('vp');
+    const scopedVpStore = useVpStore();
+    scopedVpStore.beginSnapshot('agent-a', 'req-a-1');
+    expect(scopedVpStore.applySnapshot({
+      vps: [{ vpId: 'a-only', displayName: 'A only' }],
+      emptyLibrary: false,
+    }, 'agent-a', 'req-a-1')).toBe(true);
+    chat.agents = [
+      { id: 'agent-a', name: 'Agent A', online: true, workDir: '/repo-a' },
+      { id: 'agent-b', name: 'Agent B', online: true, workDir: '/repo-b' },
+    ];
+    chat.currentAgent = 'agent-a';
+    chat.sendWsMessage.mockClear();
+    const scopedModalPinia = { ...modalPinia, useVpStore: () => scopedVpStore };
+    globalThis.Pinia = scopedModalPinia;
+    window.Pinia = scopedModalPinia;
+    const scopedModal = mount(SessionCreateModal, {
+      attachTo: document.body,
+      global: { mocks: { $t: key => key }, stubs: { Teleport: true, VpAvatar: true } },
+    });
+    await Vue.nextTick();
+    expect(scopedModal.vm.vpList.map(vp => vp.vpId)).toEqual(['a-only']);
+    expect(scopedModal.vm.form.vpIds).toEqual(['a-only']);
+
+    const agentSelect = scopedModal.findAll('select.resume-input')[0];
+    await agentSelect.setValue('agent-b');
+    await Vue.nextTick();
+    const vpRequestB = scopedVpStore.snapshotRequestId;
+    expect(scopedVpStore.snapshotAgentId).toBe('agent-b');
+    expect(scopedVpStore.snapshotStatus).toBe('loading');
+    expect(scopedVpStore.vpList).toEqual([]);
+    expect(scopedModal.vm.vpList).toEqual([]);
+    expect(scopedModal.vm.form.vpIds).toEqual([]);
+    expect(scopedModal.get('.yeaft-create-submit').attributes('disabled')).toBeDefined();
+    expect(scopedModal.find('.yeaft-roster-empty').text()).toContain('yeaft.session.create.rosterLoading');
+
+    await agentSelect.setValue('agent-a');
+    await Vue.nextTick();
+    const vpRequestA2 = scopedVpStore.snapshotRequestId;
+    expect(vpRequestA2).not.toBe(vpRequestB);
+    expect(scopedVpStore.snapshotAgentId).toBe('agent-a');
+    expect(scopedVpStore.applySnapshot({
+      vps: [{ vpId: 'a-only', displayName: 'A only' }],
+      emptyLibrary: false,
+    }, 'agent-a', vpRequestA2)).toBe(true);
+    await Vue.nextTick();
+    expect(scopedModal.vm.vpList.map(vp => vp.vpId)).toEqual(['a-only']);
+    expect(scopedModal.vm.form.vpIds).toEqual(['a-only']);
+    expect(scopedModal.get('.yeaft-create-submit').attributes('disabled')).toBeUndefined();
+    expect(scopedVpStore.applySnapshot({
+      vps: [{ vpId: 'b-only', displayName: 'B only' }],
+      emptyLibrary: false,
+    }, 'agent-b', vpRequestB)).toBe(false);
+    expect(scopedModal.vm.vpList.map(vp => vp.vpId)).toEqual(['a-only']);
+
+    // Old Agents do not echo requestId. The server still stamps agentId, so a
+    // response for the active Agent remains compatible without weakening the
+    // cross-Agent fence above.
+    scopedVpStore.beginSnapshot('agent-b', 'req-b-legacy');
+    expect(scopedVpStore.applySnapshot({
+      vps: [{ vpId: 'b-only', displayName: 'B only' }],
+      emptyLibrary: false,
+    }, 'agent-b')).toBe(true);
+    expect(scopedVpStore.vpList.map(vp => vp.vpId)).toEqual(['b-only']);
+    scopedModal.unmount();
+
     globalThis.Pinia = originalPinia;
     window.Pinia = originalWindowPinia;
 

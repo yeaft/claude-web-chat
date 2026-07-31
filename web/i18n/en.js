@@ -745,6 +745,8 @@ export default {
   'yeaft.session.create.untitled': 'Untitled session',
   'yeaft.session.create.rosterEmpty': 'No VPs available — create one from the VP Library first.',
   'yeaft.session.create.rosterLoading': 'Loading VPs…',
+  'yeaft.session.create.rosterError': 'VPs could not be loaded from this Agent.',
+  'yeaft.session.create.rosterRetry': 'Retry',
   'yeaft.vp.domain.general': 'General & coordination',
   'yeaft.vp.domain.productDesign': 'Product & experience design',
   'yeaft.vp.domain.softwareSystems': 'Software & systems',
