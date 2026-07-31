@@ -3204,6 +3204,29 @@ describe('managed CLI setup and fast tool integration', () => {
       })).rejects.toMatchObject({ name: 'AbortError' });
     }
 
+    const fallbackAbortDir = tempDir('search-fallback-mid-abort');
+    for (let dir = 0; dir < 32; dir += 1) {
+      const dirPath = join(fallbackAbortDir, `d${dir}`);
+      mkdirSync(dirPath);
+      for (let file = 0; file < 16; file += 1) {
+        writeFileSync(join(dirPath, `f${file}.txt`), 'needle\n');
+      }
+    }
+    for (const name of ['Grep', 'Glob', 'DiskUsage']) {
+      const controller = new AbortController();
+      const input = name === 'Grep'
+        ? { pattern: 'needle', path: fallbackAbortDir }
+        : name === 'Glob' ? { pattern: '**/*.txt', path: fallbackAbortDir } : { path: fallbackAbortDir };
+      const pending = registry.execute(name, input, {
+        cwd: fallbackAbortDir,
+        yeaftDir: join(fallbackAbortDir, 'missing'),
+        managedCliReady: Promise.resolve([]),
+        signal: controller.signal,
+      });
+      setImmediate(() => controller.abort('user'));
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    }
+
     if (process.platform !== 'win32') {
       const abortDir = tempDir('search-mid-abort');
       const abortBinDir = managedCliBinDir(abortDir);
