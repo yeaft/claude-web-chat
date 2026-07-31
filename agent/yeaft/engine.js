@@ -3595,6 +3595,7 @@ export class Engine {
         let displayImages = [];
         let isError = false;
         let toolErrorOutput = null;
+        let fatalToolError = null;
         currentToolCallForAsyncTask = {
           id: tc.id,
           name: tc.name,
@@ -3668,6 +3669,7 @@ export class Engine {
             output = `Error: ${err.message}`;
             isError = true;
             yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, threadId: this.currentThreadId };
+            if (err?.fatalToolTimeout === true) fatalToolError = err;
           }
         }
 
@@ -3756,6 +3758,7 @@ export class Engine {
           isError,
         }));
         queryToolCount += 1;
+        if (fatalToolError) throw fatalToolError;
       }
 
       // PR-L: flush any duplicate-call reminders queued during the batch.

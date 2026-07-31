@@ -206,23 +206,37 @@ describe('Work Center core', () => {
     expect(store.recoverCoordinatorProviderTurns()).toBe(0);
 
     const operationItem = controller.create(createInput({ id: 'operation-claim-fence', workDir: dir }));
-    const operationAction = store.getWorkItemDetail(operationItem.id).actions[0];
-    store.createOperation({
+    const operationRun = store.claimReadyAction('operation-owner', 5_000);
+    expect(operationRun?.workItem.id).toBe(operationItem.id);
+    expect(store.createAndClaimOperation({
       workItemId: operationItem.id,
-      actionId: operationAction.id,
+      actionId: operationRun.action.id,
+      runId: operationRun.run.id,
       operationType: 'external-write',
       idempotencyKey: 'operation-claim-fence',
       replayPolicy: 'never_automatic',
-    });
-    const safeItem = controller.create(createInput({ id: 'operation-safe-sibling', workDir: dir }));
+    }, 'operation-owner', operationRun.run.leaseEpoch, false))
+      .toMatchObject({ executionStatus: 'running' });
+    expect(store.createAndClaimOperation({
+      workItemId: operationItem.id,
+      actionId: operationRun.action.id,
+      runId: operationRun.run.id,
+      operationType: 'external-write',
+      idempotencyKey: 'operation-claim-fence',
+      replayPolicy: 'never_automatic',
+    }, 'operation-loser', operationRun.run.leaseEpoch, false)).toBeNull();
+    const safeItem = controller.create(createInput({
+      id: 'operation-safe-sibling', workDir: join(dir, 'operation-safe-sibling'),
+    }));
     const safeClaim = store.claimReadyAction('operation-boot', 5_000);
     expect(safeClaim?.workItem.id).toBe(safeItem.id);
     controller.cancel(safeItem.id);
-    expect(store.claimReadyAction('operation-boot', 5_000)).toBeNull();
-    expect(store.claimOperation('operation-claim-fence', 'operation-owner', 1, false))
-      .toMatchObject({ executionStatus: 'running' });
     expect(store.completeOperation(
-      'operation-claim-fence', 'operation-owner', 1, 'not_applied', { verified: true },
+      'operation-claim-fence', 'operation-owner', operationRun.run.leaseEpoch,
+      'not_applied', { verified: true },
+    )).toBe(true);
+    expect(store.interruptRun(
+      operationRun.run.id, 'operation-owner', operationRun.run.leaseEpoch, 'retry after safe operation',
     )).toBe(true);
     const operationClaim = store.claimReadyAction('operation-boot', 5_000);
     expect(operationClaim).not.toBeNull();

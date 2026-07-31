@@ -1048,7 +1048,7 @@ export class WorkItemRunner {
     const operationLifecycle = (toolName, input) => {
       operationOrdinal += 1;
       const idempotencyKey = `${run.id}:tool:${operationOrdinal}`;
-      this.store.createOperation({
+      const claimed = this.store.createAndClaimOperation({
         workItemId: workItem.id,
         actionId: action.id,
         runId: run.id,
@@ -1056,8 +1056,7 @@ export class WorkItemRunner {
         idempotencyKey,
         replayPolicy: 'never_automatic',
         payload: { inputHash: hashMainlineSnapshot(input) },
-      });
-      const claimed = this.store.claimOperation(idempotencyKey, ownerBootId, run.leaseEpoch, false);
+      }, ownerBootId, run.leaseEpoch, false);
       if (!claimed) throw new Error(`Work Center could not claim Operation ${idempotencyKey}`);
       return {
         complete: (effectStatus, result) => {
