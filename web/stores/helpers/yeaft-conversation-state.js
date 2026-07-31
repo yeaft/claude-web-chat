@@ -70,7 +70,7 @@ export function retargetYeaftConversationPromotion(store, agentId, targetConvers
   migrateYeaftConversationState(store, pending.targetConversationId, targetConversationId, {
     removeSource: true,
   });
-  retireYeaftConversation(store, agentId, pending.targetConversationId);
+  retireYeaftConversation(store, agentId, pending.targetConversationId, targetConversationId);
   rememberYeaftConversationPromotion(store, agentId, pending.sourceConversationId, targetConversationId);
   return pending;
 }

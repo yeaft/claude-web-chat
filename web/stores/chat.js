@@ -19,6 +19,7 @@ import {
 } from './helpers/yeaft-conversation-state.js';
 import {
   isRetiredYeaftConversation,
+  resolveCurrentYeaftConversation,
   retireYeaftConversation,
   reviveYeaftConversation,
 } from './helpers/yeaft-conversation-generation.js';
@@ -853,6 +854,7 @@ export const useChatStore = defineStore('chat', {
     yeaftConversationIdsByAgent: {}, // { [agentId]: conversationId } 跨机器 agent 的 Yeaft message cache 隔离
     _yeaftPendingConversationPromotions: {}, // { [agentId]: { sourceConversationId, targetConversationId } }
     _yeaftRetiredConversationIdsByAgent: {}, // { [agentId]: string[] }, bounded bridge-generation fence
+    _yeaftRetiredConversationTargetsByAgent: {}, // { [agentId]: { [retiredId]: currentId } }
     yeaftSessionAgentById: {},      // Legacy bare-session owner cache; activeSessionKey wins when ids collide.
     yeaftModel: null,              // agent/default Yeaft 模型名；Session override lives in sessions[].config.model
     yeaftModelEffort: null,        // agent/default effort；Session override lives in sessions[].config.modelEffort
@@ -3450,7 +3452,24 @@ export const useChatStore = defineStore('chat', {
         envelopeAgentId,
         envelopeConversationId,
       );
-      if (msg.data && retiredEnvelopeConversation) return;
+      if (msg.data && retiredEnvelopeConversation) {
+        if (msg.data.type !== 'result') return;
+        const currentConversationId = resolveCurrentYeaftConversation(
+          this,
+          envelopeAgentId,
+          envelopeConversationId,
+        );
+        if (!currentConversationId) return;
+        const currentTurnKey = msg.turnId
+          ? yeaftTurnStateKey(this, envelopeAgentId, msg.turnId)
+          : '';
+        const currentOwnsTurn = !!(currentTurnKey && this.activeVpTurns?.[currentTurnKey])
+          || (this.messagesMap?.[currentConversationId] || []).some(row => (
+            row?.turnId === msg.turnId && (row.isStreaming || row.status === 'pending')
+          ));
+        if (!msg.turnId || !currentOwnsTurn) return;
+        msg = { ...msg, conversationId: currentConversationId };
+      }
       if (msg.perfTraceId) {
         recordPerfTrace(this, {
           traceId: msg.perfTraceId,
@@ -3506,7 +3525,7 @@ export const useChatStore = defineStore('chat', {
             migrateYeaftConversationState(this, previousAgentConvId, conversationId, {
               removeSource: previousAgentConvId !== this.yeaftConversationId,
             });
-            retireYeaftConversation(this, frameAgentId, previousAgentConvId);
+            retireYeaftConversation(this, frameAgentId, previousAgentConvId, conversationId);
           }
           reviveYeaftConversation(this, frameAgentId, conversationId);
           const pendingPromotion = pendingYeaftConversationPromotion(this, frameAgentId, conversationId);
@@ -3737,7 +3756,7 @@ export const useChatStore = defineStore('chat', {
             retargetYeaftConversationPromotion(this, statusAgentId, agentConvId);
           } else if (!pendingForAgent && previousAgentConvId && previousAgentConvId !== agentConvId
               && !String(previousAgentConvId).startsWith('yeaft-local-')) {
-            retireYeaftConversation(this, statusAgentId, previousAgentConvId);
+            retireYeaftConversation(this, statusAgentId, previousAgentConvId, agentConvId);
           }
           reviveYeaftConversation(this, statusAgentId, agentConvId);
           const pendingPromotion = pendingYeaftConversationPromotion(this, statusAgentId, agentConvId);

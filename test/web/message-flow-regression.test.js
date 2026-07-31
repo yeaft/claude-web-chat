@@ -1674,14 +1674,67 @@ describe('message flow regressions', () => {
       expect.objectContaining({ agentId: 'agent-b', sessionId: 'grp_default' }),
     ]);
 
+    // Restore starts from the real disk-only state: Agent B has no sidebar
+    // row yet, while Agent A already owns the same bare Session id.
+    exactSessionsStore.applySnapshot([], 'agent-b');
+    exactSessionsStore.setActive('grp_default', 'agent-a');
+    exactChatStore.currentAgent = 'agent-a';
+    exactChatStore.currentAgentInfo = { id: 'agent-a' };
+    exactChatStore.yeaftActiveSessionFilter = 'grp_default';
+    exactChatStore.yeaftSessionAgentById = { grp_default: 'agent-a' };
+    exactChatStore.yeaftConversationId = 'conv-a';
+    exactChatStore.activeConversations = ['conv-a'];
+    exactChatStore.messagesMap = { 'conv-a': [], 'conv-b': [] };
+    exactChatStore.yeaftSessionHistoryState = {};
+    exactChatStore._yeaftHistoryLoad = null;
+    localStorage.setItem('lastViewedYeaftSession', 'agent-a\u001fgrp_default');
+    exactChatStore.sendWsMessage.mockClear();
+    expect(exactSessionsStore.sessions['agent-b\u001fgrp_default']).toBeUndefined();
+    expect(exactSessionsStore.sessionById('grp_default', 'agent-b')).toBeNull();
+    exactSessionsStore.setActive('grp_default', 'agent-b');
+    expect(exactSessionsStore.activeSessionKey).toBeNull();
+    exactSessionsStore.setActive('grp_default', 'agent-a');
+
     const setActiveSpy = vi.spyOn(exactSessionsStore, 'setActive');
     const setFilterSpy = vi.spyOn(exactChatStore, 'setActiveSessionFilter');
-    exactChatStore.sessionCrudRequest = vi.fn(() => Promise.resolve({
-      ok: true, session: { id: 'grp_default', name: 'Restored default' },
-    }));
-    await exactModal.vm.onRestoreClick({ id: 'grp_default', name: 'Disk default' });
+    exactChatStore.sessionCrudRequest = vi.fn(() => {
+      const result = {
+        ok: true,
+        op: 'restore',
+        session: { id: 'grp_default', name: 'Restored default', agentId: 'agent-b' },
+      };
+      exactSessionsStore.applyCrudResult(result, 'agent-b');
+      return Promise.resolve(result);
+    });
+    await exactModal.vm.onRestoreClick({
+      id: 'grp_default', name: 'Disk default', agentId: 'agent-b', workDir: '/repo-b',
+    });
     expect(setActiveSpy).toHaveBeenLastCalledWith('grp_default', 'agent-b');
     expect(setFilterSpy).toHaveBeenLastCalledWith('grp_default', { agentId: 'agent-b', force: true });
+    expect(exactSessionsStore.sessions['agent-b\u001fgrp_default']).toEqual(expect.objectContaining({
+      id: 'grp_default', agentId: 'agent-b', name: 'Restored default',
+    }));
+    expect(exactSessionsStore.activeSessionKey).toBe('agent-b\u001fgrp_default');
+    expect(exactChatStore.currentAgent).toBe('agent-b');
+    expect(exactChatStore.yeaftConversationId).toBe('conv-b');
+    expect(exactChatStore.activeConversations).toEqual(['conv-b']);
+    expect(localStorage.getItem('lastViewedYeaftSession')).toBe('agent-b\u001fgrp_default');
+    expect(exactChatStore.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_load_history')).toEqual([
+      expect.objectContaining({ agentId: 'agent-b', sessionId: 'grp_default' }),
+    ]);
+
+    exactChatStore.sendWsMessage.mockClear();
+    exactChatStore.sendYeaftSessionMessage({ groupId: 'grp_default', text: 'route only to B' });
+    expect(exactChatStore.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_session_send')).toEqual([
+      expect.objectContaining({ agentId: 'agent-b', sessionId: 'grp_default', text: 'route only to B' }),
+    ]);
+    expect(exactChatStore.messagesMap['conv-b']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'user', content: 'route only to B', sessionId: 'grp_default' }),
+    ]));
+    expect(exactChatStore.messagesMap['conv-a']).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: 'route only to B' }),
+    ]));
+    clearTimeout(exactChatStore._processingWatchdogs['conv-b']);
 
     exactModal.vm.form.vpIds = ['omni'];
     exactModal.vm.form.defaultVpId = 'omni';
@@ -2143,6 +2196,81 @@ describe('message flow regressions', () => {
     expect(store.yeaftConversationIdsByAgent['agent-a']).toBe(generationTargetTwoId);
     expect(store.yeaftConversationId).toBe(generationTargetTwoId);
     expect(store.activeConversations).toEqual([generationTargetTwoId]);
+    expect(store.messagesMap[generationTargetTwoId]).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'late-generation-one-data' }),
+    ]));
+
+    const generationTurnId = 'generation-turn';
+    store.messagesMap[generationTargetTwoId].push({
+      id: 'generation-pending-row',
+      type: 'assistant',
+      content: 'pending generation result',
+      sessionId: 'visible-session',
+      turnId: generationTurnId,
+      isStreaming: true,
+      status: 'pending',
+      timestamp: 7,
+    });
+    store.processingConversations[generationTargetTwoId] = true;
+    if (!store._processingWatchdogs[generationTargetTwoId]) {
+      store._processingWatchdogs[generationTargetTwoId] = setTimeout(() => {}, 60_000);
+    }
+    store._yeaftWatchdogConvs.add(generationTargetTwoId);
+    store.activeVpTurns = {
+      'agent-a\u001fgeneration-turn': {
+        agentId: 'agent-a', turnId: generationTurnId, vpId: 'omni', sessionId: 'visible-session', isStreaming: true,
+      },
+    };
+    store.yeaftProcessingSessions = { 'agent-a\u001fvisible-session': true };
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: generationTargetOneId,
+      sessionId: 'visible-session',
+      turnId: generationTurnId,
+      vpId: 'omni',
+      data: { type: 'result', subtype: 'success', result_text: '' },
+    });
+    const completedGenerationRow = store.messagesMap[generationTargetTwoId]
+      .find(row => row.id === 'generation-pending-row');
+    expect(completedGenerationRow).toEqual(expect.objectContaining({
+      isStreaming: false,
+      status: 'completed',
+    }));
+    expect(store.processingConversations[generationTargetTwoId]).toBeUndefined();
+    expect(store._processingWatchdogs[generationTargetTwoId]).toBeUndefined();
+    expect(store._yeaftWatchdogConvs.has(generationTargetTwoId)).toBe(false);
+    expect(store.yeaftConversationIdsByAgent['agent-a']).toBe(generationTargetTwoId);
+    expect(store.yeaftConversationId).toBe(generationTargetTwoId);
+    expect(store.activeConversations).toEqual([generationTargetTwoId]);
+
+    store.messagesMap[generationTargetTwoId].push({
+      id: 'current-unrelated-row',
+      type: 'assistant',
+      content: 'still running current turn',
+      sessionId: 'visible-session',
+      turnId: 'current-unrelated-turn',
+      isStreaming: true,
+      status: 'pending',
+      timestamp: 8,
+    });
+    store.processingConversations[generationTargetTwoId] = true;
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: generationTargetOneId,
+      sessionId: 'visible-session',
+      turnId: 'retired-unrelated-turn',
+      vpId: 'omni',
+      data: { type: 'result', subtype: 'success', result_text: '' },
+    });
+    expect(store.messagesMap[generationTargetTwoId]).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'current-unrelated-row', isStreaming: true, status: 'pending',
+      }),
+    ]));
+    expect(store.processingConversations[generationTargetTwoId]).toBe(true);
+    delete store.processingConversations[generationTargetTwoId];
+    store.messagesMap[generationTargetTwoId] = store.messagesMap[generationTargetTwoId]
+      .filter(row => row.id !== 'current-unrelated-row');
 
     store.handleYeaftOutput({
       agentId: 'agent-a',
@@ -2155,12 +2283,6 @@ describe('message flow regressions', () => {
     expect(store.yeaftConversationId).toBe(generationTargetTwoId);
     expect(store.activeConversations).toEqual([generationTargetTwoId]);
 
-    store.activeVpTurns = {
-      'agent-a\u001fgeneration-turn': {
-        agentId: 'agent-a', turnId: 'generation-turn', vpId: 'omni', sessionId: 'visible-session', isStreaming: true,
-      },
-    };
-    store.yeaftProcessingSessions = { 'agent-a\u001fvisible-session': true };
     store.handleYeaftOutput({
       agentId: 'agent-a',
       conversationId: generationTargetOneId,

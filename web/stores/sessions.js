@@ -72,6 +72,9 @@ function findSessionKey(state, sessionId, agentId = null) {
   if (!id) return '';
   const directKey = storeKeyFor(agentId, id);
   if (directKey && state.sessions[directKey]) return directKey;
+  // An explicit Agent is authoritative. Falling through here could select a
+  // different Agent's same-id Session and route the next send across owners.
+  if (agentId) return '';
   if (state.sessions[id]) return id;
   if (state.activeSessionKey && state.sessions[state.activeSessionKey]?.id === id) return state.activeSessionKey;
   const keys = state.sessionOrder.filter(key => state.sessions[key]?.id === id);
@@ -528,7 +531,7 @@ export const useSessionsStore = defineStore('sessions', {
         this.applySnapshot(result.sessions, agentId);
       }
       const session = result.session || result.group || null;
-      if (result.ok && result.op === 'create' && session && session.id) {
+      if (result.ok && (result.op === 'create' || result.op === 'restore') && session && session.id) {
         this.applySnapshotUpsert(session, agentId);
         this.setActive(session.id, agentId);
       }
