@@ -69,7 +69,7 @@ export default {
     rowsByProject() {
       const out = new Map(this.projectRows.map(project => [projectIdentityKey(project), []]));
       for (const row of this.sessions) {
-        if (row.runtimeProvider !== 'yeaft') continue;
+        if (row.runtimeProvider !== 'yeaft' || !this.isRowOnline(row)) continue;
         const project = this.projectBySessionKey.get(`${row.routeRef?.agentId}\u001f${row.routeRef?.sessionId}`);
         const key = projectIdentityKey(project);
         if (project && out.has(key)) out.get(key).push(row);
@@ -79,6 +79,7 @@ export default {
     },
     recentRows() {
       return sortRows(this.sessions.filter(row => {
+        if (!this.isRowOnline(row)) return false;
         if (row.runtimeProvider === 'yeaft') {
           const key = `${row.routeRef?.agentId}\u001f${row.routeRef?.sessionId}`;
           if (this.projectBySessionKey.has(key)) return false;
@@ -129,6 +130,11 @@ export default {
     isAgentOnline(agentId) {
       return !!agentId && this.agents.some(agent => agent.id === agentId && agent.online);
     },
+    isRowOnline(row) {
+      if (row?.availability !== 'online') return false;
+      const agent = this.agents.find(item => item.id === row?.routeRef?.agentId);
+      return !agent || !!agent.online;
+    },
     canEditProject(project) {
       return this.isAgentOnline(project?.agentId);
     },
@@ -152,15 +158,9 @@ export default {
       if (row.runtimeProvider === 'copilot') return 'Copilot';
       return 'Claude';
     },
-    relativeTime(row) {
-      const timestamp = new Date(row.updatedAt || row.createdAt || 0).getTime();
-      if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
-      const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-      if (seconds < 60) return this.$t('chat.time.justNow');
-      if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-      if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-      if (seconds < 604800) return `${Math.floor(seconds / 86400)}d`;
-      return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    agentLabel(row) {
+      const agent = this.agents.find(item => item.id === row?.routeRef?.agentId);
+      return row?.agentName || agent?.name || row?.routeRef?.agentId || '';
     },
     createSession() {
       if (this.workCenterOpen) this.$emit('close-work-center');
@@ -301,6 +301,7 @@ export default {
           </div>
 
           <form v-if="projectCreateOpen" class="sidebar-project-create" @submit.prevent="submitProjectCreate" @keydown.escape.stop.prevent="cancelProjectCreate">
+            <svg class="sidebar-project-create-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 6h7l2 2h9v10H3V6zm2 2v8h14v-6h-8l-2-2H5z"/></svg>
             <input
               ref="projectCreateInput"
               v-model="projectCreateName"
@@ -309,8 +310,12 @@ export default {
               :aria-label="$t('sidebar.projects.namePrompt')"
               :disabled="projectCreateSubmitting"
             />
-            <button type="submit" class="sidebar-project-create-confirm" :disabled="!projectCreateName.trim() || projectCreateSubmitting" :aria-label="$t('common.confirm')">{{ $t('common.confirm') }}</button>
-            <button type="button" class="sidebar-project-create-cancel" :disabled="projectCreateSubmitting" @click="cancelProjectCreate" :aria-label="$t('common.cancel')">{{ $t('common.cancel') }}</button>
+            <button type="submit" class="sidebar-project-create-confirm" :disabled="!projectCreateName.trim() || projectCreateSubmitting" :title="$t('common.confirm')" :aria-label="$t('common.confirm')">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m5 12 4 4L19 6"/></svg>
+            </button>
+            <button type="button" class="sidebar-project-create-cancel" :disabled="projectCreateSubmitting" @click="cancelProjectCreate" :title="$t('common.cancel')" :aria-label="$t('common.cancel')">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="m7 7 10 10M17 7 7 17"/></svg>
+            </button>
           </form>
 
           <div v-if="projectRows.length === 0 && !projectCreateOpen" class="sidebar-section-empty">{{ $t('sidebar.projects.empty') }}</div>
@@ -337,20 +342,26 @@ export default {
               </div>
             </div>
             <div v-if="!isProjectCollapsed(project)" class="sidebar-project-sessions">
-              <button
+              <div
                 v-for="row in rowsByProject.get(projectKey(project)) || []"
                 :key="row.catalogKey"
-                type="button"
                 class="session-item sidebar-session-row"
-                :class="{ active: isActive(row), processing: isProcessing(row), 'agent-offline': row.availability !== 'online' }"
+                :class="{ active: isActive(row), processing: isProcessing(row) }"
                 :draggable="row.runtimeProvider === 'yeaft' && canEditRow(row)"
+                role="button"
+                tabindex="0"
                 @dragstart="startDrag(row, $event)"
                 @dragend="finishDrag"
                 @click="selectRow(row)"
+                @keydown.enter.prevent="selectRow(row)"
+                @keydown.space.prevent="selectRow(row)"
               >
-                <span v-if="isProcessing(row)" class="processing-dot"></span>
-                <span v-else-if="isUnread(row)" class="unread-dot"></span>
-                <span class="sidebar-session-copy"><span class="title">{{ row.title }}</span><span class="sidebar-session-meta">{{ providerLabel(row) }}<span v-if="relativeTime(row)"> · {{ relativeTime(row) }}</span></span></span>
+                <span class="sidebar-session-copy">
+                  <span class="title" :title="row.title">
+                    <span class="sidebar-session-title-text">{{ row.title }}</span>
+                    <span v-if="isUnread(row)" class="sidebar-session-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
+                  </span>
+                </span>
                 <span v-if="canEditRow(row)" class="session-actions">
                   <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="openMenuKey = openMenuKey === row.catalogKey ? null : row.catalogKey" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
                   <div v-if="openMenuKey === row.catalogKey" class="session-menu">
@@ -359,9 +370,14 @@ export default {
                     <button class="session-menu-item" @click.stop="runAction('settings', row)">{{ $t('yeaft.session.openSettings') }}</button>
                     <button class="session-menu-item" @click.stop="moveRow(row, null)">{{ $t('sidebar.projects.remove') }}</button>
                     <button class="session-menu-item danger" @click.stop="runAction('delete', row)">{{ $t('common.delete') }}</button>
+                    <div class="sidebar-session-menu-divider"></div>
+                    <div class="sidebar-session-menu-info">
+                      <span><span>{{ $t('sidebar.sessions.agent') }}</span><strong :title="agentLabel(row)">{{ agentLabel(row) }}</strong></span>
+                      <span><span>{{ $t('sidebar.sessions.provider') }}</span><strong>{{ providerLabel(row) }}</strong></span>
+                    </div>
                   </div>
                 </span>
-              </button>
+              </div>
               <div v-if="(rowsByProject.get(projectKey(project)) || []).length === 0" class="sidebar-section-empty">{{ $t('sidebar.projects.noSessions') }}</div>
             </div>
           </div>
@@ -369,21 +385,26 @@ export default {
 
         <section class="sidebar-section recents-section" :class="{ 'drag-over': dragTargetProjectId === '__recents__' }" @dragover="dragOverRecents" @dragleave="dragTargetProjectId = null" @drop="dropOnRecents">
           <div class="sidebar-section-heading"><span>{{ $t('sidebar.recents.title') }}</span></div>
-          <button
+          <div
             v-for="row in recentRows"
             :key="row.catalogKey"
-            type="button"
             class="session-item sidebar-session-row"
-            :class="{ active: isActive(row), processing: isProcessing(row), 'agent-offline': row.availability !== 'online' }"
+            :class="{ active: isActive(row), processing: isProcessing(row) }"
             :draggable="row.runtimeProvider === 'yeaft' && canEditRow(row)"
+            role="button"
+            tabindex="0"
             @dragstart="startDrag(row, $event)"
             @dragend="finishDrag"
             @click="selectRow(row)"
+            @keydown.enter.prevent="selectRow(row)"
+            @keydown.space.prevent="selectRow(row)"
           >
-            <span v-if="isProcessing(row)" class="processing-dot"></span>
-            <span v-else-if="isUnread(row)" class="unread-dot"></span>
-            <svg v-if="row.pinned" class="session-pin-icon" viewBox="0 0 24 24"><path fill="currentColor" d="m14 4 6 6-2 2-1-1-3 3v4l-2 2-3-5-5-3 2-2h4l3-3-1-1 2-2z"/></svg>
-            <span class="sidebar-session-copy"><span class="title">{{ row.title }}</span><span class="sidebar-session-meta">{{ providerLabel(row) }}<span v-if="relativeTime(row)"> · {{ relativeTime(row) }}</span></span></span>
+            <span class="sidebar-session-copy">
+              <span class="title" :title="row.title">
+                <span class="sidebar-session-title-text">{{ row.title }}</span>
+                <span v-if="isUnread(row)" class="sidebar-session-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
+              </span>
+            </span>
             <span v-if="canEditRow(row)" class="session-actions">
               <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="openMenuKey = openMenuKey === row.catalogKey ? null : row.catalogKey" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
               <div v-if="openMenuKey === row.catalogKey" class="session-menu">
@@ -394,9 +415,14 @@ export default {
                   <button v-for="project in projectRows.filter(item => item.agentId === row.routeRef.agentId)" :key="project.id" class="session-menu-item" @click.stop="moveRow(row, project)">{{ $t('sidebar.projects.moveTo', { name: project.name }) }}</button>
                 </template>
                 <button class="session-menu-item danger" @click.stop="runAction('delete', row)">{{ $t('common.delete') }}</button>
+                <div class="sidebar-session-menu-divider"></div>
+                <div class="sidebar-session-menu-info">
+                  <span><span>{{ $t('sidebar.sessions.agent') }}</span><strong :title="agentLabel(row)">{{ agentLabel(row) }}</strong></span>
+                  <span><span>{{ $t('sidebar.sessions.provider') }}</span><strong>{{ providerLabel(row) }}</strong></span>
+                </div>
               </div>
             </span>
-          </button>
+          </div>
           <div v-if="recentRows.length === 0" class="sidebar-section-empty">{{ $t('sidebar.recents.empty') }}</div>
         </section>
       </div>
