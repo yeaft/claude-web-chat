@@ -136,7 +136,6 @@ export default {
   'sidebar.provider.claude': 'Claude',
   'sidebar.sessions.new': 'New session',
   'sidebar.sessions.newChat': 'New chat',
-  'sidebar.sessions.search': 'Search chats',
   'sidebar.sessions.emptyProvider': 'No sessions for this provider',
   'sidebar.sessions.menu': 'Session menu',
   'sidebar.projects.title': 'Projects',
