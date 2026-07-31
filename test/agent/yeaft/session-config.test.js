@@ -10,6 +10,15 @@ import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResol
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { registerSessionWorkDir, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
+import {
+  createProject,
+  deleteProject,
+  loadProjects,
+  moveSessionToProject,
+  removeSessionFromProjects,
+  renameProject,
+  sharedSessionIdsForProject,
+} from '../../../agent/yeaft/projects/store.js';
 
 const roots = [];
 const originalConfig = ctx.CONFIG;
@@ -77,6 +86,27 @@ describe('Yeaft session-scoped model config', () => {
     expect(configB.model).toBe('github-copilot/claude-opus-4.8');
     expect(configB.primaryModel).toBe('github-copilot/claude-opus-4.8');
     expect(configB.modelEffort).toBe('max');
+
+    const alpha = createProject(root, 'Alpha');
+    const beta = createProject(root, 'Beta');
+    moveSessionToProject(root, 'session-a', alpha.id);
+    moveSessionToProject(root, 'session-b', alpha.id);
+    moveSessionToProject(root, 'session-a', beta.id);
+    expect(loadProjects(root)).toEqual([
+      expect.objectContaining({ id: alpha.id, sessionIds: ['session-b'] }),
+      expect.objectContaining({ id: beta.id, sessionIds: ['session-a'] }),
+    ]);
+    moveSessionToProject(root, 'session-b', beta.id);
+    expect(sharedSessionIdsForProject(root, 'session-a')).toEqual(['session-b']);
+    const siblingSummary = join(root, 'memory', 'sessions', 'session-b');
+    mkdirSync(siblingSummary, { recursive: true });
+    writeFileSync(join(siblingSummary, 'summary.md'), '<!-- updatedAt: 2026-07-31 -->\nShared release decision\n');
+    expect(__testHooks.sharedProjectContext(root, 'session-a')).toContain('[Session session-b]\nShared release decision');
+    renameProject(root, beta.id, 'Beta 2');
+    removeSessionFromProjects(root, 'session-a');
+    expect(loadProjects(root)[1]).toEqual(expect.objectContaining({ name: 'Beta 2', sessionIds: ['session-b'] }));
+    deleteProject(root, beta.id);
+    expect(loadProjects(root).map(project => project.id)).toEqual([alpha.id]);
   });
 
 

@@ -64,6 +64,16 @@ import { persistYeaftAttachments, attachmentsForPersistence, persistedAttachment
 import { normalizeSessionMessageQuote, sessionMessageQuotePrompt } from './session-message-quote.js';
 import { ConversationStore, parseSeqFromId, projectVisibleSessionMessages } from './conversation/persist.js';
 import { isHiddenConversationRow, isVisibleConversationRow } from './conversation/internal-control.js';
+import {
+  ProjectStoreError,
+  createProject,
+  deleteProject,
+  loadProjects,
+  moveSessionToProject,
+  removeSessionFromProjects,
+  renameProject,
+} from './projects/store.js';
+import { readSummary } from './memory/summary-store.js';
 import { imageMetadataForPersistence } from './image-assets.js';
 import { sliceLastNTurns } from './turn-utils.js';
 import { pairSanitize } from './pair-sanitize.js';
@@ -3008,6 +3018,20 @@ function decorateSessionsWithRuntimeState(sessions) {
   });
 }
 
+function sharedProjectContext(yeaftDir, sessionId) {
+  const project = loadProjects(yeaftDir).find(row => row.sessionIds.includes(sessionId));
+  if (!project) return '';
+  const memoryRoot = join(yeaftDir, 'memory');
+  const rows = [];
+  for (const siblingId of project.sessionIds.filter(id => id !== sessionId)) {
+    const summary = readSummary(memoryRoot, `sessions/${siblingId}`)
+      || readSummary(memoryRoot, `session/${siblingId}`)
+      || readSummary(memoryRoot, `group/${siblingId}`);
+    if (summary) rows.push(`[Session ${siblingId}]\n${summary}`);
+  }
+  return rows.join('\n\n');
+}
+
 function sendSessionCrudResult(payload) {
   const next = payload && payload.ok && Array.isArray(payload.sessions)
     ? { ...payload, sessions: decorateSessionsWithRuntimeState(payload.sessions) }
@@ -3020,7 +3044,7 @@ function sendSessionSnapshotBroadcast() {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     if (!yeaftDir) return;
     const sessions = decorateSessionsWithRuntimeState(snapshotSessions(yeaftDir));
-    sendSessionEvent({ type: 'session_list_updated', sessions });
+    sendSessionEvent({ type: 'session_list_updated', sessions, projects: loadProjects(yeaftDir) });
   } catch (err) {
     console.warn('[Yeaft] sendSessionSnapshotBroadcast failed:', err?.message || err);
   }
@@ -3059,6 +3083,7 @@ function sessionErrorPayload(err) {
   let code = 'unknown';
   if (err instanceof SessionCrudError) code = err.code;
   else if (err instanceof SessionConfigError) code = err.code;
+  else if (err instanceof ProjectStoreError) code = err.code;
   return {
     code,
     sessionId: err && err.sessionId,
@@ -3071,9 +3096,46 @@ export function handleYeaftListSessions(msg) {
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const groups = snapshotSessions(yeaftDir);
-    sendSessionCrudResult({ op: 'list', requestId, ok: true, sessions: groups });
+    sendSessionCrudResult({ op: 'list', requestId, ok: true, sessions: groups, projects: loadProjects(yeaftDir) });
   } catch (err) {
     sendSessionCrudResult({ op: 'list', requestId, ok: false, error: sessionErrorPayload(err) });
+  }
+}
+
+export function handleYeaftProjectMutation(msg) {
+  const requestId = msg && msg.requestId;
+  const op = msg && msg.op;
+  try {
+    const yeaftDir = ctx.CONFIG?.yeaftDir;
+    let result = null;
+    if (op === 'create') result = createProject(yeaftDir, msg.name);
+    else if (op === 'rename') result = renameProject(yeaftDir, msg.projectId, msg.name);
+    else if (op === 'delete') result = deleteProject(yeaftDir, msg.projectId);
+    else if (op === 'move_session') {
+      if (!snapshotSessions(yeaftDir).some(row => row.id === msg.sessionId)) {
+        throw new ProjectStoreError('session_not_found', 'Session not found');
+      }
+      result = moveSessionToProject(yeaftDir, msg.sessionId, msg.projectId || null);
+    } else {
+      throw new ProjectStoreError('invalid_op', 'Unknown Project operation');
+    }
+    sendSessionEvent({
+      type: 'project_mutation_result',
+      requestId,
+      op,
+      ok: true,
+      result,
+      projects: loadProjects(yeaftDir),
+    }, { requestId });
+    sendSessionSnapshotBroadcast();
+  } catch (err) {
+    sendSessionEvent({
+      type: 'project_mutation_result',
+      requestId,
+      op,
+      ok: false,
+      error: sessionErrorPayload(err),
+    }, { requestId });
   }
 }
 
@@ -3260,6 +3322,7 @@ export function handleYeaftDeleteSession(msg) {
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const result = deleteSession(yeaftDir, sessionId);
+    removeSessionFromProjects(yeaftDir, sessionId);
     ctx.assetOutbox?.removeSession(sessionId);
     // Cascade: remove every persisted message stamped with this group id.
     // Hard delete (per user spec): no soft-archive, the bytes are gone.
@@ -5055,6 +5118,15 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         envelope: inboundEnvelope,
         threadId,
       });
+      if (queryOpts) {
+        const projectContext = sharedProjectContext(ctx.CONFIG?.yeaftDir, sessionId);
+        if (projectContext) {
+          const sharedBlock = `[Project Shared Context]\nRead-only memory summaries from sibling Sessions in the same Project. Preserve each source Session identity.\n\n${projectContext}`;
+          queryOpts.sessionAnnouncement = queryOpts.sessionAnnouncement
+            ? `${queryOpts.sessionAnnouncement}\n\n${sharedBlock}`
+            : sharedBlock;
+        }
+      }
       let turnSessionMeta = null;
       try { turnSessionMeta = sessionCoordinator?.group?.getMeta?.() || null; } catch { turnSessionMeta = null; }
       const projectRuntime = getProjectRuntimeForTurn(turnSessionMeta);
@@ -7172,6 +7244,8 @@ export async function handleYeaftMcpReload(msg = {}) {
 }
 
 export const __testHooks = {
+  loadProjects,
+  sharedProjectContext,
   loadVisibleGroupHistoryPage,
   projectVisibleHistoryChunkMessages,
   persistInboundMessageOnceByMsgId,
