@@ -64,6 +64,7 @@
  * @property {(input?: object) => boolean} [isReadOnly] — read-only operation?
  * @property {(input?: object) => boolean} [isDestructive] — destructive operation?
  * @property {'json-error-envelope' | null} [errorOutput] — explicit returned-output error contract; null means only thrown errors fail
+ * @property {'external' | 'run'} [sideEffectScope] — whether mutations escape the current Run collector
  */
 
 /**
@@ -78,6 +79,7 @@
  *   isReadOnly?: (input?: object) => boolean,
  *   isDestructive?: (input?: object) => boolean,
  *   errorOutput?: 'json-error-envelope' | null,
+ *   sideEffectScope?: 'external' | 'run',
  *   timeoutMs?: number,
  * }} def
  * @returns {ToolDef}
@@ -92,6 +94,7 @@ export function defineTool({
   isReadOnly = () => false,
   isDestructive = () => false,
   errorOutput = 'json-error-envelope',
+  sideEffectScope = 'external',
   timeoutMs,
 }) {
   if (!name) throw new Error('Tool must have a name');
@@ -106,6 +109,7 @@ export function defineTool({
     isReadOnly,
     isDestructive,
     errorOutput,
+    sideEffectScope,
   };
   // Legacy tool-name aliases. Registered as extra lookup keys so old
   // jsonl tool_calls (e.g. `SendMessage` → `PromptAgent`) keep resolving,
