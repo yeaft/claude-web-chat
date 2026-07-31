@@ -1036,6 +1036,8 @@ export function projectWorkCenterEvent(event) {
     type,
     ...(eventActionId ? { actionId: eventActionId } : {}),
     ...(typeof event?.runId === 'string' && event.runId ? { runId: event.runId } : {}),
+    ...(typeof event?.clientMessageId === 'string' && event.clientMessageId
+      ? { clientMessageId: truncateUtf8(event.clientMessageId, 256) } : {}),
     workItem: {
       ...projectWorkItemSummary(event?.workItem),
       actionStats: projectActionStats(event?.workItem, liveActionId),

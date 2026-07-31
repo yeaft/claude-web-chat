@@ -199,6 +199,64 @@ const YEAFT_CATALOG_STATUS_FIELDS = Object.freeze([
 ]);
 const YEAFT_RETIRED_CATALOG_EPOCH_LIMIT = 8;
 const YEAFT_ASK_TERMINAL_CACHE_LIMIT = 64;
+const WORK_CENTER_DRAFT_STORAGE_KEY = 'yeaft-work-center-composer-drafts-v1';
+const WORK_CENTER_OUTBOX_STORAGE_KEY = 'yeaft-work-center-message-outbox-v1';
+
+function readLocalRecord(key) {
+  try {
+    const parsed = JSON.parse(globalThis.localStorage?.getItem(key) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalRecord(key, value) {
+  try { globalThis.localStorage?.setItem(key, JSON.stringify(value || {})); } catch {}
+}
+
+function workCenterClientMessageKey(agentId, workItemId) {
+  return `${agentId || ''}:${workItemId || ''}`;
+}
+
+function normalizedWorkCenterMessageTarget(target) {
+  if (target?.kind === 'action' && typeof target.actionId === 'string'
+      && Number.isInteger(Number(target.generation)) && Number(target.generation) > 0) {
+    return { kind: 'action', actionId: target.actionId, generation: Number(target.generation) };
+  }
+  return { kind: 'coordinator' };
+}
+
+function normalizedWorkCenterDraftTarget(target) {
+  if (typeof target === 'string') return target;
+  if (target?.kind === 'action' && typeof target.actionId === 'string') {
+    return {
+      kind: 'action',
+      actionId: target.actionId,
+      generation: Number.isInteger(Number(target.generation)) ? Number(target.generation) : 0,
+    };
+  }
+  return { kind: 'coordinator' };
+}
+
+function workCenterEnvelopePayload(value = {}) {
+  return {
+    agentId: value.agentId || '',
+    workItemId: value.workItemId || '',
+    target: normalizedWorkCenterMessageTarget(value.target),
+    text: String(value.text || ''),
+    attachments: Array.isArray(value.attachments) ? value.attachments.map(attachment => ({
+      fileId: attachment?.fileId || '',
+      name: attachment?.name || '',
+      mimeType: attachment?.mimeType || '',
+      size: Math.max(0, Number(attachment?.size) || 0),
+    })) : [],
+    revision: Number(value.revision) || 0,
+    planRevision: Number(value.planRevision) || 0,
+    ledgerRevision: Number(value.ledgerRevision) || 0,
+    coordinatorRevision: Number(value.coordinatorRevision) || 0,
+  };
+}
 
 function askUserEventIdentity(msg, event, conversationId) {
   return {
@@ -829,6 +887,8 @@ export const useChatStore = defineStore('chat', {
     _workCenterActionRequestDetailsGeneration: {},
 
     workCenterPending: {},
+    workCenterComposerDrafts: readLocalRecord(WORK_CENTER_DRAFT_STORAGE_KEY),
+    workCenterMessageOutbox: readLocalRecord(WORK_CENTER_OUTBOX_STORAGE_KEY),
     workCenterCreateDraft: null,
     yeaftConversationId: null,     // 当前 Yeaft agent 的虚拟 conversationId（从 agent session_ready 获取）
     yeaftConversationIdsByAgent: {}, // { [agentId]: conversationId } 跨机器 agent 的 Yeaft message cache 隔离
@@ -1502,6 +1562,68 @@ export const useChatStore = defineStore('chat', {
       };
       this.enterWorkCenter(agentId);
     },
+    workCenterComposerKey(agentId, workItemId) {
+      return workCenterClientMessageKey(agentId, workItemId);
+    },
+    saveWorkCenterComposerDraft(agentId, workItemId, draft = {}) {
+      const key = workCenterClientMessageKey(agentId, workItemId);
+      if (!agentId || !workItemId) return;
+      this.workCenterComposerDrafts = {
+        ...(this.workCenterComposerDrafts || {}),
+        [key]: {
+          text: String(draft.text || ''),
+          attachments: Array.isArray(draft.attachments) ? draft.attachments : [],
+          target: normalizedWorkCenterDraftTarget(draft.target),
+          error: String(draft.error || ''),
+        },
+      };
+      writeLocalRecord(WORK_CENTER_DRAFT_STORAGE_KEY, this.workCenterComposerDrafts);
+    },
+    loadWorkCenterComposerDraft(agentId, workItemId) {
+      return this.workCenterComposerDrafts?.[workCenterClientMessageKey(agentId, workItemId)] || null;
+    },
+    removeWorkCenterComposerDraft(agentId, workItemId) {
+      const key = workCenterClientMessageKey(agentId, workItemId);
+      const next = { ...(this.workCenterComposerDrafts || {}) };
+      delete next[key];
+      this.workCenterComposerDrafts = next;
+      writeLocalRecord(WORK_CENTER_DRAFT_STORAGE_KEY, next);
+    },
+    prepareWorkCenterMessageEnvelope(input = {}) {
+      const payload = workCenterEnvelopePayload(input);
+      const key = workCenterClientMessageKey(payload.agentId, payload.workItemId);
+      const existing = this.workCenterMessageOutbox?.[key] || null;
+      if (existing) return existing;
+      const envelope = {
+        ...payload,
+        clientMessageId: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+        createdAt: Date.now(),
+      };
+      this.workCenterMessageOutbox = { ...(this.workCenterMessageOutbox || {}), [key]: envelope };
+      writeLocalRecord(WORK_CENTER_OUTBOX_STORAGE_KEY, this.workCenterMessageOutbox);
+      return envelope;
+    },
+    loadWorkCenterMessageEnvelope(agentId, workItemId) {
+      return this.workCenterMessageOutbox?.[workCenterClientMessageKey(agentId, workItemId)] || null;
+    },
+    discardWorkCenterMessageEnvelope(agentId, workItemId) {
+      const key = workCenterClientMessageKey(agentId, workItemId);
+      const next = { ...(this.workCenterMessageOutbox || {}) };
+      delete next[key];
+      this.workCenterMessageOutbox = next;
+      writeLocalRecord(WORK_CENTER_OUTBOX_STORAGE_KEY, next);
+    },
+    confirmWorkCenterMessageEnvelope(agentId, workItemId, clientMessageId) {
+      const key = workCenterClientMessageKey(agentId, workItemId);
+      const envelope = this.workCenterMessageOutbox?.[key];
+      if (!envelope || envelope.clientMessageId !== clientMessageId) return false;
+      const next = { ...(this.workCenterMessageOutbox || {}) };
+      delete next[key];
+      this.workCenterMessageOutbox = next;
+      writeLocalRecord(WORK_CENTER_OUTBOX_STORAGE_KEY, next);
+      this.removeWorkCenterComposerDraft(agentId, workItemId);
+      return true;
+    },
     workCenterRequest(op, payload = {}, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       if (!target) return Promise.reject(new Error('No Agent selected'));
@@ -1511,7 +1633,14 @@ export const useChatStore = defineStore('chat', {
           delete this.workCenterPending[requestId];
           reject(new Error('Work Center request timed out'));
         }, 30_000);
-        this.workCenterPending[requestId] = { resolve, reject, timer, agentId: target, op };
+        this.workCenterPending[requestId] = {
+          resolve,
+          reject,
+          timer,
+          agentId: target,
+          op,
+          clientMessageId: typeof payload.clientMessageId === 'string' ? payload.clientMessageId : null,
+        };
         this.sendWsMessage({ type: 'work_center_request', agentId: target, requestId, op, payload });
       });
     },
@@ -2006,30 +2135,39 @@ export const useChatStore = defineStore('chat', {
     },
     async postWorkItemMessage(id, text, targetRef, revision, attachments = [], agentId = null, fence = {}) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const clientMessageId = typeof fence.clientMessageId === 'string' && fence.clientMessageId
-        ? fence.clientMessageId
-        : globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+      const envelope = this.prepareWorkCenterMessageEnvelope({
+        agentId: target,
+        workItemId: id,
+        target: targetRef,
+        text,
+        attachments,
+        revision,
+        planRevision: fence.planRevision,
+        ledgerRevision: fence.ledgerRevision,
+        coordinatorRevision: fence.coordinatorRevision,
+      });
+      const clientMessageId = envelope.clientMessageId;
       const current = this.workCenterDetailByAgent[target]?.id === id
         ? this.workCenterDetailByAgent[target] : null;
       const detail = await this.workCenterRequest('post_work_item_message', {
-        id,
+        id: envelope.workItemId,
         clientMessageId,
-        text,
-        target: targetRef,
-        revision,
-        planRevision: Number.isInteger(Number(fence.planRevision))
-          ? Number(fence.planRevision) : Number(current?.planRevision) || 0,
-        ledgerRevision: Number.isInteger(Number(fence.ledgerRevision))
-          ? Number(fence.ledgerRevision) : Number(current?.ledgerRevision) || 0,
-        coordinatorRevision: Number.isInteger(Number(fence.coordinatorRevision))
-          ? Number(fence.coordinatorRevision) : Number(current?.coordinatorRevision) || 0,
-        attachments: Array.isArray(attachments) ? attachments : [],
+        text: envelope.text,
+        target: envelope.target,
+        revision: envelope.revision,
+        planRevision: envelope.planRevision || Number(current?.planRevision) || 0,
+        ledgerRevision: envelope.ledgerRevision || Number(current?.ledgerRevision) || 0,
+        coordinatorRevision: Number.isInteger(Number(envelope.coordinatorRevision))
+          ? Number(envelope.coordinatorRevision) : Number(current?.coordinatorRevision) || 0,
+        attachments: envelope.attachments,
       }, target);
-      if (targetRef?.kind === 'coordinator') {
+      if (envelope.target.kind === 'coordinator') {
         if (!detail?.accepted) throw new Error('Work Center Coordinator did not accept the message');
+        this.confirmWorkCenterMessageEnvelope(target, id, clientMessageId);
         return detail;
       }
       await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
+      this.confirmWorkCenterMessageEnvelope(target, id, clientMessageId);
       return detail;
     },
     async sendWorkItemMessage(id, text, revision, attachments = [], agentId = null, fence = {}) {
@@ -2103,6 +2241,20 @@ export const useChatStore = defineStore('chat', {
     applyWorkCenterEvent(agentId, event) {
       if (!agentId || !event?.workItem) return;
       const summary = event.workItem;
+      if (event.clientMessageId) {
+        this.confirmWorkCenterMessageEnvelope(agentId, summary.id, event.clientMessageId);
+        const pendingEntry = Object.entries(this.workCenterPending || {}).find(([, pending]) => (
+          pending?.agentId === agentId && pending.clientMessageId === event.clientMessageId
+        ));
+        if (pendingEntry) {
+          const [requestId, pending] = pendingEntry;
+          clearTimeout(pending.timer);
+          delete this.workCenterPending[requestId];
+          pending.resolve(event.type === 'coordinator.turn_started'
+            ? { accepted: true, turnId: null, receipt: true }
+            : event.workItem);
+        }
+      }
       const current = this.workCenterItemsByAgent[agentId] || [];
       if (event.type === 'work_item.deleted') {
         this.removeWorkItemState(agentId, summary.id);
