@@ -883,7 +883,7 @@ describe('Yeaft load-history first paint', () => {
     }
   });
 
-  it('ready-session delta replay uses the same projected frame shape', async () => {
+  it('keeps ready-session delta frames and roster metadata events canonical', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-delta-ready-'));
     try {
       const store = new ConversationStore(dir);
@@ -953,45 +953,41 @@ describe('Yeaft load-history first paint', () => {
         count: chunk.messages.length,
         sessionId: 'session-fast',
       });
-    } finally {
-      __testSetSession(null);
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
 
-  it('propagates metadata time for roster and default-VP settings mutations', () => {
-    vi.useFakeTimers();
-    const dir = mkdtempSync(join(tmpdir(), 'yeaft-roster-metadata-'));
-    try {
-      ctx.CONFIG = { yeaftDir: dir };
-      vi.setSystemTime(new Date('2026-07-29T10:00:00.000Z'));
-      createSession(join(dir, 'sessions'), {
-        id: 'session-roster',
-        name: 'Roster',
-        roster: ['omni'],
-        defaultVpId: 'omni',
-      }).close();
+      vi.useFakeTimers();
+      try {
+        ctx.CONFIG = { yeaftDir: dir };
+        vi.setSystemTime(new Date('2026-07-29T10:00:00.000Z'));
+        createSession(join(dir, 'sessions'), {
+          id: 'session-roster',
+          name: 'Roster',
+          roster: ['omni'],
+          defaultVpId: 'omni',
+        }).close();
 
-      const cases = [
-        [new Date('2026-07-29T11:00:00.000Z'), handleYeaftSessionAddMember, 'add_member', 'reviewer'],
-        [new Date('2026-07-29T12:00:00.000Z'), handleYeaftSessionSetDefaultVp, 'set_default_vp', 'reviewer'],
-        [new Date('2026-07-29T13:00:00.000Z'), handleYeaftSessionRemoveMember, 'remove_member', 'reviewer'],
-      ];
-      for (const [at, handler, op, vpId] of cases) {
-        vi.setSystemTime(at);
-        sent.length = 0;
-        handler({ sessionId: 'session-roster', vpId, requestId: `request-${op}` });
-        expect(sent).toContainEqual(expect.objectContaining({
-          type: 'yeaft_output',
-          event: expect.objectContaining({
-            type: 'session_roster_changed',
-            sessionId: 'session-roster',
-            metadataUpdatedAt: at.toISOString(),
-          }),
-        }));
+        const cases = [
+          [new Date('2026-07-29T11:00:00.000Z'), handleYeaftSessionAddMember, 'add_member', 'reviewer'],
+          [new Date('2026-07-29T12:00:00.000Z'), handleYeaftSessionSetDefaultVp, 'set_default_vp', 'reviewer'],
+          [new Date('2026-07-29T13:00:00.000Z'), handleYeaftSessionRemoveMember, 'remove_member', 'reviewer'],
+        ];
+        for (const [at, handler, op, vpId] of cases) {
+          vi.setSystemTime(at);
+          sent.length = 0;
+          handler({ sessionId: 'session-roster', vpId, requestId: `request-${op}` });
+          expect(sent).toContainEqual(expect.objectContaining({
+            type: 'yeaft_output',
+            event: expect.objectContaining({
+              type: 'session_roster_changed',
+              sessionId: 'session-roster',
+              metadataUpdatedAt: at.toISOString(),
+            }),
+          }));
+        }
+      } finally {
+        vi.useRealTimers();
       }
     } finally {
-      vi.useRealTimers();
+      __testSetSession(null);
       rmSync(dir, { recursive: true, force: true });
     }
   });

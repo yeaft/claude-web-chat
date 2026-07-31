@@ -124,6 +124,32 @@ describe('Yeaft session-scoped model config', () => {
     expect(loadProjects(root)[1]).toEqual(expect.objectContaining({ name: 'Beta 2', sessionIds: ['session-b'] }));
     deleteProject(root, beta.id);
     expect(loadProjects(root).map(project => project.id)).toEqual([alpha.id]);
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-07-29T10:00:00.000Z'));
+      const sessionId = 'session-metadata-time';
+      createSession(sessionsRoot(root), {
+        id: sessionId,
+        name: 'Original',
+        roster: [],
+        defaultVpId: null,
+      }).close();
+      expect(snapshotSessions(root).find(session => session.id === sessionId)?.metadataUpdatedAt)
+        .toBe('2026-07-29T10:00:00.000Z');
+
+      vi.setSystemTime(new Date('2026-07-29T11:00:00.000Z'));
+      renameSession(root, sessionId, 'Renamed');
+      expect(snapshotSessions(root).find(session => session.id === sessionId)?.metadataUpdatedAt)
+        .toBe('2026-07-29T11:00:00.000Z');
+
+      vi.setSystemTime(new Date('2026-07-29T12:00:00.000Z'));
+      updateSessionConfig(root, sessionId, { model: 'agent/gpt-5' });
+      expect(snapshotSessions(root).find(session => session.id === sessionId)?.metadataUpdatedAt)
+        .toBe('2026-07-29T12:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
 
@@ -140,32 +166,6 @@ describe('Yeaft session-scoped model config', () => {
     expect(config).toEqual({ model: 'agent/gpt-5', modelEffort: 'low' });
   });
 
-
-  it('advances Session metadata time for rename and settings changes', () => {
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(new Date('2026-07-29T10:00:00.000Z'));
-      const root = makeDir();
-      const sessionId = 'session-metadata-time';
-      createSession(sessionsRoot(root), {
-        id: sessionId,
-        name: 'Original',
-        roster: [],
-        defaultVpId: null,
-      }).close();
-      expect(snapshotSessions(root)[0].metadataUpdatedAt).toBe('2026-07-29T10:00:00.000Z');
-
-      vi.setSystemTime(new Date('2026-07-29T11:00:00.000Z'));
-      renameSession(root, sessionId, 'Renamed');
-      expect(snapshotSessions(root)[0].metadataUpdatedAt).toBe('2026-07-29T11:00:00.000Z');
-
-      vi.setSystemTime(new Date('2026-07-29T12:00:00.000Z'));
-      updateSessionConfig(root, sessionId, { model: 'agent/gpt-5' });
-      expect(snapshotSessions(root)[0].metadataUpdatedAt).toBe('2026-07-29T12:00:00.000Z');
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 
   it('writes Session config only to the user-level root', () => {
     const root = makeDir();
