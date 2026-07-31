@@ -829,7 +829,14 @@ function projectMainlineBrowser(detail) {
 
 function waitingReason(detail) {
   if (typeof detail?.waitingReason === 'string') return detail.waitingReason;
-  if (detail?.status !== 'waiting' || !Array.isArray(detail.runs)) return '';
+  if (detail?.status !== 'waiting') return '';
+  const waitingEvent = Array.isArray(detail?.events)
+    ? detail.events.find(event => event?.type === 'action.waiting'
+      && event?.actionId === detail.currentActionId
+      && typeof event?.data?.reason === 'string')
+    : null;
+  if (waitingEvent) return waitingEvent.data.reason;
+  if (!Array.isArray(detail.runs)) return '';
   return detail.runs.find(run => (
     run?.actionId === detail.currentActionId && typeof run.waitingReason === 'string'
   ))?.waitingReason || '';
