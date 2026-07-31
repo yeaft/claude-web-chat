@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-export const WORK_CENTER_SCHEMA_VERSION = 33;
+export const WORK_CENTER_SCHEMA_VERSION = 34;
 
 const MIGRATIONS = [
   ['23-conversation-stream', migrateConversationStream],
@@ -14,6 +14,7 @@ const MIGRATIONS = [
   ['31-reliability-guards', migrateReliabilityGuards],
   ['32-engine-turn-status-contract', migrateEngineTurnStatusContract],
   ['33-coordinator-provider-turns', migrateCoordinatorProviderTurns],
+  ['34-engine-turn-status-repair', repairEngineTurnStatusContract],
 ];
 
 const MIGRATION_ALIASES = new Map([
@@ -295,9 +296,14 @@ function migrateRuntimeIndexes(db) {
   `);
 }
 
-function migrateEngineTurnStatusContract(db, now) {
+const ENGINE_TURN_STATUS_CHECK = /status\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(\s*status\s+IN\s*\(\s*'prepared'\s*,\s*'dispatching'\s*,\s*'responded'\s*,\s*'unknown'\s*,\s*'cancelled'\s*,\s*'legacy_imported'\s*\)\s*\)/i;
+
+function hasEngineTurnStatusContract(db) {
   const sql = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'engine_turns'`).get()?.sql || '';
-  if (/dispatching/.test(sql) && /responded/.test(sql) && /legacy_imported/.test(sql)) return;
+  return ENGINE_TURN_STATUS_CHECK.test(sql);
+}
+
+function rebuildEngineTurnStatusContract(db, now) {
   db.exec('PRAGMA defer_foreign_keys = ON');
   db.exec(`
     CREATE TABLE engine_turns_new (
@@ -387,6 +393,40 @@ function migrateEngineTurnStatusContract(db, now) {
   `);
   const foreignKeyViolations = db.prepare('PRAGMA foreign_key_check').all();
   if (foreignKeyViolations.length > 0) throw new Error('EngineTurn status migration violated foreign keys');
+}
+
+function migrateEngineTurnStatusContract(db, now) {
+  if (hasEngineTurnStatusContract(db)) return;
+  rebuildEngineTurnStatusContract(db, now);
+}
+
+function repairEngineTurnStatusContract(db, now) {
+  if (!hasEngineTurnStatusContract(db)) rebuildEngineTurnStatusContract(db, now);
+  if (!hasEngineTurnStatusContract(db)) {
+    throw new Error('EngineTurn status repair did not install the required status contract');
+  }
+  const foreignKeys = db.prepare('PRAGMA foreign_key_list(engine_turns)').all();
+  const referencedTables = foreignKeys.map(row => row.table).sort();
+  if (foreignKeys.length !== 3
+      || JSON.stringify(referencedTables) !== JSON.stringify(['actions', 'runs', 'work_items'])) {
+    throw new Error('EngineTurn status repair did not preserve required foreign keys');
+  }
+  const indexes = db.prepare('PRAGMA index_list(engine_turns)').all();
+  const hasIndex = columns => indexes.some(index => {
+    const actual = db.prepare(`PRAGMA index_info(${JSON.stringify(index.name)})`).all()
+      .map(row => row.name);
+    return actual.length === columns.length && actual.every((value, offset) => value === columns[offset]);
+  });
+  if (!hasIndex(['status', 'updated_at'])
+      || !hasIndex(['request_key'])
+      || !hasIndex(['run_id', 'ordinal'])) {
+    throw new Error('EngineTurn status repair did not preserve required indexes');
+  }
+  const immutableTrigger = db.prepare(`SELECT 1 AS present FROM sqlite_master
+    WHERE type = 'trigger' AND name = 'trg_engine_turn_request_immutable'`).get();
+  if (!immutableTrigger) throw new Error('EngineTurn status repair did not preserve request immutability');
+  const foreignKeyViolations = db.prepare('PRAGMA foreign_key_check').all();
+  if (foreignKeyViolations.length > 0) throw new Error('EngineTurn status repair violated foreign keys');
 }
 
 function migrateCoordinatorProviderTurns(db) {
