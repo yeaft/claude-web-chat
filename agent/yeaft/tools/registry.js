@@ -443,9 +443,19 @@ export class ToolRegistry {
     const rawTimeout = Number.isFinite(tool.timeoutMs) ? tool.timeoutMs : DEFAULT_TOOL_TIMEOUT_MS;
     const useTimeout = rawTimeout > 0;
 
-    const output = useTimeout
-      ? await runWithTimeout(tool.execute(input, ctx), rawTimeout, name)
-      : await tool.execute(input, ctx);
+    let output;
+    try {
+      output = useTimeout
+        ? await runWithTimeout(tool.execute(input, ctx), rawTimeout, name)
+        : await tool.execute(input, ctx);
+    } catch (error) {
+      if (error instanceof ToolExecutionTimeoutError
+          && tool.sideEffectScope !== 'run'
+          && tool.isReadOnly?.(input) !== true) {
+        error.fatalToolTimeout = true;
+      }
+      throw error;
+    }
 
     return normalizeToolOutput(output);
   }

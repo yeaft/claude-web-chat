@@ -1560,16 +1560,42 @@ export class WorkItemStore {
     return rows.some(row => !this.operationSafeToProceed(row.idempotency_key));
   }
 
+  createAndClaimOperation(input = {}, ownerBootId, leaseEpoch, automatic = true) {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(input.runId, ownerBootId, leaseEpoch, true);
+      if (!active || active.work_item_id !== input.workItemId || active.action_id !== input.actionId) return null;
+      const operation = this.createOperation(input);
+      if (!operation
+          || operation.workItemId !== input.workItemId
+          || operation.actionId !== input.actionId
+          || operation.runId !== input.runId
+          || operation.operationType !== (input.operationType || 'unknown')
+          || operation.executionStatus !== 'not_started') return null;
+      if (automatic && operation.replayPolicy !== 'safe') return null;
+      const now = this.now();
+      const changed = this.db.prepare(`UPDATE operations SET execution_status = 'running',
+        execution_epoch = execution_epoch + 1, owner_boot_id = ?, owner_lease_epoch = ?,
+        claimed_at = ?, updated_at = ? WHERE idempotency_key = ? AND execution_status = 'not_started'
+        AND work_item_id = ? AND action_id = ? AND run_id = ?`).run(
+        ownerBootId, leaseEpoch, now, now, input.idempotencyKey,
+        input.workItemId, input.actionId, input.runId,
+      );
+      return Number(changed.changes) === 1 ? this.getOperationByKey(input.idempotencyKey) : null;
+    });
+  }
+
   claimOperation(idempotencyKey, ownerBootId, leaseEpoch, automatic = true) {
     return withTransaction(this.db, () => {
       const operation = this.getOperationByKey(idempotencyKey);
       if (!operation || operation.executionStatus !== 'not_started') return null;
+      if (!this.#activeRunRow(operation.runId, ownerBootId, leaseEpoch, true)) return null;
       if (automatic && operation.replayPolicy !== 'safe') return null;
       const now = this.now();
       const changed = this.db.prepare(`UPDATE operations SET execution_status = 'running',
-        owner_boot_id = ?, owner_lease_epoch = ?, claimed_at = ?, updated_at = ?
-        WHERE idempotency_key = ? AND execution_status = 'not_started'`).run(
-        ownerBootId, leaseEpoch, now, now, idempotencyKey,
+        execution_epoch = execution_epoch + 1, owner_boot_id = ?, owner_lease_epoch = ?,
+        claimed_at = ?, updated_at = ? WHERE idempotency_key = ? AND execution_status = 'not_started'
+        AND run_id = ?`).run(
+        ownerBootId, leaseEpoch, now, now, idempotencyKey, operation.runId,
       );
       return Number(changed.changes) === 1 ? this.getOperationByKey(idempotencyKey) : null;
     });
@@ -1577,23 +1603,59 @@ export class WorkItemStore {
 
   completeOperation(idempotencyKey, ownerBootId, leaseEpoch, effectStatus, result = null) {
     if (!['applied', 'not_applied', 'failed_no_effect', 'unknown'].includes(effectStatus)) return false;
-    const now = this.now();
-    const changed = this.db.prepare(`UPDATE operations SET effect_status = ?, execution_status = ?,
-      effect_cutoff = ?, result = ?, completed_at = ?, updated_at = ? WHERE idempotency_key = ?
-      AND execution_status = 'running' AND owner_boot_id = ? AND owner_lease_epoch = ?`).run(
-      effectStatus,
-      'quiescent',
-      stringify({ status: 'current', closureType: 'quiescent', closedAt: now }),
-      stringify(result), now, now, idempotencyKey, ownerBootId, leaseEpoch,
-    );
-    return Number(changed.changes) === 1;
+    return withTransaction(this.db, () => {
+      const operation = this.getOperationByKey(idempotencyKey);
+      if (!operation || operation.executionStatus !== 'running'
+          || operation.payload == null) return false;
+      const ownerMatches = this.db.prepare(`SELECT 1 AS present FROM operations
+        WHERE idempotency_key = ? AND execution_status = 'running'
+          AND owner_boot_id = ? AND owner_lease_epoch = ?`).get(
+        idempotencyKey, ownerBootId, leaseEpoch,
+      );
+      if (!ownerMatches) return false;
+      const now = this.now();
+      const active = this.#activeRunRow(operation.runId, ownerBootId, leaseEpoch, true);
+      if (!active || active.work_item_id !== operation.workItemId
+          || active.action_id !== operation.actionId) {
+        this.db.prepare(`UPDATE operations SET effect_status = 'unknown',
+          execution_status = 'hazardous_orphan', effect_cutoff = ?, result = ?, completed_at = ?,
+          updated_at = ? WHERE idempotency_key = ? AND execution_status = 'running'
+          AND owner_boot_id = ? AND owner_lease_epoch = ?`).run(
+          stringify({ status: 'stale', closureType: 'late_completion', closedAt: now }),
+          stringify({ attemptedEffectStatus: effectStatus, reportedResult: result }),
+          now, now, idempotencyKey, ownerBootId, leaseEpoch,
+        );
+        return false;
+      }
+      const changed = this.db.prepare(`UPDATE operations SET effect_status = ?, execution_status = ?,
+        effect_cutoff = ?, result = ?, completed_at = ?, updated_at = ? WHERE idempotency_key = ?
+        AND execution_status = 'running' AND owner_boot_id = ? AND owner_lease_epoch = ?`).run(
+        effectStatus,
+        'quiescent',
+        stringify({ status: 'current', closureType: 'quiescent', closedAt: now }),
+        stringify(result), now, now, idempotencyKey, ownerBootId, leaseEpoch,
+      );
+      return Number(changed.changes) === 1;
+    });
   }
 
   recoverOperations() {
-    const now = this.now();
-    return Number(this.db.prepare(`UPDATE operations SET execution_status = 'hazardous_orphan',
-      effect_status = CASE WHEN effect_status = 'pending' THEN 'unknown' ELSE effect_status END,
-      updated_at = ? WHERE execution_status IN ('running', 'cancel_requested')`).run(now).changes);
+    return withTransaction(this.db, () => {
+      const now = this.now();
+      const unstarted = this.db.prepare(`UPDATE operations SET effect_status = 'failed_no_effect',
+        execution_status = 'quiescent', effect_cutoff = ?, result = ?, completed_at = ?, updated_at = ?
+        WHERE effect_status = 'pending' AND execution_status = 'not_started'`).run(
+        stringify({ status: 'current', closureType: 'recovered_before_dispatch', closedAt: now }),
+        stringify({ recovered: true, reason: 'Operation was never claimed before restart' }),
+        now, now,
+      );
+      const hazardous = this.db.prepare(`UPDATE operations SET execution_status = 'hazardous_orphan',
+        effect_status = CASE WHEN effect_status = 'pending' THEN 'unknown' ELSE effect_status END,
+        effect_cutoff = ?, updated_at = ? WHERE execution_status IN ('running', 'cancel_requested')`).run(
+        stringify({ status: 'stale', closureType: 'restart_unknown', closedAt: now }), now,
+      );
+      return Number(unstarted.changes) + Number(hazardous.changes);
+    });
   }
 
   appendEvent(workItemId, type, data = {}, refs = {}) {
