@@ -480,6 +480,21 @@ describe('Yeaft Session online Agent filtering', () => {
     });
     expect(broadcastSessionCatalog).not.toHaveBeenCalled();
     expect(ownerClient.sent.at(-1)).toMatchObject({ type: 'session_crud_result', requestId: 'rename-1' });
+    ownerClient.sent = [];
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_output',
+      event: {
+        type: 'project_mutation_result',
+        requestId: 'project-rename-1',
+        ok: true,
+        projects: [{ id: 'project-1', name: 'Renamed project', sessionIds: ['same-id'] }],
+      },
+    });
+    expect(ownerClient.sent.at(-1)).toMatchObject({
+      type: 'yeaft_output',
+      agentId: 'agent-a',
+      event: { type: 'project_mutation_result', requestId: 'project-rename-1' },
+    });
 
     const otherTab = { authenticated: true, userId: 'user-1', sent: [], ws: { readyState: 1 } };
     webClients.set('other-tab', otherTab);
