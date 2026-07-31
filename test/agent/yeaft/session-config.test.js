@@ -127,21 +127,20 @@ describe('Yeaft session-scoped model config', () => {
   });
 
 
-  it('ignores project .yeaft Session config and uses the user-level Session config', () => {
-    const root = makeDir();
-    const workDir = tempRoot('yeaft-session-config-workdir-');
-    const { projectYeaftDir, sessionId } = createProjectSessionArtifact(root, workDir, 'session-workdir-first');
+  it('uses the user-level Session config for reads, writes, and metadata updates', () => {
+    {
+      const root = makeDir();
+      const workDir = tempRoot('yeaft-session-config-workdir-');
+      const { projectYeaftDir, sessionId } = createProjectSessionArtifact(root, workDir, 'session-workdir-first');
 
-    writeFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'project/claude-sonnet', modelEffort: 'high' }, null, 2)}\n`);
-    writeFileSync(join(root, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'agent/gpt-5', modelEffort: 'low' }, null, 2)}\n`);
+      writeFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'project/claude-sonnet', modelEffort: 'high' }, null, 2)}\n`);
+      writeFileSync(join(root, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'agent/gpt-5', modelEffort: 'low' }, null, 2)}\n`);
 
-    const config = loadSessionConfig(root, sessionId);
+      const config = loadSessionConfig(root, sessionId);
 
-    expect(config).toEqual({ model: 'agent/gpt-5', modelEffort: 'low' });
-  });
+      expect(config).toEqual({ model: 'agent/gpt-5', modelEffort: 'low' });
+    }
 
-
-  it('advances Session metadata time for rename and settings changes', () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date('2026-07-29T10:00:00.000Z'));
@@ -165,22 +164,22 @@ describe('Yeaft session-scoped model config', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
 
-  it('writes Session config only to the user-level root', () => {
-    const root = makeDir();
-    const workDir = tempRoot('yeaft-session-config-workdir-');
-    const { projectYeaftDir, sessionId } = createProjectSessionArtifact(root, workDir, 'session-workdir-update');
-    writeFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'project/stale', modelEffort: 'low' }, null, 2)}\n`);
+    {
+      const root = makeDir();
+      const workDir = tempRoot('yeaft-session-config-workdir-');
+      const { projectYeaftDir, sessionId } = createProjectSessionArtifact(root, workDir, 'session-workdir-update');
+      writeFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'project/stale', modelEffort: 'low' }, null, 2)}\n`);
 
-    const saved = updateSessionConfig(root, sessionId, { model: 'agent/claude-haiku', modelEffort: 'max' });
+      const saved = updateSessionConfig(root, sessionId, { model: 'agent/claude-haiku', modelEffort: 'max' });
 
-    expect(saved).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
-    expect(loadSessionConfig(root, sessionId)).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
-    expect(JSON.parse(readFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), 'utf8')))
-      .toEqual({ model: 'project/stale', modelEffort: 'low' });
-    expect(JSON.parse(readFileSync(join(root, 'sessions', sessionId, 'config.json'), 'utf8')))
-      .toEqual({ model: 'agent/claude-haiku', modelEffort: 'max', modelSource: 'explicit' });
+      expect(saved).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
+      expect(loadSessionConfig(root, sessionId)).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
+      expect(JSON.parse(readFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), 'utf8')))
+        .toEqual({ model: 'project/stale', modelEffort: 'low' });
+      expect(JSON.parse(readFileSync(join(root, 'sessions', sessionId, 'config.json'), 'utf8')))
+        .toEqual({ model: 'agent/claude-haiku', modelEffort: 'max', modelSource: 'explicit' });
+    }
   });
 
 

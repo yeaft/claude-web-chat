@@ -705,7 +705,8 @@ export const useSessionsStore = defineStore('sessions', {
       if (result.ok && (result.op === 'archive' || result.op === 'delete') && opSessionId && opKey) {
         delete this.sessions[opKey];
         this.sessionOrder = this.sessionOrder.filter(id => id !== opKey);
-        if (this.activeSessionKey === opKey || this.activeSessionId === opSessionId) {
+        if (this.activeSessionKey === opKey
+            || (allowOwnerlessMutation && this.activeSessionId === opSessionId)) {
           this.activeSessionKey = this.sessionOrder[0] || null;
           this.activeSessionId = this.activeSessionKey ? this.sessions[this.activeSessionKey]?.id || null : null;
         }

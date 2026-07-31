@@ -83,6 +83,7 @@ const {
 } = await import('../../web/stores/helpers/handlers/conversationHandler.js');
 const { handleAgentSelected } = await import('../../web/stores/helpers/handlers/agentHandler.js');
 const { handleMessage } = await import('../../web/stores/helpers/messageHandler.js');
+const { createFileOperations } = await import('../../web/components/files/fileOperations.js');
 
 import {
   buildYeaftMessageTurnSpans,
@@ -933,11 +934,15 @@ describe('message flow regressions', () => {
       store._yeaftTransitionActive = false;
       store._savedActiveConversations = null;
       store.currentAgent = 'agent-a';
-      store.currentAgentInfo = { id: 'agent-a', name: 'Agent A' };
+      store.currentAgentInfo = { id: 'agent-a', name: 'Agent A', workDir: '/repo-a' };
       store.agents = [
-        { id: 'agent-a', name: 'Agent A', online: true },
-        { id: 'agent-b', name: 'Agent B', online: true },
+        { id: 'agent-a', name: 'Agent A', online: true, workDir: '/repo-a' },
+        { id: 'agent-b', name: 'Agent B', online: true, workDir: '/repo-b' },
       ];
+      store.conversations = [{
+        id: 'chat-entry-a', agentId: 'agent-a', agentName: 'Agent A', workDir: '/repo-a',
+      }];
+      store.currentWorkDir = '/repo-a';
       store.yeaftActiveSessionFilter = 'same';
       store.yeaftSessionAgentById = { same: 'agent-a' };
       store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-entry-a', 'agent-b': 'conv-entry-b' };
@@ -1062,8 +1067,108 @@ describe('message flow regressions', () => {
         expect.objectContaining({ content: 'ordinary entry routes to B' }),
       ]));
       clearTimeout(store._processingWatchdogs['conv-entry-b']);
-      store.pendingAgentSelection = null;
-      store.agentSwitching = false;
+
+      const assertChatIdentityRestored = (bAckBeforeLeave) => {
+        const bSelection = store.pendingAgentSelection;
+        expect(bSelection).toMatchObject({ agentId: 'agent-b' });
+        store.sendWsMessage.mockClear();
+        if (bAckBeforeLeave) {
+          handleAgentSelected(store, {
+            type: 'agent_selected',
+            ok: true,
+            requestId: bSelection.requestId,
+            agentId: 'agent-b',
+            agentName: 'Agent B',
+            workDir: '/repo-b',
+            conversations: [],
+          });
+          expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => (
+            msg.type === 'select_conversation' && msg.conversationId === 'conv-entry-b'
+          ))).toEqual([]);
+        }
+
+        store.leaveYeaft();
+        const aSelection = store.pendingAgentSelection;
+        expect(aSelection).toMatchObject({ agentId: 'agent-a' });
+        expect(aSelection.requestId).not.toBe(bSelection.requestId);
+        expect(store.currentView).toBe('chat');
+        expect(store.currentAgent).toBe('agent-a');
+        expect(store.currentAgentInfo).toMatchObject({ id: 'agent-a', workDir: '/repo-a' });
+        expect(store.currentConversation).toBe('chat-entry-a');
+        expect(store.activeSessionRoute).toMatchObject({ agentId: 'agent-a', sessionId: 'chat-entry-a' });
+        expect(store.effectiveWorkDir).toBe('/repo-a');
+
+        if (!bAckBeforeLeave) {
+          expect(handleAgentSelected(store, {
+            type: 'agent_selected',
+            ok: true,
+            requestId: bSelection.requestId,
+            agentId: 'agent-b',
+            agentName: 'Agent B',
+            workDir: '/repo-b',
+            conversations: [],
+          })).toBe(false);
+          expect(store.currentAgent).toBe('agent-a');
+          expect(store.pendingAgentSelection).toMatchObject({
+            agentId: 'agent-a', requestId: aSelection.requestId,
+          });
+        }
+
+        expect(handleAgentSelected(store, {
+          type: 'agent_selected',
+          ok: true,
+          requestId: aSelection.requestId,
+          agentId: 'agent-a',
+          agentName: 'Agent A',
+          workDir: '/repo-a',
+          conversations: [{ id: 'chat-entry-a', workDir: '/repo-a' }],
+        })).toBe(true);
+        expect(store.pendingAgentSelection).toBeNull();
+        expect(store.currentAgent).toBe('agent-a');
+        expect(store.currentAgentInfo).toMatchObject({ id: 'agent-a', workDir: '/repo-a' });
+        expect(store.currentConversation).toBe('chat-entry-a');
+        expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => (
+          msg.type === 'select_conversation'
+        ))).toEqual([{ type: 'select_conversation', conversationId: 'chat-entry-a' }]);
+
+        globalThis.Vue = Vue;
+        const refs = {
+          getEffectiveWorkDir: () => store.effectiveWorkDir,
+          treePath: Vue.ref(''),
+        };
+        const fileOperations = createFileOperations(store, refs);
+        fileOperations.newFileType.value = 'file';
+        fileOperations.newFileName.value = 'owner.txt';
+        fileOperations.confirmNewFile();
+        expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'create_file')).toEqual([
+          expect.objectContaining({
+            agentId: 'agent-a',
+            conversationId: 'chat-entry-a',
+            workDir: '/repo-a',
+            filePath: '/repo-a/owner.txt',
+          }),
+        ]);
+        fileOperations.cleanup();
+        delete globalThis.Vue;
+        store.pendingAgentSelection = null;
+        store.agentSwitching = false;
+      };
+
+      assertChatIdentityRestored(true);
+
+      // Repeat the same real entry, but let the B acknowledgement arrive only
+      // after the user has already returned to Chat. The A restore request must
+      // supersede it rather than allowing the old Yeaft selection to win.
+      store.sendWsMessage.mockClear();
+      store.currentView = 'chat';
+      store.currentAgent = 'agent-a';
+      store.currentAgentInfo = store.agents[0];
+      store.currentWorkDir = '/repo-a';
+      store.activeConversations = ['chat-entry-a'];
+      store._yeaftTransitionActive = false;
+      store._savedActiveConversations = null;
+      store.enterYeaft();
+      assertChatIdentityRestored(false);
 
       // A caller that explicitly selects an Agent remains authoritative. These
       // call sites defer bootstrap while they establish the target Session, so
@@ -1079,9 +1184,9 @@ describe('message flow regressions', () => {
       expect(store.currentAgentInfo).toMatchObject({ id: 'agent-a' });
       expect(store.yeaftConversationId).toBe('conv-entry-a');
       expect(store.activeConversations).toEqual(['conv-entry-a']);
-      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'select_agent')).toEqual([
-        expect.objectContaining({ agentId: 'agent-a' }),
-      ]);
+      expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => (
+        msg.type === 'select_agent' && msg.agentId !== 'agent-a'
+      ))).toEqual([]);
       expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_load_history')).toEqual([]);
       store.pendingAgentSelection = null;
       store.agentSwitching = false;
@@ -1602,6 +1707,81 @@ describe('message flow regressions', () => {
       expect(legacySessions.sessionById('legacy-after-empty-snapshot', 'agent-a')).toMatchObject({
         id: 'legacy-after-empty-snapshot', agentId: null, roster: ['omni'],
       });
+
+      // Owner-scoped archive/delete results may remove only the exact row.
+      // A later authoritative snapshot from Agent A must not turn the matching
+      // bare id into permission to replace the still-live B/same selection.
+      globalThis.Pinia.useSessionsStore = () => legacySessions;
+      globalThis.Pinia.useChatStore = () => store;
+      for (const op of ['archive', 'delete']) {
+        legacySessions.resetInventory();
+        legacySessions.applySnapshot([
+          { id: 'same', name: 'Agent A same', workDir: '/repo-a/same' },
+          { id: 'other', name: 'Agent A other', workDir: '/repo-a/other' },
+        ], 'agent-a');
+        legacySessions.applySnapshot([
+          { id: 'same', name: 'Agent B same', workDir: '/repo-b/same' },
+        ], 'agent-b');
+        legacySessions.setActive('same', 'agent-b');
+        store.currentView = 'yeaft';
+        store.currentAgent = 'agent-b';
+        store.currentAgentInfo = { id: 'agent-b', name: 'Agent B', workDir: '/repo-b' };
+        store.agents = [
+          { id: 'agent-a', name: 'Agent A', online: true, workDir: '/repo-a' },
+          { id: 'agent-b', name: 'Agent B', online: true, workDir: '/repo-b' },
+        ];
+        store.yeaftActiveSessionFilter = 'same';
+        store.yeaftSessionAgentById = { same: 'agent-b', other: 'agent-a' };
+        store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-crud-a', 'agent-b': 'conv-crud-b' };
+        store.yeaftConversationId = 'conv-crud-b';
+        store.activeConversations = ['conv-crud-b'];
+        store.messagesMap = { 'conv-crud-a': [], 'conv-crud-b': [] };
+        store.yeaftSessionHistoryState = {};
+        store._yeaftHistoryLoad = null;
+        store.yeaftSessionHydrateRequestId = null;
+        store.sendWsMessage = vi.fn(() => true);
+
+        store.handleYeaftOutput({
+          agentId: 'agent-a',
+          event: {
+            type: 'session_crud_result',
+            requestId: `${op}-agent-a-same`,
+            ok: true,
+            op,
+            sessionId: 'same',
+          },
+        });
+        store.handleYeaftOutput({
+          agentId: 'agent-a',
+          event: {
+            type: 'session_list_updated',
+            sessions: [{ id: 'other', name: 'Agent A other', workDir: '/repo-a/other' }],
+          },
+        });
+
+        expect(legacySessions.sessionById('same', 'agent-a')).toBeNull();
+        expect(legacySessions.sessionById('same', 'agent-b')).toMatchObject({
+          id: 'same', agentId: 'agent-b', workDir: '/repo-b/same',
+        });
+        expect(legacySessions.activeSessionKey).toBe('agent-b\u001fsame');
+        expect(legacySessions.activeSession).toMatchObject({ id: 'same', agentId: 'agent-b' });
+        expect(store.currentAgent).toBe('agent-b');
+        expect(store.yeaftActiveSessionFilter).toBe('same');
+        expect(store.yeaftConversationId).toBe('conv-crud-b');
+        expect(store.activeConversations).toEqual(['conv-crud-b']);
+        expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => (
+          (msg.type === 'select_agent' && msg.agentId === 'agent-a')
+          || (msg.type === 'yeaft_load_history' && msg.agentId === 'agent-a')
+        ))).toEqual([]);
+        store.pendingAgentSelection = null;
+        store.agentSwitching = false;
+      }
+      store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-agent-a', 'agent-b': 'conv-agent-b' };
+      store.yeaftConversationId = 'conv-agent-b';
+      store.activeConversations = ['conv-agent-b'];
+      store.messagesMap = { 'conv-agent-a': [], 'conv-agent-b': [] };
+      store.yeaftSessionHistoryState = {};
+      store._yeaftHistoryLoad = null;
 
       legacySessions.resetInventory();
       legacySessions.applySnapshot([{ id: 'same', name: 'Agent A same' }], 'agent-a');

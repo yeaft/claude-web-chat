@@ -542,7 +542,10 @@ export function handleAgentSelected(store, msg) {
     }
   }
 
-  if (isSameAgent && store.currentConversation) {
+  // A Yeaft conversation id belongs to the Agent bridge, not the ordinary
+  // Chat conversation registry. Re-affirm the Agent catalog without sending
+  // a bogus `select_conversation` frame for that virtual transport id.
+  if (store.currentView !== 'yeaft' && isSameAgent && store.currentConversation) {
     const currentConv = store.conversations.find(c => c.id === store.currentConversation);
     store.currentWorkDir = currentConv?.workDir || store.currentWorkDir || msg.workDir;
     console.log('[Reconnect] Restoring conversation selection:', store.currentConversation);

@@ -1475,6 +1475,13 @@ export const useChatStore = defineStore('chat', {
       if (persistPreference) {
         yeaftViewHelpers.persistPreferredConversationView('chat');
       }
+      const chatIdentity = this._savedChatIdentity || null;
+      const pendingTargetsAnotherAgent = this.pendingAgentSelection
+        && this.pendingAgentSelection.agentId !== chatIdentity?.agentId;
+      if (chatIdentity?.agentId
+          && (this.currentAgent !== chatIdentity.agentId || pendingTargetsAnotherAgent)) {
+        this.selectAgent(chatIdentity.agentId);
+      }
       yeaftViewHelpers.applyLeaveYeaftTransition(this);
       if (pendingChatRestoreConversationId
           && this.conversations.some(conversation => conversation.id === pendingChatRestoreConversationId)) {
@@ -2443,6 +2450,7 @@ export const useChatStore = defineStore('chat', {
     },
     enterYeaft(agentId = null, { deferBootstrap = false } = {}) {
       const previousAgentId = this.currentAgent;
+      yeaftViewHelpers.beginYeaftTransition(this);
       // Capture the chat-side activeConversations snapshot BEFORE flipping
       // currentView. The transition helper is idempotent: if we're
       // already in Yeaft (e.g. switching agents, programmatic re-entry,
