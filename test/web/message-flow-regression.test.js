@@ -512,6 +512,120 @@ describe('message flow regressions', () => {
     documentRemove.mockRestore();
     windowAdd.mockRestore();
     windowRemove.mockRestore();
+
+    const legacyProjectStore = useChatStore();
+    const agentASession = {
+      catalogKey: 'yeaft:agent-a:session-a',
+      runtimeProvider: 'yeaft',
+      routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: 'session-a' },
+      title: 'Agent A session',
+      availability: 'online',
+    };
+    const agentBSession = {
+      catalogKey: 'yeaft:agent-b:session-b',
+      runtimeProvider: 'yeaft',
+      routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-b', sessionId: 'session-b' },
+      title: 'Agent B session',
+      availability: 'online',
+    };
+    legacyProjectStore.sessionCatalog = [agentASession, agentBSession];
+    legacyProjectStore.sessionProjects = [];
+    legacyProjectStore.applyLegacyProjectSnapshot([{
+      id: 'legacy-a',
+      name: 'Agent A legacy',
+      sessionIds: [],
+    }], 'agent-a');
+    legacyProjectStore.applyLegacyProjectSnapshot([{
+      id: 'legacy-b',
+      name: 'Agent B legacy',
+      sessionIds: [],
+    }], 'agent-b');
+    legacyProjectStore.applySessionCatalogSnapshot(legacyProjectStore.sessionCatalog, [
+      ...legacyProjectStore.sessionProjects,
+      { id: 'server-project', name: 'Server project', members: [] },
+    ]);
+    const mutateProject = vi.fn(() => Promise.resolve({ ok: true }));
+    legacyProjectStore.mutateProject = mutateProject;
+    const previousUseChatStore = globalThis.Pinia.useChatStore;
+    globalThis.Pinia.useChatStore = () => legacyProjectStore;
+    const compatibilitySidebar = mount(UnifiedSessionList, {
+      attachTo: document.body,
+      props: {
+        sessions: [agentASession, agentBSession],
+        agents: [
+          { id: 'agent-a', online: true },
+          { id: 'agent-b', online: true },
+        ],
+      },
+      global: {
+        mocks: {
+          $t: (key, values) => values?.name ? `${key}:${values.name}` : key,
+        },
+      },
+    });
+    const agentARow = compatibilitySidebar.findAll('.recents-section .session-item')
+      .find(item => item.text().includes('Agent A session'));
+    expect(agentARow).toBeTruthy();
+    const agentAMenuButton = agentARow.get('.session-dots-btn');
+    Object.defineProperty(agentAMenuButton.element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 20, bottom: 44, left: 180, right: 204, width: 24, height: 24 }),
+    });
+    await agentAMenuButton.trigger('click');
+    const moveTargets = [...document.body.querySelectorAll('.session-menu-floating .session-menu-item')]
+      .map(item => item.textContent);
+    expect(moveTargets).toContain('sidebar.projects.moveTo:Agent A legacy');
+    expect(moveTargets).toContain('sidebar.projects.moveTo:Server project');
+    expect(moveTargets).not.toContain('sidebar.projects.moveTo:Agent B legacy');
+
+    const agentALegacyProject = legacyProjectStore.sessionProjects
+      .find(project => project.legacyAgentId === 'agent-a');
+    const agentBLegacyProject = legacyProjectStore.sessionProjects
+      .find(project => project.legacyAgentId === 'agent-b');
+    const serverProject = legacyProjectStore.sessionProjects
+      .find(project => project.id === 'server-project');
+    expect(compatibilitySidebar.vm.projectMoveTargets(agentASession).map(project => project.id)).toEqual([
+      agentALegacyProject.id,
+      serverProject.id,
+    ]);
+    const emittedBeforeRejectedMoves = compatibilitySidebar.emitted('project-action')?.length || 0;
+    expect(compatibilitySidebar.vm.moveRow(agentASession, agentBLegacyProject)).toBe(false);
+    expect(compatibilitySidebar.vm.dispatchProjectAction({
+      action: 'move-session',
+      row: agentASession,
+      project: agentBLegacyProject,
+    })).toBe(false);
+    expect(mutateProject).not.toHaveBeenCalled();
+    expect(compatibilitySidebar.emitted('project-action')?.length || 0).toBe(emittedBeforeRejectedMoves);
+
+    compatibilitySidebar.vm.draggedRow = agentASession;
+    compatibilitySidebar.vm.dragTargetProjectId = agentALegacyProject.id;
+    const rejectedDragOver = { preventDefault: vi.fn(), dataTransfer: { dropEffect: 'none' } };
+    compatibilitySidebar.vm.dragOverProject(agentBLegacyProject, rejectedDragOver);
+    expect(rejectedDragOver.preventDefault).not.toHaveBeenCalled();
+    expect(compatibilitySidebar.vm.dragTargetProjectId).toBeNull();
+    const rejectedDrop = { preventDefault: vi.fn() };
+    compatibilitySidebar.vm.dropOnProject(agentBLegacyProject, rejectedDrop);
+    expect(rejectedDrop.preventDefault).toHaveBeenCalledOnce();
+    expect(mutateProject).not.toHaveBeenCalled();
+    expect(compatibilitySidebar.vm.draggedRow).toBeNull();
+
+    await compatibilitySidebar.vm.moveRow(agentASession, agentALegacyProject);
+    expect(mutateProject).toHaveBeenLastCalledWith('move_session', {
+      sessionId: 'session-a',
+      projectId: 'legacy-a',
+    }, 'agent-a');
+    await compatibilitySidebar.vm.moveRow(agentASession, serverProject);
+    expect(mutateProject).toHaveBeenLastCalledWith('move_session', {
+      sessionId: 'session-a',
+      projectId: 'server-project',
+    }, 'agent-a');
+    expect(mutateProject).toHaveBeenCalledTimes(2);
+    compatibilitySidebar.unmount();
+    if (previousUseChatStore) globalThis.Pinia.useChatStore = previousUseChatStore;
+    else delete globalThis.Pinia.useChatStore;
+    storeFactories.delete('chat');
+
     const fallbackWorkCenter = mount(SidebarWorkCenter, {
       props: { agents: [] },
       global: { mocks: { $t: key => key } },

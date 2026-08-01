@@ -241,6 +241,15 @@ export default {
       if (!row?.routeRef?.agentId || row.availability !== 'online') return false;
       return this.isAgentOnline(row.routeRef.agentId);
     },
+    canMoveRowToProject(row, project = null) {
+      if (!this.canEditRow(row)) return false;
+      if (!project) return true;
+      if (!this.canEditProject(project)) return false;
+      return !project.legacyAgentId || project.legacyAgentId === row.routeRef.agentId;
+    },
+    projectMoveTargets(row) {
+      return this.projectRows.filter(project => this.canMoveRowToProject(row, project));
+    },
     isProjectCollapsed(project) {
       return this.collapsedProjects[projectIdentityKey(project)] === true;
     },
@@ -288,8 +297,8 @@ export default {
       this.$emit('action', { action: normalizedAction, row });
     },
     dispatchProjectAction(payload) {
-      const targetAgentId = payload?.agentId || payload?.row?.routeRef?.agentId || null;
-      if (payload?.action === 'move-session' && !this.isAgentOnline(targetAgentId)) return false;
+      if (payload?.action === 'move-session'
+          && !this.canMoveRowToProject(payload?.row, payload?.project || null)) return false;
       this.$emit('project-action', payload);
       const store = this.projectStore;
       if (!store?.mutateProject) return true;
@@ -349,8 +358,8 @@ export default {
     },
     moveRow(row, project = null) {
       this.closeMenus();
-      if (!this.canEditRow(row) || (project && !this.canEditProject(project))) return;
-      this.dispatchProjectAction({ action: 'move-session', row, project });
+      if (!this.canMoveRowToProject(row, project)) return false;
+      return this.dispatchProjectAction({ action: 'move-session', row, project });
     },
     startDrag(row, event) {
       if (row.runtimeProvider !== 'yeaft' || !this.canEditRow(row)) return;
@@ -359,14 +368,17 @@ export default {
       event.dataTransfer.setData('text/plain', row.catalogKey);
     },
     dragOverProject(project, event) {
-      if (!this.draggedRow || !project?.id) return;
+      if (!this.canMoveRowToProject(this.draggedRow, project)) {
+        this.dragTargetProjectId = null;
+        return;
+      }
       event.preventDefault();
       event.dataTransfer.dropEffect = 'move';
       this.dragTargetProjectId = projectIdentityKey(project);
     },
     dropOnProject(project, event) {
       event.preventDefault();
-      if (this.draggedRow && project?.id) this.moveRow(this.draggedRow, project);
+      if (this.canMoveRowToProject(this.draggedRow, project)) this.moveRow(this.draggedRow, project);
       this.finishDrag();
     },
     dragOverRecents(event) {
@@ -517,7 +529,7 @@ export default {
               <button class="session-menu-item" @click.stop="runAction('settings', floatingMenu.row)">{{ $t('yeaft.session.openSettings') }}</button>
               <button v-if="floatingMenu.inProject" class="session-menu-item" @click.stop="moveRow(floatingMenu.row, null)">{{ $t('sidebar.projects.remove') }}</button>
               <template v-else>
-                <button v-for="project in projectRows" :key="project.id" class="session-menu-item" @click.stop="moveRow(floatingMenu.row, project)">{{ $t('sidebar.projects.moveTo', { name: project.name }) }}</button>
+                <button v-for="project in projectMoveTargets(floatingMenu.row)" :key="project.id" class="session-menu-item" @click.stop="moveRow(floatingMenu.row, project)">{{ $t('sidebar.projects.moveTo', { name: project.name }) }}</button>
               </template>
             </template>
             <button class="session-menu-item danger" @click.stop="runAction('delete', floatingMenu.row)">{{ $t('common.delete') }}</button>
