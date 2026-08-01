@@ -67,6 +67,22 @@ afterEach(() => {
 });
 
 describe('YeaftPage setup', () => {
+  it('defaults Session history search to the user without replacing an explicit sender choice', async () => {
+    const page = YeaftPage.setup();
+
+    page.toggleHistorySearch();
+    await Vue.nextTick();
+    expect(chatStore.yeaftHistorySearchState.senderKey).toBe('user');
+    expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('', { senderKey: 'user' });
+
+    page.onHistorySenderChange('vp:omni');
+    page.toggleHistorySearch();
+    page.toggleHistorySearch();
+    await Vue.nextTick();
+    expect(chatStore.yeaftHistorySearchState.senderKey).toBe('vp:omni');
+    expect(chatStore.searchYeaftHistory).toHaveBeenLastCalledWith('', { senderKey: 'vp:omni' });
+  });
+
   it('keeps the current query through sender changes and lifecycle resets', async () => {
     vi.useFakeTimers();
     chatStore.yeaftHistorySearchState = { query: 'old query', senderKey: '' };
@@ -89,10 +105,10 @@ describe('YeaftPage setup', () => {
     chatStore.searchYeaftHistory.mockClear();
     page.onHistorySenderInvalid();
 
-    expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('', { senderKey: '' });
+    expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('', { senderKey: 'user' });
     expect(loadHistorySenderPreference({
       agentId: 'agent-1', sessionId: 'session-1', validKeys: ['user'],
-    })).toBe('');
+    })).toBe('user');
     expect(loadHistorySenderPreference({
       agentId: 'agent-1', sessionId: 'session-2', validKeys: ['user'],
     })).toBe('user');
@@ -120,12 +136,17 @@ describe('YeaftPage setup', () => {
     })).toBe('user');
     expect(loadHistorySenderPreference({
       agentId: 'agent-2', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
+    })).toBe('user');
+
+    expect(saveHistorySenderPreference({ agentId: 'agent-2', sessionId: 'session-1', senderKey: '' })).toBe(true);
+    expect(loadHistorySenderPreference({
+      agentId: 'agent-2', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
     })).toBe('');
 
     saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1', senderKey: 'vp:removed' });
     expect(loadHistorySenderPreference({
       agentId: 'agent-1', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
-    })).toBe('');
+    })).toBe('user');
     expect(loadHistorySenderPreference({
       agentId: 'agent-1', sessionId: 'session-2', validKeys: ['user'],
     })).toBe('user');
@@ -136,7 +157,7 @@ describe('YeaftPage setup', () => {
       get() { throw new DOMException('blocked', 'SecurityError'); },
     });
     try {
-      expect(loadHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1' })).toBe('');
+      expect(loadHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1' })).toBe('user');
       expect(saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1', senderKey: 'user' })).toBe(false);
     } finally {
       Object.defineProperty(globalThis, 'localStorage', originalDescriptor);
