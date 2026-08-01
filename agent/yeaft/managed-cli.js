@@ -4,6 +4,7 @@ import {
   accessSync,
   chmodSync,
   constants,
+  existsSync,
   mkdirSync,
   readFileSync,
   realpathSync,

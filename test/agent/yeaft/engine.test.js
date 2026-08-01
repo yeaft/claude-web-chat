@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   existsSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync,
-  symlinkSync, utimesSync,
+  readdirSync, symlinkSync, utimesSync,
 } from 'fs';
 import { delimiter, join } from 'path';
 import { tmpdir } from 'os';
@@ -3337,6 +3337,94 @@ describe('managed CLI setup and fast tool integration', () => {
       } finally {
         for (const [name, asset] of Object.entries(originalAssets)) {
           managedCliToolSpecs[name].assets['linux-x64'] = asset;
+        }
+      }
+
+      const windowsInstallDir = tempDir('cli-windows-install');
+      const windowsBinDir = managedCliBinDir(windowsInstallDir);
+      mkdirSync(windowsBinDir, { recursive: true });
+      writeFileSync(join(windowsBinDir, 'fd.exe'), 'old fd binary');
+      const windowsScripts = {
+        rg: '#!/bin/sh\necho ripgrep 15.2.0\n',
+        fd: '#!/bin/sh\necho fd 10.3.0\n',
+        dust: '#!/bin/sh\necho dust 1.2.4\n',
+      };
+      const windowsArchives = Object.fromEntries(Object.entries(windowsScripts).map(([name, script]) => [
+        name,
+        zipArchive(`package/${name}.exe`, script),
+      ]));
+      const originalWindowsAssets = {};
+      try {
+        const windowsArchiveByFileName = new Map();
+        for (const [name, archive] of Object.entries(windowsArchives)) {
+          originalWindowsAssets[name] = managedCliToolSpecs[name].assets['win32-x64'];
+          const fileName = originalWindowsAssets[name][0];
+          managedCliToolSpecs[name].assets['win32-x64'] = [
+            fileName,
+            createHash('sha256').update(archive).digest('hex'),
+          ];
+          windowsArchiveByFileName.set(fileName, archive);
+        }
+        const windowsInstall = await ensureManagedCliTools({
+          yeaftDir: windowsInstallDir,
+          platform: 'win32',
+          arch: 'x64',
+          env: emptyPathEnv(),
+          force: true,
+          fetchFn: async url => new Response(
+            windowsArchiveByFileName.get(String(url).split('/').at(-1)),
+          ),
+        });
+        expect(windowsInstall.map(result => [result.name, result.status])).toEqual([
+          ['rg', 'installed'],
+          ['fd', 'installed'],
+          ['dust', 'installed'],
+        ]);
+        for (const [name, script] of Object.entries(windowsScripts)) {
+          expect(readFileSync(join(windowsBinDir, `${name}.exe`), 'utf8')).toBe(script);
+        }
+
+        const rollbackDir = tempDir('cli-windows-rollback');
+        const rollbackBinDir = managedCliBinDir(rollbackDir);
+        mkdirSync(rollbackBinDir, { recursive: true });
+        const oldRg = 'old rg binary';
+        writeFileSync(join(rollbackBinDir, 'rg.exe'), oldRg);
+        const rollbackArchives = {
+          ...windowsArchives,
+          rg: zipArchive(
+            'package/rg.exe',
+            '#!/bin/sh\nrm -- "$0"\necho ripgrep 15.2.0\n',
+          ),
+        };
+        const rollbackArchiveByFileName = new Map();
+        for (const [name, archive] of Object.entries(rollbackArchives)) {
+          const fileName = originalWindowsAssets[name][0];
+          managedCliToolSpecs[name].assets['win32-x64'] = [
+            fileName,
+            createHash('sha256').update(archive).digest('hex'),
+          ];
+          rollbackArchiveByFileName.set(fileName, archive);
+        }
+        const rollbackInstall = await ensureManagedCliTools({
+          yeaftDir: rollbackDir,
+          platform: 'win32',
+          arch: 'x64',
+          env: emptyPathEnv(),
+          force: true,
+          fetchFn: async url => new Response(
+            rollbackArchiveByFileName.get(String(url).split('/').at(-1)),
+          ),
+        });
+        expect(rollbackInstall.find(result => result.name === 'rg')).toMatchObject({
+          status: 'failed',
+        });
+        expect(rollbackInstall.filter(result => result.name !== 'rg')
+          .every(result => result.status === 'installed')).toBe(true);
+        expect(readFileSync(join(rollbackBinDir, 'rg.exe'), 'utf8')).toBe(oldRg);
+        expect(readdirSync(rollbackBinDir).some(name => name.includes('.backup'))).toBe(false);
+      } finally {
+        for (const [name, asset] of Object.entries(originalWindowsAssets)) {
+          managedCliToolSpecs[name].assets['win32-x64'] = asset;
         }
       }
     }
