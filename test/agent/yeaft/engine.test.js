@@ -1126,7 +1126,10 @@ describe('Engine', () => {
       });
 
       const events = [];
-      for await (const event of engine.query({ prompt: 'test' })) {
+      for await (const event of engine.query({
+        prompt: 'test',
+        projectInstruction: 'Run the shared Project verification before release.',
+      })) {
         events.push(event);
       }
 
@@ -1136,6 +1139,8 @@ describe('Engine', () => {
       expect(call.system).toContain('Session Participant');
       expect(call.system).not.toContain('Yeaft — AI');
       expect(call.system).toContain('work');
+      expect(call.system).toContain('[Project Instruction]');
+      expect(call.system).toContain('Run the shared Project verification before release.');
       expect(call.maxTokens).toBe(2048);
       expect(call.messages).toHaveLength(1);
       expect(call.messages[0].role).toBe('user');
@@ -2891,9 +2896,17 @@ describe('Engine', () => {
       const call = mockAdapter.callLog[0];
       expect(call.system).toContain('可用工具：search');
 
-      const enSystem = buildSystemPrompt({ language: 'en', toolNames: ['TodoWrite'] });
+      const enSystem = buildSystemPrompt({
+        language: 'en',
+        toolNames: ['TodoWrite'],
+        projectInstruction: 'Run the shared Project verification before release.',
+      });
       const zhSystem = buildSystemPrompt({ language: 'zh', toolNames: ['TodoWrite'] });
 
+      expect(enSystem).toContain('[Project Instruction]');
+      expect(enSystem).toContain('Run the shared Project verification before release.');
+      expect(buildSystemPrompt({ language: 'en', projectInstruction: '   ' }))
+        .not.toContain('[Project Instruction]');
       expect(enSystem).toContain('Avoid an intermediate `TodoWrite`-only model round');
       expect(enSystem).toMatch(/mark work completed only after\s+evidence/);
       expect(enSystem).toContain('A standalone `TodoWrite` remains valid');

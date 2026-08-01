@@ -37,6 +37,7 @@ function normalizeProject(row, index = 0) {
   return {
     id: row.id,
     name,
+    instruction: typeof row.instruction === 'string' ? row.instruction.trim() : '',
     sessionIds: normalizeSessionIds(row.sessionIds),
     sortOrder: Number.isFinite(row.sortOrder) ? row.sortOrder : index,
     createdAt: typeof row.createdAt === 'string' ? row.createdAt : '',
@@ -92,6 +93,7 @@ export function createProject(yeaftDir, name) {
   const project = {
     id: `project-${randomUUID().slice(0, 8)}`,
     name: requireName(name),
+    instruction: '',
     sessionIds: [],
     sortOrder: projects.length,
     createdAt: now,
@@ -105,6 +107,22 @@ export function renameProject(yeaftDir, projectId, name) {
   const projects = loadProjects(yeaftDir);
   const project = requireProject(projects, projectId);
   project.name = requireName(name);
+  project.updatedAt = new Date().toISOString();
+  saveProjects(yeaftDir, projects);
+  return project;
+}
+
+export function updateProjectInstruction(yeaftDir, projectId, instruction) {
+  if (typeof instruction !== 'string') {
+    throw new ProjectStoreError('invalid_instruction', 'Project instruction must be a string');
+  }
+  const nextInstruction = instruction.trim();
+  if (nextInstruction.length > 20_000) {
+    throw new ProjectStoreError('instruction_too_long', 'Project instruction must not exceed 20000 characters');
+  }
+  const projects = loadProjects(yeaftDir);
+  const project = requireProject(projects, projectId);
+  project.instruction = nextInstruction;
   project.updatedAt = new Date().toISOString();
   saveProjects(yeaftDir, projects);
   return project;

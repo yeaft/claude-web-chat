@@ -7,7 +7,8 @@ import { loadConfig, normalizeLlmRetry } from '../../../agent/yeaft/config.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { estimateTokens } from '../../../agent/yeaft/dream/segment.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
-import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
+import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftSubAgentPrompt, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
+import { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { registerSessionWorkDir, renameSession, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
@@ -19,6 +20,7 @@ import {
   removeSessionFromProjects,
   renameProject,
   sharedSessionIdsForProject,
+  updateProjectInstruction,
 } from '../../../agent/yeaft/projects/store.js';
 
 const roots = [];
@@ -56,6 +58,7 @@ function createProjectSessionArtifact(root, workDir, sessionId = 'session-workdi
 afterEach(() => {
   ctx.CONFIG = originalConfig;
   __testSetSession(null);
+  _resetAgentRegistry();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -111,11 +114,83 @@ describe('Yeaft session-scoped model config', () => {
     expect(__testHooks.normalizeProjectContext({
       projectId: beta.id,
       projectName: 'Beta',
+      projectInstruction: '  Use the shared release checklist.  ',
       sessionIds: ['session-a', 'session-b', 'session-b'],
     }, 'session-a')).toEqual({
       projectId: beta.id,
       projectName: 'Beta',
+      projectInstruction: 'Use the shared release checklist.',
       sessionIds: ['session-b'],
+    });
+    __testHooks.handleProjectContextSyncForTest({
+      contexts: [{
+        sessionId: 'session-a',
+        projectContext: {
+          projectId: beta.id,
+          projectName: 'Beta',
+          projectInstruction: 'Use the shared release checklist.',
+          sessionIds: ['session-a', 'session-b'],
+        },
+      }],
+    });
+    expect(__testHooks.projectContextForSessionForTest('session-a')).toEqual({
+      projectId: beta.id,
+      projectName: 'Beta',
+      projectInstruction: 'Use the shared release checklist.',
+      sessionIds: ['session-b'],
+    });
+    const bridgeAgent = {
+      id: 'agent-project-prompt',
+      name: 'project-prompt',
+      status: 'idle',
+      parentSessionId: 'session-a',
+      parentVpId: 'vp-project',
+      parentThreadId: 'main',
+      pendingPrompts: [],
+      messages: [],
+    };
+    getAgentRegistry().set(bridgeAgent.id, bridgeAgent);
+    __testSetSession({
+      taskManager: {
+        getTask(sessionId, taskId) {
+          return sessionId === 'session-a' && taskId === 'task-project'
+            ? {
+                id: taskId,
+                kind: 'sub_agent',
+                status: 'running',
+                ownerVpId: 'vp-project',
+                runtime: { subAgentId: bridgeAgent.id },
+                source: { threadId: 'main' },
+              }
+            : null;
+        },
+        refreshTaskLog() {},
+      },
+    });
+    handleYeaftSubAgentPrompt({
+      sessionId: 'session-a',
+      taskId: 'task-project',
+      subAgentId: bridgeAgent.id,
+      message: 'use current Project context',
+    });
+    expect(bridgeAgent.pendingPrompts[0]).toEqual({
+      prompt: 'use current Project context',
+      projectSessionIds: ['session-b'],
+      projectInstruction: 'Use the shared release checklist.',
+    });
+    __testHooks.handleProjectContextSyncForTest({
+      contexts: [{ sessionId: 'session-a', projectContext: null }],
+    });
+    handleYeaftSubAgentPrompt({
+      sessionId: 'session-a',
+      taskId: 'task-project',
+      subAgentId: bridgeAgent.id,
+      message: 'clear Project context',
+    });
+    expect(bridgeAgent.pendingPrompts[1]).toEqual({
+      prompt: 'clear Project context',
+      projectSessionIds: [],
+      projectInstruction: '',
     });
     expect(__testHooks.buildProjectSharedBlock({
       projectId: beta.id,
@@ -147,8 +222,15 @@ describe('Yeaft session-scoped model config', () => {
     expect(estimateTokens(defaultBudgetContext)).toBeLessThanOrEqual(4096);
     expect(estimateTokens(defaultBudgetContext)).toBeGreaterThan(64);
     renameProject(root, beta.id, 'Beta 2');
+    updateProjectInstruction(root, beta.id, '  Follow the Project release checklist.  ');
     removeSessionFromProjects(root, 'session-a');
-    expect(loadProjects(root)[1]).toEqual(expect.objectContaining({ name: 'Beta 2', sessionIds: ['session-b'] }));
+    expect(loadProjects(root)[1]).toEqual(expect.objectContaining({
+      name: 'Beta 2',
+      instruction: 'Follow the Project release checklist.',
+      sessionIds: ['session-b'],
+    }));
+    expect(() => updateProjectInstruction(root, beta.id, 'x'.repeat(20_001)))
+      .toThrow('must not exceed 20000 characters');
     deleteProject(root, beta.id);
     expect(loadProjects(root).map(project => project.id)).toEqual([alpha.id]);
   });

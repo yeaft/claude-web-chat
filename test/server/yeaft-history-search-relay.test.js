@@ -90,6 +90,7 @@ describe('Yeaft Session history search relay', () => {
     contextForSession.mockReturnValue({
       projectId: 'project-1',
       projectName: 'Project 1',
+      projectInstruction: 'Use the shared Project checks.',
       sessionIds: ['sess-2'],
     });
     forwardToAgent.mockClear();
@@ -106,6 +107,7 @@ describe('Yeaft Session history search relay', () => {
       projectContext: {
         projectId: 'project-1',
         projectName: 'Project 1',
+        projectInstruction: 'Use the shared Project checks.',
         sessionIds: ['sess-2'],
       },
     }));
@@ -119,7 +121,12 @@ describe('Yeaft Session history search relay', () => {
       text: 'no project',
     }, allow);
     expect(forwardToAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({
-      projectContext: { projectId: null, projectName: null, sessionIds: [] },
+      projectContext: {
+        projectId: null,
+        projectName: null,
+        projectInstruction: '',
+        sessionIds: [],
+      },
     }));
   });
 

@@ -49,6 +49,33 @@ async function sendVpSnapshotError(client, msg, error) {
   });
 }
 
+export async function syncProjectContextsToAgents(userId) {
+  try {
+    const sessionsByAgent = groupOnlineYeaftSessions(yeaftSessionDb.getByUser(userId));
+    await Promise.all(Object.entries(sessionsByAgent).map(async ([agentId, sessions]) => {
+      try {
+        const contexts = sessions.map(session => ({
+          sessionId: session.id,
+          projectContext: yeaftProjectDb.contextForSession(userId, agentId, session.id) || {
+            projectId: null,
+            projectName: null,
+            projectInstruction: '',
+            sessionIds: [],
+          },
+        }));
+        await forwardToAgent(agentId, {
+          type: 'yeaft_project_context_sync',
+          contexts,
+        });
+      } catch (err) {
+        console.warn(`[Yeaft] Project context sync failed for Agent ${agentId}:`, err?.message || err);
+      }
+    }));
+  } catch (err) {
+    console.warn('[Yeaft] Project context sync failed:', err?.message || err);
+  }
+}
+
 async function broadcastSessionPin(userId, payload) {
   for (const [, target] of webClients) {
     if (!target?.authenticated) continue;
@@ -1299,7 +1326,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         let result = null;
         if (op === 'create') result = yeaftProjectDb.create(client.userId, msg.name);
         else if (op === 'rename') result = yeaftProjectDb.rename(client.userId, msg.projectId, msg.name);
-        else if (op === 'delete') result = yeaftProjectDb.delete(client.userId, msg.projectId);
+        else if (op === 'update_instruction') {
+          result = yeaftProjectDb.updateInstruction(client.userId, msg.projectId, msg.instruction);
+        } else if (op === 'delete') result = yeaftProjectDb.delete(client.userId, msg.projectId);
         else if (op === 'move_session') {
           const agentId = msg.targetAgentId || msg.agentId;
           const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId.trim() : '';
@@ -1324,6 +1353,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           ? yeaftProjectDb.listForAgent(client.userId, responseAgentId)
           : yeaftProjectDb.list(client.userId);
         await respond({ ok: true, result, projects });
+        await syncProjectContextsToAgents(client.userId);
         await broadcastSessionCatalog(client.userId);
       } catch (err) {
         await respond({
@@ -1474,6 +1504,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
             rest.projectContext = projectContext || {
               projectId: null,
               projectName: null,
+              projectInstruction: '',
               sessionIds: [],
             };
           }

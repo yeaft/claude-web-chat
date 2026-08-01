@@ -68,6 +68,10 @@ export default {
       projectCreateOpen: false,
       projectCreateName: '',
       projectCreateSubmitting: false,
+      projectInstructionOpen: false,
+      projectInstructionProject: null,
+      projectInstructionDraft: '',
+      projectInstructionSubmitting: false,
       floatingMenu: null,
       floatingMenuStyle: {},
       floatingMenuTrigger: null,
@@ -155,6 +159,7 @@ export default {
       if (event?.key !== 'Escape') return;
       this.closeMenus();
       this.cancelProjectCreate();
+      if (this.projectInstructionOpen) this.closeProjectInstruction();
     },
     toggleProjectMenu(project, event) {
       const key = projectIdentityKey(project);
@@ -175,7 +180,13 @@ export default {
       }
       this.openProjectMenuKey = null;
       this.openMenuKey = row.catalogKey;
-      this.floatingMenu = { kind: 'session', row, inProject: inProject === true };
+      this.floatingMenu = {
+        kind: 'session',
+        row,
+        inProject: inProject === true,
+        currentProject: this.projectBySessionKey.get(`${row.routeRef?.agentId}\u001f${row.routeRef?.sessionId}`) || null,
+        page: 'actions',
+      };
       this.floatingMenuTrigger = event?.currentTarget || null;
       this.$nextTick(this.positionFloatingMenu);
     },
@@ -247,8 +258,22 @@ export default {
       if (!this.canEditProject(project)) return false;
       return !project.legacyAgentId || project.legacyAgentId === row.routeRef.agentId;
     },
-    projectMoveTargets(row) {
-      return this.projectRows.filter(project => this.canMoveRowToProject(row, project));
+    projectMoveTargets(row, currentProject = null) {
+      const currentProjectId = projectIdentityKey(currentProject);
+      return this.projectRows.filter(project => (
+        projectIdentityKey(project) !== currentProjectId
+        && this.canMoveRowToProject(row, project)
+      ));
+    },
+    openProjectMoveList() {
+      if (!this.floatingMenu || this.floatingMenu.kind !== 'session') return;
+      this.floatingMenu = { ...this.floatingMenu, page: 'projects' };
+      this.$nextTick(this.positionFloatingMenu);
+    },
+    closeProjectMoveList() {
+      if (!this.floatingMenu || this.floatingMenu.kind !== 'session') return;
+      this.floatingMenu = { ...this.floatingMenu, page: 'actions' };
+      this.$nextTick(this.positionFloatingMenu);
     },
     isProjectCollapsed(project) {
       return this.collapsedProjects[projectIdentityKey(project)] === true;
@@ -307,6 +332,12 @@ export default {
       if (action === 'create') return store.mutateProject('create', { name }, agentId);
       const projectId = project?.legacyProjectId || project?.id;
       if (action === 'rename') return store.mutateProject('rename', { projectId, name }, project?.legacyAgentId || agentId);
+      if (action === 'update-instruction') {
+        return store.mutateProject('update_instruction', {
+          projectId,
+          instruction: payload.instruction || '',
+        }, project?.legacyAgentId || agentId);
+      }
       if (action === 'delete') return store.mutateProject('delete', { projectId }, project?.legacyAgentId || agentId);
       if (action === 'move-session' && row?.routeRef?.sessionId) {
         return store.mutateProject('move_session', {
@@ -354,6 +385,39 @@ export default {
       this.closeMenus();
       if (window.confirm(this.$t('sidebar.projects.deleteConfirm', { name: project.name }))) {
         this.dispatchProjectAction({ action: 'delete', project });
+      }
+    },
+    editProjectInstruction(project) {
+      if (!this.canEditProject(project)) return;
+      this.closeMenus();
+      this.projectInstructionProject = project;
+      this.projectInstructionDraft = typeof project.instruction === 'string' ? project.instruction : '';
+      this.projectInstructionOpen = true;
+      this.$nextTick(() => this.$refs.projectInstructionInput?.focus?.());
+    },
+    closeProjectInstruction() {
+      if (this.projectInstructionSubmitting) return;
+      this.projectInstructionOpen = false;
+      this.projectInstructionProject = null;
+      this.projectInstructionDraft = '';
+    },
+    async saveProjectInstruction() {
+      const project = this.projectInstructionProject;
+      if (!project || this.projectInstructionSubmitting) return;
+      this.projectInstructionSubmitting = true;
+      try {
+        const result = await this.dispatchProjectAction({
+          action: 'update-instruction',
+          project,
+          instruction: this.projectInstructionDraft,
+        });
+        if (result?.ok !== false) {
+          this.projectInstructionOpen = false;
+          this.projectInstructionProject = null;
+          this.projectInstructionDraft = '';
+        }
+      } finally {
+        this.projectInstructionSubmitting = false;
       }
     },
     moveRow(row, project = null) {
@@ -519,8 +583,14 @@ export default {
       <Teleport to="body">
         <div v-if="floatingMenu" ref="floatingMenu" class="session-menu session-menu-floating" :style="floatingMenuStyle">
           <template v-if="floatingMenu.kind === 'project'">
+            <button class="session-menu-item" @click.stop="editProjectInstruction(floatingMenu.project)">{{ $t('sidebar.projects.instructions') }}</button>
             <button class="session-menu-item" @click.stop="renameProject(floatingMenu.project)">{{ $t('sidebar.projects.rename') }}</button>
             <button class="session-menu-item danger" @click.stop="deleteProject(floatingMenu.project)">{{ $t('sidebar.projects.delete') }}</button>
+          </template>
+          <template v-else-if="floatingMenu.page === 'projects'">
+            <button class="session-menu-item session-menu-back" @click.stop="closeProjectMoveList">{{ $t('sidebar.projects.moveBack') }}</button>
+            <button v-for="project in projectMoveTargets(floatingMenu.row, floatingMenu.currentProject)" :key="project.id" class="session-menu-item" @click.stop="moveRow(floatingMenu.row, project)">{{ project.name }}</button>
+            <div v-if="projectMoveTargets(floatingMenu.row, floatingMenu.currentProject).length === 0" class="session-menu-empty">{{ $t('sidebar.projects.moveEmpty') }}</div>
           </template>
           <template v-else>
             <button class="session-menu-item" @click.stop="runAction('pin', floatingMenu.row)">{{ floatingMenu.row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin') }}</button>
@@ -528,9 +598,10 @@ export default {
             <template v-if="floatingMenu.row.runtimeProvider === 'yeaft'">
               <button class="session-menu-item" @click.stop="runAction('settings', floatingMenu.row)">{{ $t('yeaft.session.openSettings') }}</button>
               <button v-if="floatingMenu.inProject" class="session-menu-item" @click.stop="moveRow(floatingMenu.row, null)">{{ $t('sidebar.projects.remove') }}</button>
-              <template v-else>
-                <button v-for="project in projectMoveTargets(floatingMenu.row)" :key="project.id" class="session-menu-item" @click.stop="moveRow(floatingMenu.row, project)">{{ $t('sidebar.projects.moveTo', { name: project.name }) }}</button>
-              </template>
+              <button class="session-menu-item session-menu-parent" @click.stop="openProjectMoveList">
+                <span>{{ $t('sidebar.projects.moveMenu') }}</span>
+                <span aria-hidden="true">&rsaquo;</span>
+              </button>
             </template>
             <button class="session-menu-item danger" @click.stop="runAction('delete', floatingMenu.row)">{{ $t('common.delete') }}</button>
             <div class="sidebar-session-menu-info">
@@ -538,6 +609,28 @@ export default {
               <strong>{{ providerLabel(floatingMenu.row) }}</strong>
             </div>
           </template>
+        </div>
+      </Teleport>
+
+      <Teleport to="body">
+        <div v-if="projectInstructionOpen" class="modal-overlay" @click.self="closeProjectInstruction">
+          <form class="modal modal-card project-instruction-modal" role="dialog" aria-modal="true" :aria-label="$t('sidebar.projects.instructionsTitle', { name: projectInstructionProject?.name || '' })" @submit.prevent="saveProjectInstruction">
+            <div class="project-instruction-header">
+              <div>
+                <h3>{{ $t('sidebar.projects.instructionsTitle', { name: projectInstructionProject?.name || '' }) }}</h3>
+                <p>{{ $t('sidebar.projects.instructionsHint') }}</p>
+              </div>
+              <button type="button" class="modal-close" :disabled="projectInstructionSubmitting" @click="closeProjectInstruction" :aria-label="$t('common.close')">&times;</button>
+            </div>
+            <div class="project-instruction-body">
+              <textarea ref="projectInstructionInput" v-model="projectInstructionDraft" maxlength="20000" :disabled="projectInstructionSubmitting" :placeholder="$t('sidebar.projects.instructionsPlaceholder')"></textarea>
+              <span class="project-instruction-count">{{ projectInstructionDraft.length }} / 20000</span>
+            </div>
+            <div class="project-instruction-actions">
+              <button type="button" class="btn btn-secondary" :disabled="projectInstructionSubmitting" @click="closeProjectInstruction">{{ $t('common.cancel') }}</button>
+              <button type="submit" class="btn btn-primary" :disabled="projectInstructionSubmitting">{{ $t('common.save') }}</button>
+            </div>
+          </form>
         </div>
       </Teleport>
     </nav>
