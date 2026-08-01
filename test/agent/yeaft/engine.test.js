@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  existsSync, linkSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync,
+  existsSync, linkSync, lstatSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync,
   readdirSync, symlinkSync, utimesSync,
 } from 'fs';
 import { delimiter, join } from 'path';
@@ -3506,6 +3506,89 @@ describe('managed CLI setup and fast tool integration', () => {
     expect(busyFirst.every(result => result.status === 'busy')).toBe(true);
     expect(busySecond.every(result => result.status === 'busy')).toBe(true);
     expect(JSON.parse(readFileSync(join(busyDir, 'managed-cli.json'), 'utf8')).failures).toEqual({});
+
+    if (process.platform !== 'win32') {
+      const managedCliModuleUrl = new URL(
+        '../../../agent/yeaft/managed-cli.js',
+        import.meta.url,
+      ).href;
+      const runLockWatchdog = (yeaftDir, skipInstall = false) => {
+        const script = `
+          import { ensureManagedCliTools } from ${JSON.stringify(managedCliModuleUrl)};
+          let fetches = 0;
+          let timerFired = false;
+          setTimeout(() => { timerFired = true; }, 0);
+          const env = { ...process.env, PATH: '', YEAFT_SKIP_MANAGED_CLI_INSTALLS: ${skipInstall ? "'true'" : "'false'"} };
+          const results = await ensureManagedCliTools({
+            yeaftDir: ${JSON.stringify(yeaftDir)},
+            platform: 'linux',
+            arch: 'x64',
+            env,
+            force: true,
+            lockWaitMs: 0,
+            fetchFn: async () => {
+              fetches += 1;
+              throw new Error('lock watchdog must not download');
+            },
+          });
+          await new Promise(resolve => setTimeout(resolve, 0));
+          console.log(JSON.stringify({
+            fetches,
+            timerFired,
+            statuses: results.map(result => result.status),
+          }));
+        `;
+        const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+          cwd: process.cwd(),
+          encoding: 'utf8',
+          timeout: 1500,
+        });
+        expect(child.error).toBeUndefined();
+        expect(child.signal).toBeNull();
+        expect(child.status, child.stderr).toBe(0);
+        return JSON.parse(child.stdout.trim());
+      };
+
+      const danglingInstallDir = tempDir('cli-dangling-install-lock');
+      const danglingInstallBin = managedCliBinDir(danglingInstallDir);
+      mkdirSync(danglingInstallBin, { recursive: true });
+      const danglingInstallLocks = ['rg', 'fd', 'dust'].map(name => (
+        join(danglingInstallBin, `.install-${name}.lock`)
+      ));
+      for (const lockPath of danglingInstallLocks) {
+        symlinkSync(`${lockPath}.missing`, lockPath, 'dir');
+      }
+      expect(runLockWatchdog(danglingInstallDir)).toEqual({
+        fetches: 0,
+        timerFired: true,
+        statuses: ['busy', 'busy', 'busy'],
+      });
+      for (const lockPath of danglingInstallLocks) {
+        expect(() => lstatSync(lockPath)).toThrow();
+      }
+
+      const danglingStateDir = tempDir('cli-dangling-state-lock');
+      const danglingStateLock = join(danglingStateDir, '.managed-cli-state.lock');
+      symlinkSync(`${danglingStateLock}.missing`, danglingStateLock, 'dir');
+      expect(runLockWatchdog(danglingStateDir, true)).toEqual({
+        fetches: 0,
+        timerFired: true,
+        statuses: ['skipped', 'skipped', 'skipped'],
+      });
+      expect(() => lstatSync(danglingStateLock)).toThrow();
+
+      const directoryLockDir = tempDir('cli-directory-lock-watchdog');
+      const directoryLockBin = managedCliBinDir(directoryLockDir);
+      mkdirSync(directoryLockBin, { recursive: true });
+      for (const name of ['rg', 'fd', 'dust']) {
+        mkdirSync(join(directoryLockBin, `.install-${name}.lock`));
+      }
+      expect(runLockWatchdog(directoryLockDir)).toEqual({
+        fetches: 0,
+        timerFired: true,
+        statuses: ['busy', 'busy', 'busy'],
+      });
+    }
 
     const identityDir = tempDir('cli-identity');
     const identityBinDir = managedCliBinDir(identityDir);

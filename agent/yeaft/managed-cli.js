@@ -5,12 +5,14 @@ import {
   chmodSync,
   constants,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   realpathSync,
   renameSync,
   rmSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
@@ -233,16 +235,28 @@ async function acquireLock(lockDir, waitMs = LOCK_WAIT_MS, ready = null) {
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
       if (ready?.()) return false;
+
+      let invalidLock = false;
+      let staleLock = false;
       try {
-        if (Date.now() - statSync(lockDir).mtimeMs > LOCK_STALE_MS) {
-          rmSync(lockDir, { recursive: true, force: true });
-          continue;
-        }
+        const lockStat = lstatSync(lockDir);
+        invalidLock = !lockStat.isDirectory();
+        staleLock = !invalidLock && Date.now() - lockStat.mtimeMs > LOCK_STALE_MS;
       } catch {
-        continue;
+        // Inspection failures are treated as a busy lock until the deadline.
       }
-      if (Date.now() - startedAt >= waitMs) return false;
-      await sleep(250);
+
+      if (invalidLock) {
+        try { unlinkSync(lockDir); } catch {}
+        return false;
+      }
+      if (staleLock) {
+        try { rmSync(lockDir, { recursive: true, force: true }); } catch {}
+      }
+
+      const remainingMs = waitMs - (Date.now() - startedAt);
+      if (remainingMs <= 0) return false;
+      await sleep(Math.min(250, remainingMs));
     }
   }
 }
