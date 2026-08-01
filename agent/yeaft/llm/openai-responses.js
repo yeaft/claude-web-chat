@@ -29,6 +29,7 @@ import {
   LLMAdapter,
   LLMRateLimitError,
   LLMAuthError,
+  classifyAuthError,
   LLMContextError,
   LLMServerError,
   LLMAbortError,
@@ -206,7 +207,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
 
   #classifyError(status, body, response = null) {
     if (status === 401 || status === 403) {
-      return new LLMAuthError(`Auth error: ${body}`, status);
+      return classifyAuthError(status, body);
     }
     if (status === 429) {
       const retryAfter = retryAfterFromResponse(response);

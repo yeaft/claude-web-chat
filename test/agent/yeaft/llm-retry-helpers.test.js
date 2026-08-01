@@ -11,6 +11,7 @@ import {
   parseRetryAfterMs,
   retryAfterFromResponse,
   classifyFetchError,
+  classifyAuthError,
   readStreamChunkWithIdleTimeout,
   LLMRateLimitError,
   LLMServerError,
@@ -133,6 +134,27 @@ describe('classifyFetchError', () => {
   });
 });
 
+describe('classifyAuthError', () => {
+  it('classifies 401 as permanent without exposing the response body', () => {
+    const err = classifyAuthError(401, 'token=secret-provider-detail');
+    expect(err).toBeInstanceOf(LLMAuthError);
+    expect(err.reasonCode).toBe('invalid_credentials');
+    expect(err.temporary).toBe(false);
+    expect(err.message).toContain('HTTP 401');
+    expect(err.message).not.toContain('secret-provider-detail');
+  });
+
+  it('retries only generic 403 responses', () => {
+    const generic = classifyAuthError(403, '{"message":"forbidden"}');
+    expect(generic.reasonCode).toBe('unknown_forbidden');
+    expect(generic.temporary).toBe(true);
+
+    const policy = classifyAuthError(403, 'content policy denied this request');
+    expect(policy.reasonCode).toBe('permission_denied');
+    expect(policy.temporary).toBe(false);
+  });
+});
+
 describe('readStreamChunkWithIdleTimeout', () => {
   it('returns stream chunks before the idle deadline', async () => {
     const chunk = new Uint8Array([1, 2, 3]);
@@ -211,6 +233,7 @@ describe('normalizeLlmRetry', () => {
     expect(out.maxDelayMs).toBe(30_000);
     expect(out.jitterRatio).toBe(0.25);
     expect(out.streamIdleTimeoutMs).toBe(20_000);
+    expect(out.forbiddenRetryDelaysMs).toEqual([30_000, 120_000]);
   });
 
   it('merges fileConfig and override (override wins)', () => {
@@ -237,6 +260,13 @@ describe('normalizeLlmRetry', () => {
     expect(out.maxDelayMs).toBeLessThanOrEqual(600_000);
     expect(out.jitterRatio).toBeLessThanOrEqual(1);
     expect(out.streamIdleTimeoutMs).toBeLessThanOrEqual(600_000);
+  });
+
+  it('normalizes bounded forbidden retry delays', () => {
+    const out = normalizeLlmRetry({
+      forbiddenRetryDelaysMs: [0, 2_000, 999_999, 4_000],
+    }, null);
+    expect(out.forbiddenRetryDelaysMs).toEqual([0, 2_000, 600_000]);
   });
 
   it('forces maxDelayMs >= baseDelayMs', () => {

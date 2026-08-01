@@ -423,6 +423,36 @@ describe('Yeaft VP turn abort routing', () => {
     expect(resetQueryTimer).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards safe auth error metadata as a structured session event', () => {
+    const err = new Error('LLM provider returned HTTP 403 (unknown_forbidden)');
+    err.name = 'LLMAuthError';
+    err.statusCode = 403;
+    err.reasonCode = 'unknown_forbidden';
+    err.provider = 'test-provider';
+    err.model = 'test-provider/test-model';
+    err.credentialRefreshable = false;
+
+    __testHandleEngineEvent({ type: 'error', error: err, retryable: false }, {
+      resetQueryTimer: vi.fn(),
+      sessionId: 'session-1',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'main',
+    });
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: 'yeaft_output',
+      event: expect.objectContaining({
+        type: 'error',
+        statusCode: 403,
+        reasonCode: 'unknown_forbidden',
+        provider: 'test-provider',
+        model: 'test-provider/test-model',
+        credentialRefreshable: false,
+      }),
+    }));
+  });
+
   it('forwards final stream idle error metadata as a structured session event', () => {
     const err = new Error('OpenAI stream idle timeout after 20000ms');
     err.name = 'LLMStreamIdleTimeoutError';

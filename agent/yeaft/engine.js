@@ -22,7 +22,7 @@ import { promises as fsp } from 'fs';
 import { join, resolve as resolvePath } from 'path';
 import { buildSystemPrompt, buildWorkerPrompt } from './prompts.js';
 import { getRuntimePlatformInfo } from './runtime-platform.js';
-import { LLMContextError, LLMAbortError, LLMRateLimitError, LLMServerError, LLMStreamIdleTimeoutError } from './llm/adapter.js';
+import { LLMContextError, LLMAbortError, LLMAuthError, LLMRateLimitError, LLMServerError, LLMStreamIdleTimeoutError } from './llm/adapter.js';
 import { runMemoryPreflow, buildRelevantScopes, memoryScopeLabel } from './sessions/pre-flow.js';
 import { readProjectDoc, pickProjectDocFile, DEFAULT_PROJECT_DOC_MAX_BYTES } from './sessions/project-doc.js';
 import { partitionMessages } from './compact/partition.js';
@@ -99,6 +99,7 @@ const RETRY_DEFAULTS = Object.freeze({
   baseDelayMs: 1_000,
   maxDelayMs: 30_000,
   jitterRatio: 0.25,
+  forbiddenRetryDelaysMs: [30_000, 120_000],
 });
 
 // Accept legacy namespaced commands and Claude Code-style bare skill commands.
@@ -152,11 +153,18 @@ function stripLeadingSkillCommandFromPromptParts(promptParts, skillManager) {
 function resolveRetryPolicy(config) {
   const raw = config?.llmRetry || {};
   const num = (v, d) => (Number.isFinite(v) && v >= 0 ? v : d);
+  const forbiddenRetryDelaysMs = Array.isArray(raw.forbiddenRetryDelaysMs)
+    ? raw.forbiddenRetryDelaysMs
+      .filter(v => Number.isFinite(v) && v >= 0)
+      .slice(0, 3)
+      .map(v => Math.min(600_000, Math.floor(v)))
+    : RETRY_DEFAULTS.forbiddenRetryDelaysMs;
   return {
     maxRetries: Math.max(0, Math.floor(num(raw.maxRetries, RETRY_DEFAULTS.maxRetries))),
     baseDelayMs: Math.max(0, Math.floor(num(raw.baseDelayMs, RETRY_DEFAULTS.baseDelayMs))),
     maxDelayMs: Math.max(0, Math.floor(num(raw.maxDelayMs, RETRY_DEFAULTS.maxDelayMs))),
     jitterRatio: Math.min(1, Math.max(0, num(raw.jitterRatio, RETRY_DEFAULTS.jitterRatio))),
+    forbiddenRetryDelaysMs,
   };
 }
 
@@ -2206,6 +2214,7 @@ export class Engine {
     // and does NOT count against this budget.
     const retryPolicy = resolveRetryPolicy(this.#config);
     let consecutiveRetryableErrors = 0;
+    let consecutiveForbiddenErrors = 0;
 
     while (true) {
       turnNumber++;
@@ -2646,6 +2655,33 @@ export class Engine {
 
         const earlyIsRateLimit = err instanceof LLMRateLimitError;
         const earlyIsTransient = err instanceof LLMServerError;
+        const earlyIsTemporaryForbidden = err instanceof LLMAuthError
+          && err.statusCode === 403
+          && err.temporary === true;
+        if (earlyIsTemporaryForbidden
+          && consecutiveForbiddenErrors < retryPolicy.forbiddenRetryDelaysMs.length) {
+          const delayMs = retryPolicy.forbiddenRetryDelaysMs[consecutiveForbiddenErrors];
+          consecutiveForbiddenErrors += 1;
+          endAttemptTrace('llm_retry');
+          yield {
+            type: 'llm_retry',
+            attempt: consecutiveForbiddenErrors,
+            maxRetries: retryPolicy.forbiddenRetryDelaysMs.length,
+            delayMs,
+            reason: 'temporary_forbidden',
+            errorName: err.name,
+            statusCode: 403,
+            message: `LLM provider returned HTTP 403; retry ${consecutiveForbiddenErrors}/${retryPolicy.forbiddenRetryDelaysMs.length}`,
+          };
+          const slept = await sleepWithAbort(delayMs, signal);
+          if (!slept || signal?.aborted) {
+            yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
+            yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
+            break;
+          }
+          yield { type: 'turn_end', turnNumber, stopReason: 'llm_retry', threadId };
+          continue;
+        }
         if (earlyIsRateLimit || earlyIsTransient) {
           if (consecutiveRetryableErrors < retryPolicy.maxRetries) {
             consecutiveRetryableErrors += 1;

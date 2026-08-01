@@ -20,7 +20,7 @@
 import * as githubCopilot from './github-copilot.js';
 
 /**
- * @typedef {{ getApiKey: () => Promise<string>, name: string }} CredentialProvider
+ * @typedef {{ getApiKey: () => Promise<string>, refreshApiKey?: () => Promise<string>, name: string }} CredentialProvider
  */
 
 /**
@@ -41,6 +41,10 @@ export function getCredentialProvider(name) {
           );
         }
         return r.token;
+      },
+      async refreshApiKey() {
+        githubCopilot.invalidateApiTokenCache();
+        return this.getApiKey();
       },
     };
   }

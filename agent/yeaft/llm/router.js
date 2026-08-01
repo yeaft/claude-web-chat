@@ -551,17 +551,37 @@ export class AdapterRouter extends LLMAdapter {
    * @returns {AsyncGenerator<import('./adapter.js').StreamEvent>}
    */
   async *stream(params) {
-    const resolved = await this.#resolveAdapter(params.model);
-    const effortContext = {
-      protocol: resolved.protocol,
-      supportsEffort: resolved.entry?.supportsEffort,
-      effortOptions: resolved.entry?.effortOptions,
-      thinkingProtocol: resolved.entry?.thinkingProtocol,
-      maxBudgetTokens: resolved.entry?.maxBudgetTokens,
-    };
-    const filtered = filterEffortForModel({ ...params, model: resolved.modelId }, resolved);
-    const sanitized = sanitizeMessagesForWire(filtered);
-    yield* resolved.adapter.stream({ ...sanitized, model: resolved.modelId, effortContext });
+    let refreshedCredential = false;
+    while (true) {
+      const resolved = await this.#resolveAdapter(params.model);
+      const provider = this.getProviderForModel(params.model);
+      const effortContext = {
+        protocol: resolved.protocol,
+        supportsEffort: resolved.entry?.supportsEffort,
+        effortOptions: resolved.entry?.effortOptions,
+        thinkingProtocol: resolved.entry?.thinkingProtocol,
+        maxBudgetTokens: resolved.entry?.maxBudgetTokens,
+      };
+      const filtered = filterEffortForModel({ ...params, model: resolved.modelId }, resolved);
+      const sanitized = sanitizeMessagesForWire(filtered);
+      try {
+        yield* resolved.adapter.stream({ ...sanitized, model: resolved.modelId, effortContext });
+        return;
+      } catch (err) {
+        if (err?.name === 'LLMAuthError') {
+          err.provider = provider?.name || null;
+          err.model = params.model;
+          err.credentialRefreshable = Boolean(provider?.credentialProvider);
+        }
+        if (err?.statusCode !== 401 || refreshedCredential || !provider?.credentialProvider) throw err;
+        const { getCredentialProvider } = await import('./credentials/index.js');
+        const credentialProvider = getCredentialProvider(provider.credentialProvider);
+        if (!credentialProvider?.refreshApiKey) throw err;
+        await credentialProvider.refreshApiKey();
+        this.#adapterCache.clear();
+        refreshedCredential = true;
+      }
+    }
   }
 
   /**

@@ -74,13 +74,43 @@ export class LLMRateLimitError extends Error {
   }
 }
 
-/** Authentication error (401, 403) — need to re-authenticate. */
+/** Authentication / authorization error (401, 403). */
 export class LLMAuthError extends Error {
-  constructor(message, statusCode) {
+  constructor(message, statusCode, details = {}) {
     super(message);
     this.name = 'LLMAuthError';
     this.statusCode = statusCode;
+    this.reasonCode = details.reasonCode || (statusCode === 401 ? 'invalid_credentials' : 'permission_denied');
+    this.temporary = details.temporary === true;
+    this.provider = details.provider || null;
+    this.model = details.model || null;
+    this.credentialRefreshable = details.credentialRefreshable === true;
   }
+}
+
+const PERMANENT_FORBIDDEN_RE = /(?:policy|safety|content[_ -]?filter|model[^\n]{0,40}(?:access|permission)|permission[^\n]{0,40}model|account[^\n]{0,40}(?:disabled|suspended)|organization[^\n]{0,40}(?:disabled|suspended)|not[_ -]?entitled|insufficient[_ -]?(?:permission|scope))/i;
+
+/**
+ * Build a user-safe auth error. The provider response body is used only for
+ * classification and is deliberately excluded from the message; raw response
+ * capture remains available in the bounded debug trace.
+ */
+export function classifyAuthError(statusCode, responseBody = '', details = {}) {
+  const status = Number(statusCode) || 0;
+  if (status === 401) {
+    return new LLMAuthError('LLM provider returned HTTP 401 (invalid credentials)', status, {
+      ...details,
+      reasonCode: 'invalid_credentials',
+      temporary: false,
+    });
+  }
+  const permanent = PERMANENT_FORBIDDEN_RE.test(String(responseBody || ''));
+  const reasonCode = permanent ? 'permission_denied' : 'unknown_forbidden';
+  return new LLMAuthError(`LLM provider returned HTTP 403 (${reasonCode})`, status, {
+    ...details,
+    reasonCode,
+    temporary: !permanent,
+  });
 }
 
 /** Context too long error (413 or API-specific) — need compaction. */

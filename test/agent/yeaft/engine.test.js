@@ -1012,6 +1012,41 @@ describe('Engine', () => {
       expect(events).toContainEqual(expect.objectContaining({ type: 'text_delta', text: 'fallback ok' }));
     });
 
+    it('retries generic 403 with the dedicated schedule then exposes the final status', async () => {
+      const { LLMAuthError } = await import('../../../agent/yeaft/llm/adapter.js');
+      let attempts = 0;
+      const engine = new Engine({
+        adapter: {
+          async *stream() {
+            attempts += 1;
+            throw new LLMAuthError('LLM provider returned HTTP 403 (unknown_forbidden)', 403, {
+              reasonCode: 'unknown_forbidden',
+              temporary: true,
+            });
+          },
+        },
+        trace,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          llmRetry: { forbiddenRetryDelaysMs: [0, 0] },
+        },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'hello' })) events.push(event);
+
+      expect(attempts).toBe(3);
+      expect(events.filter(e => e.type === 'llm_retry')).toEqual([
+        expect.objectContaining({ reason: 'temporary_forbidden', attempt: 1, maxRetries: 2, statusCode: 403 }),
+        expect.objectContaining({ reason: 'temporary_forbidden', attempt: 2, maxRetries: 2, statusCode: 403 }),
+      ]);
+      const finalError = events.find(e => e.type === 'error');
+      expect(finalError.error.statusCode).toBe(403);
+      expect(finalError.error.reasonCode).toBe('unknown_forbidden');
+      expect(finalError.retryable).toBe(false);
+    });
+
     it('does not retry on non-retryable error', async () => {
       const { LLMAuthError } = await import('../../../agent/yeaft/llm/adapter.js');
       let attempts = 0;
@@ -1039,8 +1074,38 @@ describe('Engine', () => {
       expect(events.filter(e => e.type === 'llm_retry')).toHaveLength(0);
       const errorEvents = events.filter(e => e.type === 'error');
       expect(errorEvents).toHaveLength(1);
-      // 401 is not in the retryable allow-list at the engine event boundary.
+      // Static credentials cannot self-heal; waiting would only delay the same failure.
       expect(errorEvents[0].retryable).toBe(false);
+      expect(errorEvents[0].error.statusCode).toBe(401);
+    });
+
+    it('does not retry a policy-denied 403', async () => {
+      const { LLMAuthError } = await import('../../../agent/yeaft/llm/adapter.js');
+      let attempts = 0;
+      const engine = new Engine({
+        adapter: {
+          async *stream() {
+            attempts += 1;
+            throw new LLMAuthError('LLM provider returned HTTP 403 (permission_denied)', 403, {
+              reasonCode: 'permission_denied',
+              temporary: false,
+            });
+          },
+        },
+        trace,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          llmRetry: { forbiddenRetryDelaysMs: [0, 0] },
+        },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'hello' })) events.push(event);
+
+      expect(attempts).toBe(1);
+      expect(events.filter(e => e.type === 'llm_retry')).toHaveLength(0);
+      expect(events.find(e => e.type === 'error').error.reasonCode).toBe('permission_denied');
     });
 
     it('terminates on non-retryable in-band adapter error instead of normal end_turn', async () => {

@@ -80,6 +80,11 @@ export function _resetCacheForTests() {
   _exchangeInFlight.clear();
 }
 
+/** Drop exchanged API tokens after the provider rejects one with HTTP 401. */
+export function invalidateApiTokenCache() {
+  _jwtCache.clear();
+}
+
 /**
  * Anchor for `gh auth token` output validation. gh prints either a bare
  * token followed by a newline or, on misconfiguration, a help banner /
