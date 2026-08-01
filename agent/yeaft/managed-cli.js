@@ -152,9 +152,11 @@ function inspectManagedBinary(name, { yeaftDir, platform, arch }) {
 function resolveExternalCommand(name, { yeaftDir, env, platform }) {
   const spec = TOOL_SPECS[name];
   const managedBinDir = managedCliBinDir(yeaftDir);
+  const managedPath = join(managedBinDir, executableName(name, platform));
   for (const commandName of [name, ...(spec.aliases || [])]) {
     for (const candidate of pathCandidates(commandName, { env, platform })) {
-      if (samePath(dirname(candidate), managedBinDir, platform)) continue;
+      if (samePath(dirname(candidate), managedBinDir, platform)
+        || samePath(candidate, managedPath, platform)) continue;
       if (canExecute(candidate, platform)) return candidate;
     }
   }
@@ -477,7 +479,6 @@ export function ensureManagedCliTools(options = {}) {
   const arch = options.arch || process.arch;
   const env = options.env || process.env;
 
-  prependManagedCliBinToPath(yeaftDir, env, platform);
   const flightKey = `${yeaftDir}:${platform}:${arch}`;
   if (installFlights.has(flightKey)) return installFlights.get(flightKey);
 

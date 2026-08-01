@@ -3472,6 +3472,101 @@ describe('managed CLI setup and fast tool integration', () => {
       yeaftDir: identityDir, env: emptyPathEnv(), platform: 'linux',
     })).toBeNull();
 
+    if (process.platform !== 'win32') {
+      const aliasStateDir = tempDir('cli-file-alias');
+      const aliasManagedBin = managedCliBinDir(aliasStateDir);
+      const aliasBin = tempDir('cli-file-alias-path');
+      const corruptLog = join(tmpdir(), `yeaft-corrupt-cli-${process.pid}-${Date.now()}.log`);
+      managedCliTempDirs.push(corruptLog);
+      mkdirSync(aliasManagedBin, { recursive: true });
+      for (const name of ['rg', 'fd', 'dust']) {
+        writeFileSync(
+          join(aliasManagedBin, name),
+          `#!/bin/sh\necho ${name} >> ${JSON.stringify(corruptLog)}\n${name === 'dust'
+            ? "printf '{\"size\":\"0B\",\"name\":\".\",\"children\":[]}'"
+            : 'exit 0'}\n`,
+          { mode: 0o755 },
+        );
+      }
+      for (const [alias, target] of [
+        ['rg', 'rg'],
+        ['fd', 'fd'],
+        ['fdfind', 'fd'],
+        ['dust', 'dust'],
+      ]) symlinkSync(join(aliasManagedBin, target), join(aliasBin, alias), 'file');
+
+      const aliasEnv = { ...process.env, PATH: aliasBin };
+      const processPathBeforeRepair = process.env.PATH;
+      for (const name of ['rg', 'fd', 'dust']) {
+        expect(resolveManagedCliCommand(name, {
+          yeaftDir: aliasStateDir,
+          env: aliasEnv,
+          platform: 'linux',
+          arch: 'x64',
+        })).toBeNull();
+      }
+      rmSync(join(aliasBin, 'fd'));
+      expect(resolveManagedCliCommand('fd', {
+        yeaftDir: aliasStateDir,
+        env: aliasEnv,
+        platform: 'linux',
+        arch: 'x64',
+      })).toBeNull();
+      symlinkSync(join(aliasManagedBin, 'fd'), join(aliasBin, 'fd'), 'file');
+
+      let offlineRepairFetches = 0;
+      const offlineRepair = await ensureManagedCliTools({
+        yeaftDir: aliasStateDir,
+        platform: 'linux',
+        arch: 'x64',
+        env: aliasEnv,
+        force: true,
+        fetchFn: async () => {
+          offlineRepairFetches += 1;
+          throw new Error('offline');
+        },
+      });
+      expect(offlineRepair.every(result => result.status === 'failed')).toBe(true);
+      expect(offlineRepairFetches).toBe(3);
+      expect(aliasEnv.PATH).toBe(aliasBin);
+      expect(process.env.PATH).toBe(processPathBeforeRepair);
+
+      const aliasSearchRoot = tempDir('cli-file-alias-search');
+      mkdirSync(join(aliasSearchRoot, 'src'));
+      writeFileSync(join(aliasSearchRoot, 'src', 'hit.js'), 'needle\n');
+      writeFileSync(join(aliasSearchRoot, 'src', 'data.bin'), Buffer.alloc(4096));
+      const aliasRegistry = createFullRegistry();
+      const previousProcessPath = process.env.PATH;
+      process.env.PATH = aliasBin;
+      try {
+        const aliasContext = {
+          cwd: aliasSearchRoot,
+          yeaftDir: aliasStateDir,
+          managedCliReady: Promise.resolve(offlineRepair),
+        };
+        expect(await aliasRegistry.execute('Grep', {
+          pattern: 'needle',
+          path: aliasSearchRoot,
+          output_mode: 'content',
+          fixed_strings: true,
+        }, aliasContext)).toBe('src/hit.js:1:needle');
+        expect(await aliasRegistry.execute('Glob', {
+          pattern: '**/*.js',
+          path: aliasSearchRoot,
+        }, aliasContext)).toBe('src/hit.js');
+        const aliasDiskUsage = await aliasRegistry.execute('DiskUsage', {
+          path: aliasSearchRoot,
+          depth: 1,
+          limit: 10,
+        }, aliasContext);
+        expect(aliasDiskUsage).toContain('src');
+        expect(aliasDiskUsage).not.toContain('0B  .');
+      } finally {
+        process.env.PATH = previousProcessPath;
+      }
+      expect(existsSync(corruptLog)).toBe(false);
+    }
+
     const root = tempDir('fast-tools');
     mkdirSync(join(root, 'large'));
     mkdirSync(join(root, 'small'));

@@ -40,7 +40,7 @@ import { loadSessionConfig, resolveSessionConfig } from './sessions/session-conf
 import { validateSessionId } from './sessions/ids.js';
 import { createJsonlWriter, JsonlInput, runStreamTurn, runStreamSessionTurn } from './stdio-protocol.js';
 import { createCliSessionRunner } from './cli-session-runner.js';
-import { ensureManagedCliTools, prependManagedCliBinToPath, summarizeManagedCliResults } from './managed-cli.js';
+import { ensureManagedCliTools, summarizeManagedCliResults } from './managed-cli.js';
 
 // ─── Argument parsing ──────────────────────────────────────────
 
@@ -1015,7 +1015,6 @@ async function main() {
   }
 
   const prepareManagedCli = () => {
-    prependManagedCliBinToPath(config.dir);
     args.managedCliReady = ensureManagedCliTools({ yeaftDir: config.dir });
     args.managedCliReady.then(results => {
       if (results.some(result => result.status === 'installed')) {

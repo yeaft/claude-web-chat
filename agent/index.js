@@ -14,7 +14,7 @@ import { getDefaultAgentName, getDefaultYeaftDir, resolveRuntimeIdentity, getCon
 import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
-import { ensureManagedCliTools, prependManagedCliBinToPath, summarizeManagedCliResults } from './yeaft/managed-cli.js';
+import { ensureManagedCliTools, summarizeManagedCliResults } from './yeaft/managed-cli.js';
 
 const execAsync = promisify(exec);
 
@@ -85,7 +85,6 @@ const { agentName: AGENT_NAME, instanceId: INSTANCE_ID } = resolveRuntimeIdentit
 // default (`~/.yeaft`) here and make sure the directory exists before the
 // WebSocket connection goes live, so downstream code can assume a real path.
 const YEAFT_DIR = process.env.YEAFT_DIR || fileConfig.yeaftDir || getDefaultYeaftDir(INSTANCE_ID);
-prependManagedCliBinToPath(YEAFT_DIR);
 try {
   if (!existsSync(YEAFT_DIR)) {
     mkdirSync(YEAFT_DIR, { recursive: true });
