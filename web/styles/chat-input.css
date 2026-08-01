@@ -229,6 +229,55 @@
   box-shadow: 0 0 0 2px var(--text-secondary);
 }
 
+.input-wrapper.chat-composer {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--chat-composer-gap);
+  padding: var(--chat-composer-padding);
+  border-radius: var(--chat-composer-radius);
+}
+
+.input-wrapper.chat-composer:focus-within {
+  box-shadow: 0 0 0 var(--chat-composer-focus-ring-width) var(--focus-ring);
+}
+
+.chat-composer > .textarea-wrapper {
+  flex: none;
+  width: 100%;
+  min-width: 0;
+}
+
+.chat-composer textarea {
+  display: block;
+  min-height: var(--chat-composer-textarea-min-height);
+}
+
+.chat-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--chat-composer-gap);
+  min-width: 0;
+}
+
+.chat-composer-actions-start,
+.chat-composer-actions-end {
+  display: flex;
+  align-items: center;
+  gap: var(--chat-composer-control-gap);
+  min-width: 0;
+}
+
+.chat-composer-actions-end {
+  margin-left: auto;
+}
+
+.chat-composer .attach-btn,
+.chat-composer .send-btn {
+  width: var(--chat-composer-control-size);
+  height: var(--chat-composer-control-size);
+}
+
 .input-wrapper textarea,
 .textarea-wrapper textarea {
   flex: 1;
