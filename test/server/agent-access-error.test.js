@@ -169,9 +169,13 @@ describe('resolveAgentAccessError', () => {
     yeaftProjectDb.moveSession(userId, {
       agentId: 'agent-b', sessionId: `foreign-agent-${suffix}`, projectId: project.id,
     });
+    yeaftProjectDb.updateInstruction(userId, project.id, '  Follow the Project release checklist.  ');
+    expect(() => yeaftProjectDb.updateInstruction(userId, project.id, 'x'.repeat(20_001)))
+      .toThrow('must not exceed 20000 characters');
     expect(yeaftProjectDb.list(userId)).toEqual([
       expect.objectContaining({
         id: project.id,
+        instruction: 'Follow the Project release checklist.',
         members: [
           { agentId: 'agent-a', sessionId: `same-${suffix}` },
           { agentId: 'agent-a', sessionId: `sibling-${suffix}` },
@@ -182,11 +186,13 @@ describe('resolveAgentAccessError', () => {
     expect(yeaftProjectDb.contextForSession(userId, 'agent-a', `same-${suffix}`)).toEqual({
       projectId: project.id,
       projectName: `Project ${suffix}`,
+      projectInstruction: 'Follow the Project release checklist.',
       sessionIds: [`sibling-${suffix}`],
     });
     expect(yeaftProjectDb.contextForSession(userId, 'agent-b', `foreign-agent-${suffix}`)).toEqual({
       projectId: project.id,
       projectName: `Project ${suffix}`,
+      projectInstruction: 'Follow the Project release checklist.',
       sessionIds: [],
     });
     expect(yeaftProjectDb.listForAgent(userId, 'agent-a')).toEqual([

@@ -21,6 +21,17 @@ function requireName(value) {
   return name.slice(0, 120);
 }
 
+function normalizeInstruction(value) {
+  if (typeof value !== 'string') {
+    throw new YeaftProjectDbError('invalid_instruction', 'Project instruction must be a string');
+  }
+  const instruction = value.trim();
+  if (instruction.length > 20_000) {
+    throw new YeaftProjectDbError('instruction_too_long', 'Project instruction must not exceed 20000 characters');
+  }
+  return instruction;
+}
+
 function requireId(value, code, label) {
   const id = typeof value === 'string' ? value.trim() : '';
   if (!id) throw new YeaftProjectDbError(code, `${label} is required`);
@@ -32,6 +43,7 @@ function mapProject(row, members = []) {
   return {
     id: row.id,
     name: row.name,
+    instruction: typeof row.instruction === 'string' ? row.instruction : '',
     sortOrder: row.sort_order,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -79,6 +91,7 @@ export const yeaftProjectDb = {
     const project = {
       id: `project-${randomUUID().slice(0, 8)}`,
       name: requireName(name),
+      instruction: '',
       sortOrder: projects.reduce((max, row) => Math.max(max, Number(row.sortOrder) || 0), -1) + 1,
       createdAt: now,
       updatedAt: now,
@@ -88,6 +101,7 @@ export const yeaftProjectDb = {
       project.id,
       ownerId,
       project.name,
+      project.instruction,
       project.sortOrder,
       now,
       now,
@@ -101,6 +115,16 @@ export const yeaftProjectDb = {
     requireProject(ownerId, id);
     const nextName = requireName(name);
     stmts.updateYeaftProjectName.run(nextName, Date.now(), ownerId, id);
+    return mapProject(stmts.getYeaftProjectForUser.get(ownerId, id),
+      stmts.getYeaftProjectMembersByUser.all(ownerId).filter(member => member.project_id === id));
+  },
+
+  updateInstruction(userId, projectId, instruction) {
+    const ownerId = requireUserId(userId);
+    const id = requireId(projectId, 'invalid_project_id', 'Project id');
+    requireProject(ownerId, id);
+    const nextInstruction = normalizeInstruction(instruction);
+    stmts.updateYeaftProjectInstruction.run(nextInstruction, Date.now(), ownerId, id);
     return mapProject(stmts.getYeaftProjectForUser.get(ownerId, id),
       stmts.getYeaftProjectMembersByUser.all(ownerId).filter(member => member.project_id === id));
   },
@@ -185,7 +209,7 @@ export const yeaftProjectDb = {
         for (let suffix = 2; usedNames.has(name); suffix += 1) name = `${baseName} ${suffix}`;
         const projectId = `project-${randomUUID().slice(0, 8)}`;
         const now = Date.now();
-        stmts.insertYeaftProject.run(projectId, ownerId, name.slice(0, 120), sortOrder, now, now);
+        stmts.insertYeaftProject.run(projectId, ownerId, name.slice(0, 120), '', sortOrder, now, now);
         sortOrder += 1;
         usedNames.add(name);
         for (const rawSessionId of Array.isArray(row.sessionIds) ? row.sessionIds : []) {
@@ -219,6 +243,7 @@ export const yeaftProjectDb = {
     return {
       projectId: project.id,
       projectName: project.name,
+      projectInstruction: typeof project.instruction === 'string' ? project.instruction : '',
       sessionIds: sameAgentMembers,
     };
   },

@@ -1072,6 +1072,20 @@
   background: var(--sidebar-hover);
 }
 
+.session-menu-parent {
+  justify-content: space-between;
+}
+
+.session-menu-back {
+  color: var(--text-secondary);
+}
+
+.session-menu-empty {
+  padding: 8px 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .session-menu-item svg {
   width: 14px;
   height: 14px;
