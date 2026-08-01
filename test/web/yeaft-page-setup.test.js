@@ -101,6 +101,7 @@ describe('YeaftPage setup', () => {
     expect(topbar).toContain('class="yeaft-topbar-folder"');
     expect(topbar).toContain('class="yeaft-topbar-context"');
     expect(topbar).not.toContain('class="yeaft-composer-model"');
+    expect(source).toContain('class="yeaft-session-input"');
     expect(source).toContain('<template #actions-start>');
     expect(source).toContain('class="yeaft-composer-model-control"');
     expect(source).toContain('class="yeaft-composer-model"');

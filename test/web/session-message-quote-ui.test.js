@@ -292,6 +292,8 @@ describe('Session message quote UI wiring', () => {
     const composer = inputWrapper.get('.chat-composer');
     const textarea = composer.get('textarea');
     const actionRow = composer.get('.chat-composer-actions');
+
+    expect(composer.attributes('data-message-composer')).toBe('');
     const startActions = actionRow.get('.chat-composer-actions-start');
     const endActions = actionRow.get('.chat-composer-actions-end');
 
@@ -349,15 +351,17 @@ describe('Session message quote UI wiring', () => {
     const layoutRoot = document.createElement('div');
     layoutRoot.className = 'yeaft-page';
     layoutRoot.innerHTML = `
-      <div class="input-wrapper chat-composer"></div>
-      <div class="input-wrapper work-center-item-message-input"></div>
+      <footer class="input-area yeaft-session-input">
+        <div class="input-wrapper chat-composer" data-message-composer></div>
+      </footer>
+      <div class="input-wrapper chat-composer work-center-item-message-input" data-message-composer></div>
     `;
-    const sessionComposer = layoutRoot.querySelector('.chat-composer');
+    const sessionComposer = layoutRoot.querySelector('.yeaft-session-input .chat-composer');
     const workCenterComposer = layoutRoot.querySelector('.work-center-item-message-input');
-    const sessionComposerSelector = '.yeaft-page .input-wrapper.chat-composer';
+    const sessionComposerSelector = '.yeaft-session-input > .input-wrapper.chat-composer';
     expect(sessionComposer.matches(sessionComposerSelector)).toBe(true);
     expect(workCenterComposer.matches(sessionComposerSelector)).toBe(false);
-    expect(workCenterSource).toContain('class="input-wrapper work-center-item-message-input"');
+    expect(workCenterSource).toContain('class="work-center-item-message-input"');
     expect(workCenterCss).toMatch(/\.work-center-item-message-input\s*\{[^}]*width:\s*min\(100%,\s*920px\);[^}]*max-width:\s*none;/);
 
     expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*flex-direction:\s*column/);
@@ -371,8 +375,8 @@ describe('Session message quote UI wiring', () => {
     expect(inputCss).toMatch(/\.chat-composer-actions-start,[\s\S]*?gap:\s*var\(--chat-composer-control-gap\)/);
     expect(inputCss).toMatch(/\.chat-composer \.send-btn\s*\{[^}]*width:\s*var\(--chat-composer-control-size\)/);
     expect(inputCss).toMatch(/\.chat-composer \.send-btn\s*\{[^}]*height:\s*var\(--chat-composer-control-size\)/);
-    expect(yeaftCss).toMatch(/\.yeaft-page \.input-wrapper\.chat-composer\s*\{[^}]*width:\s*min\(100%,\s*var\(--yeaft-composer-max-width\)\)/);
-    expect(yeaftCss).not.toMatch(/\.yeaft-page \.input-wrapper\s*\{/);
+    expect(yeaftCss).toMatch(/\.yeaft-session-input > \.input-wrapper\.chat-composer\s*\{[^}]*width:\s*min\(100%,\s*var\(--yeaft-composer-max-width\)\)/);
+    expect(yeaftCss).not.toMatch(/\.yeaft-page \.input-wrapper(?:\.chat-composer)?\s*\{/);
     expect(yeaftCss).toMatch(/\.yeaft-topbar-folder-path\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*direction:\s*rtl;/);
     expect(yeaftCss).toMatch(/\.yeaft-page \.chat-composer-actions-start\s*\{[^}]*position:\s*relative/);
     expect(yeaftCss).toMatch(/\.yeaft-composer-model-control\s*\{[^}]*position:\s*static/);
@@ -380,7 +384,7 @@ describe('Session message quote UI wiring', () => {
     expect(yeaftCss).toMatch(/@media \(max-width:\s*768px\)[\s\S]*?\.yeaft-topbar\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto;/);
     expect(yeaftCss).toMatch(/\.yeaft-topbar-context\s*\{[^}]*grid-column:\s*2;[^}]*display:\s*grid;/);
     expect(yeaftCss).toMatch(/\.yeaft-topbar-folder\s*\{[^}]*grid-row:\s*2;[^}]*width:\s*100%;[^}]*max-width:\s*100%;/);
-    expect(yeaftCss).toMatch(/@media \(max-width:\s*768px\)[\s\S]*?\.yeaft-page \.input-wrapper\.chat-composer,[\s\S]*?width:\s*100%;[\s\S]*?max-width:\s*100%;/);
+    expect(yeaftCss).toMatch(/@media \(max-width:\s*768px\)[\s\S]*?\.yeaft-session-input > \.input-wrapper\.chat-composer,[\s\S]*?width:\s*100%;[\s\S]*?max-width:\s*100%;/);
     for (const token of composerTokens) {
       expect(lightThemeTokens).toContain(token);
       expect(darkThemeTokens).toContain(token);

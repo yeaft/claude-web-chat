@@ -345,6 +345,7 @@ export default {
         <ChatInput
           v-if="!showSettings && !showOnboardingGuide"
           ref="chatInputRef"
+          class="yeaft-session-input"
           :conversation-id="store.yeaftConversationId"
           :draft-key="yeaftInputDraftKey"
           :send-fn="sendMessage"
