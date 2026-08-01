@@ -14,6 +14,7 @@
  * @typedef {Object} ToolContext
  * @property {AbortSignal} [signal] — cancellation signal
  * @property {string} [yeaftDir] — Yeaft data directory
+ * @property {Promise<Array> & {toolReady?: Record<string, Promise<object>>}} [managedCliReady] — resolves after optional managed CLI setup; toolReady exposes per-command readiness
  * @property {ReturnType<import('../runtime-platform.js').getRuntimePlatformInfo>} [runtimePlatform]
  *   — runtime OS/shell facts for platform-aware tools
  * @property {string} [cwd] — working directory

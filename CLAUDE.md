@@ -58,6 +58,7 @@ debug-trace.js   — Yeaft loop / tool / adapter 调试 trace 存储与查询
 prompts.js       — 双语 system prompt builder（en/zh）
 models.js        — Model 注册表（protocol、context/output limit、effort / thinking capability）
 runtime-platform.js — 运行平台探测（shell、路径、OS 提示，供工具和 prompt 注入）
+managed-cli.js   — rg / fd / dust 用户级安装、校验、解析与失败回退
 sessions/        — Session 编排（coordinator、roster、session-store、session-crud、pre-flow、config 等）
 routing/         — Turn 内路由 + loop guard
 router/          — Continuity / thinking 相关路由策略
@@ -157,8 +158,10 @@ index.js     — 入口，把所有内置工具聚合成 createFullRegistry()
 ```
 按类别分文件（节选）：
 - 文件 / 编辑：`file-read.js` / `file-write.js` / `file-edit.js` / `apply-patch.js` / `notebook-edit.js`
-- 搜索 / 探索：`grep.js` / `glob.js` / `list-dir.js` / `history-search.js`
+- 搜索 / 探索：`grep.js` / `glob.js` / `list-dir.js` / `disk-usage.js` / `history-search.js`
 - 执行：`bash.js` / `js-repl.js` / `enter-worktree.js` / `exit-worktree.js`
+
+**Managed CLI 加速：** `yeaft-agent` 和 `yeaft` 启动时把 `~/.yeaft/bin` 放到 `PATH` 前端，并异步检查 `rg`、`fd`、`dust`。系统命令已存在时直接复用；否则按 OS / arch 下载固定官方 release 资产，校验固定 SHA-256、执行 `--version` 后原子安装到用户目录，不调用 `sudo` 或系统包管理器。`Grep` / `Glob` / `DiskUsage` 优先使用这些命令，安装失败、离线、平台无官方资产或运行错误时回退 Node.js；`YEAFT_SKIP_STARTUP_INSTALLS=true` 跳过 agent 启动安装，`YEAFT_SKIP_MANAGED_CLI_INSTALLS=true` 仅跳过这三个命令的安装。
 - 后台任务：`list-tasks.js` / `read-task-log.js` / `cancel-task.js`（配合 `Bash background=true` 和 `tasks/` 子系统）
 - 网络 / 媒体：`web-fetch.js` / `web-search.js` / `image-generation.js` / `view-image.js`
 - 编排：`agent.js` / `send-message.js` / `wait-agent.js` / `close-agent.js` / `list-agents.js` / `route-forward.js`

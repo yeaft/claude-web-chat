@@ -158,6 +158,7 @@ export function startSubAgent(agent, deps = {}) {
       skillManager: deps.skillManager || null,
       mcpManager: deps.mcpManager || null,
       yeaftDir: deps.yeaftDir || null,
+      managedCliReady: deps.managedCliReady || null,
       toolStats: deps.toolStats || null,
       taskManager: deps.taskManager || null,
     });
