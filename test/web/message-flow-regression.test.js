@@ -188,6 +188,7 @@ describe('message flow regressions', () => {
 
   it('keeps Work Center inputs available and detail layouts responsive', async () => {
     const component = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatInput.js'), 'utf8');
+    const messageComposer = readFileSync(resolve(import.meta.dirname, '../../web/components/MessageComposer.js'), 'utf8');
     const websocket = readFileSync(resolve(import.meta.dirname, '../../web/stores/helpers/websocket.js'), 'utf8');
     const chatStoreSource = readFileSync(resolve(import.meta.dirname, '../../web/stores/chat.js'), 'utf8');
     const chatPageSource = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatPage.js'), 'utf8');
@@ -848,8 +849,9 @@ describe('message flow regressions', () => {
     const workCenter = readFileSync(resolve(import.meta.dirname, '../../web/components/WorkCenterPage.js'), 'utf8');
     const workCenterCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/work-center.css'), 'utf8');
 
-    expect(component).toContain('v-if="isStopVisible"');
-    expect(component).not.toContain('v-else\n          type="button"\n          class="send-btn"');
+    expect(component).toContain(':show-stop="isStopVisible"');
+    expect(messageComposer).toContain('v-if="showStop"');
+    expect(messageComposer).not.toContain('v-else\n            type="button"\n            class="send-btn"');
     expect(component).toContain('if (isCompacting.value) return false;');
     expect(component).not.toContain('if (isCompacting.value || isStopVisible.value) return false;');
     expect(component).toContain('if (!canSend.value) return;');

@@ -2131,10 +2131,28 @@ test.describe('Work Center responsive UI', () => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 1400, height: 900 });
     const select = chatPage.locator('.work-center-card').click();
-    await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
+    const longMessage = `unbroken-${'x'.repeat(1200)}`;
+    await respondToWorkCenterOp(mockAgent, 'get', {
+      ...OPEN_ITEM_DETAIL,
+      messages: [
+        ...(OPEN_ITEM_DETAIL.messages || []),
+        {
+          id: 'overflow-probe',
+          role: 'assistant',
+          text: longMessage,
+          status: 'completed',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      ],
+    });
     await select;
 
     const conversation = chatPage.locator('.work-center-conversation');
+    const sharedComposer = conversation.locator('[data-message-composer]');
+    await expect(sharedComposer).toHaveCount(1);
+    await expect(sharedComposer.locator('textarea')).toHaveAttribute('rows', '3');
+    await expect(sharedComposer.locator('.chat-composer-actions')).toBeVisible();
     const upload = chatPage.waitForResponse(response => (
       response.url().includes('/api/upload') && response.request().method() === 'POST'
     ));
@@ -2185,6 +2203,11 @@ test.describe('Work Center responsive UI', () => {
         const layout = detail.querySelector('.work-center-detail-layout');
         const workflow = detail.querySelector('.work-center-workflow');
         const main = detail.querySelector('.work-center-detail-main');
+        const conversation = detail.querySelector('.work-center-conversation');
+        const messageList = detail.querySelector('.work-center-item-message-list');
+        const composer = detail.querySelector('[data-message-composer]');
+        const composerActions = composer.querySelector('.chat-composer-actions');
+        const textarea = composer.querySelector('textarea');
         const close = detail.querySelector('.work-center-detail-close');
         const card = detail.querySelector('.work-center-action-card');
         const content = card.querySelector('.work-center-action-content');
@@ -2206,6 +2229,15 @@ test.describe('Work Center responsive UI', () => {
           closeRight: Math.round(detailRect.right - closeRect.right),
           detailScrollWidth: detail.scrollWidth,
           detailClientWidth: detail.clientWidth,
+          mainScrollWidth: main.scrollWidth,
+          mainClientWidth: main.clientWidth,
+          conversationScrollWidth: conversation.scrollWidth,
+          conversationClientWidth: conversation.clientWidth,
+          messageListScrollWidth: messageList.scrollWidth,
+          messageListClientWidth: messageList.clientWidth,
+          composerScrollWidth: composer.scrollWidth,
+          composerClientWidth: composer.clientWidth,
+          composerActionBelowTextarea: composerActions.getBoundingClientRect().top >= textarea.getBoundingClientRect().bottom,
           documentScrollWidth: document.documentElement.scrollWidth,
           documentClientWidth: document.documentElement.clientWidth,
           workflowBackground: getComputedStyle(workflow).backgroundColor,
@@ -2221,6 +2253,11 @@ test.describe('Work Center responsive UI', () => {
       expect(metrics.distinctLineTops).toBeGreaterThanOrEqual(1);
       expect(metrics.cardHeight).toBeLessThanOrEqual(width === 1400 ? 75 : 110);
       expect(metrics.detailScrollWidth).toBeLessThanOrEqual(metrics.detailClientWidth + 1);
+      expect(metrics.mainScrollWidth).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
+      expect(metrics.conversationScrollWidth).toBeLessThanOrEqual(metrics.conversationClientWidth + 1);
+      expect(metrics.messageListScrollWidth).toBeLessThanOrEqual(metrics.messageListClientWidth + 1);
+      expect(metrics.composerScrollWidth).toBeLessThanOrEqual(metrics.composerClientWidth + 1);
+      expect(metrics.composerActionBelowTextarea).toBe(true);
       expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.documentClientWidth + 1);
       expect(metrics.workflowBackground).toBe(metrics.detailBackground);
       expect(metrics.mainBackground).toBe('rgba(0, 0, 0, 0)');
