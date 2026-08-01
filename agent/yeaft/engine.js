@@ -1353,6 +1353,7 @@ export class Engine {
         adapter: this.#adapter,
         trace: this.#trace,
         config: this.#config,
+        memoryIndex: this.#memoryIndex,
         parentToolRegistry: this.#toolRegistry,
         skillManager: this.#skillManager,
         mcpManager: this.#mcpManager,

@@ -114,6 +114,7 @@ export function isRestrictedToolName(name) {
  *   trace: object,
  *   config: object,
  *   conversationStore?: object,
+ *   memoryIndex?: object,
  *   memoryStore?: object,
  *   memoryShardStore?: object,
  *   parentToolRegistry?: ToolRegistry,
@@ -153,6 +154,7 @@ export function startSubAgent(agent, deps = {}) {
       trace: deps.trace,
       config: { ...deps.config, _readOnly: true },
       conversationStore: null,
+      memoryIndex: deps.memoryIndex || null,
       memoryStore: deps.memoryStore || null,
       memoryShardStore: deps.memoryShardStore || null,
       toolRegistry: childRegistry,
@@ -315,7 +317,29 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
 
   const dequeueNextUserPrompt = () => {
     if (!Array.isArray(agent.pendingPrompts)) agent.pendingPrompts = [];
-    return agent.pendingPrompts.shift() || null;
+    const entry = agent.pendingPrompts.shift();
+    if (!entry) return null;
+    if (typeof entry === 'string') {
+      return {
+        prompt: entry,
+        projectSessionIds: Array.isArray(deps.projectSessionIds)
+          ? deps.projectSessionIds.slice()
+          : [],
+        projectInstruction: typeof deps.projectInstruction === 'string'
+          ? deps.projectInstruction
+          : '',
+      };
+    }
+    if (!entry || typeof entry !== 'object' || typeof entry.prompt !== 'string') return null;
+    return {
+      prompt: entry.prompt,
+      projectSessionIds: Array.isArray(entry.projectSessionIds)
+        ? entry.projectSessionIds.slice()
+        : [],
+      projectInstruction: typeof entry.projectInstruction === 'string'
+        ? entry.projectInstruction
+        : '',
+    };
   };
 
   try {
@@ -330,8 +354,8 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
     emit({ type: 'sub_agent_status', status: STATUS.RUNNING });
 
     while (!isTerminalAgentStatus(agent.status)) {
-      const prompt = dequeueNextUserPrompt();
-      if (!prompt) {
+      const queuedPrompt = dequeueNextUserPrompt();
+      if (!queuedPrompt) {
         // No queued work — go idle and wait for PromptAgent / CloseAgent /
         // watchdog.
         agent.status = STATUS.IDLE;
@@ -376,18 +400,14 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
       let turnUsageTokens = 0;
       try {
         const stream = subEngine.query({
-          prompt,
+          prompt: queuedPrompt.prompt,
           messages: agent.engineMessages,
           signal: agent.abortController?.signal,
           scenario: 'chat',
           vpPersona,
           sessionId: agent.parentSessionId || deps.parentSessionId || null,
-          projectSessionIds: Array.isArray(deps.projectSessionIds)
-            ? deps.projectSessionIds
-            : null,
-          projectInstruction: typeof deps.projectInstruction === 'string'
-            ? deps.projectInstruction
-            : '',
+          projectSessionIds: queuedPrompt.projectSessionIds,
+          projectInstruction: queuedPrompt.projectInstruction,
         });
         for await (const evt of stream) {
           // Liveness — update first so even listener throws don't lose
@@ -450,7 +470,7 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
 
       // Persist the turn into the local message buffer so subsequent
       // PromptAgent continuations see context.
-      agent.engineMessages.push({ role: 'user', content: prompt });
+      agent.engineMessages.push({ role: 'user', content: queuedPrompt.prompt });
       if (assistantText) {
         agent.engineMessages.push({ role: 'assistant', content: assistantText });
       }

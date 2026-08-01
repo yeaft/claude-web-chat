@@ -365,6 +365,106 @@ describe('wait-agent envelope shape', () => {
     expect(denied.error).toMatch(/not found/i);
     const listed = JSON.parse(await listAgents.execute({}, ctxB));
     expect(listed.agents.map(a => a.id)).toEqual(['agent-vp-b']);
+
+    // A retained child must use the Project snapshot attached to each queued
+    // continuation, not the Project context captured when it was spawned.
+    _resetAgentRegistry();
+    const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yeaft-project-context-runner-'));
+    const adapter = new TextAdapter('done');
+    const scopeFilters = [];
+    const memoryIndex = {
+      search({ scopeFilter }) {
+        scopeFilters.push([...scopeFilter]);
+        return [];
+      },
+    };
+    const agent = {
+      id: 'agent-project-context',
+      name: 'project-context',
+      mission: 'initial project policy',
+      status: STATUS.CREATED,
+      messages: [],
+      result: null,
+      lastResult: '',
+      partial_output: '',
+      diagnostics: [],
+      usage: { tokens: 0, turns: 0, startedAt: Date.now() },
+      createdAt: Date.now(),
+      trace: [],
+      liveness: makeLiveness(),
+      outputFile: null,
+      parentVpId: 'vp-test',
+      parentSessionId: 'session-live',
+      parentThreadId: 'main',
+      abortController: new AbortController(),
+    };
+    const ownerContext = {
+      parentEngineDeps: {
+        parentSessionId: 'session-live',
+        parentVpId: 'vp-test',
+        parentThreadId: 'main',
+      },
+    };
+    getAgentRegistry().set(agent.id, agent);
+
+    try {
+      startSubAgent(agent, mkDeps(adapter, {
+        memoryIndex,
+        parentSessionId: 'session-live',
+        parentThreadId: 'main',
+        projectSessionIds: ['old-sibling'],
+        projectInstruction: 'OLD PROJECT INSTRUCTION MUST DISAPPEAR',
+        subAgentLogDir: logDir,
+        idleAbandonMs: 10_000,
+      }));
+      await settle(agent);
+      expect(agent.status).toBe(STATUS.IDLE);
+      expect(adapter.streamCalls).toHaveLength(1);
+      expect(adapter.streamCalls[0].system).toContain('OLD PROJECT INSTRUCTION MUST DISAPPEAR');
+      expect(scopeFilters[0]).toContain('sessions/old-sibling');
+
+      const updated = JSON.parse(await sendMessage.execute({
+        agent_id: agent.id,
+        message: 'updated project policy',
+      }, {
+        parentEngineDeps: {
+          ...ownerContext.parentEngineDeps,
+          projectSessionIds: ['new-sibling'],
+          projectInstruction: 'NEW PROJECT INSTRUCTION',
+        },
+      }));
+      expect(updated.success).toBe(true);
+      await settle(agent);
+      expect(agent.status).toBe(STATUS.IDLE);
+      expect(adapter.streamCalls).toHaveLength(2);
+      expect(adapter.streamCalls[1].system).toContain('NEW PROJECT INSTRUCTION');
+      expect(adapter.streamCalls[1].system).not.toContain('OLD PROJECT INSTRUCTION MUST DISAPPEAR');
+      expect(scopeFilters[1]).toContain('sessions/new-sibling');
+      expect(scopeFilters[1]).not.toContain('sessions/old-sibling');
+
+      const cleared = JSON.parse(await sendMessage.execute({
+        agent_id: agent.id,
+        message: 'cleared project policy',
+      }, {
+        parentEngineDeps: {
+          ...ownerContext.parentEngineDeps,
+          projectSessionIds: [],
+          projectInstruction: '',
+        },
+      }));
+      expect(cleared.success).toBe(true);
+      await settle(agent);
+      expect(agent.status).toBe(STATUS.IDLE);
+      expect(adapter.streamCalls).toHaveLength(3);
+      expect(adapter.streamCalls[2].system).not.toContain('OLD PROJECT INSTRUCTION MUST DISAPPEAR');
+      expect(adapter.streamCalls[2].system).not.toContain('NEW PROJECT INSTRUCTION');
+      expect(scopeFilters[2]).not.toContain('sessions/old-sibling');
+      expect(scopeFilters[2]).not.toContain('sessions/new-sibling');
+    } finally {
+      await closeAgent.execute({ agent_id: agent.id }, ownerContext);
+      await new Promise(resolve => setTimeout(resolve, 80));
+      fs.rmSync(logDir, { recursive: true, force: true });
+    }
   });
 
 

@@ -85,6 +85,7 @@ import { classifyThread as defaultClassifyThread, fallbackTitle } from './vp/thr
 import { listMcpServers, upsertMcpServer, removeMcpServer } from './config-api.js';
 import { buildMcpFlattenedTools } from './tools/mcp-tools.js';
 import { getAgentRegistry, agentBelongsToScope } from './tools/agent.js';
+import { enqueueSubAgentPrompt } from './sub-agent/prompt-queue.js';
 import { isPromptableAgentStatus } from './sub-agent/status.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
 import { recordAgentSessionCreated, recordAgentTurn } from '../metrics.js';
@@ -6520,8 +6521,12 @@ export function handleYeaftSubAgentPrompt(msg) {
     return;
   }
 
-  if (!Array.isArray(agent.pendingPrompts)) agent.pendingPrompts = [];
-  agent.pendingPrompts.push(message);
+  const projectContext = projectContextBySession.get(sessionId)
+    || legacyProjectContext(ctx.CONFIG?.yeaftDir, sessionId);
+  enqueueSubAgentPrompt(agent, message, {
+    projectSessionIds: projectContext?.sessionIds,
+    projectInstruction: projectContext?.projectInstruction,
+  });
   if (!Array.isArray(agent.messages)) agent.messages = [];
   agent.messages.push({ role: 'user', content: message, timestamp: Date.now() });
   if (agent.status === 'idle' || agent.status === 'created') agent.status = 'running';

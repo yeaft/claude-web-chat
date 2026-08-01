@@ -227,6 +227,8 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/\.projects-section, \.recents-section\s*\{[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/);
     expect(yeaftSidebarCss).toMatch(/\.projects-section > \.sidebar-section-heading, \.recents-section > \.sidebar-section-heading\s*\{[^}]*position:\s*sticky[^}]*top:\s*0[^}]*z-index:\s*1[^}]*background:\s*var\(--bg-sidebar\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-menu-info\s*\{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-project-header > \.session-dots-btn:focus-visible\s*\{[^}]*opacity:\s*1/);
+    expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-header > \.session-dots-btn\s*\{[^}]*opacity:\s*1/);
     expect(yeaftSidebarCss).not.toContain('.sidebar-session-menu-divider');
     expect(vpAvatarSource).not.toContain('/assets/avatars/');
     expect(vpAvatarSource).not.toContain('<img');
@@ -332,7 +334,16 @@ describe('message flow regressions', () => {
       item.get('.sidebar-project-count').text(),
     ]))).toEqual({ 'Shared project': '1', 'Empty project': '0' });
     expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(2);
-    expect(sidebar.get('.session-dots-btn').attributes('aria-label')).toBe('sidebar.projects.menu');
+    const projectMenuButton = sidebar.findAll('.sidebar-project-header .session-dots-btn')[0];
+    expect(projectMenuButton.attributes('aria-label')).toBe('sidebar.projects.menu');
+    projectMenuButton.element.focus();
+    expect(document.activeElement).toBe(projectMenuButton.element);
+    await projectMenuButton.trigger('click');
+    expect([...document.body.querySelectorAll('.session-menu-item')].map(item => item.textContent))
+      .toContain('sidebar.projects.instructions');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await Vue.nextTick();
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
 
     await sidebar.get('.sidebar-tool-button').trigger('click');
     const projectCreateInput = sidebar.get('.sidebar-project-create input');
