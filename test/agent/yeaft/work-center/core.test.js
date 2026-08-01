@@ -57,6 +57,18 @@ function createInput(overrides = {}) {
   };
 }
 
+function withWorkCenterFixture(run) {
+  const fixtureDir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-case-'));
+  const fixtureStore = new WorkItemStore(join(fixtureDir, 'work-center.db'), { now: () => 1_000 });
+  const fixtureController = new WorkflowController(fixtureStore);
+  try {
+    return run({ store: fixtureStore, controller: fixtureController });
+  } finally {
+    fixtureStore.close();
+    rmSync(fixtureDir, { recursive: true, force: true });
+  }
+}
+
 function completed(type, overrides = {}) {
   const plan = overrides.plan?.actions
     ? {
