@@ -1098,6 +1098,10 @@ const ESCALATE_AFTER_ABORT_MS = 15_000;
 /** Virtual conversationId for the Yeaft session */
 let yeaftConversationId = null;
 
+function createYeaftConversationId() {
+  return `yeaft-${randomUUID()}`;
+}
+
 /** Last agent-level Yeaft slash command payload. Replayed after the web side
  *  creates/replaces the virtual Yeaft conversation id so `/` autocomplete never
  *  falls back to built-ins while full Session metadata is still loading. */
@@ -1316,7 +1320,7 @@ function loadVisibleGroupHistoryPage(store, sessionId, limit, beforeSeq = null) 
 
 function ensureYeaftConversationId() {
   if (!yeaftConversationId) {
-    yeaftConversationId = `yeaft-${Date.now()}`;
+    yeaftConversationId = createYeaftConversationId();
     replayCachedSkillSlashCommandsToYeaftConversation();
   }
   return yeaftConversationId;
@@ -7033,7 +7037,7 @@ export async function resetYeaftSession() {
     claimRuntimeOwnership(session);
     installYeaftRuntimeBridge(session);
 
-    yeaftConversationId = `yeaft-${Date.now()}`;
+    yeaftConversationId = createYeaftConversationId();
     scheduleBaseRuntimeLoad();
     hydrateYeaftStatusFromSession(session, { reason: 'reset', emitEvent: true });
     broadcastSkillSlashCommands(session);
@@ -7349,6 +7353,9 @@ export const __testHooks = {
   },
   ensureYeaftConversationIdForTest() {
     return ensureYeaftConversationId();
+  },
+  setYeaftConversationIdForTest(value) {
+    yeaftConversationId = value || null;
   },
   preloadYeaftSkillSlashCommandsForTest() {
     return broadcastSkillSlashCommands(session);

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { resolveMaxOutputTokens } from '../models.js';
 import {
   LLMAuthError,
@@ -531,6 +531,8 @@ export class WorkItemCoordinator {
     this.runtimeProvider = options.runtimeProvider;
     this.policyProvider = typeof options.policyProvider === 'function' ? options.policyProvider : async () => ({});
     this.registry = options.registry;
+    this.ownerBootId = options.ownerBootId || randomUUID();
+    this.claimLeaseMs = Math.max(5_000, Number(options.claimLeaseMs) || 60_000);
     this.attachmentRoot = options.attachmentRoot || null;
     this.languageProvider = typeof options.languageProvider === 'function'
       ? options.languageProvider
@@ -550,7 +552,7 @@ export class WorkItemCoordinator {
       throw new Error('Work Center Coordinator message or attachments are required');
     }
     const promptText = text || `The user added ${addedAttachments.length} attachment(s) for this WorkItem.`;
-    const started = this.store.beginCoordinatorTurn(id, text, {
+    let started = this.store.beginCoordinatorTurn(id, text, {
       revision: Number(input.revision),
       planRevision: Number(input.planRevision),
       ledgerRevision: Number(input.ledgerRevision),
@@ -564,6 +566,9 @@ export class WorkItemCoordinator {
     if (started.duplicate) {
       return { detail: started.detail, task: Promise.resolve(started.detail), duplicate: true };
     }
+    const claimed = this.store.claimStartedCoordinatorTurn(started, this.ownerBootId, this.claimLeaseMs);
+    if (!claimed) return { detail: started.detail, task: Promise.resolve(started.detail), duplicate: true };
+    started = claimed;
     options.onUpdate?.('coordinator.turn_started', started.detail);
     return this.#scheduleTurn(started, {
       text: promptText,
@@ -611,11 +616,13 @@ export class WorkItemCoordinator {
       },
     });
     if (!started) return null;
-    options.onUpdate?.('coordinator.recovery_started', started.detail);
+    const claimed = this.store.claimStartedCoordinatorTurn(started, this.ownerBootId, this.claimLeaseMs);
+    if (!claimed) return null;
+    options.onUpdate?.('coordinator.recovery_started', claimed.detail);
     const text = `Action stage "${action.stageId}" failed. Decide the next safe control transition. `
       + 'Failure is not a terminal WorkItem state: guide or replan executable work whenever possible. '
       + 'Request human input only when the snapshot lacks information required for a safe decision.';
-    return this.#scheduleTurn(started, { text, recovery: true, options });
+    return this.#scheduleTurn(claimed, { text, recovery: true, options });
   }
 
   #scheduleTurn(started, {
@@ -623,11 +630,19 @@ export class WorkItemCoordinator {
   }) {
     const abortController = new AbortController();
     this.activeTurns.set(started.turnId, abortController);
+    const claim = started.fence?.claim;
+    const renewalTimer = claim ? setInterval(() => {
+      if (!this.store.renewCoordinatorMailbox(
+        claim.mailboxId, claim.ownerBootId, claim.claimEpoch, this.claimLeaseMs,
+      )) abortController.abort('work_center_coordinator_claim_lost');
+    }, Math.max(1_000, Math.floor(this.claimLeaseMs / 3))) : null;
+    renewalTimer?.unref?.();
     const task = new Promise(resolve => setTimeout(resolve, 0))
       .then(() => this.#executeTurn(started, {
         text, recovery, addedAttachments, options, abortController,
       }))
       .finally(() => {
+        if (renewalTimer) clearInterval(renewalTimer);
         this.activeTurns.delete(started.turnId);
         this.activeTasks.delete(started.turnId);
       });
@@ -638,6 +653,7 @@ export class WorkItemCoordinator {
   async #executeTurn(started, {
     text, recovery, addedAttachments, options, abortController,
   }) {
+    let providerTurn = null;
     try {
       let normalized = null;
       let mutation = null;
@@ -698,6 +714,7 @@ export class WorkItemCoordinator {
           const correction = lastError
             ? `\n\nYour previous decision was rejected by the deterministic validator:\n${String(lastError.message || lastError).slice(0, 2_000)}\nReturn a corrected complete JSON decision.`
             : '';
+          providerTurn = null;
           try {
             let result;
             try {
@@ -717,9 +734,11 @@ export class WorkItemCoordinator {
                 effortSource: resolved.source,
                 effortContext: { scenario: 'work-center-coordinator' },
               };
-              const providerTurn = this.store.prepareCoordinatorProviderTurn(
-                started.detail.id, started.turnId, attemptCount, requestBody,
+              const claim = started.fence.claim;
+              providerTurn = this.store.prepareCoordinatorProviderTurn(
+                started.detail.id, started.turnId, attemptCount, requestBody, claim,
               );
+              if (!providerTurn) return started.detail;
               if (providerTurn.status === 'unknown') {
                 throw new Error('Coordinator provider dispatch outcome is unknown and requires review');
               }
@@ -731,15 +750,17 @@ export class WorkItemCoordinator {
                   ...requestBody,
                   signal: abortController.signal,
                   onRequestStart: () => {
-                    if (!this.store.dispatchCoordinatorProviderTurn(providerTurn.id)) {
+                    if (!this.store.dispatchCoordinatorProviderTurn(providerTurn.id, claim)) {
+                      abortController.abort('work_center_coordinator_dispatch_fence_lost');
                       throw new Error('Coordinator provider turn lost its dispatch fence');
                     }
                   },
                 }).then(response => {
                   const persisted = this.store.respondCoordinatorProviderTurn(
-                    providerTurn.id, providerTurn.requestHash, response,
+                    providerTurn.id, providerTurn.requestHash, response, claim,
                   );
                   if (!persisted) throw new Error('Coordinator provider response lost its CAS fence');
+                  providerTurn = persisted;
                   return response;
                 }),
                 new Promise((_, reject) => {
@@ -778,6 +799,9 @@ export class WorkItemCoordinator {
             break;
           } catch (error) {
             normalized = null;
+            if (providerTurn?.status === 'responded') {
+              this.store.rejectCoordinatorProviderTurn(providerTurn.id, error, started.fence.claim);
+            }
             if (abortController.signal.aborted || this.shuttingDown || error?.coordinatorClassified) {
               throw error;
             }
@@ -824,16 +848,19 @@ export class WorkItemCoordinator {
         mutation,
         attemptCount,
       }, started.fence);
-      if (!detail) throw new Error('Work Center Coordinator turn is stale or already completed');
+      if (!detail) return this.store.getWorkItemDetail(started.detail.id);
       options.onUpdate?.(recovery ? 'coordinator.recovery_completed' : 'coordinator.turn_completed', detail);
       return detail;
     } catch (error) {
+      if (providerTurn?.status === 'responded') {
+        this.store.rejectCoordinatorProviderTurn(providerTurn.id, error, started.fence.claim);
+      }
       const detail = this.store.failCoordinatorTurn(started.turnId, error, started.fence);
       if (detail) {
         options.onUpdate?.('coordinator.turn_failed', detail);
         return detail;
       }
-      throw error;
+      return this.store.getWorkItemDetail(started.detail.id);
     }
   }
 

@@ -94,12 +94,19 @@ describe('user agent secret routes', () => {
   });
 
   it('returns an existing Agent secret without rotating it', async () => {
-    userDb.getByUsername.mockReturnValue({ id: 'u1', username: 'dev-user', agent_secret: 'agent-secret-existing' });
+    userDb.getByUsername.mockReturnValue({
+      id: 'u1', username: 'dev-user', display_name: 'Dev', email: 'dev@example.test',
+      role: 'admin', created_at: 123, password_hash: 'hash', agent_secret: 'agent-secret-existing',
+    });
+    const app = mountRoutes();
 
-    const res = await runRoute(mountRoutes(), 'GET /api/user/agent-secret');
+    const secret = await runRoute(app, 'GET /api/user/agent-secret');
+    const profile = await runRoute(app, 'GET /api/user/profile');
 
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toEqual({ agentSecret: 'agent-secret-existing' });
+    expect(secret.statusCode).toBe(200);
+    expect(secret.body).toEqual({ agentSecret: 'agent-secret-existing' });
+    expect(profile.statusCode).toBe(200);
+    expect(profile.body).toMatchObject({ userId: 'u1', username: 'dev-user', role: 'admin' });
     expect(userDb.resetAgentSecret).not.toHaveBeenCalled();
   });
 

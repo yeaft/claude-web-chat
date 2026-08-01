@@ -129,6 +129,21 @@ const FAILED_ITEM = {
   title: 'Local run',
 };
 
+const GENERATION_ITEM = {
+  ...OPEN_ITEM,
+  id: 'work-item-generation',
+  title: 'Generation-bound draft',
+  updatedAt: Number(OPEN_ITEM.updatedAt) + 10,
+};
+
+const GENERATION_ITEM_DETAIL = {
+  ...OPEN_ITEM_DETAIL,
+  ...GENERATION_ITEM,
+  currentActionId: 'action-generation',
+  currentAction: { ...OPEN_ITEM.currentAction, id: 'action-generation' },
+  actions: [{ ...OPEN_ITEM_DETAIL.actions[0], id: 'action-generation', generation: 1 }],
+};
+
 const FAILED_ITEM_DETAIL = {
   ...OPEN_ITEM_DETAIL,
   ...FAILED_ITEM,
@@ -440,6 +455,7 @@ async function openWorkCenter(chatPage, mockAgent, items = [OPEN_ITEM]) {
   }
   await chatPage.evaluate(({ agentId, items: boardItems, settings, runtime }) => {
     const store = window.Pinia.useChatStore();
+    store.hydrateWorkCenterBrowserState();
     store.workCenterAgentId = agentId;
     store.workCenterOpen = true;
     store.workCenterItemsByAgent[agentId] = boardItems;
@@ -539,6 +555,125 @@ test.describe('Work Center responsive UI', () => {
       op: listRequest.op, ok: true, data: { items: [OPEN_ITEM], watcher: { enabled: true } },
     });
     await expect(responsePromise).resolves.toMatchObject({ id: OPEN_ITEM.id });
+    await expect.poll(() => chatPage.evaluate(() => {
+      const store = window.Pinia.useChatStore();
+      return Object.keys(store.workCenterMessageOutbox || {}).length;
+    })).toBe(0);
+
+    const firstUpload = await chatPage.evaluate(async () => {
+      const formData = new FormData();
+      formData.append('files', new File(['initial staged bytes'], 'initial-note.txt', { type: 'text/plain' }));
+      const response = await fetch('/api/upload', { method: 'POST', body: formData });
+      return (await response.json()).files[0];
+    });
+    const lostResponseRequest = mockAgent.waitForMessage('work_center_request');
+    chatPage.evaluate(({ agentId, item, attachment }) => {
+      const store = window.Pinia.useChatStore();
+      store.workCenterAgentId = agentId;
+      store.workCenterDetailByAgent[agentId] = item;
+      store.postWorkItemMessage(
+        item.id,
+        'Retry this durable message after reload',
+        { kind: 'action', actionId: 'action-1', generation: 1 },
+        item.revision,
+        [attachment],
+        agentId,
+        { planRevision: item.planRevision, ledgerRevision: item.ledgerRevision, coordinatorRevision: 0 },
+      ).catch(() => {});
+    }, { agentId: mockAgent.agentId, item: OPEN_ITEM_DETAIL, attachment: firstUpload });
+    const firstAttempt = await lostResponseRequest;
+    const durableClientMessageId = firstAttempt.payload.clientMessageId;
+    expect(durableClientMessageId).toEqual(expect.any(String));
+    expect(firstAttempt.payload.attachments[0].fileId).toBe(firstUpload.fileId);
+    await expect.poll(() => chatPage.evaluate(id => {
+      const store = window.Pinia.useChatStore();
+      return Object.values(store.workCenterMessageOutbox || {})
+        .some(envelope => envelope.clientMessageId === id);
+    }, durableClientMessageId)).toBe(true);
+
+    await chatPage.reload();
+    await chatPage.waitForSelector('.chat-page');
+    await chatPage.waitForFunction(agentId => {
+      const store = window.Pinia?.useChatStore?.();
+      return (store?.agents || []).some(agent => agent.id === agentId && agent.online === true);
+    }, mockAgent.agentId);
+    const messagesBeforeExpiredRetry = mockAgent.messages('work_center_request').length;
+    const expiredRetry = chatPage.evaluate(({ agentId, item }) => {
+      const store = window.Pinia.useChatStore();
+      store.hydrateWorkCenterBrowserState();
+      store.workCenterAgentId = agentId;
+      store.workCenterDetailByAgent[agentId] = item;
+      const envelope = store.loadWorkCenterMessageEnvelope(agentId, item.id);
+      store.replaceWorkCenterMessageEnvelopeAttachments(agentId, item.id, [{
+        ...envelope.attachments[0], fileId: 'expired-file-id',
+      }]);
+      return store.postWorkItemMessage(
+        item.id, envelope.text, envelope.target, envelope.revision,
+        envelope.attachments, agentId,
+        {
+          planRevision: envelope.planRevision,
+          ledgerRevision: envelope.ledgerRevision,
+          coordinatorRevision: envelope.coordinatorRevision,
+        },
+      );
+    }, { agentId: mockAgent.agentId, item: OPEN_ITEM_DETAIL });
+    await expect(expiredRetry).rejects.toThrow(/attachment expired/i);
+    expect(mockAgent.messages('work_center_request')).toHaveLength(messagesBeforeExpiredRetry);
+
+    const replacement = await chatPage.evaluate(async () => {
+      const formData = new FormData();
+      formData.append('files', new File(['replacement staged bytes'], 'replacement-note.txt', { type: 'text/plain' }));
+      const response = await fetch('/api/upload', { method: 'POST', body: formData });
+      return (await response.json()).files[0];
+    });
+    const retryRequestPromise = mockAgent.waitForMessage('work_center_request');
+    const retryResponse = chatPage.evaluate(({ agentId, item, attachment }) => {
+      const store = window.Pinia.useChatStore();
+      const envelope = store.replaceWorkCenterMessageEnvelopeAttachments(
+        agentId, item.id, [attachment],
+      );
+      return store.postWorkItemMessage(
+        item.id, envelope.text, envelope.target, envelope.revision,
+        envelope.attachments, agentId,
+        {
+          planRevision: envelope.planRevision,
+          ledgerRevision: envelope.ledgerRevision,
+          coordinatorRevision: envelope.coordinatorRevision,
+        },
+      );
+    }, { agentId: mockAgent.agentId, item: OPEN_ITEM_DETAIL, attachment: replacement });
+    const retryRequest = await retryRequestPromise;
+    expect(retryRequest.payload).toMatchObject({
+      clientMessageId: durableClientMessageId,
+      text: 'Retry this durable message after reload',
+      target: { kind: 'action', actionId: 'action-1', generation: 1 },
+      revision: 1,
+      planRevision: 2,
+      ledgerRevision: 4,
+      coordinatorRevision: 0,
+    });
+    expect(retryRequest.payload.attachments[0].fileId).toBe(replacement.fileId);
+    mockAgent.send({
+      type: 'work_center_event',
+      event: {
+        type: 'action.input_added',
+        actionId: 'action-1',
+        clientMessageId: durableClientMessageId,
+        workItem: { ...OPEN_ITEM, revision: 2, updatedAt: Number(OPEN_ITEM.updatedAt) + 1 },
+      },
+    });
+    const retryListRequest = await mockAgent.waitForMessage('work_center_request');
+    expect(retryListRequest.op).toBe('list');
+    mockAgent.send({
+      type: 'work_center_response', requestId: retryListRequest.requestId,
+      op: retryListRequest.op, ok: true,
+      data: { items: [{ ...OPEN_ITEM, revision: 2 }], watcher: { enabled: true } },
+    });
+    await expect(retryResponse).resolves.toMatchObject({ id: OPEN_ITEM.id });
+    await expect.poll(() => chatPage.evaluate(() => {
+      const store = window.Pinia.useChatStore();
+      return Object.keys(store.workCenterMessageOutbox || {}).length;
+    })).toBe(0);
   });
 
   test('keeps sidebar and content inside tablet and compact desktop viewports', async ({ chatPage, mockAgent }) => {
@@ -721,8 +856,8 @@ test.describe('Work Center responsive UI', () => {
   });
 
   test('uses one composer and changes wire target only after an explicit target choice', async ({ chatPage, mockAgent }) => {
-    await openWorkCenter(chatPage, mockAgent);
-    const select = chatPage.locator('.work-center-card').click();
+    await openWorkCenter(chatPage, mockAgent, [OPEN_ITEM, GENERATION_ITEM]);
+    const select = chatPage.locator('.work-center-card', { hasText: OPEN_ITEM.title }).click();
     const getRequest = await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
     await select;
     expect(getRequest.op).toBe('get');
@@ -775,6 +910,78 @@ test.describe('Work Center responsive UI', () => {
     });
     await expect(workItemComposer).toHaveValue('');
 
+    await workItemComposer.fill('Recover this request after its staged attachment expires');
+    await conversation.locator('.work-center-item-message-input input[type="file"]').setInputFiles({
+      name: 'expired-note.txt', mimeType: 'text/plain',
+      buffer: Buffer.from('expired staged attachment'),
+    });
+    await expect(conversation.locator('.work-center-message-draft-attachments'))
+      .toContainText('expired-note.txt');
+    const expiredAttemptPromise = mockAgent.__workCenterTransport.next();
+    await conversation.locator('.send-btn').click();
+    const expiredAttempt = await expiredAttemptPromise;
+    expect(expiredAttempt.op).toBe('post_work_item_message');
+    const expiredClientMessageId = expiredAttempt.payload.clientMessageId;
+    const expiredFileId = expiredAttempt.payload.attachments[0].fileId;
+    expect(expiredClientMessageId).toEqual(expect.any(String));
+    await mockAgent.__workCenterTransport.reject(
+      expiredAttempt, 'WorkItem attachment expired; upload it again',
+    );
+    await expect(conversation.locator('.work-center-error'))
+      .toContainText('WorkItem attachment expired; upload it again');
+    const pendingActions = conversation.locator('.work-center-stale-target', {
+      hasText: 'An unconfirmed request is locked to its original identity.',
+    });
+    await expect(pendingActions).toBeVisible();
+    await expect(pendingActions.getByText('Replace attachments')).toBeVisible();
+    await expect(pendingActions.getByRole('button', { name: 'Discard pending request' })).toBeVisible();
+    await expect(workItemComposer).toBeDisabled();
+
+    await pendingActions.locator('input[type="file"]').setInputFiles({
+      name: 'replacement-note.txt', mimeType: 'text/plain',
+      buffer: Buffer.from('replacement staged attachment'),
+    });
+    await expect(conversation.locator('.work-center-message-draft-attachments'))
+      .toContainText('replacement-note.txt');
+    const retryAttemptPromise = mockAgent.__workCenterTransport.next();
+    await conversation.locator('.send-btn').click();
+    const retryAttempt = await retryAttemptPromise;
+    expect(retryAttempt.op).toBe('post_work_item_message');
+    expect(retryAttempt.payload).toMatchObject({
+      id: OPEN_ITEM.id,
+      clientMessageId: expiredClientMessageId,
+      text: 'Recover this request after its staged attachment expires',
+      target: { kind: 'coordinator' },
+      revision: 1,
+      planRevision: 2,
+      ledgerRevision: 4,
+      coordinatorRevision: 0,
+    });
+    expect(retryAttempt.payload.attachments[0].fileId).not.toBe(expiredFileId);
+    expect(retryAttempt.payload.attachments[0].name).toBe('replacement-note.txt');
+    await mockAgent.__workCenterTransport.resolve(retryAttempt, {
+      accepted: true, turnId: 'turn-replaced-attachment',
+    });
+    await expect(pendingActions).toHaveCount(0);
+    await expect(workItemComposer).toBeEnabled();
+    await expect(workItemComposer).toHaveValue('');
+
+    await workItemComposer.fill('Discard this pending request but keep the editable text');
+    const discardAttemptPromise = mockAgent.__workCenterTransport.next();
+    await conversation.locator('.send-btn').click();
+    const discardAttempt = await discardAttemptPromise;
+    expect(discardAttempt.payload.clientMessageId).not.toBe(expiredClientMessageId);
+    await mockAgent.__workCenterTransport.reject(discardAttempt, 'Response was lost');
+    await expect(pendingActions).toBeVisible();
+    await pendingActions.getByRole('button', { name: 'Discard pending request' }).click();
+    await expect(pendingActions).toHaveCount(0);
+    await expect(workItemComposer).toBeEnabled();
+    await expect(workItemComposer)
+      .toHaveValue('Discard this pending request but keep the editable text');
+    await workItemComposer.fill('Discarded request is editable again');
+    await expect(workItemComposer).toHaveValue('Discarded request is editable again');
+    await workItemComposer.fill('');
+
     await action.locator('.work-center-action-summary').click();
     const actionDetail = chatPage.locator('.work-center-action-detail-pane');
     await expect(actionDetail.locator('.work-center-action-message')).toContainText('Updated the existing layout styles');
@@ -812,7 +1019,7 @@ test.describe('Work Center responsive UI', () => {
     await expect(actionDetail.locator('.work-center-action-message', { hasText: 'Live AI response from the active Run.' })).toHaveCount(1);
 
     await actionDetail.getByRole('button', { name: 'Send to this Action' }).click();
-    await expect(target).toHaveValue('action:action-1');
+    await expect(target).toHaveValue('action:action-1:1');
     await expect(workItemComposer).toBeFocused();
     await workItemComposer.fill('Keep the current implementation\nand verify the narrow layout');
     const actionInputResponse = (async () => {
@@ -824,7 +1031,7 @@ test.describe('Work Center responsive UI', () => {
             ...OPEN_ITEM_DETAIL,
             actions: [{ ...OPEN_ITEM_DETAIL.actions[0], status: 'running' }],
           },
-          list: { items: [OPEN_ITEM], watcher: { enabled: true } },
+          list: { items: [OPEN_ITEM, GENERATION_ITEM], watcher: { enabled: true } },
           get: OPEN_ITEM_DETAIL,
         }));
       }
@@ -906,12 +1113,12 @@ test.describe('Work Center responsive UI', () => {
       (await respondByOperation(mockAgent, {
         get: terminalDetail,
         get_action_messages: terminalPage,
-        list: { items: [terminalDetail], watcher: { enabled: true } },
+        list: { items: [terminalDetail, GENERATION_ITEM], watcher: { enabled: true } },
       })).op,
       (await respondByOperation(mockAgent, {
         get: terminalDetail,
         get_action_messages: terminalPage,
-        list: { items: [terminalDetail], watcher: { enabled: true } },
+        list: { items: [terminalDetail, GENERATION_ITEM], watcher: { enabled: true } },
       })).op,
     ];
     await expect(actionDetail.locator('.work-center-action-message', { hasText: 'FINAL REPLY' })).toHaveCount(1);
@@ -938,6 +1145,82 @@ test.describe('Work Center responsive UI', () => {
       cachedMessages: ['FINAL REPLY'],
       nextCursor: null,
     });
+
+    await chatPage.locator('.work-center-detail-close').click();
+    const openFailed = chatPage.locator('.work-center-card', { hasText: GENERATION_ITEM.title }).click();
+    await respondToWorkCenterOp(mockAgent, 'get', GENERATION_ITEM_DETAIL, [OPEN_ITEM, GENERATION_ITEM]);
+    await openFailed;
+    const failedConversation = chatPage.locator('.work-center-conversation');
+    const failedTarget = failedConversation.getByTestId('work-center-composer-target');
+    const failedComposer = failedConversation.locator('textarea');
+    await chatPage.locator('.work-center-action-summary').click();
+    await chatPage.locator('.work-center-action-detail-pane')
+      .getByRole('button', { name: 'Send to this Action' }).click();
+    await expect(failedTarget).toHaveValue('action:action-generation:1');
+    await failedComposer.fill('Keep this draft bound to Action generation one.');
+    await chatPage.locator('.work-center-detail-close').click();
+    const reopenDone = chatPage.locator('.work-center-card', { hasText: OPEN_ITEM.title }).click();
+    await respondToWorkCenterOp(mockAgent, 'get', terminalDetail, [OPEN_ITEM, GENERATION_ITEM]);
+    await reopenDone;
+    mockAgent.send({
+      type: 'work_center_event',
+      event: {
+        type: 'action.retried',
+        actionId: 'action-generation',
+        workItem: {
+          ...GENERATION_ITEM,
+          revision: 2,
+          currentActionId: 'action-generation',
+          updatedAt: Number(GENERATION_ITEM.updatedAt) + 1,
+          actionStats: [{ ...GENERATION_ITEM_DETAIL.actions[0], generation: 2, status: 'ready' }],
+        },
+      },
+    });
+    await chatPage.locator('.work-center-detail-close').click();
+    const generationTwoFailedDetail = {
+      ...GENERATION_ITEM_DETAIL,
+      revision: 2,
+      actions: [{ ...GENERATION_ITEM_DETAIL.actions[0], generation: 2, status: 'ready' }],
+    };
+    const returnToFailed = chatPage.locator('.work-center-card', { hasText: GENERATION_ITEM.title }).click();
+    await respondUntilOperation(mockAgent, 'get', {
+      get: generationTwoFailedDetail,
+      get_action_messages: {
+        actionId: 'action-generation', generation: 2, messages: [], nextCursor: null, total: 0,
+      },
+    });
+    await returnToFailed;
+    await expect(failedTarget).toHaveValue('action:action-generation:1');
+    await expect(chatPage.locator('.work-center-stale-target')).toBeVisible();
+    await expect(failedComposer).toHaveValue('Keep this draft bound to Action generation one.');
+    await expect(failedConversation.locator('.send-btn')).toBeDisabled();
+    await failedTarget.selectOption('action:action-generation:2');
+    await expect(chatPage.locator('.work-center-stale-target')).toHaveCount(0);
+    await expect(failedConversation.locator('.send-btn')).toBeEnabled();
+    const confirmedGenerationResponse = (async () => {
+      const operations = [];
+      while (!operations.some(request => request.op === 'post_work_item_message')
+        || !operations.some(request => request.op === 'list')) {
+        operations.push(await respondByOperation(mockAgent, {
+          post_work_item_message: {
+            ...generationTwoFailedDetail,
+            revision: 3,
+            actions: [{ ...GENERATION_ITEM_DETAIL.actions[0], generation: 3, status: 'ready' }],
+          },
+          list: { items: [OPEN_ITEM, { ...GENERATION_ITEM, revision: 3 }], watcher: { enabled: true } },
+          get: generationTwoFailedDetail,
+        }));
+      }
+      return operations;
+    })();
+    await failedConversation.locator('.send-btn').click();
+    const confirmedGenerationOps = await confirmedGenerationResponse;
+    expect(confirmedGenerationOps.find(request => request.op === 'post_work_item_message').payload)
+      .toMatchObject({
+        id: GENERATION_ITEM.id,
+        target: { kind: 'action', actionId: 'action-generation', generation: 2 },
+        text: 'Keep this draft bound to Action generation one.',
+      });
   });
 
   test('restores the Work Item and top ContentRef from the URL and browser back', async ({ chatPage, mockAgent }) => {
@@ -1070,7 +1353,7 @@ test.describe('Work Center responsive UI', () => {
     await expect(actionDetail.locator('textarea')).toHaveCount(0);
     await expect(target).toHaveValue('coordinator');
     await actionDetail.getByRole('button', { name: 'Send to this Action' }).click();
-    await expect(target).toHaveValue('action:action-1');
+    await expect(target).toHaveValue('action:action-1:1');
     await expect(composer).toHaveAttribute('placeholder', 'Message Make the Work Center layout responsive from the Conversation composer');
 
     await composer.fill('Use PostgreSQL and explain the migration tradeoff.');
@@ -1983,7 +2266,7 @@ test.describe('Work Center responsive UI', () => {
     await expect(composer).toBeVisible();
     await expect(composer).toHaveValue('Retry with the attached evidence');
     await expect(conversation.locator('.work-center-message-draft-attachments')).toContainText('follow-up.txt');
-    await expect(chatPage.getByTestId('work-center-composer-target')).toHaveValue('action:action-1');
+    await expect(chatPage.getByTestId('work-center-composer-target')).toHaveValue('action:action-1:1');
 
     const inputRequests = (async () => {
       const operations = [];

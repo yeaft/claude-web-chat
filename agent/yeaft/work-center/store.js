@@ -1282,6 +1282,43 @@ export class WorkItemStore {
     return this.db.isTransaction ? enqueue() : withTransaction(this.db, enqueue);
   }
 
+  claimCoordinatorTurn(workItemId, turnId, owner, leaseMs = 60_000) {
+    return withTransaction(this.db, () => {
+      const now = this.now();
+      const row = this.db.prepare(`SELECT * FROM coordinator_mailbox_entries
+        WHERE work_item_id = ? AND json_extract(payload, '$.turnId') = ?
+        AND (status = 'pending' OR (status = 'claimed' AND lease_expires_at <= ?))`).get(
+        workItemId, turnId, now,
+      );
+      if (!row) return null;
+      const changed = this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'claimed',
+        claim_owner = ?, claim_epoch = claim_epoch + 1, claimed_at = ?, lease_expires_at = ?,
+        updated_at = ? WHERE id = ? AND claim_epoch = ?
+        AND (status = 'pending' OR (status = 'claimed' AND lease_expires_at <= ?))`).run(
+        owner, now, now + leaseMs, now, row.id, row.claim_epoch, now,
+      );
+      if (Number(changed.changes) !== 1) return null;
+      const claimed = this.db.prepare('SELECT * FROM coordinator_mailbox_entries WHERE id = ?').get(row.id);
+      const providerChanged = this.db.prepare(`UPDATE coordinator_provider_turns SET claim_owner = ?,
+        claim_epoch = ?, updated_at = ? WHERE coordinator_turn_id = ?
+        AND status IN ('prepared', 'responded')`).run(
+        owner, claimed.claim_epoch, now, turnId,
+      );
+      const providerCount = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM coordinator_provider_turns
+        WHERE coordinator_turn_id = ? AND status IN ('prepared', 'responded')`).get(turnId)?.count) || 0;
+      if (providerCount !== Number(providerChanged.changes)) {
+        throw new Error('Coordinator provider turn cannot transfer an in-flight dispatch');
+      }
+      return {
+        mailboxId: claimed.id,
+        ownerBootId: owner,
+        claimEpoch: Number(claimed.claim_epoch),
+        leaseExpiresAt: Number(claimed.lease_expires_at),
+        payload: parseJson(claimed.payload, {}),
+      };
+    });
+  }
+
   claimCoordinatorMailbox(workItemId, owner, leaseMs = 60_000) {
     return withTransaction(this.db, () => {
       const now = this.now();
@@ -1301,6 +1338,14 @@ export class WorkItemStore {
     });
   }
 
+  renewCoordinatorMailbox(id, owner, claimEpoch, leaseMs = 60_000) {
+    const now = this.now();
+    const changed = this.db.prepare(`UPDATE coordinator_mailbox_entries SET lease_expires_at = ?,
+      updated_at = ? WHERE id = ? AND status = 'claimed' AND claim_owner = ? AND claim_epoch = ?
+      AND lease_expires_at > ?`).run(now + leaseMs, now, id, owner, claimEpoch, now);
+    return Number(changed.changes) === 1;
+  }
+
   ackCoordinatorMailbox(id, owner, claimEpoch) {
     const now = this.now();
     const changed = this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'acked',
@@ -1316,8 +1361,10 @@ export class WorkItemStore {
       WHERE status = 'claimed' AND lease_expires_at <= ?`).run(now, now).changes);
   }
 
-  prepareCoordinatorProviderTurn(workItemId, coordinatorTurnId, attemptNumber, requestBody) {
+  prepareCoordinatorProviderTurn(workItemId, coordinatorTurnId, attemptNumber, requestBody, claim = {}) {
     return withTransaction(this.db, () => {
+      const mailbox = this.#activeCoordinatorMailboxClaim(coordinatorTurnId, claim);
+      if (!mailbox || mailbox.work_item_id !== workItemId) return null;
       const existing = this.db.prepare(`SELECT * FROM coordinator_provider_turns
         WHERE coordinator_turn_id = ? AND attempt_number = ?`).get(coordinatorTurnId, attemptNumber);
       const requestHash = createHash('sha256').update(stableJson(requestBody), 'utf8').digest('hex');
@@ -1325,18 +1372,30 @@ export class WorkItemStore {
         if (existing.request_hash !== requestHash) {
           throw new Error('Prepared Coordinator provider request changed before dispatch');
         }
+        if (existing.claim_owner !== claim.ownerBootId
+            || Number(existing.claim_epoch) !== Number(claim.claimEpoch)) return null;
         return this.#mapCoordinatorProviderTurn(existing);
       }
       const now = this.now();
       const id = durableId('coordinator-provider-turn');
       this.db.prepare(`INSERT INTO coordinator_provider_turns
         (id, work_item_id, coordinator_turn_id, attempt_number, status, request_body, request_hash,
-         prepared_at, updated_at) VALUES (?, ?, ?, ?, 'prepared', ?, ?, ?, ?)`).run(
-        id, workItemId, coordinatorTurnId, attemptNumber,
-        stringify(requestBody), requestHash, now, now,
+         claim_owner, claim_epoch, prepared_at, updated_at)
+        VALUES (?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?)`).run(
+        id, workItemId, coordinatorTurnId, attemptNumber, stringify(requestBody), requestHash,
+        claim.ownerBootId, claim.claimEpoch, now, now,
       );
       return this.getCoordinatorProviderTurn(id);
     });
+  }
+
+  #activeCoordinatorMailboxClaim(coordinatorTurnId, claim = {}) {
+    if (!claim.mailboxId || !claim.ownerBootId || !Number.isInteger(Number(claim.claimEpoch))) return null;
+    return this.db.prepare(`SELECT * FROM coordinator_mailbox_entries WHERE id = ? AND status = 'claimed'
+      AND claim_owner = ? AND claim_epoch = ? AND lease_expires_at > ?
+      AND json_extract(payload, '$.turnId') = ?`).get(
+      claim.mailboxId, claim.ownerBootId, Number(claim.claimEpoch), this.now(), coordinatorTurnId,
+    );
   }
 
   #mapCoordinatorProviderTurn(row) {
@@ -1351,6 +1410,8 @@ export class WorkItemStore {
       response: parseJson(row.response, null),
       responseHash: row.response_hash || null,
       error: row.error || null,
+      claimOwner: row.claim_owner || null,
+      claimEpoch: Number(row.claim_epoch) || 0,
     };
   }
 
@@ -1359,31 +1420,63 @@ export class WorkItemStore {
     return row ? this.#mapCoordinatorProviderTurn(row) : null;
   }
 
-  dispatchCoordinatorProviderTurn(id) {
-    const existing = this.getCoordinatorProviderTurn(id);
-    if (existing?.status === 'dispatching') return existing;
-    const now = this.now();
-    const changed = this.db.prepare(`UPDATE coordinator_provider_turns SET status = 'dispatching',
-      dispatched_at = ?, updated_at = ? WHERE id = ? AND status = 'prepared'`).run(now, now, id);
-    return Number(changed.changes) === 1 ? this.getCoordinatorProviderTurn(id) : null;
+  dispatchCoordinatorProviderTurn(id, claim = {}) {
+    return withTransaction(this.db, () => {
+      const existing = this.getCoordinatorProviderTurn(id);
+      if (!existing || !this.#activeCoordinatorMailboxClaim(existing.coordinatorTurnId, claim)) return null;
+      const now = this.now();
+      const changed = this.db.prepare(`UPDATE coordinator_provider_turns SET status = 'dispatching',
+        dispatched_at = ?, updated_at = ? WHERE id = ? AND status = 'prepared'
+        AND claim_owner = ? AND claim_epoch = ?`).run(
+        now, now, id, claim.ownerBootId, Number(claim.claimEpoch),
+      );
+      return Number(changed.changes) === 1 ? this.getCoordinatorProviderTurn(id) : null;
+    });
   }
 
-  respondCoordinatorProviderTurn(id, requestHash, response) {
-    const now = this.now();
-    const responseHash = createHash('sha256').update(stableJson(response), 'utf8').digest('hex');
-    const changed = this.db.prepare(`UPDATE coordinator_provider_turns SET status = 'responded',
-      response = ?, response_hash = ?, responded_at = ?, updated_at = ?
-      WHERE id = ? AND status = 'dispatching' AND request_hash = ?`).run(
-      stringify(response), responseHash, now, now, id, requestHash,
-    );
-    return Number(changed.changes) === 1 ? this.getCoordinatorProviderTurn(id) : null;
+  respondCoordinatorProviderTurn(id, requestHash, response, claim = {}) {
+    return withTransaction(this.db, () => {
+      const existing = this.getCoordinatorProviderTurn(id);
+      if (!existing || !this.#activeCoordinatorMailboxClaim(existing.coordinatorTurnId, claim)) return null;
+      const now = this.now();
+      const responseHash = createHash('sha256').update(stableJson(response), 'utf8').digest('hex');
+      const changed = this.db.prepare(`UPDATE coordinator_provider_turns SET status = 'responded',
+        response = ?, response_hash = ?, responded_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'dispatching' AND request_hash = ?
+        AND claim_owner = ? AND claim_epoch = ?`).run(
+        stringify(response), responseHash, now, now, id, requestHash,
+        claim.ownerBootId, Number(claim.claimEpoch),
+      );
+      return Number(changed.changes) === 1 ? this.getCoordinatorProviderTurn(id) : null;
+    });
+  }
+
+  rejectCoordinatorProviderTurn(id, error, claim = {}) {
+    return withTransaction(this.db, () => {
+      const existing = this.getCoordinatorProviderTurn(id);
+      if (!existing || !this.#activeCoordinatorMailboxClaim(existing.coordinatorTurnId, claim)) return null;
+      const now = this.now();
+      const changed = this.db.prepare(`UPDATE coordinator_provider_turns SET status = 'cancelled',
+        error = ?, updated_at = ? WHERE id = ? AND status = 'responded'
+        AND claim_owner = ? AND claim_epoch = ?`).run(
+        String(error?.message || error || 'Coordinator provider response was rejected').slice(0, 8_000),
+        now, id, claim.ownerBootId, Number(claim.claimEpoch),
+      );
+      return Number(changed.changes) === 1 ? this.getCoordinatorProviderTurn(id) : null;
+    });
   }
 
   recoverCoordinatorProviderTurns() {
     const now = this.now();
     return Number(this.db.prepare(`UPDATE coordinator_provider_turns SET status = 'unknown',
       error = 'Coordinator provider dispatch outcome is unknown after Agent restart', updated_at = ?
-      WHERE status = 'dispatching'`).run(now).changes);
+      WHERE status = 'dispatching' AND NOT EXISTS (
+        SELECT 1 FROM coordinator_mailbox_entries mailbox
+        WHERE json_extract(mailbox.payload, '$.turnId') = coordinator_provider_turns.coordinator_turn_id
+          AND mailbox.status = 'claimed' AND mailbox.claim_owner = coordinator_provider_turns.claim_owner
+          AND mailbox.claim_epoch = coordinator_provider_turns.claim_epoch
+          AND mailbox.lease_expires_at > ?
+      )`).run(now, now).changes);
   }
 
   createOperation(input = {}) {
@@ -1467,16 +1560,42 @@ export class WorkItemStore {
     return rows.some(row => !this.operationSafeToProceed(row.idempotency_key));
   }
 
+  createAndClaimOperation(input = {}, ownerBootId, leaseEpoch, automatic = true) {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(input.runId, ownerBootId, leaseEpoch, true);
+      if (!active || active.work_item_id !== input.workItemId || active.action_id !== input.actionId) return null;
+      const operation = this.createOperation(input);
+      if (!operation
+          || operation.workItemId !== input.workItemId
+          || operation.actionId !== input.actionId
+          || operation.runId !== input.runId
+          || operation.operationType !== (input.operationType || 'unknown')
+          || operation.executionStatus !== 'not_started') return null;
+      if (automatic && operation.replayPolicy !== 'safe') return null;
+      const now = this.now();
+      const changed = this.db.prepare(`UPDATE operations SET execution_status = 'running',
+        execution_epoch = execution_epoch + 1, owner_boot_id = ?, owner_lease_epoch = ?,
+        claimed_at = ?, updated_at = ? WHERE idempotency_key = ? AND execution_status = 'not_started'
+        AND work_item_id = ? AND action_id = ? AND run_id = ?`).run(
+        ownerBootId, leaseEpoch, now, now, input.idempotencyKey,
+        input.workItemId, input.actionId, input.runId,
+      );
+      return Number(changed.changes) === 1 ? this.getOperationByKey(input.idempotencyKey) : null;
+    });
+  }
+
   claimOperation(idempotencyKey, ownerBootId, leaseEpoch, automatic = true) {
     return withTransaction(this.db, () => {
       const operation = this.getOperationByKey(idempotencyKey);
       if (!operation || operation.executionStatus !== 'not_started') return null;
+      if (!this.#activeRunRow(operation.runId, ownerBootId, leaseEpoch, true)) return null;
       if (automatic && operation.replayPolicy !== 'safe') return null;
       const now = this.now();
       const changed = this.db.prepare(`UPDATE operations SET execution_status = 'running',
-        owner_boot_id = ?, owner_lease_epoch = ?, claimed_at = ?, updated_at = ?
-        WHERE idempotency_key = ? AND execution_status = 'not_started'`).run(
-        ownerBootId, leaseEpoch, now, now, idempotencyKey,
+        execution_epoch = execution_epoch + 1, owner_boot_id = ?, owner_lease_epoch = ?,
+        claimed_at = ?, updated_at = ? WHERE idempotency_key = ? AND execution_status = 'not_started'
+        AND run_id = ?`).run(
+        ownerBootId, leaseEpoch, now, now, idempotencyKey, operation.runId,
       );
       return Number(changed.changes) === 1 ? this.getOperationByKey(idempotencyKey) : null;
     });
@@ -1484,23 +1603,59 @@ export class WorkItemStore {
 
   completeOperation(idempotencyKey, ownerBootId, leaseEpoch, effectStatus, result = null) {
     if (!['applied', 'not_applied', 'failed_no_effect', 'unknown'].includes(effectStatus)) return false;
-    const now = this.now();
-    const changed = this.db.prepare(`UPDATE operations SET effect_status = ?, execution_status = ?,
-      effect_cutoff = ?, result = ?, completed_at = ?, updated_at = ? WHERE idempotency_key = ?
-      AND execution_status = 'running' AND owner_boot_id = ? AND owner_lease_epoch = ?`).run(
-      effectStatus,
-      'quiescent',
-      stringify({ status: 'current', closureType: 'quiescent', closedAt: now }),
-      stringify(result), now, now, idempotencyKey, ownerBootId, leaseEpoch,
-    );
-    return Number(changed.changes) === 1;
+    return withTransaction(this.db, () => {
+      const operation = this.getOperationByKey(idempotencyKey);
+      if (!operation || operation.executionStatus !== 'running'
+          || operation.payload == null) return false;
+      const ownerMatches = this.db.prepare(`SELECT 1 AS present FROM operations
+        WHERE idempotency_key = ? AND execution_status = 'running'
+          AND owner_boot_id = ? AND owner_lease_epoch = ?`).get(
+        idempotencyKey, ownerBootId, leaseEpoch,
+      );
+      if (!ownerMatches) return false;
+      const now = this.now();
+      const active = this.#activeRunRow(operation.runId, ownerBootId, leaseEpoch, true);
+      if (!active || active.work_item_id !== operation.workItemId
+          || active.action_id !== operation.actionId) {
+        this.db.prepare(`UPDATE operations SET effect_status = 'unknown',
+          execution_status = 'hazardous_orphan', effect_cutoff = ?, result = ?, completed_at = ?,
+          updated_at = ? WHERE idempotency_key = ? AND execution_status = 'running'
+          AND owner_boot_id = ? AND owner_lease_epoch = ?`).run(
+          stringify({ status: 'stale', closureType: 'late_completion', closedAt: now }),
+          stringify({ attemptedEffectStatus: effectStatus, reportedResult: result }),
+          now, now, idempotencyKey, ownerBootId, leaseEpoch,
+        );
+        return false;
+      }
+      const changed = this.db.prepare(`UPDATE operations SET effect_status = ?, execution_status = ?,
+        effect_cutoff = ?, result = ?, completed_at = ?, updated_at = ? WHERE idempotency_key = ?
+        AND execution_status = 'running' AND owner_boot_id = ? AND owner_lease_epoch = ?`).run(
+        effectStatus,
+        'quiescent',
+        stringify({ status: 'current', closureType: 'quiescent', closedAt: now }),
+        stringify(result), now, now, idempotencyKey, ownerBootId, leaseEpoch,
+      );
+      return Number(changed.changes) === 1;
+    });
   }
 
   recoverOperations() {
-    const now = this.now();
-    return Number(this.db.prepare(`UPDATE operations SET execution_status = 'hazardous_orphan',
-      effect_status = CASE WHEN effect_status = 'pending' THEN 'unknown' ELSE effect_status END,
-      updated_at = ? WHERE execution_status IN ('running', 'cancel_requested')`).run(now).changes);
+    return withTransaction(this.db, () => {
+      const now = this.now();
+      const unstarted = this.db.prepare(`UPDATE operations SET effect_status = 'failed_no_effect',
+        execution_status = 'quiescent', effect_cutoff = ?, result = ?, completed_at = ?, updated_at = ?
+        WHERE effect_status = 'pending' AND execution_status = 'not_started'`).run(
+        stringify({ status: 'current', closureType: 'recovered_before_dispatch', closedAt: now }),
+        stringify({ recovered: true, reason: 'Operation was never claimed before restart' }),
+        now, now,
+      );
+      const hazardous = this.db.prepare(`UPDATE operations SET execution_status = 'hazardous_orphan',
+        effect_status = CASE WHEN effect_status = 'pending' THEN 'unknown' ELSE effect_status END,
+        effect_cutoff = ?, updated_at = ? WHERE execution_status IN ('running', 'cancel_requested')`).run(
+        stringify({ status: 'stale', closureType: 'restart_unknown', closedAt: now }), now,
+      );
+      return Number(unstarted.changes) + Number(hazardous.changes);
+    });
   }
 
   appendEvent(workItemId, type, data = {}, refs = {}) {
@@ -1519,6 +1674,17 @@ export class WorkItemStore {
       this.now(),
     );
     return Number(result.lastInsertRowid);
+  }
+
+  getCoordinatorClientMessageReceipt(workItemId, clientMessageId) {
+    if (typeof clientMessageId !== 'string' || !clientMessageId) return null;
+    const sourceKey = `client:message:${workItemId}:${clientMessageId}`;
+    const actionReceipt = this.db.prepare('SELECT action_id FROM action_entries WHERE source_key = ?')
+      .get(sourceKey);
+    if (actionReceipt) throw new Error('clientMessageId already belongs to an Action message');
+    const row = this.db.prepare(`SELECT payload FROM coordinator_mailbox_entries
+      WHERE work_item_id = ? AND source_key = ?`).get(workItemId, sourceKey);
+    return row ? parseJson(row.payload, {}) : null;
   }
 
   hasActionInputClientMessage(workItemId, actionId, clientMessageId) {
@@ -1651,6 +1817,7 @@ export class WorkItemStore {
       }
       const eventId = this.appendEvent(id, 'action.input_added', {
         inputId,
+        clientMessageId,
         text: input,
         attachments: projectedAttachments,
       }, { actionId: action.id, runId: eventRunId, actionGeneration: eventGeneration });
@@ -2804,23 +2971,23 @@ export class WorkItemStore {
   getRecoverableCoordinatorTurns() {
     return this.db.prepare(`SELECT w.id AS work_item_id, c.payload FROM coordinator_mailbox_entries c
       JOIN work_items w ON w.id = c.work_item_id
-      WHERE c.status = 'pending'
+      WHERE c.status IN ('pending', 'claimed')
         AND EXISTS (SELECT 1 FROM json_each(w.messages) message
           WHERE json_extract(message.value, '$.turnId') = json_extract(c.payload, '$.turnId')
             AND json_extract(message.value, '$.role') = 'assistant'
             AND json_extract(message.value, '$.status') = 'thinking')
         AND EXISTS (SELECT 1 FROM coordinator_provider_turns p
           WHERE p.coordinator_turn_id = json_extract(c.payload, '$.turnId')
-            AND p.status IN ('prepared', 'responded'))
+            AND p.status IN ('prepared', 'dispatching', 'responded'))
       ORDER BY c.created_at`).all().map(row => ({
         workItemId: row.work_item_id,
         ...parseJson(row.payload, {}),
       }));
   }
 
-  resumeCoordinatorTurn(workItemId, turnId) {
+  resumeCoordinatorTurn(workItemId, turnId, claim = {}) {
     const detail = this.getWorkItemDetail(workItemId);
-    if (!detail) return null;
+    if (!detail || !this.#activeCoordinatorMailboxClaim(turnId, claim)) return null;
     const assistant = [...(detail.messages || [])].reverse().find(message => (
       message.turnId === turnId && message.role === 'assistant' && message.status === 'thinking'
     ));
@@ -2839,6 +3006,28 @@ export class WorkItemStore {
           (detail.actions || []).filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status)),
         ),
         recovery: assistant.recovery ? { ...assistant.recovery } : null,
+        claim: {
+          mailboxId: claim.mailboxId,
+          ownerBootId: claim.ownerBootId,
+          claimEpoch: Number(claim.claimEpoch),
+        },
+      },
+    };
+  }
+
+  claimStartedCoordinatorTurn(started, ownerBootId, leaseMs = 60_000) {
+    if (!started?.turnId || !started?.detail?.id) return null;
+    const claim = this.claimCoordinatorTurn(started.detail.id, started.turnId, ownerBootId, leaseMs);
+    if (!claim) return null;
+    return {
+      ...started,
+      fence: {
+        ...started.fence,
+        claim: {
+          mailboxId: claim.mailboxId,
+          ownerBootId: claim.ownerBootId,
+          claimEpoch: claim.claimEpoch,
+        },
       },
     };
   }
@@ -2954,6 +3143,7 @@ export class WorkItemStore {
       if (Number(changed.changes) !== 1) throw new Error('Coordinator turn lost its revision fence');
       this.appendEvent(id, automaticRecovery ? 'coordinator.recovery_started' : 'coordinator.turn_started', {
         turnId,
+        clientMessageId,
         status: 'thinking',
         coordinatorRevision,
         addedAttachmentCount: projectedAttachments.length,
@@ -2981,6 +3171,8 @@ export class WorkItemStore {
 
   completeCoordinatorTurn(turnId, result, expected = {}) {
     return withTransaction(this.db, () => {
+      const claim = expected.claim || {};
+      if (!this.#activeCoordinatorMailboxClaim(turnId, claim)) return null;
       const workItem = this.getWorkItem(expected.workItemId);
       if (!workItem) return null;
       if (workItem.revision !== expected.revision
@@ -3184,11 +3376,8 @@ export class WorkItemStore {
         messages[assistantIndex],
         `coordinator:turn:${turnId}:assistant`,
       );
-      const mailbox = this.db.prepare(`SELECT * FROM coordinator_mailbox_entries
-        WHERE json_extract(payload, '$.turnId') = ?`).get(turnId);
-      if (mailbox && mailbox.status !== 'acked') {
-        this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'acked', acked_at = ?,
-          updated_at = ? WHERE id = ?`).run(now, now, mailbox.id);
+      if (!this.ackCoordinatorMailbox(claim.mailboxId, claim.ownerBootId, claim.claimEpoch)) {
+        throw new Error('Coordinator completion lost its mailbox claim');
       }
       const current = this.getWorkItem(workItem.id);
       const coordinatorRevision = current.coordinatorRevision + 1;
@@ -3220,6 +3409,11 @@ export class WorkItemStore {
 
   failCoordinatorTurn(turnId, error, expected = {}) {
     return withTransaction(this.db, () => {
+      const claim = expected.claim || {};
+      if (!this.#activeCoordinatorMailboxClaim(turnId, claim)) return null;
+      const responded = this.db.prepare(`SELECT 1 AS present FROM coordinator_provider_turns
+        WHERE coordinator_turn_id = ? AND status = 'responded'`).get(turnId);
+      if (responded) return null;
       const workItem = this.getWorkItem(expected.workItemId);
       if (!workItem || workItem.coordinatorRevision !== expected.coordinatorRevision) return null;
       const messages = [...(workItem.messages || [])];
@@ -3237,12 +3431,7 @@ export class WorkItemStore {
         messages[index],
         `coordinator:turn:${turnId}:assistant`,
       );
-      const mailbox = this.db.prepare(`SELECT * FROM coordinator_mailbox_entries
-        WHERE json_extract(payload, '$.turnId') = ?`).get(turnId);
-      if (mailbox && mailbox.status !== 'acked') {
-        this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'acked', acked_at = ?,
-          updated_at = ? WHERE id = ?`).run(now, now, mailbox.id);
-      }
+      if (!this.ackCoordinatorMailbox(claim.mailboxId, claim.ownerBootId, claim.claimEpoch)) return null;
       const changed = this.db.prepare(`UPDATE work_items SET messages = ?, coordinator_revision = coordinator_revision + 1,
         updated_at = ? WHERE id = ? AND coordinator_revision = ?`).run(
         stringify(messages), now, workItem.id, workItem.coordinatorRevision,

@@ -124,63 +124,52 @@ describe('Yeaft session-scoped model config', () => {
     expect(loadProjects(root)[1]).toEqual(expect.objectContaining({ name: 'Beta 2', sessionIds: ['session-b'] }));
     deleteProject(root, beta.id);
     expect(loadProjects(root).map(project => project.id)).toEqual([alpha.id]);
+  });
+
+
+  it('uses the user-level Session config for reads, writes, and metadata updates', () => {
+    {
+      const root = makeDir();
+      const workDir = tempRoot('yeaft-session-config-workdir-');
+      const { projectYeaftDir, sessionId } = createProjectSessionArtifact(root, workDir, 'session-workdir-first');
+
+      writeFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'project/claude-sonnet', modelEffort: 'high' }, null, 2)}\n`);
+      writeFileSync(join(root, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'agent/gpt-5', modelEffort: 'low' }, null, 2)}\n`);
+
+      const config = loadSessionConfig(root, sessionId);
+
+      expect(config).toEqual({ model: 'agent/gpt-5', modelEffort: 'low' });
+    }
 
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date('2026-07-29T10:00:00.000Z'));
-      const sessionId = 'session-metadata-time';
-      createSession(sessionsRoot(root), {
-        id: sessionId,
-        name: 'Original',
-        roster: [],
-        defaultVpId: null,
-      }).close();
-      expect(snapshotSessions(root).find(session => session.id === sessionId)?.metadataUpdatedAt)
+      const root = makeDir();
+      const workDir = tempRoot('yeaft-session-config-workdir-');
+      const { projectYeaftDir, sessionId } = createProjectSessionArtifact(root, workDir, 'session-workdir-update');
+      writeFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'project/stale', modelEffort: 'low' }, null, 2)}\n`);
+      expect(snapshotSessions(root).find(session => session.id === sessionId).metadataUpdatedAt)
         .toBe('2026-07-29T10:00:00.000Z');
 
       vi.setSystemTime(new Date('2026-07-29T11:00:00.000Z'));
       renameSession(root, sessionId, 'Renamed');
-      expect(snapshotSessions(root).find(session => session.id === sessionId)?.metadataUpdatedAt)
+      expect(snapshotSessions(root).find(session => session.id === sessionId).metadataUpdatedAt)
         .toBe('2026-07-29T11:00:00.000Z');
 
       vi.setSystemTime(new Date('2026-07-29T12:00:00.000Z'));
-      updateSessionConfig(root, sessionId, { model: 'agent/gpt-5' });
-      expect(snapshotSessions(root).find(session => session.id === sessionId)?.metadataUpdatedAt)
+      const saved = updateSessionConfig(root, sessionId, { model: 'agent/claude-haiku', modelEffort: 'max' });
+
+      expect(saved).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
+      expect(loadSessionConfig(root, sessionId)).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
+      expect(JSON.parse(readFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), 'utf8')))
+        .toEqual({ model: 'project/stale', modelEffort: 'low' });
+      expect(JSON.parse(readFileSync(join(root, 'sessions', sessionId, 'config.json'), 'utf8')))
+        .toEqual({ model: 'agent/claude-haiku', modelEffort: 'max', modelSource: 'explicit' });
+      expect(snapshotSessions(root).find(session => session.id === sessionId).metadataUpdatedAt)
         .toBe('2026-07-29T12:00:00.000Z');
     } finally {
       vi.useRealTimers();
     }
-  });
-
-
-  it('ignores project .yeaft Session config and uses the user-level Session config', () => {
-    const root = makeDir();
-    const workDir = tempRoot('yeaft-session-config-workdir-');
-    const { projectYeaftDir, sessionId } = createProjectSessionArtifact(root, workDir, 'session-workdir-first');
-
-    writeFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'project/claude-sonnet', modelEffort: 'high' }, null, 2)}\n`);
-    writeFileSync(join(root, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'agent/gpt-5', modelEffort: 'low' }, null, 2)}\n`);
-
-    const config = loadSessionConfig(root, sessionId);
-
-    expect(config).toEqual({ model: 'agent/gpt-5', modelEffort: 'low' });
-  });
-
-
-  it('writes Session config only to the user-level root', () => {
-    const root = makeDir();
-    const workDir = tempRoot('yeaft-session-config-workdir-');
-    const { projectYeaftDir, sessionId } = createProjectSessionArtifact(root, workDir, 'session-workdir-update');
-    writeFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'project/stale', modelEffort: 'low' }, null, 2)}\n`);
-
-    const saved = updateSessionConfig(root, sessionId, { model: 'agent/claude-haiku', modelEffort: 'max' });
-
-    expect(saved).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
-    expect(loadSessionConfig(root, sessionId)).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
-    expect(JSON.parse(readFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), 'utf8')))
-      .toEqual({ model: 'project/stale', modelEffort: 'low' });
-    expect(JSON.parse(readFileSync(join(root, 'sessions', sessionId, 'config.json'), 'utf8')))
-      .toEqual({ model: 'agent/claude-haiku', modelEffort: 'max', modelSource: 'explicit' });
   });
 
 

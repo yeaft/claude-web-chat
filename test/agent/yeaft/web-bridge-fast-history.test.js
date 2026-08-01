@@ -56,7 +56,14 @@ describe('Yeaft load-history first paint', () => {
     ctx.CONFIG = null;
   });
 
-  it('filters internal and model-only user-role rows in the visible-history fallback path', () => {
+  it('filters internal rows and uses a collision-resistant virtual conversation id', () => {
+    const firstConversationId = __testHooks.ensureYeaftConversationIdForTest();
+    __testHooks.setYeaftConversationIdForTest(null);
+    const secondConversationId = __testHooks.ensureYeaftConversationIdForTest();
+    expect(firstConversationId).toMatch(/^yeaft-[0-9a-f-]{36}$/);
+    expect(secondConversationId).toMatch(/^yeaft-[0-9a-f-]{36}$/);
+    expect(secondConversationId).not.toBe(firstConversationId);
+
     const hctx = {
       assistantTextParts: [],
       toolCallsAccum: [],
@@ -166,9 +173,7 @@ describe('Yeaft load-history first paint', () => {
       'visible a',
       'In docs, <task-result> is just prose',
     ]);
-  });
 
-  it('preserves Session message quotes in the history wire projection', () => {
     const quote = {
       id: 'm0001', role: 'assistant', author: 'Linus', content: 'Prior answer',
       todos: [{ content: 'Verify', status: 'completed' }],
@@ -176,7 +181,6 @@ describe('Yeaft load-history first paint', () => {
     const projected = __testHooks.projectVisibleHistoryChunkMessages([
       { id: 'm0002', role: 'user', content: 'Follow up', sessionId: 'session-fast', quote },
     ]);
-
     expect(projected[0]).toMatchObject({ id: 'm0002', quote });
   });
 
@@ -883,7 +887,7 @@ describe('Yeaft load-history first paint', () => {
     }
   });
 
-  it('keeps ready-session delta frames and roster metadata events canonical', async () => {
+  it('ready-session delta replay uses the same projected frame shape', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-delta-ready-'));
     try {
       const store = new ConversationStore(dir);
@@ -955,10 +959,11 @@ describe('Yeaft load-history first paint', () => {
       });
 
       vi.useFakeTimers();
+      const metadataDir = mkdtempSync(join(tmpdir(), 'yeaft-roster-metadata-'));
       try {
-        ctx.CONFIG = { yeaftDir: dir };
+        ctx.CONFIG = { yeaftDir: metadataDir };
         vi.setSystemTime(new Date('2026-07-29T10:00:00.000Z'));
-        createSession(join(dir, 'sessions'), {
+        createSession(join(metadataDir, 'sessions'), {
           id: 'session-roster',
           name: 'Roster',
           roster: ['omni'],
@@ -985,6 +990,7 @@ describe('Yeaft load-history first paint', () => {
         }
       } finally {
         vi.useRealTimers();
+        rmSync(metadataDir, { recursive: true, force: true });
       }
     } finally {
       __testSetSession(null);

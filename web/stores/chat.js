@@ -1,4 +1,12 @@
 import { useAuthStore } from './auth.js';
+import {
+  currentWorkCenterBrowserOwner,
+  isWorkCenterBrowserFenceCurrent,
+  readWorkCenterBrowserState,
+  subscribeWorkCenterBrowserOwner,
+  writeWorkCenterDrafts,
+  writeWorkCenterOutbox,
+} from './helpers/work-center-browser-state.js';
 import { setLocale, getLocale } from '../utils/i18n.js';
 
 // Helper modules
@@ -10,6 +18,19 @@ import * as convHelpers from './helpers/conversation.js';
 import * as sessionHelpers from './helpers/session.js';
 import * as watchdogHelpers from './helpers/watchdog.js';
 import * as yeaftViewHelpers from './helpers/yeaft-view.js';
+import {
+  clearYeaftConversationPromotion,
+  migrateYeaftConversationState,
+  pendingYeaftConversationPromotion,
+  rememberYeaftConversationPromotion,
+  retargetYeaftConversationPromotion,
+} from './helpers/yeaft-conversation-state.js';
+import {
+  isRetiredYeaftConversation,
+  resolveCurrentYeaftConversation,
+  retireYeaftConversation,
+  reviveYeaftConversation,
+} from './helpers/yeaft-conversation-generation.js';
 import { incVpTyping, decVpTyping } from './helpers/vp-typing.js';
 import { selectActiveConversationId } from './helpers/active-conv.js';
 import { trimDebugRetention } from './helpers/debug-retention.js';
@@ -199,6 +220,48 @@ const YEAFT_CATALOG_STATUS_FIELDS = Object.freeze([
 ]);
 const YEAFT_RETIRED_CATALOG_EPOCH_LIMIT = 8;
 const YEAFT_ASK_TERMINAL_CACHE_LIMIT = 64;
+function workCenterClientMessageKey(agentId, workItemId) {
+  return `${agentId || ''}:${workItemId || ''}`;
+}
+
+function normalizedWorkCenterMessageTarget(target) {
+  if (target?.kind === 'action' && typeof target.actionId === 'string'
+      && Number.isInteger(Number(target.generation)) && Number(target.generation) > 0) {
+    return { kind: 'action', actionId: target.actionId, generation: Number(target.generation) };
+  }
+  return { kind: 'coordinator' };
+}
+
+function normalizedWorkCenterDraftTarget(target) {
+  if (typeof target === 'string') return target;
+  if (target?.kind === 'action' && typeof target.actionId === 'string') {
+    return {
+      kind: 'action',
+      actionId: target.actionId,
+      generation: Number.isInteger(Number(target.generation)) ? Number(target.generation) : 0,
+    };
+  }
+  return { kind: 'coordinator' };
+}
+
+function workCenterEnvelopePayload(value = {}) {
+  return {
+    agentId: value.agentId || '',
+    workItemId: value.workItemId || '',
+    target: normalizedWorkCenterMessageTarget(value.target),
+    text: String(value.text || ''),
+    attachments: Array.isArray(value.attachments) ? value.attachments.map(attachment => ({
+      fileId: attachment?.fileId || '',
+      name: attachment?.name || '',
+      mimeType: attachment?.mimeType || '',
+      size: Math.max(0, Number(attachment?.size) || 0),
+    })) : [],
+    revision: Number(value.revision) || 0,
+    planRevision: Number(value.planRevision) || 0,
+    ledgerRevision: Number(value.ledgerRevision) || 0,
+    coordinatorRevision: Number(value.coordinatorRevision) || 0,
+  };
+}
 
 function askUserEventIdentity(msg, event, conversationId) {
   return {
@@ -345,8 +408,8 @@ function taskUpdatedTime(task) {
   return Number.isFinite(ms) ? ms : 0;
 }
 
-function taskStopKey(sessionId, taskId) {
-  return `${sessionId || ''}::${taskId || ''}`;
+function taskStopKey(agentId, sessionId, taskId) {
+  return `${yeaftSessionIdentityKey(agentId, sessionId)}::${taskId || ''}`;
 }
 
 function keepRecentSessionTasks(tasksById) {
@@ -387,6 +450,8 @@ function resolveAgentIdForSession(state, sessionId, explicitAgentId = null) {
   if (explicitAgentId) return explicitAgentId;
   if (sessionId) {
     const gs = getSessionsStore();
+    const activeSession = gs?.activeSessionKey ? gs.sessions?.[gs.activeSessionKey] : null;
+    if (activeSession?.id === sessionId && activeSession.agentId) return activeSession.agentId;
     const sess = gs && typeof gs.sessionById === 'function' ? gs.sessionById(sessionId, state?.currentAgent || null) : null;
     if (sess && sess.agentId) return sess.agentId;
     const mapped = state?.yeaftSessionAgentById ? state.yeaftSessionAgentById[sessionId] : null;
@@ -436,6 +501,13 @@ function resolveActiveDreamDebugSessionId(state) {
   const gs = getSessionsStore();
   if (gs?.sessions?.grp_default) return 'grp_default';
   return null;
+}
+
+function resolveYeaftEnvelopeConversationId(state, agentId, conversationId = null) {
+  if (conversationId) return conversationId;
+  return (agentId && state?.yeaftConversationIdsByAgent?.[agentId])
+    || state?.yeaftConversationId
+    || null;
 }
 
 function resolveYeaftConversationIdForSession(state, sessionId = null) {
@@ -829,10 +901,17 @@ export const useChatStore = defineStore('chat', {
     _workCenterActionRequestDetailsGeneration: {},
 
     workCenterPending: {},
+    workCenterComposerDrafts: {},
+    workCenterMessageOutbox: {},
+    _workCenterBrowserFence: null,
+    _workCenterBrowserUnsubscribe: null,
     workCenterCreateDraft: null,
     yeaftConversationId: null,     // 当前 Yeaft agent 的虚拟 conversationId（从 agent session_ready 获取）
     yeaftConversationIdsByAgent: {}, // { [agentId]: conversationId } 跨机器 agent 的 Yeaft message cache 隔离
-    yeaftSessionAgentById: {},      // { [sessionId]: agentId } 用 active session 反查所属 agent 的 conversationId
+    _yeaftPendingConversationPromotions: {}, // { [agentId]: { sourceConversationId, targetConversationId } }
+    _yeaftRetiredConversationIdsByAgent: {}, // { [agentId]: string[] }, bounded bridge-generation fence
+    _yeaftRetiredConversationTargetsByAgent: {}, // { [agentId]: { [retiredId]: currentId } }
+    yeaftSessionAgentById: {},      // Legacy bare-session owner cache; activeSessionKey wins when ids collide.
     yeaftModel: null,              // agent/default Yeaft 模型名；Session override lives in sessions[].config.model
     yeaftModelEffort: null,        // agent/default effort；Session override lives in sessions[].config.modelEffort
     yeaftSessionReady: false,     // Session 是否已初始化
@@ -843,8 +922,8 @@ export const useChatStore = defineStore('chat', {
     yeaftModelsRefreshing: false, // 当前 agent 的 model/status 后台刷新状态
     yeaftModelRefreshError: null, // 当前 agent 最近一次 refresh 错误（保留旧模型列表）
     yeaftYeaftDir: null,          // agent 的 ~/.yeaft 绝对路径（session_ready 携带）— Yeaft workbench 的默认 workDir
-    yeaftActiveTasksBySession: {}, // { [sessionId]: { [taskId]: running or recent terminal task snapshot } }
-    yeaftStoppingTasksById: {}, // { [`${sessionId}::${taskId}`]: true } UI-side pending stop requests
+    yeaftActiveTasksBySession: {}, // { [`${agentId}\u001f${sessionId}`]: { [taskId]: task snapshot } }
+    yeaftStoppingTasksById: {}, // { [`${agentId}\u001f${sessionId}::${taskId}`]: true }
     // 2026-05-13: tool-call usage stats for the Yeaft debug drawer.
     // Populated by `fetchYeaftToolStats()` → backend → `yeaft_tool_stats`
     // case in handleYeaftOutput. Shape:
@@ -1446,13 +1525,32 @@ export const useChatStore = defineStore('chat', {
     activateChatView({ persistPreference = false } = {}) {
       const pendingChatRestoreConversationId = this._pendingChatRestoreConversationId;
       this._pendingChatRestoreConversationId = null;
+      const pendingChatConversation = pendingChatRestoreConversationId
+        ? this.conversations.find(conversation => conversation.id === pendingChatRestoreConversationId)
+        : null;
+      const pendingChatAgent = pendingChatConversation?.agentId
+        ? this.agents.find(agent => agent.id === pendingChatConversation.agentId && agent.online)
+        : null;
+      if (!this._savedChatIdentity && pendingChatConversation && pendingChatAgent) {
+        this._savedChatIdentity = {
+          agentId: pendingChatAgent.id,
+          agentInfo: { ...pendingChatAgent },
+          workDir: pendingChatConversation.workDir || pendingChatAgent.workDir || null,
+        };
+      }
       this.currentView = 'chat';
       if (persistPreference) {
         yeaftViewHelpers.persistPreferredConversationView('chat');
       }
+      const chatIdentity = this._savedChatIdentity || null;
+      const pendingTargetsAnotherAgent = this.pendingAgentSelection
+        && this.pendingAgentSelection.agentId !== chatIdentity?.agentId;
+      if (chatIdentity?.agentId
+          && (this.currentAgent !== chatIdentity.agentId || pendingTargetsAnotherAgent)) {
+        this.selectAgent(chatIdentity.agentId);
+      }
       yeaftViewHelpers.applyLeaveYeaftTransition(this);
-      if (pendingChatRestoreConversationId
-          && this.conversations.some(conversation => conversation.id === pendingChatRestoreConversationId)) {
+      if (pendingChatRestoreConversationId && pendingChatConversation && pendingChatAgent) {
         this.autoRestoreConversation(pendingChatRestoreConversationId);
         this.sendWsMessage({
           type: 'refresh_conversation',
@@ -1465,6 +1563,7 @@ export const useChatStore = defineStore('chat', {
     // Work Center
     // =====================
     enterWorkCenter(agentId = null) {
+      if (!this.hydrateWorkCenterBrowserState()) return false;
       const compatibleAgents = this.agents.filter(agent => agent?.online
         && Array.isArray(agent.capabilities) && agent.capabilities.includes('work_center'));
       const target = compatibleAgents.some(agent => agent.id === agentId)
@@ -1502,6 +1601,119 @@ export const useChatStore = defineStore('chat', {
       };
       this.enterWorkCenter(agentId);
     },
+    hydrateWorkCenterBrowserState() {
+      if (!this._workCenterBrowserUnsubscribe) {
+        this._workCenterBrowserUnsubscribe = subscribeWorkCenterBrowserOwner(() => {
+          if (!isWorkCenterBrowserFenceCurrent(this._workCenterBrowserFence)) {
+            this.clearWorkCenterBrowserState();
+          }
+        });
+      }
+      const fence = currentWorkCenterBrowserOwner();
+      if (!fence) {
+        this._workCenterBrowserFence = null;
+        this.workCenterComposerDrafts = {};
+        this.workCenterMessageOutbox = {};
+        return false;
+      }
+      if (!isWorkCenterBrowserFenceCurrent(this._workCenterBrowserFence)) {
+        const persisted = readWorkCenterBrowserState(fence);
+        this._workCenterBrowserFence = fence;
+        this.workCenterComposerDrafts = persisted.drafts;
+        this.workCenterMessageOutbox = persisted.outbox;
+      }
+      return true;
+    },
+    clearWorkCenterBrowserState() {
+      this._workCenterBrowserFence = null;
+      this.workCenterComposerDrafts = {};
+      this.workCenterMessageOutbox = {};
+    },
+    workCenterComposerKey(agentId, workItemId) {
+      return workCenterClientMessageKey(agentId, workItemId);
+    },
+    saveWorkCenterComposerDraft(agentId, workItemId, draft = {}) {
+      const key = workCenterClientMessageKey(agentId, workItemId);
+      if (!agentId || !workItemId) return;
+      const next = {
+        ...(this.workCenterComposerDrafts || {}),
+        [key]: {
+          text: String(draft.text || ''),
+          attachments: Array.isArray(draft.attachments) ? draft.attachments : [],
+          target: normalizedWorkCenterDraftTarget(draft.target),
+          error: String(draft.error || ''),
+        },
+      };
+      if (!writeWorkCenterDrafts(next, this._workCenterBrowserFence)) return false;
+      this.workCenterComposerDrafts = next;
+      return true;
+    },
+    loadWorkCenterComposerDraft(agentId, workItemId) {
+      return this.workCenterComposerDrafts?.[workCenterClientMessageKey(agentId, workItemId)] || null;
+    },
+    removeWorkCenterComposerDraft(agentId, workItemId) {
+      const key = workCenterClientMessageKey(agentId, workItemId);
+      const next = { ...(this.workCenterComposerDrafts || {}) };
+      delete next[key];
+      if (!writeWorkCenterDrafts(next, this._workCenterBrowserFence)) return false;
+      this.workCenterComposerDrafts = next;
+      return true;
+    },
+    prepareWorkCenterMessageEnvelope(input = {}) {
+      const payload = workCenterEnvelopePayload(input);
+      const key = workCenterClientMessageKey(payload.agentId, payload.workItemId);
+      const existing = this.workCenterMessageOutbox?.[key] || null;
+      if (existing) return existing;
+      const envelope = {
+        ...payload,
+        clientMessageId: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+        createdAt: Date.now(),
+      };
+      const next = { ...(this.workCenterMessageOutbox || {}), [key]: envelope };
+      if (!writeWorkCenterOutbox(next, this._workCenterBrowserFence)) return null;
+      this.workCenterMessageOutbox = next;
+      return envelope;
+    },
+    loadWorkCenterMessageEnvelope(agentId, workItemId) {
+      return this.workCenterMessageOutbox?.[workCenterClientMessageKey(agentId, workItemId)] || null;
+    },
+    replaceWorkCenterMessageEnvelopeAttachments(agentId, workItemId, attachments = []) {
+      const key = workCenterClientMessageKey(agentId, workItemId);
+      const envelope = this.workCenterMessageOutbox?.[key];
+      if (!envelope) return null;
+      const replacement = {
+        ...envelope,
+        attachments: Array.isArray(attachments) ? attachments.map(attachment => ({
+          fileId: attachment?.fileId || '',
+          name: attachment?.name || '',
+          mimeType: attachment?.mimeType || '',
+          size: Math.max(0, Number(attachment?.size) || 0),
+        })) : [],
+      };
+      const next = { ...(this.workCenterMessageOutbox || {}), [key]: replacement };
+      if (!writeWorkCenterOutbox(next, this._workCenterBrowserFence)) return null;
+      this.workCenterMessageOutbox = next;
+      return replacement;
+    },
+    discardWorkCenterMessageEnvelope(agentId, workItemId) {
+      const key = workCenterClientMessageKey(agentId, workItemId);
+      const next = { ...(this.workCenterMessageOutbox || {}) };
+      delete next[key];
+      if (!writeWorkCenterOutbox(next, this._workCenterBrowserFence)) return false;
+      this.workCenterMessageOutbox = next;
+      return true;
+    },
+    confirmWorkCenterMessageEnvelope(agentId, workItemId, clientMessageId) {
+      const key = workCenterClientMessageKey(agentId, workItemId);
+      const envelope = this.workCenterMessageOutbox?.[key];
+      if (!envelope || envelope.clientMessageId !== clientMessageId) return false;
+      const next = { ...(this.workCenterMessageOutbox || {}) };
+      delete next[key];
+      if (!writeWorkCenterOutbox(next, this._workCenterBrowserFence)) return false;
+      this.workCenterMessageOutbox = next;
+      this.removeWorkCenterComposerDraft(agentId, workItemId);
+      return true;
+    },
     workCenterRequest(op, payload = {}, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       if (!target) return Promise.reject(new Error('No Agent selected'));
@@ -1511,7 +1723,14 @@ export const useChatStore = defineStore('chat', {
           delete this.workCenterPending[requestId];
           reject(new Error('Work Center request timed out'));
         }, 30_000);
-        this.workCenterPending[requestId] = { resolve, reject, timer, agentId: target, op };
+        this.workCenterPending[requestId] = {
+          resolve,
+          reject,
+          timer,
+          agentId: target,
+          op,
+          clientMessageId: typeof payload.clientMessageId === 'string' ? payload.clientMessageId : null,
+        };
         this.sendWsMessage({ type: 'work_center_request', agentId: target, requestId, op, payload });
       });
     },
@@ -2005,31 +2224,44 @@ export const useChatStore = defineStore('chat', {
       return result;
     },
     async postWorkItemMessage(id, text, targetRef, revision, attachments = [], agentId = null, fence = {}) {
+      if (!this.hydrateWorkCenterBrowserState()) {
+        throw new Error('Work Center browser owner is unavailable; sign in again and retry');
+      }
       const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const clientMessageId = typeof fence.clientMessageId === 'string' && fence.clientMessageId
-        ? fence.clientMessageId
-        : globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+      const envelope = this.prepareWorkCenterMessageEnvelope({
+        agentId: target,
+        workItemId: id,
+        target: targetRef,
+        text,
+        attachments,
+        revision,
+        planRevision: fence.planRevision,
+        ledgerRevision: fence.ledgerRevision,
+        coordinatorRevision: fence.coordinatorRevision,
+      });
+      if (!envelope) throw new Error('Work Center browser owner changed; reopen Work Center and try again');
+      const clientMessageId = envelope.clientMessageId;
       const current = this.workCenterDetailByAgent[target]?.id === id
         ? this.workCenterDetailByAgent[target] : null;
       const detail = await this.workCenterRequest('post_work_item_message', {
-        id,
+        id: envelope.workItemId,
         clientMessageId,
-        text,
-        target: targetRef,
-        revision,
-        planRevision: Number.isInteger(Number(fence.planRevision))
-          ? Number(fence.planRevision) : Number(current?.planRevision) || 0,
-        ledgerRevision: Number.isInteger(Number(fence.ledgerRevision))
-          ? Number(fence.ledgerRevision) : Number(current?.ledgerRevision) || 0,
-        coordinatorRevision: Number.isInteger(Number(fence.coordinatorRevision))
-          ? Number(fence.coordinatorRevision) : Number(current?.coordinatorRevision) || 0,
-        attachments: Array.isArray(attachments) ? attachments : [],
+        text: envelope.text,
+        target: envelope.target,
+        revision: envelope.revision,
+        planRevision: envelope.planRevision || Number(current?.planRevision) || 0,
+        ledgerRevision: envelope.ledgerRevision || Number(current?.ledgerRevision) || 0,
+        coordinatorRevision: Number.isInteger(Number(envelope.coordinatorRevision))
+          ? Number(envelope.coordinatorRevision) : Number(current?.coordinatorRevision) || 0,
+        attachments: envelope.attachments,
       }, target);
-      if (targetRef?.kind === 'coordinator') {
+      if (envelope.target.kind === 'coordinator') {
         if (!detail?.accepted) throw new Error('Work Center Coordinator did not accept the message');
+        this.confirmWorkCenterMessageEnvelope(target, id, clientMessageId);
         return detail;
       }
       await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
+      this.confirmWorkCenterMessageEnvelope(target, id, clientMessageId);
       return detail;
     },
     async sendWorkItemMessage(id, text, revision, attachments = [], agentId = null, fence = {}) {
@@ -2103,6 +2335,20 @@ export const useChatStore = defineStore('chat', {
     applyWorkCenterEvent(agentId, event) {
       if (!agentId || !event?.workItem) return;
       const summary = event.workItem;
+      if (event.clientMessageId) {
+        this.confirmWorkCenterMessageEnvelope(agentId, summary.id, event.clientMessageId);
+        const pendingEntry = Object.entries(this.workCenterPending || {}).find(([, pending]) => (
+          pending?.agentId === agentId && pending.clientMessageId === event.clientMessageId
+        ));
+        if (pendingEntry) {
+          const [requestId, pending] = pendingEntry;
+          clearTimeout(pending.timer);
+          delete this.workCenterPending[requestId];
+          pending.resolve(event.type === 'coordinator.turn_started'
+            ? { accepted: true, turnId: null, receipt: true }
+            : event.workItem);
+        }
+      }
       const current = this.workCenterItemsByAgent[agentId] || [];
       if (event.type === 'work_item.deleted') {
         this.removeWorkItemState(agentId, summary.id);
@@ -2416,8 +2662,9 @@ export const useChatStore = defineStore('chat', {
     syncActiveYeaftHistoryLoad() {
       return syncActiveYeaftHistoryLoad(this);
     },
-    enterYeaft(agentId = null) {
+    enterYeaft(agentId = null, { deferBootstrap = false } = {}) {
       const previousAgentId = this.currentAgent;
+      yeaftViewHelpers.beginYeaftTransition(this);
       // Capture the chat-side activeConversations snapshot BEFORE flipping
       // currentView. The transition helper is idempotent: if we're
       // already in Yeaft (e.g. switching agents, programmatic re-entry,
@@ -2427,9 +2674,15 @@ export const useChatStore = defineStore('chat', {
       // and leak yeaft messages into the Chat view.
       //
       // The agent the Yeaft page operates on is `currentAgent` — the single
-      // client/server-synced pointer. Pick an explicit agent, else keep the
-      // current one, else fall back to the first online agent.
-      let targetAgentId = agentId || this.currentAgent || null;
+      // client/server-synced pointer. An explicit caller remains authoritative;
+      // ordinary Chat → Yeaft entry must otherwise adopt the exact active
+      // Session owner before falling back to the Chat Agent. Inventory restore
+      // intentionally does not switch currentAgent while Chat is still visible.
+      const activeSessionId = resolveActiveYeaftSessionId(this);
+      const activeSessionAgentId = !agentId && activeSessionId
+        ? resolveAgentIdForSession(this, activeSessionId)
+        : null;
+      let targetAgentId = agentId || activeSessionAgentId || this.currentAgent || null;
       if (!targetAgentId) {
         const online = this.agents.find(a => a.online);
         if (online) targetAgentId = online.id;
@@ -2516,7 +2769,9 @@ export const useChatStore = defineStore('chat', {
       // a redundant second catch-up on the next routine agent_list.
       this._yeaftReconnectCatchUpPending = false;
       this.loadOpenedYeaftSessionsForConnectedAgents(null, { force: true });
-      this.requestYeaftSessionBootstrap({ forceSessionReady: true, catchUpHistory: true, forceHistoryReplay: true });
+      if (!deferBootstrap) {
+        this.requestYeaftSessionBootstrap({ forceSessionReady: true, catchUpHistory: true, forceHistoryReplay: true });
+      }
     },
 
     loadOpenedYeaftSessionsForConnectedAgents(agentIds = null, { force = false } = {}) {
@@ -2868,14 +3123,14 @@ export const useChatStore = defineStore('chat', {
       this.sendWsMessage(wsMsg);
     },
 
-    cancelYeaftTask({ sessionId, taskId }) {
+    cancelYeaftTask({ agentId = null, sessionId, taskId }) {
       const targetSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
       const targetTaskId = typeof taskId === 'string' ? taskId.trim() : '';
-      const targetAgentId = resolveAgentIdForSession(this, targetSessionId);
+      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
       if (!targetAgentId || !targetSessionId || !targetTaskId) return false;
       this.yeaftStoppingTasksById = {
         ...this.yeaftStoppingTasksById,
-        [taskStopKey(targetSessionId, targetTaskId)]: true,
+        [taskStopKey(targetAgentId, targetSessionId, targetTaskId)]: true,
       };
       this.sendWsMessage({
         type: 'yeaft_task_cancel',
@@ -3448,6 +3703,31 @@ export const useChatStore = defineStore('chat', {
     },
     handleYeaftOutput(msg) {
       if (!msg) return;
+      const envelopeAgentId = msg.agentId || this.yeaftAgentId || this.currentAgent || null;
+      const envelopeConversationId = msg.conversationId || msg.event?.conversationId || null;
+      const retiredEnvelopeConversation = isRetiredYeaftConversation(
+        this,
+        envelopeAgentId,
+        envelopeConversationId,
+      );
+      if (msg.data && retiredEnvelopeConversation) {
+        if (msg.data.type !== 'result') return;
+        const currentConversationId = resolveCurrentYeaftConversation(
+          this,
+          envelopeAgentId,
+          envelopeConversationId,
+        );
+        if (!currentConversationId) return;
+        const currentTurnKey = msg.turnId
+          ? yeaftTurnStateKey(this, envelopeAgentId, msg.turnId)
+          : '';
+        const currentOwnsTurn = !!(currentTurnKey && this.activeVpTurns?.[currentTurnKey])
+          || (this.messagesMap?.[currentConversationId] || []).some(row => (
+            row?.turnId === msg.turnId && (row.isStreaming || row.status === 'pending')
+          ));
+        if (!msg.turnId || !currentOwnsTurn) return;
+        msg = { ...msg, conversationId: currentConversationId };
+      }
       if (msg.perfTraceId) {
         recordPerfTrace(this, {
           traceId: msg.perfTraceId,
@@ -3469,6 +3749,8 @@ export const useChatStore = defineStore('chat', {
 
       // ── Assistant output frame data: dispatch through the shared pipeline ──
       if (msg.data) {
+        const frameAgentId = msg.agentId || this.yeaftAgentId || this.currentAgent || null;
+        const conversationId = resolveYeaftEnvelopeConversationId(this, frameAgentId, msg.conversationId);
         // `llm_retry` remains visible while the replacement request is silent.
         // Its first real output frame proves recovery, so clear only the retry
         // annotation; the turn itself stays active until vp_turn_end.
@@ -3487,27 +3769,38 @@ export const useChatStore = defineStore('chat', {
             [frameTurnKey]: activeTurn,
           };
         }
-        const conversationId = msg.conversationId || this.yeaftConversationId;
         if (conversationId) {
-          const frameAgentId = msg.agentId || this.yeaftAgentId || this.currentAgent || null;
           const msgSessionId = msg.sessionId ?? msg.groupId ?? null;
           const outputIsVisible = isVisibleYeaftOutput(this, msgSessionId, frameAgentId);
           const previousAgentConvId = frameAgentId && this.yeaftConversationIdsByAgent
             ? this.yeaftConversationIdsByAgent[frameAgentId]
             : null;
-          const retainVisibleSource = !outputIsVisible && previousAgentConvId === this.yeaftConversationId;
-          if (this.currentView === 'yeaft' && frameAgentId && previousAgentConvId && previousAgentConvId !== conversationId) {
-            const existingMsgs = this.messagesMap[previousAgentConvId] || [];
-            const targetMsgs = this.messagesMap[conversationId] || [];
-            this.messagesMap[conversationId] = msgHelpers
-              .mergeMessagesByStableId(targetMsgs, existingMsgs)
-              .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+          const pendingForAgent = pendingYeaftConversationPromotion(this, frameAgentId);
+          if (pendingForAgent && pendingForAgent.targetConversationId !== conversationId) {
+            retargetYeaftConversationPromotion(this, frameAgentId, conversationId);
+          } else if (!pendingForAgent && previousAgentConvId && previousAgentConvId !== conversationId
+              && !String(previousAgentConvId).startsWith('yeaft-local-')) {
+            migrateYeaftConversationState(this, previousAgentConvId, conversationId, {
+              removeSource: previousAgentConvId !== this.yeaftConversationId,
+            });
+            retireYeaftConversation(this, frameAgentId, previousAgentConvId, conversationId);
+          }
+          reviveYeaftConversation(this, frameAgentId, conversationId);
+          const pendingPromotion = pendingYeaftConversationPromotion(this, frameAgentId, conversationId);
+          const promotionSourceId = pendingPromotion?.sourceConversationId || previousAgentConvId;
+          const retainVisibleSource = !outputIsVisible && promotionSourceId === this.yeaftConversationId;
+          if (this.currentView === 'yeaft' && frameAgentId && promotionSourceId && promotionSourceId !== conversationId) {
             // An inactive same-agent Session can be the first frame carrying
             // the real bridge id. Copy the visible placeholder into that cache,
-            // but keep the source alive until an active/user-driven transition
-            // moves the explicit visible pointer.
-            if (!retainVisibleSource && String(previousAgentConvId).startsWith('yeaft-local-')) {
-              delete this.messagesMap[previousAgentConvId];
+            // but keep the source alive until an authoritative visible frame
+            // finalizes every runtime slot and watchdog under the new id.
+            const removeSource = !retainVisibleSource
+              && (!!pendingPromotion || String(promotionSourceId).startsWith('yeaft-local-'));
+            migrateYeaftConversationState(this, promotionSourceId, conversationId, { removeSource });
+            if (retainVisibleSource) {
+              rememberYeaftConversationPromotion(this, frameAgentId, promotionSourceId, conversationId);
+            } else if (removeSource) {
+              clearYeaftConversationPromotion(this, frameAgentId, conversationId);
             }
           }
           if (frameAgentId) {
@@ -3626,7 +3919,7 @@ export const useChatStore = defineStore('chat', {
           break;
 
         case 'ask_user_question': {
-          const conversationId = msg.conversationId || this.yeaftConversationId;
+          const conversationId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId);
           if (!conversationId || !event.requestId) break;
           const identity = askUserEventIdentity(msg, event, conversationId);
           const linkPrompt = () => {
@@ -3691,7 +3984,7 @@ export const useChatStore = defineStore('chat', {
 
         case 'ask_user_answered':
         case 'ask_user_expired': {
-          const conversationId = msg.conversationId || this.yeaftConversationId;
+          const conversationId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId);
           if (!conversationId || !event.requestId) break;
           const messages = this.messagesMap[conversationId] || [];
           const identity = askUserEventIdentity(msg, event, conversationId);
@@ -3708,6 +4001,7 @@ export const useChatStore = defineStore('chat', {
         case 'session_ready': {
           const agentConvId = event.conversationId;
           const statusAgentId = msg.agentId || this.currentAgent;
+          if (isRetiredYeaftConversation(this, statusAgentId, agentConvId)) break;
           const previousAgentConvId = statusAgentId && this.yeaftConversationIdsByAgent
             ? this.yeaftConversationIdsByAgent[statusAgentId]
             : null;
@@ -3719,38 +4013,31 @@ export const useChatStore = defineStore('chat', {
           const localConvId = previousAgentConvId || fallbackLocalConvId;
           const readySessionId = event.sessionId || msg.sessionId || null;
           const readyIsVisible = isVisibleYeaftOutput(this, readySessionId, statusAgentId);
-          const retainVisibleSource = !readyIsVisible && localConvId === this.yeaftConversationId;
+          const pendingForAgent = pendingYeaftConversationPromotion(this, statusAgentId);
+          if (pendingForAgent && pendingForAgent.targetConversationId !== agentConvId) {
+            retargetYeaftConversationPromotion(this, statusAgentId, agentConvId);
+          } else if (!pendingForAgent && previousAgentConvId && previousAgentConvId !== agentConvId
+              && !String(previousAgentConvId).startsWith('yeaft-local-')) {
+            retireYeaftConversation(this, statusAgentId, previousAgentConvId, agentConvId);
+          }
+          reviveYeaftConversation(this, statusAgentId, agentConvId);
+          const pendingPromotion = pendingYeaftConversationPromotion(this, statusAgentId, agentConvId);
+          const promotionSourceId = pendingPromotion?.sourceConversationId || localConvId;
+          const retainVisibleSource = !readyIsVisible && promotionSourceId === this.yeaftConversationId;
 
           // Migrate messages from this agent's local placeholder to this
           // agent's conversationId. Do not merge the last globally-active
           // conversation blindly: with multiple machines, B's session_ready can
           // arrive while A's cache is still the global yeaftConversationId.
-          if (localConvId && localConvId !== agentConvId) {
-            const migrateProcessingWatchdog = !retainVisibleSource
-              && !!this._processingWatchdogs?.[localConvId];
-            const existingMsgs = this.messagesMap[localConvId] || [];
-            const targetMsgs = this.messagesMap[agentConvId] || [];
-            this.messagesMap[agentConvId] = msgHelpers
-              .mergeMessagesByStableId(targetMsgs, existingMsgs)
-              .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-            if (!retainVisibleSource && localConvId.startsWith('yeaft-local-')) {
-              delete this.messagesMap[localConvId];
-            }
-            // Migrate processing state
-            if (this.processingConversations[localConvId]) {
-              this.processingConversations[agentConvId] = true;
-              if (!retainVisibleSource) delete this.processingConversations[localConvId];
-            }
-            // Migrate execution status
-            if (this.executionStatusMap[localConvId]) {
-              this.executionStatusMap[agentConvId] = this.executionStatusMap[localConvId];
-              if (!retainVisibleSource) delete this.executionStatusMap[localConvId];
-            }
-            if (migrateProcessingWatchdog) {
-              watchdogHelpers.stopProcessingWatchdog(this, localConvId);
-              if (this.processingConversations[agentConvId]) {
-                watchdogHelpers.startYeaftWatchdog(this, agentConvId);
-              }
+          if (promotionSourceId && promotionSourceId !== agentConvId) {
+            const removeSource = !retainVisibleSource;
+            migrateYeaftConversationState(this, promotionSourceId, agentConvId, {
+              removeSource,
+            });
+            if (retainVisibleSource) {
+              rememberYeaftConversationPromotion(this, statusAgentId, promotionSourceId, agentConvId);
+            } else if (removeSource) {
+              clearYeaftConversationPromotion(this, statusAgentId, agentConvId);
             }
           } else if (!this.messagesMap[agentConvId]) {
             this.messagesMap[agentConvId] = [];
@@ -3778,19 +4065,26 @@ export const useChatStore = defineStore('chat', {
           }
           const readyTasks = Array.isArray(event.tasks) ? event.tasks : [];
           const nextTasks = {};
-          // session_ready is authoritative for running tasks, but terminal task
-          // events may arrive immediately before it during Agent restart. Keep
-          // the bounded terminal history while replacing stale running rows.
-          for (const [sessionId, tasksById] of Object.entries(this.yeaftActiveTasksBySession || {})) {
-            const terminalTasks = Object.fromEntries(Object.entries(tasksById || {}).filter(([, task]) => (
-              task?.id && YEAFT_TERMINAL_TASK_STATUSES.has(task.status)
+          // session_ready is authoritative only for the Agent that emitted it.
+          // Preserve other Agents' running rows and this Agent's bounded terminal
+          // history while replacing this Agent's stale running snapshot.
+          for (const [sessionKey, tasksById] of Object.entries(this.yeaftActiveTasksBySession || {})) {
+            const retainedTasks = Object.fromEntries(Object.entries(tasksById || {}).filter(([, task]) => (
+              task?.id && (
+                (task.agentId && task.agentId !== statusAgentId)
+                || YEAFT_TERMINAL_TASK_STATUSES.has(task.status)
+              )
             )));
-            const retained = keepRecentSessionTasks(terminalTasks);
-            if (Object.keys(retained).length > 0) nextTasks[sessionId] = retained;
+            const retained = keepRecentSessionTasks(retainedTasks);
+            if (Object.keys(retained).length > 0) nextTasks[sessionKey] = retained;
           }
           for (const task of readyTasks) {
             if (!task?.id || !task.sessionId || task.status !== 'running') continue;
-            nextTasks[task.sessionId] = { ...(nextTasks[task.sessionId] || {}), [task.id]: task };
+            const sessionKey = yeaftHistoryIdentityKey(statusAgentId, task.sessionId);
+            nextTasks[sessionKey] = {
+              ...(nextTasks[sessionKey] || {}),
+              [task.id]: { ...task, agentId: statusAgentId },
+            };
           }
           this.yeaftActiveTasksBySession = nextTasks;
           // Background Session replay only updates its own cached metadata.
@@ -4098,7 +4392,7 @@ export const useChatStore = defineStore('chat', {
           // We store the latest state keyed by conversationId + trigger
           // + loopRange so the UI can swap "thinking…" placeholder for
           // the rendered card.
-          const convId = msg.conversationId || this.yeaftConversationId || 'unknown';
+          const convId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId) || 'unknown';
           const range = Array.isArray(event.loopRange) ? event.loopRange : [0, 0];
           const key = `${convId}:${event.trigger}:${range[0]}-${range[1]}`;
           // Anchor the card to the current tail of the message list so
@@ -4147,19 +4441,22 @@ export const useChatStore = defineStore('chat', {
         case 'yeaft_task_event': {
           const task = event.task;
           if (!task?.id || !task.sessionId) break;
+          const taskAgentId = msg.agentId || resolveAgentIdForSession(this, task.sessionId);
+          const taskSessionKey = yeaftHistoryIdentityKey(taskAgentId, task.sessionId);
+          const scopedTask = { ...task, agentId: taskAgentId };
           const bySession = { ...this.yeaftActiveTasksBySession };
-          const current = { ...(bySession[task.sessionId] || {}) };
+          const current = { ...(bySession[taskSessionKey] || {}) };
           if (task.status === 'running' || YEAFT_TERMINAL_TASK_STATUSES.has(task.status)) {
-            current[task.id] = task;
+            current[task.id] = scopedTask;
           } else {
             delete current[task.id];
           }
           const retained = keepRecentSessionTasks(current);
-          if (Object.keys(retained).length > 0) bySession[task.sessionId] = retained;
-          else delete bySession[task.sessionId];
+          if (Object.keys(retained).length > 0) bySession[taskSessionKey] = retained;
+          else delete bySession[taskSessionKey];
           this.yeaftActiveTasksBySession = bySession;
           if (task.status !== 'running') {
-            const { [taskStopKey(task.sessionId, task.id)]: _done, ...rest } = this.yeaftStoppingTasksById || {};
+            const { [taskStopKey(taskAgentId, task.sessionId, task.id)]: _done, ...rest } = this.yeaftStoppingTasksById || {};
             this.yeaftStoppingTasksById = rest;
           }
           break;
@@ -4168,18 +4465,20 @@ export const useChatStore = defineStore('chat', {
         case 'yeaft_task_cancel_result': {
           const taskId = event.taskId || event.task?.id || null;
           const sessionId = event.task?.sessionId || event.sessionId || msg.sessionId || null;
+          const taskAgentId = msg.agentId || resolveAgentIdForSession(this, sessionId);
           if (taskId && sessionId && event.success === false) {
-            const { [taskStopKey(sessionId, taskId)]: _done, ...rest } = this.yeaftStoppingTasksById || {};
+            const { [taskStopKey(taskAgentId, sessionId, taskId)]: _done, ...rest } = this.yeaftStoppingTasksById || {};
             this.yeaftStoppingTasksById = rest;
           }
           const task = event.task;
           if (task?.id && task.sessionId) {
+            const taskSessionKey = yeaftHistoryIdentityKey(taskAgentId, task.sessionId);
             const bySession = { ...this.yeaftActiveTasksBySession };
-            const current = { ...(bySession[task.sessionId] || {}) };
-            current[task.id] = task;
+            const current = { ...(bySession[taskSessionKey] || {}) };
+            current[task.id] = { ...task, agentId: taskAgentId };
             const retained = keepRecentSessionTasks(current);
-            if (Object.keys(retained).length > 0) bySession[task.sessionId] = retained;
-            else delete bySession[task.sessionId];
+            if (Object.keys(retained).length > 0) bySession[taskSessionKey] = retained;
+            else delete bySession[taskSessionKey];
             this.yeaftActiveTasksBySession = bySession;
           }
           break;
@@ -4192,7 +4491,7 @@ export const useChatStore = defineStore('chat', {
           // We accumulate per-agent state into a single card keyed by
           // ${convId}:${agentId} — anchored to the message present at the
           // first emit so MessageList can render it inline.
-          const convId = msg.conversationId || this.yeaftConversationId || 'unknown';
+          const convId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId) || 'unknown';
           const agentId = event.agentId;
           if (!agentId) break;
           const payload = event.payload || {};
@@ -4425,6 +4724,9 @@ export const useChatStore = defineStore('chat', {
             break;
           }
           const prevGroupId = gs ? (gs.activeSessionId || null) : null;
+          const prevAgentId = gs?.activeSessionKey
+            ? gs.sessions?.[gs.activeSessionKey]?.agentId || null
+            : null;
           // msg.agentId is stamped on yeaft_output envelopes by the
           // server relay (since v0.1.882). Pass it through so the
           // sessions store can keep per-agent rosters in the unified
@@ -4436,16 +4738,20 @@ export const useChatStore = defineStore('chat', {
             this.yeaftSessionHydrateError = null;
           }
           const newGroupId = gs ? (gs.activeSessionId || null) : null;
+          const newAgentId = gs?.activeSessionKey
+            ? gs.sessions?.[gs.activeSessionKey]?.agentId || null
+            : null;
           // Bug 1: after enterYeaft the group snapshot may arrive *after*
           // initial history load (which happened with groupId:null), so
           // reload history for the correct group when activeGroupId changes.
           if (this.currentView === 'yeaft' && newGroupId) {
-            const targetAgentId = resolveAgentIdForSession(this, newGroupId, msg.agentId || null);
+            const targetAgentId = newAgentId || resolveAgentIdForSession(this, newGroupId, msg.agentId || null);
             const sessionKey = yeaftHistoryIdentityKey(targetAgentId, newGroupId);
             const sessionState = this.yeaftSessionHistoryState[sessionKey] || null;
             this.setActiveSessionFilter(newGroupId, {
               agentId: targetAgentId,
-              force: msgHelpers.shouldForceHydrateActiveYeaftSession(newGroupId, prevGroupId, sessionState),
+              force: prevAgentId !== targetAgentId
+                || msgHelpers.shouldForceHydrateActiveYeaftSession(newGroupId, prevGroupId, sessionState),
             });
           }
           break;
@@ -4453,7 +4759,7 @@ export const useChatStore = defineStore('chat', {
         case 'group_roster_changed':
         case 'session_roster_changed': {
           const gs = window.Pinia?.useSessionsStore?.() || (window.__useSessionsStore && window.__useSessionsStore());
-          if (gs) gs.applyRosterChange(event);
+          if (gs) gs.applyRosterChange(event, msg.agentId || null);
           break;
         }
         case 'group_crud_result':
@@ -4573,7 +4879,7 @@ export const useChatStore = defineStore('chat', {
           };
           const nextStatus = reasonToStatus[event.reason] || 'completed';
           const stampedAt = Date.now();
-          const conv = msg.conversationId || this.yeaftConversationId;
+          const conv = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId);
           if (conv && Array.isArray(this.messagesMap[conv])) {
             const rows = this.messagesMap[conv];
             let mutated = markTurnResponseKinds(rows, event);
@@ -4682,14 +4988,14 @@ export const useChatStore = defineStore('chat', {
           // the Chat view (cross-mode state leak). The conversationId rides
           // on the yeaft_output envelope (msg.conversationId) — fall back to
           // the current Yeaft session id if absent.
-          const convId = msg.conversationId || this.yeaftConversationId;
+          const convId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId);
           if (!convId) break;
           this.yeaftVpTyping = incVpTyping(this.yeaftVpTyping, convId, event.vpId);
           break;
         }
         case 'vp_typing_end': {
           if (!event.vpId) break;
-          const convId = msg.conversationId || this.yeaftConversationId;
+          const convId = resolveYeaftEnvelopeConversationId(this, msg.agentId || null, msg.conversationId);
           if (!convId) break;
           this.yeaftVpTyping = decVpTyping(this.yeaftVpTyping, convId, event.vpId);
           break;
@@ -5262,17 +5568,6 @@ export const useChatStore = defineStore('chat', {
         && !!this.currentAgent && targetAgentId !== this.currentAgent;
       const force = !!opts.force || ownerChanged;
       this.yeaftActiveSessionFilter = next;
-      // fix-yeaft-session-server-persistence: remember the
-      // last-viewed yeaft session so reload + cross-agent switch
-      // restore it instead of arbitrarily landing on sessionOrder[0]
-      // (which manufactures the "phantom default group" bug the user
-      // reported). localStorage-only — mirrors how chat does
-      // `lastViewedConversation`.
-      try {
-        if (next) localStorage.setItem('lastViewedYeaftSession', next);
-        else localStorage.removeItem('lastViewedYeaftSession');
-      } catch (_) {}
-
       // Agent selection and catalog projection are one operation. Do this
       // before every history early-return so an already-loaded Session cannot
       // keep rendering the previous Agent's model catalog.
@@ -5315,6 +5610,9 @@ export const useChatStore = defineStore('chat', {
       try {
         const gs = window.Pinia?.useSessionsStore?.() || (window.__useSessionsStore && window.__useSessionsStore());
         if (gs && typeof gs.setActive === 'function') gs.setActive(next, targetAgentId || null);
+        const activeKey = gs?.activeSessionKey || null;
+        if (activeKey) localStorage.setItem('lastViewedYeaftSession', activeKey);
+        else localStorage.removeItem('lastViewedYeaftSession');
       } catch (_) {}
       this.syncActiveYeaftHistoryLoad();
 
@@ -5631,9 +5929,13 @@ export const useChatStore = defineStore('chat', {
     clearYeaftMessages() {
       const oldConvId = this.yeaftConversationId;
       if (oldConvId) {
+        watchdogHelpers.stopProcessingWatchdog(this, oldConvId);
         delete this.messagesMap[oldConvId];
         delete this.processingConversations[oldConvId];
         delete this.executionStatusMap[oldConvId];
+        delete this.refreshingSessionMap[oldConvId];
+        if (this._closedAt) delete this._closedAt[oldConvId];
+        this._turnCompletedConvs?.delete(oldConvId);
       }
       // Create a fresh local conversationId for the current Yeaft agent.
       this.yeaftConversationId = this.currentAgent
@@ -5854,12 +6156,11 @@ export const useChatStore = defineStore('chat', {
       const { runtimeProvider, agentId, sessionId } = descriptor.routeRef;
       this.activeCatalogKey = descriptor.catalogKey;
       if (runtimeProvider === 'yeaft') {
-        this.enterYeaft(agentId);
+        // A catalog row already identifies the exact Agent + Session. Enter the
+        // target Agent without bootstrapping the previously-visible Session, then
+        // commit the target identity before issuing its one history request.
+        this.enterYeaft(agentId, { deferBootstrap: true });
         this.setActiveSessionFilter(sessionId, { agentId, force: true });
-        try {
-          const sessions = window.Pinia?.useSessionsStore?.();
-          sessions?.setActive?.(sessionId, agentId);
-        } catch (_) {}
         return true;
       }
       if (runtimeProvider !== 'claude-code' && runtimeProvider !== 'copilot') return false;
@@ -6879,6 +7180,7 @@ export const useChatStore = defineStore('chat', {
       this.activeSubagentId = null;
       this.activeRightPanel = null;
       this.pinnedSessions = [];
+      this.clearWorkCenterBrowserState();
       if (this.ws) {
         this.ws.close();
       }
