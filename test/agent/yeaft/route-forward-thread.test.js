@@ -7,7 +7,7 @@ import { createRouter } from '../../../agent/yeaft/routing/router.js';
 import { createLoopGuard, MAX_CHAIN_DEPTH } from '../../../agent/yeaft/routing/loop-guard.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
-import { createCliSessionRunner } from '../../../agent/yeaft/cli-session-runner.js';
+import { createCliSessionRunner, createCliVpEngine } from '../../../agent/yeaft/cli-session-runner.js';
 import { runStreamSessionTurn } from '../../../agent/yeaft/stdio-protocol.js';
 import routeForwardTool from '../../../agent/yeaft/tools/route-forward.js';
 import {
@@ -418,13 +418,54 @@ describe('route_forward thread ownership', () => {
       loadSessionHistoryForVp: vi.fn(() => rows.slice()),
     };
     const starts = [];
+    const engineOptions = [];
+    const managedCliReady = Promise.resolve([{ name: 'rg', status: 'available' }]);
     const firstLinus = deferred();
     const firstMartin = deferred();
     let linusCalls = 0;
-    const runner = createCliSessionRunner({
-      loaded: { yeaftDir: root, config: {}, conversationStore },
+    const toolRegistry = new ToolRegistry();
+    let receivedManagedCliReady = null;
+    toolRegistry.register({
+      name: 'probe_managed_cli',
+      description: 'probe managed CLI context',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_input, ctx) => {
+        receivedManagedCliReady = ctx.managedCliReady;
+        return 'ready';
+      },
+    });
+    let adapterCalls = 0;
+    const adapter = {
+      async *stream() {
+        if (adapterCalls++ === 0) {
+          yield { type: 'tool_call', id: 'probe-1', name: 'probe_managed_cli', input: {} };
+          yield { type: 'stop', stopReason: 'tool_use' };
+        } else {
+          yield { type: 'stop', stopReason: 'end_turn' };
+        }
+      },
+      async call() { return { text: '', usage: {} }; },
+    };
+    const productionEngine = createCliVpEngine({
+      yeaftDir: root,
+      config: { model: 'test-model', maxOutputTokens: 1024, _readOnly: true },
+      adapter,
+      trace: new NullTrace(),
+      toolRegistry,
+      managedCliReady,
+    }, sessionId, 'vp-proof');
+    for await (const _event of productionEngine.query({
+      prompt: 'probe',
       sessionId,
-      engineFactory: (_loaded, _sessionId, vpId) => ({
+      workDir: root,
+      vpTurnId: 'turn-proof',
+      userAlreadyPersisted: true,
+    })) {}
+    expect(receivedManagedCliReady).toBe(managedCliReady);
+
+    const engineFactory = vi.fn((_loaded, _sessionId, vpId) => {
+      engineOptions.push({ vpId, managedCliReady: _loaded.managedCliReady });
+      return {
         async *query(options) {
           starts.push({ vpId, options });
           if (vpId === 'vp-linus' && linusCalls++ === 0) await firstLinus.promise;
@@ -432,7 +473,12 @@ describe('route_forward thread ownership', () => {
           yield { type: 'text_delta', text: vpId };
         },
         abort: () => true,
-      }),
+      };
+    });
+    const runner = createCliSessionRunner({
+      loaded: { yeaftDir: root, config: {}, conversationStore, managedCliReady },
+      sessionId,
+      engineFactory,
       personaFactory: vpId => ({ vpId }),
     });
 
@@ -442,6 +488,9 @@ describe('route_forward thread ownership', () => {
     });
     expect(conversationStore.append).toHaveBeenCalledTimes(1);
     expect(starts.every(item => item.options.userAlreadyPersisted === true)).toBe(true);
+    expect(engineOptions).toHaveLength(2);
+    expect(engineOptions.every(item => item.managedCliReady === managedCliReady)).toBe(true);
+    expect(engineFactory.mock.calls.every(([loaded]) => loaded.managedCliReady === managedCliReady)).toBe(true);
 
     const secondLinusTurn = runner.run('@vp-linus follow up');
     await new Promise(resolve => setTimeout(resolve, 10));

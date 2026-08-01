@@ -81,6 +81,7 @@ const DEFAULT_COMPACT_TRIGGER_RATIO = 0.7;
  * @property {boolean} [skipSkills] — Skip skill loading
  * @property {object[]} [extraTools] — Additional ToolDef objects to register
  * @property {object} [configOverrides] — Additional config overrides
+ * @property {Promise<Array>} [managedCliReady] — optional entrypoint-owned CLI setup
  */
 
 /**
@@ -95,6 +96,7 @@ const DEFAULT_COMPACT_TRIGGER_RATIO = 0.7;
  * @property {import('./tools/registry.js').ToolRegistry} toolRegistry — Tool registry
  * @property {import('./debug-trace.js').DebugTrace|import('./debug-trace.js').NullTrace} trace
  * @property {string} yeaftDir — Resolved data directory path
+ * @property {Promise<Array>} managedCliReady — optional CLI setup completion
  * @property {{ skills: number, mcpServers: string[], mcpFailed: object[], tools: number }} status
  * @property {() => Promise<void>} shutdown — Graceful shutdown
  */
@@ -148,6 +150,7 @@ export async function loadSession(options = {}) {
     extraTools = [],
     configOverrides = {},
     serverMode = false,
+    managedCliReady = null,
   } = options;
 
   // ─── 1. Determine config + store directories ─────────────
@@ -168,6 +171,8 @@ export async function loadSession(options = {}) {
   const configInitResult = initYeaftDir(configDir);
   const storeInitResult = configInitResult;
   overrides.dir = configDir;
+
+  const managedCliInstall = managedCliReady || Promise.resolve([]);
 
   // Log any warnings from directory initialization.
   const initWarnings = configInitResult.warnings;
@@ -479,6 +484,7 @@ export async function loadSession(options = {}) {
     yeaftDir,
     toolStats,
     taskManager,
+    managedCliReady: managedCliInstall,
   });
 
   // ─── 9a-pre. Create per-group history Compactor ────────
@@ -633,6 +639,7 @@ export async function loadSession(options = {}) {
     amsRegistry,
     toolStats,
     taskManager,
+    managedCliReady: managedCliInstall,
     shutdown,
     // task-325c: user-initiated abort API. Delegates to web-bridge which
     // owns the single AbortController. Lazy-imported to avoid a hard cycle

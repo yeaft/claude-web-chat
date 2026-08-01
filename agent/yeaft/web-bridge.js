@@ -1779,6 +1779,7 @@ function getOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
     skillManager: session.skillManager,
     mcpManager: session.mcpManager,
     yeaftDir: session.yeaftDir,
+    managedCliReady: session.managedCliReady || null,
     // Share the session-shared ToolUsageStats so per-VP tool calls land
     // in the same on-disk snapshot the `yeaft_fetch_tool_stats` handler
     // reads. Without this, engine's record-on-tool-exec guard
@@ -4836,6 +4837,7 @@ export async function ensureSessionLoaded(opts = {}) {
       skipMCP: true,
       skipSkills: true,
       serverMode: true,
+      managedCliReady: ctx.managedCliReady,
     });
     claimRuntimeOwnership(session);
 
@@ -7112,6 +7114,7 @@ export async function resetYeaftSession() {
       skipMCP: true,
       skipSkills: true,
       serverMode: true,
+      managedCliReady: ctx.managedCliReady,
     });
     claimRuntimeOwnership(session);
     installYeaftRuntimeBridge(session);

@@ -18,6 +18,7 @@ export default {
   pendingUserQuestions: new Map(),
   nodePty: null,
   CONFIG: null,
+  managedCliReady: Promise.resolve([]),
   agentCapabilities: [],
   // Agent 级别的 slash commands 缓存（所有 conversation 共用）
   slashCommands: [],
