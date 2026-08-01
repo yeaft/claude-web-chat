@@ -40,6 +40,20 @@ import {
   yeaftCatalogKey,
   yeaftRouteRef,
 } from '../../web/stores/helpers/session-catalog.js';
+
+const SIDEBAR_SECTION_SELECTOR = /\.(?:sidebar-section|projects-section|recents-section)(?![-\w])/;
+const CSS_ZERO = /^0(?:\.0+)?(?:[a-z%]+)?$/i;
+
+function sidebarSectionTopValues(css, property) {
+  const declarationPattern = new RegExp(`(?:^|;)\\s*(${property}(?:-top)?)\\s*:\\s*([^;]+)`, 'g');
+  return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(([, selector]) => SIDEBAR_SECTION_SELECTOR.test(selector))
+    .flatMap(([, , declarations]) => [...declarations.matchAll(declarationPattern)])
+    .map(([, declaration, value]) => declaration.endsWith('-top')
+      ? value.trim()
+      : value.trim().split(/\s+/)[0]);
+}
+
 const storeFactories = new Map();
 function defineStore(id, options) {
   return () => {
@@ -187,6 +201,14 @@ describe('message flow regressions', () => {
     const darkThemeVariables = variables.match(/\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/)?.[1] || '';
     expect(sidebarCss).toMatch(/\.unread-dot\s*\{[^}]*background:\s*var\(--success\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-actions\s*\{[^}]*padding:\s*6px 8px 4px/);
+    const sectionPaddingTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'padding');
+    const sectionMarginTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'margin');
+    expect(sectionPaddingTopValues.length).toBeGreaterThan(0);
+    expect(sectionPaddingTopValues.every(value => CSS_ZERO.test(value))).toBe(true);
+    expect(sectionMarginTopValues.length).toBeGreaterThan(0);
+    expect(sectionMarginTopValues.every(value => CSS_ZERO.test(value))).toBe(true);
+    const nonzeroOverride = `${yeaftSidebarCss}\n.projects-section { padding-top: 4px; }`;
+    expect(sidebarSectionTopValues(nonzeroOverride, 'padding').every(value => CSS_ZERO.test(value))).toBe(false);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\s*\{[^}]*background:\s*transparent/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-title-text\s*\{[^}]*flex:\s*1[^}]*text-overflow:\s*ellipsis/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-unread\s*\{[^}]*background:\s*var\(--success\)/);
