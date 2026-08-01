@@ -138,12 +138,12 @@ export default defineTool({
     en: `Search through past conversation history.
 
 Searches message content for all whitespace-separated terms (case-insensitive).
-Tool-result messages are excluded. Useful for finding previous discussions, decisions, or code snippets.
+Inside a Session, search is limited to that Session plus sibling Sessions in the same Project on this Agent. Tool-result messages are excluded. Useful for finding previous discussions, decisions, or code snippets.
 
 Results are returned newest-first with a bounded matching snippet and source metadata.`,
     zh: `搜索历史对话记录。
 
-在已持久化消息的正文中搜索全部空格分隔的关键词（不区分大小写），并排除工具结果消息。用于查找之前的讨论、决策或代码片段。
+在已持久化消息的正文中搜索全部空格分隔的关键词（不区分大小写）。在 Session 内仅搜索当前 Session，以及同一 Agent 上同 Project 的兄弟 Session；排除工具结果消息。用于查找之前的讨论、决策或代码片段。
 
 结果按最新优先返回，包含有界的命中片段和来源信息。`
   },
@@ -180,7 +180,16 @@ Results are returned newest-first with a bounded matching snippet and source met
 
     try {
       const telemetry = {};
-      const results = searchMessages(yeaftDir, keyword, limit, { telemetry });
+      const projectSessionIds = Array.isArray(ctx?.projectSessionIds)
+        ? ctx.projectSessionIds.filter(id => typeof id === 'string' && id.trim()).map(id => id.trim())
+        : [];
+      const scopedSessionIds = ctx?.sessionId
+        ? Array.from(new Set([ctx.sessionId, ...projectSessionIds]))
+        : null;
+      const results = searchMessages(yeaftDir, keyword, limit, {
+        telemetry,
+        ...(scopedSessionIds ? { sessionIds: scopedSessionIds } : {}),
+      });
       const searchTelemetry = {
         resultCount: results.length,
         scannedFiles: telemetry.scannedFiles || 0,

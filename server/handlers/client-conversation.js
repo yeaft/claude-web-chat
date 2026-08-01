@@ -4,6 +4,7 @@ import {
   sessionDb,
   messageDb,
   userDb,
+  yeaftProjectDb,
   yeaftSessionDb,
   sessionUiMetadataDb,
 } from '../database.js';
@@ -1277,6 +1278,61 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       break;
     }
 
+    case 'yeaft_project_mutation': {
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      const op = msg.op;
+      const respond = async (payload) => {
+        await sendToWebClient(client, {
+          type: 'yeaft_output',
+          agentId: msg.targetAgentId || msg.agentId || client.currentAgent || null,
+          event: {
+            type: 'project_mutation_result',
+            requestId,
+            op,
+            projectsAuthoritative: true,
+            ...payload,
+          },
+        });
+      };
+      try {
+        if (!client.userId) throw new Error('User identity is required');
+        let result = null;
+        if (op === 'create') result = yeaftProjectDb.create(client.userId, msg.name);
+        else if (op === 'rename') result = yeaftProjectDb.rename(client.userId, msg.projectId, msg.name);
+        else if (op === 'delete') result = yeaftProjectDb.delete(client.userId, msg.projectId);
+        else if (op === 'move_session') {
+          const agentId = msg.targetAgentId || msg.agentId;
+          const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId.trim() : '';
+          if (!agentId || !sessionId) throw new Error('Agent and Session identities are required');
+          if (!yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) {
+            throw new Error('Session not found');
+          }
+          result = yeaftProjectDb.moveSession(client.userId, {
+            agentId,
+            sessionId,
+            projectId: msg.projectId || null,
+          });
+        } else {
+          throw new Error('Unknown Project operation');
+        }
+        const responseAgentId = msg.targetAgentId || msg.agentId || client.currentAgent || null;
+        const projects = responseAgentId
+          ? yeaftProjectDb.listForAgent(client.userId, responseAgentId)
+          : yeaftProjectDb.list(client.userId);
+        await respond({ ok: true, result, projects });
+        await broadcastSessionCatalog(client.userId);
+      } catch (err) {
+        await respond({
+          ok: false,
+          error: {
+            code: err?.code || 'project_mutation_failed',
+            message: err?.message || String(err),
+          },
+        });
+      }
+      break;
+    }
+
     case 'yeaft_merge_thread':
     case 'unify_merge_thread': {
       const mergeAgentId = msg.agentId || client.currentAgent;
@@ -1404,6 +1460,19 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         rest.type = relayType;
         if (rest.type === 'yeaft_session_send' || rest.type === 'yeaft_session_chat') {
           trackUserTurn(client.userId, Buffer.byteLength(JSON.stringify(msg)));
+          const sessionId = typeof rest.sessionId === 'string' ? rest.sessionId.trim() : '';
+          if (sessionId && client.userId) {
+            const projectContext = yeaftProjectDb.contextForSession(
+              client.userId,
+              relayAgentId,
+              sessionId,
+            );
+            rest.projectContext = projectContext || {
+              projectId: null,
+              projectName: null,
+              sessionIds: [],
+            };
+          }
         }
 
         if (rest.type === 'yeaft_session_chat' && !rest.id) {

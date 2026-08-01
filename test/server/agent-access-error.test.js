@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { CONFIG } from '../../server/config.js';
 import { agents } from '../../server/context.js';
-import { sessionDb, yeaftSessionDb, sessionUiMetadataDb } from '../../server/database.js';
+import { sessionDb, yeaftProjectDb, yeaftSessionDb, sessionUiMetadataDb } from '../../server/database.js';
 import {
   buildSessionCatalog,
   resolveAgentAccessError,
@@ -52,7 +52,7 @@ describe('resolveAgentAccessError', () => {
       return false;
     });
     expect(handled).toBe(true);
-    expect(accessChecks).toEqual(['agent-foreign']);
+    expect(accessChecks).toEqual([]);
     expect(forwarded).toEqual([]);
   });
 
@@ -157,6 +157,46 @@ describe('resolveAgentAccessError', () => {
       expect(sessionUiMetadataDb.get(userId, `yeaft:agent-a:same-${suffix}`)).toMatchObject({
         pinned: true, sortRank: 0,
       });
+
+      const project = yeaftProjectDb.create(userId, `Project ${suffix}`);
+      yeaftProjectDb.moveSession(userId, {
+        agentId: 'agent-a', sessionId: `same-${suffix}`, projectId: project.id,
+      });
+      yeaftProjectDb.moveSession(userId, {
+        agentId: 'agent-a', sessionId: `sibling-${suffix}`, projectId: project.id,
+      });
+      yeaftProjectDb.moveSession(userId, {
+        agentId: 'agent-b', sessionId: `foreign-agent-${suffix}`, projectId: project.id,
+      });
+      expect(yeaftProjectDb.list(userId)).toEqual([
+        expect.objectContaining({
+          id: project.id,
+          members: [
+            { agentId: 'agent-a', sessionId: `same-${suffix}` },
+            { agentId: 'agent-a', sessionId: `sibling-${suffix}` },
+            { agentId: 'agent-b', sessionId: `foreign-agent-${suffix}` },
+          ],
+        }),
+      ]);
+      expect(yeaftProjectDb.contextForSession(userId, 'agent-a', `same-${suffix}`)).toEqual({
+        projectId: project.id,
+        projectName: `Project ${suffix}`,
+        sessionIds: [`sibling-${suffix}`],
+      });
+      expect(yeaftProjectDb.contextForSession(userId, 'agent-b', `foreign-agent-${suffix}`)).toEqual({
+        projectId: project.id,
+        projectName: `Project ${suffix}`,
+        sessionIds: [],
+      });
+      expect(yeaftProjectDb.listForAgent(userId, 'agent-a')).toEqual([
+        expect.objectContaining({
+          id: project.id,
+          sessionIds: [`same-${suffix}`, `sibling-${suffix}`],
+          members: expect.arrayContaining([
+            { agentId: 'agent-b', sessionId: `foreign-agent-${suffix}` },
+          ]),
+        }),
+      ]);
     });
   });
 

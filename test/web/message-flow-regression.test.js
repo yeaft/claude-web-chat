@@ -189,7 +189,10 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-unread\s*\{[^}]*background:\s*var\(--success\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\[draggable="true"\][^}]*\{[^}]*cursor:\s*default/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-create\s*\{[^}]*background:\s*var\(--bg-input-wrapper\)/);
-    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-menu-divider\s*\{[^}]*background:\s*var\(--border-light\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-results\s*\{[^}]*display:\s*flex[^}]*overflow:\s*hidden/);
+    expect(yeaftSidebarCss).toMatch(/\.projects-section, \.recents-section\s*\{[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-menu-info\s*\{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/);
+    expect(yeaftSidebarCss).not.toContain('.sidebar-session-menu-divider');
     expect(vpAvatarSource).not.toContain('/assets/avatars/');
     expect(vpAvatarSource).not.toContain('<img');
     expect(vpCss).not.toContain('.vp-avatar-img');
@@ -262,13 +265,24 @@ describe('message flow regressions', () => {
           { id: 'agent-b', name: 'Agent B', online: false },
         ],
         projects: [
-          { id: 'project-same', agentId: 'user_1770305719:server-instance', name: 'Online project', sessionIds: ['pinned'] },
-          { id: 'project-same', agentId: 'agent-b', name: 'Offline project', sessionIds: [] },
+          {
+            id: 'project-shared',
+            name: 'Shared project',
+            members: [
+              { agentId: 'user_1770305719:server-instance', sessionId: 'pinned' },
+              { agentId: 'agent-b', sessionId: 'offline' },
+            ],
+          },
+          { id: 'project-empty', name: 'Empty project', members: [] },
         ],
       },
       global: { mocks: { $t: key => key } },
     });
     expect(sidebar.findAll('.sidebar-primary-actions')).toHaveLength(1);
+    expect(sidebar.get('.sidebar-navigation').element.children[0].classList).toContain('sidebar-primary-actions');
+    expect(sidebar.get('.sidebar-navigation').element.children[1].classList).toContain('sidebar-session-results');
+    expect(sidebar.get('.sidebar-session-results').element.children[0].classList).toContain('projects-section');
+    expect(sidebar.get('.sidebar-session-results').element.children[1].classList).toContain('recents-section');
     expect(sidebar.find('input[type="search"]').exists()).toBe(false);
     expect(sidebar.findAll('.sidebar-tool-button')).toHaveLength(1);
     expect(sidebar.findAll('.sidebar-section')).toHaveLength(2);
@@ -281,8 +295,8 @@ describe('message flow regressions', () => {
     expect(Object.fromEntries(sidebar.findAll('.sidebar-project').map(item => [
       item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
       item.get('.sidebar-project-count').text(),
-    ]))).toEqual({ 'Online project': '1', 'Offline project': '0' });
-    expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(1);
+    ]))).toEqual({ 'Shared project': '1', 'Empty project': '0' });
+    expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(2);
     expect(sidebar.get('.session-dots-btn').attributes('aria-label')).toBe('sidebar.projects.menu');
 
     await sidebar.get('.sidebar-tool-button').trigger('click');
@@ -305,7 +319,6 @@ describe('message flow regressions', () => {
     expect(dispatchProjectAction).toHaveBeenCalledWith({
       action: 'create',
       name: 'Workspace',
-      agentId: 'agent-a',
     });
     finishCreate({ ok: true });
     await Promise.all([firstCreate, duplicateCreate]);
@@ -319,7 +332,7 @@ describe('message flow regressions', () => {
     expect(Object.fromEntries(sidebar.findAll('.sidebar-project').map(item => [
       item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
       item.get('.sidebar-project-count').text(),
-    ]))).toEqual({ 'Online project': '1', 'Offline project': '0' });
+    ]))).toEqual({ 'Shared project': '1', 'Empty project': '0' });
     await projectToggles[0].trigger('click');
     expect(sidebar.get('.session-dots-btn svg path').attributes('d')).toContain('M6 10');
     expect(sidebar.text()).toContain('Visible');
@@ -347,8 +360,9 @@ describe('message flow regressions', () => {
     expect(firstRow.attributes('tabindex')).toBe('0');
     expect(UnifiedSessionList.methods.providerLabel({ runtimeProvider: 'claude-code' })).toBe('Claude');
     expect(sidebar.text()).not.toContain('user_1770305719');
-    expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(1);
+    expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(2);
     expect(sidebar.findAll('.session-item .session-dots-btn')).toHaveLength(3);
+    expect(sidebar.get('.sidebar-session-results').attributes('class')).toContain('sidebar-session-results');
     const selectCountBeforeSettingsKeyboard = sidebar.emitted('select')?.length || 0;
     const pinnedSettingsButton = firstRow.get('.session-dots-btn');
     await pinnedSettingsButton.trigger('keydown', { key: 'Enter' });
@@ -359,9 +373,14 @@ describe('message flow regressions', () => {
     await pinnedSettingsButton.trigger('keydown', { key: ' ' });
     expect(sidebar.emitted('select')?.length || 0).toBe(selectCountBeforeSettingsKeyboard);
     expect(sidebar.find('.session-menu').exists()).toBe(true);
-    expect(sidebar.get('.sidebar-session-menu-info').text()).toContain('server');
-    expect(sidebar.get('.sidebar-session-menu-info').text()).toContain('Yeaft');
-    expect(sidebar.find('.sidebar-session-menu-divider').exists()).toBe(true);
+    const runtimeFooter = sidebar.get('.sidebar-session-menu-info');
+    expect(runtimeFooter.text()).toContain('server');
+    expect(runtimeFooter.text()).toContain('Yeaft');
+    expect(runtimeFooter.findAll('strong')).toHaveLength(2);
+    expect(runtimeFooter.findAll('span')).toHaveLength(0);
+    expect(runtimeFooter.text()).not.toContain('sidebar.sessions.agent');
+    expect(runtimeFooter.text()).not.toContain('sidebar.sessions.provider');
+    expect(sidebar.find('.sidebar-session-menu-divider').exists()).toBe(false);
     const settingsAction = sidebar.findAll('.session-menu-item')
       .find(item => item.text() === 'yeaft.session.openSettings');
     expect(settingsAction).toBeTruthy();
@@ -371,18 +390,11 @@ describe('message flow regressions', () => {
       row: { catalogKey: 'yeaft:user_1770305719:server-instance:pinned' },
     });
     await sidebar.get('.sidebar-project-toggle').trigger('click');
-    const pinnedRecentRow = sidebar.findAll('.session-item')
-      .find(item => item.text().includes('Pinned'));
-    expect(pinnedRecentRow).toBeTruthy();
-    await pinnedRecentRow.get('.session-dots-btn').trigger('click');
-    const recentSettingsAction = sidebar.findAll('.session-menu-item')
-      .find(item => item.text() === 'yeaft.session.openSettings');
-    expect(recentSettingsAction).toBeTruthy();
-    await recentSettingsAction.trigger('click');
-    expect(sidebar.emitted('action').at(-1)[0]).toMatchObject({
-      action: 'settings',
-      row: { catalogKey: 'yeaft:user_1770305719:server-instance:pinned' },
-    });
+    expect(sidebar.findAll('.recents-section .session-item').some(item => item.text().includes('Pinned'))).toBe(false);
+    expect(sidebar.findAll('.recents-section .session-item').map(item => item.text())).toEqual([
+      expect.stringContaining('Visible 2'),
+      expect.stringContaining('Visible'),
+    ]);
     await sidebar.get('.sidebar-primary-action').trigger('click');
     expect(sidebar.emitted('close-work-center').at(-1)).toEqual([]);
     expect(sidebar.emitted('create').at(-1)).toEqual([]);
@@ -417,11 +429,12 @@ describe('message flow regressions', () => {
     const originalConfirm = window.confirm;
     window.prompt = vi.fn();
     window.confirm = vi.fn();
-    UnifiedSessionList.methods.renameProject.call(sidebar.vm, { id: 'project-same', agentId: 'agent-b', name: 'Offline project' });
-    UnifiedSessionList.methods.deleteProject.call(sidebar.vm, { id: 'project-same', agentId: 'agent-b', name: 'Offline project' });
+    UnifiedSessionList.methods.renameProject.call(sidebar.vm, { id: 'project-shared', name: 'Shared project' });
+    expect(window.prompt).toHaveBeenCalledTimes(1);
+    UnifiedSessionList.methods.deleteProject.call(sidebar.vm, { id: 'project-shared', name: 'Shared project' });
+    expect(window.confirm).toHaveBeenCalledTimes(1);
     UnifiedSessionList.methods.runAction.call(sidebar.vm, 'rename', catalogRows[1]);
-    expect(window.prompt).not.toHaveBeenCalled();
-    expect(window.confirm).not.toHaveBeenCalled();
+    expect(window.prompt).toHaveBeenCalledTimes(1);
     if (originalPrompt) window.prompt = originalPrompt;
     else delete window.prompt;
     if (originalConfirm) window.confirm = originalConfirm;
@@ -435,6 +448,9 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).toContain("runAction('settings', row)");
     expect(UnifiedSessionList.template).toContain("moveRow(row, project)");
     expect(UnifiedSessionList.template).toContain('sidebar-primary-actions');
+    expect(UnifiedSessionList.template).toContain('projects-section');
+    expect(UnifiedSessionList.template).toContain('recents-section');
+    expect(UnifiedSessionList.template).not.toContain('sidebar-session-menu-divider');
     expect(UnifiedSessionList.template).not.toContain('sidebar-session-meta');
     expect(UnifiedSessionList.template).toContain('processing-dot');
     const documentAdd = vi.spyOn(document, 'addEventListener');

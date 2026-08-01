@@ -3915,7 +3915,8 @@ export const useChatStore = defineStore('chat', {
 
       switch (event.type) {
         case 'project_mutation_result':
-          this.finishProjectMutation(event, msg.agentId || null);
+          if (event.projectsAuthoritative === true) this.finishProjectMutation(event);
+          else this.finishLegacyProjectMutation(event, msg.agentId || null);
           break;
 
         case 'ask_user_question': {
@@ -4705,11 +4706,10 @@ export const useChatStore = defineStore('chat', {
           // reload before any agent connects.
           const gs = window.Pinia?.useSessionsStore?.() || (window.__useSessionsStore && window.__useSessionsStore());
           const rows = event.sessions || [];
-          if (Array.isArray(event.projects) && msg.agentId) {
-            this.sessionProjects = [
-              ...this.sessionProjects.filter(project => project.agentId !== msg.agentId),
-              ...event.projects.map(project => ({ ...project, agentId: msg.agentId })),
-            ];
+          if (event.projectsAuthoritative === true && Array.isArray(event.projects)) {
+            this.applySessionCatalogSnapshot(this.sessionCatalog, event.projects);
+          } else if (Array.isArray(event.projects) && msg.agentId) {
+            this.applyLegacyProjectSnapshot(event.projects, msg.agentId);
           }
           if (event.type !== 'yeaft_session_hydrate'
               && this.yeaftSessionHydrateRequestId
@@ -6028,10 +6028,21 @@ export const useChatStore = defineStore('chat', {
         return true;
       }).map(row => ({ ...row }));
       if (Array.isArray(projects)) {
-        this.sessionProjects = projects.filter(project => project?.id && project?.agentId);
+        this.sessionProjects = projects
+          .filter(project => project?.id)
+          .map(project => ({
+            ...project,
+            members: Array.isArray(project.members)
+              ? project.members.filter(member => member?.agentId && member?.sessionId)
+              : (project.agentId
+                  ? (project.sessionIds || []).map(sessionId => ({ agentId: project.agentId, sessionId }))
+                  : []),
+          }));
         const membership = new Map();
         for (const project of this.sessionProjects) {
-          for (const sessionId of project.sessionIds || []) membership.set(`${project.agentId}\u001f${sessionId}`, project.id);
+          for (const member of project.members) {
+            membership.set(`${member.agentId}\u001f${member.sessionId}`, project.id);
+          }
         }
         this.sessionCatalog = this.sessionCatalog.map(row => (
           row.runtimeProvider === 'yeaft'
@@ -6042,10 +6053,10 @@ export const useChatStore = defineStore('chat', {
       this.sessionCatalogLoaded = true;
     },
     mutateProject(op, payload = {}, agentId = null) {
-      const targetAgentId = agentId || payload.agentId || this.currentAgent;
-      if (!targetAgentId) return Promise.resolve({ ok: false, error: { code: 'missing_agent' } });
-      const targetAgent = this.agents.find(agent => agent.id === targetAgentId);
-      if (!targetAgent?.online) return Promise.resolve({ ok: false, error: { code: 'agent_offline' } });
+      const targetAgentId = agentId || payload.agentId || this.currentAgent || null;
+      if (op === 'move_session' && !targetAgentId) {
+        return Promise.resolve({ ok: false, error: { code: 'missing_agent' } });
+      }
       const requestId = `project_${crypto.randomUUID()}`;
       return new Promise(resolve => {
         const timer = setTimeout(() => {
@@ -6057,7 +6068,7 @@ export const useChatStore = defineStore('chat', {
         };
         const sent = this.sendWsMessage({
           type: 'yeaft_project_mutation',
-          agentId: targetAgentId,
+          ...(targetAgentId ? { agentId: targetAgentId, targetAgentId } : {}),
           requestId,
           op,
           ...payload,
@@ -6069,24 +6080,36 @@ export const useChatStore = defineStore('chat', {
         }
       });
     },
-    finishProjectMutation(event, agentId = null) {
+    applyLegacyProjectSnapshot(projects, agentId) {
+      if (!agentId || !Array.isArray(projects)) return;
+      const otherProjects = this.sessionProjects.filter(project => project.legacyAgentId !== agentId);
+      const legacyProjects = projects
+        .filter(project => project?.id)
+        .map(project => ({
+          ...project,
+          id: `${agentId}\u001f${project.id}`,
+          legacyProjectId: project.id,
+          legacyAgentId: agentId,
+          members: (project.sessionIds || []).map(sessionId => ({ agentId, sessionId })),
+        }));
+      this.applySessionCatalogSnapshot(this.sessionCatalog, [...otherProjects, ...legacyProjects]);
+    },
+    finishLegacyProjectMutation(event, agentId) {
       if (!event?.requestId) return false;
       const pending = this.projectMutationRequests[event.requestId] || null;
       if (pending) delete this.projectMutationRequests[event.requestId];
       if (event.ok && Array.isArray(event.projects) && agentId) {
-        this.sessionProjects = [
-          ...this.sessionProjects.filter(project => project.agentId !== agentId),
-          ...event.projects.map(project => ({ ...project, agentId })),
-        ];
-        const membership = new Map();
-        for (const project of event.projects) {
-          for (const sessionId of project.sessionIds || []) membership.set(sessionId, project.id);
-        }
-        this.sessionCatalog = this.sessionCatalog.map(row => (
-          row.runtimeProvider === 'yeaft' && row.routeRef?.agentId === agentId
-            ? { ...row, projectId: membership.get(row.routeRef.sessionId) || null }
-            : row
-        ));
+        this.applyLegacyProjectSnapshot(event.projects, agentId);
+      }
+      pending?.resolve(event);
+      return !!pending;
+    },
+    finishProjectMutation(event) {
+      if (!event?.requestId) return false;
+      const pending = this.projectMutationRequests[event.requestId] || null;
+      if (pending) delete this.projectMutationRequests[event.requestId];
+      if (event.ok && Array.isArray(event.projects)) {
+        this.applySessionCatalogSnapshot(this.sessionCatalog, event.projects);
       }
       pending?.resolve(event);
       return !!pending;

@@ -9,6 +9,15 @@ const broadcastAgentList = vi.fn(async () => {});
 const broadcastSessionCatalog = vi.fn(async () => {});
 const getByUser = vi.fn(() => []);
 const getByAgent = vi.fn(() => []);
+const listProjects = vi.fn(() => []);
+const listProjectsForAgent = vi.fn(() => listProjects());
+const importLegacyProjects = vi.fn(() => false);
+const reconcileProjectSessions = vi.fn(() => 0);
+const removeProjectSession = vi.fn(() => false);
+const createProject = vi.fn(() => ({ id: 'project-created', name: 'Created', members: [] }));
+const renameProject = vi.fn();
+const deleteProject = vi.fn();
+const moveProjectSession = vi.fn();
 const getForAgent = vi.fn(() => null);
 const reconcileFromSnapshot = vi.fn();
 const upsertFromSnapshot = vi.fn();
@@ -37,6 +46,18 @@ vi.mock('../../server/database.js', () => ({
   },
   messageDb: {},
   userDb: {},
+  yeaftProjectDb: {
+    list: listProjects,
+    listForAgent: listProjectsForAgent,
+    importLegacyProjects,
+    reconcileAgentSessions: reconcileProjectSessions,
+    removeSession: removeProjectSession,
+    create: createProject,
+    rename: renameProject,
+    delete: deleteProject,
+    moveSession: moveProjectSession,
+    contextForSession: vi.fn(() => null),
+  },
   yeaftSessionDb: {
     getByUser,
     getByAgent,
@@ -75,6 +96,16 @@ afterEach(() => {
   getByUser.mockReturnValue([]);
   getByAgent.mockReset();
   getByAgent.mockReturnValue([]);
+  listProjects.mockReset();
+  listProjects.mockReturnValue([]);
+  listProjectsForAgent.mockClear();
+  importLegacyProjects.mockClear();
+  reconcileProjectSessions.mockClear();
+  removeProjectSession.mockClear();
+  createProject.mockClear();
+  renameProject.mockClear();
+  deleteProject.mockClear();
+  moveProjectSession.mockClear();
   reconcileFromSnapshot.mockClear();
   upsertFromSnapshot.mockClear();
   sendToWebClient.mockClear();
@@ -498,6 +529,33 @@ describe('Yeaft Session online Agent filtering', () => {
     });
 
     CONFIG.skipAuth = true;
+    listProjectsForAgent.mockReturnValueOnce([{
+      id: 'project-created',
+      name: 'Created',
+      members: [],
+      sessionIds: [],
+    }]);
+    forwardToAgent.mockClear();
+    routedClient.sent = [];
+    await handleClientConversation('client-1', routedClient, {
+      type: 'yeaft_project_mutation',
+      requestId: 'project-create-1',
+      op: 'create',
+      name: 'Created',
+    }, allow);
+    expect(createProject).toHaveBeenCalledWith('user-1', 'Created');
+    expect(forwardToAgent).not.toHaveBeenCalled();
+    expect(routedClient.sent.at(-1)).toMatchObject({
+      type: 'yeaft_output',
+      event: {
+        type: 'project_mutation_result',
+        requestId: 'project-create-1',
+        projectsAuthoritative: true,
+        ok: true,
+        projects: [{ id: 'project-created', sessionIds: [] }],
+      },
+    });
+
     const ownerClient = { authenticated: true, userId: 'user-1', sent: [], ws: { readyState: 1 } };
     webClients.set('owner-client', ownerClient);
     const agent = { ownerId: 'user-1', conversations: new Map(), ws: { readyState: 1 } };
@@ -514,13 +572,43 @@ describe('Yeaft Session online Agent filtering', () => {
         type: 'project_mutation_result',
         requestId: 'project-rename-1',
         ok: true,
-        projects: [{ id: 'project-1', name: 'Renamed project', sessionIds: ['same-id'] }],
+        projects: [{ id: 'legacy-project', name: 'Legacy project', sessionIds: ['same-id'] }],
       },
     });
     expect(ownerClient.sent.at(-1)).toMatchObject({
       type: 'yeaft_output',
       agentId: 'agent-a',
       event: { type: 'project_mutation_result', requestId: 'project-rename-1' },
+    });
+
+    listProjects.mockReturnValue([{
+      id: 'server-project',
+      name: 'Server project',
+      members: [{ agentId: 'agent-a', sessionId: 'same-id' }],
+    }]);
+    ownerClient.sent = [];
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_output',
+      event: {
+        type: 'session_list_updated',
+        sessions: [{ id: 'same-id', name: 'Session' }],
+        projects: [{ id: 'legacy-project', name: 'Legacy project', sessionIds: ['same-id'] }],
+      },
+    });
+    expect(reconcileProjectSessions).toHaveBeenCalledWith('user-1', 'agent-a', ['same-id']);
+    expect(importLegacyProjects).toHaveBeenCalledWith(
+      'user-1',
+      'agent-a',
+      [{ id: 'legacy-project', name: 'Legacy project', sessionIds: ['same-id'] }],
+      expect.any(Function),
+    );
+    expect(ownerClient.sent.at(-1)).toMatchObject({
+      type: 'yeaft_output',
+      event: {
+        type: 'session_list_updated',
+        projectsAuthoritative: true,
+        projects: [{ id: 'server-project', name: 'Server project' }],
+      },
     });
 
     const otherTab = { authenticated: true, userId: 'user-1', sent: [], ws: { readyState: 1 } };

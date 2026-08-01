@@ -283,7 +283,10 @@ export function handleMessage(store, msg) {
       break;
 
     case 'session_catalog_snapshot':
-      store.applySessionCatalogSnapshot(msg.catalog);
+      store.applySessionCatalogSnapshot(
+        msg.catalog,
+        msg.projectsAuthoritative === true ? msg.projects : null,
+      );
       break;
 
     case 'session_ui_metadata_updated': {

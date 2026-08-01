@@ -14,7 +14,7 @@ function sortRows(rows) {
 }
 
 function projectIdentityKey(project) {
-  return `${project?.agentId || ''}\u001f${project?.id || ''}`;
+  return project?.id || '';
 }
 
 export default {
@@ -56,16 +56,22 @@ export default {
     },
     projectRows() {
       const projects = this.projects.length > 0 ? this.projects : (this.projectStore?.sessionProjects || []);
-      return [...projects].sort((a, b) => {
-        if (a.agentId !== b.agentId) return String(a.agentId).localeCompare(String(b.agentId));
-        return (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER);
-      });
+      return [...projects].sort((a, b) => (
+        (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER)
+      ));
     },
     projectBySessionKey() {
       const out = new Map();
       for (const project of this.projectRows) {
-        for (const sessionId of project.sessionIds || []) {
-          out.set(`${project.agentId}\u001f${sessionId}`, project);
+        const members = Array.isArray(project.members)
+          ? project.members
+          : (project.agentId
+              ? (project.sessionIds || []).map(sessionId => ({ agentId: project.agentId, sessionId }))
+              : []);
+        for (const member of members) {
+          if (member?.agentId && member?.sessionId) {
+            out.set(`${member.agentId}\u001f${member.sessionId}`, project);
+          }
         }
       }
       return out;
@@ -96,11 +102,6 @@ export default {
         }
         return true;
       }));
-    },
-    projectCreateAgentId() {
-      return this.agents.find(agent => agent.id === this.activeRoute?.agentId && agent.online)?.id
-        || this.agents.find(agent => agent.online)?.id
-        || null;
     },
   },
   methods: {
@@ -149,7 +150,8 @@ export default {
       return this.isAgentOnline(row?.routeRef?.agentId);
     },
     canEditProject(project) {
-      return this.isAgentOnline(project?.agentId);
+      if (!project?.id) return false;
+      return !project.legacyAgentId || this.isAgentOnline(project.legacyAgentId);
     },
     canEditRow(row) {
       if (!row?.routeRef?.agentId || row.availability !== 'online') return false;
@@ -202,26 +204,27 @@ export default {
       this.$emit('action', { action: normalizedAction, row });
     },
     dispatchProjectAction(payload) {
-      const ownerAgentId = payload?.agentId || payload?.project?.agentId || payload?.row?.routeRef?.agentId || null;
-      if (!this.isAgentOnline(ownerAgentId)) return false;
+      const targetAgentId = payload?.agentId || payload?.row?.routeRef?.agentId || null;
+      if (payload?.action === 'move-session' && !this.isAgentOnline(targetAgentId)) return false;
       this.$emit('project-action', payload);
       const store = this.projectStore;
       if (!store?.mutateProject) return true;
       const { action, project, row, name, agentId: explicitAgentId } = payload;
-      const agentId = explicitAgentId || project?.agentId || row?.routeRef?.agentId || store.currentAgent;
+      const agentId = explicitAgentId || row?.routeRef?.agentId || null;
       if (action === 'create') return store.mutateProject('create', { name }, agentId);
-      if (action === 'rename') return store.mutateProject('rename', { projectId: project.id, name }, agentId);
-      if (action === 'delete') return store.mutateProject('delete', { projectId: project.id }, agentId);
+      const projectId = project?.legacyProjectId || project?.id;
+      if (action === 'rename') return store.mutateProject('rename', { projectId, name }, project?.legacyAgentId || agentId);
+      if (action === 'delete') return store.mutateProject('delete', { projectId }, project?.legacyAgentId || agentId);
       if (action === 'move-session' && row?.routeRef?.sessionId) {
         return store.mutateProject('move_session', {
           sessionId: row.routeRef.sessionId,
-          projectId: project?.id || null,
+          projectId: project?.legacyProjectId || project?.id || null,
         }, agentId);
       }
       return false;
     },
     createProject() {
-      if (!this.projectCreateAgentId || this.projectCreateSubmitting) return;
+      if (this.projectCreateSubmitting) return;
       this.projectCreateOpen = true;
       this.projectCreateName = '';
       this.$nextTick(() => this.$refs.projectCreateInput?.focus?.());
@@ -233,11 +236,10 @@ export default {
     },
     async submitProjectCreate() {
       const name = this.projectCreateName.trim();
-      const agentId = this.projectCreateAgentId;
-      if (!name || !agentId || this.projectCreateSubmitting) return;
+      if (!name || this.projectCreateSubmitting) return;
       this.projectCreateSubmitting = true;
       try {
-        const result = await this.dispatchProjectAction({ action: 'create', name, agentId });
+        const result = await this.dispatchProjectAction({ action: 'create', name });
         if (result?.ok !== false) {
           this.projectCreateOpen = false;
           this.projectCreateName = '';
@@ -273,16 +275,14 @@ export default {
       event.dataTransfer.setData('text/plain', row.catalogKey);
     },
     dragOverProject(project, event) {
-      if (!this.draggedRow || project.agentId !== this.draggedRow.routeRef?.agentId) return;
+      if (!this.draggedRow || !project?.id) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = 'move';
       this.dragTargetProjectId = projectIdentityKey(project);
     },
     dropOnProject(project, event) {
       event.preventDefault();
-      if (this.draggedRow && project.agentId === this.draggedRow.routeRef?.agentId) {
-        this.moveRow(this.draggedRow, project);
-      }
+      if (this.draggedRow && project?.id) this.moveRow(this.draggedRow, project);
       this.finishDrag();
     },
     dragOverRecents(event) {
@@ -313,7 +313,7 @@ export default {
         <section class="sidebar-section projects-section">
           <div class="sidebar-section-heading">
             <span>{{ $t('sidebar.projects.title') }}</span>
-            <button type="button" class="sidebar-tool-button" @click="createProject" :disabled="!projectCreateAgentId || projectCreateOpen" :title="$t('sidebar.projects.new')" :aria-label="$t('sidebar.projects.new')">
+            <button type="button" class="sidebar-tool-button" @click="createProject" :disabled="projectCreateOpen" :title="$t('sidebar.projects.new')" :aria-label="$t('sidebar.projects.new')">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"/></svg>
             </button>
           </div>
@@ -391,10 +391,9 @@ export default {
                     <button class="session-menu-item" @click.stop="runAction('settings', row)">{{ $t('yeaft.session.openSettings') }}</button>
                     <button class="session-menu-item" @click.stop="moveRow(row, null)">{{ $t('sidebar.projects.remove') }}</button>
                     <button class="session-menu-item danger" @click.stop="runAction('delete', row)">{{ $t('common.delete') }}</button>
-                    <div class="sidebar-session-menu-divider"></div>
                     <div class="sidebar-session-menu-info">
-                      <span><span>{{ $t('sidebar.sessions.agent') }}</span><strong :title="agentLabel(row)">{{ agentLabel(row) }}</strong></span>
-                      <span><span>{{ $t('sidebar.sessions.provider') }}</span><strong>{{ providerLabel(row) }}</strong></span>
+                      <strong :title="agentLabel(row)">{{ agentLabel(row) }}</strong>
+                      <strong>{{ providerLabel(row) }}</strong>
                     </div>
                   </div>
                 </span>
@@ -435,13 +434,12 @@ export default {
                 <button class="session-menu-item" @click.stop="runAction('rename', row)">{{ $t('chat.sidebar.renameConv') }}</button>
                 <template v-if="row.runtimeProvider === 'yeaft'">
                   <button class="session-menu-item" @click.stop="runAction('settings', row)">{{ $t('yeaft.session.openSettings') }}</button>
-                  <button v-for="project in projectRows.filter(item => item.agentId === row.routeRef.agentId)" :key="project.id" class="session-menu-item" @click.stop="moveRow(row, project)">{{ $t('sidebar.projects.moveTo', { name: project.name }) }}</button>
+                  <button v-for="project in projectRows" :key="project.id" class="session-menu-item" @click.stop="moveRow(row, project)">{{ $t('sidebar.projects.moveTo', { name: project.name }) }}</button>
                 </template>
                 <button class="session-menu-item danger" @click.stop="runAction('delete', row)">{{ $t('common.delete') }}</button>
-                <div class="sidebar-session-menu-divider"></div>
                 <div class="sidebar-session-menu-info">
-                  <span><span>{{ $t('sidebar.sessions.agent') }}</span><strong :title="agentLabel(row)">{{ agentLabel(row) }}</strong></span>
-                  <span><span>{{ $t('sidebar.sessions.provider') }}</span><strong>{{ providerLabel(row) }}</strong></span>
+                  <strong :title="agentLabel(row)">{{ agentLabel(row) }}</strong>
+                  <strong>{{ providerLabel(row) }}</strong>
                 </div>
               </div>
             </span>

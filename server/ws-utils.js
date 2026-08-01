@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { CONFIG } from './config.js';
 import { encrypt, decrypt, isEncrypted, encodeKey } from './encryption.js';
-import { sessionDb, yeaftSessionDb, sessionUiMetadataDb } from './database.js';
+import { sessionDb, yeaftProjectDb, yeaftSessionDb, sessionUiMetadataDb } from './database.js';
 import { projectSessionCatalog } from './session-catalog.js';
 import { agents, webClients, directoryCache, DIR_CACHE_TTL, DIR_CACHE_MAX_SIZE, trackMessageBytesSent } from './context.js';
 
@@ -126,6 +126,8 @@ export async function broadcastSessionCatalog(userId) {
       await sendToWebClient(client, {
         type: 'session_catalog_snapshot',
         catalog: buildSessionCatalog(userId, client.role),
+        projects: yeaftProjectDb.list(userId),
+        projectsAuthoritative: true,
       });
     } catch (e) {
       console.warn('[Server] session catalog projection failed:', e?.message || e);
@@ -187,6 +189,8 @@ export async function broadcastAgentList() {
         await sendToWebClient(client, {
           type: 'session_catalog_snapshot',
           catalog: buildSessionCatalog(client.userId, client.role),
+          projects: yeaftProjectDb.list(client.userId),
+          projectsAuthoritative: true,
         });
       } catch (e) {
         console.warn('[Server] session catalog projection failed:', e?.message || e);

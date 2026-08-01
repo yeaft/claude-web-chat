@@ -8,6 +8,7 @@ import {
   estimateTokens,
   projectVisibleSessionMessages,
 } from '../../../../agent/yeaft/conversation/persist.js';
+import { searchMessages } from '../../../../agent/yeaft/conversation/search.js';
 
 const TEST_DIR = join(tmpdir(), `yeaft-test-conv-${Date.now()}`);
 
@@ -844,15 +845,22 @@ legacy session`, { encoding: 'utf8' });
   describe('loadRecentBySession / loadAllBySession', () => {
     it('returns only messages stamped with the requested sessionId', () => {
       store.appendBatch([
-        { role: 'user',      content: 'A1', sessionId: 'grp_a' },
+        { role: 'user',      content: 'A1 project needle', sessionId: 'grp_a' },
         { role: 'assistant', content: 'A2', sessionId: 'grp_a' },
-        { role: 'user',      content: 'B1', sessionId: 'grp_b' },
+        { role: 'user',      content: 'B1 project needle', sessionId: 'grp_b' },
+        { role: 'user',      content: 'C1 project needle', sessionId: 'grp_c' },
         { role: 'user',      content: 'A3', sessionId: 'grp_a' },
       ]);
       const a = store.loadRecentBySession('grp_a', 50);
       const b = store.loadRecentBySession('grp_b', 50);
-      expect(a.map(m => m.content)).toEqual(['A1', 'A2', 'A3']);
-      expect(b.map(m => m.content)).toEqual(['B1']);
+      expect(a.map(m => m.content)).toEqual(['A1 project needle', 'A2', 'A3']);
+      expect(b.map(m => m.content)).toEqual(['B1 project needle']);
+      expect(searchMessages(TEST_DIR, 'project needle', 10, {
+        sessionIds: ['grp_a', 'grp_b'],
+      }).map(m => m.sessionId).sort()).toEqual(['grp_a', 'grp_b']);
+      expect(searchMessages(TEST_DIR, 'project needle', 10, {
+        sessionIds: [],
+      })).toEqual([]);
     });
 
     it('excludes messages with no sessionId (legacy / pre-grouping)', () => {

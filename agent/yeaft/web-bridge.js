@@ -589,6 +589,54 @@ const vpCurrentTodos = new Map();
  *                     sessionHandle: object }>}
  */
 const sessionContexts = new Map();
+/** Latest server-authoritative Project identity and same-Agent siblings per Session. */
+const projectContextBySession = new Map();
+
+function normalizeProjectContext(value, sessionId) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.sessionIds)) return null;
+  const currentSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+  return {
+    projectId: typeof value.projectId === 'string' && value.projectId.trim()
+      ? value.projectId.trim()
+      : null,
+    projectName: typeof value.projectName === 'string' && value.projectName.trim()
+      ? value.projectName.trim()
+      : null,
+    sessionIds: Array.from(new Set(value.sessionIds
+      .filter(id => typeof id === 'string' && id.trim())
+      .map(id => id.trim())
+      .filter(id => id !== currentSessionId))),
+  };
+}
+
+function legacyProjectContext(yeaftDir, sessionId) {
+  const project = loadProjects(yeaftDir).find(row => row.sessionIds.includes(sessionId));
+  if (!project) return null;
+  return normalizeProjectContext({
+    projectId: project.id,
+    projectName: project.name,
+    sessionIds: project.sessionIds,
+  }, sessionId);
+}
+
+function buildProjectSharedBlock(projectContext, summaries = '') {
+  const context = normalizeProjectContext(projectContext, null);
+  const body = typeof summaries === 'string' ? summaries.trim() : '';
+  if (!context?.projectId && !body) return '';
+  const lines = ['[Project Shared Context]'];
+  if (context?.projectId) {
+    const label = context.projectName
+      ? `${context.projectName} (${context.projectId})`
+      : context.projectId;
+    lines.push(`Project: ${label}`);
+    lines.push('Sharing boundary: sibling Sessions in this Project on this Agent only.');
+  } else {
+    lines.push('Sharing boundary: sibling Sessions in the same Project on this Agent only.');
+  }
+  lines.push('Read-only memory summaries preserve each source Session identity.');
+  if (body) lines.push('', body);
+  return lines.join('\n');
+}
 
 function vpKey(sessionId, vpId) {
   return `${sessionId}::${vpId}`;
@@ -2297,6 +2345,7 @@ export async function __testResetVpState() {
   asyncTaskOwners.clear();
   vpAborts.clear();
   sessionContexts.clear();
+  projectContextBySession.clear();
   vpCurrentTodos.clear();
   threadClassifier = defaultClassifyThread;
   if (_vpUnsubscribe) {
@@ -3028,8 +3077,14 @@ const PROJECT_CONTEXT_MAX_TOKENS = 4096;
 const PROJECT_CONTEXT_TRUNCATION_NOTICE = '\n[Summary truncated to Project context budget]';
 
 async function sharedProjectContext(yeaftDir, sessionId, options = {}) {
-  const project = loadProjects(yeaftDir).find(row => row.sessionIds.includes(sessionId));
-  if (!project) return '';
+  const requestedSiblingIds = Array.isArray(options.sessionIds)
+    ? options.sessionIds.filter(id => typeof id === 'string' && id.trim()).map(id => id.trim())
+    : null;
+  const project = requestedSiblingIds === null
+    ? loadProjects(yeaftDir).find(row => row.sessionIds.includes(sessionId))
+    : null;
+  const sourceSessionIds = requestedSiblingIds || project?.sessionIds || [];
+  if (sourceSessionIds.length === 0) return '';
   const memoryRoot = join(yeaftDir, 'memory');
   const language = options.language || 'en';
   const configuredBudget = Number.isFinite(options.tokenBudget) && options.tokenBudget > 0
@@ -3037,7 +3092,7 @@ async function sharedProjectContext(yeaftDir, sessionId, options = {}) {
     : PROJECT_CONTEXT_MAX_TOKENS;
   const tokenBudget = Math.min(configuredBudget, PROJECT_CONTEXT_MAX_TOKENS);
   let context = '';
-  const siblingIds = project.sessionIds
+  const siblingIds = sourceSessionIds
     .filter(id => id !== sessionId)
     .slice(0, PROJECT_CONTEXT_MAX_SIBLINGS);
   for (const siblingId of siblingIds) {
@@ -3341,6 +3396,7 @@ export function handleYeaftArchiveSession(msg) {
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const result = archiveSession(yeaftDir, sessionId);
+    projectContextBySession.delete(sessionId);
     invalidateGroupContext(sessionId);
     sendSessionCrudResult({
       op: 'archive',
@@ -3362,6 +3418,7 @@ export function handleYeaftDeleteSession(msg) {
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const result = deleteSession(yeaftDir, sessionId);
+    projectContextBySession.delete(sessionId);
     removeSessionFromProjects(yeaftDir, sessionId);
     ctx.assetOutbox?.removeSession(sessionId);
     // Cascade: remove every persisted message stamped with this group id.
@@ -4495,6 +4552,20 @@ async function runYeaftSessionSend(msg) {
     },
   });
 
+  const hasInboundProjectContext = Object.prototype.hasOwnProperty.call(msg, 'projectContext');
+  const inboundProjectContext = normalizeProjectContext(msg.projectContext, sessionId);
+  if (hasInboundProjectContext) {
+    projectContextBySession.set(sessionId, inboundProjectContext || {
+      projectId: null,
+      projectName: null,
+      sessionIds: [],
+    });
+  } else {
+    // An old Server does not know this field. Drop any context cached from a
+    // newer Server before falling back to this Agent's legacy projects.json.
+    projectContextBySession.delete(sessionId);
+  }
+
   // Ingest user text. The coordinator persists, applies mention/fanout
   // rules, and calls deliver() (== enqueueForVp) for each chosen VP —
   // which both (a) emits vp_typing_start and (b) ensures a driver runs.
@@ -4519,6 +4590,9 @@ async function runYeaftSessionSend(msg) {
       _promptParts: attachmentBundle.promptParts,
       _promptSuffix: attachmentBundle.promptSuffix,
       _perfTraceId: perfTraceId,
+      _projectContext: msg.projectContext && typeof msg.projectContext === 'object'
+        ? msg.projectContext
+        : null,
     });
   } catch (err) {
     console.warn('[Yeaft] yeaft_session_chat: coord.ingest failed', err?.message || err);
@@ -5159,12 +5233,19 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         threadId,
       });
       if (queryOpts) {
-        const projectContext = await sharedProjectContext(ctx.CONFIG?.yeaftDir, sessionId, {
+        const envelopeProjectContext = normalizeProjectContext(inboundEnvelope?._projectContext, sessionId);
+        const projectContext = envelopeProjectContext
+          || projectContextBySession.get(sessionId)
+          || legacyProjectContext(ctx.CONFIG?.yeaftDir, sessionId);
+        const projectSessionIds = projectContext?.sessionIds || [];
+        queryOpts.projectSessionIds = projectSessionIds;
+        const projectSummaries = await sharedProjectContext(ctx.CONFIG?.yeaftDir, sessionId, {
+          sessionIds: projectSessionIds,
           language: session?.config?.language,
           tokenBudget: Math.max(512, Math.floor((session?.config?.messageTokenBudget || 32768) / 8)),
         });
-        if (projectContext) {
-          const sharedBlock = `[Project Shared Context]\nRead-only memory summaries from sibling Sessions in the same Project. Preserve each source Session identity.\n\n${projectContext}`;
+        const sharedBlock = buildProjectSharedBlock(projectContext, projectSummaries);
+        if (sharedBlock) {
           queryOpts.sessionAnnouncement = queryOpts.sessionAnnouncement
             ? `${queryOpts.sessionAnnouncement}\n\n${sharedBlock}`
             : sharedBlock;
@@ -7007,6 +7088,7 @@ export async function resetYeaftSession() {
   vpEngineConfigKeys.clear();
   asyncTaskOwners.clear();
   sessionContexts.clear();
+  projectContextBySession.clear();
   vpCurrentTodos.clear();
   threadClassifier = defaultClassifyThread;
   // History-dedup cache is keyed by per-session coordinator msg ids;
@@ -7289,6 +7371,8 @@ export async function handleYeaftMcpReload(msg = {}) {
 export const __testHooks = {
   loadProjects,
   sharedProjectContext,
+  buildProjectSharedBlock,
+  normalizeProjectContext,
   loadVisibleGroupHistoryPage,
   projectVisibleHistoryChunkMessages,
   persistInboundMessageOnceByMsgId,

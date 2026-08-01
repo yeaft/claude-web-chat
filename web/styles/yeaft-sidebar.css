@@ -60,12 +60,14 @@
 /* Mobile slide-away behavior. Width is owned exclusively by the shared
    SessionSidebarShell token so Chat and Yeaft stay identical. */
 /* Codex-style unified navigation: Projects group Yeaft Sessions; Recents keeps all providers. */
-.sidebar-primary-actions { display: flex; flex-direction: column; padding: 6px 8px 4px; }
+.sidebar-primary-actions { display: flex; flex: 0 0 auto; flex-direction: column; padding: 6px 8px 4px; }
 .sidebar-primary-action { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text-primary); font: inherit; }
 .sidebar-primary-action { cursor: pointer; text-align: left; }
 .sidebar-primary-action:hover, .sidebar-project-header:hover, .sidebar-project-header.drag-over, .recents-section.drag-over { background: var(--sidebar-hover); }
 .sidebar-primary-action svg { width: 17px; height: 17px; flex: 0 0 auto; color: var(--text-secondary); }
 .sidebar-section { padding: 4px 8px 10px; }
+.sidebar-session-results { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+.projects-section, .recents-section { flex: 1 1 50%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .sidebar-section + .sidebar-section { margin-top: 2px; }
 .sidebar-section-heading { display: flex; align-items: center; min-height: 34px; padding: 0 6px 0 10px; color: var(--text-secondary); font-size: 13px; font-weight: 600; }
 .sidebar-section-heading > span:first-child { flex: 1; }
@@ -101,10 +103,10 @@
 .sidebar-session-title-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-session-unread { width: 7px; height: 7px; margin-left: 7px; border-radius: 50%; background: var(--success); flex: 0 0 auto; }
 .sidebar-session-row .session-menu, .sidebar-project-header .session-menu { top: 30px; }
-.sidebar-session-menu-divider { height: 1px; margin: 4px 8px; background: var(--border-light); }
-.sidebar-session-menu-info { display: grid; gap: 5px; padding: 7px 10px 8px; color: var(--text-muted); font-size: 11px; }
-.sidebar-session-menu-info > span { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 8px; align-items: baseline; }
-.sidebar-session-menu-info strong { min-width: 0; overflow: hidden; color: var(--text-secondary); font-weight: 500; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-session-menu-info { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px 8px; color: var(--text-secondary); font-size: 11px; }
+.sidebar-session-menu-info strong { min-width: 0; overflow: hidden; color: inherit; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-session-menu-info strong:first-child { flex: 1; }
+.sidebar-session-menu-info strong:last-child { flex: 0 0 auto; text-align: right; }
 .sidebar-session-row[draggable="true"], .sidebar-session-row[draggable="true"]:active { cursor: default; }
 
 @media (max-width: 768px) {
