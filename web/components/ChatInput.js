@@ -183,6 +183,7 @@ export default {
               <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z"/></svg>
             </button>
             <span v-if="store.btwMode" class="btw-input-tag">BTW</span>
+            <slot name="actions-start"></slot>
           </div>
           <div class="chat-composer-actions-end">
             <button

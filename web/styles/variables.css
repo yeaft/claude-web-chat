@@ -210,6 +210,17 @@ select option:checked {
   --chat-composer-focus-ring-width: 2px;
   --chat-composer-textarea-min-height: 4.5em;
   --chat-composer-control-size: 32px;
+  --yeaft-composer-max-width: 880px;
+  --yeaft-composer-model-max-width: 220px;
+  --yeaft-composer-model-mobile-max-width: 38vw;
+  --yeaft-composer-model-font-size: 12px;
+  --yeaft-composer-model-border-width: 1px;
+  --yeaft-model-menu-width: 320px;
+  --yeaft-model-menu-max-height: 72dvh;
+  --yeaft-model-menu-layer: 1300;
+  --yeaft-header-folder-max-width: 280px;
+  --yeaft-header-folder-mobile-max-width: 30vw;
+  --yeaft-header-folder-font-size: 12px;
   /* Fonts */
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
@@ -353,6 +364,17 @@ select option:checked {
   --chat-composer-focus-ring-width: 2px;
   --chat-composer-textarea-min-height: 4.5em;
   --chat-composer-control-size: 32px;
+  --yeaft-composer-max-width: 880px;
+  --yeaft-composer-model-max-width: 220px;
+  --yeaft-composer-model-mobile-max-width: 38vw;
+  --yeaft-composer-model-font-size: 12px;
+  --yeaft-composer-model-border-width: 1px;
+  --yeaft-model-menu-width: 320px;
+  --yeaft-model-menu-max-height: 72dvh;
+  --yeaft-model-menu-layer: 1300;
+  --yeaft-header-folder-max-width: 280px;
+  --yeaft-header-folder-mobile-max-width: 30vw;
+  --yeaft-header-folder-font-size: 12px;
 }
 
 .terminal-output {
