@@ -248,6 +248,7 @@ db.exec(`
     id TEXT NOT NULL,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
+    instruction TEXT NOT NULL DEFAULT '',
     sort_order INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -328,6 +329,13 @@ const yeaftMigrations = [
   `ALTER TABLE yeaft_sessions ADD COLUMN metadata_updated_at INTEGER`,
 ];
 for (const migration of yeaftMigrations) {
+  try { db.exec(migration); } catch (_) { /* column exists */ }
+}
+
+const yeaftProjectMigrations = [
+  `ALTER TABLE yeaft_projects ADD COLUMN instruction TEXT NOT NULL DEFAULT ''`,
+];
+for (const migration of yeaftProjectMigrations) {
   try { db.exec(migration); } catch (_) { /* column exists */ }
 }
 
@@ -679,8 +687,8 @@ export const stmts = {
   // Project organization metadata. Projects are server-owned and may contain
   // Sessions from multiple Agents; sharing still filters by agent_id.
   insertYeaftProject: db.prepare(`
-    INSERT INTO yeaft_projects (id, user_id, name, sort_order, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO yeaft_projects (id, user_id, name, instruction, sort_order, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `),
   getYeaftProjectsByUser: db.prepare(`
     SELECT * FROM yeaft_projects WHERE user_id = ? ORDER BY sort_order ASC, created_at ASC
@@ -690,6 +698,9 @@ export const stmts = {
   `),
   updateYeaftProjectName: db.prepare(`
     UPDATE yeaft_projects SET name = ?, updated_at = ? WHERE user_id = ? AND id = ?
+  `),
+  updateYeaftProjectInstruction: db.prepare(`
+    UPDATE yeaft_projects SET instruction = ?, updated_at = ? WHERE user_id = ? AND id = ?
   `),
   deleteYeaftProject: db.prepare(`
     DELETE FROM yeaft_projects WHERE user_id = ? AND id = ?

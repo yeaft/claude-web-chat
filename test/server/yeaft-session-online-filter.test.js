@@ -16,8 +16,10 @@ const reconcileProjectSessions = vi.fn(() => 0);
 const removeProjectSession = vi.fn(() => false);
 const createProject = vi.fn(() => ({ id: 'project-created', name: 'Created', members: [] }));
 const renameProject = vi.fn();
+const updateProjectInstruction = vi.fn();
 const deleteProject = vi.fn();
 const moveProjectSession = vi.fn();
+const contextForSession = vi.fn(() => null);
 const getForAgent = vi.fn(() => null);
 const reconcileFromSnapshot = vi.fn();
 const upsertFromSnapshot = vi.fn();
@@ -54,9 +56,10 @@ vi.mock('../../server/database.js', () => ({
     removeSession: removeProjectSession,
     create: createProject,
     rename: renameProject,
+    updateInstruction: updateProjectInstruction,
     delete: deleteProject,
     moveSession: moveProjectSession,
-    contextForSession: vi.fn(() => null),
+    contextForSession,
   },
   yeaftSessionDb: {
     getByUser,
@@ -104,8 +107,11 @@ afterEach(() => {
   removeProjectSession.mockClear();
   createProject.mockClear();
   renameProject.mockClear();
+  updateProjectInstruction.mockClear();
   deleteProject.mockClear();
   moveProjectSession.mockClear();
+  contextForSession.mockReset();
+  contextForSession.mockReturnValue(null);
   reconcileFromSnapshot.mockClear();
   upsertFromSnapshot.mockClear();
   sendToWebClient.mockClear();
@@ -555,6 +561,73 @@ describe('Yeaft Session online Agent filtering', () => {
         projects: [{ id: 'project-created', sessionIds: [] }],
       },
     });
+
+    getByUser.mockReturnValue([{ id: 'same-id', agentId: 'agent-a' }]);
+    contextForSession.mockReturnValue({
+      projectId: 'project-created',
+      projectName: 'Created',
+      projectInstruction: 'Use the Project release checklist.',
+      sessionIds: [],
+    });
+    updateProjectInstruction.mockReturnValue({
+      id: 'project-created',
+      name: 'Created',
+      instruction: 'Use the Project release checklist.',
+      members: [{ agentId: 'agent-a', sessionId: 'same-id' }],
+    });
+    listProjectsForAgent.mockReturnValueOnce([{
+      id: 'project-created',
+      name: 'Created',
+      instruction: 'Use the Project release checklist.',
+      members: [{ agentId: 'agent-a', sessionId: 'same-id' }],
+      sessionIds: ['same-id'],
+    }]);
+    forwardToAgent.mockClear();
+    await handleClientConversation('client-1', routedClient, {
+      type: 'yeaft_project_mutation',
+      requestId: 'project-instruction-1',
+      op: 'update_instruction',
+      projectId: 'project-created',
+      instruction: 'Use the Project release checklist.',
+    }, allow);
+    expect(updateProjectInstruction).toHaveBeenCalledWith(
+      'user-1',
+      'project-created',
+      'Use the Project release checklist.',
+    );
+    expect(forwardToAgent).toHaveBeenCalledWith('agent-a', {
+      type: 'yeaft_project_context_sync',
+      contexts: [{
+        sessionId: 'same-id',
+        projectContext: {
+          projectId: 'project-created',
+          projectName: 'Created',
+          projectInstruction: 'Use the Project release checklist.',
+          sessionIds: [],
+        },
+      }],
+    });
+    getByUser.mockImplementationOnce(() => {
+      throw new Error('forced Project context sync failure');
+    });
+    routedClient.sent = [];
+    await handleClientConversation('client-1', routedClient, {
+      type: 'yeaft_project_mutation',
+      requestId: 'project-instruction-sync-failure',
+      op: 'update_instruction',
+      projectId: 'project-created',
+      instruction: 'Use the Project release checklist.',
+    }, allow);
+    expect(routedClient.sent).toHaveLength(1);
+    expect(routedClient.sent[0]).toMatchObject({
+      event: {
+        type: 'project_mutation_result',
+        requestId: 'project-instruction-sync-failure',
+        ok: true,
+      },
+    });
+    getByUser.mockReturnValue([]);
+    contextForSession.mockReturnValue(null);
 
     moveProjectSession.mockClear();
     getForAgent.mockReturnValue({ id: 'archived-session', agentId: 'agent-a', isArchived: true });
