@@ -59,13 +59,14 @@
 
 .yeaft-session-create-fields .resume-control-row {
   min-width: 0;
-  align-items: stretch;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  flex-direction: row;
+  gap: 12px;
 }
 
 .yeaft-session-create-modal .resume-control-label {
-  width: auto;
+  width: 96px;
+  flex: 0 0 96px;
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 600;
@@ -354,6 +355,17 @@
 
   .yeaft-session-create-fields {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .yeaft-session-create-fields .resume-control-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .yeaft-session-create-modal .resume-control-label {
+    width: auto;
+    flex-basis: auto;
   }
 
   .yeaft-session-create-modal .resume-modal-content {

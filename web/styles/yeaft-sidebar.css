@@ -70,6 +70,7 @@
 .projects-section, .recents-section { flex: 1 1 50%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .sidebar-section + .sidebar-section { margin-top: 2px; }
 .sidebar-section-heading { display: flex; align-items: center; min-height: 34px; padding: 0 6px 0 10px; color: var(--text-secondary); font-size: 13px; font-weight: 600; }
+.projects-section > .sidebar-section-heading, .recents-section > .sidebar-section-heading { position: sticky; top: 0; z-index: 1; background: var(--bg-sidebar); }
 .sidebar-section-heading > span:first-child { flex: 1; }
 .sidebar-section-empty { padding: 8px 10px 12px; color: var(--text-muted); font-size: 12px; }
 .sidebar-project, .sidebar-project-header { position: relative; }
