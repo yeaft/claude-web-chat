@@ -21,7 +21,7 @@
  * Phase 7 removed the legacy "openai" (Chat Completions) protocol entirely.
  */
 
-import { LLMAdapter } from './adapter.js';
+import { LLMAdapter, LLMAuthError } from './adapter.js';
 import { getModelEffortOptions, getThinkingCapability, normalizeEffort, normalizeEffortOptions, parseModelRef } from '../models.js';
 import {
   GITHUB_COPILOT_BASE_URL,
@@ -563,17 +563,26 @@ export class AdapterRouter extends LLMAdapter {
    * @param {import('./adapter.js').StreamParams} params
    * @returns {AsyncGenerator<import('./adapter.js').StreamEvent>}
    */
-  async #refreshRejectedCredential(provider) {
+  async #refreshRejectedCredential(provider, model) {
     if (!provider?.credentialProvider) return false;
-    if (provider.credentialProvider === 'github-copilot' && provider.githubToken) {
-      const githubCopilot = await import('./credentials/github-copilot.js');
-      githubCopilot.invalidateApiTokenCache();
-      await githubCopilot.exchangeToken(provider.githubToken);
-    } else {
-      const { getCredentialProvider } = await import('./credentials/index.js');
-      const credentialProvider = getCredentialProvider(provider.credentialProvider);
-      if (!credentialProvider?.refreshApiKey) return false;
-      await credentialProvider.refreshApiKey();
+    try {
+      if (provider.credentialProvider === 'github-copilot' && provider.githubToken) {
+        const githubCopilot = await import('./credentials/github-copilot.js');
+        githubCopilot.invalidateApiTokenCache();
+        await githubCopilot.exchangeToken(provider.githubToken);
+      } else {
+        const { getCredentialProvider } = await import('./credentials/index.js');
+        const credentialProvider = getCredentialProvider(provider.credentialProvider);
+        if (!credentialProvider?.refreshApiKey) return false;
+        await credentialProvider.refreshApiKey();
+      }
+    } catch (err) {
+      throw new LLMAuthError('LLM credential refresh failed', err?.statusCode ?? 401, {
+        reasonCode: err?.reasonCode || 'credential_refresh_failed',
+        provider: provider.name || null,
+        model,
+        credentialRefreshable: true,
+      });
     }
     this.#adapterCache.clear();
     return true;
@@ -606,7 +615,7 @@ export class AdapterRouter extends LLMAdapter {
       } catch (err) {
         this.#annotateAuthError(err, provider, params.model);
         if (err?.statusCode !== 401 || refreshedCredential
-          || !(await this.#refreshRejectedCredential(provider))) throw err;
+          || !(await this.#refreshRejectedCredential(provider, params.model))) throw err;
         refreshedCredential = true;
       }
     }
@@ -637,7 +646,7 @@ export class AdapterRouter extends LLMAdapter {
       } catch (err) {
         this.#annotateAuthError(err, provider, params.model);
         if (err?.statusCode !== 401 || refreshedCredential
-          || !(await this.#refreshRejectedCredential(provider))) throw err;
+          || !(await this.#refreshRejectedCredential(provider, params.model))) throw err;
         refreshedCredential = true;
       }
     }

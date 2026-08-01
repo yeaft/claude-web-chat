@@ -44,7 +44,15 @@ export function getCredentialProvider(name) {
       },
       async refreshApiKey() {
         githubCopilot.invalidateApiTokenCache();
-        return this.getApiKey();
+        const r = await githubCopilot.getApiToken({ requireExchange: true });
+        if (!r?.token) {
+          throw new githubCopilot.CopilotCredentialError(
+            'GitHub Copilot credential refresh found no usable credential',
+            null,
+            'credential_unavailable',
+          );
+        }
+        return r.token;
       },
     };
   }
