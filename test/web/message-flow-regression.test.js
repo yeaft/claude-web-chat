@@ -2856,12 +2856,13 @@ describe('message flow regressions', () => {
     const modal = mount(SessionCreateModal, {
       attachTo: document.body,
       props: { initialProvider: 'copilot' },
-      global: { mocks: { $t: key => key }, stubs: { Teleport: true, VpAvatar: true } },
+      global: { mocks: { $t: key => key }, stubs: { Teleport: true, VpAvatar: true, ModernSelect: true } },
     });
     await Vue.nextTick();
-    const selects = modal.findAll('select.resume-input');
-    expect(selects[0].element.value).toBe('agent-a');
-    expect(selects[1].element.value).toBe('copilot');
+    const selects = modal.findAllComponents({ name: 'ModernSelect' });
+    expect(selects).toHaveLength(2);
+    expect(selects[0].props('modelValue')).toBe('agent-a');
+    expect(selects[1].props('modelValue')).toBe('copilot');
     expect(modal.get('.yeaft-session-create-heading h2').text()).toBe('yeaft.session.create.title');
     expect(modal.get('.yeaft-session-create-heading p').text()).toBe('yeaft.session.create.subtitle');
     const createFields = modal.get('.yeaft-session-create-fields');
@@ -2874,7 +2875,8 @@ describe('message flow regressions', () => {
     ]);
     expect(modal.get('.yeaft-create-submit').classes()).toContain('btn-primary');
     expect(modal.find('.resume-control-row-vp').exists()).toBe(false);
-    await selects[1].setValue('yeaft');
+    modal.vm.form.provider = 'yeaft';
+    await Vue.nextTick();
     const vpRow = modal.get('.resume-control-row-vp');
     expect(vpRow.element.parentElement).toBe(modal.get('.yeaft-session-create-fields').element);
     expect(modal.findAll('.yeaft-session-create-fields > .resume-control-row')).toHaveLength(5);
@@ -2889,8 +2891,15 @@ describe('message flow regressions', () => {
     expect(sessionCreateCss).toMatch(/\.yeaft-session-create-fields\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
     expect(sessionCreateCss).toMatch(/\.yeaft-session-create-fields \.resume-control-row\s*\{[^}]*align-items:\s*center;[^}]*flex-direction:\s*row;[^}]*gap:\s*12px;/s);
     expect(sessionCreateCss).toMatch(/\.yeaft-session-create-modal \.resume-control-label\s*\{[^}]*width:\s*96px;[^}]*flex:\s*0 0 96px;/s);
+    expect(sessionCreateCss).toMatch(/\.yeaft-session-create-modal \.modern-select-trigger\s*\{[^}]*border-radius:\s*10px;/s);
+    expect(sessionCreateCss).toMatch(/\.yeaft-folder-picker-dialog\s*\{[^}]*height:\s*min\(560px, calc\(100vh - 96px\)\);[^}]*overflow:\s*hidden;/s);
+    expect(sessionCreateCss).toMatch(/\.yeaft-folder-picker-dialog \.folder-picker-list\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-height:\s*0;[^}]*max-height:\s*none;[^}]*overflow-y:\s*auto;/s);
+    expect(sessionCreateCss).toMatch(/\.yeaft-folder-picker-dialog \.folder-picker-item\s*\{[^}]*font-family:\s*inherit;[^}]*font-size:\s*14px;/s);
+    expect(sessionCreateCss).not.toMatch(/\.yeaft-folder-picker-dialog[^}]*#[0-9a-f]{3,6}/i);
+    expect(sessionCreateCss).not.toMatch(/\.yeaft-folder-picker-dialog[^}]*rgba?\(/i);
     expect(sessionCreateCss).toMatch(/@media \(max-width:\s*640px\)[\s\S]*?\.yeaft-session-create-fields \.resume-control-row\s*\{[^}]*align-items:\s*stretch;[^}]*flex-direction:\s*column;/s);
-    await selects[1].setValue('claude-code');
+    modal.vm.form.provider = 'claude-code';
+    await Vue.nextTick();
     modal.vm.form.workDir = '/repo';
     await modal.vm.onSubmit();
     expect(chat.createConversation).toHaveBeenCalledWith('/repo', 'agent-a', null, { provider: 'claude-code' });
@@ -2925,7 +2934,7 @@ describe('message flow regressions', () => {
     window.Pinia = coldModalPinia;
     const coldModal = mount(SessionCreateModal, {
       attachTo: document.body,
-      global: { mocks: { $t: key => key }, stubs: { Teleport: true, VpAvatar: true } },
+      global: { mocks: { $t: key => key }, stubs: { Teleport: true, VpAvatar: true, ModernSelect: true } },
     });
     await Vue.nextTick();
     expect(chat.sendWsMessage).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -2967,14 +2976,14 @@ describe('message flow regressions', () => {
     window.Pinia = scopedModalPinia;
     const scopedModal = mount(SessionCreateModal, {
       attachTo: document.body,
-      global: { mocks: { $t: key => key }, stubs: { Teleport: true, VpAvatar: true } },
+      global: { mocks: { $t: key => key }, stubs: { Teleport: true, VpAvatar: true, ModernSelect: true } },
     });
     await Vue.nextTick();
     expect(scopedModal.vm.vpList.map(vp => vp.vpId)).toEqual(['a-only']);
     expect(scopedModal.vm.form.vpIds).toEqual(['a-only']);
 
-    const agentSelect = scopedModal.findAll('select.resume-input')[0];
-    await agentSelect.setValue('agent-b');
+    expect(scopedModal.findAllComponents({ name: 'ModernSelect' })).toHaveLength(2);
+    scopedModal.vm.form.agentId = 'agent-b';
     await Vue.nextTick();
     const vpRequestB = scopedVpStore.snapshotRequestId;
     expect(scopedVpStore.snapshotAgentId).toBe('agent-b');
@@ -2985,7 +2994,7 @@ describe('message flow regressions', () => {
     expect(scopedModal.get('.yeaft-create-submit').attributes('disabled')).toBeDefined();
     expect(scopedModal.find('.yeaft-roster-empty').text()).toContain('yeaft.session.create.rosterLoading');
 
-    await agentSelect.setValue('agent-a');
+    scopedModal.vm.form.agentId = 'agent-a';
     await Vue.nextTick();
     const vpRequestA2 = scopedVpStore.snapshotRequestId;
     expect(vpRequestA2).not.toBe(vpRequestB);
@@ -3063,7 +3072,7 @@ describe('message flow regressions', () => {
 
     const exactModal = mount(SessionCreateModal, {
       attachTo: document.body,
-      global: { mocks: { $t: key => key }, stubs: { Teleport: true, VpAvatar: true } },
+      global: { mocks: { $t: key => key }, stubs: { Teleport: true, VpAvatar: true, ModernSelect: true } },
     });
     await Vue.nextTick();
     exactModal.vm.form.agentId = 'agent-b';

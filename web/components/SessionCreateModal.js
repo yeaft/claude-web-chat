@@ -29,6 +29,7 @@
  * without also updating the test.
  */
 import VpAvatar from './VpAvatar.js';
+import ModernSelect from './ModernSelect.js';
 import { getLastPathSegment, formatResumeDate } from '../utils/path-segments.js';
 import { buildVpDomainSections } from '../utils/vp-domains.js';
 import { yeaftSessionIdentityKey } from '../stores/helpers/yeaft-session-identity.js';
@@ -72,7 +73,7 @@ export function resolveVpRosterPopupLayout(anchorRect, boundaryRect, viewportRec
 
 export default {
   name: 'SessionCreateModal',
-  components: { VpAvatar },
+  components: { VpAvatar, ModernSelect },
   props: {
     initialProvider: { type: String, default: 'yeaft' },
   },
@@ -94,20 +95,22 @@ export default {
           <div class="yeaft-session-create-fields">
             <div class="resume-control-row">
             <label class="resume-control-label">{{ $t('yeaft.session.create.agentLabel') }}</label>
-            <select v-model="form.agentId" class="resume-input">
-              <option v-for="a in agentOptions" :key="a.id" :value="a.id" :disabled="!a.online">
-                {{ a.name || a.id }}{{ a.online ? '' : ' (offline)' }}
-              </option>
-            </select>
+            <ModernSelect
+              v-model="form.agentId"
+              :options="agentSelectOptions"
+              :aria-label="$t('yeaft.session.create.agentLabel')"
+              menu-class="yeaft-session-create-select-menu"
+            />
           </div>
 
           <div class="resume-control-row">
             <label class="resume-control-label">{{ $t('modal.newConv.provider') }}</label>
-            <select v-model="form.provider" class="resume-input">
-              <option value="yeaft">Yeaft</option>
-              <option value="copilot">{{ $t('provider.copilot') }}</option>
-              <option value="claude-code">{{ $t('provider.claudeCode') }}</option>
-            </select>
+            <ModernSelect
+              v-model="form.provider"
+              :options="providerOptions"
+              :aria-label="$t('modal.newConv.provider')"
+              menu-class="yeaft-session-create-select-menu"
+            />
           </div>
 
           <!-- Name (optional — only consulted on Create; ignored when
@@ -337,8 +340,8 @@ export default {
         </div>
 
         <!-- Folder picker -->
-        <div class="folder-picker-overlay" v-if="folderPickerOpen" @click.self="closeFolderPicker">
-          <div class="folder-picker-dialog">
+        <div class="folder-picker-overlay yeaft-folder-picker-overlay" v-if="folderPickerOpen" @click.self="closeFolderPicker">
+          <div class="folder-picker-dialog yeaft-folder-picker-dialog">
             <div class="folder-picker-header">
               <span>{{ $t('modal.folderPicker.title') }}</span>
               <button class="wb-btn-sm" type="button" @click="closeFolderPicker">&times;</button>
@@ -472,6 +475,21 @@ export default {
       const s = this.chat;
       if (!s || !Array.isArray(s.agents)) return [];
       return s.agents.map(a => ({ id: a.id, name: a.name, online: !!a.online, workDir: a.workDir || '' }));
+    },
+    agentSelectOptions() {
+      return this.agentOptions.map(agent => ({
+        value: agent.id,
+        label: agent.name || agent.id,
+        sublabel: agent.online ? '' : this.$t('settings.dashboard.offline'),
+        disabled: !agent.online,
+      }));
+    },
+    providerOptions() {
+      return [
+        { value: 'yeaft', label: 'Yeaft' },
+        { value: 'copilot', label: this.$t('provider.copilot') },
+        { value: 'claude-code', label: this.$t('provider.claudeCode') },
+      ];
     },
     // Identity+online signature of the agent roster. We watch THIS (not
     // agentOptions.length) to re-seed form.agentId: the UI keeps offline
