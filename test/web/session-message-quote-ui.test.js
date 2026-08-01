@@ -308,9 +308,35 @@ describe('Session message quote UI wiring', () => {
     expect(inputWrapper.findAll('.chat-composer-actions-end .send-btn')).toHaveLength(2);
 
     const inputCss = readFileSync(resolve(process.cwd(), 'web/styles/chat-input.css'), 'utf8');
+    const variablesCss = readFileSync(resolve(process.cwd(), 'web/styles/variables.css'), 'utf8');
+    const darkThemeStart = variablesCss.indexOf('[data-theme="dark"]');
+    const lightThemeTokens = variablesCss.slice(variablesCss.indexOf(':root {'), darkThemeStart);
+    const darkThemeTokens = variablesCss.slice(darkThemeStart);
+    const composerTokens = [
+      '--chat-composer-gap: 8px;',
+      '--chat-composer-control-gap: 4px;',
+      '--chat-composer-padding: 12px;',
+      '--chat-composer-radius: 18px;',
+      '--chat-composer-focus-ring-width: 2px;',
+      '--chat-composer-textarea-min-height: 4.5em;',
+      '--chat-composer-control-size: 32px;',
+    ];
+
     expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*flex-direction:\s*column/);
-    expect(inputCss).toMatch(/\.chat-composer textarea\s*\{[^}]*min-height:\s*4\.5em/);
+    expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*gap:\s*var\(--chat-composer-gap\)/);
+    expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*padding:\s*var\(--chat-composer-padding\)/);
+    expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*border-radius:\s*var\(--chat-composer-radius\)/);
+    expect(inputCss).toMatch(/\.input-wrapper\.chat-composer:focus-within\s*\{[^}]*var\(--chat-composer-focus-ring-width\)/);
+    expect(inputCss).toMatch(/\.chat-composer textarea\s*\{[^}]*min-height:\s*var\(--chat-composer-textarea-min-height\)/);
     expect(inputCss).toMatch(/\.chat-composer-actions\s*\{[^}]*justify-content:\s*space-between/);
+    expect(inputCss).toMatch(/\.chat-composer-actions\s*\{[^}]*gap:\s*var\(--chat-composer-gap\)/);
+    expect(inputCss).toMatch(/\.chat-composer-actions-start,[\s\S]*?gap:\s*var\(--chat-composer-control-gap\)/);
+    expect(inputCss).toMatch(/\.chat-composer \.send-btn\s*\{[^}]*width:\s*var\(--chat-composer-control-size\)/);
+    expect(inputCss).toMatch(/\.chat-composer \.send-btn\s*\{[^}]*height:\s*var\(--chat-composer-control-size\)/);
+    for (const token of composerTokens) {
+      expect(lightThemeTokens).toContain(token);
+      expect(darkThemeTokens).toContain(token);
+    }
     inputWrapper.unmount();
   });
 
