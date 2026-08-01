@@ -1573,6 +1573,7 @@
 
 .work-center-action-waiting {
   display: grid;
+  min-width: 0;
   gap: 6px;
   margin-bottom: 18px;
   padding: 12px 14px;
@@ -1587,7 +1588,9 @@
 }
 
 .work-center-action-waiting p {
+  min-width: 0;
   margin: 0;
+  overflow-wrap: anywhere;
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -1603,6 +1606,7 @@
 .work-center-action-message {
   display: grid;
   width: 100%;
+  min-width: 0;
   gap: 5px;
   color: var(--text-primary);
 }
@@ -1627,11 +1631,14 @@
 }
 
 .work-center-action-message header {
+  min-width: 0;
   justify-content: flex-start;
   gap: 8px;
 }
 
 .work-center-action-message header strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--text-primary);
   font-size: 12px;
   font-weight: 600;
@@ -2023,6 +2030,7 @@
 
 .work-center-item-message-list article {
   width: min(100%, 920px);
+  min-width: 0;
   color: var(--text-primary);
 }
 
@@ -2561,12 +2569,14 @@
 
 .work-center-attachment-list {
   display: flex;
+  min-width: 0;
   flex-wrap: wrap;
   gap: 8px;
 }
 
 .work-center-attachment-chip {
   display: inline-flex;
+  min-width: 0;
   max-width: 100%;
   align-items: center;
   gap: 7px;
@@ -2579,6 +2589,7 @@
 }
 
 .work-center-attachment-chip > span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
