@@ -63,65 +63,99 @@ async function runDust(command, baseDir, { depth, limit, signal }) {
   return flattenDustTree(JSON.parse(result.stdout), baseDir, depth, limit);
 }
 
-async function measurePath(path, baseDir, depth, level, rows, signal) {
+async function validateDiskUsageRoot(path, signal, fsOps = { lstat, stat }) {
   throwIfAborted(signal);
-  let entryStat;
-  try { entryStat = await lstat(path); } catch (error) {
-    if (isAbortError(error)) throw error;
-    return 0;
-  }
+  const rootStat = await fsOps.lstat(path);
   throwIfAborted(signal);
-  const rootSymlink = entryStat.isSymbolicLink() && level === 0;
-  if (entryStat.isSymbolicLink() && !rootSymlink) {
-    let targetIsDirectory = false;
-    try { targetIsDirectory = (await stat(path)).isDirectory(); } catch (error) {
-      if (isAbortError(error)) throw error;
-    }
+  if (rootStat.isDirectory()) return rootStat;
+  if (rootStat.isSymbolicLink()) {
+    const targetStat = await fsOps.stat(path);
     throwIfAborted(signal);
-    if (targetIsDirectory && level <= depth) {
-      rows.push({
-        path: relative(baseDir, path),
-        size: entryStat.size,
-        level,
-      });
-    }
-    return entryStat.size;
+    if (targetStat.isDirectory()) return rootStat;
   }
-  if (!rootSymlink && !entryStat.isDirectory()) return entryStat.size;
-
-  let entries;
-  try { entries = await readdir(path, { withFileTypes: true }); } catch (error) {
-    if (isAbortError(error)) throw error;
-    return 0;
-  }
-  throwIfAborted(signal);
-  let size = entryStat.size;
-  for (let index = 0; index < entries.length; index += FALLBACK_CONCURRENCY) {
-    throwIfAborted(signal);
-    const batch = entries.slice(index, index + FALLBACK_CONCURRENCY);
-    const sizes = await Promise.all(batch.map(entry => measurePath(
-      join(path, entry.name),
-      baseDir,
-      depth,
-      level + 1,
-      rows,
-      signal,
-    )));
-    size += sizes.reduce((sum, value) => sum + value, 0);
-  }
-  if (level <= depth) {
-    rows.push({
-      path: level === 0 ? '.' : relative(baseDir, path),
-      size,
-      level,
-    });
-  }
-  return size;
+  throw new Error('path must be a directory or a directory symlink');
 }
 
-async function nodeDiskUsage(baseDir, depth, limit, signal) {
-  const rows = [];
-  await measurePath(baseDir, baseDir, depth, 0, rows, signal);
+export async function nodeDiskUsage(
+  baseDir,
+  depth,
+  limit,
+  signal,
+  fsOps = { lstat, readdir, stat },
+) {
+  const rootStat = await validateDiskUsageRoot(baseDir, signal, fsOps);
+  const root = { path: baseDir, level: 0, size: rootStat.size, parent: null };
+  const directories = [root];
+  const linkedDirectories = [];
+
+  async function scanDirectory(directory) {
+    throwIfAborted(signal);
+    let entries;
+    try { entries = await fsOps.readdir(directory.path, { withFileTypes: true }); } catch (error) {
+      if (isAbortError(error)) throw error;
+      return;
+    }
+    throwIfAborted(signal);
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      throwIfAborted(signal);
+      const childPath = join(directory.path, entry.name);
+      let childStat;
+      try { childStat = await fsOps.lstat(childPath); } catch (error) {
+        if (isAbortError(error)) throw error;
+        continue;
+      }
+      throwIfAborted(signal);
+      if (childStat.isSymbolicLink()) {
+        directory.size += childStat.size;
+        let targetIsDirectory = false;
+        try { targetIsDirectory = (await fsOps.stat(childPath)).isDirectory(); } catch (error) {
+          if (isAbortError(error)) throw error;
+        }
+        throwIfAborted(signal);
+        if (targetIsDirectory && directory.level + 1 <= depth) {
+          linkedDirectories.push({
+            path: relative(baseDir, childPath),
+            size: childStat.size,
+            level: directory.level + 1,
+          });
+        }
+      } else if (childStat.isDirectory()) {
+        directories.push({
+          path: childPath,
+          level: directory.level + 1,
+          size: childStat.size,
+          parent: directory,
+        });
+      } else {
+        directory.size += childStat.size;
+      }
+    }
+  }
+
+  let cursor = 0;
+  while (cursor < directories.length) {
+    throwIfAborted(signal);
+    const batch = directories.slice(cursor, cursor + FALLBACK_CONCURRENCY);
+    cursor += batch.length;
+    const settled = await Promise.allSettled(batch.map(scanDirectory));
+    const rejected = settled.find(result => result.status === 'rejected');
+    if (rejected) throw rejected.reason;
+  }
+
+  for (let index = directories.length - 1; index > 0; index -= 1) {
+    directories[index].parent.size += directories[index].size;
+  }
+  const rows = [
+    ...directories
+      .filter(directory => directory.level <= depth)
+      .map(directory => ({
+        path: directory.level === 0 ? '.' : relative(baseDir, directory.path),
+        size: directory.size,
+        level: directory.level,
+      })),
+    ...linkedDirectories,
+  ];
   const total = rows.find(row => row.level === 0);
   const children = rows
     .filter(row => row.level > 0)
@@ -141,10 +175,12 @@ export default defineTool({
     en: `Show the largest directories under a path by apparent size.
 
 Uses dust when available for parallel disk-usage scanning, with a Node.js fallback.
-The root total is shown first, followed by the largest descendants. Symlinks are not followed.`,
+The root total is shown first, followed by the largest descendants. A root directory
+symlink is scanned like dust; descendant symlinks are not followed.`,
     zh: `按表观大小显示路径下占用最大的目录。
 
-优先使用 dust 并行扫描磁盘用量，回退到 Node.js 实现。根路径总量排在首行，之后按大小列出后代目录；不会跟随符号链接。`,
+优先使用 dust 并行扫描磁盘用量，回退到 Node.js 实现。根路径总量排在首行，之后按大小列出后代目录；
+根目录符号链接与 dust 一样扫描目标内容，后代符号链接不跟随。`,
   },
   parameters: {
     type: 'object',
@@ -183,6 +219,7 @@ The root total is shown first, followed by the largest descendants. Symlinks are
 
     try {
       throwIfAborted(ctx?.signal);
+      await validateDiskUsageRoot(baseDir, ctx?.signal);
       let rows;
       let dustCommand = resolveManagedCliCommand('dust', { yeaftDir: ctx?.yeaftDir });
       if (!dustCommand) {

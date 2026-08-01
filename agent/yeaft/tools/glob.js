@@ -22,6 +22,10 @@ import {
 
 const STAT_CONCURRENCY = 32;
 
+function comparePaths(left, right) {
+  return Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'));
+}
+
 /**
  * Simple glob pattern matcher (supports * and **).
  * @param {string} pattern
@@ -203,7 +207,7 @@ Guidelines:
           }
         })));
       }
-      matches.sort((a, b) => b.mtime - a.mtime);
+      matches.sort((a, b) => b.mtime - a.mtime || comparePaths(a.path, b.path));
       const trimmed = matches.slice(0, limit);
 
       return trimmed.map(m => m.path).join('\n') || '(no matches)';

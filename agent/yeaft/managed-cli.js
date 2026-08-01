@@ -161,7 +161,7 @@ function sleep(ms) {
   return new Promise(resolveSleep => setTimeout(resolveSleep, ms));
 }
 
-async function acquireLock(lockDir, installedPath, platform) {
+async function acquireLock(lockDir, installedPath, platform, waitMs = LOCK_WAIT_MS) {
   const startedAt = Date.now();
   for (;;) {
     try {
@@ -178,7 +178,7 @@ async function acquireLock(lockDir, installedPath, platform) {
       } catch {
         continue;
       }
-      if (Date.now() - startedAt >= LOCK_WAIT_MS) return false;
+      if (Date.now() - startedAt >= waitMs) return false;
       await sleep(250);
     }
   }
@@ -305,7 +305,7 @@ export function extractManagedCliBinary(archive, archiveName, commandName, platf
 }
 
 async function installOne(name, options) {
-  const { yeaftDir, platform, arch, env, fetchFn, timeoutMs } = options;
+  const { yeaftDir, platform, arch, env, fetchFn, timeoutMs, lockWaitMs } = options;
   const existing = resolveManagedCliCommand(name, { yeaftDir, platform, env });
   if (existing) return { name, status: 'available', path: existing };
 
@@ -316,7 +316,7 @@ async function installOne(name, options) {
   mkdirSync(binDir, { recursive: true, mode: 0o755 });
   const installedPath = join(binDir, executableName(name, platform));
   const lockDir = join(binDir, `.install-${name}.lock`);
-  const acquired = await acquireLock(lockDir, installedPath, platform);
+  const acquired = await acquireLock(lockDir, installedPath, platform, lockWaitMs);
   if (!acquired) {
     const path = resolveManagedCliCommand(name, { yeaftDir, platform, env });
     return path
@@ -378,6 +378,9 @@ export function ensureManagedCliTools(options = {}) {
     const timeoutMs = Number.isFinite(options.timeoutMs)
       ? Math.max(1000, options.timeoutMs)
       : DOWNLOAD_TIMEOUT_MS;
+    const lockWaitMs = Number.isFinite(options.lockWaitMs)
+      ? Math.max(0, options.lockWaitMs)
+      : LOCK_WAIT_MS;
 
     const results = await Promise.all(Object.keys(TOOL_SPECS).map(async name => {
       let result;
@@ -396,7 +399,9 @@ export function ensureManagedCliTools(options = {}) {
               result = { name, status: 'failed', reason: 'fetch is unavailable' };
             } else {
               try {
-                result = await installOne(name, { yeaftDir, platform, arch, env, fetchFn, timeoutMs });
+                result = await installOne(name, {
+                  yeaftDir, platform, arch, env, fetchFn, timeoutMs, lockWaitMs,
+                });
               } catch (error) {
                 result = { name, status: 'failed', reason: error?.message || String(error) };
               }
@@ -410,9 +415,9 @@ export function ensureManagedCliTools(options = {}) {
     }));
 
     for (const result of results) {
-      if (result.status === 'failed' || result.status === 'busy') {
+      if (result.status === 'failed') {
         failures[result.name] = { at: now, reason: result.reason || result.status };
-      } else {
+      } else if (result.status !== 'busy') {
         delete failures[result.name];
       }
     }

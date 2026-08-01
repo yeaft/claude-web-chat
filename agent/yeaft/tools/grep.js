@@ -7,11 +7,12 @@
 
 import { defineTool } from './types.js';
 import { spawn } from 'child_process';
-import { readdir, readFile, stat } from 'fs/promises';
+import { lstat, readdir, readFile } from 'fs/promises';
 import { StringDecoder } from 'string_decoder';
 import { existsSync } from 'fs';
-import { resolve, join, relative, extname } from 'path';
+import { basename, dirname, resolve, join, relative, extname } from 'path';
 import { managedCliToolReady, resolveManagedCliCommand } from '../managed-cli.js';
+import { runProcess } from './process-runner.js';
 import {
   createSearchPathMatcher,
   SEARCH_SKIP_GLOBS,
@@ -32,7 +33,9 @@ const MAX_CAPTURE_BYTES = MAX_OUTPUT_BYTES - Buffer.byteLength(OUTPUT_TRUNCATED_
 
 /** Keep one pathological source line from consuming the whole output budget. */
 const MAX_LINE_BYTES = 16 * 1024;
-const FALLBACK_CONCURRENCY = 8;
+const MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_CANDIDATE_BYTES = 16 * 1024 * 1024;
+const FALLBACK_CONCURRENCY = 4;
 
 /** Binary extensions to skip. */
 const BINARY_EXTS = new Set([
@@ -100,71 +103,6 @@ function compareGrepRecords(left, right) {
   return left.suffix < right.suffix ? -1 : 1;
 }
 
-function rewriteMultilineAnchors(source) {
-  let result = '';
-  let escaped = false;
-  let inClass = false;
-  for (const character of source) {
-    if (escaped) {
-      result += character;
-      escaped = false;
-      continue;
-    }
-    if (character === '\\') {
-      result += character;
-      escaped = true;
-      continue;
-    }
-    if (character === '[' && !inClass) {
-      inClass = true;
-      result += character;
-      continue;
-    }
-    if (character === ']' && inClass) {
-      inClass = false;
-      result += character;
-      continue;
-    }
-    if (!inClass && character === '^') {
-      result += '(?:(?<![\\s\\S])|(?<=\\n))';
-    } else if (!inClass && character === '$') {
-      result += '(?:(?![\\s\\S])|(?=\\n))';
-    } else {
-      result += character;
-    }
-  }
-  return result;
-}
-
-function hasGroupScopedModifiers(source) {
-  let escaped = false;
-  let inClass = false;
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (character === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (character === '[' && !inClass) {
-      inClass = true;
-      continue;
-    }
-    if (character === ']' && inClass) {
-      inClass = false;
-      continue;
-    }
-    if (inClass || character !== '(' || source[index + 1] !== '?') continue;
-    let modifierEnd = index + 2;
-    while (/[A-Za-z-]/.test(source[modifierEnd] || '')) modifierEnd += 1;
-    if (modifierEnd > index + 2 && source[modifierEnd] === ':') return true;
-  }
-  return false;
-}
-
 function createNodeRegexPlan(pattern, options) {
   let source = options.fixedStrings
     ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -183,10 +121,6 @@ function createNodeRegexPlan(pattern, options) {
       for (const flag of inlineFlags[2] || '') flags.delete(flag);
       source = source.slice(inlineFlags[0].length);
     }
-    if (flags.has('m')) {
-      source = rewriteMultilineAnchors(source);
-      flags.delete('m');
-    }
   }
   const flagString = [...flags].join('');
   new RegExp(source, flagString);
@@ -194,20 +128,18 @@ function createNodeRegexPlan(pattern, options) {
 }
 
 function canUseRipgrep(pattern, options) {
-  if (options.caseInsensitive) return false;
+  const utf8RoundTrip = Buffer.from(pattern, 'utf8').toString('utf8') === pattern;
+  if (options.caseInsensitive || options.multiline || !utf8RoundTrip) return false;
+  if (/[\0\r\n\u2028\u2029]/.test(pattern)) return false;
   if (options.fixedStrings) return true;
 
-  // JavaScript RegExp is the public contract. Rust regex only accelerates
-  // plain printable ASCII text; every regex construct stays on Node.js.
+  // JavaScript RegExp is the public contract. Rust regex only finds candidate
+  // files for plain printable ASCII text; Node.js validates every result.
   return /^[\x20-\x7e]+$/.test(pattern)
     && !/[\\^$.*+?()[\]{}|]/.test(pattern);
 }
 
 function prepareGrepPattern(pattern, options) {
-  if (!options.fixedStrings && hasGroupScopedModifiers(pattern)) {
-    // Modifier groups are not available on every supported Node.js runtime.
-    throw new Error('group-scoped regex modifiers are unsupported');
-  }
   const regexPlan = createNodeRegexPlan(pattern, options);
   return {
     ...regexPlan,
@@ -498,8 +430,63 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
   });
 }
 
+async function listRipgrepCandidatePaths(command, searchPath, options) {
+  throwIfAborted(options.signal);
+  const searchStat = await lstat(searchPath);
+  const baseDir = searchStat.isDirectory() ? searchPath : dirname(searchPath);
+  const target = searchStat.isDirectory() ? '.' : basename(searchPath);
+  const args = [
+    '--files-with-matches',
+    '--color', 'never',
+    '--hidden',
+    '--no-ignore',
+    '--null',
+  ];
+  if (options.fixedStrings) args.push('-F');
+  for (const skipGlob of SEARCH_SKIP_GLOBS) args.push('--glob', skipGlob);
+  args.push('--sort', 'path', '--', options.pattern, target);
+  const result = await runProcess(command, args, {
+    cwd: baseDir,
+    signal: options.signal,
+    timeoutMs: 120_000,
+    maxBytes: MAX_CANDIDATE_BYTES,
+    preserveCarriageReturns: true,
+  });
+  if (result.timedOut) throw new Error('rg timed out');
+  if (result.truncated) throw new Error('rg candidate output exceeded the tool limit');
+  if (result.code !== 0 && result.code !== 1) {
+    throw new Error(result.stderr.trim() || `rg exited with code ${result.code}`);
+  }
+  return result.stdout
+    .split('\0')
+    .filter(Boolean)
+    .map(path => resolve(baseDir, path));
+}
+
+function splitTextLines(content) {
+  const lines = [];
+  let start = 0;
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index];
+    if (character !== '\n' && character !== '\r'
+      && character !== '\u2028' && character !== '\u2029') continue;
+    const lineEnd = index;
+    if (character === '\r' && content[index + 1] === '\n') index += 1;
+    lines.push({ text: content.slice(start, lineEnd), start, end: lineEnd });
+    start = index + 1;
+  }
+  lines.push({ text: content.slice(start), start, end: content.length });
+  return lines;
+}
+
+function advanceEmptyMatch(regex, content) {
+  if (regex.lastIndex >= content.length) return false;
+  regex.lastIndex += regex.unicode && content.codePointAt(regex.lastIndex) > 0xffff ? 2 : 1;
+  return true;
+}
+
 /**
- * Fallback: Node.js grep implementation.
+ * Fallback and final verifier: JavaScript RegExp defines matching semantics.
  */
 export async function nodeGrep(pattern, searchPath, options) {
   throwIfAborted(options.signal);
@@ -509,11 +496,19 @@ export async function nodeGrep(pattern, searchPath, options) {
   const records = [];
   const maxResults = Math.max(1, options.maxResults || 500);
   const matchesPath = createSearchPathMatcher(options);
+  const rootStat = await lstat(searchPath);
+  throwIfAborted(options.signal);
+  const searchBase = rootStat.isDirectory() ? searchPath : dirname(searchPath);
   let resultCount = 0;
   let stopped = false;
 
+  const candidatePaths = options.candidatePaths
+    ? new Set(options.candidatePaths.map(path => resolve(path)))
+    : null;
+
   function matchesFilters(fullPath) {
-    return matchesPath(relative(searchPath, fullPath).replace(/\\/g, '/'));
+    return (!candidatePaths || candidatePaths.has(resolve(fullPath)))
+      && matchesPath(relative(searchBase, fullPath).replace(/\\/g, '/'));
   }
 
   function addResult(record) {
@@ -527,68 +522,65 @@ export async function nodeGrep(pattern, searchPath, options) {
     throwIfAborted(options.signal);
     if (!matchesFilters(fullPath) || BINARY_EXTS.has(extname(fullPath).toLowerCase())) return [];
     try {
-      const fileStat = await stat(fullPath);
+      const fileStat = await lstat(fullPath);
       throwIfAborted(options.signal);
-      if (fileStat.size > 1024 * 1024) return [];
+      if (!fileStat.isFile() || fileStat.size > MAX_TEXT_FILE_BYTES) return [];
       const decoded = decodeTextFile(await readFile(fullPath));
       throwIfAborted(options.signal);
       if (decoded == null) return [];
       const content = decoded;
-      const relPath = relative(searchPath, fullPath).replace(/\\/g, '/');
-      const rawLines = content.split('\n');
-      if (rawLines.at(-1) === '') rawLines.pop();
-      const lines = rawLines.map(line => line.replace(/\r/g, ''));
+      const relPath = relative(searchBase, fullPath).replace(/\\/g, '/');
+      const lines = splitTextLines(content);
       const matchedLines = new Set();
-      const matchStartLines = new Set();
-
-      if (options.multiline && lines.length > 0) {
-        const lineStarts = [];
-        let offset = 0;
-        for (const line of rawLines) {
-          lineStarts.push(offset);
-          offset += line.length + 1;
+      const textMatchedLines = new Set();
+      let matchCount = 0;
+      const lineAtOffset = (value, zeroWidth = false) => {
+        let low = 0;
+        let high = lines.length - 1;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          if (lines[middle].start <= value) low = middle;
+          else high = middle - 1;
         }
-        const lineAtOffset = value => {
-          let low = 0;
-          let high = lineStarts.length - 1;
-          while (low < high) {
-            const middle = Math.ceil((low + high) / 2);
-            if (lineStarts[middle] <= value) low = middle;
-            else high = middle - 1;
-          }
-          return low;
-        };
+        if (zeroWidth && value > lines[low].end && low + 1 < lines.length) return low + 1;
+        return low;
+      };
+
+      if (options.multiline) {
         regex.lastIndex = 0;
         let match;
         while ((match = regex.exec(content)) !== null) {
-          const startLine = lineAtOffset(match.index);
-          const lastOffset = match[0].length > 0
-            ? match.index + match[0].length - 1
-            : match.index;
-          const endLine = lineAtOffset(lastOffset);
-          matchStartLines.add(startLine);
-          for (let line = startLine; line <= endLine; line += 1) matchedLines.add(line);
-          if (match[0].length === 0) {
-            if (regex.lastIndex >= content.length) break;
-            regex.lastIndex += content.codePointAt(regex.lastIndex) > 0xffff ? 2 : 1;
+          matchCount += 1;
+          const zeroWidth = match[0].length === 0;
+          const startLine = lineAtOffset(match.index, zeroWidth);
+          const endOffset = zeroWidth ? match.index : match.index + match[0].length - 1;
+          const endLine = lineAtOffset(endOffset, zeroWidth);
+          for (let line = startLine; line <= endLine; line += 1) {
+            matchedLines.add(line);
+            if (!zeroWidth) textMatchedLines.add(line);
           }
+          if (zeroWidth && match.index >= lines[startLine].start) textMatchedLines.add(startLine);
+          if (match[0].length === 0 && !advanceEmptyMatch(regex, content)) break;
         }
       } else {
-        for (let line = 0; line < rawLines.length; line += 1) {
+        for (let line = 0; line < lines.length; line += 1) {
           regex.lastIndex = 0;
-          if (regex.test(rawLines[line])) {
+          let match;
+          while ((match = regex.exec(lines[line].text)) !== null) {
+            matchCount += 1;
             matchedLines.add(line);
-            matchStartLines.add(line);
+            textMatchedLines.add(line);
+            if (match[0].length === 0 && !advanceEmptyMatch(regex, lines[line].text)) break;
           }
         }
       }
 
       if (options.filesOnly) {
-        return matchStartLines.size > 0 ? [createGrepRecord(relPath)] : [];
+        return matchCount > 0 ? [createGrepRecord(relPath)] : [];
       }
       if (options.count) {
-        return matchStartLines.size > 0
-          ? [createGrepRecord(relPath, String(matchStartLines.size))]
+        return matchCount > 0
+          ? [createGrepRecord(relPath, String(matchCount))]
           : [];
       }
 
@@ -608,9 +600,12 @@ export async function nodeGrep(pattern, searchPath, options) {
         .slice(0, maxResults)
         .map(([lineIndex, kind]) => {
           const lineSeparator = kind === 'context' ? '-' : ':';
+          const lineText = kind === 'match' && !textMatchedLines.has(lineIndex)
+            ? ''
+            : lines[lineIndex].text;
           return createGrepRecord(
             relPath,
-            `${lineIndex + 1}${lineSeparator}${lines[lineIndex]}`,
+            `${lineIndex + 1}${lineSeparator}${lineText}`,
             kind,
           );
         });
@@ -666,8 +661,6 @@ export async function nodeGrep(pattern, searchPath, options) {
   }
 
   throwIfAborted(options.signal);
-  const rootStat = await stat(searchPath);
-  throwIfAborted(options.signal);
   if (rootStat.isDirectory()) await searchDir(searchPath);
   else {
     for (const record of await collectFileRecords(searchPath)) addResult(record);
@@ -691,9 +684,11 @@ Output modes:
 - "count" — show match count per file
 
 Guidelines:
-- Uses regex syntax (escape special chars: \\., \\{, etc.)
+- Uses the JavaScript RegExp syntax supported by the running Node.js version
+- Escape special characters such as \\. and \\{
+- Skips symlinks, binary files, invalid UTF-8, and text files larger than 16 MiB
 - Use glob or type filters to narrow the search
-- Skips binary files and common large directories (node_modules, .git)
+- Skips common large directories such as node_modules and .git
 - Results are limited to 500 matches by default`,
     zh: `用正则表达式搜索文件内容。
 
@@ -705,9 +700,11 @@ Guidelines:
 - "count" — 显示每个文件的匹配数量
 
 使用指南：
-- 使用正则语法（特殊字符需转义：\\.、\\{ 等）
+- 使用当前 Node.js 版本支持的 JavaScript RegExp 语法
+- 特殊字符需转义，如 \\.、\\{
+- 跳过符号链接、二进制、无效 UTF-8 和超过 16 MiB 的文本文件
 - 用 glob 或 type 过滤缩小搜索范围
-- 跳过二进制文件和常见大目录（node_modules、.git）
+- 跳过 node_modules、.git 等常见大目录
 - 默认结果限制 500 条`
   },
   parameters: {
@@ -859,7 +856,11 @@ Guidelines:
 
       if (rgCommand) {
         try {
-          result = await runRipgrep(pattern, absPath, options, spawn, rgCommand);
+          const candidatePaths = await listRipgrepCandidatePaths(rgCommand, absPath, {
+            ...options,
+            pattern,
+          });
+          result = await nodeGrep(pattern, absPath, { ...options, candidatePaths });
         } catch (error) {
           if (isAbortError(error)) throw error;
           result = await nodeGrep(pattern, absPath, options);

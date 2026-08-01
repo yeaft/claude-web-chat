@@ -3,11 +3,12 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   existsSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync,
-  symlinkSync,
+  symlinkSync, utimesSync,
 } from 'fs';
 import { delimiter, join } from 'path';
 import { tmpdir } from 'os';
 import { gzipSync } from 'node:zlib';
+import { lstat as lstatAsync, readdir as readdirAsync, stat as statAsync } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { ActiveMemorySet } from '../../../agent/yeaft/memory/ams.js';
@@ -30,6 +31,7 @@ import {
 } from '../../../agent/yeaft/managed-cli.js';
 import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
 import { createOutputCollector, runRipgrep, nodeGrep } from '../../../agent/yeaft/tools/grep.js';
+import { nodeDiskUsage } from '../../../agent/yeaft/tools/disk-usage.js';
 import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
 import { SEARCH_SKIP_DIRS } from '../../../agent/yeaft/tools/search-paths.js';
 
@@ -3283,6 +3285,24 @@ describe('managed CLI setup and fast tool integration', () => {
     expect(second.every(result => result.status === 'cooldown')).toBe(true);
     expect(cooldownRequests).toBe(3);
 
+    const busyDir = tempDir('cli-busy');
+    const busyBinDir = managedCliBinDir(busyDir);
+    mkdirSync(busyBinDir, { recursive: true });
+    for (const name of ['rg', 'fd', 'dust']) mkdirSync(join(busyBinDir, `.install-${name}.lock`));
+    const busyOptions = {
+      yeaftDir: busyDir,
+      platform: 'linux',
+      arch: 'x64',
+      env: emptyPathEnv(),
+      lockWaitMs: 0,
+      fetchFn: async () => { throw new Error('busy must not download'); },
+    };
+    const busyFirst = await ensureManagedCliTools(busyOptions);
+    const busySecond = await ensureManagedCliTools(busyOptions);
+    expect(busyFirst.every(result => result.status === 'busy')).toBe(true);
+    expect(busySecond.every(result => result.status === 'busy')).toBe(true);
+    expect(JSON.parse(readFileSync(join(busyDir, 'managed-cli.json'), 'utf8')).failures).toEqual({});
+
     const root = tempDir('fast-tools');
     mkdirSync(join(root, 'large'));
     mkdirSync(join(root, 'small'));
@@ -3302,6 +3322,8 @@ describe('managed CLI setup and fast tool integration', () => {
       const toolDir = join(root, '.yeaft');
       const toolBinDir = managedCliBinDir(toolDir);
       const log = join(root, 'calls.log');
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(join(root, 'src', 'a.js'), 'needle\n');
       mkdirSync(toolBinDir, { recursive: true });
       writeFileSync(join(toolBinDir, 'rg'), `#!/bin/sh\necho rg >> ${JSON.stringify(log)}\nprintf 'src/a.js\\000'\n`, { mode: 0o755 });
       writeFileSync(join(toolBinDir, 'fd'), `#!/bin/sh\necho fd >> ${JSON.stringify(log)}\nprintf 'src/a.js\\0src/b.txt\\0'\n`, { mode: 0o755 });
@@ -3415,7 +3437,7 @@ describe('managed CLI setup and fast tool integration', () => {
         pattern: 'needle', path: parityRoot, glob: 'count.js',
         output_mode: 'count', fixed_strings: true,
       };
-      expect(await registry.execute('Grep', countInput, fastCtx)).toBe('src/count.js:2');
+      expect(await registry.execute('Grep', countInput, fastCtx)).toBe('src/count.js:3');
       expect(await registry.execute('Grep', countInput, fastCtx))
         .toBe(await registry.execute('Grep', countInput, fallbackCtx));
 
@@ -3491,8 +3513,9 @@ describe('managed CLI setup and fast tool integration', () => {
           };
           const fast = await registry.execute('Grep', input, fastCtx);
           const fallback = await registry.execute('Grep', input, fallbackCtx);
-          expect(fast).toContain('group-scoped regex modifiers are unsupported');
           expect(fast).toBe(fallback);
+          if (process.version.startsWith('v20.')) expect(fast).toContain('Invalid regular expression');
+          else expect(fast).not.toContain('unsupported');
         }
       }
 
@@ -3501,17 +3524,17 @@ describe('managed CLI setup and fast tool integration', () => {
         pattern: '(?m:^beta$)', path: parityRoot, glob: 'multiline-crlf.js',
         output_mode: 'content', multiline: false, head_limit: 20,
       };
-      expect(await registry.execute('Grep', scopedCrlfInput, fastCtx))
-        .toContain('group-scoped regex modifiers are unsupported');
-      expect(await registry.execute('Grep', scopedCrlfInput, fastCtx))
-        .toBe(await registry.execute('Grep', scopedCrlfInput, fallbackCtx));
+      const scopedCrlfFast = await registry.execute('Grep', scopedCrlfInput, fastCtx);
+      expect(scopedCrlfFast).toBe(await registry.execute('Grep', scopedCrlfInput, fallbackCtx));
+      if (!process.version.startsWith('v20.')) expect(scopedCrlfFast).toBe('src/multiline-crlf.js:2:beta');
       for (const multiline of [false, true]) {
         const input = {
           pattern: 'beta$', path: parityRoot, glob: 'multiline-crlf.js',
           output_mode: 'content', multiline, head_limit: 20,
         };
-        expect(await registry.execute('Grep', input, fastCtx)).toBe('(no matches)');
-        expect(await registry.execute('Grep', input, fallbackCtx)).toBe('(no matches)');
+        const fast = await registry.execute('Grep', input, fastCtx);
+        expect(fast).toBe('src/multiline-crlf.js:2:beta');
+        expect(fast).toBe(await registry.execute('Grep', input, fallbackCtx));
       }
       for (const fixedStrings of [false, true]) {
         for (const outputMode of ['files_with_matches', 'count', 'content']) {
@@ -3535,7 +3558,7 @@ describe('managed CLI setup and fast tool integration', () => {
           ? 'src/isolated-cr.js'
           : outputMode === 'count'
             ? 'src/isolated-cr.js:1'
-            : 'src/isolated-cr.js:1:alphabeta';
+            : 'src/isolated-cr.js:1:alpha\nsrc/isolated-cr.js:2:beta';
         const fast = await registry.execute('Grep', input, fastCtx);
         const fallback = await registry.execute('Grep', input, fallbackCtx);
         expect(fast).toBe(expected);
@@ -3605,9 +3628,113 @@ describe('managed CLI setup and fast tool integration', () => {
       expect(managedCliLookupCount).toBe(0);
       expect(await registry.execute('Grep', {
         pattern: 'alpha', path: zeroLengthRoot, glob: 'no-trailing.js',
-        output_mode: 'content', multiline: true,
+        output_mode: 'content', multiline: false,
       }, lookupProbeContext)).toBe('src/no-trailing.js:1:alpha');
       expect(managedCliLookupCount).toBeGreaterThan(0);
+      for (const pattern of ['\ud800', '\0', '\r', '\n']) {
+        managedCliLookupCount = 0;
+        await registry.execute('Grep', {
+          pattern, path: zeroLengthRoot, output_mode: 'content', fixed_strings: true,
+        }, lookupProbeContext);
+        expect(managedCliLookupCount).toBe(0);
+      }
+
+      const eligibilityRoot = tempDir('grep-file-eligibility');
+      mkdirSync(join(eligibilityRoot, 'src'));
+      writeFileSync(join(eligibilityRoot, 'src', 'large.txt'), `${'x'.repeat(1024 * 1024 + 1)}\nneedle\n`);
+      writeFileSync(join(eligibilityRoot, 'src', 'fake.pdf'), 'needle\n');
+      writeFileSync(join(eligibilityRoot, 'src', 'invalid.txt'), Buffer.concat([
+        Buffer.from('needle\n'), Buffer.from([0xff]),
+      ]));
+      writeFileSync(join(eligibilityRoot, 'src', 'replacement.txt'), 'x\ufffdy\n');
+      const eligibilityBinDir = managedCliBinDir(eligibilityRoot);
+      mkdirSync(eligibilityBinDir, { recursive: true });
+      writeFileSync(join(eligibilityBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      const eligibilityContexts = [
+        { cwd: eligibilityRoot, yeaftDir: eligibilityRoot, managedCliReady: Promise.resolve([]) },
+        { cwd: eligibilityRoot, yeaftDir: join(eligibilityRoot, 'fallback'), managedCliReady: Promise.resolve([]) },
+      ];
+      for (const input of [
+        { pattern: 'needle', fixed_strings: true },
+        { pattern: 'needl.', fixed_strings: false },
+      ]) {
+        for (const outputMode of ['files_with_matches', 'count', 'content']) {
+          const outputs = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+            ...input, path: eligibilityRoot, output_mode: outputMode, head_limit: 50,
+          }, context)));
+          expect(outputs[0]).toBe(outputs[1]);
+          expect(outputs[0]).toContain('src/large.txt');
+          expect(outputs[0]).not.toContain('fake.pdf');
+          expect(outputs[0]).not.toContain('invalid.txt');
+        }
+      }
+      const surrogateOutputs = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+        pattern: '\ud800', path: eligibilityRoot, output_mode: 'content', fixed_strings: true,
+      }, context)));
+      expect(surrogateOutputs).toEqual(['(no matches)', '(no matches)']);
+
+      for (const [file, content] of [
+        ['empty.txt', ''],
+        ['trailing.txt', 'alpha\n'],
+        ['crlf.txt', 'alpha\r\nbeta\r\n'],
+        ['cr.txt', 'alpha\rbeta\r'],
+        ['line-separators.txt', 'alpha\u2028beta\u2029'],
+      ]) writeFileSync(join(eligibilityRoot, 'src', file), content);
+      for (const [glob, pattern, expectedContent, expectedCount] of [
+        ['empty.txt', '(?m)^$', 'src/empty.txt:1:', 1],
+        ['trailing.txt', '(?m)^$', 'src/trailing.txt:2:', 1],
+        ['crlf.txt', '^beta$', 'src/crlf.txt:2:beta', 1],
+        ['cr.txt', '^beta$', 'src/cr.txt:2:beta', 1],
+        ['line-separators.txt', '^beta$', 'src/line-separators.txt:2:beta', 1],
+      ]) {
+        for (const outputMode of ['files_with_matches', 'count', 'content']) {
+          const outputs = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+            pattern, path: eligibilityRoot, glob, output_mode: outputMode, multiline: true,
+          }, context)));
+          const expected = outputMode === 'files_with_matches'
+            ? `src/${glob}`
+            : outputMode === 'count' ? `src/${glob}:${expectedCount}` : expectedContent;
+          expect(outputs).toEqual([expected, expected]);
+        }
+      }
+      for (const context of eligibilityContexts) {
+        for (const [outputMode, expected] of [
+          ['files_with_matches', 'large.txt'],
+          ['count', 'large.txt:1'],
+          ['content', 'large.txt:2:needle'],
+        ]) {
+          expect(await registry.execute('Grep', {
+            pattern: 'needle', path: join(eligibilityRoot, 'src', 'large.txt'),
+            output_mode: outputMode, fixed_strings: true,
+          }, context)).toBe(expected);
+        }
+      }
+      const linkPath = join(eligibilityRoot, 'src', 'large-link.txt');
+      symlinkSync(join(eligibilityRoot, 'src', 'large.txt'), linkPath);
+      for (const context of eligibilityContexts) {
+        expect(await registry.execute('Grep', {
+          pattern: 'needle', path: linkPath, output_mode: 'content', fixed_strings: true,
+        }, context)).toBe('(no matches)');
+      }
+      const zeroWidthCounts = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+        pattern: '(?:)', path: eligibilityRoot, glob: 'trailing.txt',
+        output_mode: 'count', multiline: true,
+      }, context)));
+      expect(zeroWidthCounts).toEqual(['src/trailing.txt:7', 'src/trailing.txt:7']);
+      for (const [pattern, outputMode, expected] of [
+        ['(?:)', 'count', 'src/crlf.txt:14'],
+        ['(?:)', 'content', 'src/crlf.txt:1:alpha\nsrc/crlf.txt:2:beta\nsrc/crlf.txt:3:'],
+        ['(?m)^$', 'count', 'src/crlf.txt:3'],
+        ['(?m)^$', 'content', 'src/crlf.txt:2:\nsrc/crlf.txt:3:'],
+        ['$', 'count', 'src/crlf.txt:5'],
+        ['$', 'content', 'src/crlf.txt:1:alpha\nsrc/crlf.txt:2:beta\nsrc/crlf.txt:3:'],
+      ]) {
+        const outputs = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+          pattern, path: eligibilityRoot, glob: 'crlf.txt',
+          output_mode: outputMode, multiline: true,
+        }, context)));
+        expect(outputs).toEqual([expected, expected]);
+      }
 
       const safeRegexCases = [
         { pattern: '(?i)(?m)^BETA$', glob: 'no-trailing.js', expected: 'src/no-trailing.js:2:beta' },
@@ -3709,6 +3836,25 @@ describe('managed CLI setup and fast tool integration', () => {
       expect(fastGlob).toContain('src/a.js');
       expect(fastGlob).not.toContain('.yeaft/worktrees');
 
+      const equalMtimeRoot = tempDir('glob-equal-mtime');
+      for (const name of ['c.js', 'b.js', 'a.js']) writeFileSync(join(equalMtimeRoot, name), 'value\n');
+      const equalTime = new Date('2026-08-01T00:00:00.000Z');
+      for (const name of ['c.js', 'b.js', 'a.js']) utimesSync(join(equalMtimeRoot, name), equalTime, equalTime);
+      const equalMtimeBin = managedCliBinDir(equalMtimeRoot);
+      mkdirSync(equalMtimeBin, { recursive: true });
+      writeFileSync(join(equalMtimeBin, 'fd'), '#!/bin/sh\nprintf "c.js\\0b.js\\0a.js\\0"\n', { mode: 0o755 });
+      for (const limit of [1, 2]) {
+        const input = { pattern: '*.js', path: equalMtimeRoot, limit };
+        const fast = await registry.execute('Glob', input, {
+          cwd: equalMtimeRoot, yeaftDir: equalMtimeRoot, managedCliReady: Promise.resolve([]),
+        });
+        const fallback = await registry.execute('Glob', input, {
+          cwd: equalMtimeRoot, yeaftDir: join(equalMtimeRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+        });
+        expect(fast).toBe(fallback);
+        expect(fast).toBe(limit === 1 ? 'a.js' : 'a.js\nb.js');
+      }
+
       const specialPathRoot = tempDir('glob-special-paths');
       mkdirSync(join(specialPathRoot, 'src'));
       writeFileSync(join(specialPathRoot, 'src', 'car\rriage.js'), 'value\n');
@@ -3729,6 +3875,51 @@ describe('managed CLI setup and fast tool integration', () => {
       }
 
       if (realDust) {
+        const diskConcurrencyRoot = tempDir('disk-usage-concurrency');
+        let diskLevel = [diskConcurrencyRoot];
+        for (let level = 0; level < 3; level += 1) {
+          const next = [];
+          for (const parent of diskLevel) {
+            for (let index = 0; index < 8; index += 1) {
+              const child = join(parent, `d${index}`);
+              mkdirSync(child);
+              next.push(child);
+            }
+          }
+          diskLevel = next;
+        }
+        let activeFs = 0;
+        let maxActiveFs = 0;
+        const wrapFs = operation => async (...args) => {
+          activeFs += 1;
+          maxActiveFs = Math.max(maxActiveFs, activeFs);
+          await new Promise(resolve => setTimeout(resolve, 1));
+          try { return await operation(...args); } finally { activeFs -= 1; }
+        };
+        await nodeDiskUsage(diskConcurrencyRoot, 3, 20, undefined, {
+          lstat: wrapFs(lstatAsync),
+          readdir: wrapFs(readdirAsync),
+          stat: wrapFs(statAsync),
+        });
+        expect(maxActiveFs).toBeLessThanOrEqual(16);
+        expect(activeFs).toBe(0);
+
+        const diskAbort = new AbortController();
+        activeFs = 0;
+        const abortingFs = operation => async (...args) => {
+          activeFs += 1;
+          await new Promise(resolve => setTimeout(resolve, 5));
+          try { return await operation(...args); } finally { activeFs -= 1; }
+        };
+        const abortedScan = nodeDiskUsage(diskConcurrencyRoot, 3, 20, diskAbort.signal, {
+          lstat: abortingFs(lstatAsync),
+          readdir: abortingFs(readdirAsync),
+          stat: abortingFs(statAsync),
+        });
+        setImmediate(() => diskAbort.abort('user'));
+        await expect(abortedScan).rejects.toMatchObject({ name: 'AbortError' });
+        expect(activeFs).toBe(0);
+
         const symlinkRoot = tempDir('disk-usage-symlink');
         mkdirSync(join(symlinkRoot, 'target'));
         writeFileSync(join(symlinkRoot, 'target', 'data.bin'), Buffer.alloc(16));
@@ -3767,6 +3958,13 @@ describe('managed CLI setup and fast tool integration', () => {
             cwd: symlinkRoot, yeaftDir: join(symlinkRoot, 'fallback'), managedCliReady: Promise.resolve([]),
           });
           expect(boundedFast).toBe(boundedFallback);
+        }
+
+        const regularFileInput = { path: join(symlinkRoot, 'target-file.bin'), depth: 2, limit: 20 };
+        for (const yeaftDir of [symlinkRoot, join(symlinkRoot, 'fallback')]) {
+          expect(await registry.execute('DiskUsage', regularFileInput, {
+            cwd: symlinkRoot, yeaftDir, managedCliReady: Promise.resolve([]),
+          })).toContain('path must be a directory or a directory symlink');
         }
 
         const rootLink = join(symlinkRoot, 'rootlink');
