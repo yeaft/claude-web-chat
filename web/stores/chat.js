@@ -6064,6 +6064,7 @@ export const useChatStore = defineStore('chat', {
           resolve({ ok: false, error: { code: 'timeout' } });
         }, 10000);
         this.projectMutationRequests[requestId] = {
+          connectionGeneration: Number(this.chatHistoryConnectionGeneration || 0),
           resolve: result => { clearTimeout(timer); resolve(result); },
         };
         const sent = this.sendWsMessage({
@@ -6097,22 +6098,26 @@ export const useChatStore = defineStore('chat', {
     finishLegacyProjectMutation(event, agentId) {
       if (!event?.requestId) return false;
       const pending = this.projectMutationRequests[event.requestId] || null;
-      if (pending) delete this.projectMutationRequests[event.requestId];
+      if (!pending
+          || pending.connectionGeneration !== Number(this.chatHistoryConnectionGeneration || 0)) return false;
+      delete this.projectMutationRequests[event.requestId];
       if (event.ok && Array.isArray(event.projects) && agentId) {
         this.applyLegacyProjectSnapshot(event.projects, agentId);
       }
-      pending?.resolve(event);
-      return !!pending;
+      pending.resolve(event);
+      return true;
     },
     finishProjectMutation(event) {
       if (!event?.requestId) return false;
       const pending = this.projectMutationRequests[event.requestId] || null;
-      if (pending) delete this.projectMutationRequests[event.requestId];
+      if (!pending
+          || pending.connectionGeneration !== Number(this.chatHistoryConnectionGeneration || 0)) return false;
+      delete this.projectMutationRequests[event.requestId];
       if (event.ok && Array.isArray(event.projects)) {
         this.applySessionCatalogSnapshot(this.sessionCatalog, event.projects);
       }
-      pending?.resolve(event);
-      return !!pending;
+      pending.resolve(event);
+      return true;
     },
     toggleCatalogSessionPin(row) {
       if (!row?.catalogKey || !row?.routeRef

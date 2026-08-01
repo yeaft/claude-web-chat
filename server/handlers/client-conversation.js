@@ -1304,8 +1304,12 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           const agentId = msg.targetAgentId || msg.agentId;
           const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId.trim() : '';
           if (!agentId || !sessionId) throw new Error('Agent and Session identities are required');
-          if (!yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) {
-            throw new Error('Session not found');
+          const targetSession = yeaftSessionDb.getForAgent(client.userId, agentId, sessionId);
+          if (!targetSession) throw new Error('Session not found');
+          if (targetSession.isArchived) {
+            const error = new Error('Archived Sessions cannot be moved to Projects');
+            error.code = 'session_archived';
+            throw error;
           }
           result = yeaftProjectDb.moveSession(client.userId, {
             agentId,

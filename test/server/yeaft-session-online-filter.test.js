@@ -556,6 +556,30 @@ describe('Yeaft Session online Agent filtering', () => {
       },
     });
 
+    moveProjectSession.mockClear();
+    getForAgent.mockReturnValue({ id: 'archived-session', agentId: 'agent-a', isArchived: true });
+    routedClient.sent = [];
+    await handleClientConversation('client-1', routedClient, {
+      type: 'yeaft_project_mutation',
+      requestId: 'project-move-archived',
+      op: 'move_session',
+      targetAgentId: 'agent-a',
+      sessionId: 'archived-session',
+      projectId: 'project-created',
+    }, allow);
+    expect(moveProjectSession).not.toHaveBeenCalled();
+    expect(routedClient.sent.at(-1)).toMatchObject({
+      type: 'yeaft_output',
+      agentId: 'agent-a',
+      event: {
+        type: 'project_mutation_result',
+        requestId: 'project-move-archived',
+        ok: false,
+        error: { code: 'session_archived' },
+      },
+    });
+    getForAgent.mockReturnValue(null);
+
     const ownerClient = { authenticated: true, userId: 'user-1', sent: [], ws: { readyState: 1 } };
     webClients.set('owner-client', ownerClient);
     const agent = { ownerId: 'user-1', conversations: new Map(), ws: { readyState: 1 } };

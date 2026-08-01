@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { messageDb, yeaftProjectDb, yeaftSessionDb } from '../database.js';
+import { transaction } from '../db/connection.js';
 import { broadcastAgentList, broadcastSessionCatalog, forwardToClients, sendToAgent, sendToWebClient } from '../ws-utils.js';
 import { webClients, previewFiles } from '../context.js';
 import { CONFIG } from '../config.js';
@@ -33,6 +34,19 @@ export function decorateYeaftSessionsWithPinned(agentId, sessions) {
   });
 }
 
+function reconcileAuthoritativeSessionSnapshot(ownerId, agentId, sessions) {
+  const rows = Array.isArray(sessions) ? sessions : [];
+  transaction(() => {
+    yeaftSessionDb.reconcileFromSnapshot(ownerId, agentId, rows);
+    yeaftProjectDb.reconcileAgentSessions(
+      ownerId,
+      agentId,
+      rows.map(row => row?.id).filter(Boolean),
+    );
+  })();
+  return rows;
+}
+
 function syncYeaftSessionMetadata(agentId, agent, event) {
   if (!event || typeof event !== 'object') return event;
   const ownerId = agent?.ownerId || null;
@@ -41,8 +55,7 @@ function syncYeaftSessionMetadata(agentId, agent, event) {
     const rows = Array.isArray(event.sessions) ? event.sessions : [];
     try {
       if (ownerId) {
-        yeaftSessionDb.reconcileFromSnapshot(ownerId, agentId, rows);
-        yeaftProjectDb.reconcileAgentSessions(ownerId, agentId, rows.map(row => row?.id).filter(Boolean));
+        reconcileAuthoritativeSessionSnapshot(ownerId, agentId, rows);
         yeaftProjectDb.importLegacyProjects(
           ownerId,
           agentId,
@@ -61,7 +74,7 @@ function syncYeaftSessionMetadata(agentId, agent, event) {
   const sessionId = event.sessionId;
   if (event.ok && op === 'list' && Array.isArray(event.sessions)) {
     try {
-      if (ownerId) yeaftSessionDb.reconcileFromSnapshot(ownerId, agentId, event.sessions);
+      if (ownerId) reconcileAuthoritativeSessionSnapshot(ownerId, agentId, event.sessions);
     } catch (e) {
       console.warn(`[Server] yeaft session list persist failed for agent ${agentId}:`, e?.message || e);
     }

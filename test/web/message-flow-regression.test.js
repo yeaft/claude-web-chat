@@ -10,7 +10,10 @@ import {
   finishStreamingForConversation,
   maxDbMessageId,
 } from '../../web/stores/helpers/messages.js';
-import UnifiedSessionList from '../../web/components/UnifiedSessionList.js';
+import {
+  calculateFloatingMenuPosition,
+  default as UnifiedSessionList,
+} from '../../web/components/UnifiedSessionList.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
 import WorkCenterPage from '../../web/components/WorkCenterPage.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
@@ -367,24 +370,32 @@ describe('message flow regressions', () => {
     const pinnedSettingsButton = firstRow.get('.session-dots-btn');
     await pinnedSettingsButton.trigger('keydown', { key: 'Enter' });
     expect(sidebar.emitted('select')?.length || 0).toBe(selectCountBeforeSettingsKeyboard);
-    expect(sidebar.find('.session-menu').exists()).toBe(false);
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
+    Object.defineProperty(pinnedSettingsButton.element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 740, bottom: 764, left: 980, right: 1004, width: 24, height: 24 }),
+    });
     await pinnedSettingsButton.trigger('click');
-    expect(sidebar.find('.session-menu').exists()).toBe(true);
+    const teleportedMenu = document.body.querySelector('.session-menu-floating');
+    expect(teleportedMenu).not.toBeNull();
+    expect(sidebar.find('.session-menu').exists()).toBe(false);
+    expect(document.body.querySelectorAll('.session-menu-floating')).toHaveLength(1);
     await pinnedSettingsButton.trigger('keydown', { key: ' ' });
     expect(sidebar.emitted('select')?.length || 0).toBe(selectCountBeforeSettingsKeyboard);
-    expect(sidebar.find('.session-menu').exists()).toBe(true);
-    const runtimeFooter = sidebar.get('.sidebar-session-menu-info');
-    expect(runtimeFooter.text()).toContain('server');
-    expect(runtimeFooter.text()).toContain('Yeaft');
-    expect(runtimeFooter.findAll('strong')).toHaveLength(2);
-    expect(runtimeFooter.findAll('span')).toHaveLength(0);
-    expect(runtimeFooter.text()).not.toContain('sidebar.sessions.agent');
-    expect(runtimeFooter.text()).not.toContain('sidebar.sessions.provider');
+    expect(document.body.querySelector('.session-menu-floating')).not.toBeNull();
+    const runtimeFooter = document.body.querySelector('.sidebar-session-menu-info');
+    expect(runtimeFooter.textContent).toContain('server');
+    expect(runtimeFooter.textContent).toContain('Yeaft');
+    expect(runtimeFooter.querySelectorAll('strong')).toHaveLength(2);
+    expect(runtimeFooter.querySelectorAll('span')).toHaveLength(0);
+    expect(runtimeFooter.textContent).not.toContain('sidebar.sessions.agent');
+    expect(runtimeFooter.textContent).not.toContain('sidebar.sessions.provider');
     expect(sidebar.find('.sidebar-session-menu-divider').exists()).toBe(false);
-    const settingsAction = sidebar.findAll('.session-menu-item')
-      .find(item => item.text() === 'yeaft.session.openSettings');
+    const settingsAction = [...document.body.querySelectorAll('.session-menu-item')]
+      .find(item => item.textContent === 'yeaft.session.openSettings');
     expect(settingsAction).toBeTruthy();
-    await settingsAction.trigger('click');
+    settingsAction.click();
+    await Vue.nextTick();
     expect(sidebar.emitted('action').at(-1)[0]).toMatchObject({
       action: 'settings',
       row: { catalogKey: 'yeaft:user_1770305719:server-instance:pinned' },
@@ -444,34 +455,63 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).toContain(':key="row.catalogKey"');
     expect(UnifiedSessionList.emits).toContain('project-action');
     expect(UnifiedSessionList.template).toContain('sidebar-project-header');
-    expect(UnifiedSessionList.template).toContain("runAction('pin', row)");
-    expect(UnifiedSessionList.template).toContain("runAction('settings', row)");
-    expect(UnifiedSessionList.template).toContain("moveRow(row, project)");
+    expect(UnifiedSessionList.template).toContain("runAction('pin', floatingMenu.row)");
+    expect(UnifiedSessionList.template).toContain("runAction('settings', floatingMenu.row)");
+    expect(UnifiedSessionList.template).toContain("moveRow(floatingMenu.row, project)");
     expect(UnifiedSessionList.template).toContain('sidebar-primary-actions');
     expect(UnifiedSessionList.template).toContain('projects-section');
     expect(UnifiedSessionList.template).toContain('recents-section');
     expect(UnifiedSessionList.template).not.toContain('sidebar-session-menu-divider');
     expect(UnifiedSessionList.template).not.toContain('sidebar-session-meta');
     expect(UnifiedSessionList.template).toContain('processing-dot');
+    const bottomRightMenu = calculateFloatingMenuPosition(
+      { top: 740, bottom: 764, left: 980, right: 1004 },
+      { width: 220, height: 240 },
+      { width: 1024, height: 768 },
+    );
+    expect(bottomRightMenu).toEqual({
+      top: 496,
+      left: 784,
+      width: 220,
+      maxHeight: 240,
+      placement: 'above',
+    });
+    const leftCollisionMenu = calculateFloatingMenuPosition(
+      { top: 20, bottom: 44, left: -20, right: 4 },
+      { width: 220, height: 80 },
+      { width: 200, height: 300 },
+    );
+    expect(leftCollisionMenu.left).toBe(8);
+    expect(leftCollisionMenu.width).toBe(184);
     const documentAdd = vi.spyOn(document, 'addEventListener');
     const documentRemove = vi.spyOn(document, 'removeEventListener');
+    const windowAdd = vi.spyOn(window, 'addEventListener');
+    const windowRemove = vi.spyOn(window, 'removeEventListener');
     sidebar.unmount();
     const lifecycleSidebar = mount(UnifiedSessionList, {
+      attachTo: document.body,
       props: { sessions: catalogRows, agents: [{ id: 'agent-a', online: true }] },
       global: { mocks: { $t: key => key } },
     });
     expect(documentAdd).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
     expect(documentAdd).toHaveBeenCalledWith('keydown', expect.any(Function));
+    expect(windowAdd).toHaveBeenCalledWith('resize', expect.any(Function));
+    expect(windowAdd).toHaveBeenCalledWith('scroll', expect.any(Function), true);
     await lifecycleSidebar.find('.session-dots-btn').trigger('click');
-    expect(lifecycleSidebar.find('.session-menu').exists()).toBe(true);
+    expect(document.body.querySelector('.session-menu-floating')).not.toBeNull();
+    expect(lifecycleSidebar.find('.session-menu').exists()).toBe(false);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     await Vue.nextTick();
-    expect(lifecycleSidebar.find('.session-menu').exists()).toBe(false);
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
     lifecycleSidebar.unmount();
     expect(documentRemove).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
     expect(documentRemove).toHaveBeenCalledWith('keydown', expect.any(Function));
+    expect(windowRemove).toHaveBeenCalledWith('resize', expect.any(Function));
+    expect(windowRemove).toHaveBeenCalledWith('scroll', expect.any(Function), true);
     documentAdd.mockRestore();
     documentRemove.mockRestore();
+    windowAdd.mockRestore();
+    windowRemove.mockRestore();
     const fallbackWorkCenter = mount(SidebarWorkCenter, {
       props: { agents: [] },
       global: { mocks: { $t: key => key } },
