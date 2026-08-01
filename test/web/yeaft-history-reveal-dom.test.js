@@ -97,6 +97,7 @@ function primeStore() {
     agentId: null,
     sessionId: null,
     query: '',
+    senderKey: '',
     loading: false,
     results: [],
     hasMore: false,
@@ -117,6 +118,29 @@ function primeStore() {
   store.sendWsMessage = message => sent.push(message);
   store._sent = sent;
   return store;
+}
+
+async function openDefaultUserSearch(wrapper, store) {
+  wrapper.vm.toggleHistorySearch();
+  await Vue.nextTick();
+  const request = store._sent.find(message => message.type === 'yeaft_search_history');
+  expect(request).toMatchObject({
+    agentId: 'agent-a',
+    sessionId: 'same',
+    query: '',
+    senderKey: 'user',
+  });
+  expect(store.handleYeaftHistorySearchResult({
+    agentId: 'agent-a',
+    sessionId: 'same',
+    requestId: request.requestId,
+    query: '',
+    senderKey: 'user',
+    results: [{ messageId: 'm42', seq: 42, role: 'user', snippet: 'old question' }],
+    hasMore: false,
+    nextBeforeSeq: null,
+  })).toBe(true);
+  await Vue.nextTick();
 }
 
 function mountPage() {
@@ -344,8 +368,7 @@ describe('Yeaft history result rendered reveal', () => {
     expect(messageList.get('.scroll-to-latest').classes()).toContain('is-hidden');
     store.messagesMap['conv-a'].pop();
 
-    wrapper.vm.toggleHistorySearch();
-    await Vue.nextTick();
+    await openDefaultUserSearch(wrapper, store);
 
     const scrollToKey = observeVirtualScroll(wrapper);
     const option = wrapper.get('[role="option"]');
@@ -363,8 +386,7 @@ describe('Yeaft history result rendered reveal', () => {
     const store = primeStore();
     const revealWindow = vi.spyOn(store, 'revealYeaftHistoryResult');
     const wrapper = mountPage();
-    wrapper.vm.toggleHistorySearch();
-    await Vue.nextTick();
+    await openDefaultUserSearch(wrapper, store);
 
     const scrollToKey = observeVirtualScroll(wrapper);
     const option = wrapper.get('[role="option"]');
