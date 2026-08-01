@@ -78,14 +78,99 @@ function normalizeRipgrepPath(searchPath, path) {
   return relative(searchPath, normalized).replace(/\\/g, '/');
 }
 
-function createGrepRecord(path, suffix = '', kind = 'match') {
-  return { path, suffix, kind };
+function createGrepRecord(path, suffix = '', kind = 'match', metadata = {}) {
+  return { path, suffix, kind, ...metadata };
+}
+
+function createRipgrepEnv() {
+  const env = { ...process.env };
+  delete env.RIPGREP_CONFIG_PATH;
+  return env;
 }
 
 function renderGrepRecord(record, options) {
   if (options.filesOnly) return record.path;
   const separatorAfterPath = record.kind === 'context' ? '-' : ':';
   return record.path + separatorAfterPath + record.suffix;
+}
+
+function prepareOutputValue(value) {
+  const normalized = String(value).replace(/\r/g, '');
+  const text = truncateUtf8(normalized, MAX_LINE_BYTES);
+  return {
+    text,
+    truncated: Buffer.byteLength(text, 'utf8') < Buffer.byteLength(normalized, 'utf8'),
+    bytes: Buffer.byteLength(text, 'utf8'),
+  };
+}
+
+function measureOutputValues(values) {
+  return values.reduce((total, value, index) => total + value.bytes + (index > 0 ? 1 : 0), 0);
+}
+
+function renderOutputValues(values, truncated) {
+  if (!truncated) return values.map(value => value.text).join('\n');
+  const markerBytes = Buffer.byteLength(OUTPUT_TRUNCATED_MARKER, 'utf8');
+  let remaining = Math.max(0, SEARCH_RESULT_BYTES - markerBytes);
+  const parts = [];
+  for (const value of values) {
+    const separator = parts.length > 0 ? '\n' : '';
+    const separatorBytes = Buffer.byteLength(separator, 'utf8');
+    if (remaining <= separatorBytes) break;
+    const text = truncateUtf8(value.text, remaining - separatorBytes);
+    if (!text && value.text) break;
+    parts.push(separator + text);
+    remaining -= separatorBytes + Buffer.byteLength(text, 'utf8');
+    if (text !== value.text) break;
+  }
+  return parts.join('') + truncateUtf8(OUTPUT_TRUNCATED_MARKER, SEARCH_RESULT_BYTES);
+}
+
+function renderSelectedRecords(records, visibleMatches, options, moreResults) {
+  const visibleMatchRecords = new Set(visibleMatches);
+  const visibleMatchKeys = new Set(visibleMatches.map(record => record.matchKey).filter(Boolean));
+  const eligible = records.filter(record => (
+    record.kind !== 'context'
+      ? visibleMatchRecords.has(record)
+      : record.matchKeys?.some(matchKey => visibleMatchKeys.has(matchKey))
+  ));
+  const prepared = new Map(eligible.map(record => [
+    record,
+    prepareOutputValue(renderGrepRecord(record, options)),
+  ]));
+  const notice = moreResults ? prepareOutputValue('\n... (more results omitted)') : null;
+  const completeValues = eligible.map(record => prepared.get(record));
+  if (notice) completeValues.push(notice);
+  if (completeValues.every(value => !value.truncated)
+    && measureOutputValues(completeValues) <= SEARCH_RESULT_BYTES) {
+    return renderOutputValues(completeValues, false);
+  }
+
+  const markerBytes = Buffer.byteLength(OUTPUT_TRUNCATED_MARKER, 'utf8');
+  const noticeBytes = notice ? notice.bytes + 1 : 0;
+  const selectedMatches = new Set(visibleMatches);
+  const selectedMatchKeys = new Set(
+    visibleMatches.map(record => record.matchKey).filter(Boolean),
+  );
+  const matchValues = visibleMatches.map(record => prepared.get(record));
+  const selectedContexts = new Set();
+  let usedBytes = measureOutputValues(matchValues) + markerBytes + noticeBytes;
+  if (usedBytes <= SEARCH_RESULT_BYTES) {
+    for (const record of eligible) {
+      if (record.kind !== 'context'
+        || !record.matchKeys?.some(matchKey => selectedMatchKeys.has(matchKey))) continue;
+      const value = prepared.get(record);
+      if (value.truncated || usedBytes + value.bytes + 1 > SEARCH_RESULT_BYTES) continue;
+      selectedContexts.add(record);
+      usedBytes += value.bytes + 1;
+    }
+  }
+
+  const selectedValues = eligible
+    .filter(record => selectedMatches.has(record) || selectedContexts.has(record))
+    .map(record => prepared.get(record));
+  if (notice) selectedValues.push(notice);
+  return renderOutputValues(selectedValues, true);
 }
 
 function compareSearchPaths(left, right) {
@@ -242,6 +327,7 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
     const relativeTarget = options.cwd ? relative(options.cwd, searchPath) : null;
     const searchTarget = relativeTarget === '' ? null : (relativeTarget ?? searchPath);
     const args = [
+      '--no-config',
       '--no-heading',
       '--line-number',
       '--color', 'never',
@@ -268,6 +354,7 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
 
     const proc = spawnProcess(command, args, {
       cwd: options.cwd,
+      env: createRipgrepEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -436,6 +523,7 @@ async function listRipgrepCandidatePaths(command, searchPath, options) {
   const baseDir = searchStat.isDirectory() ? searchPath : dirname(searchPath);
   const target = searchStat.isDirectory() ? '.' : basename(searchPath);
   const args = [
+    '--no-config',
     '--files-with-matches',
     '--color', 'never',
     '--hidden',
@@ -447,6 +535,7 @@ async function listRipgrepCandidatePaths(command, searchPath, options) {
   args.push('--sort', 'path', '--', options.pattern, target);
   const result = await runProcess(command, args, {
     cwd: baseDir,
+    env: createRipgrepEnv(),
     signal: options.signal,
     timeoutMs: 120_000,
     maxBytes: MAX_CANDIDATE_BYTES,
@@ -511,11 +600,17 @@ export async function nodeGrep(pattern, searchPath, options) {
       && matchesPath(relative(searchBase, fullPath).replace(/\\/g, '/'));
   }
 
-  function addResult(record) {
+  function addFileRecords(fileRecords) {
     if (stopped) return;
-    resultCount += 1;
-    records.push(record);
-    if (!output.add(renderGrepRecord(record, options)) || resultCount >= maxResults) stopped = true;
+    for (const record of fileRecords) {
+      records.push(record);
+      if (!options.structured && !output.add(renderGrepRecord(record, options))) {
+        stopped = true;
+        return;
+      }
+      if (record.kind !== 'context') resultCount += 1;
+    }
+    if (resultCount >= maxResults) stopped = true;
   }
 
   async function collectFileRecords(fullPath) {
@@ -587,26 +682,34 @@ export async function nodeGrep(pattern, searchPath, options) {
       const beforeLines = Math.max(0, Number(options.before ?? options.context ?? 0));
       const afterLines = Math.max(0, Number(options.after ?? options.context ?? 0));
       const selected = new Map();
-      for (const matchIndex of matchedLines) {
+      const selectedMatches = [...matchedLines].sort((a, b) => a - b).slice(0, maxResults);
+      const selectedMatchSet = new Set(selectedMatches);
+      for (const matchIndex of selectedMatches) {
+        const matchKey = `${relPath}\0${matchIndex}`;
         const start = Math.max(0, matchIndex - beforeLines);
         const end = Math.min(lines.length - 1, matchIndex + afterLines);
         for (let i = start; i <= end; i += 1) {
-          const kind = matchedLines.has(i) ? 'match' : 'context';
-          if (kind === 'match' || !selected.has(i)) selected.set(i, kind);
+          const kind = selectedMatchSet.has(i) ? 'match' : 'context';
+          const entry = selected.get(i) || { kind, matchKeys: new Set() };
+          if (kind === 'match') entry.kind = 'match';
+          entry.matchKeys.add(matchKey);
+          selected.set(i, entry);
         }
       }
       return [...selected.entries()]
         .sort((a, b) => a[0] - b[0])
-        .slice(0, maxResults)
-        .map(([lineIndex, kind]) => {
-          const lineSeparator = kind === 'context' ? '-' : ':';
-          const lineText = kind === 'match' && !textMatchedLines.has(lineIndex)
+        .map(([lineIndex, entry]) => {
+          const lineSeparator = entry.kind === 'context' ? '-' : ':';
+          const lineText = entry.kind === 'match' && !textMatchedLines.has(lineIndex)
             ? ''
             : lines[lineIndex].text;
           return createGrepRecord(
             relPath,
             `${lineIndex + 1}${lineSeparator}${lineText}`,
-            kind,
+            entry.kind,
+            entry.kind === 'match'
+              ? { matchKey: `${relPath}\0${lineIndex}` }
+              : { matchKeys: [...entry.matchKeys] },
           );
         });
     } catch (error) {
@@ -634,10 +737,7 @@ export async function nodeGrep(pattern, searchPath, options) {
           pendingFiles.slice(i, i + FALLBACK_CONCURRENCY).map(collectFileRecords),
         );
         for (const batch of batches) {
-          for (const record of batch) {
-            addResult(record);
-            if (stopped) break;
-          }
+          addFileRecords(batch);
           if (stopped) break;
         }
       }
@@ -662,9 +762,7 @@ export async function nodeGrep(pattern, searchPath, options) {
 
   throwIfAborted(options.signal);
   if (rootStat.isDirectory()) await searchDir(searchPath);
-  else {
-    for (const record of await collectFileRecords(searchPath)) addResult(record);
-  }
+  else addFileRecords(await collectFileRecords(searchPath));
   const result = output.toString();
   return options.structured
     ? { output: result, records, resultCount, truncated: output.truncated }
@@ -874,17 +972,16 @@ Guidelines:
       } = result || {};
       if (records.length === 0 && !output.trim()) return '(no matches)';
       if (truncated) return output.trim();
-      const visibleRecords = [...records]
-        .sort(compareGrepRecords)
+      const sortedRecords = [...records].sort(compareGrepRecords);
+      const visibleMatches = sortedRecords
+        .filter(record => record.kind !== 'context')
         .slice(0, headLimit);
-      const finalOutput = createOutputCollector(SEARCH_RESULT_BYTES);
-      for (const record of visibleRecords) {
-        if (!finalOutput.add(renderGrepRecord(record, options))) break;
-      }
-      if (!finalOutput.truncated && resultCount > headLimit) {
-        finalOutput.add('\n... (more results omitted)');
-      }
-      return finalOutput.toString();
+      return renderSelectedRecords(
+        sortedRecords,
+        visibleMatches,
+        options,
+        resultCount > headLimit,
+      );
     } catch (err) {
       if (isAbortError(err)) throw err;
       return formatGrepError(err.message);

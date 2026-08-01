@@ -6,13 +6,14 @@ import {
   constants,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, delimiter, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { gunzipSync, inflateRawSync } from 'node:zlib';
 
 const DEFAULT_ROOT = join(homedir(), '.yeaft');
@@ -110,21 +111,66 @@ function pathCandidates(name, { env, platform }) {
   return candidates;
 }
 
+function hashFile(path) {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+function samePath(left, right, platform) {
+  let normalizedLeft;
+  let normalizedRight;
+  try { normalizedLeft = realpathSync(left); } catch { normalizedLeft = resolve(left); }
+  try { normalizedRight = realpathSync(right); } catch { normalizedRight = resolve(right); }
+  return platform === 'win32'
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
+}
+
+function inspectManagedBinary(name, { yeaftDir, platform, arch }) {
+  const asset = selectAsset(name, platform, arch);
+  const path = join(managedCliBinDir(yeaftDir), executableName(name, platform));
+  if (!asset || !canExecute(path, platform)) return { path, exists: false, valid: false };
+  const installation = readState(yeaftDir).installations?.[name];
+  if (installation?.version !== asset.version
+    || installation?.platform !== platform
+    || installation?.arch !== arch
+    || installation?.assetFileName !== asset.fileName
+    || installation?.archiveSha256 !== asset.sha256
+    || typeof installation?.binarySha256 !== 'string') {
+    return { path, exists: true, valid: false };
+  }
+  try {
+    return {
+      path,
+      exists: true,
+      valid: hashFile(path) === installation.binarySha256,
+    };
+  } catch {
+    return { path, exists: true, valid: false };
+  }
+}
+
+function resolveExternalCommand(name, { yeaftDir, env, platform }) {
+  const spec = TOOL_SPECS[name];
+  const managedBinDir = managedCliBinDir(yeaftDir);
+  for (const commandName of [name, ...(spec.aliases || [])]) {
+    for (const candidate of pathCandidates(commandName, { env, platform })) {
+      if (samePath(dirname(candidate), managedBinDir, platform)) continue;
+      if (canExecute(candidate, platform)) return candidate;
+    }
+  }
+  return null;
+}
+
 export function resolveManagedCliCommand(name, options = {}) {
   const spec = TOOL_SPECS[name];
   if (!spec) return null;
   const platform = options.platform || process.platform;
   const env = options.env || process.env;
-  const yeaftDir = options.yeaftDir || DEFAULT_ROOT;
-  const managedPath = join(managedCliBinDir(yeaftDir), executableName(name, platform));
-  if (canExecute(managedPath, platform)) return managedPath;
-
-  for (const commandName of [name, ...(spec.aliases || [])]) {
-    for (const candidate of pathCandidates(commandName, { env, platform })) {
-      if (canExecute(candidate, platform)) return candidate;
-    }
-  }
-  return null;
+  const arch = options.arch || process.arch;
+  const yeaftDir = resolve(options.yeaftDir || DEFAULT_ROOT);
+  const managed = inspectManagedBinary(name, { yeaftDir, platform, arch });
+  if (managed.valid) return managed.path;
+  return resolveExternalCommand(name, { yeaftDir, env, platform });
 }
 
 function selectAsset(name, platform, arch) {
@@ -161,7 +207,7 @@ function sleep(ms) {
   return new Promise(resolveSleep => setTimeout(resolveSleep, ms));
 }
 
-async function acquireLock(lockDir, installedPath, platform, waitMs = LOCK_WAIT_MS) {
+async function acquireLock(lockDir, waitMs = LOCK_WAIT_MS, ready = null) {
   const startedAt = Date.now();
   for (;;) {
     try {
@@ -169,7 +215,7 @@ async function acquireLock(lockDir, installedPath, platform, waitMs = LOCK_WAIT_
       return true;
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
-      if (canExecute(installedPath, platform)) return false;
+      if (ready?.()) return false;
       try {
         if (Date.now() - statSync(lockDir).mtimeMs > LOCK_STALE_MS) {
           rmSync(lockDir, { recursive: true, force: true });
@@ -181,6 +227,20 @@ async function acquireLock(lockDir, installedPath, platform, waitMs = LOCK_WAIT_
       if (Date.now() - startedAt >= waitMs) return false;
       await sleep(250);
     }
+  }
+}
+
+async function updateState(yeaftDir, update) {
+  const lockDir = join(yeaftDir, '.managed-cli-state.lock');
+  const acquired = await acquireLock(lockDir, LOCK_WAIT_MS);
+  if (!acquired) throw new Error('managed CLI state is busy');
+  try {
+    const current = readState(yeaftDir);
+    const next = update(current && typeof current === 'object' ? current : {});
+    writeState(yeaftDir, next);
+    return next;
+  } finally {
+    rmSync(lockDir, { recursive: true, force: true });
   }
 }
 
@@ -304,29 +364,62 @@ export function extractManagedCliBinary(archive, archiveName, commandName, platf
   throw new Error(`unsupported archive format: ${archiveName}`);
 }
 
+function versionOutputMatches(name, version, output) {
+  const labels = name === 'rg' ? ['ripgrep'] : [name];
+  const firstLine = String(output || '').trim().split(/\r?\n/, 1)[0]?.toLowerCase();
+  return labels.some(label => firstLine === `${label} ${version}`.toLowerCase()
+    || firstLine.startsWith(`${label} ${version} `));
+}
+
+function replaceManagedBinary(temporary, installedPath, platform) {
+  if (platform !== 'win32' || !existsSync(installedPath)) {
+    renameSync(temporary, installedPath);
+    return;
+  }
+  const backup = `${installedPath}.${process.pid}.${Date.now()}.backup`;
+  renameSync(installedPath, backup);
+  try {
+    renameSync(temporary, installedPath);
+    rmSync(backup, { force: true });
+  } catch (error) {
+    try { renameSync(backup, installedPath); } catch {}
+    throw error;
+  }
+}
+
 async function installOne(name, options) {
   const { yeaftDir, platform, arch, env, fetchFn, timeoutMs, lockWaitMs } = options;
-  const existing = resolveManagedCliCommand(name, { yeaftDir, platform, env });
-  if (existing) return { name, status: 'available', path: existing };
+  let managed = inspectManagedBinary(name, { yeaftDir, platform, arch });
+  if (managed.valid) return { name, status: 'available', path: managed.path };
+  if (!managed.exists) {
+    const external = resolveExternalCommand(name, { yeaftDir, platform, env });
+    if (external) return { name, status: 'available', path: external, source: 'system' };
+  }
 
   const asset = selectAsset(name, platform, arch);
   if (!asset) return { name, status: 'unsupported', platform, arch };
 
   const binDir = managedCliBinDir(yeaftDir);
   mkdirSync(binDir, { recursive: true, mode: 0o755 });
-  const installedPath = join(binDir, executableName(name, platform));
+  const installedPath = managed.path;
   const lockDir = join(binDir, `.install-${name}.lock`);
-  const acquired = await acquireLock(lockDir, installedPath, platform, lockWaitMs);
+  const acquired = await acquireLock(lockDir, lockWaitMs, () => (
+    inspectManagedBinary(name, { yeaftDir, platform, arch }).valid
+  ));
   if (!acquired) {
-    const path = resolveManagedCliCommand(name, { yeaftDir, platform, env });
-    return path
-      ? { name, status: 'available', path }
+    managed = inspectManagedBinary(name, { yeaftDir, platform, arch });
+    return managed.valid
+      ? { name, status: 'available', path: managed.path }
       : { name, status: 'busy' };
   }
 
   try {
-    const rechecked = resolveManagedCliCommand(name, { yeaftDir, platform, env });
-    if (rechecked) return { name, status: 'available', path: rechecked };
+    managed = inspectManagedBinary(name, { yeaftDir, platform, arch });
+    if (managed.valid) return { name, status: 'available', path: managed.path };
+    if (!managed.exists) {
+      const external = resolveExternalCommand(name, { yeaftDir, platform, env });
+      if (external) return { name, status: 'available', path: external, source: 'system' };
+    }
     const archive = await downloadArchive(asset, fetchFn, timeoutMs);
     const binary = extractManagedCliBinary(archive, asset.fileName, name, platform);
     if (binary.length === 0) throw new Error('archive contained an empty binary');
@@ -339,14 +432,40 @@ async function installOne(name, options) {
         timeout: 5000,
         windowsHide: true,
       });
-      if (verification.error || verification.status !== 0) {
+      if (verification.error || verification.status !== 0
+        || !versionOutputMatches(name, asset.version, verification.stdout)) {
         throw new Error(`installed ${name} binary failed its version check`);
       }
-      renameSync(temporary, installedPath);
+      replaceManagedBinary(temporary, installedPath, platform);
     } finally {
       rmSync(temporary, { force: true });
     }
-    return { name, status: 'installed', path: installedPath, version: asset.version };
+    const binarySha256 = hashFile(installedPath);
+    await updateState(yeaftDir, state => ({
+      ...state,
+      version: 2,
+      updatedAt: Date.now(),
+      installations: {
+        ...(state.installations && typeof state.installations === 'object'
+          ? state.installations
+          : {}),
+        [name]: {
+          version: asset.version,
+          platform,
+          arch,
+          assetFileName: asset.fileName,
+          archiveSha256: asset.sha256,
+          binarySha256,
+        },
+      },
+    }));
+    return {
+      name,
+      status: 'installed',
+      path: installedPath,
+      version: asset.version,
+      binarySha256,
+    };
   } finally {
     rmSync(lockDir, { recursive: true, force: true });
   }
@@ -388,9 +507,14 @@ export function ensureManagedCliTools(options = {}) {
         if (skipInstall) {
           result = { name, status: 'skipped' };
         } else {
-          const existing = resolveManagedCliCommand(name, { yeaftDir, platform, env });
-          if (existing) {
-            result = { name, status: 'available', path: existing };
+          const managed = inspectManagedBinary(name, { yeaftDir, platform, arch });
+          const external = managed.exists
+            ? null
+            : resolveExternalCommand(name, { yeaftDir, platform, env });
+          if (managed.valid) {
+            result = { name, status: 'available', path: managed.path };
+          } else if (external) {
+            result = { name, status: 'available', path: external, source: 'system' };
           } else {
             const failure = failures[name];
             if (!options.force && Number.isFinite(failure?.at) && now - failure.at < FAILURE_COOLDOWN_MS) {
@@ -422,7 +546,15 @@ export function ensureManagedCliTools(options = {}) {
       }
     }
     try {
-      writeState(yeaftDir, { version: 1, updatedAt: now, failures });
+      await updateState(yeaftDir, state => ({
+        ...state,
+        version: 2,
+        updatedAt: now,
+        failures,
+        installations: state.installations && typeof state.installations === 'object'
+          ? state.installations
+          : {},
+      }));
     } catch {
       // Tool installation remains usable when the diagnostic state is unwritable.
     }

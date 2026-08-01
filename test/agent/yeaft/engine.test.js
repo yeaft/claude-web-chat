@@ -26,6 +26,7 @@ import {
   ensureManagedCliTools,
   extractManagedCliBinary,
   managedCliBinDir,
+  managedCliToolSpecs,
   prependManagedCliBinToPath,
   resolveManagedCliCommand,
 } from '../../../agent/yeaft/managed-cli.js';
@@ -2893,6 +2894,32 @@ function emptyPathEnv() {
   return { ...process.env, PATH: '' };
 }
 
+function trustManagedCliFixtures(yeaftDir, names) {
+  const statePath = join(yeaftDir, 'managed-cli.json');
+  let state = {};
+  try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch {}
+  const installations = { ...(state.installations || {}) };
+  for (const name of names) {
+    const path = join(managedCliBinDir(yeaftDir), name);
+    const [assetFileName, archiveSha256] = managedCliToolSpecs[name].assets[
+      `${process.platform}-${process.arch}`
+    ];
+    installations[name] = {
+      version: managedCliToolSpecs[name].version,
+      platform: process.platform,
+      arch: process.arch,
+      assetFileName,
+      archiveSha256,
+      binarySha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
+    };
+  }
+  writeFileSync(statePath, `${JSON.stringify({
+    ...state,
+    version: 2,
+    installations,
+  }, null, 2)}\n`);
+}
+
 function zipArchive(path, content) {
   const name = Buffer.from(path);
   const data = Buffer.from(content);
@@ -2944,6 +2971,10 @@ describe('managed CLI setup and fast tool integration', () => {
       stdout: 'out\n',
       stderr: 'err\n',
     });
+    const replacementScript = "process.stdout.write('valid \\ufffd value')";
+    await expect(runProcess(process.execPath, ['-e', replacementScript])).resolves.toMatchObject({
+      stdout: 'valid \ufffd value',
+    });
     await expect(runProcess(process.execPath, ['-e', crScript], {
       preserveCarriageReturns: true,
     })).resolves.toMatchObject({
@@ -2972,30 +3003,40 @@ describe('managed CLI setup and fast tool integration', () => {
   }
 
   async function verifyWindowsProcessTreeTermination() {
-    const calls = [];
-    const child = new EventEmitter();
-    child.pid = 4242;
-    child.stdout = new PassThrough();
-    child.stderr = new PassThrough();
-    child.kill = () => calls.push('proc.kill');
-    const spawnProcess = () => child;
-    const spawnProcessSync = (command, args) => {
-      calls.push(`${command} ${args.join(' ')}`);
-      child.emit('close', 1);
-      return { status: 0 };
-    };
+    for (const taskkillFailure of ['nonzero', 'throw']) {
+      const calls = [];
+      const child = new EventEmitter();
+      child.pid = 4242;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = signal => {
+        calls.push(`proc.kill ${signal}`);
+        setImmediate(() => child.emit('close', 1));
+        return true;
+      };
+      const spawnProcess = () => child;
+      const spawnProcessSync = (command, args) => {
+        calls.push(`${command} ${args.join(' ')}`);
+        if (taskkillFailure === 'throw') throw new Error('taskkill unavailable');
+        return { status: 1 };
+      };
 
-    const result = await runProcess('ignored.exe', [], {
-      timeoutMs: 1,
-      platform: 'win32',
-      spawnProcess,
-      spawnProcessSync,
-    });
-    expect(result).toMatchObject({ code: 124, timedOut: true });
-    expect(calls).toEqual(['taskkill /pid 4242 /t /f']);
-    child.emit('error', new Error('late process error'));
-    child.emit('close', 0);
-    expect(calls).toEqual(['taskkill /pid 4242 /t /f']);
+      const result = await runProcess('ignored.exe', [], {
+        timeoutMs: 1,
+        platform: 'win32',
+        spawnProcess,
+        spawnProcessSync,
+      });
+      expect(result).toMatchObject({ code: 124, timedOut: true });
+      expect(calls).toEqual([
+        'taskkill /pid 4242 /t /f',
+        'proc.kill SIGKILL',
+      ]);
+      expect(child.listenerCount('close')).toBe(0);
+      expect(child.listenerCount('error')).toBe(0);
+      expect(child.stdout.listenerCount('data')).toBe(0);
+      expect(child.stderr.listenerCount('data')).toBe(0);
+    }
   }
 
   function verifyGrepExactBudget() {
@@ -3230,6 +3271,76 @@ describe('managed CLI setup and fast tool integration', () => {
     expect(extractManagedCliBinary(zip, 'fd.zip', 'fd', 'win32').toString())
       .toBe('MZ-test-binary');
 
+    if (process.platform !== 'win32') {
+      const installDir = tempDir('cli-successful-install');
+      const archives = {
+        rg: tarArchive('package/rg', '#!/bin/sh\necho ripgrep 15.2.0\n'),
+        fd: tarArchive('package/fd', '#!/bin/sh\necho fd 10.3.0\n'),
+        dust: tarArchive('package/dust', '#!/bin/sh\necho Dust 1.2.4\n'),
+      };
+      const originalAssets = {};
+      const archiveByFileName = new Map();
+      for (const [name, archive] of Object.entries(archives)) {
+        originalAssets[name] = managedCliToolSpecs[name].assets['linux-x64'];
+        const fileName = originalAssets[name][0];
+        managedCliToolSpecs[name].assets['linux-x64'] = [
+          fileName,
+          createHash('sha256').update(archive).digest('hex'),
+        ];
+        archiveByFileName.set(fileName, archive);
+      }
+      try {
+        let successfulFetches = 0;
+        const installOptions = {
+          yeaftDir: installDir,
+          platform: 'linux',
+          arch: 'x64',
+          env: emptyPathEnv(),
+          force: true,
+          fetchFn: async url => {
+            successfulFetches += 1;
+            const fileName = String(url).split('/').at(-1);
+            return new Response(archiveByFileName.get(fileName));
+          },
+        };
+        const [firstInstall, joinedInstall] = await Promise.all([
+          ensureManagedCliTools(installOptions),
+          ensureManagedCliTools(installOptions),
+        ]);
+        expect(firstInstall).toEqual(joinedInstall);
+        expect(firstInstall.every(result => result.status === 'installed')).toBe(true);
+        expect(successfulFetches).toBe(3);
+        const installedState = JSON.parse(
+          readFileSync(join(installDir, 'managed-cli.json'), 'utf8'),
+        );
+        expect(Object.keys(installedState.installations).sort()).toEqual(['dust', 'fd', 'rg']);
+        for (const name of ['rg', 'fd', 'dust']) {
+          const installation = installedState.installations[name];
+          expect(installation).toMatchObject({
+            version: managedCliToolSpecs[name].version,
+            platform: 'linux',
+            arch: 'x64',
+            assetFileName: managedCliToolSpecs[name].assets['linux-x64'][0],
+            archiveSha256: managedCliToolSpecs[name].assets['linux-x64'][1],
+          });
+          expect(installation.binarySha256).toBe(
+            createHash('sha256')
+              .update(readFileSync(join(managedCliBinDir(installDir), name)))
+              .digest('hex'),
+          );
+        }
+        const available = await ensureManagedCliTools({
+          ...installOptions,
+          fetchFn: async () => { throw new Error('valid installs must not redownload'); },
+        });
+        expect(available.every(result => result.status === 'available')).toBe(true);
+      } finally {
+        for (const [name, asset] of Object.entries(originalAssets)) {
+          managedCliToolSpecs[name].assets['linux-x64'] = asset;
+        }
+      }
+    }
+
     let unsupportedRequests = 0;
     const unsupported = await ensureManagedCliTools({
       yeaftDir: tempDir('cli-unsupported'),
@@ -3246,6 +3357,11 @@ describe('managed CLI setup and fast tool integration', () => {
     expect(unsupportedRequests).toBe(0);
 
     const flightDir = tempDir('cli-single-flight');
+    const flightBinDir = managedCliBinDir(flightDir);
+    mkdirSync(flightBinDir, { recursive: true });
+    for (const name of ['rg', 'fd', 'dust']) {
+      writeFileSync(join(flightBinDir, name), `#!/bin/sh\necho ${name} 0.0.0\n`, { mode: 0o755 });
+    }
     let flightRequests = 0;
     const flightOptions = {
       yeaftDir: flightDir,
@@ -3303,6 +3419,59 @@ describe('managed CLI setup and fast tool integration', () => {
     expect(busySecond.every(result => result.status === 'busy')).toBe(true);
     expect(JSON.parse(readFileSync(join(busyDir, 'managed-cli.json'), 'utf8')).failures).toEqual({});
 
+    const identityDir = tempDir('cli-identity');
+    const identityBinDir = managedCliBinDir(identityDir);
+    mkdirSync(identityBinDir, { recursive: true });
+    for (const name of ['rg', 'fd', 'dust']) {
+      writeFileSync(join(identityBinDir, name), `#!/bin/sh\necho ${name} 0.0.0\n`, { mode: 0o755 });
+      expect(resolveManagedCliCommand(name, {
+        yeaftDir: identityDir, env: emptyPathEnv(), platform: 'linux',
+      })).toBeNull();
+    }
+    const identityEnv = emptyPathEnv();
+    prependManagedCliBinToPath(identityDir, identityEnv, 'linux');
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir, env: identityEnv, platform: 'linux', arch: 'x64',
+    })).toBeNull();
+    const managedBinAlias = join(identityDir, 'bin-alias');
+    symlinkSync(identityBinDir, managedBinAlias, 'dir');
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir,
+      env: { ...process.env, PATH: managedBinAlias },
+      platform: 'linux',
+      arch: 'x64',
+    })).toBeNull();
+    let identityFetches = 0;
+    const identityResults = await ensureManagedCliTools({
+      yeaftDir: identityDir,
+      platform: 'linux',
+      arch: 'x64',
+      env: identityEnv,
+      force: true,
+      fetchFn: async () => {
+        identityFetches += 1;
+        return new Response(Buffer.from('invalid repair archive'));
+      },
+    });
+    expect(identityResults.every(result => result.status === 'failed')).toBe(true);
+    expect(identityFetches).toBe(3);
+    trustManagedCliFixtures(identityDir, ['rg', 'fd', 'dust']);
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir, env: emptyPathEnv(), platform: 'linux',
+    })).toBe(join(identityBinDir, 'rg'));
+    const identityStatePath = join(identityDir, 'managed-cli.json');
+    const oldVersionState = JSON.parse(readFileSync(identityStatePath, 'utf8'));
+    oldVersionState.installations.rg.version = '0.0.0';
+    writeFileSync(identityStatePath, `${JSON.stringify(oldVersionState, null, 2)}\n`);
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir, env: emptyPathEnv(), platform: 'linux',
+    })).toBeNull();
+    trustManagedCliFixtures(identityDir, ['rg']);
+    writeFileSync(join(identityBinDir, 'rg'), '\n# bit flip\n', { flag: 'a' });
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir, env: emptyPathEnv(), platform: 'linux',
+    })).toBeNull();
+
     const root = tempDir('fast-tools');
     mkdirSync(join(root, 'large'));
     mkdirSync(join(root, 'small'));
@@ -3328,6 +3497,7 @@ describe('managed CLI setup and fast tool integration', () => {
       writeFileSync(join(toolBinDir, 'rg'), `#!/bin/sh\necho rg >> ${JSON.stringify(log)}\nprintf 'src/a.js\\000'\n`, { mode: 0o755 });
       writeFileSync(join(toolBinDir, 'fd'), `#!/bin/sh\necho fd >> ${JSON.stringify(log)}\nprintf 'src/a.js\\0src/b.txt\\0'\n`, { mode: 0o755 });
       writeFileSync(join(toolBinDir, 'dust'), `#!/bin/sh\necho dust >> ${JSON.stringify(log)}\nprintf '{"size":"2080B","name":${JSON.stringify(root)},"children":[{"size":"2048B","name":${JSON.stringify(join(root, 'large'))},"children":[]}]}'\n`, { mode: 0o755 });
+      trustManagedCliFixtures(toolDir, ['rg', 'fd', 'dust']);
       const neverReady = new Promise(() => {});
       const ctx = { cwd: root, yeaftDir: toolDir, managedCliReady: neverReady };
       expect(await Promise.race([
@@ -3368,6 +3538,7 @@ describe('managed CLI setup and fast tool integration', () => {
     if (realRg && realFd) {
       writeFileSync(join(realBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
       writeFileSync(join(realBinDir, 'fd'), readFileSync(realFd), { mode: 0o755 });
+      trustManagedCliFixtures(parityRoot, ['rg', 'fd']);
       const fastCtx = { cwd: parityRoot, yeaftDir: parityRoot, managedCliReady: Promise.resolve([]) };
       const fallbackCtx = { cwd: parityRoot, yeaftDir: join(parityRoot, 'fallback'), managedCliReady: Promise.resolve([]) };
       for (const filters of [
@@ -3580,6 +3751,7 @@ describe('managed CLI setup and fast tool integration', () => {
       const zeroLengthBinDir = managedCliBinDir(zeroLengthRoot);
       mkdirSync(zeroLengthBinDir, { recursive: true });
       writeFileSync(join(zeroLengthBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      trustManagedCliFixtures(zeroLengthRoot, ['rg']);
       const zeroLengthContexts = [
         { cwd: zeroLengthRoot, yeaftDir: zeroLengthRoot, managedCliReady: Promise.resolve([]) },
         { cwd: zeroLengthRoot, yeaftDir: join(zeroLengthRoot, 'fallback'), managedCliReady: Promise.resolve([]) },
@@ -3648,12 +3820,38 @@ describe('managed CLI setup and fast tool integration', () => {
       ]));
       writeFileSync(join(eligibilityRoot, 'src', 'replacement.txt'), 'x\ufffdy\n');
       const eligibilityBinDir = managedCliBinDir(eligibilityRoot);
+      const eligibilityRgLog = join(tmpdir(), `yeaft-rg-candidate-${process.pid}-${Date.now()}.log`);
+      managedCliTempDirs.push(eligibilityRgLog);
       mkdirSync(eligibilityBinDir, { recursive: true });
-      writeFileSync(join(eligibilityBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      writeFileSync(join(eligibilityBinDir, 'rg'), `#!/bin/sh\nprintf 'env=%s\\n' "\${RIPGREP_CONFIG_PATH-unset}" >> ${JSON.stringify(eligibilityRgLog)}\nprintf 'arg=%s\\n' "$@" >> ${JSON.stringify(eligibilityRgLog)}\nexec ${JSON.stringify(realRg)} "$@"\n`, { mode: 0o755 });
+      trustManagedCliFixtures(eligibilityRoot, ['rg']);
       const eligibilityContexts = [
         { cwd: eligibilityRoot, yeaftDir: eligibilityRoot, managedCliReady: Promise.resolve([]) },
         { cwd: eligibilityRoot, yeaftDir: join(eligibilityRoot, 'fallback'), managedCliReady: Promise.resolve([]) },
       ];
+      const hostileRgConfig = join(eligibilityRoot, 'ripgrep.rc');
+      writeFileSync(hostileRgConfig, '--max-filesize=1\n--glob=!large.txt\n');
+      const previousRgConfig = process.env.RIPGREP_CONFIG_PATH;
+      process.env.RIPGREP_CONFIG_PATH = hostileRgConfig;
+      try {
+        const fast = await registry.execute('Grep', {
+          pattern: 'needle', path: eligibilityRoot, glob: 'large.txt',
+          output_mode: 'content', fixed_strings: true,
+        }, eligibilityContexts[0]);
+        const fallback = await registry.execute('Grep', {
+          pattern: 'needle', path: eligibilityRoot, glob: 'large.txt',
+          output_mode: 'content', fixed_strings: true,
+        }, eligibilityContexts[1]);
+        expect(fast).toBe('src/large.txt:2:needle');
+        expect(fast).toBe(fallback);
+        const candidateLog = readFileSync(eligibilityRgLog, 'utf8');
+        expect(candidateLog).toContain('env=unset');
+        expect(candidateLog).toContain('arg=--no-config');
+        expect(candidateLog).toContain('arg=--files-with-matches');
+      } finally {
+        if (previousRgConfig === undefined) delete process.env.RIPGREP_CONFIG_PATH;
+        else process.env.RIPGREP_CONFIG_PATH = previousRgConfig;
+      }
       for (const input of [
         { pattern: 'needle', fixed_strings: true },
         { pattern: 'needl.', fixed_strings: false },
@@ -3774,6 +3972,55 @@ describe('managed CLI setup and fast tool integration', () => {
         expect(fast).toBe(fallback);
         expect(fast).toContain('(more results omitted)');
       }
+
+      const contextLimitRoot = tempDir('grep-context-limit');
+      for (const name of ['a.txt', 'b.txt']) {
+        writeFileSync(join(contextLimitRoot, name), `${name}-0\n${name}-1\nHIT\n${name}-3\n${name}-4\n`);
+      }
+      const contextLimitBin = managedCliBinDir(contextLimitRoot);
+      mkdirSync(contextLimitBin, { recursive: true });
+      writeFileSync(join(contextLimitBin, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      trustManagedCliFixtures(contextLimitRoot, ['rg']);
+      const contextLimitContexts = [
+        { cwd: contextLimitRoot, yeaftDir: contextLimitRoot, managedCliReady: Promise.resolve([]) },
+        { cwd: contextLimitRoot, yeaftDir: join(contextLimitRoot, 'fallback'), managedCliReady: Promise.resolve([]) },
+      ];
+      for (const contextOptions of [{ before: 2 }, { after: 2 }, { context: 2 }]) {
+        for (const headLimit of [1, 2]) {
+          const outputs = await Promise.all(contextLimitContexts.map(context => registry.execute('Grep', {
+            pattern: 'HIT', path: contextLimitRoot, output_mode: 'content', fixed_strings: true,
+            head_limit: headLimit, ...contextOptions,
+          }, context)));
+          expect(outputs[0]).toBe(outputs[1]);
+          expect(outputs[0].split('\n').filter(line => line.endsWith(':3:HIT'))).toHaveLength(headLimit);
+          expect(outputs[0]).toContain('a.txt:3:HIT');
+          if (headLimit === 2) expect(outputs[0]).toContain('b.txt:3:HIT');
+        }
+      }
+      writeFileSync(join(contextLimitRoot, 'adjacent.txt'), 'HIT\nHIT\nafter\n');
+      for (const context of contextLimitContexts) {
+        const output = await registry.execute('Grep', {
+          pattern: 'HIT', path: contextLimitRoot, glob: 'adjacent.txt',
+          output_mode: 'content', fixed_strings: true, after: 2, head_limit: 1,
+        }, context);
+        expect(output.split('\n').filter(line => line.includes(':HIT'))).toHaveLength(1);
+        expect(output).toContain('adjacent.txt:1:HIT');
+        expect(output).toContain('adjacent.txt-3-after');
+        expect(output).toContain('(more results omitted)');
+      }
+      rmSync(join(contextLimitRoot, 'adjacent.txt'));
+      writeFileSync(join(contextLimitRoot, 'a.txt'), `${'界'.repeat(6000)}\nHIT\n`);
+      writeFileSync(join(contextLimitRoot, 'b.txt'), `${'界'.repeat(6000)}\nHIT\n`);
+      for (const context of contextLimitContexts) {
+        const output = await registry.execute('Grep', {
+          pattern: 'HIT', path: contextLimitRoot, output_mode: 'content', fixed_strings: true,
+          before: 1, head_limit: 2,
+        }, context);
+        expect(output).toContain('a.txt:2:HIT');
+        expect(output).toContain('b.txt:2:HIT');
+        expect(Buffer.byteLength(output)).toBeLessThanOrEqual(32 * 1024);
+      }
+
       const orderingRoot = tempDir('search-order-parity');
       mkdirSync(join(orderingRoot, 'a'));
       writeFileSync(join(orderingRoot, 'z1.js'), 'needle\n');
@@ -3783,6 +4030,7 @@ describe('managed CLI setup and fast tool integration', () => {
       const orderingBinDir = managedCliBinDir(orderingRoot);
       mkdirSync(orderingBinDir, { recursive: true });
       writeFileSync(join(orderingBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      trustManagedCliFixtures(orderingRoot, ['rg']);
       const orderingInput = {
         pattern: 'needle', path: orderingRoot, glob: '**/*.js',
         output_mode: 'files_with_matches', fixed_strings: true, head_limit: 1,
@@ -3804,6 +4052,7 @@ describe('managed CLI setup and fast tool integration', () => {
       const budgetBinDir = managedCliBinDir(budgetRoot);
       mkdirSync(budgetBinDir, { recursive: true });
       writeFileSync(join(budgetBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      trustManagedCliFixtures(budgetRoot, ['rg']);
       const budgetInput = {
         pattern: 'needle', path: budgetRoot, glob: '**/*.js',
         output_mode: 'content', fixed_strings: true, head_limit: 2,
@@ -3843,6 +4092,7 @@ describe('managed CLI setup and fast tool integration', () => {
       const equalMtimeBin = managedCliBinDir(equalMtimeRoot);
       mkdirSync(equalMtimeBin, { recursive: true });
       writeFileSync(join(equalMtimeBin, 'fd'), '#!/bin/sh\nprintf "c.js\\0b.js\\0a.js\\0"\n', { mode: 0o755 });
+      trustManagedCliFixtures(equalMtimeRoot, ['fd']);
       for (const limit of [1, 2]) {
         const input = { pattern: '*.js', path: equalMtimeRoot, limit };
         const fast = await registry.execute('Glob', input, {
@@ -3862,6 +4112,7 @@ describe('managed CLI setup and fast tool integration', () => {
       const specialPathBinDir = managedCliBinDir(specialPathRoot);
       mkdirSync(specialPathBinDir, { recursive: true });
       writeFileSync(join(specialPathBinDir, 'fd'), readFileSync(realFd), { mode: 0o755 });
+      trustManagedCliFixtures(specialPathRoot, ['fd']);
       for (const expected of ['src/car\rriage.js', 'src/line\nbreak.js']) {
         const input = { pattern: expected, path: specialPathRoot };
         const fast = await registry.execute('Glob', input, {
@@ -3875,6 +4126,26 @@ describe('managed CLI setup and fast tool integration', () => {
       }
 
       if (realDust) {
+        const equalSizeDiskRoot = tempDir('disk-usage-equal-size');
+        for (const name of ['A', 'a', 'Z', 'z', 'ä', 'é']) {
+          mkdirSync(join(equalSizeDiskRoot, name));
+          writeFileSync(join(equalSizeDiskRoot, name, 'data.bin'), Buffer.alloc(16));
+        }
+        const equalSizeDiskBin = managedCliBinDir(equalSizeDiskRoot);
+        mkdirSync(equalSizeDiskBin, { recursive: true });
+        writeFileSync(join(equalSizeDiskBin, 'dust'), readFileSync(realDust), { mode: 0o755 });
+        trustManagedCliFixtures(equalSizeDiskRoot, ['dust']);
+        for (const limit of [2, 3, 6]) {
+          const input = { path: equalSizeDiskRoot, depth: 1, limit };
+          const fast = await registry.execute('DiskUsage', input, {
+            cwd: equalSizeDiskRoot, yeaftDir: equalSizeDiskRoot, managedCliReady: Promise.resolve([]),
+          });
+          const fallback = await registry.execute('DiskUsage', input, {
+            cwd: equalSizeDiskRoot, yeaftDir: join(equalSizeDiskRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+          });
+          expect(fast).toBe(fallback);
+        }
+
         const diskConcurrencyRoot = tempDir('disk-usage-concurrency');
         let diskLevel = [diskConcurrencyRoot];
         for (let level = 0; level < 3; level += 1) {
@@ -3930,6 +4201,7 @@ describe('managed CLI setup and fast tool integration', () => {
         const symlinkBinDir = managedCliBinDir(symlinkRoot);
         mkdirSync(symlinkBinDir, { recursive: true });
         writeFileSync(join(symlinkBinDir, 'dust'), readFileSync(realDust), { mode: 0o755 });
+        trustManagedCliFixtures(symlinkRoot, ['dust']);
         const diskInput = { path: symlinkRoot, depth: 2, limit: 20 };
         const fast = await registry.execute('DiskUsage', diskInput, {
           cwd: symlinkRoot, yeaftDir: symlinkRoot, managedCliReady: Promise.resolve([]),
@@ -4027,6 +4299,7 @@ describe('managed CLI setup and fast tool integration', () => {
       for (const name of ['rg', 'fd', 'dust']) {
         writeFileSync(join(abortBinDir, name), '#!/bin/sh\ntrap "exit 130" TERM\nwhile :; do :; done\n', { mode: 0o755 });
       }
+      trustManagedCliFixtures(abortDir, ['rg', 'fd', 'dust']);
       for (const name of ['Grep', 'Glob', 'DiskUsage']) {
         const controller = new AbortController();
         const input = name === 'Grep'

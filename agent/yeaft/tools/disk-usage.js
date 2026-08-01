@@ -44,7 +44,6 @@ async function runDust(command, baseDir, { depth, limit, signal }) {
   const result = await runProcess(command, [
     '--output-json',
     '--depth', String(depth),
-    '--number-of-lines', String(limit),
     '--apparent-size',
     '--only-dir',
     '--no-progress',

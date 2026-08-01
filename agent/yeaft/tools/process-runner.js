@@ -15,21 +15,23 @@ function abortError(signal) {
 }
 
 function killProcessTree(proc, signal, platform, spawnProcessSync) {
-  if (!proc.pid) return;
+  if (!proc.pid) return false;
   if (platform === 'win32') {
     try {
-      spawnProcessSync('taskkill', ['/pid', String(proc.pid), '/t', '/f'], {
+      const result = spawnProcessSync('taskkill', ['/pid', String(proc.pid), '/t', '/f'], {
         stdio: 'ignore',
         windowsHide: true,
         timeout: 5000,
       });
+      if (!result.error && result.status === 0) return true;
     } catch {}
-    return;
+    try { return proc.kill(signal) !== false; } catch { return false; }
   }
   try {
     process.kill(-proc.pid, signal);
+    return true;
   } catch {
-    try { proc.kill(signal); } catch {}
+    try { return proc.kill(signal) !== false; } catch { return false; }
   }
 }
 
@@ -67,6 +69,8 @@ export function runProcess(command, args, options = {}) {
     const stderr = [];
     let stdoutBytes = 0;
     let stderrBytes = 0;
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     let truncated = false;
     let settled = false;
     let timedOut = false;
@@ -77,16 +81,27 @@ export function runProcess(command, args, options = {}) {
     let forceTimer = null;
     let forceSettleTimer = null;
 
+    let onStdout;
+    let onStderr;
+    let onError;
+    let onClose;
     const cleanup = () => {
       if (timer) clearTimeout(timer);
       if (forceTimer) clearTimeout(forceTimer);
       if (forceSettleTimer) clearTimeout(forceSettleTimer);
+      timer = null;
+      forceTimer = null;
+      forceSettleTimer = null;
       options.signal?.removeEventListener('abort', onAbort);
+      if (onStdout) proc.stdout?.off('data', onStdout);
+      if (onStderr) proc.stderr?.off('data', onStderr);
+      if (onError) proc.off('error', onError);
+      if (onClose) proc.off('close', onClose);
     };
-    const decode = (chunks, preserveCarriageReturns = false) => {
-      const value = new StringDecoder('utf8')
-        .end(Buffer.concat(chunks))
-        .replaceAll('\ufffd', '?');
+    const decode = (chunks, wasTruncated, preserveCarriageReturns = false) => {
+      const decoder = new StringDecoder('utf8');
+      let value = decoder.write(Buffer.concat(chunks));
+      if (!wasTruncated) value += decoder.end();
       return preserveCarriageReturns ? value : value.replace(/\r/g, '');
     };
     const finish = code => {
@@ -99,8 +114,8 @@ export function runProcess(command, args, options = {}) {
       }
       resolve({
         code: timedOut ? 124 : (code ?? 1),
-        stdout: decode(stdout, options.preserveCarriageReturns),
-        stderr: decode(stderr),
+        stdout: decode(stdout, stdoutTruncated, options.preserveCarriageReturns),
+        stderr: decode(stderr, stderrTruncated),
         truncated,
         timedOut,
       });
@@ -140,6 +155,8 @@ export function runProcess(command, args, options = {}) {
       const remaining = maxBytes - current;
       if (remaining <= 0) {
         truncated = true;
+        if (isStdout) stdoutTruncated = true;
+        else stderrTruncated = true;
         stop();
         return;
       }
@@ -149,13 +166,15 @@ export function runProcess(command, args, options = {}) {
       else stderrBytes += bounded.length;
       if (bounded.length !== buffer.length) {
         truncated = true;
+        if (isStdout) stdoutTruncated = true;
+        else stderrTruncated = true;
         stop();
       }
     };
 
-    proc.stdout.on('data', chunk => capture(stdout, chunk, true));
-    proc.stderr.on('data', chunk => capture(stderr, chunk, false));
-    proc.on('error', error => {
+    onStdout = chunk => capture(stdout, chunk, true);
+    onStderr = chunk => capture(stderr, chunk, false);
+    onError = error => {
       if (settled) return;
       if (stopRequested) {
         finish(null);
@@ -164,8 +183,8 @@ export function runProcess(command, args, options = {}) {
       settled = true;
       cleanup();
       reject(error);
-    });
-    proc.on('close', code => {
+    };
+    onClose = code => {
       if (stopRequested && !forceRequested) {
         // The direct child is gone. Kill any process that remained in its
         // detached group before releasing the tool call.
@@ -173,7 +192,11 @@ export function runProcess(command, args, options = {}) {
         killProcessTree(proc, 'SIGKILL', platform, spawnProcessSync);
       }
       finish(code);
-    });
+    };
+    proc.stdout.on('data', onStdout);
+    proc.stderr.on('data', onStderr);
+    proc.on('error', onError);
+    proc.on('close', onClose);
 
     if (Number.isFinite(options.timeoutMs) && options.timeoutMs > 0) {
       timer = setTimeout(() => {
