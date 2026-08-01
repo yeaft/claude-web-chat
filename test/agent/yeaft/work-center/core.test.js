@@ -1022,9 +1022,8 @@ describe('Work Center core', () => {
   });
 
 
-  it.each(['constructor', '__proto__'])(
-    'uses the custom execution baseline for the dynamic Action type %s',
-    (type) => {
+  it('uses the custom execution baseline for prototype-named dynamic Action types', () => {
+    for (const type of ['constructor', '__proto__']) {
       const customInstruction = 'Use the custom baseline and verify the domain result.';
       const item = controller.create(createInput({
         workflowTemplate: 'ai-planned',
@@ -1059,63 +1058,63 @@ describe('Work Center core', () => {
       expect(domainAction.instruction).not.toContain('function Object()');
       expect(domainAction.instruction).not.toContain('[object Object]');
       expect(item.workflowSnapshot.stages).toHaveLength(1);
-    },
-  );
+    }
+  });
 
-  it.each([
-    ['approach', { expectedOutcome: 'A verified fix in the affected code path' }],
-    ['expectedOutcome', { approach: 'Inspect the affected path and implement the smallest compatible fix' }],
-  ])('rejects an AI-planned Action without a task-specific %s', (field, brief) => {
-    const item = controller.create(createInput({
-      workflowTemplate: 'ai-planned', workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
-    }));
-    const triage = store.claimReadyAction('boot-a', 5_000);
-    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
-      plan: {
-        workItemType: 'bug-fix',
-        actions: [{
-          id: 'fix', type: 'implement', objective: 'Fix the Work Center detail failure display',
-          ...brief,
-          [field]: '',
-        }],
-      },
-    }));
+  it('rejects AI-planned Actions without task-specific execution fields', () => {
+    for (const [field, brief] of [
+      ['approach', { expectedOutcome: 'A verified fix in the affected code path' }],
+      ['expectedOutcome', { approach: 'Inspect the affected path and implement the smallest compatible fix' }],
+    ]) {
+      const item = controller.create(createInput({
+        workflowTemplate: 'ai-planned', workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+      }));
+      const triage = store.claimReadyAction('boot-a', 5_000);
+      const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+        plan: {
+          workItemType: 'bug-fix',
+          actions: [{
+            id: 'fix', type: 'implement', objective: 'Fix the Work Center detail failure display',
+            ...brief,
+            [field]: '',
+          }],
+        },
+      }));
 
-    expect(detail).toMatchObject({ status: 'needs_attention', currentActionId: triage.action.id });
-    expect(store.getRun(triage.run.id)).toMatchObject({
-      status: 'failed', error: expect.stringContaining(`task-specific ${field}`),
-    });
-    expect(item.workflowSnapshot.stages).toHaveLength(1);
+      expect(detail).toMatchObject({ status: 'needs_attention', currentActionId: triage.action.id });
+      expect(store.getRun(triage.run.id)).toMatchObject({
+        status: 'failed', error: expect.stringContaining(`task-specific ${field}`),
+      });
+      expect(item.workflowSnapshot.stages).toHaveLength(1);
+    }
   });
 
 
-  it.each([
-    ['missing', 'missing-action'],
-    ['self', 'review'],
-    ['future', 'deliver'],
-  ])('rejects an AI-planned review with an explicit %s return target', (_kind, target) => {
-    const item = controller.create(createInput({
-      workflowTemplate: 'ai-planned',
-      workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
-    }));
-    const triage = store.claimReadyAction('boot-a', 5_000);
-    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
-      plan: {
-        workItemType: 'custom-change',
-        actions: [
-          { id: 'fix', type: 'implement', objective: 'Implement the change' },
-          { id: 'review', type: 'review', objective: 'Review independently', changesRequestedActionId: target },
-          { id: 'deliver', type: 'deliver', objective: 'Deliver the result' },
-        ],
-      },
-    }));
+  it('rejects AI-planned reviews with invalid explicit return targets', () => {
+    for (const target of ['missing-action', 'review', 'deliver']) {
+      const item = controller.create(createInput({
+        workflowTemplate: 'ai-planned',
+        workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+      }));
+      const triage = store.claimReadyAction('boot-a', 5_000);
+      const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+        plan: {
+          workItemType: 'custom-change',
+          actions: [
+            { id: 'fix', type: 'implement', objective: 'Implement the change' },
+            { id: 'review', type: 'review', objective: 'Review independently', changesRequestedActionId: target },
+            { id: 'deliver', type: 'deliver', objective: 'Deliver the result' },
+          ],
+        },
+      }));
 
-    expect(detail).toMatchObject({ status: 'needs_attention', currentActionId: triage.action.id });
-    expect(store.getRun(triage.run.id)).toMatchObject({
-      status: 'failed',
-      error: expect.stringMatching(/invalid return Action/i),
-    });
-    expect(item.workflowSnapshot.stages).toHaveLength(1);
+      expect(detail).toMatchObject({ status: 'needs_attention', currentActionId: triage.action.id });
+      expect(store.getRun(triage.run.id)).toMatchObject({
+        status: 'failed',
+        error: expect.stringMatching(/invalid return Action/i),
+      });
+      expect(item.workflowSnapshot.stages).toHaveLength(1);
+    }
   });
 
 
@@ -3324,12 +3323,11 @@ describe('Work Center core', () => {
   });
 
 
-  it.each([
-    ['test', 'done'],
-    ['deliver', 'needs_attention'],
-  ])(
-    'applies the WorkItem-wide acceptance gate at the correct %s boundary',
-    (type, expectedStatus) => {
+  it('applies the WorkItem-wide acceptance gate at the correct boundary', () => {
+    for (const [type, expectedStatus] of [
+      ['test', 'done'],
+      ['deliver', 'needs_attention'],
+    ]) {
       const targetStage = {
         id: type,
         name: type,
@@ -3361,31 +3359,33 @@ describe('Work Center core', () => {
       } else {
         expect(store.getRun(claim.run.id)).toMatchObject({ status: 'completed', error: null });
       }
-    },
-  );
+    }
+  });
 
 
-  it.each([
-    ['completed', completed('triage')],
-    ['waiting', { outcome: 'waiting', summary: 'Need input', evidence: [], waitingReason: 'Provide input' }],
-    ['failed', { outcome: 'failed', summary: 'Failed', evidence: [], error: 'broken' }],
-  ])('increments the v2 ledger for a %s terminal Run and fences the canonical result', (_outcome, result) => {
-    const item = controller.create(createInput());
-    const claim = store.claimReadyAction('boot-a', 5_000);
-    const generation = claim.action.generation;
+  it('increments the v2 ledger for terminal Runs and fences canonical results', () => {
+    for (const result of [
+      completed('triage'),
+      { outcome: 'waiting', summary: 'Need input', evidence: [], waitingReason: 'Provide input' },
+      { outcome: 'failed', summary: 'Failed', evidence: [], error: 'broken' },
+    ]) {
+      const item = controller.create(createInput());
+      const claim = store.claimReadyAction('boot-a', 5_000);
+      const generation = claim.action.generation;
 
-    controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, result);
+      controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, result);
 
-    const detail = store.getWorkItemDetail(item.id);
-    expect(detail.ledgerRevision).toBe(1);
-    expect(store.getAction(claim.action.id)).toMatchObject({
-      generation,
-      resultRunId: result.outcome === 'completed' ? claim.run.id : null,
-    });
-    expect(store.finalizeRun(claim.run.id, 'boot-a', claim.run.leaseEpoch, result, () => {
-      throw new Error('stale terminal callback must not run');
-    })).toBeNull();
-    expect(store.getWorkItem(item.id).ledgerRevision).toBe(1);
+      const detail = store.getWorkItemDetail(item.id);
+      expect(detail.ledgerRevision).toBe(1);
+      expect(store.getAction(claim.action.id)).toMatchObject({
+        generation,
+        resultRunId: result.outcome === 'completed' ? claim.run.id : null,
+      });
+      expect(store.finalizeRun(claim.run.id, 'boot-a', claim.run.leaseEpoch, result, () => {
+        throw new Error('stale terminal callback must not run');
+      })).toBeNull();
+      expect(store.getWorkItem(item.id).ledgerRevision).toBe(1);
+    }
   });
 
 
