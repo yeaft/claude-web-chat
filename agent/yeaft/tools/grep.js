@@ -165,153 +165,54 @@ function hasGroupScopedModifiers(source) {
   return false;
 }
 
-function hasPythonNamedCapture(source) {
-  let escaped = false;
-  let inClass = false;
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (character === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (character === '[' && !inClass) {
-      inClass = true;
-      continue;
-    }
-    if (character === ']' && inClass) {
-      inClass = false;
-      continue;
-    }
-    if (!inClass && source.startsWith('(?P<', index)) return true;
+function createNodeRegexPlan(pattern, options) {
+  let source = options.fixedStrings
+    ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    : pattern;
+  const flags = new Set(['g']);
+  if (options.caseInsensitive) flags.add('i');
+  if (options.multiline) {
+    flags.add('m');
+    flags.add('s');
   }
-  return false;
+  if (!options.fixedStrings) {
+    while (true) {
+      const inlineFlags = source.match(/^\(\?([ims]*)(?:-([ims]*))?\)/);
+      if (!inlineFlags || (!inlineFlags[1] && !inlineFlags[2])) break;
+      for (const flag of inlineFlags[1]) flags.add(flag);
+      for (const flag of inlineFlags[2] || '') flags.delete(flag);
+      source = source.slice(inlineFlags[0].length);
+    }
+    if (flags.has('m')) {
+      source = rewriteMultilineAnchors(source);
+      flags.delete('m');
+    }
+  }
+  const flagString = [...flags].join('');
+  new RegExp(source, flagString);
+  return { source, flags: flagString };
 }
 
-function stripLeadingInlineModifiers(source) {
-  let remaining = source;
-  while (true) {
-    const match = remaining.match(/^\(\?([ims]*)(?:-([ims]*))?\)/);
-    if (!match || (!match[1] && !match[2])) return remaining;
-    remaining = remaining.slice(match[0].length);
-  }
+function canUseRipgrep(pattern, options) {
+  if (options.caseInsensitive) return false;
+  if (options.fixedStrings) return true;
+
+  // JavaScript RegExp is the public contract. Rust regex only accelerates
+  // plain printable ASCII text; every regex construct stays on Node.js.
+  return /^[\x20-\x7e]+$/.test(pattern)
+    && !/[\\^$.*+?()[\]{}|]/.test(pattern);
 }
 
-function regexCanMatchEmpty(source) {
-  let index = 0;
-
-  function skipClass() {
-    index += 1;
-    let escaped = false;
-    while (index < source.length) {
-      const character = source[index];
-      index += 1;
-      if (escaped) escaped = false;
-      else if (character === '\\') escaped = true;
-      else if (character === ']') break;
-    }
-  }
-
-  function parseGroup(prefixLength, assertion = false) {
-    index += prefixLength;
-    const nullable = parseDisjunction(')');
-    if (source[index] === ')') index += 1;
-    return assertion ? true : nullable;
-  }
-
-  function parseAtom() {
-    const character = source[index];
-    if (character === '^' || character === '$') {
-      index += 1;
-      return true;
-    }
-    if (character === '\\') {
-      index += 1;
-      const escaped = source[index] || '';
-      index += escaped ? 1 : 0;
-      if (escaped === 'b' || escaped === 'B' || /[1-9]/.test(escaped)) return true;
-      if (escaped === 'k' && source[index] === '<') {
-        const end = source.indexOf('>', index + 1);
-        index = end < 0 ? source.length : end + 1;
-        return true;
-      }
-      if ((escaped === 'p' || escaped === 'P') && source[index] === '{') {
-        const end = source.indexOf('}', index + 1);
-        index = end < 0 ? source.length : end + 1;
-      }
-      return false;
-    }
-    if (character === '[') {
-      skipClass();
-      return false;
-    }
-    if (character !== '(') {
-      index += 1;
-      return false;
-    }
-    if (source.startsWith('(?:', index)) return parseGroup(3);
-    if (source.startsWith('(?=', index) || source.startsWith('(?!', index)) {
-      return parseGroup(3, true);
-    }
-    if (source.startsWith('(?<=', index) || source.startsWith('(?<!', index)) {
-      return parseGroup(4, true);
-    }
-    if (source.startsWith('(?<', index) || source.startsWith('(?P<', index)) {
-      const nameStart = index + (source.startsWith('(?P<', index) ? 4 : 3);
-      const nameEnd = source.indexOf('>', nameStart);
-      if (nameEnd >= 0) {
-        index = nameEnd + 1;
-        const nullable = parseDisjunction(')');
-        if (source[index] === ')') index += 1;
-        return nullable;
-      }
-    }
-    return parseGroup(1);
-  }
-
-  function parseTerm() {
-    const atomNullable = parseAtom();
-    const quantifier = source.slice(index).match(/^(?:([*?+])|\{(\d+)(?:,(\d*)?)?\})(?:[?+])?/);
-    if (!quantifier) return atomNullable;
-    index += quantifier[0].length;
-    if ((quantifier[1] && quantifier[1] !== '+') || Number(quantifier[2]) === 0) return true;
-    return atomNullable;
-  }
-
-  function parseSequence(stopCharacter) {
-    let nullable = true;
-    while (index < source.length && source[index] !== '|' && source[index] !== stopCharacter) {
-      nullable = parseTerm() && nullable;
-    }
-    return nullable;
-  }
-
-  function parseDisjunction(stopCharacter = null) {
-    let nullable = parseSequence(stopCharacter);
-    while (source[index] === '|') {
-      index += 1;
-      nullable = parseSequence(stopCharacter) || nullable;
-    }
-    return nullable;
-  }
-
-  return parseDisjunction();
-}
-
-function validateGrepPattern(pattern, fixedStrings) {
-  if (fixedStrings) return;
-  if (hasGroupScopedModifiers(pattern)) {
+function prepareGrepPattern(pattern, options) {
+  if (!options.fixedStrings && hasGroupScopedModifiers(pattern)) {
+    // Modifier groups are not available on every supported Node.js runtime.
     throw new Error('group-scoped regex modifiers are unsupported');
   }
-  if (hasPythonNamedCapture(pattern)) {
-    throw new Error('Python-style named capture groups are unsupported');
-  }
-  if (regexCanMatchEmpty(stripLeadingInlineModifiers(pattern))) {
-    throw new Error('regexes that can match empty text are unsupported');
-  }
+  const regexPlan = createNodeRegexPlan(pattern, options);
+  return {
+    ...regexPlan,
+    useRipgrep: canUseRipgrep(pattern, options),
+  };
 }
 
 function formatGrepError(message) {
@@ -602,29 +503,8 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
  */
 export async function nodeGrep(pattern, searchPath, options) {
   throwIfAborted(options.signal);
-  let regexSource = options.fixedStrings
-    ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    : pattern;
-  const regexFlags = new Set(['g']);
-  if (options.caseInsensitive) regexFlags.add('i');
-  if (options.multiline) {
-    regexFlags.add('m');
-    regexFlags.add('s');
-  }
-  if (!options.fixedStrings) {
-    while (true) {
-      const inlineFlags = regexSource.match(/^\(\?([ims]*)(?:-([ims]*))?\)/);
-      if (!inlineFlags || (!inlineFlags[1] && !inlineFlags[2])) break;
-      for (const flag of inlineFlags[1]) regexFlags.add(flag);
-      for (const flag of inlineFlags[2] || '') regexFlags.delete(flag);
-      regexSource = regexSource.slice(inlineFlags[0].length);
-    }
-    if (regexFlags.has('m')) {
-      regexSource = rewriteMultilineAnchors(regexSource);
-      regexFlags.delete('m');
-    }
-  }
-  const regex = new RegExp(regexSource, [...regexFlags].join(''));
+  const regexPlan = options.regexPlan || createNodeRegexPlan(pattern, options);
+  const regex = new RegExp(regexPlan.source, regexPlan.flags);
   const output = createOutputCollector(options.byteBudget || SEARCH_RESULT_BYTES);
   const records = [];
   const maxResults = Math.max(1, options.maxResults || 500);
@@ -965,12 +845,16 @@ Guidelines:
 
     try {
       throwIfAborted(ctx?.signal);
-      validateGrepPattern(pattern, fixed_strings);
+      const regexPlan = prepareGrepPattern(pattern, options);
+      options.regexPlan = regexPlan;
       let result;
-      let rgCommand = resolveManagedCliCommand('rg', { yeaftDir: ctx?.yeaftDir });
-      if (!rgCommand) {
-        await waitForAbortable(managedCliToolReady(ctx?.managedCliReady, 'rg'), ctx?.signal);
+      let rgCommand = null;
+      if (regexPlan.useRipgrep) {
         rgCommand = resolveManagedCliCommand('rg', { yeaftDir: ctx?.yeaftDir });
+        if (!rgCommand) {
+          await waitForAbortable(managedCliToolReady(ctx?.managedCliReady, 'rg'), ctx?.signal);
+          rgCommand = resolveManagedCliCommand('rg', { yeaftDir: ctx?.yeaftDir });
+        }
       }
 
       if (rgCommand) {

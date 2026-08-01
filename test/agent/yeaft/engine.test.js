@@ -3550,6 +3550,10 @@ describe('managed CLI setup and fast tool integration', () => {
       writeFileSync(join(zeroLengthRoot, 'src', 'trailing.js'), 'alpha\nbeta\n');
       writeFileSync(join(zeroLengthRoot, 'src', 'no-trailing.js'), 'alpha\nbeta');
       writeFileSync(join(zeroLengthRoot, 'src', 'crlf-empty.js'), 'alpha\r\n\r\nbeta\r\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'regex-backref.js'), 'aa\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'regex-legacy.js'), 'Aalpha\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'regex-literal.js'), '(?x)^a b$\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'unicode-only.js'), '界\n');
       const zeroLengthBinDir = managedCliBinDir(zeroLengthRoot);
       mkdirSync(zeroLengthBinDir, { recursive: true });
       writeFileSync(join(zeroLengthBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
@@ -3569,16 +3573,42 @@ describe('managed CLI setup and fast tool integration', () => {
           const outputs = await Promise.all(zeroLengthContexts.map(context => (
             registry.execute('Grep', input, context)
           )));
-          expect(outputs[0]).toContain('regexes that can match empty text are unsupported');
           expect(outputs[0]).toBe(outputs[1]);
+          expect(outputs[0]).not.toContain('Grep failed');
         }
       }
       for (const context of zeroLengthContexts) {
+        for (const pattern of ['(?P<name>alpha)', '(?x)^a b$']) {
+          expect(await registry.execute('Grep', {
+            pattern, path: zeroLengthRoot, glob: 'no-trailing.js',
+            output_mode: 'content', multiline: true,
+          }, context)).toContain('Invalid regular expression');
+        }
         expect(await registry.execute('Grep', {
-          pattern: '(?P<name>alpha)', path: zeroLengthRoot, glob: 'no-trailing.js',
-          output_mode: 'content', multiline: true,
-        }, context)).toContain('Python-style named capture groups are unsupported');
+          pattern: '(?x)^a b$', path: zeroLengthRoot, glob: 'regex-literal.js',
+          output_mode: 'content', multiline: true, fixed_strings: true,
+        }, context)).toBe('src/regex-literal.js:1:(?x)^a b$');
       }
+      let managedCliLookupCount = 0;
+      const lookupProbeContext = {
+        cwd: zeroLengthRoot,
+        get yeaftDir() {
+          managedCliLookupCount += 1;
+          return zeroLengthRoot;
+        },
+        managedCliReady: Promise.resolve([]),
+      };
+      expect(await registry.execute('Grep', {
+        pattern: '(?=(a))\\1', path: zeroLengthRoot, glob: 'regex-backref.js',
+        output_mode: 'content', multiline: true,
+      }, lookupProbeContext)).toBe('src/regex-backref.js:1:aa');
+      expect(managedCliLookupCount).toBe(0);
+      expect(await registry.execute('Grep', {
+        pattern: 'alpha', path: zeroLengthRoot, glob: 'no-trailing.js',
+        output_mode: 'content', multiline: true,
+      }, lookupProbeContext)).toBe('src/no-trailing.js:1:alpha');
+      expect(managedCliLookupCount).toBeGreaterThan(0);
+
       const safeRegexCases = [
         { pattern: '(?i)(?m)^BETA$', glob: 'no-trailing.js', expected: 'src/no-trailing.js:2:beta' },
         { pattern: '(?:alpha|beta)+', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
@@ -3586,6 +3616,12 @@ describe('managed CLI setup and fast tool integration', () => {
         { pattern: '(?:alpha|beta){1,2}', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
         { pattern: '(?<name>alpha)', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
         { pattern: '(?=alpha)alpha', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
+        { pattern: '(?=(a))\\1', glob: 'regex-backref.js', expected: 'src/regex-backref.js:1:aa' },
+        { pattern: '(?<=(a))\\1', glob: 'regex-backref.js', expected: 'src/regex-backref.js:1:aa' },
+        { pattern: '(?<letter>a)\\k<letter>', glob: 'regex-backref.js', expected: 'src/regex-backref.js:1:aa' },
+        { pattern: '\\Aalpha', glob: 'regex-legacy.js', expected: 'src/regex-legacy.js:1:Aalpha' },
+        { pattern: '^\\w+$', glob: 'unicode-only.js', expected: '(no matches)' },
+        { pattern: '\\b界', glob: 'unicode-only.js', expected: '(no matches)' },
         { pattern: '[a*]+', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
         { pattern: '\\^', glob: 'no-trailing.js', expected: '(no matches)' },
       ];
