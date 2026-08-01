@@ -126,6 +126,19 @@ function samePath(left, right, platform) {
     : normalizedLeft === normalizedRight;
 }
 
+function sameFileIdentity(left, right) {
+  try {
+    const leftStat = statSync(left, { bigint: true });
+    const rightStat = statSync(right, { bigint: true });
+    return leftStat.isFile()
+      && rightStat.isFile()
+      && leftStat.dev === rightStat.dev
+      && leftStat.ino === rightStat.ino;
+  } catch {
+    return false;
+  }
+}
+
 function inspectManagedBinary(name, { yeaftDir, platform, arch }) {
   const asset = selectAsset(name, platform, arch);
   const path = join(managedCliBinDir(yeaftDir), executableName(name, platform));
@@ -157,7 +170,8 @@ function resolveExternalCommand(name, { yeaftDir, env, platform }) {
   for (const commandName of [name, ...(spec.aliases || [])]) {
     for (const candidate of pathCandidates(commandName, { env, platform })) {
       if (samePath(dirname(candidate), managedBinDir, platform)
-        || samePath(candidate, managedPath, platform)) continue;
+        || samePath(candidate, managedPath, platform)
+        || sameFileIdentity(candidate, managedPath)) continue;
       if (canExecute(candidate, platform)) return candidate;
     }
   }
