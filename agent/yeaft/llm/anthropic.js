@@ -12,6 +12,7 @@ import {
   classifyFetchError,
   retryAfterFromResponse,
   LLMAuthError,
+  classifyAuthError,
   LLMContextError,
   LLMServerError,
   LLMAbortError,
@@ -218,7 +219,7 @@ export class AnthropicAdapter extends LLMAdapter {
   #classifyError(status, body, response = null) {
     const authHint = `auth=${this.#authHeaderMode}`;
     if (status === 401 || status === 403) {
-      return new LLMAuthError(`Anthropic auth error (${authHint}): ${body}`, status);
+      return classifyAuthError(status, body);
     }
     if (status === 429) {
       const retryAfter = retryAfterFromResponse(response);

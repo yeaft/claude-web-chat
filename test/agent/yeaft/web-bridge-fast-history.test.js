@@ -238,6 +238,34 @@ describe('Yeaft load-history first paint', () => {
       retryable: false,
     }, handlerCtx);
     expect(markEngineTerminal).not.toHaveBeenCalled();
+
+    handlerCtx.resetQueryTimer.mockClear();
+    handlerCtx.pauseQueryTimer.mockClear();
+    __testHandleEngineEvent({
+      type: 'llm_retry',
+      attempt: 2,
+      maxRetries: 2,
+      delayMs: 120_000,
+      reason: 'temporary_forbidden',
+      threadId: 'main',
+    }, handlerCtx);
+    expect(handlerCtx.pauseQueryTimer).toHaveBeenCalledTimes(1);
+    expect(handlerCtx.resetQueryTimer).not.toHaveBeenCalled();
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'llm_retry',
+        delayMs: 120_000,
+      }),
+    }));
+    expect(sent.at(-1)).toMatchObject({
+      sessionId: 'session-fast',
+      vpId: 'vp-linus',
+      turnId: 'turn-error',
+      threadId: 'main',
+    });
+    __testHandleEngineEvent({ type: 'turn_start', threadId: 'main' }, handlerCtx);
+    expect(handlerCtx.resetQueryTimer).toHaveBeenCalledTimes(1);
+
     __testHandleEngineEvent({
       type: 'turn_end',
       stopReason: 'error',

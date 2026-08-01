@@ -20,7 +20,7 @@
 import * as githubCopilot from './github-copilot.js';
 
 /**
- * @typedef {{ getApiKey: () => Promise<string>, name: string }} CredentialProvider
+ * @typedef {{ getApiKey: () => Promise<string>, refreshApiKey?: () => Promise<string>, name: string }} CredentialProvider
  */
 
 /**
@@ -38,6 +38,18 @@ export function getCredentialProvider(name) {
             'github-copilot credential provider could not resolve a token. ' +
             'Try: set COPILOT_GITHUB_TOKEN/GH_TOKEN/GITHUB_TOKEN env var, ' +
             'or run `gh auth login`, or sign in via the device flow.'
+          );
+        }
+        return r.token;
+      },
+      async refreshApiKey() {
+        githubCopilot.invalidateApiTokenCache();
+        const r = await githubCopilot.getApiToken({ requireExchange: true });
+        if (!r?.token) {
+          throw new githubCopilot.CopilotCredentialError(
+            'GitHub Copilot credential refresh found no usable credential',
+            null,
+            'credential_unavailable',
           );
         }
         return r.token;

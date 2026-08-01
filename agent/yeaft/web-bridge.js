@@ -3778,7 +3778,8 @@ function handleEngineEvent(event, hctx) {
   const terminalTurnEnd = event.type === 'turn_end' && event.terminal === true;
   const managesQueryTimer = terminalTurnEnd
     || event.type === 'async_task_wait_start'
-    || event.type === 'async_task_wait_end';
+    || event.type === 'async_task_wait_end'
+    || event.type === 'llm_retry';
   if (!managesQueryTimer) hctx.resetQueryTimer();
   const envelope = {
     sessionId: hctx.sessionId,
@@ -4074,6 +4075,9 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'llm_retry':
+      // Engine is intentionally sleeping before the next provider request.
+      // Silence watchdogs protect active calls, not declared retry waits.
+      if (typeof hctx.pauseQueryTimer === 'function') hctx.pauseQueryTimer();
       maybeTransitionVpStatus(hctx, 'retrying');
       // Engine paused before re-issuing the same turn because the LLM
       // returned a retryable error (rate limit / 5xx / transient network /
@@ -4284,6 +4288,11 @@ function handleEngineEvent(event, hctx) {
         type: 'error',
         message: visibleErrMsg,
         errorName: event.error?.name || null,
+        statusCode: event.error?.statusCode ?? null,
+        reasonCode: event.error?.reasonCode || null,
+        provider: event.error?.provider || null,
+        model: event.error?.model || null,
+        credentialRefreshable: event.error?.credentialRefreshable === true,
         retryable: !!event.retryable,
         ...(event.reason ? { reason: event.reason } : {}),
         ...(event.retryExhausted !== undefined ? { retryExhausted: !!event.retryExhausted } : {}),

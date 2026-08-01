@@ -77,6 +77,7 @@ const DEFAULTS = {
     maxDelayMs: 30_000,
     jitterRatio: 0.25,
     streamIdleTimeoutMs: 90_000,
+    forbiddenRetryDelaysMs: [30_000, 120_000],
   },
 };
 
@@ -113,6 +114,12 @@ export function normalizeLlmRetry(fileConfig, overrides) {
     }
     if (Number.isFinite(src.streamIdleTimeoutMs) && src.streamIdleTimeoutMs >= 0) {
       out.streamIdleTimeoutMs = Math.min(600_000, Math.floor(src.streamIdleTimeoutMs));
+    }
+    if (Array.isArray(src.forbiddenRetryDelaysMs)) {
+      out.forbiddenRetryDelaysMs = src.forbiddenRetryDelaysMs
+        .filter(v => Number.isFinite(v) && v >= 0)
+        .slice(0, 3)
+        .map(v => Math.min(600_000, Math.floor(v)));
     }
   };
   apply(fileConfig);
