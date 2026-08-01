@@ -72,6 +72,7 @@ import {
   moveSessionToProject,
   removeSessionFromProjects,
   renameProject,
+  updateProjectInstruction,
 } from './projects/store.js';
 import { readSummary as readScopeSummary } from './memory/store.js';
 import { estimateTokens } from './dream/segment.js';
@@ -602,6 +603,9 @@ function normalizeProjectContext(value, sessionId) {
     projectName: typeof value.projectName === 'string' && value.projectName.trim()
       ? value.projectName.trim()
       : null,
+    projectInstruction: typeof value.projectInstruction === 'string'
+      ? value.projectInstruction.trim()
+      : '',
     sessionIds: Array.from(new Set(value.sessionIds
       .filter(id => typeof id === 'string' && id.trim())
       .map(id => id.trim())
@@ -615,6 +619,7 @@ function legacyProjectContext(yeaftDir, sessionId) {
   return normalizeProjectContext({
     projectId: project.id,
     projectName: project.name,
+    projectInstruction: project.instruction || '',
     sessionIds: project.sessionIds,
   }, sessionId);
 }
@@ -3198,6 +3203,20 @@ export function handleYeaftListSessions(msg) {
   }
 }
 
+export function handleYeaftProjectContextSync(msg) {
+  for (const row of Array.isArray(msg?.contexts) ? msg.contexts : []) {
+    const sessionId = typeof row?.sessionId === 'string' ? row.sessionId.trim() : '';
+    if (!sessionId) continue;
+    const projectContext = normalizeProjectContext(row.projectContext, sessionId);
+    projectContextBySession.set(sessionId, projectContext || {
+      projectId: null,
+      projectName: null,
+      projectInstruction: '',
+      sessionIds: [],
+    });
+  }
+}
+
 export function handleYeaftProjectMutation(msg) {
   const requestId = msg && msg.requestId;
   const op = msg && msg.op;
@@ -3206,7 +3225,9 @@ export function handleYeaftProjectMutation(msg) {
     let result = null;
     if (op === 'create') result = createProject(yeaftDir, msg.name);
     else if (op === 'rename') result = renameProject(yeaftDir, msg.projectId, msg.name);
-    else if (op === 'delete') result = deleteProject(yeaftDir, msg.projectId);
+    else if (op === 'update_instruction') {
+      result = updateProjectInstruction(yeaftDir, msg.projectId, msg.instruction);
+    } else if (op === 'delete') result = deleteProject(yeaftDir, msg.projectId);
     else if (op === 'move_session') {
       if (!snapshotSessions(yeaftDir).some(row => row.id === msg.sessionId)) {
         throw new ProjectStoreError('session_not_found', 'Session not found');
@@ -4568,6 +4589,7 @@ async function runYeaftSessionSend(msg) {
     projectContextBySession.set(sessionId, inboundProjectContext || {
       projectId: null,
       projectName: null,
+      projectInstruction: '',
       sessionIds: [],
     });
   } else {
@@ -5250,6 +5272,7 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
           || legacyProjectContext(ctx.CONFIG?.yeaftDir, sessionId);
         const projectSessionIds = projectContext?.sessionIds || [];
         queryOpts.projectSessionIds = projectSessionIds;
+        queryOpts.projectInstruction = projectContext?.projectInstruction || '';
         const projectSummaries = await sharedProjectContext(ctx.CONFIG?.yeaftDir, sessionId, {
           sessionIds: projectSessionIds,
           language: session?.config?.language,
@@ -7385,6 +7408,12 @@ export const __testHooks = {
   sharedProjectContext,
   buildProjectSharedBlock,
   normalizeProjectContext,
+  handleProjectContextSyncForTest(msg) {
+    handleYeaftProjectContextSync(msg);
+  },
+  projectContextForSessionForTest(sessionId) {
+    return projectContextBySession.get(sessionId) || null;
+  },
   loadVisibleGroupHistoryPage,
   projectVisibleHistoryChunkMessages,
   persistInboundMessageOnceByMsgId,

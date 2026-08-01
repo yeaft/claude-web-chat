@@ -19,6 +19,7 @@ import {
   removeSessionFromProjects,
   renameProject,
   sharedSessionIdsForProject,
+  updateProjectInstruction,
 } from '../../../agent/yeaft/projects/store.js';
 
 const roots = [];
@@ -111,10 +112,29 @@ describe('Yeaft session-scoped model config', () => {
     expect(__testHooks.normalizeProjectContext({
       projectId: beta.id,
       projectName: 'Beta',
+      projectInstruction: '  Use the shared release checklist.  ',
       sessionIds: ['session-a', 'session-b', 'session-b'],
     }, 'session-a')).toEqual({
       projectId: beta.id,
       projectName: 'Beta',
+      projectInstruction: 'Use the shared release checklist.',
+      sessionIds: ['session-b'],
+    });
+    __testHooks.handleProjectContextSyncForTest({
+      contexts: [{
+        sessionId: 'session-a',
+        projectContext: {
+          projectId: beta.id,
+          projectName: 'Beta',
+          projectInstruction: 'Use the shared release checklist.',
+          sessionIds: ['session-a', 'session-b'],
+        },
+      }],
+    });
+    expect(__testHooks.projectContextForSessionForTest('session-a')).toEqual({
+      projectId: beta.id,
+      projectName: 'Beta',
+      projectInstruction: 'Use the shared release checklist.',
       sessionIds: ['session-b'],
     });
     expect(__testHooks.buildProjectSharedBlock({
@@ -147,8 +167,15 @@ describe('Yeaft session-scoped model config', () => {
     expect(estimateTokens(defaultBudgetContext)).toBeLessThanOrEqual(4096);
     expect(estimateTokens(defaultBudgetContext)).toBeGreaterThan(64);
     renameProject(root, beta.id, 'Beta 2');
+    updateProjectInstruction(root, beta.id, '  Follow the Project release checklist.  ');
     removeSessionFromProjects(root, 'session-a');
-    expect(loadProjects(root)[1]).toEqual(expect.objectContaining({ name: 'Beta 2', sessionIds: ['session-b'] }));
+    expect(loadProjects(root)[1]).toEqual(expect.objectContaining({
+      name: 'Beta 2',
+      instruction: 'Follow the Project release checklist.',
+      sessionIds: ['session-b'],
+    }));
+    expect(() => updateProjectInstruction(root, beta.id, 'x'.repeat(20_001)))
+      .toThrow('must not exceed 20000 characters');
     deleteProject(root, beta.id);
     expect(loadProjects(root).map(project => project.id)).toEqual([alpha.id]);
   });

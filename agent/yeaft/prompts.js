@@ -204,6 +204,8 @@ const PROMPTS = {
     activeScopeEnvelopeLabel: 'Handoff',
     multiVpRoutingHeader: '## multi_vp_routing',
     sessionAnnouncementHeader: '[Session Announcement]',
+    projectInstructionHeader: '[Project Instruction]',
+    projectInstructionIntro: 'This server-managed instruction applies to every Session in the current Project.',
     workCenterInstructionsHeader: '[Work Center Agent Instructions]',
     workCenterInstructionsIntro: 'These Agent-level instructions apply to every Action in this WorkItem. Follow them unless they conflict with system/tool safety rules, the authoritative project document, or the WorkItem contract.',
     // Project-doc (CLAUDE.md / AGENTS.md) header + one-liner intro. Both
@@ -226,6 +228,8 @@ const PROMPTS = {
     activeScopeEnvelopeLabel: '转交消息',
     multiVpRoutingHeader: '## multi_vp_routing',
     sessionAnnouncementHeader: '[会话公告]',
+    projectInstructionHeader: '[Project 指令]',
+    projectInstructionIntro: '这是服务器管理的 Project 级指令，适用于当前 Project 内的所有 Session。',
     workCenterInstructionsHeader: '[Work Center Agent 指令]',
     workCenterInstructionsIntro: '这些 Agent 级指令作用于当前 Work Item 的每个 Action。除非与系统/工具安全规则、权威项目文档或 Work Item 契约冲突，否则必须遵循。',
     // 项目文档块：CLAUDE.md / AGENTS.md（与 Codex 通用命名兼容）。
@@ -297,6 +301,7 @@ export function normalizePromptLanguage(language) {
  *   activeScope?: object,
  *   vpPersona?: object,
  *   sessionAnnouncement?: string,
+ *   projectInstruction?: string,
  *   workCenterInstructions?: string,
  *   projectDoc?: string,
  * }} params
@@ -311,6 +316,7 @@ export function buildSystemPrompt({
   activeScope,
   vpPersona,
   sessionAnnouncement = '',
+  projectInstruction = '',
   workCenterInstructions = '',
   projectDoc = '',
   runtimePlatform,
@@ -355,6 +361,13 @@ export function buildSystemPrompt({
     const docIntro = lang.projectDocIntro || '';
     const introLine = docIntro ? `${docIntro}\n\n` : '';
     parts.push(`${docHeader}\n${introLine}${docText}`);
+  }
+
+  const projectInstructionText = typeof projectInstruction === 'string' ? projectInstruction.trim() : '';
+  if (projectInstructionText) {
+    const header = lang.projectInstructionHeader || '[Project Instruction]';
+    const intro = lang.projectInstructionIntro || '';
+    parts.push(`${header}\n${intro ? `${intro}\n\n` : ''}${projectInstructionText}`);
   }
 
   // ─── 1.5  Session Announcement (CLAUDE.md-style shared prefix) ───

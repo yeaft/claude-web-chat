@@ -124,6 +124,7 @@ export function isRestrictedToolName(name) {
  *   parentVpId?: string,
  *   parentSessionId?: string|null,
  *   projectSessionIds?: string[],
+ *   projectInstruction?: string,
  *   parentThreadId?: string|null,
  *   parentVpPersona?: object,
  *   toolStats?: object,
@@ -384,6 +385,9 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
           projectSessionIds: Array.isArray(deps.projectSessionIds)
             ? deps.projectSessionIds
             : null,
+          projectInstruction: typeof deps.projectInstruction === 'string'
+            ? deps.projectInstruction
+            : '',
         });
         for await (const evt of stream) {
           // Liveness — update first so even listener throws don't lose

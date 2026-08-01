@@ -351,6 +351,33 @@ describe('message flow regressions', () => {
     await Vue.nextTick();
     expect(sidebar.find('.sidebar-project-create').exists()).toBe(false);
 
+    dispatchProjectAction.mockClear();
+    UnifiedSessionList.methods.editProjectInstruction.call(sidebar.vm, {
+      id: 'project-shared',
+      name: 'Shared project',
+      instruction: 'Existing Project rule.',
+    });
+    await Vue.nextTick();
+    const instructionModal = document.body.querySelector('.project-instruction-modal');
+    expect(instructionModal).not.toBeNull();
+    const instructionInput = instructionModal.querySelector('textarea');
+    expect(instructionInput.value).toBe('Existing Project rule.');
+    instructionInput.value = 'Updated Project rule.';
+    instructionInput.dispatchEvent(new Event('input', { bubbles: true }));
+    instructionModal.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await Vue.nextTick();
+    await Promise.resolve();
+    expect(dispatchProjectAction).toHaveBeenCalledWith({
+      action: 'update-instruction',
+      project: {
+        id: 'project-shared',
+        name: 'Shared project',
+        instruction: 'Existing Project rule.',
+      },
+      instruction: 'Updated Project rule.',
+    });
+    expect(document.body.querySelector('.project-instruction-modal')).toBeNull();
+
     const projectToggles = sidebar.findAll('.sidebar-project-toggle');
     await projectToggles[0].trigger('click');
     expect(sidebar.findAll('.sidebar-project-sessions')).toHaveLength(1);
@@ -414,6 +441,21 @@ describe('message flow regressions', () => {
     expect(runtimeFooter.textContent).not.toContain('sidebar.sessions.agent');
     expect(runtimeFooter.textContent).not.toContain('sidebar.sessions.provider');
     expect(sidebar.find('.sidebar-session-menu-divider').exists()).toBe(false);
+    const mainMenuLabels = [...document.body.querySelectorAll('.session-menu-item')]
+      .map(item => item.textContent);
+    expect(mainMenuLabels.some(label => label.includes('sidebar.projects.moveMenu'))).toBe(true);
+    expect(mainMenuLabels).not.toContain('Shared project');
+    expect(mainMenuLabels).not.toContain('Empty project');
+    const moveMenuAction = [...document.body.querySelectorAll('.session-menu-item')]
+      .find(item => item.textContent.includes('sidebar.projects.moveMenu'));
+    moveMenuAction.click();
+    await Vue.nextTick();
+    const projectMenuLabels = [...document.body.querySelectorAll('.session-menu-item')]
+      .map(item => item.textContent);
+    expect(projectMenuLabels).toContain('Empty project');
+    expect(projectMenuLabels).not.toContain('Shared project');
+    document.body.querySelector('.session-menu-back').click();
+    await Vue.nextTick();
     const settingsAction = [...document.body.querySelectorAll('.session-menu-item')]
       .find(item => item.textContent === 'yeaft.session.openSettings');
     expect(settingsAction).toBeTruthy();
@@ -481,6 +523,9 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).toContain("runAction('pin', floatingMenu.row)");
     expect(UnifiedSessionList.template).toContain("runAction('settings', floatingMenu.row)");
     expect(UnifiedSessionList.template).toContain("moveRow(floatingMenu.row, project)");
+    expect(UnifiedSessionList.template).toContain("floatingMenu.page === 'projects'");
+    expect(UnifiedSessionList.template).toContain('sidebar.projects.moveMenu');
+    expect(UnifiedSessionList.template).toContain('project-instruction-modal');
     expect(UnifiedSessionList.template).toContain('sidebar-primary-actions');
     expect(UnifiedSessionList.template).toContain('projects-section');
     expect(UnifiedSessionList.template).toContain('recents-section');
@@ -595,11 +640,20 @@ describe('message flow regressions', () => {
       value: () => ({ top: 20, bottom: 44, left: 180, right: 204, width: 24, height: 24 }),
     });
     await agentAMenuButton.trigger('click');
+    const primaryMenuTargets = [...document.body.querySelectorAll('.session-menu-floating .session-menu-item')]
+      .map(item => item.textContent);
+    expect(primaryMenuTargets.some(label => label.includes('sidebar.projects.moveMenu'))).toBe(true);
+    expect(primaryMenuTargets).not.toContain('Agent A legacy');
+    expect(primaryMenuTargets).not.toContain('Server project');
+    const moveToProjects = [...document.body.querySelectorAll('.session-menu-floating .session-menu-item')]
+      .find(item => item.textContent.includes('sidebar.projects.moveMenu'));
+    moveToProjects.click();
+    await Vue.nextTick();
     const moveTargets = [...document.body.querySelectorAll('.session-menu-floating .session-menu-item')]
       .map(item => item.textContent);
-    expect(moveTargets).toContain('sidebar.projects.moveTo:Agent A legacy');
-    expect(moveTargets).toContain('sidebar.projects.moveTo:Server project');
-    expect(moveTargets).not.toContain('sidebar.projects.moveTo:Agent B legacy');
+    expect(moveTargets).toContain('Agent A legacy');
+    expect(moveTargets).toContain('Server project');
+    expect(moveTargets).not.toContain('Agent B legacy');
 
     const agentALegacyProject = legacyProjectStore.sessionProjects
       .find(project => project.legacyAgentId === 'agent-a');
