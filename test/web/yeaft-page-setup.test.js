@@ -54,8 +54,24 @@ beforeAll(async () => {
 
 beforeEach(() => {
   localStorage.clear();
-  sessionsStore.sessions = { 'session-1': { id: 'session-1', roster: ['omni'], defaultVpId: 'omni' } };
+  sessionsStore.sessions = {
+    'session-1': {
+      id: 'session-1',
+      title: 'Conversation title',
+      workDir: '/home/user/projects/yeaft-web-code-agent',
+      roster: ['omni'],
+      defaultVpId: 'omni',
+      config: { model: 'provider/session-model', modelEffort: 'high' },
+    },
+  };
   sessionsStore.activeSession = sessionsStore.sessions['session-1'];
+  chatStore.yeaftModel = 'provider/fallback-model';
+  chatStore.yeaftModelEffort = 'medium';
+  chatStore.yeaftAvailableModels = [
+    { id: 'session-model', provider: 'provider', ref: 'provider/session-model', effortOptions: ['low', 'medium', 'high'] },
+    { id: 'next-model', provider: 'provider', ref: 'provider/next-model', effortOptions: ['medium', 'high'] },
+  ];
+  chatStore.switchYeaftModel = vi.fn();
   chatStore.yeaftHistorySearchState = { query: '', senderKey: '' };
   chatStore.loadYeaftHistoryOutline.mockReset();
   chatStore.searchYeaftHistory.mockReset();
@@ -69,6 +85,33 @@ afterEach(() => {
 describe('YeaftPage setup', () => {
   it('defaults Session history search to the user without replacing an explicit sender choice', async () => {
     const page = YeaftPage.setup();
+
+    expect(page.topbarSessionTitle.value).toBe('Conversation title');
+    expect(page.topbarFolderPath.value).toBe('/home/user/projects/yeaft-web-code-agent');
+    expect(page.topbarModel.value).toBe('provider/session-model');
+    expect(page.topbarEffort.value).toBe('high');
+
+    page.selectModel('provider/next-model', 'medium');
+    expect(chatStore.switchYeaftModel).toHaveBeenCalledWith('provider/next-model', 'session-1', 'medium');
+
+    const source = YeaftPage.template;
+    const topbarStart = source.indexOf('<div class="yeaft-topbar">');
+    const topbarEnd = source.indexOf('</div>', source.indexOf('<YeaftSessionActions', topbarStart));
+    const topbar = source.slice(topbarStart, topbarEnd);
+    expect(topbar).toContain('class="yeaft-topbar-folder"');
+    expect(topbar).toContain('class="yeaft-topbar-context"');
+    expect(topbar).not.toContain('class="yeaft-composer-model"');
+    expect(source).toContain('class="yeaft-session-input"');
+    expect(source).toContain('<template #actions-start>');
+    expect(source).toContain('class="yeaft-composer-model-control"');
+    expect(source).toContain('class="yeaft-composer-model"');
+    expect(source).toContain('class="yeaft-composer-model-effort"');
+    expect(source).toContain("$t('yeaft.modelMenu.effort.' + topbarEffort)");
+    expect(source).toContain('class="yeaft-model-effort-chip"');
+    expect(source).toContain('class="yeaft-model-option-provider"');
+    expect(source).toContain('class="yeaft-model-option-ctx"');
+    expect(source).toContain('class="yeaft-model-config-option"');
+    expect(source).toContain(':title="topbarFolderPath"');
 
     page.toggleHistorySearch();
     await Vue.nextTick();

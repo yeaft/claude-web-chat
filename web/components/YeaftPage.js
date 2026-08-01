@@ -148,62 +148,13 @@ export default {
 
         <!-- task-339-F1: SessionSelector removed from topbar — groups now surface via sidebar section. -->
 
-          <!-- Model selector doubles as the LLM settings entry; no extra gear. -->
-          <div class="yeaft-topbar-model" @click="toggleModelDropdown" :title="$t('yeaft.modelMenu.title')">
-            <span class="yeaft-topbar-model-name">{{ topbarModel || $t('settings.llm.selectModel') }}</span>
-            <span v-if="store.yeaftModelsRefreshing" class="yeaft-model-refreshing">{{ $t('common.loading') || 'Loading' }}</span>
-            <svg class="yeaft-model-chevron" :class="{ open: modelDropdownOpen }" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-            <div class="yeaft-model-dropdown yeaft-topbar-model-dropdown" v-if="modelDropdownOpen" @click.stop>
-              <div class="yeaft-model-selector-body">
-                <div class="yeaft-model-list" role="listbox" :aria-label="$t('settings.llm.selectModel')">
-                  <div
-                    v-for="row in topbarModelRows"
-                    :key="row.modelRef"
-                    class="yeaft-model-option"
-                    :class="{
-                      active: isModelRowActive(row),
-                      current: modelOptionMatchesRef(row.model, topbarModel),
-                      'yeaft-model-option-with-effort': row.efforts.length,
-                    }"
-                    role="option"
-                    :aria-selected="isModelRowActive(row) ? 'true' : 'false'"
-                  >
-                    <span class="yeaft-model-check" v-if="isModelRowActive(row)">&check;</span>
-                    <span class="yeaft-model-check" v-else></span>
-                    <button
-                      type="button"
-                      class="yeaft-model-option-main"
-                      @click="selectModel(row.modelRef, row.defaultEffort)"
-                    >
-                      <span class="yeaft-model-option-label">{{ row.label }}</span>
-                      <span class="yeaft-model-option-meta">
-                        <span class="yeaft-model-option-provider" v-if="row.model.provider">{{ row.model.provider }}</span>
-                        <span class="yeaft-model-option-ctx" v-if="row.model.contextWindow">{{ formatModelCtx(row.model) }}</span>
-                      </span>
-                    </button>
-                    <span class="yeaft-model-effort-list" v-if="row.efforts.length" :aria-label="row.label">
-                      <button
-                        v-for="effort in row.efforts"
-                        :key="row.modelRef + ':' + effort"
-                        type="button"
-                        class="yeaft-model-effort-chip"
-                        :class="{ active: isModelSelectionActive(row.model, effort) }"
-                        @click="selectModel(row.modelRef, effort)"
-                      >{{ $t('yeaft.modelMenu.effort.' + effort) }}</button>
-                    </span>
-                  </div>
-                </div>
-                <div class="yeaft-model-fixed-controls">
-                  <button type="button" class="yeaft-model-config-option" @click="openLlmConfig">
-                    <span class="yeaft-model-config-label">{{ $t('settings.llm.configureMenu') }}</span>
-                    <span class="yeaft-model-config-hint">{{ $t('yeaft.modelMenu.configureHint') }}</span>
-                  </button>
-                </div>
-              </div>
+          <div class="yeaft-topbar-context">
+            <div v-if="topbarFolderPath" class="yeaft-topbar-folder" :title="topbarFolderPath">
+              <span class="yeaft-topbar-folder-path">{{ topbarFolderPath }}</span>
             </div>
-          </div>
-          <div class="yeaft-topbar-title-group" :title="showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || topbarGroup?.id || '')">
-            <div class="yeaft-topbar-session-title">{{ showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || $t('yeaft.session.create.untitled')) }}</div>
+            <div class="yeaft-topbar-title-group" :title="showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || topbarGroup?.id || '')">
+              <div class="yeaft-topbar-session-title">{{ showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || $t('yeaft.session.create.untitled')) }}</div>
+            </div>
           </div>
 
           <YeaftSessionActions
@@ -394,6 +345,7 @@ export default {
         <ChatInput
           v-if="!showSettings && !showOnboardingGuide"
           ref="chatInputRef"
+          class="yeaft-session-input"
           :conversation-id="store.yeaftConversationId"
           :draft-key="yeaftInputDraftKey"
           :send-fn="sendMessage"
@@ -404,7 +356,74 @@ export default {
           placeholder-key="yeaft.placeholder"
           @remove-quote="messageQuote = null"
           @quote-consumed="messageQuote = null"
-        />
+        >
+          <template #actions-start>
+            <!-- Model selector doubles as the LLM settings entry; no extra gear. -->
+            <div class="yeaft-composer-model-control">
+              <button
+                type="button"
+                class="yeaft-composer-model"
+                @click="toggleModelDropdown"
+                :title="$t('yeaft.modelMenu.title')"
+                aria-haspopup="listbox"
+                :aria-expanded="modelDropdownOpen ? 'true' : 'false'"
+              >
+                <span class="yeaft-composer-model-name">{{ topbarModel || $t('settings.llm.selectModel') }}</span>
+                <span v-if="topbarEffort" class="yeaft-composer-model-effort">{{ $t('yeaft.modelMenu.effort.' + topbarEffort) }}</span>
+                <span v-if="store.yeaftModelsRefreshing" class="yeaft-model-refreshing">{{ $t('common.loading') || 'Loading' }}</span>
+                <svg class="yeaft-model-chevron" :class="{ open: modelDropdownOpen }" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+              </button>
+              <div class="yeaft-model-dropdown yeaft-composer-model-dropdown" v-if="modelDropdownOpen">
+                <div class="yeaft-model-selector-body">
+                  <div class="yeaft-model-list" role="listbox" :aria-label="$t('settings.llm.selectModel')">
+                    <div
+                      v-for="row in topbarModelRows"
+                      :key="row.modelRef"
+                      class="yeaft-model-option"
+                      :class="{
+                        active: isModelRowActive(row),
+                        current: modelOptionMatchesRef(row.model, topbarModel),
+                        'yeaft-model-option-with-effort': row.efforts.length,
+                      }"
+                      role="option"
+                      :aria-selected="isModelRowActive(row) ? 'true' : 'false'"
+                    >
+                      <span class="yeaft-model-check" v-if="isModelRowActive(row)">&check;</span>
+                      <span class="yeaft-model-check" v-else></span>
+                      <button
+                        type="button"
+                        class="yeaft-model-option-main"
+                        @click="selectModel(row.modelRef, row.defaultEffort)"
+                      >
+                        <span class="yeaft-model-option-label">{{ row.label }}</span>
+                        <span class="yeaft-model-option-meta">
+                          <span class="yeaft-model-option-provider" v-if="row.model.provider">{{ row.model.provider }}</span>
+                          <span class="yeaft-model-option-ctx" v-if="row.model.contextWindow">{{ formatModelCtx(row.model) }}</span>
+                        </span>
+                      </button>
+                      <span class="yeaft-model-effort-list" v-if="row.efforts.length" :aria-label="row.label">
+                        <button
+                          v-for="effort in row.efforts"
+                          :key="row.modelRef + ':' + effort"
+                          type="button"
+                          class="yeaft-model-effort-chip"
+                          :class="{ active: isModelSelectionActive(row.model, effort) }"
+                          @click="selectModel(row.modelRef, effort)"
+                        >{{ $t('yeaft.modelMenu.effort.' + effort) }}</button>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="yeaft-model-fixed-controls">
+                    <button type="button" class="yeaft-model-config-option" @click="openLlmConfig">
+                      <span class="yeaft-model-config-label">{{ $t('settings.llm.configureMenu') }}</span>
+                      <span class="yeaft-model-config-hint">{{ $t('yeaft.modelMenu.configureHint') }}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </ChatInput>
         </div><!-- /.yeaft-main-center -->
       </div>
 
@@ -1069,6 +1088,11 @@ export default {
       return '';
     });
 
+    const topbarFolderPath = Vue.computed(() => {
+      const workDir = topbarGroup.value?.workDir;
+      return typeof workDir === 'string' ? workDir.trim() : '';
+    });
+
     const sessionStatusAnnouncementText = Vue.computed(() => {
       const text = topbarGroup.value && typeof topbarGroup.value.announcement === 'string'
         ? topbarGroup.value.announcement
@@ -1164,7 +1188,7 @@ export default {
 
     const closeModelDropdownOutside = (e) => {
       if (!modelDropdownOpen.value) return;
-      const row = e.target.closest('.yeaft-topbar-model, .yeaft-topbar-model-dropdown');
+      const row = e.target.closest('.yeaft-composer-model-control');
       if (!row) closeModelDropdown();
     };
 
@@ -1558,6 +1582,7 @@ export default {
       modelDropdownOpen,
       topbarGroup,
       topbarSessionTitle,
+      topbarFolderPath,
       topbarModel,
       topbarEffort,
       topbarModelRows,

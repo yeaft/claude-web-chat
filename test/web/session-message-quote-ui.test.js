@@ -280,6 +280,9 @@ describe('Session message quote UI wiring', () => {
     const { default: ChatInput } = await import('../../web/components/ChatInput.js');
     const inputWrapper = mount(ChatInput, {
       props: { showStop: true, workItemFn: vi.fn() },
+      slots: {
+        'actions-start': '<button class="composer-model-slot" type="button">Model</button>',
+      },
       global: {
         mocks: { $t: key => key },
         stubs: { VpMentionAutocomplete: true },
@@ -299,6 +302,13 @@ describe('Session message quote UI wiring', () => {
     expect(textarea.element.compareDocumentPosition(actionRow.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(startActions.findAll('.attach-btn')).toHaveLength(1);
     expect(startActions.findAll('.work-item-draft-btn')).toHaveLength(1);
+    expect(startActions.findAll('.composer-model-slot')).toHaveLength(1);
+    expect(startActions.get('.attach-btn').element.compareDocumentPosition(
+      startActions.get('.work-item-draft-btn').element,
+    ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(startActions.get('.work-item-draft-btn').element.compareDocumentPosition(
+      startActions.get('.composer-model-slot').element,
+    ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(endActions.findAll('.send-btn')).toHaveLength(2);
     expect([...composer.element.children].filter(child => child.matches('.attach-btn, .work-item-draft-btn, .send-btn'))).toHaveLength(0);
 
@@ -307,10 +317,14 @@ describe('Session message quote UI wiring', () => {
     expect(inputWrapper.get('.chat-composer-actions-start .btw-input-tag').text()).toBe('BTW');
     expect(inputWrapper.find('.chat-composer-actions-start .attach-btn').exists()).toBe(false);
     expect(inputWrapper.find('.chat-composer-actions-start .work-item-draft-btn').exists()).toBe(false);
+    expect(inputWrapper.find('.chat-composer-actions-start .composer-model-slot').exists()).toBe(true);
     expect(inputWrapper.findAll('.chat-composer-actions-end .send-btn')).toHaveLength(2);
 
     const inputCss = readFileSync(resolve(process.cwd(), 'web/styles/chat-input.css'), 'utf8');
     const variablesCss = readFileSync(resolve(process.cwd(), 'web/styles/variables.css'), 'utf8');
+    const yeaftCss = readFileSync(resolve(process.cwd(), 'web/styles/yeaft.css'), 'utf8');
+    const workCenterCss = readFileSync(resolve(process.cwd(), 'web/styles/work-center.css'), 'utf8');
+    const workCenterSource = readFileSync(resolve(process.cwd(), 'web/components/WorkCenterPage.js'), 'utf8');
     const darkThemeStart = variablesCss.indexOf('[data-theme="dark"]');
     const lightThemeTokens = variablesCss.slice(variablesCss.indexOf(':root {'), darkThemeStart);
     const darkThemeTokens = variablesCss.slice(darkThemeStart);
@@ -322,7 +336,33 @@ describe('Session message quote UI wiring', () => {
       '--chat-composer-focus-ring-width: 2px;',
       '--chat-composer-textarea-min-height: 4.5em;',
       '--chat-composer-control-size: 32px;',
+      '--yeaft-composer-max-width: 880px;',
+      '--yeaft-composer-model-max-width: 220px;',
+      '--yeaft-composer-model-mobile-max-width: 38vw;',
+      '--yeaft-composer-model-font-size: 12px;',
+      '--yeaft-composer-model-border-width: 1px;',
+      '--yeaft-model-menu-width: 320px;',
+      '--yeaft-model-menu-max-height: 72dvh;',
+      '--yeaft-model-menu-layer: 1300;',
+      '--yeaft-header-folder-max-width: 280px;',
+      '--yeaft-header-folder-font-size: 12px;',
     ];
+
+    const layoutRoot = document.createElement('div');
+    layoutRoot.className = 'yeaft-page';
+    layoutRoot.innerHTML = `
+      <footer class="input-area yeaft-session-input">
+        <div class="input-wrapper chat-composer" data-message-composer></div>
+      </footer>
+      <div class="input-wrapper chat-composer work-center-item-message-input" data-message-composer></div>
+    `;
+    const sessionComposer = layoutRoot.querySelector('.yeaft-session-input .chat-composer');
+    const workCenterComposer = layoutRoot.querySelector('.work-center-item-message-input');
+    const sessionComposerSelector = '.yeaft-session-input > .input-wrapper.chat-composer';
+    expect(sessionComposer.matches(sessionComposerSelector)).toBe(true);
+    expect(workCenterComposer.matches(sessionComposerSelector)).toBe(false);
+    expect(workCenterSource).toContain('class="work-center-item-message-input"');
+    expect(workCenterCss).toMatch(/\.work-center-item-message-input\s*\{[^}]*width:\s*min\(100%,\s*920px\);[^}]*max-width:\s*none;/);
 
     expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*flex-direction:\s*column/);
     expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*gap:\s*var\(--chat-composer-gap\)/);
@@ -335,6 +375,16 @@ describe('Session message quote UI wiring', () => {
     expect(inputCss).toMatch(/\.chat-composer-actions-start,[\s\S]*?gap:\s*var\(--chat-composer-control-gap\)/);
     expect(inputCss).toMatch(/\.chat-composer \.send-btn\s*\{[^}]*width:\s*var\(--chat-composer-control-size\)/);
     expect(inputCss).toMatch(/\.chat-composer \.send-btn\s*\{[^}]*height:\s*var\(--chat-composer-control-size\)/);
+    expect(yeaftCss).toMatch(/\.yeaft-session-input > \.input-wrapper\.chat-composer\s*\{[^}]*width:\s*min\(100%,\s*var\(--yeaft-composer-max-width\)\)/);
+    expect(yeaftCss).not.toMatch(/\.yeaft-page \.input-wrapper(?:\.chat-composer)?\s*\{/);
+    expect(yeaftCss).toMatch(/\.yeaft-topbar-folder-path\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*direction:\s*rtl;/);
+    expect(yeaftCss).toMatch(/\.yeaft-page \.chat-composer-actions-start\s*\{[^}]*position:\s*relative/);
+    expect(yeaftCss).toMatch(/\.yeaft-composer-model-control\s*\{[^}]*position:\s*static/);
+    expect(yeaftCss).toMatch(/\.yeaft-composer-model-dropdown\s*\{[^}]*bottom:\s*calc\(100% \+ var\(--chat-composer-gap\)\)[^}]*max-height:\s*var\(--yeaft-model-menu-max-height\)/);
+    expect(yeaftCss).toMatch(/@media \(max-width:\s*768px\)[\s\S]*?\.yeaft-topbar\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto;/);
+    expect(yeaftCss).toMatch(/\.yeaft-topbar-context\s*\{[^}]*grid-column:\s*2;[^}]*display:\s*grid;/);
+    expect(yeaftCss).toMatch(/\.yeaft-topbar-folder\s*\{[^}]*grid-row:\s*2;[^}]*width:\s*100%;[^}]*max-width:\s*100%;/);
+    expect(yeaftCss).toMatch(/@media \(max-width:\s*768px\)[\s\S]*?\.yeaft-session-input > \.input-wrapper\.chat-composer,[\s\S]*?width:\s*100%;[\s\S]*?max-width:\s*100%;/);
     for (const token of composerTokens) {
       expect(lightThemeTokens).toContain(token);
       expect(darkThemeTokens).toContain(token);
