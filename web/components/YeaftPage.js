@@ -148,11 +148,13 @@ export default {
 
         <!-- task-339-F1: SessionSelector removed from topbar — groups now surface via sidebar section. -->
 
-          <div v-if="topbarFolderPath" class="yeaft-topbar-folder" :title="topbarFolderPath">
-            <span class="yeaft-topbar-folder-path">{{ topbarFolderPath }}</span>
-          </div>
-          <div class="yeaft-topbar-title-group" :title="showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || topbarGroup?.id || '')">
-            <div class="yeaft-topbar-session-title">{{ showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || $t('yeaft.session.create.untitled')) }}</div>
+          <div class="yeaft-topbar-context">
+            <div v-if="topbarFolderPath" class="yeaft-topbar-folder" :title="topbarFolderPath">
+              <span class="yeaft-topbar-folder-path">{{ topbarFolderPath }}</span>
+            </div>
+            <div class="yeaft-topbar-title-group" :title="showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || topbarGroup?.id || '')">
+              <div class="yeaft-topbar-session-title">{{ showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || $t('yeaft.session.create.untitled')) }}</div>
+            </div>
           </div>
 
           <YeaftSessionActions

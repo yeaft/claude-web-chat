@@ -184,8 +184,12 @@
 
 /* ── Header folder + composer model selector ── */
 
+.yeaft-topbar-context {
+  display: contents;
+}
+
 .yeaft-topbar-folder {
-  flex: 0 4 var(--yeaft-header-folder-max-width);
+  flex: 0 1 var(--yeaft-header-folder-max-width);
   min-width: 0;
   max-width: var(--yeaft-header-folder-max-width);
   overflow: hidden;
@@ -1863,7 +1867,7 @@
   padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
 }
 
-.yeaft-page .input-wrapper {
+.yeaft-page .input-wrapper.chat-composer {
   width: min(100%, var(--yeaft-composer-max-width));
   max-width: var(--yeaft-composer-max-width);
 }
@@ -1989,6 +1993,43 @@
     max-width: 38%;
   }
 
+  .yeaft-topbar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .yeaft-topbar-sidebar-toggle {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .yeaft-topbar-context {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+    display: grid;
+    grid-template-rows: auto auto;
+    align-content: center;
+  }
+
+  .yeaft-topbar-title-group {
+    grid-row: 1;
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .yeaft-topbar-folder {
+    grid-row: 2;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .yeaft-topbar-right {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
   /* Yeaft conversation: narrower padding on mobile */
   .yeaft-page .messages {
     max-width: 100%;
@@ -2000,17 +2041,12 @@
     padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   }
 
-  .yeaft-page .input-wrapper,
+  .yeaft-page .input-wrapper.chat-composer,
   .yeaft-page .input-quote-preview,
   .yeaft-page .attachments-preview,
   .yeaft-page .expert-chips-bar {
     width: 100%;
     max-width: 100%;
-  }
-
-  .yeaft-topbar-folder {
-    flex-basis: var(--yeaft-header-folder-mobile-max-width);
-    max-width: var(--yeaft-header-folder-mobile-max-width);
   }
 
   /* Hide right panel */

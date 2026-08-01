@@ -219,7 +219,6 @@ select option:checked {
   --yeaft-model-menu-max-height: 72dvh;
   --yeaft-model-menu-layer: 1300;
   --yeaft-header-folder-max-width: 280px;
-  --yeaft-header-folder-mobile-max-width: 30vw;
   --yeaft-header-folder-font-size: 12px;
   /* Fonts */
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
@@ -373,7 +372,6 @@ select option:checked {
   --yeaft-model-menu-max-height: 72dvh;
   --yeaft-model-menu-layer: 1300;
   --yeaft-header-folder-max-width: 280px;
-  --yeaft-header-folder-mobile-max-width: 30vw;
   --yeaft-header-folder-font-size: 12px;
 }
 

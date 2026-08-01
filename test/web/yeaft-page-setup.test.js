@@ -99,6 +99,7 @@ describe('YeaftPage setup', () => {
     const topbarEnd = source.indexOf('</div>', source.indexOf('<YeaftSessionActions', topbarStart));
     const topbar = source.slice(topbarStart, topbarEnd);
     expect(topbar).toContain('class="yeaft-topbar-folder"');
+    expect(topbar).toContain('class="yeaft-topbar-context"');
     expect(topbar).not.toContain('class="yeaft-composer-model"');
     expect(source).toContain('<template #actions-start>');
     expect(source).toContain('class="yeaft-composer-model-control"');
