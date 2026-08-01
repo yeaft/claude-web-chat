@@ -194,6 +194,7 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-create\s*\{[^}]*background:\s*var\(--bg-input-wrapper\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-results\s*\{[^}]*display:\s*flex[^}]*overflow:\s*hidden/);
     expect(yeaftSidebarCss).toMatch(/\.projects-section, \.recents-section\s*\{[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/\.projects-section > \.sidebar-section-heading, \.recents-section > \.sidebar-section-heading\s*\{[^}]*position:\s*sticky[^}]*top:\s*0[^}]*z-index:\s*1[^}]*background:\s*var\(--bg-sidebar\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-menu-info\s*\{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/);
     expect(yeaftSidebarCss).not.toContain('.sidebar-session-menu-divider');
     expect(vpAvatarSource).not.toContain('/assets/avatars/');
@@ -2864,7 +2865,9 @@ describe('message flow regressions', () => {
     ]);
     const sessionCreateCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/yeaft-session-create.css'), 'utf8');
     expect(sessionCreateCss).toMatch(/\.yeaft-session-create-fields\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
-    expect(sessionCreateCss).toMatch(/\.yeaft-session-create-fields \.resume-control-row\s*\{[^}]*flex-direction:\s*column;/s);
+    expect(sessionCreateCss).toMatch(/\.yeaft-session-create-fields \.resume-control-row\s*\{[^}]*align-items:\s*center;[^}]*flex-direction:\s*row;[^}]*gap:\s*12px;/s);
+    expect(sessionCreateCss).toMatch(/\.yeaft-session-create-modal \.resume-control-label\s*\{[^}]*width:\s*96px;[^}]*flex:\s*0 0 96px;/s);
+    expect(sessionCreateCss).toMatch(/@media \(max-width:\s*640px\)[\s\S]*?\.yeaft-session-create-fields \.resume-control-row\s*\{[^}]*align-items:\s*stretch;[^}]*flex-direction:\s*column;/s);
     await selects[1].setValue('claude-code');
     modal.vm.form.workDir = '/repo';
     await modal.vm.onSubmit();
