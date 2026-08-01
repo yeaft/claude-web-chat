@@ -196,11 +196,20 @@ describe('message flow regressions', () => {
     const vpAvatarSource = readFileSync(resolve(import.meta.dirname, '../../web/components/VpAvatar.js'), 'utf8');
     const vpCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/yeaft-vp.css'), 'utf8');
     const sidebarCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/sidebar.css'), 'utf8');
+    const chatInputCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/chat-input.css'), 'utf8');
+    const yeaftCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/yeaft.css'), 'utf8');
     const yeaftSidebarCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/yeaft-sidebar.css'), 'utf8');
     const variables = readFileSync(resolve(import.meta.dirname, '../../web/styles/variables.css'), 'utf8');
     const lightThemeVariables = variables.match(/:root\s*\{([\s\S]*?)\n\}/)?.[1] || '';
     const darkThemeVariables = variables.match(/\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/)?.[1] || '';
     expect(sidebarCss).toMatch(/\.unread-dot\s*\{[^}]*background:\s*var\(--success\)/);
+    expect(lightThemeVariables).toMatch(/--session-content-width:\s*90%/);
+    expect(sidebarCss).toMatch(/\.messages\s*\{[^}]*max-width:\s*var\(--session-content-width\)/);
+    for (const selector of ['input-quote-preview', 'attachments-preview', 'input-hints', 'input-wrapper']) {
+      expect(chatInputCss).toMatch(new RegExp(`\\.${selector}\\s*\\{[^}]*max-width:\\s*var\\(--session-content-width\\)`));
+    }
+    expect(yeaftCss).not.toMatch(/\.yeaft-page \.messages\s*\{[^}]*max-width:\s*90%/);
+    expect(yeaftCss).not.toMatch(/\.yeaft-page \.(?:input-wrapper|input-quote-preview|attachments-preview)\s*\{[^}]*max-width:\s*90%/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-actions\s*\{[^}]*padding:\s*6px 8px 4px/);
     const sectionPaddingTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'padding');
     const sectionMarginTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'margin');
