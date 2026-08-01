@@ -204,7 +204,7 @@ describe('Session message quote UI wiring', () => {
 
   });
 
-  it('uses concise localized labels and keeps user content inside one message block', async () => {
+  it('keeps the user message and multiline composer layouts coherent', async () => {
     const user = readFileSync(resolve(process.cwd(), 'web/components/MessageItem.js'), 'utf8');
     const sidebarCss = readFileSync(resolve(process.cwd(), 'web/styles/sidebar.css'), 'utf8');
     const messagesCss = readFileSync(resolve(process.cwd(), 'web/styles/chat-messages.css'), 'utf8');
@@ -253,5 +253,91 @@ describe('Session message quote UI wiring', () => {
       wrapper.get('.message-user-block').element,
     ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     wrapper.unmount();
+
+    const chatStore = Vue.reactive({
+      activeConversationId: 'conversation-1',
+      btwMode: false,
+      compactStatus: null,
+      currentAgent: 'agent-1',
+      currentConversation: 'conversation-1',
+      currentView: 'chat',
+      customExpertRoles: [],
+      expertSelections: [],
+      inputDrafts: {},
+      isProcessing: false,
+      slashCommandDescriptions: {},
+      yeaftActiveSessionFilter: null,
+    });
+    globalThis.Pinia = {
+      ...(globalThis.Pinia || {}),
+      useAuthStore: () => ({}),
+      useChatStore: () => chatStore,
+      useSessionsStore: () => ({ activeSessionId: null, sessions: {} }),
+      useVpStore: () => ({ vpList: [] }),
+    };
+    window.Pinia = globalThis.Pinia;
+
+    const { default: ChatInput } = await import('../../web/components/ChatInput.js');
+    const inputWrapper = mount(ChatInput, {
+      props: { showStop: true, workItemFn: vi.fn() },
+      global: {
+        mocks: { $t: key => key },
+        stubs: { VpMentionAutocomplete: true },
+      },
+    });
+
+    const composer = inputWrapper.get('.chat-composer');
+    const textarea = composer.get('textarea');
+    const actionRow = composer.get('.chat-composer-actions');
+    const startActions = actionRow.get('.chat-composer-actions-start');
+    const endActions = actionRow.get('.chat-composer-actions-end');
+
+    expect(textarea.attributes('rows')).toBe('3');
+    expect(actionRow.element.parentElement).toBe(composer.element);
+    expect(textarea.element.compareDocumentPosition(actionRow.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(startActions.findAll('.attach-btn')).toHaveLength(1);
+    expect(startActions.findAll('.work-item-draft-btn')).toHaveLength(1);
+    expect(endActions.findAll('.send-btn')).toHaveLength(2);
+    expect([...composer.element.children].filter(child => child.matches('.attach-btn, .work-item-draft-btn, .send-btn'))).toHaveLength(0);
+
+    chatStore.btwMode = true;
+    await Vue.nextTick();
+    expect(inputWrapper.get('.chat-composer-actions-start .btw-input-tag').text()).toBe('BTW');
+    expect(inputWrapper.find('.chat-composer-actions-start .attach-btn').exists()).toBe(false);
+    expect(inputWrapper.find('.chat-composer-actions-start .work-item-draft-btn').exists()).toBe(false);
+    expect(inputWrapper.findAll('.chat-composer-actions-end .send-btn')).toHaveLength(2);
+
+    const inputCss = readFileSync(resolve(process.cwd(), 'web/styles/chat-input.css'), 'utf8');
+    const variablesCss = readFileSync(resolve(process.cwd(), 'web/styles/variables.css'), 'utf8');
+    const darkThemeStart = variablesCss.indexOf('[data-theme="dark"]');
+    const lightThemeTokens = variablesCss.slice(variablesCss.indexOf(':root {'), darkThemeStart);
+    const darkThemeTokens = variablesCss.slice(darkThemeStart);
+    const composerTokens = [
+      '--chat-composer-gap: 8px;',
+      '--chat-composer-control-gap: 4px;',
+      '--chat-composer-padding: 12px;',
+      '--chat-composer-radius: 18px;',
+      '--chat-composer-focus-ring-width: 2px;',
+      '--chat-composer-textarea-min-height: 4.5em;',
+      '--chat-composer-control-size: 32px;',
+    ];
+
+    expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*flex-direction:\s*column/);
+    expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*gap:\s*var\(--chat-composer-gap\)/);
+    expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*padding:\s*var\(--chat-composer-padding\)/);
+    expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*border-radius:\s*var\(--chat-composer-radius\)/);
+    expect(inputCss).toMatch(/\.input-wrapper\.chat-composer:focus-within\s*\{[^}]*var\(--chat-composer-focus-ring-width\)/);
+    expect(inputCss).toMatch(/\.chat-composer textarea\s*\{[^}]*min-height:\s*var\(--chat-composer-textarea-min-height\)/);
+    expect(inputCss).toMatch(/\.chat-composer-actions\s*\{[^}]*justify-content:\s*space-between/);
+    expect(inputCss).toMatch(/\.chat-composer-actions\s*\{[^}]*gap:\s*var\(--chat-composer-gap\)/);
+    expect(inputCss).toMatch(/\.chat-composer-actions-start,[\s\S]*?gap:\s*var\(--chat-composer-control-gap\)/);
+    expect(inputCss).toMatch(/\.chat-composer \.send-btn\s*\{[^}]*width:\s*var\(--chat-composer-control-size\)/);
+    expect(inputCss).toMatch(/\.chat-composer \.send-btn\s*\{[^}]*height:\s*var\(--chat-composer-control-size\)/);
+    for (const token of composerTokens) {
+      expect(lightThemeTokens).toContain(token);
+      expect(darkThemeTokens).toContain(token);
+    }
+    inputWrapper.unmount();
   });
+
 });
