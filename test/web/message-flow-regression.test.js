@@ -187,6 +187,9 @@ describe('message flow regressions', () => {
     const darkThemeVariables = variables.match(/\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/)?.[1] || '';
     expect(sidebarCss).toMatch(/\.unread-dot\s*\{[^}]*background:\s*var\(--success\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-actions\s*\{[^}]*padding:\s*6px 8px 4px/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section\s*\{[^}]*padding:\s*0 8px 10px/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section \+ \.sidebar-section\s*\{[^}]*margin-top:\s*0/);
+    expect(yeaftSidebarCss).not.toMatch(/\.sidebar-section\s*\{[^}]*padding:\s*[1-9][\d.]*px[^}]*\}/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\s*\{[^}]*background:\s*transparent/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-title-text\s*\{[^}]*flex:\s*1[^}]*text-overflow:\s*ellipsis/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-unread\s*\{[^}]*background:\s*var\(--success\)/);
