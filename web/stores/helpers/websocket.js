@@ -163,6 +163,15 @@ export function connect(store) {
   store.serverEncryptionRequired = true;
   store.chatHistoryRequestIdSupported = null;
   store.chatHistoryConnectionGeneration = Number(store.chatHistoryConnectionGeneration || 0) + 1;
+  for (const [requestId, request] of Object.entries(store.projectMutationRequests || {})) {
+    request?.resolve?.({
+      ok: false,
+      requestId,
+      error: { code: 'connection_changed' },
+    });
+  }
+  store.projectMutationRequests = {};
+  store.sessionProjects = [];
   for (const [catalogKey, request] of Object.entries(store.chatHistoryRequests || {})) {
     if (!request?.loading) continue;
     store.chatHistoryRequests[catalogKey] = {

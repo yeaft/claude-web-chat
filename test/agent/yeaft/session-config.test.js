@@ -104,6 +104,33 @@ describe('Yeaft session-scoped model config', () => {
     writeFileSync(join(siblingSummary, 'summary.zh.md'), '共享发布决策\n');
     expect(await __testHooks.sharedProjectContext(root, 'session-a', { language: 'zh' }))
       .toBe('[Session session-b]\n共享发布决策');
+    expect(await __testHooks.sharedProjectContext(root, 'session-a', {
+      language: 'zh',
+      sessionIds: [],
+    })).toBe('');
+    expect(__testHooks.normalizeProjectContext({
+      projectId: beta.id,
+      projectName: 'Beta',
+      sessionIds: ['session-a', 'session-b', 'session-b'],
+    }, 'session-a')).toEqual({
+      projectId: beta.id,
+      projectName: 'Beta',
+      sessionIds: ['session-b'],
+    });
+    expect(__testHooks.buildProjectSharedBlock({
+      projectId: beta.id,
+      projectName: 'Beta',
+      sessionIds: [],
+    })).toContain(`Project: Beta (${beta.id})`);
+    expect(__testHooks.buildProjectSharedBlock({
+      projectId: beta.id,
+      projectName: 'Beta',
+      sessionIds: ['session-b'],
+    }, '[Session session-b]\n共享发布决策')).toContain('this Project on this Agent only');
+    expect(await __testHooks.sharedProjectContext(root, 'session-outside', {
+      language: 'zh',
+      sessionIds: ['session-b'],
+    })).toBe('[Session session-b]\n共享发布决策');
     rmSync(join(siblingSummary, 'summary.zh.md'));
     writeFileSync(join(siblingSummary, 'summary.md'), 'English fallback decision\n');
     expect(await __testHooks.sharedProjectContext(root, 'session-a', { language: 'zh' }))

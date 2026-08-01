@@ -23,6 +23,7 @@
  * @property {object} [config] — engine config
  * @property {import('../tasks/manager.js').TaskManager} [taskManager] — Session task manager
  * @property {string} [sessionId] — current Session id
+ * @property {string[]} [projectSessionIds] — same-Agent sibling Session ids in the current Project
  * @property {string} [threadId] — current Session thread id
  * @property {string} [currentVpId] — R6: VP id of the caller (set in multi-VP groups)
  * @property {string} [currentGroupId] — R6: group id of the caller's RoleInstance

@@ -1047,6 +1047,8 @@
   position: fixed;
   right: auto;
   margin-top: 0;
+  min-width: 0;
+  overflow-y: auto;
   z-index: 1000;
 }
 

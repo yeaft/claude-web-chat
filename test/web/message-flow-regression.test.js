@@ -10,7 +10,10 @@ import {
   finishStreamingForConversation,
   maxDbMessageId,
 } from '../../web/stores/helpers/messages.js';
-import UnifiedSessionList from '../../web/components/UnifiedSessionList.js';
+import {
+  calculateFloatingMenuPosition,
+  default as UnifiedSessionList,
+} from '../../web/components/UnifiedSessionList.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
 import WorkCenterPage from '../../web/components/WorkCenterPage.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
@@ -189,7 +192,10 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-unread\s*\{[^}]*background:\s*var\(--success\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\[draggable="true"\][^}]*\{[^}]*cursor:\s*default/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-create\s*\{[^}]*background:\s*var\(--bg-input-wrapper\)/);
-    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-menu-divider\s*\{[^}]*background:\s*var\(--border-light\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-results\s*\{[^}]*display:\s*flex[^}]*overflow:\s*hidden/);
+    expect(yeaftSidebarCss).toMatch(/\.projects-section, \.recents-section\s*\{[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-menu-info\s*\{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/);
+    expect(yeaftSidebarCss).not.toContain('.sidebar-session-menu-divider');
     expect(vpAvatarSource).not.toContain('/assets/avatars/');
     expect(vpAvatarSource).not.toContain('<img');
     expect(vpCss).not.toContain('.vp-avatar-img');
@@ -262,13 +268,24 @@ describe('message flow regressions', () => {
           { id: 'agent-b', name: 'Agent B', online: false },
         ],
         projects: [
-          { id: 'project-same', agentId: 'user_1770305719:server-instance', name: 'Online project', sessionIds: ['pinned'] },
-          { id: 'project-same', agentId: 'agent-b', name: 'Offline project', sessionIds: [] },
+          {
+            id: 'project-shared',
+            name: 'Shared project',
+            members: [
+              { agentId: 'user_1770305719:server-instance', sessionId: 'pinned' },
+              { agentId: 'agent-b', sessionId: 'offline' },
+            ],
+          },
+          { id: 'project-empty', name: 'Empty project', members: [] },
         ],
       },
       global: { mocks: { $t: key => key } },
     });
     expect(sidebar.findAll('.sidebar-primary-actions')).toHaveLength(1);
+    expect(sidebar.get('.sidebar-navigation').element.children[0].classList).toContain('sidebar-primary-actions');
+    expect(sidebar.get('.sidebar-navigation').element.children[1].classList).toContain('sidebar-session-results');
+    expect(sidebar.get('.sidebar-session-results').element.children[0].classList).toContain('projects-section');
+    expect(sidebar.get('.sidebar-session-results').element.children[1].classList).toContain('recents-section');
     expect(sidebar.find('input[type="search"]').exists()).toBe(false);
     expect(sidebar.findAll('.sidebar-tool-button')).toHaveLength(1);
     expect(sidebar.findAll('.sidebar-section')).toHaveLength(2);
@@ -281,8 +298,8 @@ describe('message flow regressions', () => {
     expect(Object.fromEntries(sidebar.findAll('.sidebar-project').map(item => [
       item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
       item.get('.sidebar-project-count').text(),
-    ]))).toEqual({ 'Online project': '1', 'Offline project': '0' });
-    expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(1);
+    ]))).toEqual({ 'Shared project': '1', 'Empty project': '0' });
+    expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(2);
     expect(sidebar.get('.session-dots-btn').attributes('aria-label')).toBe('sidebar.projects.menu');
 
     await sidebar.get('.sidebar-tool-button').trigger('click');
@@ -305,7 +322,6 @@ describe('message flow regressions', () => {
     expect(dispatchProjectAction).toHaveBeenCalledWith({
       action: 'create',
       name: 'Workspace',
-      agentId: 'agent-a',
     });
     finishCreate({ ok: true });
     await Promise.all([firstCreate, duplicateCreate]);
@@ -319,7 +335,7 @@ describe('message flow regressions', () => {
     expect(Object.fromEntries(sidebar.findAll('.sidebar-project').map(item => [
       item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
       item.get('.sidebar-project-count').text(),
-    ]))).toEqual({ 'Online project': '1', 'Offline project': '0' });
+    ]))).toEqual({ 'Shared project': '1', 'Empty project': '0' });
     await projectToggles[0].trigger('click');
     expect(sidebar.get('.session-dots-btn svg path').attributes('d')).toContain('M6 10');
     expect(sidebar.text()).toContain('Visible');
@@ -347,42 +363,49 @@ describe('message flow regressions', () => {
     expect(firstRow.attributes('tabindex')).toBe('0');
     expect(UnifiedSessionList.methods.providerLabel({ runtimeProvider: 'claude-code' })).toBe('Claude');
     expect(sidebar.text()).not.toContain('user_1770305719');
-    expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(1);
+    expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(2);
     expect(sidebar.findAll('.session-item .session-dots-btn')).toHaveLength(3);
+    expect(sidebar.get('.sidebar-session-results').attributes('class')).toContain('sidebar-session-results');
     const selectCountBeforeSettingsKeyboard = sidebar.emitted('select')?.length || 0;
     const pinnedSettingsButton = firstRow.get('.session-dots-btn');
     await pinnedSettingsButton.trigger('keydown', { key: 'Enter' });
     expect(sidebar.emitted('select')?.length || 0).toBe(selectCountBeforeSettingsKeyboard);
-    expect(sidebar.find('.session-menu').exists()).toBe(false);
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
+    Object.defineProperty(pinnedSettingsButton.element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 740, bottom: 764, left: 980, right: 1004, width: 24, height: 24 }),
+    });
     await pinnedSettingsButton.trigger('click');
-    expect(sidebar.find('.session-menu').exists()).toBe(true);
+    const teleportedMenu = document.body.querySelector('.session-menu-floating');
+    expect(teleportedMenu).not.toBeNull();
+    expect(sidebar.find('.session-menu').exists()).toBe(false);
+    expect(document.body.querySelectorAll('.session-menu-floating')).toHaveLength(1);
     await pinnedSettingsButton.trigger('keydown', { key: ' ' });
     expect(sidebar.emitted('select')?.length || 0).toBe(selectCountBeforeSettingsKeyboard);
-    expect(sidebar.find('.session-menu').exists()).toBe(true);
-    expect(sidebar.get('.sidebar-session-menu-info').text()).toContain('server');
-    expect(sidebar.get('.sidebar-session-menu-info').text()).toContain('Yeaft');
-    expect(sidebar.find('.sidebar-session-menu-divider').exists()).toBe(true);
-    const settingsAction = sidebar.findAll('.session-menu-item')
-      .find(item => item.text() === 'yeaft.session.openSettings');
+    expect(document.body.querySelector('.session-menu-floating')).not.toBeNull();
+    const runtimeFooter = document.body.querySelector('.sidebar-session-menu-info');
+    expect(runtimeFooter.textContent).toContain('server');
+    expect(runtimeFooter.textContent).toContain('Yeaft');
+    expect(runtimeFooter.querySelectorAll('strong')).toHaveLength(2);
+    expect(runtimeFooter.querySelectorAll('span')).toHaveLength(0);
+    expect(runtimeFooter.textContent).not.toContain('sidebar.sessions.agent');
+    expect(runtimeFooter.textContent).not.toContain('sidebar.sessions.provider');
+    expect(sidebar.find('.sidebar-session-menu-divider').exists()).toBe(false);
+    const settingsAction = [...document.body.querySelectorAll('.session-menu-item')]
+      .find(item => item.textContent === 'yeaft.session.openSettings');
     expect(settingsAction).toBeTruthy();
-    await settingsAction.trigger('click');
+    settingsAction.click();
+    await Vue.nextTick();
     expect(sidebar.emitted('action').at(-1)[0]).toMatchObject({
       action: 'settings',
       row: { catalogKey: 'yeaft:user_1770305719:server-instance:pinned' },
     });
     await sidebar.get('.sidebar-project-toggle').trigger('click');
-    const pinnedRecentRow = sidebar.findAll('.session-item')
-      .find(item => item.text().includes('Pinned'));
-    expect(pinnedRecentRow).toBeTruthy();
-    await pinnedRecentRow.get('.session-dots-btn').trigger('click');
-    const recentSettingsAction = sidebar.findAll('.session-menu-item')
-      .find(item => item.text() === 'yeaft.session.openSettings');
-    expect(recentSettingsAction).toBeTruthy();
-    await recentSettingsAction.trigger('click');
-    expect(sidebar.emitted('action').at(-1)[0]).toMatchObject({
-      action: 'settings',
-      row: { catalogKey: 'yeaft:user_1770305719:server-instance:pinned' },
-    });
+    expect(sidebar.findAll('.recents-section .session-item').some(item => item.text().includes('Pinned'))).toBe(false);
+    expect(sidebar.findAll('.recents-section .session-item').map(item => item.text())).toEqual([
+      expect.stringContaining('Visible 2'),
+      expect.stringContaining('Visible'),
+    ]);
     await sidebar.get('.sidebar-primary-action').trigger('click');
     expect(sidebar.emitted('close-work-center').at(-1)).toEqual([]);
     expect(sidebar.emitted('create').at(-1)).toEqual([]);
@@ -417,11 +440,12 @@ describe('message flow regressions', () => {
     const originalConfirm = window.confirm;
     window.prompt = vi.fn();
     window.confirm = vi.fn();
-    UnifiedSessionList.methods.renameProject.call(sidebar.vm, { id: 'project-same', agentId: 'agent-b', name: 'Offline project' });
-    UnifiedSessionList.methods.deleteProject.call(sidebar.vm, { id: 'project-same', agentId: 'agent-b', name: 'Offline project' });
+    UnifiedSessionList.methods.renameProject.call(sidebar.vm, { id: 'project-shared', name: 'Shared project' });
+    expect(window.prompt).toHaveBeenCalledTimes(1);
+    UnifiedSessionList.methods.deleteProject.call(sidebar.vm, { id: 'project-shared', name: 'Shared project' });
+    expect(window.confirm).toHaveBeenCalledTimes(1);
     UnifiedSessionList.methods.runAction.call(sidebar.vm, 'rename', catalogRows[1]);
-    expect(window.prompt).not.toHaveBeenCalled();
-    expect(window.confirm).not.toHaveBeenCalled();
+    expect(window.prompt).toHaveBeenCalledTimes(1);
     if (originalPrompt) window.prompt = originalPrompt;
     else delete window.prompt;
     if (originalConfirm) window.confirm = originalConfirm;
@@ -431,31 +455,177 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).toContain(':key="row.catalogKey"');
     expect(UnifiedSessionList.emits).toContain('project-action');
     expect(UnifiedSessionList.template).toContain('sidebar-project-header');
-    expect(UnifiedSessionList.template).toContain("runAction('pin', row)");
-    expect(UnifiedSessionList.template).toContain("runAction('settings', row)");
-    expect(UnifiedSessionList.template).toContain("moveRow(row, project)");
+    expect(UnifiedSessionList.template).toContain("runAction('pin', floatingMenu.row)");
+    expect(UnifiedSessionList.template).toContain("runAction('settings', floatingMenu.row)");
+    expect(UnifiedSessionList.template).toContain("moveRow(floatingMenu.row, project)");
     expect(UnifiedSessionList.template).toContain('sidebar-primary-actions');
+    expect(UnifiedSessionList.template).toContain('projects-section');
+    expect(UnifiedSessionList.template).toContain('recents-section');
+    expect(UnifiedSessionList.template).not.toContain('sidebar-session-menu-divider');
     expect(UnifiedSessionList.template).not.toContain('sidebar-session-meta');
     expect(UnifiedSessionList.template).toContain('processing-dot');
+    const bottomRightMenu = calculateFloatingMenuPosition(
+      { top: 740, bottom: 764, left: 980, right: 1004 },
+      { width: 220, height: 240 },
+      { width: 1024, height: 768 },
+    );
+    expect(bottomRightMenu).toEqual({
+      top: 496,
+      left: 784,
+      width: 220,
+      maxHeight: 240,
+      placement: 'above',
+    });
+    const leftCollisionMenu = calculateFloatingMenuPosition(
+      { top: 20, bottom: 44, left: -20, right: 4 },
+      { width: 220, height: 80 },
+      { width: 200, height: 300 },
+    );
+    expect(leftCollisionMenu.left).toBe(8);
+    expect(leftCollisionMenu.width).toBe(184);
     const documentAdd = vi.spyOn(document, 'addEventListener');
     const documentRemove = vi.spyOn(document, 'removeEventListener');
+    const windowAdd = vi.spyOn(window, 'addEventListener');
+    const windowRemove = vi.spyOn(window, 'removeEventListener');
     sidebar.unmount();
     const lifecycleSidebar = mount(UnifiedSessionList, {
+      attachTo: document.body,
       props: { sessions: catalogRows, agents: [{ id: 'agent-a', online: true }] },
       global: { mocks: { $t: key => key } },
     });
     expect(documentAdd).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
     expect(documentAdd).toHaveBeenCalledWith('keydown', expect.any(Function));
+    expect(windowAdd).toHaveBeenCalledWith('resize', expect.any(Function));
+    expect(windowAdd).toHaveBeenCalledWith('scroll', expect.any(Function), true);
     await lifecycleSidebar.find('.session-dots-btn').trigger('click');
-    expect(lifecycleSidebar.find('.session-menu').exists()).toBe(true);
+    expect(document.body.querySelector('.session-menu-floating')).not.toBeNull();
+    expect(lifecycleSidebar.find('.session-menu').exists()).toBe(false);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     await Vue.nextTick();
-    expect(lifecycleSidebar.find('.session-menu').exists()).toBe(false);
+    expect(document.body.querySelector('.session-menu-floating')).toBeNull();
     lifecycleSidebar.unmount();
     expect(documentRemove).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
     expect(documentRemove).toHaveBeenCalledWith('keydown', expect.any(Function));
+    expect(windowRemove).toHaveBeenCalledWith('resize', expect.any(Function));
+    expect(windowRemove).toHaveBeenCalledWith('scroll', expect.any(Function), true);
     documentAdd.mockRestore();
     documentRemove.mockRestore();
+    windowAdd.mockRestore();
+    windowRemove.mockRestore();
+
+    const legacyProjectStore = useChatStore();
+    const agentASession = {
+      catalogKey: 'yeaft:agent-a:session-a',
+      runtimeProvider: 'yeaft',
+      routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: 'session-a' },
+      title: 'Agent A session',
+      availability: 'online',
+    };
+    const agentBSession = {
+      catalogKey: 'yeaft:agent-b:session-b',
+      runtimeProvider: 'yeaft',
+      routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-b', sessionId: 'session-b' },
+      title: 'Agent B session',
+      availability: 'online',
+    };
+    legacyProjectStore.sessionCatalog = [agentASession, agentBSession];
+    legacyProjectStore.sessionProjects = [];
+    legacyProjectStore.applyLegacyProjectSnapshot([{
+      id: 'legacy-a',
+      name: 'Agent A legacy',
+      sessionIds: [],
+    }], 'agent-a');
+    legacyProjectStore.applyLegacyProjectSnapshot([{
+      id: 'legacy-b',
+      name: 'Agent B legacy',
+      sessionIds: [],
+    }], 'agent-b');
+    legacyProjectStore.applySessionCatalogSnapshot(legacyProjectStore.sessionCatalog, [
+      ...legacyProjectStore.sessionProjects,
+      { id: 'server-project', name: 'Server project', members: [] },
+    ]);
+    const mutateProject = vi.fn(() => Promise.resolve({ ok: true }));
+    legacyProjectStore.mutateProject = mutateProject;
+    const previousUseChatStore = globalThis.Pinia.useChatStore;
+    globalThis.Pinia.useChatStore = () => legacyProjectStore;
+    const compatibilitySidebar = mount(UnifiedSessionList, {
+      attachTo: document.body,
+      props: {
+        sessions: [agentASession, agentBSession],
+        agents: [
+          { id: 'agent-a', online: true },
+          { id: 'agent-b', online: true },
+        ],
+      },
+      global: {
+        mocks: {
+          $t: (key, values) => values?.name ? `${key}:${values.name}` : key,
+        },
+      },
+    });
+    const agentARow = compatibilitySidebar.findAll('.recents-section .session-item')
+      .find(item => item.text().includes('Agent A session'));
+    expect(agentARow).toBeTruthy();
+    const agentAMenuButton = agentARow.get('.session-dots-btn');
+    Object.defineProperty(agentAMenuButton.element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 20, bottom: 44, left: 180, right: 204, width: 24, height: 24 }),
+    });
+    await agentAMenuButton.trigger('click');
+    const moveTargets = [...document.body.querySelectorAll('.session-menu-floating .session-menu-item')]
+      .map(item => item.textContent);
+    expect(moveTargets).toContain('sidebar.projects.moveTo:Agent A legacy');
+    expect(moveTargets).toContain('sidebar.projects.moveTo:Server project');
+    expect(moveTargets).not.toContain('sidebar.projects.moveTo:Agent B legacy');
+
+    const agentALegacyProject = legacyProjectStore.sessionProjects
+      .find(project => project.legacyAgentId === 'agent-a');
+    const agentBLegacyProject = legacyProjectStore.sessionProjects
+      .find(project => project.legacyAgentId === 'agent-b');
+    const serverProject = legacyProjectStore.sessionProjects
+      .find(project => project.id === 'server-project');
+    expect(compatibilitySidebar.vm.projectMoveTargets(agentASession).map(project => project.id)).toEqual([
+      agentALegacyProject.id,
+      serverProject.id,
+    ]);
+    const emittedBeforeRejectedMoves = compatibilitySidebar.emitted('project-action')?.length || 0;
+    expect(compatibilitySidebar.vm.moveRow(agentASession, agentBLegacyProject)).toBe(false);
+    expect(compatibilitySidebar.vm.dispatchProjectAction({
+      action: 'move-session',
+      row: agentASession,
+      project: agentBLegacyProject,
+    })).toBe(false);
+    expect(mutateProject).not.toHaveBeenCalled();
+    expect(compatibilitySidebar.emitted('project-action')?.length || 0).toBe(emittedBeforeRejectedMoves);
+
+    compatibilitySidebar.vm.draggedRow = agentASession;
+    compatibilitySidebar.vm.dragTargetProjectId = agentALegacyProject.id;
+    const rejectedDragOver = { preventDefault: vi.fn(), dataTransfer: { dropEffect: 'none' } };
+    compatibilitySidebar.vm.dragOverProject(agentBLegacyProject, rejectedDragOver);
+    expect(rejectedDragOver.preventDefault).not.toHaveBeenCalled();
+    expect(compatibilitySidebar.vm.dragTargetProjectId).toBeNull();
+    const rejectedDrop = { preventDefault: vi.fn() };
+    compatibilitySidebar.vm.dropOnProject(agentBLegacyProject, rejectedDrop);
+    expect(rejectedDrop.preventDefault).toHaveBeenCalledOnce();
+    expect(mutateProject).not.toHaveBeenCalled();
+    expect(compatibilitySidebar.vm.draggedRow).toBeNull();
+
+    await compatibilitySidebar.vm.moveRow(agentASession, agentALegacyProject);
+    expect(mutateProject).toHaveBeenLastCalledWith('move_session', {
+      sessionId: 'session-a',
+      projectId: 'legacy-a',
+    }, 'agent-a');
+    await compatibilitySidebar.vm.moveRow(agentASession, serverProject);
+    expect(mutateProject).toHaveBeenLastCalledWith('move_session', {
+      sessionId: 'session-a',
+      projectId: 'server-project',
+    }, 'agent-a');
+    expect(mutateProject).toHaveBeenCalledTimes(2);
+    compatibilitySidebar.unmount();
+    if (previousUseChatStore) globalThis.Pinia.useChatStore = previousUseChatStore;
+    else delete globalThis.Pinia.useChatStore;
+    storeFactories.delete('chat');
+
     const fallbackWorkCenter = mount(SidebarWorkCenter, {
       props: { agents: [] },
       global: { mocks: { $t: key => key } },

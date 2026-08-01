@@ -241,6 +241,37 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_session_ui_metadata_user_sort
     ON session_ui_metadata(user_id, pinned DESC, sort_rank ASC);
+
+  -- Projects are user-owned organization metadata. Membership keeps the full
+  -- Agent + Session identity because Session ids are only unique per Agent.
+  CREATE TABLE IF NOT EXISTS yeaft_projects (
+    id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, id)
+  );
+  CREATE TABLE IF NOT EXISTS yeaft_project_sessions (
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, agent_id, session_id),
+    FOREIGN KEY (user_id, project_id) REFERENCES yeaft_projects(user_id, id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_yeaft_projects_user_sort
+    ON yeaft_projects(user_id, sort_order ASC, created_at ASC);
+  CREATE INDEX IF NOT EXISTS idx_yeaft_project_sessions_project
+    ON yeaft_project_sessions(user_id, project_id, agent_id);
+  CREATE TABLE IF NOT EXISTS yeaft_project_imports (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    agent_id TEXT NOT NULL,
+    imported_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, agent_id)
+  );
 `);
 
 try {
@@ -643,6 +674,61 @@ export const stmts = {
 
   deleteSessionUiMetadata: db.prepare(`
     DELETE FROM session_ui_metadata WHERE user_id = ? AND catalog_key = ?
+  `),
+
+  // Project organization metadata. Projects are server-owned and may contain
+  // Sessions from multiple Agents; sharing still filters by agent_id.
+  insertYeaftProject: db.prepare(`
+    INSERT INTO yeaft_projects (id, user_id, name, sort_order, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `),
+  getYeaftProjectsByUser: db.prepare(`
+    SELECT * FROM yeaft_projects WHERE user_id = ? ORDER BY sort_order ASC, created_at ASC
+  `),
+  getYeaftProjectForUser: db.prepare(`
+    SELECT * FROM yeaft_projects WHERE user_id = ? AND id = ?
+  `),
+  updateYeaftProjectName: db.prepare(`
+    UPDATE yeaft_projects SET name = ?, updated_at = ? WHERE user_id = ? AND id = ?
+  `),
+  deleteYeaftProject: db.prepare(`
+    DELETE FROM yeaft_projects WHERE user_id = ? AND id = ?
+  `),
+  getYeaftProjectMembersByUser: db.prepare(`
+    SELECT * FROM yeaft_project_sessions
+    WHERE user_id = ?
+    ORDER BY created_at ASC, agent_id ASC, session_id ASC
+  `),
+  getYeaftProjectForSession: db.prepare(`
+    SELECT p.* FROM yeaft_projects p
+    JOIN yeaft_project_sessions m
+      ON m.user_id = p.user_id AND m.project_id = p.id
+    WHERE m.user_id = ? AND m.agent_id = ? AND m.session_id = ?
+  `),
+  getYeaftProjectMembersForAgent: db.prepare(`
+    SELECT agent_id, session_id FROM yeaft_project_sessions
+    WHERE user_id = ? AND project_id = ? AND agent_id = ?
+    ORDER BY created_at ASC, session_id ASC
+  `),
+  deleteYeaftProjectSessionMembership: db.prepare(`
+    DELETE FROM yeaft_project_sessions
+    WHERE user_id = ? AND agent_id = ? AND session_id = ?
+  `),
+  insertYeaftProjectSessionMembership: db.prepare(`
+    INSERT INTO yeaft_project_sessions
+      (user_id, project_id, agent_id, session_id, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `),
+  deleteYeaftProjectMembershipsForSession: db.prepare(`
+    DELETE FROM yeaft_project_sessions
+    WHERE user_id = ? AND agent_id = ? AND session_id = ?
+  `),
+  getYeaftProjectImport: db.prepare(`
+    SELECT imported_at FROM yeaft_project_imports WHERE user_id = ? AND agent_id = ?
+  `),
+  insertYeaftProjectImport: db.prepare(`
+    INSERT OR IGNORE INTO yeaft_project_imports (user_id, agent_id, imported_at)
+    VALUES (?, ?, ?)
   `),
 
   // Message 操作

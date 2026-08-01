@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
-import { messageDb, yeaftSessionDb } from '../database.js';
+import { messageDb, yeaftProjectDb, yeaftSessionDb } from '../database.js';
+import { transaction } from '../db/connection.js';
 import { broadcastAgentList, broadcastSessionCatalog, forwardToClients, sendToAgent, sendToWebClient } from '../ws-utils.js';
 import { webClients, previewFiles } from '../context.js';
 import { CONFIG } from '../config.js';
@@ -33,6 +34,19 @@ export function decorateYeaftSessionsWithPinned(agentId, sessions) {
   });
 }
 
+function reconcileAuthoritativeSessionSnapshot(ownerId, agentId, sessions) {
+  const rows = Array.isArray(sessions) ? sessions : [];
+  transaction(() => {
+    yeaftSessionDb.reconcileFromSnapshot(ownerId, agentId, rows);
+    yeaftProjectDb.reconcileAgentSessions(
+      ownerId,
+      agentId,
+      rows.map(row => row?.id).filter(Boolean),
+    );
+  })();
+  return rows;
+}
+
 function syncYeaftSessionMetadata(agentId, agent, event) {
   if (!event || typeof event !== 'object') return event;
   const ownerId = agent?.ownerId || null;
@@ -40,7 +54,15 @@ function syncYeaftSessionMetadata(agentId, agent, event) {
   if (event.type === 'session_list_updated') {
     const rows = Array.isArray(event.sessions) ? event.sessions : [];
     try {
-      if (ownerId) yeaftSessionDb.reconcileFromSnapshot(ownerId, agentId, rows);
+      if (ownerId) {
+        reconcileAuthoritativeSessionSnapshot(ownerId, agentId, rows);
+        yeaftProjectDb.importLegacyProjects(
+          ownerId,
+          agentId,
+          event.projects,
+          sessionId => rows.some(row => row?.id === sessionId),
+        );
+      }
     } catch (e) {
       console.warn(`[Server] yeaft session persist failed for agent ${agentId}:`, e?.message || e);
     }
@@ -52,7 +74,7 @@ function syncYeaftSessionMetadata(agentId, agent, event) {
   const sessionId = event.sessionId;
   if (event.ok && op === 'list' && Array.isArray(event.sessions)) {
     try {
-      if (ownerId) yeaftSessionDb.reconcileFromSnapshot(ownerId, agentId, event.sessions);
+      if (ownerId) reconcileAuthoritativeSessionSnapshot(ownerId, agentId, event.sessions);
     } catch (e) {
       console.warn(`[Server] yeaft session list persist failed for agent ${agentId}:`, e?.message || e);
     }
@@ -63,6 +85,7 @@ function syncYeaftSessionMetadata(agentId, agent, event) {
   if (op === 'archive') {
     try {
       yeaftSessionDb.setArchivedForAgent(ownerId, agentId, sessionId, true);
+      yeaftProjectDb.removeSession(ownerId, agentId, sessionId);
     } catch (e) {
       console.warn('[Server] Yeaft Session metadata archive failed:', e?.message || e);
     }
@@ -71,6 +94,7 @@ function syncYeaftSessionMetadata(agentId, agent, event) {
 
   try {
     yeaftSessionDb.deleteForAgent(ownerId, agentId, sessionId);
+    yeaftProjectDb.removeSession(ownerId, agentId, sessionId);
   } catch (e) {
     console.warn('[Server] Yeaft Session metadata cleanup failed:', e?.message || e);
   }
@@ -527,7 +551,14 @@ export async function handleAgentOutput(agentId, agent, msg) {
     case 'yeaft_session_output':
     case 'session_output': {
       const data = hydrateInlinePreviewData(msg.data);
-      const event = syncYeaftSessionMetadata(agentId, agent, msg.event);
+      let event = syncYeaftSessionMetadata(agentId, agent, msg.event);
+      if ((event?.type === 'session_list_updated' || event?.type === 'session_crud_result') && agent.ownerId) {
+        event = {
+          ...event,
+          projects: yeaftProjectDb.listForAgent(agent.ownerId, agentId),
+          projectsAuthoritative: true,
+        };
+      }
       let catalogChanged = false;
       if (event?.type === 'yeaft_status') {
         agent.yeaftStatus = event;
@@ -850,6 +881,8 @@ export async function handleAgentOutput(agentId, agent, msg) {
             type: msg.type,
             agentId: agentId,
             sessions: decoratedSessions,
+            projects: agent.ownerId ? yeaftProjectDb.listForAgent(agent.ownerId, agentId) : [],
+            projectsAuthoritative: true,
           });
         }
       }
@@ -907,7 +940,10 @@ export async function handleAgentOutput(agentId, agent, msg) {
       // probes too: entering Yeaft asks each connected agent for its opened
       // sessions, and that response must carry persisted server-side pin
       // state before it hits the web store.
-      const outboundMsg = syncYeaftSessionMetadata(agentId, agent, msg);
+      const syncedMsg = syncYeaftSessionMetadata(agentId, agent, msg);
+      const outboundMsg = agent.ownerId
+        ? { ...syncedMsg, projects: yeaftProjectDb.listForAgent(agent.ownerId, agentId), projectsAuthoritative: true }
+        : { ...syncedMsg, projects: [], projectsAuthoritative: true };
       // CRUD acknowledgements are not authoritative catalog snapshots. The
       // agent emits session_list_updated after mutations; broadcast only after
       // that reconciliation so create/rename cannot briefly project stale data.

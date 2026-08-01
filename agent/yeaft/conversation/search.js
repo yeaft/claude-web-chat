@@ -152,7 +152,7 @@ function sessionConversationDirs(dir) {
  * @param {string} dir — Yeaft root directory (e.g. ~/.yeaft)
  * @param {string} keyword — search terms
  * @param {number} [limit=10] — max results
- * @param {{telemetry?: {scannedFiles?: number, scannedBytes?: number, scannedMessages?: number}}} [options]
+ * @param {{telemetry?: {scannedFiles?: number, scannedBytes?: number, scannedMessages?: number}, sessionIds?: string[]}} [options]
  * @returns {object[]} — matching messages, newest first
  */
 export function searchMessages(dir, keyword, limit = 10, options = {}) {
@@ -167,18 +167,24 @@ export function searchMessages(dir, keyword, limit = 10, options = {}) {
     telemetry.scannedMessages = 0;
   }
 
-  const conversationDirs = [
-    { dir: join(dir, 'chat'), sessionId: null, kind: 'chat' },
-    ...sessionConversationDirs(dir),
-  ];
+  const requestedSessionIds = Array.isArray(options.sessionIds)
+    ? new Set(options.sessionIds.filter(id => typeof id === 'string' && id.trim()).map(id => id.trim()))
+    : null;
+  const scopedSessionDirs = sessionConversationDirs(dir)
+    .filter(source => !requestedSessionIds || requestedSessionIds.has(source.sessionId));
+  const conversationDirs = requestedSessionIds
+    ? scopedSessionDirs
+    : [{ dir: join(dir, 'chat'), sessionId: null, kind: 'chat' }, ...scopedSessionDirs];
 
   const markdownDirs = [
     ...conversationDirs.flatMap(source => [
       { ...source, dir: join(source.dir, 'messages') },
       { ...source, dir: join(source.dir, 'cold') },
     ]),
-    { dir: join(dir, 'conversation', 'messages'), sessionId: null, kind: 'legacy-conversation' },
-    { dir: join(dir, 'conversation', 'cold'), sessionId: null, kind: 'legacy-conversation' },
+    ...(!requestedSessionIds ? [
+      { dir: join(dir, 'conversation', 'messages'), sessionId: null, kind: 'legacy-conversation' },
+      { dir: join(dir, 'conversation', 'cold'), sessionId: null, kind: 'legacy-conversation' },
+    ] : []),
   ];
   const segmentDirs = conversationDirs.map(source => ({ ...source, dir: join(source.dir, 'segments') }));
 

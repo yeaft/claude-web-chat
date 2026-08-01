@@ -14,7 +14,35 @@ function sortRows(rows) {
 }
 
 function projectIdentityKey(project) {
-  return `${project?.agentId || ''}\u001f${project?.id || ''}`;
+  return project?.id || '';
+}
+
+export function calculateFloatingMenuPosition(triggerRect, menuSize, viewport = {}) {
+  const gap = 4;
+  const padding = 8;
+  const viewportWidth = Math.max(0, Number(viewport.width) || 0);
+  const viewportHeight = Math.max(0, Number(viewport.height) || 0);
+  const width = Math.min(
+    Math.max(160, Number(menuSize?.width) || 0),
+    Math.max(0, viewportWidth - padding * 2),
+  );
+  const desiredHeight = Math.max(0, Number(menuSize?.height) || 0);
+  const below = Math.max(0, viewportHeight - triggerRect.bottom - gap - padding);
+  const above = Math.max(0, triggerRect.top - gap - padding);
+  const placeAbove = below < desiredHeight && above > below;
+  const maxHeight = Math.min(desiredHeight, placeAbove ? above : below);
+  const left = Math.min(
+    Math.max(padding, triggerRect.right - width),
+    Math.max(padding, viewportWidth - padding - width),
+  );
+  const naturalTop = placeAbove
+    ? triggerRect.top - gap - maxHeight
+    : triggerRect.bottom + gap;
+  const top = Math.min(
+    Math.max(padding, naturalTop),
+    Math.max(padding, viewportHeight - padding - maxHeight),
+  );
+  return { top, left, width, maxHeight, placement: placeAbove ? 'above' : 'below' };
 }
 
 export default {
@@ -40,15 +68,22 @@ export default {
       projectCreateOpen: false,
       projectCreateName: '',
       projectCreateSubmitting: false,
+      floatingMenu: null,
+      floatingMenuStyle: {},
+      floatingMenuTrigger: null,
     };
   },
   mounted() {
     document.addEventListener('pointerdown', this.closeMenusFromDocument, true);
     document.addEventListener('keydown', this.closeMenusFromKeyboard);
+    window.addEventListener('resize', this.positionFloatingMenu);
+    window.addEventListener('scroll', this.positionFloatingMenu, true);
   },
   beforeUnmount() {
     document.removeEventListener('pointerdown', this.closeMenusFromDocument, true);
     document.removeEventListener('keydown', this.closeMenusFromKeyboard);
+    window.removeEventListener('resize', this.positionFloatingMenu);
+    window.removeEventListener('scroll', this.positionFloatingMenu, true);
   },
   computed: {
     projectStore() {
@@ -56,16 +91,22 @@ export default {
     },
     projectRows() {
       const projects = this.projects.length > 0 ? this.projects : (this.projectStore?.sessionProjects || []);
-      return [...projects].sort((a, b) => {
-        if (a.agentId !== b.agentId) return String(a.agentId).localeCompare(String(b.agentId));
-        return (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER);
-      });
+      return [...projects].sort((a, b) => (
+        (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER)
+      ));
     },
     projectBySessionKey() {
       const out = new Map();
       for (const project of this.projectRows) {
-        for (const sessionId of project.sessionIds || []) {
-          out.set(`${project.agentId}\u001f${sessionId}`, project);
+        const members = Array.isArray(project.members)
+          ? project.members
+          : (project.agentId
+              ? (project.sessionIds || []).map(sessionId => ({ agentId: project.agentId, sessionId }))
+              : []);
+        for (const member of members) {
+          if (member?.agentId && member?.sessionId) {
+            out.set(`${member.agentId}\u001f${member.sessionId}`, project);
+          }
         }
       }
       return out;
@@ -97,23 +138,67 @@ export default {
         return true;
       }));
     },
-    projectCreateAgentId() {
-      return this.agents.find(agent => agent.id === this.activeRoute?.agentId && agent.online)?.id
-        || this.agents.find(agent => agent.online)?.id
-        || null;
-    },
   },
   methods: {
-    closeMenusFromDocument(event) {
-      if (event?.target?.closest?.('.session-menu, .session-dots-btn')) return;
+    closeMenus() {
       this.openMenuKey = null;
       this.openProjectMenuKey = null;
+      this.floatingMenu = null;
+      this.floatingMenuStyle = {};
+      this.floatingMenuTrigger = null;
+    },
+    closeMenusFromDocument(event) {
+      if (event?.target?.closest?.('.session-menu, .session-dots-btn')) return;
+      this.closeMenus();
     },
     closeMenusFromKeyboard(event) {
       if (event?.key !== 'Escape') return;
-      this.openMenuKey = null;
-      this.openProjectMenuKey = null;
+      this.closeMenus();
       this.cancelProjectCreate();
+    },
+    toggleProjectMenu(project, event) {
+      const key = projectIdentityKey(project);
+      if (this.openProjectMenuKey === key) {
+        this.closeMenus();
+        return;
+      }
+      this.openMenuKey = null;
+      this.openProjectMenuKey = key;
+      this.floatingMenu = { kind: 'project', project };
+      this.floatingMenuTrigger = event?.currentTarget || null;
+      this.$nextTick(this.positionFloatingMenu);
+    },
+    toggleSessionMenu(row, inProject, event) {
+      if (this.openMenuKey === row.catalogKey) {
+        this.closeMenus();
+        return;
+      }
+      this.openProjectMenuKey = null;
+      this.openMenuKey = row.catalogKey;
+      this.floatingMenu = { kind: 'session', row, inProject: inProject === true };
+      this.floatingMenuTrigger = event?.currentTarget || null;
+      this.$nextTick(this.positionFloatingMenu);
+    },
+    positionFloatingMenu() {
+      const trigger = this.floatingMenuTrigger;
+      const menu = this.$refs.floatingMenu;
+      if (!this.floatingMenu || !trigger?.isConnected || !menu) {
+        if (this.floatingMenu && trigger && !trigger.isConnected) this.closeMenus();
+        return;
+      }
+      const position = calculateFloatingMenuPosition(trigger.getBoundingClientRect(), {
+        width: menu.scrollWidth || menu.offsetWidth || 160,
+        height: menu.scrollHeight || menu.offsetHeight || 0,
+      }, {
+        width: document.documentElement.clientWidth || window.innerWidth,
+        height: document.documentElement.clientHeight || window.innerHeight,
+      });
+      this.floatingMenuStyle = {
+        top: `${position.top}px`,
+        left: `${position.left}px`,
+        width: `${position.width}px`,
+        maxHeight: `${position.maxHeight}px`,
+      };
     },
     isActive(row) {
       const route = row?.routeRef;
@@ -149,11 +234,21 @@ export default {
       return this.isAgentOnline(row?.routeRef?.agentId);
     },
     canEditProject(project) {
-      return this.isAgentOnline(project?.agentId);
+      if (!project?.id) return false;
+      return !project.legacyAgentId || this.isAgentOnline(project.legacyAgentId);
     },
     canEditRow(row) {
       if (!row?.routeRef?.agentId || row.availability !== 'online') return false;
       return this.isAgentOnline(row.routeRef.agentId);
+    },
+    canMoveRowToProject(row, project = null) {
+      if (!this.canEditRow(row)) return false;
+      if (!project) return true;
+      if (!this.canEditProject(project)) return false;
+      return !project.legacyAgentId || project.legacyAgentId === row.routeRef.agentId;
+    },
+    projectMoveTargets(row) {
+      return this.projectRows.filter(project => this.canMoveRowToProject(row, project));
     },
     isProjectCollapsed(project) {
       return this.collapsedProjects[projectIdentityKey(project)] === true;
@@ -164,7 +259,7 @@ export default {
         ...this.collapsedProjects,
         [key]: !this.collapsedProjects[key],
       };
-      this.openProjectMenuKey = null;
+      this.closeMenus();
     },
     providerLabel(row) {
       if (row.runtimeProvider === 'yeaft') return 'Yeaft';
@@ -180,7 +275,7 @@ export default {
       this.$emit('create');
     },
     selectRow(row) {
-      this.openMenuKey = null;
+      this.closeMenus();
       if (this.workCenterOpen) this.$emit('close-work-center');
       this.$emit('select', row);
     },
@@ -190,7 +285,7 @@ export default {
       this.selectRow(row);
     },
     runAction(action, row) {
-      this.openMenuKey = null;
+      this.closeMenus();
       if (!this.canEditRow(row)) return;
       if (action === 'rename') {
         const title = window.prompt(this.$t('yeaft.session.renamePrompt', { name: row.title }), row.title);
@@ -202,26 +297,27 @@ export default {
       this.$emit('action', { action: normalizedAction, row });
     },
     dispatchProjectAction(payload) {
-      const ownerAgentId = payload?.agentId || payload?.project?.agentId || payload?.row?.routeRef?.agentId || null;
-      if (!this.isAgentOnline(ownerAgentId)) return false;
+      if (payload?.action === 'move-session'
+          && !this.canMoveRowToProject(payload?.row, payload?.project || null)) return false;
       this.$emit('project-action', payload);
       const store = this.projectStore;
       if (!store?.mutateProject) return true;
       const { action, project, row, name, agentId: explicitAgentId } = payload;
-      const agentId = explicitAgentId || project?.agentId || row?.routeRef?.agentId || store.currentAgent;
+      const agentId = explicitAgentId || row?.routeRef?.agentId || null;
       if (action === 'create') return store.mutateProject('create', { name }, agentId);
-      if (action === 'rename') return store.mutateProject('rename', { projectId: project.id, name }, agentId);
-      if (action === 'delete') return store.mutateProject('delete', { projectId: project.id }, agentId);
+      const projectId = project?.legacyProjectId || project?.id;
+      if (action === 'rename') return store.mutateProject('rename', { projectId, name }, project?.legacyAgentId || agentId);
+      if (action === 'delete') return store.mutateProject('delete', { projectId }, project?.legacyAgentId || agentId);
       if (action === 'move-session' && row?.routeRef?.sessionId) {
         return store.mutateProject('move_session', {
           sessionId: row.routeRef.sessionId,
-          projectId: project?.id || null,
+          projectId: project?.legacyProjectId || project?.id || null,
         }, agentId);
       }
       return false;
     },
     createProject() {
-      if (!this.projectCreateAgentId || this.projectCreateSubmitting) return;
+      if (this.projectCreateSubmitting) return;
       this.projectCreateOpen = true;
       this.projectCreateName = '';
       this.$nextTick(() => this.$refs.projectCreateInput?.focus?.());
@@ -233,11 +329,10 @@ export default {
     },
     async submitProjectCreate() {
       const name = this.projectCreateName.trim();
-      const agentId = this.projectCreateAgentId;
-      if (!name || !agentId || this.projectCreateSubmitting) return;
+      if (!name || this.projectCreateSubmitting) return;
       this.projectCreateSubmitting = true;
       try {
-        const result = await this.dispatchProjectAction({ action: 'create', name, agentId });
+        const result = await this.dispatchProjectAction({ action: 'create', name });
         if (result?.ok !== false) {
           this.projectCreateOpen = false;
           this.projectCreateName = '';
@@ -249,22 +344,22 @@ export default {
     renameProject(project) {
       if (!this.canEditProject(project)) return;
       const name = window.prompt(this.$t('sidebar.projects.renamePrompt'), project.name);
-      this.openProjectMenuKey = null;
+      this.closeMenus();
       if (name?.trim() && name.trim() !== project.name) {
         this.dispatchProjectAction({ action: 'rename', project, name: name.trim() });
       }
     },
     deleteProject(project) {
       if (!this.canEditProject(project)) return;
-      this.openProjectMenuKey = null;
+      this.closeMenus();
       if (window.confirm(this.$t('sidebar.projects.deleteConfirm', { name: project.name }))) {
         this.dispatchProjectAction({ action: 'delete', project });
       }
     },
     moveRow(row, project = null) {
-      this.openMenuKey = null;
-      if (!this.canEditRow(row) || (project && !this.canEditProject(project))) return;
-      this.dispatchProjectAction({ action: 'move-session', row, project });
+      this.closeMenus();
+      if (!this.canMoveRowToProject(row, project)) return false;
+      return this.dispatchProjectAction({ action: 'move-session', row, project });
     },
     startDrag(row, event) {
       if (row.runtimeProvider !== 'yeaft' || !this.canEditRow(row)) return;
@@ -273,16 +368,17 @@ export default {
       event.dataTransfer.setData('text/plain', row.catalogKey);
     },
     dragOverProject(project, event) {
-      if (!this.draggedRow || project.agentId !== this.draggedRow.routeRef?.agentId) return;
+      if (!this.canMoveRowToProject(this.draggedRow, project)) {
+        this.dragTargetProjectId = null;
+        return;
+      }
       event.preventDefault();
       event.dataTransfer.dropEffect = 'move';
       this.dragTargetProjectId = projectIdentityKey(project);
     },
     dropOnProject(project, event) {
       event.preventDefault();
-      if (this.draggedRow && project.agentId === this.draggedRow.routeRef?.agentId) {
-        this.moveRow(this.draggedRow, project);
-      }
+      if (this.canMoveRowToProject(this.draggedRow, project)) this.moveRow(this.draggedRow, project);
       this.finishDrag();
     },
     dragOverRecents(event) {
@@ -313,7 +409,7 @@ export default {
         <section class="sidebar-section projects-section">
           <div class="sidebar-section-heading">
             <span>{{ $t('sidebar.projects.title') }}</span>
-            <button type="button" class="sidebar-tool-button" @click="createProject" :disabled="!projectCreateAgentId || projectCreateOpen" :title="$t('sidebar.projects.new')" :aria-label="$t('sidebar.projects.new')">
+            <button type="button" class="sidebar-tool-button" @click="createProject" :disabled="projectCreateOpen" :title="$t('sidebar.projects.new')" :aria-label="$t('sidebar.projects.new')">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"/></svg>
             </button>
           </div>
@@ -352,13 +448,9 @@ export default {
                 <span v-if="isProjectUnread(project)" class="sidebar-session-unread sidebar-project-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
                 <span class="sidebar-project-count">{{ (rowsByProject.get(projectKey(project)) || []).length }}</span>
               </button>
-              <button v-if="canEditProject(project)" type="button" class="session-dots-btn" :class="{ 'menu-open': openProjectMenuKey === projectKey(project) }" @click.stop="openProjectMenuKey = openProjectMenuKey === projectKey(project) ? null : projectKey(project)" :aria-label="$t('sidebar.projects.menu')">
+              <button v-if="canEditProject(project)" type="button" class="session-dots-btn" :class="{ 'menu-open': openProjectMenuKey === projectKey(project) }" @click.stop="toggleProjectMenu(project, $event)" :aria-label="$t('sidebar.projects.menu')">
                 <svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
               </button>
-              <div v-if="openProjectMenuKey === projectKey(project)" class="session-menu">
-                <button class="session-menu-item" @click.stop="renameProject(project)">{{ $t('sidebar.projects.rename') }}</button>
-                <button class="session-menu-item danger" @click.stop="deleteProject(project)">{{ $t('sidebar.projects.delete') }}</button>
-              </div>
             </div>
             <div v-if="!isProjectCollapsed(project)" class="sidebar-project-sessions">
               <div
@@ -384,19 +476,7 @@ export default {
                   </span>
                 </span>
                 <span v-if="canEditRow(row)" class="session-actions">
-                  <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="openMenuKey = openMenuKey === row.catalogKey ? null : row.catalogKey" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
-                  <div v-if="openMenuKey === row.catalogKey" class="session-menu">
-                    <button class="session-menu-item" @click.stop="runAction('pin', row)">{{ row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin') }}</button>
-                    <button class="session-menu-item" @click.stop="runAction('rename', row)">{{ $t('chat.sidebar.renameConv') }}</button>
-                    <button class="session-menu-item" @click.stop="runAction('settings', row)">{{ $t('yeaft.session.openSettings') }}</button>
-                    <button class="session-menu-item" @click.stop="moveRow(row, null)">{{ $t('sidebar.projects.remove') }}</button>
-                    <button class="session-menu-item danger" @click.stop="runAction('delete', row)">{{ $t('common.delete') }}</button>
-                    <div class="sidebar-session-menu-divider"></div>
-                    <div class="sidebar-session-menu-info">
-                      <span><span>{{ $t('sidebar.sessions.agent') }}</span><strong :title="agentLabel(row)">{{ agentLabel(row) }}</strong></span>
-                      <span><span>{{ $t('sidebar.sessions.provider') }}</span><strong>{{ providerLabel(row) }}</strong></span>
-                    </div>
-                  </div>
+                  <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="toggleSessionMenu(row, true, $event)" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
                 </span>
               </div>
               <div v-if="(rowsByProject.get(projectKey(project)) || []).length === 0" class="sidebar-section-empty">{{ $t('sidebar.projects.noSessions') }}</div>
@@ -429,26 +509,37 @@ export default {
               </span>
             </span>
             <span v-if="canEditRow(row)" class="session-actions">
-              <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="openMenuKey = openMenuKey === row.catalogKey ? null : row.catalogKey" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
-              <div v-if="openMenuKey === row.catalogKey" class="session-menu">
-                <button class="session-menu-item" @click.stop="runAction('pin', row)">{{ row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin') }}</button>
-                <button class="session-menu-item" @click.stop="runAction('rename', row)">{{ $t('chat.sidebar.renameConv') }}</button>
-                <template v-if="row.runtimeProvider === 'yeaft'">
-                  <button class="session-menu-item" @click.stop="runAction('settings', row)">{{ $t('yeaft.session.openSettings') }}</button>
-                  <button v-for="project in projectRows.filter(item => item.agentId === row.routeRef.agentId)" :key="project.id" class="session-menu-item" @click.stop="moveRow(row, project)">{{ $t('sidebar.projects.moveTo', { name: project.name }) }}</button>
-                </template>
-                <button class="session-menu-item danger" @click.stop="runAction('delete', row)">{{ $t('common.delete') }}</button>
-                <div class="sidebar-session-menu-divider"></div>
-                <div class="sidebar-session-menu-info">
-                  <span><span>{{ $t('sidebar.sessions.agent') }}</span><strong :title="agentLabel(row)">{{ agentLabel(row) }}</strong></span>
-                  <span><span>{{ $t('sidebar.sessions.provider') }}</span><strong>{{ providerLabel(row) }}</strong></span>
-                </div>
-              </div>
+              <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="toggleSessionMenu(row, false, $event)" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
             </span>
           </div>
           <div v-if="recentRows.length === 0" class="sidebar-section-empty">{{ $t('sidebar.recents.empty') }}</div>
         </section>
       </div>
+
+      <Teleport to="body">
+        <div v-if="floatingMenu" ref="floatingMenu" class="session-menu session-menu-floating" :style="floatingMenuStyle">
+          <template v-if="floatingMenu.kind === 'project'">
+            <button class="session-menu-item" @click.stop="renameProject(floatingMenu.project)">{{ $t('sidebar.projects.rename') }}</button>
+            <button class="session-menu-item danger" @click.stop="deleteProject(floatingMenu.project)">{{ $t('sidebar.projects.delete') }}</button>
+          </template>
+          <template v-else>
+            <button class="session-menu-item" @click.stop="runAction('pin', floatingMenu.row)">{{ floatingMenu.row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin') }}</button>
+            <button class="session-menu-item" @click.stop="runAction('rename', floatingMenu.row)">{{ $t('chat.sidebar.renameConv') }}</button>
+            <template v-if="floatingMenu.row.runtimeProvider === 'yeaft'">
+              <button class="session-menu-item" @click.stop="runAction('settings', floatingMenu.row)">{{ $t('yeaft.session.openSettings') }}</button>
+              <button v-if="floatingMenu.inProject" class="session-menu-item" @click.stop="moveRow(floatingMenu.row, null)">{{ $t('sidebar.projects.remove') }}</button>
+              <template v-else>
+                <button v-for="project in projectMoveTargets(floatingMenu.row)" :key="project.id" class="session-menu-item" @click.stop="moveRow(floatingMenu.row, project)">{{ $t('sidebar.projects.moveTo', { name: project.name }) }}</button>
+              </template>
+            </template>
+            <button class="session-menu-item danger" @click.stop="runAction('delete', floatingMenu.row)">{{ $t('common.delete') }}</button>
+            <div class="sidebar-session-menu-info">
+              <strong :title="agentLabel(floatingMenu.row)">{{ agentLabel(floatingMenu.row) }}</strong>
+              <strong>{{ providerLabel(floatingMenu.row) }}</strong>
+            </div>
+          </template>
+        </div>
+      </Teleport>
     </nav>
   `,
 };

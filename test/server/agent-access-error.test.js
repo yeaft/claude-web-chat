@@ -2,12 +2,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { CONFIG } from '../../server/config.js';
 import { agents } from '../../server/context.js';
-import { sessionDb, yeaftSessionDb, sessionUiMetadataDb } from '../../server/database.js';
+import { sessionDb, yeaftProjectDb, yeaftSessionDb, sessionUiMetadataDb } from '../../server/database.js';
 import {
   buildSessionCatalog,
   resolveAgentAccessError,
   verifyConversationOwnership,
 } from '../../server/ws-utils.js';
+import { handleAgentOutput } from '../../server/handlers/agent-output.js';
 import { handleClientConversation } from '../../server/handlers/client-conversation.js';
 import { routeSessionPin } from '../../server/handlers/session-pin-router.js';
 
@@ -52,7 +53,7 @@ describe('resolveAgentAccessError', () => {
       return false;
     });
     expect(handled).toBe(true);
-    expect(accessChecks).toEqual(['agent-foreign']);
+    expect(accessChecks).toEqual([]);
     expect(forwarded).toEqual([]);
   });
 
@@ -128,36 +129,112 @@ describe('resolveAgentAccessError', () => {
     }
   });
 
-  it('atomically writes canonical pin metadata without touching a duplicate Yeaft id', () => {
+  it('atomically writes canonical metadata and authoritative Session snapshots', async () => {
     const suffix = `${Date.now()}-${Math.random()}`;
     const userId = `catalog-user-${suffix}`;
     const username = `catalog-${suffix}`;
     const now = Date.now();
     // The production DB module is isolated by the Vitest worker. Use public
     // APIs so this test exercises the same transaction as the handler.
-    return import('../../server/db/connection.js').then(({ default: sql }) => {
-      sql.prepare('INSERT INTO users (id, username, created_at) VALUES (?, ?, ?)').run(userId, username, now);
-      const chatId = `chat-${suffix}`;
-      sessionDb.create(chatId, 'agent-a', 'A', '/tmp', null, 'Chat', userId, 'copilot');
-      sessionUiMetadataDb.applyBatch(userId, [{
-        catalogKey: `chat:${chatId}`,
-        runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: chatId,
-        pinned: true, sortRank: 1,
-      }]);
-      expect(sessionDb.get(chatId).is_pinned).toBe(1);
-      yeaftSessionDb.upsertFromSnapshot(userId, 'agent-a', { id: `same-${suffix}`, name: 'A' });
-      yeaftSessionDb.upsertFromSnapshot(userId, 'agent-b', { id: `same-${suffix}`, name: 'B' });
-      sessionUiMetadataDb.applyBatch(userId, [{
-        catalogKey: `yeaft:agent-a:same-${suffix}`,
-        runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: `same-${suffix}`,
-        pinned: true, sortRank: 0,
-      }]);
-      expect(yeaftSessionDb.getForAgent(userId, 'agent-a', `same-${suffix}`).pinned).toBe(true);
-      expect(yeaftSessionDb.getForAgent(userId, 'agent-b', `same-${suffix}`).pinned).toBe(false);
-      expect(sessionUiMetadataDb.get(userId, `yeaft:agent-a:same-${suffix}`)).toMatchObject({
-        pinned: true, sortRank: 0,
-      });
+    const { default: sql } = await import('../../server/db/connection.js');
+    sql.prepare('INSERT INTO users (id, username, created_at) VALUES (?, ?, ?)').run(userId, username, now);
+    const chatId = `chat-${suffix}`;
+    sessionDb.create(chatId, 'agent-a', 'A', '/tmp', null, 'Chat', userId, 'copilot');
+    sessionUiMetadataDb.applyBatch(userId, [{
+      catalogKey: `chat:${chatId}`,
+      runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: chatId,
+      pinned: true, sortRank: 1,
+    }]);
+    expect(sessionDb.get(chatId).is_pinned).toBe(1);
+    yeaftSessionDb.upsertFromSnapshot(userId, 'agent-a', { id: `same-${suffix}`, name: 'A' });
+    yeaftSessionDb.upsertFromSnapshot(userId, 'agent-b', { id: `same-${suffix}`, name: 'B' });
+    sessionUiMetadataDb.applyBatch(userId, [{
+      catalogKey: `yeaft:agent-a:same-${suffix}`,
+      runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: `same-${suffix}`,
+      pinned: true, sortRank: 0,
+    }]);
+    expect(yeaftSessionDb.getForAgent(userId, 'agent-a', `same-${suffix}`).pinned).toBe(true);
+    expect(yeaftSessionDb.getForAgent(userId, 'agent-b', `same-${suffix}`).pinned).toBe(false);
+    expect(sessionUiMetadataDb.get(userId, `yeaft:agent-a:same-${suffix}`)).toMatchObject({
+      pinned: true, sortRank: 0,
     });
+
+    const project = yeaftProjectDb.create(userId, `Project ${suffix}`);
+    yeaftProjectDb.moveSession(userId, {
+      agentId: 'agent-a', sessionId: `same-${suffix}`, projectId: project.id,
+    });
+    yeaftProjectDb.moveSession(userId, {
+      agentId: 'agent-a', sessionId: `sibling-${suffix}`, projectId: project.id,
+    });
+    yeaftProjectDb.moveSession(userId, {
+      agentId: 'agent-b', sessionId: `foreign-agent-${suffix}`, projectId: project.id,
+    });
+    expect(yeaftProjectDb.list(userId)).toEqual([
+      expect.objectContaining({
+        id: project.id,
+        members: [
+          { agentId: 'agent-a', sessionId: `same-${suffix}` },
+          { agentId: 'agent-a', sessionId: `sibling-${suffix}` },
+          { agentId: 'agent-b', sessionId: `foreign-agent-${suffix}` },
+        ],
+      }),
+    ]);
+    expect(yeaftProjectDb.contextForSession(userId, 'agent-a', `same-${suffix}`)).toEqual({
+      projectId: project.id,
+      projectName: `Project ${suffix}`,
+      sessionIds: [`sibling-${suffix}`],
+    });
+    expect(yeaftProjectDb.contextForSession(userId, 'agent-b', `foreign-agent-${suffix}`)).toEqual({
+      projectId: project.id,
+      projectName: `Project ${suffix}`,
+      sessionIds: [],
+    });
+    expect(yeaftProjectDb.listForAgent(userId, 'agent-a')).toEqual([
+      expect.objectContaining({
+        id: project.id,
+        sessionIds: [`same-${suffix}`, `sibling-${suffix}`],
+        members: expect.arrayContaining([
+          { agentId: 'agent-b', sessionId: `foreign-agent-${suffix}` },
+        ]),
+      }),
+    ]);
+
+    const originalReconcileProjectSessions = yeaftProjectDb.reconcileAgentSessions;
+    yeaftProjectDb.reconcileAgentSessions = () => { throw new Error('forced project reconciliation failure'); };
+    try {
+      await handleAgentOutput('agent-a', {
+        ownerId: userId,
+        ws: { readyState: 1 },
+        conversations: new Map(),
+      }, {
+        type: 'session_crud_result',
+        op: 'list',
+        ok: true,
+        sessions: [{ id: `replacement-${suffix}`, name: 'Replacement' }],
+      });
+      expect(yeaftSessionDb.getForAgent(userId, 'agent-a', `same-${suffix}`)).not.toBeNull();
+      expect(yeaftSessionDb.getForAgent(userId, 'agent-a', `replacement-${suffix}`)).toBeUndefined();
+      expect(yeaftProjectDb.contextForSession(userId, 'agent-a', `same-${suffix}`)).toMatchObject({
+        projectId: project.id,
+      });
+    } finally {
+      yeaftProjectDb.reconcileAgentSessions = originalReconcileProjectSessions;
+    }
+
+    await handleAgentOutput('agent-a', {
+      ownerId: userId,
+      ws: { readyState: 1 },
+      conversations: new Map(),
+    }, {
+      type: 'session_crud_result',
+      op: 'list',
+      ok: true,
+      sessions: [],
+    });
+    expect(yeaftSessionDb.getByAgent('agent-a').filter(row => row.userId === userId)).toEqual([]);
+    expect(yeaftProjectDb.list(userId)[0].members).toEqual([
+      { agentId: 'agent-b', sessionId: `foreign-agent-${suffix}` },
+    ]);
   });
 
   it('fails closed when legacy Yeaft pin identity is ambiguous', () => {
