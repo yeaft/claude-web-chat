@@ -289,6 +289,8 @@ describe('Session message quote UI wiring', () => {
     const composer = inputWrapper.get('.chat-composer');
     const textarea = composer.get('textarea');
     const actionRow = composer.get('.chat-composer-actions');
+
+    expect(composer.attributes('data-message-composer')).toBe('');
     const startActions = actionRow.get('.chat-composer-actions-start');
     const endActions = actionRow.get('.chat-composer-actions-end');
 

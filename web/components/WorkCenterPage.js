@@ -1,5 +1,6 @@
 import WorkCenterActionDetail from './WorkCenterActionDetail.js';
 import WorkCenterSettingsModal from './WorkCenterSettingsModal.js';
+import MessageComposer from './MessageComposer.js';
 import LlmTab from './LlmTab.js';
 import ModernSelect from './ModernSelect.js';
 import folderPickerMixin from './mixins/folder-picker-mixin.js';
@@ -25,7 +26,7 @@ function invalidateActionRunOpen(target) {
 
 export default {
   name: 'WorkCenterPage',
-  components: { WorkCenterActionDetail, WorkCenterSettingsModal, LlmTab, ModernSelect },
+  components: { MessageComposer, WorkCenterActionDetail, WorkCenterSettingsModal, LlmTab, ModernSelect },
   mixins: [folderPickerMixin],
   data() {
     return {
@@ -398,7 +399,6 @@ export default {
       this.workItemMessageAttachments = [];
       this.workItemMessageError = '';
       this.workItemMessageSending = false;
-      this.$nextTick(() => this.resizeWorkItemComposer(this.$refs.workItemComposerInput, true));
     },
     detail: {
       deep: true,
@@ -487,17 +487,8 @@ export default {
       if (!value) return '';
       try { return new Date(Number(value)).toLocaleString(); } catch { return ''; }
     },
-    resizeWorkItemComposer(input, reset = false) {
-      if (!input) return;
-      input.style.height = 'auto';
-      const nextHeight = reset ? 24 : Math.min(input.scrollHeight, 144);
-      input.style.height = `${nextHeight}px`;
-      input.style.overflowY = input.scrollHeight > 144 ? 'auto' : 'hidden';
-    },
-    onWorkItemMessageInput(event) {
-      this.workItemMessage = event.target.value;
+    onWorkItemMessageInput() {
       this.saveComposerDraft();
-      this.resizeWorkItemComposer(event.target, !event.target.value);
     },
     onWorkItemMessageKeydown(event) {
       if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
@@ -813,7 +804,7 @@ export default {
       this.staleComposerTarget = null;
       this.saveComposerDraft();
       this.mobileWorkItemPane = 'conversation';
-      this.$nextTick(() => this.$refs.workItemComposerInput?.focus());
+      this.$refs.workItemComposer?.focusInput?.();
     },
     loadEarlierActionMessages() {
       if (!this.selected?.id || !this.selectedAction?.id || this.actionMessagesNextCursor == null) return null;
@@ -1235,7 +1226,6 @@ export default {
           this.workItemMessage = '';
           this.workItemMessageAttachments = [];
           this.store.removeWorkCenterComposerDraft(this.agentId, itemId);
-          this.$nextTick(() => this.resizeWorkItemComposer(this.$refs.workItemComposerInput, true));
         }
       } catch (error) {
         if (this.workItemComposerScope === scope && this.actionInputRequestGeneration === requestGeneration) {
@@ -1552,19 +1542,27 @@ export default {
                             <button type="button" @click="removeWorkItemMessageAttachment(index)" :disabled="composerDraftLocked" :aria-label="tr('workCenter.removeAttachment', 'Remove from draft')">×</button>
                           </span>
                         </div>
-                        <div class="input-wrapper work-center-item-message-input">
-                          <label v-if="workItemAttachmentsSupported" class="attach-btn work-center-attachment-picker" :title="tr('workCenter.addAttachments', 'Add files')">
-                            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
-                            <input type="file" multiple :disabled="composerDraftLocked" :aria-label="tr('workCenter.addAttachments', 'Add files')" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv" @change="onWorkItemMessageAttachmentInput">
-                          </label>
-                          <div class="textarea-wrapper">
-                            <textarea ref="workItemComposerInput" :value="workItemMessage" rows="1" :disabled="composerTargetUnavailable || composerDraftLocked" :placeholder="composerPlaceholder" @input="onWorkItemMessageInput" @keydown="onWorkItemMessageKeydown"></textarea>
-                          </div>
-                          <button class="send-btn" type="button" @click="sendSelectedWorkItemMessage" :disabled="!composerCanSend" :title="$t('workCenter.sendToTarget', { target: composerTargetLabel })" :aria-label="$t('workCenter.sendToTarget', { target: composerTargetLabel })">
-                            <svg v-if="!workItemMessageSending" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-                            <span v-else class="work-center-send-spinner" aria-hidden="true"></span>
-                          </button>
-                        </div>
+                        <MessageComposer
+                          ref="workItemComposer"
+                          v-model="workItemMessage"
+                          class="work-center-item-message-input"
+                          :placeholder="composerPlaceholder"
+                          :disabled="composerTargetUnavailable || composerDraftLocked"
+                          :can-send="composerCanSend"
+                          :sending="workItemMessageSending"
+                          :rows="3"
+                          :send-label="$t('workCenter.sendToTarget', { target: composerTargetLabel })"
+                          @input="onWorkItemMessageInput"
+                          @keydown="onWorkItemMessageKeydown"
+                          @send="sendSelectedWorkItemMessage"
+                        >
+                          <template #start-actions>
+                            <label v-if="workItemAttachmentsSupported" class="attach-btn work-center-attachment-picker" :title="tr('workCenter.addAttachments', 'Add files')">
+                              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
+                              <input type="file" multiple :disabled="composerDraftLocked" :aria-label="tr('workCenter.addAttachments', 'Add files')" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv" @change="onWorkItemMessageAttachmentInput">
+                            </label>
+                          </template>
+                        </MessageComposer>
                         <small v-if="workItemMessageAttachmentsUploading" class="work-center-message-uploading">{{ tr('workCenter.attachmentsUploading', 'Uploading…') }}</small>
                       </template>
                     </section>

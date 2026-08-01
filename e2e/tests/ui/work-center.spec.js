@@ -190,6 +190,30 @@ const WAITING_ITEM_DETAIL = {
   }],
 };
 
+const ACTION_OVERFLOW_DETAIL = structuredClone(OPEN_ITEM_DETAIL);
+ACTION_OVERFLOW_DETAIL.actions[0].status = 'waiting';
+ACTION_OVERFLOW_DETAIL.actions[0].canonicalResult = { waitingReason: `waiting-${'w'.repeat(1200)}` };
+ACTION_OVERFLOW_DETAIL.actions[0].messages = [
+  {
+    id: 'action-overflow-message',
+    role: 'assistant',
+    status: 'completed',
+    speaker: { id: `speaker-${'s'.repeat(1200)}` },
+    text: 'Action overflow probe',
+    attachments: [{ id: 'action-overflow-attachment', name: `attachment-${'a'.repeat(1800)}.txt`, size: 12 }],
+    createdAt: Date.now() - 1,
+    updatedAt: Date.now() - 1,
+  },
+  {
+    id: 'action-overflow-user',
+    role: 'user',
+    status: 'completed',
+    text: 'Keep the correction small.',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  },
+];
+
 function closedWorkItem(status) {
   const suffix = status === 'done' ? 'done' : 'cancelled';
   return {
@@ -512,6 +536,21 @@ async function resizeWorkbenchForMainWidth(page, targetWidth) {
   await page.waitForTimeout(350);
 }
 
+async function expectNoHorizontalOverflow(root, selectors) {
+  const metrics = await root.evaluate((element, targetSelectors) => Object.fromEntries(
+    Object.entries(targetSelectors).map(([name, selector]) => {
+      const target = selector === ':scope' ? element : element.querySelector(selector);
+      return [name, target ? { clientWidth: target.clientWidth, scrollWidth: target.scrollWidth } : null];
+    }),
+  ), selectors);
+  for (const [name, metric] of Object.entries(metrics)) {
+    expect(metric, `${name} overflow probe must exist`).not.toBeNull();
+    expect(metric.scrollWidth, `${name} must not overflow horizontally`)
+      .toBeLessThanOrEqual(metric.clientWidth + 1);
+  }
+  return metrics;
+}
+
 test.describe('Work Center responsive UI', () => {
   test('forwards canonical Work Item messages through the real browser-server-Agent wire', async ({ chatPage, mockAgent }) => {
     mockAgent.__workCenterTransport = null;
@@ -755,11 +794,12 @@ test.describe('Work Center responsive UI', () => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 1920, height: 900 });
     const select = chatPage.locator('.work-center-card').click();
-    await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
+    await respondToWorkCenterOp(mockAgent, 'get', ACTION_OVERFLOW_DETAIL);
     await select;
 
     await chatPage.locator('.work-center-action-summary').click();
-    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
+    const actionPane = chatPage.locator('.work-center-action-detail-pane');
+    await expect(actionPane).toBeVisible();
     await chatPage.locator('.session-sidebar-shell .sidebar-icon-btn[title="Workbench"]').click();
     await expect(chatPage.locator('.workbench-panel')).toHaveClass(/expanded/);
 
@@ -771,6 +811,19 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
     expect(metrics.mainScrollWidth).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
     expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
+    await expectNoHorizontalOverflow(actionPane, {
+      pane: ':scope',
+      transcript: '.work-center-action-transcript',
+      column: '.work-center-action-conversation-column',
+      waiting: '.work-center-action-waiting',
+      waitingText: '.work-center-action-waiting p',
+      messageList: '.work-center-action-message-list',
+      message: '.work-center-action-message',
+      messageHeader: '.work-center-action-message header',
+      speaker: '.work-center-action-message header strong',
+      attachmentList: '.work-center-attachment-list',
+      attachmentChip: '.work-center-attachment-chip',
+    });
 
     await resizeWorkbenchForMainWidth(chatPage, 1200);
     metrics = await layoutMetrics(chatPage);
@@ -781,6 +834,19 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
     expect(metrics.mainScrollWidth).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
     expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
+    await expectNoHorizontalOverflow(actionPane, {
+      pane: ':scope',
+      transcript: '.work-center-action-transcript',
+      column: '.work-center-action-conversation-column',
+      waiting: '.work-center-action-waiting',
+      waitingText: '.work-center-action-waiting p',
+      messageList: '.work-center-action-message-list',
+      message: '.work-center-action-message',
+      messageHeader: '.work-center-action-message header',
+      speaker: '.work-center-action-message header strong',
+      attachmentList: '.work-center-attachment-list',
+      attachmentChip: '.work-center-attachment-chip',
+    });
   });
 
   test('keeps a long Action list reachable in a short workspace', async ({ chatPage, mockAgent }) => {
@@ -1660,20 +1726,10 @@ test.describe('Work Center responsive UI', () => {
   });
 
   test('renders read-only Action content in both themes and preserves the Conversation draft on mobile', async ({ chatPage, mockAgent }) => {
-    const detail = structuredClone(FAILED_ITEM_DETAIL);
-    detail.actions[0].messages = [
-      {
-        id: 'action-1:assistant', role: 'assistant', status: 'completed',
-        text: 'Verified the responsive layout.', createdAt: Date.now() - 1, updatedAt: Date.now() - 1,
-      },
-      {
-        id: 'action-1:user', role: 'user', status: 'completed',
-        text: 'Keep the correction small.', createdAt: Date.now(), updatedAt: Date.now(),
-      },
-    ];
-    await openWorkCenter(chatPage, mockAgent, [FAILED_ITEM]);
+    const detail = structuredClone(ACTION_OVERFLOW_DETAIL);
+    await openWorkCenter(chatPage, mockAgent);
     const select = chatPage.locator('.work-center-card').click();
-    await respondToWorkCenterOp(mockAgent, 'get', detail, [FAILED_ITEM]);
+    await respondToWorkCenterOp(mockAgent, 'get', detail);
     await select;
 
     const workItem = chatPage.locator('.work-center-detail');
@@ -1686,8 +1742,10 @@ test.describe('Work Center responsive UI', () => {
     await expect(pane.locator('textarea')).toHaveCount(0);
     await expect(workItem.locator('textarea')).toHaveCount(1);
     await expect(pane.locator('.work-center-action-message')).toHaveCount(2);
-    await expect(pane).toContainText('Verified the responsive layout.');
+    await expect(pane.locator('.work-center-action-waiting')).toBeVisible();
+    await expect(pane).toContainText('Action overflow probe');
     await expect(pane).toContainText('Keep the correction small.');
+    await expect(pane.locator('.work-center-attachment-chip')).toHaveCount(1);
 
     for (const theme of ['light', 'dark']) {
       await chatPage.evaluate(value => {
@@ -1718,6 +1776,19 @@ test.describe('Work Center responsive UI', () => {
         expect(layout.left).toBeGreaterThanOrEqual(0);
         expect(layout.right).toBeLessThanOrEqual(width + 1);
         expect(layout.scrollWidth).toBeLessThanOrEqual(layout.width + 1);
+        await expectNoHorizontalOverflow(pane, {
+          pane: ':scope',
+          transcript: '.work-center-action-transcript',
+          column: '.work-center-action-conversation-column',
+          waiting: '.work-center-action-waiting',
+          waitingText: '.work-center-action-waiting p',
+          messageList: '.work-center-action-message-list',
+          message: '.work-center-action-message',
+          messageHeader: '.work-center-action-message header',
+          speaker: '.work-center-action-message header strong',
+          attachmentList: '.work-center-attachment-list',
+          attachmentChip: '.work-center-attachment-chip',
+        });
         expect(layout.userText).not.toBe(layout.userBackground);
         expect(layout.userBackground).not.toBe('rgba(0, 0, 0, 0)');
         expect(layout.assistantText).not.toBe(layout.userBackground);
@@ -2131,10 +2202,30 @@ test.describe('Work Center responsive UI', () => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 1400, height: 900 });
     const select = chatPage.locator('.work-center-card').click();
-    await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
+    const longMessage = `unbroken-${'x'.repeat(1200)}`;
+    const longAttachmentName = `attachment-${'x'.repeat(1800)}.txt`;
+    await respondToWorkCenterOp(mockAgent, 'get', {
+      ...OPEN_ITEM_DETAIL,
+      messages: [
+        ...(OPEN_ITEM_DETAIL.messages || []),
+        {
+          id: 'overflow-probe',
+          role: 'assistant',
+          text: longMessage,
+          status: 'completed',
+          attachments: [{ id: 'probe', name: longAttachmentName, size: 12 }],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      ],
+    });
     await select;
 
     const conversation = chatPage.locator('.work-center-conversation');
+    const sharedComposer = conversation.locator('[data-message-composer]');
+    await expect(sharedComposer).toHaveCount(1);
+    await expect(sharedComposer.locator('textarea')).toHaveAttribute('rows', '3');
+    await expect(sharedComposer.locator('.chat-composer-actions')).toBeVisible();
     const upload = chatPage.waitForResponse(response => (
       response.url().includes('/api/upload') && response.request().method() === 'POST'
     ));
@@ -2185,6 +2276,14 @@ test.describe('Work Center responsive UI', () => {
         const layout = detail.querySelector('.work-center-detail-layout');
         const workflow = detail.querySelector('.work-center-workflow');
         const main = detail.querySelector('.work-center-detail-main');
+        const conversation = detail.querySelector('.work-center-conversation');
+        const messageList = detail.querySelector('.work-center-item-message-list');
+        const overflowArticle = messageList.lastElementChild;
+        const renderedAttachmentList = overflowArticle.querySelector('.work-center-message-attachments');
+        const renderedAttachmentChip = renderedAttachmentList.querySelector('.work-center-attachment-chip');
+        const composer = detail.querySelector('[data-message-composer]');
+        const composerActions = composer.querySelector('.chat-composer-actions');
+        const textarea = composer.querySelector('textarea');
         const close = detail.querySelector('.work-center-detail-close');
         const card = detail.querySelector('.work-center-action-card');
         const content = card.querySelector('.work-center-action-content');
@@ -2206,6 +2305,21 @@ test.describe('Work Center responsive UI', () => {
           closeRight: Math.round(detailRect.right - closeRect.right),
           detailScrollWidth: detail.scrollWidth,
           detailClientWidth: detail.clientWidth,
+          mainScrollWidth: main.scrollWidth,
+          mainClientWidth: main.clientWidth,
+          conversationScrollWidth: conversation.scrollWidth,
+          conversationClientWidth: conversation.clientWidth,
+          messageListScrollWidth: messageList.scrollWidth,
+          messageListClientWidth: messageList.clientWidth,
+          articleScrollWidth: overflowArticle.scrollWidth,
+          articleClientWidth: overflowArticle.clientWidth,
+          attachmentListScrollWidth: renderedAttachmentList.scrollWidth,
+          attachmentListClientWidth: renderedAttachmentList.clientWidth,
+          attachmentChipScrollWidth: renderedAttachmentChip.scrollWidth,
+          attachmentChipClientWidth: renderedAttachmentChip.clientWidth,
+          composerScrollWidth: composer.scrollWidth,
+          composerClientWidth: composer.clientWidth,
+          composerActionBelowTextarea: composerActions.getBoundingClientRect().top >= textarea.getBoundingClientRect().bottom,
           documentScrollWidth: document.documentElement.scrollWidth,
           documentClientWidth: document.documentElement.clientWidth,
           workflowBackground: getComputedStyle(workflow).backgroundColor,
@@ -2221,6 +2335,14 @@ test.describe('Work Center responsive UI', () => {
       expect(metrics.distinctLineTops).toBeGreaterThanOrEqual(1);
       expect(metrics.cardHeight).toBeLessThanOrEqual(width === 1400 ? 75 : 110);
       expect(metrics.detailScrollWidth).toBeLessThanOrEqual(metrics.detailClientWidth + 1);
+      expect(metrics.mainScrollWidth).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
+      expect(metrics.conversationScrollWidth).toBeLessThanOrEqual(metrics.conversationClientWidth + 1);
+      expect(metrics.messageListScrollWidth).toBeLessThanOrEqual(metrics.messageListClientWidth + 1);
+      expect(metrics.articleScrollWidth).toBeLessThanOrEqual(metrics.articleClientWidth + 1);
+      expect(metrics.attachmentListScrollWidth).toBeLessThanOrEqual(metrics.attachmentListClientWidth + 1);
+      expect(metrics.attachmentChipScrollWidth).toBeLessThanOrEqual(metrics.attachmentChipClientWidth + 1);
+      expect(metrics.composerScrollWidth).toBeLessThanOrEqual(metrics.composerClientWidth + 1);
+      expect(metrics.composerActionBelowTextarea).toBe(true);
       expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.documentClientWidth + 1);
       expect(metrics.workflowBackground).toBe(metrics.detailBackground);
       expect(metrics.mainBackground).toBe('rgba(0, 0, 0, 0)');
@@ -2232,11 +2354,35 @@ test.describe('Work Center responsive UI', () => {
         expect(metrics.workflowWidth).toBeLessThanOrEqual(600);
         expect(metrics.closeTop).toBe(16);
         expect(metrics.closeRight).toBe(16);
-      } else {
+      } else if (width === 430) {
         expect(metrics.columnCount).toBeGreaterThanOrEqual(1);
         expect(metrics.closeTop).toBe(12);
         expect(metrics.closeRight).toBe(12);
       }
+    }
+
+    for (const { width, theme } of [
+      { width: 1920, theme: 'light' },
+      { width: 1920, theme: 'dark' },
+      { width: 1200, theme: 'light' },
+      { width: 1200, theme: 'dark' },
+    ]) {
+      await chatPage.setViewportSize({ width, height: 900 });
+      await chatPage.evaluate(value => {
+        document.documentElement.setAttribute('data-theme', value);
+        localStorage.setItem('theme', value);
+      }, theme);
+      await chatPage.waitForTimeout(250);
+      await expectNoHorizontalOverflow(chatPage.locator('.work-center-detail'), {
+        detail: ':scope',
+        main: '.work-center-detail-main',
+        conversation: '.work-center-conversation',
+        messageList: '.work-center-item-message-list',
+        article: '.work-center-item-message-list article:last-child',
+        attachmentList: '.work-center-item-message-list article:last-child .work-center-message-attachments',
+        attachmentChip: '.work-center-item-message-list article:last-child .work-center-attachment-chip',
+        composer: '[data-message-composer]',
+      });
     }
   });
 
