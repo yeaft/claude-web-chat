@@ -1,18 +1,28 @@
+import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
 
 export class MockAgent {
   constructor(serverUrl, agentName = 'test-agent') {
     this.serverUrl = serverUrl;
     this.agentName = agentName;
+    this.clientId = `e2e-${randomUUID()}`;
     this.ws = null;
     this.agentId = null;
     this.conversations = new Map();
     this._messageHandlers = [];
     this._receivedMessages = [];
+    this._messageHistory = [];
   }
 
   async connect() {
-    const wsUrl = `${this.serverUrl.replace('http', 'ws')}?type=agent&name=${this.agentName}&workDir=/tmp/test&capabilities=terminal,file_editor,work_center,work_item_attachments`;
+    const params = new URLSearchParams({
+      type: 'agent',
+      id: this.clientId,
+      name: this.agentName,
+      workDir: '/tmp/test',
+      capabilities: 'terminal,file_editor,work_center,work_center_message_v2,work_item_attachments,plaintext-ok',
+    });
+    const wsUrl = `${this.serverUrl.replace('http', 'ws')}?${params}`;
     this.ws = new WebSocket(wsUrl);
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('MockAgent connect timeout')), 5000);
@@ -45,6 +55,7 @@ export class MockAgent {
           });
         }
         this._receivedMessages.push(msg);
+        this._messageHistory.push(msg);
         this._messageHandlers.forEach(h => h(msg));
       });
       this.ws.on('error', reject);
@@ -52,16 +63,39 @@ export class MockAgent {
   }
 
   async disconnect() {
-    if (this.ws) {
-      this.ws.removeAllListeners();
-      this.ws.close();
-      this.ws = null;
+    const ws = this.ws;
+    if (!ws) return;
+    this.ws = null;
+    if (ws.readyState === WebSocket.CLOSED) {
+      ws.removeAllListeners();
+      return;
     }
+    await new Promise(resolve => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve();
+      };
+      const timeout = setTimeout(() => {
+        try { ws.terminate(); } catch {}
+        finish();
+      }, 2_000);
+      ws.once('close', finish);
+      ws.once('error', finish);
+      try { ws.close(); } catch { finish(); }
+    });
+    ws.removeAllListeners();
   }
 
   async reconnect() {
     await this.disconnect();
     await this.connect();
+  }
+
+  messages(type = null) {
+    return this._messageHistory.filter(message => !type || message.type === type);
   }
 
   waitForMessage(type, timeoutMs = 5000) {
@@ -71,8 +105,12 @@ export class MockAgent {
       return Promise.resolve(existing);
     }
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error(`Timeout waiting for ${type}`)), timeoutMs);
-      const handler = (msg) => {
+      let handler;
+      const timeout = setTimeout(() => {
+        this._messageHandlers = this._messageHandlers.filter(candidate => candidate !== handler);
+        reject(new Error(`Timeout waiting for ${type}`));
+      }, timeoutMs);
+      handler = (msg) => {
         if (msg.type === type) {
           clearTimeout(timeout);
           this._messageHandlers = this._messageHandlers.filter(h => h !== handler);

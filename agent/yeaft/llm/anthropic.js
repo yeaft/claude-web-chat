@@ -20,6 +20,7 @@ import {
   redactRawRequest,
   safeHeaders,
   SseLineBuffer,
+  toWellFormedJson,
 } from './adapter.js';
 import {
   normalizeEffort,
@@ -262,6 +263,7 @@ export class AnthropicAdapter extends LLMAdapter {
 
     const translatedTools = this.#translateTools(tools);
     if (translatedTools) body.tools = translatedTools;
+    const wireBody = toWellFormedJson(body);
 
     const url = `${this.#baseUrl}/v1/messages`;
     const headers = this.#headers();
@@ -269,7 +271,7 @@ export class AnthropicAdapter extends LLMAdapter {
     // Expose the raw request (auth-redacted) for the debug panel. The body
     // is captured verbatim — never truncated — so "copy request" matches
     // exactly what we POST to the LLM.
-    const rawRequest = redactRawRequest({ url, method: 'POST', headers, body });
+    const rawRequest = redactRawRequest({ url, method: 'POST', headers, body: wireBody });
 
     let response;
     try {
@@ -277,7 +279,7 @@ export class AnthropicAdapter extends LLMAdapter {
       response = await fetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify(body),
+        body: JSON.stringify(wireBody),
         signal,
       });
     } catch (err) {
@@ -545,6 +547,7 @@ export class AnthropicAdapter extends LLMAdapter {
     if ((thinkingV1Enabled() || effortSource === 'user') && normEffort) {
       applyAnthropicThinking(body, model, normEffort, effortContext);
     }
+    const wireBody = toWellFormedJson(body);
 
     let response;
     try {
@@ -552,7 +555,7 @@ export class AnthropicAdapter extends LLMAdapter {
       response = await fetch(`${this.#baseUrl}/v1/messages`, {
         method: 'POST',
         headers: this.#headers(),
-        body: JSON.stringify(body),
+        body: JSON.stringify(wireBody),
         signal,
       });
     } catch (err) {

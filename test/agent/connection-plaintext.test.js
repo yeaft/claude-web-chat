@@ -1,5 +1,31 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
+import {
+  DEFAULT_UPGRADE_REGISTRY,
+  buildUpgradeInstallArgs,
+  buildUpgradeMetadataArgs,
+  buildUpgradeMetadataUrl,
+  buildUpgradeUpdateArgs,
+  buildWindowsUpgradeInvocation,
+  launchWindowsUpgradeScript,
+} from '../../agent/upgrade-command.js';
+import { buildWindowsUpgradeCommand } from '../../agent/connection/upgrade.js';
+import ctx from '../../agent/context.js';
+import { connect, resetConnectionTransport, sendToServer } from '../../agent/connection/index.js';
+import { parseLocalArgs } from '../../agent/local-run.js';
+import {
+  applyAgentIdentityToEnv,
+  getDefaultAgentName,
+  getInstanceIdFromArgs,
+  parseServiceArgs,
+  resolveDisplayName,
+  resolveRuntimeIdentity,
+  resolveServiceInstanceId,
+} from '../../agent/service/config.js';
+import { applyRegisteredTransport } from '../../agent/connection/message-router.js';
+import { generateSessionKey, isEncrypted } from '../../agent/encryption.js';
 
 /**
  * Tests for the agent side of feat-ws-plaintext-negotiation.
@@ -10,8 +36,7 @@ import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
  *   - send-side: encrypt only if (serverEncryptionRequired && sessionKey)
  *   - receive-side: unchanged — decrypt iff sessionKey && isEncrypted()
  *
- * Source files exercised by intent (not directly imported, because
- * agent/context.js has side effects that don't unit-test cleanly):
+ * Source files exercised by the production transport helpers:
  *   - agent/connection/message-router.js (case 'registered' handler)
  *   - agent/connection/buffer.js (sendToServer encrypt-or-plaintext gate)
  *   - agent/connection/index.js (capabilities include 'plaintext-ok')
@@ -34,18 +59,265 @@ async function sendToServerUnderTest(ctxLike, msg) {
   }
 }
 
-// Verbatim copy of the registered-handler flag flip in message-router.js.
-function applyRegisteredMessage(ctxLike, msg) {
-  if (msg.acceptPlaintext === true) {
-    ctxLike.serverEncryptionRequired = false;
-  }
-}
+describe('agent ctx defaults and upgrade contract', () => {
+  it('defaults identity and encryption safely and pins every upgrade fetch to the Yeaft registry', async () => {
+    expect(getDefaultAgentName('Dev Box/东')).toBe('Dev-Box--');
+    expect(getDefaultAgentName('')).toBe('default');
 
-describe('agent ctx defaults', () => {
-  it('defaults serverEncryptionRequired to true (assume old server)', async () => {
+    const computerName = getDefaultAgentName();
+    expect(computerName).toMatch(/^[A-Za-z0-9._-]+$/);
+    expect(getInstanceIdFromArgs([], {})).toBe(computerName);
+    expect(getInstanceIdFromArgs([], {}, { management: true })).toBe('default');
+    expect(getInstanceIdFromArgs([], { YEAFT_AGENT_INSTANCE: 'named' }, { management: true })).toBe('named');
+    expect(parseLocalArgs([], {})).toEqual({ name: computerName, port: 6868 });
+    expect(parseLocalArgs([], { AGENT_NAME: 'env-name' })).toEqual({ name: 'env-name', port: 6868 });
+
+    const env = {};
+    expect(applyAgentIdentityToEnv([], env)).toBeNull();
+    expect(env).toEqual({});
+
+    expect(getInstanceIdFromArgs(['--name', 'explicit-name'], {})).toBe('explicit-name');
+    expect(getInstanceIdFromArgs(['--instance', 'legacy', '--name', 'explicit-name'], {})).toBe('explicit-name');
+    expect(getInstanceIdFromArgs([], { AGENT_NAME: 'env-name' })).toBe('env-name');
+    expect(resolveDisplayName([], { AGENT_NAME: 'Display Name' }, 'file-name')).toBe('Display Name');
+    expect(resolveDisplayName([], {}, 'Worker A')).toBe('Worker A');
+    expect(resolveDisplayName([], {}, 'host-name')).toBe('host-name');
+    expect(resolveRuntimeIdentity({ agentName: 'Worker A' }, {})).toEqual({ agentName: 'Worker A', instanceId: 'default' });
+    expect(resolveRuntimeIdentity({ agentName: 'file-name', instanceId: 'saved-instance' }, { AGENT_NAME: 'Display Name' })).toEqual({
+      agentName: 'Display Name',
+      instanceId: 'saved-instance',
+    });
+    expect(resolveServiceInstanceId([], { YEAFT_AGENT_INSTANCE: 'named' }, { management: true })).toBe('named');
+    expect(() => resolveServiceInstanceId([], { YEAFT_AGENT_INSTANCE: 'bad name' }, { management: true })).toThrow('Instance id');
+    expect(applyAgentIdentityToEnv(['--instance', 'legacy', '--name', 'explicit-name'], env)).toBe('explicit-name');
+    expect(env).toEqual({
+      YEAFT_AGENT_INSTANCE: 'explicit-name',
+      AGENT_NAME: 'explicit-name',
+    });
+    expect(() => getInstanceIdFromArgs(['--name'], {})).toThrow('--name requires a value');
+    expect(() => getInstanceIdFromArgs(['--instance'], {})).toThrow('--instance requires a value');
+    expect(() => getInstanceIdFromArgs(['--instance', 'legacy', '--name', 'bad name'], {})).toThrow('Instance id');
+    expect(() => parseLocalArgs(['--name', 'bad name'])).toThrow('Instance id');
+
+    const priorIdentity = {
+      AGENT_NAME: process.env.AGENT_NAME,
+      YEAFT_AGENT_INSTANCE: process.env.YEAFT_AGENT_INSTANCE,
+    };
+    try {
+      delete process.env.AGENT_NAME;
+      delete process.env.YEAFT_AGENT_INSTANCE;
+      const defaultService = parseServiceArgs([]);
+      expect(defaultService.instanceId).toBe('default');
+      expect(defaultService.agentName).toBe(computerName);
+
+      process.env.AGENT_NAME = 'Display Name';
+      const envService = parseServiceArgs([]);
+      expect(envService.instanceId).toBe('default');
+      expect(envService.agentName).toBe('Display Name');
+
+      process.env.YEAFT_AGENT_INSTANCE = 'named';
+      const envNamedService = parseServiceArgs([]);
+      expect(envNamedService.instanceId).toBe('named');
+      expect(envNamedService.agentName).toBe('Display Name');
+
+      const namedService = parseServiceArgs(['--instance', 'legacy', '--name', 'explicit-name']);
+      expect(namedService.instanceId).toBe('explicit-name');
+      expect(namedService.agentName).toBe('explicit-name');
+    } finally {
+      if (priorIdentity.AGENT_NAME === undefined) delete process.env.AGENT_NAME;
+      else process.env.AGENT_NAME = priorIdentity.AGENT_NAME;
+      if (priorIdentity.YEAFT_AGENT_INSTANCE === undefined) delete process.env.YEAFT_AGENT_INSTANCE;
+      else process.env.YEAFT_AGENT_INSTANCE = priorIdentity.YEAFT_AGENT_INSTANCE;
+    }
+
+    const agentSource = readFileSync(new URL('../../agent/index.js', import.meta.url), 'utf8');
+    const doctorSource = readFileSync(new URL('../../agent/service/doctor.js', import.meta.url), 'utf8');
+    expect(doctorSource).toContain('getSystemdServicePath(instanceId)');
+    expect(doctorSource).toContain('getLaunchdPlistPath(instanceId)');
+    expect(doctorSource).toContain('getEcosystemPath(instanceId)');
+    const startupCommands = [...agentSource.matchAll(/await execHiddenAsync\(/g)];
+    expect(startupCommands).toHaveLength(6);
+    expect(agentSource).toContain('return execAsync(command, { ...options, windowsHide: true });');
+    expect(agentSource).not.toMatch(/await execAsync\(/);
+
     // The actual default is set in agent/context.js. Mirror the contract.
     const ctxLike = { serverEncryptionRequired: true };
     expect(ctxLike.serverEncryptionRequired).toBe(true);
+
+    expect(DEFAULT_UPGRADE_REGISTRY).toBe('https://pkg.yeaft.com/');
+    expect(buildUpgradeMetadataArgs('@yeaft/webchat-agent@latest', 'version')).toEqual([
+      'view',
+      '@yeaft/webchat-agent@latest',
+      'version',
+      '--registry=https://pkg.yeaft.com/',
+      '--prefer-online',
+      '--prefer-offline=false',
+      '--offline=false',
+    ]);
+    expect(buildUpgradeInstallArgs('@yeaft/webchat-agent@1.0.250')).toEqual([
+      'install',
+      '-g',
+      '@yeaft/webchat-agent@1.0.250',
+      '--registry=https://pkg.yeaft.com/',
+    ]);
+    expect(buildUpgradeInstallArgs('@yeaft/webchat-agent@1.0.250', { global: false })).toEqual([
+      'install',
+      '@yeaft/webchat-agent@1.0.250',
+      '--registry=https://pkg.yeaft.com/',
+    ]);
+    expect(buildUpgradeUpdateArgs('@yeaft/webchat-agent')).toEqual([
+      'update',
+      '-g',
+      '@yeaft/webchat-agent',
+      '--registry=https://pkg.yeaft.com/',
+    ]);
+    expect(buildUpgradeMetadataUrl('@yeaft/webchat-agent')).toBe(
+      'https://pkg.yeaft.com/%40yeaft%2Fwebchat-agent/latest',
+    );
+    expect(buildWindowsUpgradeCommand()).toBe(
+      'call npm update -g %PKG% --registry=https://pkg.yeaft.com/',
+    );
+
+    const options = {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      windowsVerbatimArguments: true,
+    };
+    const batPath = 'C:\\Users\\Corp User\\AppData\\Roaming\\yeaft-agent\\upgrade.bat';
+    const handoffPath = 'C:\\Users\\Corp User\\AppData\\Roaming\\yeaft-agent\\upgrade.started';
+    expect(buildWindowsUpgradeInvocation(batPath)).toEqual({
+      command: 'cmd.exe',
+      args: ['/d', '/s', '/c', `"${batPath}"`],
+      options,
+    });
+    const makeChild = () => {
+      const child = new EventEmitter();
+      child.exitCode = null;
+      child.signalCode = null;
+      child.unref = vi.fn();
+      child.kill = vi.fn();
+      return child;
+    };
+    const runLauncher = (overrides = {}) => launchWindowsUpgradeScript({
+      batPath,
+      handoffPath,
+      fileExists: () => false,
+      removeFile: () => {},
+      sleep: async () => {},
+      timeoutMs: 10,
+      ...overrides,
+    });
+
+    await expect(runLauncher({
+      spawnProcess: () => { throw new Error('cmd blocked'); },
+    })).rejects.toThrow('Windows upgrade launcher failed: cmd blocked');
+
+    const asyncErrorChild = makeChild();
+    await expect(runLauncher({
+      spawnProcess: () => {
+        queueMicrotask(() => asyncErrorChild.emit('error', new Error('spawn denied')));
+        return asyncErrorChild;
+      },
+    })).rejects.toThrow('Windows upgrade launcher failed: spawn denied');
+    expect(asyncErrorChild.kill).toHaveBeenCalledOnce();
+
+    const postSpawnErrorChild = makeChild();
+    await expect(runLauncher({
+      spawnProcess: () => {
+        queueMicrotask(() => {
+          postSpawnErrorChild.emit('spawn');
+          queueMicrotask(() => postSpawnErrorChild.emit('error', new Error('launcher failed after spawn')));
+        });
+        return postSpawnErrorChild;
+      },
+    })).rejects.toThrow('Windows upgrade launcher failed: launcher failed after spawn');
+    expect(postSpawnErrorChild.kill).toHaveBeenCalledOnce();
+    expect(postSpawnErrorChild.unref).not.toHaveBeenCalled();
+
+    const exitedChild = makeChild();
+    const exitedSpawn = vi.fn(() => {
+      queueMicrotask(() => {
+        exitedChild.emit('spawn');
+        exitedChild.exitCode = 1;
+        exitedChild.emit('close', 1);
+      });
+      return exitedChild;
+    });
+    const exitedHandoff = vi.fn();
+    await expect(runLauncher({
+      spawnProcess: exitedSpawn,
+      onHandoff: exitedHandoff,
+    })).rejects.toThrow('exited before handoff (code 1)');
+    expect(exitedHandoff).not.toHaveBeenCalled();
+    expect(exitedChild.unref).not.toHaveBeenCalled();
+    expect(exitedChild.kill).toHaveBeenCalledOnce();
+
+    const markerThenExitChild = makeChild();
+    const markerThenExitHandoff = vi.fn();
+    let markerChecks = 0;
+    await expect(runLauncher({
+      spawnProcess: () => {
+        queueMicrotask(() => markerThenExitChild.emit('spawn'));
+        return markerThenExitChild;
+      },
+      fileExists: () => ++markerChecks > 0,
+      sleep: async () => {
+        markerThenExitChild.exitCode = 1;
+        markerThenExitChild.emit('close', 1);
+      },
+      onHandoff: markerThenExitHandoff,
+    })).rejects.toThrow('exited before handoff (code 1)');
+    expect(markerChecks).toBe(1);
+    expect(markerThenExitHandoff).not.toHaveBeenCalled();
+    expect(markerThenExitChild.kill).toHaveBeenCalledOnce();
+
+    const timeoutChild = makeChild();
+    await expect(runLauncher({
+      spawnProcess: () => {
+        queueMicrotask(() => timeoutChild.emit('spawn'));
+        return timeoutChild;
+      },
+      timeoutMs: 0,
+    })).rejects.toThrow('did not confirm handoff within 0ms');
+    expect(timeoutChild.kill).toHaveBeenCalledOnce();
+
+    const cmdChild = makeChild();
+    const spawnMock = vi.fn(() => {
+      queueMicrotask(() => cmdChild.emit('spawn'));
+      return cmdChild;
+    });
+    let handoffChecks = 0;
+    const onHandoff = vi.fn();
+    await expect(runLauncher({
+      spawnProcess: spawnMock,
+      fileExists: () => ++handoffChecks >= 2,
+      onHandoff,
+    })).resolves.toBe('cmd.exe');
+    expect(spawnMock).toHaveBeenCalledWith(
+      'cmd.exe',
+      ['/d', '/s', '/c', `"${batPath}"`],
+      options,
+    );
+    expect(handoffChecks).toBeGreaterThanOrEqual(3);
+    expect(onHandoff).toHaveBeenCalledOnce();
+    expect(cmdChild.kill).not.toHaveBeenCalled();
+    expect(cmdChild.unref).toHaveBeenCalledOnce();
+
+    const callbackChild = makeChild();
+    const removeHandoff = vi.fn();
+    await expect(runLauncher({
+      spawnProcess: () => {
+        queueMicrotask(() => callbackChild.emit('spawn'));
+        return callbackChild;
+      },
+      fileExists: () => true,
+      removeFile: removeHandoff,
+      onHandoff: () => { throw new Error('pm2 delete failed'); },
+    })).rejects.toThrow('pm2 delete failed');
+    expect(callbackChild.kill).toHaveBeenCalledOnce();
+    expect(callbackChild.unref).not.toHaveBeenCalled();
+    expect(removeHandoff).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -80,37 +352,55 @@ describe('agent advertises plaintext-ok capability', () => {
 });
 
 describe('agent received `registered` flips serverEncryptionRequired', () => {
-  it('flips serverEncryptionRequired off on registered { acceptPlaintext: true }', () => {
-    const ctxLike = { serverEncryptionRequired: true };
-    applyRegisteredMessage(ctxLike, {
-      type: 'registered',
-      agentId: 'global:Worker-1',
-      sessionKey: null,
-      acceptPlaintext: true
-    });
-    expect(ctxLike.serverEncryptionRequired).toBe(false);
-  });
+  it('keeps the registered plaintext decision connection-scoped', async () => {
+    const original = {
+      ws: ctx.ws,
+      sessionKey: ctx.sessionKey,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      pendingAuthTempId: ctx.pendingAuthTempId,
+      CONFIG: ctx.CONFIG,
+      agentCapabilities: ctx.agentCapabilities,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+    };
+    try {
+      resetConnectionTransport();
+      expect(ctx.serverEncryptionRequired).toBe(true);
+      applyRegisteredTransport({ type: 'registered', acceptPlaintext: true });
+      expect(ctx.serverEncryptionRequired).toBe(false);
 
-  it('keeps serverEncryptionRequired on when registered omits acceptPlaintext (old server)', () => {
-    const ctxLike = { serverEncryptionRequired: true };
-    applyRegisteredMessage(ctxLike, {
-      type: 'registered',
-      agentId: 'global:Worker-1',
-      sessionKey: 'base64key'
-      // no acceptPlaintext field
-    });
-    expect(ctxLike.serverEncryptionRequired).toBe(true);
-  });
+      const legacyKey = generateSessionKey();
+      class ConnectSocket extends MockWebSocket {}
+      ctx.CONFIG = {
+        instanceId: 'test-agent',
+        agentName: 'Test Agent',
+        workDir: '/tmp',
+        serverUrl: 'ws://localhost:1',
+        disallowedTools: [],
+      };
+      ctx.agentCapabilities = [];
+      connect(ConnectSocket);
+      applyRegisteredTransport({
+        type: 'registered',
+        sessionKey: Buffer.from(legacyKey).toString('base64'),
+      });
+      const legacySocket = ctx.ws;
+      legacySocket.readyState = WS_OPEN;
+      await sendToServer({ type: 'claude_output', payload: { text: 'legacy' } });
+      await new Promise(resolve => setImmediate(resolve));
 
-  it('keeps serverEncryptionRequired on if acceptPlaintext is false explicitly', () => {
-    const ctxLike = { serverEncryptionRequired: true };
-    applyRegisteredMessage(ctxLike, {
-      type: 'registered',
-      agentId: 'global:Worker-1',
-      sessionKey: null,
-      acceptPlaintext: false
-    });
-    expect(ctxLike.serverEncryptionRequired).toBe(true);
+      expect(ctx.serverEncryptionRequired).toBe(true);
+      expect(isEncrypted(legacySocket.getLastMessage())).toBe(true);
+    } finally {
+      ctx.ws = original.ws;
+      ctx.sessionKey = original.sessionKey;
+      ctx.serverEncryptionRequired = original.serverEncryptionRequired;
+      ctx.pendingAuthTempId = original.pendingAuthTempId;
+      ctx.CONFIG = original.CONFIG;
+      ctx.agentCapabilities = original.agentCapabilities;
+      ctx.outboundSendQueue = original.outboundSendQueue;
+      ctx.outboundSendQueueActive = original.outboundSendQueueActive;
+    }
   });
 });
 

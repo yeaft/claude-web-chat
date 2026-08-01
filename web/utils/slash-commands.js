@@ -27,8 +27,20 @@ const BUILTIN_NAMES = new Set(Object.keys(BUILTIN_DESCRIPTIONS));
 export const SYSTEM_SKILLS = BUILTIN_DESCRIPTIONS;
 export const SYSTEM_SKILL_NAMES = BUILTIN_NAMES;
 
-// Default slash commands list (used before Claude SDK returns dynamic list)
+// Default slash commands list (used before Claude SDK returns dynamic list).
+// These are Claude Chat commands; Yeaft has its own smaller, engine-backed
+// command surface and must not advertise commands it merely sends as text.
 export const DEFAULT_SLASH_COMMANDS = Object.keys(BUILTIN_DESCRIPTIONS);
+
+export const YEAFT_BUILTIN_DESCRIPTIONS = {
+  '/low': 'Use low reasoning effort for this turn',
+  '/medium': 'Use medium reasoning effort for this turn',
+  '/high': 'Use high reasoning effort for this turn',
+  '/xhigh': 'Use extra-high reasoning effort for this turn',
+  '/max': 'Use maximum reasoning effort for this turn',
+};
+
+export const YEAFT_DEFAULT_SLASH_COMMANDS = Object.keys(YEAFT_BUILTIN_DESCRIPTIONS);
 
 export function mergeSlashCommands(...lists) {
   const merged = [];
@@ -43,8 +55,15 @@ export function mergeSlashCommands(...lists) {
 }
 
 export function resolveDynamicSlashCommands(store, conversationId, agentId) {
+  const conversationCommands = conversationId ? store?.slashCommandsMap?.[conversationId] : null;
+  if (store?.currentView === 'yeaft') {
+    // Only the Yeaft conversation snapshot is valid here. Agent/preload
+    // fallbacks may contain Claude Chat commands and would advertise entries
+    // the Yeaft engine does not implement while its skill scan is still booting.
+    return mergeSlashCommands(conversationCommands);
+  }
   return mergeSlashCommands(
-    conversationId ? store?.slashCommandsMap?.[conversationId] : null,
+    conversationCommands,
     agentId ? store?.slashCommandsMap?.[`agent:${agentId}`] : null,
     store?.slashCommandsMap?.__preload__
   );
@@ -58,7 +77,7 @@ export function resolveDynamicSlashCommands(store, conversationId, agentId) {
  * @returns {'skill' | 'builtin' | 'project'}
  */
 export function getCommandGroup(cmd, dynamicDescriptions = {}, dynamicCommandNames = new Set()) {
-  if (BUILTIN_NAMES.has(cmd)) return 'builtin';
+  if (BUILTIN_NAMES.has(cmd) || Object.prototype.hasOwnProperty.call(YEAFT_BUILTIN_DESCRIPTIONS, cmd)) return 'builtin';
   // Skill commands include legacy namespaced aliases and Yeaft's visible bare
   // skill commands. Bare skills must be part of the current dynamic command
   // list; descriptions are cumulative across reconnects/workDir switches.
@@ -79,6 +98,7 @@ export function getCommandGroup(cmd, dynamicDescriptions = {}, dynamicCommandNam
 export function getCommandDescription(cmd, dynamicDescriptions = {}) {
   // Check builtin descriptions first (with / prefix)
   if (BUILTIN_DESCRIPTIONS[cmd]) return BUILTIN_DESCRIPTIONS[cmd];
+  if (YEAFT_BUILTIN_DESCRIPTIONS[cmd]) return YEAFT_BUILTIN_DESCRIPTIONS[cmd];
   // Check dynamic descriptions (without / prefix, as CLI uses bare names)
   const bare = cmd.startsWith('/') ? cmd.slice(1) : cmd;
   if (dynamicDescriptions[bare]) return dynamicDescriptions[bare];

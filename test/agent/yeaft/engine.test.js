@@ -1,13 +1,40 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import {
+  existsSync, linkSync, lstatSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync,
+  readdirSync, symlinkSync, utimesSync,
+} from 'fs';
+import { delimiter, join } from 'path';
 import { tmpdir } from 'os';
+import { gzipSync } from 'node:zlib';
+import { lstat as lstatAsync, readdir as readdirAsync, stat as statAsync } from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { ActiveMemorySet } from '../../../agent/yeaft/memory/ams.js';
-import { Engine, buildResidentEntries } from '../../../agent/yeaft/engine.js';
+import { filterMemoryPromptTextForPrompt } from '../../../agent/yeaft/memory/prompt-cleanup.js';
+import { Engine, buildResidentEntries, selectResidentTopicScopes } from '../../../agent/yeaft/engine.js';
 import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
 import { writeSummary } from '../../../agent/yeaft/memory/store.js';
 import { NullTrace, DebugTrace } from '../../../agent/yeaft/debug-trace.js';
+import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
+import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
+import todoWriteTool from '../../../agent/yeaft/tools/todo-write.js';
+import startPlanTool from '../../../agent/yeaft/tools/start-plan.js';
+import {
+  ensureManagedCliTools,
+  extractManagedCliBinary,
+  managedCliBinDir,
+  managedCliToolSpecs,
+  prependManagedCliBinToPath,
+  resolveManagedCliCommand,
+} from '../../../agent/yeaft/managed-cli.js';
+import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
+import { createOutputCollector, runRipgrep, nodeGrep } from '../../../agent/yeaft/tools/grep.js';
+import { nodeDiskUsage } from '../../../agent/yeaft/tools/disk-usage.js';
+import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
+import { SEARCH_SKIP_DIRS } from '../../../agent/yeaft/tools/search-paths.js';
 
 // ─── Mock Adapter ─────────────────────────────────────────────
 
@@ -103,23 +130,19 @@ describe('Engine memory prompt hygiene', () => {
     expect(snap.onDemand.map(seg => seg.body)).toEqual(['A distinct implementation detail remains available.']);
   });
 
-  it('does not let over-budget resident candidates suppress onDemand memory', () => {
-    const ams = new ActiveMemorySet({
+  it('keeps onDemand memory when resident entries are over budget or only prefixes', () => {
+    const overBudget = new ActiveMemorySet({
       budget: { total: 100, resident: 1, recent: 1, onDemand: 80 },
     });
     const repeated = 'Budget-sensitive Dream memory detail should remain available from onDemand when the resident copy is too large for the resident budget.';
-    ams.setResident([{ scope: 'sessions/s1', summary: repeated }]);
-    ams.setOnDemand([
+    overBudget.setResident([{ scope: 'sessions/s1', summary: repeated }]);
+    overBudget.setOnDemand([
       { id: 'od-1', scope: 'sessions/s1/topic/dream', body: repeated, kind: 'context', tags: [], sourceMessages: [] },
     ]);
+    const overBudgetSnap = overBudget.snapshot();
+    expect(overBudgetSnap.resident).toEqual([]);
+    expect(overBudgetSnap.onDemand.map(seg => seg.body)).toEqual([repeated]);
 
-    const snap = ams.snapshot();
-
-    expect(snap.resident).toEqual([]);
-    expect(snap.onDemand.map(seg => seg.body)).toEqual([repeated]);
-  });
-
-  it('keeps detailed onDemand memory when resident summary is only a prefix', () => {
     const ams = new ActiveMemorySet({
       budget: { total: 1000, resident: 300, recent: 100, onDemand: 600 },
     });
@@ -135,6 +158,109 @@ describe('Engine memory prompt hygiene', () => {
     expect(snap.resident.map(entry => entry.summary)).toEqual([summary]);
     expect(snap.onDemand.map(seg => seg.body)).toEqual([detail]);
   });
+
+  it('drops unrelated transient work-item state from the prompt snapshot', () => {
+    const ams = new ActiveMemorySet({
+      budget: { total: 1000, resident: 500, recent: 200, onDemand: 300 },
+    });
+    ams.setResident([
+      {
+        scope: 'sessions/s1',
+        summary: [
+          'Reusable Dream memory rule: topic recall must stay precise.',
+          '',
+          'Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
+        ].join('\n'),
+      },
+    ]);
+    ams.setOnDemand([
+      {
+        id: 'billing-work-item',
+        scope: 'sessions/s1/topic/billing',
+        body: 'Work Item #884: billing dashboard export is in progress and awaiting review.',
+        kind: 'context',
+        tags: [],
+        sourceMessages: [],
+      },
+      {
+        id: 'dream-rule',
+        scope: 'sessions/s1/topic/dream',
+        body: 'Dream memory relevance should keep stable topic recall facts available.',
+        kind: 'context',
+        tags: [],
+        sourceMessages: [],
+      },
+    ]);
+
+    const snap = ams.snapshot({ userMsg: '优化 Dream memory relevance，减少无关状态' });
+
+    expect(snap.resident.map(entry => entry.summary)).toEqual([
+      'Reusable Dream memory rule: topic recall must stay precise.',
+    ]);
+    expect(snap.onDemand.map(seg => seg.body)).toEqual([
+      'Dream memory relevance should keep stable topic recall facts available.',
+    ]);
+  });
+
+  it('keeps transient work-item state when the user asks about the same task', () => {
+    const ams = new ActiveMemorySet({
+      budget: { total: 1000, resident: 500, recent: 200, onDemand: 300 },
+    });
+    ams.setOnDemand([
+      {
+        id: 'billing-work-item',
+        scope: 'sessions/s1/topic/billing',
+        body: 'Work Item #884: billing dashboard export is in progress and awaiting review.',
+        kind: 'context',
+        tags: [],
+        sourceMessages: [],
+      },
+    ]);
+
+    const snap = ams.snapshot({ userMsg: '继续 billing dashboard export 的 work item' });
+
+    expect(snap.onDemand.map(seg => seg.body)).toEqual([
+      'Work Item #884: billing dashboard export is in progress and awaiting review.',
+    ]);
+  });
+
+  it('keeps stable markdown bullets when a sibling transient bullet is unrelated', () => {
+    const filtered = filterMemoryPromptTextForPrompt(
+      [
+        '- Stable preference: user wants Dream memory topic labels compact.',
+        '- Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
+      ].join('\n'),
+      '优化 Dream memory relevance，减少无关状态',
+    );
+
+    expect(filtered).toBe('- Stable preference: user wants Dream memory topic labels compact.');
+
+    const related = filterMemoryPromptTextForPrompt(
+      [
+        '- Stable preference: user wants Dream memory topic labels compact.',
+        '- Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
+      ].join('\n'),
+      '继续 billing dashboard export 的 work item',
+    );
+    expect(related).toBe([
+      '- Stable preference: user wants Dream memory topic labels compact.',
+      '- Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
+    ].join('\n'));
+  });
+
+  it('loads resident topic summaries only for topics recalled or named this turn', () => {
+    expect(selectResidentTopicScopes([
+      'sessions/s1/topic/dream/relevance',
+      'sessions/s1/topic/dream/recall',
+      'sessions/s1/topic/billing/export',
+    ], [
+      { scope: 'sessions/s1/topic/dream/relevance', body: 'Relevant Dream memory.' },
+      { scope: 'sessions/s1', body: 'Session memory.' },
+    ], 'please inspect dream recall')).toEqual([
+      'sessions/s1/topic/dream/relevance',
+      'sessions/s1/topic/dream/recall',
+    ]);
+  });
 });
 
 describe('Engine', () => {
@@ -147,6 +273,18 @@ describe('Engine', () => {
       });
       expect(engine.traceId).toBeTruthy();
       expect(typeof engine.traceId).toBe('string');
+    });
+
+    it('refreshes the fast-model config without rebuilding the engine', () => {
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'old-primary', fastModelId: 'old-fast', maxOutputTokens: 1024 },
+      });
+
+      engine.refreshConfig({ model: 'new-primary', fastModelId: 'new-fast', maxOutputTokens: 2048 });
+
+      expect(engine.fastConfig).toMatchObject({ model: 'new-fast', maxOutputTokens: 2048 });
     });
   });
 
@@ -251,22 +389,6 @@ describe('Engine', () => {
       expect(mockAdapter.callLog).toHaveLength(0);
     });
 
-    it('should yield error for null prompt', async () => {
-      const engine = new Engine({
-        adapter: mockAdapter,
-        trace,
-        config: { model: 'test-model', maxOutputTokens: 1024 },
-      });
-
-      const events = [];
-      for await (const event of engine.query({ prompt: null })) {
-        events.push(event);
-      }
-
-      expect(events).toHaveLength(1);
-      expect(events[0].type).toBe('error');
-    });
-
     it('should yield error for whitespace-only prompt', async () => {
       const engine = new Engine({
         adapter: mockAdapter,
@@ -322,6 +444,466 @@ describe('Engine', () => {
       const turnEnd = events.find(e => e.type === 'turn_end');
       expect(turnEnd.stopReason).toBe('end_turn');
       expect(turnEnd.turnNumber).toBe(1);
+
+      const continuityAdapter = new MockAdapter();
+      continuityAdapter.pushResponse([
+        { type: 'text_delta', text: 'Current answer' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const continuityEngine = new Engine({
+        adapter: continuityAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+      for await (const _event of continuityEngine.query({
+        prompt: 'Continue',
+        messages: [
+          { role: 'user', content: 'Original question' },
+          { role: 'assistant', content: 'I found the relevant state boundary.', responseKind: 'progress' },
+          { role: 'assistant', content: 'The previous turn completed.', responseKind: 'result' },
+        ],
+      })) {
+        // consume
+      }
+      expect(continuityAdapter.callLog[0].messages).toEqual([
+        { role: 'user', content: 'Original question' },
+        { role: 'assistant', content: 'I found the relevant state boundary.', responseKind: 'progress' },
+        { role: 'assistant', content: 'The previous turn completed.', responseKind: 'result' },
+        { role: 'user', content: 'Continue' },
+      ]);
+    });
+
+    it('persists the user row before starting the LLM request', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-user-prewrite-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const adapter = {
+          async *stream() {
+            const persisted = conversationStore.loadRecentBySession('session-prewrite', 10);
+            expect(persisted).toHaveLength(1);
+            expect(persisted[0]).toMatchObject({
+              role: 'user',
+              content: 'persist before request',
+              sessionId: 'session-prewrite',
+              threadId: 'main',
+              userAuthored: true,
+            });
+            throw new Error('provider failed before replying');
+          },
+        };
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'persist before request',
+          sessionId: 'session-prewrite',
+        })) events.push(event);
+
+        expect(events.find(event => event.type === 'error')).toBeTruthy();
+        expect(conversationStore.loadRecentBySession('session-prewrite', 10)).toHaveLength(1);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists partial assistant text when the provider fails mid-stream', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-partial-persist-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const adapter = {
+          async *stream() {
+            yield { type: 'text_delta', text: 'partial reply' };
+            throw new Error('stream disconnected');
+          },
+        };
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+          vpId: 'vp-linus',
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'hello',
+          sessionId: 'session-partial',
+          vpTurnId: 'vp-turn-partial',
+        })) {
+          // consume
+        }
+
+        expect(conversationStore.loadRecentBySession('session-partial', 10)).toEqual([
+          expect.objectContaining({ role: 'user', content: 'hello' }),
+          expect.objectContaining({
+            role: 'assistant',
+            content: 'partial reply',
+            turnId: 'vp-turn-partial',
+            speakerVpId: 'vp-linus',
+            incomplete: true,
+            stopReason: 'error',
+            responseKind: 'progress',
+          }),
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists partial assistant text when the user aborts mid-stream', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-partial-abort-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const controller = new AbortController();
+        const adapter = {
+          async *stream() {
+            yield { type: 'text_delta', text: 'partial before stop' };
+            controller.abort('user');
+          },
+        };
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+          vpId: 'vp-linus',
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'stop this',
+          signal: controller.signal,
+          sessionId: 'session-partial-abort',
+          vpTurnId: 'vp-turn-abort',
+        })) events.push(event);
+
+        expect(events.filter(event => event.type === 'aborted')).toHaveLength(1);
+        expect(conversationStore.loadRecentBySession('session-partial-abort', 10)).toEqual([
+          expect.objectContaining({ role: 'user', content: 'stop this' }),
+          expect.objectContaining({
+            role: 'assistant',
+            content: 'partial before stop',
+            turnId: 'vp-turn-abort',
+            speakerVpId: 'vp-linus',
+            incomplete: true,
+            stopReason: 'aborted',
+            responseKind: 'progress',
+          }),
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists completed assistant and tool records before a later LLM loop fails', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-tool-incremental-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'call_incremental', name: 'durable_tool', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'error', error: new Error('second request failed'), retryable: false },
+        ]);
+        const rawToolOutput = 'tool output that must survive';
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+          vpId: 'vp-linus',
+        });
+        engine.registerTool({
+          name: 'durable_tool',
+          description: 'returns durable output',
+          parameters: { type: 'object', properties: {} },
+          execute: async () => rawToolOutput,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'use the tool',
+          sessionId: 'session-tool-incremental',
+          vpTurnId: 'vp-turn-tool',
+        })) {
+          // consume
+        }
+
+        const persisted = conversationStore.loadRecentBySession('session-tool-incremental', 10);
+        expect(persisted.map(message => message.role)).toEqual(['user', 'assistant', 'tool']);
+        expect(persisted[1]).toMatchObject({
+          toolCalls: [expect.objectContaining({ id: 'call_incremental', name: 'durable_tool' })],
+          turnId: 'vp-turn-tool',
+          responseKind: 'progress',
+        });
+        expect(persisted[2]).toMatchObject({
+          toolCallId: 'call_incremental',
+          content: rawToolOutput,
+          turnId: 'vp-turn-tool',
+          speakerVpId: 'vp-linus',
+        });
+
+        const emptyFinalAdapter = new MockAdapter();
+        emptyFinalAdapter.pushResponse([
+          { type: 'text_delta', text: 'Completed via tool.' },
+          { type: 'tool_call', id: 'call_empty_final', name: 'durable_tool', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        emptyFinalAdapter.pushResponse([
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const emptyFinalEngine = new Engine({
+          adapter: emptyFinalAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+          vpId: 'vp-linus',
+        });
+        emptyFinalEngine.registerTool({
+          name: 'durable_tool',
+          description: 'returns durable output',
+          parameters: { type: 'object', properties: {} },
+          execute: async () => rawToolOutput,
+        });
+
+        for await (const _event of emptyFinalEngine.query({
+          prompt: 'use the tool, then finish silently',
+          sessionId: 'session-tool-empty-final',
+          vpTurnId: 'vp-turn-empty-final',
+        })) {
+          // consume
+        }
+
+        const emptyFinalRows = conversationStore.loadRecentBySession('session-tool-empty-final', 10);
+        expect(emptyFinalRows.find(message => message.content === 'Completed via tool.')).toMatchObject({
+          responseKind: 'result',
+          stopReason: 'end_turn',
+          turnId: 'vp-turn-empty-final',
+        });
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists a T1 folding reflection and hides the original tool arc after restart', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-t1-fold-persist-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const adapter = new MockAdapter();
+        adapter.call = async () => ({
+          text: 'durable reflection summary',
+          usage: { inputTokens: 10, outputTokens: 5 },
+        });
+        adapter.pushResponse([
+          ...Array.from({ length: 30 }, (_, index) => ({
+            type: 'tool_call',
+            id: `call_fold_${index}`,
+            name: 'fold_tool',
+            input: { index },
+          })),
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'finished after fold' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 1000 },
+          conversationStore,
+          yeaftDir,
+        });
+        engine.registerTool({
+          name: 'fold_tool',
+          description: 'returns one result',
+          parameters: { type: 'object', properties: { index: { type: 'number' } } },
+          execute: async ({ index }) => `result ${index}`,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'run thirty tools',
+          sessionId: 'session-t1-fold',
+        })) {
+          // consume
+        }
+
+        const restarted = new ConversationStore(yeaftDir);
+        const durable = restarted.loadRecentBySession(
+          'session-t1-fold',
+          Infinity,
+          { includeReflections: true },
+        );
+        expect(durable.filter(message => message._reflection)).toEqual([
+          expect.objectContaining({ content: expect.stringContaining('durable reflection summary') }),
+        ]);
+        expect(durable.some(message => message.role === 'tool')).toBe(false);
+        expect(durable.some(message => Array.isArray(message.toolCalls) && message.toolCalls.length > 0)).toBe(false);
+        expect(durable.at(-1)).toMatchObject({ role: 'assistant', content: 'finished after fold' });
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists a T2 carry-forward reflection and hides the original tool arc after restart', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-t2-fold-persist-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const adapter = new MockAdapter();
+        adapter.call = async () => ({
+          text: 'durable t2 reflection summary',
+          usage: { inputTokens: 10, outputTokens: 5 },
+        });
+        adapter.pushResponse([
+          ...Array.from({ length: 9 }, (_, index) => ({
+            type: 'tool_call',
+            id: `call_t2_fold_${index}`,
+            name: 't2_fold_tool',
+            input: { index },
+          })),
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'first turn finished' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'second turn finished' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 1000 },
+          conversationStore,
+          yeaftDir,
+        });
+        engine.registerTool({
+          name: 't2_fold_tool',
+          description: 'returns one result',
+          parameters: { type: 'object', properties: { index: { type: 'number' } } },
+          execute: async ({ index }) => `result ${index}`,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'run nine tools',
+          sessionId: 'session-t2-fold',
+        })) {
+          // consume
+        }
+        await Promise.resolve();
+        const firstTurn = conversationStore.loadRecentBySession('session-t2-fold', Infinity);
+        for await (const _event of engine.query({
+          prompt: 'continue after t2',
+          messages: firstTurn,
+          sessionId: 'session-t2-fold',
+        })) {
+          // consume
+        }
+
+        const restarted = new ConversationStore(yeaftDir);
+        const durable = restarted.loadRecentBySession(
+          'session-t2-fold',
+          Infinity,
+          { includeReflections: true },
+        );
+        expect(durable.filter(message => message._reflection)).toEqual([
+          expect.objectContaining({ content: expect.stringContaining('durable t2 reflection summary') }),
+        ]);
+        expect(durable.some(message => message.role === 'tool')).toBe(false);
+        expect(durable.some(message => Array.isArray(message.toolCalls) && message.toolCalls.length > 0)).toBe(false);
+        expect(durable.at(-1)).toMatchObject({ role: 'assistant', content: 'second turn finished' });
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists a normal turn once without end-of-turn duplicates', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-no-persist-duplicates-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'one reply' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'one prompt',
+          sessionId: 'session-no-duplicates',
+        })) {
+          // consume
+        }
+
+        expect(conversationStore.loadRecentBySession('session-no-duplicates', 10).map(message => ({
+          role: message.role,
+          content: message.content,
+        }))).toEqual([
+          { role: 'user', content: 'one prompt' },
+          { role: 'assistant', content: 'one reply' },
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists the max-token continuation boundary before the next request fails', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-continue-persist-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'first part' },
+          { type: 'stop', stopReason: 'max_tokens' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'error', error: new Error('continuation request failed'), retryable: false },
+        ]);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'write a long answer',
+          sessionId: 'session-continue-persist',
+        })) {
+          // consume
+        }
+
+        expect(conversationStore.loadRecentBySession('session-continue-persist', 10).map(message => ({
+          role: message.role,
+          content: message.content,
+          userAuthored: message.userAuthored,
+        }))).toEqual([
+          { role: 'user', content: 'write a long answer', userAuthored: true },
+          { role: 'assistant', content: 'first part', userAuthored: undefined },
+          { role: 'user', content: 'Continue', userAuthored: false },
+        ]);
+        expect(conversationStore.loadVisibleBySession('session-continue-persist', null, 10).messages).toEqual([
+          expect.objectContaining({ role: 'user', content: 'write a long answer', userAuthored: true }),
+          expect.objectContaining({ role: 'assistant', content: 'first part' }),
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
     });
 
     it('persists assistant rows with the caller-provided VP turn id', async () => {
@@ -363,6 +945,8 @@ describe('Engine', () => {
           threadId: 'main',
           turnId: 'vp-turn-ui-1',
           speakerVpId: 'vp-linus',
+          responseKind: 'result',
+          stopReason: 'end_turn',
         });
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });
@@ -407,7 +991,7 @@ describe('Engine', () => {
 
       const events = [];
       for await (const event of engine.query({
-        prompt: 'test',
+        prompt: 'dream recall test',
         sessionId: 'g1',
         vpPersona: { vpId: 'vp1', name: 'VP One' },
       })) {
@@ -448,6 +1032,85 @@ describe('Engine', () => {
       ]));
       const topicLoaded = loaded.resident.find(entry => entry.scope === 'sessions/g1/topic/dream/recall');
       expect(topicLoaded.summary).toContain('完整摘要细节'.repeat(800));
+
+      const debugYeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-memory-debug-'));
+      try {
+        const memoryRows = [
+          {
+            id: 'billing-work-item',
+            scope: 'sessions/g1',
+            kind: 'context',
+            tags: ['billing'],
+            body: 'Work Item #884: billing dashboard export is in progress and awaiting review.',
+            rank: 0,
+          },
+          ...Array.from({ length: 9 }, (_, index) => ({
+            id: `dream-relevance-${index + 1}`,
+            scope: 'sessions/g1',
+            kind: 'context',
+            tags: ['dream', 'memory'],
+            body: `Dream relevance loaded memory item ${index + 1}.`,
+            rank: index + 1,
+          })),
+        ];
+        const memoryIndex = {
+          search({ scopeFilter }) {
+            return memoryRows
+              .filter(row => scopeFilter.includes(row.scope))
+              .map(row => ({
+                ...row,
+                sourceMessages: [],
+                createdAt: '2026-07-01T00:00:00.000Z',
+                updatedAt: '2026-07-01T00:00:00.000Z',
+              }));
+          },
+        };
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const debugEngine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          yeaftDir: debugYeaftDir,
+          sessionId: 'g1',
+          config: { model: 'claude-test', maxOutputTokens: 2048, language: 'en' },
+          memoryIndex,
+          amsRegistry: new AmsRegistry({ yeaftDir: debugYeaftDir, config: {} }),
+        });
+
+        const debugEvents = [];
+        for await (const event of debugEngine.query({
+          prompt: 'optimize Dream memory relevance',
+          sessionId: 'g1',
+          vpPersona: { vpId: 'vp1', name: 'VP One' },
+        })) {
+          debugEvents.push(event);
+        }
+
+        const debugSystem = mockAdapter.callLog.at(-1).system;
+        expect(debugSystem).toContain('Dream relevance loaded memory item 1.');
+        expect(debugSystem).toContain('Dream relevance loaded memory item 7.');
+        expect(debugSystem).not.toContain('billing dashboard export');
+        expect(debugSystem).not.toContain('Dream relevance loaded memory item 8.');
+
+        const memoryUsed = debugEvents.find(e => e.type === 'memory_used');
+        expect(memoryUsed).toBeTruthy();
+        expect(memoryUsed.meta).toMatchObject({ recallLimit: 8, recallCandidates: 10 });
+        expect(memoryUsed.loaded).toHaveLength(7);
+        expect(memoryUsed.loaded[0]).toMatchObject({
+          id: 'dream-relevance-1',
+          layer: 'onDemand',
+          scope: 'sessions/g1',
+          label: 'session',
+          body: 'Dream relevance loaded memory item 1.',
+        });
+        expect(memoryUsed.loaded[0].score).toEqual(expect.any(Number));
+        expect(memoryUsed.loaded.map(entry => entry.body).join('\n')).not.toContain('billing dashboard export');
+      } finally {
+        rmSync(debugYeaftDir, { recursive: true, force: true });
+      }
     });
 
     it('should pass model and system prompt to adapter', async () => {
@@ -540,6 +1203,312 @@ describe('Engine', () => {
       expect(secondCall.messages[1].toolCalls).toHaveLength(1);
       expect(secondCall.messages[2].role).toBe('tool');
       expect(secondCall.messages[2].toolCallId).toBe('call_1');
+
+      // A result-producing task can outlive the visible turn. If its terminal
+      // event is lost, the parent must eventually release same-turn ownership
+      // and finish; the task keeps running and its later completion can use the
+      // bridge's existing rescue-turn path.
+      const stalledTaskAdapter = new MockAdapter();
+      stalledTaskAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_stalled_task', name: 'launch_stalled_task', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      stalledTaskAdapter.pushResponse([
+        { type: 'text_delta', text: 'The delegated task is still running.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const stalledTaskEngine = new Engine({
+        adapter: stalledTaskAdapter,
+        trace,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          asyncTaskWaitTimeoutMs: 20,
+        },
+      });
+      const deferredTasks = [];
+      stalledTaskEngine.setAsyncTaskCoordinator({
+        onDeferred(taskId) { deferredTasks.push(taskId); },
+      });
+      stalledTaskEngine.registerTool({
+        name: 'launch_stalled_task',
+        description: 'launch a task whose terminal event never arrives',
+        parameters: { type: 'object', properties: {} },
+        execute: async (_input, ctx) => {
+          ctx.registerAsyncTask('task_stalled');
+          return 'task started';
+        },
+      });
+
+      const stalledEvents = [];
+      await Promise.race([
+        (async () => {
+          for await (const event of stalledTaskEngine.query({ prompt: 'delegate this work' })) {
+            stalledEvents.push(event);
+          }
+        })(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('async task wait stayed pinned')), 500)),
+      ]);
+
+      expect(stalledEvents).toContainEqual(expect.objectContaining({
+        type: 'async_task_wait_end',
+        timedOut: true,
+        deferredTaskIds: ['task_stalled'],
+      }));
+      expect(stalledEvents).toContainEqual(expect.objectContaining({
+        type: 'turn_end',
+        stopReason: 'end_turn',
+        terminal: true,
+      }));
+      expect(stalledEvents.at(-1)).toMatchObject({ type: 'turn_close' });
+      expect(stalledTaskEngine.hasPendingAsyncTasks()).toBe(false);
+      expect(stalledTaskEngine.notifyAsyncTaskCompleted('task_stalled', 'late result')).toBe(false);
+      expect(deferredTasks).toEqual(['task_stalled']);
+
+      // Long-running child work is not itself a stall. TaskManager activity
+      // refreshes the silence deadline; a completion after the first timeout
+      // window must still resume in the same turn.
+      const activeTaskAdapter = new MockAdapter();
+      activeTaskAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_active_task', name: 'launch_active_task', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      activeTaskAdapter.pushResponse([
+        { type: 'text_delta', text: 'The delegated result was consumed.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const activeTaskEngine = new Engine({
+        adapter: activeTaskAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 20 },
+        taskManager: {
+          getTask() {
+            return { status: 'running', updatedAt: new Date().toISOString() };
+          },
+          renderActiveTasksForPrompt() { return ''; },
+        },
+        sessionId: 'session-active-task',
+      });
+      activeTaskEngine.registerTool({
+        name: 'launch_active_task',
+        description: 'launch a task that keeps reporting activity',
+        parameters: { type: 'object', properties: {} },
+        execute: async (_input, ctx) => {
+          ctx.registerAsyncTask('task_active');
+          return 'task started';
+        },
+      });
+
+      const activeEvents = [];
+      let activeCompletionAccepted = null;
+      for await (const event of activeTaskEngine.query({ prompt: 'delegate active work' })) {
+        activeEvents.push(event);
+        if (event.type === 'async_task_wait_start') {
+          setTimeout(() => {
+            activeCompletionAccepted = activeTaskEngine.notifyAsyncTaskCompleted(
+              'task_active',
+              '<task-result id="task_active">done</task-result>',
+            );
+          }, 45);
+        }
+      }
+
+      expect(activeCompletionAccepted).toBe(true);
+      expect(activeEvents.find(event => event.type === 'async_task_wait_end')).toMatchObject({
+        timedOut: false,
+        deferredTaskIds: [],
+      });
+      expect(activeTaskAdapter.callLog).toHaveLength(3);
+
+      // Multiple owned tasks use independent silence leases. Expiring one stale
+      // child must not evict an active sibling; the active result remains in the
+      // same parent turn while only the stale task is deferred.
+      const mixedTaskAdapter = new MockAdapter();
+      mixedTaskAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_mixed_tasks', name: 'launch_mixed_tasks', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mixedTaskAdapter.pushResponse([
+        { type: 'text_delta', text: 'Waiting for the active task.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      mixedTaskAdapter.pushResponse([
+        { type: 'text_delta', text: 'The active task result was consumed.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const mixedTaskEngine = new Engine({
+        adapter: mixedTaskAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 20 },
+        taskManager: {
+          getTask(_sessionId, taskId) {
+            return taskId === 'task_stale_sibling'
+              ? { status: 'running', updatedAt: new Date(0).toISOString() }
+              : { status: 'running', updatedAt: new Date().toISOString() };
+          },
+          renderActiveTasksForPrompt() { return ''; },
+        },
+        sessionId: 'session-mixed-tasks',
+      });
+      const mixedDeferredTasks = [];
+      mixedTaskEngine.setAsyncTaskCoordinator({
+        onDeferred(taskId) { mixedDeferredTasks.push(taskId); },
+      });
+      mixedTaskEngine.registerTool({
+        name: 'launch_mixed_tasks',
+        description: 'launch one stale task and one active task',
+        parameters: { type: 'object', properties: {} },
+        execute: async (_input, ctx) => {
+          ctx.registerAsyncTask('task_stale_sibling');
+          ctx.registerAsyncTask('task_active_sibling');
+          return 'tasks started';
+        },
+      });
+
+      const mixedEvents = [];
+      let mixedActiveAccepted = null;
+      for await (const event of mixedTaskEngine.query({ prompt: 'delegate mixed work' })) {
+        mixedEvents.push(event);
+        if (event.type === 'async_task_wait_start') {
+          setTimeout(() => {
+            mixedActiveAccepted = mixedTaskEngine.notifyAsyncTaskCompleted(
+              'task_active_sibling',
+              '<task-result id="task_active_sibling">done</task-result>',
+            );
+          }, 45);
+        }
+      }
+
+      expect(mixedDeferredTasks).toEqual(['task_stale_sibling']);
+      expect(mixedActiveAccepted).toBe(true);
+      expect(mixedTaskEngine.notifyAsyncTaskCompleted('task_stale_sibling', 'late')).toBe(false);
+      expect(mixedEvents.find(event => event.type === 'async_task_wait_end')).toMatchObject({
+        timedOut: true,
+        deferredTaskIds: ['task_stale_sibling'],
+        remainingTaskIds: [],
+      });
+      expect(mixedTaskAdapter.callLog).toHaveLength(3);
+    });
+
+    it('passes the active tool call identity to interactive AskUser hosts', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_ask', name: 'ask_test', input: { question: 'Continue?' } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'Continuing.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const askUser = async (_input, toolCall) => JSON.stringify(toolCall);
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+      engine.registerTool({
+        name: 'ask_test',
+        description: 'Ask through the host',
+        parameters: {},
+        execute: async (input, ctx) => ctx.askUser(input),
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'ask me', askUser })) events.push(event);
+
+      const toolEnd = events.find(event => event.type === 'tool_end');
+      expect(JSON.parse(toolEnd.output)).toMatchObject({
+        id: 'call_ask',
+        name: 'ask_test',
+      });
+    });
+
+    it('marks structured tool error envelopes as failed executions', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_structured_error', name: 'structured_error_tool', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'The tool returned an error.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const records = [];
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolStats: { record: entry => records.push(entry) },
+      });
+      engine.registerTool({
+        name: 'structured_error_tool',
+        description: 'Returns a structured failure',
+        parameters: {},
+        errorOutput: 'json-error-envelope',
+        execute: async () => JSON.stringify({ error: 'Path not found' }),
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'use the tool' })) events.push(event);
+
+      expect(events.find(event => event.type === 'tool_end')).toMatchObject({ isError: true });
+      expect(events.find(event => event.type === 'tool_exec')).toMatchObject({ isError: true });
+      expect(mockAdapter.callLog[1].messages.find(message => message.role === 'tool')).toMatchObject({ isError: true });
+      expect(records).toEqual([
+        expect.objectContaining({ name: 'structured_error_tool', isError: true, errorMessage: '{"error":"Path not found"}' }),
+      ]);
+    });
+
+    it('propagates resolved MCP isError results through events, model messages, and stats', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_mcp_error', name: 'mcp__secure__read', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'The MCP tool failed.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const records = [];
+      const mcpManager = {
+        listTools: () => [{
+          name: 'secure__read',
+          server: 'secure',
+          description: 'Read protected data',
+          inputSchema: { type: 'object', properties: {} },
+        }],
+        callTool: async () => ({
+          isError: true,
+          content: [{ type: 'text', text: 'permission denied' }],
+        }),
+      };
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolStats: { record: entry => records.push(entry) },
+      });
+      for (const tool of buildMcpFlattenedTools(mcpManager)) engine.registerTool(tool);
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'read protected data' })) events.push(event);
+
+      expect(events.find(event => event.type === 'tool_end')).toMatchObject({
+        output: 'Error: permission denied',
+        isError: true,
+      });
+      expect(events.find(event => event.type === 'tool_exec')).toMatchObject({ isError: true });
+      expect(mockAdapter.callLog[1].messages.find(message => message.role === 'tool')).toMatchObject({
+        content: 'Error: permission denied',
+        isError: true,
+      });
+      expect(records).toEqual([
+        expect.objectContaining({
+          name: 'mcp__secure__read',
+          isError: true,
+          errorMessage: 'Error: permission denied',
+        }),
+      ]);
     });
 
     it('should handle tool execution errors gracefully', async () => {
@@ -816,6 +1785,7 @@ describe('Engine', () => {
       expect(retryEvents).toHaveLength(1);
       expect(retryEvents[0].attempt).toBe(1);
       expect(retryEvents[0].reason).toBe('rate_limit_retry_after');
+      expect(retryEvents[0].recoveryMode).toBe('restart');
       expect(retryEvents[0].delayMs).toBeLessThanOrEqual(50);
       const errorEvents = events.filter(e => e.type === 'error');
       expect(errorEvents).toHaveLength(0);
@@ -894,7 +1864,40 @@ describe('Engine', () => {
       expect(errorEvents[0].retryable).toBe(true);
       expect(errorEvents[0].reason).toBe('stream_idle_timeout');
       expect(errorEvents[0].retryExhausted).toBe(true);
+      expect(errorEvents[0].retryAttempts).toBe(3);
+      expect(errorEvents[0].maxRetries).toBe(3);
       expect(errorEvents[0].error).toBeInstanceOf(LLMStreamIdleTimeoutError);
+
+      // Once a complete tool call has crossed the stream boundary, retrying or
+      // falling back could publish and execute it twice. Fail closed instead.
+      let toolAttempts = 0;
+      const toolEngine = new Engine({
+        adapter: {
+          async *stream() {
+            toolAttempts += 1;
+            yield { type: 'tool_call', id: 'call-once', name: 'echo', input: { value: 1 } };
+            throw new LLMStreamIdleTimeoutError('OpenAI stream idle timeout after 90000ms', 90_000);
+          },
+        },
+        trace,
+        config: {
+          model: 'test-model',
+          fallbackModel: 'fallback-model',
+          maxOutputTokens: 1024,
+          llmRetry: { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 5, jitterRatio: 0 },
+        },
+      });
+      const toolEvents = [];
+      for await (const event of toolEngine.query({ prompt: 'use a tool' })) toolEvents.push(event);
+      expect(toolAttempts).toBe(1);
+      expect(toolEvents.filter(event => event.type === 'tool_call')).toHaveLength(1);
+      expect(toolEvents.filter(event => event.type === 'llm_retry' || event.type === 'fallback')).toHaveLength(0);
+      expect(toolEvents).toContainEqual(expect.objectContaining({
+        type: 'error',
+        reason: 'stream_idle_timeout',
+        retryExhausted: false,
+        retryAttempts: 0,
+      }));
     });
 
     it('falls back after stream idle timeout retries are exhausted', async () => {
@@ -936,6 +1939,75 @@ describe('Engine', () => {
       }));
       expect(events.filter(e => e.type === 'error')).toHaveLength(0);
       expect(events).toContainEqual(expect.objectContaining({ type: 'text_delta', text: 'fallback ok' }));
+
+      // A retry after visible text must continue from the accepted prefix on a
+      // fresh request instead of replaying the original prompt and duplicating
+      // the already-rendered output.
+      const requests = [];
+      const traceRows = [];
+      const continuationTrace = Object.create(trace);
+      continuationTrace.startTurn = () => 'retry-trace';
+      continuationTrace.endTurn = (_id, row) => traceRows.push(row);
+      const continuationDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-idle-continuation-'));
+      const continuationStore = new ConversationStore(continuationDir);
+      let attempt = 0;
+      const continuationEngine = new Engine({
+        adapter: {
+          async *stream(params) {
+            requests.push(params.messages.map(message => ({
+              role: message.role,
+              content: message.content,
+            })));
+            attempt += 1;
+            if (attempt === 1) {
+              yield { type: 'text_delta', text: 'first half ' };
+              throw new LLMStreamIdleTimeoutError('OpenAI stream idle timeout after 90000ms', 90_000);
+            }
+            yield { type: 'stop', stopReason: 'end_turn' };
+          },
+        },
+        trace: continuationTrace,
+        conversationStore: continuationStore,
+        yeaftDir: continuationDir,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          llmRetry: { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 5, jitterRatio: 0 },
+        },
+      });
+      const continuationEvents = [];
+      for await (const event of continuationEngine.query({
+        prompt: 'hello',
+        sessionId: 'session-idle-continuation',
+      })) continuationEvents.push(event);
+      expect(attempt).toBe(2);
+      expect(continuationEvents.filter(event => event.type === 'text_delta').map(event => event.text))
+        .toEqual(['first half ']);
+      expect(continuationEvents.filter(event => event.type === 'llm_retry')).toEqual([
+        expect.objectContaining({ reason: 'stream_idle_timeout', recoveryMode: 'continue' }),
+      ]);
+      expect(requests[1].slice(-2)).toEqual([
+        expect.objectContaining({ role: 'assistant', content: 'first half ' }),
+        expect.objectContaining({
+          role: 'user',
+          content: expect.stringContaining('Continue from the exact point'),
+        }),
+      ]);
+      const retryTrace = traceRows.find(row => row.stopReason === 'llm_retry');
+      expect(retryTrace.messages).not.toContainEqual(expect.objectContaining({
+        role: 'user',
+        content: expect.stringContaining('Continue from the exact point'),
+      }));
+      expect(traceRows.at(-1).messages).toContainEqual(expect.objectContaining({
+        role: 'user',
+        content: expect.stringContaining('Continue from the exact point'),
+      }));
+      expect(continuationStore.loadRecentBySession('session-idle-continuation', 10)
+        .find(message => message.content === 'first half ')).toMatchObject({
+          responseKind: 'result',
+          stopReason: 'end_turn',
+        });
+      rmSync(continuationDir, { recursive: true, force: true });
     });
 
     it('does not emit debug loop rows for retryable attempts before fallback succeeds', async () => {
@@ -1143,36 +2215,109 @@ describe('Engine', () => {
       expect(events).not.toContainEqual(expect.objectContaining({ type: 'turn_end', stopReason: 'end_turn' }));
     });
 
-    it('stops retrying when aborted mid-backoff', async () => {
-      const { LLMRateLimitError } = await import('../../../agent/yeaft/llm/adapter.js');
-      const controller = new AbortController();
-      let attempts = 0;
-      const engine = new Engine({
-        adapter: {
-          async *stream() {
-            attempts += 1;
-            throw new LLMRateLimitError('slow down', 429, 5_000);
+    it('settles retry persistence for boundary teardown and later textless failure', async () => {
+      const { LLMServerError } = await import('../../../agent/yeaft/llm/adapter.js');
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-retry-abort-partial-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        let attempts = 0;
+        const engine = new Engine({
+          adapter: {
+            async *stream() {
+              attempts += 1;
+              yield { type: 'text_delta', text: 'visible partial before retry' };
+              throw new LLMServerError('temporary upstream failure', 503);
+            },
           },
-        },
-        trace,
-        config: {
-          model: 'test-model',
-          maxOutputTokens: 1024,
-          llmRetry: { maxRetries: 3, baseDelayMs: 10, maxDelayMs: 5_000, jitterRatio: 0 },
-        },
-      });
+          trace,
+          conversationStore,
+          yeaftDir,
+          config: {
+            model: 'test-model',
+            maxOutputTokens: 1024,
+            llmRetry: { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
+          },
+        });
 
-      // Abort right after the first retry event lands.
-      setTimeout(() => controller.abort('test'), 20);
+        const iterator = engine.query({
+          prompt: 'hi',
+          sessionId: 'session-retry-abort',
+          vpTurnId: 'turn-retry-abort',
+        })[Symbol.asyncIterator]();
+        const events = [];
+        while (true) {
+          const step = await iterator.next();
+          if (step.done) break;
+          events.push(step.value);
+          if (step.value.type === 'turn_end' && step.value.stopReason === 'llm_retry') break;
+        }
+        await iterator.return();
 
-      const events = [];
-      for await (const event of engine.query({ prompt: 'hi', signal: controller.signal })) {
-        events.push(event);
+        expect(attempts).toBe(1);
+        expect(events.some(e => e.type === 'llm_retry')).toBe(true);
+        expect(events).toContainEqual(expect.objectContaining({ type: 'turn_end', stopReason: 'llm_retry' }));
+        expect(conversationStore.loadRecentBySession('session-retry-abort', Infinity)).toEqual([
+          expect.objectContaining({ role: 'user', content: 'hi' }),
+          expect.objectContaining({
+            role: 'assistant',
+            content: 'visible partial before retry',
+            incomplete: true,
+            stopReason: 'aborted',
+            turnId: 'turn-retry-abort',
+          }),
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
       }
+      const errorDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-retry-final-partial-'));
+      try {
+        const conversationStore = new ConversationStore(errorDir);
+        let attempts = 0;
+        const engine = new Engine({
+          adapter: {
+            async *stream() {
+              attempts += 1;
+              if (attempts === 1) yield { type: 'text_delta', text: 'visible partial before failure' };
+              throw new LLMServerError('temporary upstream failure', 503);
+            },
+          },
+          trace,
+          conversationStore,
+          yeaftDir: errorDir,
+          config: {
+            model: 'test-model',
+            maxOutputTokens: 1024,
+            llmRetry: { maxRetries: 2, baseDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
+          },
+        });
 
-      expect(attempts).toBe(1);
-      expect(events.some(e => e.type === 'llm_retry')).toBe(true);
-      expect(events.some(e => e.type === 'aborted')).toBe(true);
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'hi',
+          sessionId: 'session-retry-final-partial',
+          vpTurnId: 'turn-retry-final-partial',
+        })) events.push(event);
+
+        expect(attempts).toBe(3);
+        expect(events).toContainEqual(expect.objectContaining({ type: 'error', retryable: true }));
+        expect(conversationStore.loadRecentBySession('session-retry-final-partial', Infinity)).toEqual([
+          expect.objectContaining({ role: 'user', content: 'hi' }),
+          expect.objectContaining({
+            role: 'assistant',
+            content: 'visible partial before failure',
+            incomplete: true,
+            stopReason: 'error',
+            turnId: 'turn-retry-final-partial',
+          }),
+          expect.objectContaining({
+            role: 'user',
+            userAuthored: false,
+            content: expect.stringContaining('Continue from the exact point'),
+          }),
+        ]);
+      } finally {
+        rmSync(errorDir, { recursive: true, force: true });
+      }
     });
   });
 
@@ -1720,7 +2865,7 @@ describe('Engine', () => {
       expect(call.system).not.toContain('你是一个持续伴随的 AI 伙伴');
     });
 
-    it('should include tool names in system prompt for configured language', async () => {
+    it('should include configured tools and dependency-aware TodoWrite guidance', async () => {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'ok' },
         { type: 'stop', stopReason: 'end_turn' },
@@ -1745,6 +2890,1812 @@ describe('Engine', () => {
 
       const call = mockAdapter.callLog[0];
       expect(call.system).toContain('可用工具：search');
+
+      const enSystem = buildSystemPrompt({ language: 'en', toolNames: ['TodoWrite'] });
+      const zhSystem = buildSystemPrompt({ language: 'zh', toolNames: ['TodoWrite'] });
+
+      expect(enSystem).toContain('Avoid an intermediate `TodoWrite`-only model round');
+      expect(enSystem).toMatch(/mark work completed only after\s+evidence/);
+      expect(enSystem).toContain('A standalone `TodoWrite` remains valid');
+      expect(zhSystem).toContain('不要让中间状态的 `TodoWrite` 单独占一个');
+      expect(zhSystem).toContain('只有已有证据时才能把工作标记为完成');
+      expect(zhSystem).toContain('`TodoWrite` 仍可单独调用');
+
+      expect(todoWriteTool.description.en).toContain('BATCH WITH WORK');
+      expect(todoWriteTool.description.en).toContain('same assistant response');
+      expect(todoWriteTool.description.en).toContain('only after evidence');
+      expect(todoWriteTool.description.en).toContain('standalone TodoWrite remains valid');
+      expect(todoWriteTool.description.zh).toContain('和工作工具合批');
+      expect(todoWriteTool.description.zh).toContain('同一个 assistant response');
+      expect(todoWriteTool.description.zh).toContain('只有已有证据时');
+      expect(todoWriteTool.description.zh).toContain('TodoWrite 仍可单独调用');
+
+      const enPlan = await startPlanTool.execute(
+        { topic: 'Batch plan setup with its first investigation' },
+        { config: { language: 'en' }, vpPersona: {} },
+      );
+      const zhPlan = await startPlanTool.execute(
+        { topic: '把计划建立和第一批调查工具合批' },
+        { config: { language: 'zh-CN' }, vpPersona: {} },
+      );
+
+      expect(enPlan).toContain('emit `TodoWrite` and those independent tool calls in the same assistant response');
+      expect(enPlan).toContain('Stop after the plan only when the first step must ask the user');
+      expect(zhPlan).toContain('在同一个 assistant response 中发出 `TodoWrite`');
+      expect(zhPlan).toContain('只有第一步必须询问用户时才在计划后停下');
     });
+  });
+});
+const managedCliTempDirs = [];
+
+function tempDir(name) {
+  const dir = mkdtempSync(join(tmpdir(), `yeaft-${name}-`));
+  managedCliTempDirs.push(dir);
+  return dir;
+}
+
+function tarArchive(path, content) {
+  const data = Buffer.from(content);
+  const header = Buffer.alloc(512);
+  header.write(path, 0, 100, 'utf8');
+  header.write('0000755\0', 100, 8, 'ascii');
+  header.write('0000000\0', 108, 8, 'ascii');
+  header.write('0000000\0', 116, 8, 'ascii');
+  header.write(`${data.length.toString(8).padStart(11, '0')}\0`, 124, 12, 'ascii');
+  header.fill(32, 148, 156);
+  header[156] = 48;
+  header.write('ustar\0', 257, 6, 'ascii');
+  const checksum = [...header].reduce((sum, byte) => sum + byte, 0);
+  header.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+  return gzipSync(Buffer.concat([
+    header,
+    data,
+    Buffer.alloc((512 - data.length % 512) % 512),
+    Buffer.alloc(1024),
+  ]));
+}
+
+function emptyPathEnv() {
+  return { ...process.env, PATH: '' };
+}
+
+function trustManagedCliFixtures(yeaftDir, names) {
+  const statePath = join(yeaftDir, 'managed-cli.json');
+  let state = {};
+  try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch {}
+  const installations = { ...(state.installations || {}) };
+  for (const name of names) {
+    const path = join(managedCliBinDir(yeaftDir), name);
+    const [assetFileName, archiveSha256] = managedCliToolSpecs[name].assets[
+      `${process.platform}-${process.arch}`
+    ];
+    installations[name] = {
+      version: managedCliToolSpecs[name].version,
+      platform: process.platform,
+      arch: process.arch,
+      assetFileName,
+      archiveSha256,
+      binarySha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
+    };
+  }
+  writeFileSync(statePath, `${JSON.stringify({
+    ...state,
+    version: 2,
+    installations,
+  }, null, 2)}\n`);
+}
+
+function zipArchive(path, content) {
+  const name = Buffer.from(path);
+  const data = Buffer.from(content);
+  const local = Buffer.alloc(30 + name.length + data.length);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(0, 6);
+  local.writeUInt16LE(0, 8);
+  local.writeUInt32LE(data.length, 18);
+  local.writeUInt32LE(data.length, 22);
+  local.writeUInt16LE(name.length, 26);
+  name.copy(local, 30);
+  data.copy(local, 30 + name.length);
+
+  const central = Buffer.alloc(46 + name.length);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(0, 8);
+  central.writeUInt16LE(0, 10);
+  central.writeUInt32LE(data.length, 20);
+  central.writeUInt32LE(data.length, 24);
+  central.writeUInt16LE(name.length, 28);
+  name.copy(central, 46);
+
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length, 12);
+  end.writeUInt32LE(local.length, 16);
+  return Buffer.concat([local, central, end]);
+}
+
+afterEach(() => {
+  for (const dir of managedCliTempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('managed CLI setup and fast tool integration', () => {
+  async function verifyProcessTermination() {
+    const preAborted = new AbortController();
+    preAborted.abort();
+    await expect(runProcess(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], {
+      signal: preAborted.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+
+    const crScript = "process.stdout.write('out\\r\\n'); process.stderr.write('err\\r\\n')";
+    await expect(runProcess(process.execPath, ['-e', crScript])).resolves.toMatchObject({
+      stdout: 'out\n',
+      stderr: 'err\n',
+    });
+    const replacementScript = "process.stdout.write('valid \\ufffd value')";
+    await expect(runProcess(process.execPath, ['-e', replacementScript])).resolves.toMatchObject({
+      stdout: 'valid \ufffd value',
+    });
+    await expect(runProcess(process.execPath, ['-e', crScript], {
+      preserveCarriageReturns: true,
+    })).resolves.toMatchObject({
+      stdout: 'out\r\n',
+      stderr: 'err\n',
+    });
+
+    if (process.platform !== 'win32') {
+      const termResistant = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)";
+      const startedAt = Date.now();
+      const timedOut = await runProcess(process.execPath, ['-e', termResistant], {
+        timeoutMs: 50,
+        killGraceMs: 25,
+      });
+      expect(timedOut).toMatchObject({ code: 124, timedOut: true });
+      expect(Date.now() - startedAt).toBeLessThan(1000);
+
+      const controller = new AbortController();
+      const pending = runProcess(process.execPath, ['-e', termResistant], {
+        signal: controller.signal,
+        killGraceMs: 25,
+      });
+      setTimeout(() => controller.abort(), 50);
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    }
+  }
+
+  async function verifyWindowsProcessTreeTermination() {
+    for (const taskkillFailure of ['nonzero', 'throw']) {
+      const calls = [];
+      const child = new EventEmitter();
+      child.pid = 4242;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = signal => {
+        calls.push(`proc.kill ${signal}`);
+        setImmediate(() => child.emit('close', 1));
+        return true;
+      };
+      const spawnProcess = () => child;
+      const spawnProcessSync = (command, args) => {
+        calls.push(`${command} ${args.join(' ')}`);
+        if (taskkillFailure === 'throw') throw new Error('taskkill unavailable');
+        return { status: 1 };
+      };
+
+      const result = await runProcess('ignored.exe', [], {
+        timeoutMs: 1,
+        platform: 'win32',
+        spawnProcess,
+        spawnProcessSync,
+      });
+      expect(result).toMatchObject({ code: 124, timedOut: true });
+      expect(calls).toEqual([
+        'taskkill /pid 4242 /t /f',
+        'proc.kill SIGKILL',
+      ]);
+      expect(child.listenerCount('close')).toBe(0);
+      expect(child.listenerCount('error')).toBe(0);
+      expect(child.stdout.listenerCount('data')).toBe(0);
+      expect(child.stderr.listenerCount('data')).toBe(0);
+    }
+  }
+
+  function verifyGrepExactBudget() {
+    const marker = '\n\n[Output truncated]';
+    for (const finalSize of [32767, 32768]) {
+      const collector = createOutputCollector(32768);
+      const lastSize = finalSize - 24002;
+      expect(collector.add('x'.repeat(12000))).toBe(true);
+      expect(collector.add('x'.repeat(12000))).toBe(true);
+      expect(collector.add('x'.repeat(lastSize))).toBe(true);
+      expect(Buffer.byteLength(collector.toString())).toBe(finalSize);
+      expect(collector.toString()).not.toContain(marker);
+    }
+    const overflow = createOutputCollector(32768);
+    expect(overflow.add('x'.repeat(12000))).toBe(true);
+    expect(overflow.add('x'.repeat(12000))).toBe(true);
+    expect(overflow.add('x'.repeat(8767))).toBe(false);
+    expect(Buffer.byteLength(overflow.toString())).toBe(32768);
+    expect(overflow.toString().endsWith(marker)).toBe(true);
+    const settled = overflow.toString();
+    expect(overflow.add('late')).toBe(false);
+    expect(overflow.toString()).toBe(settled);
+
+    for (const maxBytes of [0, 1, Buffer.byteLength(marker) - 1, Buffer.byteLength(marker)]) {
+      const tiny = createOutputCollector(maxBytes);
+      expect(tiny.add('x'.repeat(maxBytes + 1))).toBe(false);
+      expect(Buffer.byteLength(tiny.toString())).toBe(maxBytes);
+      expect(tiny.toString()).not.toContain('\ufffd');
+    }
+
+    const unicode = createOutputCollector(16);
+    expect(unicode.add('界'.repeat(6))).toBe(false);
+    expect(Buffer.byteLength(unicode.toString())).toBe(16);
+    expect(unicode.toString()).not.toContain('\ufffd');
+  }
+
+  async function verifyRipgrepRecordFraming() {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => {};
+    const pending = runRipgrep('needle', process.cwd(), {
+      fixedStrings: true,
+      filesOnly: false,
+      maxResults: 10,
+      byteBudget: 32768,
+      cwd: process.cwd(),
+      structured: true,
+    }, () => child);
+    const raw = Buffer.from(
+      'C:/a.js\u00001:needle\nsrc/界\nbreak.js\u00002:needle\nsrc/a:12:b.js\u00003:needle\n',
+      'utf8',
+    );
+    for (const byte of raw) child.stdout.write(Buffer.from([byte]));
+    child.stdout.end();
+    child.stderr.end();
+    child.emit('close', 0);
+    await expect(pending).resolves.toMatchObject({
+      records: [
+        { path: 'C:/a.js', suffix: '1:needle', kind: 'match' },
+        { path: 'src/界\nbreak.js', suffix: '2:needle', kind: 'match' },
+        { path: 'src/a:12:b.js', suffix: '3:needle', kind: 'match' },
+      ],
+      resultCount: 3,
+      truncated: false,
+    });
+  }
+
+  async function verifyRipgrepFilteredLongLineFraming() {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    let killCalls = 0;
+    child.kill = () => { killCalls += 1; };
+    const pending = runRipgrep('needle', process.cwd(), {
+      fixedStrings: true,
+      filesOnly: false,
+      glob: '**/*.js',
+      maxResults: 10,
+      byteBudget: 32768,
+      cwd: process.cwd(),
+      structured: true,
+    }, () => child);
+    child.stdout.write(Buffer.from(`a.txt\u0000${'x'.repeat(17000)}`));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(killCalls).toBe(0);
+    child.stdout.write(Buffer.from('tail\nb.js\u00001:needle\n'));
+    child.stdout.end();
+    child.stderr.end();
+    child.emit('close', 0);
+    await expect(pending).resolves.toMatchObject({
+      records: [{ path: 'b.js', suffix: '1:needle', kind: 'match' }],
+      resultCount: 1,
+      truncated: false,
+    });
+    expect(killCalls).toBe(0);
+  }
+
+  async function verifyRipgrepLongLineStopsDuringCapture() {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    let killCalls = 0;
+    child.kill = () => { killCalls += 1; };
+    const pending = runRipgrep('needle', process.cwd(), {
+      fixedStrings: true,
+      filesOnly: false,
+      maxResults: 10,
+      byteBudget: 32768,
+      cwd: process.cwd(),
+      structured: true,
+    }, () => child);
+    child.stdout.write(Buffer.from(`src/a.js\u0000${'界'.repeat(7000)}`));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(killCalls).toBe(1);
+    child.stdout.end();
+    child.stderr.end();
+    child.emit('close', null);
+    const result = await pending;
+    expect(result.truncated).toBe(true);
+    expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(32768);
+    expect(result.output).toContain('[Output truncated]');
+    expect(result.output).not.toContain('\ufffd');
+  }
+
+  async function verifyRipgrepAbortReentry() {
+    for (const event of ['close', 'error']) {
+      const controller = new AbortController();
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      let killCalls = 0;
+      child.kill = () => {
+        killCalls += 1;
+        if (event === 'close') child.emit('close', 130);
+        else child.emit('error', new Error('sync process error'));
+      };
+      const pending = runRipgrep('needle', process.cwd(), {
+        fixedStrings: true,
+        filesOnly: true,
+        maxResults: 10,
+        byteBudget: 32768,
+        cwd: process.cwd(),
+        signal: controller.signal,
+      }, () => child);
+      controller.abort('user');
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      expect(killCalls).toBe(1);
+      child.emit('error', new Error('late process error'));
+      child.emit('close', 0);
+      expect(killCalls).toBe(1);
+    }
+  }
+
+  async function verifyRipgrepParity() {
+    if (process.platform === 'win32') return;
+    const root = tempDir('grep-semantic-parity');
+    const binDir = join(root, 'bin');
+    mkdirSync(join(root, '.hidden'), { recursive: true });
+    mkdirSync(join(root, 'node_modules'), { recursive: true });
+    mkdirSync(join(root, '.git'), { recursive: true });
+    mkdirSync(join(root, '.yeaft', 'worktrees', 'ignored'), { recursive: true });
+    mkdirSync(join(root, 'src', '.yeaft', 'worktrees', 'ignored'), { recursive: true });
+    mkdirSync(binDir);
+    writeFileSync(join(root, 'src', 'a.txt'), 'needle\n');
+    writeFileSync(join(root, '.hidden', 'h.txt'), 'needle\n');
+    writeFileSync(join(root, 'node_modules', 'n.txt'), 'needle\n');
+    writeFileSync(join(root, '.git', 'g.txt'), 'needle\n');
+    writeFileSync(join(root, '.yeaft', 'worktrees', 'ignored', 'w.txt'), 'needle\n');
+    writeFileSync(join(root, 'src', '.yeaft', 'worktrees', 'ignored', 'w.txt'), 'needle\n');
+    const rgPath = join(binDir, 'rg');
+    const capturedArgs = join(tmpdir(), `yeaft-rg-args-${process.pid}-${Date.now()}.txt`);
+    writeFileSync(rgPath, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(capturedArgs)}\nprintf 'src/a.txt\\000.hidden/h.txt\\000'\n`, { mode: 0o755 });
+    const options = {
+      caseInsensitive: false,
+      fixedStrings: true,
+      filesOnly: true,
+      count: false,
+      multiline: false,
+      maxResults: 50,
+      byteBudget: 32 * 1024,
+      cwd: root,
+    };
+    const fast = (await runRipgrep('needle', root, options, undefined, rgPath)).trim().split('\n').sort();
+    const fallback = (await nodeGrep('needle', root, options)).trim().split('\n').sort();
+    expect(fast).toEqual(fallback);
+    expect(fast).toEqual(['.hidden/h.txt', 'src/a.txt']);
+    const args = readFileSync(capturedArgs, 'utf8').trim().split('\n');
+    expect(args).toContain('--hidden');
+    expect(args).toContain('--no-ignore');
+    expect(args).toContain('!**/node_modules/**');
+    expect(args).toContain('!.yeaft/worktrees/**');
+    expect(args).toContain('!**/.yeaft/worktrees/**');
+    options.glob = '**/*.txt';
+    const filteredFallback = (await nodeGrep('needle', root, options)).trim().split('\n').sort();
+    expect(filteredFallback).toEqual(['.hidden/h.txt', 'src/a.txt']);
+    await runRipgrep('needle', root, options, undefined, rgPath);
+    const filteredArgs = readFileSync(capturedArgs, 'utf8').trim().split('\n');
+    expect(filteredArgs).not.toContain('**/*.txt');
+    expect(filteredArgs).toContain('!**/node_modules/**');
+    expect(filteredArgs).toContain('!.yeaft/worktrees/**');
+    expect(filteredArgs).toContain('!**/.yeaft/worktrees/**');
+    rmSync(capturedArgs, { force: true });
+  }
+
+  it('keeps process, platform, and fast-tool fallback boundaries', async () => {
+    await verifyProcessTermination();
+    await verifyWindowsProcessTreeTermination();
+    verifyGrepExactBudget();
+    await verifyRipgrepRecordFraming();
+    await verifyRipgrepFilteredLongLineFraming();
+    await verifyRipgrepLongLineStopsDuringCapture();
+    await verifyRipgrepAbortReentry();
+    const yeaftDir = tempDir('cli-path');
+    const systemBin = join(yeaftDir, 'system-bin');
+    mkdirSync(systemBin);
+    const fdfind = join(systemBin, 'fdfind');
+    writeFileSync(fdfind, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const env = { PATH: systemBin };
+    const binDir = prependManagedCliBinToPath(yeaftDir, env);
+    prependManagedCliBinToPath(yeaftDir, env);
+    expect(env.PATH.split(delimiter)).toEqual([binDir, systemBin]);
+    const windowsEnv = { Path: systemBin };
+    prependManagedCliBinToPath(yeaftDir, windowsEnv, 'win32');
+    expect(windowsEnv.PATH).toBe(windowsEnv.Path);
+    expect(resolveManagedCliCommand('fd', { yeaftDir, env, platform: 'linux' })).toBe(fdfind);
+
+    const tar = tarArchive('ripgrep-15.2.0/rg', '#!/bin/sh\necho ripgrep 15.2.0\n');
+    expect(extractManagedCliBinary(tar, 'ripgrep.tar.gz', 'rg', 'linux').toString())
+      .toContain('ripgrep 15.2.0');
+    const zip = zipArchive('fd-v10.3.0/fd.exe', Buffer.from('MZ-test-binary'));
+    expect(extractManagedCliBinary(zip, 'fd.zip', 'fd', 'win32').toString())
+      .toBe('MZ-test-binary');
+
+    if (process.platform !== 'win32') {
+      const installDir = tempDir('cli-successful-install');
+      const archives = {
+        rg: tarArchive('package/rg', '#!/bin/sh\necho ripgrep 15.2.0\n'),
+        fd: tarArchive('package/fd', '#!/bin/sh\necho fd 10.3.0\n'),
+        dust: tarArchive('package/dust', '#!/bin/sh\necho Dust 1.2.4\n'),
+      };
+      const originalAssets = {};
+      const archiveByFileName = new Map();
+      for (const [name, archive] of Object.entries(archives)) {
+        originalAssets[name] = managedCliToolSpecs[name].assets['linux-x64'];
+        const fileName = originalAssets[name][0];
+        managedCliToolSpecs[name].assets['linux-x64'] = [
+          fileName,
+          createHash('sha256').update(archive).digest('hex'),
+        ];
+        archiveByFileName.set(fileName, archive);
+      }
+      try {
+        let successfulFetches = 0;
+        const installOptions = {
+          yeaftDir: installDir,
+          platform: 'linux',
+          arch: 'x64',
+          env: emptyPathEnv(),
+          force: true,
+          fetchFn: async url => {
+            successfulFetches += 1;
+            const fileName = String(url).split('/').at(-1);
+            return new Response(archiveByFileName.get(fileName));
+          },
+        };
+        const [firstInstall, joinedInstall] = await Promise.all([
+          ensureManagedCliTools(installOptions),
+          ensureManagedCliTools(installOptions),
+        ]);
+        expect(firstInstall).toEqual(joinedInstall);
+        expect(firstInstall.every(result => result.status === 'installed')).toBe(true);
+        expect(successfulFetches).toBe(3);
+        const installedState = JSON.parse(
+          readFileSync(join(installDir, 'managed-cli.json'), 'utf8'),
+        );
+        expect(Object.keys(installedState.installations).sort()).toEqual(['dust', 'fd', 'rg']);
+        for (const name of ['rg', 'fd', 'dust']) {
+          const installation = installedState.installations[name];
+          expect(installation).toMatchObject({
+            version: managedCliToolSpecs[name].version,
+            platform: 'linux',
+            arch: 'x64',
+            assetFileName: managedCliToolSpecs[name].assets['linux-x64'][0],
+            archiveSha256: managedCliToolSpecs[name].assets['linux-x64'][1],
+          });
+          expect(installation.binarySha256).toBe(
+            createHash('sha256')
+              .update(readFileSync(join(managedCliBinDir(installDir), name)))
+              .digest('hex'),
+          );
+        }
+        const available = await ensureManagedCliTools({
+          ...installOptions,
+          fetchFn: async () => { throw new Error('valid installs must not redownload'); },
+        });
+        expect(available.every(result => result.status === 'available')).toBe(true);
+      } finally {
+        for (const [name, asset] of Object.entries(originalAssets)) {
+          managedCliToolSpecs[name].assets['linux-x64'] = asset;
+        }
+      }
+
+      const windowsInstallDir = tempDir('cli-windows-install');
+      const windowsBinDir = managedCliBinDir(windowsInstallDir);
+      mkdirSync(windowsBinDir, { recursive: true });
+      writeFileSync(join(windowsBinDir, 'fd.exe'), 'old fd binary');
+      const windowsScripts = {
+        rg: '#!/bin/sh\necho ripgrep 15.2.0\n',
+        fd: '#!/bin/sh\necho fd 10.3.0\n',
+        dust: '#!/bin/sh\necho dust 1.2.4\n',
+      };
+      const windowsArchives = Object.fromEntries(Object.entries(windowsScripts).map(([name, script]) => [
+        name,
+        zipArchive(`package/${name}.exe`, script),
+      ]));
+      const originalWindowsAssets = {};
+      try {
+        const windowsArchiveByFileName = new Map();
+        for (const [name, archive] of Object.entries(windowsArchives)) {
+          originalWindowsAssets[name] = managedCliToolSpecs[name].assets['win32-x64'];
+          const fileName = originalWindowsAssets[name][0];
+          managedCliToolSpecs[name].assets['win32-x64'] = [
+            fileName,
+            createHash('sha256').update(archive).digest('hex'),
+          ];
+          windowsArchiveByFileName.set(fileName, archive);
+        }
+        const windowsInstall = await ensureManagedCliTools({
+          yeaftDir: windowsInstallDir,
+          platform: 'win32',
+          arch: 'x64',
+          env: emptyPathEnv(),
+          force: true,
+          fetchFn: async url => new Response(
+            windowsArchiveByFileName.get(String(url).split('/').at(-1)),
+          ),
+        });
+        expect(windowsInstall.map(result => [result.name, result.status])).toEqual([
+          ['rg', 'installed'],
+          ['fd', 'installed'],
+          ['dust', 'installed'],
+        ]);
+        for (const [name, script] of Object.entries(windowsScripts)) {
+          expect(readFileSync(join(windowsBinDir, `${name}.exe`), 'utf8')).toBe(script);
+        }
+
+        const rollbackDir = tempDir('cli-windows-rollback');
+        const rollbackBinDir = managedCliBinDir(rollbackDir);
+        mkdirSync(rollbackBinDir, { recursive: true });
+        const oldRg = 'old rg binary';
+        writeFileSync(join(rollbackBinDir, 'rg.exe'), oldRg);
+        const rollbackArchives = {
+          ...windowsArchives,
+          rg: zipArchive(
+            'package/rg.exe',
+            '#!/bin/sh\nrm -- "$0"\necho ripgrep 15.2.0\n',
+          ),
+        };
+        const rollbackArchiveByFileName = new Map();
+        for (const [name, archive] of Object.entries(rollbackArchives)) {
+          const fileName = originalWindowsAssets[name][0];
+          managedCliToolSpecs[name].assets['win32-x64'] = [
+            fileName,
+            createHash('sha256').update(archive).digest('hex'),
+          ];
+          rollbackArchiveByFileName.set(fileName, archive);
+        }
+        const rollbackInstall = await ensureManagedCliTools({
+          yeaftDir: rollbackDir,
+          platform: 'win32',
+          arch: 'x64',
+          env: emptyPathEnv(),
+          force: true,
+          fetchFn: async url => new Response(
+            rollbackArchiveByFileName.get(String(url).split('/').at(-1)),
+          ),
+        });
+        expect(rollbackInstall.find(result => result.name === 'rg')).toMatchObject({
+          status: 'failed',
+        });
+        expect(rollbackInstall.filter(result => result.name !== 'rg')
+          .every(result => result.status === 'installed')).toBe(true);
+        expect(readFileSync(join(rollbackBinDir, 'rg.exe'), 'utf8')).toBe(oldRg);
+        expect(readdirSync(rollbackBinDir).some(name => name.includes('.backup'))).toBe(false);
+      } finally {
+        for (const [name, asset] of Object.entries(originalWindowsAssets)) {
+          managedCliToolSpecs[name].assets['win32-x64'] = asset;
+        }
+      }
+    }
+
+    let unsupportedRequests = 0;
+    const unsupported = await ensureManagedCliTools({
+      yeaftDir: tempDir('cli-unsupported'),
+      platform: 'aix',
+      arch: 'ppc64',
+      env: emptyPathEnv(),
+      force: true,
+      fetchFn: async () => {
+        unsupportedRequests += 1;
+        throw new Error('must not download');
+      },
+    });
+    expect(unsupported.every(result => result.status === 'unsupported')).toBe(true);
+    expect(unsupportedRequests).toBe(0);
+
+    const flightDir = tempDir('cli-single-flight');
+    const flightBinDir = managedCliBinDir(flightDir);
+    mkdirSync(flightBinDir, { recursive: true });
+    for (const name of ['rg', 'fd', 'dust']) {
+      writeFileSync(join(flightBinDir, name), `#!/bin/sh\necho ${name} 0.0.0\n`, { mode: 0o755 });
+    }
+    let flightRequests = 0;
+    const flightOptions = {
+      yeaftDir: flightDir,
+      platform: 'linux',
+      arch: 'x64',
+      env: emptyPathEnv(),
+      force: true,
+      fetchFn: async () => {
+        flightRequests += 1;
+        await new Promise(resolve => setTimeout(resolve, 20));
+        return new Response(Buffer.from('invalid archive'));
+      },
+    };
+    const [left, right] = await Promise.all([
+      ensureManagedCliTools(flightOptions),
+      ensureManagedCliTools(flightOptions),
+    ]);
+    expect(left).toEqual(right);
+    expect(flightRequests).toBe(3);
+
+    const cooldownDir = tempDir('cli-cooldown');
+    let cooldownRequests = 0;
+    const cooldownOptions = {
+      yeaftDir: cooldownDir,
+      platform: 'linux',
+      arch: 'x64',
+      env: emptyPathEnv(),
+      now: () => 1000,
+      fetchFn: async () => {
+        cooldownRequests += 1;
+        return new Response(Buffer.from('not an official archive'));
+      },
+    };
+    const first = await ensureManagedCliTools({ ...cooldownOptions, force: true });
+    const second = await ensureManagedCliTools(cooldownOptions);
+    expect(first.every(result => result.status === 'failed')).toBe(true);
+    expect(second.every(result => result.status === 'cooldown')).toBe(true);
+    expect(cooldownRequests).toBe(3);
+
+    const busyDir = tempDir('cli-busy');
+    const busyBinDir = managedCliBinDir(busyDir);
+    mkdirSync(busyBinDir, { recursive: true });
+    for (const name of ['rg', 'fd', 'dust']) mkdirSync(join(busyBinDir, `.install-${name}.lock`));
+    const busyOptions = {
+      yeaftDir: busyDir,
+      platform: 'linux',
+      arch: 'x64',
+      env: emptyPathEnv(),
+      lockWaitMs: 0,
+      fetchFn: async () => { throw new Error('busy must not download'); },
+    };
+    const busyFirst = await ensureManagedCliTools(busyOptions);
+    const busySecond = await ensureManagedCliTools(busyOptions);
+    expect(busyFirst.every(result => result.status === 'busy')).toBe(true);
+    expect(busySecond.every(result => result.status === 'busy')).toBe(true);
+    expect(JSON.parse(readFileSync(join(busyDir, 'managed-cli.json'), 'utf8')).failures).toEqual({});
+
+    if (process.platform !== 'win32') {
+      const managedCliModuleUrl = new URL(
+        '../../../agent/yeaft/managed-cli.js',
+        import.meta.url,
+      ).href;
+      const runLockWatchdog = (yeaftDir, skipInstall = false) => {
+        const script = `
+          import { ensureManagedCliTools } from ${JSON.stringify(managedCliModuleUrl)};
+          let fetches = 0;
+          let timerFired = false;
+          setTimeout(() => { timerFired = true; }, 0);
+          const env = { ...process.env, PATH: '', YEAFT_SKIP_MANAGED_CLI_INSTALLS: ${skipInstall ? "'true'" : "'false'"} };
+          const results = await ensureManagedCliTools({
+            yeaftDir: ${JSON.stringify(yeaftDir)},
+            platform: 'linux',
+            arch: 'x64',
+            env,
+            force: true,
+            lockWaitMs: 0,
+            fetchFn: async () => {
+              fetches += 1;
+              throw new Error('lock watchdog must not download');
+            },
+          });
+          await new Promise(resolve => setTimeout(resolve, 0));
+          console.log(JSON.stringify({
+            fetches,
+            timerFired,
+            statuses: results.map(result => result.status),
+          }));
+        `;
+        const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+          cwd: process.cwd(),
+          encoding: 'utf8',
+          timeout: 1500,
+        });
+        expect(child.error).toBeUndefined();
+        expect(child.signal).toBeNull();
+        expect(child.status, child.stderr).toBe(0);
+        return JSON.parse(child.stdout.trim());
+      };
+
+      const danglingInstallDir = tempDir('cli-dangling-install-lock');
+      const danglingInstallBin = managedCliBinDir(danglingInstallDir);
+      mkdirSync(danglingInstallBin, { recursive: true });
+      const danglingInstallLocks = ['rg', 'fd', 'dust'].map(name => (
+        join(danglingInstallBin, `.install-${name}.lock`)
+      ));
+      for (const lockPath of danglingInstallLocks) {
+        symlinkSync(`${lockPath}.missing`, lockPath, 'dir');
+      }
+      expect(runLockWatchdog(danglingInstallDir)).toEqual({
+        fetches: 0,
+        timerFired: true,
+        statuses: ['busy', 'busy', 'busy'],
+      });
+      for (const lockPath of danglingInstallLocks) {
+        expect(() => lstatSync(lockPath)).toThrow();
+      }
+
+      const danglingStateDir = tempDir('cli-dangling-state-lock');
+      const danglingStateLock = join(danglingStateDir, '.managed-cli-state.lock');
+      symlinkSync(`${danglingStateLock}.missing`, danglingStateLock, 'dir');
+      expect(runLockWatchdog(danglingStateDir, true)).toEqual({
+        fetches: 0,
+        timerFired: true,
+        statuses: ['skipped', 'skipped', 'skipped'],
+      });
+      expect(() => lstatSync(danglingStateLock)).toThrow();
+
+      const directoryLockDir = tempDir('cli-directory-lock-watchdog');
+      const directoryLockBin = managedCliBinDir(directoryLockDir);
+      mkdirSync(directoryLockBin, { recursive: true });
+      for (const name of ['rg', 'fd', 'dust']) {
+        mkdirSync(join(directoryLockBin, `.install-${name}.lock`));
+      }
+      expect(runLockWatchdog(directoryLockDir)).toEqual({
+        fetches: 0,
+        timerFired: true,
+        statuses: ['busy', 'busy', 'busy'],
+      });
+    }
+
+    const identityDir = tempDir('cli-identity');
+    const identityBinDir = managedCliBinDir(identityDir);
+    mkdirSync(identityBinDir, { recursive: true });
+    for (const name of ['rg', 'fd', 'dust']) {
+      writeFileSync(join(identityBinDir, name), `#!/bin/sh\necho ${name} 0.0.0\n`, { mode: 0o755 });
+      expect(resolveManagedCliCommand(name, {
+        yeaftDir: identityDir, env: emptyPathEnv(), platform: 'linux',
+      })).toBeNull();
+    }
+    const identityEnv = emptyPathEnv();
+    prependManagedCliBinToPath(identityDir, identityEnv, 'linux');
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir, env: identityEnv, platform: 'linux', arch: 'x64',
+    })).toBeNull();
+    const managedBinAlias = join(identityDir, 'bin-alias');
+    symlinkSync(identityBinDir, managedBinAlias, 'dir');
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir,
+      env: { ...process.env, PATH: managedBinAlias },
+      platform: 'linux',
+      arch: 'x64',
+    })).toBeNull();
+    let identityFetches = 0;
+    const identityResults = await ensureManagedCliTools({
+      yeaftDir: identityDir,
+      platform: 'linux',
+      arch: 'x64',
+      env: identityEnv,
+      force: true,
+      fetchFn: async () => {
+        identityFetches += 1;
+        return new Response(Buffer.from('invalid repair archive'));
+      },
+    });
+    expect(identityResults.every(result => result.status === 'failed')).toBe(true);
+    expect(identityFetches).toBe(3);
+    trustManagedCliFixtures(identityDir, ['rg', 'fd', 'dust']);
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir, env: emptyPathEnv(), platform: 'linux',
+    })).toBe(join(identityBinDir, 'rg'));
+    const identityStatePath = join(identityDir, 'managed-cli.json');
+    const oldVersionState = JSON.parse(readFileSync(identityStatePath, 'utf8'));
+    oldVersionState.installations.rg.version = '0.0.0';
+    writeFileSync(identityStatePath, `${JSON.stringify(oldVersionState, null, 2)}\n`);
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir, env: emptyPathEnv(), platform: 'linux',
+    })).toBeNull();
+    trustManagedCliFixtures(identityDir, ['rg']);
+    writeFileSync(join(identityBinDir, 'rg'), '\n# bit flip\n', { flag: 'a' });
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir, env: emptyPathEnv(), platform: 'linux',
+    })).toBeNull();
+
+    if (process.platform !== 'win32') {
+      const verifyRejectedManagedAliases = async (aliasKind, createAlias) => {
+        const aliasStateDir = tempDir(`cli-${aliasKind}-alias`);
+        const aliasManagedBin = managedCliBinDir(aliasStateDir);
+        const aliasBin = join(aliasStateDir, 'external-bin');
+        const corruptLog = join(aliasStateDir, 'corrupt.log');
+        mkdirSync(aliasManagedBin, { recursive: true });
+        mkdirSync(aliasBin);
+        for (const name of ['rg', 'fd', 'dust']) {
+          writeFileSync(
+            join(aliasManagedBin, name),
+            `#!/bin/sh\necho ${name} >> ${JSON.stringify(corruptLog)}\n${name === 'dust'
+              ? "printf '{\"size\":\"0B\",\"name\":\".\",\"children\":[]}'"
+              : 'exit 0'}\n`,
+            { mode: 0o755 },
+          );
+        }
+        for (const [alias, target] of [
+          ['rg', 'rg'],
+          ['fd', 'fd'],
+          ['fdfind', 'fd'],
+          ['dust', 'dust'],
+        ]) createAlias(join(aliasManagedBin, target), join(aliasBin, alias));
+
+        const aliasEnv = { ...process.env, PATH: aliasBin };
+        const processPathBeforeRepair = process.env.PATH;
+        for (const name of ['rg', 'fd', 'dust']) {
+          expect(resolveManagedCliCommand(name, {
+            yeaftDir: aliasStateDir,
+            env: aliasEnv,
+            platform: 'linux',
+            arch: 'x64',
+          })).toBeNull();
+        }
+        rmSync(join(aliasBin, 'fd'));
+        expect(resolveManagedCliCommand('fd', {
+          yeaftDir: aliasStateDir,
+          env: aliasEnv,
+          platform: 'linux',
+          arch: 'x64',
+        })).toBeNull();
+        createAlias(join(aliasManagedBin, 'fd'), join(aliasBin, 'fd'));
+
+        let offlineRepairFetches = 0;
+        const offlineRepair = await ensureManagedCliTools({
+          yeaftDir: aliasStateDir,
+          platform: 'linux',
+          arch: 'x64',
+          env: aliasEnv,
+          force: true,
+          fetchFn: async () => {
+            offlineRepairFetches += 1;
+            throw new Error('offline');
+          },
+        });
+        expect(offlineRepair.every(result => result.status === 'failed')).toBe(true);
+        expect(offlineRepairFetches).toBe(3);
+        expect(aliasEnv.PATH).toBe(aliasBin);
+        expect(process.env.PATH).toBe(processPathBeforeRepair);
+
+        const aliasSearchRoot = tempDir(`cli-${aliasKind}-alias-search`);
+        mkdirSync(join(aliasSearchRoot, 'src'));
+        writeFileSync(join(aliasSearchRoot, 'src', 'hit.js'), 'needle\n');
+        writeFileSync(join(aliasSearchRoot, 'src', 'data.bin'), Buffer.alloc(4096));
+        const aliasRegistry = createFullRegistry();
+        const aliasContext = {
+          cwd: aliasSearchRoot,
+          yeaftDir: aliasStateDir,
+          managedCliReady: Promise.resolve(offlineRepair),
+        };
+        const previousProcessPath = process.env.PATH;
+        process.env.PATH = aliasBin;
+        try {
+          expect(await aliasRegistry.execute('Grep', {
+            pattern: 'needle',
+            path: aliasSearchRoot,
+            output_mode: 'content',
+            fixed_strings: true,
+          }, aliasContext)).toBe('src/hit.js:1:needle');
+          expect(await aliasRegistry.execute('Glob', {
+            pattern: '**/*.js',
+            path: aliasSearchRoot,
+          }, aliasContext)).toBe('src/hit.js');
+          const aliasDiskUsage = await aliasRegistry.execute('DiskUsage', {
+            path: aliasSearchRoot,
+            depth: 1,
+            limit: 10,
+          }, aliasContext);
+          expect(aliasDiskUsage).toContain('src');
+          expect(aliasDiskUsage).not.toContain('0B  .');
+        } finally {
+          process.env.PATH = previousProcessPath;
+        }
+        expect(existsSync(corruptLog)).toBe(false);
+        return { aliasContext, aliasRegistry, aliasSearchRoot, aliasStateDir, offlineRepair };
+      };
+
+      await verifyRejectedManagedAliases(
+        'symlink',
+        (target, alias) => symlinkSync(target, alias, 'file'),
+      );
+      const hardLinkCase = await verifyRejectedManagedAliases('hard-link', linkSync);
+
+      const systemBin = join(hardLinkCase.aliasStateDir, 'system-bin');
+      const systemLog = join(hardLinkCase.aliasStateDir, 'system.log');
+      mkdirSync(systemBin);
+      writeFileSync(join(systemBin, 'rg'), `#!/bin/sh\necho rg >> ${JSON.stringify(systemLog)}\nprintf 'src/hit.js\\0'\n`, { mode: 0o755 });
+      writeFileSync(join(systemBin, 'fdfind'), `#!/bin/sh\necho fd >> ${JSON.stringify(systemLog)}\nprintf 'src/hit.js\\0'\n`, { mode: 0o755 });
+      writeFileSync(join(systemBin, 'dust'), `#!/bin/sh\necho dust >> ${JSON.stringify(systemLog)}\nprintf '{\"size\":\"4096B\",\"name\":${JSON.stringify(hardLinkCase.aliasSearchRoot)},\"children\":[{\"size\":\"4096B\",\"name\":${JSON.stringify(join(hardLinkCase.aliasSearchRoot, 'src'))},\"children\":[]}]}'\n`, { mode: 0o755 });
+      for (const [name, commandName] of [
+        ['rg', 'rg'],
+        ['fd', 'fdfind'],
+        ['dust', 'dust'],
+      ]) {
+        expect(resolveManagedCliCommand(name, {
+          yeaftDir: hardLinkCase.aliasStateDir,
+          env: { ...process.env, PATH: systemBin },
+          platform: 'linux',
+          arch: 'x64',
+        })).toBe(join(systemBin, commandName));
+      }
+      const previousProcessPath = process.env.PATH;
+      process.env.PATH = systemBin;
+      try {
+        expect(await hardLinkCase.aliasRegistry.execute('Grep', {
+          pattern: 'needle',
+          path: hardLinkCase.aliasSearchRoot,
+          output_mode: 'content',
+          fixed_strings: true,
+        }, hardLinkCase.aliasContext)).toBe('src/hit.js:1:needle');
+        expect(await hardLinkCase.aliasRegistry.execute('Glob', {
+          pattern: '**/*.js',
+          path: hardLinkCase.aliasSearchRoot,
+        }, hardLinkCase.aliasContext)).toBe('src/hit.js');
+        expect(await hardLinkCase.aliasRegistry.execute('DiskUsage', {
+          path: hardLinkCase.aliasSearchRoot,
+          depth: 1,
+          limit: 10,
+        }, hardLinkCase.aliasContext)).toContain('src');
+      } finally {
+        process.env.PATH = previousProcessPath;
+      }
+      expect(readFileSync(systemLog, 'utf8').trim().split('\n')).toEqual(['rg', 'fd', 'dust']);
+    }
+
+    const root = tempDir('fast-tools');
+    mkdirSync(join(root, 'large'));
+    mkdirSync(join(root, 'small'));
+    writeFileSync(join(root, 'large', 'a.bin'), Buffer.alloc(2048));
+    writeFileSync(join(root, 'small', 'b.bin'), Buffer.alloc(32));
+    const registry = createFullRegistry();
+    const fallbackOutput = await registry.execute('DiskUsage', { path: root, depth: 2, limit: 2 }, {
+      cwd: root,
+      yeaftDir: join(root, '.fallback'),
+      managedCliReady: Promise.resolve([]),
+    });
+    expect(registry.getToolNames()).toContain('DiskUsage');
+    expect(fallbackOutput).toContain('large');
+    expect(fallbackOutput.trim().split('\n')).toHaveLength(4);
+
+    if (process.platform !== 'win32') {
+      const toolDir = join(root, '.yeaft');
+      const toolBinDir = managedCliBinDir(toolDir);
+      const log = join(root, 'calls.log');
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(join(root, 'src', 'a.js'), 'needle\n');
+      mkdirSync(toolBinDir, { recursive: true });
+      writeFileSync(join(toolBinDir, 'rg'), `#!/bin/sh\necho rg >> ${JSON.stringify(log)}\nprintf 'src/a.js\\000'\n`, { mode: 0o755 });
+      writeFileSync(join(toolBinDir, 'fd'), `#!/bin/sh\necho fd >> ${JSON.stringify(log)}\nprintf 'src/a.js\\0src/b.txt\\0'\n`, { mode: 0o755 });
+      writeFileSync(join(toolBinDir, 'dust'), `#!/bin/sh\necho dust >> ${JSON.stringify(log)}\nprintf '{"size":"2080B","name":${JSON.stringify(root)},"children":[{"size":"2048B","name":${JSON.stringify(join(root, 'large'))},"children":[]}]}'\n`, { mode: 0o755 });
+      trustManagedCliFixtures(toolDir, ['rg', 'fd', 'dust']);
+      const neverReady = new Promise(() => {});
+      const ctx = { cwd: root, yeaftDir: toolDir, managedCliReady: neverReady };
+      expect(await Promise.race([
+        registry.execute('Grep', { pattern: 'needle', path: root }, ctx),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Grep waited for unrelated installs')), 500)),
+      ])).toContain('src/a.js');
+      const globOutput = await Promise.race([
+        registry.execute('Glob', { pattern: '**/*.js', path: root }, ctx),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Glob waited for unrelated installs')), 500)),
+      ]);
+      expect(globOutput).toContain('src/a.js');
+      expect(globOutput).not.toContain('b.txt');
+      const dustOutput = await Promise.race([
+        registry.execute('DiskUsage', { path: root, depth: 2, limit: 2 }, ctx),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('DiskUsage waited for unrelated installs')), 500)),
+      ]);
+      expect(dustOutput).toContain('large');
+      expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['rg', 'fd', 'dust']);
+
+      const rg = resolveManagedCliCommand('rg', { yeaftDir: toolDir, env: emptyPathEnv() });
+      expect(execFileSync(rg, ['--version'], { encoding: 'utf8' })).toContain('src/a.js');
+      expect(createHash('sha256').update(readFileSync(rg)).digest('hex')).toHaveLength(64);
+      expect(existsSync(rg)).toBe(true);
+    }
+    const parityRoot = tempDir('search-backend-parity');
+    mkdirSync(join(parityRoot, 'src', '.yeaft', 'worktrees', 'nested'), { recursive: true });
+    mkdirSync(join(parityRoot, '.yeaft', 'worktrees', 'root'), { recursive: true });
+    writeFileSync(join(parityRoot, 'root.txt'), 'needle\n');
+    writeFileSync(join(parityRoot, 'src', 'a.js'), 'needle\n');
+    writeFileSync(join(parityRoot, 'src', 'a.txt'), 'needle\n');
+    writeFileSync(join(parityRoot, 'src', '.yeaft', 'worktrees', 'nested', 'nested.js'), 'needle\n');
+    writeFileSync(join(parityRoot, '.yeaft', 'worktrees', 'root', 'root.js'), 'needle\n');
+    const realBinDir = managedCliBinDir(parityRoot);
+    mkdirSync(realBinDir, { recursive: true });
+    const realRg = process.env.YEAFT_TEST_RG;
+    const realFd = process.env.YEAFT_TEST_FD;
+    const realDust = process.env.YEAFT_TEST_DUST;
+    if (realRg && realFd) {
+      writeFileSync(join(realBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      writeFileSync(join(realBinDir, 'fd'), readFileSync(realFd), { mode: 0o755 });
+      trustManagedCliFixtures(parityRoot, ['rg', 'fd']);
+      const fastCtx = { cwd: parityRoot, yeaftDir: parityRoot, managedCliReady: Promise.resolve([]) };
+      const fallbackCtx = { cwd: parityRoot, yeaftDir: join(parityRoot, 'fallback'), managedCliReady: Promise.resolve([]) };
+      for (const filters of [
+        { glob: '**/*.txt', type: 'js' },
+        { glob: 'src/**', type: 'js' },
+        { glob: '*.{js,txt}' },
+        { glob: '**/*.txt' },
+      ]) {
+        const input = { pattern: 'needle', path: parityRoot, output_mode: 'files_with_matches', fixed_strings: true, ...filters };
+        const fast = (await registry.execute('Grep', input, fastCtx)).split('\n').sort();
+        const fallback = (await registry.execute('Grep', input, fallbackCtx)).split('\n').sort();
+        expect(fast).toEqual(fallback);
+      }
+
+      writeFileSync(join(parityRoot, 'src', 'a[0-9].js'), 'needle\n');
+      for (const directory of SEARCH_SKIP_DIRS) {
+        mkdirSync(join(parityRoot, directory), { recursive: true });
+        writeFileSync(join(parityRoot, directory, 'hit.js'), 'needle\n');
+      }
+      const skipInput = {
+        pattern: 'needle', path: parityRoot, glob: '**/*.js',
+        output_mode: 'files_with_matches', fixed_strings: true, head_limit: 50,
+      };
+      expect(await registry.execute('Grep', skipInput, fastCtx))
+        .toBe(await registry.execute('Grep', skipInput, fallbackCtx));
+      for (const directory of SEARCH_SKIP_DIRS) {
+        expect(await registry.execute('Grep', skipInput, fastCtx))
+          .not.toContain(`${directory}/hit.js`);
+      }
+      const literalBracketInput = {
+        pattern: 'needle', path: parityRoot, glob: 'a[0-9].js',
+        output_mode: 'files_with_matches', fixed_strings: true,
+      };
+      const literalBracketFast = await registry.execute('Grep', literalBracketInput, fastCtx);
+      const literalBracketFallback = await registry.execute('Grep', literalBracketInput, fallbackCtx);
+      expect(literalBracketFast).toBe('src/a[0-9].js');
+      expect(literalBracketFast).toBe(literalBracketFallback);
+
+      writeFileSync(join(parityRoot, 'src', 'line\nbreak.js'), 'needle\n');
+      mkdirSync(join(parityRoot, 'C:'));
+      writeFileSync(join(parityRoot, 'C:', 'a.js'), 'needle\n');
+      for (const outputMode of ['files_with_matches', 'count', 'content']) {
+        const input = {
+          pattern: 'needle', path: parityRoot, glob: '**/*.js',
+          output_mode: outputMode, fixed_strings: true, head_limit: 20,
+        };
+        const fast = await registry.execute('Grep', input, fastCtx);
+        const fallback = await registry.execute('Grep', input, fallbackCtx);
+        expect(fast).toBe(fallback);
+        expect(fast).toContain('C:/a.js');
+        expect(fast).toContain('src/line\nbreak.js');
+      }
+      writeFileSync(join(parityRoot, 'src', 'context.js'), 'zero\r\nneedle\r\ntwo\r\n');
+      for (const contextOptions of [{}, { context: 1 }, { before: 1 }, { after: 1 }]) {
+        const input = {
+          pattern: 'needle', path: parityRoot, glob: '**/*.js',
+          output_mode: 'content', fixed_strings: true, head_limit: 20,
+          ...contextOptions,
+        };
+        const fast = await registry.execute('Grep', input, fastCtx);
+        const fallback = await registry.execute('Grep', input, fallbackCtx);
+        expect(fast).toBe(fallback);
+        expect(fast).not.toContain('\r');
+      }
+      writeFileSync(join(parityRoot, 'src', 'count.js'), 'needle needle\nneedle\n');
+      const countInput = {
+        pattern: 'needle', path: parityRoot, glob: 'count.js',
+        output_mode: 'count', fixed_strings: true,
+      };
+      expect(await registry.execute('Grep', countInput, fastCtx)).toBe('src/count.js:3');
+      expect(await registry.execute('Grep', countInput, fastCtx))
+        .toBe(await registry.execute('Grep', countInput, fallbackCtx));
+
+      writeFileSync(join(parityRoot, 'src', 'multiline.js'), 'alpha\nbeta\nalpha\nbeta\n');
+      for (const outputMode of ['files_with_matches', 'count', 'content']) {
+        for (const search of [
+          { pattern: 'alpha.*beta', fixed_strings: false, expectedCount: 1 },
+          { pattern: 'alpha\nbeta', fixed_strings: true, expectedCount: 2 },
+        ]) {
+          const input = {
+            ...search, path: parityRoot, glob: 'multiline.js',
+            output_mode: outputMode, multiline: true, head_limit: 20,
+          };
+          const fast = await registry.execute('Grep', input, fastCtx);
+          const fallback = await registry.execute('Grep', input, fallbackCtx);
+          const expected = outputMode === 'files_with_matches'
+            ? 'src/multiline.js'
+            : outputMode === 'count'
+              ? `src/multiline.js:${search.expectedCount}`
+              : [1, 2, 3, 4]
+                  .map(line => `src/multiline.js:${line}:${line % 2 ? 'alpha' : 'beta'}`)
+                  .join('\n');
+          expect(fast).toBe(expected);
+          expect(fast).toBe(fallback);
+        }
+      }
+      writeFileSync(join(parityRoot, 'src', 'anchor.js'), 'alpha\nbeta\ngamma\n^beta$\n');
+      for (const pattern of ['^beta$', '(?m)^beta$']) {
+        for (const multiline of [false, true]) {
+          for (const outputMode of ['files_with_matches', 'count', 'content']) {
+            const input = {
+              pattern, path: parityRoot, glob: 'anchor.js',
+              output_mode: outputMode, multiline, head_limit: 20,
+            };
+            const expected = outputMode === 'files_with_matches'
+              ? 'src/anchor.js'
+              : outputMode === 'count'
+                ? 'src/anchor.js:1'
+                : 'src/anchor.js:2:beta';
+            const fast = await registry.execute('Grep', input, fastCtx);
+            const fallback = await registry.execute('Grep', input, fallbackCtx);
+            expect(fast).toBe(expected);
+            expect(fast).toBe(fallback);
+          }
+        }
+      }
+      for (const pattern of ['\\^beta\\$', 'beta[$]']) {
+        const input = {
+          pattern, path: parityRoot, glob: 'anchor.js',
+          output_mode: 'content', multiline: true, head_limit: 20,
+        };
+        const fast = await registry.execute('Grep', input, fastCtx);
+        const fallback = await registry.execute('Grep', input, fallbackCtx);
+        expect(fast).toBe('src/anchor.js:4:^beta$');
+        expect(fast).toBe(fallback);
+      }
+      const disabledAnchorInput = {
+        pattern: '(?-m)^beta$', path: parityRoot, glob: 'anchor.js',
+        output_mode: 'content', multiline: true, head_limit: 20,
+      };
+      expect(await registry.execute('Grep', disabledAnchorInput, fastCtx)).toBe('(no matches)');
+      expect(await registry.execute('Grep', disabledAnchorInput, fallbackCtx)).toBe('(no matches)');
+
+      for (const pattern of [
+        '(?-m:^beta$)',
+        '(?m:(?-m:^beta$)|^gamma$)',
+        '(?m:^beta(?-m:$))',
+      ]) {
+        for (const outputMode of ['files_with_matches', 'count', 'content']) {
+          const input = {
+            pattern, path: parityRoot, glob: 'anchor.js',
+            output_mode: outputMode, multiline: true, head_limit: 20,
+          };
+          const fast = await registry.execute('Grep', input, fastCtx);
+          const fallback = await registry.execute('Grep', input, fallbackCtx);
+          expect(fast).toBe(fallback);
+          if (process.version.startsWith('v20.')) expect(fast).toContain('Invalid regular expression');
+          else expect(fast).not.toContain('unsupported');
+        }
+      }
+
+      writeFileSync(join(parityRoot, 'src', 'multiline-crlf.js'), 'alpha\r\nbeta\r\n');
+      const scopedCrlfInput = {
+        pattern: '(?m:^beta$)', path: parityRoot, glob: 'multiline-crlf.js',
+        output_mode: 'content', multiline: false, head_limit: 20,
+      };
+      const scopedCrlfFast = await registry.execute('Grep', scopedCrlfInput, fastCtx);
+      expect(scopedCrlfFast).toBe(await registry.execute('Grep', scopedCrlfInput, fallbackCtx));
+      if (!process.version.startsWith('v20.')) expect(scopedCrlfFast).toBe('src/multiline-crlf.js:2:beta');
+      for (const multiline of [false, true]) {
+        const input = {
+          pattern: 'beta$', path: parityRoot, glob: 'multiline-crlf.js',
+          output_mode: 'content', multiline, head_limit: 20,
+        };
+        const fast = await registry.execute('Grep', input, fastCtx);
+        expect(fast).toBe('src/multiline-crlf.js:2:beta');
+        expect(fast).toBe(await registry.execute('Grep', input, fallbackCtx));
+      }
+      for (const fixedStrings of [false, true]) {
+        for (const outputMode of ['files_with_matches', 'count', 'content']) {
+          const input = {
+            pattern: 'alpha\nbeta', path: parityRoot, glob: 'multiline-crlf.js',
+            output_mode: outputMode, fixed_strings: fixedStrings,
+            multiline: true, head_limit: 20,
+          };
+          expect(await registry.execute('Grep', input, fastCtx)).toBe('(no matches)');
+          expect(await registry.execute('Grep', input, fallbackCtx)).toBe('(no matches)');
+        }
+      }
+
+      writeFileSync(join(parityRoot, 'src', 'isolated-cr.js'), 'alpha\rbeta\n');
+      for (const outputMode of ['files_with_matches', 'count', 'content']) {
+        const input = {
+          pattern: 'alpha.*beta', path: parityRoot, glob: 'isolated-cr.js',
+          output_mode: outputMode, multiline: true, head_limit: 20,
+        };
+        const expected = outputMode === 'files_with_matches'
+          ? 'src/isolated-cr.js'
+          : outputMode === 'count'
+            ? 'src/isolated-cr.js:1'
+            : 'src/isolated-cr.js:1:alpha\nsrc/isolated-cr.js:2:beta';
+        const fast = await registry.execute('Grep', input, fastCtx);
+        const fallback = await registry.execute('Grep', input, fallbackCtx);
+        expect(fast).toBe(expected);
+        expect(fast).toBe(fallback);
+      }
+
+      const zeroLengthRoot = tempDir('grep-zero-length');
+      mkdirSync(join(zeroLengthRoot, 'src'));
+      writeFileSync(join(zeroLengthRoot, 'src', 'empty.js'), '');
+      writeFileSync(join(zeroLengthRoot, 'src', 'only-newline.js'), '\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'middle.js'), 'alpha\n\nbeta\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'trailing.js'), 'alpha\nbeta\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'no-trailing.js'), 'alpha\nbeta');
+      writeFileSync(join(zeroLengthRoot, 'src', 'crlf-empty.js'), 'alpha\r\n\r\nbeta\r\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'regex-backref.js'), 'aa\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'regex-legacy.js'), 'Aalpha\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'regex-literal.js'), '(?x)^a b$\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'unicode-only.js'), '界\n');
+      const zeroLengthBinDir = managedCliBinDir(zeroLengthRoot);
+      mkdirSync(zeroLengthBinDir, { recursive: true });
+      writeFileSync(join(zeroLengthBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      trustManagedCliFixtures(zeroLengthRoot, ['rg']);
+      const zeroLengthContexts = [
+        { cwd: zeroLengthRoot, yeaftDir: zeroLengthRoot, managedCliReady: Promise.resolve([]) },
+        { cwd: zeroLengthRoot, yeaftDir: join(zeroLengthRoot, 'fallback'), managedCliReady: Promise.resolve([]) },
+      ];
+      for (const pattern of [
+        '(?m)^$', '(?m)^|$', '\\b', 'a*', 'a?', 'a{0}', 'a{00,2}',
+        '(?:alpha|)', '(?:a*)+', '(?<name>a*)', '(?=alpha)',
+      ]) {
+        for (const outputMode of ['files_with_matches', 'count', 'content']) {
+          const input = {
+            pattern, path: zeroLengthRoot, glob: '**/*.js',
+            output_mode: outputMode, multiline: true, head_limit: 50,
+          };
+          const outputs = await Promise.all(zeroLengthContexts.map(context => (
+            registry.execute('Grep', input, context)
+          )));
+          expect(outputs[0]).toBe(outputs[1]);
+          expect(outputs[0]).not.toContain('Grep failed');
+        }
+      }
+      for (const context of zeroLengthContexts) {
+        for (const pattern of ['(?P<name>alpha)', '(?x)^a b$']) {
+          expect(await registry.execute('Grep', {
+            pattern, path: zeroLengthRoot, glob: 'no-trailing.js',
+            output_mode: 'content', multiline: true,
+          }, context)).toContain('Invalid regular expression');
+        }
+        expect(await registry.execute('Grep', {
+          pattern: '(?x)^a b$', path: zeroLengthRoot, glob: 'regex-literal.js',
+          output_mode: 'content', multiline: true, fixed_strings: true,
+        }, context)).toBe('src/regex-literal.js:1:(?x)^a b$');
+      }
+      let managedCliLookupCount = 0;
+      const lookupProbeContext = {
+        cwd: zeroLengthRoot,
+        get yeaftDir() {
+          managedCliLookupCount += 1;
+          return zeroLengthRoot;
+        },
+        managedCliReady: Promise.resolve([]),
+      };
+      expect(await registry.execute('Grep', {
+        pattern: '(?=(a))\\1', path: zeroLengthRoot, glob: 'regex-backref.js',
+        output_mode: 'content', multiline: true,
+      }, lookupProbeContext)).toBe('src/regex-backref.js:1:aa');
+      expect(managedCliLookupCount).toBe(0);
+      expect(await registry.execute('Grep', {
+        pattern: 'alpha', path: zeroLengthRoot, glob: 'no-trailing.js',
+        output_mode: 'content', multiline: false,
+      }, lookupProbeContext)).toBe('src/no-trailing.js:1:alpha');
+      expect(managedCliLookupCount).toBeGreaterThan(0);
+      for (const pattern of ['\ud800', '\0', '\r', '\n']) {
+        managedCliLookupCount = 0;
+        await registry.execute('Grep', {
+          pattern, path: zeroLengthRoot, output_mode: 'content', fixed_strings: true,
+        }, lookupProbeContext);
+        expect(managedCliLookupCount).toBe(0);
+      }
+
+      const eligibilityRoot = tempDir('grep-file-eligibility');
+      mkdirSync(join(eligibilityRoot, 'src'));
+      writeFileSync(join(eligibilityRoot, 'src', 'large.txt'), `${'x'.repeat(1024 * 1024 + 1)}\nneedle\n`);
+      writeFileSync(join(eligibilityRoot, 'src', 'fake.pdf'), 'needle\n');
+      writeFileSync(join(eligibilityRoot, 'src', 'invalid.txt'), Buffer.concat([
+        Buffer.from('needle\n'), Buffer.from([0xff]),
+      ]));
+      writeFileSync(join(eligibilityRoot, 'src', 'replacement.txt'), 'x\ufffdy\n');
+      const eligibilityBinDir = managedCliBinDir(eligibilityRoot);
+      const eligibilityRgLog = join(tmpdir(), `yeaft-rg-candidate-${process.pid}-${Date.now()}.log`);
+      managedCliTempDirs.push(eligibilityRgLog);
+      mkdirSync(eligibilityBinDir, { recursive: true });
+      writeFileSync(join(eligibilityBinDir, 'rg'), `#!/bin/sh\nprintf 'env=%s\\n' "\${RIPGREP_CONFIG_PATH-unset}" >> ${JSON.stringify(eligibilityRgLog)}\nprintf 'arg=%s\\n' "$@" >> ${JSON.stringify(eligibilityRgLog)}\nexec ${JSON.stringify(realRg)} "$@"\n`, { mode: 0o755 });
+      trustManagedCliFixtures(eligibilityRoot, ['rg']);
+      const eligibilityContexts = [
+        { cwd: eligibilityRoot, yeaftDir: eligibilityRoot, managedCliReady: Promise.resolve([]) },
+        { cwd: eligibilityRoot, yeaftDir: join(eligibilityRoot, 'fallback'), managedCliReady: Promise.resolve([]) },
+      ];
+      const hostileRgConfig = join(eligibilityRoot, 'ripgrep.rc');
+      writeFileSync(hostileRgConfig, '--max-filesize=1\n--glob=!large.txt\n');
+      const previousRgConfig = process.env.RIPGREP_CONFIG_PATH;
+      process.env.RIPGREP_CONFIG_PATH = hostileRgConfig;
+      try {
+        const fast = await registry.execute('Grep', {
+          pattern: 'needle', path: eligibilityRoot, glob: 'large.txt',
+          output_mode: 'content', fixed_strings: true,
+        }, eligibilityContexts[0]);
+        const fallback = await registry.execute('Grep', {
+          pattern: 'needle', path: eligibilityRoot, glob: 'large.txt',
+          output_mode: 'content', fixed_strings: true,
+        }, eligibilityContexts[1]);
+        expect(fast).toBe('src/large.txt:2:needle');
+        expect(fast).toBe(fallback);
+        const candidateLog = readFileSync(eligibilityRgLog, 'utf8');
+        expect(candidateLog).toContain('env=unset');
+        expect(candidateLog).toContain('arg=--no-config');
+        expect(candidateLog).toContain('arg=--files-with-matches');
+      } finally {
+        if (previousRgConfig === undefined) delete process.env.RIPGREP_CONFIG_PATH;
+        else process.env.RIPGREP_CONFIG_PATH = previousRgConfig;
+      }
+      for (const input of [
+        { pattern: 'needle', fixed_strings: true },
+        { pattern: 'needl.', fixed_strings: false },
+      ]) {
+        for (const outputMode of ['files_with_matches', 'count', 'content']) {
+          const outputs = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+            ...input, path: eligibilityRoot, output_mode: outputMode, head_limit: 50,
+          }, context)));
+          expect(outputs[0]).toBe(outputs[1]);
+          expect(outputs[0]).toContain('src/large.txt');
+          expect(outputs[0]).not.toContain('fake.pdf');
+          expect(outputs[0]).not.toContain('invalid.txt');
+        }
+      }
+      const surrogateOutputs = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+        pattern: '\ud800', path: eligibilityRoot, output_mode: 'content', fixed_strings: true,
+      }, context)));
+      expect(surrogateOutputs).toEqual(['(no matches)', '(no matches)']);
+
+      for (const [file, content] of [
+        ['empty.txt', ''],
+        ['trailing.txt', 'alpha\n'],
+        ['crlf.txt', 'alpha\r\nbeta\r\n'],
+        ['cr.txt', 'alpha\rbeta\r'],
+        ['line-separators.txt', 'alpha\u2028beta\u2029'],
+      ]) writeFileSync(join(eligibilityRoot, 'src', file), content);
+      for (const [glob, pattern, expectedContent, expectedCount] of [
+        ['empty.txt', '(?m)^$', 'src/empty.txt:1:', 1],
+        ['trailing.txt', '(?m)^$', 'src/trailing.txt:2:', 1],
+        ['crlf.txt', '^beta$', 'src/crlf.txt:2:beta', 1],
+        ['cr.txt', '^beta$', 'src/cr.txt:2:beta', 1],
+        ['line-separators.txt', '^beta$', 'src/line-separators.txt:2:beta', 1],
+      ]) {
+        for (const outputMode of ['files_with_matches', 'count', 'content']) {
+          const outputs = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+            pattern, path: eligibilityRoot, glob, output_mode: outputMode, multiline: true,
+          }, context)));
+          const expected = outputMode === 'files_with_matches'
+            ? `src/${glob}`
+            : outputMode === 'count' ? `src/${glob}:${expectedCount}` : expectedContent;
+          expect(outputs).toEqual([expected, expected]);
+        }
+      }
+      for (const context of eligibilityContexts) {
+        for (const [outputMode, expected] of [
+          ['files_with_matches', 'large.txt'],
+          ['count', 'large.txt:1'],
+          ['content', 'large.txt:2:needle'],
+        ]) {
+          expect(await registry.execute('Grep', {
+            pattern: 'needle', path: join(eligibilityRoot, 'src', 'large.txt'),
+            output_mode: outputMode, fixed_strings: true,
+          }, context)).toBe(expected);
+        }
+      }
+      const linkPath = join(eligibilityRoot, 'src', 'large-link.txt');
+      symlinkSync(join(eligibilityRoot, 'src', 'large.txt'), linkPath);
+      for (const context of eligibilityContexts) {
+        expect(await registry.execute('Grep', {
+          pattern: 'needle', path: linkPath, output_mode: 'content', fixed_strings: true,
+        }, context)).toBe('(no matches)');
+      }
+      const zeroWidthCounts = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+        pattern: '(?:)', path: eligibilityRoot, glob: 'trailing.txt',
+        output_mode: 'count', multiline: true,
+      }, context)));
+      expect(zeroWidthCounts).toEqual(['src/trailing.txt:7', 'src/trailing.txt:7']);
+      for (const [pattern, outputMode, expected] of [
+        ['(?:)', 'count', 'src/crlf.txt:14'],
+        ['(?:)', 'content', 'src/crlf.txt:1:alpha\nsrc/crlf.txt:2:beta\nsrc/crlf.txt:3:'],
+        ['(?m)^$', 'count', 'src/crlf.txt:3'],
+        ['(?m)^$', 'content', 'src/crlf.txt:2:\nsrc/crlf.txt:3:'],
+        ['$', 'count', 'src/crlf.txt:5'],
+        ['$', 'content', 'src/crlf.txt:1:alpha\nsrc/crlf.txt:2:beta\nsrc/crlf.txt:3:'],
+      ]) {
+        const outputs = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+          pattern, path: eligibilityRoot, glob: 'crlf.txt',
+          output_mode: outputMode, multiline: true,
+        }, context)));
+        expect(outputs).toEqual([expected, expected]);
+      }
+
+      const safeRegexCases = [
+        { pattern: '(?i)(?m)^BETA$', glob: 'no-trailing.js', expected: 'src/no-trailing.js:2:beta' },
+        { pattern: '(?:alpha|beta)+', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
+        { pattern: '(?:alpha)?beta', glob: 'no-trailing.js', expected: 'src/no-trailing.js:2:beta' },
+        { pattern: '(?:alpha|beta){1,2}', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
+        { pattern: '(?<name>alpha)', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
+        { pattern: '(?=alpha)alpha', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
+        { pattern: '(?=(a))\\1', glob: 'regex-backref.js', expected: 'src/regex-backref.js:1:aa' },
+        { pattern: '(?<=(a))\\1', glob: 'regex-backref.js', expected: 'src/regex-backref.js:1:aa' },
+        { pattern: '(?<letter>a)\\k<letter>', glob: 'regex-backref.js', expected: 'src/regex-backref.js:1:aa' },
+        { pattern: '\\Aalpha', glob: 'regex-legacy.js', expected: 'src/regex-legacy.js:1:Aalpha' },
+        { pattern: '^\\w+$', glob: 'unicode-only.js', expected: '(no matches)' },
+        { pattern: '\\b界', glob: 'unicode-only.js', expected: '(no matches)' },
+        { pattern: '[a*]+', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
+        { pattern: '\\^', glob: 'no-trailing.js', expected: '(no matches)' },
+      ];
+      for (const { pattern, glob, expected } of safeRegexCases) {
+        const input = {
+          pattern, path: zeroLengthRoot, glob,
+          output_mode: 'content', multiline: true, head_limit: 50,
+        };
+        const outputs = await Promise.all(zeroLengthContexts.map(context => (
+          registry.execute('Grep', input, context)
+        )));
+        expect(outputs[0].split('\n')[0]).toBe(expected);
+        expect(outputs[0]).toBe(outputs[1]);
+      }
+
+      for (const headLimit of [1, 2]) {
+        const input = {
+          pattern: 'needle', path: parityRoot, glob: '**/*.js',
+          output_mode: 'files_with_matches', fixed_strings: true, head_limit: headLimit,
+        };
+        const fast = await registry.execute('Grep', input, fastCtx);
+        const fallback = await registry.execute('Grep', input, fallbackCtx);
+        expect(fast).toBe(fallback);
+        expect(fast).toContain('(more results omitted)');
+      }
+
+      const contextLimitRoot = tempDir('grep-context-limit');
+      for (const name of ['a.txt', 'b.txt']) {
+        writeFileSync(join(contextLimitRoot, name), `${name}-0\n${name}-1\nHIT\n${name}-3\n${name}-4\n`);
+      }
+      const contextLimitBin = managedCliBinDir(contextLimitRoot);
+      mkdirSync(contextLimitBin, { recursive: true });
+      writeFileSync(join(contextLimitBin, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      trustManagedCliFixtures(contextLimitRoot, ['rg']);
+      const contextLimitContexts = [
+        { cwd: contextLimitRoot, yeaftDir: contextLimitRoot, managedCliReady: Promise.resolve([]) },
+        { cwd: contextLimitRoot, yeaftDir: join(contextLimitRoot, 'fallback'), managedCliReady: Promise.resolve([]) },
+      ];
+      for (const contextOptions of [{ before: 2 }, { after: 2 }, { context: 2 }]) {
+        for (const headLimit of [1, 2]) {
+          const outputs = await Promise.all(contextLimitContexts.map(context => registry.execute('Grep', {
+            pattern: 'HIT', path: contextLimitRoot, output_mode: 'content', fixed_strings: true,
+            head_limit: headLimit, ...contextOptions,
+          }, context)));
+          expect(outputs[0]).toBe(outputs[1]);
+          expect(outputs[0].split('\n').filter(line => line.endsWith(':3:HIT'))).toHaveLength(headLimit);
+          expect(outputs[0]).toContain('a.txt:3:HIT');
+          if (headLimit === 2) expect(outputs[0]).toContain('b.txt:3:HIT');
+        }
+      }
+      writeFileSync(join(contextLimitRoot, 'adjacent.txt'), 'HIT\nHIT\nafter\n');
+      for (const context of contextLimitContexts) {
+        const output = await registry.execute('Grep', {
+          pattern: 'HIT', path: contextLimitRoot, glob: 'adjacent.txt',
+          output_mode: 'content', fixed_strings: true, after: 2, head_limit: 1,
+        }, context);
+        expect(output.split('\n').filter(line => line.includes(':HIT'))).toHaveLength(1);
+        expect(output).toContain('adjacent.txt:1:HIT');
+        expect(output).toContain('adjacent.txt-3-after');
+        expect(output).toContain('(more results omitted)');
+      }
+      rmSync(join(contextLimitRoot, 'adjacent.txt'));
+      writeFileSync(join(contextLimitRoot, 'a.txt'), `${'界'.repeat(6000)}\nHIT\n`);
+      writeFileSync(join(contextLimitRoot, 'b.txt'), `${'界'.repeat(6000)}\nHIT\n`);
+      for (const context of contextLimitContexts) {
+        const output = await registry.execute('Grep', {
+          pattern: 'HIT', path: contextLimitRoot, output_mode: 'content', fixed_strings: true,
+          before: 1, head_limit: 2,
+        }, context);
+        expect(output).toContain('a.txt:2:HIT');
+        expect(output).toContain('b.txt:2:HIT');
+        expect(Buffer.byteLength(output)).toBeLessThanOrEqual(32 * 1024);
+      }
+
+      const orderingRoot = tempDir('search-order-parity');
+      mkdirSync(join(orderingRoot, 'a'));
+      writeFileSync(join(orderingRoot, 'z1.js'), 'needle\n');
+      writeFileSync(join(orderingRoot, 'z2.js'), 'needle\n');
+      writeFileSync(join(orderingRoot, 'z3.js'), 'needle\n');
+      writeFileSync(join(orderingRoot, 'a', 'a.js'), 'needle\n');
+      const orderingBinDir = managedCliBinDir(orderingRoot);
+      mkdirSync(orderingBinDir, { recursive: true });
+      writeFileSync(join(orderingBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      trustManagedCliFixtures(orderingRoot, ['rg']);
+      const orderingInput = {
+        pattern: 'needle', path: orderingRoot, glob: '**/*.js',
+        output_mode: 'files_with_matches', fixed_strings: true, head_limit: 1,
+      };
+      const orderingFast = await registry.execute('Grep', orderingInput, {
+        cwd: orderingRoot, yeaftDir: orderingRoot, managedCliReady: Promise.resolve([]),
+      });
+      const orderingFallback = await registry.execute('Grep', orderingInput, {
+        cwd: orderingRoot, yeaftDir: join(orderingRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+      });
+      expect(orderingFast).toBe('a/a.js\n\n... (more results omitted)');
+      expect(orderingFast).toBe(orderingFallback);
+      const budgetRoot = tempDir('grep-render-budget');
+      mkdirSync(join(budgetRoot, 'src'));
+      const exactFirstMatch = `${'界'.repeat(5455)}aa`;
+      const exactSecondMatch = `${'界'.repeat(5455)}a`;
+      writeFileSync(join(budgetRoot, 'src', 'a.js'), `needle${exactFirstMatch}\n`);
+      writeFileSync(join(budgetRoot, 'src', 'b.js'), `needle${exactSecondMatch}\n`);
+      const budgetBinDir = managedCliBinDir(budgetRoot);
+      mkdirSync(budgetBinDir, { recursive: true });
+      writeFileSync(join(budgetBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      trustManagedCliFixtures(budgetRoot, ['rg']);
+      const budgetInput = {
+        pattern: 'needle', path: budgetRoot, glob: '**/*.js',
+        output_mode: 'content', fixed_strings: true, head_limit: 2,
+      };
+      const budgetContexts = [budgetRoot, join(budgetRoot, 'fallback')];
+      for (const yeaftDir of budgetContexts) {
+        const output = await registry.execute('Grep', budgetInput, {
+          cwd: budgetRoot, yeaftDir, managedCliReady: Promise.resolve([]),
+        });
+        expect(Buffer.byteLength(output)).toBe(32768);
+        expect(output).not.toContain('[Output truncated]');
+        expect(output).not.toContain('\ufffd');
+      }
+
+      const longMatch = '界'.repeat(5451);
+      writeFileSync(join(budgetRoot, 'src', 'a.js'), `needle${longMatch}\n`);
+      writeFileSync(join(budgetRoot, 'src', 'b.js'), `needle${longMatch}\n`);
+      writeFileSync(join(budgetRoot, 'src', 'c.js'), 'needle\n');
+      for (const yeaftDir of budgetContexts) {
+        const output = await registry.execute('Grep', budgetInput, {
+          cwd: budgetRoot, yeaftDir, managedCliReady: Promise.resolve([]),
+        });
+        expect(Buffer.byteLength(output)).toBe(32768);
+        expect(output).toContain('[Output truncated]');
+        expect(output).not.toContain('\ufffd');
+      }
+      const fastGlob = await registry.execute('Glob', { pattern: '**/*.js', path: parityRoot }, fastCtx);
+      const fallbackGlob = await registry.execute('Glob', { pattern: '**/*.js', path: parityRoot }, fallbackCtx);
+      expect(fastGlob).toBe(fallbackGlob);
+      expect(fastGlob).toContain('src/a.js');
+      expect(fastGlob).not.toContain('.yeaft/worktrees');
+
+      const equalMtimeRoot = tempDir('glob-equal-mtime');
+      for (const name of ['c.js', 'b.js', 'a.js']) writeFileSync(join(equalMtimeRoot, name), 'value\n');
+      const equalTime = new Date('2026-08-01T00:00:00.000Z');
+      for (const name of ['c.js', 'b.js', 'a.js']) utimesSync(join(equalMtimeRoot, name), equalTime, equalTime);
+      const equalMtimeBin = managedCliBinDir(equalMtimeRoot);
+      mkdirSync(equalMtimeBin, { recursive: true });
+      writeFileSync(join(equalMtimeBin, 'fd'), '#!/bin/sh\nprintf "c.js\\0b.js\\0a.js\\0"\n', { mode: 0o755 });
+      trustManagedCliFixtures(equalMtimeRoot, ['fd']);
+      for (const limit of [1, 2]) {
+        const input = { pattern: '*.js', path: equalMtimeRoot, limit };
+        const fast = await registry.execute('Glob', input, {
+          cwd: equalMtimeRoot, yeaftDir: equalMtimeRoot, managedCliReady: Promise.resolve([]),
+        });
+        const fallback = await registry.execute('Glob', input, {
+          cwd: equalMtimeRoot, yeaftDir: join(equalMtimeRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+        });
+        expect(fast).toBe(fallback);
+        expect(fast).toBe(limit === 1 ? 'a.js' : 'a.js\nb.js');
+      }
+
+      const specialPathRoot = tempDir('glob-special-paths');
+      mkdirSync(join(specialPathRoot, 'src'));
+      writeFileSync(join(specialPathRoot, 'src', 'car\rriage.js'), 'value\n');
+      writeFileSync(join(specialPathRoot, 'src', 'line\nbreak.js'), 'value\n');
+      const specialPathBinDir = managedCliBinDir(specialPathRoot);
+      mkdirSync(specialPathBinDir, { recursive: true });
+      writeFileSync(join(specialPathBinDir, 'fd'), readFileSync(realFd), { mode: 0o755 });
+      trustManagedCliFixtures(specialPathRoot, ['fd']);
+      for (const expected of ['src/car\rriage.js', 'src/line\nbreak.js']) {
+        const input = { pattern: expected, path: specialPathRoot };
+        const fast = await registry.execute('Glob', input, {
+          cwd: specialPathRoot, yeaftDir: specialPathRoot, managedCliReady: Promise.resolve([]),
+        });
+        const fallback = await registry.execute('Glob', input, {
+          cwd: specialPathRoot, yeaftDir: join(specialPathRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+        });
+        expect(fast).toBe(expected);
+        expect(fast).toBe(fallback);
+      }
+
+      if (realDust) {
+        const equalSizeDiskRoot = tempDir('disk-usage-equal-size');
+        for (const name of ['A', 'a', 'Z', 'z', 'ä', 'é']) {
+          mkdirSync(join(equalSizeDiskRoot, name));
+          writeFileSync(join(equalSizeDiskRoot, name, 'data.bin'), Buffer.alloc(16));
+        }
+        const equalSizeDiskBin = managedCliBinDir(equalSizeDiskRoot);
+        mkdirSync(equalSizeDiskBin, { recursive: true });
+        writeFileSync(join(equalSizeDiskBin, 'dust'), readFileSync(realDust), { mode: 0o755 });
+        trustManagedCliFixtures(equalSizeDiskRoot, ['dust']);
+        for (const limit of [2, 3, 6]) {
+          const input = { path: equalSizeDiskRoot, depth: 1, limit };
+          const fast = await registry.execute('DiskUsage', input, {
+            cwd: equalSizeDiskRoot, yeaftDir: equalSizeDiskRoot, managedCliReady: Promise.resolve([]),
+          });
+          const fallback = await registry.execute('DiskUsage', input, {
+            cwd: equalSizeDiskRoot, yeaftDir: join(equalSizeDiskRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+          });
+          expect(fast).toBe(fallback);
+        }
+
+        const diskConcurrencyRoot = tempDir('disk-usage-concurrency');
+        let diskLevel = [diskConcurrencyRoot];
+        for (let level = 0; level < 3; level += 1) {
+          const next = [];
+          for (const parent of diskLevel) {
+            for (let index = 0; index < 8; index += 1) {
+              const child = join(parent, `d${index}`);
+              mkdirSync(child);
+              next.push(child);
+            }
+          }
+          diskLevel = next;
+        }
+        let activeFs = 0;
+        let maxActiveFs = 0;
+        const wrapFs = operation => async (...args) => {
+          activeFs += 1;
+          maxActiveFs = Math.max(maxActiveFs, activeFs);
+          await new Promise(resolve => setTimeout(resolve, 1));
+          try { return await operation(...args); } finally { activeFs -= 1; }
+        };
+        await nodeDiskUsage(diskConcurrencyRoot, 3, 20, undefined, {
+          lstat: wrapFs(lstatAsync),
+          readdir: wrapFs(readdirAsync),
+          stat: wrapFs(statAsync),
+        });
+        expect(maxActiveFs).toBeLessThanOrEqual(16);
+        expect(activeFs).toBe(0);
+
+        const diskAbort = new AbortController();
+        activeFs = 0;
+        const abortingFs = operation => async (...args) => {
+          activeFs += 1;
+          await new Promise(resolve => setTimeout(resolve, 5));
+          try { return await operation(...args); } finally { activeFs -= 1; }
+        };
+        const abortedScan = nodeDiskUsage(diskConcurrencyRoot, 3, 20, diskAbort.signal, {
+          lstat: abortingFs(lstatAsync),
+          readdir: abortingFs(readdirAsync),
+          stat: abortingFs(statAsync),
+        });
+        setImmediate(() => diskAbort.abort('user'));
+        await expect(abortedScan).rejects.toMatchObject({ name: 'AbortError' });
+        expect(activeFs).toBe(0);
+
+        const symlinkRoot = tempDir('disk-usage-symlink');
+        mkdirSync(join(symlinkRoot, 'target'));
+        writeFileSync(join(symlinkRoot, 'target', 'data.bin'), Buffer.alloc(16));
+        writeFileSync(join(symlinkRoot, 'target-file.bin'), Buffer.alloc(8));
+        symlinkSync('target', join(symlinkRoot, 'linkdir'), 'dir');
+        symlinkSync('target-file.bin', join(symlinkRoot, 'filelink'), 'file');
+        symlinkSync('missing-target', join(symlinkRoot, 'broken'));
+        const symlinkBinDir = managedCliBinDir(symlinkRoot);
+        mkdirSync(symlinkBinDir, { recursive: true });
+        writeFileSync(join(symlinkBinDir, 'dust'), readFileSync(realDust), { mode: 0o755 });
+        trustManagedCliFixtures(symlinkRoot, ['dust']);
+        const diskInput = { path: symlinkRoot, depth: 2, limit: 20 };
+        const fast = await registry.execute('DiskUsage', diskInput, {
+          cwd: symlinkRoot, yeaftDir: symlinkRoot, managedCliReady: Promise.resolve([]),
+        });
+        const fallback = await registry.execute('DiskUsage', diskInput, {
+          cwd: symlinkRoot, yeaftDir: join(symlinkRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+        });
+        const fastLinkRow = fast.split('\n').find(line => line.endsWith('  linkdir'));
+        const fallbackLinkRow = fallback.split('\n').find(line => line.endsWith('  linkdir'));
+        expect(fastLinkRow).toBeDefined();
+        expect(fallbackLinkRow).toBe(fastLinkRow);
+        for (const nonDirectoryLink of ['filelink', 'broken']) {
+          expect(fast.split('\n').some(line => line.endsWith(`  ${nonDirectoryLink}`))).toBe(false);
+          expect(fallback.split('\n').some(line => line.endsWith(`  ${nonDirectoryLink}`))).toBe(false);
+        }
+        for (const { depth, limit } of [
+          { depth: 0, limit: 1 },
+          { depth: 1, limit: 2 },
+          { depth: 2, limit: 20 },
+        ]) {
+          const boundedInput = { path: symlinkRoot, depth, limit };
+          const boundedFast = await registry.execute('DiskUsage', boundedInput, {
+            cwd: symlinkRoot, yeaftDir: symlinkRoot, managedCliReady: Promise.resolve([]),
+          });
+          const boundedFallback = await registry.execute('DiskUsage', boundedInput, {
+            cwd: symlinkRoot, yeaftDir: join(symlinkRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+          });
+          expect(boundedFast).toBe(boundedFallback);
+        }
+
+        const regularFileInput = { path: join(symlinkRoot, 'target-file.bin'), depth: 2, limit: 20 };
+        for (const yeaftDir of [symlinkRoot, join(symlinkRoot, 'fallback')]) {
+          expect(await registry.execute('DiskUsage', regularFileInput, {
+            cwd: symlinkRoot, yeaftDir, managedCliReady: Promise.resolve([]),
+          })).toContain('path must be a directory or a directory symlink');
+        }
+
+        const rootLink = join(symlinkRoot, 'rootlink');
+        symlinkSync(join(symlinkRoot, 'target'), rootLink, 'dir');
+        const rootInput = { path: rootLink, depth: 2, limit: 20 };
+        const fastRoot = await registry.execute('DiskUsage', rootInput, {
+          cwd: symlinkRoot, yeaftDir: symlinkRoot, managedCliReady: Promise.resolve([]),
+        });
+        const fallbackRoot = await registry.execute('DiskUsage', rootInput, {
+          cwd: symlinkRoot, yeaftDir: join(symlinkRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+        });
+        const fastRootRow = fastRoot.split('\n').find(line => line.endsWith('  .'));
+        const fallbackRootRow = fallbackRoot.split('\n').find(line => line.endsWith('  .'));
+        expect(fastRootRow).toBeDefined();
+        expect(fallbackRootRow).toBe(fastRootRow);
+      }
+    }
+
+    for (const name of ['Grep', 'Glob', 'DiskUsage']) {
+      const controller = new AbortController();
+      controller.abort();
+      const input = name === 'Grep'
+        ? { pattern: 'needle', path: parityRoot }
+        : name === 'Glob' ? { pattern: '**/*', path: parityRoot } : { path: parityRoot };
+      await expect(registry.execute(name, input, {
+        cwd: parityRoot,
+        yeaftDir: join(parityRoot, 'fallback'),
+        managedCliReady: Promise.resolve([]),
+        signal: controller.signal,
+      })).rejects.toMatchObject({ name: 'AbortError' });
+    }
+
+    const fallbackAbortDir = tempDir('search-fallback-mid-abort');
+    for (let dir = 0; dir < 32; dir += 1) {
+      const dirPath = join(fallbackAbortDir, `d${dir}`);
+      mkdirSync(dirPath);
+      for (let file = 0; file < 16; file += 1) {
+        writeFileSync(join(dirPath, `f${file}.txt`), 'needle\n');
+      }
+    }
+    for (const name of ['Grep', 'Glob', 'DiskUsage']) {
+      const controller = new AbortController();
+      const input = name === 'Grep'
+        ? { pattern: 'needle', path: fallbackAbortDir }
+        : name === 'Glob' ? { pattern: '**/*.txt', path: fallbackAbortDir } : { path: fallbackAbortDir };
+      const pending = registry.execute(name, input, {
+        cwd: fallbackAbortDir,
+        yeaftDir: join(fallbackAbortDir, 'missing'),
+        managedCliReady: Promise.resolve([]),
+        signal: controller.signal,
+      });
+      setImmediate(() => controller.abort('user'));
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    }
+
+    if (process.platform !== 'win32') {
+      const abortDir = tempDir('search-mid-abort');
+      const abortBinDir = managedCliBinDir(abortDir);
+      mkdirSync(abortBinDir, { recursive: true });
+      for (const name of ['rg', 'fd', 'dust']) {
+        writeFileSync(join(abortBinDir, name), '#!/bin/sh\ntrap "exit 130" TERM\nwhile :; do :; done\n', { mode: 0o755 });
+      }
+      trustManagedCliFixtures(abortDir, ['rg', 'fd', 'dust']);
+      for (const name of ['Grep', 'Glob', 'DiskUsage']) {
+        const controller = new AbortController();
+        const input = name === 'Grep'
+          ? { pattern: 'needle', path: abortDir }
+          : name === 'Glob' ? { pattern: '**/*', path: abortDir } : { path: abortDir };
+        const pending = registry.execute(name, input, {
+          cwd: abortDir,
+          yeaftDir: abortDir,
+          managedCliReady: Promise.resolve([]),
+          signal: controller.signal,
+        });
+        setTimeout(() => controller.abort('user'), 20);
+        await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      }
+    }
+    await verifyRipgrepParity();
   });
 });

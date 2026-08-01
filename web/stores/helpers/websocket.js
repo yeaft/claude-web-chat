@@ -7,6 +7,11 @@ import { clearSessionLoading } from './session.js';
 // Pending ensureConnected resolvers — settled by onopen/timeout
 let _connectResolvers = [];
 
+function isAuthenticationClose(event) {
+  return event?.code === 1008
+    && String(event.reason || '').toLowerCase().includes('authentication');
+}
+
 function _settleConnectResolvers(success) {
   const resolvers = _connectResolvers;
   _connectResolvers = [];
@@ -120,11 +125,28 @@ export function connect(store) {
   }
 
   const authToken = authStore.getActiveToken?.() || authStore.token || null;
+  const authGeneration = authStore.authGeneration;
 
-  if (store.ws && store.ws.readyState === WebSocket.CONNECTING && store._wsAuthToken === authToken) {
+  if (store.ws && store.ws.readyState === WebSocket.CONNECTING
+      && store._wsAuthToken === authToken && store._wsAuthGeneration === authGeneration) {
     console.log('[WS] Already connecting, skip');
     return;
   }
+
+  // Agent and Session inventories belong to the socket that delivered them.
+  // Invalidate both before replacing the socket so the UI cannot render a
+  // stale empty/content state while the new authenticated snapshot is pending.
+  clearTimeout(store._legacyYeaftSessionHydrateTimer);
+  store._legacyYeaftSessionHydrateTimer = null;
+  store._hasHandledAgentList = false;
+  store._hasHandledYeaftSessionHydrate = false;
+  store.yeaftSessionInventoryCompleteSupported = null;
+  store.yeaftSessionHydrateRequestId = null;
+  store.yeaftSessionHydrateSlices = [];
+  store.yeaftSessionHydrateError = null;
+  store._yeaftSessionInventorySocketQuarantined = false;
+  store.pendingAgentSelection = null;
+  store.agentSwitching = false;
 
   if (store.ws) {
     store.ws.onopen = null;
@@ -135,9 +157,45 @@ export function connect(store) {
   }
 
   store.connectionState = store.reconnectAttempts > 0 ? 'reconnecting' : 'connecting';
+  // Encryption and history request capabilities are connection-scoped. Start
+  // every socket conservatively and cancel requests owned by the old socket;
+  // reconnect catch-up will issue fresh requests after agent_list arrives.
+  store.serverEncryptionRequired = true;
+  store.chatHistoryRequestIdSupported = null;
+  store.chatHistoryConnectionGeneration = Number(store.chatHistoryConnectionGeneration || 0) + 1;
+  for (const [requestId, request] of Object.entries(store.projectMutationRequests || {})) {
+    request?.resolve?.({
+      ok: false,
+      requestId,
+      error: { code: 'connection_changed' },
+    });
+  }
+  store.projectMutationRequests = {};
+  store.sessionProjects = [];
+  for (const [catalogKey, request] of Object.entries(store.chatHistoryRequests || {})) {
+    if (!request?.loading) continue;
+    store.chatHistoryRequests[catalogKey] = {
+      ...request,
+      loading: false,
+      cancelled: true,
+      error: 'connection_changed',
+    };
+  }
+  const pendingCatalogMutations = Object.values(store.sessionCatalogMutationRequests || {});
+  if (pendingCatalogMutations.length > 0) {
+    store.sessionCatalog = pendingCatalogMutations[0].previousCatalog;
+    store.sessionCatalogMutationRequests = {};
+  }
+  // Catalog support is a capability of the current Server connection. Reset
+  // before every handshake so reconnecting to an older Server immediately
+  // restores the legacy sidebar instead of showing a stale prior snapshot.
+  store.sessionCatalogLoaded = false;
+  store.sessionCatalog = [];
+  store.activeCatalogKey = null;
   console.log(`[WS] Connecting... (attempt ${store.reconnectAttempts + 1})`);
 
   store._wsAuthToken = authToken;
+  store._wsAuthGeneration = authGeneration;
   let wsUrl = `${protocol}//${location.host}?type=web`;
   if (authToken) {
     wsUrl += `&token=${encodeURIComponent(authToken)}`;
@@ -176,7 +234,7 @@ export function connect(store) {
     const msg = store.parseWsMessage(event.data);
     if (msg) {
       if (msg.type === 'file_content') console.log('[WS.onmessage] Received file_content, path:', msg.filePath, 'contentLen:', msg.content?.length);
-      store.handleMessage({ ...msg, _wsAuthToken: authToken });
+      store.handleMessage({ ...msg, _wsAuthToken: authToken, _wsAuthGeneration: authGeneration });
     } else {
       console.warn('[WS.onmessage] parseWsMessage returned null, raw data length:', event.data?.length);
     }
@@ -184,19 +242,29 @@ export function connect(store) {
 
   socket.onclose = (event) => {
     if (socket !== store.ws) {
-      if (event.code === 1008) authStore.handleAuthFailure?.(undefined, authToken);
+      if (isAuthenticationClose(event)) authStore.handleAuthFailure?.(undefined, authToken, authGeneration);
       return;
     }
     console.log('[WS] Disconnected:', event.code, event.reason);
     store.authenticated = false;
+    clearTimeout(store._legacyYeaftSessionHydrateTimer);
+    store._legacyYeaftSessionHydrateTimer = null;
+    store._hasHandledAgentList = false;
+    store._hasHandledYeaftSessionHydrate = false;
+    store.yeaftSessionInventoryCompleteSupported = null;
+    store.yeaftSessionHydrateRequestId = null;
+    store.yeaftSessionHydrateSlices = [];
+    store.yeaftSessionHydrateError = null;
+    store.pendingAgentSelection = null;
+    store.agentSwitching = false;
     const wasUpdating = store.connectionState === 'updating';
     store.connectionState = wasUpdating ? 'updating' : 'disconnected';
     store.stopHeartbeat();
     clearSessionLoading(store);
 
-    if (event.code === 1008) {
+    if (isAuthenticationClose(event)) {
       console.log('[WS] Auth failure, clearing token and resetting auth state');
-      authStore.handleAuthFailure?.(undefined, authToken);
+      authStore.handleAuthFailure?.(undefined, authToken, authGeneration);
       store.reconnectAttempts = 0;
       _settleConnectResolvers(false);
       return;

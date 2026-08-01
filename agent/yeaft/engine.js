@@ -7,7 +7,7 @@
  *   3. Call adapter.stream()
  *   4. Collect text + tool_calls from stream events
  *   5. If tool_calls → execute tools → append results → goto 3
- *   6. If end_turn → persist messages → check consolidation → done
+ *   6. Persist each completed message at its durability boundary; end_turn runs maintenance
  *   7. If max_tokens → auto-continue (up to maxContinueTurns)
  *   8. On LLMContextError → force compact → retry
  *   9. On retryable error with fallbackModel → switch model → retry
@@ -32,9 +32,8 @@ import { archiveTurn } from './archive/turn-archive.js';
 import { archiveToolResults } from './archive/tool-results.js';
 import { readSummary as readScopeSummary } from './memory/store.js';
 import { runAdjust } from './memory/adjust.js';
-import { cleanMemoryPromptText } from './memory/prompt-cleanup.js';
+import { cleanMemoryPromptText, isMemoryPromptRelevant } from './memory/prompt-cleanup.js';
 import { isVpSeedBackfillStub } from './memory/seed-backfill.js';
-import { runStopHooks } from './stop-hooks.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
 // Default thread marker for legacy / non-group flows. Group VP runtime may
 // pass a real threadId per (sessionId, vpId, threadId) engine instance.
@@ -46,7 +45,7 @@ import { countTurns } from './turn-utils.js';
 import { attachRouterPlan, extractPriorPlan, stripMetaForWire } from './router/continuity.js';
 import { resolveThinking } from './router/thinking.js';
 import { approxTokens } from './memory/budget.js';
-import { COLLAB_TOOL_POLICY, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
+import { COLLAB_TOOL_POLICY, isToolErrorOutput, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
 import { extractDisplayImages, stripDisplayImageData } from './image-assets.js';
 import { acknowledgePendingNotifications, formatNotificationsForPrompt, peekPendingNotifications } from './sub-agent/notifications.js';
 import {
@@ -82,6 +81,11 @@ const MAX_CONTINUE_TURNS = 3;
 /** Bound the best-effort post-turn AMS LLM call independently of the user turn. */
 const AMS_ADJUST_TIMEOUT_MS = 30_000;
 
+/** Maximum silence while a visible turn waits for a result-producing task. */
+const DEFAULT_ASYNC_TASK_WAIT_TIMEOUT_MS = 120_000;
+
+const DEFAULT_MEMORY_RECALL_LIMIT = 8;
+
 // ─── LLM retry policy defaults ──────────────────────────────────
 // Hard-coded floor / ceiling for retry behaviour. The engine reads the
 // effective policy from `config.llmRetry` so users can dial these via
@@ -101,6 +105,9 @@ const RETRY_DEFAULTS = Object.freeze({
   jitterRatio: 0.25,
   forbiddenRetryDelaysMs: [30_000, 120_000],
 });
+
+const RETRY_CONTINUATION_PROMPT =
+  'Continue from the exact point where the previous response stopped. Do not repeat text already produced.';
 
 // Accept legacy namespaced commands and Claude Code-style bare skill commands.
 // Project-tier skills are shown as /<skill-name>; /yeaft-skills:<name> and
@@ -362,8 +369,8 @@ export function shouldAllowGroupReflection({
  * @typedef {{ type: 'consolidate', archivedCount: number, extractedCount: number }} ConsolidateEvent
  * @typedef {{ type: 'recall', entryCount: number, cached: boolean }} RecallEvent
  * @typedef {{ type: 'fallback', from: string, to: string, reason: string }} FallbackEvent
- * @typedef {{ type: 'llm_retry', attempt: number, maxRetries: number, delayMs: number, reason: 'rate_limit_retry_after'|'rate_limit_backoff'|'transient_backoff'|'stream_idle_timeout', errorName: string, statusCode: number|null, message: string }} LlmRetryEvent
- * @typedef {{ type: 'error', error: Error, retryable: boolean, reason?: 'stream_idle_timeout', retryExhausted?: boolean }} ErrorEvent
+ * @typedef {{ type: 'llm_retry', attempt: number, maxRetries: number, delayMs: number, reason: 'rate_limit_retry_after'|'rate_limit_backoff'|'transient_backoff'|'stream_idle_timeout', recoveryMode: 'restart'|'continue', errorName: string, statusCode: number|null, message: string }} LlmRetryEvent
+ * @typedef {{ type: 'error', error: Error, retryable: boolean, reason?: 'stream_idle_timeout', retryExhausted?: boolean, retryAttempts?: number, maxRetries?: number }} ErrorEvent
  *
  * @typedef {import('./llm/adapter.js').StreamEvent | TurnStartEvent | TurnEndEvent | ToolStartEvent | ToolEndEvent | ConsolidateEvent | RecallEvent | FallbackEvent | LlmRetryEvent | ErrorEvent} EngineEvent
  */
@@ -396,6 +403,20 @@ export function shouldAllowGroupReflection({
  * }} args
  * @returns {Array<{scope: string, summary: string}>}
  */
+export function selectResidentTopicScopes(topicScopes, recallEntries, userMsg = '') {
+  const recalledTopicScopes = new Set((recallEntries || [])
+    .map(entry => entry?.scope)
+    .filter(scope => typeof scope === 'string' && /^sessions\/[^/]+\/topic\//.test(scope)));
+  return (Array.isArray(topicScopes) ? topicScopes : [])
+    .filter(scope => recalledTopicScopes.has(scope) || isTopicScopeRelevant(scope, userMsg));
+}
+
+function isTopicScopeRelevant(scope, userMsg) {
+  if (!userMsg || typeof scope !== 'string') return false;
+  const label = scope.replace(/^sessions\/[^/]+\/topic\//, '').replace(/[/-]+/g, ' ');
+  return isMemoryPromptRelevant(label, userMsg);
+}
+
 export function buildResidentEntries(args) {
   const summaries = (args && args.summaries) || {};
   const out = [];
@@ -429,6 +450,47 @@ export function buildResidentEntries(args) {
 
 function isZhRuntimeLanguage(language) {
   return String(language || '').toLowerCase().startsWith('zh');
+}
+
+function resolveMemoryRecallLimit(config) {
+  const raw = config?.memoryRecallLimit ?? config?.dreamMemoryRecallLimit;
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_MEMORY_RECALL_LIMIT;
+  return Math.max(1, Math.floor(raw));
+}
+
+function loadedMemoryDebugEntries(snapshot) {
+  const snap = snapshot || {};
+  return [
+    ...loadedResidentDebugEntries(snap.resident || []),
+    ...loadedSegmentDebugEntries(snap.recent || [], 'recent'),
+    ...loadedSegmentDebugEntries(snap.onDemand || [], 'onDemand'),
+  ];
+}
+
+function loadedResidentDebugEntries(entries) {
+  return (entries || []).map((entry, index) => ({
+    id: `resident:${entry.scope || index}`,
+    layer: 'resident',
+    scope: entry.scope || null,
+    label: memoryScopeLabel(entry.scope || ''),
+    kind: 'summary',
+    score: null,
+    tags: [],
+    body: entry.summary || '',
+  })).filter(entry => entry.body);
+}
+
+function loadedSegmentDebugEntries(segments, layer) {
+  return (segments || []).map((seg, index) => ({
+    id: seg.id || `${layer}:${index}`,
+    layer,
+    scope: seg.scope || null,
+    label: memoryScopeLabel(seg.scope || ''),
+    kind: seg.kind || null,
+    score: typeof seg.score === 'number' ? seg.score : null,
+    tags: Array.isArray(seg.tags) ? seg.tags : [],
+    body: seg.body || '',
+  })).filter(entry => entry.body);
 }
 
 export class Engine {
@@ -470,6 +532,9 @@ export class Engine {
 
   /** @type {string|null} */
   #yeaftDir;
+
+  /** @type {Promise<Array>|null} */
+  #managedCliReady;
   /** @type {string|null} — set when this engine is bound to a specific group (per-VP fan-out path). */
   #sessionId = null;
   /** @type {string|null} — set when this engine is bound to a specific VP (per-VP fan-out path). */
@@ -506,7 +571,8 @@ export class Engine {
    * LLMAbortError (or a synthetic abort check) and yields exactly one pair
    * of events — `{type:'aborted', reason}` followed by
    * `{type:'turn_end', stopReason:'aborted'}` — then returns without
-   * persisting partial tool calls, consolidation, or stop-hook side-effects.
+   * running consolidation or other terminal maintenance. Any assistant text
+   * already streamed is durably recorded as an incomplete response.
    *
    * @type {AbortController|null}
    */
@@ -542,11 +608,12 @@ export class Engine {
   #externalUserWakePending = false;
 
   /**
-   * Tasks (background bash, sub-agent spawns) that were launched DURING
-   * the currently-running query() and have NOT terminated yet. The query
-   * loop refuses to finalize end_turn while this set is non-empty — instead
-   * it parks on `#asyncTaskWaiters` until a terminal event or a new user
-   * append wakes it up. Cleared at the top of each query() and again in
+   * Result-producing async tasks (currently sub-agent spawns) launched DURING
+   * the running query() and not yet terminated. Persistent shell tasks are
+   * deliberately status-only and never enter this set. The query loop refuses
+   * to finalize end_turn while this set is non-empty — instead it parks on
+   * `#asyncTaskWaiters` until a terminal event or a new user append wakes it.
+   * Cleared at the top of each query() and again in
    * the finally block so a stale set never leaks across turns.
    * @type {Set<string>}
    */
@@ -579,6 +646,9 @@ export class Engine {
 
   /** Task results already spliced into conversationMessages for the next request. */
   #pendingAsyncTaskConfirmIds = new Set();
+
+  /** Persisted tool rows that may receive a same-turn background-task update. */
+  #persistedToolMessages = new Map();
 
   /** Reject new same-turn deliveries once the current query starts closing. */
   #asyncTaskDeliveryClosed = true;
@@ -616,6 +686,7 @@ export class Engine {
    *   onUnregister?: (taskId:string, engine:Engine) => void,
    *   onConsumed?: (taskId:string, engine:Engine) => void,
    *   onUndelivered?: (taskId:string, delivery:object, engine:Engine) => void,
+   *   onDeferred?: (taskId:string, engine:Engine) => void,
    * } | null}
    */
   #asyncTaskCoordinator = null;
@@ -656,9 +727,10 @@ export class Engine {
    *   mcpManager?: import('./mcp.js').MCPManager,
    *   yeaftDir?: string,
    *   toolStats?: import('./stats/tool-usage.js').ToolUsageStats,
+   *   managedCliReady?: Promise<Array>,
    * }} params
    */
-  constructor({ adapter, trace, config, conversationStore, memoryIndex, amsRegistry, toolRegistry, skillManager, mcpManager, yeaftDir, toolStats = null, taskManager = null, sessionId = null, vpId = null, chatId = null }) {
+  constructor({ adapter, trace, config, conversationStore, memoryIndex, amsRegistry, toolRegistry, skillManager, mcpManager, yeaftDir, toolStats = null, taskManager = null, sessionId = null, vpId = null, chatId = null, managedCliReady = null }) {
     this.#adapter = adapter;
     this.#trace = trace;
     this.#config = config;
@@ -672,6 +744,7 @@ export class Engine {
     this.#skillManager = skillManager || null;
     this.#mcpManager = mcpManager || null;
     this.#yeaftDir = yeaftDir || null;
+    this.#managedCliReady = managedCliReady || null;
     this.#toolStats = toolStats || null;
     // Per-VP fan-out (2026-06-01): engine instances in the group path are
     // keyed by ${sessionId}::${vpId}::${threadId}, so binding the engine to
@@ -691,14 +764,7 @@ export class Engine {
       conversationId: this.#traceId,
     });
 
-    // Build fast config: uses fastModelId for internal tasks (recall, consolidation, dream)
-    // Falls back to primary model if no fastModel configured
-    const fastModelId = config.fastModelId || config.model;
-    if (fastModelId !== config.model) {
-      this.#fastConfig = { ...config, model: fastModelId };
-    } else {
-      this.#fastConfig = config;
-    }
+    this.refreshConfig(config);
   }
 
   /**
@@ -765,6 +831,21 @@ export class Engine {
   setLanguage(lang) {
     if (typeof lang !== 'string' || !lang) return;
     this.#config.language = lang;
+  }
+
+  /**
+   * Replace the effective runtime config for subsequent queries without
+   * interrupting a turn that already captured its model.
+   *
+   * @param {object} config
+   */
+  refreshConfig(config) {
+    if (!config || typeof config !== 'object') return;
+    this.#config = config;
+    const fastModelId = config.fastModelId || config.model;
+    this.#fastConfig = fastModelId !== config.model
+      ? { ...config, model: fastModelId }
+      : config;
   }
 
   /**
@@ -873,6 +954,7 @@ export class Engine {
    *   ownVpId?: string|null,
    *   summaries: { user?: string, session?: string, vp?: string },
    *   recallEntries: object[],
+   *   userMsg?: string,
    * }} args
    * @returns {{
    *   ams: import('./memory/ams.js').ActiveMemorySet,
@@ -880,6 +962,7 @@ export class Engine {
    *   ownVpId: string|null,
    *   scopes: string[],
    *   snapshotBlock: string,
+ *   snapshot: import('./memory/ams.js').AmsSnapshot,
  *   residentEntries: Array<{scope:string, summary:string}>,
    * } | null}
    */
@@ -912,14 +995,15 @@ export class Engine {
     ams.setOnDemand(segs);
 
     // (c) Snapshot — render the AMS layers as a single prompt block.
-    const snapshotBlock = this.#renderAmsSnapshot(ams, this.#config.language || 'en');
+    const snapshot = ams.snapshot({ userMsg: args.userMsg || '' });
+    const snapshotBlock = this.#renderAmsSnapshot(snapshot, this.#config.language || 'en');
 
     const scopes = buildRelevantScopes({
       sessionId: args.sessionId,
       vpId: ownVpId,
     });
 
-    return { ams, sessionKey, ownVpId, scopes, snapshotBlock, residentEntries };
+    return { ams, sessionKey, ownVpId, scopes, snapshotBlock, snapshot, residentEntries };
   }
 
   /**
@@ -927,12 +1011,11 @@ export class Engine {
    * injection. Mirrors the heading style of the existing memory blocks
    * so the LLM sees a consistent layout.
    *
-   * @param {import('./memory/ams.js').ActiveMemorySet} ams
+   * @param {import('./memory/ams.js').AmsSnapshot} snap
    * @param {string} [language]
    * @returns {string}
    */
-  #renderAmsSnapshot(ams, language = 'en') {
-    const snap = ams.snapshot();
+  #renderAmsSnapshot(snap, language = 'en') {
     if (!snap) return '';
     const parts = [];
     if (snap.resident.length === 0 && snap.recent.length === 0 && snap.onDemand.length === 0) {
@@ -1070,12 +1153,12 @@ export class Engine {
    * @param {string} [args.explicitSkillName] — leading /skill:<name> command, if present
    * @returns {string}
    */
-  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, workCenterInstructions, projectDoc, taskCtx, activeTasks, explicitSkillName } = {}) {
-    // Get relevant skill content if SkillManager is wired. A leading
-    // /skill:<name> is explicit, not relevance matching: load that skill by
-    // name or inject a visible prompt warning when the command is unknown.
-    let skillContent = '';
-    if (this.#skillManager) {
+  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, workCenterInstructions, projectDoc, taskCtx, activeTasks, explicitSkillName, resolvedSkillContent = null } = {}) {
+    // Skill selection is normally resolved once by #runQuery so the prompt and
+    // emitted protocol events describe the exact same skills. Keep the local
+    // fallback for internal callers that do not need selection events.
+    let skillContent = typeof resolvedSkillContent === 'string' ? resolvedSkillContent : '';
+    if (resolvedSkillContent === null && this.#skillManager) {
       if (explicitSkillName) {
         skillContent = this.#skillManager.getPromptContent(explicitSkillName)
           || `## Skill command error\n\nRequested skill "${explicitSkillName}" was not found. Continue without that skill and tell the user it is unavailable.`;
@@ -1190,6 +1273,7 @@ export class Engine {
     return {
       signal,
       yeaftDir: this.#yeaftDir,
+      managedCliReady: this.#managedCliReady,
       runtimePlatform: getRuntimePlatformInfo(),
       // Group-scoped working directory. Threaded from #runQuery({ workDir })
       // → set by web-bridge runVpTurn from sessionMeta.workDir. Tools read
@@ -1209,6 +1293,9 @@ export class Engine {
       config: this.#config,
       taskManager: this.#taskManager,
       sessionId: vpCtx?.sessionId || this.#sessionId || null,
+      projectSessionIds: Array.isArray(vpCtx?.projectSessionIds)
+        ? vpCtx.projectSessionIds.slice()
+        : [],
       threadId: vpCtx?.threadId || this.#currentThreadId || MAIN_THREAD_ID,
       currentVpId: vpCtx?.senderVpId || this.#vpId || null,
       // task-704b: per-tool-result hard cap derives from this. Threaded
@@ -1242,18 +1329,18 @@ export class Engine {
       // Null in non-VP / test contexts — tools tolerate missing slots.
       getCurrentTodos: vpCtx?.getCurrentTodos || null,
       setCurrentTodos: vpCtx?.setCurrentTodos || null,
-      askUser: vpCtx?.askUser || null,
+      askUser: typeof vpCtx?.askUser === 'function'
+        ? input => vpCtx.askUser(input, typeof vpCtx?.currentToolCall === 'function' ? vpCtx.currentToolCall() : null)
+        : null,
       // task-707: tool-callable end-turn signal. The engine threads this
       // setter when constructing toolCtx so a tool (e.g. route_forward)
       // can mark "after this batch, end the turn — do NOT call adapter
       // again". Honored at the top of the tool-loop continuation.
       requestEndTurn: vpCtx?.requestEndTurn,
-      // Background-task ownership hook. Tools that produce a TaskManager
-      // task (bash background, agent spawn) call this with the new
-      // `task.id` so the engine keeps the current query parked at end_turn
-      // until the task terminates — its result is then spliced into the
-      // next adapter loop in the SAME turn. Tools that don't produce
-      // async tasks ignore it.
+      // Result-producing async-task ownership hook. Tools such as SpawnAgent
+      // call this with the new `task.id` so the engine keeps the current query
+      // parked at end_turn until the result arrives. Persistent background
+      // shell tasks are status-only and intentionally do not call this hook.
       registerAsyncTask: (taskId, meta = {}) => {
         const current = typeof vpCtx?.currentToolCall === 'function' ? vpCtx.currentToolCall() : null;
         this.#registerAsyncTask(taskId, { ...(current || {}), ...(meta || {}) });
@@ -1268,10 +1355,14 @@ export class Engine {
         skillManager: this.#skillManager,
         mcpManager: this.#mcpManager,
         yeaftDir: this.#yeaftDir,
+        managedCliReady: this.#managedCliReady,
         parentName: vpCtx?.senderVpId || 'parent',
         parentVpId: vpCtx?.senderVpId || null,
         parentVpPersona: vpCtx?.vpPersona || null,
         parentSessionId: vpCtx?.sessionId || null,
+        projectSessionIds: Array.isArray(vpCtx?.projectSessionIds)
+          ? vpCtx.projectSessionIds.slice()
+          : [],
         parentThreadId: vpCtx?.threadId || this.#currentThreadId || MAIN_THREAD_ID,
         onEvent: this.#subAgentEventSink || null,
         language: this.#config?.language || 'en',
@@ -1281,11 +1372,9 @@ export class Engine {
         // to. Null when the parent has no stats wired (e.g. tests).
         toolStats: this.#toolStats || null,
         taskManager: this.#taskManager || null,
-        // Propagate the async-task coordinator so sub-agents launched
-        // from this engine register their background tasks against the
-        // SAME owner map the bridge uses. Without this, a sub-agent's
-        // background bash terminal event would not find its engine and
-        // would fall through to the legacy rescue path.
+        // Propagate the async-task coordinator so sub-agents launched from
+        // this engine register result-producing child tasks against the same
+        // owner map the bridge uses.
         asyncTaskCoordinator: this.#asyncTaskCoordinator || null,
       },
     };
@@ -1317,7 +1406,7 @@ export class Engine {
    * @returns {Promise<{ profile: string, entries: object[], formatted: string }|null>}
    */
   async #recallMemory(prompt, ctx = {}) {
-    const memory = { profile: '', entries: [], formatted: '' };
+    const memory = { profile: '', entries: [], formatted: '', meta: {} };
     if (!this.#memoryIndex) return memory;
     try {
       const result = runMemoryPreflow(this.#memoryIndex, {
@@ -1326,11 +1415,13 @@ export class Engine {
         chatId: ctx.chatId || this.#chatId,
         vpId: ctx.vpId,
         extraScopes: ctx.extraScopes,
+        pickLimit: resolveMemoryRecallLimit(this.#config),
         fallbackOnEmpty: true,
       });
       memory.profile = result.profile || '';
       memory.entries = result.entries || [];
       memory.formatted = result.formatted || '';
+      memory.meta = result.meta || {};
     } catch {
       // Fail soft — empty injection.
     }
@@ -1359,57 +1450,62 @@ export class Engine {
     return this.#conversationStore.readCompactSummary();
   }
 
-  /**
-   * Persist user message and assistant response to conversation store.
-   * Skipped in read-only mode (config._readOnly).
-   *
-   * Multi-VP fan-out (Bug 1): when several engines run the same user
-   * prompt in parallel, we must NOT each write our own copy of the user
-   * message — `coord.ingest`/the orchestrator already wrote it once. Pass
-   * `userAlreadyPersisted: true` from the caller to skip the user-row
-   * append while still persisting the assistant + tool rows.
-   *
-   * @param {string} userContent
-   * @param {string} assistantContent
-   * @param {object[]} [toolCalls]
-   * @param {string} [sessionId]
-   * @param {boolean} [userAlreadyPersisted]
-   */
-  #persistMessages(userContent, assistantContent, toolCalls, sessionId, userAlreadyPersisted = false) {
-    if (!this.#conversationStore) return;
-    if (this.#config._readOnly) return;
+  #canPersistConversation() {
+    return Boolean(this.#conversationStore) && !this.#config._readOnly;
+  }
 
-    // Persist with the active runtime thread. Legacy / non-group flows use
-    // MAIN_THREAD_ID; group VP flows pass their classified threadId.
-    const threadId = this.#currentThreadId || MAIN_THREAD_ID;
-
-    // Persist user message — unless an upstream caller (e.g. the group
-    // coordinator) has already done so for this turn.
-    if (!userAlreadyPersisted) {
-      this.#conversationStore.append({
-        role: 'user',
-        content: userContent,
-        threadId,
-        // Bug 6: stamp sessionId/chatId so history replay can route by container.
-        ...(sessionId ? { sessionId } : {}),
-        ...(this.#chatId ? { chatId: this.#chatId } : {}),
-      });
-    }
-
-    // Persist assistant message
-    const assistantMsg = {
-      role: 'assistant',
-      content: assistantContent,
-      model: this.#config.model,
-      threadId,
+  #conversationRecord(message, { sessionId, turnId, model, incomplete = false, stopReason = null } = {}) {
+    const record = {
+      role: message.role,
+      content: typeof message.content === 'string'
+        ? message.content
+        : JSON.stringify(message.content ?? ''),
+      model: model || this.#config.model,
+      threadId: this.#currentThreadId || MAIN_THREAD_ID,
       ...(sessionId ? { sessionId } : {}),
       ...(this.#chatId ? { chatId: this.#chatId } : {}),
-      ...(this.#vpId ? { speakerVpId: this.#vpId } : {}),
     };
-    if (toolCalls && toolCalls.length > 0) {
-      assistantMsg.toolCalls = toolCalls;
+    if (message.toolCallId) record.toolCallId = message.toolCallId;
+    if (Array.isArray(message.toolCalls) && message.toolCalls.length > 0) record.toolCalls = message.toolCalls;
+    if (Array.isArray(message.thinkingBlocks) && message.thinkingBlocks.length > 0) record.thinkingBlocks = message.thinkingBlocks;
+    if (message.isError) record.isError = true;
+    if (message.imageAssetAnchor) record.imageAssetAnchor = true;
+    if (message._reflection) record._reflection = true;
+    if (message.role === 'user') record.userAuthored = message.userAuthored === true;
+    if (message.internal === true) record.internal = true;
+    if (message.responseKind === 'progress' || message.responseKind === 'result') {
+      record.responseKind = message.responseKind;
     }
-    this.#conversationStore.append(assistantMsg);
+    if (Array.isArray(message.foldedMessageIds) && message.foldedMessageIds.length > 0) {
+      record.foldedMessageIds = [...message.foldedMessageIds];
+    }
+    if (turnId && (message.role === 'assistant' || message.role === 'tool')) record.turnId = turnId;
+    if (this.#vpId && (message.role === 'assistant' || message.role === 'tool')) record.speakerVpId = this.#vpId;
+    if (incomplete) record.incomplete = true;
+    if (stopReason) record.stopReason = stopReason;
+    return record;
+  }
+
+  #persistConversationMessage(message, context = {}) {
+    if (!this.#canPersistConversation() || !message?.role) return null;
+    const hasContent = typeof message.content === 'string'
+      ? message.content.length > 0
+      : message.content != null;
+    const hasToolCalls = Array.isArray(message.toolCalls) && message.toolCalls.length > 0;
+    const hasThinking = Array.isArray(message.thinkingBlocks) && message.thinkingBlocks.length > 0;
+    if (!hasContent && !hasToolCalls && !hasThinking && message.role !== 'tool') return null;
+    return this.#conversationStore.append(this.#conversationRecord(message, context));
+  }
+
+  #persistFoldedRange(messages, startIdx, endIdx, reflection, context = {}) {
+    if (!this.#canPersistConversation() || typeof this.#conversationStore?.foldMessages !== 'function') return null;
+    const persistedRows = (messages || []).slice(startIdx, endIdx + 1)
+      .map(message => message?._persistedMessageId || message?.id)
+      .filter(id => typeof id === 'string' && id)
+      .map(id => ({ id }));
+    if (persistedRows.length === 0) return null;
+    const record = this.#conversationRecord(reflection, context);
+    return this.#conversationStore.foldMessages(persistedRows, record);
   }
 
   /**
@@ -1634,6 +1730,15 @@ export class Engine {
         ? toolMsg.content
         : this.#formatTaskResultUpdateContent(toolMsg.content);
       toolMsg.content = `${prior}\n\n${appendText}`;
+      const persistedTool = this.#persistedToolMessages.get(update.toolCallId);
+      if (persistedTool && typeof this.#conversationStore?.update === 'function') {
+        const durablePrior = typeof persistedTool.content === 'string'
+          ? persistedTool.content
+          : this.#formatTaskResultUpdateContent(persistedTool.content);
+        const durableContent = `${durablePrior}\n\n${appendText}`;
+        const updated = this.#conversationStore.update(persistedTool, { content: durableContent });
+        if (updated) this.#persistedToolMessages.set(update.toolCallId, updated);
+      }
       applied.push(update);
       if (this.#acceptedAsyncTaskResults.has(update.taskId)) {
         this.#pendingAsyncTaskConfirmIds.add(update.taskId);
@@ -1668,6 +1773,16 @@ export class Engine {
       } catch { /* rescue plumbing must not break query teardown */ }
     }
     return deliveries.length;
+  }
+
+  #persistAppendedUserMessage(item, sessionId) {
+    if (!item || item.persisted || item.internal) return;
+    this.#persistConversationMessage({
+      role: 'user',
+      content: item.content,
+      userAuthored: true,
+    }, { sessionId });
+    item.persisted = true;
   }
 
   #drainPendingUserMessages(drainPendingUserMessages) {
@@ -1708,6 +1823,7 @@ export class Engine {
           content,
           preview,
           internal: Boolean(item.internal),
+          persisted: Boolean(item.persisted),
           taskId,
         };
       })
@@ -1743,7 +1859,7 @@ export class Engine {
    *   string-prompt shape (no regression for existing callers).
    * @yields {EngineEvent}
    */
-  async *query({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, collabToolPolicy = null } = {}) {
+  async *query({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null } = {}) {
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
       yield {
         type: 'error',
@@ -1814,10 +1930,27 @@ export class Engine {
     // The signal passed down to adapter.stream() + tool execution.
     const runSignal = abortCtrl.signal;
 
+    const retryLifecycle = {
+      pendingContinuation: null,
+      lastPersistedPartial: null,
+    };
     try {
       this.#currentThreadId = threadId || MAIN_THREAD_ID;
-      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName });
+      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds, sessionTopics, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, prepareProviderRequest, startProviderRequest, finishProviderRequest, failProviderRequest, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName, retryLifecycle });
     } finally {
+      // Closing the async generator at a visible retry boundary means the
+      // continuation never reached a provider. Keep it out of history and
+      // terminate the accepted assistant prefix instead of leaving `retry`.
+      if (retryLifecycle.pendingContinuation
+          && retryLifecycle.lastPersistedPartial
+          && typeof this.#conversationStore?.update === 'function') {
+        const abortedPartial = this.#conversationStore.update(
+          retryLifecycle.lastPersistedPartial,
+          { stopReason: 'aborted' },
+        );
+        if (abortedPartial) retryLifecycle.lastPersistedPartial = abortedPartial;
+      }
+      retryLifecycle.pendingContinuation = null;
       if (signal) {
         try { signal.removeEventListener('abort', onExternalAbort); } catch { /* ignore */ }
       }
@@ -1832,6 +1965,7 @@ export class Engine {
       this.#asyncTaskToolMeta.clear();
       this.#pendingTaskResultMessages.length = 0;
       this.#pendingTaskResultUpdates.length = 0;
+      this.#persistedToolMessages.clear();
       // Release any parked waiters so they don't pin a microtask after
       // query() returns. The loop has already exited so they're harmless,
       // but cleanup keeps the promise graph tight.
@@ -1850,7 +1984,7 @@ export class Engine {
    * in a try/finally without indenting the whole loop.
    * @private
    */
-  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, collabToolPolicy = null, explicitSkillName = null }) {
+  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null, explicitSkillName = null, retryLifecycle }) {
 
     const effectiveCollabToolPolicy = collabToolPolicy === COLLAB_TOOL_POLICY.SINGLE_VP || collabToolPolicy === COLLAB_TOOL_POLICY.MULTI_VP
       ? collabToolPolicy
@@ -1861,6 +1995,24 @@ export class Engine {
     const runtimeThreadId = (typeof threadId === 'string' && threadId.trim())
       ? threadId.trim()
       : MAIN_THREAD_ID;
+    const queryTurnId = randomUUID();
+    const queryStartedAt = Date.now();
+    const userQuestionPreview = String(prompt || '').slice(0, 200);
+    const queryVpId = vpPersona && typeof vpPersona === 'object'
+      && typeof vpPersona.vpId === 'string'
+      ? vpPersona.vpId
+      : (typeof senderVpId === 'string' ? senderVpId : null);
+
+    // Durability boundary: a valid user turn must exist on disk before any
+    // memory pre-flow or provider request can fail. The Web Session bridge
+    // already writes one shared user row before multi-VP fan-out, so those
+    // callers set userAlreadyPersisted and every VP skips this append.
+    if (!userAlreadyPersisted) {
+      this.#persistConversationMessage({ role: 'user', content: prompt, userAuthored: true }, {
+        sessionId: runtimeSessionId,
+      });
+    }
+
     const perfTraceId = typeof inboundEnvelope?._perfTraceId === 'string' && inboundEnvelope._perfTraceId.trim()
       ? inboundEnvelope._perfTraceId.trim()
       : (typeof inboundEnvelope?.perfTraceId === 'string' && inboundEnvelope.perfTraceId.trim() ? inboundEnvelope.perfTraceId.trim() : null);
@@ -1891,12 +2043,22 @@ export class Engine {
     let recallEntryCount = 0;
 
     const topicScopesForMemory = await this.#loadSessionTopicScopes(sessionId);
+    const projectScopesForMemory = Array.isArray(projectSessionIds)
+      ? projectSessionIds.flatMap(id => [
+          `sessions/${id}`,
+          `sessions/${id}/user`,
+          `session/${id}`,
+          `session/${id}/user`,
+          `group/${id}`,
+          `group/${id}/user`,
+        ])
+      : [];
     const recallResult = await this.#recallMemory(prompt, {
       sessionId,
       vpId: vpPersona && typeof vpPersona === 'object' && typeof vpPersona.vpId === 'string'
         ? vpPersona.vpId
         : (typeof senderVpId === 'string' ? senderVpId : undefined),
-      extraScopes: topicScopesForMemory,
+      extraScopes: [...topicScopesForMemory, ...projectScopesForMemory],
     });
     recallEntryCount = recallResult && Array.isArray(recallResult.entries)
       ? recallResult.entries.length
@@ -1904,6 +2066,11 @@ export class Engine {
     if (recallEntryCount > 0) {
       yield { type: 'recall', entryCount: recallEntryCount, cached: false, threadId };
     }
+    const topicScopesForResident = selectResidentTopicScopes(
+      topicScopesForMemory,
+      recallResult?.entries || [],
+      prompt,
+    );
 
     // Layer-A summaries — same scopes AMS Resident will surface, loaded
     // here so we can pass them into #prepareAms. (Rolling per-scope
@@ -1914,7 +2081,7 @@ export class Engine {
         ? vpPersona.vpId
         : (typeof senderVpId === 'string' ? senderVpId : undefined),
       language: this.#config.language || 'en',
-      topicScopes: topicScopesForMemory,
+      topicScopes: topicScopesForResident,
     });
 
     // ─── AMS: populate + snapshot ───────────────────────────────
@@ -1933,10 +2100,12 @@ export class Engine {
       ownVpId: ownVpIdForAms,
       summaries,
       recallEntries: recallResult ? (recallResult.entries || []) : [],
+      userMsg: prompt,
     });
     if (amsContext && amsContext.snapshotBlock) {
       memoryInjection = amsContext.snapshotBlock;
     }
+    const loadedMemoryForDebug = loadedMemoryDebugEntries(amsContext?.snapshot);
 
     // Diagnostic payload for the Dream debug panel. The full AMS Resident
     // layer can include user and per-VP summaries, but the browser-facing
@@ -1980,6 +2149,32 @@ export class Engine {
     const activeTasks = this.#taskManager
       ? this.#taskManager.renderActiveTasksForPrompt(runtimeSessionId)
       : '';
+    let resolvedSkillContent = '';
+    let resolvedSkills = [];
+    let skillResolutionError = null;
+    if (this.#skillManager) {
+      if (explicitSkillName) {
+        resolvedSkillContent = this.#skillManager.getPromptContent(explicitSkillName);
+        const skill = this.#skillManager.list?.().find(item => item.name === explicitSkillName)
+          || (resolvedSkillContent ? { name: explicitSkillName } : null);
+        if (resolvedSkillContent && skill) {
+          resolvedSkills = [{ ...skill, explicit: true }];
+        } else {
+          skillResolutionError = `Requested skill "${explicitSkillName}" was not found.`;
+          resolvedSkillContent = `## Skill command error\n\n${skillResolutionError} Continue without that skill and tell the user it is unavailable.`;
+        }
+      } else if (prompt && typeof this.#skillManager.findRelevant === 'function') {
+        resolvedSkills = this.#skillManager.findRelevant(prompt).map(skill => ({
+          name: skill.name,
+          description: skill.description || '',
+          trigger: skill.trigger || '',
+          category: skill.category,
+          tier: skill._tier,
+          explicit: false,
+        }));
+        resolvedSkillContent = resolvedSkills.map(skill => this.#skillManager.getPromptContent(skill.name)).join('\n\n');
+      }
+    }
 
     const systemPrompt = this.#buildSystemPrompt({
       prompt,
@@ -1991,6 +2186,7 @@ export class Engine {
       projectDoc,
       activeTasks,
       explicitSkillName,
+      resolvedSkillContent,
     });
 
     // ─── HARD INVARIANT: Compact ≠ Dream (read DESIGN-COMPACT-VS-DREAM.md) ─
@@ -2108,7 +2304,10 @@ export class Engine {
     // reflection; only high context pressure (>=80% of model window)
     // enables the carry-forward rewrite.
     if (groupReflectionAllowed) {
-      yield* this.#applyPendingT2Reflections(conversationMessages, prompt);
+      yield* this.#applyPendingT2Reflections(conversationMessages, prompt, {
+        sessionId: runtimeSessionId,
+        model: this.#config.model,
+      });
     }
 
     // PR-L: track this query()'s tool-arc for reflection.
@@ -2143,13 +2342,6 @@ export class Engine {
     // `queryTurnId` is the wire-level turn identifier; every event emitted
     // during this query() carries it as `turnId`. Each LLM call inside
     // the loop is a `loopNumber` (was wire field `turnNumber`).
-    const queryTurnId = randomUUID();
-    const queryStartedAt = Date.now();
-    const userQuestionPreview = String(prompt || '').slice(0, 200);
-    const queryVpId = vpPersona && typeof vpPersona === 'object'
-      && typeof vpPersona.vpId === 'string'
-      ? vpPersona.vpId
-      : (typeof senderVpId === 'string' ? senderVpId : null);
 
     yield {
       type: 'turn_open',
@@ -2160,20 +2352,27 @@ export class Engine {
       sessionId: sessionId || null,
       at: queryStartedAt,
     };
+    for (const skill of resolvedSkills) {
+      yield { type: 'skill_loaded', turnId: queryTurnId, skill };
+    }
+    if (skillResolutionError) {
+      yield { type: 'skill_error', turnId: queryTurnId, skillName: explicitSkillName, message: skillResolutionError };
+    }
 
-    // Surface memory recall to the debug panel right after turn_open.
-    // recallResult was loaded above; emit a structured `memory_used`
-    // event so the UI can show "loaded N segments" without parsing
-    // the legacy `recall` event (which only carried entryCount).
-    if (recallResult && Array.isArray(recallResult.entries) && recallResult.entries.length > 0) {
+    // Surface the exact memory that entered the prompt. This must be based on
+    // the AMS snapshot, not raw FTS candidates, otherwise debug can claim memory
+    // was loaded even when prompt cleanup, dedupe, or token budget dropped it.
+    if (loadedMemoryForDebug.length > 0) {
       yield {
         type: 'memory_used',
         turnId: queryTurnId,
-        loaded: recallResult.entries.map(e => ({
-          id: e && e.id || null,
-          score: e && typeof e.score === 'number' ? e.score : null,
-          kind: e && e.kind || null,
-        })),
+        loaded: loadedMemoryForDebug,
+        meta: {
+          recallLimit: resolveMemoryRecallLimit(this.#config),
+          recallCandidates: Number.isFinite(recallResult?.meta?.hitCount)
+            ? recallResult.meta.hitCount
+            : (recallResult && Array.isArray(recallResult.entries) ? recallResult.entries.length : 0),
+        },
       };
     }
 
@@ -2193,10 +2392,13 @@ export class Engine {
     let continueTurns = 0; // auto-continue counter
     let toolLoopTurns = 0; // task-327b: tool-use turns for long-loop auto-bump
     let fullResponseText = '';
-    let hasDisplayImageAnchor = false;
+    let displayImageAnchorMessage = null;
+    let lastPersistedAssistantMessage = null;
+    let lastPersistedAssistantTextMessage = null;
     let currentModel = this.#config.model;
     let cumulativeInputTokens = 0;
     let cumulativeOutputTokens = 0;
+    let activeProviderRequest = null;
     // task-707: tool-callable end-turn signal. Tools (currently only
     // `route_forward`) can set this via toolCtx.requestEndTurn(reason)
     // to break out of the tool-loop after the current batch finishes
@@ -2228,6 +2430,15 @@ export class Engine {
       // the previous iteration) cleanly ends the loop instead of
       // launching another adapter stream.
       if (signal?.aborted) {
+        if (retryLifecycle.lastPersistedPartial
+            && typeof this.#conversationStore?.update === 'function') {
+          const abortedPartial = this.#conversationStore.update(
+            retryLifecycle.lastPersistedPartial,
+            { stopReason: 'aborted' },
+          );
+          if (abortedPartial) retryLifecycle.lastPersistedPartial = abortedPartial;
+        }
+        retryLifecycle.pendingContinuation = null;
         yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
         yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
         break;
@@ -2267,6 +2478,18 @@ export class Engine {
       });
       let ttfbMs = null;  // Time to first token
       let responseText = '';
+      let incompleteAssistantPersisted = false;
+      const persistIncompleteAssistantOnce = (reason) => {
+        if (incompleteAssistantPersisted || !responseText) return null;
+        incompleteAssistantPersisted = true;
+        return this.#persistConversationMessage({ role: 'assistant', content: responseText, responseKind: 'progress' }, {
+          sessionId: runtimeSessionId,
+          turnId: vpTurnId || queryTurnId,
+          model: currentModel,
+          incomplete: true,
+          stopReason: reason,
+        });
+      };
       const toolCalls = [];
       const thinkingBlocks = []; // task-327d: collected from adapter for round-trip
       let stopReason = 'end_turn';
@@ -2295,6 +2518,7 @@ export class Engine {
       const appendedBeforeStream = this.#drainPendingUserMessages(drainPendingUserMessages);
       if (appendedBeforeStream.length > 0) {
         for (const item of appendedBeforeStream) {
+          this.#persistAppendedUserMessage(item, runtimeSessionId);
           conversationMessages.push({ role: 'user', content: item.content });
           yield {
             type: 'user_append',
@@ -2370,7 +2594,10 @@ export class Engine {
         // <yeaftDir>/memory/<scopeDir>/archive/tool-results/<id>.md so
         // message_trace can fetch it on demand. The stub keeps the
         // OpenAI/Anthropic toolCallId pairing intact.
-        let wireMessages = stripMetaForWire([...conversationMessages]);
+        const pendingContinuationForRequest = retryLifecycle.pendingContinuation;
+        let wireMessages = stripMetaForWire(pendingContinuationForRequest
+          ? [...conversationMessages, pendingContinuationForRequest]
+          : [...conversationMessages]);
 
         if (scenario !== 'work-item' && this.#yeaftDir && (this.#config?.archive?.toolResults !== false)) {
           try {
@@ -2439,6 +2666,28 @@ export class Engine {
           }
         }
 
+        // Do not durably publish a model-only continuation until every
+        // pre-request await is complete and the fresh provider request is about
+        // to start. Stop at the visible loop boundary must leave no
+        // continuation that the provider never received.
+        if (signal?.aborted) throw new LLMAbortError();
+        if (pendingContinuationForRequest
+            && retryLifecycle.pendingContinuation === pendingContinuationForRequest) {
+          this.#persistConversationMessage(pendingContinuationForRequest, { sessionId: runtimeSessionId });
+          conversationMessages.push(pendingContinuationForRequest);
+          retryLifecycle.pendingContinuation = null;
+        }
+
+        activeProviderRequest = typeof prepareProviderRequest === 'function'
+          ? prepareProviderRequest({
+              turnNumber,
+              entries: appendedBeforeStream,
+              system: systemPrompt,
+              messages: wireMessages.map(mapDebugMessage),
+              model: currentModel,
+            }) || null
+          : null;
+
         // Snapshot task results carried by this exact request. Request start
         // is not delivery: fetch may remain pending and then be aborted before
         // the provider processes anything. Ack only after a normal stream end
@@ -2455,6 +2704,7 @@ export class Engine {
           effortSource: userEffort ? 'user' : 'auto',
           signal,
           onRawExchange: captureRawExchange,
+          onRequestStart: () => startProviderRequest?.(activeProviderRequest),
         })) {
           // task-325a (abort-stop fix): per-event abort short-circuit.
           // The adapter is expected to throw AbortError when fetch's
@@ -2562,6 +2812,14 @@ export class Engine {
         // escrow so retry or final rescue can deliver the payload.
         if (sawProviderStop) {
           this.#confirmAsyncTaskResults(requestAsyncTaskIds);
+          const completedProviderRequest = activeProviderRequest;
+          activeProviderRequest = null;
+          finishProviderRequest?.(completedProviderRequest, {
+            responseText,
+            stopReason,
+            toolCalls: toolCalls.map(tc => ({ id: tc.id, name: tc.name, input: tc.input })),
+            thinkingBlocks,
+          });
         }
         traceRequest('llm.request_complete', {
           durationMs: perfNowMs() - requestPerfStart,
@@ -2579,6 +2837,10 @@ export class Engine {
         consecutiveRetryableErrors = 0;
       } catch (err) {
         const latencyMs = Date.now() - startTime;
+        if (activeProviderRequest) {
+          failProviderRequest?.(activeProviderRequest, err);
+          activeProviderRequest = null;
+        }
 
         const endAttemptTrace = (attemptStopReason) => {
           this.#trace.endTurn(turnId, {
@@ -2607,6 +2869,30 @@ export class Engine {
           });
         };
 
+        const prepareRetryContinuation = () => {
+          if (!responseText || toolCalls.length > 0) return null;
+          const partialAssistant = {
+            role: 'assistant',
+            content: responseText,
+            incomplete: true,
+            responseKind: 'progress',
+          };
+          const persistedPartial = persistIncompleteAssistantOnce('retry');
+          if (persistedPartial) {
+            partialAssistant._persistedMessageId = persistedPartial.id;
+            lastPersistedAssistantTextMessage = persistedPartial;
+            retryLifecycle.lastPersistedPartial = persistedPartial;
+          }
+          conversationMessages.push(partialAssistant);
+          fullResponseText += responseText;
+          retryLifecycle.pendingContinuation = {
+            role: 'user',
+            content: RETRY_CONTINUATION_PROMPT,
+            userAuthored: false,
+          };
+          return persistedPartial;
+        };
+
         // Abort/retry/fallback are not final assistant responses. Handle them
         // before writing debug loop rows; otherwise transient DeepSeek stream
         // cuts or user stops show up as bogus `Error: Request aborted` replies.
@@ -2615,6 +2901,18 @@ export class Engine {
           || err?.name === 'LLMAbortError'
           || (signal?.aborted && /abort/i.test(err?.message || ''));
         if (earlyIsAbort || signal?.aborted) {
+          const abortedPartial = persistIncompleteAssistantOnce('aborted');
+          if (abortedPartial) {
+            retryLifecycle.lastPersistedPartial = abortedPartial;
+          } else if (retryLifecycle.lastPersistedPartial
+              && typeof this.#conversationStore?.update === 'function') {
+            const updatedPartial = this.#conversationStore.update(
+              retryLifecycle.lastPersistedPartial,
+              { stopReason: 'aborted' },
+            );
+            if (updatedPartial) retryLifecycle.lastPersistedPartial = updatedPartial;
+          }
+          retryLifecycle.pendingContinuation = null;
           traceRequest('llm.request_abort', {
             durationMs: perfNowMs() - requestPerfStart,
             ok: false,
@@ -2655,10 +2953,15 @@ export class Engine {
 
         const earlyIsRateLimit = err instanceof LLMRateLimitError;
         const earlyIsTransient = err instanceof LLMServerError;
+        // A completed tool_call has already crossed the streaming boundary to
+        // the caller. Replaying that request would publish a duplicate call and
+        // leave ambiguous execution ownership, so only pre-tool failures are
+        // eligible for transparent retry or model fallback.
+        const canReplayProviderRequest = toolCalls.length === 0;
         const earlyIsTemporaryForbidden = err instanceof LLMAuthError
           && err.statusCode === 403
           && err.temporary === true;
-        if (earlyIsTemporaryForbidden
+        if (earlyIsTemporaryForbidden && canReplayProviderRequest
           && consecutiveForbiddenErrors < retryPolicy.forbiddenRetryDelaysMs.length) {
           const delayMs = retryPolicy.forbiddenRetryDelaysMs[consecutiveForbiddenErrors];
           consecutiveForbiddenErrors += 1;
@@ -2669,6 +2972,7 @@ export class Engine {
             maxRetries: retryPolicy.forbiddenRetryDelaysMs.length,
             delayMs,
             reason: 'temporary_forbidden',
+            recoveryMode: 'restart',
             errorName: err.name,
             statusCode: 403,
             message: `LLM provider returned HTTP 403; retry ${consecutiveForbiddenErrors}/${retryPolicy.forbiddenRetryDelaysMs.length}`,
@@ -2682,7 +2986,7 @@ export class Engine {
           yield { type: 'turn_end', turnNumber, stopReason: 'llm_retry', threadId };
           continue;
         }
-        if (earlyIsRateLimit || earlyIsTransient) {
+        if ((earlyIsRateLimit || earlyIsTransient) && canReplayProviderRequest) {
           if (consecutiveRetryableErrors < retryPolicy.maxRetries) {
             consecutiveRetryableErrors += 1;
             let delayMs;
@@ -2699,19 +3003,37 @@ export class Engine {
                 ? 'stream_idle_timeout'
                 : 'transient_backoff';
             }
+            // A retry is a brand-new provider request. Replaying the original
+            // request after forwarding partial text duplicates that text in
+            // the UI and can make the model restart its answer. Preserve the
+            // accepted prefix as an incomplete assistant boundary, then ask
+            // the next request to continue from it.
+            const recoveryMode = responseText && toolCalls.length === 0 ? 'continue' : 'restart';
             endAttemptTrace('llm_retry');
+            if (recoveryMode === 'continue') prepareRetryContinuation();
             yield {
               type: 'llm_retry',
               attempt: consecutiveRetryableErrors,
               maxRetries: retryPolicy.maxRetries,
               delayMs,
               reason,
+              recoveryMode,
               errorName: err.name,
               statusCode: err.statusCode ?? null,
               message: String(err.message || '').slice(0, 300),
             };
             const slept = await sleepWithAbort(delayMs, signal);
             if (!slept || signal?.aborted) {
+              const partial = persistIncompleteAssistantOnce('aborted');
+              if (!partial && retryLifecycle.lastPersistedPartial
+                  && typeof this.#conversationStore?.update === 'function') {
+                const abortedPartial = this.#conversationStore.update(
+                  retryLifecycle.lastPersistedPartial,
+                  { stopReason: 'aborted' },
+                );
+                if (abortedPartial) retryLifecycle.lastPersistedPartial = abortedPartial;
+              }
+              retryLifecycle.pendingContinuation = null;
               yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
               yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
               break;
@@ -2723,14 +3045,31 @@ export class Engine {
 
         const earlyFallbackModel = this.#config.fallbackModel;
         if (earlyFallbackModel && earlyFallbackModel !== currentModel
-          && (earlyIsRateLimit || earlyIsTransient)) {
+          && (earlyIsRateLimit || earlyIsTransient) && canReplayProviderRequest) {
           endAttemptTrace('fallback_retry');
+          prepareRetryContinuation();
           yield { type: 'fallback', from: currentModel, to: earlyFallbackModel, reason: err.message };
           currentModel = earlyFallbackModel;
           consecutiveRetryableErrors = 0;
           yield { type: 'turn_end', turnNumber, stopReason: 'fallback_retry', threadId };
           continue;
         }
+
+        // A later fresh request can fail before producing text. In that case the
+        // durable assistant prefix belongs to this same query and must leave the
+        // transient `retry` state even though the current attempt persisted none.
+        const persistedErrorPartial = persistIncompleteAssistantOnce('error');
+        if (persistedErrorPartial) {
+          retryLifecycle.lastPersistedPartial = persistedErrorPartial;
+        } else if (retryLifecycle.lastPersistedPartial
+          && typeof this.#conversationStore?.update === 'function') {
+          const errorPartial = this.#conversationStore.update(
+            retryLifecycle.lastPersistedPartial,
+            { stopReason: 'error' },
+          );
+          if (errorPartial) retryLifecycle.lastPersistedPartial = errorPartial;
+        }
+        retryLifecycle.pendingContinuation = null;
 
         this.#trace.endTurn(turnId, {
           model: currentModel,
@@ -2802,7 +3141,10 @@ export class Engine {
         };
         if (err instanceof LLMStreamIdleTimeoutError) {
           errorEvent.reason = 'stream_idle_timeout';
-          errorEvent.retryExhausted = consecutiveRetryableErrors >= retryPolicy.maxRetries;
+          errorEvent.retryExhausted = canReplayProviderRequest
+            && consecutiveRetryableErrors >= retryPolicy.maxRetries;
+          errorEvent.retryAttempts = consecutiveRetryableErrors;
+          errorEvent.maxRetries = retryPolicy.maxRetries;
         }
         yield errorEvent;
         yield { type: 'turn_end', turnNumber, stopReason: 'error', threadId };
@@ -2844,6 +3186,70 @@ export class Engine {
         rawResponse,
       });
 
+      // Build and durably append this completed provider response before
+      // yielding any post-stream diagnostics. A consumer may stop iterating at
+      // any yield; persistence therefore cannot wait for turn_end or even the
+      // debug `loop` event below.
+      const assistantMsg = { role: 'assistant', content: responseText, responseKind: 'progress' };
+      if (toolCalls.length > 0) {
+        assistantMsg.toolCalls = toolCalls.map(tc => ({
+          id: tc.id,
+          name: tc.name,
+          input: tc.input,
+        }));
+      }
+      if (thinkingBlocks.length > 0) {
+        assistantMsg.thinkingBlocks = thinkingBlocks.map(tb => (
+          tb.redacted
+            ? { redacted: true, data: tb.data, signature: tb.signature }
+            : { thinking: tb.thinking, signature: tb.signature }
+        ));
+      }
+      if (vpPersona && vpPersona.vpId) {
+        const planForThisVp = (vpPlan && typeof vpPlan === 'object'
+          && typeof vpPlan.vpId === 'string' && vpPlan.vpId === vpPersona.vpId)
+          ? vpPlan
+          : null;
+        attachRouterPlan(assistantMsg, {
+          vpId: vpPersona.vpId,
+          forwardQuery: planForThisVp && planForThisVp.forwardQuery
+            ? planForThisVp.forwardQuery
+            : { userOriginal: prompt || '', intent: '' },
+          preselect: planForThisVp && planForThisVp.preselect
+            ? planForThisVp.preselect
+            : undefined,
+          thinking: planForThisVp && (planForThisVp.thinking === 'high' || planForThisVp.thinking === 'max')
+            ? planForThisVp.thinking
+            : null,
+          thinkingReason: planForThisVp && typeof planForThisVp.thinkingReason === 'string'
+            ? planForThisVp.thinkingReason
+            : '',
+        });
+      }
+      const previousImageAnchorMessage = displayImageAnchorMessage;
+      if (previousImageAnchorMessage && typeof this.#conversationStore?.update === 'function') {
+        const cleared = this.#conversationStore.update(previousImageAnchorMessage, { imageAssetAnchor: false });
+        if (cleared) displayImageAnchorMessage = null;
+      }
+      if (previousImageAnchorMessage && displayImageAnchorMessage === null) assistantMsg.imageAssetAnchor = true;
+      const persistedAssistantMessage = this.#persistConversationMessage(assistantMsg, {
+        sessionId: runtimeSessionId,
+        turnId: vpTurnId || queryTurnId,
+        model: currentModel,
+      });
+      if (persistedAssistantMessage) {
+        assistantMsg._persistedMessageId = persistedAssistantMessage.id;
+        if (assistantMsg.imageAssetAnchor) displayImageAnchorMessage = persistedAssistantMessage;
+        lastPersistedAssistantMessage = persistedAssistantMessage;
+      }
+      if (responseText.trim() && persistedAssistantMessage) {
+        lastPersistedAssistantTextMessage = persistedAssistantMessage;
+      }
+      if (previousImageAnchorMessage && displayImageAnchorMessage === null && !persistedAssistantMessage) {
+        const restored = this.#conversationStore.update(previousImageAnchorMessage, { imageAssetAnchor: true });
+        displayImageAnchorMessage = restored || null;
+      }
+
       // Emit `loop` event for the debug panel.
       // feat-6af5f9f1 PR B: a Loop is one LLM call inside a Turn. The wire
       // event was historically named `debug_turn` and carried `turnNumber`,
@@ -2884,63 +3290,20 @@ export class Engine {
         rawResponse,
       };
 
-      // Append assistant message to conversation
-      const assistantMsg = { role: 'assistant', content: responseText };
-      if (toolCalls.length > 0) {
-        assistantMsg.toolCalls = toolCalls.map(tc => ({
-          id: tc.id,
-          name: tc.name,
-          input: tc.input,
-        }));
-      }
-      // task-327d: persist thinking blocks for the next turn's replay.
-      // Anthropic requires assistant.thinking blocks to be echoed back
-      // verbatim (text + signature) when the previous turn used extended
-      // thinking — see translateMessages in anthropic.js.
-      if (thinkingBlocks.length > 0) {
-        assistantMsg.thinkingBlocks = thinkingBlocks.map(tb => (
-          tb.redacted
-            ? { redacted: true, data: tb.data, signature: tb.signature }
-            : { thinking: tb.thinking, signature: tb.signature }
-        ));
-      }
-      // Phase 8 (DESIGN.md §9.15): carry the router plan back on the
-      // assistant message that produced it. Stripped at the wire by
-      // stripMetaForWire — pure bookkeeping for priorPlan continuity.
-      if (vpPersona && vpPersona.vpId) {
-        // PR-I: when the dispatcher hands us a per-VP plan whose vpId matches
-        // the active persona, persist its `forwardQuery`, `preselect`, and
-        // `thinking` on the assistant message so the next turn's
-        // priorPlan continuity (DESIGN.md §9.15) sees the live router's
-        // decision — not a synthetic stub.
-        const planForThisVp = (vpPlan && typeof vpPlan === 'object'
-          && typeof vpPlan.vpId === 'string' && vpPlan.vpId === vpPersona.vpId)
-          ? vpPlan
-          : null;
-        attachRouterPlan(assistantMsg, {
-          vpId: vpPersona.vpId,
-          forwardQuery: planForThisVp && planForThisVp.forwardQuery
-            ? planForThisVp.forwardQuery
-            : { userOriginal: prompt || '', intent: '' },
-          preselect: planForThisVp && planForThisVp.preselect
-            ? planForThisVp.preselect
-            : undefined,
-          thinking: planForThisVp && (planForThisVp.thinking === 'high' || planForThisVp.thinking === 'max')
-            ? planForThisVp.thinking
-            : null,
-          thinkingReason: planForThisVp && typeof planForThisVp.thinkingReason === 'string'
-            ? planForThisVp.thinkingReason
-            : '',
-        });
-      }
+      // Keep the same durable assistant object in the live model history.
+      // Private router metadata is stripped only at the next wire boundary.
       conversationMessages.push(assistantMsg);
       fullResponseText += responseText;
 
       // ─── Handle max_tokens → auto-continue ────────────
       if (stopReason === 'max_tokens' && continueTurns < MAX_CONTINUE_TURNS) {
         continueTurns++;
-        // Append a "Continue" user message
-        conversationMessages.push({ role: 'user', content: 'Continue' });
+        // This synthetic continuation is part of the model-visible protocol.
+        // Persist it before the next provider request so a crash does not leave
+        // the completed assistant row without its following user boundary.
+        const continueMessage = { role: 'user', content: 'Continue' };
+        this.#persistConversationMessage(continueMessage, { sessionId: runtimeSessionId });
+        conversationMessages.push(continueMessage);
         yield { type: 'turn_end', turnNumber, stopReason: 'max_tokens_continue', threadId };
         continue; // loop back to call adapter again
       }
@@ -2952,6 +3315,7 @@ export class Engine {
       const appendedAfterAssistant = this.#drainPendingUserMessages(drainPendingUserMessages);
       if (appendedAfterAssistant.length > 0) {
         for (const item of appendedAfterAssistant) {
+          this.#persistAppendedUserMessage(item, runtimeSessionId);
           conversationMessages.push({ role: 'user', content: item.content });
           yield {
             type: 'user_append',
@@ -2967,9 +3331,10 @@ export class Engine {
       }
 
       // If no tool calls, we're done — UNLESS we still own a pending
-      // async task. The user-facing semantic: a turn that launched a
-      // background bash / sub-agent stays "live" until those tasks
-      // terminate (or the user appends, or abort). The model already
+      // result-producing async task. Persistent shell tasks never register
+      // here; they remain visible in TaskManager without holding this turn.
+      // Registered tasks stay live until they terminate (or the user appends,
+      // or abort). The model already
       // said end_turn; we just defer finalization by parking on the
       // wait queue, then splice the synthetic task-result message in
       // and run one more adapter loop. This matches the contract the
@@ -2979,14 +3344,17 @@ export class Engine {
       if ((stopReason !== 'tool_use' || toolCalls.length === 0)
           && this.#pendingAsyncTaskIds.size > 0
           && !signal?.aborted) {
+        const asyncTaskWaitTimeoutMs = this.#asyncTaskWaitTimeoutMs();
+        const deferredTaskIds = [];
         // Drop into a wait loop. The loop wakes on (a) any task
         // terminal event delivered via `notifyAsyncTaskCompleted`, (b)
         // a fresh user append (which is honored as a higher priority
         // user input), or (c) abort. On wake we re-check: if either
         // queue has content, drain + splice + continue the outer loop.
         // If both queues are empty AND we still have pending tasks AND
-        // we're not aborted, we just keep waiting. This is the only
-        // place query() can block on something other than the LLM stream.
+        // we're not aborted, wait only until the oldest tracked task has
+        // been silent for the bounded window. Stale ownership is then
+        // released so a later terminal event uses the rescue-turn path.
         yield {
           type: 'async_task_wait_start',
           turnId: queryTurnId,
@@ -3007,7 +3375,10 @@ export class Engine {
                && this.#pendingUserMessages.length === 0
                && !this.#externalUserWakePending) {
           if (this.#pendingAsyncTaskIds.size === 0) break;
-          await this.#waitForAsyncWake(signal);
+          const waitMs = this.#nextAsyncTaskWaitMs(asyncTaskWaitTimeoutMs);
+          if (await this.#waitForAsyncWake(signal, waitMs) === 'timeout') {
+            deferredTaskIds.push(...this.#deferExpiredAsyncTasks(asyncTaskWaitTimeoutMs));
+          }
         }
         yield {
           type: 'async_task_wait_end',
@@ -3016,6 +3387,8 @@ export class Engine {
           threadId,
           aborted: Boolean(signal?.aborted),
           remainingTaskIds: Array.from(this.#pendingAsyncTaskIds),
+          timedOut: deferredTaskIds.length > 0,
+          deferredTaskIds,
         };
         if (signal?.aborted) {
           yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
@@ -3043,6 +3416,7 @@ export class Engine {
           const appendedAfterAsyncWait = this.#drainPendingUserMessages(drainPendingUserMessages);
           if (appendedAfterAsyncWait.length > 0) {
             for (const item of appendedAfterAsyncWait) {
+              this.#persistAppendedUserMessage(item, runtimeSessionId);
               conversationMessages.push({ role: 'user', content: item.content });
               yield {
                 type: 'user_append',
@@ -3063,64 +3437,50 @@ export class Engine {
         // into the regular end_turn path.
       }
 
-      // If no tool calls, we're done
+      // If no tool calls, we're done. Callers with a durable append queue may
+      // atomically close it here. A failed close means input won the race with
+      // terminal completion, so drain it and keep this same Engine query alive.
       if (stopReason !== 'tool_use' || toolCalls.length === 0) {
+        if (typeof closePendingUserInput === 'function' && !closePendingUserInput()) {
+          const appendedBeforeClose = this.#drainPendingUserMessages(drainPendingUserMessages);
+          if (appendedBeforeClose.length === 0) {
+            throw new Error('Could not close pending user input for terminal completion');
+          }
+          for (const item of appendedBeforeClose) {
+            this.#persistAppendedUserMessage(item, runtimeSessionId);
+            conversationMessages.push({ role: 'user', content: item.content });
+            yield {
+              type: 'user_append',
+              turnId: queryTurnId,
+              loopNumber: turnNumber,
+              threadId,
+              preview: String(item.preview || '').slice(0, 200),
+              internal: Boolean(item.internal),
+            };
+          }
+          yield { type: 'turn_end', turnNumber, stopReason: 'user_append_continue', threadId };
+          continue;
+        }
         if (pendingSubAgentNotifs.length > 0) {
           acknowledgePendingNotifications(notifScope, pendingSubAgentNotifs.map(n => n.id));
         }
+        if (stopReason === 'end_turn'
+            && lastPersistedAssistantTextMessage
+            && typeof this.#conversationStore?.update === 'function') {
+          const resultMessage = this.#conversationStore.update(lastPersistedAssistantTextMessage, {
+            responseKind: 'result',
+            stopReason,
+          });
+          if (resultMessage) lastPersistedAssistantTextMessage = resultMessage;
+        }
         yield { type: 'turn_end', turnNumber, stopReason, threadId, terminal: true };
 
-        // ─── Post-query: StopHooks or Legacy ─────────────
-        if (this.#config._readOnly) {
-          // Read-only mode: skip all persistence operations
-        } else if (this.#yeaftDir && this.#conversationStore) {
-          // Full pipeline: persist + consolidate + dream gate
-          // Note: stopHooks uses fastConfig for consolidation/dream (cheaper internal tasks)
-          // but receives both configs — messages are persisted with primary model name
-          const hookResult = await runStopHooks({
-            yeaftDir: this.#yeaftDir,
-            conversationStore: this.#conversationStore,
-            adapter: this.#adapter,
-            config: this.#fastConfig,
-            primaryModel: this.#config.model,
-            messages: conversationMessages,
-            // Reflect-persist fix: tell stop-hooks the EXACT turn boundary
-            // instead of letting it heuristically scan back to the last
-            // role:'user'. With T1/T2 reflection collapse, the last
-            // role:'user' is the synthetic reflection message — not the
-            // original user prompt — so the heuristic was dropping
-            // earlier reflection messages and the original prompt off
-            // the persistence window. `turnStartIdx` is the index of
-            // the original user prompt (set at query() entry); slicing
-            // from there persists the full collapsed turn including all
-            // reflection messages and the trailing assistant response.
-            turnStartIdx,
-            trace: this.#trace,
-            // Bug 6: tag persisted messages with the originating group so
-            // history replay can re-stamp them on reload.
-            sessionId,
-            threadId,
-            turnId: vpTurnId || queryTurnId,
-            vpId: this.#vpId,
-            // Multi-VP fan-out (history-dedup): skip the user-row append
-            // in stop-hooks when the orchestrator already wrote it once
-            // for this turn. The hook still persists assistant + tool
-            // rows for THIS VP's contribution.
-            userAlreadyPersisted,
-            hasDisplayImageAnchor,
-          });
-
-          if (hookResult.consolidated) {
-            yield { type: 'consolidate', archivedCount: 0, extractedCount: 0 };
-          }
-        } else {
-          // Legacy path (no yeaftDir → use old behavior)
-          this.#persistMessages(prompt, fullResponseText, assistantMsg.toolCalls, sessionId, userAlreadyPersisted);
-
-          const consolidated = await this.#maybeConsolidate();
-          if (consolidated && consolidated.archivedCount > 0) {
-            yield { type: 'consolidate', archivedCount: consolidated.archivedCount, extractedCount: consolidated.extractedCount };
-          }
+        // Message durability is handled incrementally before this terminal
+        // branch. End-of-turn owns maintenance only; re-appending the whole
+        // turn here would duplicate rows and reintroduce the crash window.
+        const consolidated = await this.#maybeConsolidate();
+        if (consolidated && consolidated.archivedCount > 0) {
+          yield { type: 'consolidate', archivedCount: consolidated.archivedCount, extractedCount: consolidated.extractedCount };
         }
 
         // ─── Post-turn AMS adjust ────────────────────────────────
@@ -3221,6 +3581,7 @@ export class Engine {
         router,
         senderVpId,
         sessionId: runtimeSessionId,
+        projectSessionIds,
         threadId: runtimeThreadId,
         inboundEnvelope,
         taskId,
@@ -3294,6 +3655,8 @@ export class Engine {
         let output;
         let displayImages = [];
         let isError = false;
+        let toolErrorOutput = null;
+        let fatalToolError = null;
         currentToolCallForAsyncTask = {
           id: tc.id,
           name: tc.name,
@@ -3313,9 +3676,11 @@ export class Engine {
           try {
             yield { type: 'tool_start', id: tc.id, name: tc.name, input: tc.input, threadId: this.currentThreadId };
             if (this.#toolRegistry) {
+              toolErrorOutput = this.#toolRegistry.get(tc.name)?.errorOutput || null;
               output = await this.#toolRegistry.execute(tc.name, tc.input, toolCtx);
             } else {
               const tool = this.#tools.get(tc.name);
+              toolErrorOutput = tool.errorOutput || null;
               // Pass the full toolCtx (cwd, workDir, signal, …) — not just
               // `{ signal }`. Legacy registerTool() callers historically got
               // a 1-field ctx, but that means tools like bash/file-read run
@@ -3330,12 +3695,42 @@ export class Engine {
             if (displayImages.length > 0) {
               output = stripDisplayImageData(output, displayImages);
             }
-            yield { type: 'tool_end', id: tc.id, name: tc.name, output, displayImages, isError: false, threadId: this.currentThreadId };
-            if (displayImages.some(image => image.deliveryQueued === true)) hasDisplayImageAnchor = true;
+            isError = toolErrorOutput === 'json-error-envelope' && isToolErrorOutput(output);
+            yield { type: 'tool_end', id: tc.id, name: tc.name, output, displayImages, isError, threadId: this.currentThreadId };
+            if (displayImages.some(image => image.deliveryQueued === true)
+                && lastPersistedAssistantMessage
+                && typeof this.#conversationStore?.update === 'function') {
+              const priorAnchor = displayImageAnchorMessage;
+              if (priorAnchor && priorAnchor.id !== lastPersistedAssistantMessage.id) {
+                const cleared = this.#conversationStore.update(priorAnchor, { imageAssetAnchor: false });
+                if (cleared) {
+                  const anchored = this.#conversationStore.update(lastPersistedAssistantMessage, {
+                    imageAssetAnchor: true,
+                  });
+                  if (anchored) {
+                    displayImageAnchorMessage = anchored;
+                    lastPersistedAssistantMessage = anchored;
+                  } else {
+                    displayImageAnchorMessage = this.#conversationStore.update(priorAnchor, {
+                      imageAssetAnchor: true,
+                    }) || null;
+                  }
+                }
+              } else if (!priorAnchor) {
+                const anchored = this.#conversationStore.update(lastPersistedAssistantMessage, {
+                  imageAssetAnchor: true,
+                });
+                if (anchored) {
+                  displayImageAnchorMessage = anchored;
+                  lastPersistedAssistantMessage = anchored;
+                }
+              }
+            }
           } catch (err) {
             output = `Error: ${err.message}`;
             isError = true;
             yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, threadId: this.currentThreadId };
+            if (err?.fatalToolTimeout === true) fatalToolError = err;
           }
         }
 
@@ -3390,12 +3785,24 @@ export class Engine {
           toolName: tc.name,
           language: this.#config?.language,
         });
-        conversationMessages.push({
+        const toolMessage = {
           role: 'tool',
           toolCallId: tc.id,
           content: contextOutput,
           isError,
+        };
+        conversationMessages.push(toolMessage);
+        // Model context may use a bounded copy, but durable conversation
+        // history keeps the raw normalized tool output for recovery/debug.
+        const persistedToolMessage = this.#persistConversationMessage({ ...toolMessage, content: output }, {
+          sessionId: runtimeSessionId,
+          turnId: vpTurnId || queryTurnId,
+          model: currentModel,
         });
+        if (persistedToolMessage) {
+          toolMessage._persistedMessageId = persistedToolMessage.id;
+          this.#persistedToolMessages.set(tc.id, persistedToolMessage);
+        }
 
         // PR-L: persist this execution to the exec-log for fallback-stub
         // and duplicate-call detection. Best-effort — disk failures are
@@ -3412,6 +3819,7 @@ export class Engine {
           isError,
         }));
         queryToolCount += 1;
+        if (fatalToolError) throw fatalToolError;
       }
 
       // PR-L: flush any duplicate-call reminders queued during the batch.
@@ -3509,6 +3917,20 @@ export class Engine {
           const next = collapseRangeToReflection(
             conversationMessages, batchStart, batchEnd, content,
           );
+          const reflectionMessage = next[batchStart];
+          const durableRowsInRange = conversationMessages
+            .slice(batchStart, batchEnd + 1)
+            .some(message => message?._persistedMessageId || message?.id);
+          const persistedReflection = this.#persistFoldedRange(
+            conversationMessages,
+            batchStart,
+            batchEnd,
+            reflectionMessage,
+            { sessionId: runtimeSessionId, model: currentModel },
+          );
+          if (durableRowsInRange && !persistedReflection) {
+            throw new Error('T1 reflection could not publish its durable range replacement');
+          }
           conversationMessages.length = 0;
           for (const m of next) conversationMessages.push(m);
           // After collapse: the just-inserted reflection lives at
@@ -3642,8 +4064,9 @@ export class Engine {
    *
    * @param {Array} conversationMessages
    * @param {string} originalUserMsg
+   * @param {{sessionId?: string, model?: string}} context
    */
-  async *#applyPendingT2Reflections(conversationMessages, originalUserMsg) {
+  async *#applyPendingT2Reflections(conversationMessages, originalUserMsg, context = {}) {
     if (this.#pendingT2.size === 0) return;
     // Drain in insertion order (Map preserves it). We process all entries
     // because the user could send multiple prompts back-to-back before
@@ -3685,8 +4108,20 @@ export class Engine {
         continue;
       }
 
-      // Rewrite history.
+      // Rewrite history and publish the same logical replacement to disk.
       const next = collapseRangeToReflection(conversationMessages, startIdx, endIdx, content);
+      const reflectionMessage = next[startIdx];
+      const durableRowsInRange = conversationMessages
+        .slice(startIdx, endIdx + 1)
+        .some(message => message?._persistedMessageId || message?.id);
+      const persistedReflection = this.#persistFoldedRange(
+        conversationMessages,
+        startIdx,
+        endIdx,
+        reflectionMessage,
+        context,
+      );
+      if (durableRowsInRange && !persistedReflection) continue;
       // Mutate in place so caller's reference stays valid.
       conversationMessages.length = 0;
       for (const m of next) conversationMessages.push(m);
@@ -3876,8 +4311,8 @@ export class Engine {
   }
 
   /**
-   * Register a background task as belonging to the current query. Called
-   * from tools (bash background, agent spawn) via `toolCtx.registerAsyncTask`.
+   * Register a result-producing async task as belonging to the current query.
+   * Called by tools such as SpawnAgent via `toolCtx.registerAsyncTask`.
    * @param {string} taskId
    * @param {{ id?: string, name?: string, threadId?: string, toolCallId?: string, toolName?: string }} [meta]
    * @returns {void}
@@ -3898,6 +4333,69 @@ export class Engine {
     try { this.#asyncTaskCoordinator?.onRegister?.(taskId, this); } catch { /* coord must not throw into tools */ }
   }
 
+  #asyncTaskWaitTimeoutMs() {
+    const configured = Number(this.#config?.asyncTaskWaitTimeoutMs);
+    if (!Number.isFinite(configured)) return DEFAULT_ASYNC_TASK_WAIT_TIMEOUT_MS;
+    return Math.max(1, Math.min(60 * 60_000, Math.floor(configured)));
+  }
+
+  #asyncTaskLastActivityAt(taskId) {
+    if (!this.#taskManager || typeof this.#taskManager.getTask !== 'function') return null;
+    const sessionId = this.#sessionId || 'default';
+    let task = null;
+    try { task = this.#taskManager.getTask(sessionId, taskId); } catch { return null; }
+    if (!task || task.status !== 'running') return 0;
+    const updatedAt = Date.parse(task.updatedAt || task.startedAt || task.createdAt || '');
+    return Number.isFinite(updatedAt) ? updatedAt : 0;
+  }
+
+  #nextAsyncTaskWaitMs(timeoutMs) {
+    const now = Date.now();
+    let next = timeoutMs;
+    for (const taskId of this.#pendingAsyncTaskIds) {
+      const lastActivityAt = this.#asyncTaskLastActivityAt(taskId);
+      if (lastActivityAt === null) continue;
+      next = Math.min(next, Math.max(1, lastActivityAt + timeoutMs - now));
+    }
+    return Math.max(1, next);
+  }
+
+  /**
+   * Release stale same-turn ownership without stopping the underlying tasks.
+   * Active sub-agents refresh TaskManager.updatedAt from their event stream, so
+   * the timeout measures silence rather than total runtime. A later terminal
+   * event misses the owner map and uses the bridge rescue path.
+   * @param {number} timeoutMs
+   * @returns {string[]}
+   */
+  #deferExpiredAsyncTasks(timeoutMs) {
+    if (this.#pendingAsyncTaskIds.size === 0) return [];
+    const now = Date.now();
+    const taskIds = Array.from(this.#pendingAsyncTaskIds).filter((taskId) => {
+      const lastActivityAt = this.#asyncTaskLastActivityAt(taskId);
+      return lastActivityAt === null || now - lastActivityAt >= timeoutMs;
+    });
+    for (const taskId of taskIds) {
+      // Keep ownership visible while the coordinator decides whether this is a
+      // real defer. If a terminal event already won and removed the task, the
+      // coordinator can reject a stale timeout callback instead of scheduling
+      // a duplicate rescue.
+      try {
+        if (typeof this.#asyncTaskCoordinator?.onDeferred === 'function') {
+          this.#asyncTaskCoordinator.onDeferred(taskId, this);
+        } else {
+          this.#asyncTaskCoordinator?.onUnregister?.(taskId, this);
+        }
+      } catch { /* best-effort */ }
+      this.#pendingAsyncTaskIds.delete(taskId);
+      this.#asyncTaskToolMeta.delete(taskId);
+    }
+    if (taskIds.length > 0) {
+      console.warn(`[Engine] async task wait silent for ${timeoutMs}ms; deferring ${taskIds.join(', ')}`);
+    }
+    return taskIds;
+  }
+
   #wakeAsyncTaskWaiters() {
     if (this.#asyncTaskWaiters.length === 0) return;
     const waiters = this.#asyncTaskWaiters.splice(0);
@@ -3908,30 +4406,42 @@ export class Engine {
 
   /**
    * Wait for *any* of: an async task terminal event, a fresh user append,
-   * or signal abort. Resolves immediately if any of those is already
-   * pending. The loop re-evaluates conditions on wake — multiple
-   * concurrent tasks all wake the same waiter once, then the loop drains
-   * everything in one iteration and decides whether to keep waiting.
+   * signal abort, or the current silence budget. The loop re-evaluates all
+   * queues and task activity on every wake.
    * @param {AbortSignal|null|undefined} signal
-   * @returns {Promise<void>}
+   * @param {number} timeoutMs
+   * @returns {Promise<'wake'|'timeout'>}
    */
-  #waitForAsyncWake(signal) {
+  #waitForAsyncWake(signal, timeoutMs) {
     return new Promise((resolve) => {
+      let settled = false;
+      let timer = null;
+      let onAbort = null;
       // Fast paths — anything already pending releases instantly. This is
       // the common case when a task finished between adapter loops.
-      if (this.#pendingTaskResultMessages.length > 0) return resolve();
-      if (this.#pendingTaskResultUpdates.length > 0) return resolve();
-      if (this.#pendingUserMessages.length > 0) return resolve();
-      if (this.#externalUserWakePending) return resolve();
-      if (signal?.aborted) return resolve();
-      this.#asyncTaskWaiters.push(resolve);
+      if (this.#pendingTaskResultMessages.length > 0) return resolve('wake');
+      if (this.#pendingTaskResultUpdates.length > 0) return resolve('wake');
+      if (this.#pendingUserMessages.length > 0) return resolve('wake');
+      if (this.#externalUserWakePending) return resolve('wake');
+      if (signal?.aborted) return resolve('wake');
+      const finish = (reason) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (signal && onAbort) {
+          try { signal.removeEventListener('abort', onAbort); } catch { /* ignore */ }
+        }
+        const idx = this.#asyncTaskWaiters.indexOf(wake);
+        if (idx >= 0) this.#asyncTaskWaiters.splice(idx, 1);
+        resolve(reason);
+      };
+      const wake = () => finish('wake');
+      this.#asyncTaskWaiters.push(wake);
+      timer = setTimeout(() => finish('timeout'), Math.max(1, Number(timeoutMs) || 1));
+      timer.unref?.();
       if (signal && typeof signal.addEventListener === 'function') {
-        // Best-effort abort wakeup; the loop re-checks signal.aborted.
-        const onAbort = () => {
-          // Splice the resolver out of the wait queue so it can't double-fire.
-          const idx = this.#asyncTaskWaiters.indexOf(resolve);
-          if (idx >= 0) this.#asyncTaskWaiters.splice(idx, 1);
-          try { resolve(); } catch { /* ignore */ }
+        onAbort = () => {
+          try { finish('wake'); } catch { /* ignore */ }
         };
         try { signal.addEventListener('abort', onAbort, { once: true }); } catch { /* old runtimes */ }
       }

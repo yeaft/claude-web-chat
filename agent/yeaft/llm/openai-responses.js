@@ -39,6 +39,7 @@ import {
   redactRawRequest,
   safeHeaders,
   SseLineBuffer,
+  toWellFormedJson,
 } from './adapter.js';
 import {
   normalizeEffort,
@@ -188,7 +189,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
               type: 'function_call',
               call_id: tc.id,
               name: tc.name,
-              arguments: JSON.stringify(tc.input ?? {}),
+              arguments: JSON.stringify(toWellFormedJson(tc.input ?? {})),
             });
           }
         }
@@ -286,6 +287,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
     }
 
     if (extraBody) Object.assign(body, extraBody);
+    const wireBody = toWellFormedJson(body);
 
     const url = `${this.#baseUrl}/responses`;
     const headers = {
@@ -295,7 +297,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
 
     // Expose the raw request (auth-redacted) for the debug panel. See
     // `redactRawRequest` in adapter.js for the verbatim-design rationale.
-    const rawRequest = redactRawRequest({ url, method: 'POST', headers, body });
+    const rawRequest = redactRawRequest({ url, method: 'POST', headers, body: wireBody });
 
     let response;
     try {
@@ -303,7 +305,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
       response = await fetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify(body),
+        body: JSON.stringify(wireBody),
         signal,
       });
     } catch (err) {
@@ -541,6 +543,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
     }
 
     if (extraBody) Object.assign(body, extraBody);
+    const wireBody = toWellFormedJson(body);
 
     let response;
     try {
@@ -551,7 +554,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.#apiKey}`,
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(wireBody),
         signal,
       });
     } catch (err) {

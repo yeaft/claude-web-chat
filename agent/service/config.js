@@ -3,12 +3,18 @@
  */
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
-import { platform, homedir } from 'os';
+import { platform, homedir, hostname } from 'os';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const SERVICE_NAME = 'yeaft-agent';
 export const DEFAULT_INSTANCE_ID = 'default';
+
+export function getDefaultAgentName(machineName = hostname()) {
+  const raw = String(machineName || '');
+  if (!raw) return DEFAULT_INSTANCE_ID;
+  return raw.replace(/[^A-Za-z0-9._-]/gu, '-');
+}
 
 /**
  * Load .env file from agent directory (or cwd) into process.env
@@ -58,45 +64,73 @@ export function validateInstanceId(instanceId) {
   return normalized;
 }
 
-export function getInstanceIdFromArgs(args = [], env = process.env) {
-  let instanceId = '';
-  let agentName = '';
+function readIdentityArgs(args = []) {
+  let deprecatedInstanceId = null;
+  let explicitName = null;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     const next = args[i + 1];
-    if (arg === '--instance' && next) {
-      instanceId = next;
-      i++;
-    } else if (arg === '--name' && next) {
-      agentName = next;
-      i++;
+    if (arg !== '--instance' && arg !== '--name') continue;
+    if (!next || next.startsWith('-')) {
+      throw new Error(`${arg} requires a value`);
     }
+    if (arg === '--name') {
+      explicitName = validateInstanceId(next);
+    } else {
+      deprecatedInstanceId = validateInstanceId(next);
+    }
+    i++;
   }
-  return validateInstanceId(
-    instanceId
-    || agentName
-    || env.YEAFT_AGENT_INSTANCE
+  return { deprecatedInstanceId, explicitName };
+}
+
+export function resolveDisplayName(args = [], env = process.env, fallbackName = getDefaultAgentName()) {
+  const { explicitName } = readIdentityArgs(args);
+  return explicitName
     || env.AGENT_NAME
-    || DEFAULT_INSTANCE_ID,
-  );
+    || fallbackName
+    || getDefaultAgentName();
+}
+
+export function resolveRuntimeIdentity(fileConfig = {}, env = process.env) {
+  const agentName = resolveDisplayName([], env, fileConfig.agentName || getDefaultAgentName());
+  const instanceId = validateInstanceId(env.YEAFT_AGENT_INSTANCE || fileConfig.instanceId || DEFAULT_INSTANCE_ID);
+  return { agentName, instanceId };
+}
+
+export function resolveServiceInstanceId(args = [], env = process.env, options = {}) {
+  const { deprecatedInstanceId, explicitName } = readIdentityArgs(args);
+  if (explicitName) return explicitName;
+  if (deprecatedInstanceId) return deprecatedInstanceId;
+  if (env.YEAFT_AGENT_INSTANCE) return validateInstanceId(env.YEAFT_AGENT_INSTANCE);
+  if (options.management) return DEFAULT_INSTANCE_ID;
+  if (env.AGENT_NAME) return validateInstanceId(env.AGENT_NAME);
+  return validateInstanceId(options.fallbackName || getDefaultAgentName());
+}
+
+/** Legacy alias for resolveServiceInstanceId(). */
+export function getInstanceIdFromArgs(args = [], env = process.env, options = {}) {
+  return resolveServiceInstanceId(args, env, options);
 }
 
 export function applyAgentIdentityToEnv(args = [], env = process.env) {
-  env.YEAFT_AGENT_INSTANCE = getInstanceIdFromArgs(args, env);
-
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--name' && args[i + 1]) {
-      env.AGENT_NAME = args[i + 1];
-      i++;
-    }
+  const { deprecatedInstanceId, explicitName } = readIdentityArgs(args);
+  if (explicitName) {
+    env.YEAFT_AGENT_INSTANCE = explicitName;
+    env.AGENT_NAME = explicitName;
+  } else if (deprecatedInstanceId) {
+    env.YEAFT_AGENT_INSTANCE = deprecatedInstanceId;
+  } else if (!env.YEAFT_AGENT_INSTANCE && env.AGENT_NAME) {
+    env.YEAFT_AGENT_INSTANCE = validateInstanceId(env.AGENT_NAME);
+  } else if (env.YEAFT_AGENT_INSTANCE) {
+    env.YEAFT_AGENT_INSTANCE = validateInstanceId(env.YEAFT_AGENT_INSTANCE);
   }
-
-  return env.YEAFT_AGENT_INSTANCE;
+  return env.YEAFT_AGENT_INSTANCE || null;
 }
 
 export function warnDeprecatedInstanceArg(args = [], warn = console.warn) {
   if (args.includes('--instance')) {
-    warn('Warning: --instance is deprecated; use --name instead. The instance id now defaults to the agent name.');
+    warn('Warning: --instance is deprecated; use --name instead. --name takes precedence when both are provided.');
   }
 }
 
@@ -184,12 +218,20 @@ export function parseServiceArgs(args) {
   // Load .env if available (for dev / source-based usage)
   loadDotenv();
 
-  const instanceId = getInstanceIdFromArgs(args);
+  const instanceId = resolveServiceInstanceId(args, process.env, { management: true });
   const existing = loadServiceConfig(instanceId) || {};
+  const explicitIdentity = args.includes('--name') || args.includes('--instance');
+  const fallbackName = explicitIdentity
+    ? instanceId
+    : existing.agentName || getDefaultAgentName();
   const config = {
     instanceId,
     serverUrl: existing.serverUrl || '',
-    agentName: existing.agentName || '',
+    agentName: resolveDisplayName(
+      args,
+      explicitIdentity ? { ...process.env, AGENT_NAME: '' } : process.env,
+      fallbackName,
+    ),
     agentSecret: existing.agentSecret || '',
     workDir: existing.workDir || '',
     yeaftDir: existing.yeaftDir || '',
@@ -197,7 +239,6 @@ export function parseServiceArgs(args) {
 
   // Environment variables override saved config
   if (process.env.SERVER_URL) config.serverUrl = process.env.SERVER_URL;
-  if (process.env.AGENT_NAME) config.agentName = process.env.AGENT_NAME;
   if (process.env.AGENT_SECRET) config.agentSecret = process.env.AGENT_SECRET;
   if (process.env.WORK_DIR) config.workDir = process.env.WORK_DIR;
   if (process.env.YEAFT_DIR) config.yeaftDir = process.env.YEAFT_DIR;
@@ -209,7 +250,7 @@ export function parseServiceArgs(args) {
     switch (arg) {
       case '--instance': if (next) { i++; } break;
       case '--server': if (next) { config.serverUrl = next; i++; } break;
-      case '--name': if (next) { config.agentName = next; i++; } break;
+      case '--name': if (next) { i++; } break;
       case '--secret': if (next) { config.agentSecret = next; i++; } break;
       case '--work-dir': if (next) { config.workDir = next; i++; } break;
       case '--yeaft-dir': if (next) { config.yeaftDir = next; i++; } break;

@@ -267,11 +267,7 @@ export default {
       if (!store.processingConversations[effectiveConvId.value]) {
         store.messagesMap[effectiveConvId.value] = [];
       }
-      store.sendWsMessage({
-        type: 'sync_messages',
-        conversationId: effectiveConvId.value,
-        turns: 5
-      });
+      store.requestChatHistory(effectiveConvId.value, { mode: 'recent', turns: 5 });
     };
 
     const compactContext = () => {

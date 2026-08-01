@@ -24,8 +24,11 @@ V1 操作：
 - `update`：修改 title、goal、acceptance criteria、workDir。
 - `start`：把 draft/waiting 工作项推进到 ready。
 - `cancel`：取消非终态工作项并 abort 当前 Run。
-- `guide`：给当前 ready/running Action 补充提示；请求必须携带用户看到的 `actionId` 和 WorkItem `revision`，匹配后才原子终止旧执行并重启同类型 Action。成功后 WorkItem `revision` 在同一事务中递增，因此相同请求不可重放；图流程原地 reset 目标 Action 及受影响下游，不得走线性 Action 替换。
-- `retry`：人工把 needs_attention/waiting 创建为新 ready Action。
+- `work_item_message`：向整个 WorkItem 追加消息；请求携带 WorkItem `revision`。成功后同一事务递增 revision，把消息排入所有 running Action，并让 ready/future Action 从 Mainline 的 WorkItem 消息上下文继承。若任一 running Action 已关闭输入窗口，整笔请求失败且不递增 revision，客户端必须保留草稿并刷新重试。
+- `action_input`：向指定 Action 追加输入；请求必须携带正整数 `generation` 及 `actionId + revision`。ready Action 在同一事务中生成新的 canonical generation/spec identity，并以稳定 `inputId` 累积所有当前-spec input；schema-v2 Runner 从 canonical context 按顺序投影，Event 只补附件与审计元数据。running Action 通常不修改 Action spec，只把输入绑定到当前 `runId + generation + specHash`，并在下一个安全 Loop 消费；若 Run 中断或 Runner `prepare()` 因 workspace fallback 原子换代 execution identity，下一次 ready claim 或 fallback transaction 会把完整 identity 匹配的 input 晋升到 canonical context 并 settle pending row，使当前 Run 和后续 retry 都只投影一次。waiting/failed Action 恢复时只保留本次新输入。reset/replan/replacement 会删除旧 canonical input并 supersede 旧 identity 的未消费输入，禁止按 `actionId` 隐式跨代投递或放宽 Event generation fence。
+- `retry_action`：显式重试指定 failed Action；请求携带 `actionId + revision + generation`，不要求用户先输入消息，也不得中止无关 sibling Run。
+- `guide`：兼容管理型 Action guidance；请求必须携带用户看到的 `actionId` 和 WorkItem `revision`，匹配后才原子终止旧执行并重启同类型 Action。成功后 WorkItem `revision` 在同一事务中递增，因此相同请求不可重放；图流程原地 reset 目标 Action 及受影响下游，不得走线性 Action 替换。
+- `retry`：兼容旧的 WorkItem 级恢复操作。
 - `set_watcher`：启停当前 Agent 的 Watcher。
 - `get_settings`：读取当前 Agent 的 Work Center workflow / VP assignment / model policy 设置及可用 VP、模型目录。
 - `update_settings`：校验并原子写入当前 Agent 的 Work Center 设置；只影响之后创建的 WorkItem。

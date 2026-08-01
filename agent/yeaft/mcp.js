@@ -141,8 +141,17 @@ class MCPServerConnection extends EventEmitter {
    */
   async start() {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`MCP server "${this.#name}" startup timeout (${STARTUP_TIMEOUT_MS}ms)`));
+      let settled = false;
+      let timer = null;
+      const failStart = async (err) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        await this.stop();
+        reject(err);
+      };
+      timer = setTimeout(() => {
+        void failStart(new Error(`MCP server "${this.#name}" startup timeout (${STARTUP_TIMEOUT_MS}ms)`));
       }, STARTUP_TIMEOUT_MS);
 
       try {
@@ -181,23 +190,22 @@ class MCPServerConnection extends EventEmitter {
         });
 
         this.#process.on('error', (err) => {
-          clearTimeout(timer);
-          reject(err);
+          void failStart(err);
         });
 
         // Initialize MCP protocol
         this.#initialize().then(() => {
+          if (settled) return;
+          settled = true;
           clearTimeout(timer);
           this.#ready = true;
           resolve();
         }).catch((err) => {
-          clearTimeout(timer);
-          reject(err);
+          void failStart(err);
         });
 
       } catch (err) {
-        clearTimeout(timer);
-        reject(err);
+        void failStart(err);
       }
     });
   }
@@ -319,23 +327,27 @@ class MCPServerConnection extends EventEmitter {
    * Stop the MCP server process.
    */
   async stop() {
-    if (this.#process) {
-      this.#ready = false;
-      this.#process.kill('SIGTERM');
-      // Wait a bit then force kill. Test fakes do not emit close, so cap the
-      // wait at 2s and do not require a close event for cleanup to finish.
-      await Promise.race([
-        new Promise(resolve => {
-          if (this.#closed) return resolve();
-          this.#process.once('close', resolve);
-        }),
-        new Promise(resolve => setTimeout(resolve, 2000)),
-      ]);
-      if (this.#process && !this.#process.killed && !this.#closed) {
-        this.#process.kill('SIGKILL');
-      }
-      this.#process = null;
+    const child = this.#process;
+    if (!child) return;
+
+    this.#ready = false;
+    let closed = this.#closed;
+    if (!closed) {
+      child.kill('SIGTERM');
+      closed = await new Promise(resolve => {
+        let timer = null;
+        const finish = (didClose) => {
+          if (timer) clearTimeout(timer);
+          child.removeListener('close', onClose);
+          resolve(didClose);
+        };
+        const onClose = () => finish(true);
+        child.once('close', onClose);
+        timer = setTimeout(() => finish(false), 2000);
+      });
+      if (!closed) child.kill('SIGKILL');
     }
+    if (this.#process === child) this.#process = null;
   }
 }
 

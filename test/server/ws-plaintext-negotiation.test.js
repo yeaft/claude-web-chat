@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { sendToWebClient } from '../../server/ws-utils.js';
 import { createTestDb, cleanupTestDb, createDbOperations } from '../helpers/testDb.js';
 import { MockWebSocket, createMockAgent, createMockWebClient, WS_OPEN } from '../helpers/mockWs.js';
 
@@ -76,9 +77,11 @@ describe('server → web : auth_result frame advertises acceptPlaintext', () => 
       success: true,
       sessionKey: Buffer.from(sessionKey).toString('base64'),
       role: 'admin',
-      acceptPlaintext: true
+      acceptPlaintext: true,
+      yeaftSessionInventoryComplete: true,
     };
     expect(frame.acceptPlaintext).toBe(true);
+    expect(frame.yeaftSessionInventoryComplete).toBe(true);
     // Field still carries sessionKey so old clients keep working.
     expect(frame.sessionKey).toBeTruthy();
   });
@@ -166,6 +169,41 @@ describe('server → web : sendToWebClient writes plaintext vs ciphertext', () =
     // Round-trips back to the original message via the session key.
     const decoded = await decrypt(lastSent, sessionKey);
     expect(decoded).toEqual(msg);
+
+    // Production relay regression: the old encrypted-client path compresses a
+    // large chunk asynchronously. The following small completion can overtake it,
+    // so Web history handling must support either arrival order.
+    const observedOrders = [];
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const productionClient = createMockWebClient({
+        sessionKey: generateSessionKey(),
+        encryptOutbound: true,
+      });
+      const requestId = `history-${attempt}`;
+      const chunk = {
+        type: 'yeaft_history_chunk',
+        requestId,
+        sessionId: 'session-1',
+        messages: Array.from({ length: 200 }, (_, index) => ({
+          id: `m${index}`,
+          role: index % 2 ? 'assistant' : 'user',
+          content: `history ${index} ${'x'.repeat(2000)}`,
+        })),
+      };
+      const completion = {
+        type: 'yeaft_output',
+        requestId,
+        sessionId: 'session-1',
+        event: { type: 'history_loaded', requestId, sessionId: 'session-1' },
+      };
+      await Promise.all([
+        sendToWebClient(productionClient, chunk),
+        sendToWebClient(productionClient, completion),
+      ]);
+      const decodedFrames = await Promise.all(productionClient.ws.getSentMessages().map(frame => decrypt(frame, productionClient.sessionKey)));
+      observedOrders.push(decodedFrames.map(frame => frame.type));
+    }
+    expect(observedOrders).toEqual(Array.from({ length: 5 }, () => ['yeaft_output', 'yeaft_history_chunk']));
   });
 
   it('skipAuth forces plaintext even if encryptOutbound is true (dev visibility)', async () => {

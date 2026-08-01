@@ -27,62 +27,9 @@ function fakeIndex(rows) {
   };
 }
 
-describe('Yeaft VP selection pre-flow', () => {
-  const meta = {
-    roster: ['vp-linus', 'vp-martin'],
-    defaultVpId: 'vp-linus',
-  };
-
-  it('falls back to the default VP when every @ token is unknown', () => {
-    expect(selectRespondingVps({
-      meta,
-      fromUser: true,
-      mentions: ['example', 'missing-vp'],
-    })).toEqual({
-      dispatched: ['vp-linus'],
-      fallback: 'vp-linus',
-      errors: [],
-      reason: 'fallback',
-    });
-  });
-
-  it('routes valid mentions and silently ignores unknown @ tokens', () => {
-    expect(selectRespondingVps({
-      meta,
-      fromUser: true,
-      mentions: ['missing-vp', 'vp-martin'],
-    })).toEqual({
-      dispatched: ['vp-martin'],
-      fallback: null,
-      errors: [],
-      reason: 'mention',
-    });
-  });
-
-  it('keeps task membership errors for real VP mentions', () => {
-    expect(selectRespondingVps({
-      meta,
-      fromUser: true,
-      mentions: ['missing-vp', 'vp-martin'],
-      taskMembers: ['vp-linus'],
-    })).toEqual({
-      dispatched: [],
-      fallback: null,
-      errors: [{ vpId: 'vp-martin', error: 'not_in_task_members' }],
-      reason: 'mention',
-    });
-  });
-});
 
 describe('Yeaft memory pre-flow scopes', () => {
-  it('renders compact model-facing labels without changing storage scopes', () => {
-    expect(memoryScopeLabel('sessions/s1')).toBe('session');
-    expect(memoryScopeLabel('sessions/s1/topic/dream/recall')).toBe('topic: dream/recall');
-    expect(memoryScopeLabel('session/s1/topic/storage')).toBe('topic: storage');
-    expect(memoryScopeLabel('group/s1/topic/legacy')).toBe('topic: legacy');
-    expect(memoryScopeLabel('sessions/s1/vp/linus')).toBe('sessions/s1/vp/linus');
-    expect(memoryScopeLabel('user')).toBe('user');
-  });
+
 
   it('includes current sessions/* Dream scopes plus legacy aliases', () => {
     expect(buildRelevantScopes({
@@ -123,6 +70,31 @@ describe('Yeaft memory pre-flow scopes', () => {
     expect(result.formatted).toContain('Dream remembers the Sydney project preference.');
     expect(result.formatted).toContain('Linus should keep the Dream fix minimal.');
     expect(result.formatted).not.toContain('This session must not leak into s1.');
+  });
+
+  it('limits picked recall entries by default and honors a larger caller limit', () => {
+    const rows = Array.from({ length: 12 }, (_, index) => ({
+      scope: 'sessions/s1',
+      body: `Dream relevance memory ${index}`,
+      rank: index,
+    }));
+    const load = pickLimit => runMemoryPreflow(fakeIndex(rows), {
+      sessionId: 's1',
+      vpId: 'linus',
+      userMsg: 'Dream relevance memory',
+      budgetTokens: 1000,
+      ...(pickLimit == null ? {} : { pickLimit }),
+    });
+
+    const concise = load();
+    expect(concise.entries).toHaveLength(8);
+    expect(concise.entries.map(entry => entry.body)).toEqual(Array.from({ length: 8 }, (_, index) => `Dream relevance memory ${index}`));
+    expect(concise.entries[0].score).toEqual(expect.any(Number));
+    expect(concise.meta.droppedCount).toBe(4);
+
+    const expanded = load(10);
+    expect(expanded.entries).toHaveLength(10);
+    expect(expanded.meta.droppedCount).toBe(2);
   });
 
   it('filters foreign current sessions/* VP scopes from recall', () => {

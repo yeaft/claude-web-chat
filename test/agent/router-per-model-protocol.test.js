@@ -109,6 +109,28 @@ describe('AdapterRouter resolution', () => {
     }
   });
 
+  it('rejects a removed model from an authoritative managed catalog before any network call', async () => {
+    const fetchFn = vi.fn();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchFn;
+    try {
+      const r = new AdapterRouter({
+        providers: [{
+          name: 'github-copilot',
+          credentialProvider: 'github-copilot',
+          models: ['gpt-new'],
+        }],
+      });
+      await expect(async () => {
+        const gen = r.stream({ model: 'github-copilot/gpt-old', messages: [] });
+        await gen.next();
+      }).rejects.toThrow(/not listed under provider/);
+      expect(fetchFn).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('routes a bare Claude entry from existing Copilot config through Anthropic despite provider-level Responses', async () => {
     const fetchFn = vi.fn(async () => ({ ok: true, body: { getReader: () => ({ read: async () => ({ done: true }), releaseLock: () => {} }) } }));
     const originalFetch = globalThis.fetch;

@@ -24,6 +24,9 @@
  */
 
 import { createInterface } from 'readline';
+import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { join } from 'path';
 import { loadConfig } from './config.js';
 import { DebugTrace } from './debug-trace.js';
@@ -33,10 +36,15 @@ import { buildSystemPrompt } from './prompts.js';
 import { searchMessages } from './conversation/search.js';
 import { ConversationStore } from './conversation/persist.js';
 import { snapshotSessions } from './sessions/session-crud.js';
+import { loadSessionConfig, resolveSessionConfig } from './sessions/session-config.js';
+import { validateSessionId } from './sessions/ids.js';
+import { createJsonlWriter, JsonlInput, runStreamTurn, runStreamSessionTurn } from './stdio-protocol.js';
+import { createCliSessionRunner } from './cli-session-runner.js';
+import { ensureManagedCliTools, summarizeManagedCliResults } from './managed-cli.js';
 
 // ─── Argument parsing ──────────────────────────────────────────
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = {
     debug: false,
     interactive: false,
@@ -51,7 +59,14 @@ function parseArgs(argv) {
     compactOrphans: false,
     compactOrphansDry: false,
     deleteSession: null,
+    sessionId: null,
+    workDir: null,
+    modelEffort: null,
+    inputFormat: 'text',
+    outputFormat: 'text',
+    print: false,
     prompt: null,
+    managedCliReady: Promise.resolve([]),
   };
 
   const rest = argv.slice(2);
@@ -74,6 +89,28 @@ function parseArgs(argv) {
         break;
       case '--model':
         args.model = rest[++i] || null;
+        break;
+      case '--effort':
+      case '--model-effort':
+        args.modelEffort = rest[++i] || null;
+        break;
+      case '--session-id':
+      case '--resume':
+        args.sessionId = rest[++i] || null;
+        break;
+      case '--cwd':
+      case '--work-dir':
+        args.workDir = rest[++i] || null;
+        break;
+      case '--input-format':
+        args.inputFormat = rest[++i] || 'text';
+        break;
+      case '--output-format':
+        args.outputFormat = rest[++i] || 'text';
+        break;
+      case '-p':
+      case '--print':
+        args.print = true;
         break;
       case '--language':
         args.language = rest[++i] || null;
@@ -299,16 +336,29 @@ function handleDeleteGroup(config, sessionId) {
 // ─── REPL ──────────────────────────────────────────────────────
 
 async function runREPL(config, args) {
-  // Use loadSession() to wire all subsystems
+  const workDir = resolve(args.workDir || process.cwd());
+  const persisted = args.sessionId ? loadSessionConfig(config.dir, args.sessionId) : {};
+  const effectiveConfig = resolveSessionConfig(config, persisted);
   const session = await loadSession({
-    model: args.model || config.model,
-    language: args.language || config.language,
-    debug: args.debug || config.debug,
+    dir: config.dir,
+    workDir,
+    model: args.model || effectiveConfig.model,
+    language: args.language || effectiveConfig.language,
+    debug: args.debug || effectiveConfig.debug,
     skipMCP: args.skipMCP,
     skipSkills: args.skipSkills,
+    configOverrides: effectiveConfig,
+    managedCliReady: args.managedCliReady,
   });
 
   const { engine, conversationStore, trace, skillManager, mcpManager, toolRegistry } = session;
+  const sessionRunner = args.sessionId
+    ? createCliSessionRunner({ loaded: session, sessionId: args.sessionId, workDir })
+    : null;
+  if (args.sessionId && !sessionRunner) {
+    await session.shutdown();
+    throw new Error(`Session not found: ${args.sessionId}`);
+  }
 
   // Load persisted conversation as initial messages. `loadRecent` is now
   // turn-based (one user round-trip = one turn; multi-VP fan-out collapses
@@ -621,9 +671,28 @@ async function runREPL(config, args) {
       return;
     }
 
-    // Regular input → engine.query
+    // Regular input → Session fan-out or legacy single Engine.
     try {
       let responseText = '';
+      if (sessionRunner) {
+        const outcome = await sessionRunner.run(input, {
+          modelEffort: args.modelEffort || session.config.modelEffort || null,
+          onEvent: ({ vpId, event }) => {
+            if (event.type === 'text_delta') {
+              responseText += event.text || '';
+              process.stdout.write(`\n[${vpId}] ${event.text || ''}`);
+            } else if (event.type === 'tool_start') {
+              process.stderr.write(`\n[${vpId}] ${event.name}...\n`);
+            } else if (event.type === 'error') {
+              process.stderr.write(`\n[${vpId}] Error: ${event.error?.message || event.error}\n`);
+            }
+          },
+        });
+        console.log();
+        if (outcome.results.some(result => result.error)) process.exitCode = 1;
+        rl.prompt();
+        return;
+      }
 
       for await (const event of engine.query({
         prompt: input,
@@ -687,10 +756,117 @@ async function runREPL(config, args) {
   });
 
   rl.on('close', async () => {
+    await sessionRunner?.close();
     await session.shutdown();
     console.log('\nBye!');
     process.exit(0);
   });
+}
+
+// ─── Structured stdio handler ──────────────────────────────────
+
+async function runStreamJson(config, args) {
+  const sessionId = args.sessionId || `session_cli_${randomUUID()}`;
+  const validation = validateSessionId(sessionId);
+  if (!validation.ok) {
+    throw new Error(`Invalid --session-id (${validation.reason})`);
+  }
+  const workDir = resolve(args.workDir || process.cwd());
+  const persisted = args.sessionId ? loadSessionConfig(config.dir, sessionId) : {};
+  const effectiveConfig = resolveSessionConfig(config, persisted);
+  if (args.model) {
+    effectiveConfig.model = args.model;
+    effectiveConfig.primaryModel = args.model;
+  }
+  if (args.modelEffort) effectiveConfig.modelEffort = args.modelEffort;
+
+  const write = createJsonlWriter(process.stdout);
+  const input = args.inputFormat === 'stream-json' ? new JsonlInput(process.stdin) : null;
+  const originalConsole = { log: console.log, info: console.info, debug: console.debug };
+  const writeDiagnostic = (...values) => console.error(...values);
+  console.log = writeDiagnostic;
+  console.info = writeDiagnostic;
+  console.debug = writeDiagnostic;
+
+  const loaded = await loadSession({
+    dir: config.dir,
+    workDir,
+    model: effectiveConfig.model,
+    language: args.language || effectiveConfig.language,
+    debug: args.debug || effectiveConfig.debug,
+    skipMCP: args.skipMCP,
+    skipSkills: args.skipSkills,
+    configOverrides: {
+      ...effectiveConfig,
+      ...(effectiveConfig.modelEffort ? { modelEffort: effectiveConfig.modelEffort } : {}),
+    },
+    managedCliReady: args.managedCliReady,
+  });
+  const { engine, conversationStore, skillManager, toolRegistry } = loaded;
+  const sessionRunner = createCliSessionRunner({ loaded, sessionId, workDir });
+  const todoState = { value: [] };
+
+  write({
+    type: 'system',
+    subtype: 'init',
+    session_id: sessionId,
+    model: loaded.config.model,
+    model_effort: loaded.config.modelEffort || null,
+    cwd: workDir,
+    tools: toolRegistry.names,
+    skills: skillManager.list(),
+    input_format: args.inputFormat,
+    output_format: 'stream-json',
+  });
+
+  const runPrompt = async (prompt) => {
+    const priorMessages = conversationStore.loadRecentBySession(sessionId, 20).map(message => ({
+      role: message.role,
+      content: message.content,
+      ...(message.toolCallId && { toolCallId: message.toolCallId }),
+      ...(message.toolCalls && { toolCalls: message.toolCalls }),
+    }));
+    const turnOptions = {
+      prompt,
+      messages: priorMessages,
+      sessionId,
+      workDir,
+      model: loaded.config.model,
+      modelEffort: loaded.config.modelEffort || null,
+      input,
+      write,
+      getCurrentTodos: () => todoState.value.slice(),
+      setCurrentTodos: todos => { todoState.value = Array.isArray(todos) ? todos.slice() : []; },
+    };
+    return sessionRunner
+      ? runStreamSessionTurn({ runner: sessionRunner, ...turnOptions })
+      : runStreamTurn({ engine, ...turnOptions });
+  };
+
+  let lastResult = null;
+  try {
+    if (args.prompt) {
+      lastResult = await runPrompt(args.prompt);
+    } else if (input) {
+      for (;;) {
+        const item = await input.nextPrompt();
+        if (!item) break;
+        lastResult = await runPrompt(item.prompt);
+      }
+    } else {
+      let prompt = '';
+      for await (const chunk of process.stdin) prompt += chunk;
+      if (prompt.trim()) lastResult = await runPrompt(prompt.trim());
+    }
+  } finally {
+    input?.close();
+    await sessionRunner?.close();
+    await loaded.shutdown();
+    console.log = originalConsole.log;
+    console.info = originalConsole.info;
+    console.debug = originalConsole.debug;
+  }
+  if (lastResult?.is_error) process.exitCode = 1;
 }
 
 // ─── One-shot handler ──────────────────────────────────────────
@@ -701,18 +877,43 @@ async function runOnce(config, args) {
     return;
   }
 
-  // Use loadSession() to wire all subsystems
+  const workDir = resolve(args.workDir || process.cwd());
+  const persisted = args.sessionId ? loadSessionConfig(config.dir, args.sessionId) : {};
+  const effectiveConfig = resolveSessionConfig(config, persisted);
   const session = await loadSession({
-    model: args.model || config.model,
-    language: args.language || config.language,
-    debug: args.debug || config.debug,
+    dir: config.dir,
+    workDir,
+    model: args.model || effectiveConfig.model,
+    language: args.language || effectiveConfig.language,
+    debug: args.debug || effectiveConfig.debug,
     skipMCP: args.skipMCP,
     skipSkills: args.skipSkills,
+    configOverrides: effectiveConfig,
+    managedCliReady: args.managedCliReady,
   });
 
   const { engine, conversationStore } = session;
+  const sessionRunner = args.sessionId
+    ? createCliSessionRunner({ loaded: session, sessionId: args.sessionId, workDir })
+    : null;
 
   try {
+    if (args.sessionId && !sessionRunner) {
+      throw new Error(`Session not found: ${args.sessionId}`);
+    }
+    if (sessionRunner) {
+      const outcome = await sessionRunner.run(args.prompt, {
+        modelEffort: args.modelEffort || session.config.modelEffort || null,
+        onEvent: ({ vpId, event }) => {
+          if (event.type === 'text_delta') process.stdout.write(`\n[${vpId}] ${event.text || ''}`);
+          else if (event.type === 'tool_start') process.stderr.write(`\n[${vpId}] ${event.name}...\n`);
+          else if (event.type === 'error') process.stderr.write(`\n[${vpId}] Error: ${event.error?.message || event.error}\n`);
+        },
+      });
+      console.log();
+      if (outcome.results.some(result => result.error)) process.exitCode = 1;
+      return;
+    }
     // Load recent conversation as context
     const priorMessages = conversationStore.loadRecent(20).map(m => ({
       role: m.role,
@@ -768,6 +969,7 @@ async function runOnce(config, args) {
     // Final newline after streaming text
     console.log();
   } finally {
+    await sessionRunner?.close();
     await session.shutdown();
   }
 }
@@ -796,7 +998,6 @@ async function main() {
     language: args.language,
     debug: args.debug || undefined,
   });
-
   // Handle --trace queries (no LLM needed, no session needed)
   if (args.trace) {
     await handleTraceQuery(args, config);
@@ -813,14 +1014,42 @@ async function main() {
     return;
   }
 
+  const prepareManagedCli = () => {
+    args.managedCliReady = ensureManagedCliTools({ yeaftDir: config.dir });
+    args.managedCliReady.then(results => {
+      if (results.some(result => result.status === 'installed')) {
+        console.error(`[Yeaft] managed CLI tools: ${summarizeManagedCliResults(results)}`);
+      }
+    }).catch(error => {
+      console.error(`[Yeaft] managed CLI setup failed; using built-in fallbacks: ${error?.message || error}`);
+    });
+  };
+
   // Handle interactive mode
   if (args.interactive) {
+    prepareManagedCli();
     await runREPL(config, args);
     return;
   }
 
+  if (args.outputFormat === 'stream-json') {
+    if (args.inputFormat !== 'text' && args.inputFormat !== 'stream-json') {
+      throw new Error('--input-format must be text or stream-json');
+    }
+    if (!args.prompt && args.inputFormat !== 'stream-json' && process.stdin.isTTY) {
+      throw new Error('stream-json output requires a prompt, piped stdin, or --input-format stream-json');
+    }
+    prepareManagedCli();
+    await runStreamJson(config, args);
+    return;
+  }
+  if (args.inputFormat === 'stream-json') {
+    throw new Error('--input-format stream-json requires --output-format stream-json');
+  }
+
   // Handle prompt (from args or stdin)
   if (args.prompt) {
+    prepareManagedCli();
     await runOnce(config, args);
     return;
   }
@@ -833,6 +1062,7 @@ async function main() {
     }
     args.prompt = input.trim();
     if (args.prompt) {
+      prepareManagedCli();
       await runOnce(config, args);
       return;
     }
@@ -856,15 +1086,24 @@ async function main() {
   console.log('  -d, --debug           Enable debug tracing');
   console.log('  -i, --interactive     Start REPL');
   console.log('  -v, --verbose         Verbose output');
-  console.log('  --model <name>        Override model');
-  console.log('  --language <code>     Language: en, zh (default: en)');
+  console.log('  -p, --print           Run a non-interactive query');
+  console.log('  --session-id <id>     Persist and resume a Yeaft Session');
+  console.log('  --cwd <dir>           Set the working directory');
+  console.log('  --model <name>         Override model');
+  console.log('  --effort <level>       Override model effort');
+  console.log('  --input-format <fmt>   text or stream-json');
+  console.log('  --output-format <fmt>  text or stream-json');
+  console.log('  --language <code>      Language: en, zh (default: en)');
   console.log('  --trace <cmd>         Query debug trace');
   console.log('  --dry-run             Show prompt without calling LLM');
   console.log('  --skip-mcp            Skip MCP server connections');
   console.log('  --skip-skills         Skip skill loading');
 }
 
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+const isDirectRun = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isDirectRun) {
+  main().catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
+}

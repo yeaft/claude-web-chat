@@ -30,6 +30,7 @@ import AssistantTurn from './AssistantTurn.js';
 import { useChatStore } from '../stores/chat.js';
 import { useVpStore } from '../stores/vp.js';
 import { formatElapsed } from '../stores/helpers/turn-timing.js';
+import { formatSessionMessageDateTime } from '../utils/session-message-quote.js';
 
 export default {
   name: 'VpTurnBlock',
@@ -42,7 +43,7 @@ export default {
     responseCollapsed: { type: Boolean, default: false },
     responseToggleLabel: { type: String, default: '' },
   },
-  emits: ['toggle-response-collapse'],
+  emits: ['toggle-response-collapse', 'quote'],
   template: `
     <div class="vp-turn-block"
          :class="{ 'vp-turn-block-streaming': turn.isStreaming }"
@@ -68,7 +69,15 @@ export default {
             class="vp-turn-block-time"
             :title="startedTimeFullText"
           >{{ startedTimeText }}</span>
-          <template v-if="turn.isStreaming && elapsedText">
+          <template v-if="turn.isStreaming && retryText">
+            <span
+              v-if="displayName || startedTimeText"
+              class="vp-turn-block-sep"
+              aria-hidden="true"
+            >·</span>
+            <span class="vp-turn-block-elapsed" aria-live="polite">{{ retryText }}</span>
+          </template>
+          <template v-else-if="turn.isStreaming && elapsedText">
             <span
               v-if="displayName || startedTimeText"
               class="vp-turn-block-sep"
@@ -103,6 +112,9 @@ export default {
           :response-collapsible="responseCollapsible"
           :response-collapsed="responseCollapsed"
           :response-toggle-label="responseToggleLabel"
+          :session-actions="true"
+          :quote-author="displayName"
+          @quote="$emit('quote', $event)"
           @toggle-response-collapse="$emit('toggle-response-collapse')"
         />
       </div>
@@ -111,6 +123,8 @@ export default {
   setup(props) {
     const store = useChatStore();
     const vpStore = useVpStore();
+    const inst = Vue.getCurrentInstance();
+    const $t = (inst && inst.appContext.config.globalProperties.$t) || ((key) => key);
 
     const displayName = Vue.computed(() => {
       const vpId = props.turn && props.turn.speakerVpId;
@@ -149,15 +163,7 @@ export default {
       () => !!(props.turn && props.turn.isStreaming && props.turn.turnId)
     );
 
-    const startedTimeText = Vue.computed(() => {
-      const ts = props.turn.speakerTimestamp;
-      if (!ts) return '';
-      const d = new Date(ts);
-      if (Number.isNaN(d.getTime())) return '';
-      return d.toLocaleTimeString(undefined, {
-        hour: '2-digit', minute: '2-digit',
-      });
-    });
+    const startedTimeText = Vue.computed(() => formatSessionMessageDateTime(props.turn.speakerTimestamp));
 
     const startedTimeFullText = Vue.computed(() => {
       const ts = props.turn.speakerTimestamp;
@@ -175,6 +181,25 @@ export default {
       return formatElapsed(ms);
     });
 
+    const retryText = Vue.computed(() => {
+      const turnId = props.turn && props.turn.turnId;
+      const retry = turnId
+        ? Object.values(store.activeVpTurns || {}).find(row => (
+          row?.turnId === turnId
+          && (!store.currentAgent || !row?.agentId || row.agentId === store.currentAgent)
+        )) || store.activeVpTurns?.[turnId]
+        : null;
+      if (!retry?.retryAttempt || !retry?.retryMax) return '';
+      const key = retry.retryRecoveryMode === 'continue'
+        ? 'yeaft.vp.turnBlock.retryingContinue'
+        : 'yeaft.vp.turnBlock.retryingRequest';
+      const fallback = retry.retryRecoveryMode === 'continue'
+        ? `Response stalled; continuing with a fresh request (${retry.retryAttempt}/${retry.retryMax})`
+        : `Response stalled; retrying with a fresh request (${retry.retryAttempt}/${retry.retryMax})`;
+      const translated = $t(key, { attempt: retry.retryAttempt, max: retry.retryMax });
+      return translated === key ? fallback : translated;
+    });
+
     return {
       onStopTurn,
       isTyping,
@@ -184,6 +209,7 @@ export default {
       startedTimeText,
       startedTimeFullText,
       elapsedText,
+      retryText,
     };
   },
 };

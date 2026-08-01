@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 const MAX_DEBUG_STRING_BYTES = 64 * 1024;
 export const MAX_ACTION_REQUEST_DETAIL_BYTES = 256 * 1024;
 const MAX_ACTION_REQUEST_INPUT_BYTES = MAX_ACTION_REQUEST_DETAIL_BYTES;
@@ -31,6 +33,17 @@ function truncateUtf8(value, maxBytes = MAX_DEBUG_STRING_BYTES) {
   let end = Math.min(contentBytes, bytes.length);
   while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
   return `${bytes.subarray(0, end).toString('utf8')}${marker}`;
+}
+
+export function boundedDebugIdentity(value, maxBytes) {
+  const text = String(value || '');
+  if (!text || byteLength(text) <= maxBytes) return text;
+  const digest = createHash('sha256').update(text, 'utf8').digest('hex');
+  const suffix = `~${digest}`;
+  const bytes = Buffer.from(text, 'utf8');
+  let end = Math.max(0, maxBytes - byteLength(suffix));
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return `${bytes.subarray(0, end).toString('utf8')}${suffix}`;
 }
 
 function normalizeSensitiveName(name) {
@@ -260,6 +273,76 @@ function boundedDebugInputBytes(value, maxBytes) {
   return bytes > maxBytes ? maxBytes + 1 : bytes;
 }
 
+const MAX_ACTION_REQUEST_SUMMARY_ID_BYTES = 256;
+const MAX_ACTION_REQUEST_SUMMARY_NAME_BYTES = 512;
+const MAX_ACTION_REQUEST_SUMMARY_MODEL_BYTES = 1_024;
+const MAX_ACTION_REQUEST_SUMMARY_STOP_REASON_BYTES = 256;
+
+function summaryString(value, maxBytes, fallback = null) {
+  if (typeof value !== 'string' || !value) return fallback;
+  return truncateUtf8(value, maxBytes);
+}
+
+function summaryUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  return {
+    inputTokens: Math.max(0, Number(usage.inputTokens) || 0),
+    outputTokens: Math.max(0, Number(usage.outputTokens) || 0),
+    cacheReadTokens: Math.max(0, Number(usage.cacheReadTokens) || 0),
+    cacheWriteTokens: Math.max(0, Number(usage.cacheWriteTokens) || 0),
+    totalInputTokens: Math.max(0, Number(usage.totalInputTokens) || 0),
+    totalTokens: Math.max(0, Number(usage.totalTokens) || 0),
+  };
+}
+
+function minimalActionRequestLoopSummary(loop) {
+  return {
+    loopInstanceId: null,
+    loopNumber: Number(loop?.loopNumber) || 0,
+    model: null,
+    response: '',
+    usage: null,
+    latencyMs: 0,
+    ttfbMs: null,
+    stopReason: null,
+    at: 0,
+    toolCalls: [],
+    detailTruncated: true,
+  };
+}
+
+function actionRequestLoopSummary(loop) {
+  const toolCalls = Array.isArray(loop?.toolCalls) ? loop.toolCalls : [];
+  return {
+    loopInstanceId: boundedDebugIdentity(loop?.loopInstanceId, MAX_ACTION_REQUEST_SUMMARY_ID_BYTES) || null,
+    loopNumber: Number(loop?.loopNumber) || 0,
+    model: summaryString(loop?.model, MAX_ACTION_REQUEST_SUMMARY_MODEL_BYTES),
+    response: typeof loop?.response === 'string' ? truncateUtf8(loop.response, 8 * 1024) : '',
+    usage: summaryUsage(loop?.usage),
+    latencyMs: Math.max(0, Number(loop?.latencyMs) || 0),
+    ttfbMs: loop?.ttfbMs == null ? null : Math.max(0, Number(loop.ttfbMs) || 0),
+    stopReason: summaryString(loop?.stopReason, MAX_ACTION_REQUEST_SUMMARY_STOP_REASON_BYTES),
+    at: Math.max(0, Number(loop?.at) || 0),
+    toolCalls: toolCalls.slice(0, MAX_DEBUG_ARRAY_ITEMS).map(call => ({
+      id: boundedDebugIdentity(call?.id, MAX_ACTION_REQUEST_SUMMARY_ID_BYTES) || null,
+      name: summaryString(call?.name, MAX_ACTION_REQUEST_SUMMARY_NAME_BYTES, '?'),
+      input: null,
+    })),
+    detailTruncated: true,
+  };
+}
+
+function actionRequestToolSummary(tool) {
+  return {
+    loopNumber: Number(tool?.loopNumber) || 0,
+    callId: boundedDebugIdentity(tool?.callId, MAX_ACTION_REQUEST_SUMMARY_ID_BYTES) || null,
+    name: summaryString(tool?.name, MAX_ACTION_REQUEST_SUMMARY_NAME_BYTES, '?'),
+    durationMs: Math.max(0, Number(tool?.durationMs) || 0),
+    isError: tool?.isError === true,
+    toolOutput: null,
+  };
+}
+
 export function limitActionRequestDebugInput(loopValues, toolValues) {
   const sourceLoops = Array.isArray(loopValues) ? loopValues : [];
   const sourceTools = Array.isArray(toolValues) ? toolValues : [];
@@ -277,11 +360,25 @@ export function limitActionRequestDebugInput(loopValues, toolValues) {
   let remainingBytes = MAX_ACTION_REQUEST_INPUT_BYTES;
   const loops = [];
   const tools = [];
+  let summarizedLoopCount = 0;
   for (let index = candidates.length - 1; index >= 0; index -= 1) {
-    const loop = candidates[index];
-    const loopTools = toolsByLoop.get(Number(loop?.loopNumber) || 0) || [];
-    const inputBytes = boundedDebugInputBytes({ loop, tools: loopTools }, remainingBytes);
-    if (inputBytes > remainingBytes) continue;
+    const sourceLoop = candidates[index];
+    const sourceLoopTools = toolsByLoop.get(Number(sourceLoop?.loopNumber) || 0) || [];
+    let loop = sourceLoop;
+    let loopTools = sourceLoopTools;
+    let inputBytes = boundedDebugInputBytes({ loop, tools: loopTools }, remainingBytes);
+    if (inputBytes > remainingBytes) {
+      loop = actionRequestLoopSummary(sourceLoop);
+      loopTools = sourceLoopTools.map(actionRequestToolSummary);
+      inputBytes = boundedDebugInputBytes({ loop, tools: loopTools }, remainingBytes);
+      if (inputBytes > remainingBytes && loops.length === 0) {
+        loop = minimalActionRequestLoopSummary(sourceLoop);
+        loopTools = [];
+        inputBytes = boundedDebugInputBytes({ loop, tools: loopTools }, remainingBytes);
+      }
+      if (inputBytes > remainingBytes) continue;
+      summarizedLoopCount += 1;
+    }
     loops.unshift(loop);
     tools.unshift(...loopTools);
     remainingBytes -= inputBytes;
@@ -290,6 +387,7 @@ export function limitActionRequestDebugInput(loopValues, toolValues) {
     loops,
     tools,
     omittedLoopCount: sourceLoops.length - loops.length,
+    summarizedLoopCount,
   };
 }
 
@@ -482,12 +580,25 @@ export function sanitizeDebugValue(value, parent = null, key = '', seen = new We
   }
 }
 
+function finalizeActionRequestDetail(detail) {
+  if (!detail?.request) return detail;
+  const loops = Array.isArray(detail.request.loops) ? detail.request.loops : [];
+  detail.request.summarizedLoopCount = loops.filter(loop => loop?.detailTruncated === true).length;
+  detail.request.omittedLoopCount = Math.max(0, Number(detail.request.omittedLoopCount) || 0);
+  detail.request.truncated = detail.request.truncated === true
+    || detail.request.summarizedLoopCount > 0
+    || detail.request.omittedLoopCount > 0;
+  return detail;
+}
+
 export function enforceActionRequestDetailBudget(detail, omittedLoopCount = 0) {
   if (omittedLoopCount > 0 && detail?.request) {
     detail.request.truncated = true;
     detail.request.omittedLoopCount = omittedLoopCount;
   }
-  if (!detail?.request || jsonByteLength(detail) <= MAX_ACTION_REQUEST_DETAIL_BYTES) return detail;
+  if (!detail?.request || jsonByteLength(detail) <= MAX_ACTION_REQUEST_DETAIL_BYTES) {
+    return finalizeActionRequestDetail(detail);
+  }
   detail.request.truncated = true;
   const loops = Array.isArray(detail.request.loops) ? detail.request.loops : [];
   const stages = [
@@ -504,21 +615,31 @@ export function enforceActionRequestDetailBudget(detail, omittedLoopCount = 0) {
     loop => { loop.response = ''; },
   ];
   for (const stage of stages) {
-    for (const loop of loops) stage(loop);
-    if (jsonByteLength(detail) <= MAX_ACTION_REQUEST_DETAIL_BYTES) return detail;
+    for (const loop of loops) {
+      stage(loop);
+      loop.detailTruncated = true;
+    }
+    if (jsonByteLength(detail) <= MAX_ACTION_REQUEST_DETAIL_BYTES) {
+      return finalizeActionRequestDetail(detail);
+    }
   }
   while (loops.length > 1 && jsonByteLength(detail) > MAX_ACTION_REQUEST_DETAIL_BYTES) {
     loops.shift();
     detail.request.omittedLoopCount = (detail.request.omittedLoopCount || 0) + 1;
   }
-  if (jsonByteLength(detail) <= MAX_ACTION_REQUEST_DETAIL_BYTES) return detail;
+  if (jsonByteLength(detail) <= MAX_ACTION_REQUEST_DETAIL_BYTES) {
+    return finalizeActionRequestDetail(detail);
+  }
   detail.request.omittedLoopCount = (detail.request.omittedLoopCount || 0) + loops.length;
   detail.request.loops = [];
-  if (jsonByteLength(detail) <= MAX_ACTION_REQUEST_DETAIL_BYTES) return detail;
+  if (jsonByteLength(detail) <= MAX_ACTION_REQUEST_DETAIL_BYTES) {
+    return finalizeActionRequestDetail(detail);
+  }
   const request = detail.request;
   const metadata = value => truncateUtf8(value, 4 * 1024);
   return {
     actionId: metadata(detail.actionId),
+    generation: Math.max(1, Number(detail.generation) || 1),
     request: {
       id: metadata(request.id),
       runId: metadata(request.runId),
@@ -536,6 +657,7 @@ export function enforceActionRequestDetailBudget(detail, omittedLoopCount = 0) {
       loops: [],
       truncated: true,
       omittedLoopCount: detail.request.omittedLoopCount,
+      summarizedLoopCount: 0,
     },
   };
 }

@@ -4,6 +4,12 @@ import { resetProcessingWatchdog, stopProcessingWatchdog } from './watchdog.js';
 import { markAllToolsCompleted } from './handlers/conversationHandler.js';
 import { sameUserMessage } from './dedup.js';
 
+function promoteOrInvalidateOutline(store, row) {
+  if (store.promoteYeaftHistoryOutlineRow?.(row)) return;
+  const sessionId = row?.sessionId ?? row?.groupId ?? store._currentYeaftSessionId ?? null;
+  if (sessionId) store.invalidateYeaftHistoryOutline?.(sessionId);
+}
+
 function normalizeUserVisibleContent(content) {
   let value = content;
   if (typeof value === 'string') {
@@ -142,7 +148,9 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
         // Finish any in-progress streaming so typing dots reappear during tool execution.
         // Without this, isStreaming stays true on the assistant message, which suppresses
         // the typing indicator (showTypingDots = isProcessing && !hasStreamingMessage).
-        store.finishStreamingForConversation(conversationId);
+        // Tool execution ends the current text chunk, not the VP turn. Keep
+        // lifecycle status pending until vp_turn_end / terminal result.
+        store.finishStreamingForConversation(conversationId, { completeLifecycle: false });
 
         execStatus.currentTool = {
           name: block.name,
@@ -173,6 +181,12 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
       }
     }
   } else if (data.type === 'user') {
+    // Yeaft and provider adapters may use a user-role frame for model-only
+    // protocol messages. Tool results still need to update their ToolLine, but
+    // this provenance must block the fallback human-bubble branch below.
+    const modelOnlyUserFrame = data.internal === true || data.message?.internal === true
+      || data.userAuthored === false || data.message?.userAuthored === false;
+
     // Legacy Claude CLI quirk: skill/slash command local output (e.g.
     // /context, /cost) is echoed as a user frame whose content is wrapped
     // in <local-command-stdout>. Other providers (including Copilot CLI)
@@ -260,7 +274,7 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
       }
 
       execStatus.currentTool = null;
-    } else if ((typeof userContent === 'string' && userContent.trim()) || (Array.isArray(data.message?.attachments) && data.message.attachments.length > 0)) {
+    } else if (!modelOnlyUserFrame && ((typeof userContent === 'string' && userContent.trim()) || (Array.isArray(data.message?.attachments) && data.message.attachments.length > 0))) {
       // 普通用户消息（agent 广播回来的）
       // 发送端已通过 addMessage 本地添加，检查是否已存在以避免重复
       //
@@ -279,19 +293,21 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
       const msgs = store.messagesMap[conversationId] || [];
       const duplicate = msgs.some(m => sameUserMessage(m, echoCandidate));
       if (!duplicate) {
-        store.addMessageToConversation(conversationId, {
+        const persistedUserRow = store.addMessageToConversation(conversationId, {
           ...(data.message?.id ? { id: data.message.id, messageId: data.message.id } : {}),
           ...(data.ts ? { ts: data.ts } : {}),
           type: 'user',
           content: userContent,
           // Preserve attachment metadata from agent history replay
           ...(data.message?.attachments ? { attachments: data.message.attachments } : {}),
+          ...(data.message?.quote ? { quote: data.message.quote } : {}),
           // Stamp the echo id on the freshly-added message so any future
           // dedup pass (e.g. sync_messages_result merge) still matches.
           ...(echoClientMsgId ? { clientMessageId: echoClientMsgId } : {}),
           // Bug 1: forward original ts so history messages keep their real
           // timestamp instead of using arrival time.
         });
+        promoteOrInvalidateOutline(store, persistedUserRow);
       } else if (echoClientMsgId) {
         // Common live-send path (NOT a rare race): the dedup gate above
         // already collapsed the echo's row onto the optimistic row by
@@ -311,6 +327,7 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
               msgs[i].messageId = data.message.id;
             }
             if (data.ts && !msgs[i].ts) msgs[i].ts = data.ts;
+            promoteOrInvalidateOutline(store, msgs[i]);
             break;
           }
         }
@@ -333,10 +350,18 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
     // and covers missed or reordered metadata events. Keep the idle check
     // session-scoped so sibling VP turns in the same session remain running.
     let completedYeaftSessionId = store._currentYeaftSessionId || null;
-    if (store._currentYeaftTurnId && store.activeVpTurns[store._currentYeaftTurnId]) {
-      const { [store._currentYeaftTurnId]: _removed, ...rest } = store.activeVpTurns;
-      if (!completedYeaftSessionId && _removed?.sessionId) completedYeaftSessionId = _removed.sessionId;
-      store.activeVpTurns = rest;
+    if (store._currentYeaftTurnId) {
+      const activeTurn = Object.entries(store.activeVpTurns || {}).find(([, row]) => (
+        (row?.turnId === store._currentYeaftTurnId
+          || (!row?.turnId && row === store.activeVpTurns[store._currentYeaftTurnId]))
+        && (!store._currentYeaftAgentId || !row?.agentId || row.agentId === store._currentYeaftAgentId)
+      ));
+      if (activeTurn) {
+        const [turnKey, removed] = activeTurn;
+        const { [turnKey]: _removed, ...rest } = store.activeVpTurns;
+        if (!completedYeaftSessionId && removed?.sessionId) completedYeaftSessionId = removed.sessionId;
+        store.activeVpTurns = rest;
+      }
     }
     if (completedYeaftSessionId && store._currentYeaftVpId && store.vpStatuses) {
       const completedTurnId = store._currentYeaftTurnId || null;
@@ -344,6 +369,7 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
       let statusMutated = false;
       for (const [key, status] of Object.entries(nextStatuses)) {
         if (!status || status.vpId !== store._currentYeaftVpId) continue;
+        if (store._currentYeaftAgentId && status.agentId && status.agentId !== store._currentYeaftAgentId) continue;
         const statusSessionId = status.sessionId || status.groupId || null;
         if (statusSessionId !== completedYeaftSessionId) continue;
         if (completedTurnId && status.turnId && status.turnId !== completedTurnId) continue;
@@ -358,7 +384,9 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
       if (statusMutated) store.vpStatuses = nextStatuses;
     }
     if (completedYeaftSessionId && typeof store.clearYeaftSessionProcessingIfIdle === 'function') {
-      store.clearYeaftSessionProcessingIfIdle(completedYeaftSessionId);
+      store.clearYeaftSessionProcessingIfIdle(completedYeaftSessionId, {
+        agentId: store._currentYeaftAgentId || null,
+      });
     }
     // ★ 设置防护窗口，防止后续 agent_list 中的 stale processing:true 重新设回
     if (!store._closedAt) store._closedAt = {};
@@ -388,6 +416,13 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
       }
     }
     store.finishStreamingForConversation(conversationId);
+    const outlinePromoted = store.promoteCompletedYeaftHistoryOutline?.(
+      conversationId,
+      store._currentYeaftTurnId || null,
+    );
+    if (!outlinePromoted && completedYeaftSessionId) {
+      store.invalidateYeaftHistoryOutline?.(completedYeaftSessionId);
+    }
     // v0.1.768 — orphan sweep: when this is the last per-VP `result` for
     // the conversation, clear any stale `isStreaming: true` flag left
     // behind by a prior turn whose `result` was lost (WS hiccup, agent

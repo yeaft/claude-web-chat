@@ -1,7 +1,8 @@
 import { WebSocket } from 'ws';
 import { CONFIG } from './config.js';
 import { encrypt, decrypt, isEncrypted, encodeKey } from './encryption.js';
-import { sessionDb } from './database.js';
+import { sessionDb, yeaftProjectDb, yeaftSessionDb, sessionUiMetadataDb } from './database.js';
+import { projectSessionCatalog } from './session-catalog.js';
 import { agents, webClients, directoryCache, DIR_CACHE_TTL, DIR_CACHE_MAX_SIZE, trackMessageBytesSent } from './context.js';
 
 // Send message to web client.
@@ -75,6 +76,65 @@ export async function parseMessage(data, sessionKey) {
   }
 }
 
+function onlineAgentIdsForUser(userId, role = null) {
+  return new Set(
+    Array.from(agents.entries())
+      .filter(([, agent]) => agent?.ws?.readyState === WebSocket.OPEN)
+      .filter(([, agent]) => CONFIG.skipAuth
+        || agent.ownerId === userId
+        || (!agent.ownerId && role === 'admin'))
+      .map(([agentId]) => agentId),
+  );
+}
+
+export function verifyPersistedAgentOwnership(agentId, userId, role = null) {
+  if (CONFIG.skipAuth) return true;
+  if (!agentId || !userId) return false;
+  const agent = agents.get(agentId);
+  if (agent) {
+    if (agent.ownerId === userId) return true;
+    return !agent.ownerId && role === 'admin';
+  }
+  return sessionDb.hasOwnedRoute(userId, agentId)
+    || sessionDb.getByUser(userId).some(row => row.user_id === userId && row.agent_id === agentId)
+    || yeaftSessionDb.getByUser(userId).some(row => row.agentId === agentId);
+}
+
+export function buildSessionCatalog(userId, role = null) {
+  const chatSessions = sessionDb.getActiveByUser(userId).filter((session) => {
+    if (CONFIG.skipAuth || session.user_id === userId) return true;
+    if (session.user_id != null) return false;
+    // Legacy NULL-owner rows require a durable route proof when their Agent is
+    // offline. This same predicate protects catalog mutations.
+    return verifyPersistedAgentOwnership(session.agent_id, userId, role);
+  });
+  return projectSessionCatalog({
+    chatSessions,
+    yeaftSessions: yeaftSessionDb.getByUser(userId),
+    metadata: sessionUiMetadataDb.getByUser(userId),
+    onlineAgentIds: onlineAgentIdsForUser(userId, role),
+  });
+}
+
+// Broadcast the owner-scoped read model after canonical Session state changes.
+export async function broadcastSessionCatalog(userId) {
+  if (!userId) return;
+  for (const [, client] of webClients) {
+    if (!client?.authenticated) continue;
+    if (client.userId !== userId) continue;
+    try {
+      await sendToWebClient(client, {
+        type: 'session_catalog_snapshot',
+        catalog: buildSessionCatalog(userId, client.role),
+        projects: yeaftProjectDb.list(userId),
+        projectsAuthoritative: true,
+      });
+    } catch (e) {
+      console.warn('[Server] session catalog projection failed:', e?.message || e);
+    }
+  }
+}
+
 // 广播 agent 列表给所有已认证的 web 客户端（按 owner 过滤）
 export async function broadcastAgentList() {
   for (const [, client] of webClients) {
@@ -125,6 +185,16 @@ export async function broadcastAgentList() {
         type: 'agent_list',
         agents: agentList
       });
+      try {
+        await sendToWebClient(client, {
+          type: 'session_catalog_snapshot',
+          catalog: buildSessionCatalog(client.userId, client.role),
+          projects: yeaftProjectDb.list(client.userId),
+          projectsAuthoritative: true,
+        });
+      } catch (e) {
+        console.warn('[Server] session catalog projection failed:', e?.message || e);
+      }
     }
   }
 }
@@ -305,7 +375,7 @@ export function findAgentByName(agentName) {
 /**
  * 检查用户是否拥有指定的会话
  */
-export function verifyConversationOwnership(conversationId, userId) {
+export function verifyConversationOwnership(conversationId, userId, role = null) {
   if (!conversationId || !userId) {
     console.warn(`[Ownership] Check failed: conversationId=${conversationId}, userId=${userId} (missing parameter)`);
     return false;
@@ -315,8 +385,9 @@ export function verifyConversationOwnership(conversationId, userId) {
   for (const [agentId, agent] of agents) {
     const conv = agent.conversations.get(conversationId);
     if (conv) {
-      // 无 owner 的 conversation（创建时未启用 auth）允许任何已认证用户访问
-      if (!conv.userId) return true;
+      // Legacy ownerless conversations inherit the Agent route ACL; they are
+      // not public merely because the old row lacks user_id.
+      if (!conv.userId) return verifyPersistedAgentOwnership(agentId, userId, role);
       const match = conv.userId === userId;
       if (!match) {
         console.warn(`[Ownership] Mismatch for ${conversationId}: conv.userId=${conv.userId}, client.userId=${userId}, agent=${agentId}`);
@@ -329,7 +400,13 @@ export function verifyConversationOwnership(conversationId, userId) {
   try {
     const session = sessionDb.get(conversationId);
     if (session) {
-      if (!session.user_id) return true;
+      if (!session.user_id) {
+        const allowed = verifyPersistedAgentOwnership(session.agent_id, userId, role);
+        if (!allowed) {
+          console.warn(`[Ownership] Legacy Session ${conversationId} has no durable owner proof for userId=${userId}`);
+        }
+        return allowed;
+      }
       const match = session.user_id === userId;
       if (!match) {
         console.warn(`[Ownership] DB mismatch for ${conversationId}: session.user_id=${session.user_id}, client.userId=${userId}`);

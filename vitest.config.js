@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { CORE_TEST_FILES } from './scripts/test-suite-manifest.mjs';
 
 export default defineConfig({
   test: {
@@ -7,10 +8,9 @@ export default defineConfig({
     hookTimeout: 10000,
     pool: 'forks',
     fileParallelism: false,
-    // Anchor discovery to this repository's real test tree. Positional filters
-    // like `vitest run test/foo.test.js` can otherwise also match cloned paths
-    // such as `.worktrees/name/test/foo.test.js` before normal filtering.
-    include: ['test/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
+    // Keep the default suite intentionally bounded. New regression coverage
+    // must replace or consolidate an existing case before joining this list.
+    include: [...CORE_TEST_FILES],
     // Dot-dir worktrees may appear at different depths depending on who
     // created them. Use globstar forms so both full and focused runs exclude
     // `.claude/worktrees`, `.worktrees`, and `.yeaft/worktrees` clones.

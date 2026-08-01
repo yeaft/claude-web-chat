@@ -97,6 +97,15 @@ export const test = base.extend({
     await page.goto(serverUrl);
     await page.waitForSelector('.chat-page', { timeout: 10000 });
     await page.waitForSelector('.brand-label', { timeout: 5000 });
+    await page.waitForFunction(agentId => {
+      const store = window.Pinia?.useChatStore?.();
+      const compatible = (store?.agents || []).filter(agent => agent.online === true
+        && Array.isArray(agent.capabilities)
+        && agent.capabilities.includes('work_center'));
+      return compatible.length === 1
+        && compatible[0].id === agentId
+        && compatible[0].status === 'ready';
+    }, mockAgent.agentId, { timeout: 10000 });
     await use(page);
   }
 });

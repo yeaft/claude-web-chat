@@ -5,10 +5,12 @@
  * has not loaded yet" state into "there are definitely no Sessions".
  */
 export function shouldShowYeaftOnboardingGuide({
+  agentInventoryReady = false,
   hasYeaftAgent = false,
   sessionsReady = false,
   sessionsEmpty = false,
 } = {}) {
+  if (!agentInventoryReady) return false;
   if (sessionsReady && !sessionsEmpty) return false;
   if (!hasYeaftAgent) return true;
   if (!sessionsReady) return false;

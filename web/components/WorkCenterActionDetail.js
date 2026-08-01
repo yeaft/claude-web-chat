@@ -16,56 +16,64 @@ export default {
     requestDetailsError: { type: Object, default: () => ({}) },
     requestsLoading: { type: Boolean, default: false },
     requestsError: { type: String, default: '' },
-    composerText: { type: String, default: '' },
-    composerAttachments: { type: Array, default: () => [] },
-    uploading: { type: Boolean, default: false },
-    sending: { type: Boolean, default: false },
-    composerError: { type: String, default: '' },
-    attachmentsSupported: { type: Boolean, default: false },
+    previewingAttachmentId: { type: String, default: null },
+    attachmentError: { type: String, default: '' },
   },
-  emits: ['back', 'update:composerText', 'load-earlier-messages', 'select-request', 'refresh-requests', 'attachment-input', 'remove-attachment', 'send'],
+  emits: ['back', 'target-action', 'load-earlier-messages', 'select-request', 'refresh-requests', 'open-run', 'open-attachment'],
   data() {
     return {
-      activeTab: 'messages',
+      activeView: 'conversation',
+      conversationScrollTop: 0,
       expandedRequestKey: null,
-      expandedLoops: {},
+      requestSelectionTouched: false,
     };
   },
   computed: {
-    canCompose() {
-      if (!this.action || !['ready', 'running', 'waiting', 'needs_attention'].includes(this.selected?.status)) return false;
-      if (this.selected?.currentActionId === this.action.id) return true;
-      return this.selected?.workflowSnapshot?.executionMode === 'graph'
-        && ['waiting', 'failed'].includes(this.action.status);
+    executorName() {
+      return this.action?.assignedVp?.name || this.action?.assignedVp?.id
+        || this.action?.requiredRole || this.tr('workCenter.actionExecutorPending', 'Executor pending');
     },
-    composerHint() {
-      if (this.selected?.status === 'waiting') {
-        return this.tr('workCenter.actionInputResumeHint', 'Your input resumes this Action with the additional context.');
-      }
-      if (this.selected?.status === 'needs_attention') {
-        return this.tr('workCenter.actionInputRetryHint', 'Add instructions or files, then rerun this Action with the new context.');
-      }
-      return this.tr('workCenter.actionInputRestartHint', 'New input restarts the active Action so it can apply the updated context safely.');
+    canTargetAction() {
+      if (!this.action || ['done', 'cancelled'].includes(this.selected?.status)) return false;
+      return ['idle', 'ready', 'running', 'paused', 'waiting', 'failed', 'completed', 'stopped']
+        .includes(this.action.status) && this.action.admissionStatus !== 'blocked';
     },
-    canSend() {
-      return !this.uploading && !this.sending
-        && (!!this.composerText.trim() || this.composerAttachments.length > 0);
+    hasMessages() {
+      return this.messages.length > 0;
+    },
+    hasActionBrief() {
+      return !!this.action?.brief?.approach || !!this.action?.brief?.expectedOutcome
+        || !!this.action?.dependsOnStageIds?.length || !!this.action?.canonicalResult?.summary;
+    },
+    waitingQuestion() {
+      if (this.action?.status !== 'waiting') return '';
+      return String(this.action?.canonicalResult?.waitingReason || '').trim();
+    },
+    currentGenerationRequests() {
+      const generation = Math.max(1, Number(this.action?.generation) || 1);
+      return this.requests.filter(request => Math.max(1, Number(request?.generation) || 1) === generation)
+        .slice()
+        .sort((left, right) => (Number(right?.attempt) || 0) - (Number(left?.attempt) || 0)
+          || (Number(right?.openedAt) || 0) - (Number(left?.openedAt) || 0)
+          || String(right?.id || '').localeCompare(String(left?.id || '')));
     },
   },
   watch: {
     'action.id'() {
-      this.activeTab = 'messages';
-      this.expandedRequestKey = null;
-      this.expandedLoops = {};
-      this.$nextTick(() => renderMermaidIn(this.$el));
+      this.resetActionView();
     },
-    composerText(value) {
-      if (value) return;
-      this.$nextTick(() => this.resizeComposerInput(this.$refs.composerInput, true));
+    'action.generation'(generation, previousGeneration) {
+      const current = Math.max(1, Number(generation) || 1);
+      const previous = Math.max(1, Number(previousGeneration) || 1);
+      if (current !== previous) this.resetActionView();
     },
     messages: {
       deep: true,
       handler() { this.$nextTick(() => renderMermaidIn(this.$el)); },
+    },
+    requests() {
+      if (this.activeView !== 'execution' || this.requestSelectionTouched) return;
+      this.$nextTick(() => this.syncLatestRequest());
     },
   },
   mounted() {
@@ -78,6 +86,10 @@ export default {
     },
     statusLabel(status) {
       return this.tr(`workCenter.status.${status}`, String(status || '').replace('_', ' '));
+    },
+    messageSpeaker(message) {
+      if (message?.role === 'user') return this.tr('workCenter.you', 'You');
+      return message?.speaker?.name || message?.speaker?.id || this.executorName;
     },
     time(value) {
       if (!value) return '';
@@ -121,8 +133,68 @@ export default {
       const detail = this.requestDetails[this.requestKey(request)] || null;
       return detail?.request || detail;
     },
+    resetActionView() {
+      this.activeView = 'conversation';
+      this.conversationScrollTop = 0;
+      this.expandedRequestKey = null;
+      this.requestSelectionTouched = false;
+      this.$nextTick(() => {
+        if (this.$refs.conversationPanel) this.$refs.conversationPanel.scrollTop = 0;
+        renderMermaidIn(this.$el);
+      });
+    },
+    tabId(view) {
+      return `work-center-action-${view}-tab`;
+    },
+    panelId(view) {
+      return `work-center-action-${view}-panel`;
+    },
+    onTabKeydown(event, view) {
+      const views = ['conversation', 'execution'];
+      const index = views.indexOf(view);
+      if (index < 0) return;
+      let nextIndex;
+      if (event.key === 'ArrowRight') nextIndex = (index + 1) % views.length;
+      else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + views.length) % views.length;
+      else if (event.key === 'Home') nextIndex = 0;
+      else if (event.key === 'End') nextIndex = views.length - 1;
+      else return;
+      event.preventDefault();
+      const nextView = views[nextIndex];
+      this.setActiveView(nextView);
+      this.$nextTick(() => this.$refs[`${nextView}Tab`]?.focus());
+    },
+    async openRun(run) {
+      const actionId = this.action?.id;
+      const generation = this.action?.generation;
+      const request = await new Promise(resolve => this.$emit('open-run', run, resolve));
+      if (!request || this.action?.id !== actionId || this.action?.generation !== generation) return;
+      this.activeView = 'execution';
+      this.requestSelectionTouched = true;
+      this.expandedRequestKey = this.requestKey(request);
+      await this.$nextTick();
+      this.$refs.requestsPanel?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    },
+    setActiveView(view) {
+      if (view === this.activeView) return;
+      if (this.activeView === 'conversation') {
+        this.conversationScrollTop = this.$refs.conversationPanel?.scrollTop || 0;
+      }
+      this.activeView = view;
+      if (view === 'execution') {
+        this.refreshRequests();
+        this.$nextTick(() => this.syncLatestRequest());
+      }
+      this.$nextTick(() => {
+        if (view === 'conversation' && this.$refs.conversationPanel) {
+          this.$refs.conversationPanel.scrollTop = this.conversationScrollTop;
+        }
+        renderMermaidIn(this.$el);
+      });
+    },
     async toggleRequest(request) {
       const key = this.requestKey(request);
+      this.requestSelectionTouched = true;
       if (this.expandedRequestKey === key) {
         this.expandedRequestKey = null;
         return;
@@ -130,166 +202,172 @@ export default {
       this.expandedRequestKey = key;
       if (!this.requestDetail(request)) this.$emit('select-request', request);
     },
-    toggleLoop(request, loop) {
-      const key = this.requestLoopKey(request, loop);
-      this.expandedLoops = { ...this.expandedLoops, [key]: !this.expandedLoops[key] };
+    syncLatestRequest() {
+      if (this.requestSelectionTouched) return;
+      const request = this.currentGenerationRequests[0];
+      if (!request) {
+        this.expandedRequestKey = null;
+        return;
+      }
+      const key = this.requestKey(request);
+      if (this.expandedRequestKey === key) return;
+      this.expandedRequestKey = key;
+      if (!this.requestDetail(request)) this.$emit('select-request', request);
     },
-    loopExpanded(request, loop) {
-      return !!this.expandedLoops[this.requestLoopKey(request, loop)];
+    toolHasDetail(tool) {
+      return tool?.input != null || tool?.output != null;
     },
-    resizeComposerInput(input, reset = false) {
-      if (!input) return;
-      input.style.height = 'auto';
-      if (!reset) input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
-    },
-    onComposerInput(event) {
-      this.$emit('update:composerText', event.target.value);
-      this.resizeComposerInput(event.target, !event.target.value);
-    },
-    onComposerKeydown(event) {
-      if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
-      event.preventDefault();
-      if (this.canSend) this.$emit('send');
-    },
-    switchTab(tab) {
-      this.activeTab = tab;
-      if (tab === 'requests') this.$emit('refresh-requests');
-    },
-    onTabKeydown(event) {
-      const tabs = ['messages', 'requests'];
-      const current = tabs.indexOf(this.activeTab);
-      let next = current;
-      if (['ArrowRight', 'ArrowDown'].includes(event.key)) next = (current + 1) % tabs.length;
-      else if (['ArrowLeft', 'ArrowUp'].includes(event.key)) next = (current - 1 + tabs.length) % tabs.length;
-      else if (event.key === 'Home') next = 0;
-      else if (event.key === 'End') next = tabs.length - 1;
-      else return;
-      event.preventDefault();
-      const tab = tabs[next];
-      this.switchTab(tab);
-      this.$nextTick(() => this.$refs[`${tab}Tab`]?.focus());
+    refreshRequests() {
+      this.$emit('refresh-requests');
     },
   },
   template: `
     <section class="work-center-action-detail-pane" v-if="action">
       <header class="work-center-action-detail-header">
-        <button class="work-center-pane-back btn-ghost" type="button" @click="$emit('back')">
-          <span aria-hidden="true">‹</span>{{ tr('workCenter.backToActions', 'Actions') }}
-        </button>
-        <div>
-          <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
-          <h2>{{ tr('workCenter.actionDetails', 'Action details') }} · {{ tr('workCenter.action.' + action.type, action.type) }}</h2>
+        <div class="work-center-action-header-copy">
+          <div class="work-center-action-header-meta">
+            <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
+            <span class="work-center-action-executor"><span class="work-center-action-vp-presence" :data-status="action.status" aria-hidden="true"></span>{{ executorName }}</span>
+          </div>
+          <h2>{{ action.brief?.objective || tr('workCenter.actionDetails', 'Action details') }}</h2>
+        </div>
+        <div class="work-center-action-header-actions">
+          <button v-if="canTargetAction" class="btn-secondary work-center-target-action" type="button" @click="$emit('target-action')">
+            {{ tr('workCenter.targetThisAction', 'Send to this Action') }}
+          </button>
+          <button class="work-center-icon-button" type="button" @click="$emit('back')" :title="tr('workCenter.backToActions', 'Back to Actions')" :aria-label="tr('workCenter.backToActions', 'Back to Actions')">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2Z"/></svg>
+          </button>
         </div>
       </header>
 
-      <div class="work-center-action-detail-stats">
-        <span>{{ $t('workCenter.llmRequestCount', { count: formatCount(action.executionStats?.llmRequestCount) }) }}</span>
-        <span>{{ $t('workCenter.loopCount', { count: formatCount(action.executionStats?.loopCount) }) }}</span>
-        <span>{{ $t('workCenter.toolCount', { count: formatCount(action.executionStats?.toolCount) }) }}</span>
-        <span>{{ $t('workCenter.tokenCount', { count: formatTokens(action.executionStats?.totalTokens) }) }}</span>
-      </div>
-
-      <nav class="work-center-action-tabs" role="tablist" :aria-label="tr('workCenter.actionDetails', 'Action details')">
-        <button ref="messagesTab" id="work-center-action-messages-tab" type="button" role="tab" aria-controls="work-center-action-messages-panel" :tabindex="activeTab === 'messages' ? 0 : -1" :aria-selected="activeTab === 'messages'" :class="{ active: activeTab === 'messages' }" @click="switchTab('messages')" @keydown="onTabKeydown">
-          {{ tr('workCenter.actionMessages', 'Messages') }}
-        </button>
-        <button ref="requestsTab" id="work-center-action-requests-tab" type="button" role="tab" aria-controls="work-center-action-requests-panel" :tabindex="activeTab === 'requests' ? 0 : -1" :aria-selected="activeTab === 'requests'" :class="{ active: activeTab === 'requests' }" @click="switchTab('requests')" @keydown="onTabKeydown">
-          {{ tr('workCenter.requestDetails', 'Request details') }}
-          <span v-if="requests.length">{{ requests.length }}</span>
-        </button>
+      <nav class="work-center-action-view-switch" role="tablist" :aria-label="tr('workCenter.actionViews', 'Action views')">
+        <button ref="conversationTab" :id="tabId('conversation')" type="button" role="tab"
+                :tabindex="activeView === 'conversation' ? 0 : -1"
+                :aria-selected="activeView === 'conversation' ? 'true' : 'false'"
+                :aria-controls="panelId('conversation')"
+                :class="{ active: activeView === 'conversation' }"
+                @click="setActiveView('conversation')" @keydown="onTabKeydown($event, 'conversation')">{{ tr('workCenter.actionConversation', 'Conversation') }}</button>
+        <button ref="executionTab" :id="tabId('execution')" type="button" role="tab"
+                :tabindex="activeView === 'execution' ? 0 : -1"
+                :aria-selected="activeView === 'execution' ? 'true' : 'false'"
+                :aria-controls="panelId('execution')"
+                :class="{ active: activeView === 'execution' }"
+                @click="setActiveView('execution')" @keydown="onTabKeydown($event, 'execution')">{{ tr('workCenter.execution', 'Execution') }}</button>
       </nav>
 
-      <div class="work-center-action-detail-scroll">
-        <div v-if="activeTab === 'messages'" id="work-center-action-messages-panel" role="tabpanel" aria-labelledby="work-center-action-messages-tab" class="work-center-action-transcript">
+      <div class="work-center-action-detail-scroll" :data-view="activeView">
+        <div v-show="activeView === 'conversation'" ref="conversationPanel" :id="panelId('conversation')" class="work-center-action-transcript" role="tabpanel" :aria-labelledby="tabId('conversation')">
+          <div class="work-center-action-conversation-column">
+          <section v-if="waitingQuestion" id="work-center-action-waiting-question" class="work-center-action-waiting" role="status">
+            <strong>{{ tr('workCenter.waitingQuestionTitle', 'Input required') }}</strong>
+            <p>{{ waitingQuestion }}</p>
+          </section>
           <section v-if="action.failure" class="work-center-action-failure" role="alert">
             <strong>{{ tr('workCenter.actionFailedTitle', 'Why this Action failed') }}</strong>
             <p v-if="action.failure.error">{{ action.failure.error }}</p>
             <p v-if="action.failure.summary && action.failure.summary !== action.failure.error">{{ action.failure.summary }}</p>
             <small v-if="action.failure.failedAt">{{ tr('workCenter.failedAt', 'Failed at') }} · {{ time(action.failure.failedAt) }}</small>
-            <small v-if="canCompose">{{ tr('workCenter.actionFailureRecovery', 'Add corrected instructions or files below to rerun this Action. Request details contain the exact model and loop trace.') }}</small>
+            <small v-if="canTargetAction">{{ tr('workCenter.actionFailureRecovery', 'Target this Action in the Conversation composer to send corrected instructions. The Execution view shows retained tool evidence.') }}</small>
           </section>
+          <details v-if="hasActionBrief" class="work-center-action-brief-disclosure">
+            <summary>{{ tr('workCenter.actionBrief', 'Task brief') }}</summary>
+            <dl class="work-center-action-context-list">
+              <div v-if="action.brief?.approach"><dt>{{ tr('workCenter.actionApproach', 'How to do it') }}</dt><dd>{{ action.brief.approach }}</dd></div>
+              <div v-if="action.brief?.expectedOutcome"><dt>{{ tr('workCenter.actionExpectedOutcome', 'Expected result') }}</dt><dd>{{ action.brief.expectedOutcome }}</dd></div>
+              <div v-if="action.dependsOnStageIds?.length"><dt>{{ tr('workCenter.dependencies', 'Dependencies') }}</dt><dd>{{ action.dependsOnStageIds.join(', ') }}</dd></div>
+              <div v-if="action.canonicalResult?.summary"><dt>{{ tr('workCenter.actionResult', 'Latest result') }}</dt><dd>{{ action.canonicalResult.summary }}</dd></div>
+            </dl>
+          </details>
           <button v-if="messagesNextCursor != null" class="btn-ghost" type="button" @click="$emit('load-earlier-messages')" :disabled="messagesLoading">
             {{ messagesLoading ? tr('workCenter.loadingEarlierMessages', 'Loading earlier messages…') : tr('workCenter.loadEarlierMessages', 'Load earlier messages') }}
           </button>
           <p v-if="messagesError" class="work-center-error">{{ messagesError }}</p>
-          <dl v-if="action.brief" class="work-center-action-brief work-center-action-detail-brief">
-            <div><dt>{{ tr('workCenter.actionObjective', 'What to do') }}</dt><dd>{{ action.brief.objective }}</dd></div>
-            <div><dt>{{ tr('workCenter.actionApproach', 'How to do it') }}</dt><dd>{{ action.brief.approach }}</dd></div>
-            <div><dt>{{ tr('workCenter.actionExpectedOutcome', 'Expected result') }}</dt><dd>{{ action.brief.expectedOutcome }}</dd></div>
-          </dl>
-          <article v-for="message in messages" :key="message.id" class="work-center-action-message" :class="'role-' + message.role" :data-status="message.status">
-            <header>
-              <strong>{{ message.role === 'user' ? tr('workCenter.you', 'You') : tr('workCenter.aiResponse', 'AI response') }}</strong>
-              <small>{{ time(message.updatedAt || message.createdAt) }}</small>
-            </header>
-            <div v-if="message.text" class="markdown-body" v-html="messageHtml(message.text)"></div>
-            <div v-if="message.attachments?.length" class="work-center-attachment-list">
-              <span v-for="attachment in message.attachments" :key="attachment.id" class="work-center-attachment-chip">
-                <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
-              </span>
-            </div>
-          </article>
-          <p v-if="messages.length === 0" class="work-center-action-empty">{{ tr('workCenter.noActionMessages', 'No execution messages yet.') }}</p>
-        </div>
-
-        <div v-else id="work-center-action-requests-panel" role="tabpanel" aria-labelledby="work-center-action-requests-tab" class="work-center-action-requests">
-          <p v-if="requestsError" class="work-center-error">{{ requestsError }}</p>
-          <p v-if="requestsLoading && requests.length === 0" class="work-center-action-empty">{{ tr('workCenter.loadingRequests', 'Loading requests…') }}</p>
-          <p v-else-if="requests.length === 0" class="work-center-action-empty">{{ tr('workCenter.noRequestDetails', 'No request details are available for this Action yet.') }}</p>
-          <article v-for="(request, index) in requests" :key="requestKey(request)" class="work-center-request-card" :class="{ expanded: expandedRequestKey === requestKey(request) }">
-            <button type="button" class="work-center-request-summary" @click="toggleRequest(request)" :aria-expanded="expandedRequestKey === requestKey(request)">
-              <span class="work-center-request-index">{{ requests.length - index }}</span>
-              <span class="work-center-request-title"><strong>{{ request.model || tr('workCenter.unknownModel', 'Unknown model') }}</strong><small>{{ request.vp?.name || request.vp?.id || '—' }} · {{ time(request.openedAt) }}</small></span>
-              <span class="work-center-request-metrics"><span>{{ request.loopCount }}L</span><span>{{ formatTokens(request.totalTokens) }} tok</span><span>{{ formatDuration(request.totalMs) }}</span></span>
-              <span class="work-center-action-chevron" aria-hidden="true"></span>
-            </button>
-            <div v-if="expandedRequestKey === requestKey(request)" class="work-center-request-detail">
-              <p v-if="requestDetailsError[requestKey(request)]" class="work-center-error">{{ requestDetailsError[requestKey(request)] }}</p>
-              <p v-else-if="requestDetailsLoading[requestKey(request)]" class="work-center-action-empty">{{ tr('workCenter.loadingRequestDetail', 'Loading request detail…') }}</p>
-              <p v-else-if="!requestDetail(request)" class="work-center-action-empty">{{ tr('workCenter.requestDetailUnavailable', 'Request detail is unavailable. Try again.') }}</p>
-              <p v-else-if="(requestDetail(request).loops || []).length === 0" class="work-center-action-empty">{{ tr('workCenter.noRequestLoops', 'This request has no retained loop details.') }}</p>
-              <article v-for="loop in requestDetail(request)?.loops || []" :key="requestLoopKey(request, loop)" class="work-center-request-loop">
-                <button type="button" @click="toggleLoop(request, loop)" :aria-expanded="loopExpanded(request, loop)">
-                  <strong>{{ tr('workCenter.loop', 'Loop') }} {{ loop.loopNumber }}</strong>
-                  <span>{{ loop.model || request.model }} · {{ formatTokens(loop.usage?.totalTokens) }} tok · {{ formatDuration(loop.latencyMs) }}</span>
+          <div class="work-center-action-message-list">
+            <article v-for="message in messages" :key="message.id" class="work-center-action-message" :class="'role-' + message.role" :data-status="message.status">
+              <header>
+                <strong>{{ messageSpeaker(message) }}</strong>
+                <small>{{ time(message.updatedAt || message.createdAt) }}</small>
+              </header>
+              <div v-if="message.text" class="markdown-body" v-html="messageHtml(message.text)"></div>
+              <div v-if="message.attachments?.length" class="work-center-attachment-list">
+                <button v-for="attachment in message.attachments" :key="attachment.id" type="button"
+                        class="work-center-attachment-chip work-center-attachment-preview"
+                        :disabled="previewingAttachmentId === attachment.id"
+                        :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })"
+                        @click="$emit('open-attachment', attachment, $event.currentTarget)">
+                  <span>{{ attachment.name }}</span><small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
                 </button>
-                <div v-if="loopExpanded(request, loop)" class="work-center-request-loop-body">
-                  <details v-if="loop.systemPrompt"><summary>{{ tr('workCenter.systemPrompt', 'System prompt') }}</summary><pre>{{ loop.systemPrompt }}</pre></details>
-                  <details v-if="loop.messages?.length"><summary>{{ tr('workCenter.requestMessages', 'Request messages') }}</summary><pre>{{ json(loop.messages) }}</pre></details>
-                  <details v-if="loop.response"><summary>{{ tr('workCenter.aiResponse', 'AI response') }}</summary><pre>{{ loop.response }}</pre></details>
-                  <details v-if="loop.tools?.length"><summary>{{ tr('workCenter.toolCalls', 'Tool calls') }} · {{ loop.tools.length }}</summary><div class="work-center-request-tools"><article v-for="tool in loop.tools" :key="tool.id || tool.name"><strong>{{ tool.name }}</strong><small>{{ formatDuration(tool.durationMs) }} · {{ tool.isError ? tr('workCenter.status.failed', 'Failed') : tr('workCenter.status.completed', 'Completed') }}</small><pre>{{ json(tool.input) }}</pre><pre v-if="tool.output != null">{{ json(tool.output) }}</pre></article></div></details>
-                  <details v-if="loop.rawRequest"><summary>{{ tr('workCenter.rawRequest', 'Raw request') }}</summary><pre>{{ json(loop.rawRequest) }}</pre></details>
-                  <details v-if="loop.rawResponse"><summary>{{ tr('workCenter.rawResponse', 'Raw response') }}</summary><pre>{{ json(loop.rawResponse) }}</pre></details>
-                </div>
-              </article>
-            </div>
-          </article>
-        </div>
-      </div>
-
-      <footer v-if="canCompose" class="work-center-action-composer">
-        <p v-if="composerError" class="work-center-error" role="alert">{{ composerError }}</p>
-        <div v-if="composerAttachments.length" class="work-center-attachment-list">
-          <span v-for="(attachment, index) in composerAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
-            <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
-            <button type="button" @click="$emit('remove-attachment', index)" :aria-label="tr('workCenter.removeAttachment', 'Remove attachment')">×</button>
-          </span>
-        </div>
-        <div class="input-wrapper work-center-action-input-wrapper">
-          <label v-if="attachmentsSupported" class="attach-btn work-center-attachment-picker" :title="tr('workCenter.addAttachments', 'Add files')">
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
-            <input type="file" multiple :aria-label="tr('workCenter.addAttachments', 'Add files')" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv" @change="$emit('attachment-input', $event)">
-          </label>
-          <div class="textarea-wrapper">
-            <textarea ref="composerInput" :value="composerText" rows="1" :placeholder="tr('workCenter.actionInputPlaceholder', 'Add context, answer a question, or redirect this Action')" @input="onComposerInput" @keydown="onComposerKeydown"></textarea>
+              </div>
+            </article>
           </div>
-          <button class="send-btn" type="button" @click="$emit('send')" :disabled="!canSend" :title="sending ? tr('workCenter.sendingInput', 'Sending…') : tr('workCenter.sendInput', 'Send input')">
-            <svg v-if="!sending" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-            <span v-else class="work-center-send-spinner" aria-hidden="true"></span>
-          </button>
+          <p v-if="attachmentError" class="work-center-error" role="alert">{{ attachmentError }}</p>
+          <p v-if="!hasMessages" class="work-center-action-empty">{{ tr('workCenter.noActionMessages', 'No messages yet.') }}</p>
+          </div>
         </div>
-        <small class="work-center-action-composer-hint">{{ uploading ? tr('workCenter.attachmentsUploading', 'Uploading…') : composerHint }}</small>
-      </footer>
+
+        <section v-show="activeView === 'execution'" :id="panelId('execution')" class="work-center-action-execution" role="tabpanel" :aria-labelledby="tabId('execution')">
+          <div class="work-center-action-conversation-column">
+          <header class="work-center-action-execution-heading">
+            <div class="work-center-action-metrics" :aria-label="tr('workCenter.executionSummary', 'Execution summary')">
+              <span>{{ $t('workCenter.llmRequestCount', { count: formatCount(action.executionStats?.llmRequestCount) }) }}</span>
+              <span>{{ $t('workCenter.loopCount', { count: formatCount(action.executionStats?.loopCount) }) }}</span>
+              <span>{{ $t('workCenter.toolCount', { count: formatCount(action.executionStats?.toolCount) }) }}</span>
+              <span>{{ $t('workCenter.tokenCount', { count: formatTokens(action.executionStats?.totalTokens) }) }}</span>
+            </div>
+            <button class="btn-ghost" type="button" @click="refreshRequests">{{ tr('workCenter.refresh', 'Refresh') }}</button>
+          </header>
+          <section ref="requestsPanel" class="work-center-action-requests">
+            <p v-if="requestsError" class="work-center-error">{{ requestsError }}</p>
+            <p v-if="requestsLoading && requests.length === 0" class="work-center-action-empty">{{ tr('workCenter.loadingRequests', 'Loading execution records…') }}</p>
+            <p v-else-if="requests.length === 0" class="work-center-action-empty">{{ tr('workCenter.noRequestDetails', 'No execution records are available for this Action yet.') }}</p>
+            <article v-for="(request, index) in requests" :key="requestKey(request)" class="work-center-request-card" :class="{ expanded: expandedRequestKey === requestKey(request) }">
+              <button type="button" class="work-center-request-summary" @click="toggleRequest(request)" :aria-expanded="expandedRequestKey === requestKey(request)">
+                <span class="work-center-request-index">{{ requests.length - index }}</span>
+                <span class="work-center-request-title"><strong>{{ request.model || tr('workCenter.unknownModel', 'Unknown model') }}</strong><small>{{ request.vp?.name || request.vp?.id || '—' }} · {{ time(request.openedAt) }}</small></span>
+                <span class="work-center-request-metrics"><span>{{ request.loopCount }}L</span><span>{{ formatTokens(request.totalTokens) }} tok</span><span>{{ formatDuration(request.totalMs) }}</span></span>
+                <span class="work-center-action-chevron" aria-hidden="true"></span>
+              </button>
+              <div v-if="expandedRequestKey === requestKey(request)" class="work-center-request-detail">
+                <p v-if="requestDetailsError[requestKey(request)]" class="work-center-error">{{ requestDetailsError[requestKey(request)] }}</p>
+                <p v-else-if="requestDetailsLoading[requestKey(request)]" class="work-center-action-empty">{{ tr('workCenter.loadingRequestDetail', 'Loading tool evidence…') }}</p>
+                <p v-else-if="!requestDetail(request)" class="work-center-action-empty">{{ tr('workCenter.requestDetailUnavailable', 'Tool evidence is unavailable. Try again.') }}</p>
+                <p v-else-if="requestDetail(request).truncated" class="work-center-action-notice">{{ $t('workCenter.requestDetailTruncated', { summarized: formatCount(requestDetail(request).summarizedLoopCount), omitted: formatCount(requestDetail(request).omittedLoopCount) }) }}</p>
+                <p v-else-if="(requestDetail(request).loops || []).length === 0" class="work-center-action-empty">{{ tr('workCenter.noRequestLoops', 'This request has no retained Loop details.') }}</p>
+                <article v-for="loop in requestDetail(request)?.loops || []" :key="requestLoopKey(request, loop)" class="work-center-request-loop">
+                  <header class="work-center-request-loop-summary">
+                    <strong>{{ tr('workCenter.loop', 'Loop') }} {{ loop.loopNumber }}</strong>
+                    <span>{{ $t('workCenter.toolCount', { count: loop.tools?.length || 0 }) }} · {{ formatDuration(loop.latencyMs) }}</span>
+                  </header>
+                  <div class="work-center-request-loop-body">
+                    <p v-if="loop.detailTruncated" class="work-center-action-notice">{{ tr('workCenter.loopDetailTruncated', 'Large Loop: showing retained tool diagnostics.') }}</p>
+                    <div v-if="loop.tools?.length" class="work-center-request-tools">
+                      <template v-for="tool in loop.tools" :key="tool.id || tool.name">
+                        <details v-if="toolHasDetail(tool)" class="work-center-request-tool" :data-status="tool.isError ? 'failed' : 'completed'">
+                          <summary>
+                            <span class="work-center-request-tool-name"><span aria-hidden="true"></span><strong>{{ tool.name }}</strong></span>
+                            <span>{{ formatDuration(tool.durationMs) }} · {{ tool.isError ? tr('workCenter.status.failed', 'Failed') : tr('workCenter.status.completed', 'Completed') }}</span>
+                          </summary>
+                          <div class="work-center-request-tool-detail">
+                            <section v-if="tool.input != null"><strong>{{ tr('workCenter.toolParameters', 'Parameters') }}</strong><pre>{{ json(tool.input) }}</pre></section>
+                            <section v-if="tool.output != null"><strong>{{ tr('workCenter.toolResult', 'Result') }}</strong><pre>{{ json(tool.output) }}</pre></section>
+                          </div>
+                        </details>
+                        <div v-else class="work-center-request-tool work-center-request-tool-static" :data-status="tool.isError ? 'failed' : 'completed'">
+                          <span class="work-center-request-tool-name"><span aria-hidden="true"></span><strong>{{ tool.name }}</strong></span>
+                          <span>{{ formatDuration(tool.durationMs) }} · {{ tool.isError ? tr('workCenter.status.failed', 'Failed') : tr('workCenter.status.completed', 'Completed') }}</span>
+                        </div>
+                      </template>
+                    </div>
+                    <p v-else class="work-center-request-tool-empty">{{ tr('workCenter.noToolCalls', 'No tool calls in this Loop.') }}</p>
+                  </div>
+                </article>
+              </div>
+            </article>
+          </section>
+          </div>
+        </section>
+      </div>
     </section>
     <section v-else class="work-center-action-detail-pane work-center-detail-empty"><strong>{{ tr('workCenter.selectAction', 'Select an Action to inspect its execution') }}</strong></section>
   `,

@@ -457,7 +457,7 @@ export default {
       if (command) lines.push(`${$t('yeaft.sessionStatus.task.command')}: ${command}`);
       return lines.join('\n');
     };
-    const taskStopKey = (task) => `${task?.sessionId || ''}::${task?.id || ''}`;
+    const taskStopKey = (task) => `${task?.agentId || ''}\u001f${task?.sessionId || ''}::${task?.id || ''}`;
     const isTaskCancellable = (task) => task?.kind === 'shell' && task?.status === 'running' && !!task?.runtime?.pid;
     const isTaskStopping = (task) => !!(task?.id && props.stoppingTasksById?.[taskStopKey(task)]);
 
@@ -469,6 +469,7 @@ export default {
         case 'idle':      return $t('yeaft.vpTimeline.status.idle');
         case 'typing':    return $t('yeaft.vpTimeline.status.typing');
         case 'thinking':  return $t('yeaft.vpTimeline.status.thinking');
+        case 'retrying':  return $t('yeaft.vpTimeline.status.retrying');
         case 'streaming': return $t('yeaft.vpTimeline.status.streaming');
         case 'tool':      return $t('yeaft.vpTimeline.status.tool');
         case 'error':     return $t('yeaft.vpTimeline.status.error');
@@ -483,7 +484,7 @@ export default {
     // never land). Without this gate, an offline row would render a
     // dead abort button that does nothing on click, which is worse than
     // not showing it at all.
-    const ACTIVE_STATES = new Set(['typing', 'thinking', 'streaming', 'tool']);
+    const ACTIVE_STATES = new Set(['typing', 'thinking', 'retrying', 'streaming', 'tool']);
     const isActiveStatus = (s) => ACTIVE_STATES.has(s);
 
     const threadCountTitle = (row) => {

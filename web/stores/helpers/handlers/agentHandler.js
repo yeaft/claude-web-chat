@@ -5,6 +5,7 @@
 
 import { isRecentlyClosed, stopProcessingWatchdog } from '../watchdog.js';
 import { clearSessionLoading, restorePanels } from '../session.js';
+import { maxDbMessageId } from '../messages.js';
 
 /**
  * Decide whether the current Yeaft agent just RESTARTED (a fresh process),
@@ -69,11 +70,7 @@ export function restoreLastViewedConversation(store, agentSetup) {
   store.sendWsMessage({ type: 'select_conversation', conversationId: lastViewed });
 
 
-  store.sendWsMessage({
-    type: 'sync_messages',
-    conversationId: lastViewed,
-    turns: 5
-  });
+  store.requestChatHistory?.(lastViewed, { mode: 'recent', turns: 5 });
   store.sendWsMessage({ type: 'refresh_conversation', conversationId: lastViewed });
 
   return true;
@@ -341,20 +338,15 @@ export function handleAgentList(store, msg) {
         // broadcastAgentList -> select/sync/refresh -> agent status update ->
         // broadcastAgentList. Keep it edge-triggered like Yeaft catch-up.
         const currentMsgs = store.messagesMap[store.currentConversation] || [];
-        if (currentMsgs.length > 0) {
-          const lastMessageId = currentMsgs[currentMsgs.length - 1]?.id;
+        const lastMessageId = maxDbMessageId(currentMsgs);
+        if (lastMessageId != null) {
           console.log('[Reconnect] Requesting missed messages after:', lastMessageId);
-          store.sendWsMessage({
-            type: 'sync_messages',
-            conversationId: store.currentConversation,
-            afterMessageId: lastMessageId
+          store.requestChatHistory?.(store.currentConversation, {
+            mode: 'delta',
+            afterMessageId: lastMessageId,
           });
         } else {
-          store.sendWsMessage({
-            type: 'sync_messages',
-            conversationId: store.currentConversation,
-            turns: 5
-          });
+          store.requestChatHistory?.(store.currentConversation, { mode: 'recent', turns: 5 });
         }
         store.sendWsMessage({
           type: 'refresh_conversation',
@@ -420,25 +412,45 @@ export function handleAgentList(store, msg) {
  */
 export function handleAgentSelected(store, msg) {
   console.log('[agent_selected] Switching to agent:', msg.agentId);
+  const pending = store.pendingAgentSelection || null;
+  if (pending) {
+    const matchesRequest = typeof msg.requestId === 'string' && msg.requestId
+      ? msg.requestId === pending.requestId
+      : msg.agentId === pending.agentId;
+    if (!matchesRequest) return false;
+    store.pendingAgentSelection = null;
+    if (msg.ok === false) {
+      store.agentSwitching = false;
+      return false;
+    }
+  } else if (msg.requestId) {
+    return false;
+  } else if (store.currentAgent && msg.agentId !== store.currentAgent) {
+    // A delayed response from a legacy Server has no request identity. With no
+    // pending target, only the already-active Agent is safe to re-affirm.
+    return false;
+  }
   store.agentSwitching = false;
   const isSameAgent = store.currentAgent === msg.agentId;
-  store.currentAgent = msg.agentId;
-  store.currentAgentInfo = {
+  const agentInfo = {
     id: msg.agentId,
     name: msg.agentName,
     workDir: msg.workDir,
     capabilities: msg.capabilities || ['terminal', 'file_editor', 'background_tasks'],
     version: msg.version || null,
   };
+  if (typeof store.activateYeaftAgent === 'function') {
+    store.activateYeaftAgent(msg.agentId, agentInfo);
+  } else {
+    store.currentAgent = msg.agentId;
+    store.currentAgentInfo = agentInfo;
+  }
 
-  if (msg.slashCommands && msg.slashCommands.length > 0) {
-    // Store as agent-level default, used as fallback when a conversation
-    // hasn't reported its own slashCommands yet
+  if (Array.isArray(msg.slashCommands)) {
+    // Store as the Claude Chat agent-level fallback. Yeaft command snapshots
+    // are delivered separately and must not be overwritten during selection.
     const slashCommands = [...new Set(msg.slashCommands)];
     store.slashCommandsMap[`agent:${msg.agentId}`] = slashCommands;
-    if (store.currentView === 'yeaft' && store.yeaftConversationId) {
-      store.slashCommandsMap[store.yeaftConversationId] = slashCommands;
-    }
   }
   // Merge command descriptions
   if (msg.slashCommandDescriptions) {
@@ -530,28 +542,35 @@ export function handleAgentSelected(store, msg) {
     }
   }
 
-  if (isSameAgent && store.currentConversation) {
-    const currentConv = store.conversations.find(c => c.id === store.currentConversation);
-    store.currentWorkDir = currentConv?.workDir || store.currentWorkDir || msg.workDir;
-    console.log('[Reconnect] Restoring conversation selection:', store.currentConversation);
-    clearSessionLoading(store);
-    store.sendWsMessage({
-      type: 'select_conversation',
-      conversationId: store.currentConversation
-    });
+  // A Yeaft conversation id belongs to the Agent bridge, not the ordinary
+  // Chat conversation registry. Re-affirm the Agent catalog without mutating
+  // hidden Chat selection, workDir or history state.
+  if (store.currentView !== 'yeaft') {
+    if (isSameAgent && store.currentConversation) {
+      const currentConv = store.conversations.find(c => c.id === store.currentConversation);
+      store.currentWorkDir = currentConv?.workDir || store.currentWorkDir || msg.workDir;
+      console.log('[Reconnect] Restoring conversation selection:', store.currentConversation);
+      clearSessionLoading(store);
+      store.sendWsMessage({
+        type: 'select_conversation',
+        conversationId: store.currentConversation
+      });
 
-  } else {
-    store.activeConversations = [];
-    store.currentWorkDir = msg.workDir;
+    } else {
+      store.activeConversations = [];
+      store.currentWorkDir = msg.workDir;
 
-    const lastViewed = store.lastViewedConversation || localStorage.getItem('lastViewedConversation');
-    if (lastViewed && store.conversations.find(c => c.id === lastViewed)) {
-      console.log('[AutoRestore] Restoring last viewed conversation:', lastViewed);
-      store.autoRestoreConversation(lastViewed);
-      store.pendingRecovery = null;
+      const lastViewed = store.lastViewedConversation || localStorage.getItem('lastViewedConversation');
+      if (lastViewed && store.conversations.find(c => c.id === lastViewed)) {
+        console.log('[AutoRestore] Restoring last viewed conversation:', lastViewed);
+        store.autoRestoreConversation(lastViewed);
+        store.pendingRecovery = null;
+      }
     }
-  }
 
-  // ★ Restore split-screen panels from localStorage (independent of conversation restore)
-  restorePanels(store);
+    // Split panels are ordinary Chat state. Restoring them during a Yeaft ACK
+    // would reintroduce Chat conversations and history into the Yeaft view.
+    restorePanels(store);
+  }
+  return true;
 }

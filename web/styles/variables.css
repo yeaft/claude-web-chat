@@ -197,6 +197,10 @@ select option:checked {
   --terminal-bg-bright-magenta: #e1d0eb;
   --terminal-bg-bright-cyan: #cfe4e8;
   --terminal-bg-bright-white: #fafaf8;
+  /* Work Center conversation geometry */
+  --work-center-conversation-column-width: 1200px;
+  --work-center-conversation-gutter: clamp(20px, 3vw, 40px);
+  --work-center-conversation-gutter-compact: 16px;
   /* Fonts */
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;

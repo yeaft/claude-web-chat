@@ -88,7 +88,30 @@ export class LLMAuthError extends Error {
   }
 }
 
-const PERMANENT_FORBIDDEN_RE = /(?:policy|safety|content[_ -]?filter|model[^\n]{0,40}(?:access|permission)|permission[^\n]{0,40}model|account[^\n]{0,40}(?:disabled|suspended)|organization[^\n]{0,40}(?:disabled|suspended)|not[_ -]?entitled|insufficient[_ -]?(?:permission|scope))/i;
+const PERMANENT_FORBIDDEN_RE = /(?:access[_ -]?denied|not[_ -]?authorized|unauthori[sz]ed|authorization[_ -]?denied|policy|safety|content[_ -]?filter|entitle(?:ment|d)|subscription[_ -]?(?:required|inactive|expired)|plan[_ -]?(?:required|does[_ -]?not[_ -]?include)|model[^\n]{0,60}(?:access|permission|unavailable|not[_ -]?available|plan)|permission[^\n]{0,40}model|account[^\n]{0,40}(?:disabled|suspended)|organization[^\n]{0,40}(?:disabled|suspended)|insufficient[_ -]?(?:permission|scope))/i;
+const PERMANENT_FORBIDDEN_CODE_RE = /(?:access_denied|permission_denied|unauthorized|not_authorized|insufficient_(?:scope|permission)|model_(?:access_denied|not_available)|subscription_required|not_entitled|policy_violation|content_filter)/i;
+
+function parseProviderErrorBody(responseBody) {
+  if (typeof responseBody !== 'string') return responseBody && typeof responseBody === 'object' ? responseBody : null;
+  try {
+    const parsed = JSON.parse(responseBody);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function providerErrorSignals(responseBody) {
+  const parsed = parseProviderErrorBody(responseBody);
+  const error = parsed?.error && typeof parsed.error === 'object' ? parsed.error : parsed;
+  const code = [error?.code, error?.type, error?.reason, parsed?.code, parsed?.type]
+    .filter(value => typeof value === 'string')
+    .join(' ');
+  const message = [error?.message, parsed?.message, typeof responseBody === 'string' ? responseBody : '']
+    .filter(value => typeof value === 'string')
+    .join(' ');
+  return { code, message };
+}
 
 /**
  * Build a user-safe auth error. The provider response body is used only for
@@ -104,7 +127,9 @@ export function classifyAuthError(statusCode, responseBody = '', details = {}) {
       temporary: false,
     });
   }
-  const permanent = PERMANENT_FORBIDDEN_RE.test(String(responseBody || ''));
+  const signals = providerErrorSignals(responseBody);
+  const permanent = PERMANENT_FORBIDDEN_CODE_RE.test(signals.code)
+    || PERMANENT_FORBIDDEN_RE.test(signals.message);
   const reasonCode = permanent ? 'permission_denied' : 'unknown_forbidden';
   return new LLMAuthError(`LLM provider returned HTTP 403 (${reasonCode})`, status, {
     ...details,
@@ -447,6 +472,56 @@ export function redactRawRequest(req) {
     }
   }
   return { url: req.url, method: req.method, headers, body: req.body };
+}
+
+/**
+ * Return a wire-safe copy of a JSON-compatible value.
+ *
+ * JavaScript strings may contain lone UTF-16 surrogates. JSON.stringify keeps
+ * them as `\\ud800`-style escapes, but strict API servers reject them because
+ * they cannot represent Unicode scalar values in UTF-8. Replace only malformed
+ * code units with U+FFFD; valid surrogate pairs (including emoji) are kept.
+ *
+ * @param {any} value
+ * @returns {any}
+ */
+export function toWellFormedJson(value) {
+  // Let the native serializer retain its complete semantics first: toJSON,
+  // boxed primitives, non-finite numbers, array holes, and omitted values.
+  const serialized = JSON.stringify(value, (_key, child) => {
+    if (typeof child === 'string') return child.toWellFormed();
+    // JSON.stringify invokes the replacer before unboxing String objects.
+    // String#valueOf checks the real [[StringData]] internal slot across realms;
+    // unlike instanceof or Object#toString, it cannot be spoofed by a caller.
+    if (child && typeof child === 'object') {
+      try {
+        return String.prototype.valueOf.call(child).toWellFormed();
+      } catch (err) {
+        if (!(err instanceof TypeError)) throw err;
+      }
+    }
+    return child;
+  });
+  if (serialized === undefined) return undefined;
+
+  // The replacer cannot rename object keys. Rebuild only the already-serialized
+  // plain JSON tree so malformed keys are fixed too. Null-prototype containers
+  // keep an own "__proto__" key as data rather than invoking the legacy setter.
+  const normalizeKeys = child => {
+    if (Array.isArray(child)) return child.map(normalizeKeys);
+    if (!child || typeof child !== 'object') return child;
+    const out = Object.create(null);
+    for (const [key, nested] of Object.entries(child)) {
+      Object.defineProperty(out, key.toWellFormed(), {
+        value: normalizeKeys(nested),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  };
+  return normalizeKeys(JSON.parse(serialized));
 }
 
 /**

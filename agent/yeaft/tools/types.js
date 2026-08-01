@@ -14,6 +14,7 @@
  * @typedef {Object} ToolContext
  * @property {AbortSignal} [signal] — cancellation signal
  * @property {string} [yeaftDir] — Yeaft data directory
+ * @property {Promise<Array> & {toolReady?: Record<string, Promise<object>>}} [managedCliReady] — resolves after optional managed CLI setup; toolReady exposes per-command readiness
  * @property {ReturnType<import('../runtime-platform.js').getRuntimePlatformInfo>} [runtimePlatform]
  *   — runtime OS/shell facts for platform-aware tools
  * @property {string} [cwd] — working directory
@@ -23,6 +24,7 @@
  * @property {object} [config] — engine config
  * @property {import('../tasks/manager.js').TaskManager} [taskManager] — Session task manager
  * @property {string} [sessionId] — current Session id
+ * @property {string[]} [projectSessionIds] — same-Agent sibling Session ids in the current Project
  * @property {string} [threadId] — current Session thread id
  * @property {string} [currentVpId] — R6: VP id of the caller (set in multi-VP groups)
  * @property {string} [currentGroupId] — R6: group id of the caller's RoleInstance
@@ -32,7 +34,7 @@
  * @property {number} [contextWindow] — current model's context window in
  *   tokens (used by ToolRegistry.execute to cap a single tool result at a
  *   fraction of the window so one runaway grep can't blow the wire).
- * @property {(input: {question:string, options?:string[]}) => Promise<object>} [askUser]
+ * @property {(input: {question:string, options?:string[]}, toolCall?: {id?:string, name?:string}|null) => Promise<object>} [askUser]
  *   — host-provided interactive prompt. Resolves only after the user answers.
  * @property {(reason?: string|object) => void} [requestEndTurn]
  *   — tool-callable signal that the current engine turn should end after
@@ -62,6 +64,8 @@
  * @property {(input?: object) => boolean} [isConcurrencySafe] — can run in parallel?
  * @property {(input?: object) => boolean} [isReadOnly] — read-only operation?
  * @property {(input?: object) => boolean} [isDestructive] — destructive operation?
+ * @property {'json-error-envelope' | null} [errorOutput] — explicit returned-output error contract; null means only thrown errors fail
+ * @property {'external' | 'run'} [sideEffectScope] — whether mutations escape the current Run collector
  */
 
 /**
@@ -75,6 +79,8 @@
  *   isConcurrencySafe?: (input?: object) => boolean,
  *   isReadOnly?: (input?: object) => boolean,
  *   isDestructive?: (input?: object) => boolean,
+ *   errorOutput?: 'json-error-envelope' | null,
+ *   sideEffectScope?: 'external' | 'run',
  *   timeoutMs?: number,
  * }} def
  * @returns {ToolDef}
@@ -88,6 +94,8 @@ export function defineTool({
   isConcurrencySafe = () => false,
   isReadOnly = () => false,
   isDestructive = () => false,
+  errorOutput = 'json-error-envelope',
+  sideEffectScope = 'external',
   timeoutMs,
 }) {
   if (!name) throw new Error('Tool must have a name');
@@ -101,6 +109,8 @@ export function defineTool({
     isConcurrencySafe,
     isReadOnly,
     isDestructive,
+    errorOutput,
+    sideEffectScope,
   };
   // Legacy tool-name aliases. Registered as extra lookup keys so old
   // jsonl tool_calls (e.g. `SendMessage` → `PromptAgent`) keep resolving,

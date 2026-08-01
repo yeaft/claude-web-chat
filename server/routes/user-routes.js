@@ -57,6 +57,7 @@ export function registerUserRoutes(app, { requireAuth, requireAdmin }) {
         return res.status(404).json({ error: 'User not found' });
       }
       res.json({
+        userId: user.id,
         username: user.username,
         displayName: user.display_name,
         email: user.email,

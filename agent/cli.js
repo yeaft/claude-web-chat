@@ -32,7 +32,9 @@ import {
 import { applyAgentIdentityToEnv, warnDeprecatedInstanceArg } from './service/config.js';
 import {
   buildUpgradeInstallCommand,
+  buildUpgradeMetadataUrl,
   buildUpgradeVersionCommand,
+  launchWindowsUpgradeScript,
 } from './upgrade-command.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -46,7 +48,7 @@ const subArgs = args.slice(1);
 const SERVICE_COMMANDS = ['install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs'];
 
 if (command === 'doctor') {
-  await handleDoctorCommand();
+  await handleDoctorCommand(subArgs);
 } else if (command === 'llm') {
   await handleLlmCommand(subArgs);
 } else if (command === 'local') {
@@ -58,7 +60,7 @@ if (command === 'doctor') {
     process.exit(1);
   }
 } else if (command === 'upgrade') {
-  upgrade();
+  await upgrade();
 } else if (command === '--version' || command === '-v') {
   console.log(pkg.version);
 } else if (command === '--help' || command === '-h') {
@@ -76,7 +78,7 @@ function printHelp() {
 
   Usage:
     yeaft-agent [options]              Run agent in foreground
-    yeaft-agent local --name <name>    Run local Web UI, server, and agent
+    yeaft-agent local [options]        Run local Web UI, server, and agent
     yeaft-agent install [options]      Install as system service
     yeaft-agent uninstall [options]    Remove system service
     yeaft-agent start [options]        Start installed service
@@ -92,7 +94,7 @@ function printHelp() {
   Options:
     --instance <id>     Deprecated alias for the local service instance id
     --server <url>      WebSocket server URL (default: ws://localhost:3456)
-    --name <name>       Agent name and instance id (letters, numbers, ._-)
+    --name <name>       Agent name and instance id (default: computer name; invalid chars become -)
     --port <port>       Local server port (local command only; default: 6868)
     --secret <secret>   Agent secret for authentication
     --work-dir <dir>    Default working directory (default: cwd)
@@ -102,13 +104,13 @@ function printHelp() {
   Environment variables (alternative to flags):
     YEAFT_AGENT_INSTANCE Deprecated local service instance id override
     SERVER_URL          WebSocket server URL
-    AGENT_NAME          Agent name and instance id fallback
+    AGENT_NAME          Agent name and instance id override
     AGENT_SECRET        Agent secret
     WORK_DIR            Working directory
     YEAFT_DIR           Yeaft data directory
 
   Examples:
-    yeaft-agent local --name my-worker
+    yeaft-agent local
     yeaft-agent local --name my-worker --port 7000
     yeaft-agent --server wss://your-server.com --name my-worker --secret xxx
     yeaft-agent install --server wss://your-server.com --name my-worker --secret xxx
@@ -413,14 +415,21 @@ async function handleServiceCommand(command, args) {
   }
 }
 
-async function handleDoctorCommand() {
+async function handleDoctorCommand(args) {
+  warnDeprecatedInstanceArg(args);
   const { doctor } = await import('./service.js');
-  doctor();
+  doctor(args);
 }
 
 function parseAndStart(args) {
-  warnDeprecatedInstanceArg(args);
-  applyAgentIdentityToEnv(args);
+  try {
+    warnDeprecatedInstanceArg(args);
+    applyAgentIdentityToEnv(args);
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+    return;
+  }
 
   // Parse non-identity flags. Saved environment remains the fallback for these options.
   for (let i = 0; i < args.length; i++) {
@@ -464,7 +473,7 @@ function parseAndStart(args) {
 
 async function checkForUpdates() {
   try {
-    const res = await fetch(`https://registry.npmjs.org/${pkg.name}/latest`);
+    const res = await fetch(buildUpgradeMetadataUrl(pkg.name));
     if (!res.ok) return;
     const data = await res.json();
     const latest = data.version;
@@ -477,12 +486,12 @@ async function checkForUpdates() {
   }
 }
 
-function upgrade() {
+async function upgrade() {
   console.log(`Current version: ${pkg.version}`);
   console.log('Checking for updates...');
 
   try {
-    const latest = execSync(buildUpgradeVersionCommand(pkg.name), { encoding: 'utf-8' }).trim();
+    const latest = execSync(buildUpgradeVersionCommand(`${pkg.name}@latest`), { encoding: 'utf-8' }).trim();
     if (latest === pkg.version) {
       console.log('Already up to date.');
       return;
@@ -493,9 +502,9 @@ function upgrade() {
       // On Windows, the current process locks its own files. npm cannot overwrite
       // them while this process is running. Spawn a detached bat script that waits
       // for us to exit, then runs npm install, then optionally restarts the service.
-      upgradeWindows(latest);
+      await upgradeWindows(latest);
     } else {
-      execSync(buildUpgradeInstallCommand(`${pkg.name}@latest`), { stdio: 'inherit' });
+      execSync(buildUpgradeInstallCommand(`${pkg.name}@${latest}`), { stdio: 'inherit' });
       console.log(`Successfully upgraded to ${latest}`);
 
       // If PM2 is managing yeaft-agent, restart it so the new version takes effect
@@ -517,28 +526,24 @@ function upgrade() {
   }
 }
 
-function upgradeWindows(latestVersion) {
+async function upgradeWindows(latestVersion) {
   const configDir = join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'yeaft-agent');
   mkdirSync(configDir, { recursive: true });
   const logDir = join(configDir, 'logs');
   mkdirSync(logDir, { recursive: true });
   const batPath = join(configDir, 'upgrade-cli.bat');
-  const vbsPath = join(configDir, 'upgrade-cli.vbs');
+  const handoffPath = join(configDir, 'upgrade-cli.started');
   const logPath = join(logDir, 'upgrade.log');
   const pid = process.pid;
   const pkgSpec = `${pkg.name}@${latestVersion}`;
 
-  // --- PM2 handling: delete app before exit to prevent auto-restart ---
+  // Detect PM2 now, but do not delete it until the updater confirms handoff.
   let isPm2 = false;
   const ecoPath = join(configDir, 'ecosystem.config.cjs');
   try {
     const pm2List = execSync('pm2 jlist', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
     const apps = JSON.parse(pm2List);
     isPm2 = Array.isArray(apps) && apps.some(app => app.name === 'yeaft-agent');
-    if (isPm2) {
-      execSync('pm2 delete yeaft-agent', { stdio: 'pipe' });
-      console.log('PM2 app deleted to prevent auto-restart during upgrade.');
-    }
   } catch {
     // PM2 not installed or not managing yeaft-agent — continue
   }
@@ -549,12 +554,14 @@ function upgradeWindows(latestVersion) {
     `set PID=${pid}`,
     `set PKG=${pkgSpec}`,
     `set LOGFILE=${logPath}`,
+    `set HANDOFF=${handoffPath}`,
     `set MAX_WAIT=30`,
     `set COUNT=0`,
     '',
     ':: Change to temp dir to avoid EBUSY on cwd',
     'cd /d "%TEMP%"',
     '',
+    'echo started>"%HANDOFF%"',
     'echo [Upgrade] Started at %date% %time% > "%LOGFILE%"',
     `echo [Upgrade] Version: ${pkg.version} -> ${latestVersion} >> "%LOGFILE%"`,
     `echo [Upgrade] PM2 managed: ${isPm2 ? 'yes (deleted pre-exit)' : 'no'} >> "%LOGFILE%"`,
@@ -607,28 +614,25 @@ function upgradeWindows(latestVersion) {
     '',
     'echo [Upgrade] Finished at %time% >> "%LOGFILE%"',
     ':CLEANUP',
-    `del /F /Q "${vbsPath}" 2>NUL`,
+    'del /F /Q "%HANDOFF%" 2>NUL',
     `del /F /Q "${batPath}" 2>NUL`,
   );
 
   writeFileSync(batPath, batLines.join('\r\n'));
 
-  // Use VBScript wrapper to fully detach the bat process from the parent.
-  // WshShell.Run with 0 (hidden window) and False (don't wait) ensures the bat
-  // runs completely independently — survives parent exit, no console window flash.
-  const vbsLines = [
-    'Set WshShell = CreateObject("WScript.Shell")',
-    `WshShell.Run """${batPath}""", 0, False`,
-  ];
-  writeFileSync(vbsPath, vbsLines.join('\r\n'));
+  const launcher = await launchWindowsUpgradeScript({
+    batPath,
+    handoffPath,
+    spawnProcess: spawn,
+    onHandoff: isPm2
+      ? () => {
+          execSync('pm2 delete yeaft-agent', { stdio: 'pipe' });
+          console.log('PM2 app deleted after upgrade handoff.');
+        }
+      : undefined,
+  });
 
-  spawn('wscript.exe', [vbsPath], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  }).unref();
-
-  console.log(`Upgrade script spawned via VBScript wrapper.`);
+  console.log(`Upgrade script spawned via ${launcher}.`);
   console.log(`This process will exit now. The upgrade will proceed after exit.`);
   console.log(`Check upgrade log: ${logPath}`);
   process.exit(0);

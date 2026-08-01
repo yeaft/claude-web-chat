@@ -1,7 +1,8 @@
 import { randomUUID } from 'crypto';
 import { WebSocket } from 'ws';
 import { CONFIG } from './config.js';
-import { verifyToken, generateSkipAuthSession } from './auth.js';
+import { generateSkipAuthSession } from './auth.js';
+import { authenticateRequest } from './auth/request-auth.js';
 import { encodeKey } from './encryption.js';
 import { userDb } from './database.js';
 import { agents, webClients, isHeartbeatMessageType, trackRequest } from './context.js';
@@ -15,9 +16,8 @@ import { handleClientMisc } from './handlers/client-misc.js';
 import { clearWorkCenterRequestsForClient, handleClientWorkCenter } from './handlers/client-work-center.js';
 import { recordPerfTraceEvent } from './perf-trace.js';
 
-export function handleWebConnection(ws, url) {
+export function handleWebConnection(ws, url, req = {}) {
   const clientId = randomUUID();
-  const token = url.searchParams.get('token');
 
   let authenticated = false;
   let sessionKey = null;
@@ -32,14 +32,15 @@ export function handleWebConnection(ws, url) {
     sessionKey = session.sessionKey;
     username = 'dev-user';
     role = 'admin';
-  } else if (token) {
-    const result = verifyToken(token);
-    if (result.valid) {
-      authenticated = true;
-      sessionKey = result.sessionKey;
-      username = result.username;
-      role = result.role === 'admin' ? 'admin' : 'pro';
-    }
+  } else {
+    const result = authenticateRequest({
+      cookieHeader: req.headers?.cookie,
+      queryToken: url.searchParams.get('token'),
+    });
+    authenticated = !!result;
+    sessionKey = result?.sessionKey || null;
+    username = result?.username || null;
+    role = result?.role === 'admin' ? 'admin' : (result ? 'pro' : null);
   }
 
   // 获取或创建用户
@@ -92,7 +93,8 @@ export function handleWebConnection(ws, url) {
       success: true,
       sessionKey: sessionKey ? encodeKey(sessionKey) : null,
       role,
-      acceptPlaintext: true
+      acceptPlaintext: true,
+      yeaftSessionInventoryComplete: true,
     }));
     setTimeout(() => broadcastAgentList(), 100);
   } else {

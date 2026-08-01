@@ -9,12 +9,29 @@ export function persistedMessageIdsForRenderedItem(item) {
   for (const message of Array.isArray(item.messages) ? item.messages : []) {
     addPersistedMessageId(ids, message?.id);
     addPersistedMessageId(ids, message?.messageId);
+    addPersistedMessageId(ids, message?.persistedMessageId);
   }
   addPersistedMessageId(ids, item.message?.id);
   addPersistedMessageId(ids, item.messageId);
   addPersistedMessageId(ids, item.atMessageId);
   if (item.type !== 'assistant-turn') addPersistedMessageId(ids, item.id);
   return ids;
+}
+
+export function shouldDismissHistorySearch(target) {
+  return !target?.closest?.(
+    '.yeaft-conversation-outline, .yeaft-conversation-outline-sender-menu, .yeaft-search-btn',
+  );
+}
+
+export async function revealOutlineResult({ result, revealWindow, nextTick, revealMessage, isMobile, closeOutline }) {
+  if (!result) return false;
+  const expanded = await revealWindow?.(result);
+  if (!expanded) return false;
+  await nextTick?.();
+  const revealed = await revealMessage?.(result.messageId);
+  if (revealed && isMobile) closeOutline?.();
+  return !!revealed;
 }
 
 export function resolvePersistedMessageTarget(blocks, messageId) {
@@ -44,8 +61,10 @@ export async function navigateToPersistedMessage({
   collapseStates,
   scrollToBlock,
   findRow,
+  anchorRow,
   flashRow,
   nextTick,
+  align = 'start',
 }) {
   const target = resolvePersistedMessageTarget(blocks, messageId);
   if (!target || typeof scrollToBlock !== 'function' || typeof findRow !== 'function') return false;
@@ -56,13 +75,14 @@ export async function navigateToPersistedMessage({
     await nextTick?.();
   }
 
-  const moved = await scrollToBlock(target.blockId);
+  const moved = await scrollToBlock(target.blockId, { align });
   if (!moved) return false;
   await nextTick?.();
 
   const row = findRow(target.rowId);
   if (!row) return false;
-  row.scrollIntoView?.({ block: 'center', inline: 'nearest' });
+  if (typeof anchorRow === 'function') anchorRow(target.blockId, target.rowId, row, { align });
+  else row.scrollIntoView?.({ block: align, inline: 'nearest' });
   flashRow?.(target.rowId);
   return true;
 }
