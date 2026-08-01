@@ -1945,7 +1945,7 @@
 }
 
 .messages {
-  max-width: 60%;
+  max-width: var(--session-content-width);
   width: 100%;
   margin: 0 auto;
   padding: 0 24px;

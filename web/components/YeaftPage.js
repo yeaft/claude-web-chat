@@ -27,6 +27,8 @@ import { shouldCloseLlmConfigAfterSave } from '../utils/llm-config-save.js';
 import { revealOutlineResult, shouldDismissHistorySearch } from '../utils/message-search-navigation.js';
 
 const HISTORY_SENDER_PREFERENCES_KEY = 'yeaft-history-sender-preferences';
+const HISTORY_SENDER_ALL = '__all__';
+const DEFAULT_HISTORY_SENDER = 'user';
 
 function historySenderPreferenceId(agentId, sessionId) {
   return agentId && sessionId ? `${agentId}:${sessionId}` : '';
@@ -51,15 +53,20 @@ function readHistorySenderPreferences(storage) {
 }
 
 export function loadHistorySenderPreference({ agentId, sessionId, validKeys = [], storage } = {}) {
+  const defaultSender = validKeys.length === 0 || validKeys.includes(DEFAULT_HISTORY_SENDER)
+    ? DEFAULT_HISTORY_SENDER
+    : '';
   const id = historySenderPreferenceId(agentId, sessionId);
-  if (!id) return '';
+  if (!id) return defaultSender;
   const resolvedStorage = resolveHistorySenderStorage(storage);
   const preferences = readHistorySenderPreferences(resolvedStorage);
+  if (!Object.prototype.hasOwnProperty.call(preferences, id)) return defaultSender;
   const senderKey = typeof preferences[id] === 'string' ? preferences[id] : '';
-  if (!senderKey || validKeys.includes(senderKey)) return senderKey;
+  if (senderKey === HISTORY_SENDER_ALL) return '';
+  if (senderKey && validKeys.includes(senderKey)) return senderKey;
   delete preferences[id];
   try { resolvedStorage?.setItem(HISTORY_SENDER_PREFERENCES_KEY, JSON.stringify(preferences)); } catch { /* best effort */ }
-  return '';
+  return defaultSender;
 }
 
 export function saveHistorySenderPreference({ agentId, sessionId, senderKey, storage } = {}) {
@@ -68,8 +75,7 @@ export function saveHistorySenderPreference({ agentId, sessionId, senderKey, sto
   const resolvedStorage = resolveHistorySenderStorage(storage);
   if (!resolvedStorage) return false;
   const preferences = readHistorySenderPreferences(resolvedStorage);
-  if (senderKey) preferences[id] = senderKey;
-  else delete preferences[id];
+  preferences[id] = senderKey || HISTORY_SENDER_ALL;
   try {
     resolvedStorage.setItem(HISTORY_SENDER_PREFERENCES_KEY, JSON.stringify(preferences));
     return true;
@@ -833,9 +839,9 @@ export default {
       store.searchYeaftHistory(historySearchQuery.value, { senderKey });
     };
     const onHistorySenderInvalid = () => {
-      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey: '' });
+      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey: DEFAULT_HISTORY_SENDER });
       historySearchActiveMessageId.value = null;
-      store.searchYeaftHistory(historySearchQuery.value, { senderKey: '' });
+      store.searchYeaftHistory(historySearchQuery.value, { senderKey: DEFAULT_HISTORY_SENDER });
     };
     const loadOlderHistoryOutline = (scrollSnapshot) => {
       if (!store.loadYeaftHistoryOutline({ append: true })) return;

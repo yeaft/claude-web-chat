@@ -61,6 +61,7 @@ select option:checked {
   --bg-main: #fafaf8;
   --bg-sidebar: #f3f3f0;
   --session-sidebar-width: 260px;
+  --session-content-width: 90%;
   --bg-workbench: #f6f5f3;
   --bg-user-msg: #eeeee9;
   --bg-user-msg-subtle: #f4f3ef;
