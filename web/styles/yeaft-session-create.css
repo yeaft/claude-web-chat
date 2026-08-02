@@ -446,14 +446,14 @@
   }
 
   .yeaft-session-create-fields .resume-control-row {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 6px;
+    align-items: center;
+    flex-direction: row;
+    gap: 8px;
   }
 
   .yeaft-session-create-modal .resume-control-label {
-    width: auto;
-    flex-basis: auto;
+    width: 76px;
+    flex: 0 0 76px;
   }
 
   .yeaft-session-create-modal .resume-modal-content {
@@ -465,13 +465,9 @@
   }
 
   .resume-control-row-vp {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .resume-control-row-vp .resume-control-label {
-    width: auto;
+    align-items: flex-start;
+    flex-direction: row;
+    gap: 8px;
   }
 
   .yeaft-roster {
