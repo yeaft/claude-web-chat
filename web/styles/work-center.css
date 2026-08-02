@@ -2025,7 +2025,6 @@
 .work-center-item-message-list {
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(0, 1fr);
   gap: 22px;
   padding: 8px 0 12px;
 }
@@ -2039,7 +2038,6 @@
 .work-center-item-message-list article.role-user {
   justify-self: end;
   width: min(92%, 920px);
-  max-width: 100%;
   padding: 12px 16px;
   border-radius: 16px 16px 4px 16px;
   background: var(--bg-user-msg);

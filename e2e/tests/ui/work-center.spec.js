@@ -2274,6 +2274,9 @@ test.describe('Work Center responsive UI', () => {
     for (const { width, theme } of [
       { width: 1400, theme: 'light' },
       { width: 1400, theme: 'dark' },
+      // Keep the narrow desktop split-pane range above the mobile breakpoint covered.
+      { width: 867, theme: 'light' },
+      { width: 867, theme: 'dark' },
       { width: 430, theme: 'light' },
       { width: 430, theme: 'dark' },
     ]) {
