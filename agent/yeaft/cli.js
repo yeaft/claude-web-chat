@@ -922,6 +922,7 @@ async function runOnce(config, args) {
       ...(m.toolCalls && { toolCalls: m.toolCalls }),
     }));
 
+    let terminalEngineError = null;
     for await (const event of engine.query({
       prompt: args.prompt,
       messages: priorMessages,
@@ -958,6 +959,11 @@ async function runOnce(config, args) {
           break;
         case 'error':
           process.stderr.write(`\nError: ${event.error.message}\n`);
+          if (!terminalEngineError) {
+            terminalEngineError = event.error instanceof Error
+              ? event.error
+              : new Error(String(event.error?.message || event.error || 'Engine query failed'));
+          }
           break;
         case 'turn_start':
           if (args.verbose && event.turnNumber > 1) {
@@ -968,6 +974,7 @@ async function runOnce(config, args) {
     }
     // Final newline after streaming text
     console.log();
+    if (terminalEngineError) process.exitCode = 1;
   } finally {
     await sessionRunner?.close();
     await session.shutdown();

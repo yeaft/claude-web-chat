@@ -9,11 +9,11 @@
  */
 
 import { defineTool } from './types.js';
-import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
 import { buildShellInvocation, getRuntimePlatformInfo } from '../runtime-platform.js';
 import { wrapInvocationInSystemdUserScope } from '../systemd-scope.js';
+import { runProcess } from './process-runner.js';
 
 export { buildShellInvocation };
 
@@ -26,9 +26,9 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 /** Max timeout in ms (10 minutes). */
 const MAX_TIMEOUT_MS = 600_000;
 /**
- * ToolRegistry must not preempt Bash's own process timeout. Bash kills its
- * process tree and returns exit 124 at MAX_TIMEOUT_MS; the small grace only
- * protects the engine if that cleanup itself fails to settle.
+ * ToolRegistry must not preempt Bash's own process timeout. Bash terminates
+ * the process tree and waits for close before returning exit 124; the grace
+ * covers TERM/KILL escalation and the bounded close-confirmation window.
  */
 const REGISTRY_TIMEOUT_MS = MAX_TIMEOUT_MS + 15_000;
 
@@ -37,111 +37,28 @@ const REGISTRY_TIMEOUT_MS = MAX_TIMEOUT_MS + 15_000;
  * @returns {Promise<{ stdout: string, stderr: string, exitCode: number, timedOut: boolean }>}
  */
 function runCommand(command, { cwd, timeout, signal, runtimePlatform }) {
-  return new Promise((resolve) => {
-    const platform = runtimePlatform || getRuntimePlatformInfo();
-    const env = { ...process.env, TERM: 'dumb', FORCE_COLOR: '0' };
-    const baseInvocation = buildShellInvocation(command, { runtimePlatform: platform });
-    const invocation = wrapInvocationInSystemdUserScope(baseInvocation, {
-      runtimePlatform: platform,
-      env,
-      scopeId: `foreground-${Date.now()}-${process.pid}`,
-    });
-    const proc = spawn(invocation.command, invocation.args, {
-      cwd,
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: !platform.isWindows,
-      windowsHide: true,
-    });
-
-    let stdout = '';
-    let stderr = '';
-    let stdoutTruncated = false;
-    let stderrTruncated = false;
-    let timedOut = false;
-    let settled = false;
-    let timeoutId = null;
-
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      if (timeoutId) clearTimeout(timeoutId);
-      resolve(result);
-    };
-
-    const killProcess = () => {
-      try {
-        if (!platform.isWindows && proc.pid) {
-          process.kill(-proc.pid, 'SIGTERM');
-          return;
-        }
-      } catch {
-        // Fall back to killing the shell process below.
-      }
-      try {
-        proc.kill('SIGTERM');
-      } catch {
-        // ignore
-      }
-    };
-
-    proc.stdout.on('data', (chunk) => {
-      if (stdout.length < MAX_OUTPUT) {
-        stdout += chunk.toString();
-        if (stdout.length > MAX_OUTPUT) {
-          stdout = stdout.slice(0, MAX_OUTPUT);
-          stdoutTruncated = true;
-        }
-      }
-    });
-
-    proc.stderr.on('data', (chunk) => {
-      if (stderr.length < MAX_OUTPUT) {
-        stderr += chunk.toString();
-        if (stderr.length > MAX_OUTPUT) {
-          stderr = stderr.slice(0, MAX_OUTPUT);
-          stderrTruncated = true;
-        }
-      }
-    });
-
-    timeoutId = setTimeout(() => {
-      timedOut = true;
-      killProcess();
-      finish({
-        stdout,
-        stderr: stderr + `\nProcess timed out after ${timeout}ms`,
-        exitCode: 124,
-        timedOut: true,
-      });
-    }, timeout);
-
-    if (signal) {
-      signal.addEventListener('abort', () => {
-        killProcess();
-      }, { once: true });
-    }
-
-    proc.on('close', (code, signalName) => {
-      if (stdoutTruncated) stdout += '\n[Output truncated]';
-      if (stderrTruncated) stderr += '\n[Output truncated]';
-      finish({
-        stdout,
-        stderr,
-        exitCode: timedOut ? 124 : (code ?? (signalName ? 128 : 1)),
-        timedOut,
-      });
-    });
-
-    proc.on('error', (err) => {
-      finish({
-        stdout,
-        stderr: `Error spawning process: ${err.message}`,
-        exitCode: 1,
-        timedOut: false,
-      });
-    });
+  const platform = runtimePlatform || getRuntimePlatformInfo();
+  const env = { ...process.env, TERM: 'dumb', FORCE_COLOR: '0' };
+  const baseInvocation = buildShellInvocation(command, { runtimePlatform: platform });
+  const invocation = wrapInvocationInSystemdUserScope(baseInvocation, {
+    runtimePlatform: platform,
+    env,
+    scopeId: `foreground-${Date.now()}-${process.pid}`,
   });
+  return runProcess(invocation.command, invocation.args, {
+    cwd,
+    env,
+    signal,
+    timeoutMs: timeout,
+    maxBytes: MAX_OUTPUT,
+    requireExitConfirmation: true,
+    platform: platform.platform,
+  }).then(result => ({
+    stdout: result.stdout,
+    stderr: result.stderr,
+    exitCode: result.code,
+    timedOut: result.timedOut,
+  }));
 }
 
 export default defineTool({
@@ -288,7 +205,8 @@ Guidelines:
       }
       return output || '(no output)';
     } catch (err) {
-      throw new Error(err.message);
+      if (err?.name === 'ProcessTerminationError') err.fatalToolTimeout = true;
+      throw err;
     }
   },
 });

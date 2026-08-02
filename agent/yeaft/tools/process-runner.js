@@ -5,6 +5,15 @@ const DEFAULT_MAX_BYTES = 512 * 1024;
 const DEFAULT_KILL_GRACE_MS = 250;
 const DEFAULT_FORCE_SETTLE_MS = 1000;
 
+export class ProcessTerminationError extends Error {
+  constructor(command, forceSettleMs) {
+    super(`Process did not exit within ${forceSettleMs}ms after SIGKILL: ${command}`);
+    this.name = 'ProcessTerminationError';
+    this.command = command;
+    this.forceSettleMs = forceSettleMs;
+  }
+}
+
 function abortError(signal) {
   if (signal?.reason instanceof Error && signal.reason.name === 'AbortError') return signal.reason;
   const error = new Error(
@@ -40,7 +49,7 @@ function killProcessTree(proc, signal, platform, spawnProcessSync) {
  *
  * @param {string} command
  * @param {string[]} args
- * @param {{ cwd?: string, signal?: AbortSignal, timeoutMs?: number, maxBytes?: number, env?: NodeJS.ProcessEnv, preserveCarriageReturns?: boolean, killGraceMs?: number, forceSettleMs?: number, platform?: NodeJS.Platform, spawnProcess?: typeof spawn, spawnProcessSync?: typeof spawnSync }} [options]
+ * @param {{ cwd?: string, signal?: AbortSignal, timeoutMs?: number, maxBytes?: number, env?: NodeJS.ProcessEnv, preserveCarriageReturns?: boolean, killGraceMs?: number, forceSettleMs?: number, requireExitConfirmation?: boolean, platform?: NodeJS.Platform, spawnProcess?: typeof spawn, spawnProcessSync?: typeof spawnSync }} [options]
  */
 export function runProcess(command, args, options = {}) {
   if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
@@ -104,10 +113,14 @@ export function runProcess(command, args, options = {}) {
       if (!wasTruncated) value += decoder.end();
       return preserveCarriageReturns ? value : value.replace(/\r/g, '');
     };
-    const finish = code => {
+    const finish = (code, error = null) => {
       if (settled) return;
       settled = true;
       cleanup();
+      if (error) {
+        reject(error);
+        return;
+      }
       if (aborted) {
         reject(abortError(options.signal));
         return;
@@ -124,7 +137,14 @@ export function runProcess(command, args, options = {}) {
       if (settled || forceRequested) return;
       forceRequested = true;
       killProcessTree(proc, 'SIGKILL', platform, spawnProcessSync);
-      forceSettleTimer = setTimeout(() => finish(null), forceSettleMs);
+      forceSettleTimer = setTimeout(() => {
+        finish(
+          null,
+          options.requireExitConfirmation
+            ? new ProcessTerminationError(command, forceSettleMs)
+            : null,
+        );
+      }, forceSettleMs);
       forceSettleTimer.unref?.();
     };
     const stop = () => {
@@ -136,7 +156,14 @@ export function runProcess(command, args, options = {}) {
         forceRequested = true;
         killProcessTree(proc, 'SIGKILL', platform, spawnProcessSync);
         if (!settled) {
-          forceSettleTimer = setTimeout(() => finish(null), forceSettleMs);
+          forceSettleTimer = setTimeout(() => {
+            finish(
+              null,
+              options.requireExitConfirmation
+                ? new ProcessTerminationError(command, forceSettleMs)
+                : null,
+            );
+          }, forceSettleMs);
           forceSettleTimer.unref?.();
         }
         return;
