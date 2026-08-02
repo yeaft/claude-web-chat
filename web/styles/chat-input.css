@@ -252,6 +252,10 @@
   min-height: var(--chat-composer-textarea-min-height);
 }
 
+.input-wrapper.chat-composer textarea.is-scrollable {
+  overflow-y: auto;
+}
+
 .chat-composer-actions {
   display: flex;
   align-items: center;
@@ -510,6 +514,12 @@
   .input-hints,
   .input-wrapper {
     max-width: var(--session-content-width);
+  }
+
+  .input-wrapper.chat-composer textarea {
+    min-height: var(--chat-composer-textarea-mobile-height);
+    max-height: var(--chat-composer-textarea-mobile-height);
+    overflow-y: auto;
   }
 }
 

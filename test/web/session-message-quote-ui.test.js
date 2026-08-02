@@ -15,6 +15,7 @@ describe('Session message quote UI wiring', () => {
     document.body.innerHTML = '';
     delete globalThis.marked;
     delete globalThis.hljs;
+    vi.unstubAllGlobals();
   });
 
   it('keeps the attachment badge last and separates turn progress from the final Markdown result', async () => {
@@ -277,6 +278,24 @@ describe('Session message quote UI wiring', () => {
     };
     window.Pinia = globalThis.Pinia;
 
+    let composerResizeCallback = null;
+    let pendingResizeFrame = null;
+    let nextResizeFrameId = 0;
+    const observeComposer = vi.fn();
+    const disconnectComposer = vi.fn();
+    const cancelResizeFrame = vi.fn();
+    vi.stubGlobal('ResizeObserver', class ResizeObserver {
+      constructor(callback) { composerResizeCallback = callback; }
+      observe(element) { observeComposer(element); }
+      disconnect() { disconnectComposer(); }
+    });
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback) => {
+      const id = ++nextResizeFrameId;
+      pendingResizeFrame = { id, callback };
+      return id;
+    }));
+    vi.stubGlobal('cancelAnimationFrame', cancelResizeFrame);
+
     const { default: ChatInput } = await import('../../web/components/ChatInput.js');
     const inputWrapper = mount(ChatInput, {
       props: { showStop: true, workItemFn: vi.fn() },
@@ -297,7 +316,7 @@ describe('Session message quote UI wiring', () => {
     const startActions = actionRow.get('.chat-composer-actions-start');
     const endActions = actionRow.get('.chat-composer-actions-end');
 
-    expect(textarea.attributes('rows')).toBe('3');
+    expect(textarea.attributes('rows')).toBe('2');
     expect(actionRow.element.parentElement).toBe(composer.element);
     expect(textarea.element.compareDocumentPosition(actionRow.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(startActions.findAll('.attach-btn')).toHaveLength(1);
@@ -311,6 +330,36 @@ describe('Session message quote UI wiring', () => {
     ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(endActions.findAll('.send-btn')).toHaveLength(2);
     expect([...composer.element.children].filter(child => child.matches('.attach-btn, .work-item-draft-btn, .send-btn'))).toHaveLength(0);
+    expect(observeComposer).toHaveBeenCalledWith(composer.get('.textarea-wrapper').element);
+
+    let composerScrollHeight = 96;
+    Object.defineProperty(textarea.element, 'scrollHeight', {
+      configurable: true,
+      get: () => composerScrollHeight,
+    });
+    requestAnimationFrame.mockClear();
+    pendingResizeFrame = null;
+    composerResizeCallback([{ contentRect: { width: 480 } }]);
+    composerResizeCallback([{ contentRect: { width: 480 } }]);
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+    let resizeFrame = pendingResizeFrame;
+    pendingResizeFrame = null;
+    resizeFrame.callback(performance.now());
+    await Vue.nextTick();
+    expect(textarea.element.style.height).toBe('96px');
+    expect(textarea.classes()).not.toContain('is-scrollable');
+
+    composerScrollHeight = 160;
+    composerResizeCallback([{ contentRect: { width: 320 } }]);
+    resizeFrame = pendingResizeFrame;
+    pendingResizeFrame = null;
+    resizeFrame.callback(performance.now());
+    await Vue.nextTick();
+    expect(textarea.element.style.height).toBe('120px');
+    expect(textarea.classes()).toContain('is-scrollable');
+    requestAnimationFrame.mockClear();
+    composerResizeCallback([{ contentRect: { width: 320 } }]);
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
 
     chatStore.btwMode = true;
     await Vue.nextTick();
@@ -321,6 +370,8 @@ describe('Session message quote UI wiring', () => {
     expect(inputWrapper.findAll('.chat-composer-actions-end .send-btn')).toHaveLength(2);
 
     const inputCss = readFileSync(resolve(process.cwd(), 'web/styles/chat-input.css'), 'utf8');
+    const chatInputSource = readFileSync(resolve(process.cwd(), 'web/components/ChatInput.js'), 'utf8');
+    const messageComposerSource = readFileSync(resolve(process.cwd(), 'web/components/MessageComposer.js'), 'utf8');
     const variablesCss = readFileSync(resolve(process.cwd(), 'web/styles/variables.css'), 'utf8');
     const yeaftCss = readFileSync(resolve(process.cwd(), 'web/styles/yeaft.css'), 'utf8');
     const workCenterCss = readFileSync(resolve(process.cwd(), 'web/styles/work-center.css'), 'utf8');
@@ -335,6 +386,7 @@ describe('Session message quote UI wiring', () => {
       '--chat-composer-radius: 18px;',
       '--chat-composer-focus-ring-width: 2px;',
       '--chat-composer-textarea-min-height: 4.5em;',
+      '--chat-composer-textarea-mobile-height: 3em;',
       '--chat-composer-control-size: 32px;',
       '--yeaft-composer-model-max-width: 220px;',
       '--yeaft-composer-model-mobile-max-width: 38vw;',
@@ -361,6 +413,7 @@ describe('Session message quote UI wiring', () => {
     expect(sessionComposer.matches(sessionComposerSelector)).toBe(true);
     expect(workCenterComposer.matches(sessionComposerSelector)).toBe(false);
     expect(workCenterSource).toContain('class="work-center-item-message-input"');
+    expect(workCenterSource).not.toContain(':rows="3"');
     expect(workCenterCss).toMatch(/\.work-center-item-message-input\s*\{[^}]*width:\s*min\(100%,\s*920px\);[^}]*max-width:\s*none;/);
 
     expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*flex-direction:\s*column/);
@@ -369,6 +422,13 @@ describe('Session message quote UI wiring', () => {
     expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*border-radius:\s*var\(--chat-composer-radius\)/);
     expect(inputCss).toMatch(/\.input-wrapper\.chat-composer:focus-within\s*\{[^}]*var\(--chat-composer-focus-ring-width\)/);
     expect(inputCss).toMatch(/\.chat-composer textarea\s*\{[^}]*min-height:\s*var\(--chat-composer-textarea-min-height\)/);
+    expect(inputCss).toMatch(/\.input-wrapper\.chat-composer textarea\.is-scrollable\s*\{[^}]*overflow-y:\s*auto;/);
+    expect(inputCss).toMatch(/\.input-wrapper textarea,[\s\S]*?\.textarea-wrapper textarea\s*\{[^}]*max-height:\s*120px;[^}]*overflow-y:\s*hidden;/);
+    expect(inputCss).toMatch(/@media \(max-width:\s*768px\)[\s\S]*?\.input-wrapper\.chat-composer textarea\s*\{[^}]*min-height:\s*var\(--chat-composer-textarea-mobile-height\);[^}]*max-height:\s*var\(--chat-composer-textarea-mobile-height\);[^}]*overflow-y:\s*auto;/);
+    expect(chatInputSource).not.toContain(':rows="3"');
+    expect(messageComposerSource).toContain('rows: { type: Number, default: 2 }');
+    expect(messageComposerSource).toContain("'is-scrollable': textareaScrollable");
+    expect(messageComposerSource).not.toContain('textarea.style.overflowY');
     expect(inputCss).toMatch(/\.chat-composer-actions\s*\{[^}]*justify-content:\s*space-between/);
     expect(inputCss).toMatch(/\.chat-composer-actions\s*\{[^}]*gap:\s*var\(--chat-composer-gap\)/);
     expect(inputCss).toMatch(/\.chat-composer-actions-start,[\s\S]*?gap:\s*var\(--chat-composer-control-gap\)/);
@@ -389,7 +449,11 @@ describe('Session message quote UI wiring', () => {
       expect(lightThemeTokens).toContain(token);
       expect(darkThemeTokens).toContain(token);
     }
+    composerResizeCallback([{ contentRect: { width: 640 } }]);
+    const pendingFrameId = pendingResizeFrame.id;
     inputWrapper.unmount();
+    expect(disconnectComposer).toHaveBeenCalledTimes(1);
+    expect(cancelResizeFrame).toHaveBeenCalledWith(pendingFrameId);
   });
 
 });

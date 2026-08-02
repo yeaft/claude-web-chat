@@ -2236,7 +2236,7 @@ test.describe('Work Center responsive UI', () => {
     await expect(userMessage.locator('p')).toHaveText(longUserMessage);
     const sharedComposer = conversation.locator('[data-message-composer]');
     await expect(sharedComposer).toHaveCount(1);
-    await expect(sharedComposer.locator('textarea')).toHaveAttribute('rows', '3');
+    await expect(sharedComposer.locator('textarea')).toHaveAttribute('rows', '2');
     await expect(sharedComposer.locator('.chat-composer-actions')).toBeVisible();
     const upload = chatPage.waitForResponse(response => (
       response.url().includes('/api/upload') && response.request().method() === 'POST'
@@ -2285,6 +2285,7 @@ test.describe('Work Center responsive UI', () => {
         document.documentElement.setAttribute('data-theme', value);
         localStorage.setItem('theme', value);
       }, theme);
+      await conversation.locator('textarea').fill('First line\nSecond line\nThird line');
       await chatPage.waitForTimeout(250);
 
       const metrics = await chatPage.locator('.work-center-detail').evaluate(detail => {
@@ -2356,6 +2357,12 @@ test.describe('Work Center responsive UI', () => {
           composerScrollWidth: composer.scrollWidth,
           composerClientWidth: composer.clientWidth,
           composerActionBelowTextarea: composerActions.getBoundingClientRect().top >= textarea.getBoundingClientRect().bottom,
+          composerTextareaHeight: textarea.getBoundingClientRect().height,
+          composerTextareaLineHeight: Number.parseFloat(getComputedStyle(textarea).lineHeight),
+          composerTextareaOverflowY: getComputedStyle(textarea).overflowY,
+          composerTextareaRows: textarea.rows,
+          composerTextareaClientHeight: textarea.clientHeight,
+          composerTextareaScrollHeight: textarea.scrollHeight,
           documentScrollWidth: document.documentElement.scrollWidth,
           documentClientWidth: document.documentElement.clientWidth,
           workflowBackground: getComputedStyle(workflow).backgroundColor,
@@ -2386,6 +2393,16 @@ test.describe('Work Center responsive UI', () => {
       expect(metrics.attachmentChipScrollWidth).toBeLessThanOrEqual(metrics.attachmentChipClientWidth + 1);
       expect(metrics.composerScrollWidth).toBeLessThanOrEqual(metrics.composerClientWidth + 1);
       expect(metrics.composerActionBelowTextarea).toBe(true);
+      expect(metrics.composerTextareaRows).toBe(2);
+      expect(metrics.composerTextareaHeight).toBe(width === 430
+        ? metrics.composerTextareaLineHeight * 2
+        : metrics.composerTextareaLineHeight * 3);
+      expect(metrics.composerTextareaOverflowY).toBe(width === 430 ? 'auto' : 'hidden');
+      if (width === 430) {
+        expect(metrics.composerTextareaScrollHeight).toBeGreaterThan(metrics.composerTextareaClientHeight);
+      } else {
+        expect(metrics.composerTextareaScrollHeight).toBe(metrics.composerTextareaClientHeight);
+      }
       expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.documentClientWidth + 1);
       expect(metrics.workflowBackground).toBe(metrics.detailBackground);
       expect(metrics.mainBackground).toBe('rgba(0, 0, 0, 0)');
@@ -2403,6 +2420,46 @@ test.describe('Work Center responsive UI', () => {
         expect(metrics.closeRight).toBe(12);
       }
     }
+
+    const responsiveDraft = Array.from({ length: 28 }, () => 'draft').join(' ');
+    const responsiveTextarea = conversation.locator('textarea');
+    await chatPage.setViewportSize({ width: 430, height: 900 });
+    await responsiveTextarea.fill(responsiveDraft);
+    await expect.poll(() => responsiveTextarea.evaluate(element => ({
+      visibleHeight: element.getBoundingClientRect().height,
+      inlineHeight: Number.parseFloat(element.style.height),
+      lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight),
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+      overflowY: getComputedStyle(element).overflowY,
+    }))).toMatchObject({ visibleHeight: 48, overflowY: 'auto' });
+    const mobileDraftMetrics = await responsiveTextarea.evaluate(element => ({
+      inlineHeight: Number.parseFloat(element.style.height),
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+    }));
+    expect(mobileDraftMetrics.inlineHeight).toBeGreaterThan(48);
+    expect(mobileDraftMetrics.scrollHeight).toBeGreaterThan(mobileDraftMetrics.clientHeight);
+
+    await chatPage.setViewportSize({ width: 1400, height: 900 });
+    await expect(responsiveTextarea).toHaveValue(responsiveDraft);
+    await expect.poll(() => responsiveTextarea.evaluate(element => element.getBoundingClientRect().height))
+      .toBe(72);
+    const desktopDraftMetrics = await responsiveTextarea.evaluate(element => ({
+      inlineHeight: Number.parseFloat(element.style.height),
+      lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight),
+      overflowY: getComputedStyle(element).overflowY,
+    }));
+    expect(desktopDraftMetrics.inlineHeight).toBe(desktopDraftMetrics.lineHeight * 3);
+    expect(desktopDraftMetrics.overflowY).toBe('hidden');
+
+    await chatPage.setViewportSize({ width: 430, height: 900 });
+    await expect(responsiveTextarea).toHaveValue(responsiveDraft);
+    await expect.poll(() => responsiveTextarea.evaluate(element => ({
+      visibleHeight: element.getBoundingClientRect().height,
+      overflowY: getComputedStyle(element).overflowY,
+      scrolls: element.scrollHeight > element.clientHeight,
+    }))).toEqual({ visibleHeight: 48, overflowY: 'auto', scrolls: true });
 
     for (const { width, theme } of [
       { width: 1920, theme: 'light' },

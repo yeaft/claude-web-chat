@@ -7,7 +7,7 @@ export default {
     canSend: { type: Boolean, default: false },
     sending: { type: Boolean, default: false },
     showStop: { type: Boolean, default: false },
-    rows: { type: Number, default: 3 },
+    rows: { type: Number, default: 2 },
     inputId: { type: String, default: '' },
     sendLabel: { type: String, default: '' },
     stopLabel: { type: String, default: '' },
@@ -18,8 +18,13 @@ export default {
   },
   emits: ['update:modelValue', 'input', 'keydown', 'paste', 'blur', 'send', 'stop'],
   setup(props, { emit }) {
+    const textareaWrapperRef = Vue.ref(null);
     const textareaRef = Vue.ref(null);
+    const textareaScrollable = Vue.ref(false);
     const maxTextareaHeight = 120;
+    let resizeObserver = null;
+    let resizeFrame = null;
+    let observedWidth = null;
 
     const autoResize = () => {
       const textarea = textareaRef.value;
@@ -27,14 +32,26 @@ export default {
       textarea.style.height = 'auto';
       const nextHeight = Math.min(textarea.scrollHeight, maxTextareaHeight);
       textarea.style.height = `${nextHeight}px`;
-      textarea.style.overflowY = textarea.scrollHeight > maxTextareaHeight ? 'auto' : 'hidden';
+      textareaScrollable.value = textarea.scrollHeight > maxTextareaHeight;
+    };
+
+    const scheduleAutoResize = () => {
+      if (resizeFrame !== null) return;
+      if (typeof requestAnimationFrame !== 'function') {
+        autoResize();
+        return;
+      }
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = null;
+        autoResize();
+      });
     };
 
     const resetTextareaSize = () => {
       const textarea = textareaRef.value;
       if (!textarea) return;
       textarea.style.height = 'auto';
-      textarea.style.overflowY = 'hidden';
+      textareaScrollable.value = false;
     };
 
     const onInput = (event) => {
@@ -53,10 +70,33 @@ export default {
       });
     });
 
-    Vue.onMounted(autoResize);
+    Vue.onMounted(() => {
+      autoResize();
+      const wrapper = textareaWrapperRef.value;
+      if (!wrapper || typeof ResizeObserver === 'undefined') return;
+      observedWidth = wrapper.getBoundingClientRect().width;
+      resizeObserver = new ResizeObserver((entries) => {
+        const width = entries[0]?.contentRect?.width ?? wrapper.getBoundingClientRect().width;
+        if (width === observedWidth) return;
+        observedWidth = width;
+        scheduleAutoResize();
+      });
+      resizeObserver.observe(wrapper);
+    });
+
+    Vue.onUnmounted(() => {
+      resizeObserver?.disconnect();
+      resizeObserver = null;
+      if (resizeFrame !== null && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(resizeFrame);
+      }
+      resizeFrame = null;
+    });
 
     return {
+      textareaWrapperRef,
       textareaRef,
+      textareaScrollable,
       autoResize,
       resetTextareaSize,
       focusInput,
@@ -67,13 +107,14 @@ export default {
   },
   template: `
     <div class="input-wrapper chat-composer" data-message-composer>
-      <div class="textarea-wrapper">
+      <div ref="textareaWrapperRef" class="textarea-wrapper">
         <slot name="overlays"></slot>
         <textarea
           ref="textareaRef"
           :value="modelValue"
           :id="inputId || null"
           :rows="rows"
+          :class="{ 'is-scrollable': textareaScrollable }"
           :placeholder="placeholder"
           :disabled="disabled"
           :aria-autocomplete="ariaAutocomplete"

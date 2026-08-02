@@ -1550,7 +1550,6 @@ export default {
                           :disabled="composerTargetUnavailable || composerDraftLocked"
                           :can-send="composerCanSend"
                           :sending="workItemMessageSending"
-                          :rows="3"
                           :send-label="$t('workCenter.sendToTarget', { target: composerTargetLabel })"
                           @input="onWorkItemMessageInput"
                           @keydown="onWorkItemMessageKeydown"
