@@ -1855,8 +1855,8 @@
 }
 
 /* ── Yeaft Conversation Spacing Overrides ── */
-/* Content width is shared across every Session provider. Yeaft only uses
-   tighter horizontal padding and a compact composer cap. */
+/* Content width is shared across messages, the composer, and its previews.
+   Yeaft only uses tighter horizontal padding. */
 
 .yeaft-page .messages {
   padding: 0 16px;
@@ -1867,16 +1867,12 @@
   padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
 }
 
-.yeaft-session-input > .input-wrapper.chat-composer {
-  width: min(100%, var(--yeaft-composer-max-width));
-  max-width: var(--yeaft-composer-max-width);
-}
-
+.yeaft-session-input > .input-wrapper.chat-composer,
 .yeaft-page .input-quote-preview,
 .yeaft-page .attachments-preview,
 .yeaft-page .expert-chips-bar {
-  width: min(100%, var(--yeaft-composer-max-width));
-  max-width: var(--yeaft-composer-max-width);
+  width: 100%;
+  max-width: var(--session-content-width);
 }
 
 .yeaft-page .turn-footer {
