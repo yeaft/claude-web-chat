@@ -2973,7 +2973,9 @@ describe('message flow regressions', () => {
     expect(sessionCreateCss).toMatch(/\.yeaft-folder-picker-dialog \.folder-picker-item\s*\{[^}]*font-family:\s*inherit;[^}]*font-size:\s*14px;/s);
     expect(sessionCreateCss).not.toMatch(/\.yeaft-folder-picker-dialog[^}]*#[0-9a-f]{3,6}/i);
     expect(sessionCreateCss).not.toMatch(/\.yeaft-folder-picker-dialog[^}]*rgba?\(/i);
-    expect(sessionCreateCss).toMatch(/@media \(max-width:\s*640px\)[\s\S]*?\.yeaft-session-create-fields \.resume-control-row\s*\{[^}]*align-items:\s*stretch;[^}]*flex-direction:\s*column;/s);
+    expect(sessionCreateCss).toMatch(/@media \(max-width:\s*640px\)[\s\S]*?\.yeaft-session-create-fields \.resume-control-row\s*\{[^}]*align-items:\s*center;[^}]*flex-direction:\s*row;[^}]*gap:\s*8px;/s);
+    expect(sessionCreateCss).toMatch(/@media \(max-width:\s*640px\)[\s\S]*?\.yeaft-session-create-modal \.resume-control-label\s*\{[^}]*width:\s*76px;[^}]*flex:\s*0 0 76px;/s);
+    expect(sessionCreateCss).toMatch(/@media \(max-width:\s*640px\)[\s\S]*?\.resume-control-row-vp\s*\{[^}]*align-items:\s*flex-start;[^}]*flex-direction:\s*row;/s);
     modal.vm.form.provider = 'claude-code';
     await Vue.nextTick();
     modal.vm.form.workDir = '/repo';
