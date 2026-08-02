@@ -2198,16 +2198,25 @@ test.describe('Work Center responsive UI', () => {
     })]);
   });
 
-  test('sends an attachment-only Work Item message and keeps the detail layout compact', async ({ chatPage, mockAgent }) => {
+  test('keeps long Work Item messages fully visible without horizontal clipping', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 1400, height: 900 });
     const select = chatPage.locator('.work-center-card').click();
     const longMessage = `unbroken-${'x'.repeat(1200)}`;
+    const longUserMessage = `回归执行发现一个必须在评审前修复的代码级门禁：${'Sandbox 测试文件必须纳入受审测试清单并保持预算策略明确。'.repeat(12)}`;
     const longAttachmentName = `attachment-${'x'.repeat(1800)}.txt`;
     await respondToWorkCenterOp(mockAgent, 'get', {
       ...OPEN_ITEM_DETAIL,
       messages: [
         ...(OPEN_ITEM_DETAIL.messages || []),
+        {
+          id: 'user-overflow-probe',
+          role: 'user',
+          text: longUserMessage,
+          status: 'completed',
+          createdAt: Date.now() - 1,
+          updatedAt: Date.now() - 1,
+        },
         {
           id: 'overflow-probe',
           role: 'assistant',
@@ -2222,6 +2231,9 @@ test.describe('Work Center responsive UI', () => {
     await select;
 
     const conversation = chatPage.locator('.work-center-conversation');
+    const userMessage = conversation.locator('.work-center-item-message-list article.role-user');
+    await expect(userMessage).toContainText(longUserMessage);
+    await expect(userMessage.locator('p')).toHaveText(longUserMessage);
     const sharedComposer = conversation.locator('[data-message-composer]');
     await expect(sharedComposer).toHaveCount(1);
     await expect(sharedComposer.locator('textarea')).toHaveAttribute('rows', '3');
@@ -2278,6 +2290,8 @@ test.describe('Work Center responsive UI', () => {
         const main = detail.querySelector('.work-center-detail-main');
         const conversation = detail.querySelector('.work-center-conversation');
         const messageList = detail.querySelector('.work-center-item-message-list');
+        const userArticle = messageList.querySelector('.role-user');
+        const userText = userArticle.querySelector('p');
         const overflowArticle = messageList.lastElementChild;
         const renderedAttachmentList = overflowArticle.querySelector('.work-center-message-attachments');
         const renderedAttachmentChip = renderedAttachmentList.querySelector('.work-center-attachment-chip');
@@ -2288,6 +2302,16 @@ test.describe('Work Center responsive UI', () => {
         const card = detail.querySelector('.work-center-action-card');
         const content = card.querySelector('.work-center-action-content');
         const detailRect = detail.getBoundingClientRect();
+        const mainRect = main.getBoundingClientRect();
+        const mainVisibleRight = mainRect.left + main.clientLeft + main.clientWidth;
+        const userArticleRect = userArticle.getBoundingClientRect();
+        const userTextRange = document.createRange();
+        userTextRange.selectNodeContents(userText);
+        const userTextContentRect = userTextRange.getBoundingClientRect();
+        const userLastCharacterRange = document.createRange();
+        userLastCharacterRange.setStart(userText.firstChild, userText.firstChild.length - 1);
+        userLastCharacterRange.setEnd(userText.firstChild, userText.firstChild.length);
+        const userLastCharacterRect = userLastCharacterRange.getBoundingClientRect();
         const closeRect = close.getBoundingClientRect();
         const lineRects = [...content.children].map(element => element.getBoundingClientRect());
         const themeProbe = document.createElement('div');
@@ -2307,10 +2331,19 @@ test.describe('Work Center responsive UI', () => {
           detailClientWidth: detail.clientWidth,
           mainScrollWidth: main.scrollWidth,
           mainClientWidth: main.clientWidth,
+          mainVisibleLeft: mainRect.left + main.clientLeft,
+          mainVisibleRight,
           conversationScrollWidth: conversation.scrollWidth,
           conversationClientWidth: conversation.clientWidth,
           messageListScrollWidth: messageList.scrollWidth,
           messageListClientWidth: messageList.clientWidth,
+          userArticleLeft: userArticleRect.left,
+          userArticleRight: userArticleRect.right,
+          userTextContentLeft: userTextContentRect.left,
+          userTextContentRight: userTextContentRect.right,
+          userLastCharacterLeft: userLastCharacterRect.left,
+          userLastCharacterRight: userLastCharacterRect.right,
+          mainOverflowX: getComputedStyle(main).overflowX,
           articleScrollWidth: overflowArticle.scrollWidth,
           articleClientWidth: overflowArticle.clientWidth,
           attachmentListScrollWidth: renderedAttachmentList.scrollWidth,
@@ -2338,6 +2371,13 @@ test.describe('Work Center responsive UI', () => {
       expect(metrics.mainScrollWidth).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
       expect(metrics.conversationScrollWidth).toBeLessThanOrEqual(metrics.conversationClientWidth + 1);
       expect(metrics.messageListScrollWidth).toBeLessThanOrEqual(metrics.messageListClientWidth + 1);
+      expect(metrics.userArticleLeft).toBeGreaterThanOrEqual(metrics.mainVisibleLeft - 1);
+      expect(metrics.userArticleRight).toBeLessThanOrEqual(metrics.mainVisibleRight + 1);
+      expect(metrics.userTextContentLeft).toBeGreaterThanOrEqual(metrics.mainVisibleLeft - 1);
+      expect(metrics.userTextContentRight).toBeLessThanOrEqual(metrics.mainVisibleRight + 1);
+      expect(metrics.userLastCharacterLeft).toBeGreaterThanOrEqual(metrics.mainVisibleLeft - 1);
+      expect(metrics.userLastCharacterRight).toBeLessThanOrEqual(metrics.mainVisibleRight + 1);
+      expect(metrics.mainOverflowX).not.toBe('hidden');
       expect(metrics.articleScrollWidth).toBeLessThanOrEqual(metrics.articleClientWidth + 1);
       expect(metrics.attachmentListScrollWidth).toBeLessThanOrEqual(metrics.attachmentListClientWidth + 1);
       expect(metrics.attachmentChipScrollWidth).toBeLessThanOrEqual(metrics.attachmentChipClientWidth + 1);
