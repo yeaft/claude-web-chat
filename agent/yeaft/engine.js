@@ -1630,18 +1630,33 @@ export class Engine {
                 ? `【先前累计摘要】\n${priorSummary}\n\n【新待压缩对话】\n`
                 : `[Previous cumulative summary]\n${priorSummary}\n\n[New conversation to absorb]\n`)
             : '';
-          const result = await adapter.call({
-            model: fastConfig.model,
-            system: summariserSystem,
-            messages: [{ role: 'user', content: `${summariserPromptPrefix}${priorBlock}${toArchive.map(m => `[${m.role}] ${(m.content || '').slice(0, 500)}`).join('\n\n')}` }],
-            // 10k output budget: the running summary is the engine's
-            // long-term memory of cold turns, so it deserves room to
-            // actually preserve detail. We rewrite-in-place each round,
-            // so size stays bounded by maxTokens regardless of how many
-            // compact passes have run.
-            maxTokens: 10240,
+          const maintenanceCtrl = new AbortController();
+          let timeout = null;
+          const timedOut = new Promise((_, reject) => {
+            timeout = setTimeout(() => {
+              maintenanceCtrl.abort('compact_summary_timeout');
+              reject(new LLMAbortError());
+            }, AMS_ADJUST_TIMEOUT_MS);
+            if (timeout && typeof timeout.unref === 'function') timeout.unref();
           });
-          return (result.text || '').trim();
+          try {
+            const request = adapter.call({
+              model: fastConfig.model,
+              system: summariserSystem,
+              messages: [{ role: 'user', content: `${summariserPromptPrefix}${priorBlock}${toArchive.map(m => `[${m.role}] ${(m.content || '').slice(0, 500)}`).join('\n\n')}` }],
+              // 10k output budget: the running summary is the engine's
+              // long-term memory of cold turns, so it deserves room to
+              // actually preserve detail. We rewrite-in-place each round,
+              // so size stays bounded by maxTokens regardless of how many
+              // compact passes have run.
+              maxTokens: 10240,
+              signal: maintenanceCtrl.signal,
+            });
+            const result = await Promise.race([request, timedOut]);
+            return (result.text || '').trim();
+          } finally {
+            if (timeout) clearTimeout(timeout);
+          }
         } catch {
           return '';
         }
@@ -1865,12 +1880,54 @@ export class Engine {
    *   string-prompt shape (no regression for existing callers).
    * @yields {EngineEvent}
    */
-  async *query({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null } = {}) {
+  async *query(params = {}) {
+    let terminalEmitted = false;
+    let lastTurnNumber = 0;
+    try {
+      for await (const event of this.#queryLifecycle(params)) {
+        if (Number.isFinite(event?.turnNumber)) lastTurnNumber = event.turnNumber;
+        if (event?.type === 'turn_end' && event.terminal === true) terminalEmitted = true;
+        yield event;
+      }
+    } catch (err) {
+      // The internal state machine handles expected provider failures, tool
+      // results, retries and aborts. This outermost boundary catches everything
+      // else, including pre-flow and cleanup faults, so an accepted query never
+      // disappears without a diagnostic terminal event.
+      if (!terminalEmitted) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        yield { type: 'error', error, retryable: false };
+        yield {
+          type: 'turn_end',
+          turnNumber: lastTurnNumber,
+          stopReason: 'error',
+          terminal: true,
+          detail: { message: error.message, errorName: error.name },
+          threadId: params.threadId || MAIN_THREAD_ID,
+        };
+      } else {
+        // Normal end_turn is already durable and visible. A failed maintenance
+        // hook must not retroactively turn the completed answer into an error.
+        console.warn('[Engine] post-turn maintenance failed:', err?.message || err);
+      }
+    }
+  }
+
+  async *#queryLifecycle({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null } = {}) {
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+      const error = new Error('prompt is required and must be a non-empty string');
       yield {
         type: 'error',
-        error: new Error('prompt is required and must be a non-empty string'),
+        error,
         retryable: false,
+      };
+      yield {
+        type: 'turn_end',
+        turnNumber: 0,
+        stopReason: 'error',
+        terminal: true,
+        detail: { message: error.message, errorName: error.name },
+        threadId,
       };
       return;
     }
@@ -2447,7 +2504,7 @@ export class Engine {
         }
         retryLifecycle.pendingContinuation = null;
         yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
-        yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
+        yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId, terminal: true };
         break;
       }
 
@@ -2932,7 +2989,7 @@ export class Engine {
           });
           endAttemptTrace('aborted');
           yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
-          yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
+          yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId, terminal: true };
           break;
         }
 
@@ -2987,7 +3044,7 @@ export class Engine {
           const slept = await sleepWithAbort(delayMs, signal);
           if (!slept || signal?.aborted) {
             yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
-            yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
+            yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId, terminal: true };
             break;
           }
           yield { type: 'turn_end', turnNumber, stopReason: 'llm_retry', threadId };
@@ -3042,7 +3099,7 @@ export class Engine {
               }
               retryLifecycle.pendingContinuation = null;
               yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
-              yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
+              yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId, terminal: true };
               break;
             }
             yield { type: 'turn_end', turnNumber, stopReason: 'llm_retry', threadId };
@@ -3154,7 +3211,7 @@ export class Engine {
           errorEvent.maxRetries = retryPolicy.maxRetries;
         }
         yield errorEvent;
-        yield { type: 'turn_end', turnNumber, stopReason: 'error', threadId };
+        yield { type: 'turn_end', turnNumber, stopReason: 'error', threadId, terminal: true };
         break;
       }
 
@@ -3399,7 +3456,7 @@ export class Engine {
         };
         if (signal?.aborted) {
           yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
-          yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
+          yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId, terminal: true };
           break;
         }
         if (!signal?.aborted) {
@@ -3863,6 +3920,7 @@ export class Engine {
           stopReason: 'tool_handoff',
           detail: handoffDetail,
           threadId,
+          terminal: true,
         };
         break;
       }
@@ -4000,7 +4058,7 @@ export class Engine {
       // 'aborted' instead of looping back to a new adapter call.
       if (abortedDuringTools || signal?.aborted) {
         yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
-        yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
+        yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId, terminal: true };
         break;
       }
 

@@ -381,13 +381,17 @@ describe('Work Center tool policy', () => {
       toolRegistry: timeoutRegistry,
     });
     const timeoutEvents = [];
-    await expect(async () => {
-      for await (const event of timeoutEngine.query({ prompt: 'Run both writes', workDir })) {
-        timeoutEvents.push(event);
-      }
-    }).rejects.toMatchObject({ name: 'ToolExecutionTimeoutError' });
+    for await (const event of timeoutEngine.query({ prompt: 'Run both writes', workDir })) {
+      timeoutEvents.push(event);
+    }
     expect(timeoutEvents).toContainEqual(expect.objectContaining({
       type: 'tool_end', id: 'slow', isError: true,
+    }));
+    expect(timeoutEvents).toContainEqual(expect.objectContaining({
+      type: 'error', error: expect.objectContaining({ name: 'ToolExecutionTimeoutError' }),
+    }));
+    expect(timeoutEvents).toContainEqual(expect.objectContaining({
+      type: 'turn_end', stopReason: 'error', terminal: true,
     }));
     expect(fastWriteCalls).toBe(0);
     expect(store.interruptRun(
@@ -535,6 +539,47 @@ describe('Work Center tool policy', () => {
     })).rejects.toThrow(/canonical workspace identity changed/);
     expect(setRunExecutionSnapshots).not.toHaveBeenCalled();
     expect(adapterStarted).toBe(false);
+
+    const engineError = new Error('provider failed inside Work Center');
+    const errorStore = {
+      listCompletedRuns: () => [],
+      listActionDependencies: () => [],
+      getActionResumeContext: () => null,
+      listPendingActionInputs: () => [],
+      setRunExecutionSnapshots: () => true,
+      isActiveRun: () => true,
+      prepareEngineTurn: () => ({ id: 'engine-turn-error' }),
+      claimEngineTurn: () => true,
+      failEngineTurn: () => ({ allowRetry: true }),
+      closeRunInput: () => true,
+    };
+    const errorRunner = new WorkItemRunner({
+      runtimeProvider: async () => ({
+        defaultWorkDir: workDir,
+        config: { model: 'provider/model', maxOutputTokens: 1_024, projectDocMaxBytes: 0 },
+        adapter: {
+          async *stream(params) {
+            params.onRequestStart?.();
+            throw engineError;
+          },
+        },
+      }),
+      store: errorStore,
+      registry: {
+        listVps: () => [{ id: 'omni', name: 'Omni', role: 'developer', traits: [] }],
+        getVp: () => ({ id: 'omni', name: 'Omni', role: 'developer', traits: [] }),
+      },
+    });
+    await expect(errorRunner.run({
+      workItem: {
+        id: 'work-item-engine-error', title: 'Fail visibly', goal: 'Surface the Engine error',
+        acceptanceCriteria: [], workDir, workspaceKey: workDir,
+      },
+      action: { id: 'action-error', type: 'test', requiredRole: 'omni', instruction: 'Fail' },
+      run: { id: 'run-engine-error', leaseEpoch: 1 },
+      signal: new AbortController().signal,
+      ownerBootId: 'boot-error',
+    })).rejects.toBe(engineError);
   });
 
 

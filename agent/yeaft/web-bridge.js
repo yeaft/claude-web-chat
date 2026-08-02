@@ -1111,24 +1111,19 @@ function queryTimeoutMsForSession(sessionId = null) {
 /**
  * Secondary watchdog grace period (ms).
  *
- * After the active query timeout of silence the per-VP `vpAbort` is fired.
+ * After the active provider timeout of silence the per-VP `vpAbort` is fired.
  * Normal turns use {@link QUERY_TIMEOUT_MS}; high-reasoning session turns use
- * {@link HIGH_REASONING_QUERY_TIMEOUT_MS} because large tool-result arcs can
- * legitimately spend longer before the provider emits the first SSE event.
- * That's enough on its own when adapters / tools cooperate with the
- * AbortSignal — the engine throws `AbortError`, runVpTurn's catch emits
- * `result{stopped:true}`, the driver `finally` emits `vp_typing_end`, and
- * the user is unstuck.
+ * {@link HIGH_REASONING_QUERY_TIMEOUT_MS}. Tool execution and declared retry /
+ * async-task waits pause this watchdog because those phases own separate,
+ * explicit deadlines. Treating a long tool as silent provider work races the
+ * tool's own timeout and can abort the whole query before its error result is
+ * returned to the model.
  *
- * If a tool ignores `signal` and never resolves, the engine generator's
- * `await tool.execute(...)` is permanently blocked: the abort fires on a
- * controller it never observes, and runVpTurn never returns. The same
- * applies to an adapter `stream()` that ignores `signal` (e.g. a stuck
- * SSE connection) or to tools that legitimately opt out of the per-tool
- * timeout via `timeoutMs <= 0`. The per-tool timeout in
- * {@link import('./tools/registry.js').DEFAULT_TOOL_TIMEOUT_MS}
- * is the primary cure for the tool-ignore-signal case; this bridge-level
- * escalation strictly extends it to cover the adapter and opt-out cases.
+ * If an adapter ignores `signal`, runVpTurn still cannot return after the
+ * abort. The per-tool timeout in
+ * {@link import('./tools/registry.js').DEFAULT_TOOL_TIMEOUT_MS} independently
+ * protects tool execution; this bridge-level escalation covers the adapter
+ * and any other path that ignores the query abort.
  * Without a second-stage escalation the typing dots hang forever —
  * exactly the "halts mid-execution with no turn_end" symptom.
  *
@@ -3799,6 +3794,8 @@ export function __testHandleEngineEvent(event, hctx) {
 function handleEngineEvent(event, hctx) {
   const terminalTurnEnd = event.type === 'turn_end' && event.terminal === true;
   const managesQueryTimer = terminalTurnEnd
+    || event.type === 'tool_start'
+    || event.type === 'tool_end'
     || event.type === 'async_task_wait_start'
     || event.type === 'async_task_wait_end'
     || event.type === 'llm_retry';
@@ -3886,6 +3883,11 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'tool_start':
+      // ToolRegistry and individual tools own their execution deadlines. The
+      // bridge watchdog only protects provider silence; leaving it armed here
+      // races legitimate long tools and can abort the whole query just before
+      // the tool returns a bounded error result for the model to handle.
+      if (typeof hctx.pauseQueryTimer === 'function') hctx.pauseQueryTimer();
       sendSessionEvent({
         type: 'tool_start',
         id: event.id,
@@ -3951,12 +3953,12 @@ function handleEngineEvent(event, hctx) {
           is_error: event.isError || false,
         }],
       }, envelope);
-      // Tool finished. Do NOT speculatively flip to 'thinking' — the
-      // engine may emit more text-deltas (→ 'streaming') OR go straight
-      // to end_turn (→ 'idle' via runVpTurn's finally). The old
-      // speculative transition caused a visible 'tool → thinking →
-      // streaming' flicker on every tool call. Hold the 'tool' state
-      // until the next real event arrives.
+      // Tool execution is over, so the next silent phase is provider work
+      // again. Re-arm the provider watchdog before waiting for the next event.
+      if (typeof hctx.resetQueryTimer === 'function') hctx.resetQueryTimer();
+      // Do NOT speculatively flip to 'thinking' — the engine may emit more
+      // text-deltas (→ 'streaming') OR go straight to end_turn (→ 'idle' via
+      // runVpTurn's finally). Hold the 'tool' state until a real event arrives.
       break;
     }
 

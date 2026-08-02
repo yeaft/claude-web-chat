@@ -25,6 +25,12 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 
 /** Max timeout in ms (10 minutes). */
 const MAX_TIMEOUT_MS = 600_000;
+/**
+ * ToolRegistry must not preempt Bash's own process timeout. Bash kills its
+ * process tree and returns exit 124 at MAX_TIMEOUT_MS; the small grace only
+ * protects the engine if that cleanup itself fails to settle.
+ */
+const REGISTRY_TIMEOUT_MS = MAX_TIMEOUT_MS + 15_000;
 
 /**
  * Run a command in a child process.
@@ -211,6 +217,7 @@ Guidelines:
     required: ['command'],
   },
   errorOutput: null,
+  timeoutMs: REGISTRY_TIMEOUT_MS,
   isConcurrencySafe: () => false,
   isReadOnly: () => false,
   isDestructive: (input) => {

@@ -134,15 +134,16 @@ function localizeParameters(parameters, language, toolName, parameterOverrides =
  * does nothing.
  *
  * Fix: race the tool's promise against a timer. On timeout we throw a
- * loud error — the engine's existing catch (engine.js: tool-execute path)
- * emits `tool_end{isError:true}` and the loop continues normally. Loud
- * failure beats silent stall.
+ * loud error and the engine emits `tool_end{isError:true}`. Read-only and
+ * run-scoped failures can continue normally; an external side-effecting tool
+ * is terminal because its detached promise may still be running and replaying
+ * or continuing beside it is unsafe. Either way the query emits a diagnostic
+ * terminal boundary instead of silently stalling.
  *
- * 90s is comfortably above the typical tool budget (most tools complete
- * in <1s; bash and web-fetch can run tens of seconds; web-search is
- * usually <10s) but well below the 120s bridge-level watchdog so the
- * tool-level signal fires first and surfaces a useful per-tool diagnosis
- * rather than an opaque "VP stalled" log.
+ * 90s is comfortably above the typical tool budget (most tools complete in
+ * <1s; web-fetch can run tens of seconds; web-search is usually <10s). Tools
+ * with a longer owned deadline, such as Bash and WaitAgent, override this so
+ * their own cancellation/timeout result reaches the model first.
  *
  * Override per-tool by setting `tool.timeoutMs` on the ToolDef. Set to
  * 0 (or a negative number) to disable the timeout for that tool — only

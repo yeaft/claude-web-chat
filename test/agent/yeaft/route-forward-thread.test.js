@@ -502,6 +502,29 @@ describe('route_forward thread ownership', () => {
     expect(broadcastResult.report.dispatched.sort()).toEqual(['vp-linus', 'vp-martin']);
     expect(secondResult.report.dispatched).toEqual(['vp-linus']);
     expect(conversationStore.append).toHaveBeenCalledTimes(2);
+
+    const error = new Error('CLI Session Engine failed');
+    const errorEvents = [];
+    const errorRunner = createCliSessionRunner({
+      loaded: { yeaftDir: root, config: {}, conversationStore, managedCliReady },
+      sessionId,
+      engineFactory: () => ({
+        async *query() {
+          yield { type: 'error', error, retryable: false };
+          yield { type: 'turn_end', stopReason: 'error', terminal: true };
+        },
+        abort: () => true,
+      }),
+      personaFactory: vpId => ({ vpId }),
+    });
+    const errorOutcome = await errorRunner.run('@vp-linus fail', {
+      onEvent: ({ event }) => errorEvents.push(event),
+    });
+    expect(errorEvents).toContainEqual(expect.objectContaining({ type: 'turn_end', terminal: true }));
+    expect(errorOutcome.results).toEqual([
+      expect.objectContaining({ vpId: 'vp-linus', error }),
+    ]);
+    await errorRunner.close();
     await runner.close();
   }
 

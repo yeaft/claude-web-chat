@@ -31,6 +31,7 @@ import {
   resolveManagedCliCommand,
 } from '../../../agent/yeaft/managed-cli.js';
 import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
+import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { createOutputCollector, runRipgrep, nodeGrep } from '../../../agent/yeaft/tools/grep.js';
 import { nodeDiskUsage } from '../../../agent/yeaft/tools/disk-usage.js';
 import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
@@ -382,9 +383,15 @@ describe('Engine', () => {
         events.push(event);
       }
 
-      expect(events).toHaveLength(1);
+      expect(events).toHaveLength(2);
       expect(events[0].type).toBe('error');
       expect(events[0].error.message).toContain('prompt is required');
+      expect(events[1]).toMatchObject({
+        type: 'turn_end',
+        turnNumber: 0,
+        stopReason: 'error',
+        terminal: true,
+      });
       // Should NOT have called adapter
       expect(mockAdapter.callLog).toHaveLength(0);
     });
@@ -401,8 +408,9 @@ describe('Engine', () => {
         events.push(event);
       }
 
-      expect(events).toHaveLength(1);
+      expect(events).toHaveLength(2);
       expect(events[0].type).toBe('error');
+      expect(events[1]).toMatchObject({ type: 'turn_end', stopReason: 'error', terminal: true });
     });
   });
 
@@ -442,8 +450,11 @@ describe('Engine', () => {
 
       // Check turn_end
       const turnEnd = events.find(e => e.type === 'turn_end');
-      expect(turnEnd.stopReason).toBe('end_turn');
-      expect(turnEnd.turnNumber).toBe(1);
+      expect(turnEnd).toMatchObject({
+        stopReason: 'end_turn',
+        turnNumber: 1,
+        terminal: true,
+      });
 
       const continuityAdapter = new MockAdapter();
       continuityAdapter.pushResponse([
@@ -1553,7 +1564,51 @@ describe('Engine', () => {
 
       // Engine should still complete
       const lastTurnEnd = events.filter(e => e.type === 'turn_end').pop();
-      expect(lastTurnEnd.stopReason).toBe('end_turn');
+      expect(lastTurnEnd).toMatchObject({ stopReason: 'end_turn', terminal: true });
+
+      // A timed-out side-effecting tool cannot be replayed safely because its
+      // underlying promise may still be running. It must nevertheless produce
+      // a diagnostic terminal boundary instead of escaping query() after the
+      // tool_end event and leaving the VP half-open.
+      const timeoutAdapter = new MockAdapter();
+      timeoutAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_timeout', name: 'slow_side_effect', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      const timeoutRegistry = new ToolRegistry();
+      timeoutRegistry.register({
+        name: 'slow_side_effect',
+        description: 'Never settles',
+        parameters: {},
+        timeoutMs: 5,
+        sideEffectScope: 'external',
+        isReadOnly: () => false,
+        execute: async () => new Promise(() => {}),
+      });
+      const timeoutEngine = new Engine({
+        adapter: timeoutAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolRegistry: timeoutRegistry,
+      });
+      const timeoutEvents = [];
+      for await (const event of timeoutEngine.query({ prompt: 'run the slow tool' })) {
+        timeoutEvents.push(event);
+      }
+      expect(timeoutEvents.find(event => event.type === 'tool_end')).toMatchObject({
+        id: 'call_timeout',
+        isError: true,
+      });
+      expect(timeoutEvents.find(event => event.type === 'error')).toMatchObject({
+        retryable: false,
+        error: expect.objectContaining({ name: 'ToolExecutionTimeoutError' }),
+      });
+      expect(timeoutEvents.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+        turnNumber: 1,
+        stopReason: 'error',
+        terminal: true,
+        detail: expect.objectContaining({ errorName: 'ToolExecutionTimeoutError' }),
+      });
     });
 
     it('should handle unknown tool gracefully', async () => {

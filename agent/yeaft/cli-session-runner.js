@@ -128,6 +128,11 @@ export function createCliSessionRunner({
     try {
       for await (const event of engine.query(queryOptions)) {
         if (event.type === 'text_delta') resultText += event.text || '';
+        else if (event.type === 'error' && !failed) {
+          failed = event.error instanceof Error
+            ? event.error
+            : new Error(String(event.error?.message || event.error || 'Unknown Engine error'));
+        }
         await options.onEvent?.({ vpId, event, sessionId, turnId: queryOptions.vpTurnId });
       }
     } catch (error) {
