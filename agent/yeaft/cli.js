@@ -395,13 +395,22 @@ async function runREPL(config, args) {
   let closeRequested = false;
   let lineQueue = Promise.resolve();
   let shutdownPromise = null;
+  let acceptedLineSequence = 0;
+  let exitLineSequence = Number.POSITIVE_INFINITY;
+  const isExitLine = line => {
+    const input = line.trim();
+    if (!input.startsWith('/')) return false;
+    const [command] = input.slice(1).split(/\s+/);
+    return command === 'quit' || command === 'exit' || command === 'q';
+  };
   const promptIfOpen = () => {
     if (!closeRequested) rl.prompt();
   };
 
   rl.prompt();
 
-  const handleLine = async (line) => {
+  const handleLine = async (line, lineSequence) => {
+    if (lineSequence > exitLineSequence) return;
     const input = line.trim();
     if (!input) {
       promptIfOpen();
@@ -766,10 +775,18 @@ async function runREPL(config, args) {
   };
 
   rl.on('line', line => {
-    lineQueue = lineQueue.then(() => handleLine(line)).catch(error => {
+    if (closeRequested) return;
+    const lineSequence = ++acceptedLineSequence;
+    const exitsRepl = isExitLine(line);
+    if (exitsRepl) {
+      exitLineSequence = lineSequence;
+      closeRequested = true;
+    }
+    lineQueue = lineQueue.then(() => handleLine(line, lineSequence)).catch(error => {
       console.error(`Error: ${error.message}`);
       process.exitCode = 1;
     });
+    if (exitsRepl) rl.close();
   });
 
   rl.on('close', () => {

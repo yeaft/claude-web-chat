@@ -399,9 +399,11 @@ describe('Engine', () => {
       const cliDir = mkdtempSync(join(tmpdir(), 'yeaft-cli-error-'));
       const serverScript = join(cliDir, 'server.mjs');
       const portPath = join(cliDir, 'port');
+      const requestLogPath = join(cliDir, 'provider-requests.jsonl');
+      writeFileSync(requestLogPath, '');
       writeFileSync(serverScript, [
         "import { createServer } from 'node:http';",
-        "import { writeFileSync } from 'node:fs';",
+        "import { appendFileSync, writeFileSync } from 'node:fs';",
         "const server = createServer((req, res) => {",
         "  let body = '';",
         "  req.on('data', chunk => { body += chunk; });",
@@ -412,8 +414,35 @@ describe('Engine', () => {
         "      const users = (parsed.messages || []).filter(message => message.role === 'user');",
         "      latestUser = JSON.stringify(users.at(-1)?.content || '');",
         "    } catch {}",
+        "    appendFileSync(process.argv[3], `${latestUser}\\n`);",
         "    const delayMs = latestUser.includes('delayed') ? 1000 : 0;",
         "    setTimeout(() => {",
+        "      if (latestUser.includes('must-write')) {",
+        "        const marker = latestUser.match(/marker=([^\\\"\\s]+)/)?.[1] || '';",
+        "        const toolInput = JSON.stringify({ file_path: marker, content: 'unexpected write' });",
+        "        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });",
+        "        res.end([",
+        "          'event: message_start',",
+        "          'data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}',",
+        "          '',",
+        "          'event: content_block_start',",
+        "          'data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"write-after-exit\",\"name\":\"FileWrite\"}}',",
+        "          '',",
+        "          'event: content_block_delta',",
+        "          `data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: toolInput } })}` ,",
+        "          '',",
+        "          'event: content_block_stop',",
+        "          'data: {\"type\":\"content_block_stop\",\"index\":0}',",
+        "          '',",
+        "          'event: message_delta',",
+        "          'data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":1}}',",
+        "          '',",
+        "          'event: message_stop',",
+        "          'data: {\"type\":\"message_stop\"}',",
+        "          '',",
+        "        ].join('\\n'));",
+        "        return;",
+        "      }",
         "      if (!latestUser.includes('succeed')) {",
         "        res.writeHead(401, { 'content-type': 'application/json' });",
         "        res.end(JSON.stringify({ error: { message: 'forced cli auth failure' } }));",
@@ -446,7 +475,7 @@ describe('Engine', () => {
         "server.listen(0, '127.0.0.1', () => writeFileSync(process.argv[2], String(server.address().port)));",
         "process.on('SIGTERM', () => server.close(() => process.exit(0)));",
       ].join('\n'));
-      const cliServer = spawn(process.execPath, [serverScript, portPath], { stdio: 'ignore' });
+      const cliServer = spawn(process.execPath, [serverScript, portPath, requestLogPath], { stdio: 'ignore' });
       let cliResult = null;
       try {
         for (let i = 0; i < 200 && !existsSync(portPath); i += 1) {
@@ -497,6 +526,10 @@ describe('Engine', () => {
         expect(cliExit).toEqual({ code: 1, signal: null });
         expect(cliStderr).toContain('Error: LLM provider returned HTTP 401');
 
+        const providerRequests = () => readFileSync(requestLogPath, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map(line => JSON.parse(line));
         const runCli = (args, input) => {
           const child = spawn(process.execPath, [
             join(process.cwd(), 'agent', 'yeaft', 'cli.js'),
@@ -541,12 +574,32 @@ describe('Engine', () => {
           .toEqual([true, false]);
         expect(streamResult).toMatchObject({ code: 1, signal: null });
 
+        const defaultExitMarker = join(cliDir, 'default-exit-marker');
+        const requestsBeforeImmediateExit = providerRequests().length;
+        const immediateExit = await runCli(
+          ['-i'],
+          `/exit\nmust-write marker=${defaultExitMarker}\n`,
+        );
+        expect(immediateExit).toMatchObject({ code: 0, signal: null });
+        expect(immediateExit.stdout).toContain('Bye!');
+        expect(existsSync(defaultExitMarker)).toBe(false);
+        expect(providerRequests()).toHaveLength(requestsBeforeImmediateExit);
+
+        const delayedExitMarker = join(cliDir, 'default-delayed-exit-marker');
+        const requestsBeforeDefaultSuccess = providerRequests().length;
         const defaultSuccessStartedAt = Date.now();
-        const defaultSuccess = await runCli(['-i'], 'delayed succeed\n/exit\n');
+        const defaultSuccess = await runCli(
+          ['-i'],
+          `delayed succeed\n/exit\nmust-write marker=${delayedExitMarker}\n`,
+        );
         expect(Date.now() - defaultSuccessStartedAt).toBeGreaterThanOrEqual(900);
         expect(defaultSuccess.stdout).toContain('success');
         expect(defaultSuccess.stderr).not.toContain('ERR_USE_AFTER_CLOSE');
         expect(defaultSuccess).toMatchObject({ code: 0, signal: null });
+        expect(existsSync(delayedExitMarker)).toBe(false);
+        const defaultSuccessRequests = providerRequests().slice(requestsBeforeDefaultSuccess);
+        expect(defaultSuccessRequests.some(request => request.includes('delayed succeed'))).toBe(true);
+        expect(defaultSuccessRequests.some(request => request.includes('must-write'))).toBe(false);
 
         const defaultFailureStartedAt = Date.now();
         const defaultFailure = await runCli(['-i'], 'delayed fail\n/exit\n');
@@ -567,12 +620,21 @@ describe('Engine', () => {
           workDir: '',
           createdAt: new Date().toISOString(),
         }));
+        const sessionExitMarker = join(cliDir, 'session-delayed-exit-marker');
+        const requestsBeforeSessionSuccess = providerRequests().length;
         const sessionSuccessStartedAt = Date.now();
-        const sessionSuccess = await runCli(['-i', '--session-id', sessionId], 'delayed succeed\n/exit\n');
+        const sessionSuccess = await runCli(
+          ['-i', '--session-id', sessionId],
+          `delayed succeed\n/exit\nmust-write marker=${sessionExitMarker}\n`,
+        );
         expect(Date.now() - sessionSuccessStartedAt).toBeGreaterThanOrEqual(900);
         expect(sessionSuccess.stdout).toContain('success');
         expect(sessionSuccess.stderr).not.toContain('ERR_USE_AFTER_CLOSE');
         expect(sessionSuccess).toMatchObject({ code: 0, signal: null });
+        expect(existsSync(sessionExitMarker)).toBe(false);
+        const sessionSuccessRequests = providerRequests().slice(requestsBeforeSessionSuccess);
+        expect(sessionSuccessRequests.some(request => request.includes('delayed succeed'))).toBe(true);
+        expect(sessionSuccessRequests.some(request => request.includes('must-write'))).toBe(false);
 
         const sessionFailureStartedAt = Date.now();
         const sessionFailure = await runCli(['-i', '--session-id', sessionId], 'delayed fail\n/exit\n');
