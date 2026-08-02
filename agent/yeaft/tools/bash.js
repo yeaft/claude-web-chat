@@ -10,9 +10,13 @@
 
 import { defineTool } from './types.js';
 import { existsSync } from 'fs';
-import { resolve } from 'path';
+import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
 import { buildShellInvocation, getRuntimePlatformInfo } from '../runtime-platform.js';
-import { wrapInvocationInSystemdUserScope } from '../systemd-scope.js';
+import {
+  wrapInvocationInSystemdUserScope,
+  wrapInvocationInSystemdUserService,
+} from '../systemd-scope.js';
 import { runProcess } from './process-runner.js';
 
 export { buildShellInvocation };
@@ -31,6 +35,11 @@ const MAX_TIMEOUT_MS = 600_000;
  * covers TERM/KILL escalation and the bounded close-confirmation window.
  */
 const REGISTRY_TIMEOUT_MS = MAX_TIMEOUT_MS + 15_000;
+const LINUX_NAMESPACE_HELPER = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'linux-process-namespace.js',
+);
 
 /**
  * Run a command in a child process.
@@ -40,11 +49,33 @@ function runCommand(command, { cwd, timeout, signal, runtimePlatform }) {
   const platform = runtimePlatform || getRuntimePlatformInfo();
   const env = { ...process.env, TERM: 'dumb', FORCE_COLOR: '0' };
   const baseInvocation = buildShellInvocation(command, { runtimePlatform: platform });
-  const invocation = wrapInvocationInSystemdUserScope(baseInvocation, {
+  let invocation = wrapInvocationInSystemdUserScope(baseInvocation, {
     runtimePlatform: platform,
     env,
     scopeId: `foreground-${Date.now()}-${process.pid}`,
   });
+  if (platform.isLinux && !invocation.systemdControl) {
+    invocation = wrapInvocationInSystemdUserService(baseInvocation, {
+      runtimePlatform: platform,
+      env,
+      cwd,
+      unitId: `foreground-${Date.now()}-${process.pid}`,
+    });
+  }
+  if (platform.isLinux && !invocation.systemdControl) {
+    const unsharePath = env.YEAFT_UNSHARE_PATH || '/usr/bin/unshare';
+    if (!existsSync(unsharePath)) {
+      throw new Error(
+        'Foreground Bash requires systemd-run or unshare on Linux so timeout can guarantee complete process-tree cleanup. Use background=true or install util-linux.',
+      );
+    }
+    invocation = {
+      command: process.execPath,
+      args: [LINUX_NAMESPACE_HELPER, '--', baseInvocation.command, ...(baseInvocation.args || [])],
+      family: baseInvocation.family,
+      systemdControl: null,
+    };
+  }
   return runProcess(invocation.command, invocation.args, {
     cwd,
     env,
@@ -52,6 +83,7 @@ function runCommand(command, { cwd, timeout, signal, runtimePlatform }) {
     timeoutMs: timeout,
     maxBytes: MAX_OUTPUT,
     requireExitConfirmation: true,
+    systemdScope: invocation.systemdControl,
     platform: platform.platform,
   }).then(result => ({
     stdout: result.stdout,

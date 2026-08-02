@@ -403,10 +403,35 @@ describe('Engine', () => {
         "import { createServer } from 'node:http';",
         "import { writeFileSync } from 'node:fs';",
         "const server = createServer((req, res) => {",
-        "  req.resume();",
+        "  let body = '';",
+        "  req.on('data', chunk => { body += chunk; });",
         "  req.on('end', () => {",
-        "    res.writeHead(401, { 'content-type': 'application/json' });",
-        "    res.end(JSON.stringify({ error: { message: 'forced cli auth failure' } }));",
+        "    if (!body.includes('succeed second')) {",
+        "      res.writeHead(401, { 'content-type': 'application/json' });",
+        "      res.end(JSON.stringify({ error: { message: 'forced cli auth failure' } }));",
+        "      return;",
+        "    }",
+        "    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });",
+        "    res.end([",
+        "      'event: message_start',",
+        "      'data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}',",
+        "      '',",
+        "      'event: content_block_start',",
+        "      'data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}',",
+        "      '',",
+        "      'event: content_block_delta',",
+        "      'data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"success\"}}',",
+        "      '',",
+        "      'event: content_block_stop',",
+        "      'data: {\"type\":\"content_block_stop\",\"index\":0}',",
+        "      '',",
+        "      'event: message_delta',",
+        "      'data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}',",
+        "      '',",
+        "      'event: message_stop',",
+        "      'data: {\"type\":\"message_stop\"}',",
+        "      '',",
+        "    ].join('\\n'));",
         "  });",
         "});",
         "server.listen(0, '127.0.0.1', () => writeFileSync(process.argv[2], String(server.address().port)));",
@@ -462,6 +487,70 @@ describe('Engine', () => {
         });
         expect(cliExit).toEqual({ code: 1, signal: null });
         expect(cliStderr).toContain('Error: LLM provider returned HTTP 401');
+
+        const runCli = (args, input) => {
+          const child = spawn(process.execPath, [
+            join(process.cwd(), 'agent', 'yeaft', 'cli.js'),
+            '--skip-mcp',
+            '--skip-skills',
+            ...args,
+          ], {
+            cwd: process.cwd(),
+            env: {
+              ...process.env,
+              YEAFT_DIR: cliDir,
+              YEAFT_SKIP_MANAGED_CLI_INSTALLS: 'true',
+            },
+          });
+          let stdout = '';
+          let stderr = '';
+          child.stdout.on('data', chunk => { stdout += chunk; });
+          child.stderr.on('data', chunk => { stderr += chunk; });
+          child.stdin.end(input);
+          return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+              child.kill('SIGKILL');
+              reject(new Error(`CLI timed out; stdout=${stdout}; stderr=${stderr}`));
+            }, 30_000);
+            child.once('error', reject);
+            child.once('close', (code, signal) => {
+              clearTimeout(timer);
+              resolve({ code, signal, stdout, stderr });
+            });
+          });
+        };
+        const streamResult = await runCli([
+          '--input-format', 'stream-json',
+          '--output-format', 'stream-json',
+        ], [
+          JSON.stringify({ type: 'prompt', prompt: 'fail first' }),
+          JSON.stringify({ type: 'prompt', prompt: 'succeed second' }),
+          '',
+        ].join('\n'));
+        const streamEvents = streamResult.stdout.trim().split('\n').map(line => JSON.parse(line));
+        expect(streamEvents.filter(event => event.type === 'result').map(event => event.is_error))
+          .toEqual([true, false]);
+        expect(streamResult).toMatchObject({ code: 1, signal: null });
+
+        const defaultReplResult = await runCli([], 'fail the turn\n/exit\n');
+        expect(defaultReplResult.stderr).toContain('Error:');
+        expect(defaultReplResult).toMatchObject({ code: 1, signal: null });
+
+        const sessionId = 'session_cli_exit_status';
+        const sessionDir = join(cliDir, 'sessions', sessionId);
+        mkdirSync(sessionDir, { recursive: true });
+        writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({
+          id: sessionId,
+          name: 'CLI exit status',
+          roster: ['linus'],
+          defaultVpId: 'linus',
+          announcement: '',
+          workDir: '',
+          createdAt: new Date().toISOString(),
+        }));
+        const replResult = await runCli(['--session-id', sessionId], 'fail the turn\n/exit\n');
+        expect(replResult.stderr).toContain('Error:');
+        expect(replResult).toMatchObject({ code: 1, signal: null });
       } finally {
         cliServer.kill('SIGTERM');
         await new Promise(resolve => cliServer.once('close', resolve));
@@ -1684,68 +1773,77 @@ describe('Engine', () => {
       });
 
       expect(bashTool.timeoutMs).toBeGreaterThan(120_000);
-      if (process.platform !== 'win32') {
-        const bashRoot = mkdtempSync(join(tmpdir(), 'yeaft-bash-timeout-'));
-        const markerPath = join(bashRoot, 'survived');
-        const pidPath = join(bashRoot, 'pid');
-        const escapedMarker = JSON.stringify(markerPath);
-        const escapedPid = JSON.stringify(pidPath);
-        const bashAdapter = new MockAdapter();
-        bashAdapter.pushResponse([
-          {
-            type: 'tool_call',
-            id: 'call_bash_timeout',
-            name: 'Bash',
-            input: {
-              command: `echo $$ > ${escapedPid}; trap '' TERM; sleep 2; printf survived > ${escapedMarker}`,
-              timeout_ms: 1000,
-            },
-          },
-          { type: 'stop', stopReason: 'tool_use' },
-        ]);
-        bashAdapter.pushResponse([
-          { type: 'text_delta', text: 'The command timed out; use a background task for long-running work.' },
-          { type: 'stop', stopReason: 'end_turn' },
-        ]);
-        const bashRegistry = new ToolRegistry();
-        bashRegistry.register(bashTool);
-        const bashEngine = new Engine({
-          adapter: bashAdapter,
-          trace,
-          config: { model: 'test-model', maxOutputTokens: 1024 },
-          toolRegistry: bashRegistry,
-        });
-        const bashEvents = [];
+      if (process.platform === 'linux') {
         const priorDisableScope = process.env.YEAFT_DISABLE_SYSTEMD_SCOPE;
-        process.env.YEAFT_DISABLE_SYSTEMD_SCOPE = '1';
         try {
-          for await (const event of bashEngine.query({ prompt: 'run the command', workDir: bashRoot })) {
-            bashEvents.push(event);
+          for (const disableSystemdScope of [true, false]) {
+            if (disableSystemdScope) process.env.YEAFT_DISABLE_SYSTEMD_SCOPE = '1';
+            else delete process.env.YEAFT_DISABLE_SYSTEMD_SCOPE;
+            const bashRoot = mkdtempSync(join(tmpdir(), 'yeaft-bash-timeout-'));
+            const markerPath = join(bashRoot, 'survived');
+            const pidPath = join(bashRoot, 'pid');
+            const escapedMarker = JSON.stringify(markerPath);
+            const escapedPid = JSON.stringify(pidPath);
+            const bashAdapter = new MockAdapter();
+            bashAdapter.pushResponse([
+              {
+                type: 'tool_call',
+                id: 'call_bash_timeout',
+                name: 'Bash',
+                input: {
+                  command: `setsid env -i PATH="$PATH" sh -c 'trap "" TERM; sleep 3; printf survived > "$1"' sh ${escapedMarker} >/dev/null 2>&1 & echo $! > ${escapedPid}; wait`,
+                  timeout_ms: 1000,
+                },
+              },
+              { type: 'stop', stopReason: 'tool_use' },
+            ]);
+            bashAdapter.pushResponse([
+              { type: 'text_delta', text: 'The command timed out; use a background task for long-running work.' },
+              { type: 'stop', stopReason: 'end_turn' },
+            ]);
+            const bashRegistry = new ToolRegistry();
+            bashRegistry.register(bashTool);
+            const bashEngine = new Engine({
+              adapter: bashAdapter,
+              trace,
+              config: { model: 'test-model', maxOutputTokens: 1024 },
+              toolRegistry: bashRegistry,
+            });
+            const bashEvents = [];
+            try {
+              for await (const event of bashEngine.query({ prompt: 'run the command', workDir: bashRoot })) {
+                bashEvents.push(event);
+              }
+              expect(existsSync(markerPath)).toBe(false);
+              expect(bashEvents.find(event => event.type === 'tool_end')?.output)
+                .toContain('Exit code: 124');
+              const pid = Number.parseInt(readFileSync(pidPath, 'utf8'), 10);
+              expect(() => process.kill(pid, 0)).toThrow();
+              await new Promise(resolve => setTimeout(resolve, 2250));
+              expect(existsSync(markerPath)).toBe(false);
+              expect(bashAdapter.callLog).toHaveLength(2);
+              expect(bashAdapter.callLog[1].messages.find(message => message.role === 'tool')).toMatchObject({
+                toolCallId: 'call_bash_timeout',
+                isError: false,
+              });
+              expect(bashAdapter.callLog[1].messages.find(message => message.role === 'tool').content)
+                .toContain('Exit code: 124');
+              expect(bashEvents.find(event => event.type === 'tool_end')).toMatchObject({
+                id: 'call_bash_timeout',
+                isError: false,
+              });
+              expect(bashEvents.find(event => event.type === 'error')).toBeUndefined();
+              expect(bashEvents.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+                stopReason: 'end_turn',
+                terminal: true,
+              });
+            } finally {
+              rmSync(bashRoot, { recursive: true, force: true });
+            }
           }
-          await new Promise(resolve => setTimeout(resolve, 1250));
-          expect(existsSync(markerPath)).toBe(false);
-          const pid = Number.parseInt(readFileSync(pidPath, 'utf8'), 10);
-          expect(() => process.kill(pid, 0)).toThrow();
-          expect(bashAdapter.callLog).toHaveLength(2);
-          expect(bashAdapter.callLog[1].messages.find(message => message.role === 'tool')).toMatchObject({
-            toolCallId: 'call_bash_timeout',
-            isError: false,
-          });
-          expect(bashAdapter.callLog[1].messages.find(message => message.role === 'tool').content)
-            .toContain('Exit code: 124');
-          expect(bashEvents.find(event => event.type === 'tool_end')).toMatchObject({
-            id: 'call_bash_timeout',
-            isError: false,
-          });
-          expect(bashEvents.find(event => event.type === 'error')).toBeUndefined();
-          expect(bashEvents.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
-            stopReason: 'end_turn',
-            terminal: true,
-          });
         } finally {
           if (priorDisableScope === undefined) delete process.env.YEAFT_DISABLE_SYSTEMD_SCOPE;
           else process.env.YEAFT_DISABLE_SYSTEMD_SCOPE = priorDisableScope;
-          rmSync(bashRoot, { recursive: true, force: true });
         }
       }
     });

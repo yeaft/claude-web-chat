@@ -733,6 +733,7 @@ async function runREPL(config, args) {
             break;
           case 'error':
             process.stderr.write(`\nError: ${event.error.message}\n`);
+            process.exitCode = 1;
             break;
           case 'turn_start':
             if (session.config.debug && event.turnNumber > 1) {
@@ -751,6 +752,7 @@ async function runREPL(config, args) {
       }
     } catch (err) {
       console.error(`Error: ${err.message}`);
+      process.exitCode = 1;
     }
     rl.prompt();
   });
@@ -759,7 +761,7 @@ async function runREPL(config, args) {
     await sessionRunner?.close();
     await session.shutdown();
     console.log('\nBye!');
-    process.exit(0);
+    process.exit(process.exitCode || 0);
   });
 }
 
@@ -843,20 +845,24 @@ async function runStreamJson(config, args) {
       : runStreamTurn({ engine, ...turnOptions });
   };
 
-  let lastResult = null;
+  let hadError = false;
+  const recordResult = (result) => {
+    hadError ||= result?.is_error === true;
+    return result;
+  };
   try {
     if (args.prompt) {
-      lastResult = await runPrompt(args.prompt);
+      recordResult(await runPrompt(args.prompt));
     } else if (input) {
       for (;;) {
         const item = await input.nextPrompt();
         if (!item) break;
-        lastResult = await runPrompt(item.prompt);
+        recordResult(await runPrompt(item.prompt));
       }
     } else {
       let prompt = '';
       for await (const chunk of process.stdin) prompt += chunk;
-      if (prompt.trim()) lastResult = await runPrompt(prompt.trim());
+      if (prompt.trim()) recordResult(await runPrompt(prompt.trim()));
     }
   } finally {
     input?.close();
@@ -866,7 +872,7 @@ async function runStreamJson(config, args) {
     console.info = originalConsole.info;
     console.debug = originalConsole.debug;
   }
-  if (lastResult?.is_error) process.exitCode = 1;
+  if (hadError) process.exitCode = 1;
 }
 
 // ─── One-shot handler ──────────────────────────────────────────

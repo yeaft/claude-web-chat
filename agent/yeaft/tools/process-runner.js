@@ -4,10 +4,11 @@ import { StringDecoder } from 'node:string_decoder';
 const DEFAULT_MAX_BYTES = 512 * 1024;
 const DEFAULT_KILL_GRACE_MS = 250;
 const DEFAULT_FORCE_SETTLE_MS = 1000;
+const CONFIRMATION_POLL_MS = 25;
 
 export class ProcessTerminationError extends Error {
   constructor(command, forceSettleMs) {
-    super(`Process did not exit within ${forceSettleMs}ms after SIGKILL: ${command}`);
+    super(`Process tree did not exit within ${forceSettleMs}ms after SIGKILL: ${command}`);
     this.name = 'ProcessTerminationError';
     this.command = command;
     this.forceSettleMs = forceSettleMs;
@@ -23,7 +24,54 @@ function abortError(signal) {
   return error;
 }
 
-function killProcessTree(proc, signal, platform, spawnProcessSync) {
+function signalSystemdScope(scope, signalName, spawnProcessSync) {
+  if (!scope?.unit || !scope?.systemctlPath) return false;
+  try {
+    const result = spawnProcessSync(scope.systemctlPath, [
+      '--user',
+      'kill',
+      `--signal=${signalName}`,
+      scope.unit,
+    ], {
+      env: scope.env || process.env,
+      encoding: 'utf8',
+      stdio: 'ignore',
+      timeout: 5000,
+      windowsHide: true,
+    });
+    return !result.error && result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function isSystemdScopeInactive(scope, spawnProcessSync) {
+  if (!scope?.unit || !scope?.systemctlPath) return true;
+  try {
+    const result = spawnProcessSync(scope.systemctlPath, [
+      '--user',
+      'show',
+      '--property=ActiveState',
+      '--value',
+      scope.unit,
+    ], {
+      env: scope.env || process.env,
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true,
+    });
+    const state = String(result.stdout || '').trim();
+    if (!result.error && result.status === 0) {
+      return state === 'inactive' || state === 'failed';
+    }
+    return /(?:could not be found|not found|does not exist|not loaded)/i
+      .test(String(result.stderr || ''));
+  } catch {
+    return false;
+  }
+}
+
+function killProcessTree(proc, signalName, platform, spawnProcessSync, systemdScope) {
   if (!proc.pid) return false;
   if (platform === 'win32') {
     try {
@@ -34,14 +82,18 @@ function killProcessTree(proc, signal, platform, spawnProcessSync) {
       });
       if (!result.error && result.status === 0) return true;
     } catch {}
-    try { return proc.kill(signal) !== false; } catch { return false; }
+    try { return proc.kill(signalName) !== false; } catch { return false; }
   }
+
+  let signalled = signalSystemdScope(systemdScope, signalName, spawnProcessSync);
   try {
-    process.kill(-proc.pid, signal);
-    return true;
-  } catch {
-    try { return proc.kill(signal) !== false; } catch { return false; }
-  }
+    process.kill(-proc.pid, signalName);
+    signalled = true;
+  } catch {}
+  try {
+    if (proc.kill(signalName) !== false) signalled = true;
+  } catch {}
+  return signalled;
 }
 
 /**
@@ -49,7 +101,7 @@ function killProcessTree(proc, signal, platform, spawnProcessSync) {
  *
  * @param {string} command
  * @param {string[]} args
- * @param {{ cwd?: string, signal?: AbortSignal, timeoutMs?: number, maxBytes?: number, env?: NodeJS.ProcessEnv, preserveCarriageReturns?: boolean, killGraceMs?: number, forceSettleMs?: number, requireExitConfirmation?: boolean, platform?: NodeJS.Platform, spawnProcess?: typeof spawn, spawnProcessSync?: typeof spawnSync }} [options]
+ * @param {{ cwd?: string, signal?: AbortSignal, timeoutMs?: number, maxBytes?: number, env?: NodeJS.ProcessEnv, preserveCarriageReturns?: boolean, killGraceMs?: number, forceSettleMs?: number, requireExitConfirmation?: boolean, systemdScope?: { unit: string, systemctlPath: string, env?: NodeJS.ProcessEnv } | null, platform?: NodeJS.Platform, spawnProcess?: typeof spawn, spawnProcessSync?: typeof spawnSync }} [options]
  */
 export function runProcess(command, args, options = {}) {
   if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
@@ -86,9 +138,12 @@ export function runProcess(command, args, options = {}) {
     let aborted = false;
     let stopRequested = false;
     let forceRequested = false;
+    let directClosed = false;
+    let directCode = null;
     let timer = null;
     let forceTimer = null;
     let forceSettleTimer = null;
+    let confirmationTimer = null;
 
     let onStdout;
     let onStderr;
@@ -98,9 +153,11 @@ export function runProcess(command, args, options = {}) {
       if (timer) clearTimeout(timer);
       if (forceTimer) clearTimeout(forceTimer);
       if (forceSettleTimer) clearTimeout(forceSettleTimer);
+      if (confirmationTimer) clearInterval(confirmationTimer);
       timer = null;
       forceTimer = null;
       forceSettleTimer = null;
+      confirmationTimer = null;
       options.signal?.removeEventListener('abort', onAbort);
       if (onStdout) proc.stdout?.off('data', onStdout);
       if (onStderr) proc.stderr?.off('data', onStderr);
@@ -133,11 +190,33 @@ export function runProcess(command, args, options = {}) {
         timedOut,
       });
     };
+    const terminationConfirmed = () => {
+      if (!options.requireExitConfirmation) return directClosed;
+      const scopeInactive = isSystemdScopeInactive(options.systemdScope, spawnProcessSync);
+      return directClosed && scopeInactive;
+    };
+    const maybeFinishStopped = () => {
+      if (settled || !stopRequested || !terminationConfirmed()) return false;
+      finish(directCode);
+      return true;
+    };
+    const startConfirmationPolling = () => {
+      if (!options.requireExitConfirmation || confirmationTimer) return;
+      confirmationTimer = setInterval(maybeFinishStopped, CONFIRMATION_POLL_MS);
+    };
     const forceStop = () => {
       if (settled || forceRequested) return;
       forceRequested = true;
-      killProcessTree(proc, 'SIGKILL', platform, spawnProcessSync);
+      killProcessTree(
+        proc,
+        'SIGKILL',
+        platform,
+        spawnProcessSync,
+        options.systemdScope,
+      );
+      if (maybeFinishStopped()) return;
       forceSettleTimer = setTimeout(() => {
+        if (maybeFinishStopped()) return;
         finish(
           null,
           options.requireExitConfirmation
@@ -145,7 +224,6 @@ export function runProcess(command, args, options = {}) {
             : null,
         );
       }, forceSettleMs);
-      forceSettleTimer.unref?.();
     };
     const stop = () => {
       if (settled || stopRequested) return;
@@ -154,7 +232,7 @@ export function runProcess(command, args, options = {}) {
         // taskkill must run while the parent PID still identifies the tree.
         // It is already forceful, so do not wait for the direct child to exit.
         forceRequested = true;
-        killProcessTree(proc, 'SIGKILL', platform, spawnProcessSync);
+        killProcessTree(proc, 'SIGKILL', platform, spawnProcessSync, null);
         if (!settled) {
           forceSettleTimer = setTimeout(() => {
             finish(
@@ -164,11 +242,17 @@ export function runProcess(command, args, options = {}) {
                 : null,
             );
           }, forceSettleMs);
-          forceSettleTimer.unref?.();
         }
         return;
       }
-      killProcessTree(proc, 'SIGTERM', platform, spawnProcessSync);
+      startConfirmationPolling();
+      killProcessTree(
+        proc,
+        'SIGTERM',
+        platform,
+        spawnProcessSync,
+        options.systemdScope,
+      );
       forceTimer = setTimeout(forceStop, killGraceMs);
       forceTimer.unref?.();
     };
@@ -201,10 +285,19 @@ export function runProcess(command, args, options = {}) {
 
     onStdout = chunk => capture(stdout, chunk, true);
     onStderr = chunk => capture(stderr, chunk, false);
+    const finishStoppedChild = () => {
+      if (!forceRequested) {
+        if (forceTimer) clearTimeout(forceTimer);
+        forceTimer = null;
+        forceStop();
+      }
+      maybeFinishStopped();
+    };
     onError = error => {
       if (settled) return;
       if (stopRequested) {
-        finish(null);
+        directClosed = true;
+        finishStoppedChild();
         return;
       }
       settled = true;
@@ -212,11 +305,11 @@ export function runProcess(command, args, options = {}) {
       reject(error);
     };
     onClose = code => {
-      if (stopRequested && !forceRequested) {
-        // The direct child is gone. Kill any process that remained in its
-        // detached group before releasing the tool call.
-        forceRequested = true;
-        killProcessTree(proc, 'SIGKILL', platform, spawnProcessSync);
+      directClosed = true;
+      directCode = code;
+      if (stopRequested) {
+        finishStoppedChild();
+        return;
       }
       finish(code);
     };
