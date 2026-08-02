@@ -9,7 +9,8 @@
  */
 
 import { spawnSync } from 'child_process';
-import { existsSync } from 'fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -133,20 +134,25 @@ export function wrapInvocationInSystemdUserService(invocation, {
   const safePrefix = sanitizeSystemdUnitPart(unitPrefix).slice(0, 48);
   const safeId = sanitizeSystemdUnitPart(unitId);
   const unit = `${safePrefix}-${safeId}`.slice(0, UNIT_MAX_LENGTH) + '.service';
-  const encodedInvocation = Buffer.from(JSON.stringify([
-    invocation.command,
-    invocation.args || [],
-  ])).toString('base64url');
-  const serviceEnv = {
-    ...env,
-    YEAFT_SYSTEMD_INVOCATION: encodedInvocation,
-  };
+  const payloadDir = mkdtempSync(join(tmpdir(), 'yeaft-systemd-invocation-'));
+  const payloadPath = join(payloadDir, 'invocation.json');
+  const cleanup = () => rmSync(payloadDir, { recursive: true, force: true });
+  try {
+    chmodSync(payloadDir, 0o700);
+    writeFileSync(payloadPath, JSON.stringify({
+      command: invocation.command,
+      args: invocation.args || [],
+      cwd,
+      env,
+    }), { mode: 0o600 });
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
   return {
     command: systemdRun,
     args: [
       '--user',
-      `--working-directory=${cwd}`,
-      ...Object.entries(serviceEnv).map(([name, value]) => `--setenv=${name}=${value}`),
       '--wait',
       '--pipe',
       '--quiet',
@@ -157,10 +163,12 @@ export function wrapInvocationInSystemdUserService(invocation, {
       '--',
       process.execPath,
       SYSTEMD_SERVICE_RUNNER,
+      payloadPath,
     ],
     family: invocation.family,
     systemdScope: unit,
     systemdControl: { unit, systemctlPath, env },
+    cleanup,
     wrappedCommand: invocation.command,
   };
 }

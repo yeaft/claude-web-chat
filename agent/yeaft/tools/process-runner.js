@@ -101,10 +101,13 @@ function killProcessTree(proc, signalName, platform, spawnProcessSync, systemdSc
  *
  * @param {string} command
  * @param {string[]} args
- * @param {{ cwd?: string, signal?: AbortSignal, timeoutMs?: number, maxBytes?: number, env?: NodeJS.ProcessEnv, preserveCarriageReturns?: boolean, killGraceMs?: number, forceSettleMs?: number, requireExitConfirmation?: boolean, systemdScope?: { unit: string, systemctlPath: string, env?: NodeJS.ProcessEnv } | null, platform?: NodeJS.Platform, spawnProcess?: typeof spawn, spawnProcessSync?: typeof spawnSync }} [options]
+ * @param {{ cwd?: string, signal?: AbortSignal, timeoutMs?: number, maxBytes?: number, env?: NodeJS.ProcessEnv, preserveCarriageReturns?: boolean, killGraceMs?: number, forceSettleMs?: number, requireExitConfirmation?: boolean, systemdScope?: { unit: string, systemctlPath: string, env?: NodeJS.ProcessEnv } | null, onSettled?: (() => void) | null, platform?: NodeJS.Platform, spawnProcess?: typeof spawn, spawnProcessSync?: typeof spawnSync }} [options]
  */
 export function runProcess(command, args, options = {}) {
-  if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
+  if (options.signal?.aborted) {
+    try { options.onSettled?.(); } catch {}
+    return Promise.reject(abortError(options.signal));
+  }
 
   return new Promise((resolve, reject) => {
     const platform = options.platform || process.platform;
@@ -119,13 +122,20 @@ export function runProcess(command, args, options = {}) {
     const forceSettleMs = Number.isFinite(options.forceSettleMs)
       ? Math.max(1, options.forceSettleMs)
       : DEFAULT_FORCE_SETTLE_MS;
-    const proc = spawnProcess(command, args, {
-      cwd: options.cwd,
-      env: options.env || process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      detached: platform !== 'win32',
-    });
+    let proc;
+    try {
+      proc = spawnProcess(command, args, {
+        cwd: options.cwd,
+        env: options.env || process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        detached: platform !== 'win32',
+      });
+    } catch (error) {
+      try { options.onSettled?.(); } catch {}
+      reject(error);
+      return;
+    }
     const stdout = [];
     const stderr = [];
     let stdoutBytes = 0;
@@ -149,7 +159,10 @@ export function runProcess(command, args, options = {}) {
     let onStderr;
     let onError;
     let onClose;
+    let cleanedUp = false;
     const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
       if (timer) clearTimeout(timer);
       if (forceTimer) clearTimeout(forceTimer);
       if (forceSettleTimer) clearTimeout(forceSettleTimer);
@@ -163,6 +176,7 @@ export function runProcess(command, args, options = {}) {
       if (onStderr) proc.stderr?.off('data', onStderr);
       if (onError) proc.off('error', onError);
       if (onClose) proc.off('close', onClose);
+      try { options.onSettled?.(); } catch {}
     };
     const decode = (chunks, wasTruncated, preserveCarriageReturns = false) => {
       const decoder = new StringDecoder('utf8');

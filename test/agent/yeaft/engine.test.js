@@ -406,13 +406,21 @@ describe('Engine', () => {
         "  let body = '';",
         "  req.on('data', chunk => { body += chunk; });",
         "  req.on('end', () => {",
-        "    if (!body.includes('succeed second')) {",
-        "      res.writeHead(401, { 'content-type': 'application/json' });",
-        "      res.end(JSON.stringify({ error: { message: 'forced cli auth failure' } }));",
-        "      return;",
-        "    }",
-        "    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });",
-        "    res.end([",
+        "    let latestUser = '';",
+        "    try {",
+        "      const parsed = JSON.parse(body);",
+        "      const users = (parsed.messages || []).filter(message => message.role === 'user');",
+        "      latestUser = JSON.stringify(users.at(-1)?.content || '');",
+        "    } catch {}",
+        "    const delayMs = latestUser.includes('delayed') ? 1000 : 0;",
+        "    setTimeout(() => {",
+        "      if (!latestUser.includes('succeed')) {",
+        "        res.writeHead(401, { 'content-type': 'application/json' });",
+        "        res.end(JSON.stringify({ error: { message: 'forced cli auth failure' } }));",
+        "        return;",
+        "      }",
+        "      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });",
+        "      res.end([",
         "      'event: message_start',",
         "      'data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}',",
         "      '',",
@@ -432,6 +440,7 @@ describe('Engine', () => {
         "      'data: {\"type\":\"message_stop\"}',",
         "      '',",
         "    ].join('\\n'));",
+        "    }, delayMs);",
         "  });",
         "});",
         "server.listen(0, '127.0.0.1', () => writeFileSync(process.argv[2], String(server.address().port)));",
@@ -532,9 +541,19 @@ describe('Engine', () => {
           .toEqual([true, false]);
         expect(streamResult).toMatchObject({ code: 1, signal: null });
 
-        const defaultReplResult = await runCli([], 'fail the turn\n/exit\n');
-        expect(defaultReplResult.stderr).toContain('Error:');
-        expect(defaultReplResult).toMatchObject({ code: 1, signal: null });
+        const defaultSuccessStartedAt = Date.now();
+        const defaultSuccess = await runCli(['-i'], 'delayed succeed\n/exit\n');
+        expect(Date.now() - defaultSuccessStartedAt).toBeGreaterThanOrEqual(900);
+        expect(defaultSuccess.stdout).toContain('success');
+        expect(defaultSuccess.stderr).not.toContain('ERR_USE_AFTER_CLOSE');
+        expect(defaultSuccess).toMatchObject({ code: 0, signal: null });
+
+        const defaultFailureStartedAt = Date.now();
+        const defaultFailure = await runCli(['-i'], 'delayed fail\n/exit\n');
+        expect(Date.now() - defaultFailureStartedAt).toBeGreaterThanOrEqual(900);
+        expect(defaultFailure.stderr).toContain('Error:');
+        expect(defaultFailure.stderr).not.toContain('ERR_USE_AFTER_CLOSE');
+        expect(defaultFailure).toMatchObject({ code: 1, signal: null });
 
         const sessionId = 'session_cli_exit_status';
         const sessionDir = join(cliDir, 'sessions', sessionId);
@@ -548,15 +567,25 @@ describe('Engine', () => {
           workDir: '',
           createdAt: new Date().toISOString(),
         }));
-        const replResult = await runCli(['--session-id', sessionId], 'fail the turn\n/exit\n');
-        expect(replResult.stderr).toContain('Error:');
-        expect(replResult).toMatchObject({ code: 1, signal: null });
+        const sessionSuccessStartedAt = Date.now();
+        const sessionSuccess = await runCli(['-i', '--session-id', sessionId], 'delayed succeed\n/exit\n');
+        expect(Date.now() - sessionSuccessStartedAt).toBeGreaterThanOrEqual(900);
+        expect(sessionSuccess.stdout).toContain('success');
+        expect(sessionSuccess.stderr).not.toContain('ERR_USE_AFTER_CLOSE');
+        expect(sessionSuccess).toMatchObject({ code: 0, signal: null });
+
+        const sessionFailureStartedAt = Date.now();
+        const sessionFailure = await runCli(['-i', '--session-id', sessionId], 'delayed fail\n/exit\n');
+        expect(Date.now() - sessionFailureStartedAt).toBeGreaterThanOrEqual(900);
+        expect(sessionFailure.stderr).toContain('Error:');
+        expect(sessionFailure.stderr).not.toContain('ERR_USE_AFTER_CLOSE');
+        expect(sessionFailure).toMatchObject({ code: 1, signal: null });
       } finally {
         cliServer.kill('SIGTERM');
         await new Promise(resolve => cliServer.once('close', resolve));
         rmSync(cliDir, { recursive: true, force: true });
       }
-    });
+    }, 30_000);
 
     it('should yield error for whitespace-only prompt', async () => {
       const engine = new Engine({
@@ -1774,6 +1803,51 @@ describe('Engine', () => {
 
       expect(bashTool.timeoutMs).toBeGreaterThan(120_000);
       if (process.platform === 'linux') {
+        const canary = `pr1483-${Date.now()}-${process.pid}`;
+        const probeRoot = mkdtempSync(join(tmpdir(), 'yeaft-systemd-payload-'));
+        const bashModuleUrl = new URL('../../../agent/yeaft/tools/bash.js', import.meta.url).href;
+        const probe = spawn(process.execPath, [
+          '--input-type=module',
+          '-e',
+          `import bashTool from ${JSON.stringify(bashModuleUrl)}; await bashTool.execute({ command: 'sleep 3' }, { cwd: ${JSON.stringify(probeRoot)} });`,
+        ], {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            YEAFT_DISABLE_SYSTEMD_SCOPE: '1',
+            PR1483_CANARY: canary,
+          },
+          stdio: ['ignore', 'ignore', 'pipe'],
+        });
+        let probeStderr = '';
+        probe.stderr.on('data', chunk => { probeStderr += chunk; });
+        try {
+          let systemdRunCmdline = '';
+          const deadline = Date.now() + 2000;
+          while (!systemdRunCmdline && Date.now() < deadline) {
+            let childPids = [];
+            try {
+              const children = readFileSync(`/proc/${probe.pid}/task/${probe.pid}/children`, 'utf8').trim();
+              childPids = children ? children.split(/\s+/).map(Number) : [];
+            } catch {}
+            for (const childPid of childPids) {
+              try {
+                const cmdline = readFileSync(`/proc/${childPid}/cmdline`).toString('utf8').replace(/\0/g, ' ');
+                if (cmdline.includes('systemd-run')) systemdRunCmdline = cmdline;
+              } catch {}
+            }
+            if (!systemdRunCmdline) await new Promise(resolve => setTimeout(resolve, 20));
+          }
+          expect(systemdRunCmdline).toContain('systemd-run');
+          expect(systemdRunCmdline).not.toContain(canary);
+          expect(systemdRunCmdline).not.toContain('--setenv=PR1483_CANARY');
+          const probeExit = await new Promise(resolve => probe.once('close', (code, signal) => resolve({ code, signal })));
+          expect(probeExit, probeStderr).toEqual({ code: 0, signal: null });
+        } finally {
+          if (probe.exitCode === null && probe.signalCode === null) probe.kill('SIGKILL');
+          rmSync(probeRoot, { recursive: true, force: true });
+        }
+
         const priorDisableScope = process.env.YEAFT_DISABLE_SYSTEMD_SCOPE;
         try {
           for (const disableSystemdScope of [true, false]) {
@@ -1846,7 +1920,7 @@ describe('Engine', () => {
           else process.env.YEAFT_DISABLE_SYSTEMD_SCOPE = priorDisableScope;
         }
       }
-    });
+    }, 30_000);
 
     it('should handle unknown tool gracefully', async () => {
       mockAdapter.pushResponse([

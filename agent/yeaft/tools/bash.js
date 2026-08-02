@@ -84,6 +84,7 @@ function runCommand(command, { cwd, timeout, signal, runtimePlatform }) {
     maxBytes: MAX_OUTPUT,
     requireExitConfirmation: true,
     systemdScope: invocation.systemdControl,
+    onSettled: invocation.cleanup || null,
     platform: platform.platform,
   }).then(result => ({
     stdout: result.stdout,

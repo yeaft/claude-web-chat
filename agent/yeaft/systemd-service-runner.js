@@ -1,23 +1,27 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
+import { readFileSync, rmSync } from 'node:fs';
+import { dirname } from 'node:path';
 
-let invocation;
+const payloadPath = process.argv[2];
+let payload;
 try {
-  const encoded = process.env.YEAFT_SYSTEMD_INVOCATION;
-  if (!encoded) throw new Error('missing YEAFT_SYSTEMD_INVOCATION');
-  invocation = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
-  if (!Array.isArray(invocation) || typeof invocation[0] !== 'string') {
-    throw new Error('invalid encoded invocation');
+  if (!payloadPath) throw new Error('missing invocation payload path');
+  payload = JSON.parse(readFileSync(payloadPath, 'utf8'));
+  if (!payload || typeof payload.command !== 'string' || !Array.isArray(payload.args)) {
+    throw new Error('invalid invocation payload');
   }
 } catch (error) {
-  console.error(`Unable to decode systemd service command: ${error.message}`);
+  console.error(`Unable to read systemd service command: ${error.message}`);
   process.exit(126);
+} finally {
+  if (payloadPath) rmSync(dirname(payloadPath), { recursive: true, force: true });
 }
 
-const child = spawn(invocation[0], Array.isArray(invocation[1]) ? invocation[1] : [], {
-  cwd: process.cwd(),
-  env: process.env,
+const child = spawn(payload.command, payload.args, {
+  cwd: payload.cwd || process.cwd(),
+  env: payload.env || process.env,
   stdio: 'inherit',
 });
 const forward = signal => {

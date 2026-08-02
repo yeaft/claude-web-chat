@@ -392,12 +392,19 @@ async function runREPL(config, args) {
     prompt: `yeaft> `,
   });
 
+  let closeRequested = false;
+  let lineQueue = Promise.resolve();
+  let shutdownPromise = null;
+  const promptIfOpen = () => {
+    if (!closeRequested) rl.prompt();
+  };
+
   rl.prompt();
 
-  rl.on('line', async (line) => {
+  const handleLine = async (line) => {
     const input = line.trim();
     if (!input) {
-      rl.prompt();
+      promptIfOpen();
       return;
     }
 
@@ -661,13 +668,14 @@ async function runREPL(config, args) {
         case 'quit':
         case 'exit':
         case 'q':
-          rl.close(); // close handler does shutdown + process.exit()
-          return; // don't call rl.prompt() below
+          closeRequested = true;
+          rl.close();
+          return;
 
         default:
           console.log(`Unknown command: /${cmd}. Type /help for commands.`);
       }
-      rl.prompt();
+      promptIfOpen();
       return;
     }
 
@@ -690,7 +698,7 @@ async function runREPL(config, args) {
         });
         console.log();
         if (outcome.results.some(result => result.error)) process.exitCode = 1;
-        rl.prompt();
+        promptIfOpen();
         return;
       }
 
@@ -754,15 +762,34 @@ async function runREPL(config, args) {
       console.error(`Error: ${err.message}`);
       process.exitCode = 1;
     }
-    rl.prompt();
+    promptIfOpen();
+  };
+
+  rl.on('line', line => {
+    lineQueue = lineQueue.then(() => handleLine(line)).catch(error => {
+      console.error(`Error: ${error.message}`);
+      process.exitCode = 1;
+    });
   });
 
-  rl.on('close', async () => {
-    await sessionRunner?.close();
-    await session.shutdown();
-    console.log('\nBye!');
-    process.exit(process.exitCode || 0);
+  rl.on('close', () => {
+    closeRequested = true;
+    if (!shutdownPromise) {
+      shutdownPromise = lineQueue.catch(error => {
+        console.error(`Error: ${error.message}`);
+        process.exitCode = 1;
+      }).then(async () => {
+        await sessionRunner?.close();
+        await session.shutdown();
+        console.log('\nBye!');
+      }).catch(error => {
+        console.error(`Error: ${error.message}`);
+        process.exitCode = 1;
+      });
+    }
   });
+  await new Promise(resolve => rl.once('close', resolve));
+  await shutdownPromise;
 }
 
 // ─── Structured stdio handler ──────────────────────────────────
