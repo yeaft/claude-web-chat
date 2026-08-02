@@ -63,6 +63,7 @@ function runnerRuntime(calls, defaultWorkDir = '') {
     adapter: {
       async *stream(params) {
         calls.push(params);
+        params.onRequestStart?.();
         yield { type: 'text_delta', text: '{"outcome":"completed","summary":"Safe","evidence":[]}' };
         yield { type: 'stop', stopReason: 'end_turn' };
       },
@@ -2334,6 +2335,7 @@ describe('Work Center store migration', () => {
           adapter: {
             async *stream(params) {
               calls.push(params);
+              params.onRequestStart?.();
               yield { type: 'text_delta', text: '{"outcome":"completed","summary":"Verified","evidence":[]}' };
               yield { type: 'stop', stopReason: 'end_turn' };
             },

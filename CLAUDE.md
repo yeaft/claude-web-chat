@@ -84,13 +84,14 @@ eval/            — 评估脚本
 
 1. Pre-query：召回记忆 + project docs + runtime platform + pending sub-agent notification -> 注入 system prompt / 当前 user turn
 2. 构造 messages 数组（带 compact summary、reflection message、attachment payload 时一并带上）
-3. 调 adapter.stream() -> 收集 text、thinking blocks / reasoning、tool_calls、usage、debug trace
-4. 如果有 tool_calls -> ToolRegistry 执行；普通结果进入当前 loop，后台任务 / 子 Agent 返回 task envelope 并继续异步
+3. 调 adapter.stream() -> 收集 text、thinking blocks / reasoning、tool_calls、usage、debug trace；adapter 自己负责 stream idle timeout，Web bridge 的 provider-silence watchdog 只在 provider 阶段运行
+4. 如果有 tool_calls -> ToolRegistry 执行；工具阶段暂停 provider watchdog，由每个工具自己的 timeout 负责收束。普通工具错误作为 tool_result 进入下一轮让模型处理；无法确认停止的外部副作用工具 timeout 不做盲目续跑
 5. Tool folding：T1 在 turn 内按 `TOOL_BATCH_SIZE = 30` 折叠长工具弧；T2 在 end_turn 对超过 `TURN_SUMMARY_THRESHOLD = 8` 的长 turn 做 reflection；重复同参工具调用第 3 次会插入提醒
 6. end_turn -> 持久化 messages / raw tool output / debug trace -> acknowledge sub-agent notifications -> 检查 Dream / AMS adjust / compact 触发
 7. max_tokens -> 自动续写（最多 3 次）
 8. 遇到 LLMContextError -> 强制 compact -> 重试
-9. rate limit / 5xx / idle timeout 等可重试错误会先做有界的新请求重试；若旧流已有部分文本，则把它作为不完整 assistant 上下文并用隐藏 continuation 续写，避免重放已显示内容；重试耗尽且配置了 fallbackModel 时再换 model
+9. rate limit / 5xx / idle timeout 及未明确为永久拒绝的 403 等可恢复错误会先做有界的新请求重试；若旧流已有部分文本，则把它作为不完整 assistant 上下文并用隐藏 continuation 续写，避免重放已显示内容；重试耗尽且配置了 fallbackModel 时再换 model
+10. `Engine.query()` 是 terminal boundary：正常完成、abort、handoff 或不可恢复错误都必须发出 `turn_end{terminal:true}`；内部 loop 边界的 `turn_end` 不带 terminal。任何未被内部状态机处理的异常会转成可诊断 `error` + terminal `turn_end`，不会让 VP 无声停在半个 turn
 
 ### LLM 层（agent/yeaft/llm/）— Yeaft Code Agent provider 集成
 ```

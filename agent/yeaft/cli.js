@@ -392,12 +392,28 @@ async function runREPL(config, args) {
     prompt: `yeaft> `,
   });
 
+  let closeRequested = false;
+  let lineQueue = Promise.resolve();
+  let shutdownPromise = null;
+  let acceptedLineSequence = 0;
+  let exitLineSequence = Number.POSITIVE_INFINITY;
+  const isExitLine = line => {
+    const input = line.trim();
+    if (!input.startsWith('/')) return false;
+    const [command] = input.slice(1).split(/\s+/);
+    return command === 'quit' || command === 'exit' || command === 'q';
+  };
+  const promptIfOpen = () => {
+    if (!closeRequested) rl.prompt();
+  };
+
   rl.prompt();
 
-  rl.on('line', async (line) => {
+  const handleLine = async (line, lineSequence) => {
+    if (lineSequence > exitLineSequence) return;
     const input = line.trim();
     if (!input) {
-      rl.prompt();
+      promptIfOpen();
       return;
     }
 
@@ -661,13 +677,14 @@ async function runREPL(config, args) {
         case 'quit':
         case 'exit':
         case 'q':
-          rl.close(); // close handler does shutdown + process.exit()
-          return; // don't call rl.prompt() below
+          closeRequested = true;
+          rl.close();
+          return;
 
         default:
           console.log(`Unknown command: /${cmd}. Type /help for commands.`);
       }
-      rl.prompt();
+      promptIfOpen();
       return;
     }
 
@@ -690,7 +707,7 @@ async function runREPL(config, args) {
         });
         console.log();
         if (outcome.results.some(result => result.error)) process.exitCode = 1;
-        rl.prompt();
+        promptIfOpen();
         return;
       }
 
@@ -733,6 +750,7 @@ async function runREPL(config, args) {
             break;
           case 'error':
             process.stderr.write(`\nError: ${event.error.message}\n`);
+            process.exitCode = 1;
             break;
           case 'turn_start':
             if (session.config.debug && event.turnNumber > 1) {
@@ -751,16 +769,44 @@ async function runREPL(config, args) {
       }
     } catch (err) {
       console.error(`Error: ${err.message}`);
+      process.exitCode = 1;
     }
-    rl.prompt();
+    promptIfOpen();
+  };
+
+  rl.on('line', line => {
+    if (closeRequested) return;
+    const lineSequence = ++acceptedLineSequence;
+    const exitsRepl = isExitLine(line);
+    if (exitsRepl) {
+      exitLineSequence = lineSequence;
+      closeRequested = true;
+    }
+    lineQueue = lineQueue.then(() => handleLine(line, lineSequence)).catch(error => {
+      console.error(`Error: ${error.message}`);
+      process.exitCode = 1;
+    });
+    if (exitsRepl) rl.close();
   });
 
-  rl.on('close', async () => {
-    await sessionRunner?.close();
-    await session.shutdown();
-    console.log('\nBye!');
-    process.exit(0);
+  rl.on('close', () => {
+    closeRequested = true;
+    if (!shutdownPromise) {
+      shutdownPromise = lineQueue.catch(error => {
+        console.error(`Error: ${error.message}`);
+        process.exitCode = 1;
+      }).then(async () => {
+        await sessionRunner?.close();
+        await session.shutdown();
+        console.log('\nBye!');
+      }).catch(error => {
+        console.error(`Error: ${error.message}`);
+        process.exitCode = 1;
+      });
+    }
   });
+  await new Promise(resolve => rl.once('close', resolve));
+  await shutdownPromise;
 }
 
 // ─── Structured stdio handler ──────────────────────────────────
@@ -843,20 +889,24 @@ async function runStreamJson(config, args) {
       : runStreamTurn({ engine, ...turnOptions });
   };
 
-  let lastResult = null;
+  let hadError = false;
+  const recordResult = (result) => {
+    hadError ||= result?.is_error === true;
+    return result;
+  };
   try {
     if (args.prompt) {
-      lastResult = await runPrompt(args.prompt);
+      recordResult(await runPrompt(args.prompt));
     } else if (input) {
       for (;;) {
         const item = await input.nextPrompt();
         if (!item) break;
-        lastResult = await runPrompt(item.prompt);
+        recordResult(await runPrompt(item.prompt));
       }
     } else {
       let prompt = '';
       for await (const chunk of process.stdin) prompt += chunk;
-      if (prompt.trim()) lastResult = await runPrompt(prompt.trim());
+      if (prompt.trim()) recordResult(await runPrompt(prompt.trim()));
     }
   } finally {
     input?.close();
@@ -866,7 +916,7 @@ async function runStreamJson(config, args) {
     console.info = originalConsole.info;
     console.debug = originalConsole.debug;
   }
-  if (lastResult?.is_error) process.exitCode = 1;
+  if (hadError) process.exitCode = 1;
 }
 
 // ─── One-shot handler ──────────────────────────────────────────
@@ -922,6 +972,7 @@ async function runOnce(config, args) {
       ...(m.toolCalls && { toolCalls: m.toolCalls }),
     }));
 
+    let terminalEngineError = null;
     for await (const event of engine.query({
       prompt: args.prompt,
       messages: priorMessages,
@@ -958,6 +1009,11 @@ async function runOnce(config, args) {
           break;
         case 'error':
           process.stderr.write(`\nError: ${event.error.message}\n`);
+          if (!terminalEngineError) {
+            terminalEngineError = event.error instanceof Error
+              ? event.error
+              : new Error(String(event.error?.message || event.error || 'Engine query failed'));
+          }
           break;
         case 'turn_start':
           if (args.verbose && event.turnNumber > 1) {
@@ -968,6 +1024,7 @@ async function runOnce(config, args) {
     }
     // Final newline after streaming text
     console.log();
+    if (terminalEngineError) process.exitCode = 1;
   } finally {
     await sessionRunner?.close();
     await session.shutdown();

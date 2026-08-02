@@ -251,6 +251,27 @@ describe('Yeaft load-history first paint', () => {
     }, handlerCtx);
     expect(handlerCtx.pauseQueryTimer).toHaveBeenCalledTimes(1);
     expect(handlerCtx.resetQueryTimer).not.toHaveBeenCalled();
+
+    handlerCtx.pauseQueryTimer.mockClear();
+    __testHandleEngineEvent({
+      type: 'tool_start',
+      id: 'call-slow',
+      name: 'Bash',
+      threadId: 'main',
+    }, handlerCtx);
+    expect(handlerCtx.pauseQueryTimer).toHaveBeenCalledTimes(1);
+    expect(handlerCtx.resetQueryTimer).not.toHaveBeenCalled();
+
+    __testHandleEngineEvent({
+      type: 'tool_end',
+      id: 'call-slow',
+      name: 'Bash',
+      output: 'done',
+      isError: false,
+      threadId: 'main',
+    }, handlerCtx);
+    expect(handlerCtx.resetQueryTimer).toHaveBeenCalledTimes(1);
+
     expect(sent).toContainEqual(expect.objectContaining({
       event: expect.objectContaining({
         type: 'llm_retry',
@@ -263,6 +284,7 @@ describe('Yeaft load-history first paint', () => {
       turnId: 'turn-error',
       threadId: 'main',
     });
+    handlerCtx.resetQueryTimer.mockClear();
     __testHandleEngineEvent({ type: 'turn_start', threadId: 'main' }, handlerCtx);
     expect(handlerCtx.resetQueryTimer).toHaveBeenCalledTimes(1);
 

@@ -94,14 +94,22 @@ export function migrateYeaftConversationState(store, sourceConversationId, targe
   }
 
   const sourceUsesYeaftWatchdog = !!store._yeaftWatchdogConvs?.has(sourceConversationId);
+  const sourcePauseReasons = store._yeaftWatchdogPauseReasons?.[sourceConversationId];
+  const sourceWatchdogPaused = !!sourcePauseReasons?.size;
   const hadSourceWatchdog = !!store._processingWatchdogs?.[sourceConversationId];
-  if (removeSource && hadSourceWatchdog) stopProcessingWatchdog(store, sourceConversationId);
+  if (sourceWatchdogPaused) {
+    if (!store._yeaftWatchdogPauseReasons) store._yeaftWatchdogPauseReasons = {};
+    store._yeaftWatchdogPauseReasons[targetConversationId] = new Set(sourcePauseReasons);
+  }
+  if (removeSource && (hadSourceWatchdog || sourceWatchdogPaused)) {
+    stopProcessingWatchdog(store, sourceConversationId);
+  }
   if (removeSource && store._pongTimeouts?.[sourceConversationId]) {
     clearTimeout(store._pongTimeouts[sourceConversationId]);
     delete store._pongTimeouts[sourceConversationId];
   }
   const shouldRestoreYeaftWatchdog = removeSource
-    && (hadSourceWatchdog || sourceUsesYeaftWatchdog)
+    && (hadSourceWatchdog || sourceUsesYeaftWatchdog || sourceWatchdogPaused)
     && !!store.processingConversations?.[targetConversationId];
   if (shouldRestoreYeaftWatchdog) {
     if (store._processingWatchdogs?.[targetConversationId]) {

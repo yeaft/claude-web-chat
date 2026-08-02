@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   existsSync, linkSync, lstatSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync,
@@ -31,9 +31,11 @@ import {
   resolveManagedCliCommand,
 } from '../../../agent/yeaft/managed-cli.js';
 import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
+import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { createOutputCollector, runRipgrep, nodeGrep } from '../../../agent/yeaft/tools/grep.js';
 import { nodeDiskUsage } from '../../../agent/yeaft/tools/disk-usage.js';
 import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
+import bashTool from '../../../agent/yeaft/tools/bash.js';
 import { SEARCH_SKIP_DIRS } from '../../../agent/yeaft/tools/search-paths.js';
 
 // ─── Mock Adapter ─────────────────────────────────────────────
@@ -370,7 +372,7 @@ describe('Engine', () => {
   });
 
   describe('input validation', () => {
-    it('should yield error for empty prompt', async () => {
+    it('should yield terminal errors and return a failed one-shot CLI status', async () => {
       const engine = new Engine({
         adapter: mockAdapter,
         trace,
@@ -382,12 +384,270 @@ describe('Engine', () => {
         events.push(event);
       }
 
-      expect(events).toHaveLength(1);
+      expect(events).toHaveLength(2);
       expect(events[0].type).toBe('error');
       expect(events[0].error.message).toContain('prompt is required');
+      expect(events[1]).toMatchObject({
+        type: 'turn_end',
+        turnNumber: 0,
+        stopReason: 'error',
+        terminal: true,
+      });
       // Should NOT have called adapter
       expect(mockAdapter.callLog).toHaveLength(0);
-    });
+
+      const cliDir = mkdtempSync(join(tmpdir(), 'yeaft-cli-error-'));
+      const serverScript = join(cliDir, 'server.mjs');
+      const portPath = join(cliDir, 'port');
+      const requestLogPath = join(cliDir, 'provider-requests.jsonl');
+      writeFileSync(requestLogPath, '');
+      writeFileSync(serverScript, [
+        "import { createServer } from 'node:http';",
+        "import { appendFileSync, writeFileSync } from 'node:fs';",
+        "const server = createServer((req, res) => {",
+        "  let body = '';",
+        "  req.on('data', chunk => { body += chunk; });",
+        "  req.on('end', () => {",
+        "    let latestUser = '';",
+        "    try {",
+        "      const parsed = JSON.parse(body);",
+        "      const users = (parsed.messages || []).filter(message => message.role === 'user');",
+        "      latestUser = JSON.stringify(users.at(-1)?.content || '');",
+        "    } catch {}",
+        "    appendFileSync(process.argv[3], `${latestUser}\\n`);",
+        "    const delayMs = latestUser.includes('delayed') ? 1000 : 0;",
+        "    setTimeout(() => {",
+        "      if (latestUser.includes('must-write')) {",
+        "        const marker = latestUser.match(/marker=([^\\\"\\s]+)/)?.[1] || '';",
+        "        const toolInput = JSON.stringify({ file_path: marker, content: 'unexpected write' });",
+        "        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });",
+        "        res.end([",
+        "          'event: message_start',",
+        "          'data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}',",
+        "          '',",
+        "          'event: content_block_start',",
+        "          'data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"write-after-exit\",\"name\":\"FileWrite\"}}',",
+        "          '',",
+        "          'event: content_block_delta',",
+        "          `data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: toolInput } })}` ,",
+        "          '',",
+        "          'event: content_block_stop',",
+        "          'data: {\"type\":\"content_block_stop\",\"index\":0}',",
+        "          '',",
+        "          'event: message_delta',",
+        "          'data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":1}}',",
+        "          '',",
+        "          'event: message_stop',",
+        "          'data: {\"type\":\"message_stop\"}',",
+        "          '',",
+        "        ].join('\\n'));",
+        "        return;",
+        "      }",
+        "      if (!latestUser.includes('succeed')) {",
+        "        res.writeHead(401, { 'content-type': 'application/json' });",
+        "        res.end(JSON.stringify({ error: { message: 'forced cli auth failure' } }));",
+        "        return;",
+        "      }",
+        "      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });",
+        "      res.end([",
+        "      'event: message_start',",
+        "      'data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}',",
+        "      '',",
+        "      'event: content_block_start',",
+        "      'data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}',",
+        "      '',",
+        "      'event: content_block_delta',",
+        "      'data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"success\"}}',",
+        "      '',",
+        "      'event: content_block_stop',",
+        "      'data: {\"type\":\"content_block_stop\",\"index\":0}',",
+        "      '',",
+        "      'event: message_delta',",
+        "      'data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}',",
+        "      '',",
+        "      'event: message_stop',",
+        "      'data: {\"type\":\"message_stop\"}',",
+        "      '',",
+        "    ].join('\\n'));",
+        "    }, delayMs);",
+        "  });",
+        "});",
+        "server.listen(0, '127.0.0.1', () => writeFileSync(process.argv[2], String(server.address().port)));",
+        "process.on('SIGTERM', () => server.close(() => process.exit(0)));",
+      ].join('\n'));
+      const cliServer = spawn(process.execPath, [serverScript, portPath, requestLogPath], { stdio: 'ignore' });
+      let cliResult = null;
+      try {
+        for (let i = 0; i < 200 && !existsSync(portPath); i += 1) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(existsSync(portPath)).toBe(true);
+        const cliPort = readFileSync(portPath, 'utf8').trim();
+        writeFileSync(join(cliDir, 'config.json'), JSON.stringify({
+          providers: [{
+            name: 'mock',
+            baseUrl: `http://127.0.0.1:${cliPort}`,
+            apiKey: 'test',
+            protocol: 'anthropic',
+            models: ['claude-test'],
+          }],
+          primaryModel: 'mock/claude-test',
+          llmRetry: { maxRetries: 0, forbiddenRetryDelaysMs: [] },
+        }));
+        writeFileSync(join(cliDir, 'models_dev_cache.json'), '{}');
+        cliResult = spawn(process.execPath, [
+          join(process.cwd(), 'agent', 'yeaft', 'cli.js'),
+          '--skip-mcp',
+          '--skip-skills',
+          'trigger auth failure',
+        ], {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            YEAFT_DIR: cliDir,
+            YEAFT_SKIP_MANAGED_CLI_INSTALLS: 'true',
+          },
+        });
+        let cliStdout = '';
+        let cliStderr = '';
+        cliResult.stdout.on('data', chunk => { cliStdout += chunk; });
+        cliResult.stderr.on('data', chunk => { cliStderr += chunk; });
+        const cliExit = await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            cliResult.kill('SIGKILL');
+            reject(new Error(`CLI timed out; stdout=${cliStdout}; stderr=${cliStderr}`));
+          }, 30_000);
+          cliResult.once('error', reject);
+          cliResult.once('close', (code, signal) => {
+            clearTimeout(timer);
+            resolve({ code, signal });
+          });
+        });
+        expect(cliExit).toEqual({ code: 1, signal: null });
+        expect(cliStderr).toContain('Error: LLM provider returned HTTP 401');
+
+        const providerRequests = () => readFileSync(requestLogPath, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map(line => JSON.parse(line));
+        const runCli = (args, input) => {
+          const child = spawn(process.execPath, [
+            join(process.cwd(), 'agent', 'yeaft', 'cli.js'),
+            '--skip-mcp',
+            '--skip-skills',
+            ...args,
+          ], {
+            cwd: process.cwd(),
+            env: {
+              ...process.env,
+              YEAFT_DIR: cliDir,
+              YEAFT_SKIP_MANAGED_CLI_INSTALLS: 'true',
+            },
+          });
+          let stdout = '';
+          let stderr = '';
+          child.stdout.on('data', chunk => { stdout += chunk; });
+          child.stderr.on('data', chunk => { stderr += chunk; });
+          child.stdin.end(input);
+          return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+              child.kill('SIGKILL');
+              reject(new Error(`CLI timed out; stdout=${stdout}; stderr=${stderr}`));
+            }, 30_000);
+            child.once('error', reject);
+            child.once('close', (code, signal) => {
+              clearTimeout(timer);
+              resolve({ code, signal, stdout, stderr });
+            });
+          });
+        };
+        const streamResult = await runCli([
+          '--input-format', 'stream-json',
+          '--output-format', 'stream-json',
+        ], [
+          JSON.stringify({ type: 'prompt', prompt: 'fail first' }),
+          JSON.stringify({ type: 'prompt', prompt: 'succeed second' }),
+          '',
+        ].join('\n'));
+        const streamEvents = streamResult.stdout.trim().split('\n').map(line => JSON.parse(line));
+        expect(streamEvents.filter(event => event.type === 'result').map(event => event.is_error))
+          .toEqual([true, false]);
+        expect(streamResult).toMatchObject({ code: 1, signal: null });
+
+        const defaultExitMarker = join(cliDir, 'default-exit-marker');
+        const requestsBeforeImmediateExit = providerRequests().length;
+        const immediateExit = await runCli(
+          ['-i'],
+          `/exit\nmust-write marker=${defaultExitMarker}\n`,
+        );
+        expect(immediateExit).toMatchObject({ code: 0, signal: null });
+        expect(immediateExit.stdout).toContain('Bye!');
+        expect(existsSync(defaultExitMarker)).toBe(false);
+        expect(providerRequests()).toHaveLength(requestsBeforeImmediateExit);
+
+        const delayedExitMarker = join(cliDir, 'default-delayed-exit-marker');
+        const requestsBeforeDefaultSuccess = providerRequests().length;
+        const defaultSuccessStartedAt = Date.now();
+        const defaultSuccess = await runCli(
+          ['-i'],
+          `delayed succeed\n/exit\nmust-write marker=${delayedExitMarker}\n`,
+        );
+        expect(Date.now() - defaultSuccessStartedAt).toBeGreaterThanOrEqual(900);
+        expect(defaultSuccess.stdout).toContain('success');
+        expect(defaultSuccess.stderr).not.toContain('ERR_USE_AFTER_CLOSE');
+        expect(defaultSuccess).toMatchObject({ code: 0, signal: null });
+        expect(existsSync(delayedExitMarker)).toBe(false);
+        const defaultSuccessRequests = providerRequests().slice(requestsBeforeDefaultSuccess);
+        expect(defaultSuccessRequests.some(request => request.includes('delayed succeed'))).toBe(true);
+        expect(defaultSuccessRequests.some(request => request.includes('must-write'))).toBe(false);
+
+        const defaultFailureStartedAt = Date.now();
+        const defaultFailure = await runCli(['-i'], 'delayed fail\n/exit\n');
+        expect(Date.now() - defaultFailureStartedAt).toBeGreaterThanOrEqual(900);
+        expect(defaultFailure.stderr).toContain('Error:');
+        expect(defaultFailure.stderr).not.toContain('ERR_USE_AFTER_CLOSE');
+        expect(defaultFailure).toMatchObject({ code: 1, signal: null });
+
+        const sessionId = 'session_cli_exit_status';
+        const sessionDir = join(cliDir, 'sessions', sessionId);
+        mkdirSync(sessionDir, { recursive: true });
+        writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({
+          id: sessionId,
+          name: 'CLI exit status',
+          roster: ['linus'],
+          defaultVpId: 'linus',
+          announcement: '',
+          workDir: '',
+          createdAt: new Date().toISOString(),
+        }));
+        const sessionExitMarker = join(cliDir, 'session-delayed-exit-marker');
+        const requestsBeforeSessionSuccess = providerRequests().length;
+        const sessionSuccessStartedAt = Date.now();
+        const sessionSuccess = await runCli(
+          ['-i', '--session-id', sessionId],
+          `delayed succeed\n/exit\nmust-write marker=${sessionExitMarker}\n`,
+        );
+        expect(Date.now() - sessionSuccessStartedAt).toBeGreaterThanOrEqual(900);
+        expect(sessionSuccess.stdout).toContain('success');
+        expect(sessionSuccess.stderr).not.toContain('ERR_USE_AFTER_CLOSE');
+        expect(sessionSuccess).toMatchObject({ code: 0, signal: null });
+        expect(existsSync(sessionExitMarker)).toBe(false);
+        const sessionSuccessRequests = providerRequests().slice(requestsBeforeSessionSuccess);
+        expect(sessionSuccessRequests.some(request => request.includes('delayed succeed'))).toBe(true);
+        expect(sessionSuccessRequests.some(request => request.includes('must-write'))).toBe(false);
+
+        const sessionFailureStartedAt = Date.now();
+        const sessionFailure = await runCli(['-i', '--session-id', sessionId], 'delayed fail\n/exit\n');
+        expect(Date.now() - sessionFailureStartedAt).toBeGreaterThanOrEqual(900);
+        expect(sessionFailure.stderr).toContain('Error:');
+        expect(sessionFailure.stderr).not.toContain('ERR_USE_AFTER_CLOSE');
+        expect(sessionFailure).toMatchObject({ code: 1, signal: null });
+      } finally {
+        cliServer.kill('SIGTERM');
+        await new Promise(resolve => cliServer.once('close', resolve));
+        rmSync(cliDir, { recursive: true, force: true });
+      }
+    }, 30_000);
 
     it('should yield error for whitespace-only prompt', async () => {
       const engine = new Engine({
@@ -401,8 +661,9 @@ describe('Engine', () => {
         events.push(event);
       }
 
-      expect(events).toHaveLength(1);
+      expect(events).toHaveLength(2);
       expect(events[0].type).toBe('error');
+      expect(events[1]).toMatchObject({ type: 'turn_end', stopReason: 'error', terminal: true });
     });
   });
 
@@ -442,8 +703,11 @@ describe('Engine', () => {
 
       // Check turn_end
       const turnEnd = events.find(e => e.type === 'turn_end');
-      expect(turnEnd.stopReason).toBe('end_turn');
-      expect(turnEnd.turnNumber).toBe(1);
+      expect(turnEnd).toMatchObject({
+        stopReason: 'end_turn',
+        turnNumber: 1,
+        terminal: true,
+      });
 
       const continuityAdapter = new MockAdapter();
       continuityAdapter.pushResponse([
@@ -1553,8 +1817,172 @@ describe('Engine', () => {
 
       // Engine should still complete
       const lastTurnEnd = events.filter(e => e.type === 'turn_end').pop();
-      expect(lastTurnEnd.stopReason).toBe('end_turn');
-    });
+      expect(lastTurnEnd).toMatchObject({ stopReason: 'end_turn', terminal: true });
+
+      // A timed-out side-effecting tool cannot be replayed safely because its
+      // underlying promise may still be running. It must nevertheless produce
+      // a diagnostic terminal boundary instead of escaping query() after the
+      // tool_end event and leaving the VP half-open.
+      const timeoutAdapter = new MockAdapter();
+      timeoutAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_timeout', name: 'slow_side_effect', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      const timeoutRegistry = new ToolRegistry();
+      timeoutRegistry.register({
+        name: 'slow_side_effect',
+        description: 'Never settles',
+        parameters: {},
+        timeoutMs: 5,
+        sideEffectScope: 'external',
+        isReadOnly: () => false,
+        execute: async () => new Promise(() => {}),
+      });
+      const timeoutEngine = new Engine({
+        adapter: timeoutAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolRegistry: timeoutRegistry,
+      });
+      const timeoutEvents = [];
+      for await (const event of timeoutEngine.query({ prompt: 'run the slow tool' })) {
+        timeoutEvents.push(event);
+      }
+      expect(timeoutEvents.find(event => event.type === 'tool_end')).toMatchObject({
+        id: 'call_timeout',
+        isError: true,
+      });
+      expect(timeoutEvents.find(event => event.type === 'error')).toMatchObject({
+        retryable: false,
+        error: expect.objectContaining({ name: 'ToolExecutionTimeoutError' }),
+      });
+      expect(timeoutEvents.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+        turnNumber: 1,
+        stopReason: 'error',
+        terminal: true,
+        detail: expect.objectContaining({ errorName: 'ToolExecutionTimeoutError' }),
+      });
+
+      expect(bashTool.timeoutMs).toBeGreaterThan(120_000);
+      if (process.platform === 'linux') {
+        const canary = `pr1483-${Date.now()}-${process.pid}`;
+        const probeRoot = mkdtempSync(join(tmpdir(), 'yeaft-systemd-payload-'));
+        const bashModuleUrl = new URL('../../../agent/yeaft/tools/bash.js', import.meta.url).href;
+        const probe = spawn(process.execPath, [
+          '--input-type=module',
+          '-e',
+          `import bashTool from ${JSON.stringify(bashModuleUrl)}; await bashTool.execute({ command: 'sleep 3' }, { cwd: ${JSON.stringify(probeRoot)} });`,
+        ], {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            YEAFT_DISABLE_SYSTEMD_SCOPE: '1',
+            PR1483_CANARY: canary,
+          },
+          stdio: ['ignore', 'ignore', 'pipe'],
+        });
+        let probeStderr = '';
+        probe.stderr.on('data', chunk => { probeStderr += chunk; });
+        try {
+          let systemdRunCmdline = '';
+          const deadline = Date.now() + 2000;
+          while (!systemdRunCmdline && Date.now() < deadline) {
+            let childPids = [];
+            try {
+              const children = readFileSync(`/proc/${probe.pid}/task/${probe.pid}/children`, 'utf8').trim();
+              childPids = children ? children.split(/\s+/).map(Number) : [];
+            } catch {}
+            for (const childPid of childPids) {
+              try {
+                const cmdline = readFileSync(`/proc/${childPid}/cmdline`).toString('utf8').replace(/\0/g, ' ');
+                if (cmdline.includes('systemd-run')) systemdRunCmdline = cmdline;
+              } catch {}
+            }
+            if (!systemdRunCmdline) await new Promise(resolve => setTimeout(resolve, 20));
+          }
+          expect(systemdRunCmdline).toContain('systemd-run');
+          expect(systemdRunCmdline).not.toContain(canary);
+          expect(systemdRunCmdline).not.toContain('--setenv=PR1483_CANARY');
+          const probeExit = await new Promise(resolve => probe.once('close', (code, signal) => resolve({ code, signal })));
+          expect(probeExit, probeStderr).toEqual({ code: 0, signal: null });
+        } finally {
+          if (probe.exitCode === null && probe.signalCode === null) probe.kill('SIGKILL');
+          rmSync(probeRoot, { recursive: true, force: true });
+        }
+
+        const priorDisableScope = process.env.YEAFT_DISABLE_SYSTEMD_SCOPE;
+        try {
+          for (const disableSystemdScope of [true, false]) {
+            if (disableSystemdScope) process.env.YEAFT_DISABLE_SYSTEMD_SCOPE = '1';
+            else delete process.env.YEAFT_DISABLE_SYSTEMD_SCOPE;
+            const bashRoot = mkdtempSync(join(tmpdir(), 'yeaft-bash-timeout-'));
+            const markerPath = join(bashRoot, 'survived');
+            const pidPath = join(bashRoot, 'pid');
+            const escapedMarker = JSON.stringify(markerPath);
+            const escapedPid = JSON.stringify(pidPath);
+            const bashAdapter = new MockAdapter();
+            bashAdapter.pushResponse([
+              {
+                type: 'tool_call',
+                id: 'call_bash_timeout',
+                name: 'Bash',
+                input: {
+                  command: `setsid env -i PATH="$PATH" sh -c 'trap "" TERM; sleep 3; printf survived > "$1"' sh ${escapedMarker} >/dev/null 2>&1 & echo $! > ${escapedPid}; wait`,
+                  timeout_ms: 1000,
+                },
+              },
+              { type: 'stop', stopReason: 'tool_use' },
+            ]);
+            bashAdapter.pushResponse([
+              { type: 'text_delta', text: 'The command timed out; use a background task for long-running work.' },
+              { type: 'stop', stopReason: 'end_turn' },
+            ]);
+            const bashRegistry = new ToolRegistry();
+            bashRegistry.register(bashTool);
+            const bashEngine = new Engine({
+              adapter: bashAdapter,
+              trace,
+              config: { model: 'test-model', maxOutputTokens: 1024 },
+              toolRegistry: bashRegistry,
+            });
+            const bashEvents = [];
+            try {
+              for await (const event of bashEngine.query({ prompt: 'run the command', workDir: bashRoot })) {
+                bashEvents.push(event);
+              }
+              expect(existsSync(markerPath)).toBe(false);
+              expect(bashEvents.find(event => event.type === 'tool_end')?.output)
+                .toContain('Exit code: 124');
+              const pid = Number.parseInt(readFileSync(pidPath, 'utf8'), 10);
+              expect(() => process.kill(pid, 0)).toThrow();
+              await new Promise(resolve => setTimeout(resolve, 2250));
+              expect(existsSync(markerPath)).toBe(false);
+              expect(bashAdapter.callLog).toHaveLength(2);
+              expect(bashAdapter.callLog[1].messages.find(message => message.role === 'tool')).toMatchObject({
+                toolCallId: 'call_bash_timeout',
+                isError: false,
+              });
+              expect(bashAdapter.callLog[1].messages.find(message => message.role === 'tool').content)
+                .toContain('Exit code: 124');
+              expect(bashEvents.find(event => event.type === 'tool_end')).toMatchObject({
+                id: 'call_bash_timeout',
+                isError: false,
+              });
+              expect(bashEvents.find(event => event.type === 'error')).toBeUndefined();
+              expect(bashEvents.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+                stopReason: 'end_turn',
+                terminal: true,
+              });
+            } finally {
+              rmSync(bashRoot, { recursive: true, force: true });
+            }
+          }
+        } finally {
+          if (priorDisableScope === undefined) delete process.env.YEAFT_DISABLE_SYSTEMD_SCOPE;
+          else process.env.YEAFT_DISABLE_SYSTEMD_SCOPE = priorDisableScope;
+        }
+      }
+    }, 30_000);
 
     it('should handle unknown tool gracefully', async () => {
       mockAdapter.pushResponse([

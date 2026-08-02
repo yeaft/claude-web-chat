@@ -503,6 +503,14 @@ function resolveActiveDreamDebugSessionId(state) {
   return null;
 }
 
+function yeaftWatchdogOwner(event, fallback = 'session') {
+  return [
+    event?.vpId || event?.ownerVpId || 'vp',
+    event?.threadId || 'thread',
+    event?.turnId || fallback,
+  ].join(':');
+}
+
 function resolveYeaftEnvelopeConversationId(state, agentId, conversationId = null) {
   if (conversationId) return conversationId;
   return (agentId && state?.yeaftConversationIdsByAgent?.[agentId])
@@ -3751,6 +3759,17 @@ export const useChatStore = defineStore('chat', {
       if (msg.data) {
         const frameAgentId = msg.agentId || this.yeaftAgentId || this.currentAgent || null;
         const conversationId = resolveYeaftEnvelopeConversationId(this, frameAgentId, msg.conversationId);
+        if (conversationId) {
+          const frameOwner = yeaftWatchdogOwner(msg, msg.turnId || 'session');
+          // A real output frame proves provider/retry/thinking silence ended.
+          // Tool-result frames are also the authoritative tool_end boundary.
+          for (const phase of ['retry', 'retrying', 'thinking']) {
+            watchdogHelpers.resumeYeaftWatchdog(this, conversationId, `${phase}:${frameOwner}`);
+          }
+          if (msg.data?.tool_use_result) {
+            watchdogHelpers.resumeYeaftWatchdog(this, conversationId, `tool:${frameOwner}`);
+          }
+        }
         // `llm_retry` remains visible while the replacement request is silent.
         // Its first real output frame proves recovery, so clear only the retry
         // annotation; the turn itself stays active until vp_turn_end.
@@ -3912,6 +3931,31 @@ export const useChatStore = defineStore('chat', {
       // ── Metadata events ──
       const event = msg.event;
       if (!event) return;
+      const phaseEvent = {
+        ...event,
+        vpId: event.vpId || msg.vpId || null,
+        threadId: event.threadId || msg.threadId || null,
+        turnId: event.turnId || msg.turnId || null,
+      };
+      const eventConversationId = resolveYeaftEnvelopeConversationId(
+        this,
+        msg.agentId || null,
+        msg.conversationId,
+      );
+      if (eventConversationId) {
+        const owner = yeaftWatchdogOwner(phaseEvent);
+        if (event.type === 'tool_start') {
+          watchdogHelpers.pauseYeaftWatchdog(this, eventConversationId, `tool:${owner}`);
+        } else if (event.type === 'tool_end') {
+          watchdogHelpers.resumeYeaftWatchdog(this, eventConversationId, `tool:${owner}`);
+        } else if (event.type === 'llm_retry') {
+          watchdogHelpers.pauseYeaftWatchdog(this, eventConversationId, `retry:${owner}`);
+        } else if (event.type === 'vp_async_task_wait_start') {
+          watchdogHelpers.pauseYeaftWatchdog(this, eventConversationId, `async-wait:${owner}`);
+        } else if (event.type === 'vp_async_task_wait_end') {
+          watchdogHelpers.resumeYeaftWatchdog(this, eventConversationId, `async-wait:${owner}`);
+        }
+      }
 
       switch (event.type) {
         case 'project_mutation_result':
@@ -5011,6 +5055,20 @@ export const useChatStore = defineStore('chat', {
         // it aggregates multiple Agent brokers in one state table.
         case 'vp_status_changed': {
           if (!event.vpId || !event.state) break;
+          if (eventConversationId) {
+            const owner = yeaftWatchdogOwner(phaseEvent);
+            if (event.state === 'thinking' || event.state === 'retrying' || event.state === 'tool') {
+              watchdogHelpers.pauseYeaftWatchdog(
+                this,
+                eventConversationId,
+                `${event.state}:${owner}`,
+              );
+            } else if (event.state === 'streaming' || event.state === 'idle' || event.state === 'error') {
+              for (const phase of ['thinking', 'retrying', 'tool']) {
+                watchdogHelpers.resumeYeaftWatchdog(this, eventConversationId, `${phase}:${owner}`);
+              }
+            }
+          }
           const sessionId = event.sessionId || null;
           const agentId = msg.agentId || null;
           const k = vpStatusKey(agentId, sessionId, event.vpId);

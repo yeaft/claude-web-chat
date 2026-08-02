@@ -18,6 +18,12 @@ import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
 import WorkCenterPage from '../../web/components/WorkCenterPage.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
 import { migrateYeaftConversationState } from '../../web/stores/helpers/yeaft-conversation-state.js';
+import {
+  pauseYeaftWatchdog,
+  resumeYeaftWatchdog,
+  startYeaftWatchdog,
+  stopProcessingWatchdog,
+} from '../../web/stores/helpers/watchdog.js';
 import { resolveTimelineSession } from '../../web/stores/helpers/vp-timeline.js';
 import { buildYeaftSidebarSessionList } from '../../web/stores/helpers/yeaft-sidebar-sessions.js';
 import {
@@ -3315,13 +3321,16 @@ describe('message flow regressions', () => {
       timestamp: Date.now() + 60_000,
     }];
     store.processingConversations = { [localConversationId]: true };
-    store.executionStatusMap = { [localConversationId]: { currentTool: { name: 'Bash' } } };
+    store.executionStatusMap = {
+      [localConversationId]: { currentTool: { name: 'Bash' }, toolHistory: [], lastActivity: 1 },
+    };
     store.sessionHealth = { [localConversationId]: { status: 'agent-offline' } };
     store.refreshingSessionMap = { [localConversationId]: true };
     store._closedAt = { [localConversationId]: 1 };
     store._turnCompletedConvs = new Set([localConversationId]);
     store._processingWatchdogs = { [localConversationId]: setTimeout(() => {}, 60_000) };
     store._yeaftWatchdogConvs = new Set([localConversationId]);
+    store._yeaftWatchdogPauseReasons = { [localConversationId]: new Set(['tool:vp:thread:session']) };
     const request = store.beginYeaftHistoryLoad({
       agentId: 'agent-b', sessionId: 'session-b', mode: 'recent', preserveLoaded: false,
     });
@@ -3349,6 +3358,23 @@ describe('message flow regressions', () => {
     expect(store._closedAt[bridgeConversationId]).toBe(1);
     expect(store._turnCompletedConvs.has(bridgeConversationId)).toBe(true);
     expect(store._processingWatchdogs[localConversationId]).toBeUndefined();
+    expect(store._processingWatchdogs[bridgeConversationId]).toBeUndefined();
+    expect(store._yeaftWatchdogPauseReasons[localConversationId]).toBeUndefined();
+    expect([...store._yeaftWatchdogPauseReasons[bridgeConversationId]])
+      .toEqual(['tool:vp:thread:session']);
+    store.handleYeaftOutput({
+      agentId: 'agent-b',
+      conversationId: bridgeConversationId,
+      sessionId: 'session-b',
+      vpId: 'vp',
+      threadId: 'thread',
+      turnId: 'session',
+      data: {
+        type: 'user',
+        tool_use_result: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'done' }],
+      },
+    });
+    expect(store._yeaftWatchdogPauseReasons[bridgeConversationId]).toBeUndefined();
     expect(store._processingWatchdogs[bridgeConversationId]).toBeTruthy();
     clearTimeout(store._processingWatchdogs[bridgeConversationId]);
 
@@ -4239,7 +4265,86 @@ describe('message flow regressions', () => {
     });
   });
 
-  it('counts hyphenated tool-use/tool-result events as part of Yeaft assistant turns', () => {
+  it('counts Yeaft assistant turns and keeps declared long phases alive', () => {
+    const conversationId = 'yeaft-watchdog-long-phase';
+    const watchdogStore = {
+      processingConversations: { [conversationId]: true },
+      executionStatusMap: { [conversationId]: { currentTool: { name: 'Bash' } } },
+      sessionHealth: {},
+      finishStreamingForConversation: vi.fn(),
+    };
+    vi.useFakeTimers();
+    try {
+      const phaseStore = useChatStore();
+      phaseStore.yeaftConversationIdsByAgent = { 'agent-watchdog': conversationId };
+      phaseStore.processingConversations = { [conversationId]: true };
+      phaseStore.executionStatusMap = { [conversationId]: { currentTool: null, toolHistory: [] } };
+      phaseStore._processingWatchdogs = {};
+      phaseStore._yeaftWatchdogConvs = new Set();
+      phaseStore._yeaftWatchdogPauseReasons = {};
+      phaseStore.handleYeaftOutput({
+        agentId: 'agent-watchdog',
+        conversationId,
+        sessionId: 'session-watchdog',
+        event: { type: 'vp_status_changed', vpId: 'vp-watchdog', state: 'thinking' },
+      });
+      expect([...phaseStore._yeaftWatchdogPauseReasons[conversationId]])
+        .toEqual(['thinking:vp-watchdog:thread:session']);
+      vi.advanceTimersByTime(300_001);
+      expect(phaseStore.processingConversations[conversationId]).toBe(true);
+      phaseStore.handleYeaftOutput({
+        agentId: 'agent-watchdog',
+        conversationId,
+        sessionId: 'session-watchdog',
+        event: { type: 'vp_status_changed', vpId: 'vp-watchdog', state: 'streaming' },
+      });
+      expect(phaseStore._yeaftWatchdogPauseReasons[conversationId]).toBeUndefined();
+      phaseStore.handleYeaftOutput({
+        agentId: 'agent-watchdog',
+        conversationId,
+        sessionId: 'session-watchdog',
+        event: { type: 'vp_status_changed', vpId: 'vp-a', turnId: 'turn-a', state: 'thinking' },
+      });
+      phaseStore.handleYeaftOutput({
+        agentId: 'agent-watchdog',
+        conversationId,
+        sessionId: 'session-watchdog',
+        event: { type: 'vp_status_changed', vpId: 'vp-b', turnId: 'turn-b', state: 'thinking' },
+      });
+      phaseStore.handleYeaftOutput({
+        agentId: 'agent-watchdog',
+        conversationId,
+        sessionId: 'session-watchdog',
+        event: { type: 'vp_status_changed', vpId: 'vp-a', turnId: 'turn-a', state: 'streaming' },
+      });
+      expect([...phaseStore._yeaftWatchdogPauseReasons[conversationId]])
+        .toEqual(['thinking:vp-b:thread:turn-b']);
+      expect(phaseStore._processingWatchdogs[conversationId]).toBeUndefined();
+      stopProcessingWatchdog(phaseStore, conversationId);
+
+      startYeaftWatchdog(watchdogStore, conversationId);
+      pauseYeaftWatchdog(watchdogStore, conversationId);
+      vi.advanceTimersByTime(600_001);
+      expect(watchdogStore.processingConversations[conversationId]).toBe(true);
+      expect(watchdogStore.executionStatusMap[conversationId].currentTool).toEqual({ name: 'Bash' });
+      expect(watchdogStore.finishStreamingForConversation).not.toHaveBeenCalled();
+
+      resumeYeaftWatchdog(watchdogStore, conversationId);
+      vi.advanceTimersByTime(150_000);
+      expect(watchdogStore.processingConversations[conversationId]).toBeUndefined();
+      expect(watchdogStore.executionStatusMap[conversationId].currentTool).toBeNull();
+
+      watchdogStore.processingConversations[conversationId] = true;
+      startYeaftWatchdog(watchdogStore, conversationId);
+      pauseYeaftWatchdog(watchdogStore, conversationId);
+      vi.advanceTimersByTime(300_001);
+      expect(watchdogStore.processingConversations[conversationId]).toBe(true);
+      expect(watchdogStore.finishStreamingForConversation).toHaveBeenCalledTimes(1);
+    } finally {
+      stopProcessingWatchdog(watchdogStore, conversationId);
+      vi.useRealTimers();
+    }
+
     const messages = [
       { type: 'user', content: 'u1' },
       { type: 'tool-use', toolName: 'Bash', turnId: 'a', speakerVpId: 'vp-1' },

@@ -1134,6 +1134,7 @@ export class WorkItemRunner {
     let loopCount = 0;
     let toolCount = 0;
     let checkpoint = null;
+    let terminalEngineError = null;
     const toolInputs = new Map();
     const usageStats = {
       llmRequestCount: 0,
@@ -1298,9 +1299,19 @@ export class WorkItemRunner {
             resource: checkpointResource(event.name, input, workDir),
           });
         }
+        else if (event?.type === 'error' && !terminalEngineError) {
+          terminalEngineError = event.error instanceof Error
+            ? event.error
+            : new Error(String(event.error?.message || event.error || 'Work Center Engine failed'));
+        }
         if (event?.type === 'text_delta' && typeof event.text === 'string') text += event.text;
         reportProgress(event?.type === 'loop');
       }
+      // Engine.query owns the terminal protocol and converts unexpected faults
+      // into error + terminal turn_end. Consume that boundary completely, then
+      // preserve Work Center's historical rejection semantics so Run fencing,
+      // hazardous side-effect handling, and retry policy still see the failure.
+      if (terminalEngineError) throw terminalEngineError;
     } catch (error) {
       error.workItemExecutionStats = currentProgress();
       throw error;
