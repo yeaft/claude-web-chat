@@ -210,6 +210,8 @@ describe('message flow regressions', () => {
     }
     expect(yeaftCss).not.toMatch(/\.yeaft-page \.messages\s*\{[^}]*max-width:\s*90%/);
     expect(yeaftCss).not.toMatch(/\.yeaft-page \.(?:input-wrapper|input-quote-preview|attachments-preview)\s*\{[^}]*max-width:\s*90%/);
+    expect(yeaftCss).toMatch(/\.yeaft-session-input > \.input-wrapper\.chat-composer,[\s\S]*?\.yeaft-page \.expert-chips-bar\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*var\(--session-content-width\)/);
+    expect(variables).not.toContain('--yeaft-composer-max-width');
     expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-actions\s*\{[^}]*padding:\s*6px 8px 4px/);
     const sectionPaddingTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'padding');
     const sectionMarginTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'margin');

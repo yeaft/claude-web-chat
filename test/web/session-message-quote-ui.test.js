@@ -336,7 +336,6 @@ describe('Session message quote UI wiring', () => {
       '--chat-composer-focus-ring-width: 2px;',
       '--chat-composer-textarea-min-height: 4.5em;',
       '--chat-composer-control-size: 32px;',
-      '--yeaft-composer-max-width: 880px;',
       '--yeaft-composer-model-max-width: 220px;',
       '--yeaft-composer-model-mobile-max-width: 38vw;',
       '--yeaft-composer-model-font-size: 12px;',
@@ -375,7 +374,8 @@ describe('Session message quote UI wiring', () => {
     expect(inputCss).toMatch(/\.chat-composer-actions-start,[\s\S]*?gap:\s*var\(--chat-composer-control-gap\)/);
     expect(inputCss).toMatch(/\.chat-composer \.send-btn\s*\{[^}]*width:\s*var\(--chat-composer-control-size\)/);
     expect(inputCss).toMatch(/\.chat-composer \.send-btn\s*\{[^}]*height:\s*var\(--chat-composer-control-size\)/);
-    expect(yeaftCss).toMatch(/\.yeaft-session-input > \.input-wrapper\.chat-composer\s*\{[^}]*width:\s*min\(100%,\s*var\(--yeaft-composer-max-width\)\)/);
+    expect(yeaftCss).toMatch(/\.yeaft-session-input > \.input-wrapper\.chat-composer,[\s\S]*?\.yeaft-page \.expert-chips-bar\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*var\(--session-content-width\)/);
+    expect(yeaftCss).not.toContain('--yeaft-composer-max-width');
     expect(yeaftCss).not.toMatch(/\.yeaft-page \.input-wrapper(?:\.chat-composer)?\s*\{/);
     expect(yeaftCss).toMatch(/\.yeaft-topbar-folder-path\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*direction:\s*rtl;/);
     expect(yeaftCss).toMatch(/\.yeaft-page \.chat-composer-actions-start\s*\{[^}]*position:\s*relative/);
