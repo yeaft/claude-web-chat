@@ -2378,6 +2378,46 @@ test.describe('Work Center responsive UI', () => {
       }
     }
 
+    const responsiveDraft = Array.from({ length: 28 }, () => 'draft').join(' ');
+    const responsiveTextarea = conversation.locator('textarea');
+    await chatPage.setViewportSize({ width: 430, height: 900 });
+    await responsiveTextarea.fill(responsiveDraft);
+    await expect.poll(() => responsiveTextarea.evaluate(element => ({
+      visibleHeight: element.getBoundingClientRect().height,
+      inlineHeight: Number.parseFloat(element.style.height),
+      lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight),
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+      overflowY: getComputedStyle(element).overflowY,
+    }))).toMatchObject({ visibleHeight: 48, overflowY: 'auto' });
+    const mobileDraftMetrics = await responsiveTextarea.evaluate(element => ({
+      inlineHeight: Number.parseFloat(element.style.height),
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+    }));
+    expect(mobileDraftMetrics.inlineHeight).toBeGreaterThan(48);
+    expect(mobileDraftMetrics.scrollHeight).toBeGreaterThan(mobileDraftMetrics.clientHeight);
+
+    await chatPage.setViewportSize({ width: 1400, height: 900 });
+    await expect(responsiveTextarea).toHaveValue(responsiveDraft);
+    await expect.poll(() => responsiveTextarea.evaluate(element => element.getBoundingClientRect().height))
+      .toBe(72);
+    const desktopDraftMetrics = await responsiveTextarea.evaluate(element => ({
+      inlineHeight: Number.parseFloat(element.style.height),
+      lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight),
+      overflowY: getComputedStyle(element).overflowY,
+    }));
+    expect(desktopDraftMetrics.inlineHeight).toBe(desktopDraftMetrics.lineHeight * 3);
+    expect(desktopDraftMetrics.overflowY).toBe('hidden');
+
+    await chatPage.setViewportSize({ width: 430, height: 900 });
+    await expect(responsiveTextarea).toHaveValue(responsiveDraft);
+    await expect.poll(() => responsiveTextarea.evaluate(element => ({
+      visibleHeight: element.getBoundingClientRect().height,
+      overflowY: getComputedStyle(element).overflowY,
+      scrolls: element.scrollHeight > element.clientHeight,
+    }))).toEqual({ visibleHeight: 48, overflowY: 'auto', scrolls: true });
+
     for (const { width, theme } of [
       { width: 1920, theme: 'light' },
       { width: 1920, theme: 'dark' },

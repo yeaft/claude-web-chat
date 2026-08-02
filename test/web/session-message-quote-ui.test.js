@@ -15,6 +15,7 @@ describe('Session message quote UI wiring', () => {
     document.body.innerHTML = '';
     delete globalThis.marked;
     delete globalThis.hljs;
+    vi.unstubAllGlobals();
   });
 
   it('keeps the attachment badge last and separates turn progress from the final Markdown result', async () => {
@@ -277,6 +278,24 @@ describe('Session message quote UI wiring', () => {
     };
     window.Pinia = globalThis.Pinia;
 
+    let composerResizeCallback = null;
+    let pendingResizeFrame = null;
+    let nextResizeFrameId = 0;
+    const observeComposer = vi.fn();
+    const disconnectComposer = vi.fn();
+    const cancelResizeFrame = vi.fn();
+    vi.stubGlobal('ResizeObserver', class ResizeObserver {
+      constructor(callback) { composerResizeCallback = callback; }
+      observe(element) { observeComposer(element); }
+      disconnect() { disconnectComposer(); }
+    });
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback) => {
+      const id = ++nextResizeFrameId;
+      pendingResizeFrame = { id, callback };
+      return id;
+    }));
+    vi.stubGlobal('cancelAnimationFrame', cancelResizeFrame);
+
     const { default: ChatInput } = await import('../../web/components/ChatInput.js');
     const inputWrapper = mount(ChatInput, {
       props: { showStop: true, workItemFn: vi.fn() },
@@ -311,6 +330,36 @@ describe('Session message quote UI wiring', () => {
     ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(endActions.findAll('.send-btn')).toHaveLength(2);
     expect([...composer.element.children].filter(child => child.matches('.attach-btn, .work-item-draft-btn, .send-btn'))).toHaveLength(0);
+    expect(observeComposer).toHaveBeenCalledWith(composer.get('.textarea-wrapper').element);
+
+    let composerScrollHeight = 96;
+    Object.defineProperty(textarea.element, 'scrollHeight', {
+      configurable: true,
+      get: () => composerScrollHeight,
+    });
+    requestAnimationFrame.mockClear();
+    pendingResizeFrame = null;
+    composerResizeCallback([{ contentRect: { width: 480 } }]);
+    composerResizeCallback([{ contentRect: { width: 480 } }]);
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+    let resizeFrame = pendingResizeFrame;
+    pendingResizeFrame = null;
+    resizeFrame.callback(performance.now());
+    await Vue.nextTick();
+    expect(textarea.element.style.height).toBe('96px');
+    expect(textarea.classes()).not.toContain('is-scrollable');
+
+    composerScrollHeight = 160;
+    composerResizeCallback([{ contentRect: { width: 320 } }]);
+    resizeFrame = pendingResizeFrame;
+    pendingResizeFrame = null;
+    resizeFrame.callback(performance.now());
+    await Vue.nextTick();
+    expect(textarea.element.style.height).toBe('120px');
+    expect(textarea.classes()).toContain('is-scrollable');
+    requestAnimationFrame.mockClear();
+    composerResizeCallback([{ contentRect: { width: 320 } }]);
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
 
     chatStore.btwMode = true;
     await Vue.nextTick();
@@ -400,7 +449,11 @@ describe('Session message quote UI wiring', () => {
       expect(lightThemeTokens).toContain(token);
       expect(darkThemeTokens).toContain(token);
     }
+    composerResizeCallback([{ contentRect: { width: 640 } }]);
+    const pendingFrameId = pendingResizeFrame.id;
     inputWrapper.unmount();
+    expect(disconnectComposer).toHaveBeenCalledTimes(1);
+    expect(cancelResizeFrame).toHaveBeenCalledWith(pendingFrameId);
   });
 
 });
