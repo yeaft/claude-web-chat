@@ -209,6 +209,7 @@ select option:checked {
   --chat-composer-radius: 18px;
   --chat-composer-focus-ring-width: 2px;
   --chat-composer-textarea-min-height: 4.5em;
+  --chat-composer-textarea-mobile-height: 3em;
   --chat-composer-control-size: 32px;
   --yeaft-composer-max-width: 880px;
   --yeaft-composer-model-max-width: 220px;
@@ -362,6 +363,7 @@ select option:checked {
   --chat-composer-radius: 18px;
   --chat-composer-focus-ring-width: 2px;
   --chat-composer-textarea-min-height: 4.5em;
+  --chat-composer-textarea-mobile-height: 3em;
   --chat-composer-control-size: 32px;
   --yeaft-composer-max-width: 880px;
   --yeaft-composer-model-max-width: 220px;

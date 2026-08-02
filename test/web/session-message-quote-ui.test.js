@@ -297,7 +297,7 @@ describe('Session message quote UI wiring', () => {
     const startActions = actionRow.get('.chat-composer-actions-start');
     const endActions = actionRow.get('.chat-composer-actions-end');
 
-    expect(textarea.attributes('rows')).toBe('3');
+    expect(textarea.attributes('rows')).toBe('2');
     expect(actionRow.element.parentElement).toBe(composer.element);
     expect(textarea.element.compareDocumentPosition(actionRow.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(startActions.findAll('.attach-btn')).toHaveLength(1);
@@ -321,6 +321,8 @@ describe('Session message quote UI wiring', () => {
     expect(inputWrapper.findAll('.chat-composer-actions-end .send-btn')).toHaveLength(2);
 
     const inputCss = readFileSync(resolve(process.cwd(), 'web/styles/chat-input.css'), 'utf8');
+    const chatInputSource = readFileSync(resolve(process.cwd(), 'web/components/ChatInput.js'), 'utf8');
+    const messageComposerSource = readFileSync(resolve(process.cwd(), 'web/components/MessageComposer.js'), 'utf8');
     const variablesCss = readFileSync(resolve(process.cwd(), 'web/styles/variables.css'), 'utf8');
     const yeaftCss = readFileSync(resolve(process.cwd(), 'web/styles/yeaft.css'), 'utf8');
     const workCenterCss = readFileSync(resolve(process.cwd(), 'web/styles/work-center.css'), 'utf8');
@@ -335,6 +337,7 @@ describe('Session message quote UI wiring', () => {
       '--chat-composer-radius: 18px;',
       '--chat-composer-focus-ring-width: 2px;',
       '--chat-composer-textarea-min-height: 4.5em;',
+      '--chat-composer-textarea-mobile-height: 3em;',
       '--chat-composer-control-size: 32px;',
       '--yeaft-composer-max-width: 880px;',
       '--yeaft-composer-model-max-width: 220px;',
@@ -362,6 +365,7 @@ describe('Session message quote UI wiring', () => {
     expect(sessionComposer.matches(sessionComposerSelector)).toBe(true);
     expect(workCenterComposer.matches(sessionComposerSelector)).toBe(false);
     expect(workCenterSource).toContain('class="work-center-item-message-input"');
+    expect(workCenterSource).not.toContain(':rows="3"');
     expect(workCenterCss).toMatch(/\.work-center-item-message-input\s*\{[^}]*width:\s*min\(100%,\s*920px\);[^}]*max-width:\s*none;/);
 
     expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*flex-direction:\s*column/);
@@ -370,6 +374,13 @@ describe('Session message quote UI wiring', () => {
     expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*border-radius:\s*var\(--chat-composer-radius\)/);
     expect(inputCss).toMatch(/\.input-wrapper\.chat-composer:focus-within\s*\{[^}]*var\(--chat-composer-focus-ring-width\)/);
     expect(inputCss).toMatch(/\.chat-composer textarea\s*\{[^}]*min-height:\s*var\(--chat-composer-textarea-min-height\)/);
+    expect(inputCss).toMatch(/\.input-wrapper\.chat-composer textarea\.is-scrollable\s*\{[^}]*overflow-y:\s*auto;/);
+    expect(inputCss).toMatch(/\.input-wrapper textarea,[\s\S]*?\.textarea-wrapper textarea\s*\{[^}]*max-height:\s*120px;[^}]*overflow-y:\s*hidden;/);
+    expect(inputCss).toMatch(/@media \(max-width:\s*768px\)[\s\S]*?\.input-wrapper\.chat-composer textarea\s*\{[^}]*min-height:\s*var\(--chat-composer-textarea-mobile-height\);[^}]*max-height:\s*var\(--chat-composer-textarea-mobile-height\);[^}]*overflow-y:\s*auto;/);
+    expect(chatInputSource).not.toContain(':rows="3"');
+    expect(messageComposerSource).toContain('rows: { type: Number, default: 2 }');
+    expect(messageComposerSource).toContain("'is-scrollable': textareaScrollable");
+    expect(messageComposerSource).not.toContain('textarea.style.overflowY');
     expect(inputCss).toMatch(/\.chat-composer-actions\s*\{[^}]*justify-content:\s*space-between/);
     expect(inputCss).toMatch(/\.chat-composer-actions\s*\{[^}]*gap:\s*var\(--chat-composer-gap\)/);
     expect(inputCss).toMatch(/\.chat-composer-actions-start,[\s\S]*?gap:\s*var\(--chat-composer-control-gap\)/);

@@ -106,7 +106,6 @@ export default {
         :disabled="isCompacting"
         :can-send="canSend"
         :show-stop="isStopVisible"
-        :rows="3"
         :input-id="inputElementId"
         :send-label="$t('chatInput.send')"
         :stop-label="$t('chatInput.stop')"

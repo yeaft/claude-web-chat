@@ -2224,7 +2224,7 @@ test.describe('Work Center responsive UI', () => {
     const conversation = chatPage.locator('.work-center-conversation');
     const sharedComposer = conversation.locator('[data-message-composer]');
     await expect(sharedComposer).toHaveCount(1);
-    await expect(sharedComposer.locator('textarea')).toHaveAttribute('rows', '3');
+    await expect(sharedComposer.locator('textarea')).toHaveAttribute('rows', '2');
     await expect(sharedComposer.locator('.chat-composer-actions')).toBeVisible();
     const upload = chatPage.waitForResponse(response => (
       response.url().includes('/api/upload') && response.request().method() === 'POST'
@@ -2270,6 +2270,7 @@ test.describe('Work Center responsive UI', () => {
         document.documentElement.setAttribute('data-theme', value);
         localStorage.setItem('theme', value);
       }, theme);
+      await conversation.locator('textarea').fill('First line\nSecond line\nThird line');
       await chatPage.waitForTimeout(250);
 
       const metrics = await chatPage.locator('.work-center-detail').evaluate(detail => {
@@ -2320,6 +2321,12 @@ test.describe('Work Center responsive UI', () => {
           composerScrollWidth: composer.scrollWidth,
           composerClientWidth: composer.clientWidth,
           composerActionBelowTextarea: composerActions.getBoundingClientRect().top >= textarea.getBoundingClientRect().bottom,
+          composerTextareaHeight: textarea.getBoundingClientRect().height,
+          composerTextareaLineHeight: Number.parseFloat(getComputedStyle(textarea).lineHeight),
+          composerTextareaOverflowY: getComputedStyle(textarea).overflowY,
+          composerTextareaRows: textarea.rows,
+          composerTextareaClientHeight: textarea.clientHeight,
+          composerTextareaScrollHeight: textarea.scrollHeight,
           documentScrollWidth: document.documentElement.scrollWidth,
           documentClientWidth: document.documentElement.clientWidth,
           workflowBackground: getComputedStyle(workflow).backgroundColor,
@@ -2343,6 +2350,16 @@ test.describe('Work Center responsive UI', () => {
       expect(metrics.attachmentChipScrollWidth).toBeLessThanOrEqual(metrics.attachmentChipClientWidth + 1);
       expect(metrics.composerScrollWidth).toBeLessThanOrEqual(metrics.composerClientWidth + 1);
       expect(metrics.composerActionBelowTextarea).toBe(true);
+      expect(metrics.composerTextareaRows).toBe(2);
+      expect(metrics.composerTextareaHeight).toBe(width === 430
+        ? metrics.composerTextareaLineHeight * 2
+        : metrics.composerTextareaLineHeight * 3);
+      expect(metrics.composerTextareaOverflowY).toBe(width === 430 ? 'auto' : 'hidden');
+      if (width === 430) {
+        expect(metrics.composerTextareaScrollHeight).toBeGreaterThan(metrics.composerTextareaClientHeight);
+      } else {
+        expect(metrics.composerTextareaScrollHeight).toBe(metrics.composerTextareaClientHeight);
+      }
       expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.documentClientWidth + 1);
       expect(metrics.workflowBackground).toBe(metrics.detailBackground);
       expect(metrics.mainBackground).toBe('rgba(0, 0, 0, 0)');

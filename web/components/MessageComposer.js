@@ -7,7 +7,7 @@ export default {
     canSend: { type: Boolean, default: false },
     sending: { type: Boolean, default: false },
     showStop: { type: Boolean, default: false },
-    rows: { type: Number, default: 3 },
+    rows: { type: Number, default: 2 },
     inputId: { type: String, default: '' },
     sendLabel: { type: String, default: '' },
     stopLabel: { type: String, default: '' },
@@ -19,6 +19,7 @@ export default {
   emits: ['update:modelValue', 'input', 'keydown', 'paste', 'blur', 'send', 'stop'],
   setup(props, { emit }) {
     const textareaRef = Vue.ref(null);
+    const textareaScrollable = Vue.ref(false);
     const maxTextareaHeight = 120;
 
     const autoResize = () => {
@@ -27,14 +28,14 @@ export default {
       textarea.style.height = 'auto';
       const nextHeight = Math.min(textarea.scrollHeight, maxTextareaHeight);
       textarea.style.height = `${nextHeight}px`;
-      textarea.style.overflowY = textarea.scrollHeight > maxTextareaHeight ? 'auto' : 'hidden';
+      textareaScrollable.value = textarea.scrollHeight > maxTextareaHeight;
     };
 
     const resetTextareaSize = () => {
       const textarea = textareaRef.value;
       if (!textarea) return;
       textarea.style.height = 'auto';
-      textarea.style.overflowY = 'hidden';
+      textareaScrollable.value = false;
     };
 
     const onInput = (event) => {
@@ -57,6 +58,7 @@ export default {
 
     return {
       textareaRef,
+      textareaScrollable,
       autoResize,
       resetTextareaSize,
       focusInput,
@@ -74,6 +76,7 @@ export default {
           :value="modelValue"
           :id="inputId || null"
           :rows="rows"
+          :class="{ 'is-scrollable': textareaScrollable }"
           :placeholder="placeholder"
           :disabled="disabled"
           :aria-autocomplete="ariaAutocomplete"
