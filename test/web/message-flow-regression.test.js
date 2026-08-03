@@ -12,6 +12,7 @@ import {
 } from '../../web/stores/helpers/messages.js';
 import {
   calculateFloatingMenuPosition,
+  calculateFloatingSubmenuPosition,
   default as UnifiedSessionList,
 } from '../../web/components/UnifiedSessionList.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
@@ -254,7 +255,9 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-recents-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-menu-info\s*\{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row \.session-actions\s*\{[^}]*position:\s*absolute[^}]*opacity:\s*0[^}]*pointer-events:\s*none[^}]*linear-gradient\(90deg, transparent, var\(--sidebar-hover\) 22px\)/);
-    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row:hover \.session-actions,[\s\S]*?\.sidebar-session-row:focus-within \.session-actions,[\s\S]*?\.sidebar-session-row \.session-actions\.menu-open\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row:hover \.session-actions,[\s\S]*?\.sidebar-session-row \.session-actions:focus-within,[\s\S]*?\.sidebar-session-row \.session-actions\.menu-open\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).not.toContain('.sidebar-session-row:focus-within .session-actions');
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\.actions-suppressed \.session-actions\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
     expect(yeaftSidebarCss).not.toMatch(/\.yeaft-sidebar \.session-dots-btn\s*\{[^}]*opacity:\s*1/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-header > \.session-dots-btn:focus-visible\s*\{[^}]*opacity:\s*1/);
     expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-header > \.session-dots-btn\s*\{[^}]*opacity:\s*1/);
@@ -485,6 +488,8 @@ describe('message flow regressions', () => {
     expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(2);
     expect(sidebar.findAll('.session-item .session-dots-btn')).toHaveLength(3);
     expect(sidebar.findAll('.session-item .session-quick-action')).toHaveLength(6);
+    expect(sidebar.findAll('.session-remove-icon')).toHaveLength(3);
+    expect(sidebar.findAll('.session-remove-icon path').every(path => path.attributes('d').includes('m3 0-1 13'))).toBe(true);
     expect(sidebar.get('.sidebar-session-results').attributes('class')).toContain('sidebar-session-results');
     const pinnedQuickActions = firstRow.findAll('.session-quick-action');
     expect(pinnedQuickActions.map(button => button.attributes('aria-label'))).toEqual([
@@ -492,14 +497,32 @@ describe('message flow regressions', () => {
       'yeaft.session.removeFromList',
     ]);
     const selectCountBeforeQuickActions = sidebar.emitted('select')?.length || 0;
+    firstRow.element.focus();
+    expect(document.activeElement).toBe(firstRow.element);
+    await firstRow.trigger('click');
+    expect(document.activeElement).not.toBe(firstRow.element);
+    expect(firstRow.classes()).toContain('actions-suppressed');
+    expect(sidebar.emitted('select')).toHaveLength(selectCountBeforeQuickActions + 1);
+    await firstRow.trigger('pointerleave');
+    expect(firstRow.classes()).not.toContain('actions-suppressed');
+    firstRow.element.focus();
+    await firstRow.trigger('keydown', { key: 'Enter' });
+    expect(firstRow.classes()).not.toContain('actions-suppressed');
+    expect(document.activeElement).toBe(firstRow.element);
+    await firstRow.trigger('keydown', { key: ' ' });
+    expect(firstRow.classes()).not.toContain('actions-suppressed');
+    expect(document.activeElement).toBe(firstRow.element);
+    pinnedQuickActions[0].element.focus();
+    expect(document.activeElement).toBe(pinnedQuickActions[0].element);
+    const selectCountAfterRowClick = sidebar.emitted('select').length;
     await pinnedQuickActions[0].trigger('click');
-    expect(sidebar.emitted('select')?.length || 0).toBe(selectCountBeforeQuickActions);
+    expect(sidebar.emitted('select')?.length || 0).toBe(selectCountAfterRowClick);
     expect(sidebar.emitted('action').at(-1)[0]).toMatchObject({
       action: 'pin',
       row: { catalogKey: 'yeaft:user_1770305719:server-instance:pinned' },
     });
     await pinnedQuickActions[1].trigger('click');
-    expect(sidebar.emitted('select')?.length || 0).toBe(selectCountBeforeQuickActions);
+    expect(sidebar.emitted('select')?.length || 0).toBe(selectCountAfterRowClick);
     expect(sidebar.emitted('action').at(-1)[0]).toMatchObject({
       action: 'remove',
       row: { catalogKey: 'yeaft:user_1770305719:server-instance:pinned' },
@@ -540,12 +563,19 @@ describe('message flow regressions', () => {
       .find(item => item.textContent.includes('sidebar.projects.moveMenu'));
     moveMenuAction.click();
     await Vue.nextTick();
-    const projectMenuLabels = [...document.body.querySelectorAll('.session-menu-item')]
+    expect(document.body.querySelectorAll('.session-menu-floating')).toHaveLength(2);
+    expect(document.body.querySelector('.session-menu-parent').getAttribute('aria-expanded')).toBe('true');
+    expect(document.body.querySelector('.sidebar-session-menu-info')).toBe(runtimeFooter);
+    const projectMenuLabels = [...document.body.querySelectorAll('.session-submenu .session-menu-item')]
       .map(item => item.textContent);
     expect(projectMenuLabels).toContain('Empty project');
     expect(projectMenuLabels).not.toContain('Shared project');
-    document.body.querySelector('.session-menu-back').click();
+    expect([...document.body.querySelectorAll('.session-menu-floating:not(.session-submenu) .session-menu-item')]
+      .map(item => item.textContent)).toContain('yeaft.session.openSettings');
+    moveMenuAction.click();
     await Vue.nextTick();
+    expect(document.body.querySelector('.session-submenu')).toBeNull();
+    expect(document.body.querySelector('.session-menu-parent').getAttribute('aria-expanded')).toBe('false');
     const settingsAction = [...document.body.querySelectorAll('.session-menu-item')]
       .find(item => item.textContent === 'yeaft.session.openSettings');
     expect(settingsAction).toBeTruthy();
@@ -620,7 +650,8 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).not.toContain("runAction('delete', floatingMenu.row)");
     expect(UnifiedSessionList.template).toContain("runAction('settings', floatingMenu.row)");
     expect(UnifiedSessionList.template).toContain("moveRow(floatingMenu.row, project)");
-    expect(UnifiedSessionList.template).toContain("floatingMenu.page === 'projects'");
+    expect(UnifiedSessionList.template).toContain('session-submenu');
+    expect(UnifiedSessionList.template).not.toContain("floatingMenu.page === 'projects'");
     expect(UnifiedSessionList.template).toContain('sidebar.projects.moveMenu');
     expect(UnifiedSessionList.template).toContain('project-instruction-modal');
     expect(UnifiedSessionList.template).toContain('sidebar-primary-actions');
@@ -648,6 +679,16 @@ describe('message flow regressions', () => {
     );
     expect(leftCollisionMenu.left).toBe(8);
     expect(leftCollisionMenu.width).toBe(184);
+    expect(calculateFloatingSubmenuPosition(
+      { top: 120, bottom: 260, left: 300, right: 480 },
+      { width: 180, height: 160 },
+      { width: 900, height: 700 },
+    )).toEqual({ top: 120, left: 484, width: 180, maxHeight: 160, placement: 'right' });
+    expect(calculateFloatingSubmenuPosition(
+      { top: 620, bottom: 760, left: 700, right: 880 },
+      { width: 180, height: 160 },
+      { width: 900, height: 700 },
+    )).toEqual({ top: 532, left: 516, width: 180, maxHeight: 160, placement: 'left' });
     const documentAdd = vi.spyOn(document, 'addEventListener');
     const documentRemove = vi.spyOn(document, 'removeEventListener');
     const windowAdd = vi.spyOn(window, 'addEventListener');

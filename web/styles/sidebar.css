@@ -1076,8 +1076,12 @@
   justify-content: space-between;
 }
 
-.session-menu-back {
-  color: var(--text-secondary);
+.session-menu-parent.active {
+  background: var(--sidebar-hover);
+}
+
+.session-submenu {
+  overflow-y: auto;
 }
 
 .session-menu-empty {
