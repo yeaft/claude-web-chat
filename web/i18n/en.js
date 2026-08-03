@@ -1637,7 +1637,7 @@ export default {
   'workCenter.conversationReadOnly': 'This work item is closed. The conversation remains available.',
   'workCenter.conversationPlaceholder': 'Message about this work item',
   'workCenter.sendMessage': 'Send message',
-  'workCenter.assistant': 'Yeaft',
+  'workCenter.messageSpeakerRole': '{name} · {role}',
   'workCenter.originalRequest': 'Original request',
   'workCenter.actionMessageScopeTitle': 'Message this Action',
   'workCenter.actionMessageScope': 'Only this Action receives the message.',

@@ -19,6 +19,8 @@ const MAX_ACTION_REQUEST_NAME_BYTES = 512;
 const MAX_ACTION_REQUEST_MODEL_BYTES = 1_024;
 const MAX_ACTION_REQUEST_STOP_REASON_BYTES = 256;
 const MAX_ACTION_REQUEST_METADATA_BYTES = 4 * 1_024;
+const MAX_SPEAKER_ID_BYTES = 256;
+const MAX_SPEAKER_NAME_BYTES = 512;
 const MAX_HISTORICAL_BRIEF_CHARS = 256;
 const MAX_CURRENT_BRIEF_BYTES = 8 * 1024;
 export const MAX_WORK_ITEM_BROWSER_DTO_BYTES = 512 * 1024;
@@ -207,9 +209,12 @@ function conversationRuns(action, runs) {
 
 function projectVpSpeaker(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return null;
-  const id = typeof snapshot.id === 'string' && snapshot.id ? snapshot.id : null;
-  const name = typeof snapshot.name === 'string' && snapshot.name ? snapshot.name : id;
-  return id || name ? { id, name } : null;
+  const sourceId = typeof snapshot.id === 'string' ? snapshot.id.trim() : '';
+  if (!sourceId) return null;
+  const id = truncateUtf8(sourceId, MAX_SPEAKER_ID_BYTES);
+  const sourceName = typeof snapshot.name === 'string' ? snapshot.name.trim() : '';
+  const name = truncateUtf8(sourceName || id, MAX_SPEAKER_NAME_BYTES) || id;
+  return { id, name };
 }
 
 function compareEventIds(leftId, rightId) {
@@ -896,6 +901,8 @@ export function projectWorkItemDetail(detail, options = {}) {
       id: String(message.id || ''),
       turnId: String(message.turnId || message.id || ''),
       role: message.role === 'assistant' ? 'assistant' : message.role === 'legacy_instruction' ? 'legacy_instruction' : 'user',
+      ...(message.role === 'assistant' && projectVpSpeaker(message.speaker)
+        ? { speaker: projectVpSpeaker(message.speaker) } : {}),
       text: truncateUtf8(message.text || '', MAX_ACTION_MESSAGE_CHARS),
       attachments: projectAttachments(message.attachments),
       status: ['thinking', 'completed', 'failed'].includes(message.status) ? message.status : 'completed',

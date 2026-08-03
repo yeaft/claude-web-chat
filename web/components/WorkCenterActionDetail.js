@@ -87,9 +87,15 @@ export default {
     statusLabel(status) {
       return this.tr(`workCenter.status.${status}`, String(status || '').replace('_', ' '));
     },
+    actionSequence() {
+      const sequence = Number(this.action?.sequence);
+      return Number.isFinite(sequence) && sequence > 0 ? sequence : 1;
+    },
     messageSpeaker(message) {
       if (message?.role === 'user') return this.tr('workCenter.you', 'You');
-      return message?.speaker?.name || message?.speaker?.id || this.executorName;
+      const role = this.$t('workCenter.actionNumber', { number: this.actionSequence() });
+      const name = message?.speaker?.name || message?.speaker?.id || '';
+      return name ? this.$t('workCenter.messageSpeakerRole', { name, role }) : role;
     },
     time(value) {
       if (!value) return '';

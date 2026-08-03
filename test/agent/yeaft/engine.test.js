@@ -32,11 +32,20 @@ import {
 } from '../../../agent/yeaft/managed-cli.js';
 import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
-import { createOutputCollector, runRipgrep, nodeGrep } from '../../../agent/yeaft/tools/grep.js';
-import { nodeDiskUsage } from '../../../agent/yeaft/tools/disk-usage.js';
+import {
+  createOutputCollector,
+  listRipgrepCandidatePaths,
+  nodeGrep,
+  runRipgrep,
+} from '../../../agent/yeaft/tools/grep.js';
+import { nodeDiskUsage, runDust } from '../../../agent/yeaft/tools/disk-usage.js';
+import { listFilesWithFd } from '../../../agent/yeaft/tools/glob.js';
 import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
 import bashTool from '../../../agent/yeaft/tools/bash.js';
-import { SEARCH_SKIP_DIRS } from '../../../agent/yeaft/tools/search-paths.js';
+import {
+  SearchBackendLimitError,
+  SEARCH_SKIP_DIRS,
+} from '../../../agent/yeaft/tools/search-paths.js';
 
 // ─── Mock Adapter ─────────────────────────────────────────────
 
@@ -3830,6 +3839,97 @@ describe('managed CLI setup and fast tool integration', () => {
     expect(filteredArgs).toContain('!**/.yeaft/worktrees/**');
     rmSync(capturedArgs, { force: true });
   }
+
+  it('pushes managed CLI filters down and avoids overflow rescans', async () => {
+    const processResult = (overrides = {}) => ({
+      code: 0,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      timedOut: false,
+      ...overrides,
+    });
+
+    const fdRoot = tempDir('fd-pattern');
+    let fdCall;
+    const fdOutput = await listFilesWithFd('fd', fdRoot, 'src/**/*.{js,md}', undefined,
+      async (command, args, options) => {
+        fdCall = { command, args, options };
+        return processResult({
+          stdout: `src${process.platform === 'win32' ? '\\' : '/'}a.js\0`,
+        });
+      });
+    expect(fdOutput).toEqual([join('src', 'a.js')]);
+    expect(fdCall.args).toContain('--full-path');
+    expect(fdCall.args).toContain('--case-sensitive');
+    expect(fdCall.args.at(-1)).toBe('.');
+    const pushedPattern = fdCall.args.at(-2);
+    expect(new RegExp(pushedPattern).test(join(fdRoot, 'src', 'nested', 'a.js'))).toBe(true);
+    expect(new RegExp(pushedPattern).test(join(fdRoot, 'src', 'nested', 'a.txt'))).toBe(false);
+
+    const rgRoot = tempDir('rg-candidates');
+    mkdirSync(join(rgRoot, 'src'));
+    writeFileSync(join(rgRoot, 'src', 'hit.js'), 'needle\n');
+    writeFileSync(join(rgRoot, 'src', 'miss.js'), 'needle\n');
+    let rgCall;
+    const candidatePaths = await listRipgrepCandidatePaths('rg', rgRoot, {
+      pattern: 'needle', fixedStrings: true,
+    }, async (command, args, options) => {
+      rgCall = { command, args, options };
+      return processResult({
+        stdout: `src${process.platform === 'win32' ? '\\' : '/'}hit.js\0`,
+      });
+    });
+    expect(rgCall.args).toContain('--files-with-matches');
+    expect(rgCall.args).toContain('--max-filesize');
+    expect(rgCall.args).not.toContain('--sort');
+    const rgResult = await nodeGrep('needle', rgRoot, {
+      fixedStrings: true,
+      filesOnly: true,
+      count: false,
+      multiline: false,
+      maxResults: 10,
+      structured: true,
+      candidatePaths,
+    });
+    expect(rgResult.records.map(record => record.path)).toEqual(['src/hit.js']);
+
+    const dustRoot = tempDir('dust-limit');
+    let dustCall;
+    const dustRows = await runDust('dust', dustRoot, { depth: 2, limit: 5 },
+      async (command, args, options) => {
+        dustCall = { command, args, options };
+        return processResult({
+          stdout: JSON.stringify({
+            size: '10B',
+            name: dustRoot,
+            children: [{ size: '5B', name: join(dustRoot, 'child'), children: [] }],
+          }),
+        });
+      });
+    const lineLimit = dustCall.args.indexOf('--number-of-lines');
+    expect(lineLimit).toBeGreaterThanOrEqual(0);
+    expect(Number(dustCall.args[lineLimit + 1])).toBe(200);
+    expect(dustRows.map(row => row.path)).toEqual(['.', 'child']);
+
+    for (const invoke of [
+      runner => listFilesWithFd('fd', tempDir('fd-limit'), '**/*', undefined, runner),
+      runner => listRipgrepCandidatePaths('rg', tempDir('rg-limit'), {
+        pattern: 'needle', fixedStrings: true,
+      }, runner),
+      runner => runDust('dust', tempDir('dust-output-limit'), {
+        depth: 2, limit: 20,
+      }, runner),
+    ]) {
+      let calls = 0;
+      const runner = async () => {
+        calls += 1;
+        return processResult({ truncated: true });
+      };
+      await expect(invoke(runner)).rejects.toBeInstanceOf(SearchBackendLimitError);
+      expect(calls).toBe(1);
+    }
+  });
 
   it('keeps process, platform, and fast-tool fallback boundaries', async () => {
     await verifyProcessTermination();

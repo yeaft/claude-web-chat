@@ -1633,7 +1633,7 @@ export default {
   'workCenter.conversationReadOnly': '这个工作项已关闭，对话记录仍可查看。',
   'workCenter.conversationPlaceholder': '继续讨论这个工作项',
   'workCenter.sendMessage': '发送消息',
-  'workCenter.assistant': 'Yeaft',
+  'workCenter.messageSpeakerRole': '{name} · {role}',
   'workCenter.originalRequest': '原始需求',
   'workCenter.actionMessageScopeTitle': '给这个 Action 发消息',
   'workCenter.actionMessageScope': '消息只发送给当前 Action。',

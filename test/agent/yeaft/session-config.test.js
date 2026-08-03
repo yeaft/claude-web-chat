@@ -7,7 +7,7 @@ import { loadConfig, normalizeLlmRetry } from '../../../agent/yeaft/config.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { estimateTokens } from '../../../agent/yeaft/dream/segment.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
-import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftSubAgentPrompt, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
+import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
@@ -192,6 +192,40 @@ describe('Yeaft session-scoped model config', () => {
       projectSessionIds: [],
       projectInstruction: '',
     });
+
+    const abortController = new AbortController();
+    bridgeAgent.status = 'running';
+    bridgeAgent.abortController = abortController;
+    const completedTask = {
+      id: 'task-project',
+      sessionId: 'session-a',
+      kind: 'sub_agent',
+      status: 'cancelled',
+      ownerVpId: 'vp-project',
+      runtime: { subAgentId: bridgeAgent.id },
+      source: { threadId: 'main' },
+    };
+    const completeTask = vi.fn(() => completedTask);
+    __testSetSession({
+      taskManager: {
+        getTask: () => ({ ...completedTask, status: 'running' }),
+        completeTask,
+        cancelTask: vi.fn(),
+      },
+    });
+    handleYeaftTaskCancel({
+      sessionId: 'session-a',
+      taskId: 'task-project',
+      clientRequestId: 'stop-project-agent',
+    });
+    expect(abortController.signal.aborted).toBe(true);
+    expect(abortController.signal.reason).toBe('stopped_by_user');
+    expect(bridgeAgent.status).toBe('closed');
+    expect(completeTask).toHaveBeenCalledWith('session-a', 'task-project', { status: 'cancelled' });
+    expect(ctx.messageBuffer.some(frame => frame.event?.type === 'yeaft_task_cancel_result'
+      && frame.event.success === true
+      && frame.event.task?.status === 'cancelled')).toBe(true);
+
     expect(__testHooks.buildProjectSharedBlock({
       projectId: beta.id,
       projectName: 'Beta',
@@ -279,14 +313,10 @@ describe('Yeaft session-scoped model config', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
 
-
-  it('rejects client-supplied model provenance', () => {
-    const root = makeDir();
-    mkdirSync(join(root, 'sessions', 'session-provenance'), { recursive: true });
-
-    expect(() => saveSessionConfig(root, 'session-provenance', {
+    const provenanceRoot = makeDir();
+    mkdirSync(join(provenanceRoot, 'sessions', 'session-provenance'), { recursive: true });
+    expect(() => saveSessionConfig(provenanceRoot, 'session-provenance', {
       model: 'github-copilot/gpt-new',
       modelSource: 'explicit',
     })).toThrow('unknown config key: modelSource');

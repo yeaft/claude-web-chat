@@ -202,8 +202,6 @@ function clearYeaftAgentRuntimeState(state, agentId) {
 // spot — small enough to paint instantly, large enough to give context.
 const YEAFT_RECENT_TURNS = 5;
 const YEAFT_SESSION_INVENTORY_TIMEOUT_MS = 15_000;
-const YEAFT_RECENT_TERMINAL_TASK_LIMIT = 8;
-const YEAFT_TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'orphaned']);
 const YEAFT_RUNNING_VP_STATES = new Set(['typing', 'thinking', 'retrying', 'streaming', 'tool']);
 const YEAFT_CATALOG_STATUS_FIELDS = Object.freeze([
   'model',
@@ -402,24 +400,14 @@ function outlineResultIdentity(row) {
   return row?.clientMessageId ? `client:${row.clientMessageId}` : `message:${row?.messageId || ''}`;
 }
 
-function taskUpdatedTime(task) {
-  const raw = task?.updatedAt || task?.endedAt || task?.createdAt;
-  const ms = raw ? Date.parse(raw) : NaN;
-  return Number.isFinite(ms) ? ms : 0;
-}
-
 function taskStopKey(agentId, sessionId, taskId) {
   return `${yeaftSessionIdentityKey(agentId, sessionId)}::${taskId || ''}`;
 }
 
-function keepRecentSessionTasks(tasksById) {
-  const entries = Object.entries(tasksById || {});
-  const running = entries.filter(([, task]) => task?.status === 'running');
-  const terminal = entries
-    .filter(([, task]) => task && task.status !== 'running' && YEAFT_TERMINAL_TASK_STATUSES.has(task.status))
-    .sort((a, b) => taskUpdatedTime(b[1]) - taskUpdatedTime(a[1]))
-    .slice(0, YEAFT_RECENT_TERMINAL_TASK_LIMIT);
-  return Object.fromEntries([...running, ...terminal]);
+function keepRunningSessionTasks(tasksById) {
+  return Object.fromEntries(
+    Object.entries(tasksById || {}).filter(([, task]) => task?.status === 'running')
+  );
 }
 
 function getSessionsStore() {
@@ -4111,16 +4099,13 @@ export const useChatStore = defineStore('chat', {
           const readyTasks = Array.isArray(event.tasks) ? event.tasks : [];
           const nextTasks = {};
           // session_ready is authoritative only for the Agent that emitted it.
-          // Preserve other Agents' running rows and this Agent's bounded terminal
-          // history while replacing this Agent's stale running snapshot.
+          // Preserve other Agents' running rows while replacing this Agent's
+          // stale running snapshot. Terminal rows leave the activity pane.
           for (const [sessionKey, tasksById] of Object.entries(this.yeaftActiveTasksBySession || {})) {
             const retainedTasks = Object.fromEntries(Object.entries(tasksById || {}).filter(([, task]) => (
-              task?.id && (
-                (task.agentId && task.agentId !== statusAgentId)
-                || YEAFT_TERMINAL_TASK_STATUSES.has(task.status)
-              )
+              task?.id && task.status === 'running' && task.agentId && task.agentId !== statusAgentId
             )));
-            const retained = keepRecentSessionTasks(retainedTasks);
+            const retained = keepRunningSessionTasks(retainedTasks);
             if (Object.keys(retained).length > 0) nextTasks[sessionKey] = retained;
           }
           for (const task of readyTasks) {
@@ -4491,12 +4476,12 @@ export const useChatStore = defineStore('chat', {
           const scopedTask = { ...task, agentId: taskAgentId };
           const bySession = { ...this.yeaftActiveTasksBySession };
           const current = { ...(bySession[taskSessionKey] || {}) };
-          if (task.status === 'running' || YEAFT_TERMINAL_TASK_STATUSES.has(task.status)) {
+          if (task.status === 'running') {
             current[task.id] = scopedTask;
           } else {
             delete current[task.id];
           }
-          const retained = keepRecentSessionTasks(current);
+          const retained = keepRunningSessionTasks(current);
           if (Object.keys(retained).length > 0) bySession[taskSessionKey] = retained;
           else delete bySession[taskSessionKey];
           this.yeaftActiveTasksBySession = bySession;
@@ -4520,8 +4505,9 @@ export const useChatStore = defineStore('chat', {
             const taskSessionKey = yeaftHistoryIdentityKey(taskAgentId, task.sessionId);
             const bySession = { ...this.yeaftActiveTasksBySession };
             const current = { ...(bySession[taskSessionKey] || {}) };
-            current[task.id] = { ...task, agentId: taskAgentId };
-            const retained = keepRecentSessionTasks(current);
+            if (task.status === 'running') current[task.id] = { ...task, agentId: taskAgentId };
+            else delete current[task.id];
+            const retained = keepRunningSessionTasks(current);
             if (Object.keys(retained).length > 0) bySession[taskSessionKey] = retained;
             else delete bySession[taskSessionKey];
             this.yeaftActiveTasksBySession = bySession;

@@ -2076,13 +2076,29 @@
   background: var(--bg-user-msg-subtle);
 }
 
-.message-user-footer {
+.message-user-attachments,
+.message-user-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 4px 6px;
+}
+
+.message-user-attachments {
   margin-top: 5px;
+}
+
+.message-user-actions {
+  min-height: 23px;
+  margin: 2px 8px 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.message.user:hover .message-user-actions,
+.message.user:focus-within .message-user-actions {
+  opacity: 1;
 }
 
 .message-action-btn {
