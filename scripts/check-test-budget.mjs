@@ -5,7 +5,7 @@ import { dirname, relative, resolve } from 'node:path';
 import process from 'node:process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { CORE_TEST_FILES, isTestFile, normalizeTestPath } from './test-suite-manifest.mjs';
+import { CORE_TEST_FILES, REVIEWED_TEST_FILES, isTestFile, normalizeTestPath } from './test-suite-manifest.mjs';
 
 export const TEST_CASE_LIMIT = 500;
 
@@ -21,8 +21,8 @@ export function validateCoreTestFiles({ rootDir = process.cwd(), files = null } 
   const discovered = new Set((files || walkFiles(testDir))
     .map(file => normalizeTestPath(relative(rootDir, file)))
     .filter(isTestFile));
-  const expected = new Set(CORE_TEST_FILES);
-  const missing = CORE_TEST_FILES.filter(file => !discovered.has(file));
+  const expected = new Set(REVIEWED_TEST_FILES);
+  const missing = REVIEWED_TEST_FILES.filter(file => !discovered.has(file));
   const unexpected = [...discovered].filter(file => !expected.has(file)).sort();
   return { missing, unexpected, count: discovered.size };
 }
@@ -49,7 +49,7 @@ export function isMainModule(moduleUrl, entryPath = process.argv[1]) {
 
 function main() {
   const result = validateCoreTestFiles();
-  if (result.missing.length) console.error(`Missing core test files:\n- ${result.missing.join('\n- ')}`);
+  if (result.missing.length) console.error(`Missing reviewed test files:\n- ${result.missing.join('\n- ')}`);
   if (result.unexpected.length) console.error(`Unreviewed test files:\n- ${result.unexpected.join('\n- ')}`);
   if (result.missing.length || result.unexpected.length) {
     process.exitCode = 1;
@@ -62,7 +62,7 @@ function main() {
     process.exitCode = 1;
     return;
   }
-  console.log(`Core suite: ${result.count} files, ${caseCount} test cases (< ${TEST_CASE_LIMIT})`);
+  console.log(`Core suite: ${CORE_TEST_FILES.length} files, ${caseCount} test cases (< ${TEST_CASE_LIMIT}); ${result.count} reviewed files`);
 }
 
 if (isMainModule(import.meta.url)) main();

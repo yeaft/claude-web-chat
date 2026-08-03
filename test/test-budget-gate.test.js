@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { pathToFileURL } from 'node:url';
+import { CORE_TEST_FILES, REVIEWED_TEST_FILES, SANDBOX_TEST_FILES } from '../scripts/test-suite-manifest.mjs';
 import {
   TEST_CASE_LIMIT,
   isMainModule,
@@ -17,6 +18,12 @@ describe('test budget gate', () => {
       files: ['test/new-regression.test.js'],
     });
     expect(unexpectedResult.unexpected).toContain('test/new-regression.test.js');
+
+    expect(SANDBOX_TEST_FILES).toHaveLength(9);
+    expect(REVIEWED_TEST_FILES).toEqual([...CORE_TEST_FILES, ...SANDBOX_TEST_FILES]);
+    for (const file of SANDBOX_TEST_FILES) {
+      expect(CORE_TEST_FILES).not.toContain(file);
+    }
   });
 
   it('uses a strict sub-500 case limit', () => {
