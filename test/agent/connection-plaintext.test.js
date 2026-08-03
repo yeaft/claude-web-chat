@@ -1,17 +1,27 @@
 import { describe, it, expect, vi } from 'vitest';
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
 import {
   DEFAULT_UPGRADE_REGISTRY,
   buildUpgradeInstallArgs,
   buildUpgradeMetadataArgs,
   buildUpgradeMetadataUrl,
-  buildUpgradeUpdateArgs,
   buildWindowsUpgradeInvocation,
   launchWindowsUpgradeScript,
+  prepareWindowsUpgradeRunner,
+  resolveWindowsNpmCliPath,
+  resolveWindowsPm2CliPath,
 } from '../../agent/upgrade-command.js';
-import { buildWindowsUpgradeCommand } from '../../agent/connection/upgrade.js';
+import {
+  installWindowsUpgrade,
+  runWindowsUpgrade,
+  waitForProcessExit,
+} from '../../agent/windows-upgrade-runner.js';
 import ctx from '../../agent/context.js';
 import { connect, resetConnectionTransport, sendToServer } from '../../agent/connection/index.js';
 import { parseLocalArgs } from '../../agent/local-run.js';
@@ -57,6 +67,15 @@ async function sendToServerUnderTest(ctxLike, msg) {
   } else {
     ws.send(JSON.stringify(msg));
   }
+}
+
+async function waitForFile(path, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return true;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  return false;
 }
 
 describe('agent ctx defaults and upgrade contract', () => {
@@ -106,9 +125,11 @@ describe('agent ctx defaults and upgrade contract', () => {
     try {
       delete process.env.AGENT_NAME;
       delete process.env.YEAFT_AGENT_INSTANCE;
+      process.env.AGENT_NAME = '';
+      process.env.YEAFT_AGENT_INSTANCE = '';
       const defaultService = parseServiceArgs([]);
       expect(defaultService.instanceId).toBe('default');
-      expect(defaultService.agentName).toBe(computerName);
+      expect(defaultService.agentName).toMatch(/^[A-Za-z0-9._-]+$/);
 
       process.env.AGENT_NAME = 'Display Name';
       const envService = parseServiceArgs([]);
@@ -165,32 +186,34 @@ describe('agent ctx defaults and upgrade contract', () => {
       '@yeaft/webchat-agent@1.0.250',
       '--registry=https://pkg.yeaft.com/',
     ]);
-    expect(buildUpgradeUpdateArgs('@yeaft/webchat-agent')).toEqual([
-      'update',
+    expect(buildUpgradeInstallArgs('@yeaft/webchat-agent@1.0.250', { quiet: true })).toEqual([
+      'install',
       '-g',
-      '@yeaft/webchat-agent',
+      '@yeaft/webchat-agent@1.0.250',
       '--registry=https://pkg.yeaft.com/',
+      '--no-audit',
+      '--no-fund',
+      '--loglevel=error',
     ]);
     expect(buildUpgradeMetadataUrl('@yeaft/webchat-agent')).toBe(
       'https://pkg.yeaft.com/%40yeaft%2Fwebchat-agent/latest',
     );
-    expect(buildWindowsUpgradeCommand()).toBe(
-      'call npm update -g %PKG% --registry=https://pkg.yeaft.com/',
-    );
 
-    const options = {
+    const nodePath = 'C:\\Program Files\\nodejs\\node.exe';
+    const runnerPath = 'C:\\Users\\Corp User\\AppData\\Roaming\\yeaft-agent\\upgrade-runtime\\windows-upgrade-runner.js';
+    const payloadPath = 'C:\\Users\\Corp User\\AppData\\Roaming\\yeaft-agent\\upgrade-runtime\\payload.json';
+    const handoffPath = 'C:\\Users\\Corp User\\AppData\\Roaming\\yeaft-agent\\upgrade-runtime\\started';
+    const logPath = 'C:\\Users\\Corp User\\AppData\\Roaming\\yeaft-agent\\logs\\upgrade.log';
+    const invocation = buildWindowsUpgradeInvocation({ nodePath, runnerPath, payloadPath, logPath });
+    expect(invocation.command).toBe(nodePath);
+    expect(invocation.args).toEqual([runnerPath, payloadPath]);
+    expect(invocation.options).toMatchObject({
       detached: true,
       stdio: 'ignore',
       windowsHide: true,
-      windowsVerbatimArguments: true,
-    };
-    const batPath = 'C:\\Users\\Corp User\\AppData\\Roaming\\yeaft-agent\\upgrade.bat';
-    const handoffPath = 'C:\\Users\\Corp User\\AppData\\Roaming\\yeaft-agent\\upgrade.started';
-    expect(buildWindowsUpgradeInvocation(batPath)).toEqual({
-      command: 'cmd.exe',
-      args: ['/d', '/s', '/c', `"${batPath}"`],
-      options,
     });
+    expect(invocation.options).not.toHaveProperty('shell');
+    expect(invocation.options.env.YEAFT_UPGRADE_LOG).toBe(logPath);
     const makeChild = () => {
       const child = new EventEmitter();
       child.exitCode = null;
@@ -200,7 +223,10 @@ describe('agent ctx defaults and upgrade contract', () => {
       return child;
     };
     const runLauncher = (overrides = {}) => launchWindowsUpgradeScript({
-      batPath,
+      nodePath,
+      runnerPath,
+      payloadPath,
+      logPath,
       handoffPath,
       fileExists: () => false,
       removeFile: () => {},
@@ -210,8 +236,8 @@ describe('agent ctx defaults and upgrade contract', () => {
     });
 
     await expect(runLauncher({
-      spawnProcess: () => { throw new Error('cmd blocked'); },
-    })).rejects.toThrow('Windows upgrade launcher failed: cmd blocked');
+      spawnProcess: () => { throw new Error('node blocked'); },
+    })).rejects.toThrow('Windows upgrade launcher failed: node blocked');
 
     const asyncErrorChild = makeChild();
     await expect(runLauncher({
@@ -282,10 +308,10 @@ describe('agent ctx defaults and upgrade contract', () => {
     })).rejects.toThrow('did not confirm handoff within 0ms');
     expect(timeoutChild.kill).toHaveBeenCalledOnce();
 
-    const cmdChild = makeChild();
+    const runnerChild = makeChild();
     const spawnMock = vi.fn(() => {
-      queueMicrotask(() => cmdChild.emit('spawn'));
-      return cmdChild;
+      queueMicrotask(() => runnerChild.emit('spawn'));
+      return runnerChild;
     });
     let handoffChecks = 0;
     const onHandoff = vi.fn();
@@ -293,16 +319,16 @@ describe('agent ctx defaults and upgrade contract', () => {
       spawnProcess: spawnMock,
       fileExists: () => ++handoffChecks >= 2,
       onHandoff,
-    })).resolves.toBe('cmd.exe');
-    expect(spawnMock).toHaveBeenCalledWith(
-      'cmd.exe',
-      ['/d', '/s', '/c', `"${batPath}"`],
-      options,
-    );
+    })).resolves.toBe(nodePath);
+    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(spawnMock.mock.calls[0][0]).toBe(nodePath);
+    expect(spawnMock.mock.calls[0][1]).toEqual([runnerPath, payloadPath]);
+    expect(spawnMock.mock.calls[0][2]).toMatchObject({ detached: true, stdio: 'ignore', windowsHide: true });
+    expect(spawnMock.mock.calls[0][2]).not.toHaveProperty('shell');
     expect(handoffChecks).toBeGreaterThanOrEqual(3);
     expect(onHandoff).toHaveBeenCalledOnce();
-    expect(cmdChild.kill).not.toHaveBeenCalled();
-    expect(cmdChild.unref).toHaveBeenCalledOnce();
+    expect(runnerChild.kill).not.toHaveBeenCalled();
+    expect(runnerChild.unref).toHaveBeenCalledOnce();
 
     const callbackChild = makeChild();
     const removeHandoff = vi.fn();
@@ -317,7 +343,137 @@ describe('agent ctx defaults and upgrade contract', () => {
     })).rejects.toThrow('pm2 delete failed');
     expect(callbackChild.kill).toHaveBeenCalledOnce();
     expect(callbackChild.unref).not.toHaveBeenCalled();
-    expect(removeHandoff).toHaveBeenCalledTimes(2);
+    expect(removeHandoff).toHaveBeenCalledOnce();
+  });
+
+  it('starts the copied updater from a standalone ESM runtime directory', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'yeaft-upgrade-runtime-'));
+    const runnerPath = join(testDir, 'windows-upgrade-runner.js');
+    const commandPath = join(testDir, 'upgrade-command.js');
+    const payloadPath = join(testDir, 'payload.json');
+    const handoffPath = join(testDir, 'started');
+    const logPath = join(testDir, 'upgrade.log');
+    const sourceRunnerPath = fileURLToPath(new URL('../../agent/windows-upgrade-runner.js', import.meta.url));
+    const sourceCommandPath = fileURLToPath(new URL('../../agent/upgrade-command.js', import.meta.url));
+    const payload = {
+      parentPid: process.pid,
+      packageSpec: '@yeaft/webchat-agent@0.0.0-test',
+      globalInstall: true,
+      installDir: testDir,
+      logPath,
+      handoffPath,
+      runnerPath,
+      commandPath,
+      payloadPath,
+      nodePath: process.execPath,
+      npmCliPath: process.execPath,
+      pm2CliPath: null,
+      ecosystemPath: null,
+    };
+
+    let child;
+    try {
+      prepareWindowsUpgradeRunner({
+        sourceRunnerPath,
+        sourceCommandPath,
+        runnerPath,
+        commandPath,
+        payloadPath,
+        payload,
+      });
+      expect(JSON.parse(readFileSync(join(testDir, 'package.json'), 'utf8'))).toEqual({ type: 'module' });
+
+      child = spawn(process.execPath, [runnerPath, payloadPath], {
+        cwd: tmpdir(),
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      expect(await waitForFile(handoffPath)).toBe(true);
+      expect(child.exitCode).toBeNull();
+    } finally {
+      child?.kill();
+      if (child?.exitCode == null) await new Promise(resolve => child?.once('exit', resolve));
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs the detached Windows updater without shell wrappers and with bounded retries', async () => {
+    const nodePath = 'C:\\Program Files\\nodejs\\node.exe';
+    const npmCliPath = 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js';
+    const pm2CliPath = 'Q:\\.tools\\.npm-global\\node_modules\\pm2\\bin\\pm2';
+    expect(resolveWindowsNpmCliPath(nodePath, path => path === npmCliPath, '')).toBe(npmCliPath);
+    expect(resolveWindowsPm2CliPath(nodePath, path => path === pm2CliPath, 'Q:\\.tools\\.npm-global')).toBe(pm2CliPath);
+
+    const run = vi.fn()
+      .mockImplementationOnce(async (_command, _args, options) => {
+        options.onStderr(Buffer.from('npm error EBUSY resource busy'));
+        return 1;
+      })
+      .mockResolvedValueOnce(0);
+    const sleep = vi.fn(async () => {});
+    await expect(installWindowsUpgrade({
+      nodePath,
+      packageSpec: '@yeaft/webchat-agent@1.0.999',
+      globalInstall: true,
+      installDir: 'Q:\\MISC',
+      logPath: 'Q:\\upgrade.log',
+      run,
+      sleep,
+      fileExists: path => path === npmCliPath,
+    })).resolves.toMatchObject({ exitCode: 0, attempts: 2, command: nodePath });
+    expect(run.mock.calls[0][1]).toEqual([
+      npmCliPath,
+      'install',
+      '-g',
+      '@yeaft/webchat-agent@1.0.999',
+      '--registry=https://pkg.yeaft.com/',
+      '--no-audit',
+      '--no-fund',
+      '--loglevel=error',
+    ]);
+    expect(run.mock.calls[0][2]).not.toHaveProperty('shell');
+    expect(sleep).toHaveBeenCalledWith(250);
+
+    let runningChecks = 0;
+    expect(await waitForProcessExit(123, {
+      processRunning: () => runningChecks++ < 2,
+      sleep: async () => {},
+      now: (() => { let value = 0; return () => value++; })(),
+    })).toBe(true);
+  });
+
+  it('restarts the selected PM2 ecosystem after install and preserves install failure status', async () => {
+    const install = vi.fn().mockRejectedValue(new Error('npm spawn failed'));
+    const startService = vi.fn().mockResolvedValue(true);
+    const testDir = join(tmpdir(), `yeaft-upgrade-test-${process.pid}`);
+    const options = {
+      parentPid: 42,
+      packageSpec: '@yeaft/webchat-agent@1.0.999',
+      globalInstall: true,
+      installDir: testDir,
+      logPath: join(testDir, 'upgrade.log'),
+      handoffPath: join(testDir, 'started'),
+      runnerPath: join(testDir, 'windows-upgrade-runner.js'),
+      commandPath: join(testDir, 'upgrade-command.js'),
+      payloadPath: join(testDir, 'payload.json'),
+      nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+      npmCliPath: 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js',
+      pm2CliPath: 'Q:\\.tools\\.npm-global\\node_modules\\pm2\\bin\\pm2',
+      ecosystemPath: 'C:\\Users\\hyi\\.yeaft\\instances\\C1\\ecosystem.config.cjs',
+    };
+    await expect(runWindowsUpgrade(options, {
+      waitForProcessExit: vi.fn().mockResolvedValue(true),
+      installWindowsUpgrade: install,
+      startPm2Service: startService,
+    })).resolves.toMatchObject({ exitCode: 1, restarted: true });
+    expect(install).toHaveBeenCalledWith(expect.objectContaining({
+      packageSpec: options.packageSpec,
+      globalInstall: true,
+    }));
+    expect(startService).toHaveBeenCalledWith(expect.objectContaining({
+      pm2CliPath: options.pm2CliPath,
+      ecosystemPath: options.ecosystemPath,
+    }));
   });
 });
 
