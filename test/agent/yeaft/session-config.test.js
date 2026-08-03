@@ -313,14 +313,10 @@ describe('Yeaft session-scoped model config', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
 
-
-  it('rejects client-supplied model provenance', () => {
-    const root = makeDir();
-    mkdirSync(join(root, 'sessions', 'session-provenance'), { recursive: true });
-
-    expect(() => saveSessionConfig(root, 'session-provenance', {
+    const provenanceRoot = makeDir();
+    mkdirSync(join(provenanceRoot, 'sessions', 'session-provenance'), { recursive: true });
+    expect(() => saveSessionConfig(provenanceRoot, 'session-provenance', {
       model: 'github-copilot/gpt-new',
       modelSource: 'explicit',
     })).toThrow('unknown config key: modelSource');
