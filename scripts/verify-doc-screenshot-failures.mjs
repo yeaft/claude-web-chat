@@ -49,6 +49,16 @@ const scenarios = [
     forbiddenArtifacts: ['zh-CN/work-center.png'],
   },
   {
+    id: 'post-screenshot-store-error',
+    env: { YEAFT_DOC_SCREENSHOT_FAILURE_SCENARIO: 'post-screenshot-store-error' },
+    markers: [
+      'Injected post-screenshot store lifecycle failure',
+      '[store-error:zh-CN] Injected post-screenshot store lifecycle failure',
+      'fatal screenshot lifecycle errors',
+    ],
+    requiredArtifacts: ['session.png', 'work-center.png', 'zh-CN/session.png', 'zh-CN/work-center.png'],
+  },
+  {
     id: 'visible-typing-error',
     env: { YEAFT_DOC_SCREENSHOT_FAILURE_SCENARIO: 'visible-typing-error' },
     markers: ['Injected visible typing error failure', '[visible-error:en]'],

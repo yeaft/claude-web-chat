@@ -27,6 +27,7 @@ const injectableFailureScenarios = new Set([
   'post-screenshot-console',
   'post-screenshot-pageerror',
   'post-screenshot-requestfailed',
+  'post-screenshot-store-error',
   'visible-typing-error',
   'server-exit',
 ]);
@@ -529,32 +530,67 @@ async function installVisibleErrorObserver(page, fatalLatch, locale) {
   }, { selectors: visibleErrorSelectors, locale });
 }
 
+async function installStoreHealthObserver(page, fatalLatch, locale, agentId) {
+  const initialFailures = await page.evaluate(({ pageLocale, activeAgentId }) => {
+    const chat = window.Pinia?.useChatStore?.();
+    if (!chat) return [`[store-error:${pageLocale}] Pinia chat store is unavailable`];
+    const reported = new Set();
+    const collect = () => {
+      const failures = [];
+      if (chat.connectionState !== 'connected') {
+        failures.push(`WebSocket connection state is ${chat.connectionState}`);
+      }
+      if (chat.currentAgentInfo?.id !== activeAgentId || chat.currentAgentInfo?.online !== true) {
+        failures.push('Current Agent is offline or changed');
+      }
+      for (const error of [
+        chat.workCenterErrorByAgent?.[activeAgentId],
+        chat.workCenterSettingsErrorByAgent?.[activeAgentId],
+        chat.yeaftSessionHydrateError,
+      ]) {
+        if (error) failures.push(String(error));
+      }
+      return [...new Set(failures.map(value => `[store-error:${pageLocale}] ${value}`))];
+    };
+    const report = () => {
+      for (const message of collect()) {
+        if (reported.has(message)) continue;
+        reported.add(message);
+        void window.__yeaftRecordScreenshotFailure(message);
+      }
+    };
+    const snapshot = () => [...new Set([...reported, ...collect()])];
+    const unsubscribe = chat.$subscribe(report, { detached: true, flush: 'sync' });
+    window.__yeaftCollectScreenshotStoreFailures = snapshot;
+    window.__yeaftStopScreenshotHealthObservers = () => {
+      const failures = snapshot();
+      unsubscribe();
+      window.__yeaftScreenshotErrorObserver?.disconnect();
+      return failures;
+    };
+    report();
+    return snapshot();
+  }, { pageLocale: locale, activeAgentId: agentId });
+  for (const failure of initialFailures) fatalLatch.record(failure);
+  fatalLatch.assert(`${locale} store health observer installation`);
+}
+
 async function assertScreenshotLifecycleClean(page, fatalLatch, label) {
   const visibleErrors = await page.locator(visibleErrorSelectors.map(selector => `${selector}:visible`).join(', '))
     .allTextContents();
   for (const text of visibleErrors.map(value => value.trim()).filter(Boolean)) {
     fatalLatch.record(`[visible-error] ${text}`);
   }
-  const storeState = await page.evaluate(() => {
-    const chat = window.Pinia?.useChatStore?.();
-    return chat ? {
-      connectionState: chat.connectionState,
-      currentAgentOnline: chat.currentAgentInfo?.online === true,
-      workCenterError: chat.currentAgent ? chat.workCenterErrorByAgent?.[chat.currentAgent] || '' : '',
-      settingsError: chat.currentAgent ? chat.workCenterSettingsErrorByAgent?.[chat.currentAgent] || '' : '',
-      sessionHydrateError: chat.yeaftSessionHydrateError || '',
-    } : null;
-  });
-  if (!storeState) fatalLatch.record('[store-error] Pinia chat store is unavailable');
-  else {
-    if (storeState.connectionState !== 'connected') {
-      fatalLatch.record(`[store-error] WebSocket connection state is ${storeState.connectionState}`);
-    }
-    if (!storeState.currentAgentOnline) fatalLatch.record('[store-error] Current Agent is offline');
-    for (const error of [storeState.workCenterError, storeState.settingsError, storeState.sessionHydrateError]) {
-      if (error) fatalLatch.record(`[store-error] ${error}`);
-    }
-  }
+  const storeFailures = await page.evaluate(() => window.__yeaftCollectScreenshotStoreFailures?.()
+    || ['[store-error] Screenshot store health observer is unavailable']);
+  for (const failure of storeFailures) fatalLatch.record(failure);
+  fatalLatch.assert(label);
+}
+
+async function stopScreenshotHealthObservers(page, fatalLatch, label) {
+  const finalStoreFailures = await page.evaluate(() => window.__yeaftStopScreenshotHealthObservers?.()
+    || ['[store-error] Screenshot health observer shutdown is unavailable']);
+  for (const failure of finalStoreFailures) fatalLatch.record(failure);
   fatalLatch.assert(label);
 }
 
@@ -579,7 +615,7 @@ async function injectPostScreenshotFailure(page, serverHandle, fatalLatch, local
     }, agentId);
     await page.waitForSelector('.typing-status-error', { state: 'visible' });
     await page.evaluate(() => console.log('Injected visible typing error failure'));
-  } else if (failureScenario === 'server-exit') {
+  } else if (failureScenario === 'post-screenshot-store-error' || failureScenario === 'server-exit') {
     return;
   }
   await fatalLatch.waitForFailure();
@@ -626,6 +662,7 @@ async function captureLocale(browser, agent, serverHandle, fatalLatch, locale, p
   await page.waitForFunction(() => window.Pinia?.useChatStore && window.Pinia?.useSessionsStore && window.Pinia?.useVpStore);
   await installVisibleErrorObserver(page, fatalLatch, locale);
   await seedPage(page, { locale, agentId: agent.agentId });
+  await installStoreHealthObserver(page, fatalLatch, locale, agent.agentId);
 
   const sessionPath = resolve(outputRoot, prefix, 'session.png');
   await assertScreenshotLifecycleClean(page, fatalLatch, `${locale} Session screenshot`);
@@ -786,6 +823,20 @@ async function captureLocale(browser, agent, serverHandle, fatalLatch, locale, p
     if (overflow) throw new Error(`Horizontal overflow in ${selector}`);
   }
   await assertScreenshotLifecycleClean(page, fatalLatch, `${locale} Work Center screenshot completion`);
+  if (failureScenario === 'post-screenshot-store-error' && locale === 'zh-CN') {
+    await page.evaluate(activeAgentId => {
+      const chat = window.Pinia.useChatStore();
+      const marker = 'Injected post-screenshot store lifecycle failure';
+      chat.workCenterSettingsErrorByAgent = {
+        ...chat.workCenterSettingsErrorByAgent,
+        [activeAgentId]: marker,
+      };
+      console.log(marker);
+    }, agent.agentId);
+    await fatalLatch.waitForFailure();
+    fatalLatch.assert('Injected post-screenshot-store-error screenshot failure');
+  }
+  await stopScreenshotHealthObservers(page, fatalLatch, `${locale} screenshot health observer shutdown`);
   await context.close();
   fatalLatch.assert(`${locale} browser context close`);
   return [sessionPath, workCenterPath];
