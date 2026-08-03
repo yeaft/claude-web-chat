@@ -4,6 +4,7 @@ export default {
   name: 'WorkCenterActionDetail',
   props: {
     action: { type: Object, default: null },
+    canMessage: { type: Boolean, default: false },
     messages: { type: Array, default: () => [] },
     messagesNextCursor: { type: [String, Number], default: null },
     messagesLoading: { type: Boolean, default: false },
@@ -105,7 +106,7 @@ export default {
             <p v-if="action.failure.error">{{ action.failure.error }}</p>
             <p v-if="action.failure.summary && action.failure.summary !== action.failure.error">{{ action.failure.summary }}</p>
             <small v-if="action.failure.failedAt">{{ tr('workCenter.failedAt', 'Failed at') }} · {{ time(action.failure.failedAt) }}</small>
-            <small>{{ tr('workCenter.actionFailureRecovery', 'Choose this Action in the Work Item composer to send corrected instructions.') }}</small>
+            <small v-if="canMessage">{{ tr('workCenter.actionFailureRecovery', 'Choose this Action in the Work Item composer to send corrected instructions.') }}</small>
           </section>
 
           <button v-if="messagesNextCursor != null" class="btn-ghost work-center-action-load-earlier" type="button" @click="$emit('load-earlier-messages')" :disabled="messagesLoading">

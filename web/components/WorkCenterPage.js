@@ -593,7 +593,11 @@ export default {
     parseContentStack(value) {
       const refs = String(value || '').split('/').filter(Boolean)
         .map(part => this.parseContentRef(part));
-      return refs.length > 0 ? refs : [{ type: 'action-list' }];
+      const actionRef = [...refs].reverse().find(ref => ref.actionId
+        && ['action', 'run', 'attachment'].includes(ref.type));
+      return actionRef
+        ? [{ type: 'action-list' }, { type: 'action', actionId: actionRef.actionId }]
+        : [{ type: 'action-list' }];
     },
     workCenterUrlRoute() {
       const params = new URLSearchParams(window.location.search);
@@ -671,6 +675,9 @@ export default {
       this.contentPanelOpen = contentPanelOpen;
       this.narrowPane = 'work-item';
       if (contentPanelOpen && actionId) this.loadLatestActionMessages(this.selectedAction);
+      if (contentPanelOpen && route.content !== this.contentStackParam()) {
+        this.syncWorkCenterUrl(true);
+      }
     },
     resetWorkItemComposer() {
       this.workItemComposerGeneration += 1;
@@ -793,18 +800,29 @@ export default {
       return ['idle', 'ready', 'running', 'paused', 'waiting', 'failed', 'completed', 'stopped']
         .includes(action.status) && action.admissionStatus !== 'blocked';
     },
-    chooseCoordinatorTarget() {
-      if (this.pendingMessageEnvelope) {
-        this.store.discardWorkCenterMessageEnvelope(this.agentId, this.selectedId);
+    clearPendingMessageEnvelope({ preserveAttachments = false } = {}) {
+      if (!this.selectedId || !this.pendingMessageEnvelope) return false;
+      this.actionInputRequestGeneration = (Number(this.actionInputRequestGeneration) || 0) + 1;
+      this.preserveComposerOnEnvelopeClear = true;
+      if (!this.store.discardWorkCenterMessageEnvelope(this.agentId, this.selectedId)) {
+        this.preserveComposerOnEnvelopeClear = false;
+        return false;
       }
+      if (!preserveAttachments) this.workItemMessageAttachments = [];
+      this.workItemMessageError = '';
+      this.workItemMessageSending = false;
+      return true;
+    },
+    chooseCoordinatorTarget() {
+      if (this.pendingMessageEnvelope
+        && !this.clearPendingMessageEnvelope({ preserveAttachments: true })) return;
       this.composerTargetValue = 'coordinator';
       this.staleComposerTarget = null;
       this.saveComposerDraft();
     },
     onComposerTargetChange() {
-      if (this.pendingMessageEnvelope) {
-        this.store.discardWorkCenterMessageEnvelope(this.agentId, this.selectedId);
-      }
+      if (this.pendingMessageEnvelope
+        && !this.clearPendingMessageEnvelope({ preserveAttachments: true })) return;
       this.staleComposerTarget = this.composerTargetAction == null
         && this.composerTargetValue !== 'coordinator'
         ? this.composerTargetValue : null;
@@ -910,16 +928,7 @@ export default {
       this.createAttachments = this.createAttachments.filter((_attachment, itemIndex) => itemIndex !== index);
     },
     discardPendingMessageEnvelope() {
-      if (!this.selectedId || !this.pendingMessageEnvelope) return;
-      this.actionInputRequestGeneration = (Number(this.actionInputRequestGeneration) || 0) + 1;
-      this.preserveComposerOnEnvelopeClear = true;
-      if (!this.store.discardWorkCenterMessageEnvelope(this.agentId, this.selectedId)) {
-        this.preserveComposerOnEnvelopeClear = false;
-        return;
-      }
-      this.workItemMessageAttachments = [];
-      this.workItemMessageError = '';
-      this.workItemMessageSending = false;
+      if (!this.clearPendingMessageEnvelope()) return;
       this.saveComposerDraft();
     },
     async onWorkItemMessageAttachmentInput(event) {
@@ -1569,6 +1578,7 @@ export default {
                     <WorkCenterActionDetail
                       v-else
                       :action="selectedAction"
+                      :can-message="canMessageAction(selectedAction)"
                       :messages="actionMessages"
                       :messages-next-cursor="actionMessagesNextCursor"
                       :messages-loading="actionMessagesLoading"

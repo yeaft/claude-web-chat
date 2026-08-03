@@ -901,7 +901,11 @@
 .work-center-breadcrumb-button:focus-visible {
   background: var(--sidebar-hover);
   color: var(--text-primary);
-  outline: none;
+}
+
+.work-center-breadcrumb-button:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
 }
 
 .work-center-breadcrumb-button span {
@@ -1258,7 +1262,11 @@
 .work-center-action-summary:hover,
 .work-center-action-summary:focus-visible {
   background: var(--sidebar-hover);
-  outline: none;
+}
+
+.work-center-action-summary:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
 }
 
 .work-center-action-index {
@@ -1627,12 +1635,19 @@
 }
 
 .work-center-item-message-input .work-center-composer-target .modern-select-trigger:hover:not(:disabled),
-.work-center-item-message-input .work-center-composer-target.is-open .modern-select-trigger,
-.work-center-item-message-input .work-center-composer-target .modern-select-trigger:focus-visible {
+.work-center-item-message-input .work-center-composer-target.is-open .modern-select-trigger {
   border-color: var(--border-color);
   background: var(--sidebar-hover);
   color: var(--text-primary);
   box-shadow: none;
+}
+
+.work-center-item-message-input .work-center-composer-target .modern-select-trigger:focus-visible {
+  border-color: var(--accent-blue);
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .work-center-item-message-input .work-center-composer-target .modern-select-label {

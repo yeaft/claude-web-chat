@@ -530,6 +530,35 @@ async function expectWorkCenterTarget(target, value, label) {
   await expect(target.locator('.modern-select-label')).toHaveText(label);
 }
 
+async function tabTo(page, selector, limit = 120) {
+  await page.evaluate(() => document.activeElement?.blur?.());
+  for (let index = 0; index < limit; index += 1) {
+    await page.keyboard.press('Tab');
+    if (await page.evaluate(target => document.activeElement?.matches?.(target) === true, selector)) {
+      return page.locator(selector);
+    }
+  }
+  throw new Error(`Tab focus did not reach ${selector}`);
+}
+
+async function focusIndicator(locator) {
+  return locator.evaluate(element => {
+    const style = getComputedStyle(element);
+    return {
+      outlineStyle: style.outlineStyle,
+      outlineWidth: Number.parseFloat(style.outlineWidth) || 0,
+      boxShadow: style.boxShadow,
+    };
+  });
+}
+
+async function expectVisibleFocus(locator) {
+  const indicator = await focusIndicator(locator);
+  const hasOutline = indicator.outlineStyle !== 'none' && indicator.outlineWidth >= 2;
+  const hasShadow = indicator.boxShadow !== 'none';
+  expect(hasOutline || hasShadow).toBe(true);
+}
+
 async function expectNoHorizontalOverflow(root, selectors) {
   const metrics = await root.evaluate((element, targetSelectors) => Object.fromEntries(
     Object.entries(targetSelectors).map(([name, selector]) => {
@@ -954,12 +983,16 @@ test.describe('Work Center responsive UI', () => {
     await select;
     expect(getRequest.op).toBe('get');
 
+    const breadcrumb = await tabTo(chatPage, '.work-center-breadcrumb-button');
+    await expectVisibleFocus(breadcrumb);
     await expect(chatPage.locator('.work-center-content-pane')).toHaveCount(0);
     await chatPage.getByRole('button', { name: /^\d+ Actions$/ }).click();
     await expect(chatPage.locator('.work-center-content-title')).toContainText('Actions');
     await expect(chatPage.locator('.work-center-content-title span')).toHaveText('1');
     const action = chatPage.locator('.work-center-action-card');
     await expect(action).toHaveCount(1);
+    const actionSummary = await tabTo(chatPage, '.work-center-action-summary');
+    await expectVisibleFocus(actionSummary);
     await expect(action).toContainText('Linus');
     await expect(action).toContainText('Update the existing layout styles and verify supported breakpoints');
     await expect(action).not.toContainText('LLM requests');
@@ -981,6 +1014,8 @@ test.describe('Work Center responsive UI', () => {
     ));
     expect(composerControls[0]).toContain('work-center-attachment-picker');
     expect(composerControls[1]).toContain('work-center-composer-target');
+    const targetTrigger = await tabTo(chatPage, '.work-center-composer-target .modern-select-trigger');
+    await expectVisibleFocus(targetTrigger);
     await target.locator('.modern-select-trigger').click();
     const targetMenu = chatPage.locator('.work-center-composer-target-menu');
     await expect(targetMenu).toHaveClass(/yeaft-model-dropdown/);
@@ -1301,6 +1336,28 @@ test.describe('Work Center responsive UI', () => {
     await chooseWorkCenterTarget(chatPage, failedTarget, 'Send to Action 1');
     await expectWorkCenterTarget(failedTarget, 'action:action-generation:1', 'Send to Action 1');
     await failedComposer.fill('Keep this draft bound to Action generation one.');
+    const generationUpload = chatPage.waitForResponse(response => (
+      response.url().includes('/api/upload') && response.request().method() === 'POST'
+    ));
+    await failedConversation.locator('.work-center-attachment-picker input').setInputFiles({
+      name: 'generation-one.txt', mimeType: 'text/plain', buffer: Buffer.from('generation one evidence'),
+    });
+    await generationUpload;
+    await expect(failedConversation.locator('.work-center-message-draft-attachments'))
+      .toContainText('generation-one.txt');
+    const generationOneAttemptPromise = mockAgent.__workCenterTransport.next();
+    await failedConversation.locator('.send-btn').click();
+    const generationOneAttempt = await generationOneAttemptPromise;
+    expect(generationOneAttempt.payload).toMatchObject({
+      id: GENERATION_ITEM.id,
+      target: { kind: 'action', actionId: 'action-generation', generation: 1 },
+      text: 'Keep this draft bound to Action generation one.',
+      attachments: [expect.objectContaining({ name: 'generation-one.txt' })],
+    });
+    await mockAgent.__workCenterTransport.reject(generationOneAttempt, 'Response was lost');
+    await expect(failedConversation.locator('.work-center-stale-target', {
+      hasText: 'An unconfirmed request is locked to its original identity.',
+    })).toBeVisible();
     if (await chatPage.locator('.work-center-content-pane').count()) {
       await chatPage.getByRole('button', { name: 'Close Actions' }).click();
     }
@@ -1337,12 +1394,18 @@ test.describe('Work Center responsive UI', () => {
     });
     await returnToFailed;
     await expectWorkCenterTarget(failedTarget, 'action:action-generation:1', 'Selected Action is no longer available');
-    await expect(chatPage.locator('.work-center-stale-target')).toBeVisible();
+    await expect(failedConversation.locator('.work-center-stale-target[role="alert"]')).toBeVisible();
     await expect(failedComposer).toHaveValue('Keep this draft bound to Action generation one.');
     await expect(failedConversation.locator('.send-btn')).toBeDisabled();
     await chooseWorkCenterTarget(chatPage, failedTarget, 'Send to Action 1');
     await expectWorkCenterTarget(failedTarget, 'action:action-generation:2', 'Send to Action 1');
     await expect(chatPage.locator('.work-center-stale-target')).toHaveCount(0);
+    await expect(failedComposer).toHaveValue('Keep this draft bound to Action generation one.');
+    await expect(failedConversation.locator('.work-center-message-draft-attachments'))
+      .toContainText('generation-one.txt');
+    await expect.poll(() => chatPage.evaluate(({ agentId, workItemId }) => (
+      window.Pinia.useChatStore().loadWorkCenterMessageEnvelope(agentId, workItemId)
+    ), { agentId: mockAgent.agentId, workItemId: GENERATION_ITEM.id })).toBeNull();
     await expect(failedConversation.locator('.send-btn')).toBeEnabled();
     const confirmedGenerationResponse = (async () => {
       const operations = [];
@@ -1367,6 +1430,7 @@ test.describe('Work Center responsive UI', () => {
         id: GENERATION_ITEM.id,
         target: { kind: 'action', actionId: 'action-generation', generation: 2 },
         text: 'Keep this draft bound to Action generation one.',
+        attachments: [expect.objectContaining({ name: 'generation-one.txt' })],
       });
   });
 
@@ -1472,6 +1536,26 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage.locator('.work-center-conversation')).toBeVisible();
     await expect(chatPage.locator('.work-center-content-pane')).toHaveCount(0);
     await expect(chatPage).toHaveURL(new RegExp(`workItemId=${OPEN_ITEM.id}(?!.*workContent=)`));
+
+    for (const legacyContent of [
+      'action-list/action:action-1/run:action-1:run-legacy',
+      'action-list/action:action-1/attachment:action-1:attachment-legacy',
+    ]) {
+      await chatPage.evaluate(content => {
+        const url = new URL(window.location.href);
+        url.searchParams.set('workContent', content);
+        const state = { ...window.history.state, workCenterContent: true };
+        window.history.pushState(state, '', url);
+        window.dispatchEvent(new PopStateEvent('popstate', { state }));
+      }, legacyContent);
+      await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
+      await expect(chatPage).toHaveURL(new RegExp(
+        `workItemId=${OPEN_ITEM.id}.*workContent=action-list%2Faction%3Aaction-1$`,
+      ));
+      await chatPage.getByRole('button', { name: 'Back to Actions' }).click();
+      await expect(chatPage.locator('.work-center-action-list')).toBeVisible();
+      await expect(chatPage.locator('.work-center-action-detail-pane')).toHaveCount(0);
+    }
   });
 
   test('loads one retained conversation when an earlier Action is selected', async ({ chatPage, mockAgent }) => {
@@ -1715,7 +1799,17 @@ test.describe('Work Center responsive UI', () => {
     const closedItems = [DONE_ITEM, CANCELLED_ITEM];
     const closedDetails = new Map([
       [DONE_ITEM.id, DONE_ITEM_DETAIL],
-      [CANCELLED_ITEM.id, CANCELLED_ITEM_DETAIL],
+      [CANCELLED_ITEM.id, {
+        ...CANCELLED_ITEM_DETAIL,
+        actions: [{
+          ...CANCELLED_ITEM_DETAIL.actions[0],
+          failure: {
+            error: 'The cancelled Action did not publish changes.',
+            summary: 'The Work Item is closed and cannot accept corrected instructions.',
+            failedAt: Date.now(),
+          },
+        }],
+      }],
     ]);
     await openWorkCenter(chatPage, mockAgent, closedItems);
 
@@ -1743,6 +1837,7 @@ test.describe('Work Center responsive UI', () => {
       await expect(actionDetail.locator('.work-center-action-message header strong')).toHaveText('Action 1');
       await expect(actionDetail.locator('.work-center-action-composer')).toHaveCount(0);
       await expect(actionDetail.locator('textarea')).toHaveCount(0);
+      await expect(actionDetail).not.toContainText('Choose this Action in the Work Item composer');
 
       await actionDetail.getByRole('button', { name: 'Back to Actions' }).click();
       await chatPage.getByRole('button', { name: 'Close Actions' }).click();
