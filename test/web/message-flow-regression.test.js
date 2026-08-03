@@ -4773,6 +4773,25 @@ describe('message flow regressions', () => {
       turnId: 'turn-2',
       speakerVpId: 'vp-2',
     });
+
+    const firstSibling = { type: 'user', content: 'identical legacy sibling' };
+    const secondSibling = { type: 'user', content: 'identical legacy sibling' };
+    const firstRow = addMessageToConversation(routedStore, 'conv-2', firstSibling);
+    const secondRow = addMessageToConversation(routedStore, 'conv-2', secondSibling);
+    expect(firstRow.uiKey).toMatch(/^legacy:conv-2:/);
+    expect(secondRow.uiKey).toMatch(/^legacy:conv-2:/);
+    expect(firstRow.uiKey).not.toBe(secondRow.uiKey);
+    const stableSiblingKeys = [firstRow.uiKey, secondRow.uiKey];
+    routedStore.messagesMap['conv-2'].unshift({
+      type: 'user', content: 'older legacy row', uiKey: 'legacy:conv-2:older',
+    });
+    expect(routedStore.messagesMap['conv-2'].slice(-2).map(row => row.uiKey))
+      .toEqual(stableSiblingKeys);
+    routedStore._messageUiKeySequence = 0;
+    const restoredSibling = addMessageToConversation(routedStore, 'conv-2', {
+      type: 'user', content: 'post-restore legacy sibling',
+    });
+    expect(stableSiblingKeys).not.toContain(restoredSibling.uiKey);
   });
 
   it('counts Yeaft assistant turns and keeps declared long phases alive', () => {

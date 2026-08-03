@@ -871,21 +871,24 @@ export default {
     };
     const loadMoreHistorySearchResults = () => store.searchYeaftHistory(store.yeaftHistorySearchState.query, { append: true, senderKey: store.yeaftHistorySearchState.senderKey });
     const previewHistorySearchResult = result => {
-      // Warm a bounded anchor window while the user points at a result. The
-      // store de-duplicates this with the eventual click, so preview never
-      // creates parallel reads and clicking an already-cached turn is instant.
+      // Warm a bounded anchor window while the user points at a result. Preview
+      // stays cache-only; click revalidates the indexed generation before it
+      // expands or scrolls, so a source mutation cannot reveal a stale locator.
       if (store.hasCapability('session_history_window_prefetch')) {
         store.loadYeaftHistoryWindow(result);
       }
     };
-    const selectHistorySearchResult = result => revealOutlineResult({
-      result,
-      revealWindow: candidate => store.revealYeaftHistoryResult(candidate),
-      nextTick: () => Vue.nextTick(),
-      revealMessage: messageId => messageListRef.value?.revealMessage?.(messageId),
-      isMobile: isMobile.value,
-      closeOutline: closeHistorySearch,
-    });
+    const selectHistorySearchResult = (result) => {
+      const revealLease = store.beginYeaftHistoryReveal?.(result) || null;
+      return revealOutlineResult({
+        result,
+        revealWindow: candidate => store.revealYeaftHistoryResult(candidate, revealLease),
+        nextTick: () => Vue.nextTick(),
+        revealMessage: target => messageListRef.value?.revealMessage?.(target),
+        isMobile: isMobile.value,
+        closeOutline: closeHistorySearch,
+      }).finally(() => store.finishYeaftHistoryReveal?.(revealLease));
+    };
 
     // Esc handling — close transient controls. Detail drill-down layers were
     // removed; the center pane always stays on the Session stream.

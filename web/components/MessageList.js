@@ -901,20 +901,56 @@ export default {
       catch (err) { console.warn('Failed to copy welcome setup command:', err); }
     };
 
-    const messageBlockMetaForItem = (item, index) => {
+    const fallbackUiKeys = new WeakMap();
+    let fallbackUiKeySequence = 0;
+    const objectUiFallback = (item, msg) => {
+      const identityObject = (item?.message && typeof item.message === 'object')
+        ? item.message
+        : (Array.isArray(item?.messages) && item.messages[0] && typeof item.messages[0] === 'object'
+          ? item.messages[0]
+          : (msg && typeof msg === 'object'
+            ? msg
+            : (item && typeof item === 'object' ? item : null)));
+      if (!identityObject) return `legacy_render_${++fallbackUiKeySequence}`;
+      let key = fallbackUiKeys.get(identityObject);
+      if (!key) {
+        key = `legacy_render_${++fallbackUiKeySequence}`;
+        fallbackUiKeys.set(identityObject, key);
+      }
+      return key;
+    };
+    const messageUiKey = (item) => {
+      const msg = item?.message || item || null;
+      return item?.entryId
+        || item?.uiKey
+        || item?.stableKey
+        || msg?.entryId
+        || msg?.uiKey
+        || msg?.stableKey
+        || item?.atMessageId
+        || item?.messageId
+        || msg?.messageId
+        || item?.id
+        || msg?.id
+        || objectUiFallback(item, msg);
+    };
+    const renderSafeUiKey = value => encodeURIComponent(String(value || 'legacy'));
+    const messageBlockMetaForItem = (item) => {
       const msg = item?.message || null;
+      const uiKey = messageUiKey(item);
       const messageId = item?.id
         || item?.atMessageId
         || msg?.id
         || msg?.messageId
-        || `legacy_${index}`;
+        || uiKey;
       const vpId = item?.speakerVpId
         || item?.vpId
         || msg?.speakerVpId
         || msg?.vpId
         || '';
       return {
-        id: `message_${vpId || 'user'}_${messageId}_${index}`,
+        id: `message_${renderSafeUiKey(uiKey)}`,
+        uiKey,
         vpId,
         messageId,
       };
@@ -925,7 +961,7 @@ export default {
       const messages = store.messages;
       const result = [];
       let currentTurn = null;
-      let turnCounter = 0;
+
       // task-708: every VP-attributed turn carries its own avatar header.
       // The previous "consecutive-same-speaker collapse" (Slack-style)
       // produced the user's "VP disappears" complaint — when a VP sent
@@ -1015,11 +1051,13 @@ export default {
         }
       };
 
-      const startTurn = () => {
-        turnCounter++;
+      const startTurn = (message = null) => {
+        const uiKey = messageUiKey(message);
         currentTurn = {
           type: 'assistant-turn',
-          id: 'turn_' + turnCounter,
+          id: `response_${renderSafeUiKey(uiKey)}`,
+          uiKey,
+          ...(message?.entryId ? { entryId: message.entryId } : {}),
           textContent: '',
           textSegments: [],
           isStreaming: false,
@@ -1073,13 +1111,13 @@ export default {
             continue;
           }
           finishTurn();
-          result.push({ type: 'user', id: msg.id || 'u_' + i, message: msg });
+          result.push({ type: 'user', id: messageUiKey(msg), message: msg });
           continue;
         }
 
         if (msg.type === 'system' || msg.type === 'error') {
           finishTurn();
-          result.push({ type: msg.type, id: msg.id || 's_' + i, message: msg });
+          result.push({ type: msg.type, id: messageUiKey(msg), message: msg });
           continue;
         }
 
@@ -1090,7 +1128,7 @@ export default {
 
         if (msg.type === 'tool-summary') {
           closeTurnIfTurnBoundaryChanged(msg);
-          if (!currentTurn) startTurn();
+          if (!currentTurn) startTurn(msg);
           latchSpeakerFromMsg(msg);
           if (msg.isHistory) currentTurn.isHistory = true;
           currentTurn.toolSummaryCount += Number(msg.count || msg.omittedCount || 0) || 0;
@@ -1100,7 +1138,7 @@ export default {
 
         if (msg.type === 'assistant') {
           closeTurnIfTurnBoundaryChanged(msg);
-          if (!currentTurn) startTurn();
+          if (!currentTurn) startTurn(msg);
           appendTurnResponseSegment(currentTurn, msg);
           if (msg.isStreaming) {
             currentTurn.isStreaming = true;
@@ -1127,7 +1165,7 @@ export default {
 
         if (msg.type === 'tool-use') {
           closeTurnIfTurnBoundaryChanged(msg);
-          if (!currentTurn) startTurn();
+          if (!currentTurn) startTurn(msg);
           latchSpeakerFromMsg(msg);
 
           // Merge tool-result from next message
@@ -1153,7 +1191,7 @@ export default {
 
         if (msg.type === 'chat-image') {
           closeTurnIfTurnBoundaryChanged(msg);
-          if (!currentTurn) startTurn();
+          if (!currentTurn) startTurn(msg);
           latchSpeakerFromMsg(msg);
           if (msg.isHistory) currentTurn.isHistory = true;
           currentTurn.imageMsgs.push(msg);
@@ -1163,7 +1201,7 @@ export default {
 
         // Unknown type: pass through
         finishTurn();
-        result.push({ type: msg.type || 'unknown', id: msg.id || 'x_' + i, message: msg });
+        result.push({ type: msg.type || 'unknown', id: messageUiKey(msg), message: msg });
       }
 
       finishTurn();
@@ -1209,19 +1247,20 @@ export default {
         currentBlock = null;
       };
 
-      turnGroups.value.forEach((item, i) => {
+      turnGroups.value.forEach((item) => {
         if (!item || item.type === 'system' || item.type === 'error') {
           finishBlock();
           blocks.push(item);
           return;
         }
 
-        const meta = messageBlockMetaForItem(item, i);
+        const meta = messageBlockMetaForItem(item);
         if (item.type === 'user' || !currentBlock) {
           finishBlock();
           currentBlock = {
             type: 'message-block',
-            id: `turn_${meta.messageId}_${i}`,
+            id: `block_${renderSafeUiKey(meta.uiKey)}`,
+            uiKey: meta.uiKey,
             vpId: meta.vpId,
             messageId: meta.messageId,
             items: [item],
@@ -2069,12 +2108,12 @@ export default {
     const flashMsgId = Vue.ref(null);
     let flashGeneration = 0;
 
-    const revealMessage = async (messageId) => {
-      if (!messageId) return false;
+    const revealMessage = async (target) => {
+      if (!target) return false;
       pauseAutoFollow();
       const revealed = await navigateToPersistedMessage({
         blocks: messageBlocks.value,
-        messageId,
+        target,
         collapseStates: messageTurnCollapseStates,
         nextTick: Vue.nextTick,
         scrollToBlock: (blockId, options) => {

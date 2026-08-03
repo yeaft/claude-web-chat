@@ -880,9 +880,18 @@ describe('Yeaft Session online Agent filtering', () => {
       conversationId: 'yeaft-agent-a',
       sessionId: 'same-id',
       messages: [{ role: 'user', content: 'legacy history' }],
+      pageKind: 'gap',
+      gapStopAtSeq: 501,
+      cacheEpoch: 7,
     });
-    expect(ownerClient.sent.at(-1)).toMatchObject({ type: 'yeaft_history_chunk', sessionId: 'same-id' });
-    expect(otherTab.sent.at(-1)).toMatchObject({ type: 'yeaft_history_chunk', sessionId: 'same-id' });
+    expect(ownerClient.sent.at(-1)).toMatchObject({
+      type: 'yeaft_history_chunk', sessionId: 'same-id',
+      pageKind: 'gap', gapStopAtSeq: 501, cacheEpoch: 7,
+    });
+    expect(otherTab.sent.at(-1)).toMatchObject({
+      type: 'yeaft_history_chunk', sessionId: 'same-id',
+      pageKind: 'gap', gapStopAtSeq: 501, cacheEpoch: 7,
+    });
 
     ownerClient.sent = [];
     await handleAgentOutput('agent-a', agent, {

@@ -1204,7 +1204,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
         limit: typeof msg.limit === 'number' ? msg.limit : 50,
         beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
-        includeTotal: msg.includeTotal !== false,
+        ...(msg.cursor && typeof msg.cursor === 'object' ? { cursor: msg.cursor } : {}),
+        includeTotal: msg.includeTotal === true,
+        ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
         _requestClientId: clientId,
       });
       break;
@@ -1224,6 +1226,8 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         senderKey: typeof msg.senderKey === 'string' ? msg.senderKey.slice(0, 103) : '',
         limit: typeof msg.limit === 'number' ? msg.limit : 20,
         beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
+        ...(msg.cursor && typeof msg.cursor === 'object' ? { cursor: msg.cursor } : {}),
+        ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
         _requestClientId: clientId,
       });
       break;
@@ -1239,10 +1243,15 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         type: 'yeaft_load_history_window',
         sessionId: windowSessionId,
         requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+        entryId: typeof msg.entryId === 'string' ? msg.entryId : null,
+        indexGeneration: typeof msg.indexGeneration === 'number' ? msg.indexGeneration : null,
+        entryStartSeq: typeof msg.entryStartSeq === 'number' ? msg.entryStartSeq : null,
         anchorMessageId: typeof msg.anchorMessageId === 'string' ? msg.anchorMessageId : null,
         anchorSeq: typeof msg.anchorSeq === 'number' ? msg.anchorSeq : null,
         beforeTurns: typeof msg.beforeTurns === 'number' ? msg.beforeTurns : 3,
         afterTurns: typeof msg.afterTurns === 'number' ? msg.afterTurns : 3,
+        maxRows: typeof msg.maxRows === 'number' ? msg.maxRows : 200,
+        maxBytes: typeof msg.maxBytes === 'number' ? msg.maxBytes : 512 * 1024,
         _requestClientId: clientId,
       });
       break;
@@ -1258,6 +1267,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         sessionId: msg.sessionId || null,
         requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
         beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
+        pageKind: msg.pageKind === 'gap' ? 'gap' : 'server',
+        gapStopAtSeq: typeof msg.gapStopAtSeq === 'number' ? msg.gapStopAtSeq : null,
+        cacheEpoch: typeof msg.cacheEpoch === 'number' ? msg.cacheEpoch : 0,
         turns: typeof msg.turns === 'number' ? msg.turns : 20,
         ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
         _requestClientId: clientId,

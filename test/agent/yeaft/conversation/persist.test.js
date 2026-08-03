@@ -1,5 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -9,6 +18,16 @@ import {
   projectVisibleSessionMessages,
 } from '../../../../agent/yeaft/conversation/persist.js';
 import { searchMessages } from '../../../../agent/yeaft/conversation/search.js';
+import { createSession } from '../../../../agent/yeaft/sessions/session-store.js';
+import { archiveSession, deleteSession } from '../../../../agent/yeaft/sessions/session-crud.js';
+import {
+  __historyIndexForTest,
+  closeConversationHistoryIndexes,
+  loadConversationOutlineFromIndex,
+  readConversationIndexWindow,
+  searchConversationIndex,
+  validateConversationIndexAnchor,
+} from '../../../../agent/yeaft/conversation/history-index.js';
 
 const TEST_DIR = join(tmpdir(), `yeaft-test-conv-${Date.now()}`);
 
@@ -16,7 +35,8 @@ beforeEach(() => {
   mkdirSync(TEST_DIR, { recursive: true });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await closeConversationHistoryIndexes();
   if (existsSync(TEST_DIR)) {
     rmSync(TEST_DIR, { recursive: true, force: true });
   }
@@ -26,6 +46,15 @@ afterEach(() => {
 
 
 // ─── parseMessage ────────────────────────────────────────────
+
+const consolidatedHistoryScenarios = [];
+function historyScenario(name, run) { consolidatedHistoryScenarios.push({ name, run }); }
+async function runConsolidatedHistoryScenarios() {
+  for (const scenario of consolidatedHistoryScenarios) {
+    try { await scenario.run(); }
+    catch (error) { error.message = `[${scenario.name}] ${error.message}`; throw error; }
+  }
+}
 
 describe('parseMessage', () => {
   it('should parse frontmatter and body', () => {
@@ -593,6 +622,82 @@ legacy session`, { encoding: 'utf8' });
       expect(page.results[0].snippet).toContain('Needle before tool');
     });
 
+    historyScenario('keeps one canonical entry across interleaved VP rows with a stable identity', () => {
+      store.append({ role: 'user', content: 'compare answers', sessionId: 'session_interleaved_entry' });
+      const linusFirst = store.append({
+        role: 'assistant', content: 'Linus needle first', sessionId: 'session_interleaved_entry',
+        turnId: 'turn-shared', speakerVpId: 'linus',
+      });
+      const martin = store.append({
+        role: 'assistant', content: 'Martin needle', sessionId: 'session_interleaved_entry',
+        turnId: 'turn-shared', speakerVpId: 'martin',
+      });
+
+      const beforeTail = store.searchVisibleBySession('session_interleaved_entry', 'needle', { limit: 20 });
+      const linusEntryBefore = beforeTail.results.find(result => result.speakerVpId === 'linus');
+      expect(linusEntryBefore).toMatchObject({
+        messageId: linusFirst.id,
+        sourceMessageIds: [linusFirst.id],
+        entryStartSeq: store.getMessageSeqById(linusFirst.id),
+      });
+
+      const linusFinal = store.append({
+        role: 'assistant', content: 'Linus needle final', sessionId: 'session_interleaved_entry',
+        turnId: 'turn-shared', speakerVpId: 'linus',
+      });
+      const page = store.searchVisibleBySession('session_interleaved_entry', 'needle', { limit: 20 });
+      const linusEntries = page.results.filter(result => result.speakerVpId === 'linus');
+      const martinEntries = page.results.filter(result => result.speakerVpId === 'martin');
+
+      expect(linusEntries).toHaveLength(1);
+      expect(martinEntries).toHaveLength(1);
+      expect(linusEntries[0]).toMatchObject({
+        entryId: linusEntryBefore.entryId,
+        messageId: linusFinal.id,
+        sourceMessageIds: [linusFirst.id, linusFinal.id],
+        snippet: expect.stringContaining('Linus needle first'),
+      });
+      expect(martinEntries[0]).toMatchObject({
+        messageId: martin.id,
+        sourceMessageIds: [martin.id],
+      });
+      expect(linusEntries[0].entryId).not.toBe(martinEntries[0].entryId);
+    });
+
+    historyScenario('does not merge a reused assistant turn id across visible user boundaries', () => {
+      store.append({ role: 'user', content: 'first question', sessionId: 'session_reused_turn' });
+      const first = store.append({
+        role: 'assistant', content: 'first needle', sessionId: 'session_reused_turn',
+        turnId: 'reused-turn', speakerVpId: 'linus',
+      });
+      store.append({ role: 'user', content: 'second question', sessionId: 'session_reused_turn' });
+      const second = store.append({
+        role: 'assistant', content: 'second needle', sessionId: 'session_reused_turn',
+        turnId: 'reused-turn', speakerVpId: 'linus',
+      });
+
+      const results = store.searchVisibleBySession('session_reused_turn', 'needle').results;
+      expect(results).toHaveLength(2);
+      expect(results.map(result => result.messageId)).toEqual([second.id, first.id]);
+      expect(new Set(results.map(result => result.entryId)).size).toBe(2);
+    });
+
+    historyScenario('preserves literal substring semantics for CJK, emoji, punctuation, and case', () => {
+      const row = store.append({
+        role: 'user',
+        content: '前缀中文后缀 😀 rocket foo.bar QUOTED "Value"',
+        sessionId: 'session_literal_search',
+      });
+
+      for (const query of ['中文', '😀', 'foo.bar', 'quoted "value"', 'QUOTED']) {
+        expect(store.searchVisibleBySession('session_literal_search', query).results)
+          .toEqual([expect.objectContaining({ messageId: row.id })]);
+      }
+      expect(store.searchVisibleBySession('session_literal_search', '文后').results)
+        .toEqual([expect.objectContaining({ messageId: row.id })]);
+      expect(store.searchVisibleBySession('session_literal_search', 'fooXbar').results).toEqual([]);
+    });
+
     it('pages search results on response boundaries', () => {
       for (let i = 0; i < 3; i += 1) {
         store.append({ role: 'user', content: `question ${i}`, sessionId: 'session_search_pages' });
@@ -632,14 +737,16 @@ legacy session`, { encoding: 'utf8' });
       const latest = store.append({ role: 'assistant', content: 'second answer', sessionId: 'session_outline' });
 
       const firstPage = store.loadVisibleOutlineBySession('session_outline', { limit: 2 });
+      const countedPage = store.loadVisibleOutlineBySession('session_outline', { limit: 2, includeTotal: true });
       const olderPage = store.loadVisibleOutlineBySession('session_outline', {
-        limit: 2, beforeSeq: firstPage.nextBeforeSeq, includeTotal: false,
+        limit: 2, beforeSeq: firstPage.nextBeforeSeq,
       });
 
       expect(firstPage.results.map(result => result.messageId)).toEqual([
         expect.any(String), latest.id,
       ]);
-      expect(firstPage).toMatchObject({ hasMore: true, totalCount: 4 });
+      expect(firstPage).toMatchObject({ hasMore: true, totalCount: null });
+      expect(countedPage.totalCount).toBe(4);
       expect([...firstPage.results, ...olderPage.results].map(result => result.snippet))
         .not.toContain('engine reflection');
       expect(olderPage.results.map(result => result.messageId)).toContain(first.id);
@@ -669,7 +776,7 @@ legacy session`, { encoding: 'utf8' });
         turnId: 'assistant-turn', speakerVpId: 'maker',
       });
 
-      const page = store.loadVisibleOutlineBySession('session_outline_tools', { limit: 50 });
+      const page = store.loadVisibleOutlineBySession('session_outline_tools', { limit: 50, includeTotal: true });
 
       expect(page).toMatchObject({ totalCount: 2, hasMore: false, nextBeforeSeq: null });
       expect(page.results).toEqual([
@@ -691,7 +798,7 @@ legacy session`, { encoding: 'utf8' });
         speakerVpId: 'maker', toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: 'true' } }],
       });
 
-      const page = store.loadVisibleOutlineBySession('session_outline_tool_only', { limit: 50 });
+      const page = store.loadVisibleOutlineBySession('session_outline_tool_only', { limit: 50, includeTotal: true });
 
       expect(page.totalCount).toBe(2);
       expect(page.results[1]).toMatchObject({
@@ -745,7 +852,8 @@ legacy session`, { encoding: 'utf8' });
       ]);
     });
 
-    it('supports an exclusive seq cursor and bounded anchor window', () => {
+    it('supports an exclusive seq cursor and bounded anchor window', async () => {
+      await runConsolidatedHistoryScenarios();
       const ids = [];
       for (let i = 0; i < 5; i += 1) {
         ids.push(store.append({ role: 'user', content: `searchable turn ${i}`, sessionId: 'session_window' }));
@@ -769,7 +877,7 @@ legacy session`, { encoding: 'utf8' });
       expect(window.messages.some(message => message.id === anchor.id)).toBe(true);
       expect(window.messages.every(message => message.sessionId === 'session_window')).toBe(true);
       expect(window.messages.length).toBeLessThan(10);
-    });
+    }, 60_000);
 
     it('restores AskUser answers inside a bounded search window', () => {
       store.append({ role: 'user', content: 'searchable AskUser turn', sessionId: 'session_window_ask' });
@@ -810,6 +918,354 @@ legacy session`, { encoding: 'utf8' });
   });
 
 
+
+  historyScenario('preserves literal search semantics and rebuilds after same-seq mutations', async () => {
+      const sessionId = 'session_index_mutations';
+      const user = store.append({
+        role: 'user',
+        content: '前缀中文后缀 😀 👨‍💻 foo.bar quoted "Value" old-token',
+        sessionId,
+      });
+      const assistant = store.append({
+        role: 'assistant',
+        content: 'assistant needle',
+        sessionId,
+        turnId: 'turn-index',
+        speakerVpId: 'linus',
+      });
+
+      for (const query of ['中', '中文', '😀', '👨‍💻', 'foo.bar', 'quoted "value"', 'OLD-TOKEN']) {
+        const page = await searchConversationIndex(TEST_DIR, sessionId, query, { limit: 10 });
+        expect(page.results).toEqual([expect.objectContaining({ messageId: user.id })]);
+        expect(page.maxBatchRows).toBeLessThanOrEqual(128);
+        expect(page.maxBatchBytes).toBeLessThanOrEqual(2 * 1024 * 1024 + 1024);
+      }
+      const databaseDir = join(TEST_DIR, 'conversation-index', 'databases');
+      const databaseName = readdirSync(databaseDir).find(name => name.endsWith('.sqlite'));
+      expect(statSync(join(databaseDir, databaseName)).size).toBeLessThan(2 * 1024 * 1024);
+      const first = await searchConversationIndex(TEST_DIR, sessionId, 'assistant needle', { limit: 10 });
+      expect(first.results).toHaveLength(1);
+      const firstGeneration = first.indexGeneration;
+      const entryId = first.results[0].entryId;
+
+      store.update(assistant, { content: 'assistant updated-token' });
+      expect(await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+        indexGeneration: firstGeneration,
+        entryId,
+        entryStartSeq: first.results[0].entryStartSeq,
+        anchorMessageId: first.results[0].messageId,
+        anchorSeq: first.results[0].seq,
+      })).toMatchObject({ ok: false, code: 'stale_result' });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'assistant needle')).results).toEqual([]);
+      const updated = await searchConversationIndex(TEST_DIR, sessionId, 'updated-token');
+      expect(updated.indexGeneration).toBeGreaterThan(firstGeneration);
+      expect(updated.results).toEqual([expect.objectContaining({ entryId })]);
+
+      const hiddenInternal = store.append({
+        role: 'user', content: 'hide internal token', sessionId, userAuthored: true,
+      });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hide internal token')).results)
+        .toHaveLength(1);
+      store.update(hiddenInternal, { internal: true });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hide internal token')).results)
+        .toEqual([]);
+
+      const hiddenModel = store.append({
+        role: 'user', content: 'hide model token', sessionId, userAuthored: true,
+      });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hide model token')).results)
+        .toHaveLength(1);
+      store.update(hiddenModel, { userAuthored: false });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hide model token')).results)
+        .toEqual([]);
+
+      const revealed = store.append({
+        role: 'user', content: 'hidden then visible', sessionId, userAuthored: false,
+      });
+      store.update(revealed, { userAuthored: true });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hidden then visible')).results)
+        .toHaveLength(1);
+
+      store.moveToCold(user.id);
+      expect((await searchConversationIndex(TEST_DIR, sessionId, '中文')).results)
+        .toEqual([expect.objectContaining({ messageId: user.id })]);
+
+      store.foldMessages([assistant], {
+        role: 'user',
+        content: 'fold replacement',
+        sessionId,
+        _reflection: true,
+        internal: true,
+      });
+      expect(await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+        indexGeneration: updated.indexGeneration,
+        entryId: updated.results[0].entryId,
+        entryStartSeq: updated.results[0].entryStartSeq,
+        anchorMessageId: updated.results[0].messageId,
+        anchorSeq: updated.results[0].seq,
+      })).toMatchObject({ ok: false, code: 'stale_result' });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'updated-token')).results).toEqual([]);
+
+      store.deleteByGroup(sessionId);
+      await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+        indexGeneration: updated.indexGeneration,
+        entryId: updated.results[0].entryId,
+        entryStartSeq: updated.results[0].entryStartSeq,
+        anchorMessageId: updated.results[0].messageId,
+        anchorSeq: updated.results[0].seq,
+      });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, '中文')).results).toEqual([]);
+    });
+
+    historyScenario('pages interleaved VP entries with an opaque cursor and no gaps', async () => {
+      const sessionId = 'session_index_cursor';
+      const user = store.append({ role: 'user', content: 'cursor question', sessionId });
+      const linusFirst = store.append({
+        role: 'assistant', content: 'linus first', sessionId,
+        turnId: 'turn-cursor', speakerVpId: 'linus',
+      });
+      const martin = store.append({
+        role: 'assistant', content: 'martin response', sessionId,
+        turnId: 'turn-cursor', speakerVpId: 'martin',
+      });
+      const linusFinal = store.append({
+        role: 'assistant', content: 'linus final', sessionId,
+        turnId: 'turn-cursor', speakerVpId: 'linus',
+      });
+
+      const pages = [];
+      let cursor = null;
+      do {
+        const page = await loadConversationOutlineFromIndex(TEST_DIR, sessionId, {
+          limit: 1,
+          ...(cursor ? { cursor } : {}),
+        });
+        pages.push(...page.results);
+        cursor = page.nextCursor;
+      } while (cursor);
+
+      expect(pages).toHaveLength(3);
+      expect(new Set(pages.map(result => result.entryId)).size).toBe(3);
+      expect(pages.find(result => result.speakerVpId === 'linus')).toMatchObject({
+        sourceMessageIds: [linusFirst.id, linusFinal.id],
+      });
+      expect(pages.find(result => result.speakerVpId === 'martin')).toMatchObject({
+        sourceMessageIds: [martin.id],
+      });
+      expect(pages.find(result => result.role === 'user')).toMatchObject({ messageId: user.id });
+    });
+
+    historyScenario('keeps an oversized canonical anchor entry complete under byte caps', () => {
+      const sessionId = 'session_index_large_anchor';
+      store.append({ role: 'user', content: 'large anchor question', sessionId });
+      const first = store.append({
+        role: 'assistant', content: 'x'.repeat(40_000), sessionId,
+        turnId: 'turn-large', speakerVpId: 'linus',
+      });
+      const second = store.append({
+        role: 'assistant', content: 'y'.repeat(40_000), sessionId,
+        turnId: 'turn-large', speakerVpId: 'linus',
+      });
+      const entry = store.loadCanonicalVisibleEntriesBySession(sessionId)
+        .find(candidate => candidate.speakerVpId === 'linus');
+      const window = store.loadVisibleWindowBySession(sessionId, entry.anchorSeq, {
+        entryStartSeq: entry.entryStartSeq,
+        entryEndSeq: entry.entryEndSeq,
+        sourceMessageIds: entry.sourceMessageIds,
+        beforeTurns: 1,
+        afterTurns: 1,
+        maxRows: 10,
+        maxBytes: 32 * 1024,
+      });
+
+      expect(window.messages.map(message => message.id)).toEqual(expect.arrayContaining([first.id, second.id]));
+      expect(window.byteCount).toBeGreaterThan(32 * 1024);
+      expect(window.rowCount).toBeLessThanOrEqual(10);
+    });
+
+    historyScenario('reconciles a source write that lands during the initial rebuild', async () => {
+      const buildingSessionId = 'session_index_building';
+      store.append({ role: 'user', content: 'build me', sessionId: buildingSessionId });
+      const rejectedAt = performance.now();
+      await expect(searchConversationIndex(TEST_DIR, buildingSessionId, 'build me', {
+        _waitForBuild: false,
+      })).rejects.toMatchObject({ code: 'index_building' });
+      expect(performance.now() - rejectedAt).toBeLessThan(250);
+      expect((await searchConversationIndex(TEST_DIR, buildingSessionId, 'build me')).results)
+        .toHaveLength(1);
+
+      const sessionId = 'session_index_concurrent';
+      for (let index = 0; index < 200; index += 1) {
+        store.append({ role: 'user', content: `seed ${index}`, sessionId });
+      }
+      const initial = searchConversationIndex(TEST_DIR, sessionId, 'seed 199');
+      store.append({ role: 'user', content: 'concurrent needle', sessionId });
+      await initial;
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'concurrent needle')).results)
+        .toEqual([expect.objectContaining({ snippet: expect.stringContaining('concurrent needle') })]);
+
+      const managerSessions = Array.from(
+        { length: __historyIndexForTest.maxManagers + 4 },
+        (_, index) => `session_index_manager_${index}`,
+      );
+      for (const [index, managerSessionId] of managerSessions.entries()) {
+        store.append({ role: 'user', content: `manager needle ${index}`, sessionId: managerSessionId });
+        expect((await searchConversationIndex(
+          TEST_DIR,
+          managerSessionId,
+          `manager needle ${index}`,
+        )).results).toHaveLength(1);
+        expect(__historyIndexForTest.managers.size)
+          .toBeLessThanOrEqual(__historyIndexForTest.maxManagers);
+      }
+      const firstManagerKey = `${TEST_DIR}\u001fsession_index_manager_0`;
+      expect(__historyIndexForTest.managers.has(firstManagerKey)).toBe(false);
+      expect((await searchConversationIndex(
+        TEST_DIR,
+        'session_index_manager_0',
+        'manager needle 0',
+      )).results).toHaveLength(1);
+      expect(__historyIndexForTest.managers.size)
+        .toBeLessThanOrEqual(__historyIndexForTest.maxManagers);
+    });
+
+    historyScenario('reconciles a crash-gap source rewrite without a mutation marker', async () => {
+      const sessionId = 'session_index_crash_gap';
+      store.append({ role: 'user', content: 'before crash', sessionId });
+      await searchConversationIndex(TEST_DIR, sessionId, 'before crash');
+
+      const segmentPath = join(TEST_DIR, 'sessions', sessionId, 'conversation', 'segments', '000001.jsonl');
+      const original = readFileSync(segmentPath, 'utf8');
+      writeFileSync(segmentPath, original.replace('before crash', 'after crash!'), 'utf8');
+
+      const after = await searchConversationIndex(TEST_DIR, sessionId, 'after crash!');
+      expect(after.results)
+        .toEqual([expect.objectContaining({ snippet: expect.stringContaining('after crash!') })]);
+      expect(after.indexGeneration).toBeGreaterThan(1);
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'before crash')).results).toEqual([]);
+
+      const outlineSessionId = 'session_index_outline_reconcile';
+      store.append({ role: 'user', content: 'old-token', sessionId: outlineSessionId });
+      const initialOutline = await loadConversationOutlineFromIndex(TEST_DIR, outlineSessionId, {
+        limit: 10,
+      });
+      await closeConversationHistoryIndexes({ releaseMutationState: false });
+      const outlinePath = join(
+        TEST_DIR, 'sessions', outlineSessionId, 'conversation', 'segments', '000001.jsonl',
+      );
+      const outlineOriginal = readFileSync(outlinePath, 'utf8');
+      writeFileSync(outlinePath, outlineOriginal.replace('old-token', 'new-token'), 'utf8');
+      const staleOutline = await loadConversationOutlineFromIndex(TEST_DIR, outlineSessionId, {
+        limit: 10,
+      });
+      expect(staleOutline.indexGeneration).toBe(initialOutline.indexGeneration);
+      expect(staleOutline.results[0].snippet).toContain('old-token');
+      let reconciledOutline = staleOutline;
+      for (let attempt = 0; attempt < 100
+        && reconciledOutline.indexGeneration === initialOutline.indexGeneration; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+        reconciledOutline = await loadConversationOutlineFromIndex(TEST_DIR, outlineSessionId, {
+          limit: 10,
+        });
+      }
+      expect(reconciledOutline.indexGeneration).toBeGreaterThan(initialOutline.indexGeneration);
+      expect(reconciledOutline.results[0].snippet).toContain('new-token');
+    });
+
+    historyScenario('invalidates the live scope when Session CRUD archives or deletes the directory', async () => {
+      const sessionId = 'session_index_lifecycle';
+      const handle = createSession(join(TEST_DIR, 'sessions'), {
+        id: sessionId,
+        name: 'Indexed lifecycle',
+        roster: [],
+        defaultVpId: null,
+      });
+      handle.close();
+      store.append({ role: 'user', content: 'lifecycle needle', sessionId });
+      const indexed = await searchConversationIndex(TEST_DIR, sessionId, 'lifecycle needle');
+      expect(indexed.results).toHaveLength(1);
+
+      rmSync(join(TEST_DIR, 'sessions', sessionId), { recursive: true, force: true });
+      expect(archiveSession(TEST_DIR, sessionId)).toMatchObject({ alreadyGone: true });
+      expect(await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+        indexGeneration: indexed.indexGeneration,
+        entryId: indexed.results[0].entryId,
+        entryStartSeq: indexed.results[0].entryStartSeq,
+        anchorMessageId: indexed.results[0].messageId,
+        anchorSeq: indexed.results[0].seq,
+      })).toMatchObject({ ok: false, code: 'stale_result' });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'lifecycle needle')).results).toEqual([]);
+
+      expect(deleteSession(TEST_DIR, sessionId, { memoryRoot: join(TEST_DIR, 'memory') }))
+        .toMatchObject({ sessionId, alreadyGone: true, legacyCleanedUp: 0 });
+      expect(deleteSession(TEST_DIR, sessionId, { memoryRoot: join(TEST_DIR, 'memory') }))
+        .toMatchObject({ sessionId, alreadyGone: true });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'lifecycle needle')).results).toEqual([]);
+    });
+
+    historyScenario('rejects a stale versioned entry locator after the source entry changes', async () => {
+      const raceAnchorMutation = async (kind, mutate) => {
+        const sessionId = `session_index_anchor_${kind}`;
+        store.append({ role: 'user', content: `anchor question ${kind}`, sessionId });
+        const assistant = store.append({
+          role: 'assistant',
+          content: `anchor needle ${kind}`,
+          sessionId,
+          turnId: `turn-anchor-${kind}`,
+          speakerVpId: 'linus',
+        });
+        const page = await searchConversationIndex(TEST_DIR, sessionId, `anchor needle ${kind}`);
+        const result = page.results[0];
+        expect(await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+          indexGeneration: result.indexGeneration,
+          entryId: result.entryId,
+          entryStartSeq: result.entryStartSeq,
+          anchorMessageId: result.messageId,
+          anchorSeq: result.seq,
+        })).toMatchObject({ ok: true });
+
+        const barrierBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
+        const barrier = new Int32Array(barrierBuffer);
+        const reading = readConversationIndexWindow(TEST_DIR, sessionId, {
+          indexGeneration: result.indexGeneration,
+          entryId: result.entryId,
+          entryStartSeq: result.entryStartSeq,
+          anchorMessageId: result.messageId,
+          anchorSeq: result.seq,
+          beforeTurns: 1,
+          afterTurns: 1,
+          _testBarrier: barrierBuffer,
+        });
+        while (Atomics.load(barrier, 0) === 0) {
+          await new Promise(resolve => setTimeout(resolve, 1));
+        }
+        await mutate({ sessionId, assistant });
+        Atomics.store(barrier, 1, 1);
+        Atomics.notify(barrier, 1);
+        await expect(reading).rejects.toMatchObject({ code: 'stale_result' });
+      };
+
+      await raceAnchorMutation('update', ({ assistant }) => {
+        store.update(assistant, { content: 'anchor changed during read' });
+      });
+      await raceAnchorMutation('fold', ({ sessionId, assistant }) => {
+        store.foldMessages([assistant], {
+          role: 'user', content: 'fold replacement', sessionId, _reflection: true, internal: true,
+        });
+      });
+      await raceAnchorMutation('delete', ({ sessionId }) => {
+        store.deleteByGroup(sessionId);
+      });
+      await raceAnchorMutation('rewrite', ({ sessionId }) => {
+        const segmentPath = join(
+          TEST_DIR, 'sessions', sessionId, 'conversation', 'segments', '000001.jsonl',
+        );
+        const original = readFileSync(segmentPath, 'utf8');
+        const rewritten = original.replace('anchor needle rewrite', 'anchor change rewrite');
+        expect(Buffer.byteLength(rewritten)).toBe(Buffer.byteLength(original));
+        writeFileSync(segmentPath, rewritten, 'utf8');
+      });
+    });
 
   describe('loadRecent', () => {
 
@@ -1419,11 +1875,23 @@ legacy session`, { encoding: 'utf8' });
         readCounts.count += 1;
         return original.call(store, ...args);
       };
-      const page = store.loadVisibleBySession('grp_a', null, 1);
+      let page = store.loadVisibleBySession('grp_a', null, 1);
 
       expect(page.messages).toEqual([]);
       expect(page.hasMore).toBe(true);
+      expect(page.nextBeforeSeq).toEqual(expect.any(Number));
       expect(readCounts.count).toBeLessThan(80);
+
+      const cursors = [];
+      while (page.messages.length === 0 && page.hasMore) {
+        const cursor = page.nextBeforeSeq;
+        expect(cursor).toEqual(expect.any(Number));
+        cursors.push(cursor);
+        page = store.loadVisibleBySession('grp_a', cursor, 1);
+      }
+      expect(new Set(cursors).size).toBe(cursors.length);
+      expect(cursors.every((cursor, index) => index === 0 || cursor < cursors[index - 1])).toBe(true);
+      expect(page.messages.map(message => message.content)).toEqual(['old q', 'old a']);
 
       readCounts.count = 0;
       const engineRows = store.loadRecentBySession('grp_a', 1);

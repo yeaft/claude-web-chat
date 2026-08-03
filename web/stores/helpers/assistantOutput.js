@@ -4,10 +4,12 @@ import { resetProcessingWatchdog, stopProcessingWatchdog } from './watchdog.js';
 import { markAllToolsCompleted } from './handlers/conversationHandler.js';
 import { sameUserMessage } from './dedup.js';
 
-function promoteOrInvalidateOutline(store, row) {
-  if (store.promoteYeaftHistoryOutlineRow?.(row)) return;
+function promoteOrInvalidateOutline(store, row, frameAgentId = null) {
+  if (!frameAgentId) return false;
+  if (store.promoteYeaftHistoryOutlineRow?.(row, frameAgentId)) return true;
   const sessionId = row?.sessionId ?? row?.groupId ?? store._currentYeaftSessionId ?? null;
-  if (sessionId) store.invalidateYeaftHistoryOutline?.(sessionId);
+  if (sessionId) return !!store.invalidateYeaftHistoryOutline?.(sessionId, frameAgentId);
+  return false;
 }
 
 function normalizeUserVisibleContent(content) {
@@ -52,7 +54,7 @@ export function getOrCreateExecutionStatus(store, conversationId) {
   return store.executionStatusMap[conversationId];
 }
 
-export function handleAssistantOutputFrame(store, conversationId, data) {
+export function handleAssistantOutputFrame(store, conversationId, data, frameAgentId = null) {
   if (!conversationId) return;
 
   const execStatus = getOrCreateExecutionStatus(store, conversationId);
@@ -307,7 +309,7 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
           // Bug 1: forward original ts so history messages keep their real
           // timestamp instead of using arrival time.
         });
-        promoteOrInvalidateOutline(store, persistedUserRow);
+        promoteOrInvalidateOutline(store, persistedUserRow, frameAgentId);
       } else if (echoClientMsgId) {
         // Common live-send path (NOT a rare race): the dedup gate above
         // already collapsed the echo's row onto the optimistic row by
@@ -327,7 +329,7 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
               msgs[i].messageId = data.message.id;
             }
             if (data.ts && !msgs[i].ts) msgs[i].ts = data.ts;
-            promoteOrInvalidateOutline(store, msgs[i]);
+            promoteOrInvalidateOutline(store, msgs[i], frameAgentId);
             break;
           }
         }
@@ -416,12 +418,13 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
       }
     }
     store.finishStreamingForConversation(conversationId);
-    const outlinePromoted = store.promoteCompletedYeaftHistoryOutline?.(
+    const outlinePromoted = frameAgentId && store.promoteCompletedYeaftHistoryOutline?.(
       conversationId,
       store._currentYeaftTurnId || null,
+      frameAgentId,
     );
-    if (!outlinePromoted && completedYeaftSessionId) {
-      store.invalidateYeaftHistoryOutline?.(completedYeaftSessionId);
+    if (!outlinePromoted && completedYeaftSessionId && frameAgentId) {
+      store.invalidateYeaftHistoryOutline?.(completedYeaftSessionId, frameAgentId);
     }
     // v0.1.768 — orphan sweep: when this is the last per-VP `result` for
     // the conversation, clear any stale `isStreaming: true` flag left

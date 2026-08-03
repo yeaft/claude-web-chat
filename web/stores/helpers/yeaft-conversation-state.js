@@ -1,4 +1,4 @@
-import { mergeMessagesByStableId } from './messages.js';
+import { ensureMessageUiKeys, mergeMessagesByStableId } from './messages.js';
 import { retireYeaftConversation } from './yeaft-conversation-generation.js';
 import { startYeaftWatchdog, stopProcessingWatchdog } from './watchdog.js';
 
@@ -6,8 +6,17 @@ function mergeRows(store, sourceConversationId, targetConversationId) {
   const sourceRows = store.messagesMap?.[sourceConversationId] || [];
   const targetRows = store.messagesMap?.[targetConversationId] || [];
   if (!store.messagesMap) store.messagesMap = {};
+  ensureMessageUiKeys(store, sourceConversationId, sourceRows);
+  ensureMessageUiKeys(store, targetConversationId, targetRows);
   store.messagesMap[targetConversationId] = mergeMessagesByStableId(targetRows, sourceRows)
-    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    .sort((a, b) => {
+      const aSeq = Number.isFinite(a?.seq) ? a.seq : null;
+      const bSeq = Number.isFinite(b?.seq) ? b.seq : null;
+      if (aSeq !== null && bSeq !== null && aSeq !== bSeq) return aSeq - bSeq;
+      if (aSeq !== null && bSeq === null) return -1;
+      if (aSeq === null && bSeq !== null) return 1;
+      return (a?.timestamp || 0) - (b?.timestamp || 0);
+    });
 }
 
 function copyRuntimeValue(value) {
@@ -81,6 +90,16 @@ export function migrateYeaftConversationState(store, sourceConversationId, targe
   if (!sourceConversationId || !targetConversationId || sourceConversationId === targetConversationId) return false;
 
   mergeRows(store, sourceConversationId, targetConversationId);
+  if (store.yeaftHistoryCacheState) {
+    store.yeaftHistoryCacheState = Object.fromEntries(
+      Object.entries(store.yeaftHistoryCacheState).map(([key, entry]) => [
+        key,
+        entry?.conversationId === sourceConversationId
+          ? { ...entry, conversationId: targetConversationId }
+          : entry,
+      ]),
+    );
+  }
   moveMapEntry(store.processingConversations, sourceConversationId, targetConversationId, { removeSource });
   moveMapEntry(store.executionStatusMap, sourceConversationId, targetConversationId, { removeSource });
   moveMapEntry(store.refreshingSessionMap, sourceConversationId, targetConversationId, { removeSource });

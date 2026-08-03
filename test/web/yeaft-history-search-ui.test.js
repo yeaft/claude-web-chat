@@ -45,7 +45,7 @@ describe('Yeaft conversation outline UI', () => {
     expect(store).toContain('yeaftHistoryIdentityKey(targetAgentId, targetSessionId)');
     expect(store).toContain('yeaftHistoryOutlineBySession');
     expect(store).toContain('const liveRows = conversationId ? (this.messagesMap[conversationId] || []) : []');
-    expect(store).toContain('clientMessageId ? `client:${row.clientMessageId}`');
+    expect(store).toContain('yeaftHistoryResultIdentity(row)');
     expect(store).not.toContain("localStorage.setItem('yeaft-history-outline");
   });
 
@@ -101,7 +101,8 @@ describe('Yeaft conversation outline UI', () => {
   });
 
   it('uses the existing bounded history window to reveal and flash unloaded messages', () => {
-    expect(page).toContain('revealWindow: candidate => store.revealYeaftHistoryResult(candidate)');
+    expect(page).toContain('revealWindow: candidate => store.revealYeaftHistoryResult(candidate, revealLease)');
+    expect(page).toContain(".finally(() => store.finishYeaftHistoryReveal?.(revealLease))");
     expect(page).toContain("store.hasCapability('session_history_window_prefetch')");
     expect(panel).toContain("emit('preview', result)");
     expect(store).toContain('_yeaftHistoryWindowPendingByKey');
@@ -110,7 +111,7 @@ describe('Yeaft conversation outline UI', () => {
     expect(list).toContain('navigateToPersistedMessage({');
     expect(list).toContain('virtualTranscriptRef.value?.scrollToKey?.(blockId, options)');
     expect(list).toContain('virtualTranscriptRef.value?.anchorTarget?.(blockId, row, options)');
-    expect(store).toContain('this.isYeaftMessageCached(pending.sessionId, pending.messageId, conversationId)');
+    expect(store).toContain('this.isYeaftMessageCached(pending.sessionId, pending.messageId, conversationId, pending.agentId)');
     expect(store).not.toContain('containsAnchor || revealedInStore');
     expect(virtual).toContain('expose({ scrollToKey, scrollToIndex, anchorTarget, clearTargetAnchor, cancelPendingBottomFollow, setBottomFollowEnabled })');
     expect(css).toContain('@keyframes yeaft-history-search-flash');
@@ -129,7 +130,7 @@ describe('Yeaft conversation outline UI', () => {
       closeOutline,
     })).resolves.toBe(true);
 
-    expect(revealMessage).toHaveBeenCalledWith('m42');
+    expect(revealMessage).toHaveBeenCalledWith({ messageId: 'm42' });
     expect(closeOutline).toHaveBeenCalledTimes(1);
   });
 
@@ -168,7 +169,7 @@ describe('Yeaft conversation outline UI', () => {
     ];
 
     for (const input of permutations) {
-      expect(sortHistoryResultsNewest(input).map(row => row.messageId)).toEqual(['m1', 'm3', 'm2']);
+      expect(sortHistoryResultsNewest(input).map(row => row.messageId)).toEqual(['m3', 'm2', 'm1']);
     }
     expect(panel).toContain('sortHistoryResultsNewest(');
     expect(panel).toContain('isSearching.value ? props.searchState.results : props.outlineState.results');
@@ -183,7 +184,7 @@ describe('Yeaft conversation outline UI', () => {
       { messageId: 'm8', seq: 8, timestamp: '2026-07-23T10:00:00Z' },
     ];
 
-    expect(sortHistoryResultsNewest(rows).map(row => row.messageId)).toEqual(['m7', 'm6', 'm8', 'm5', 'm4']);
+    expect(sortHistoryResultsNewest(rows).map(row => row.messageId)).toEqual(['m8', 'm7', 'm6', 'm5', 'm4']);
     expect(sortHistoryResultsNewest([
       { messageId: 'm9', seq: 9 },
       { messageId: 'm10', seq: 9 },

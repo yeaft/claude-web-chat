@@ -424,7 +424,8 @@ export function handleMessage(store, msg) {
       break;
 
     case 'yeaft_history_window': {
-      const conversationId = handleYeaftHistoryWindow(store, msg);
+      if (!store.pendingYeaftHistoryWindow?.(msg)) break;
+      const conversationId = msg.error ? null : handleYeaftHistoryWindow(store, msg);
       store.handleYeaftHistoryWindow(msg, conversationId);
       break;
     }
