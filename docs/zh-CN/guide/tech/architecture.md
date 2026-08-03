@@ -1,136 +1,160 @@
 # 架构总览
 
-Yeaft 是一个**三层架构**的多 provider AI 协作平台：
+Yeaft 是三层系统。Browser 是控制面，Server 负责认证与中继，每台 Agent 拥有代码执行和原生 Yeaft runtime data。
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│                       Web Client (Vue 3)                        │
-│              统一的 MessageList 渲染管线（不区分后端）          │
-└──────────────────────────────┬─────────────────────────────────┘
-                               │ WebSocket（加密）
-                               ↓
-┌────────────────────────────────────────────────────────────────┐
-│                     Server (Express + ws)                       │
-│  - 哑中继：按 conversationId / agentId 路由                     │
-│  - 鉴权（JWT + TOTP + Email）                                   │
-│  - 端到端加密（TweetNaCl）                                      │
-│  - SQLite session / user / invite codes                         │
-└──────────────────────────────┬─────────────────────────────────┘
-                               │ WebSocket（加密）
-                               ↓
-┌────────────────────────────────────────────────────────────────┐
-│                          Agent (Node.js)                        │
-│  ┌─────────────────────┐  ┌──────────────────────────────────┐ │
-│  │  Provider 抽象层      │  │  Yeaft 引擎（独立 AI orchestrator）│ │
-│  │  ─ claude-code        │  │  ─ engine.js query loop          │ │
-│  │  ─ copilot (ACP)      │  │  ─ H2-AMS 记忆                   │ │
-│  │                       │  │  ─ multi-provider LLM router      │ │
-│  │  spawn 外部 CLI 子进程 │  │  ─ 30+ 工具                       │ │
-│  └─────────────────────┘  └──────────────────────────────────┘ │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  └─────────────────────────────────────────────────────────┘  │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  Workbench：terminal / git / files / port-proxy           │  │
-│  └─────────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────┘
+```text
+Browser（Vue 3 + Pinia）
+        │ HTTP + 认证/加密 WebSocket traffic
+        ▼
+Server（Express + ws + SQLite）
+        │ owner-checked relay 与 browser-facing catalog
+        ▼
+Agent（运行在代码机器的 Node.js）
+        ├── Claude Code CLI provider
+        ├── GitHub Copilot CLI provider（ACP）
+        ├── 原生 Yeaft engine
+        │   ├── Session + 1..N VP 编排
+        │   ├── Anthropic / OpenAI Responses adapter
+        │   ├── 33 个内置工具 + Skills + MCP
+        │   ├── H2-AMS memory + Dream maintenance
+        │   ├── Project 与 scoped sibling-Session recall
+        │   └── Work Center（WorkItem → Action → Run）
+        └── Workbench（terminal、Git、files、port proxy）
 ```
 
-## 关键分层
+## 所有权边界
 
-### Provider 抽象层（`agent/providers/`）
-- 接口 `ChatProvider`（`base.js`）— `start / sendInput / abort / listSessions / loadHistory`
-- 两个实现：`claude-code`（spawn Claude CLI）、`copilot`（spawn `copilot --acp`）
-- 所有 provider **输出**翻译成同一个 `claude_output` envelope，前端零分支
-- 详见 [Provider 系统](./providers.md)
+| 层 | 拥有 | 不拥有 |
+| --- | --- | --- |
+| **Browser** | 当前 UI state、统一 catalog projection、locale/theme、draft | 代码执行或权威 Agent runtime data |
+| **Server** | User/auth record、invitation/admin data、browser-facing conversation catalog metadata、WebSocket routing | 原生 Session transcript、Agent memory、provider credential 或 Work Center execution |
+| **Agent** | CLI subprocess、原生 provider call、tools、Session history、memory、background task、Project Agent-side context、Work Center SQLite、workbench access | Server user account 或 cross-owner data |
 
-### Yeaft 引擎层（`agent/yeaft/`）
-- 完全自含的 AI orchestrator —— **不**依赖任何外部 CLI
-- 自有 query loop、记忆系统（H2-AMS）、多 provider LLM router、工具系统
-- 通过 `yeaft_output` wire type 出消息（payload 跟 claude_output 同构，前端复用渲染管线）
-- 详见 [Yeaft 引擎](./yeaft-engine.md)
+Session 的 `workDir` 是 execution 与 project asset context。原生 Session data 和 Work Center state 仍位于 Agent 的 Yeaft data root。
 
-### Wire 协议层
-- WebSocket envelope 用 `type` 字段区分消息种类
-- `claude_output` 是 **protocol name**，不是 vendor name — 所有 chat 输出都用它
-- 详见 [WebSocket 协议](./wire-protocol.md)
+## Runtime 路径
 
-## 项目结构
+### Claude Code
 
-```
-claude-web-chat/
-├── server/                  # 中央 WebSocket hub
-│   ├── index.js             # 入口
-│   ├── handlers/            # 消息处理器（agent↔client 路由）
-│   ├── api.js               # REST 接口（认证、会话、用户）
-│   ├── proxy.js             # 端口代理转发
-│   ├── database.js          # SQLite 存储
-│   └── auth.js              # JWT + TOTP + 邮箱验证
-├── agent/                   # 工作机器 Agent
-│   ├── cli.js               # CLI 入口（yeaft-agent 命令）
-│   ├── index.js             # 启动 + 能力检测
-│   ├── connection/          # WebSocket 连接、认证、消息路由
-│   ├── providers/           # Provider 抽象 + claude-code/copilot 实现
-│   │   ├── base.js          # ChatProvider 接口
-│   │   ├── claude-code.js   # Claude CLI 驱动
-│   │   ├── copilot.js       # Copilot CLI 驱动（ACP）
-│   │   └── acp-client.js    # ACP JSON-RPC 客户端
-│   ├── yeaft/               # Yeaft 自有引擎
-│   │   ├── engine.js        # 主 query loop
-│   │   ├── memory/          # H2-AMS 记忆
-│   │   ├── llm/             # LLM adapter（anthropic / openai-responses）
-│   │   ├── sessions/        # Session 编排（多 VP fan-out）
-│   │   ├── tools/           # 30+ 内置工具
-│   │   └── ...
-│   ├── claude.js            # Claude Chat 旧路径（仍保留）
-│   ├── conversation.js      # Chat session 生命周期
-│   ├── sdk/                 # Claude CLI stream-json SDK
-│   ├── terminal.js          # PTY 终端（node-pty）
-│   └── workbench/           # Git + 文件操作
-├── web/                     # Vue 3 前端
-│   ├── app.js               # Vue 应用入口
-│   ├── build.js             # esbuild 生产构建
-│   ├── stores/              # Pinia 状态管理
-│   ├── styles/              # CSS（深色 / 浅色主题）
-│   ├── i18n/                # en / zh-CN 翻译
-│   └── vendor/              # 第三方库（本地，无 CDN）
-├── test/                    # Vitest 单元/集成测试
-├── e2e/                     # Playwright E2E
-├── docs/                    # VitePress 文档（本站）
-├── Dockerfile               # 多阶段生产构建
-└── LICENSE                  # MIT
+```text
+Web send_message
+  → Server relay
+  → Agent ChatProvider
+  → Claude Code CLI stream-json process
+  → normalized claude_output event
+  → 共享 Web message renderer
 ```
 
-## 数据流
+每个 CLI conversation 由一个 provider process 拥有。Claude Code 对其 command 和 resume 行为保持权威。
 
-### Claude Code / Copilot 模式
-```
-Web → ws "send_message" → Server → ws agent
-  → provider.sendInput()
-  → CLI 子进程
-  → 事件流（stream-json / ACP）→ 翻译为 claude_output envelope
-  → ws "claude_output" → Server → ws Web → MessageList 渲染
-```
+### GitHub Copilot
 
-### Yeaft Code Agent
-```
-Web → ws "yeaft_session_send" → Server → ws agent
-  → handleYeaftSessionSend() → coordinator.ingest()
-  → Promise.all(runVpTurn × selected VPs)
-  → Engine.query() → tool exec → LLM stream → engine events
-  → web-bridge.js 归一化事件，复用 MessageList 渲染
-  → ws "yeaft_output" → Server → ws Web → handleYeaftOutput → MessageList
+```text
+Web send_message / permission response
+  → Server relay
+  → Agent Copilot ChatProvider
+  → copilot --acp JSON-RPC process
+  → normalized claude_output event
+  → 共享 Web message renderer
 ```
 
-**兼容命名说明：** `yeaft_session_send` 是当前产品层发送通道。`yeaft_session_chat`、`unify_group_chat` 等旧 wire alias，`groupId` 等旧 payload 字段，以及 `claude_output` / `handleClaudeOutput` 等渲染内部名仍为兼容保留。它们不是新的领域术语；除非代码明确在处理 legacy compatibility，否则新 API 不应使用这些名字。
+ACP permission prompt 与 live Copilot model catalog 保持 provider-specific。
 
-## CI/CD
+### 原生 Yeaft Session
 
-内置 GitHub Actions：
-- **CI** (`ci.yml`)：Node 24 跑测试 + 构建前端（`workflow_dispatch` 手动触发）
-- **Release** (`release.yml`)：推 `release-*` tag → 自动发 npm 包 + Docker 镜像 + GitHub Release
+```text
+Web yeaft_session_send
+  → Server owner-checked relay
+  → Agent Session coordinator
+  → 解析 default/@mentioned VP
+  → 独立运行 VP turn
+  → Engine query/tool loop
+  → yeaft_output event
+  → 共享 Web message renderer
+```
 
-## 接下来
+`yeaft_session_send` 是当前 send channel。历史 alias 与 `claude_output` shape 的 rendering payload 为 wire/storage 兼容保留，不是当前领域术语。
 
-- 想加新 provider → [Provider 系统](./providers.md)
-- 想读 Yeaft 引擎 → [Yeaft 引擎](./yeaft-engine.md)
-- 想看 wire 类型 → [WebSocket 协议](./wire-protocol.md)
+### Work Center
+
+```text
+Browser WorkItem request
+  → Server relay
+  → Agent Work Center store/controller
+  → triage 与经过校验的 Action graph
+  → watcher claim ready Action
+  → runner 复用原生 Engine
+  → 有 fence 的 Run result + evidence
+  → controller 推进 dependency/final gate
+```
+
+Work Center 属于 Agent。Source Session 是 origin/link，不是 storage owner。Coordinator conversation 没有 side-effect tool；Action Run 获得 task-specific tools 与 workspace policy。
+
+## 原生 engine query loop
+
+每个 VP turn 中，engine：
+
+1. 解析 Session、VP、Project、project doc、memory 和 pending sub-agent context；
+2. 在 token budget 内构造 prompt 与 compacted history；
+3. 从所选 Anthropic Messages 或 OpenAI Responses adapter stream；
+4. 执行允许的工具，并 fold 较长 tool arc；
+5. 持久化 raw event、message、usage 和 trace；
+6. 调整 H2-AMS，按需触发 Dream/compact，并报告 stop/result event。
+
+Context error 可以触发强制 compact/retry；配置的 fallback model 处理符合条件的 provider failure。Background job 与 child agent 使用持久 Session-scoped task record。
+
+## 主要源码布局
+
+```text
+server/                     Express/ws relay、auth、catalog、SQLite、port proxy
+agent/
+  providers/                Claude Code 与 Copilot CLI ChatProvider adapter
+  connection/               Agent WebSocket 与 message routing
+  yeaft/
+    engine.js               原生 query/tool loop
+    sessions/               Session roster、store、coordinator、pre-flow
+    projects/               Agent-side Project context store
+    llm/                    Anthropic/OpenAI Responses adapter 与 routing
+    memory/                 H2-AMS、FTS index、summary、segment
+    tools/                  33 个内置工具
+    work-center/            WorkItem/Action/Run store、planner、watcher、runner
+    sub-agent/              Child-agent execution 与 notification
+    tasks/                  Background shell task persistence
+  workbench/                Terminal、Git、files 等服务
+web/                        Vue 3 Options API + Pinia + static CSS/i18n
+test/                       Vitest unit/integration tests
+e2e/                        Playwright browser tests
+docs/                       中英文 VitePress 文档
+```
+
+## Project 与 memory flow
+
+Server catalog 给 Browser 一个 Agent-aware 的原生/CLI conversation 视图。Project membership 会同步给 Agent。原生 turn 开始前，当前 Agent 可以解析 Project 中同一 Agent 的 sibling Session，并将保留来源标签的只读 scope 加入 H2-AMS recall。
+
+这不是 transcript merging。User、VP、Session、Project-related Session、WorkItem 与 legacy compatibility scope 都保留明确所有权和 ACL rule。
+
+## 与安全有关的路径
+
+- Browser/Server auth 支持 JWT、可选 TOTP/邮件验证和可配置 SSO provider。
+- Agent authentication 后，Browser ↔ Agent message body 可以使用 TweetNaCl session encryption。
+- Server 对 Agent 与 WebSocket traffic 执行 owner routing。
+- Provider credential、raw tool output、project file、debug trace 与原生 runtime storage 留在 Agent，除非显式返回 Browser。
+- `SKIP_AUTH` 与 local mode 是开发/受信任工作站路径，不是公网部署设置。
+
+## 构建与发布
+
+- `npm test` 运行核心 Vitest manifest。
+- `npm run test:e2e` 运行 Playwright。
+- `npm run release:guard` 导入 Server/Agent module 并执行 Server startup smoke。
+- `npm run build` 生成 production Web asset。
+- `npm run docs:build` 构建中英文 VitePress 站点。
+- `v1.0.*` tag 触发 development release workflow；`release-v1.0.*` 是显式 production release tag。Release workflow 发布 npm/Docker artifact 前会校验 tag 指向当前 `main`。
+
+## 相关参考
+
+- [CLI provider 系统](./providers.md)
+- [原生 Yeaft engine](./yeaft-engine.md)
+- [H2-AMS memory](./yeaft-memory.md)
+- [原生 LLM 层](./yeaft-llm.md)
+- [WebSocket 协议](./wire-protocol.md)
+- [Work Center 用户合同](../user/work-center.md)

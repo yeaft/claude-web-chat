@@ -1,16 +1,18 @@
 import { defineConfig } from 'vitepress'
 
+const repo = 'https://github.com/yeaft/yeaft-web-code-agent'
+
 export default defineConfig({
   title: 'Yeaft',
-  description: 'Web-based multi-provider code agent platform — Claude Code, GitHub Copilot, and Yeaft Code Agent',
-  base: '/claude-web-chat/',
+  description: 'Web control plane for native multi-provider Sessions, Work Center, Claude Code CLI, and GitHub Copilot CLI',
+  base: '/yeaft-web-code-agent/',
 
   rewrites: {
     'USER_GUIDE.zh-CN.md': 'zh-CN/USER_GUIDE.md',
   },
 
   head: [
-    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/claude-web-chat/logo.svg' }],
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/yeaft-web-code-agent/logo.svg' }],
   ],
 
   locales: {
@@ -20,61 +22,62 @@ export default defineConfig({
       themeConfig: {
         nav: [
           { text: 'Guide', link: '/guide/introduction' },
-          { text: 'User Guide', link: '/guide/user/choose-backend' },
-          { text: 'Tech', link: '/guide/tech/architecture' },
-          { text: 'GitHub', link: 'https://github.com/yeaft/claude-web-chat' },
+          { text: 'Sessions', link: '/guide/user/yeaft-session' },
+          { text: 'Work Center', link: '/guide/user/work-center' },
+          { text: 'Architecture', link: '/guide/tech/architecture' },
+          { text: 'GitHub', link: repo },
         ],
         sidebar: [
           {
-            text: 'Introduction',
+            text: 'Start here',
             items: [
               { text: 'What is Yeaft?', link: '/guide/introduction' },
-              { text: 'Getting Started', link: '/guide/getting-started' },
+              { text: 'Getting started', link: '/guide/getting-started' },
+              { text: 'Choose a code agent path', link: '/guide/user/choose-backend' },
             ],
           },
           {
-            text: 'Deployment',
+            text: 'Native Yeaft',
             items: [
-              { text: 'Server (Docker)', link: '/guide/deploy-server' },
-              { text: 'Agent Setup', link: '/guide/deploy-agent' },
-              { text: 'Yeaft Engine Config', link: '/guide/yeaft-config' },
-            ],
-          },
-          {
-            text: 'User Guide',
-            items: [
-              { text: 'Login & Register', link: '/guide/user/login' },
-              { text: 'Choose a Backend', link: '/guide/user/choose-backend' },
-              { text: 'Claude Code Chat', link: '/guide/user/chat-mode' },
-              { text: 'Copilot Mode', link: '/guide/user/copilot-mode' },
-              { text: 'Yeaft Code Agent', link: '/guide/user/yeaft-group' },
-              { text: 'Expert Panel', link: '/guide/user/expert-panel' },
-              { text: 'Split Screen', link: '/guide/user/split-screen' },
-              { text: 'Workbench', link: '/guide/user/workbench' },
-              { text: 'Admin Dashboard', link: '/guide/features-dashboard' },
+              { text: 'Sessions and Projects', link: '/guide/user/yeaft-session' },
+              { text: 'Work Center', link: '/guide/user/work-center' },
+              { text: 'Provider and model config', link: '/guide/yeaft-config' },
               { text: 'Settings', link: '/guide/user/settings' },
-              { text: 'Keyboard Shortcuts', link: '/guide/user/shortcuts' },
             ],
           },
           {
-            text: 'Technical',
+            text: 'CLI backends and workspace',
+            items: [
+              { text: 'Claude Code conversations', link: '/guide/user/chat-mode' },
+              { text: 'GitHub Copilot conversations', link: '/guide/user/copilot-mode' },
+              { text: 'Expert Panel', link: '/guide/user/expert-panel' },
+              { text: 'Split screen', link: '/guide/user/split-screen' },
+              { text: 'Workbench', link: '/guide/user/workbench' },
+              { text: 'Keyboard shortcuts', link: '/guide/user/shortcuts' },
+            ],
+          },
+          {
+            text: 'Install and operate',
+            items: [
+              { text: 'Server deployment', link: '/guide/deploy-server' },
+              { text: 'Agent installation', link: '/guide/deploy-agent' },
+              { text: 'Agent and native CLI', link: '/guide/agent-cli' },
+              { text: 'Login and registration', link: '/guide/user/login' },
+              { text: 'Admin dashboard', link: '/guide/features-dashboard' },
+              { text: 'Security', link: '/guide/security' },
+            ],
+          },
+          {
+            text: 'Technical reference',
             items: [
               { text: 'Architecture', link: '/guide/tech/architecture' },
-              { text: 'Provider System', link: '/guide/tech/providers' },
-              { text: 'Yeaft Code Agent Engine', link: '/guide/tech/yeaft-engine' },
-              { text: 'Yeaft Memory (H2-AMS)', link: '/guide/tech/yeaft-memory' },
-              { text: 'Yeaft LLM Layer', link: '/guide/tech/yeaft-llm' },
-              { text: 'WebSocket Protocol', link: '/guide/tech/wire-protocol' },
-              { text: 'Security', link: '/guide/security' },
-              { text: 'Agent CLI', link: '/guide/agent-cli' },
-            ],
-          },
-          {
-            text: 'Reference',
-            items: [
+              { text: 'CLI provider system', link: '/guide/tech/providers' },
+              { text: 'Native engine', link: '/guide/tech/yeaft-engine' },
+              { text: 'H2-AMS memory', link: '/guide/tech/yeaft-memory' },
+              { text: 'Native LLM layer', link: '/guide/tech/yeaft-llm' },
+              { text: 'WebSocket protocol', link: '/guide/tech/wire-protocol' },
+              { text: 'Configuration reference', link: '/guide/reference/config-reference' },
               { text: 'FAQ', link: '/guide/faq' },
-              { text: 'Config Reference', link: '/guide/reference/config-reference' },
-              { text: 'Full User Guide (single page)', link: '/USER_GUIDE' },
             ],
           },
         ],
@@ -86,61 +89,62 @@ export default defineConfig({
       themeConfig: {
         nav: [
           { text: '指南', link: '/zh-CN/guide/introduction' },
-          { text: '用户指南', link: '/zh-CN/guide/user/choose-backend' },
-          { text: '技术实现', link: '/zh-CN/guide/tech/architecture' },
-          { text: 'GitHub', link: 'https://github.com/yeaft/claude-web-chat' },
+          { text: 'Session', link: '/zh-CN/guide/user/yeaft-session' },
+          { text: 'Work Center', link: '/zh-CN/guide/user/work-center' },
+          { text: '架构', link: '/zh-CN/guide/tech/architecture' },
+          { text: 'GitHub', link: repo },
         ],
         sidebar: [
           {
-            text: '介绍',
+            text: '从这里开始',
             items: [
               { text: '什么是 Yeaft？', link: '/zh-CN/guide/introduction' },
               { text: '快速开始', link: '/zh-CN/guide/getting-started' },
+              { text: '选择代码 Agent 路径', link: '/zh-CN/guide/user/choose-backend' },
             ],
           },
           {
-            text: '部署',
+            text: '原生 Yeaft',
             items: [
-              { text: '服务器 (Docker)', link: '/zh-CN/guide/deploy-server' },
-              { text: 'Agent 安装', link: '/zh-CN/guide/deploy-agent' },
-              { text: 'Yeaft 引擎配置', link: '/zh-CN/guide/yeaft-config' },
-            ],
-          },
-          {
-            text: '用户指南',
-            items: [
-              { text: '登录与注册', link: '/zh-CN/guide/user/login' },
-              { text: '选择会话后端', link: '/zh-CN/guide/user/choose-backend' },
-              { text: 'Claude Code Chat', link: '/zh-CN/guide/user/chat-mode' },
-              { text: 'Copilot 模式', link: '/zh-CN/guide/user/copilot-mode' },
-              { text: 'Yeaft Code Agent', link: '/zh-CN/guide/user/yeaft-group' },
-              { text: '帮帮团', link: '/zh-CN/guide/user/expert-panel' },
-              { text: '分屏模式', link: '/zh-CN/guide/user/split-screen' },
-              { text: 'Workbench 工作台', link: '/zh-CN/guide/user/workbench' },
-              { text: '仪表板（管理员）', link: '/zh-CN/guide/features-dashboard' },
+              { text: 'Session 与 Project', link: '/zh-CN/guide/user/yeaft-session' },
+              { text: 'Work Center', link: '/zh-CN/guide/user/work-center' },
+              { text: 'Provider 与 model 配置', link: '/zh-CN/guide/yeaft-config' },
               { text: '设置', link: '/zh-CN/guide/user/settings' },
+            ],
+          },
+          {
+            text: 'CLI 后端与工作区',
+            items: [
+              { text: 'Claude Code conversation', link: '/zh-CN/guide/user/chat-mode' },
+              { text: 'GitHub Copilot conversation', link: '/zh-CN/guide/user/copilot-mode' },
+              { text: 'Expert Panel', link: '/zh-CN/guide/user/expert-panel' },
+              { text: '分屏', link: '/zh-CN/guide/user/split-screen' },
+              { text: 'Workbench', link: '/zh-CN/guide/user/workbench' },
               { text: '快捷键', link: '/zh-CN/guide/user/shortcuts' },
             ],
           },
           {
-            text: '技术实现',
+            text: '安装与运维',
             items: [
-              { text: '架构总览', link: '/zh-CN/guide/tech/architecture' },
-              { text: 'Provider 系统', link: '/zh-CN/guide/tech/providers' },
-              { text: 'Yeaft Code Agent 引擎', link: '/zh-CN/guide/tech/yeaft-engine' },
-              { text: 'Yeaft 记忆系统（H2-AMS）', link: '/zh-CN/guide/tech/yeaft-memory' },
-              { text: 'Yeaft LLM 层', link: '/zh-CN/guide/tech/yeaft-llm' },
-              { text: 'WebSocket 协议', link: '/zh-CN/guide/tech/wire-protocol' },
+              { text: '部署 Server', link: '/zh-CN/guide/deploy-server' },
+              { text: '安装 Agent', link: '/zh-CN/guide/deploy-agent' },
+              { text: 'Agent 与原生 CLI', link: '/zh-CN/guide/agent-cli' },
+              { text: '登录与注册', link: '/zh-CN/guide/user/login' },
+              { text: '管理员仪表板', link: '/zh-CN/guide/features-dashboard' },
               { text: '安全', link: '/zh-CN/guide/security' },
-              { text: 'Agent CLI', link: '/zh-CN/guide/agent-cli' },
             ],
           },
           {
-            text: '参考',
+            text: '技术参考',
             items: [
+              { text: '架构', link: '/zh-CN/guide/tech/architecture' },
+              { text: 'CLI provider 系统', link: '/zh-CN/guide/tech/providers' },
+              { text: '原生 engine', link: '/zh-CN/guide/tech/yeaft-engine' },
+              { text: 'H2-AMS memory', link: '/zh-CN/guide/tech/yeaft-memory' },
+              { text: '原生 LLM 层', link: '/zh-CN/guide/tech/yeaft-llm' },
+              { text: 'WebSocket 协议', link: '/zh-CN/guide/tech/wire-protocol' },
+              { text: '配置参考', link: '/zh-CN/guide/reference/config-reference' },
               { text: '常见问题', link: '/zh-CN/guide/faq' },
-              { text: '配置文件参考', link: '/zh-CN/guide/reference/config-reference' },
-              { text: '完整用户手册（单页）', link: '/zh-CN/USER_GUIDE' },
             ],
           },
         ],
@@ -149,12 +153,8 @@ export default defineConfig({
   },
 
   themeConfig: {
-    search: {
-      provider: 'local',
-    },
-    socialLinks: [
-      { icon: 'github', link: 'https://github.com/yeaft/claude-web-chat' },
-    ],
+    search: { provider: 'local' },
+    socialLinks: [{ icon: 'github', link: repo }],
     footer: {
       message: 'Released under the MIT License.',
       copyright: 'Copyright 2024-present Yeaft',

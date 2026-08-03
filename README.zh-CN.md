@@ -1,568 +1,224 @@
 # Yeaft Web Code Agent
 
-![CI](https://github.com/yeaft/claude-web-chat/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/yeaft/yeaft-web-code-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/yeaft/yeaft-web-code-agent/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@yeaft/webchat-agent)](https://www.npmjs.com/package/@yeaft/webchat-agent)
-[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://ghcr.io/yeaft/claude-web-chat)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://ghcr.io/yeaft/yeaft-web-code-agent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Node.js](https://img.shields.io/badge/node-%3E%3D18-green)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22.5-green)](package.json)
 
-[English](README.md) | [中文](README.zh-CN.md) | [文档站点](https://yeaft.github.io/claude-web-chat/zh-CN/)
+[English](README.md) | [中文](README.zh-CN.md) | [文档站](https://yeaft.github.io/yeaft-web-code-agent/zh-CN/)
 
-> Web 端多 provider 代码 Agent 平台 — 在同一个浏览器 UI 里运行 Claude Code CLI、GitHub Copilot CLI，或 Yeaft 原生 Code Agent。支持多工作机器、本地执行、跨 provider 模型路由、持久记忆和多 VP Session 协作。
+Yeaft 是运行在自有机器上的代码 Agent 的 Web 控制面。同一个浏览器可以连接多台 Agent，打开 Claude Code 或 GitHub Copilot CLI 对话，也可以运行 Yeaft 原生多 provider 引擎，使用持久 Session、可复用的 Virtual Person（VP）、有边界的记忆、Project 和 Work Center。
 
-**🌐 在线体验：[cc.yeaft.com](https://cc.yeaft.com)** — 开放注册，无需邀请码。
+**在线体验：** [cc.yeaft.com](https://cc.yeaft.com)
 
-## 术语表
+![Yeaft Session 中的实现与独立审查交接](docs/images/zh-CN/session.png)
 
-- **Yeaft Web Code Agent**：完整 Web 端产品，包括 server、浏览器 UI、已连接的 worker agent、文档和部署形态。
-- **Yeaft Code Agent**：运行在 `yeaft-agent` 内的原生代码 Agent 能力，包含 Yeaft 引擎、工具、记忆和直接 LLM provider 路由。
-- **Yeaft Session**：原生引擎的持久协作单元。一个 Session 可以只有 1 个 VP 做专注编码，也可以有多个 VP 并行协作。
-- **Legacy wire/storage names**：部分代码和协议字段仍保留 `group`、`groupId`、`yeaft_session_chat`、`unify_*`、`claude_output` 等旧名。这些是兼容契约，不是新的产品语言。新文档和新代码应使用 Yeaft + Session 术语，除非是在明确说明兼容层。
+## 为什么使用 Yeaft
 
-![Screenshot](docs/images/zh-CN/hero.jpg)
+- **让执行靠近代码。** Shell、文件、Git、provider、凭据、Session 数据和 Work Center 状态都留在已连接的 Agent 机器。Server 负责用户认证和 Browser ↔ Agent 中继。
+- **每个任务选合适的 runtime。** Claude Code CLI、基于 ACP 的 GitHub Copilot CLI 与 Yeaft 原生引擎共用一套 Web UI，但文档不会假装它们行为完全相同。
+- **一个 Session 从 1 个 VP 扩到多个 VP。** 原生 Yeaft 只有 Session 这一种协作单元：1 个 VP 做专注任务，多个 VP 可并行承担实现、审查、调研或设计。
+- **有意识地携带上下文。** H2-AMS 按 user、VP、Session 和相关 Project Session scope 召回记忆，不把一份全局 transcript 无差别塞给所有角色。
+- **把长任务移出单次 chat turn。** Work Center 将目标持久化为 WorkItem，由 AI 规划经过校验的 Action graph，分配 VP、记录 Run 和工具证据，并能在浏览器断开或 Agent 重启后继续恢复。
 
-## 功能特性
+## 产品模型
 
-### 选择你的代码 Agent 路径
-
-Yeaft Web Code Agent 不绑定单一 AI 厂商，也不绑定单一执行模型。开始工作时可以选择：
-
-| 后端 | 适合 |
+| 概念 | 准确定义 |
 | --- | --- |
-| **Claude Code** | 1:1 chat 配 Claude Code CLI — 全套 Claude 工具 |
-| **Copilot** | 1:1 chat 走 GitHub Copilot CLI（ACP 协议）— 任挑 Claude / GPT 系 model |
-| **Yeaft Code Agent** | 原生多 provider 代码 Agent，1..N 个 VP，并行 fan-out，持久记忆，30+ 内置工具 |
+| **Agent** | 运行在笔记本、VM、服务器或容器上的 Node.js worker。它拥有执行环境、本机配置和原生 Yeaft 运行数据。 |
+| **Session** | 原生 Yeaft 的持久对话单元，包含 1..N 个 VP、一个消息时间线、工作目录、模型 override、公告和记忆 scope。 |
+| **VP（Virtual Person）** | 可复用角色，包含双语元数据、traits、persona prompt，以及 primary/fast model hint。VP 是角色，不是另一台机器。 |
+| **Project** | 浏览器中对原生 Session 的分组。Project instruction 作用于成员 Session；同一 Agent 上的兄弟 Session 可召回只读的 scoped summary，并保留来源身份。 |
+| **Work Center** | Agent 级持久任务系统。WorkItem 包含合同和对话；规划出的 Action 通过有 fence 的 Run 执行，记录状态、证据、重试、人工输入和 review 结论。 |
 
-### Chat（Claude Code）
+内部 wire type 和存储路径仍有 `group`、`unify_*`、`claude_output` 等历史名字用于兼容；它们不是当前产品术语。
 
-ChatGPT 风格对话界面，实时工具追踪，会话管理和文件上传。
+## 三条执行路径
 
-- Claude 响应实时流式输出
-- 可视化显示 Read、Edit、Bash 等工具操作
-- 斜杠命令（`/model`、`/memory`、`/skills` 等）+ 自动补全
-- `/btw` 侧边提问 — 在不打断当前任务的情况下快速追问
-- Sub-Agent 面板 — 实时监控和查看嵌套 Agent 工具调用
-- SQLite 会话持久化，支持历史恢复
-- 会话置顶 — 将重要对话固定在侧边栏顶部
-- 拖放上传文件和图片
-- 深色 / 浅色主题一键切换
-- 双语界面（English / 中文），运行时切换语言
-- 移动端响应式布局
+| 路径 | Runtime 与优势 | 重要边界 |
+| --- | --- | --- |
+| **Claude Code** | 每个 conversation 一个 Claude Code CLI 进程；支持 Claude Code 工具、skills、MCP、compact/clear、sub-agent event 和 resume | 本机必须安装并登录 Claude Code CLI |
+| **GitHub Copilot** | 每个 conversation 一个 `copilot --acp` 进程；使用 Copilot model catalog 和明确的工具权限确认 | 本机必须安装 Copilot CLI，并拥有可用的 GitHub Copilot 账号 |
+| **Yeaft Code Agent** | `yeaft-agent` 内的原生引擎；1..N 个 VP、33 个内置工具、多 provider 路由、H2-AMS 记忆、Project、sub-agent 和 Work Center 交接 | 不模拟 Claude Code 或 Copilot CLI 的所有命令和行为 |
 
-### Copilot CLI 后端
+Web UI 还提供终端、Git 状态与 diff、文件浏览/编辑、端口代理、CLI conversation 分屏、Claude Code conversation 的 Expert Panel、用量管理、light/dark theme，以及中英文切换。
 
-同样的 chat 界面，但后端跑 `copilot --acp` 而不是 `claude`。Copilot 走 ACP（Agent Client Protocol），Agent 把每条 ACP 事件翻译成同样的 `claude_output` envelope — 渲染管线共用。
+## 当前原生 Yeaft 能力
 
-- 任挑 Copilot 提供的 Claude / GPT 系 model
-- per-session 权限弹窗（一次允许 / 永久允许 / 拒绝）
-- Session 恢复 + 历史
-- 复用你的 GitHub Copilot OAuth，不需要额外 API key
+### Session 与 Project
 
-### Yeaft Code Agent
+- 创建 Session 时可设置工作目录、roster、default VP、model/effort override 和公告。
+- 用 `@mention` 指定一个或多个 VP；选中的 VP 独立执行同一个 turn，也能通过 `RouteForward` 明确交接给同 Session 的其他 VP。
+- 搜索和分页加载持久 Session history，检查每个 VP turn、运行中的后台任务、模型选择、记忆召回、工具调用、token 用量和 stop reason。
+- 将原生 Session 放入 Project，在 Project 与 Recents 之间拖动，并为所有成员 Session 设置共享 Project instruction。
+- 从当前 Session 创建持久 WorkItem；来源 Session 身份由 runtime 强制写入。
 
-Yeaft 原生代码 Agent 引擎运行在 `yeaft-agent` 内，不需要外部 CLI 子进程。它以 Session 为核心：一个 Session 可以只有 1 个 VP 做专注编码，也可以放多个 VP 做产品 / 架构 / 实现 / 审查协作。
+### Provider、工具与记忆
 
-- 用可复用 VP 组建 Session，每个 VP 独立配置人格、provider/model、记忆和工具策略
-- 用 `@mention` 决定哪些 VP 处理本轮；多个 VP 会并行运行
-- 通过 H2-AMS 保留跨 session 持久记忆，按 user / VP / Session / feature 分 scope 管理
-- LLM 调用可路由到 Anthropic、OpenAI Responses、GitHub Copilot 动态凭证、Azure/OpenAI-compatible gateway 或本地 proxy
-- 内置 30+ 工具，覆盖文件、patch、shell、git worktree、Web、notebook、计划和子 Agent 编排
-- 在 Yeaft debug panel 中查看模型路由、召回记忆、工具调用、token 用量和 stop reason
+- 原生 adapter 支持 Anthropic Messages 和 OpenAI Responses 两种协议。
+- Provider 可以使用静态 API key，也可以使用 GitHub Copilot 动态凭据。支持 per-model protocol、context window、output limit 和 reasoning effort 元数据。
+- 当前原生 registry 提供 **33 个内置工具**，覆盖文件/patch、shell 与后台任务、Git worktree、搜索、Web、图片、notebook、计划、持久 WorkItem 创建，以及 sub-agent/VP 编排；Skills 和 MCP 可以继续扩展工具表。
+- H2-AMS 组合 resident summary、recent context 与按需全文召回。Dream 在后台提取持久 segment；记忆始终遵守 scope 和 owner 边界。
 
-完整用法、provider 设置和设计原则见 [Yeaft Code Agent 指南](docs/zh-CN/guide/user/yeaft-group.md)。
+### Work Center
 
-![Chat](docs/images/zh-CN/chat.jpg)
+![Work Center 中的持久 WorkItem、主对话与 Action graph](docs/images/zh-CN/work-center.png)
 
-### 分屏模式（Split Screen）
+Work Center 用来处理必须跨越一次交互 turn 的目标。当前实现包括：
 
-并排打开多个对话 — 最多同时显示 3 个面板。
+- 持久 WorkItem 合同：`goal`、acceptance criteria、工作目录、attachments 和 memory reuse policy；
+- WorkItem 级 Coordinator conversation，用于查询状态、追加指导、修改合同和 replan；
+- AI 规划并校验 Action graph：依赖关系、唯一 final acceptance gate，以及配置允许范围内的并发 Action；
+- auto/pool/fixed VP 分配、model/effort policy、review 角色隔离、retry/waiting/failed 状态和明确的人工恢复输入；
+- shared、read-only、isolated-write、integrate workspace policy，有 fence 的 Run，以及可保留的工具证据；
+- Agent-local SQLite 持久化与重启恢复。WorkItem 会关联来源 Session，但不存放在 Session 内部。
 
-- 从侧边栏将任意 session 分屏到新面板
-- 每个面板是完全独立的对话视图
-- 活跃面板焦点指示器，便于键盘和侧边栏交互
-- 可逐个关闭面板；全部关闭后自动回到单面板模式
+Work Center **不等于**任意无人值守部署。外部副作用仍受所选 Agent/VP 可用工具、仓库规则、凭据和交付指令约束。
 
-### 帮帮团（Expert Panel）
+## 快速开始
 
-AI 专家团队辅助对话 — 选择一个团队（如写作、交易），在侧边面板获取多视角建议。
+### 本机单机体验
 
-- 多个预置专家团队，各有专属角色
-- 专家回复显示在可折叠侧边面板中
-- Chip 风格标签切换团队
-- 与正常对话并行，不打断聊天流程
+安装发布的 Agent 包，在 loopback 上启动内置 Web UI、Server 和 Agent：
 
+```bash
+npm install -g @yeaft/webchat-agent
+yeaft-agent local
+```
 
+浏览器打开 `http://127.0.0.1:6868`。Local mode 关闭 Web 认证且只绑定 loopback，适合受信任的个人工作站，不应直接作为公网部署。
 
-### 仪表板（Admin Dashboard）
-
-管理员使用统计与系统监控。
-
-- 用户活跃度指标，支持时间范围筛选（今天/本周/本月）
-- 按用户维度的使用量明细（消息数、会话数、请求数、流量）
-- Agent 连接状态与延迟监控
-- 移动端响应式卡片布局
-
-![Dashboard](docs/images/zh-CN/dashboard.jpg)
-
-### Workbench（工作台）
-
-集成开发环境：终端、Git 操作、文件浏览器和端口代理。
-
-- 全功能终端模拟器 (xterm.js)，支持 PTY
-- Git 状态查看、差异对比、分支管理
-- 文件浏览器 + CodeMirror 代码编辑器
-- 端口代理：将 Agent 本地端口转发到浏览器
-
-![Workbench](docs/images/zh-CN/workbench.jpg)
-
-## 前置要求
-
-- **Server**: Node.js >= 22.5, Docker（推荐用于生产环境部署）
-- **Agent**: Node.js >= 22.5，按需安装下列至少一项：
-  - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — Claude Chat 模式必需
-  - [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) — Copilot 模式必需（可选）
-  - **Yeaft Code Agent 已内置**于 npm 包，原生 Yeaft Session **无需任何额外 CLI**
-- **Web 客户端**: 现代浏览器（Chrome, Firefox, Safari, Edge）
-
-### 通过 Agent CLI 配置 Yeaft LLM provider
-
-安装后的 agent 可以通过 `yeaft-agent llm` 配置本机 LLM。所有命令只写当前机器的 `~/.yeaft/config.json`；不会写 server global config，也不会改任何 UI 全局 provider 列表。
+至少配置一个原生 Yeaft LLM provider：
 
 ```bash
 yeaft-agent llm setup
 ```
 
-```bash
-yeaft-agent llm use github-copilot --model claude-sonnet-4.5 --fast gpt-4.1
-```
-
-GitHub Copilot 会使用本机 device token / `gh auth` credential provider，从 Copilot API 刷新实时模型列表，并且不会把 token 写入配置。自定义 OpenAI-compatible endpoint 可以这样配置：
+原生 GitHub Copilot provider 可以复用本机 `gh auth` / device credential，不把 token 写进 `~/.yeaft/config.json`：
 
 ```bash
-OPENAI_KEY=sk-... yeaft-agent llm use openai-compatible --name openai --base-url https://api.openai.com/v1 --api-key-env OPENAI_KEY --model gpt-5
+yeaft-agent llm use github-copilot \
+  --model claude-sonnet-4.5 \
+  --fast gpt-4.1
 ```
 
-高级手动配置仍然保留：
+Claude Code 和 Copilot CLI conversation 仍需要分别安装并登录对应 CLI。
+
+### 连接已有 Server
 
 ```bash
-OPENAI_KEY=sk-... yeaft-agent llm add-provider --name openai --base-url https://api.openai.com/v1 --models gpt-5,gpt-4.1 --api-key-env OPENAI_KEY --protocol openai-responses --set-primary gpt-5
-```
-
-```bash
-yeaft-agent llm show
-```
-
-```bash
-yeaft-agent llm set-model --primary openai/gpt-5 --fast openai/gpt-4.1
-```
-
-```bash
-yeaft-agent llm remove-provider --name openai
-```
-
-完整用法和示例见 `yeaft-agent llm --help`。Yeaft Code Agent session header 里的 LLM 配置按钮编辑的是同一份 agent-local config。
-
-## 架构
-
-```
-┌──────────────────────────────────────────┐
-│        Server  (@yeaft/webchat-server)   │
-│         Express + WebSocket Hub          │
-│   - Agent / Web 客户端管理               │
-│   - 多层认证（密码 + TOTP + 邮箱）      │
-│   - 端到端加密 (TweetNaCl)              │
-│   - 消息路由与队列                       │
-│   - SQLite 会话持久化                    │
-└──────────────────┬───────────────────────┘
-                   │ 加密 WebSocket
-        ┌──────────┴──────────┐
-        │                     │
-┌───────▼───────┐      ┌──────▼──────────┐
-│    Agent      │      │   Web 客户端    │
-│ @yeaft/       │      │    (web/)       │
-│ webchat-agent │      │                 │
-│               │      │ - Vue 3 + Pinia │
-│ - 原生 Yeaft  │      │ - 分屏多面板    │
-│   Code Agent  │      │ - 端到端加密    │
-│ - Claude /    │      │ - 深色/浅色主题 │
-│   Copilot CLI │      │ - 中英双语      │
-│ - 终端 / Git  │      │ - 文件上传      │
-│ - 文件管理    │      │                 │
-└───────────────┘      └─────────────────┘
-```
-
-## 快速开始
-
-### 方式 A：npm 安装（仅 Agent）
-
-```bash
-# 全局安装 Agent
 npm install -g @yeaft/webchat-agent
-
-# 连接到服务器
-yeaft-agent --server wss://your-server.com --name my-worker --secret your-secret
-
-# 升级到最新版
-yeaft-agent upgrade
+yeaft-agent --server wss://your-server.example --name my-worker --secret your-agent-secret
 ```
 
-### 方式 B：完整开发环境
+如果机器需要开机后自动重连，可以安装为系统服务：
 
 ```bash
-git clone https://github.com/yeaft/claude-web-chat.git
-cd claude-web-chat
+yeaft-agent install --server wss://your-server.example --name my-worker --secret your-agent-secret
+yeaft-agent status --name my-worker
+```
 
-# 安装所有依赖
+### 从源码运行
+
+```bash
+git clone https://github.com/yeaft/yeaft-web-code-agent.git
+cd yeaft-web-code-agent
 npm install
-
-# 启动服务器 + Agent（开发模式，无需认证）
 npm run dev
 ```
 
-然后浏览器打开 `http://localhost:3456`
+然后打开 `http://localhost:3456`。
 
-## 生产环境部署
+## CLI 边界
 
-### 服务器（Docker）
+npm 包安装两个主要命令：
 
-```bash
-cd server
-cp .env.example .env
-```
+- `yeaft-agent`：运行/管理 Web-connected worker、local mode 和 Agent-local LLM 配置。
+- `yeaft`：直接从终端运行原生引擎，支持 one-shot、interactive、持久 `--session-id`、`--cwd`、model/effort override，以及机器可读的 `stream-json` 输入输出。
 
-编辑 `.env` 文件：
-
-```env
-PORT=3456
-
-# 必须修改！使用随机字符串
-JWT_SECRET=your-very-long-random-secret-key-here
-AGENT_SECRET=your-agent-shared-secret-here
-
-# 可选：邮箱验证
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your@gmail.com
-SMTP_PASS=your-app-password
-SMTP_FROM=Yeaft Web Code Agent <noreply@example.com>
-
-# 可选：TOTP 双因素认证
-TOTP_ENABLED=true
-```
-
-Docker Compose 配置：
-
-```yaml
-services:
-  webchat:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    expose:
-      - "3456"
-    env_file:
-      - server/.env
-    environment:
-      - NODE_ENV=production
-      - SKIP_AUTH=false
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
-```
+原生 Session 的非交互示例：
 
 ```bash
-# 启动服务器（首次运行会自动创建 data/ 目录和 SQLite 数据库）
-docker compose up -d --build webchat
-
-# 创建第一个 admin 用户
-docker compose exec webchat node server/create-user.js admin your-password admin@example.com
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"检查这个仓库并告诉我测试命令。"}}' \
+  | yeaft --session-id session_docs \
+      --cwd "$PWD" \
+      --input-format stream-json \
+      --output-format stream-json
 ```
 
-后续用户可直接在登录页注册（开放注册，无需邀请码）。
+完整、当前的参数和 JSONL 边界见 [Agent 与原生 CLI 参考](docs/zh-CN/guide/agent-cli.md)。
 
-![登录页面](docs/images/login.png)
+## 架构与所有权
 
-### Nginx 反向代理
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name cc.your-domain.com;
-
-    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
-
-    client_max_body_size 50M;
-
-    location / {
-        proxy_pass http://webchat:3456;
-        proxy_http_version 1.1;
-
-        # WebSocket 支持
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # WebSocket 长连接超时
-        proxy_buffering off;
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 3600s;
-    }
-}
+```text
+Browser（Vue 3 + Pinia）
+        │ 认证 / 加密的 WebSocket traffic
+        ▼
+Server（Express + ws + SQLite）
+        │ owner check、中继与浏览器 Session catalog
+        ▼
+Agent（运行在代码所在机器的 Node.js）
+        ├── Claude Code CLI provider
+        ├── GitHub Copilot CLI provider（ACP）
+        ├── 原生 Yeaft engine
+        │   ├── Session + VP 编排
+        │   ├── Anthropic / OpenAI Responses adapter
+        │   ├── 33 个内置工具 + Skills + MCP
+        │   ├── H2-AMS memory + Dream maintenance
+        │   └── Work Center（WorkItem → Action → Run）
+        └── Workbench（terminal、Git、files、port proxy）
 ```
 
-### 部署 Agent
+Server 拥有认证、用户可见的 catalog metadata 和 relay state。Agent 拥有代码执行与 Agent-local Yeaft runtime data。Session 的 `workDir` 只选择 project context，不会变成 Session transcript、memory、tasks 或 Work Center records 的存储根。
 
-**npm 安装**（推荐）：
+## 配置与部署
+
+- **Runtime 要求：** Node.js `>=22.5.0`；release CI 使用 Node.js 24。
+- **Agent 配置：** 每个 Agent instance 解析自己的 Yeaft 目录和 `config.json`。Provider credential 不是 server-global 设置。
+- **Server：** 生产环境推荐 Docker。必须替换默认认证 secret、创建首个管理员、在反向代理终止 TLS，并持久化 Server data directory。
+- **注册：** 当前 production route 支持开放注册。邀请管理代码仍保留，但 `server/auth/register.js` 目前不要求 invitation code。
+- **安全边界：** 产品支持 password/JWT、可选 TOTP 与邮件验证、用户级 Agent secret，以及 TweetNaCl message encryption。Raw debug trace、tool output、attachment 和本机 provider credential 都应视为敏感 Agent 数据。
+
+详细文档：
+
+- [快速开始](docs/zh-CN/guide/getting-started.md)
+- [Yeaft Session 与 Project](docs/zh-CN/guide/user/yeaft-session.md)
+- [Work Center](docs/zh-CN/guide/user/work-center.md)
+- [Provider 与 model 配置](docs/zh-CN/guide/yeaft-config.md)
+- [架构](docs/zh-CN/guide/tech/architecture.md)
+- [安全](docs/zh-CN/guide/security.md)
+- [Server 部署](docs/zh-CN/guide/deploy-server.md)
+- [Agent 安装](docs/zh-CN/guide/deploy-agent.md)
+
+## 开发与验证
 
 ```bash
-npm install -g @yeaft/webchat-agent
-
-# 前台运行。--name 可省略，默认使用计算机名，其中非法字符替换为 "-"。
-yeaft-agent --server wss://your-server.com --secret your-secret
-
-# 或安装为系统服务（开机自启、崩溃自重启）
-yeaft-agent install --server wss://your-server.com --secret your-secret
-
-# 管理已安装的服务
-yeaft-agent status                 # 查看运行状态
-yeaft-agent logs                   # 查看日志（跟踪模式）
-yeaft-agent restart                # 重启
-yeaft-agent uninstall              # 卸载服务
+npm install
+npm test                 # 核心 Vitest suite
+npm run test:e2e         # Playwright browser suite
+npm run release:guard    # Server/Agent import guard + startup smoke
+npm run build            # production Web assets
+npm run docs:build       # 中英文 VitePress 文档站
 ```
 
-**从源码运行**（开发环境或不使用 npm 全局安装）：
+当前 revision 的核心 manifest 包含 49 个 Vitest 文件 / 499 个可列出的测试，E2E 目录包含 11 个 Playwright spec 文件。这些数字用于说明当前规模，不是兼容承诺。
 
-```bash
-cd agent
-cp .env.example .env
-# 编辑 .env — 设置 SERVER_URL, AGENT_NAME, AGENT_SECRET, WORK_DIR
+仓库使用 ES modules、Node.js 22.5+、带 JSDoc 的纯 JavaScript、Vue 3 + Pinia、Express + `ws`、SQLite、esbuild、Vitest、Playwright 和 VitePress。
 
-# 前台运行
-node index.js
+## 文档与兼容
 
-# 或安装为系统服务（自动读取 .env 配置）
-node cli.js install
+面向用户的文档保持中英文双语。英文页面位于 `docs/guide/`，中文页面位于 `docs/zh-CN/guide/`。`docs/notes/` 和 `docs/work-center/` 下的内部设计记录可能描述迁移或历史决策，不应当作公开 feature contract。
 
-# 管理已安装的服务
-node cli.js status
-node cli.js logs
-node cli.js uninstall
-```
-
-Agent Secret 可在 Web 界面的 **设置 > 安全** 中找到：
-
-![设置 Agent](docs/images/zh-CN/setup-agent.jpg)
-
-当没有 Agent 连接时，首页会引导你前往设置页面：
-
-![无 Agent](docs/images/zh-CN/no-agent.jpg)
-
-### Agent CLI 命令
-
-```
-yeaft-agent [选项]                  前台运行
-yeaft-agent install [选项]          安装为系统服务 (Linux/macOS/Windows)
-yeaft-agent uninstall               卸载系统服务
-yeaft-agent start                   启动服务
-yeaft-agent stop                    停止服务
-yeaft-agent restart                 重启服务
-yeaft-agent status                  查看服务状态
-yeaft-agent logs                    查看服务日志
-yeaft-agent upgrade                 升级到最新版本
-yeaft-agent --version               显示版本号
-
-选项：
-  --server <url>      WebSocket 服务器地址
-  --name <name>       Agent 显示名称
-  --secret <secret>   认证密钥
-  --work-dir <dir>    默认工作目录
-  --auto-upgrade      启动时检查更新
-
-环境变量（替代命令行参数）：
-  SERVER_URL, AGENT_NAME, AGENT_SECRET, WORK_DIR
-```
-
-## 安全
-
-### 认证流程
-
-1. **用户名 + 密码**（bcrypt 哈希）
-2. **TOTP 双因素认证**（可选，支持 Google/Microsoft Authenticator）
-3. **邮箱验证码**（可选，需配置 SMTP）
-
-### 生产模式要求
-
-服务器在生产模式（`SKIP_AUTH=false`）下会检查：
-- `JWT_SECRET` 必须修改为非默认值
-
-如果未配置用户，服务器会启动但输出警告 — 通过 `docker compose exec` 创建首个用户即可。
-
-### Agent 认证
-
-- Agent 通过 WebSocket 消息认证（密钥不在 URL 中传输）
-- **用户级 Agent 密钥**：Agent 绑定到特定用户，仅该用户可见
-- **全局 AGENT_SECRET**：环境变量方式，仅 admin 可见
-- 每个连接生成独立会话密钥用于加密
-
-### 角色与权限
-
-所有注册用户默认为 **Pro** 角色。通过 CLI 创建的第一个用户为 **Admin**。
-
-| 功能 | `pro` | `admin` |
-|---|:---:|:---:|
-| 聊天 | ✓ | ✓ |
-| 帮帮团（Expert Panel） | ✓ | ✓ |
-| 自有 Agent（用户级密钥） | ✓ | ✓ |
-| 全局 Agent（AGENT_SECRET） | - | ✓ |
-| 工作台（终端、Git、文件） | ✓ | ✓ |
-| 端口代理 | ✓ | ✓ |
-| 仪表板（Admin Dashboard） | - | ✓ |
-| 邀请码管理 | - | ✓ |
-
-## 前端构建
-
-前端资源在 Docker 构建时自动打包：
-
-```bash
-# 手动构建（开发测试用）
-npm run build
-```
-
-构建输出：
-- `web/dist/vendor.bundle.js` — 第三方库（Vue、Pinia、TweetNaCl 等）
-- `web/dist/app.bundle.js` — 应用代码
-- `web/dist/style.bundle.css` — 样式
-- 所有文件同时生成 `.gz` 压缩版本
-
-## 项目结构
-
-```
-yeaft-web-code-agent/
-├── server/              # 中央 WebSocket 服务器
-│   ├── index.js         # 入口
-│   ├── handlers/        # 消息处理器（agent↔client 路由）
-│   ├── api.js           # REST 接口（认证、会话、用户）
-│   ├── proxy.js         # 端口代理转发
-│   ├── database.js      # SQLite 存储
-│   └── auth.js          # JWT + TOTP + 邮箱验证
-├── agent/               # 工作机器 Agent
-│   ├── cli.js           # CLI 入口（yeaft-agent 命令）
-│   ├── index.js         # 启动与能力检测
-│   ├── connection/      # WebSocket 连接、认证与消息路由
-│   ├── providers/       # ChatProvider 抽象
-│   │   ├── base.js      # ChatProvider 接口 + 能力声明
-│   │   ├── claude-code.js # Claude CLI 驱动
-│   │   ├── copilot.js   # GitHub Copilot CLI 驱动（ACP）
-│   │   └── acp-client.js# ACP JSON-RPC 客户端
-│   ├── yeaft/           # Yeaft 自有 AI 引擎（不依赖外部 CLI）
-│   │   ├── engine.js    # 主 query loop
-│   │   ├── memory/      # H2-AMS 记忆子系统
-│   │   ├── llm/         # 多 provider LLM 适配器
-│   │   ├── sessions/    # Session 编排
-│   │   └── tools/       # 30+ 内置工具
-│   ├── claude.js        # Legacy Claude CLI 进程管理
-│   ├── conversation.js  # 会话生命周期与斜杠命令
-│   ├── sdk/             # Claude CLI stream-json SDK
-│   ├── terminal.js      # PTY 终端 (node-pty)
-│   └── workbench/       # Git + 文件操作
-├── web/                 # Vue 3 前端
-│   ├── app.js           # Vue 应用入口
-│   ├── build.js         # 生产构建脚本（esbuild）
-│   ├── stores/          # Pinia 状态管理 + helpers
-│   ├── styles/          # CSS（23 个样式表，深色/浅色主题）
-│   ├── i18n/            # 国际化翻译（en、zh-CN）
-│   └── vendor/          # 第三方库（本地加载，无 CDN）
-├── test/                # Vitest 单元/集成测试（68 文件，2700+ 用例）
-├── e2e/                 # Playwright 端到端测试
-├── docs/                # VitePress 文档站点
-├── Dockerfile           # 多阶段生产构建
-└── LICENSE              # MIT
-```
-
-## 技术栈
-
-- **Server**: Node.js, Express, ws, node:sqlite, compression
-- **Frontend**: Vue 3, Pinia, xterm.js, CodeMirror 5, marked, highlight.js
-- **Build**: esbuild
-- **Testing**: Vitest（2,700+ 单元/集成测试），Playwright（E2E）
-- **Encryption**: TweetNaCl (XSalsa20-Poly1305)
-- **Auth**: JWT, bcrypt, speakeasy (TOTP), nodemailer
-- **Docs**: VitePress
-- **Deploy**: Docker 多阶段构建
-
-## CI/CD
-
-内置 GitHub Actions 工作流：
-
-- **CI** (`ci.yml`): 在 Node 24 上运行测试 + 构建前端（手动触发 `workflow_dispatch`）
-- **Release** (`release.yml`): 推送 `release-*` tag 时自动发布 npm 包 + Docker 镜像 + GitHub Release
-
-### 发布新版本
-
-```bash
-git tag release-v1.0.0
-git push origin release-v1.0.0
-# GitHub Actions 自动完成后续工作
-```
-
-## 常见问题
-
-### Agent 连接失败 "Invalid agent secret"
-
-确保 Agent 的 `AGENT_SECRET`（或 `--secret` 参数）与服务器 `.env` 中配置一致。
-
-### 服务器启动失败 "SECURITY CONFIGURATION ERROR"
-
-生产模式下必须修改默认 JWT 密钥：
-```env
-JWT_SECRET=随机字符串（至少32位）
-```
-
-可用命令生成：`openssl rand -base64 32`
-
-### Docker 部署后 502 Bad Gateway
-
-1. 检查容器是否运行：`docker compose logs webchat`
-2. 刷新 nginx DNS 缓存：`docker exec nginx nginx -s reload`
-
-### SQLite 只读错误 (SQLITE_READONLY)
-
-确保数据目录权限正确：
-```bash
-sudo chown -R root:root ./data
-```
-
-### TOTP 设置后无法登录
-
-TOTP 码有时间窗口限制（默认 ±30 秒），确保服务器和手机时间同步。
-
-### Agent 自动升级
-
-```bash
-# 手动升级
-yeaft-agent upgrade
-
-# 启动时自动检查
-yeaft-agent --auto-upgrade --server wss://...
-```
-
-服务器也可通过设置 `AGENT_LATEST_VERSION` 环境变量，在 Agent 连接时推送升级通知。
+Canonical repository 是 [github.com/yeaft/yeaft-web-code-agent](https://github.com/yeaft/yeaft-web-code-agent)。历史 package name 和 image alias 只在修改会破坏现有安装的地方保留。
 
 ## 贡献
 
-参见 [CONTRIBUTING.md](CONTRIBUTING.md) 了解开发环境搭建和贡献规范。
+请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。保持小而正确的 diff，尊重兼容边界，补齐定向测试，并根据当前实现核验每一条文档 claim。
 
 ## 免责声明
 
-本项目是一个独立的、社区驱动的开源项目，与 Anthropic, PBC **没有任何关联**，未获得其认可或官方授权。
-
-"Claude" 是 Anthropic 的商标。本项目为 Claude Code CLI 提供 Web 界面，不修改或再分发任何 Anthropic 软件。
-
-使用本软件的风险由用户自行承担。作者不对因使用本软件而产生的任何问题承担责任。
+Yeaft 是独立开源项目，与 Anthropic、OpenAI、GitHub 或其他 model provider 无隶属或官方背书关系。Provider 和 model 名称属于各自权利方。
 
 ## License
 

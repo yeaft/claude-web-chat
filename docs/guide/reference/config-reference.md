@@ -69,8 +69,8 @@ Anything else on a model entry is silently ignored. UI affordances like display 
 | `maxConcurrentThreads` | `number` | `6` | `1–50` | Concurrent ThreadEngineRegistry cap; includes the always-on `main` thread |
 | `autoArchiveIdleDays` | `number` | `30` | `1–3650` | Idle days before a thread is auto-archived |
 | `recentTurnsLimit` | `number` | `20` | `1–500` | Cold-start replay window when no compact summary exists |
-| `multiVp.enabled` | `boolean` | `false` | — | Opt-in flag for multi-VP session mode (gates UI entry) |
-| `dream.*` | object | see [dream/limits.js](https://github.com/yeaft/claude-web-chat/blob/main/agent/yeaft/dream/limits.js) | — | Overrides any UPPER_CASE constant in `DEFAULT_LIMITS` |
+| `multiVp.enabled` | `boolean` | `false` | — | Legacy feature flag retained for compatibility; the current Session UI does not use it as a mode gate |
+| `dream.*` | object | see [dream/limits.js](https://github.com/yeaft/yeaft-web-code-agent/blob/main/agent/yeaft/dream/limits.js) | — | Overrides any UPPER_CASE constant in `DEFAULT_LIMITS` |
 
 Out-of-range numeric values are **clamped** to the valid range rather than silently reset (so a hand-edit of `maxConcurrentThreads: 100` loads as `50`, not the default `6`).
 

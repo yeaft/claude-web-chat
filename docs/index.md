@@ -3,11 +3,11 @@ layout: home
 
 hero:
   name: Yeaft
-  text: Yeaft Web Code Agent
-  tagline: Web-based code agents with Claude Code, GitHub Copilot, and the native multi-provider Yeaft Code Agent
+  text: Web Code Agents on Your Machines
+  tagline: One browser for native multi-provider Sessions, durable Work Center tasks, Claude Code CLI, and GitHub Copilot CLI
   image:
-    src: /images/hero.jpg
-    alt: Yeaft
+    src: /images/session.png
+    alt: A Yeaft multi-VP Session in the light theme
   actions:
     - theme: brand
       text: Try it Online
@@ -16,36 +16,26 @@ hero:
       text: Get Started
       link: /guide/getting-started
     - theme: alt
-      text: View on GitHub
-      link: https://github.com/yeaft/claude-web-chat
+      text: GitHub
+      link: https://github.com/yeaft/yeaft-web-code-agent
 
 features:
-  - icon: 💬
-    title: Chat (Claude Code)
-    details: ChatGPT-style 1:1 conversation backed by Claude Code CLI — streaming, slash commands, file attachments, sub-agent monitoring.
-    link: /guide/user/chat-mode
-  - icon: 🪄
-    title: Copilot Mode
-    details: GitHub Copilot CLI as the backend (ACP protocol) — same interface, pick any Claude / GPT model.
-    link: /guide/user/copilot-mode
-  - icon: 👥
-    title: Yeaft Code Agent
-    details: Native multi-provider code agent — 1..N VPs, persistent memory, 30+ tools, provider/model routing.
-    link: /guide/user/yeaft-group
-  - icon: 🖥️
-    title: Split Screen
-    details: Up to 3 panels side by side — mix backends (one Claude + one Copilot + one native Yeaft Session).
-    link: /guide/user/split-screen
-  - icon: 🧠
-    title: Expert Panel
-    details: AI expert team in a side panel — pick a team, get multi-perspective advice without interrupting the main chat.
-    link: /guide/user/expert-panel
-  - icon: 🛠️
-    title: Workbench
-    details: Terminal / Git / files / port proxy — the agent machine's dev environment piped right into the browser.
+  - title: Native Yeaft Sessions
+    details: Start with one VP for focused coding or address several VPs for parallel implementation, review, research, and explicit handoffs.
+    link: /guide/user/yeaft-session
+  - title: Durable Work Center
+    details: Persist goals as WorkItems, plan validated Action graphs, assign VPs, retain Run evidence, and recover after disconnects or restarts.
+    link: /guide/user/work-center
+  - title: Multi-provider LLM routing
+    details: Route native requests through Anthropic Messages or OpenAI Responses providers, including supported dynamic GitHub Copilot credentials and compatible gateways.
+    link: /guide/yeaft-config
+  - title: Scoped persistent memory
+    details: H2-AMS combines resident summaries, recent context, and full-text recall across explicit user, VP, Session, and related Project-Session scopes.
+    link: /guide/tech/yeaft-memory
+  - title: Claude Code and Copilot CLI
+    details: Keep vendor CLI behavior when you need it. Each runtime is explicit, while the browser shares navigation and compatible event rendering.
+    link: /guide/user/choose-backend
+  - title: Local development workspace
+    details: Run terminal, Git, files, port proxy, 33 native tools, Skills, MCP, background jobs, and sub-agents on the connected Agent machine.
     link: /guide/user/workbench
-  - icon: 🔒
-    title: Security
-    details: TweetNaCl end-to-end encryption, multi-layer auth (password + TOTP + email), per-user agent secret + Yeaft credential 2FA.
-    link: /guide/security
 ---
