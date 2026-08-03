@@ -522,20 +522,28 @@ async function layoutMetrics(page) {
 
 async function resizeWorkbenchForMainWidth(page, targetWidth) {
   await page.waitForTimeout(350);
-  const resized = await page.evaluate(width => {
-    const handle = document.querySelector('.workbench-panel .resize-handle');
-    const main = document.querySelector('.work-center-main');
-    if (!handle || !main) return false;
-    const handleBox = handle.getBoundingClientRect();
-    const startX = handleBox.x + handleBox.width / 2;
-    const targetX = startX + main.getBoundingClientRect().width - width;
-    handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: startX }));
-    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: targetX }));
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: targetX }));
-    return true;
-  }, targetWidth);
-  if (!resized) throw new Error('Workbench resize geometry is unavailable');
-  await page.waitForTimeout(350);
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const resized = await page.evaluate(width => {
+      const handle = document.querySelector('.workbench-panel .resize-handle');
+      const main = document.querySelector('.work-center-main');
+      if (!handle || !main) return null;
+      const currentWidth = main.getBoundingClientRect().width;
+      if (Math.abs(currentWidth - width) <= 0.25) return currentWidth;
+      const handleBox = handle.getBoundingClientRect();
+      const startX = handleBox.x + handleBox.width / 2;
+      const targetX = startX + currentWidth - width;
+      handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: startX }));
+      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: targetX }));
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: targetX }));
+      return currentWidth;
+    }, targetWidth);
+    if (resized == null) throw new Error('Workbench resize geometry is unavailable');
+    await page.waitForTimeout(350);
+    const actualWidth = await page.locator('.work-center-main').evaluate(element => element.getBoundingClientRect().width);
+    if (Math.abs(actualWidth - targetWidth) <= 0.25) return actualWidth;
+  }
+  const actualWidth = await page.locator('.work-center-main').evaluate(element => element.getBoundingClientRect().width);
+  throw new Error(`Workbench resize did not converge: expected ${targetWidth}px, received ${actualWidth}px`);
 }
 
 async function expectNoHorizontalOverflow(root, selectors) {
@@ -771,22 +779,17 @@ test.describe('Work Center responsive UI', () => {
     await expect(actionsButton).toBeFocused();
     await expect(chatPage).not.toHaveURL(/workContent=/);
 
-    await chatPage.setViewportSize({ width: 867, height: 900 });
-    await actionsButton.click();
-    await expect(content).toBeVisible();
-    await expect(conversation).toBeHidden();
-    await content.getByRole('button', { name: 'Close Actions' }).click();
-    await expect(conversation).toBeVisible();
-
-    await chatPage.setViewportSize({ width: 720, height: 900 });
-    await actionsButton.click();
-    await expect(content).toBeVisible();
-    await expect(conversation).toBeHidden();
-    const metrics = await layoutMetrics(chatPage);
-    expect(metrics.mainScrollWidth).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
-    expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
-    await content.getByRole('button', { name: 'Close Actions' }).click();
-    await expect(conversation).toBeVisible();
+    for (const width of [1024, 961, 867, 720]) {
+      await chatPage.setViewportSize({ width, height: 900 });
+      await actionsButton.click();
+      await expect(content).toBeVisible();
+      await expect(conversation).toBeHidden();
+      const metrics = await layoutMetrics(chatPage);
+      expect(metrics.mainScrollWidth, `${width}px main overflow`).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
+      expect(metrics.bodyScrollWidth, `${width}px workspace overflow`).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
+      await content.getByRole('button', { name: 'Close Actions' }).click();
+      await expect(conversation).toBeVisible();
+    }
   });
 
   test('switches to drilldown when the Workbench reduces the actual Work Center width', async ({ chatPage, mockAgent }) => {
@@ -869,6 +872,20 @@ test.describe('Work Center responsive UI', () => {
       attachmentList: '.work-center-attachment-list',
       attachmentChip: '.work-center-attachment-chip',
     });
+
+    await resizeWorkbenchForMainWidth(chatPage, 1025);
+    metrics = await layoutMetrics(chatPage);
+    expect(metrics.main.width).toBeGreaterThan(1024);
+    await expect(chatPage.locator('.work-center-conversation-pane')).toBeVisible();
+    await expect(actionPane).toBeVisible();
+
+    await resizeWorkbenchForMainWidth(chatPage, 1024);
+    metrics = await layoutMetrics(chatPage);
+    expect(metrics.main.width).toBeLessThanOrEqual(1024);
+    await expect(chatPage.locator('.work-center-conversation-pane')).toBeHidden();
+    await expect(actionPane).toBeVisible();
+    expect(metrics.mainScrollWidth).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
+    expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
   });
 
   test('keeps a long Action list reachable in a short workspace', async ({ chatPage, mockAgent }) => {
@@ -1242,6 +1259,9 @@ test.describe('Work Center responsive UI', () => {
       nextCursor: null,
     });
 
+    if (await chatPage.locator('.work-center-content-pane').count()) {
+      await chatPage.getByRole('button', { name: 'Close Actions' }).click();
+    }
     await chatPage.locator('.work-center-detail-close').click();
     const openFailed = chatPage.locator('.work-center-card', { hasText: GENERATION_ITEM.title }).click();
     await respondToWorkCenterOp(mockAgent, 'get', GENERATION_ITEM_DETAIL, [OPEN_ITEM, GENERATION_ITEM]);
@@ -1255,6 +1275,9 @@ test.describe('Work Center responsive UI', () => {
       .getByRole('button', { name: 'Send to this Action' }).click();
     await expect(failedTarget).toHaveValue('action:action-generation:1');
     await failedComposer.fill('Keep this draft bound to Action generation one.');
+    if (await chatPage.locator('.work-center-content-pane').count()) {
+      await chatPage.getByRole('button', { name: 'Close Actions' }).click();
+    }
     await chatPage.locator('.work-center-detail-close').click();
     const reopenDone = chatPage.locator('.work-center-card', { hasText: OPEN_ITEM.title }).click();
     await respondToWorkCenterOp(mockAgent, 'get', terminalDetail, [OPEN_ITEM, GENERATION_ITEM]);
@@ -1639,6 +1662,7 @@ test.describe('Work Center responsive UI', () => {
       await expect(actionDetail.locator('textarea')).toHaveCount(0);
 
       await actionDetail.getByRole('button', { name: 'Back to Actions' }).click();
+      await chatPage.getByRole('button', { name: 'Close Actions' }).click();
       await chatPage.locator('.work-center-detail-close').click();
       await expect(chatPage.locator('.work-center-list')).toBeVisible();
     }
@@ -2278,6 +2302,56 @@ test.describe('Work Center responsive UI', () => {
     })]);
   });
 
+  test('keeps Conversation and composer reachable with a bounded long triage summary', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent);
+    await chatPage.setViewportSize({ width: 1600, height: 720 });
+    const select = chatPage.locator('.work-center-card').click();
+    const longDetail = {
+      ...OPEN_ITEM_DETAIL,
+      goal: `Long goal ${'g'.repeat(7900)}`,
+      acceptanceCriteria: Array.from(
+        { length: 30 },
+        (_, index) => `Criterion ${index + 1}: ${'c'.repeat(1900)}`,
+      ),
+      messages: [{
+        id: 'long-triage-message', role: 'assistant', status: 'completed',
+        text: 'Conversation stays reachable.', createdAt: Date.now(), updatedAt: Date.now(),
+      }],
+    };
+    await respondToWorkCenterOp(mockAgent, 'get', longDetail);
+    await select;
+
+    const detail = chatPage.locator('.work-center-detail');
+    const triage = detail.locator('.work-center-triage-summary');
+    const messageScroll = detail.locator('.work-center-conversation-scroll');
+    const composer = detail.locator('.work-center-conversation-composer');
+    await expect(triage).toBeVisible();
+    await expect(messageScroll).toBeVisible();
+    await expect(composer).toBeVisible();
+    await expect(composer.locator('textarea')).toBeInViewport();
+    const metrics = await detail.evaluate(element => {
+      const bounds = selector => element.querySelector(selector).getBoundingClientRect();
+      const triageElement = element.querySelector('.work-center-triage-summary');
+      const messageElement = element.querySelector('.work-center-conversation-scroll');
+      const composerElement = element.querySelector('.work-center-conversation-composer');
+      return {
+        detail: element.getBoundingClientRect(),
+        triage: bounds('.work-center-triage-summary'),
+        triageClientHeight: triageElement.clientHeight,
+        triageScrollHeight: triageElement.scrollHeight,
+        triageOverflowY: getComputedStyle(triageElement).overflowY,
+        message: messageElement.getBoundingClientRect(),
+        composer: composerElement.getBoundingClientRect(),
+      };
+    });
+    expect(metrics.triageScrollHeight).toBeGreaterThan(metrics.triageClientHeight);
+    expect(metrics.triageOverflowY).toBe('auto');
+    expect(metrics.message.height).toBeGreaterThanOrEqual(72);
+    expect(metrics.message.top).toBeGreaterThanOrEqual(metrics.triage.bottom - 1);
+    expect(metrics.composer.top).toBeGreaterThanOrEqual(metrics.message.bottom - 1);
+    expect(metrics.composer.bottom).toBeLessThanOrEqual(metrics.detail.bottom + 1);
+  });
+
   test('keeps long Work Item messages fully visible without horizontal clipping', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 1400, height: 900 });
@@ -2355,9 +2429,10 @@ test.describe('Work Center responsive UI', () => {
     for (const { width, theme } of [
       { width: 1400, theme: 'light' },
       { width: 1400, theme: 'dark' },
-      // Keep the narrow desktop split-pane range above the mobile breakpoint covered.
-      { width: 867, theme: 'light' },
-      { width: 867, theme: 'dark' },
+      { width: 1024, theme: 'light' },
+      { width: 1024, theme: 'dark' },
+      { width: 961, theme: 'light' },
+      { width: 961, theme: 'dark' },
       { width: 430, theme: 'light' },
       { width: 430, theme: 'dark' },
     ]) {
@@ -2366,9 +2441,9 @@ test.describe('Work Center responsive UI', () => {
         document.documentElement.setAttribute('data-theme', value);
         localStorage.setItem('theme', value);
       }, theme);
-      if (width <= 867 && await chatPage.locator('.work-center-content-pane').count()) {
+      if (width <= 1024 && await chatPage.locator('.work-center-content-pane').count()) {
         await chatPage.getByRole('button', { name: 'Close Actions' }).click();
-      } else if (width > 867 && await chatPage.locator('.work-center-content-pane').count() === 0) {
+      } else if (width > 1024 && await chatPage.locator('.work-center-content-pane').count() === 0) {
         await chatPage.getByRole('button', { name: /^\d+ Actions$/ }).click();
       }
       await conversation.locator('textarea').fill('First line\nSecond line\nThird line');
@@ -2457,10 +2532,13 @@ test.describe('Work Center responsive UI', () => {
           cardBackground: card ? getComputedStyle(card).backgroundColor : null,
           sessionActiveBackground,
           cardActive: card?.classList.contains('active') ?? false,
+          composerPaddingBottom: Number.parseFloat(getComputedStyle(
+            detail.querySelector('.work-center-conversation-composer'),
+          ).paddingBottom),
         };
       });
 
-      if (width > 867) {
+      if (width > 1024) {
         expect(metrics.lineCount).toBe(3);
         expect(metrics.distinctLineTops).toBeGreaterThanOrEqual(1);
         expect(metrics.cardHeight).toBeLessThanOrEqual(75);
@@ -2484,6 +2562,7 @@ test.describe('Work Center responsive UI', () => {
       expect(metrics.attachmentChipScrollWidth).toBeLessThanOrEqual(metrics.attachmentChipClientWidth + 1);
       expect(metrics.composerScrollWidth).toBeLessThanOrEqual(metrics.composerClientWidth + 1);
       expect(metrics.composerActionBelowTextarea).toBe(true);
+      expect(metrics.composerPaddingBottom).toBeGreaterThanOrEqual(14);
       expect(metrics.composerTextareaRows).toBe(2);
       expect(metrics.composerTextareaHeight).toBe(width === 430
         ? metrics.composerTextareaLineHeight * 2
@@ -2495,7 +2574,7 @@ test.describe('Work Center responsive UI', () => {
         expect(metrics.composerTextareaScrollHeight).toBe(metrics.composerTextareaClientHeight);
       }
       expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.documentClientWidth + 1);
-      if (width > 867) {
+      if (width > 1024) {
         expect(metrics.workflowBackground).not.toBe(metrics.detailBackground);
         expect(metrics.cardActive).toBe(false);
         expect(metrics.cardBackground).not.toBe(metrics.sessionActiveBackground);
@@ -2509,11 +2588,9 @@ test.describe('Work Center responsive UI', () => {
         expect(metrics.workflowWidth).toBeLessThanOrEqual(600);
         expect(metrics.closeTop).toBe(4);
         expect(metrics.closeRight).toBeGreaterThan(metrics.workflowWidth);
-      } else if (width === 867) {
+      } else {
         expect(metrics.columnCount).toBeGreaterThanOrEqual(1);
         expect(metrics.workflowWidth).toBe(0);
-      } else if (width === 430) {
-        expect(metrics.columnCount).toBeGreaterThanOrEqual(1);
       }
     }
 
@@ -2539,14 +2616,22 @@ test.describe('Work Center responsive UI', () => {
 
     await chatPage.setViewportSize({ width: 1400, height: 900 });
     await expect(responsiveTextarea).toHaveValue(responsiveDraft);
-    await expect.poll(() => responsiveTextarea.evaluate(element => element.getBoundingClientRect().height))
-      .toBe(72);
+    await expect.poll(() => responsiveTextarea.evaluate(element => {
+      const inlineHeight = Number.parseFloat(element.style.height);
+      const targetHeight = Math.min(element.scrollHeight, 120);
+      return getComputedStyle(element).overflowY === 'hidden'
+        && Math.abs(inlineHeight - targetHeight) <= 1;
+    })).toBe(true);
     const desktopDraftMetrics = await responsiveTextarea.evaluate(element => ({
+      visibleHeight: element.getBoundingClientRect().height,
       inlineHeight: Number.parseFloat(element.style.height),
-      lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight),
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
       overflowY: getComputedStyle(element).overflowY,
     }));
-    expect(desktopDraftMetrics.inlineHeight).toBe(desktopDraftMetrics.lineHeight * 3);
+    expect(desktopDraftMetrics.inlineHeight).toBe(Math.min(desktopDraftMetrics.scrollHeight, 120));
+    expect(desktopDraftMetrics.visibleHeight).toBe(desktopDraftMetrics.clientHeight);
+    expect(desktopDraftMetrics.visibleHeight).toBeLessThanOrEqual(120);
     expect(desktopDraftMetrics.overflowY).toBe('hidden');
 
     await chatPage.setViewportSize({ width: 430, height: 900 });

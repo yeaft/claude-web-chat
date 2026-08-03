@@ -1133,6 +1133,11 @@ describe('message flow regressions', () => {
     expect(workCenter).toContain('work-center-conversation-topbar');
     expect(workCenter).toContain("tr('workCenter.triageSummary', 'Triage summary')");
     expect(workCenterCss).toMatch(/\.work-center-detail-layout\.content-open\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(400px, var\(--work-center-content-width, 500px\)\);/s);
+    expect(workCenterCss).toMatch(/\.work-center-triage-summary\s*\{[^}]*max-height:\s*var\(--work-center-triage-max-height\);[^}]*overflow-y:\s*auto;/s);
+    expect(workCenterCss).toMatch(/\.work-center-conversation-scroll\s*\{[^}]*min-height:\s*var\(--work-center-conversation-min-height\);/s);
+    expect(workCenterCss).toMatch(/\.work-center-conversation-composer\s*\{[^}]*padding:\s*8px var\(--work-center-conversation-gutter\) calc\(14px \+ env\(safe-area-inset-bottom, 0px\)\);/s);
+    expect(workCenterCss).toMatch(/@container work-center \(max-width:\s*1024px\)\s*\{[\s\S]*?\.work-center-detail-layout\.content-open \.work-center-conversation-pane\s*\{[^}]*display:\s*none;/s);
+    expect(workCenterCss).not.toContain('@container work-center (max-width: 700px)');
     expect(workCenterCss).toMatch(/\.work-center-detail-close\s*\{[\s\S]*?position: absolute;[\s\S]*?right: 16px;/);
     expect(workCenterCss).toMatch(/\.work-center-action-description\s*\{[\s\S]*?white-space: nowrap;/);
     expect(workCenter).not.toContain('coordinatorRequestedSelectedActionInput');
@@ -1150,6 +1155,8 @@ describe('message flow regressions', () => {
     expect(workCenterCss).not.toContain('width: min(100%, 1120px);');
     expect(variables).toContain('--work-center-conversation-column-width: 1200px;');
     expect(variables).toContain('--work-center-conversation-gutter: clamp(20px, 3vw, 40px);');
+    expect(variables).toContain('--work-center-triage-max-height: min(32dvh, 320px);');
+    expect(variables).toContain('--work-center-conversation-min-height: 72px;');
     expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-detail-layout,[\s\S]*?\.work-center-detail-layout\.content-open\s*\{[\s\S]*?display: block;/);
     expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-detail-layout\.content-open \.work-center-conversation-pane\s*\{[\s\S]*?display: none;/);
     expect(workCenterCss).not.toMatch(/\.work-center-mobile-pane-tabs\s*\{[\s\S]*?display: grid;/);

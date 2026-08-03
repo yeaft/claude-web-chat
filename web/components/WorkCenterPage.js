@@ -1495,7 +1495,7 @@ export default {
                       <strong>{{ tr('workCenter.detailLoadFailed', 'Could not load full details') }}</strong>
                       <span>{{ detailError }}</span>
                     </div>
-                    <section class="work-center-detail-overview work-center-triage-summary" :aria-label="tr('workCenter.triageSummary', 'Triage summary')">
+                    <section class="work-center-detail-overview work-center-triage-summary" tabindex="0" :aria-label="tr('workCenter.triageSummary', 'Triage summary')">
                       <h3>{{ tr('workCenter.triageSummary', 'Triage summary') }}</h3>
                       <dl class="work-center-detail-meta">
                         <div><dt>{{ tr('workCenter.updated', 'Updated') }}</dt><dd>{{ time(selected.updatedAt) || '—' }}</dd></div>
