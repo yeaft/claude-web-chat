@@ -201,21 +201,46 @@ describe('TaskManager', () => {
     expect(manager.getTask('session_cancel', task.id).status).toBe('running');
   });
 
-  it('includes shell commands and log tails in active task prompt summaries', () => {
+  it('renders bounded human-readable task context without paths or log protocol', () => {
     const manager = new TaskManager({ yeaftDir: dir });
     const task = manager.startTask({
       sessionId: 'session_prompt',
       ownerVpId: 'vp_linus',
-      kind: 'shell',
-      title: 'Dev server',
+      kind: 'sub_agent',
+      title: `Review timeout recovery ${'with detailed checks '.repeat(30)}`,
       runtime: { command: 'npm run dev -- --host 0.0.0.0' },
+      logPath: '/private/sub-agent/events.jsonl',
     });
-    manager.store.appendLog('session_prompt', task.id, 'ready on port 5173\n');
+    manager.store.appendLog('session_prompt', task.id, '{"type":"sub_agent_status","status":"running"}\n');
     manager.refreshTaskLog('session_prompt', task.id);
 
-    const rendered = manager.renderActiveTasksForPrompt('session_prompt');
-    expect(rendered).toContain('command="npm run dev -- --host 0.0.0.0"');
-    expect(rendered).toContain('tail="ready on port 5173"');
+    const rendered = manager.renderActiveTasksForPrompt('session_prompt', { language: 'zh' });
+    expect(rendered).toContain('## 可能相关的任务');
+    expect(rendered).toContain('Review timeout recovery');
+    expect(rendered).toContain('(子 Agent，运行中)');
+    expect(rendered).toContain('…');
+    expect(rendered).not.toContain('<active_tasks>');
+    expect(rendered).not.toContain(task.id);
+    expect(rendered).not.toContain('/private/sub-agent/events.jsonl');
+    expect(rendered).not.toContain('sub_agent_status');
+    expect(rendered).not.toContain('npm run dev');
+  });
+
+  it('limits the task prompt list and points to task tools for the remainder', () => {
+    const manager = new TaskManager({ yeaftDir: dir });
+    for (let index = 1; index <= 7; index += 1) {
+      manager.startTask({
+        sessionId: 'session_prompt_limit',
+        kind: 'shell',
+        title: `Background check ${index}`,
+      });
+    }
+
+    const rendered = manager.renderActiveTasksForPrompt('session_prompt_limit', { language: 'en' });
+    expect(rendered).toContain('## Possibly Relevant Tasks');
+    expect(rendered).toContain('Background check 5');
+    expect(rendered).not.toContain('Background check 6');
+    expect(rendered).toContain('2 more running tasks; use the task list to inspect them.');
   });
 
   it('reads log tails without requiring a whole-file read', () => {

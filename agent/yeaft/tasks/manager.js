@@ -20,6 +20,8 @@ import { getRuntimePlatformInfo } from '../runtime-platform.js';
 const LOG_PREVIEW_BYTES = 4096;
 const SUB_AGENT_LOG_PREVIEW_BYTES = 1024 * 1024;
 const DEFAULT_CANCEL_ESCALATION_MS = 2000;
+const PROMPT_TASK_LIMIT = 5;
+const PROMPT_TASK_TITLE_CHARS = 240;
 
 function logPreviewBytesFor(task) {
   return task?.kind === 'sub_agent' ? SUB_AGENT_LOG_PREVIEW_BYTES : LOG_PREVIEW_BYTES;
@@ -57,6 +59,32 @@ function publicSnapshot(task) {
 function taskCommand(task) {
   const command = task?.runtime?.command;
   return typeof command === 'string' && command.trim() ? command.trim() : '';
+}
+
+function oneLineTaskText(value, maxChars = PROMPT_TASK_TITLE_CHARS) {
+  const text = typeof value === 'string'
+    ? value.replace(/\s+/g, ' ').trim()
+    : '';
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function taskKindLabel(kind, language) {
+  const zh = String(language || '').toLowerCase().startsWith('zh');
+  if (kind === 'sub_agent') return zh ? '子 Agent' : 'sub-agent';
+  if (kind === 'shell') return zh ? '后台命令' : 'background command';
+  return zh ? '后台任务' : 'background task';
+}
+
+function taskStatusLabel(status, language) {
+  const zh = String(language || '').toLowerCase().startsWith('zh');
+  if (!zh) return String(status || 'running').replace(/_/g, ' ');
+  const labels = {
+    running: '运行中',
+    queued: '等待中',
+    cancelling: '正在取消',
+  };
+  return labels[status] || String(status || '运行中').replace(/_/g, ' ');
 }
 
 export class TaskManager {
@@ -358,17 +386,27 @@ export class TaskManager {
     return publicSnapshot(task);
   }
 
-  renderActiveTasksForPrompt(sessionId = null) {
+  renderActiveTasksForPrompt(sessionId = null, { language = 'en', limit = PROMPT_TASK_LIMIT } = {}) {
     const tasks = this.listActiveTasks(sessionId);
     if (tasks.length === 0) return '';
-    const lines = ['<active_tasks>'];
-    for (const task of tasks) {
-      const preview = (task.log?.preview || '').trim().split('\n').slice(-3).join(' | ');
-      const command = taskCommand(task);
-      const cancelRequestedAt = typeof task.runtime?.cancelRequestedAt === 'string' ? task.runtime.cancelRequestedAt : '';
-      lines.push(`- ${task.id} | ${task.kind} | ${task.status} | owner=${task.ownerVpId || 'unknown'} | title=${JSON.stringify(task.title)}${command ? ` | command=${JSON.stringify(command)}` : ''}${cancelRequestedAt ? ` | cancelRequestedAt=${JSON.stringify(cancelRequestedAt)}` : ''} | log=${task.log?.path || ''}${preview ? ` | tail=${JSON.stringify(preview)}` : ''}`);
+    const zh = String(language || '').toLowerCase().startsWith('zh');
+    const maxTasks = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : PROMPT_TASK_LIMIT;
+    const visible = tasks.slice(0, maxTasks);
+    const lines = [zh ? '## 可能相关的任务' : '## Possibly Relevant Tasks'];
+    lines.push(zh
+      ? '以下任务仍在后台运行。需要进度或完整输出时使用任务工具查询；不要把它们当成记忆事实。'
+      : 'These tasks are still running in the background. Use the task tools for progress or full output; do not treat them as memory facts.');
+    for (const task of visible) {
+      const title = oneLineTaskText(task.title) || oneLineTaskText(taskCommand(task), 160) || taskKindLabel(task.kind, language);
+      const detail = zh
+        ? `${taskKindLabel(task.kind, language)}，${taskStatusLabel(task.status, language)}`
+        : `${taskKindLabel(task.kind, language)}, ${taskStatusLabel(task.status, language)}`;
+      lines.push(`- ${title} (${detail})`);
     }
-    lines.push('</active_tasks>');
+    if (tasks.length > visible.length) {
+      const remaining = tasks.length - visible.length;
+      lines.push(zh ? `- 另有 ${remaining} 个运行中任务，可用任务列表查看。` : `- ${remaining} more running task${remaining === 1 ? '' : 's'}; use the task list to inspect them.`);
+    }
     return lines.join('\n');
   }
 }

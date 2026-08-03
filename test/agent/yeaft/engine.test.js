@@ -113,6 +113,27 @@ describe('Engine memory prompt hygiene', () => {
     ]);
   });
 
+  it('includes related Session summaries as separate resident sources', () => {
+    const entries = buildResidentEntries({
+      sessionId: 's1',
+      ownVpId: 'linus',
+      summaries: {
+        session: 'Current Session memory.',
+        relatedSessions: [
+          { sessionId: 's2', summary: 'Past Session experience: verify the remote tag target.' },
+          { sessionId: 's1', summary: 'Duplicate current Session summary must not be re-added.' },
+          { sessionId: 's3', summary: '<!-- dream-state -->\nold metadata\n<!-- /dream-state -->\nKeep this sibling lesson.' },
+        ],
+      },
+    });
+
+    expect(entries).toEqual([
+      { scope: 'sessions/s1', summary: 'Current Session memory.' },
+      { scope: 'sessions/s2', summary: 'Past Session experience: verify the remote tag target.' },
+      { scope: 'sessions/s3', summary: 'Keep this sibling lesson.' },
+    ]);
+  });
+
   it('deduplicates repeated memory text across resident, recent, and onDemand layers', () => {
     const ams = new ActiveMemorySet({
       budget: { total: 1000, resident: 400, recent: 300, onDemand: 300 },
@@ -1264,8 +1285,8 @@ describe('Engine', () => {
 
       expect(mockAdapter.callLog).toHaveLength(1);
       const system = mockAdapter.callLog[0].system;
-      expect(system).toContain('## Active Memory Set');
-      expect(system).toContain('### Resident');
+      expect(system).toContain('## Relevant Context');
+      expect(system).toContain('### Relevant Memory');
       expect(system).toContain('Dream memory loaded into the prompt');
       expect(system).toContain('User-level Dream summary should enter the prompt');
       expect(system).toContain('VP Dream summary should enter the prompt');
@@ -1374,6 +1395,68 @@ describe('Engine', () => {
         expect(memoryUsed.loaded.map(entry => entry.body).join('\n')).not.toContain('billing dashboard export');
       } finally {
         rmSync(debugYeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('loads related Session experience and FTS memory without a persistent AMS registry', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-readable-context-'));
+      try {
+        await writeSummary(
+          { kind: 'session', id: 'sibling-session' },
+          'Reusable release experience: verify origin/main and the remote tag target before publishing.',
+          { root: join(yeaftDir, 'memory'), language: 'zh' },
+        );
+        const memoryIndex = {
+          search({ scopeFilter }) {
+            if (!scopeFilter.includes('sessions/current-session')) return [];
+            return [{
+              id: 'timeout-memory',
+              scope: 'sessions/current-session',
+              kind: 'context',
+              tags: ['timeout'],
+              sourceMessages: [],
+              body: 'Timeout cleanup failures must return a tool result so the Engine can continue.',
+              rank: -1,
+              createdAt: '2026-08-01T00:00:00.000Z',
+              updatedAt: '2026-08-01T00:00:00.000Z',
+            }];
+          },
+        };
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          yeaftDir,
+          sessionId: 'current-session',
+          config: { model: 'claude-test', maxOutputTokens: 2048, language: 'zh' },
+          memoryIndex,
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: '检查 timeout cleanup failure',
+          sessionId: 'current-session',
+          projectSessionIds: ['sibling-session'],
+          vpPersona: { vpId: 'linus', name: 'Linus' },
+        })) {
+          events.push(event);
+        }
+
+        const system = mockAdapter.callLog.at(-1).system;
+        expect(system).toContain('## 相关上下文');
+        expect(system).toContain('### 过去 Session 的经验总结');
+        expect(system).toContain('**sibling-session**: Reusable release experience');
+        expect(system).toContain('### 相关记忆');
+        expect(system).toContain('Timeout cleanup failures must return a tool result');
+        expect(events.find(event => event.type === 'memory_used')?.loaded).toEqual(expect.arrayContaining([
+          expect.objectContaining({ category: 'experience', scope: 'sessions/sibling-session' }),
+          expect.objectContaining({ layer: 'onDemand', id: 'timeout-memory' }),
+        ]));
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
       }
     });
 
