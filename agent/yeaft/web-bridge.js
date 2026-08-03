@@ -5276,6 +5276,9 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
           || legacyProjectContext(ctx.CONFIG?.yeaftDir, sessionId);
         const projectSessionIds = projectContext?.sessionIds || [];
         queryOpts.projectSessionIds = projectSessionIds;
+        queryOpts.projectLabel = projectContext?.projectName
+          ? `${projectContext.projectName} (${projectContext.projectId})`
+          : (projectContext?.projectId || '');
         queryOpts.projectInstruction = projectContext?.projectInstruction || '';
         // Related Session summaries now enter through Engine's single AMS
         // memory outlet. Keep this announcement limited to Project identity and
@@ -6527,6 +6530,9 @@ export function handleYeaftSubAgentPrompt(msg) {
     || legacyProjectContext(ctx.CONFIG?.yeaftDir, sessionId);
   enqueueSubAgentPrompt(agent, message, {
     projectSessionIds: projectContext?.sessionIds,
+    projectLabel: projectContext?.projectName
+      ? `${projectContext.projectName} (${projectContext.projectId})`
+      : (projectContext?.projectId || ''),
     projectInstruction: projectContext?.projectInstruction,
   });
   if (!Array.isArray(agent.messages)) agent.messages = [];

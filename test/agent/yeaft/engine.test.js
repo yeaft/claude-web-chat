@@ -1507,6 +1507,7 @@ describe('Engine', () => {
       const events = [];
       for await (const event of engine.query({
         prompt: 'test',
+        projectLabel: 'Yeaft (project-123)',
         projectInstruction: 'Run the shared Project verification before release.',
       })) {
         events.push(event);
@@ -1519,6 +1520,7 @@ describe('Engine', () => {
       expect(call.system).not.toContain('Yeaft — AI');
       expect(call.system).toContain('work');
       expect(call.system).toContain('[Project Instruction]');
+      expect(call.system).toContain('The current Session belongs to Project Yeaft (project-123). The unified instruction for this Project is:');
       expect(call.system).toContain('Run the shared Project verification before release.');
       expect(call.maxTokens).toBe(2048);
       expect(call.messages).toHaveLength(1);
@@ -3730,17 +3732,35 @@ describe('Engine', () => {
       const enSystem = buildSystemPrompt({
         language: 'en',
         toolNames: ['TodoWrite'],
+        projectLabel: 'Yeaft (project-123)',
         projectInstruction: 'Run the shared Project verification before release.',
       });
-      const zhSystem = buildSystemPrompt({ language: 'zh', toolNames: ['TodoWrite'] });
+      const zhSystem = buildSystemPrompt({
+        language: 'zh',
+        projectLabel: 'Yeaft（project-123）',
+        projectInstruction: '发布前执行统一验证。',
+        toolNames: ['TodoWrite'],
+      });
 
       expect(enSystem).toContain('[Project Instruction]');
+      expect(enSystem).toContain('The current Session belongs to Project Yeaft (project-123). The unified instruction for this Project is:');
       expect(enSystem).toContain('Run the shared Project verification before release.');
+      expect(buildSystemPrompt({
+        language: 'en',
+        projectInstruction: 'Use the current Project instruction.',
+      })).toContain('The current Session belongs to the current Project. The unified instruction for this Project is:');
+      expect(buildSystemPrompt({
+        language: 'zh',
+        projectLabel: '   ',
+        projectInstruction: '使用当前 Project 指令。',
+      })).toContain('当前 Session 隶属于当前 Project。当前 Project 的统一 instruction 是：');
       expect(buildSystemPrompt({ language: 'en', projectInstruction: '   ' }))
         .not.toContain('[Project Instruction]');
       expect(enSystem).toContain('Avoid an intermediate `TodoWrite`-only model round');
       expect(enSystem).toMatch(/mark work completed only after\s+evidence/);
       expect(enSystem).toContain('A standalone `TodoWrite` remains valid');
+      expect(zhSystem).toContain('当前 Session 隶属于 Project Yeaft（project-123）。当前 Project 的统一 instruction 是：');
+      expect(zhSystem).toContain('发布前执行统一验证。');
       expect(zhSystem).toContain('不要让中间状态的 `TodoWrite` 单独占一个');
       expect(zhSystem).toContain('只有已有证据时才能把工作标记为完成');
       expect(zhSystem).toContain('`TodoWrite` 仍可单独调用');

@@ -125,6 +125,7 @@ export function isRestrictedToolName(name) {
  *   parentVpId?: string,
  *   parentSessionId?: string|null,
  *   projectSessionIds?: string[],
+ *   projectLabel?: string,
  *   projectInstruction?: string,
  *   parentThreadId?: string|null,
  *   parentVpPersona?: object,
@@ -325,6 +326,9 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
         projectSessionIds: Array.isArray(deps.projectSessionIds)
           ? deps.projectSessionIds.slice()
           : [],
+        projectLabel: typeof deps.projectLabel === 'string'
+          ? deps.projectLabel
+          : '',
         projectInstruction: typeof deps.projectInstruction === 'string'
           ? deps.projectInstruction
           : '',
@@ -336,6 +340,9 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
       projectSessionIds: Array.isArray(entry.projectSessionIds)
         ? entry.projectSessionIds.slice()
         : [],
+      projectLabel: typeof entry.projectLabel === 'string'
+        ? entry.projectLabel
+        : '',
       projectInstruction: typeof entry.projectInstruction === 'string'
         ? entry.projectInstruction
         : '',
@@ -407,6 +414,7 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
           vpPersona,
           sessionId: agent.parentSessionId || deps.parentSessionId || null,
           projectSessionIds: queuedPrompt.projectSessionIds,
+          projectLabel: queuedPrompt.projectLabel,
           projectInstruction: queuedPrompt.projectInstruction,
         });
         for await (const evt of stream) {

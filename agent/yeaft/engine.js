@@ -1201,13 +1201,14 @@ export class Engine {
    * @param {object} [args.activeScope] — DESIGN-PROMPT §3 ④ structured scope summary
    * @param {string} [args.sessionAnnouncement]
    * @param {string} [args.projectInstruction] — server-managed instruction shared by Project Sessions
+   * @param {string} [args.projectLabel] — current Project name and id for prompt attribution
    * @param {string} [args.workCenterInstructions] — frozen Agent-level Work Center policy
    * @param {string} [args.projectDoc] — resolved CLAUDE.md / AGENTS.md text (already truncated)
    * @param {object} [args.taskCtx] — legacy task-context sub-block (optional)
    * @param {string} [args.explicitSkillName] — leading /skill:<name> command, if present
    * @returns {string}
    */
-  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, projectInstruction, workCenterInstructions, projectDoc, taskCtx, activeTasks, explicitSkillName, resolvedSkillContent = null } = {}) {
+  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, projectInstruction, projectLabel, workCenterInstructions, projectDoc, taskCtx, activeTasks, explicitSkillName, resolvedSkillContent = null } = {}) {
     // Skill selection is normally resolved once by #runQuery so the prompt and
     // emitted protocol events describe the exact same skills. Keep the local
     // fallback for internal callers that do not need selection events.
@@ -1235,6 +1236,7 @@ export class Engine {
       activeScope,
       sessionAnnouncement,
       projectInstruction,
+      projectLabel,
       workCenterInstructions,
       projectDoc,
       runtimePlatform: getRuntimePlatformInfo(),
@@ -1420,6 +1422,9 @@ export class Engine {
         projectSessionIds: Array.isArray(vpCtx?.projectSessionIds)
           ? vpCtx.projectSessionIds.slice()
           : [],
+        projectLabel: typeof vpCtx?.projectLabel === 'string'
+          ? vpCtx.projectLabel
+          : '',
         projectInstruction: typeof vpCtx?.projectInstruction === 'string'
           ? vpCtx.projectInstruction
           : '',
@@ -1967,7 +1972,7 @@ export class Engine {
     }
   }
 
-  async *#queryLifecycle({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null } = {}) {
+  async *#queryLifecycle({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', projectLabel = '', sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null } = {}) {
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
       const error = new Error('prompt is required and must be a non-empty string');
       yield {
@@ -2053,7 +2058,7 @@ export class Engine {
     };
     try {
       this.#currentThreadId = threadId || MAIN_THREAD_ID;
-      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds, projectInstruction, sessionTopics, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, prepareProviderRequest, startProviderRequest, finishProviderRequest, failProviderRequest, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName, retryLifecycle });
+      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds, projectInstruction, projectLabel, sessionTopics, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, prepareProviderRequest, startProviderRequest, finishProviderRequest, failProviderRequest, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName, retryLifecycle });
     } finally {
       // Closing the async generator at a visible retry boundary means the
       // continuation never reached a provider. Keep it out of history and
@@ -2101,7 +2106,7 @@ export class Engine {
    * in a try/finally without indenting the whole loop.
    * @private
    */
-  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null, explicitSkillName = null, retryLifecycle }) {
+  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', projectLabel = '', sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null, explicitSkillName = null, retryLifecycle }) {
 
     const effectiveCollabToolPolicy = collabToolPolicy === COLLAB_TOOL_POLICY.SINGLE_VP || collabToolPolicy === COLLAB_TOOL_POLICY.MULTI_VP
       ? collabToolPolicy
@@ -2303,6 +2308,7 @@ export class Engine {
       activeScope,
       sessionAnnouncement,
       projectInstruction,
+      projectLabel,
       workCenterInstructions,
       projectDoc,
       activeTasks,
@@ -3706,6 +3712,7 @@ export class Engine {
         sessionId: runtimeSessionId,
         projectSessionIds,
         projectInstruction,
+        projectLabel,
         threadId: runtimeThreadId,
         inboundEnvelope,
         taskId,

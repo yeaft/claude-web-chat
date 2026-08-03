@@ -176,6 +176,7 @@ describe('Yeaft session-scoped model config', () => {
     expect(bridgeAgent.pendingPrompts[0]).toEqual({
       prompt: 'use current Project context',
       projectSessionIds: ['session-b'],
+      projectLabel: `Beta (${beta.id})`,
       projectInstruction: 'Use the shared release checklist.',
     });
     __testHooks.handleProjectContextSyncForTest({
@@ -190,6 +191,7 @@ describe('Yeaft session-scoped model config', () => {
     expect(bridgeAgent.pendingPrompts[1]).toEqual({
       prompt: 'clear Project context',
       projectSessionIds: [],
+      projectLabel: '',
       projectInstruction: '',
     });
 

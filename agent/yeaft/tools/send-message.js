@@ -114,6 +114,7 @@ SpawnAgent -> (PromptAgent <-> WaitAgent)+ -> CloseAgent -> 最终回复给用�
     // driver out of its idle wait and starts a new turn.
     enqueueSubAgentPrompt(agent, message, {
       projectSessionIds: ctx?.parentEngineDeps?.projectSessionIds,
+      projectLabel: ctx?.parentEngineDeps?.projectLabel,
       projectInstruction: ctx?.parentEngineDeps?.projectInstruction,
     });
     agent.messages.push({
