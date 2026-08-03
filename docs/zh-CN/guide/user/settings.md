@@ -68,7 +68,7 @@ yeaft-agent install --server <你的服务器URL> --secret <你的 Agent Key>
 
 如果你的 Agent 启用了 Yeaft 引擎，设置里会多一个 **Yeaft / LLM** tab：
 
-- **配置文件路径** — 显示 `~/.yeaft/config.json` 位置
+- **配置文件路径** —— 显示所选 Agent instance 解析出的 `config.json` 位置
 - **Providers 列表** — 当前配的 provider / 模型 / 协议
 - **测试连接** — 选一个 model 发 ping，确认 endpoint + 鉴权 OK
 - **重新加载** — 让 Agent 重读 config 文件（改完 config 不用重启 Agent）

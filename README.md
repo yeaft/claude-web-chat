@@ -48,7 +48,7 @@ The Web UI also includes a terminal, Git status/diff, file browser/editor, port 
 
 ### Sessions and Projects
 
-- Create a Session with a working directory, roster, default VP, model/effort override, and announcement.
+- Create a Session with an Agent, working directory, roster, and default VP. After creation, choose model/effort in the composer and edit the announcement in Session settings.
 - Address one or more VPs with `@mentions`; selected VPs execute the same turn independently and can hand work to a peer with `RouteForward`.
 - Search and page durable Session history, inspect per-VP turns, running background tasks, model choice, memory recall, tool calls, token usage, and stop reasons.
 - Organize native Sessions into Projects, drag them between Project and Recents sections, and attach a Project instruction to all member Sessions.
@@ -80,28 +80,36 @@ Work Center does **not** mean arbitrary unattended deployment. Side effects stil
 
 ### Local, single-machine evaluation
 
-Install the published Agent package and start its bundled local Web UI, server, and Agent on loopback:
+Install the published Agent package, then start its bundled local Web UI, Server, and Agent on loopback:
 
 ```bash
 npm install -g @yeaft/webchat-agent
-yeaft-agent local
+```
+
+`yeaft-agent local` uses a named Agent instance. Without `--name`, the name is the sanitized computer hostname; this example makes it explicit:
+
+```bash
+yeaft-agent local --name local
 ```
 
 Open `http://127.0.0.1:6868`. Local mode disables Web authentication and binds to loopback, so use it for a trusted workstation rather than as a public deployment.
 
-Configure at least one native Yeaft LLM provider:
+In another shell, configure the same instance. The `llm` subcommand does not infer it, so pass the config path explicitly:
 
 ```bash
-yeaft-agent llm setup
+YEAFT_CONFIG="$HOME/.yeaft/instances/local/config.json"
+yeaft-agent llm setup --config "$YEAFT_CONFIG"
 ```
 
-A GitHub Copilot-backed native provider can use local `gh auth` / device credentials without writing the token to `~/.yeaft/config.json`:
+A GitHub Copilot-backed native provider can use local `gh auth` / device credentials without writing the token itself into the instance config:
 
 ```bash
-yeaft-agent llm use github-copilot \
+yeaft-agent llm use github-copilot --config "$YEAFT_CONFIG" \
   --model claude-sonnet-4.5 \
   --fast gpt-4.1
 ```
+
+The default service instance is the exception: it uses `~/.yeaft/config.json`. A custom `YEAFT_DIR` / `--yeaft-dir` requires the matching `<yeaftDir>/config.json` path.
 
 Claude Code and Copilot CLI conversations require their corresponding CLI to be installed and authenticated separately.
 
@@ -134,10 +142,10 @@ Then open `http://localhost:3456`.
 
 The npm package installs two primary commands:
 
-- `yeaft-agent` runs or manages the Web-connected worker, local mode, and Agent-local LLM configuration.
-- `yeaft` runs the native engine directly from a terminal. It supports one-shot and interactive use, a persistent `--session-id`, `--cwd`, model/effort overrides, and machine-readable `stream-json` input/output.
+- `yeaft-agent` runs or manages the Web-connected worker and local mode. Its `llm` subcommand edits the explicit `--config` path, or `~/.yeaft/config.json` by default; it does not infer a named running instance.
+- `yeaft` runs the native engine directly from a terminal. One-shot/interactive text mode can target an **existing** formal Web Session with `--session-id`. `stream-json` can also use a new validated ID as an ad-hoc CLI conversation key, but that does not create `session.json`, a roster, or a Web product Session.
 
-Example non-interactive native Session:
+Example machine-readable ad-hoc CLI conversation:
 
 ```bash
 printf '%s\n' '{"type":"user","message":{"role":"user","content":"Inspect this repository and report the test command."}}' \
@@ -147,13 +155,13 @@ printf '%s\n' '{"type":"user","message":{"role":"user","content":"Inspect this r
       --output-format stream-json
 ```
 
-See the [Agent and native CLI reference](docs/guide/agent-cli.md) for the exact current commands and JSONL boundary.
+The ID scopes persisted CLI messages; it is not a newly created Web Session. To execute an existing multi-VP Session, pass its existing Session ID. See the [Agent and native CLI reference](docs/guide/agent-cli.md) for the exact current commands and JSONL boundary.
 
 ## Architecture and ownership
 
 ```text
 Browser (Vue 3 + Pinia)
-        │ authenticated / encrypted WebSocket traffic
+        │ authenticated WebSocket relay (WSS in production)
         ▼
 Server (Express + ws + SQLite)
         │ owner-checked relay and browser-facing catalog
@@ -178,7 +186,7 @@ The server owns authentication, user-visible catalog metadata, and relay state. 
 - **Agent config:** each Agent instance resolves its own Yeaft directory and `config.json`. Provider credentials are not a server-global setting.
 - **Server:** Docker is the recommended production path. Set non-default authentication secrets, create the first administrator, terminate TLS at a reverse proxy, and persist the server data directory.
 - **Registration:** the current production route accepts open registration. Invitation administration remains in the codebase, but an invitation code is not currently required by `server/auth/register.js`.
-- **Security boundary:** the product supports password/JWT authentication, optional TOTP and email verification, per-user Agent secrets, and TweetNaCl message encryption. Treat raw debug traces, tool outputs, attachments, and local provider credentials as sensitive Agent data.
+- **Security boundary:** the product supports password/JWT authentication, optional TOTP and email verification, per-user Agent secrets, and owner-checked relay. Current Web/Agent peers negotiate plaintext JSON payloads, so production deployments must use HTTPS/WSS; TweetNaCl payload encryption remains only as a compatibility fallback for legacy peers. Treat raw debug traces, tool outputs, attachments, and local provider credentials as sensitive Agent data.
 
 Detailed guides:
 

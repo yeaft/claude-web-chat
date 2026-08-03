@@ -23,8 +23,8 @@ Session metadata and history live under the owning Agent's Yeaft directory. `wor
 2. Select the Agent that owns the working directory.
 3. Set a Session name and working directory.
 4. Choose one or more VPs and a default VP.
-5. Optionally choose a model/effort override and announcement.
-6. Create the Session and send a message.
+5. Create the Session.
+6. After creation, choose model/effort in the composer and edit the announcement in Session settings, then send a message.
 
 When the roster is omitted and the Agent's VP library contains `omni`, the runtime can use Omni as the default generalist. An explicitly non-empty roster is never silently replaced.
 

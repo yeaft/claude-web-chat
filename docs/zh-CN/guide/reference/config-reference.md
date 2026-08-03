@@ -1,12 +1,12 @@
 # 配置文件参考
 
-本章是**全字段**参考 — Yeaft 引擎 `~/.yeaft/config.json` + Agent / Server 环境变量。日常配怎么填看 [Yeaft 引擎配置](../yeaft-config.md)；本章供查阅。
+本章是 Agent instance Yeaft `config.json` 与 Agent/Server 环境变量的**全字段**参考。Default instance 使用 `~/.yeaft/config.json`；named instance 默认使用 `~/.yeaft/instances/<name>/config.json`。日常配怎么填看 [Yeaft 引擎配置](../yeaft-config.md)；本章供查阅。
 
 > 这里记录的 schema 是代码**当前**实际会读的字段（来自 `agent/yeaft/config.js`、`agent/index.js`、`server/config.js`）。代码不消费的字段一律不列；如果你印象中某个字段曾经存在却没出现在这里，几乎可以确定它从来没接进 codepath。
 
 ---
 
-## `~/.yeaft/config.json`
+## Instance `config.json`
 
 ### 顶层
 
@@ -103,7 +103,7 @@ Agent 启动时读环境变量。多数值也可以写在 Agent 的 `config.json
 
 | 变量 | `fileConfig` key | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `YEAFT_DIR` | `yeaftDir` | `~/.yeaft` | 覆盖默认的 Yeaft 数据根目录 |
+| `YEAFT_DIR` | `yeaftDir` | default: `~/.yeaft`；named: `~/.yeaft/instances/<name>` | Override 当前 instance 的 Yeaft data root |
 | `MAX_CONTEXT_TOKENS` | `maxContextTokens` | `128000` | Agent 端 context 百分比展示的分母 |
 | `AUTO_COMPACT_THRESHOLD` | `autoCompactThreshold` | `110000` | Chat-mode wrapper 触发 compact 的 token 阈值 |
 | `YEAFT_THINKING_V1` | — | `"0"` | 设为 `"1"` 启用 v1 thinking/reasoning 协议路径 |
@@ -122,7 +122,7 @@ Agent 启动时读环境变量。多数值也可以写在 Agent 的 `config.json
 | `YEAFT_API_KEY` | — | `agent/yeaft/eval/run-eval.js` 用的 Anthropic key |
 | `YEAFT_OPENAI_API_KEY` | — | 同上，OpenAI key |
 
-> 如果你有 Anthropic / OpenAI 的 key，优先写进 `~/.yeaft/config.json` 对应 provider 的 `apiKey` 字段 — 引擎本身不会去读 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`。
+> 如果你有 Anthropic / OpenAI key，优先写进所选 instance `config.json` 的 provider `apiKey` 字段 — 引擎本身不会去读 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`。
 
 ---
 

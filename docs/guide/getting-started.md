@@ -15,28 +15,29 @@ Local mode starts the bundled Web UI, Server, and Agent on `127.0.0.1`:
 
 ```bash
 npm install -g @yeaft/webchat-agent
-yeaft-agent local
+yeaft-agent local --name local
 ```
 
 Open `http://127.0.0.1:6868`.
 
-Local mode uses no Web authentication and listens on loopback. It is intended for a trusted single-machine evaluation, not direct public exposure.
+Local mode uses no Web authentication and listens on loopback. It is intended for a trusted single-machine evaluation, not direct public exposure. The explicit `--name local` selects the Agent instance and its default Yeaft directory, `~/.yeaft/instances/local/`.
 
-Configure a native Yeaft provider:
+In another shell, configure the same instance. The `llm` subcommand does not infer a named instance, so pass its config file:
 
 ```bash
-yeaft-agent llm setup
+YEAFT_CONFIG="$HOME/.yeaft/instances/local/config.json"
+yeaft-agent llm setup --config "$YEAFT_CONFIG"
 ```
 
 For GitHub Copilot-backed native models:
 
 ```bash
-yeaft-agent llm use github-copilot \
+yeaft-agent llm use github-copilot --config "$YEAFT_CONFIG" \
   --model claude-sonnet-4.5 \
   --fast gpt-4.1
 ```
 
-The native credential provider uses the local device/`gh auth` credential flow and does not write the token to config.
+The native credential provider uses the local device/`gh auth` credential flow and does not write the token itself to config. The default service instance uses `~/.yeaft/config.json`; a custom `YEAFT_DIR` / `--yeaft-dir` uses `<yeaftDir>/config.json`.
 
 ## Connect to an existing server
 
@@ -82,7 +83,8 @@ npm run docs:build
 3. Select **Yeaft** and the target Agent.
 4. Choose a working directory.
 5. Select one or more VPs and a default VP.
-6. Create the Session and send a message.
+6. Create the Session.
+7. After creation, choose model/effort in the composer and edit the announcement in Session settings, then send a message.
 
 Use one VP for a conventional coding-assistant workflow. Add more VPs only when independent roles are useful; use `@mentions` to select who handles each turn.
 

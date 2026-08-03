@@ -2,7 +2,7 @@
 
 The npm package installs separate commands for two different responsibilities:
 
-- `yeaft-agent` runs or manages the Web-connected Agent and its local configuration.
+- `yeaft-agent` runs or manages the Web-connected Agent. Its `llm` subcommand edits an explicit `--config` path, or `~/.yeaft/config.json` by default; it does not infer a named instance.
 - `yeaft` runs the native Yeaft engine directly from a terminal.
 
 Do not treat them as aliases. `yeaft-agent` is service/control-plane integration; `yeaft` is a code-agent query interface.
@@ -21,7 +21,7 @@ yeaft-agent status [options]       Show service status
 yeaft-agent logs [options]         Follow service logs
 yeaft-agent doctor                 Diagnose service configuration
 yeaft-agent llm <command>          Configure native LLM providers/models
-yeaft-agent upgrade [--name <id>]  Upgrade and restart an instance
+yeaft-agent upgrade [--name <id>]  Upgrade the package; restart explicitly on Unix
 yeaft-agent --version              Show package version
 ```
 
@@ -59,21 +59,31 @@ yeaft-agent restart --name worker-a
 
 Multiple service instances are selected by `--name`; their data/config identity must remain separate.
 
-### Native LLM configuration
+On Unix, `yeaft-agent upgrade --name worker-a` installs the package but does not restart that named service. Apply the new version explicitly:
 
-```text
-yeaft-agent llm show [--reveal]
-yeaft-agent llm list-models [<provider-name>]
-yeaft-agent llm setup
-yeaft-agent llm use github-copilot --model <model-id> [--fast <model-id>]
-yeaft-agent llm use openai-compatible --name <name> --base-url <url> \
-  --api-key-env <ENV> --model <model-id> [--fast <model-id>]
-yeaft-agent llm add-provider ...
-yeaft-agent llm set-model --primary <provider/model> [--fast <provider/model>]
-yeaft-agent llm remove-provider --name <name>
+```bash
+yeaft-agent upgrade --name worker-a
+yeaft-agent restart --name worker-a
 ```
 
-`list-models` without a provider reads local config offline. `list-models github-copilot` performs live discovery with the local credential provider. Avoid `show --reveal` in logs because it prints stored secrets.
+### Native LLM configuration
+
+Every `llm` command accepts `--config <path>`. Without it, the CLI always edits `~/.yeaft/config.json`; `--name`, `--yeaft-dir`, and `YEAFT_DIR` do not select a config for this subcommand.
+
+```bash
+CONFIG="$HOME/.yeaft/instances/worker-a/config.json"
+yeaft-agent llm show --config "$CONFIG"
+yeaft-agent llm list-models --config "$CONFIG"
+yeaft-agent llm setup --config "$CONFIG"
+yeaft-agent llm use github-copilot --config "$CONFIG" --model <model-id> --fast <model-id>
+yeaft-agent llm use openai-compatible --config "$CONFIG" --name <provider-name> --base-url <url> \
+  --api-key-env <ENV> --model <model-id> --fast <model-id>
+yeaft-agent llm add-provider --config "$CONFIG" ...
+yeaft-agent llm set-model --config "$CONFIG" --primary <provider/model> --fast <provider/model>
+yeaft-agent llm remove-provider --config "$CONFIG" --name <provider-name>
+```
+
+The default service instance uses `~/.yeaft/config.json`; named `<name>` uses `~/.yeaft/instances/<name>/config.json` unless its Yeaft directory was overridden. `yeaft-agent local` defaults `<name>` to the sanitized computer hostname, so use an explicit `--name` when you want a predictable path. `list-models` without a provider reads the selected config offline; `list-models github-copilot` performs live discovery. Avoid `show --reveal` in logs because it prints stored secrets.
 
 ## `yeaft`
 
@@ -88,7 +98,7 @@ yeaft --dry-run "prompt"          Show the prepared prompt without an LLM call
 
 | Flag | Meaning |
 | --- | --- |
-| `--session-id <id>` | Persist/resume a native Session; IDs must match the runtime Session-ID contract |
+| `--session-id <id>` | Text modes require an existing formal Session; stream-json accepts a validated existing Session ID or a new ad-hoc CLI conversation key |
 | `--cwd <dir>` | Execution working directory |
 | `--model <provider/model>` | Override the configured model |
 | `--effort <level>` | Override model reasoning effort when supported |
@@ -113,7 +123,7 @@ printf '%s\n' '{"type":"user","message":{"role":"user","content":"List the repos
 
 Stdout is JSONL. Events include Session/turn identity and may include text/thinking deltas, skill loads, tool start/result, todo updates, usage, turn stop, result, or error. If a tool needs human input, stream-json input is required so the caller can return an answer. Treat engine events as authoritative rather than reconstructing state from display text.
 
-A CLI Session uses the same native Session runtime and ID validation as the Web path. Passing an existing Session roster runs the transport-neutral multi-VP Session runner and adds VP identity to streamed events; the CLI does not create arbitrary rosters through undocumented text flags.
+If the ID names an existing formal Session (with persisted `session.json` and roster), the transport-neutral runner executes that Session and adds VP identity to streamed events. A new ID accepted by stream-json only scopes an ad-hoc CLI message history; it does not create `session.json`, a roster, or a Web product Session. ID validation is currently enforced on the stream-json path; text modes instead fail when the requested formal Session does not exist.
 
 ## Diagnostics
 

@@ -140,7 +140,7 @@ The Coordinator uses the same model infrastructure but a restricted decision con
 
 Agent-local Session metadata, history, memory, tasks, and Work Center data live under the resolved Yeaft directory. A Session `workDir` is project context only.
 
-Older wire aliases, payload identifiers, and storage scope prefixes remain where changing them would break deployed clients or data. New code uses Session/Yeaft terminology; readers may still handle both `session/<id>` and legacy `group/<id>` memory paths during migration.
+Older wire aliases, payload identifiers, and storage scope prefixes remain where changing them would break deployed clients or data. New code uses Session/Yeaft terminology and the canonical Session memory layout is `sessions/<id>`. Readers may still handle legacy `session/<id>` and `group/<id>` aliases during migration.
 
 ## Verification map
 

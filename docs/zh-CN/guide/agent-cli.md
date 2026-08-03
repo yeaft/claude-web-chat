@@ -2,7 +2,7 @@
 
 npm 包会安装两个职责不同的命令：
 
-- `yeaft-agent`：运行/管理 Web-connected Agent 及其本机配置。
+- `yeaft-agent`：运行/管理 Web-connected Agent。它的 `llm` subcommand 修改显式 `--config` 路径，未传时固定使用 `~/.yeaft/config.json`；不会推断 named instance。
 - `yeaft`：直接从终端运行 Yeaft 原生引擎。
 
 不要把它们当成 alias。`yeaft-agent` 面向 service/control-plane integration；`yeaft` 面向 code-agent query。
@@ -21,7 +21,7 @@ yeaft-agent status [options]       查看 service 状态
 yeaft-agent logs [options]         跟踪 service 日志
 yeaft-agent doctor                 诊断 service 配置
 yeaft-agent llm <command>          配置原生 LLM provider/model
-yeaft-agent upgrade [--name <id>]  升级并重启一个 instance
+yeaft-agent upgrade [--name <id>]  升级 package；Unix 上需显式 restart
 yeaft-agent --version              显示 package version
 ```
 
@@ -59,21 +59,31 @@ yeaft-agent restart --name worker-a
 
 多个 service instance 通过 `--name` 选择；它们的数据/配置 identity 必须保持分离。
 
-### 原生 LLM 配置
+在 Unix 上，`yeaft-agent upgrade --name worker-a` 会安装 package，但不会重启这个 named service。需要显式应用新版本：
 
-```text
-yeaft-agent llm show [--reveal]
-yeaft-agent llm list-models [<provider-name>]
-yeaft-agent llm setup
-yeaft-agent llm use github-copilot --model <model-id> [--fast <model-id>]
-yeaft-agent llm use openai-compatible --name <name> --base-url <url> \
-  --api-key-env <ENV> --model <model-id> [--fast <model-id>]
-yeaft-agent llm add-provider ...
-yeaft-agent llm set-model --primary <provider/model> [--fast <provider/model>]
-yeaft-agent llm remove-provider --name <name>
+```bash
+yeaft-agent upgrade --name worker-a
+yeaft-agent restart --name worker-a
 ```
 
-不带 provider 的 `list-models` 只离线读取本机 config。`list-models github-copilot` 使用本机 credential provider 做 live discovery。不要在日志中使用 `show --reveal`，它会打印已保存 secret。
+### 原生 LLM 配置
+
+每个 `llm` command 都接受 `--config <path>`。未传时 CLI 固定修改 `~/.yeaft/config.json`；这个 subcommand 不会通过 `--name`、`--yeaft-dir` 或 `YEAFT_DIR` 选择 config。
+
+```bash
+CONFIG="$HOME/.yeaft/instances/worker-a/config.json"
+yeaft-agent llm show --config "$CONFIG"
+yeaft-agent llm list-models --config "$CONFIG"
+yeaft-agent llm setup --config "$CONFIG"
+yeaft-agent llm use github-copilot --config "$CONFIG" --model <model-id> --fast <model-id>
+yeaft-agent llm use openai-compatible --config "$CONFIG" --name <provider-name> --base-url <url> \
+  --api-key-env <ENV> --model <model-id> --fast <model-id>
+yeaft-agent llm add-provider --config "$CONFIG" ...
+yeaft-agent llm set-model --config "$CONFIG" --primary <provider/model> --fast <provider/model>
+yeaft-agent llm remove-provider --config "$CONFIG" --name <provider-name>
+```
+
+Default service instance 使用 `~/.yeaft/config.json`；named `<name>` 默认使用 `~/.yeaft/instances/<name>/config.json`，除非 override 了 Yeaft directory。`yeaft-agent local` 的默认 `<name>` 是经过清理的计算机 hostname；需要可预测路径时应显式传 `--name`。不带 provider 的 `list-models` 只离线读取所选 config；`list-models github-copilot` 做 live discovery。不要在日志中使用 `show --reveal`，它会打印已保存 secret。
 
 ## `yeaft`
 
@@ -88,7 +98,7 @@ yeaft --dry-run "prompt"          不调用 LLM，只展示 prepared prompt
 
 | Flag | 含义 |
 | --- | --- |
-| `--session-id <id>` | 持久化/恢复原生 Session；ID 必须满足 runtime Session-ID contract |
+| `--session-id <id>` | Text mode 要求已有正式 Session；stream-json 接受已校验的已有 Session ID 或新的 ad-hoc CLI conversation key |
 | `--cwd <dir>` | Execution working directory |
 | `--model <provider/model>` | Override 已配置 model |
 | `--effort <level>` | Model 支持时 override reasoning effort |
@@ -113,7 +123,7 @@ printf '%s\n' '{"type":"user","message":{"role":"user","content":"列出这个�
 
 Stdout 是 JSONL。Event 包含 Session/turn identity，并可能包含 text/thinking delta、skill load、tool start/result、todo update、usage、turn stop、result 或 error。如果工具需要人工输入，必须使用 stream-json input，让调用方可以返回 answer。Engine event 是权威状态，不要根据展示文本重建状态。
 
-CLI Session 使用与 Web path 相同的原生 Session runtime 和 ID validation。传入已有 Session roster 时，会运行 transport-neutral multi-VP Session runner，并在 stream event 中增加 VP identity；CLI 不通过未文档化的文本 flag 创建任意 roster。
+如果 ID 指向已有正式 Session（存在持久 `session.json` 与 roster），transport-neutral runner 会执行该 Session，并在 stream event 中增加 VP identity。Stream-json 接受的新 ID 只隔离 ad-hoc CLI message history，不创建 `session.json`、roster 或 Web 产品 Session。ID validation 当前只在 stream-json path 强制执行；text mode 则在所请求正式 Session 不存在时失败。
 
 ## 诊断
 

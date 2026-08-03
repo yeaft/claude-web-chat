@@ -61,7 +61,7 @@ Copilot CLI 跑 `--acp` 模式时，每个 session 第一次执行 shell 命令�
 
 ### Copilot 模式能选 Claude / GPT 以外的 model 吗？
 
-只能用 Copilot CLI 暴露的模型 —— 当前是 Claude 系（Sonnet 4 / 4.5）和 GPT 系（4.1 / 5 等）。需要别的厂商就用 Yeaft Code Agent，在 `~/.yeaft/config.json` 里加 provider。
+只能使用 Copilot CLI 暴露的 model。需要其他 vendor 时使用 Yeaft Code Agent，并在所选 Agent instance 解析出的 `config.json` 添加 provider。
 
 ### Copilot 说"未鉴权"，但我 VS Code Copilot 是登录的
 
@@ -71,7 +71,7 @@ CLI 用的 OAuth token 和 IDE 插件不是同一个。在 agent 机器上跑 `c
 
 ### 发消息时报 "No LLM provider configured"
 
-在 agent 机器上编辑 `~/.yeaft/config.json`，添加至少一个 provider 条目 —— schema 见 [Yeaft 引擎配置](./yeaft-config.md)。`primaryModel` 必须是 `providers[].models` 列表里存在的 model。
+编辑所选 Agent instance 解析出的 `config.json`，添加至少一个 provider entry；路径和 schema 见 [Yeaft 引擎配置](./yeaft-config.md)。`primaryModel` 必须存在于 `providers[].models`。
 
 ### VP 好像不记得上次说过的话
 
@@ -89,9 +89,9 @@ Yeaft 用 H2-AMS 持久化记忆，但新写入的记忆段要等本 turn 末尾
 
 ## Yeaft 引擎配置
 
-### `~/.yeaft/config.json` 在哪？
+### Yeaft `config.json` 在哪？
 
-在 **agent 机器** 上 —— 不是服务器。是 Yeaft 引擎启动时读取的文件。
+在 Agent 机器上，不在 Server。Default service instance 使用 `~/.yeaft/config.json`；named `<name>` 默认使用 `~/.yeaft/instances/<name>/config.json`。Named/custom instance 调用 `yeaft-agent llm` 时必须显式传 `--config`。
 
 ### 同一个 provider 能既配 Claude 又配 GPT 吗？
 
@@ -114,13 +114,14 @@ Yeaft 用 H2-AMS 持久化记忆，但新写入的记忆段要等本 turn 末尾
 
 ### 热加载 —— 改 config.json 要重启 agent 吗？
 
-Agent 在下一个 turn 时会重新读 config，所以 model 和 provider 改动通常不用重启。改 language / debug / 全局 limits 可能需要重启。
+Agent 在下一个 turn 重新读取其 resolved instance config，因此 model/provider 改动通常无需重启；language、debug 和全局 limit 可能需要重启。
 
 ## Agent 自动升级
 
 ```bash
-# 手动升级
-yeaft-agent upgrade
+# 升级 package；Unix named service 随后必须显式重启
+yeaft-agent upgrade --name worker-a
+yeaft-agent restart --name worker-a
 
 # 启动时检查
 yeaft-agent --auto-upgrade --server wss://...

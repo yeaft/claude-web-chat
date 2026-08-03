@@ -44,7 +44,7 @@ Use **New chat** in the unified sidebar:
 1. Select the Agent that owns the target directory.
 2. Select **Claude Code**, **Copilot**, or **Yeaft**.
 3. Enter the working directory and runtime-specific options.
-4. For Yeaft, choose the Session roster/default VP and optional model/effort override.
+4. For Yeaft, choose the Session roster/default VP. After creation, choose model/effort in the composer and edit the announcement in Session settings.
 
 The sidebar catalog can show conversations from multiple Agents. Runtime identity always includes the Agent; the same Session ID on two Agents is not the same Session.
 

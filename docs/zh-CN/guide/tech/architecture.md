@@ -4,7 +4,7 @@ Yeaft 是三层系统。Browser 是控制面，Server 负责认证与中继，�
 
 ```text
 Browser（Vue 3 + Pinia）
-        │ HTTP + 认证/加密 WebSocket traffic
+        │ HTTP + 经过认证的 WebSocket relay（生产环境使用 WSS）
         ▼
 Server（Express + ws + SQLite）
         │ owner-checked relay 与 browser-facing catalog
@@ -136,7 +136,8 @@ Server catalog 给 Browser 一个 Agent-aware 的原生/CLI conversation 视图�
 ## 与安全有关的路径
 
 - Browser/Server auth 支持 JWT、可选 TOTP/邮件验证和可配置 SSO provider。
-- Agent authentication 后，Browser ↔ Agent message body 可以使用 TweetNaCl session encryption。
+- 当前 Web 与 Agent peer 在认证后协商 plaintext JSON payload；生产环境的保密性依赖 HTTPS/WSS transport security。
+- TweetNaCl payload encryption 只在 legacy peer 未协商 plaintext 时作为 compatibility fallback。
 - Server 对 Agent 与 WebSocket traffic 执行 owner routing。
 - Provider credential、raw tool output、project file、debug trace 与原生 runtime storage 留在 Agent，除非显式返回 Browser。
 - `SKIP_AUTH` 与 local mode 是开发/受信任工作站路径，不是公网部署设置。

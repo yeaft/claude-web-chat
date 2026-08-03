@@ -15,28 +15,29 @@ Local mode 在 `127.0.0.1` 启动内置 Web UI、Server 和 Agent：
 
 ```bash
 npm install -g @yeaft/webchat-agent
-yeaft-agent local
+yeaft-agent local --name local
 ```
 
 浏览器打开 `http://127.0.0.1:6868`。
 
-Local mode 不启用 Web 认证，并且只监听 loopback。它适合受信任的单机体验，不应直接暴露到公网。
+Local mode 不启用 Web 认证，并且只监听 loopback。它适合受信任的单机体验，不应直接暴露到公网。显式 `--name local` 选择 Agent instance 及其默认 Yeaft 目录 `~/.yeaft/instances/local/`。
 
-配置原生 Yeaft provider：
+在另一个 shell 配置同一 instance。`llm` subcommand 不会自动推断 named instance，因此必须传 config path：
 
 ```bash
-yeaft-agent llm setup
+YEAFT_CONFIG="$HOME/.yeaft/instances/local/config.json"
+yeaft-agent llm setup --config "$YEAFT_CONFIG"
 ```
 
 使用 GitHub Copilot-backed native model：
 
 ```bash
-yeaft-agent llm use github-copilot \
+yeaft-agent llm use github-copilot --config "$YEAFT_CONFIG" \
   --model claude-sonnet-4.5 \
   --fast gpt-4.1
 ```
 
-原生 credential provider 复用本机 device/`gh auth` credential flow，不会把 token 写入 config。
+原生 credential provider 复用本机 device/`gh auth` credential flow，不把 token 本身写入 config。Default service instance 使用 `~/.yeaft/config.json`；自定义 `YEAFT_DIR` / `--yeaft-dir` 使用 `<yeaftDir>/config.json`。
 
 ## 连接已有 Server
 
@@ -82,7 +83,8 @@ npm run docs:build
 3. 选择 **Yeaft** 和目标 Agent。
 4. 选择 working directory。
 5. 选择一个或多个 VP，并指定 default VP。
-6. 创建 Session 并发送消息。
+6. 创建 Session。
+7. 创建后在 composer 选择 model/effort，在 Session settings 编辑公告，然后发送消息。
 
 1 个 VP 适合普通代码 Agent workflow。只有确实需要独立角色时才增加 VP，并用 `@mention` 指定每个 turn 的参与者。
 

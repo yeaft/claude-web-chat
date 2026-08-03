@@ -44,7 +44,7 @@ Yeaft 在同一个浏览器中提供三条执行路径。一台已连接 Agent �
 1. 选择拥有目标目录的 Agent。
 2. 选择 **Claude Code**、**Copilot** 或 **Yeaft**。
 3. 输入工作目录和 runtime-specific options。
-4. 对 Yeaft，选择 Session roster/default VP，以及可选 model/effort override。
+4. 对 Yeaft，选择 Session roster/default VP；创建后在 composer 选择 model/effort，在 Session settings 编辑公告。
 
 侧栏 catalog 可以展示多台 Agent 的 conversation。Runtime identity 始终包含 Agent；两台 Agent 上相同 Session ID 并不是同一个 Session。
 

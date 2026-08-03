@@ -48,7 +48,7 @@ Web UI 还提供终端、Git 状态与 diff、文件浏览/编辑、端口代理
 
 ### Session 与 Project
 
-- 创建 Session 时可设置工作目录、roster、default VP、model/effort override 和公告。
+- 创建 Session 时选择 Agent、工作目录、roster 和 default VP；创建后在 composer 选择 model/effort，在 Session settings 编辑公告。
 - 用 `@mention` 指定一个或多个 VP；选中的 VP 独立执行同一个 turn，也能通过 `RouteForward` 明确交接给同 Session 的其他 VP。
 - 搜索和分页加载持久 Session history，检查每个 VP turn、运行中的后台任务、模型选择、记忆召回、工具调用、token 用量和 stop reason。
 - 将原生 Session 放入 Project，在 Project 与 Recents 之间拖动，并为所有成员 Session 设置共享 Project instruction。
@@ -80,28 +80,36 @@ Work Center **不等于**任意无人值守部署。外部副作用仍受所选 
 
 ### 本机单机体验
 
-安装发布的 Agent 包，在 loopback 上启动内置 Web UI、Server 和 Agent：
+先安装发布的 Agent 包，再在 loopback 上启动内置 Web UI、Server 和 Agent：
 
 ```bash
 npm install -g @yeaft/webchat-agent
-yeaft-agent local
+```
+
+`yeaft-agent local` 使用 named Agent instance。不传 `--name` 时，name 是经过清理的计算机 hostname；这里显式指定：
+
+```bash
+yeaft-agent local --name local
 ```
 
 浏览器打开 `http://127.0.0.1:6868`。Local mode 关闭 Web 认证且只绑定 loopback，适合受信任的个人工作站，不应直接作为公网部署。
 
-至少配置一个原生 Yeaft LLM provider：
+在另一个 shell 配置同一 instance。`llm` subcommand 不会自动推断它，因此必须显式传 config path：
 
 ```bash
-yeaft-agent llm setup
+YEAFT_CONFIG="$HOME/.yeaft/instances/local/config.json"
+yeaft-agent llm setup --config "$YEAFT_CONFIG"
 ```
 
-原生 GitHub Copilot provider 可以复用本机 `gh auth` / device credential，不把 token 写进 `~/.yeaft/config.json`：
+原生 GitHub Copilot provider 可以复用本机 `gh auth` / device credential，不把 token 本身写进 instance config：
 
 ```bash
-yeaft-agent llm use github-copilot \
+yeaft-agent llm use github-copilot --config "$YEAFT_CONFIG" \
   --model claude-sonnet-4.5 \
   --fast gpt-4.1
 ```
+
+Default service instance 是例外，使用 `~/.yeaft/config.json`。自定义 `YEAFT_DIR` / `--yeaft-dir` 时，应改为对应的 `<yeaftDir>/config.json`。
 
 Claude Code 和 Copilot CLI conversation 仍需要分别安装并登录对应 CLI。
 
@@ -134,10 +142,10 @@ npm run dev
 
 npm 包安装两个主要命令：
 
-- `yeaft-agent`：运行/管理 Web-connected worker、local mode 和 Agent-local LLM 配置。
-- `yeaft`：直接从终端运行原生引擎，支持 one-shot、interactive、持久 `--session-id`、`--cwd`、model/effort override，以及机器可读的 `stream-json` 输入输出。
+- `yeaft-agent`：运行/管理 Web-connected worker 与 local mode。它的 `llm` subcommand 修改显式 `--config` 路径，未传时固定使用 `~/.yeaft/config.json`；不会推断正在运行的 named instance。
+- `yeaft`：直接从终端运行原生引擎。One-shot/interactive text mode 可以通过 `--session-id` 指向一个**已有**正式 Web Session；`stream-json` 也允许用新的已校验 ID 作为 ad-hoc CLI conversation key，但不会创建 `session.json`、roster 或 Web 产品 Session。
 
-原生 Session 的非交互示例：
+机器可读的 ad-hoc CLI conversation 示例：
 
 ```bash
 printf '%s\n' '{"type":"user","message":{"role":"user","content":"检查这个仓库并告诉我测试命令。"}}' \
@@ -147,13 +155,13 @@ printf '%s\n' '{"type":"user","message":{"role":"user","content":"检查这个�
       --output-format stream-json
 ```
 
-完整、当前的参数和 JSONL 边界见 [Agent 与原生 CLI 参考](docs/zh-CN/guide/agent-cli.md)。
+这个 ID 用来隔离持久 CLI message，不代表新建了 Web Session。要执行已有 multi-VP Session，请传其现有 Session ID。完整参数与 JSONL 边界见 [Agent 与原生 CLI 参考](docs/zh-CN/guide/agent-cli.md)。
 
 ## 架构与所有权
 
 ```text
 Browser（Vue 3 + Pinia）
-        │ 认证 / 加密的 WebSocket traffic
+        │ 经过认证的 WebSocket relay（生产环境使用 WSS）
         ▼
 Server（Express + ws + SQLite）
         │ owner check、中继与浏览器 Session catalog
@@ -178,7 +186,7 @@ Server 拥有认证、用户可见的 catalog metadata 和 relay state。Agent �
 - **Agent 配置：** 每个 Agent instance 解析自己的 Yeaft 目录和 `config.json`。Provider credential 不是 server-global 设置。
 - **Server：** 生产环境推荐 Docker。必须替换默认认证 secret、创建首个管理员、在反向代理终止 TLS，并持久化 Server data directory。
 - **注册：** 当前 production route 支持开放注册。邀请管理代码仍保留，但 `server/auth/register.js` 目前不要求 invitation code。
-- **安全边界：** 产品支持 password/JWT、可选 TOTP 与邮件验证、用户级 Agent secret，以及 TweetNaCl message encryption。Raw debug trace、tool output、attachment 和本机 provider credential 都应视为敏感 Agent 数据。
+- **安全边界：** 产品支持 password/JWT、可选 TOTP 与邮件验证、用户级 Agent secret 和 owner-checked relay。当前 Web/Agent peer 会协商 plaintext JSON payload，因此生产部署必须使用 HTTPS/WSS；TweetNaCl payload encryption 只作为 legacy peer compatibility fallback。Raw debug trace、tool output、attachment 和本机 provider credential 都应视为敏感 Agent 数据。
 
 详细文档：
 

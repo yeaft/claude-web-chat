@@ -140,7 +140,7 @@ Coordinator 使用相同 model infrastructure，但其 decision contract 受限�
 
 Agent-local Session metadata、history、memory、tasks 和 Work Center data 位于解析出的 Yeaft directory。Session 的 `workDir` 只是 project context。
 
-旧 wire alias、payload identifier 和 storage scope prefix 会在修改可能破坏已部署 client/data 的地方保留。新代码使用 Session/Yeaft 术语；迁移期间 reader 可能同时处理 `session/<id>` 与 legacy `group/<id>` memory path。
+旧 wire alias、payload identifier 和 storage scope prefix 会在修改可能破坏已部署 client/data 的地方保留。新代码使用 Session/Yeaft 术语，canonical Session memory layout 是 `sessions/<id>`；迁移期间 reader 仍可能处理 legacy `session/<id>` 与 `group/<id>` alias。
 
 ## 验证映射
 

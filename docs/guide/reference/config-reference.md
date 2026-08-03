@@ -1,12 +1,12 @@
 # Config Reference
 
-This chapter is the **field-by-field** reference — Yeaft engine `~/.yeaft/config.json` + Agent / Server environment variables. For day-to-day filling, see [Yeaft Engine Configuration](../yeaft-config.md); this chapter is a lookup table.
+This chapter is the **field-by-field** reference for an Agent instance's Yeaft `config.json` plus Agent/Server environment variables. The default instance uses `~/.yeaft/config.json`; named instances use `~/.yeaft/instances/<name>/config.json` unless overridden. For day-to-day filling, see [Yeaft Engine Configuration](../yeaft-config.md); this chapter is a lookup table.
 
 > The schema documented here is what the code actually reads at the time of writing — extracted from `agent/yeaft/config.js`, `agent/index.js`, `server/config.js`. Fields the code does not consume are intentionally omitted; if you remember a field that used to be here and is now gone, it almost certainly never had a code path.
 
 ---
 
-## `~/.yeaft/config.json`
+## Instance `config.json`
 
 ### Top-Level
 
@@ -103,7 +103,7 @@ The Agent reads environment variables on startup. Most values can also be set in
 
 | Variable | `fileConfig` key | Default | Description |
 | --- | --- | --- | --- |
-| `YEAFT_DIR` | `yeaftDir` | `~/.yeaft` | Override default Yeaft data root |
+| `YEAFT_DIR` | `yeaftDir` | default: `~/.yeaft`; named: `~/.yeaft/instances/<name>` | Override this instance's Yeaft data root |
 | `MAX_CONTEXT_TOKENS` | `maxContextTokens` | `128000` | Denominator used for the agent-side context % display |
 | `AUTO_COMPACT_THRESHOLD` | `autoCompactThreshold` | `110000` | Token count at which the Chat-mode wrapper triggers compact |
 | `YEAFT_THINKING_V1` | — | `"0"` | Set to `"1"` to enable the v1 thinking/reasoning protocol path |
@@ -122,7 +122,7 @@ The Agent reads environment variables on startup. Most values can also be set in
 | `YEAFT_API_KEY` | — | Anthropic key consumed by `agent/yeaft/eval/run-eval.js` |
 | `YEAFT_OPENAI_API_KEY` | — | OpenAI key consumed by the same eval script |
 
-> If you have an Anthropic / OpenAI key, prefer putting it in `~/.yeaft/config.json` under a provider's `apiKey` field — the engine itself does not read `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` directly.
+> If you have an Anthropic / OpenAI key, prefer putting it in the selected instance's `config.json` under a provider's `apiKey` field — the engine itself does not read `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` directly.
 
 ---
 

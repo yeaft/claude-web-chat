@@ -4,7 +4,7 @@ Yeaft is a three-layer system. The browser is the control surface, the Server au
 
 ```text
 Browser (Vue 3 + Pinia)
-        │ HTTP + authenticated/encrypted WebSocket traffic
+        │ HTTP + authenticated WebSocket relay (WSS in production)
         ▼
 Server (Express + ws + SQLite)
         │ owner-checked relay and browser-facing catalog
@@ -137,7 +137,8 @@ This is not transcript merging. User, VP, Session, Project-related Session, Work
 ## Security-relevant paths
 
 - Browser/Server auth supports JWT, optional TOTP/email verification, and configurable SSO providers.
-- Browser ↔ Agent message bodies can use TweetNaCl session encryption after Agent authentication.
+- Current Web and Agent peers negotiate plaintext JSON payloads after authentication; production confidentiality depends on HTTPS/WSS transport security.
+- TweetNaCl payload encryption is retained only as a compatibility fallback when a legacy peer does not negotiate plaintext.
 - The Server enforces owner routing for Agent and WebSocket traffic.
 - Provider credentials, raw tool output, project files, debug traces, and native runtime storage stay on the Agent unless explicitly returned to the browser.
 - `SKIP_AUTH` and local mode are development/trusted-workstation paths, not public deployment settings.

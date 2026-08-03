@@ -5,6 +5,10 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { MockAgent } from '../e2e/fixtures/mock-agent.js';
+import {
+  projectWorkItemDetail,
+  projectWorkItemSummary,
+} from '../agent/yeaft/work-center/projection.js';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const port = Number(process.env.YEAFT_DOC_SCREENSHOT_PORT || 3469);
@@ -14,73 +18,42 @@ const viewport = { width: 2560, height: 1440 };
 const baseNow = Date.UTC(2026, 7, 3, 9, 30, 0);
 const sleep = ms => new Promise(resolvePromise => setTimeout(resolvePromise, ms));
 
-function action({ id, sequence, type, status, vpId, vpName, objective, approach, expectedOutcome, response, stats }) {
+function action({ id, sequence, type, status, vpId, vpName, objective, approach, expectedOutcome, response, stats, dependsOnStageIds = [] }) {
   return {
-    id,
-    generation: 1,
-    sequence,
-    type,
-    status,
-    requiredRole: type,
-    assignedVp: { id: vpId, name: vpName },
-    brief: { objective, approach, expectedOutcome },
-    contentSummary: response,
-    canonicalResult: status === 'completed'
-      ? { summary: response, evidence: [{ type: 'summary', text: response }] }
-      : null,
-    response,
-    progressRevision: sequence,
-    executionStats: stats,
-    loopCount: stats.loopCount,
-    toolCount: stats.toolCount,
-    messages: [{
-      id: `${id}:assistant`,
-      role: 'assistant',
+    action: {
+      id,
+      generation: 1,
+      sequence,
+      type,
+      stageId: type,
       status,
-      speaker: { id: vpId, name: vpName },
-      text: response,
-      createdAt: baseNow - (6 - sequence) * 600_000,
-      updatedAt: baseNow - (6 - sequence) * 600_000,
-    }],
+      requiredRole: '',
+      assignmentPolicy: { mode: 'auto', capability: type, fixedVpId: null },
+      dependsOnStageIds,
+      workspaceMode: type === 'review' ? 'read' : 'shared',
+      brief: { objective, approach, expectedOutcome },
+      canonicalResult: status === 'completed'
+        ? { status: 'completed', summary: response, evidence: [{ kind: 'summary', label: response }] }
+        : null,
+      progressRevision: sequence,
+    },
+    run: status === 'ready' ? null : {
+      id: `run-${id}`,
+      actionId: id,
+      actionGeneration: 1,
+      actionAttempt: 1,
+      status,
+      startedAt: baseNow - (7 - sequence) * 600_000,
+      ...(status === 'completed' ? { endedAt: baseNow - (6 - sequence) * 600_000 } : {}),
+      vpSnapshot: { id: vpId, name: vpName },
+      response,
+      progressRevision: sequence,
+      ...stats,
+    },
   };
 }
 
-const workItem = {
-  id: 'docs-current-product',
-  title: 'Refresh bilingual product documentation',
-  goal: 'Make the English and Chinese documentation describe the current Session, Project, provider, memory, and Work Center behavior with verified high-resolution screenshots.',
-  status: 'running',
-  boardLane: 'active',
-  workItemType: 'software-change',
-  createdAt: baseNow - 5_400_000,
-  updatedAt: baseNow - 300_000,
-  actionCount: 5,
-  completedActionCount: 3,
-  currentAction: {
-    id: 'action-review',
-    generation: 1,
-    type: 'review',
-    status: 'running',
-    objective: 'Review feature claims and visual evidence independently',
-    assignedVp: { id: 'martin', name: 'Martin' },
-  },
-  activeAction: {
-    id: 'action-review',
-    generation: 1,
-    type: 'review',
-    status: 'running',
-    objective: 'Review feature claims and visual evidence independently',
-    assignedVp: { id: 'martin', name: 'Martin' },
-  },
-  actionCounts: { completed: 3, running: 1, ready: 1, waiting: 0, failed: 0 },
-  executors: [
-    { id: 'omni', name: 'Omni' },
-    { id: 'linus', name: 'Linus' },
-    { id: 'martin', name: 'Martin' },
-  ],
-};
-
-const actions = [
+const actionSpecs = [
   action({
     id: 'action-triage', sequence: 1, type: 'triage', status: 'completed', vpId: 'omni', vpName: 'Omni',
     objective: 'Define the public documentation contract',
@@ -91,6 +64,7 @@ const actions = [
   }),
   action({
     id: 'action-audit', sequence: 2, type: 'research', status: 'completed', vpId: 'ada', vpName: 'Ada',
+    dependsOnStageIds: ['triage'],
     objective: 'Audit current code and tests for feature evidence',
     approach: 'Trace each user-facing claim to the current implementation, protocol, or test suite.',
     expectedOutcome: 'An evidence map for Sessions, Projects, providers, memory, tools, and Work Center.',
@@ -99,6 +73,7 @@ const actions = [
   }),
   action({
     id: 'action-write', sequence: 3, type: 'document', status: 'completed', vpId: 'linus', vpName: 'Linus',
+    dependsOnStageIds: ['research'],
     objective: 'Rewrite the bilingual entry documentation',
     approach: 'Keep English and Chinese information architecture aligned and replace legacy group-mode wording.',
     expectedOutcome: 'Accurate README and VitePress guides with current navigation.',
@@ -107,6 +82,7 @@ const actions = [
   }),
   action({
     id: 'action-review', sequence: 4, type: 'review', status: 'running', vpId: 'martin', vpName: 'Martin',
+    dependsOnStageIds: ['document'],
     objective: 'Review feature claims and visual evidence independently',
     approach: 'Compare documentation claims with code, tests, generated screenshots, and compatibility boundaries.',
     expectedOutcome: 'Approval or concrete blockers before merge.',
@@ -115,6 +91,7 @@ const actions = [
   }),
   action({
     id: 'action-deliver', sequence: 5, type: 'deliver', status: 'ready', vpId: 'linus', vpName: 'Linus',
+    dependsOnStageIds: ['review'],
     objective: 'Publish the reviewed documentation release',
     approach: 'Merge only the approved commit, tag the merged main commit, and verify documentation deployment.',
     expectedOutcome: 'Traceable bilingual documentation and high-resolution light-theme assets.',
@@ -123,33 +100,35 @@ const actions = [
   }),
 ];
 
-const workItemDetail = {
-  ...workItem,
+const actions = actionSpecs.map(spec => spec.action);
+const runs = actionSpecs.map(spec => spec.run).filter(Boolean);
+const rawWorkItemDetail = {
+  id: 'docs-current-product',
   revision: 4,
   planRevision: 2,
   ledgerRevision: 8,
   coordinatorRevision: 3,
+  title: 'Refresh bilingual product documentation',
+  goal: 'Make the English and Chinese documentation describe the current Session, Project, provider, memory, and Work Center behavior with verified high-resolution screenshots.',
+  status: 'running',
+  lifecycle: 'active',
+  attentionState: 'none',
+  workItemType: 'software-change',
   workDir: '/home/projects/yeaft-web-code-agent',
   workflowTemplate: 'ai-planned',
   planningMode: 'ai',
+  executionMode: 'graph',
   acceptanceCriteria: [
     'English and Chinese entry documentation describe the same current product model',
     'Every new feature claim is supported by current code, tests, or a runnable UI path',
     'Documentation screenshots use the current light theme at 2560 × 1440',
   ],
-  executionStats: {
-    llmRequestCount: 14,
-    loopCount: 25,
-    toolCount: 62,
-    inputTokens: 138_000,
-    outputTokens: 24_000,
-    cacheReadTokens: 47_000,
-    cacheWriteTokens: 3_000,
-    totalTokens: 212_000,
-  },
-  actionSummary: '3 completed · 1 running · 1 ready',
+  activeActionIds: ['action-review', 'action-deliver'],
+  attentionActionIds: [],
   currentActionId: 'action-review',
   actions,
+  runs,
+  events: [],
   messages: [
     {
       id: 'work-user', role: 'user', status: 'completed',
@@ -163,7 +142,24 @@ const workItemDetail = {
       createdAt: baseNow - 420_000, updatedAt: baseNow - 420_000,
     },
   ],
+  createdAt: baseNow - 5_400_000,
+  updatedAt: baseNow - 300_000,
 };
+const workItemDetail = projectWorkItemDetail(rawWorkItemDetail);
+const workItem = projectWorkItemSummary(rawWorkItemDetail);
+if (Object.hasOwn(workItemDetail, 'workDir') || Object.hasOwn(workItem, 'workDir')) {
+  throw new Error('Work Center screenshot projection leaked workDir');
+}
+const readyAction = workItemDetail.actions.find(item => item.id === 'action-deliver');
+if (!readyAction || readyAction.status !== 'ready' || readyAction.assignedVp) {
+  throw new Error('Ready screenshot Action must remain unassigned after projection');
+}
+const workCenterVps = [
+  { id: 'omni', name: 'Omni' },
+  { id: 'ada', name: 'Ada' },
+  { id: 'linus', name: 'Linus' },
+  { id: 'martin', name: 'Martin' },
+];
 
 const sessionRows = [
   {
@@ -391,6 +387,28 @@ async function seedPage(page, { locale, agentId }) {
   await page.waitForTimeout(500);
 }
 
+function browserFailureMessage(kind, value) {
+  return `[browser:${kind}] ${String(value || '').trim()}`;
+}
+
+async function assertScreenshotPageClean(page, browserFailures, label) {
+  const visibleErrors = await page.locator([
+    '.work-center-error:visible',
+    '.work-center-detail-error:visible',
+    '.work-center-settings-error:visible',
+    '[role="alert"]:visible',
+    '.sp-toast.error:visible',
+  ].join(', ')).allTextContents();
+  const normalizedErrors = visibleErrors.map(text => text.trim()).filter(Boolean);
+  if (browserFailures.length || normalizedErrors.length) {
+    throw new Error([
+      `${label} contains unexpected browser/UI errors.`,
+      ...browserFailures,
+      ...normalizedErrors.map(text => `[visible-error] ${text}`),
+    ].join('\n'));
+  }
+}
+
 async function captureLocale(browser, agent, locale, prefix) {
   const context = await browser.newContext({
     viewport,
@@ -400,9 +418,22 @@ async function captureLocale(browser, agent, locale, prefix) {
     locale: locale === 'zh-CN' ? 'zh-CN' : 'en-US',
   });
   const page = await context.newPage();
-  page.on('console', message => console.error(`[browser:${message.type()}] ${message.text()}`));
-  page.on('pageerror', error => console.error(`[browser:pageerror] ${error.stack || error.message}`));
-  page.on('requestfailed', request => console.error(`[browser:requestfailed] ${request.url()} ${request.failure()?.errorText || ''}`));
+  const browserFailures = [];
+  page.on('console', message => {
+    const entry = browserFailureMessage(`console:${message.type()}`, message.text());
+    console.error(entry);
+    if (message.type() === 'error') browserFailures.push(entry);
+  });
+  page.on('pageerror', error => {
+    const entry = browserFailureMessage('pageerror', error.stack || error.message);
+    browserFailures.push(entry);
+    console.error(entry);
+  });
+  page.on('requestfailed', request => {
+    const entry = browserFailureMessage('requestfailed', `${request.url()} ${request.failure()?.errorText || ''}`);
+    browserFailures.push(entry);
+    console.error(entry);
+  });
   await page.addInitScript(({ locale: nextLocale }) => {
     localStorage.setItem('theme', 'light');
     localStorage.setItem('theme-follow-system', 'false');
@@ -415,9 +446,10 @@ async function captureLocale(browser, agent, locale, prefix) {
   await seedPage(page, { locale, agentId: agent.agentId });
 
   const sessionPath = resolve(outputRoot, prefix, 'session.png');
+  await assertScreenshotPageClean(page, browserFailures, `${locale} Session screenshot`);
   await page.screenshot({ path: sessionPath, type: 'png', fullPage: false });
 
-  await page.evaluate(({ agentId, item, detail }) => {
+  await page.evaluate(({ agentId, item, detail, vps }) => {
     const chat = window.Pinia.useChatStore();
     const localized = chat.locale === 'zh-CN';
     const localItem = {
@@ -435,9 +467,9 @@ async function captureLocale(browser, agent, locale, prefix) {
         : message),
     };
     chat.workCenterAgentId = agentId;
-    chat.workCenterItemsByAgent = { [agentId]: [localItem] };
-    chat.workCenterDetailByAgent = { [agentId]: localDetail };
-    chat.workCenterLoadedByAgent = { [agentId]: true };
+    chat.workCenterItemsByAgent = { [agentId]: [] };
+    chat.workCenterDetailByAgent = { [agentId]: null };
+    chat.workCenterLoadedByAgent = { [agentId]: false };
     chat.workCenterLoadingByAgent = { [agentId]: false };
     chat.workCenterErrorByAgent = { [agentId]: null };
     chat.workCenterWatcherByAgent = { [agentId]: { enabled: true } };
@@ -446,30 +478,42 @@ async function captureLocale(browser, agent, locale, prefix) {
       defaultWorkDir: detail.workDir,
       workItemAttachments: true,
       workItemTypes: [{ id: 'software-change', name: localized ? '软件变更' : 'Software change', actionCount: 5 }],
-      vps: detail.executors,
+      vps,
       models: [{ id: 'review', ref: 'github-copilot/claude-sonnet-4.5', provider: 'github-copilot', label: 'Claude Sonnet 4.5', effortOptions: ['medium', 'high'] }],
       primaryModel: 'github-copilot/claude-sonnet-4.5',
     } };
     chat.workCenterRequest = (op, data, targetAgentId) => {
-      if (op === 'get' && data?.id === localDetail.id && targetAgentId === agentId) {
-        return Promise.resolve(localDetail);
+      if (targetAgentId !== agentId) {
+        return Promise.reject(new Error(`Unexpected screenshot Work Center Agent: ${targetAgentId}`));
+      }
+      if (op === 'list') return Promise.resolve({ items: [localItem], nextCursor: null, watcher: { enabled: true } });
+      if (op === 'get' && data?.id === localDetail.id) return Promise.resolve(localDetail);
+      if (op === 'get_settings') {
+        return Promise.resolve({
+          settings: { defaultWorkDir: detail.workDir, startImmediately: true },
+          runtime: chat.workCenterRuntimeByAgent[agentId],
+        });
       }
       return Promise.reject(new Error(`Unexpected screenshot Work Center request: ${op}`));
     };
     chat.workCenterOpen = true;
-  }, { agentId: agent.agentId, item: workItem, detail: workItemDetail });
+  }, { agentId: agent.agentId, item: workItem, detail: workItemDetail, vps: workCenterVps });
 
   await page.waitForSelector('.work-center-main');
-  await page.evaluate(({ agentId, detail }) => {
+  await page.waitForFunction(({ agentId, id }) => {
     const chat = window.Pinia.useChatStore();
-    chat.workCenterDetailByAgent = { [agentId]: detail };
-  }, { agentId: agent.agentId, detail: workItemDetail });
+    return (chat.workCenterItemsByAgent[agentId]?.some(item => item.id === id)
+      && !chat.workCenterLoadingByAgent[agentId])
+      || Boolean(document.querySelector('.work-center-error'));
+  }, { agentId: agent.agentId, id: workItem.id });
+  await assertScreenshotPageClean(page, browserFailures, `${locale} Work Center initialization`);
   await page.locator('.work-center-card-open').first().click();
   await page.waitForSelector('.work-center-conversation-pane');
   await page.locator('.work-center-actions-button').click();
   await page.waitForSelector('.work-center-action-list');
   await page.waitForTimeout(500);
   const workCenterPath = resolve(outputRoot, prefix, 'work-center.png');
+  await assertScreenshotPageClean(page, browserFailures, `${locale} Work Center screenshot`);
   await page.screenshot({ path: workCenterPath, type: 'png', fullPage: false });
 
   const theme = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));

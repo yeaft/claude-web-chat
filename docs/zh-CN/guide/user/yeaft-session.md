@@ -23,8 +23,8 @@ Session metadata 和 history 位于所属 Agent 的 Yeaft 目录。`workDir` 是
 2. 选择拥有目标工作目录的 Agent。
 3. 设置 Session name 和 working directory。
 4. 选择一个或多个 VP，并指定 default VP。
-5. 按需选择 model/effort override 与公告。
-6. 创建 Session 并发送消息。
+5. 创建 Session。
+6. 创建后在 composer 选择 model/effort，在 Session settings 编辑公告，然后发送消息。
 
 如果没有传 roster，而 Agent 的 VP library 中存在 `omni`，runtime 可以使用 Omni 作为默认 generalist。显式传入的非空 roster 永远不会被静默覆盖。
 

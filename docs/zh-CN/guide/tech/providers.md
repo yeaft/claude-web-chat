@@ -5,7 +5,7 @@ Yeaft 有两条 provider 集成路径：
 1. **ChatProvider**：给 Claude Code CLI、GitHub Copilot CLI 这类 1:1 CLI chat 后端使用。
 2. **Yeaft LLM adapter**：给原生 **Yeaft Code Agent** 引擎使用，每个 VP 直接路由到 Anthropic 或 OpenAI Responses 兼容 provider。
 
-本章重点讲 ChatProvider，因为这是新增 1:1 chat 后端的扩展点。如果你只是想把另一个 LLM 接到 Yeaft Code Agent，先看 [Yeaft 引擎配置](../yeaft-config.md) 和 [Yeaft LLM 层](./yeaft-llm.md)；大多数 provider 只需要改 `~/.yeaft/config.json`，不需要写新的 ChatProvider driver。
+本章重点讲 ChatProvider，因为这是新增 1:1 chat 后端的扩展点。如果你只是想把另一个 LLM 接到 Yeaft Code Agent，先看 [Yeaft 引擎配置](../yeaft-config.md) 和 [Yeaft LLM 层](./yeaft-llm.md)；大多数 provider 只需要修改所选 Agent instance 解析出的 `config.json`，不需要写新的 ChatProvider driver。
 
 > 本章面向**想加新 provider** 或**想理解为什么前端不区分 Claude / Copilot 渲染**的开发者。普通用户视角看 [选择会话后端](../user/choose-backend.md)。
 

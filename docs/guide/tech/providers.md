@@ -5,7 +5,7 @@ Yeaft has two provider integration paths:
 1. **ChatProvider** for 1:1 CLI-style chat backends such as Claude Code CLI and GitHub Copilot CLI.
 2. **Yeaft LLM adapters** for the native **Yeaft Code Agent** engine, where each VP routes directly to an Anthropic or OpenAI Responses compatible provider.
 
-This chapter focuses on ChatProvider because that is the extension point for adding a new 1:1 chat backend. If you want to connect another LLM to Yeaft Code Agent, start with [Yeaft Engine Config](../yeaft-config.md) and [Yeaft LLM Layer](./yeaft-llm.md); most providers only need `~/.yeaft/config.json`, not a new ChatProvider driver.
+This chapter focuses on ChatProvider because that is the extension point for adding a new 1:1 chat backend. If you want to connect another LLM to Yeaft Code Agent, start with [Yeaft Engine Config](../yeaft-config.md) and [Yeaft LLM Layer](./yeaft-llm.md); most providers only need the selected Agent instance's resolved `config.json`, not a new ChatProvider driver.
 
 > Audience: **engineers who want to add a new provider** or **understand why the frontend doesn't branch on Claude vs Copilot rendering**. End-user view in [Choose a Code Agent Path](../user/choose-backend.md).
 
