@@ -24,6 +24,12 @@ function invalidateActionRunOpen(target) {
   return generation;
 }
 
+function invalidateWorkCenterUrlRestore(target) {
+  const generation = (Number(target?.workCenterUrlRestoreGeneration) || 0) + 1;
+  if (target) target.workCenterUrlRestoreGeneration = generation;
+  return generation;
+}
+
 export default {
   name: 'WorkCenterPage',
   components: { MessageComposer, WorkCenterActionDetail, WorkCenterSettingsModal, LlmTab, ModernSelect },
@@ -41,6 +47,7 @@ export default {
       actionDetailTab: 'messages',
       actionInputRequestGeneration: 0,
       actionRunOpenGeneration: 0,
+      workCenterUrlRestoreGeneration: 0,
       workItemMessage: '',
       workItemMessageAttachments: [],
       workItemMessageAttachmentsUploading: false,
@@ -348,6 +355,7 @@ export default {
       immediate: true,
       handler(id, previousId) {
         invalidateActionRunOpen(this);
+        invalidateWorkCenterUrlRestore(this);
         this.createGeneration = (Number(this.createGeneration) || 0) + 1;
         this.saving = false;
         this.selectedId = null;
@@ -428,6 +436,7 @@ export default {
   },
   beforeUnmount() {
     invalidateActionRunOpen(this);
+    invalidateWorkCenterUrlRestore(this);
     if (this.boardQueryTimer) clearTimeout(this.boardQueryTimer);
     window.removeEventListener('popstate', this.restoreWorkCenterUrl);
   },
@@ -637,7 +646,21 @@ export default {
         .map(part => this.parseContentRef(part));
       return refs.length > 0 ? refs : [{ type: 'action-list' }];
     },
+    workCenterUrlRoute() {
+      const params = new URLSearchParams(window.location.search);
+      return {
+        agentId: params.get('workAgentId'),
+        itemId: params.get('workItemId'),
+        content: params.has('workContent') ? params.get('workContent') : null,
+      };
+    },
+    sameWorkCenterUrlRoute(left, right) {
+      return left?.agentId === right?.agentId
+        && left?.itemId === right?.itemId
+        && left?.content === right?.content;
+    },
     syncWorkCenterUrl(replace = false) {
+      invalidateWorkCenterUrlRestore(this);
       const url = new URL(window.location.href);
       if (this.selectedId) {
         url.searchParams.set('workAgentId', this.agentId || '');
@@ -659,15 +682,18 @@ export default {
       window.history[replace ? 'replaceState' : 'pushState'](state, '', next);
     },
     async restoreWorkCenterUrl() {
-      const params = new URLSearchParams(window.location.search);
-      const workAgentId = params.get('workAgentId');
-      const workItemId = params.get('workItemId');
+      const restoreGeneration = invalidateWorkCenterUrlRestore(this);
+      const route = this.workCenterUrlRoute();
+      const restoreIsCurrent = () => restoreGeneration === this.workCenterUrlRestoreGeneration
+        && this.sameWorkCenterUrlRoute(route, this.workCenterUrlRoute());
+      const workAgentId = route.agentId;
+      const workItemId = route.itemId;
       if (!workItemId || (workAgentId && workAgentId !== this.agentId)) {
         if (this.selectedId) this.showItemsPane({ syncUrl: false });
         return;
       }
-      const contentPanelOpen = params.has('workContent');
-      const contentStack = this.parseContentStack(params.get('workContent'));
+      const contentPanelOpen = route.content != null;
+      const contentStack = this.parseContentStack(route.content);
       const contentRef = contentStack.at(-1);
       if (this.selectedId !== workItemId || this.detail?.id !== workItemId) {
         this.openWorkItem(workItemId, {
@@ -679,11 +705,12 @@ export default {
         try {
           await this.store.getWorkItem(workItemId, this.agentId);
         } catch (error) {
-          if (this.selectedId === workItemId) this.detailError = error?.message || String(error);
+          if (restoreIsCurrent()) this.detailError = error?.message || String(error);
         } finally {
-          if (this.selectedId === workItemId) this.detailLoading = false;
+          if (restoreIsCurrent()) this.detailLoading = false;
         }
       }
+      if (!restoreIsCurrent()) return;
       const actionId = contentRef.actionId
         || [...contentStack].reverse().find(ref => ref.type === 'action')?.actionId;
       if (actionId && !this.selected?.actions?.some(action => action.id === actionId)) {

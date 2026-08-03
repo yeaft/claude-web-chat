@@ -1390,6 +1390,61 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage).toHaveURL(new RegExp(`workItemId=${OPEN_ITEM.id}(?!.*workContent=)`));
     await expect(chatPage.locator('.work-center-content-pane')).toHaveCount(0);
     await expect(chatPage.locator('.work-center-conversation')).toBeVisible();
+
+    await chatPage.evaluate(() => {
+      const url = new URL(window.location.href);
+      url.searchParams.set('workContent', 'action-list/action:action-1');
+      window.history.pushState({ ...window.history.state, workCenterContent: true }, '', url);
+    });
+    await chatPage.reload();
+    await chatPage.waitForSelector('.chat-page');
+    workCenterTransports.delete(chatPage);
+    mockAgent.__workCenterTransport = null;
+    const raceTransport = await installWorkCenterTransport(chatPage);
+    mockAgent.__workCenterTransport = raceTransport;
+    await chatPage.evaluate(({ agentId, item, settings }) => {
+      const store = window.Pinia.useChatStore();
+      store.workCenterAgentId = agentId;
+      store.workCenterOpen = false;
+      store.workCenterItemsByAgent[agentId] = [item];
+      store.workCenterDetailByAgent[agentId] = null;
+      store.workCenterLoadedByAgent[agentId] = true;
+      store.workCenterLoadingByAgent[agentId] = false;
+      store.workCenterSettingsByAgent[agentId] = settings;
+      store.workCenterRuntimeByAgent[agentId] = settings.runtime;
+    }, { agentId: mockAgent.agentId, item: OPEN_ITEM, settings: WORK_CENTER_SETTINGS });
+
+    const takePendingGet = async () => {
+      for (;;) {
+        const request = await raceTransport.next();
+        if (request.op === 'get') return request;
+        const response = request.op === 'list' ? { items: [OPEN_ITEM], watcher: { enabled: true } }
+          : request.op === 'get_settings' ? WORK_CENTER_SETTINGS
+          : request.op === 'get_runtime' ? WORK_CENTER_SETTINGS.runtime
+          : undefined;
+        if (response === undefined) throw new Error(`Unexpected Work Center op ${request.op}`);
+        await raceTransport.resolve(request, response);
+      }
+    };
+
+    await chatPage.evaluate(() => {
+      window.Pinia.useChatStore().workCenterOpen = true;
+    });
+    const staleDeepLinkGet = await takePendingGet();
+    expect(staleDeepLinkGet.payload).toEqual({ id: OPEN_ITEM.id });
+
+    await chatPage.goBack();
+    await expect(chatPage).toHaveURL(new RegExp(`workItemId=${OPEN_ITEM.id}(?!.*workContent=)`));
+    const currentConversationGet = await takePendingGet();
+    expect(currentConversationGet.payload).toEqual({ id: OPEN_ITEM.id });
+    await raceTransport.resolve(currentConversationGet, OPEN_ITEM_DETAIL);
+
+    await expect(chatPage.locator('.work-center-conversation')).toBeVisible();
+    await expect(chatPage.locator('.work-center-content-pane')).toHaveCount(0);
+    await raceTransport.resolve(staleDeepLinkGet, OPEN_ITEM_DETAIL);
+    await expect(chatPage.locator('.work-center-conversation')).toBeVisible();
+    await expect(chatPage.locator('.work-center-content-pane')).toHaveCount(0);
+    await expect(chatPage).toHaveURL(new RegExp(`workItemId=${OPEN_ITEM.id}(?!.*workContent=)`));
   });
 
   test('loads one retained conversation when an earlier Action is selected', async ({ chatPage, mockAgent }) => {
