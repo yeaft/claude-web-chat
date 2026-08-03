@@ -1872,7 +1872,66 @@ describe('Engine', () => {
         detail: expect.objectContaining({ errorName: 'ToolExecutionTimeoutError' }),
       });
 
-      expect(bashTool.timeoutMs).toBeGreaterThan(120_000);
+      expect(bashTool.timeoutMs).toBe(0);
+
+      const systemdChild = new EventEmitter();
+      systemdChild.pid = 4344;
+      systemdChild.stdout = new PassThrough();
+      systemdChild.stderr = new PassThrough();
+      systemdChild.kill = () => true;
+      const systemdCalls = [];
+      const slowSystemctl = (_command, args) => {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+        systemdCalls.push(args.includes('kill')
+          ? args.find(arg => arg.startsWith('--signal='))
+          : 'show');
+        return args.includes('show')
+          ? { status: 0, stdout: 'active\n' }
+          : { status: 0 };
+      };
+      const ownedTimeoutBash = createBashTool({
+        runProcessImpl: (_command, _args, options) => {
+          expect(options.timeoutMs).toBe(600_000);
+          return runProcess('systemd-run', [], {
+            ...options,
+            timeoutMs: 1,
+            killGraceMs: 1,
+            forceSettleMs: 5,
+            platform: 'linux',
+            systemdScope: {
+              unit: 'yeaft-test.scope',
+              systemctlPath: '/usr/bin/systemctl',
+              env: {},
+            },
+            spawnProcess: () => systemdChild,
+            spawnProcessSync: slowSystemctl,
+          });
+        },
+      });
+      const ownedTimeoutRegistry = new ToolRegistry();
+      ownedTimeoutRegistry.register(ownedTimeoutBash);
+      const ownedTimeoutResult = await ownedTimeoutRegistry.execute('Bash', {
+        command: 'sleep 600',
+        timeout_ms: 600_000,
+      }, {
+        cwd: process.cwd(),
+        runtimePlatform: {
+          platform: 'linux',
+          isLinux: true,
+          isWindows: false,
+          shellFamily: 'posix',
+          defaultShell: '/bin/sh',
+        },
+      });
+      expect(ownedTimeoutResult).toContain('Exit code: 124');
+      expect(ownedTimeoutResult).toContain('Process tree did not exit within 5ms after SIGKILL: systemd-run');
+      expect(systemdCalls).toContain('--signal=SIGTERM');
+      expect(systemdCalls).toContain('--signal=SIGKILL');
+      expect(systemdCalls).toContain('show');
+      expect(systemdChild.listenerCount('close')).toBe(0);
+      expect(systemdChild.listenerCount('error')).toBe(0);
+      expect(systemdChild.stdout.listenerCount('data')).toBe(0);
+      expect(systemdChild.stderr.listenerCount('data')).toBe(0);
 
       const terminationChild = new EventEmitter();
       terminationChild.pid = 4444;

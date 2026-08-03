@@ -234,7 +234,7 @@ describe('task result re-entry', () => {
     const persisted = [];
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(bashTool);
-    expect(bashTool.timeoutMs).toBeGreaterThan(600_000);
+    expect(bashTool.timeoutMs).toBe(0);
     const sessionLike = {
       adapter,
       trace: new NullTrace(),

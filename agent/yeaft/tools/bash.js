@@ -29,12 +29,6 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 
 /** Max timeout in ms (10 minutes). */
 const MAX_TIMEOUT_MS = 600_000;
-/**
- * ToolRegistry must not preempt Bash's own process timeout. Bash terminates
- * the process tree and waits for close before returning exit 124; the grace
- * covers TERM/KILL escalation and the bounded close-confirmation window.
- */
-const REGISTRY_TIMEOUT_MS = MAX_TIMEOUT_MS + 15_000;
 const LINUX_NAMESPACE_HELPER = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -171,7 +165,10 @@ Guidelines:
     required: ['command'],
   },
   errorOutput: null,
-  timeoutMs: REGISTRY_TIMEOUT_MS,
+  // Foreground Bash owns a bounded timeout and process-tree cleanup state
+  // machine. A second ToolRegistry timer can preempt that cleanup and turn an
+  // owned exit 124 into a fatal orphan, so it must stay disabled for this tool.
+  timeoutMs: 0,
   isConcurrencySafe: () => false,
   isReadOnly: () => false,
   isDestructive: (input) => {
