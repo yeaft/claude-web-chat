@@ -1126,7 +1126,13 @@ describe('message flow regressions', () => {
     expect(workCenter).toContain('workItemMessageAttachments.length > 0');
     expect(workCenter).toContain('work-center-detail-close');
     expect(workCenter).not.toContain('class="work-center-action-content-summary"');
-    expect(workCenterCss).toContain('grid-template-columns: minmax(0, 1fr) minmax(400px, 1fr);');
+    expect(workCenter).toContain("contentPanelOpen: false");
+    expect(workCenter).toContain("v-if=\"contentPanelOpen\"");
+    expect(workCenter).toContain("if (this.contentPanelOpen) url.searchParams.set('workContent'");
+    expect(workCenterCss).toMatch(/\.work-center-detail-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
+    expect(workCenter).toContain('work-center-conversation-topbar');
+    expect(workCenter).toContain("tr('workCenter.triageSummary', 'Triage summary')");
+    expect(workCenterCss).toMatch(/\.work-center-detail-layout\.content-open\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(400px, var\(--work-center-content-width, 500px\)\);/s);
     expect(workCenterCss).toMatch(/\.work-center-detail-close\s*\{[\s\S]*?position: absolute;[\s\S]*?right: 16px;/);
     expect(workCenterCss).toMatch(/\.work-center-action-description\s*\{[\s\S]*?white-space: nowrap;/);
     expect(workCenter).not.toContain('coordinatorRequestedSelectedActionInput');
@@ -1134,8 +1140,8 @@ describe('message flow regressions', () => {
     expect(workCenter).not.toContain("[...(this.selected.messages || [])].reverse().some");
     expect(workCenter).not.toContain("message.recovery?.actionId === this.selectedAction.id");
     expect(workCenter).toContain(":class=\"{ 'showing-detail': narrowPane !== 'items' }\"");
-    expect(workCenterCss).toMatch(/\.work-center-shell\.showing-detail\s*\{[\s\S]*?padding-top: 10px;/);
-    expect(workCenterCss).toMatch(/\.work-center-detail-heading\s*\{[\s\S]*?padding: 10px 56px 12px 24px;/);
+    expect(workCenterCss).toMatch(/\.work-center-shell\.showing-detail\s*\{[\s\S]*?padding: 0;/);
+    expect(workCenterCss).toMatch(/\.work-center-detail-heading\s*\{[\s\S]*?min-height: 40px;[\s\S]*?padding: 4px 16px;/);
     expect(workCenter).toContain('workItemMessageSpeaker(message)');
     expect(workCenter).toContain('workCenter.messageSpeakerRole');
     expect(workCenter).not.toContain("tr('workCenter.assistant', 'Yeaft')");
@@ -1144,8 +1150,9 @@ describe('message flow regressions', () => {
     expect(workCenterCss).not.toContain('width: min(100%, 1120px);');
     expect(variables).toContain('--work-center-conversation-column-width: 1200px;');
     expect(variables).toContain('--work-center-conversation-gutter: clamp(20px, 3vw, 40px);');
-    expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-detail-layout\s*\{[\s\S]*?display: block;/);
-    expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-mobile-pane-tabs\s*\{[\s\S]*?display: grid;/);
+    expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-detail-layout,[\s\S]*?\.work-center-detail-layout\.content-open\s*\{[\s\S]*?display: block;/);
+    expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-detail-layout\.content-open \.work-center-conversation-pane\s*\{[\s\S]*?display: none;/);
+    expect(workCenterCss).not.toMatch(/\.work-center-mobile-pane-tabs\s*\{[\s\S]*?display: grid;/);
 
     const turnBlock = readFileSync(resolve(import.meta.dirname, '../../web/components/VpTurnBlock.js'), 'utf8');
     const chatStore = readFileSync(resolve(import.meta.dirname, '../../web/stores/chat.js'), 'utf8');

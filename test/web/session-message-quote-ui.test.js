@@ -482,7 +482,7 @@ describe('Session message quote UI wiring', () => {
     expect(workCenterComposer.matches(sessionComposerSelector)).toBe(false);
     expect(workCenterSource).toContain('class="work-center-item-message-input"');
     expect(workCenterSource).not.toContain(':rows="3"');
-    expect(workCenterCss).toMatch(/\.work-center-item-message-input\s*\{[^}]*width:\s*min\(100%,\s*920px\);[^}]*max-width:\s*none;/);
+    expect(workCenterCss).toMatch(/\.work-center-item-message-input\s*\{[^}]*width:\s*min\(100%,\s*var\(--work-center-conversation-column-width\)\);[^}]*max-width:\s*none;/);
 
     expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*flex-direction:\s*column/);
     expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*gap:\s*var\(--chat-composer-gap\)/);
