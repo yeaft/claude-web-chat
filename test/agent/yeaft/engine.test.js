@@ -105,8 +105,8 @@ afterEach(() => {
 // ─── Tests ────────────────────────────────────────────────────
 
 describe('Engine memory prompt hygiene', () => {
-  it('strips dream-state metadata from resident summaries before prompt injection', () => {
-    const entries = buildResidentEntries({
+  it('normalizes current and related Session summaries into separate resident sources', () => {
+    const currentEntries = buildResidentEntries({
       sessionId: 's1',
       ownVpId: 'linus',
       summaries: {
@@ -118,14 +118,12 @@ describe('Engine memory prompt hygiene', () => {
       },
     });
 
-    expect(entries).toEqual([
+    expect(currentEntries).toEqual([
       { scope: 'sessions/s1', summary: 'Useful session fact.' },
       { scope: 'sessions/s1/topic/dream/recall', summary: 'Topic detail stays.' },
     ]);
-  });
 
-  it('includes related Session summaries as separate resident sources', () => {
-    const entries = buildResidentEntries({
+    const relatedEntries = buildResidentEntries({
       sessionId: 's1',
       ownVpId: 'linus',
       summaries: {
@@ -138,7 +136,7 @@ describe('Engine memory prompt hygiene', () => {
       },
     });
 
-    expect(entries).toEqual([
+    expect(relatedEntries).toEqual([
       { scope: 'sessions/s1', summary: 'Current Session memory.' },
       { scope: 'sessions/s2', summary: 'Past Session experience: verify the remote tag target.' },
       { scope: 'sessions/s3', summary: 'Keep this sibling lesson.' },
@@ -1407,9 +1405,12 @@ describe('Engine', () => {
       } finally {
         rmSync(debugYeaftDir, { recursive: true, force: true });
       }
+
+      mockAdapter.callLog.length = 0;
+      await verifyReadableContextWithoutPersistentAms();
     });
 
-    it('loads related Session experience and FTS memory without a persistent AMS registry', async () => {
+    async function verifyReadableContextWithoutPersistentAms() {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-readable-context-'));
       try {
         await writeSummary(
@@ -1489,7 +1490,7 @@ describe('Engine', () => {
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });
       }
-    });
+    }
 
     it('should pass model and system prompt to adapter', async () => {
       mockAdapter.pushResponse([

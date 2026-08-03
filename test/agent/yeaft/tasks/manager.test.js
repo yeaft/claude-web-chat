@@ -201,7 +201,8 @@ describe('TaskManager', () => {
     expect(manager.getTask('session_cancel', task.id).status).toBe('running');
   });
 
-  it('renders task kind and strict sub-agent name without arbitrary titles or log protocol', () => {
+  it('renders safe sub-agent prompt labels without mission or log protocol text', () => {
+    verifyUnsafeSubAgentNames();
     const manager = new TaskManager({ yeaftDir: dir });
     const task = manager.startTask({
       sessionId: 'session_prompt',
@@ -226,7 +227,9 @@ describe('TaskManager', () => {
     expect(rendered).not.toContain('npm run dev');
   });
 
-  it('never reuses sub-agent mission text as a prompt label', () => {
+  it('uses safe task labels and bounds the prompt task list', () => {
+    verifyShellTaskLabels();
+    verifyPromptTaskLimit();
     const manager = new TaskManager({ yeaftDir: dir });
     const titles = [
       ['json-worker', '{"type":"sub_agent_status","outputFile":"/private/events.jsonl"}'],
@@ -258,7 +261,7 @@ describe('TaskManager', () => {
     expect(rendered).not.toContain('https://github.com');
   });
 
-  it('rejects unsafe sub-agent names at the prompt boundary', () => {
+  function verifyUnsafeSubAgentNames() {
     const manager = new TaskManager({ yeaftDir: dir });
     manager.startTask({
       sessionId: 'session_unsafe_name',
@@ -271,9 +274,9 @@ describe('TaskManager', () => {
     expect(rendered).toContain('- sub-agent (sub-agent, running)');
     expect(rendered).not.toContain('reviewer');
     expect(rendered).not.toContain('/private');
-  });
+  }
 
-  it('always uses the task kind for background shell prompt labels', () => {
+  function verifyShellTaskLabels() {
     const manager = new TaskManager({ yeaftDir: dir });
     const command = 'node server.js --token super-secret --watch';
     manager.startTask({
@@ -295,9 +298,9 @@ describe('TaskManager', () => {
     expect(rendered).not.toContain('super-secret');
     expect(rendered).not.toContain('echo');
     expect(rendered).not.toContain('explicit-shell-secret');
-  });
+  }
 
-  it('limits the task prompt list and points to task tools for the remainder', () => {
+  function verifyPromptTaskLimit() {
     const manager = new TaskManager({ yeaftDir: dir });
     for (let index = 1; index <= 7; index += 1) {
       manager.startTask({
@@ -312,7 +315,7 @@ describe('TaskManager', () => {
     expect(rendered.match(/- background command \(background command, running\)/g)).toHaveLength(5);
     expect(rendered).not.toContain('Background check');
     expect(rendered).toContain('2 more running tasks; use the task list to inspect them.');
-  });
+  }
 
   it('reads log tails without requiring a whole-file read', () => {
     const manager = new TaskManager({ yeaftDir: dir });
