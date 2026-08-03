@@ -238,6 +238,9 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).not.toMatch(/\.projects-section, \.recents-section\s*\{[^}]*flex:\s*1 1 50%/);
     expect(yeaftSidebarCss).toMatch(/\.projects-section > \.sidebar-section-heading, \.recents-section > \.sidebar-section-heading\s*\{[^}]*position:\s*sticky[^}]*top:\s*0[^}]*z-index:\s*1[^}]*background:\s*var\(--bg-sidebar\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-menu-info\s*\{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row \.session-actions\s*\{[^}]*position:\s*absolute[^}]*opacity:\s*0[^}]*pointer-events:\s*none[^}]*linear-gradient\(90deg, transparent, var\(--sidebar-hover\) 22px\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row:hover \.session-actions,[\s\S]*?\.sidebar-session-row:focus-within \.session-actions,[\s\S]*?\.sidebar-session-row \.session-actions\.menu-open\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).not.toMatch(/\.yeaft-sidebar \.session-dots-btn\s*\{[^}]*opacity:\s*1/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-header > \.session-dots-btn:focus-visible\s*\{[^}]*opacity:\s*1/);
     expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-header > \.session-dots-btn\s*\{[^}]*opacity:\s*1/);
     expect(yeaftSidebarCss).not.toContain('.sidebar-session-menu-divider');
@@ -446,7 +449,26 @@ describe('message flow regressions', () => {
     expect(sidebar.text()).not.toContain('user_1770305719');
     expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(2);
     expect(sidebar.findAll('.session-item .session-dots-btn')).toHaveLength(3);
+    expect(sidebar.findAll('.session-item .session-quick-action')).toHaveLength(6);
     expect(sidebar.get('.sidebar-session-results').attributes('class')).toContain('sidebar-session-results');
+    const pinnedQuickActions = firstRow.findAll('.session-quick-action');
+    expect(pinnedQuickActions.map(button => button.attributes('aria-label'))).toEqual([
+      'chat.sidebar.unpin',
+      'yeaft.session.removeFromList',
+    ]);
+    const selectCountBeforeQuickActions = sidebar.emitted('select')?.length || 0;
+    await pinnedQuickActions[0].trigger('click');
+    expect(sidebar.emitted('select')?.length || 0).toBe(selectCountBeforeQuickActions);
+    expect(sidebar.emitted('action').at(-1)[0]).toMatchObject({
+      action: 'pin',
+      row: { catalogKey: 'yeaft:user_1770305719:server-instance:pinned' },
+    });
+    await pinnedQuickActions[1].trigger('click');
+    expect(sidebar.emitted('select')?.length || 0).toBe(selectCountBeforeQuickActions);
+    expect(sidebar.emitted('action').at(-1)[0]).toMatchObject({
+      action: 'remove',
+      row: { catalogKey: 'yeaft:user_1770305719:server-instance:pinned' },
+    });
     const selectCountBeforeSettingsKeyboard = sidebar.emitted('select')?.length || 0;
     const pinnedSettingsButton = firstRow.get('.session-dots-btn');
     await pinnedSettingsButton.trigger('keydown', { key: 'Enter' });
@@ -475,6 +497,8 @@ describe('message flow regressions', () => {
     const mainMenuLabels = [...document.body.querySelectorAll('.session-menu-item')]
       .map(item => item.textContent);
     expect(mainMenuLabels.some(label => label.includes('sidebar.projects.moveMenu'))).toBe(true);
+    expect(mainMenuLabels).not.toContain('chat.sidebar.unpin');
+    expect(mainMenuLabels).not.toContain('common.delete');
     expect(mainMenuLabels).not.toContain('Shared project');
     expect(mainMenuLabels).not.toContain('Empty project');
     const moveMenuAction = [...document.body.querySelectorAll('.session-menu-item')]
@@ -551,7 +575,10 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).toContain(':key="row.catalogKey"');
     expect(UnifiedSessionList.emits).toContain('project-action');
     expect(UnifiedSessionList.template).toContain('sidebar-project-header');
-    expect(UnifiedSessionList.template).toContain("runAction('pin', floatingMenu.row)");
+    expect(UnifiedSessionList.template).toContain("runAction('pin', row)");
+    expect(UnifiedSessionList.template).toContain("runAction('delete', row)");
+    expect(UnifiedSessionList.template).not.toContain("runAction('pin', floatingMenu.row)");
+    expect(UnifiedSessionList.template).not.toContain("runAction('delete', floatingMenu.row)");
     expect(UnifiedSessionList.template).toContain("runAction('settings', floatingMenu.row)");
     expect(UnifiedSessionList.template).toContain("moveRow(floatingMenu.row, project)");
     expect(UnifiedSessionList.template).toContain("floatingMenu.page === 'projects'");
