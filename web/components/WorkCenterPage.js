@@ -24,6 +24,12 @@ function invalidateActionRunOpen(target) {
   return generation;
 }
 
+function invalidateWorkCenterUrlRestore(target) {
+  const generation = (Number(target?.workCenterUrlRestoreGeneration) || 0) + 1;
+  if (target) target.workCenterUrlRestoreGeneration = generation;
+  return generation;
+}
+
 export default {
   name: 'WorkCenterPage',
   components: { MessageComposer, WorkCenterActionDetail, WorkCenterSettingsModal, LlmTab, ModernSelect },
@@ -34,12 +40,14 @@ export default {
       selectedActionId: null,
       narrowPane: 'items',
       mobileWorkItemPane: 'conversation',
+      contentPanelOpen: false,
       contentStack: [{ type: 'action-list' }],
       staleComposerTarget: null,
       composerTargetValue: 'coordinator',
       actionDetailTab: 'messages',
       actionInputRequestGeneration: 0,
       actionRunOpenGeneration: 0,
+      workCenterUrlRestoreGeneration: 0,
       workItemMessage: '',
       workItemMessageAttachments: [],
       workItemMessageAttachmentsUploading: false,
@@ -347,10 +355,12 @@ export default {
       immediate: true,
       handler(id, previousId) {
         invalidateActionRunOpen(this);
+        invalidateWorkCenterUrlRestore(this);
         this.createGeneration = (Number(this.createGeneration) || 0) + 1;
         this.saving = false;
         this.selectedId = null;
         this.selectedActionId = null;
+        this.contentPanelOpen = false;
         this.resetWorkItemComposer?.();
         this.resetContentStack?.();
         this.composerTargetValue = 'coordinator';
@@ -408,7 +418,10 @@ export default {
         if (this.selectedActionId && !actions.some(action => action.id === this.selectedActionId)) {
           invalidateActionRunOpen(this);
           this.selectedActionId = null;
+          this.contentPanelOpen = false;
+          this.mobileWorkItemPane = 'conversation';
           this.resetContentStack();
+          this.syncWorkCenterUrl(true);
           this.previewingAttachmentId = null;
           this.attachmentPreviewError = '';
           this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
@@ -423,6 +436,7 @@ export default {
   },
   beforeUnmount() {
     invalidateActionRunOpen(this);
+    invalidateWorkCenterUrlRestore(this);
     if (this.boardQueryTimer) clearTimeout(this.boardQueryTimer);
     window.removeEventListener('popstate', this.restoreWorkCenterUrl);
   },
@@ -564,10 +578,25 @@ export default {
       const actionRef = [...this.contentStack].reverse().find(ref => ref.type === 'action');
       this.selectedActionId = this.contentRef.actionId || actionRef?.actionId || null;
     },
+    openContentPanel({ syncUrl = true } = {}) {
+      this.contentPanelOpen = true;
+      this.mobileWorkItemPane = 'content';
+      if (syncUrl) this.syncWorkCenterUrl();
+    },
+    closeContentPanel({ syncUrl = true } = {}) {
+      invalidateActionRunOpen(this);
+      this.contentPanelOpen = false;
+      this.mobileWorkItemPane = 'conversation';
+      this.resetContentStack();
+      if (syncUrl) this.syncWorkCenterUrl();
+      this.$nextTick(() => this.$refs.actionsButton?.focus?.());
+    },
     pushContentRef(contentRef, { replace = false, syncUrl = true } = {}) {
       const current = this.contentRef;
+      this.contentPanelOpen = true;
       if (this.sameContentRef(current, contentRef)) {
         this.mobileWorkItemPane = 'content';
+        if (syncUrl) this.syncWorkCenterUrl(replace);
         return;
       }
       this.contentStack = contentRef.type === 'action-list'
@@ -617,12 +646,27 @@ export default {
         .map(part => this.parseContentRef(part));
       return refs.length > 0 ? refs : [{ type: 'action-list' }];
     },
+    workCenterUrlRoute() {
+      const params = new URLSearchParams(window.location.search);
+      return {
+        agentId: params.get('workAgentId'),
+        itemId: params.get('workItemId'),
+        content: params.has('workContent') ? params.get('workContent') : null,
+      };
+    },
+    sameWorkCenterUrlRoute(left, right) {
+      return left?.agentId === right?.agentId
+        && left?.itemId === right?.itemId
+        && left?.content === right?.content;
+    },
     syncWorkCenterUrl(replace = false) {
+      invalidateWorkCenterUrlRestore(this);
       const url = new URL(window.location.href);
       if (this.selectedId) {
         url.searchParams.set('workAgentId', this.agentId || '');
         url.searchParams.set('workItemId', this.selectedId);
-        url.searchParams.set('workContent', this.contentStackParam());
+        if (this.contentPanelOpen) url.searchParams.set('workContent', this.contentStackParam());
+        else url.searchParams.delete('workContent');
       } else {
         url.searchParams.delete('workAgentId');
         url.searchParams.delete('workItemId');
@@ -633,31 +677,40 @@ export default {
       const state = {
         ...window.history.state,
         workCenter: !!this.selectedId,
-        workCenterContent: !!this.selectedId && this.contentStack.length > 1,
+        workCenterContent: !!this.selectedId && this.contentPanelOpen,
       };
       window.history[replace ? 'replaceState' : 'pushState'](state, '', next);
     },
     async restoreWorkCenterUrl() {
-      const params = new URLSearchParams(window.location.search);
-      const workAgentId = params.get('workAgentId');
-      const workItemId = params.get('workItemId');
+      const restoreGeneration = invalidateWorkCenterUrlRestore(this);
+      const route = this.workCenterUrlRoute();
+      const restoreIsCurrent = () => restoreGeneration === this.workCenterUrlRestoreGeneration
+        && this.sameWorkCenterUrlRoute(route, this.workCenterUrlRoute());
+      const workAgentId = route.agentId;
+      const workItemId = route.itemId;
       if (!workItemId || (workAgentId && workAgentId !== this.agentId)) {
         if (this.selectedId) this.showItemsPane({ syncUrl: false });
         return;
       }
-      const contentStack = this.parseContentStack(params.get('workContent'));
+      const contentPanelOpen = route.content != null;
+      const contentStack = this.parseContentStack(route.content);
       const contentRef = contentStack.at(-1);
       if (this.selectedId !== workItemId || this.detail?.id !== workItemId) {
-        this.openWorkItem(workItemId, { syncUrl: false, contentRefs: contentStack });
+        this.openWorkItem(workItemId, {
+          syncUrl: false,
+          contentRefs: contentStack,
+          contentOpen: contentPanelOpen,
+        });
         this.detailLoading = true;
         try {
           await this.store.getWorkItem(workItemId, this.agentId);
         } catch (error) {
-          if (this.selectedId === workItemId) this.detailError = error?.message || String(error);
+          if (restoreIsCurrent()) this.detailError = error?.message || String(error);
         } finally {
-          if (this.selectedId === workItemId) this.detailLoading = false;
+          if (restoreIsCurrent()) this.detailLoading = false;
         }
       }
+      if (!restoreIsCurrent()) return;
       const actionId = contentRef.actionId
         || [...contentStack].reverse().find(ref => ref.type === 'action')?.actionId;
       if (actionId && !this.selected?.actions?.some(action => action.id === actionId)) {
@@ -666,9 +719,10 @@ export default {
         return;
       }
       this.resetContentStack(contentStack);
+      this.contentPanelOpen = contentPanelOpen;
       this.narrowPane = 'work-item';
-      this.mobileWorkItemPane = contentRef.type === 'action-list' ? 'conversation' : 'content';
-      if (actionId) this.loadLatestActionMessages(this.selectedAction);
+      this.mobileWorkItemPane = contentPanelOpen ? 'content' : 'conversation';
+      if (contentPanelOpen && actionId) this.loadLatestActionMessages(this.selectedAction);
     },
     resetWorkItemComposer() {
       this.workItemComposerGeneration += 1;
@@ -716,12 +770,17 @@ export default {
       this.workItemMessageAttachmentsUploading = false;
       this.workItemComposerGeneration += 1;
     },
-    openWorkItem(itemId, { syncUrl = true, contentRefs = [{ type: 'action-list' }] } = {}) {
+    openWorkItem(itemId, {
+      syncUrl = true,
+      contentRefs = [{ type: 'action-list' }],
+      contentOpen = false,
+    } = {}) {
       this.saveComposerDraft();
       invalidateActionRunOpen(this);
       this.selectedId = itemId;
       this.narrowPane = 'work-item';
-      this.mobileWorkItemPane = 'conversation';
+      this.contentPanelOpen = contentOpen;
+      this.mobileWorkItemPane = contentOpen ? 'content' : 'conversation';
       this.resetContentStack(contentRefs);
       this.restoreComposerDraft(itemId);
       this.expandedActions = {};
@@ -775,14 +834,17 @@ export default {
       this.saveComposerDraft();
       this.narrowPane = 'items';
       this.selectedId = null;
+      this.contentPanelOpen = false;
       this.resetContentStack();
       this.composerTargetValue = 'coordinator';
       this.resetWorkItemComposer();
       if (syncUrl) this.syncWorkCenterUrl();
     },
     showActionsPane() {
+      this.contentPanelOpen = true;
       this.mobileWorkItemPane = 'content';
       if (!this.contentIsActionList) this.popContentRef();
+      else this.syncWorkCenterUrl();
     },
     canMessageAction(action) {
       if (!action || ['done', 'cancelled'].includes(this.selected?.status)) return false;
@@ -815,8 +877,8 @@ export default {
       this.composerTargetValue = nextValue;
       this.staleComposerTarget = null;
       this.saveComposerDraft();
-      this.mobileWorkItemPane = 'conversation';
-      this.$refs.workItemComposer?.focusInput?.();
+      this.closeContentPanel();
+      this.$nextTick(() => this.$refs.workItemComposer?.focusInput?.());
     },
     loadEarlierActionMessages() {
       if (!this.selected?.id || !this.selectedAction?.id || this.actionMessagesNextCursor == null) return null;
@@ -1291,7 +1353,7 @@ export default {
   template: `
     <main class="work-center-main" :class="{ 'workbench-maximized': store.workbenchMaximized && store.workbenchExpanded }">
         <div class="work-center-shell" :class="{ 'showing-detail': narrowPane !== 'items' }">
-          <header class="work-center-header">
+          <header v-if="narrowPane === 'items'" class="work-center-header">
             <div class="work-center-heading">
               <button class="work-center-sidebar-toggle" type="button" @click="store.toggleSessionSidebar()"
                       :title="tr('chat.sidebar.expand', 'Open sidebar')" :aria-label="tr('chat.sidebar.expand', 'Open sidebar')">
@@ -1325,12 +1387,6 @@ export default {
               </button>
             </div>
           </header>
-
-          <nav v-if="narrowPane !== 'items' && selected" class="work-center-breadcrumbs" :aria-label="tr('workCenter.breadcrumbs', 'Work Center navigation')">
-            <button type="button" @click="showItemsPane">{{ tr('workCenter.workItems', 'Work items') }}</button>
-            <span aria-hidden="true">/</span>
-            <span aria-current="page">{{ selected.title }}</span>
-          </nav>
 
           <div v-if="narrowPane === 'items'" class="work-center-toolbar">
             <label class="work-center-search">
@@ -1428,35 +1484,46 @@ export default {
 
             <section class="work-center-detail">
               <template v-if="selected">
-                <div v-if="detailLoading" class="work-center-detail-notice" aria-live="polite">{{ tr('workCenter.detailLoading', 'Loading full details…') }}</div>
-                <div v-else-if="detailError" class="work-center-detail-notice work-center-detail-error" role="alert">
-                  <strong>{{ tr('workCenter.detailLoadFailed', 'Could not load full details') }}</strong>
-                  <span>{{ detailError }}</span>
-                </div>
-                <div class="work-center-detail-heading">
-                  <div class="work-center-detail-heading-copy">
-                    <span class="work-center-status" :data-status="selected.status"><span aria-hidden="true"></span>{{ statusLabel(selected.status) }}</span>
-                    <div class="work-center-detail-title-row">
-                      <h2>{{ selected.title }}</h2>
-                      <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-ghost work-center-stop-action" type="button" @click="cancelSelected">
-                        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
-                        {{ tr('workCenter.stopWorkItem', 'Stop work item') }}
-                      </button>
-                    </div>
-                  </div>
-                  <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
-                  <button v-else-if="selected.status === 'cancelled'" class="btn-secondary work-center-resume-action" type="button" @click="resumeSelected">{{ tr('workCenter.resumeWorkItem', 'Resume work item') }}</button>
-                </div>
-                <button class="work-center-icon-button work-center-detail-close" type="button" @click="showItemsPane" :title="tr('workCenter.closeWorkItem', 'Close details')" :aria-label="tr('workCenter.closeWorkItem', 'Close details')">
-                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4l-6.3 6.31-1.42-1.42L9.17 12l-6.3-6.29 1.42-1.42 6.3 6.31 6.3-6.31 1.41 1.42Z"/></svg>
-                </button>
-                <div class="work-center-mobile-pane-tabs" role="tablist" :aria-label="tr('workCenter.workItemPanes', 'Work item panes')">
-                  <button type="button" role="tab" :aria-selected="mobileWorkItemPane === 'conversation' ? 'true' : 'false'" :class="{ active: mobileWorkItemPane === 'conversation' }" @click="mobileWorkItemPane = 'conversation'">{{ tr('workCenter.conversation', 'Conversation') }}</button>
-                  <button type="button" role="tab" :aria-selected="mobileWorkItemPane === 'content' ? 'true' : 'false'" :class="{ active: mobileWorkItemPane === 'content' }" @click="mobileWorkItemPane = 'content'">{{ tr('workCenter.contentPane', 'Content') }}</button>
-                </div>
-                <div class="work-center-detail-layout" :data-mobile-pane="mobileWorkItemPane">
+                <div class="work-center-detail-layout" :class="{ 'content-open': contentPanelOpen }">
                   <div class="work-center-detail-main work-center-conversation-pane">
-                    <div class="work-center-detail-overview">
+                    <header class="work-center-detail-heading work-center-conversation-topbar">
+                      <button class="work-center-icon-button work-center-detail-close" type="button" @click="showItemsPane" :title="tr('workCenter.closeWorkItem', 'Back to Work Items')" :aria-label="tr('workCenter.closeWorkItem', 'Back to Work Items')">
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2Z"/></svg>
+                      </button>
+                      <div class="work-center-detail-heading-copy">
+                        <h2>{{ selected.title }}</h2>
+                        <span class="work-center-status" :data-status="selected.status"><span aria-hidden="true"></span>{{ statusLabel(selected.status) }}</span>
+                      </div>
+                      <div class="work-center-detail-actions">
+                        <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-ghost work-center-stop-action" type="button" @click="cancelSelected">
+                          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+                          {{ tr('workCenter.stopWorkItem', 'Stop work item') }}
+                        </button>
+                        <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
+                        <button v-else-if="selected.status === 'cancelled'" class="btn-secondary work-center-resume-action" type="button" @click="resumeSelected">{{ tr('workCenter.resumeWorkItem', 'Resume work item') }}</button>
+                        <button
+                          ref="actionsButton"
+                          class="work-center-icon-button work-center-actions-button"
+                          :class="{ active: contentPanelOpen }"
+                          type="button"
+                          :aria-expanded="contentPanelOpen ? 'true' : 'false'"
+                          aria-controls="work-center-content-panel"
+                          @click="contentPanelOpen ? closeContentPanel() : openContentPanel()"
+                          :title="tr('workCenter.viewActions', 'View Actions')"
+                          :aria-label="$t('workCenter.actionCount', { count: selected.actionCount || selected.actions?.length || 0 })"
+                        >
+                          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M5 4h14v2H5V4Zm0 7h14v2H5v-2Zm0 7h14v2H5v-2Z"/></svg>
+                          <span>{{ selected.actionCount || selected.actions?.length || 0 }}</span>
+                        </button>
+                      </div>
+                    </header>
+                    <div v-if="detailLoading" class="work-center-detail-notice" aria-live="polite">{{ tr('workCenter.detailLoading', 'Loading full details…') }}</div>
+                    <div v-else-if="detailError" class="work-center-detail-notice work-center-detail-error" role="alert">
+                      <strong>{{ tr('workCenter.detailLoadFailed', 'Could not load full details') }}</strong>
+                      <span>{{ detailError }}</span>
+                    </div>
+                    <section class="work-center-detail-overview work-center-triage-summary" tabindex="0" :aria-label="tr('workCenter.triageSummary', 'Triage summary')">
+                      <h3>{{ tr('workCenter.triageSummary', 'Triage summary') }}</h3>
                       <dl class="work-center-detail-meta">
                         <div><dt>{{ tr('workCenter.updated', 'Updated') }}</dt><dd>{{ time(selected.updatedAt) || '—' }}</dd></div>
                         <div v-if="selected.workDir"><dt>{{ tr('workCenter.workDir', 'Working directory') }}</dt><dd :title="selected.workDir">{{ selected.workDir }}</dd></div>
@@ -1504,33 +1571,33 @@ export default {
                         </div>
                         <p v-if="attachmentPreviewError" class="work-center-error" role="alert">{{ attachmentPreviewError }}</p>
                       </section>
-                    </div>
+                    </section>
 
                     <section class="work-center-section work-center-item-messages work-center-conversation" :aria-label="tr('workCenter.conversation', 'Conversation')">
-                      <header class="work-center-conversation-heading">
-                        <h3>{{ tr('workCenter.conversation', 'Conversation') }}</h3>
-                        <span v-if="coordinatorThinking" class="work-center-conversation-status" aria-live="polite">
-                          <span aria-hidden="true"></span>{{ tr('workCenter.conversationThinking', 'Working…') }}
-                        </span>
-                      </header>
-                      <div v-if="selected.messages?.length" class="work-center-item-message-list" role="log" aria-live="polite">
-                        <article v-for="message in selected.messages" :key="message.id" :class="'role-' + message.role" :data-status="message.status">
-                          <header><strong>{{ workItemMessageSpeaker(message) }}</strong><small>{{ time(message.updatedAt || message.createdAt) }}</small></header>
-                          <p v-if="message.text">{{ message.text }}</p>
-                          <p v-else-if="message.status === 'thinking'" class="work-center-conversation-thinking">{{ tr('workCenter.conversationThinking', 'Working…') }}</p>
-                          <div v-if="message.attachments?.length" class="work-center-attachment-list work-center-message-attachments">
-                            <button v-for="attachment in message.attachments" :key="attachment.id" type="button"
-                                    class="work-center-attachment-chip work-center-attachment-preview"
-                                    @click="previewAttachment(attachment, $event.currentTarget)" :disabled="previewingAttachmentId === attachment.id"
-                                    :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })">
-                              <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
-                            </button>
-                          </div>
-                          <p v-if="message.error" class="work-center-error">{{ message.error }}</p>
-                          <small v-if="message.decision?.kind && message.decision.kind !== 'answer'" class="work-center-conversation-decision">{{ tr('workCenter.coordinatorDecision.' + message.decision.kind, message.decision.kind) }}</small>
-                        </article>
+                      <span v-if="coordinatorThinking" class="work-center-conversation-status" aria-live="polite">
+                        <span aria-hidden="true"></span>{{ tr('workCenter.conversationThinking', 'Working…') }}
+                      </span>
+                      <div class="work-center-conversation-scroll">
+                        <div v-if="selected.messages?.length" class="work-center-item-message-list" role="log" aria-live="polite">
+                          <article v-for="message in selected.messages" :key="message.id" :class="'role-' + message.role" :data-status="message.status">
+                            <header><strong>{{ workItemMessageSpeaker(message) }}</strong><small>{{ time(message.updatedAt || message.createdAt) }}</small></header>
+                            <p v-if="message.text">{{ message.text }}</p>
+                            <p v-else-if="message.status === 'thinking'" class="work-center-conversation-thinking">{{ tr('workCenter.conversationThinking', 'Working…') }}</p>
+                            <div v-if="message.attachments?.length" class="work-center-attachment-list work-center-message-attachments">
+                              <button v-for="attachment in message.attachments" :key="attachment.id" type="button"
+                                      class="work-center-attachment-chip work-center-attachment-preview"
+                                      @click="previewAttachment(attachment, $event.currentTarget)" :disabled="previewingAttachmentId === attachment.id"
+                                      :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })">
+                                <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
+                              </button>
+                            </div>
+                            <p v-if="message.error" class="work-center-error">{{ message.error }}</p>
+                            <small v-if="message.decision?.kind && message.decision.kind !== 'answer'" class="work-center-conversation-decision">{{ tr('workCenter.coordinatorDecision.' + message.decision.kind, message.decision.kind) }}</small>
+                          </article>
+                        </div>
+                        <p v-if="workItemMessageError" class="work-center-error" role="alert">{{ workItemMessageError }}</p>
                       </div>
-                      <p v-if="workItemMessageError" class="work-center-error" role="alert">{{ workItemMessageError }}</p>
+                      <div class="work-center-conversation-composer">
                       <div v-if="pendingMessageEnvelope" class="work-center-stale-target" role="status">
                         <span>{{ tr('workCenter.pendingEnvelopeLocked', 'An unconfirmed request is locked to its original identity.') }}</span>
                         <label v-if="pendingEnvelopeHasAttachments" class="btn-secondary">
@@ -1582,11 +1649,27 @@ export default {
                         </MessageComposer>
                         <small v-if="workItemMessageAttachmentsUploading" class="work-center-message-uploading">{{ tr('workCenter.attachmentsUploading', 'Uploading…') }}</small>
                       </template>
+                      </div>
                     </section>
 
                   </div>
 
-                  <aside class="work-center-workflow work-center-content-pane" :aria-label="tr('workCenter.contentPane', 'Content')">
+                  <aside
+                    v-if="contentPanelOpen"
+                    id="work-center-content-panel"
+                    class="work-center-workflow work-center-content-pane"
+                    :aria-label="tr('workCenter.actionsPanel', 'Actions')"
+                  >
+                    <button
+                      v-if="contentIsActionList"
+                      class="work-center-icon-button work-center-content-close"
+                      type="button"
+                      @click="closeContentPanel"
+                      :title="tr('workCenter.closeActions', 'Close Actions')"
+                      :aria-label="tr('workCenter.closeActions', 'Close Actions')"
+                    >
+                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4l-6.3 6.31-1.42-1.42L9.17 12l-6.3-6.29 1.42-1.42 6.3 6.31 6.3-6.31 1.41 1.42Z"/></svg>
+                    </button>
                     <template v-if="contentIsActionList">
                     <div class="work-center-action-list-heading">
                       <div>
@@ -1643,6 +1726,7 @@ export default {
                       :previewing-attachment-id="previewingAttachmentId"
                       :attachment-error="attachmentPreviewError"
                       @back="showActionsPane"
+                      @close="closeContentPanel"
                       @target-action="setComposerTargetForAction"
                       @load-earlier-messages="loadEarlierActionMessages"
                       @refresh-requests="refreshActionRequests"

@@ -202,6 +202,8 @@ select option:checked {
   --work-center-conversation-column-width: 1200px;
   --work-center-conversation-gutter: clamp(20px, 3vw, 40px);
   --work-center-conversation-gutter-compact: 16px;
+  --work-center-triage-max-height: min(32dvh, 320px);
+  --work-center-conversation-min-height: 72px;
   /* Chat composer geometry */
   --chat-composer-gap: 8px;
   --chat-composer-control-gap: 4px;
