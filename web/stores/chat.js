@@ -4888,10 +4888,33 @@ export const useChatStore = defineStore('chat', {
           this.activeVpTurns = rest;
           const { [turnKey]: _stopped, ...stoppingRest } = this.stoppingVpTurnIds;
           this.stoppingVpTurnIds = stoppingRest;
-          this.clearYeaftSessionProcessingIfIdle(
-            event.sessionId || _removed?.sessionId || null,
-            { agentId: msg.agentId || _removed?.agentId || null },
-          );
+          const terminalSessionId = event.sessionId || _removed?.sessionId || null;
+          const terminalAgentId = msg.agentId || _removed?.agentId || null;
+          const terminalVpId = event.vpId || _removed?.vpId || null;
+          const hasSiblingVpTurn = terminalSessionId && terminalVpId
+            ? Object.values(this.activeVpTurns || {}).some((info) => (
+                info?.vpId === terminalVpId
+                && matchesYeaftRuntimeIdentity(info, terminalSessionId, terminalAgentId)
+              ))
+            : false;
+          if (!hasSiblingVpTurn && terminalSessionId && terminalVpId) {
+            const nextStatuses = { ...(this.vpStatuses || {}) };
+            let statusMutated = false;
+            for (const [key, status] of Object.entries(nextStatuses)) {
+              if (status?.vpId !== terminalVpId) continue;
+              if (!matchesYeaftRuntimeIdentity(status, terminalSessionId, terminalAgentId)) continue;
+              if (!YEAFT_RUNNING_VP_STATES.has(status.state)) continue;
+              nextStatuses[key] = {
+                ...status,
+                state: 'idle',
+                turnId: null,
+                since: event.ts || Date.now(),
+              };
+              statusMutated = true;
+            }
+            if (statusMutated) this.vpStatuses = nextStatuses;
+          }
+          this.clearYeaftSessionProcessingIfIdle(terminalSessionId, { agentId: terminalAgentId });
           // Per-message lifecycle: flip every in-flight assistant message
           // owned by this VP/turn from 'pending' to the terminal status
           // carried on `event.reason` (end_turn → completed; route_forward
