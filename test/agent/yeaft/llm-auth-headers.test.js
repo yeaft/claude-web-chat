@@ -195,6 +195,63 @@ describe('LLM adapter auth headers', () => {
     expect(fetchFn).toHaveBeenCalledTimes(3);
   });
 
+  it('shares failed Router refreshes across concurrent 401s and allows a later retry', async () => {
+    process.env.COPILOT_GITHUB_TOKEN = 'raw-github-token-concurrent-failure';
+    let exchanges = 0;
+    let providerRequests = 0;
+    global.fetch = vi.fn(async url => {
+      if (String(url).includes('/copilot_internal/v2/token')) {
+        exchanges += 1;
+        if (exchanges === 2) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+          return new Response('exchange-secret', { status: 503 });
+        }
+        return jsonResponse({
+          token: `api-token-${exchanges}`,
+          expires_at: Math.floor(Date.now() / 1000) + 1800,
+        });
+      }
+      providerRequests += 1;
+      if (providerRequests <= 20) {
+        return new Response('{"message":"bad token"}', { status: 401 });
+      }
+      return anthropicResponse();
+    });
+
+    const provider = {
+      name: 'github-copilot',
+      baseUrl: 'https://api.githubcopilot.com',
+      credentialProvider: 'github-copilot',
+      models: [{ id: 'claude-opus-4.8', protocol: 'anthropic' }],
+    };
+    const routers = Array.from({ length: 20 }, () => new AdapterRouter({ providers: [provider] }));
+    const failed = await Promise.allSettled(routers.map(router => router.call({
+      model: 'github-copilot/claude-opus-4.8',
+      system: '',
+      messages: [],
+    })));
+
+    expect(failed.every(result => result.status === 'rejected')).toBe(true);
+    for (const result of failed) {
+      expect(result.reason).toMatchObject({
+        name: 'LLMAuthError',
+        statusCode: 503,
+        reasonCode: 'credential_exchange_failed',
+        credentialRefreshable: true,
+      });
+      expect(result.reason.message).toBe('LLM credential refresh failed');
+      expect(result.reason.message).not.toContain('exchange-secret');
+    }
+    expect(exchanges).toBe(2);
+    expect(providerRequests).toBe(20);
+
+    await expect(routers[0].call({
+      model: 'github-copilot/claude-opus-4.8', system: '', messages: [],
+    })).resolves.toMatchObject({ text: 'ok' });
+    expect(exchanges).toBe(3);
+    expect(providerRequests).toBe(21);
+  });
+
   it('refreshes dynamic credentials once for call and stream while static keys fail once', async () => {
     process.env.COPILOT_GITHUB_TOKEN = 'raw-github-token';
     const dynamicProvider = {

@@ -92,6 +92,10 @@ const _rawTokenGeneration = new Map();
 // 401 responses cannot invalidate each other's replacement token.
 const _leaseMutationTail = new Map();
 
+// Exact refresh operations share both success and failure. The key includes
+// account, rejected API token fingerprint, and refresh stage.
+const _leaseMutationInFlight = new Map();
+
 /**
  * Reset all in-process state. Tests only.
  */
@@ -102,6 +106,7 @@ export function _resetCacheForTests() {
   _rawTokenInFlight.clear();
   _rawTokenGeneration.clear();
   _leaseMutationTail.clear();
+  _leaseMutationInFlight.clear();
 }
 
 /** Drop exchanged API tokens after the provider rejects one with HTTP 401. */
@@ -413,7 +418,9 @@ export async function refreshApiToken({
   ghTokenFn = tryGhCliToken,
 } = {}) {
   const cacheKey = hostname || 'github.com';
-  return withLeaseMutation(`managed:${cacheKey}`, async () => {
+  const accountKey = `managed:${cacheKey}`;
+  const operationKey = leaseMutationOperationKey(accountKey, rejectedToken, refreshRaw);
+  return withSharedLeaseMutation(accountKey, operationKey, async () => {
     let raw = _rawTokenCache.get(cacheKey);
     const current = raw?.token ? _jwtCache.get(tokenFingerprint(raw.token)) : null;
     if (rejectedToken && current?.apiToken && current.apiToken !== rejectedToken) {
@@ -440,7 +447,9 @@ export async function refreshExplicitApiToken(rawToken, {
   rejectedToken,
 } = {}) {
   const fp = tokenFingerprint(rawToken);
-  return withLeaseMutation(`explicit:${fp}`, async () => {
+  const accountKey = `explicit:${fp}`;
+  const operationKey = leaseMutationOperationKey(accountKey, rejectedToken, false);
+  return withSharedLeaseMutation(accountKey, operationKey, async () => {
     const current = _jwtCache.get(fp);
     if (rejectedToken && current?.apiToken && current.apiToken !== rejectedToken) {
       return current.apiToken;
@@ -449,6 +458,25 @@ export async function refreshExplicitApiToken(rawToken, {
     const { apiToken } = await exchangeToken(rawToken, { fetchFn });
     return apiToken;
   });
+}
+
+function leaseMutationOperationKey(accountKey, rejectedToken, refreshRaw) {
+  const rejectedFp = rejectedToken ? tokenFingerprint(rejectedToken) : 'none';
+  return `${accountKey}:${refreshRaw ? 'raw' : 'api'}:${rejectedFp}`;
+}
+
+function withSharedLeaseMutation(accountKey, operationKey, mutate) {
+  const inFlight = _leaseMutationInFlight.get(operationKey);
+  if (inFlight) return inFlight;
+
+  const promise = withLeaseMutation(accountKey, mutate);
+  _leaseMutationInFlight.set(operationKey, promise);
+  promise.finally(() => {
+    if (_leaseMutationInFlight.get(operationKey) === promise) {
+      _leaseMutationInFlight.delete(operationKey);
+    }
+  }).catch(() => {});
+  return promise;
 }
 
 function withLeaseMutation(key, mutate) {
