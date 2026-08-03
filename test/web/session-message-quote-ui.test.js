@@ -262,7 +262,11 @@ describe('Session message quote UI wiring', () => {
     expect(wrapper.get('.message-user-meta .message-time').text()).not.toBe('');
     expect(wrapper.get('.message-user-block .message-content').text()).toBe('Check this again');
     expect(wrapper.findAll('.message-user-block .message-action-btn')).toHaveLength(0);
-    expect(wrapper.findAll('.message-user-actions .message-action-btn')).toHaveLength(2);
+    const userActions = wrapper.findAll('.message-user-actions .message-action-btn');
+    expect(userActions).toHaveLength(2);
+    expect(userActions.map(action => action.text())).toEqual(['', '']);
+    expect(userActions.map(action => action.attributes('title'))).toEqual(['Quote', 'Edit']);
+    expect(userActions.map(action => action.attributes('aria-label'))).toEqual(['Quote', 'Edit']);
     expect(wrapper.get('.message-user-block .attachments-badge').text()).toContain('message.imageCount');
     expect(wrapper.find('.message-user-actions .attachments-badge').exists()).toBe(false);
     expect(wrapper.get('.message-user-meta').element.compareDocumentPosition(
@@ -272,6 +276,52 @@ describe('Session message quote UI wiring', () => {
       wrapper.get('.message-user-actions').element,
     ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     wrapper.unmount();
+
+    globalThis.Pinia.useChatStore = () => ({ answerUserQuestion: vi.fn(), cancelVpTurn: vi.fn() });
+    const { default: AssistantTurn } = await import('../../web/components/AssistantTurn.js');
+    const assistant = mount(AssistantTurn, {
+      props: {
+        turn: {
+          id: 'assistant-actions',
+          textContent: 'Done',
+          textSegments: [{ key: 'result', content: 'Done', kind: 'result', isStreaming: false }],
+          toolMsgs: [],
+          toolSummaryCount: 0,
+          imageMsgs: [],
+          todoMsg: null,
+          askMsg: null,
+          isStreaming: false,
+        },
+        sessionActions: true,
+        responseCollapsible: true,
+        responseToggleLabel: 'Collapse response',
+      },
+      global: {
+        mocks: {
+          $t: key => ({
+            'message.quote': 'Quote',
+            'message.screenshot': 'Screenshot',
+            'message.screenshotting': 'Taking screenshot...',
+            'message.exportMd': 'Export MD',
+            'message.copyAll': 'Copy all',
+            'message.copied': 'Copied',
+            'message.assistant': 'Assistant',
+          }[key] || key),
+        },
+        provide: { t: key => key === 'message.assistant' ? 'Assistant' : key },
+        stubs: { ToolLine: true, AskCard: true, VpSpeakerHeader: true },
+      },
+    });
+    const assistantActions = assistant.findAll('.turn-footer button');
+    expect(assistantActions).toHaveLength(5);
+    expect(assistantActions.map(action => action.text())).toEqual(['', '', '', '', '']);
+    expect(assistantActions.map(action => action.attributes('title'))).toEqual([
+      'Quote', 'Screenshot', 'Export MD', 'Copy all', 'Collapse response',
+    ]);
+    expect(assistantActions.map(action => action.attributes('aria-label'))).toEqual([
+      'Quote', 'Screenshot', 'Export MD', 'Copy all', 'Collapse response',
+    ]);
+    assistant.unmount();
 
     const chatStore = Vue.reactive({
       activeConversationId: 'conversation-1',

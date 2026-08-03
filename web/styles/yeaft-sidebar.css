@@ -35,11 +35,6 @@
   font-size: 13px;
 }
 
-/* Keep Yeaft session row actions visible like chat rows, but only in Yeaft. */
-.yeaft-sidebar .session-dots-btn {
-  opacity: 1;
-}
-
 .yeaft-sidebar .agent-dropdown-item {
   position: relative;
 }
@@ -109,6 +104,57 @@
 .sidebar-session-row .title { display: flex; align-items: center; min-width: 0; }
 .sidebar-session-title-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-session-unread { width: 7px; height: 7px; margin-left: 7px; border-radius: 50%; background: var(--success); flex: 0 0 auto; }
+.sidebar-session-row .session-actions {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  z-index: 1;
+  gap: 1px;
+  padding-left: 22px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 0.12s ease;
+  background: linear-gradient(90deg, transparent, var(--sidebar-hover) 22px);
+}
+.sidebar-session-row.active .session-actions {
+  background: linear-gradient(90deg, transparent, var(--session-active) 22px);
+}
+.sidebar-session-row:hover .session-actions,
+.sidebar-session-row:focus-within .session-actions,
+.sidebar-session-row .session-actions.menu-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.sidebar-session-row .session-quick-action,
+.sidebar-session-row .session-dots-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 1;
+}
+.sidebar-session-row .session-quick-action:hover,
+.sidebar-session-row .session-dots-btn:hover {
+  background: var(--session-active);
+  color: var(--text-primary);
+}
+.sidebar-session-row.active .session-quick-action:hover,
+.sidebar-session-row.active .session-dots-btn:hover {
+  background: var(--sidebar-hover);
+}
+.sidebar-session-row .session-quick-action svg,
+.sidebar-session-row .session-dots-btn svg {
+  width: 15px;
+  height: 15px;
+}
 .sidebar-session-row .session-menu, .sidebar-project-header .session-menu { top: 30px; }
 .sidebar-session-menu-info { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px 8px; color: var(--text-secondary); font-size: 11px; }
 .sidebar-session-menu-info strong { min-width: 0; overflow: hidden; color: inherit; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
