@@ -42,6 +42,7 @@ import { nodeDiskUsage, runDust } from '../../../agent/yeaft/tools/disk-usage.js
 import { listFilesWithFd } from '../../../agent/yeaft/tools/glob.js';
 import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
 import bashTool, { createBashTool } from '../../../agent/yeaft/tools/bash.js';
+import fileWriteTool from '../../../agent/yeaft/tools/file-write.js';
 import {
   SearchBackendLimitError,
   SEARCH_SKIP_DIRS,
@@ -1933,6 +1934,29 @@ describe('Engine', () => {
       expect(systemdChild.stdout.listenerCount('data')).toBe(0);
       expect(systemdChild.stderr.listenerCount('data')).toBe(0);
 
+      const barrierRequests = [];
+      const confirmedTimeoutOutput = await createBashTool({
+        runProcessImpl: async () => ({
+          stdout: '', stderr: '', code: 124, timedOut: true, terminationError: null,
+        }),
+      }).execute({ command: 'sleep 600', timeout_ms: 1000 }, {
+        cwd: process.cwd(),
+        requestToolBatchBarrier: reason => barrierRequests.push(reason),
+      });
+      const ordinaryFailureOutput = await createBashTool({
+        runProcessImpl: async () => ({
+          stdout: '', stderr: 'failed', code: 2, timedOut: false, terminationError: null,
+        }),
+      }).execute({ command: 'exit 2' }, {
+        cwd: process.cwd(),
+        requestToolBatchBarrier: reason => barrierRequests.push(reason),
+      });
+      expect(confirmedTimeoutOutput).toContain('Exit code: 124');
+      expect(ordinaryFailureOutput).toContain('Exit code: 2');
+      expect(barrierRequests).toEqual([
+        expect.objectContaining({ kind: 'owned_timeout' }),
+      ]);
+
       const terminationChild = new EventEmitter();
       terminationChild.pid = 4444;
       terminationChild.stdout = new PassThrough();
@@ -2028,6 +2052,115 @@ describe('Engine', () => {
         stopReason: 'end_turn',
         terminal: true,
       });
+
+      const batchBarrierRoot = mkdtempSync(join(tmpdir(), 'yeaft-bash-batch-barrier-'));
+      const batchBarrierMarker = join(batchBarrierRoot, 'must-not-write.txt');
+      try {
+        const batchBarrierChild = new EventEmitter();
+        batchBarrierChild.pid = 4544;
+        batchBarrierChild.stdout = new PassThrough();
+        batchBarrierChild.stderr = new PassThrough();
+        batchBarrierChild.kill = () => true;
+        const batchBarrierBash = createBashTool({
+          runProcessImpl: (_command, _args, options) => runProcess('powershell.exe', [], {
+            ...options,
+            timeoutMs: 1,
+            forceSettleMs: 5,
+            platform: 'win32',
+            systemdScope: null,
+            spawnProcess: () => batchBarrierChild,
+            spawnProcessSync: () => ({ status: 0 }),
+          }),
+        });
+        const batchBarrierAdapter = new MockAdapter();
+        batchBarrierAdapter.pushResponse([
+          {
+            type: 'tool_call',
+            id: 'call_batch_timeout',
+            name: 'Bash',
+            input: { command: 'Start-Sleep -Seconds 30', timeout_ms: 1000 },
+          },
+          {
+            type: 'tool_call',
+            id: 'call_write_after_timeout',
+            name: 'FileWrite',
+            input: { file_path: batchBarrierMarker, content: 'must not be written' },
+          },
+          {
+            type: 'tool_call',
+            id: 'call_second_write_after_timeout',
+            name: 'FileWrite',
+            input: { file_path: `${batchBarrierMarker}.second`, content: 'must not be written either' },
+          },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        batchBarrierAdapter.pushResponse([
+          { type: 'text_delta', text: 'The write was skipped, so I will inspect the timed-out command first.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const batchBarrierRegistry = new ToolRegistry();
+        batchBarrierRegistry.register(batchBarrierBash);
+        batchBarrierRegistry.register(fileWriteTool);
+        const batchBarrierEngine = new Engine({
+          adapter: batchBarrierAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: batchBarrierRegistry,
+        });
+        const batchBarrierEvents = [];
+        for await (const event of batchBarrierEngine.query({ prompt: 'run then write' })) {
+          batchBarrierEvents.push(event);
+        }
+
+        expect(existsSync(batchBarrierMarker)).toBe(false);
+        expect(existsSync(`${batchBarrierMarker}.second`)).toBe(false);
+        expect(batchBarrierAdapter.callLog).toHaveLength(2);
+        const barrierProviderMessages = batchBarrierAdapter.callLog[1].messages;
+        expect(barrierProviderMessages
+          .find(message => message.toolCallId === 'call_batch_timeout')).toMatchObject({
+            isError: false,
+            content: expect.stringContaining('The command may still be running.'),
+          });
+        expect(barrierProviderMessages
+          .find(message => message.toolCallId === 'call_write_after_timeout')).toMatchObject({
+            isError: true,
+            content: expect.stringContaining('This tool was not executed.'),
+          });
+        expect(barrierProviderMessages
+          .find(message => message.toolCallId === 'call_second_write_after_timeout')).toMatchObject({
+            isError: true,
+            content: expect.stringContaining('This tool was not executed.'),
+          });
+        expect(barrierProviderMessages.filter(message => message.toolCallId).map(message => message.toolCallId))
+          .toEqual([
+            'call_batch_timeout',
+            'call_write_after_timeout',
+            'call_second_write_after_timeout',
+          ]);
+        expect(batchBarrierEvents.filter(event => event.type === 'tool_start').map(event => event.name))
+          .toEqual(['Bash']);
+        expect(batchBarrierEvents.filter(event => event.type === 'tool_end')).toEqual([
+          expect.objectContaining({ id: 'call_batch_timeout', name: 'Bash', isError: false }),
+          expect.objectContaining({
+            id: 'call_write_after_timeout',
+            name: 'FileWrite',
+            isError: true,
+            skipped: true,
+          }),
+          expect.objectContaining({
+            id: 'call_second_write_after_timeout',
+            name: 'FileWrite',
+            isError: true,
+            skipped: true,
+          }),
+        ]);
+        expect(batchBarrierEvents.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+          stopReason: 'end_turn',
+          terminal: true,
+        });
+      } finally {
+        rmSync(batchBarrierRoot, { recursive: true, force: true });
+      }
 
       if (process.platform === 'linux') {
         const canary = `pr1483-${Date.now()}-${process.pid}`;

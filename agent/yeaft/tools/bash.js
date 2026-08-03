@@ -240,6 +240,17 @@ Guidelines:
           'Decide whether to inspect or stop it, retry, or use background=true.',
         ].join('\n'));
       }
+      if (result.timedOut) {
+        ctx?.requestToolBatchBarrier?.({
+          kind: 'owned_timeout',
+          message: [
+            result.terminationError
+              ? 'The foreground Bash command timed out and process-tree termination could not be confirmed.'
+              : 'The foreground Bash command timed out.',
+            'Return this result to the model before executing another tool call from the same batch.',
+          ].join(' '),
+        });
+      }
 
       const output = parts.join('\n');
       if (result.exitCode !== 0) {

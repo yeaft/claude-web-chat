@@ -365,7 +365,7 @@ export function shouldAllowGroupReflection({
  * @typedef {{ type: 'turn_start', turnNumber: number }} TurnStartEvent
  * @typedef {{ type: 'turn_end', turnNumber: number, stopReason: string, terminal?: boolean }} TurnEndEvent
  * @typedef {{ type: 'tool_start', id: string, name: string, input: object }} ToolStartEvent
- * @typedef {{ type: 'tool_end', id: string, name: string, output: string, isError: boolean }} ToolEndEvent
+ * @typedef {{ type: 'tool_end', id: string, name: string, output: string, isError: boolean, skipped?: boolean }} ToolEndEvent
  * @typedef {{ type: 'consolidate', archivedCount: number, extractedCount: number }} ConsolidateEvent
  * @typedef {{ type: 'recall', entryCount: number, cached: boolean }} RecallEvent
  * @typedef {{ type: 'fallback', from: string, to: string, reason: string }} FallbackEvent
@@ -1339,6 +1339,7 @@ export class Engine {
       // can mark "after this batch, end the turn — do NOT call adapter
       // again". Honored at the top of the tool-loop continuation.
       requestEndTurn: vpCtx?.requestEndTurn,
+      requestToolBatchBarrier: vpCtx?.requestToolBatchBarrier,
       // Result-producing async-task ownership hook. Tools such as SpawnAgent
       // call this with the new `task.id` so the engine keeps the current query
       // parked at end_turn until the result arrives. Persistent background
@@ -3636,6 +3637,8 @@ export class Engine {
       }
 
       // Execute tool calls and feed results back
+      /** @type {{ kind?: string, message?: string, sourceToolCallId?: string, sourceToolName?: string } | null} */
+      let toolBatchBarrier = null;
       let currentToolCallForAsyncTask = null;
       // task-707: requestEndTurn is a per-batch closure that lets a tool
       // signal "end this turn after the current batch — no adapter retry".
@@ -3667,6 +3670,17 @@ export class Engine {
             endTurnRequested = reason || { kind: 'tool_handoff' };
           }
         },
+        requestToolBatchBarrier: (reason) => {
+          if (toolBatchBarrier != null) return;
+          const detail = reason && typeof reason === 'object'
+            ? { ...reason }
+            : { message: String(reason || 'A preceding tool result invalidated the remaining batch.') };
+          toolBatchBarrier = {
+            ...detail,
+            sourceToolCallId: currentToolCallForAsyncTask?.id || null,
+            sourceToolName: currentToolCallForAsyncTask?.name || null,
+          };
+        },
       });
 
       // task-325a: track whether we aborted mid tool-loop so we can
@@ -3681,11 +3695,14 @@ export class Engine {
         // that's already running (the signal is passed in, tools decide
         // themselves whether to bail early), but we stop dispatching
         // any remaining tools the moment abort fires.
-        if (signal?.aborted) {
+        if (signal?.aborted && !toolBatchBarrier) {
           abortedDuringTools = true;
           break;
         }
+        if (signal?.aborted) abortedDuringTools = true;
 
+        const activeToolBatchBarrier = toolBatchBarrier;
+        const skipped = activeToolBatchBarrier != null;
         const toolStartTime = Date.now();
 
         // PR-L: duplicate-call detection. If this exact (toolName,
@@ -3696,25 +3713,27 @@ export class Engine {
         // assistant(tool_use) → user(tool_result, …) pairing demanded
         // by the Anthropic / OpenAI Responses APIs stays intact. We
         // don't block the call — the LLM still decides.
-        const dupHash = argsHashOf(tc.input);
-        // PR-L follow-up: lookback is by user-conversation turn
-        // (`queryNumber`), NOT by inner adapter loop iteration. Each call
-        // to query() bumps queryNumber once, so "last 2 turns" means the
-        // current user turn + the previous two user turns — the natural
-        // semantic for "the model is stuck in a loop across the
-        // conversation."
-        const dupInfo = this.#execLog.dupInfo({
-          toolName: tc.name,
-          argsHash: dupHash,
-          currentTurn: queryNumber,
-          lookbackTurns: 2,
-        });
-        if (dupInfo.count + 1 >= DUP_TOOL_THRESHOLD) {
-          pendingDupReminders.push(buildDuplicateReminder({
+        if (!skipped) {
+          const dupHash = argsHashOf(tc.input);
+          // PR-L follow-up: lookback is by user-conversation turn
+          // (`queryNumber`), NOT by inner adapter loop iteration. Each call
+          // to query() bumps queryNumber once, so "last 2 turns" means the
+          // current user turn + the previous two user turns — the natural
+          // semantic for "the model is stuck in a loop across the
+          // conversation."
+          const dupInfo = this.#execLog.dupInfo({
             toolName: tc.name,
-            count: dupInfo.count + 1,
-            lastResultBrief: dupInfo.lastResultBrief,
-          }));
+            argsHash: dupHash,
+            currentTurn: queryNumber,
+            lookbackTurns: 2,
+          });
+          if (dupInfo.count + 1 >= DUP_TOOL_THRESHOLD) {
+            pendingDupReminders.push(buildDuplicateReminder({
+              toolName: tc.name,
+              count: dupInfo.count + 1,
+              lastResultBrief: dupInfo.lastResultBrief,
+            }));
+          }
         }
 
         let output;
@@ -3722,18 +3741,40 @@ export class Engine {
         let isError = false;
         let toolErrorOutput = null;
         let fatalToolError = null;
-        currentToolCallForAsyncTask = {
-          id: tc.id,
-          name: tc.name,
-          threadId: runtimeThreadId,
-        };
+        currentToolCallForAsyncTask = skipped
+          ? null
+          : {
+              id: tc.id,
+              name: tc.name,
+              threadId: runtimeThreadId,
+            };
 
         // Resolve tool: prefer ToolRegistry, fallback to legacy #tools Map
         const hasTool = this.#toolRegistry
           ? this.#toolRegistry.isAllowed(tc.name, { collabToolPolicy: effectiveCollabToolPolicy })
           : this.#tools.has(tc.name);
 
-        if (!hasTool) {
+        if (skipped) {
+          const source = activeToolBatchBarrier.sourceToolName || 'a preceding tool';
+          const sourceId = activeToolBatchBarrier.sourceToolCallId
+            ? ` (${activeToolBatchBarrier.sourceToolCallId})`
+            : '';
+          output = [
+            `Skipped ${tc.name} because ${source}${sourceId} invalidated the remaining tool batch.`,
+            activeToolBatchBarrier.message || 'Review the preceding tool result before deciding whether to retry this call.',
+            'This tool was not executed. Submit it again only after reviewing the preceding result.',
+          ].join('\n');
+          isError = true;
+          yield {
+            type: 'tool_end',
+            id: tc.id,
+            name: tc.name,
+            output,
+            isError: true,
+            skipped: true,
+            threadId: this.currentThreadId,
+          };
+        } else if (!hasTool) {
           output = `Error: unknown tool "${tc.name}"`;
           isError = true;
           yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, threadId: this.currentThreadId };
@@ -3816,13 +3857,14 @@ export class Engine {
           durationMs: toolDurationMs,
           isError,
           toolOutput: output,
+          ...(skipped ? { skipped: true } : {}),
           ...(displayImages.length > 0 ? { displayImageCount: displayImages.length } : {}),
         };
 
         // 2026-05-13: feed the per-tool counters. Stays best-effort — a
         // stats sink that throws shouldn't crash the engine. `record`
         // already swallows internal write errors.
-        if (this.#toolStats && typeof this.#toolStats.record === 'function') {
+        if (!skipped && this.#toolStats && typeof this.#toolStats.record === 'function') {
           try {
             this.#toolStats.record({
               name: tc.name,
@@ -3841,6 +3883,7 @@ export class Engine {
           toolOutput: output,
           durationMs: toolDurationMs,
           isError,
+          skipped,
         });
 
         // Append only the bounded copy to the model message history. Raw
@@ -3876,14 +3919,16 @@ export class Engine {
         // user-conversation turn), not the inner loop's turnNumber.
         // Aligns exec-log layout with dup detection lookback and the
         // T2 fallback-stub readTurn() call below.
-        this.#execLog.append(queryNumber, buildExecLogEntry({
-          loopIdx: queryToolCount,
-          toolName: tc.name,
-          args: tc.input,
-          output,
-          isError,
-        }));
-        queryToolCount += 1;
+        if (!skipped) {
+          this.#execLog.append(queryNumber, buildExecLogEntry({
+            loopIdx: queryToolCount,
+            toolName: tc.name,
+            args: tc.input,
+            output,
+            isError,
+          }));
+          queryToolCount += 1;
+        }
         if (fatalToolError) throw fatalToolError;
       }
 
@@ -3894,6 +3939,11 @@ export class Engine {
       for (const reminder of pendingDupReminders) {
         conversationMessages.push({ role: 'user', content: reminder });
       }
+
+      // A batch barrier deliberately returns control to the provider. Any
+      // handoff requested by an earlier call belongs to the invalidated plan
+      // and must not leak into a later provider-generated batch.
+      if (toolBatchBarrier) endTurnRequested = null;
 
       // task-707: tool-callable end-turn signal. If a tool in this batch
       // called toolCtx.requestEndTurn(reason), break out of the outer
@@ -3907,7 +3957,7 @@ export class Engine {
       // collapse the arc into a summary that's only valuable across
       // multi-iteration tool loops) and BEFORE the abortedDuringTools
       // check (so a clean handoff doesn't get reported as 'aborted').
-      if (endTurnRequested) {
+      if (endTurnRequested && !toolBatchBarrier) {
         if (pendingSubAgentNotifs.length > 0) {
           acknowledgePendingNotifications(notifScope, pendingSubAgentNotifs.map(n => n.id));
         }
@@ -3945,7 +3995,8 @@ export class Engine {
       //     batch within the same query gets a distinct entry — without
       //     this the second batch would be silently skipped.
       const t1BatchDue = queryToolCount - lastT1AtToolCount >= TOOL_BATCH_SIZE;
-      if (groupReflectionAllowed && t1BatchDue && !abortedDuringTools && !signal?.aborted) {
+      if (groupReflectionAllowed && t1BatchDue && !toolBatchBarrier
+          && !abortedDuringTools && !signal?.aborted) {
         const t1DedupKey = `${queryNumber}:t1:${queryToolCount}`;
         if (this.#reflectedTurns.has(t1DedupKey)) {
           // Defensive: should never hit since t1BatchDue gates re-entry

@@ -45,6 +45,11 @@
  *   the supplied reason as `detail`. `reason` may be a structured object
  *   `{kind, ...}` so downstream observers (web-bridge) can render UI hints
  *   (e.g. "↪ 已转交给 @vp-b") without re-parsing strings.
+ * @property {(reason?: string|object) => void} [requestToolBatchBarrier]
+ *   — stop executing the remaining calls in the current assistant tool batch
+ *   while still pairing each call with an explicit skipped tool result. The
+ *   engine then returns those results to the provider before accepting another
+ *   plan. Used when a completed tool result invalidates the rest of the batch.
  * @property {string} [senderVpId] — id of the VP whose turn is currently
  *   running. Used by `route_forward` to stamp the forwarded message and
  *   by the loop guard to key per-sender throttling.
