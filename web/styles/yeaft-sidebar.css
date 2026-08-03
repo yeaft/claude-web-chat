@@ -67,7 +67,8 @@
 .sidebar-primary-action svg { width: 17px; height: 17px; flex: 0 0 auto; color: var(--text-secondary); }
 .sidebar-section { padding: 0 8px 10px; }
 .sidebar-session-results { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
-.projects-section, .recents-section { flex: 1 1 50%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.projects-section { flex: 0 0 auto; max-height: 50%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.recents-section { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .sidebar-section + .sidebar-section { margin-top: 0; }
 .sidebar-section-heading { display: flex; align-items: center; min-height: 34px; padding: 0 6px 0 10px; color: var(--text-secondary); font-size: 13px; font-weight: 600; }
 .projects-section > .sidebar-section-heading, .recents-section > .sidebar-section-heading { position: sticky; top: 0; z-index: 1; background: var(--bg-sidebar); }
