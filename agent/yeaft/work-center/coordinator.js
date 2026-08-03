@@ -654,6 +654,10 @@ export class WorkItemCoordinator {
     text, recovery, addedAttachments, options, abortController,
   }) {
     let providerTurn = null;
+    let candidateSpeaker = null;
+    let speaker = (started.detail.messages || []).find(message => (
+      message?.turnId === started.turnId && message.role === 'assistant'
+    ))?.speaker || null;
     try {
       let normalized = null;
       let mutation = null;
@@ -697,6 +701,10 @@ export class WorkItemCoordinator {
             vps,
             priorRuns: started.detail.runs || [],
           });
+          candidateSpeaker = {
+            id: assignment.vp.id,
+            name: assignment.vp.name || assignment.vp.id,
+          };
           const coordinatorPolicy = settings?.coordinatorModelPolicy || {
             ...(settings?.modelPolicy || {}),
             effort: settings?.actionModelPolicies?.triage?.effort || settings?.modelPolicy?.effort || 'high',
@@ -736,9 +744,10 @@ export class WorkItemCoordinator {
               };
               const claim = started.fence.claim;
               providerTurn = this.store.prepareCoordinatorProviderTurn(
-                started.detail.id, started.turnId, attemptCount, requestBody, claim,
+                started.detail.id, started.turnId, attemptCount, requestBody, claim, candidateSpeaker,
               );
               if (!providerTurn) return started.detail;
+              speaker = providerTurn.speaker;
               if (providerTurn.status === 'unknown') {
                 throw new Error('Coordinator provider dispatch outcome is unknown and requires review');
               }
@@ -844,6 +853,7 @@ export class WorkItemCoordinator {
       }
       const detail = this.store.completeCoordinatorTurn(started.turnId, {
         reply: normalized.reply,
+        speaker,
         decision: normalized.decision,
         mutation,
         attemptCount,
@@ -855,7 +865,10 @@ export class WorkItemCoordinator {
       if (providerTurn?.status === 'responded') {
         this.store.rejectCoordinatorProviderTurn(providerTurn.id, error, started.fence.claim);
       }
-      const detail = this.store.failCoordinatorTurn(started.turnId, error, started.fence);
+      const detail = this.store.failCoordinatorTurn(started.turnId, error, {
+        ...started.fence,
+        speaker,
+      });
       if (detail) {
         options.onUpdate?.('coordinator.turn_failed', detail);
         return detail;

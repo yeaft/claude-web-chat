@@ -204,6 +204,7 @@ describe('Work Center core', () => {
     expect(store.prepareCoordinatorProviderTurn(
       item.id, restartTurn.turnId, 1, coordinatorRequest, restartClaim,
     )).toEqual(preparedCoordinatorTurn);
+    expect(store.getWorkItemDetail(item.id).messages.at(-1)).not.toHaveProperty('speaker');
     expect(() => store.prepareCoordinatorProviderTurn(
       item.id, restartTurn.turnId, 1, { ...coordinatorRequest, model: 'other' }, restartClaim,
     )).toThrow(/changed before dispatch/);
@@ -227,8 +228,22 @@ describe('Work Center core', () => {
       item.id, respondedTurn.turnId, 'provider-response-owner',
     );
     const respondedCoordinatorTurn = store.prepareCoordinatorProviderTurn(
-      item.id, respondedTurn.turnId, 1, coordinatorRequest, respondedClaim,
+      item.id,
+      respondedTurn.turnId,
+      1,
+      coordinatorRequest,
+      respondedClaim,
+      { id: 'omni', name: 'Omni' },
     );
+    expect(respondedCoordinatorTurn.speaker).toEqual({ id: 'omni', name: 'Omni' });
+    expect(store.prepareCoordinatorProviderTurn(
+      item.id,
+      respondedTurn.turnId,
+      1,
+      coordinatorRequest,
+      respondedClaim,
+      { id: 'linus', name: 'Linus' },
+    ).speaker).toEqual({ id: 'omni', name: 'Omni' });
     store.dispatchCoordinatorProviderTurn(respondedCoordinatorTurn.id, respondedClaim);
     expect(store.respondCoordinatorProviderTurn(
       respondedCoordinatorTurn.id, respondedCoordinatorTurn.requestHash,
@@ -491,6 +506,81 @@ describe('Work Center core', () => {
       'Second execution completed.',
     ]);
     expect(detail.actions[0]).not.toHaveProperty('thread');
+
+    const oversizedVpIdentity = '发'.repeat(150_000);
+    const speakerBoundaryAction = {
+      id: 'speaker-boundary', generation: 1, specHash: 'speaker-boundary-spec',
+      identityHistory: [{ generation: 1, specHash: 'speaker-boundary-spec' }],
+    };
+    const speakerBoundaryRuns = [
+      {
+        id: 'speaker-overlong', actionId: speakerBoundaryAction.id, actionGeneration: 1,
+        actionSpecHash: speakerBoundaryAction.specHash, actionAttempt: 1, status: 'completed',
+        response: 'Bound the sender identity.', startedAt: 60, endedAt: 61,
+        vpSnapshot: { id: oversizedVpIdentity, name: oversizedVpIdentity },
+      },
+      {
+        id: 'speaker-name-only', actionId: speakerBoundaryAction.id, actionGeneration: 1,
+        actionSpecHash: speakerBoundaryAction.specHash, actionAttempt: 2, status: 'completed',
+        response: 'Do not trust a name-only sender.', startedAt: 62, endedAt: 63,
+        vpSnapshot: { name: 'Yeaft' },
+      },
+      {
+        id: 'speaker-blank-id', actionId: speakerBoundaryAction.id, actionGeneration: 1,
+        actionSpecHash: speakerBoundaryAction.specHash, actionAttempt: 3, status: 'completed',
+        response: 'Reject a blank sender id.', startedAt: 64, endedAt: 65,
+        vpSnapshot: { id: '   ', name: 'Yeaft' },
+      },
+      {
+        id: 'speaker-id-only', actionId: speakerBoundaryAction.id, actionGeneration: 1,
+        actionSpecHash: speakerBoundaryAction.specHash, actionAttempt: 4, status: 'completed',
+        response: 'Use a stable id when no display name exists.', startedAt: 66, endedAt: 67,
+        vpSnapshot: { id: 'linus' },
+      },
+      {
+        id: 'speaker-malformed-id', actionId: speakerBoundaryAction.id, actionGeneration: 1,
+        actionSpecHash: speakerBoundaryAction.specHash, actionAttempt: 5, status: 'completed',
+        response: 'Reject a malformed sender id.', startedAt: 68, endedAt: 69,
+        vpSnapshot: { id: 42, name: 'Yeaft' },
+      },
+    ];
+    const speakerBoundaryPage = projectActionMessagePage(
+      speakerBoundaryAction, speakerBoundaryRuns, [], { limit: 20 },
+    );
+    expect(Buffer.byteLength(speakerBoundaryPage.messages[0].speaker.id, 'utf8')).toBeLessThanOrEqual(256);
+    expect(Buffer.byteLength(speakerBoundaryPage.messages[0].speaker.name, 'utf8')).toBeLessThanOrEqual(512);
+    expect(speakerBoundaryPage.messages[1]).not.toHaveProperty('speaker');
+    expect(speakerBoundaryPage.messages[2]).not.toHaveProperty('speaker');
+    expect(speakerBoundaryPage.messages[3].speaker).toEqual({ id: 'linus', name: 'linus' });
+    expect(speakerBoundaryPage.messages[4]).not.toHaveProperty('speaker');
+    expect(Buffer.byteLength(JSON.stringify(speakerBoundaryPage), 'utf8'))
+      .toBeLessThanOrEqual(MAX_WORK_ITEM_BROWSER_DTO_BYTES);
+
+    const speakerBoundaryDetail = projectWorkItemDetail({
+      id: 'speaker-boundary-detail', revision: 1, planRevision: 0, ledgerRevision: 0,
+      coordinatorRevision: 0, title: 'Bound sender identity', goal: 'Keep the conversation visible',
+      acceptanceCriteria: [], workflowTemplate: 'software-change', status: 'running',
+      lifecycle: 'active', attentionState: 'none', currentActionId: null,
+      actions: [], runs: [], events: [], attachments: [], createdAt: 1, updatedAt: 2,
+      messages: [
+        {
+          id: 'coordinator-overlong', turnId: 'coordinator-overlong', role: 'assistant',
+          status: 'completed', text: 'Bound this Coordinator sender.',
+          speaker: { id: oversizedVpIdentity, name: oversizedVpIdentity }, createdAt: 1, updatedAt: 1,
+        },
+        {
+          id: 'coordinator-name-only', turnId: 'coordinator-name-only', role: 'assistant',
+          status: 'completed', text: 'Fall back to the Coordinator role.',
+          speaker: { name: 'Yeaft' }, createdAt: 2, updatedAt: 2,
+        },
+      ],
+    });
+    expect(speakerBoundaryDetail.messages).toHaveLength(2);
+    expect(Buffer.byteLength(speakerBoundaryDetail.messages[0].speaker.id, 'utf8')).toBeLessThanOrEqual(256);
+    expect(Buffer.byteLength(speakerBoundaryDetail.messages[0].speaker.name, 'utf8')).toBeLessThanOrEqual(512);
+    expect(speakerBoundaryDetail.messages[1]).not.toHaveProperty('speaker');
+    expect(Buffer.byteLength(JSON.stringify(speakerBoundaryDetail), 'utf8'))
+      .toBeLessThanOrEqual(MAX_WORK_ITEM_BROWSER_DTO_BYTES);
 
     const pagedItem = controller.create(createInput({ id: 'conversation-pagination' }));
     const pagedAction = store.getWorkItemDetail(pagedItem.id).actions[0];
@@ -1382,6 +1472,9 @@ describe('Work Center core', () => {
     expect(store.db.prepare(`SELECT status, attempt_number FROM coordinator_provider_turns
       WHERE coordinator_turn_id = ?`).get(turn.detail.messages.at(-1).turnId))
       .toEqual({ status: 'dispatching', attempt_number: 1 });
+    expect(store.getWorkItemDetail(item.id).messages.at(-1)).toMatchObject({
+      role: 'assistant', status: 'thinking', speaker: { id: 'omni', name: 'Omni' },
+    });
     resolveCall({ text: JSON.stringify({
       reply: 'I replaced the impossible gate with a bounded validation Action and kept delivery downstream.',
       decision: {
@@ -1421,7 +1514,9 @@ describe('Work Center core', () => {
       acceptanceCriteria: ['Code-level validation passes', 'Delivery remains explicit'],
     });
     expect(replanned.messages.at(-1)).toMatchObject({
-      role: 'assistant', status: 'completed', decision: { kind: 'replan', changedContract: true },
+      role: 'assistant', status: 'completed',
+      speaker: { id: 'omni', name: 'Omni' },
+      decision: { kind: 'replan', changedContract: true },
     });
     const coordinatorTurnId = replanned.messages.at(-1).turnId;
     expect(projectWorkItemDetail(replanned)).toMatchObject({
@@ -1430,7 +1525,9 @@ describe('Work Center core', () => {
       messages: [
         expect.objectContaining({ role: 'user', status: 'completed' }),
         expect.objectContaining({
-          role: 'assistant', status: 'completed', decision: expect.objectContaining({ kind: 'replan' }),
+          role: 'assistant', status: 'completed',
+          speaker: { id: 'omni', name: 'Omni' },
+          decision: expect.objectContaining({ kind: 'replan' }),
         }),
       ],
     });
@@ -1546,9 +1643,38 @@ describe('Work Center core', () => {
     const invalid = await invalidTurn.task;
     expect(invalid.messages.at(-1)).toMatchObject({
       role: 'assistant', status: 'failed',
+      speaker: { id: 'omni', name: 'Omni' },
       error: 'Work Center Coordinator 未能生成有效回复。你的消息已经保留，请重试。',
     });
     expect(invalid.messages.at(-1).error).not.toContain('decision kind is invalid');
+
+    let missingModelAdapterCalls = 0;
+    coordinator.runtimeProvider = async () => ({
+      config: { availableModels: [] },
+      adapter: { call: async request => {
+        request.onRequestStart?.();
+        missingModelAdapterCalls += 1;
+        throw new Error('adapter must not run without a model');
+      } },
+    });
+    const missingModelBefore = store.getWorkItemDetail(item.id);
+    const missingModelTurn = coordinator.message(item.id, {
+      text: 'Explain the current state without a configured model.',
+      revision: missingModelBefore.revision,
+      planRevision: missingModelBefore.planRevision,
+      ledgerRevision: missingModelBefore.ledgerRevision,
+      coordinatorRevision: missingModelBefore.coordinatorRevision,
+    });
+    const missingModel = await missingModelTurn.task;
+    const missingModelMessage = missingModel.messages.at(-1);
+    expect(missingModelAdapterCalls).toBe(0);
+    expect(store.db.prepare(`SELECT COUNT(*) AS count FROM coordinator_provider_turns
+      WHERE coordinator_turn_id = ?`).get(missingModelMessage.turnId).count).toBe(0);
+    expect(missingModelMessage).toMatchObject({ role: 'assistant', status: 'failed' });
+    expect(missingModelMessage).not.toHaveProperty('speaker');
+    const missingModelConversation = JSON.parse(store.db.prepare(`SELECT payload FROM conversation_entries
+      WHERE source_key = ?`).get(`coordinator:turn:${missingModelMessage.turnId}:assistant`).payload);
+    expect(missingModelConversation).not.toHaveProperty('speaker');
 
     const next = store.getWorkItemDetail(item.id);
     let resolveLate;
@@ -3142,7 +3268,10 @@ describe('Work Center core', () => {
       const durable = ownerA.store.getWorkItemDetail(dualOwnerItem.id);
       expect(providerCalls).toBe(1);
       expect(durable.messages.at(-1)).toMatchObject({
-        turnId: seededTurnId, status: 'completed', text: 'Recovered exactly once.',
+        turnId: seededTurnId,
+        status: 'completed',
+        text: 'Recovered exactly once.',
+        speaker: { id: 'omni', name: 'Omni' },
       });
       const journal = ownerA.store.db.prepare(`SELECT status, claim_owner, claim_epoch
         FROM coordinator_provider_turns WHERE coordinator_turn_id = ?`).get(seededTurnId);
