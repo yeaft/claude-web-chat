@@ -6,7 +6,7 @@
  *
  * @param {object} agent
  * @param {string} prompt
- * @param {{ projectSessionIds?: string[], projectInstruction?: string }} projectContext
+ * @param {{ projectSessionIds?: string[], projectLabel?: string, projectInstruction?: string }} projectContext
  */
 export function enqueueSubAgentPrompt(agent, prompt, projectContext = {}) {
   if (!Array.isArray(agent.pendingPrompts)) agent.pendingPrompts = [];
@@ -15,6 +15,9 @@ export function enqueueSubAgentPrompt(agent, prompt, projectContext = {}) {
     projectSessionIds: Array.isArray(projectContext.projectSessionIds)
       ? projectContext.projectSessionIds.slice()
       : [],
+    projectLabel: typeof projectContext.projectLabel === 'string'
+      ? projectContext.projectLabel
+      : '',
     projectInstruction: typeof projectContext.projectInstruction === 'string'
       ? projectContext.projectInstruction
       : '',
