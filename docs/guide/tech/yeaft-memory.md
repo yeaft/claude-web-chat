@@ -1,237 +1,129 @@
-# Yeaft Memory System (H2-AMS)
+# H2-AMS Memory
 
-H2-AMS is the **cross-session persistent memory** subsystem of the Yeaft engine. It combines an in-memory Active Memory Set with a SQLite FTS pre-flow recall layer (see `agent/yeaft/memory/DESIGN-H2-AMS.md` for the long-form rationale). Before each turn the engine actively recalls relevant memory and injects it into the system prompt; after each turn it uses an LLM to amend memory. This chapter covers the **architecture**, **scope model**, and **read/write paths**.
+H2-AMS is the native Yeaft engine's scoped persistent-memory system. It uses readable Markdown as the source of truth, SQLite FTS5 as a rebuildable search index, and a budgeted in-memory Active Memory Set (AMS) for the current Session.
 
-> Audience: developers who want to understand / debug / extend Yeaft memory. End-user blurb in [Yeaft Code Agent](../user/yeaft-group.md#memory-design).
+> This page describes developer-facing behavior. For the user boundary, see [Yeaft Sessions and Projects](../user/yeaft-session.md#memory-boundaries) and [Work Center](../user/work-center.md#memory-reuse).
 
-## Design Goals
+## Goals
 
-1. **Cross-session memory** — A VP remembers what you said last time in a new session
-2. **Multi-scope isolation** — user / vp / group / feature / global stay independent, no cross-pollution
-3. **Recall precision** — Uses FTS5 full-text index, **not** vector search (lightweight, explainable, debuggable)
-4. **Readable / backupable** — Memory is plain markdown files, no binary blobs
+- recall useful information across turns and eligible Sessions;
+- keep user, VP, Session, and related scopes isolated;
+- preserve source identity and ACL checks;
+- remain inspectable without a vector database;
+- inject a bounded memory block rather than unbounded history.
 
-## Architecture Layers
+Memory retrieval is reference context. It does not outrank the system prompt, current user request, WorkItem contract, or tool/safety policy.
 
-```
-┌─────────────────────────────────────────────────────┐
-│ Engine Query Loop                                     │
-└─────────────────┬───────────────────────────────────┘
-                  │ preflow.recall(scopes)
-                  ↓
-┌─────────────────────────────────────────────────────┐
-│ AMS (Active Memory Set) — in-memory 3-layer cache    │
-│   • Resident summary  — Layer-A summary              │
-│   • Recent            — recent high-priority segs    │
-│   • OnDemand          — FTS-recalled relevant segs   │
-└─────────────────┬───────────────────────────────────┘
-                  │
-                  ↓
-┌─────────────────────────────────────────────────────┐
-│ Segment Store — <scope>/memory.md (multiple segs)    │
-│ Summary Store — Layer-A summary blob                 │
-│ FTS5 Index    — SQLite FTS5 (one row per segment)    │
-└─────────────────────────────────────────────────────┘
-                  ↑
-                  │ dream maintenance
-┌─────────────────────────────────────────────────────┐
-│ Dream Loop — background                              │
-│   • Slice conversation into atomic segments          │
-│   • LLM updates Layer-A summary                      │
-│   • Mirror to FTS index                              │
-└─────────────────────────────────────────────────────┘
+## Storage and index
+
+For each scope, the memory root can contain:
+
+```text
+<scope>/memory.md             multiple serialized atomic segments
+<scope>/summary.md            bounded English/default summary
+<scope>/summary.zh.md         optional Chinese summary
 ```
 
-## Scope Model
+`segment-store.js` parses and atomically rewrites the multi-segment `memory.md`. `store.js` is the scope/path/ACL boundary used by current runtime readers and writers. `summary-store.js` manages the bounded Layer-A summary.
 
-**Scope is the only isolation dimension.** No shards, no channels — just scope.
+`index-db.js` maintains a derived SQLite database:
 
-| Scope | Meaning | Who reads / writes |
-| --- | --- | --- |
-| `user/<userId>` | User-level profile / preference | All VPs / sessions of this user |
-| `vp/<vpId>` | Persona memory of a single VP | That VP (private) |
-| `vp/<vpId>/sub/<subId>` | Nested scope for VP sub-agent | That sub-agent |
-| `group/<groupId>` | Session-shared (the on-disk name is still `group/`) | All VPs in this session |
-| `feature/<featureId>` | Feature-level collaborative memory | VPs working on this feature |
-| `global` | Global (product-level common knowledge) | Everyone |
+- one `memory_segments` row per atomic segment;
+- an FTS5 table over body, tags, and scope;
+- `source_msgs` storing normalized source message IDs;
+- indexes by scope and update time.
 
-### VP and Sub-Agent
-VP is a scope owner at the same level as user. A VP's sub-agent is a nested scope (`vp/X/sub/Y`) with its own private memory.
+The Markdown files are the source of truth. `segment-sync.js` can rebuild/synchronize the FTS index from disk.
 
-### Session Fan-out Visibility
-When multiple VPs run in parallel in a session:
-- Each VP sees its own `vp/<vpId>` memory + the session-level (`group/<groupId>`) memory + the `user/<userId>` memory
-- They **don't** share transcripts (each VP's conversation history is its own)
-- VP→VP cross-visibility = via scope-aware pre-flow recall, **not** via a shared shard
+## Scope model
 
-### Explicit VP→VP Handoff
-Use the `route_forward` tool to pass task context explicitly.
+Scope is the isolation dimension. Current storage readers handle active and compatibility layouts, including:
 
-## Storage Primitives
+| Scope family | Purpose |
+| --- | --- |
+| `user` | Agent user preferences/profile available to authorized native work |
+| `chat/<chatId>` and nested `chat/.../vp/<vpId>` | Active 1:1 native/CLI Session memory |
+| `sessions/<sessionId>` and nested user/VP/feature/topic paths | Current Session-shaped storage layout |
+| `group/<sessionId>` and nested paths | Historical storage-compatible Session layout still read during migration |
+| VP/sub-agent scopes used by prompt and Dream paths | Role-specific or child-agent memory |
+| topic/feature compatibility scopes | Bounded semantic collaboration scopes where current readers authorize them |
 
-### Segment Store (`segment-store.js`)
-On disk each scope owns **one** `memory.md` file that bundles multiple atomic segments:
+New domain code uses Session terminology. The storage layer must continue reading legacy `group` paths until persisted data is migrated.
 
-```
-~/.yeaft/memory/user/memory.md
-~/.yeaft/memory/vp/<vpId>/memory.md
-~/.yeaft/memory/group/<groupId>/memory.md
-~/.yeaft/memory/feature/<featureId>/memory.md
-~/.yeaft/memory/topic/<l1>/memory.md
-~/.yeaft/memory/topic/<l1>/<l2>/memory.md
-```
+The VP ACL blocks another VP's nested private path when a current VP identity is present. Higher-level owner/session authorization is resolved before scopes reach the memory store.
 
-A single `memory.md` looks like:
+## Active Memory Set
 
-```markdown
-<!-- segment: 2026-06-10-prefer-ts -->
-<!-- created: 2026-06-10T08:32:11Z, source_turn: turn-abc, keywords: [typescript], priority: 0.7 -->
+AMS is Session-scoped and held in memory by `ams-registry.js`. It has three layers:
 
-User prefers TypeScript over JavaScript. Rationale: "type safety has the highest ROI at team scale".
+1. **Resident** — summaries for relevant scopes;
+2. **Recent** — recently touched high-priority segments;
+3. **OnDemand** — FTS hits selected for the current task.
 
-<!-- segment: 2026-06-09-dark-mode -->
-...
-```
+`budget.js` allocates token limits across these layers. `preflow.js` extracts searchable keywords, queries only authorized scopes, hydrates OnDemand hits, and renders one memory block for the prompt.
 
-Read/write is atomic at the scope level — the whole `memory.md` is rewritten when segments change.
+The registry persists enough Session state to hydrate AMS after restart, including whether the LLM adjustment has run for that Session. The rendered prompt block itself is rebuilt rather than treated as a second source of truth.
 
-### Summary Store / Layer A (`summary-store.js` / `store.js`)
-Each scope has a Layer-A summary — the **condensed** view of all segments in that scope. The LLM incrementally updates it during dream maintenance.
+## Read path
 
-### Index DB / FTS (`index-db.js`)
-SQLite FTS5 table, one row per segment:
+Before a native turn:
 
-```sql
-CREATE VIRTUAL TABLE segments USING fts5(
-  segment_id UNINDEXED,
-  scope UNINDEXED,
-  keywords,
-  body,
-  tokenize='unicode61'
-);
-```
+1. Session pre-flow determines the authorized user, VP, current Session, and related Project-Session scopes.
+2. Project sibling recall is limited to Sessions on the same Agent and retains source Session identity.
+3. Keywords are derived from the current task.
+4. FTS5 returns ranked matching segments within the scope filter.
+5. AMS combines summaries, recent segments, and OnDemand hits within budget.
+6. The prompt renderer clearly labels memory as reference context.
 
-Sharded by scope; recall unions across the scope list as needed.
+Project recall does not merge transcripts. A sibling Session contributes a source-labelled scope summary/segment only when the current Agent and Project membership authorize it.
 
-### AMS (Active Memory Set, `ams.js`)
-In-memory 3-layer cache:
-- **Resident summary** — Layer-A summary of the current-session-related scopes, fixed length
-- **Recent** — recent high-priority segments, sorted by priority, capped by token budget
-- **OnDemand** — segments recalled by this preflow, capped by token budget
+## Write path
 
-Each layer has an independent budget (`budget.js`); the total doesn't exceed the memory portion of the system prompt budget.
+Conversation messages are not copied directly into every memory scope. Durable extraction happens through Dream maintenance:
 
-## Read Path — Preflow (before each turn)
+1. collect eligible conversation/diff input;
+2. ask the maintenance model for atomic facts with scope, tags, source message IDs, and timestamps;
+3. merge/deduplicate segments in the scope's `memory.md`;
+4. synchronize the derived FTS index;
+5. regenerate affected scope summaries.
 
-`preflow.js` runs at the start of every turn:
+`adjust.js` is separate from durable extraction. It can correct AMS membership based on the current turn. It is guaranteed an initial adjustment opportunity and may run again only under the implemented budget-pressure/change policy; it is not an unconditional LLM rewrite after every turn.
 
-```js
-async function preflow({ scopes, query, budget }) {
-  // 1. Extract keywords from query (keywords.js)
-  const kws = extractKeywords(query);
+## Dream maintenance
 
-  // 2. FTS recall against each scope
-  const hits = await Promise.all(
-    scopes.map(s => indexDb.search(s, kws, { limit: 20 }))
-  );
+Dream is a background maintenance operation with a restricted prompt/tool contract. It slices source material, rejects malformed or unsafe scope writes, updates atomic segments, and refreshes summaries. Dream output is memory data, not a user-authored turn.
 
-  // 3. Rank by priority + recall score
-  const ranked = rankHits(hits.flat());
+Source message normalization matters: persisted segment metadata stores IDs, while Markdown source text is a debug/history fallback. This prevents raw message objects from leaking into memory provenance fields.
 
-  // 4. Truncate to budget
-  const selected = pickWithinBudget(ranked, budget);
+## Work Center memory reuse
 
-  // 5. Render into system prompt
-  return renderMemoryBlock(selected);
-}
-```
+Work Center does not share one memory owner with Sessions. With `reuseMemory=true`, a WorkItem may compute three bounded candidates:
 
-Recall results are injected into the `### Memory` section of the system prompt.
+- scope-bounded FTS recall from the current Agent;
+- structured summary/evidence from completed WorkItems with the same canonical workspace key;
+- user-visible excerpts from ordinary Sessions resolved to the same canonical workspace.
 
-## Write Path — adjust + dream after the turn
+Browser-created and legacy items read the Agent user scope. A trusted Session producer may also authorize source Session and current VP scopes. Workspace-Session recall verifies the canonical path, is owner-local, excludes the current source Session, and does not expose raw tool output.
 
-### Adjust (lightweight, at most once per turn)
-`adjust.js`: a lightweight LLM call **amends** AMS with new info from the current turn (e.g. user changed a preference — deactivate the old one, bump priority on the new).
+Candidate computation is not identical to prompt injection. Execution schema v1 appends non-empty runner-computed memory/workspace blocks. Schema v2 currently renders immutable Mainline context plus a fixed suffix and does not append those precomputed blocks. All context is token-bounded and cannot override the WorkItem contract or execution rules. `reuseMemory=false` disables the three candidates.
 
-Runs at most once per session to avoid hot looping on short turns.
+## Operational cautions
 
-```js
-const adjustment = await llm.call({
-  model: fastModel,
-  system: adjustPrompt,
-  messages: [{ role: 'user', content: `Turn diff: ${diff}` }],
-});
-await applyAdjustment(ams, adjustment);
-```
+- Memory files and the FTS database may contain sensitive project facts.
+- Raw debug output and Dream input should remain inside the owning Agent boundary.
+- Deleting a Session/VP must clear or migrate all owned memory paths; partial cleanup can expose stale context on ID reuse.
+- Scope path changes require compatibility readers and explicit migration, not blind renames.
+- FTS is lexical, not semantic vector search; missing keywords can reduce recall.
+- Summary text is lossy. Important acceptance evidence should remain in the authoritative Session or WorkItem record.
 
-### Dream (heavyweight, background)
-`dream/` is a background daemon loop:
-1. Detect which scopes have undigested conversation history
-2. Use an LLM to **slice** the conversation into atomic segments
-3. Append the new segments to the scope's `memory.md`
-4. Update the Layer-A summary
-5. Mirror to the FTS index
+## Main files
 
-Dream does **not** block user turns. It runs when idle or when the user manually triggers `/yeaft compact`.
-
-## Consolidation Decision
-
-`consolidate.js` decides when dream maintenance should kick in:
-
-- Segment count exceeds threshold
-- Cumulative character count exceeds threshold
-- It's been N minutes since the last dream
-- User manually triggers
-
-When the condition is met → mark scope `needs_dream: true` → dream loop picks it up.
-
-## Debugging
-
-### Read memory directly
-Open `~/.yeaft/memory/<scope>/memory.md`. Plain markdown.
-
-### Inspect the recall process
-The Yeaft Web **Debug panel** shows per-turn preflow recall details:
-- Which scopes were searched
-- Which keywords were used
-- Which segments were recalled
-- Which made it into AMS / which got cut by budget
-
-### Inspect the FTS index
-```bash
-sqlite3 ~/.yeaft/memory/index.db
-> SELECT segment_id, keywords FROM segments WHERE body MATCH 'typescript';
-```
-
-## Backup / Migration
-
-Memory is all files — `tar` `~/.yeaft/memory/` and you have a backup. To migrate: extract back to `~/.yeaft/memory/` on the new machine and start the Agent. Use `seed-backfill.js` to rebuild the FTS index.
-
-## Key Files
-
-```
-agent/yeaft/memory/
-  segment-store.js   — segment storage primitive (writes memory.md)
-  segment-sync.js    — sync FTS on segment write/delete
-  segment.js         — segment record helpers
-  index-db.js        — SQLite FTS5 index
-  store.js           — Layer-A summary read/write
-  summary-store.js   — summary persistence
-  ams.js             — Active Memory Set cache
-  ams-registry.js    — session-level AMS hydrate/persist
-  budget.js          — token budget calculator
-  keywords.js        — FTS keyword extractor
-  preflow.js         — pre-turn recall
-  adjust.js          — post-turn adjustment
-  seed-backfill.js   — historical data migration
-```
-
-> The dream loop itself lives in `agent/yeaft/dream/`, not in `memory/`. Consolidation triggers live in `agent/yeaft/dream/consolidate.js`.
-
-## Design Trade-offs
-
-**Why not vector search?** FTS5 + keywords + segment-level markdown is precise enough (recall ≥80% for our use cases), and it's **explainable / debuggable / backupable**. Vector search needs an embedding service + index rebuild + binary blobs — high maintenance, not much precision gain for short memory segments.
-
-**Why is the Layer-A summary stored separately?** It's the LLM-maintained "current state of long-term memory" — more stable than raw segments. At recall time it's **read directly**, skipping the FTS query for latency savings.
-
-**Why is dream backgrounded?** Dream involves LLM calls (expensive + slow); it can't block user turns. It's eventual consistency — what you said today may not be digested into segments until tomorrow.
+- `agent/yeaft/memory/store.js` — scope paths, I/O, and nested VP ACL
+- `agent/yeaft/memory/segment-store.js` — segment serialization for `memory.md`
+- `agent/yeaft/memory/index-db.js` — SQLite/FTS5 derived index
+- `agent/yeaft/memory/segment-sync.js` — disk/index synchronization
+- `agent/yeaft/memory/summary-store.js` — Layer-A summaries
+- `agent/yeaft/memory/ams.js` / `ams-registry.js` — active memory and Session hydration
+- `agent/yeaft/memory/preflow.js` — keyword recall and prompt injection
+- `agent/yeaft/memory/adjust.js` — post-turn AMS membership adjustment
+- `agent/yeaft/dream/` — durable background extraction and summary refresh

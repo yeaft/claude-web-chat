@@ -1,237 +1,129 @@
-# Yeaft 记忆系统（H2-AMS）
+# H2-AMS Memory
 
-H2-AMS 是 Yeaft 引擎的**跨 session 持久记忆子系统**。它结合了 in-memory 的 Active Memory Set 和基于 SQLite FTS 的 pre-flow 召回层（长版本设计见 `agent/yeaft/memory/DESIGN-H2-AMS.md`）。每个 turn 之前主动召回相关记忆注入 system prompt，每个 turn 之后用 LLM 修正记忆。本章讲它的**架构**、**scope 模型**、**读写路径**。
+H2-AMS 是 Yeaft 原生 engine 的 scoped persistent-memory system。它以可读 Markdown 为 source of truth，以 SQLite FTS5 作为可重建搜索 index，并为当前 Session 维护有预算的 in-memory Active Memory Set（AMS）。
 
-> 面向想理解 / 调试 / 扩展 Yeaft 记忆的开发者。用户视角的简介在 [Yeaft Code Agent](../user/yeaft-group.md#记忆设计)。
+> 本页面描述开发者行为。用户边界见 [Yeaft Session 与 Project](../user/yeaft-session.md#memory-边界) 和 [Work Center](../user/work-center.md#memory-reuse)。
 
-## 设计目标
+## 目标
 
-1. **跨 session 记忆** — VP 在新 session 也记得你上次说的事
-2. **多 scope 隔离** — user / vp / group / feature / global 各自独立，互不污染
-3. **召回精度** — 用 FTS5 全文索引，不是向量搜索（轻量、可解释、调试友好）
-4. **可读可备份** — 记忆都是 markdown 文件，不依赖 binary blob
+- 跨 turn 与符合条件的 Session 召回有用信息；
+- 隔离 user、VP、Session 和相关 scope；
+- 保留 source identity 与 ACL check；
+- 不依赖 vector database，保持可检查；
+- 注入有界 memory block，而不是无限 history。
 
-## 架构层次
+Memory retrieval 是 reference context，不高于 system prompt、当前 user request、WorkItem contract 或 tool/safety policy。
 
+## Storage 与 index
+
+每个 scope 的 memory root 可以包含：
+
+```text
+<scope>/memory.md             序列化的多个 atomic segment
+<scope>/summary.md            有界 English/default summary
+<scope>/summary.zh.md         可选 Chinese summary
 ```
-┌─────────────────────────────────────────────────────┐
-│ Engine Query Loop                                     │
-└─────────────────┬───────────────────────────────────┘
-                  │ preflow.recall(scopes)
-                  ↓
-┌─────────────────────────────────────────────────────┐
-│ AMS (Active Memory Set) — in-memory 三层缓存          │
-│   • Resident summary  — Layer-A summary              │
-│   • Recent            — 近期 high-priority 段        │
-│   • OnDemand          — FTS5 召回的相关段             │
-└─────────────────┬───────────────────────────────────┘
-                  │
-                  ↓
-┌─────────────────────────────────────────────────────┐
-│ Segment Store — <scope>/memory.md（多段在同一文件）    │
-│ Summary Store — Layer-A summary blob                 │
-│ FTS5 Index    — SQLite FTS5（每段一行，按 scope 分）   │
-└─────────────────────────────────────────────────────┘
-                  ↑
-                  │ dream maintenance
-┌─────────────────────────────────────────────────────┐
-│ Dream Loop — 后台跑                                  │
-│   • 切对话历史为原子段                                  │
-│   • LLM 写入 Layer-A summary                         │
-│   • 镜像 FTS 索引                                    │
-└─────────────────────────────────────────────────────┘
-```
+
+`segment-store.js` 解析并原子重写包含多个 segment 的 `memory.md`。`store.js` 是当前 runtime reader/writer 使用的 scope/path/ACL 边界。`summary-store.js` 管理有界 Layer-A summary。
+
+`index-db.js` 维护 derived SQLite database：
+
+- 每个 atomic segment 一条 `memory_segments` row；
+- body、tags 和 scope 的 FTS5 table；
+- `source_msgs` 保存归一化 source message ID；
+- 按 scope 和 update time 的 index。
+
+Markdown file 是 source of truth。`segment-sync.js` 可以根据磁盘重建/同步 FTS index。
 
 ## Scope 模型
 
-**Scope 是唯一的隔离维度。** 没有 shard、没有 channel — 只有 scope。
+Scope 是隔离维度。当前 storage reader 处理 active 与 compatibility layout，包括：
 
-| Scope | 含义 | 谁能读 / 写 |
-| --- | --- | --- |
-| `user/<userId>` | 用户级 profile / preference | 该用户的所有 VP / session |
-| `vp/<vpId>` | 单个 VP 的人格记忆 | 该 VP（独立私有） |
-| `vp/<vpId>/sub/<subId>` | VP 子 Agent 嵌套 scope | 该子 Agent |
-| `group/<groupId>` | session 内共享（盘上目录名仍是 `group/`） | 该 session 的所有 VP |
-| `feature/<featureId>` | feature 级协作记忆 | 该 feature 相关的所有 VP |
-| `global` | 全局（产品级常识） | 所有 |
+| Scope family | 用途 |
+| --- | --- |
+| `user` | 授权原生工作可用的 Agent user preference/profile |
+| `chat/<chatId>` 与 nested `chat/.../vp/<vpId>` | 活跃 1:1 原生/CLI Session memory |
+| `sessions/<sessionId>` 与 nested user/VP/feature/topic path | 当前 Session-shaped storage layout |
+| `group/<sessionId>` 与 nested path | 迁移期间仍读取的历史 storage-compatible Session layout |
+| Prompt/Dream path 使用的 VP/sub-agent scope | Role-specific 或 child-agent memory |
+| topic/feature compatibility scope | 当前 reader 授权时的有界 semantic collaboration scope |
 
-### VP 与子 Agent
-VP 是 scope owner，跟用户同级。VP 的子 Agent 是嵌套 scope（`vp/X/sub/Y`），独立有自己的记忆。
+新领域代码使用 Session 术语。Storage layer 必须继续读取 legacy `group` path，直到持久数据迁移完成。
 
-### Session fan-out 时的可见性
-Session 里多个 VP 并行执行时：
-- 每个 VP 看自己的 `vp/<vpId>` 记忆 + session 级（`group/<groupId>`）记忆 + `user/<userId>` 记忆
-- **不**共享 transcript（每个 VP 看到的对话历史是它自己的）
-- VP→VP 跨视野 = 通过 scope-aware pre-flow 召回实现，**不**走共享 shard
+当存在 current VP identity 时，VP ACL 会阻止另一个 VP 的 nested private path。更高层 owner/session authorization 在 scope 进入 memory store 前解析。
 
-### VP→VP 显式 handoff
-用 `route_forward` 工具显式传递任务上下文。
+## Active Memory Set
 
-## 存储原语
+AMS 属于 Session，由 `ams-registry.js` 在内存中持有。它有三层：
 
-### Segment Store（`segment-store.js`）
-盘上每个 scope 拥有**一个** `memory.md` 文件，文件里打包了这个 scope 的所有原子段：
+1. **Resident** — 相关 scope 的 summary；
+2. **Recent** — 最近触达的 high-priority segment；
+3. **OnDemand** — 为当前任务选择的 FTS hit。
 
-```
-~/.yeaft/memory/user/memory.md
-~/.yeaft/memory/vp/<vpId>/memory.md
-~/.yeaft/memory/group/<groupId>/memory.md
-~/.yeaft/memory/feature/<featureId>/memory.md
-~/.yeaft/memory/topic/<l1>/memory.md
-~/.yeaft/memory/topic/<l1>/<l2>/memory.md
-```
+`budget.js` 在三层之间分配 token limit。`preflow.js` 提取 searchable keyword，只查询 authorized scope，hydrate OnDemand hit，并为 prompt 渲染唯一 memory block。
 
-单个 `memory.md` 长这样：
+Registry 持久化足够的 Session state，使 AMS 能在重启后 hydrate，包括该 Session 是否已运行 LLM adjustment。Rendered prompt block 会重建，不作为第二个 source of truth。
 
-```markdown
-<!-- segment: 2026-06-10-prefer-ts -->
-<!-- created: 2026-06-10T08:32:11Z, source_turn: turn-abc, keywords: [typescript], priority: 0.7 -->
+## 读路径
 
-用户偏好 TypeScript 而非 JavaScript。理由是"类型安全在团队规模上是 ROI 最高的投资"。
+原生 turn 之前：
 
-<!-- segment: 2026-06-09-dark-mode -->
-...
-```
+1. Session pre-flow 确定授权的 user、VP、current Session 和 related Project-Session scope。
+2. Project sibling recall 只限同一 Agent 的 Session，并保留 source Session identity。
+3. 从当前任务提取 keyword。
+4. FTS5 在 scope filter 内返回 ranked matching segment。
+5. AMS 在 budget 内组合 summary、recent segment 和 OnDemand hit。
+6. Prompt renderer 明确把 memory 标记为 reference context。
 
-读写在 scope 级别原子 — 段变更时整个 `memory.md` 重写。
+Project recall 不合并 transcript。只有当前 Agent 与 Project membership 授权时，sibling Session 才提供带 source label 的 scope summary/segment。
 
-### Summary Store / Layer A（`summary-store.js` / `store.js`）
-每个 scope 都有一份 Layer-A summary — 该 scope 所有段的**浓缩**版。LLM 在 dream 维护时增量更新它。
+## 写路径
 
-### Index DB / FTS（`index-db.js`）
-SQLite FTS5 表，每条段对应一行：
+Conversation message 不会直接复制进每个 memory scope。持久提取由 Dream maintenance 完成：
 
-```sql
-CREATE VIRTUAL TABLE segments USING fts5(
-  segment_id UNINDEXED,
-  scope UNINDEXED,
-  keywords,
-  body,
-  tokenize='unicode61'
-);
-```
+1. 收集符合条件的 conversation/diff input；
+2. 让 maintenance model 输出带 scope、tags、source message ID 与 timestamp 的 atomic fact；
+3. 在 scope 的 `memory.md` 中 merge/deduplicate segment；
+4. 同步 derived FTS index；
+5. 重建受影响的 scope summary。
 
-按 scope 分库写，召回时按需要的 scope 列表跨库 union。
+`adjust.js` 与 durable extraction 分离。它根据当前 turn 修正 AMS membership。它保证一次初始 adjustment 机会，之后只在已实现的 budget-pressure/change policy 下再次运行；不是每个 turn 无条件调用 LLM 重写。
 
-### AMS（Active Memory Set，`ams.js`）
-in-memory 三层缓存：
-- **Resident summary** — 当前 session 关联 scope 的 Layer-A summary 直读，定长
-- **Recent** — 近期 high-priority 段，按 priority 排序，限 token budget
-- **OnDemand** — 本次 preflow 召回的相关段，限 token budget
+## Dream maintenance
 
-三层都有独立 budget（`budget.js` 算），加起来不超过 system prompt 的记忆部分总预算。
+Dream 是 restricted prompt/tool contract 下的后台 maintenance operation。它切分 source material，拒绝 malformed/unsafe scope write，更新 atomic segment 并刷新 summary。Dream output 是 memory data，不是 user-authored turn。
 
-## 读路径 — preflow（每 turn 前）
+Source message normalization 很重要：持久 segment metadata 只保存 ID，Markdown source text 只是 debug/history fallback，避免 raw message object 泄漏到 memory provenance 字段。
 
-`preflow.js` 在每 turn 开始前跑：
+## Work Center memory reuse
 
-```js
-async function preflow({ scopes, query, budget }) {
-  // 1. 抽 query 关键词（keywords.js）
-  const kws = extractKeywords(query);
+Work Center 与 Session 不共享一个 memory owner。`reuseMemory=true` 时，WorkItem 可以计算三类有边界的候选来源：
 
-  // 2. 对每个 scope FTS 召回
-  const hits = await Promise.all(
-    scopes.map(s => indexDb.search(s, kws, { limit: 20 }))
-  );
+- 当前 Agent 的 scope-bounded FTS recall；
+- 相同 canonical workspace key 下 completed WorkItem 的 structured summary/evidence；
+- 解析到相同 canonical workspace 的普通 Session user-visible excerpt。
 
-  // 3. 按 priority + 召回分排序
-  const ranked = rankHits(hits.flat());
+Browser-created 和 legacy item 读取 Agent user scope。Trusted Session producer 还可以授权 source Session 与 current VP scope。Workspace-Session recall 会验证 canonical path，只在 owner 本地运行，排除当前 source Session，并且不暴露 raw tool output。
 
-  // 4. 截到 budget
-  const selected = pickWithinBudget(ranked, budget);
+候选计算不等于 prompt injection。Execution schema v1 会附加非空的 Runner-computed memory/workspace block；schema v2 当前渲染 immutable Mainline context 与 fixed suffix，不附加这些预计算 block。所有 context 都有 token budget，不能覆盖 WorkItem contract 或 execution rule。`reuseMemory=false` 关闭三类候选来源。
 
-  // 5. 渲染到 system prompt
-  return renderMemoryBlock(selected);
-}
-```
+## 运维注意事项
 
-召回结果注入 system prompt 的 `### Memory` section。
+- Memory file 与 FTS database 可能包含敏感 project fact。
+- Raw debug output 与 Dream input 应留在所属 Agent 边界。
+- 删除 Session/VP 时必须清理或迁移所有 owned memory path；部分清理会在 ID reuse 时暴露 stale context。
+- Scope path 变化必须配 compatibility reader 与显式 migration，不能盲目 rename。
+- FTS 是 lexical search，不是 semantic vector search；缺少 keyword 会降低 recall。
+- Summary 是有损信息。重要 acceptance evidence 应保留在权威 Session 或 WorkItem record。
 
-## 写路径 — turn 后的 adjust + dream
+## 主要文件
 
-### Adjust（轻量，每 turn 后最多一次）
-`adjust.js`：用一次轻量 LLM 调用把当前 turn 的新信息**修正** AMS（如：用户改了偏好，要把旧偏好失活、新偏好升 priority）。
-
-每个 session 最多跑一次，避免短 turn 高频跑。
-
-```js
-const adjustment = await llm.call({
-  model: fastModel,
-  system: adjustPrompt,
-  messages: [{ role: 'user', content: `Turn diff: ${diff}` }],
-});
-await applyAdjustment(ams, adjustment);
-```
-
-### Dream（重量级，后台跑）
-`dream/` 是后台 daemon loop：
-1. 监测哪些 scope 有新对话历史尚未消化
-2. 用 LLM 把对话历史**切分**成原子段
-3. 把新段追加到该 scope 的 `memory.md`
-4. 更新该 scope 的 Layer-A summary
-5. 镜像 FTS 索引
-
-Dream 不阻塞 user turn。它在 idle 时跑，或在用户主动 `/yeaft compact` 时触发。
-
-## Consolidation 决策
-
-`consolidate.js` 判断何时该跑 dream maintenance：
-
-- 段数超过阈值
-- 累计字符数超过阈值
-- 距离上次 dream 超过 N 分钟
-- 用户主动触发
-
-满足条件 → 标记 scope `needs_dream: true` → dream loop 拾取。
-
-## 调试
-
-### 看记忆原文
-直接读 `~/.yeaft/memory/<scope>/memory.md`。是 plain markdown。
-
-### 看召回过程
-Yeaft Web 端的 **Debug 面板**显示每 turn 的 preflow 召回明细：
-- 哪些 scope 被搜
-- 用了哪些关键词
-- 召回了哪些段
-- 哪些进了 AMS / 哪些被 budget cut
-
-### 看 FTS 索引
-```bash
-sqlite3 ~/.yeaft/memory/index.db
-> SELECT segment_id, keywords FROM segments WHERE body MATCH 'typescript';
-```
-
-## 备份 / 迁移
-
-记忆全是文件 — `~/.yeaft/memory/` 整个目录 tar 一下就备份了。迁到新机器：解压回 `~/.yeaft/memory/`，启动 Agent 即可。FTS 索引重建用 `seed-backfill.js`。
-
-## 关键文件
-
-```
-agent/yeaft/memory/
-  segment-store.js   — 段存储原语（写 memory.md）
-  segment-sync.js    — 段写/删时同步到 FTS
-  segment.js         — 段记录辅助
-  index-db.js        — SQLite FTS5 索引
-  store.js           — Layer-A summary 读写
-  summary-store.js   — summary 持久化
-  ams.js             — Active Memory Set 缓存
-  ams-registry.js    — session 级 AMS hydrate/persist
-  budget.js          — token 预算计算
-  keywords.js        — FTS 关键词抽取
-  preflow.js         — turn 前召回
-  adjust.js          — turn 后修正
-  seed-backfill.js   — 历史数据迁移
-```
-
-> Dream loop 本身在 `agent/yeaft/dream/`，不在 memory 目录里。Consolidation 触发在 `agent/yeaft/dream/consolidate.js`。
-
-## 设计取舍说明
-
-**为什么不用向量搜索？** FTS5 + 关键词 + 段级 markdown 已经足够准（实际召回率 ≥80% 对我们的场景），且**可解释 / 可调试 / 可备份**。向量搜索要 embedding 服务 + 索引重建 + binary blob，维护成本高，对短记忆段精度提升不明显。
-
-**为什么 Layer-A summary 单独存？** 它是 LLM 主动维护的"长期记忆当前状态"，比段更稳定，召回时**直读**不走 FTS，节省 query 时延。
-
-**为什么 dream 是后台？** dream 涉及 LLM 调用（贵 + 慢），不能阻塞 user turn。它是 eventual consistency — 你今天讲的事可能明天才被消化成段。
+- `agent/yeaft/memory/store.js` — scope path、I/O 与 nested VP ACL
+- `agent/yeaft/memory/segment-store.js` — `memory.md` segment serialization
+- `agent/yeaft/memory/index-db.js` — SQLite/FTS5 derived index
+- `agent/yeaft/memory/segment-sync.js` — disk/index synchronization
+- `agent/yeaft/memory/summary-store.js` — Layer-A summary
+- `agent/yeaft/memory/ams.js` / `ams-registry.js` — active memory 与 Session hydration
+- `agent/yeaft/memory/preflow.js` — keyword recall 与 prompt injection
+- `agent/yeaft/memory/adjust.js` — post-turn AMS membership adjustment
+- `agent/yeaft/dream/` — 持久后台提取与 summary refresh

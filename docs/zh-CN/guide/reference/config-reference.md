@@ -1,12 +1,12 @@
 # 配置文件参考
 
-本章是**全字段**参考 — Yeaft 引擎 `~/.yeaft/config.json` + Agent / Server 环境变量。日常配怎么填看 [Yeaft 引擎配置](../yeaft-config.md)；本章供查阅。
+本章是 Agent instance Yeaft `config.json` 与 Agent/Server 环境变量的**全字段**参考。Default instance 使用 `~/.yeaft/config.json`；named instance 默认使用 `~/.yeaft/instances/<name>/config.json`。日常配怎么填看 [Yeaft 引擎配置](../yeaft-config.md)；本章供查阅。
 
 > 这里记录的 schema 是代码**当前**实际会读的字段（来自 `agent/yeaft/config.js`、`agent/index.js`、`server/config.js`）。代码不消费的字段一律不列；如果你印象中某个字段曾经存在却没出现在这里，几乎可以确定它从来没接进 codepath。
 
 ---
 
-## `~/.yeaft/config.json`
+## Instance `config.json`
 
 ### 顶层
 
@@ -69,8 +69,8 @@ model 项可以是裸字符串（`"gpt-5"`），也可以是对象：
 | `maxConcurrentThreads` | `number` | `6` | `1–50` | ThreadEngineRegistry 并发上限；含常驻的 `main` thread |
 | `autoArchiveIdleDays` | `number` | `30` | `1–3650` | thread 自动归档的空闲天数 |
 | `recentTurnsLimit` | `number` | `20` | `1–500` | 无 compact summary 时的冷启回放窗口 |
-| `multiVp.enabled` | `boolean` | `false` | — | 多 VP session mode 的 opt-in flag（决定 UI 入口是否出现） |
-| `dream.*` | object | 见 [dream/limits.js](https://github.com/yeaft/claude-web-chat/blob/main/agent/yeaft/dream/limits.js) | — | 任何 `DEFAULT_LIMITS` 里的 UPPER_CASE 常量都可覆盖 |
+| `multiVp.enabled` | `boolean` | `false` | — | 为兼容保留的 legacy feature flag；当前 Session UI 不把它作为 mode gate |
+| `dream.*` | object | 见 [dream/limits.js](https://github.com/yeaft/yeaft-web-code-agent/blob/main/agent/yeaft/dream/limits.js) | — | 任何 `DEFAULT_LIMITS` 里的 UPPER_CASE 常量都可覆盖 |
 
 数值超范围会被**钳制**到合法范围（而不是悄悄回落默认），所以手写一个 `maxConcurrentThreads: 100` 会被读成 `50`，不是默认的 `6`。
 
@@ -103,7 +103,7 @@ Agent 启动时读环境变量。多数值也可以写在 Agent 的 `config.json
 
 | 变量 | `fileConfig` key | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `YEAFT_DIR` | `yeaftDir` | `~/.yeaft` | 覆盖默认的 Yeaft 数据根目录 |
+| `YEAFT_DIR` | `yeaftDir` | default: `~/.yeaft`；named: `~/.yeaft/instances/<name>` | Override 当前 instance 的 Yeaft data root |
 | `MAX_CONTEXT_TOKENS` | `maxContextTokens` | `128000` | Agent 端 context 百分比展示的分母 |
 | `AUTO_COMPACT_THRESHOLD` | `autoCompactThreshold` | `110000` | Chat-mode wrapper 触发 compact 的 token 阈值 |
 | `YEAFT_THINKING_V1` | — | `"0"` | 设为 `"1"` 启用 v1 thinking/reasoning 协议路径 |
@@ -122,7 +122,7 @@ Agent 启动时读环境变量。多数值也可以写在 Agent 的 `config.json
 | `YEAFT_API_KEY` | — | `agent/yeaft/eval/run-eval.js` 用的 Anthropic key |
 | `YEAFT_OPENAI_API_KEY` | — | 同上，OpenAI key |
 
-> 如果你有 Anthropic / OpenAI 的 key，优先写进 `~/.yeaft/config.json` 对应 provider 的 `apiKey` 字段 — 引擎本身不会去读 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`。
+> 如果你有 Anthropic / OpenAI key，优先写进所选 instance `config.json` 的 provider `apiKey` 字段 — 引擎本身不会去读 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`。
 
 ---
 

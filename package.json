@@ -32,7 +32,9 @@
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:agent\"",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "docs:screenshots": "node scripts/capture-doc-screenshots.mjs",
+    "docs:screenshots:verify-failures": "node scripts/verify-doc-screenshot-failures.mjs"
   },
   "devDependencies": {
     "@dicebear/collection": "^9.4.2",

@@ -1,16 +1,18 @@
 # Yeaft Engine Configuration
 
-To run **Yeaft Code Agent** you need to tell the native engine **which LLM providers to use** and **which model is primary / fast**. All of that lives in `~/.yeaft/config.json`. This is the main integration point for other providers: Anthropic, OpenAI Responses, GitHub Copilot dynamic credentials, Azure/OpenAI-compatible gateways, and local proxies can all coexist in one config. This chapter is the **field-by-field** filling guide.
+To run **Yeaft Code Agent** you need to tell the native engine **which LLM providers to use** and **which model is primary / fast**. That configuration belongs to one Agent instance. The default instance uses `~/.yeaft/config.json`; named `<name>` uses `~/.yeaft/instances/<name>/config.json` unless its Yeaft directory is overridden. Anthropic, OpenAI Responses, GitHub Copilot dynamic credentials, Azure/OpenAI-compatible gateways, and local proxies can coexist in one instance config.
 
 > For the complete schema, every optional field, and Agent-side `.env`, see [Config Reference](./reference/config-reference.md).
 
-## File Location
+## File location
 
-```
-~/.yeaft/config.json
-```
+| Agent instance | Default config path |
+| --- | --- |
+| Default service instance | `~/.yeaft/config.json` |
+| Named instance `<name>` | `~/.yeaft/instances/<name>/config.json` |
+| Explicit Yeaft directory | `<yeaftDir>/config.json` |
 
-The Agent reads it on startup. **If it's missing or has no providers** → the engine starts but any call fails with `"No LLM adapter configured"`.
+`yeaft-agent local` defaults `<name>` to the sanitized computer hostname; use `--name` when you want a predictable path. The `yeaft-agent llm` subcommand does not infer that instance: pass `--config <path>` for a named/custom instance. If the instance config is missing or has no providers, the engine starts but calls fail with `"No LLM adapter configured"`.
 
 ## Minimum Working Config
 
@@ -218,7 +220,7 @@ Examples:
 
 ## Hot Reload
 
-The Agent re-reads `~/.yeaft/config.json` at the start of every turn, so **model and provider changes typically take effect without a restart** — just edit the file and start a new turn.
+The Agent re-reads its resolved instance `config.json` at the start of every turn, so **model and provider changes typically take effect without a restart** — edit the correct instance file and start a new turn.
 
 Changes that **do** require restarting the Agent:
 - `language` / `debug`
