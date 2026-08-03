@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -8,7 +8,80 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const captureScript = resolve(root, 'scripts/capture-doc-screenshots.mjs');
-const failureOps = ['list', 'get', 'get_settings'];
+const scenarios = [
+  {
+    id: 'list',
+    env: { YEAFT_DOC_SCREENSHOT_FAIL_WORK_CENTER_OP: 'list' },
+    markers: ['Injected screenshot list failure'],
+    forbiddenArtifacts: ['work-center.png'],
+  },
+  {
+    id: 'get',
+    env: { YEAFT_DOC_SCREENSHOT_FAIL_WORK_CENTER_OP: 'get' },
+    markers: ['Injected screenshot get failure'],
+    forbiddenArtifacts: ['work-center.png'],
+  },
+  {
+    id: 'get_settings',
+    env: { YEAFT_DOC_SCREENSHOT_FAIL_WORK_CENTER_OP: 'get_settings' },
+    markers: ['Injected screenshot get_settings failure'],
+    forbiddenArtifacts: ['work-center.png'],
+  },
+  {
+    id: 'post-screenshot-console',
+    env: { YEAFT_DOC_SCREENSHOT_FAILURE_SCENARIO: 'post-screenshot-console' },
+    markers: ['Injected post-screenshot console failure', 'fatal screenshot lifecycle errors'],
+    requiredArtifacts: ['work-center.png'],
+    forbiddenArtifacts: ['zh-CN/work-center.png'],
+  },
+  {
+    id: 'post-screenshot-pageerror',
+    env: { YEAFT_DOC_SCREENSHOT_FAILURE_SCENARIO: 'post-screenshot-pageerror' },
+    markers: ['Injected post-screenshot pageerror failure', 'fatal screenshot lifecycle errors'],
+    requiredArtifacts: ['work-center.png'],
+    forbiddenArtifacts: ['zh-CN/work-center.png'],
+  },
+  {
+    id: 'post-screenshot-requestfailed',
+    env: { YEAFT_DOC_SCREENSHOT_FAILURE_SCENARIO: 'post-screenshot-requestfailed' },
+    markers: ['__yeaft-doc-injected-request-failure', 'fatal screenshot lifecycle errors'],
+    requiredArtifacts: ['work-center.png'],
+    forbiddenArtifacts: ['zh-CN/work-center.png'],
+  },
+  {
+    id: 'post-screenshot-store-error',
+    env: { YEAFT_DOC_SCREENSHOT_FAILURE_SCENARIO: 'post-screenshot-store-error' },
+    markers: [
+      'Injected post-screenshot store lifecycle failure',
+      '[store-error:zh-CN] Injected post-screenshot store lifecycle failure',
+      'fatal screenshot lifecycle errors',
+    ],
+    requiredArtifacts: ['session.png', 'work-center.png', 'zh-CN/session.png', 'zh-CN/work-center.png'],
+  },
+  {
+    id: 'post-screenshot-agent-identity-change',
+    env: { YEAFT_DOC_SCREENSHOT_FAILURE_SCENARIO: 'post-screenshot-agent-identity-change' },
+    markers: [
+      'Injected authoritative currentAgent identity change',
+      '[store-error:zh-CN] Current Agent route changed',
+      'fatal screenshot lifecycle errors',
+    ],
+    requiredArtifacts: ['session.png', 'work-center.png', 'zh-CN/session.png', 'zh-CN/work-center.png'],
+  },
+  {
+    id: 'visible-typing-error',
+    env: { YEAFT_DOC_SCREENSHOT_FAILURE_SCENARIO: 'visible-typing-error' },
+    markers: ['Injected visible typing error failure', '[visible-error:en]'],
+    requiredArtifacts: ['work-center.png'],
+    forbiddenArtifacts: ['zh-CN/work-center.png'],
+  },
+  {
+    id: 'server-exit',
+    env: { YEAFT_DOC_SCREENSHOT_FAILURE_SCENARIO: 'server-exit' },
+    markers: ['Injected screenshot server exit failure', 'fatal screenshot lifecycle errors'],
+    requiredArtifacts: ['work-center.png', 'zh-CN/work-center.png'],
+  },
+];
 const outputRoot = mkdtempSync(join(tmpdir(), 'yeaft-doc-screenshot-failures-'));
 
 function reserveFreePort() {
@@ -26,31 +99,37 @@ function reserveFreePort() {
 }
 
 try {
-  for (const op of failureOps) {
+  for (const scenario of scenarios) {
     const port = await reserveFreePort();
+    const scenarioOutput = join(outputRoot, scenario.id);
     const result = spawnSync(process.execPath, [captureScript], {
       cwd: root,
       env: {
         ...process.env,
         YEAFT_DOC_SCREENSHOT_PORT: String(port),
-        YEAFT_DOC_SCREENSHOT_OUTPUT_DIR: join(outputRoot, op),
-        YEAFT_DOC_SCREENSHOT_FAIL_WORK_CENTER_OP: op,
+        YEAFT_DOC_SCREENSHOT_OUTPUT_DIR: scenarioOutput,
+        ...scenario.env,
       },
       encoding: 'utf8',
       maxBuffer: 10 * 1024 * 1024,
     });
     const output = `${result.stdout || ''}${result.stderr || ''}`;
-    const marker = `Injected screenshot ${op} failure`;
-    if (result.error || result.signal || result.status === 0 || !output.includes(marker)) {
+    const missingMarkers = scenario.markers.filter(marker => !output.includes(marker));
+    const missingArtifacts = (scenario.requiredArtifacts || []).filter(path => !existsSync(join(scenarioOutput, path)));
+    const unexpectedArtifacts = (scenario.forbiddenArtifacts || []).filter(path => existsSync(join(scenarioOutput, path)));
+    if (result.error || result.signal || result.status === 0
+        || missingMarkers.length || missingArtifacts.length || unexpectedArtifacts.length) {
       process.stderr.write(output);
       throw new Error([
-        `Screenshot failure gate did not fail closed for ${op}`,
+        `Screenshot failure gate did not fail closed for ${scenario.id}`,
         `status=${result.status} signal=${result.signal || 'none'}`,
-        `expected=${marker}`,
+        missingMarkers.length ? `missing markers=${missingMarkers.join(', ')}` : '',
+        missingArtifacts.length ? `missing artifacts=${missingArtifacts.join(', ')}` : '',
+        unexpectedArtifacts.length ? `unexpected artifacts=${unexpectedArtifacts.join(', ')}` : '',
         result.error?.message || '',
       ].filter(Boolean).join('\n'));
     }
-    console.log(`${op}: rejected with exit ${result.status}`);
+    console.log(`${scenario.id}: rejected with exit ${result.status}`);
   }
 } finally {
   rmSync(outputRoot, { recursive: true, force: true });

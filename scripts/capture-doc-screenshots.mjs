@@ -20,11 +20,54 @@ const viewport = { width: 2560, height: 1440 };
 const workCenterDefaultWorkDir = '/home/projects/yeaft-web-code-agent';
 const baseNow = Date.UTC(2026, 7, 3, 9, 30, 0);
 const failWorkCenterOp = String(process.env.YEAFT_DOC_SCREENSHOT_FAIL_WORK_CENTER_OP || '').trim();
+const failureScenario = String(process.env.YEAFT_DOC_SCREENSHOT_FAILURE_SCENARIO || '').trim();
 const injectableWorkCenterOps = new Set(['', 'list', 'get', 'get_settings']);
+const injectableFailureScenarios = new Set([
+  '',
+  'post-screenshot-console',
+  'post-screenshot-pageerror',
+  'post-screenshot-requestfailed',
+  'post-screenshot-store-error',
+  'post-screenshot-agent-identity-change',
+  'visible-typing-error',
+  'server-exit',
+]);
 if (!injectableWorkCenterOps.has(failWorkCenterOp)) {
   throw new Error(`Unsupported YEAFT_DOC_SCREENSHOT_FAIL_WORK_CENTER_OP: ${failWorkCenterOp}`);
 }
+if (!injectableFailureScenarios.has(failureScenario)) {
+  throw new Error(`Unsupported YEAFT_DOC_SCREENSHOT_FAILURE_SCENARIO: ${failureScenario}`);
+}
+if (failWorkCenterOp && failureScenario) {
+  throw new Error('Only one documentation screenshot failure injection may be active');
+}
 const sleep = ms => new Promise(resolvePromise => setTimeout(resolvePromise, ms));
+
+function createFatalLatch() {
+  const failures = [];
+  const seen = new Set();
+  let resolveFailure;
+  const failureSignal = new Promise(resolvePromise => { resolveFailure = resolvePromise; });
+  return {
+    record(value) {
+      const message = String(value || '').trim();
+      if (!message || seen.has(message)) return;
+      seen.add(message);
+      failures.push(message);
+      resolveFailure(message);
+    },
+    async waitForFailure(timeoutMs = 5_000) {
+      return Promise.race([
+        failureSignal,
+        sleep(timeoutMs).then(() => { throw new Error('Timed out waiting for injected screenshot failure'); }),
+      ]);
+    },
+    assert(label) {
+      if (failures.length === 0) return;
+      throw new Error([`${label} contains fatal screenshot lifecycle errors.`, ...failures].join('\n'));
+    },
+  };
+}
 
 function action({ id, sequence, type, status, vpId, vpName, objective, approach, expectedOutcome, response, stats, dependsOnStageIds = [] }) {
   return {
@@ -55,6 +98,10 @@ function action({ id, sequence, type, status, vpId, vpName, objective, approach,
       ...(status === 'completed' ? { endedAt: baseNow - (6 - sequence) * 600_000 } : {}),
       vpSnapshot: { id: vpId, name: vpName },
       response,
+      ...(status === 'completed' ? {
+        summary: response,
+        evidence: [{ kind: 'summary', label: response }],
+      } : {}),
       progressRevision: sequence,
       ...stats,
     },
@@ -116,6 +163,7 @@ const rawWorkItemDetail = {
   planRevision: 2,
   ledgerRevision: 8,
   coordinatorRevision: 3,
+  executionSchemaVersion: 2,
   title: 'Refresh bilingual product documentation',
   goal: 'Make the English and Chinese documentation describe the current Session, Project, provider, memory, and Work Center behavior with verified high-resolution screenshots.',
   status: 'running',
@@ -161,6 +209,17 @@ if (Object.hasOwn(workItemDetail, 'workDir') || Object.hasOwn(workItem, 'workDir
 const readyAction = workItemDetail.actions.find(item => item.id === 'action-deliver');
 if (!readyAction || readyAction.status !== 'ready' || readyAction.assignedVp) {
   throw new Error('Ready screenshot Action must remain unassigned after projection');
+}
+if (!workItemDetail.mainline) {
+  throw new Error('Work Center screenshot detail must include schema-v2 mainline projection');
+}
+if (workItemDetail.mainline.progress.frontierActionIds.join(',') !== 'action-review') {
+  throw new Error('Work Center screenshot mainline frontier must contain only the running review Action');
+}
+const dependentStageIds = new Set(workItemDetail.mainline.actions.flatMap(item => item.dependencies));
+const sinkActions = workItemDetail.mainline.actions.filter(item => !dependentStageIds.has(item.stageId));
+if (sinkActions.length !== 1 || sinkActions[0].id !== 'action-deliver') {
+  throw new Error('Work Center screenshot mainline must end at the deliver Action');
 }
 const workCenterVps = [
   { id: 'omni', name: 'Omni' },
@@ -251,7 +310,7 @@ const sessionMessages = [
   },
 ];
 
-function startServer() {
+function startServer(fatalLatch) {
   const child = spawn(process.execPath, ['server/index.js'], {
     cwd: root,
     env: {
@@ -265,37 +324,66 @@ function startServer() {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  const handle = {
+    child,
+    ready: false,
+    shutdownRequested: false,
+    injectedExitMarker: '',
+  };
   return new Promise((resolvePromise, reject) => {
-    const timer = setTimeout(() => reject(new Error('Documentation screenshot server start timeout')), 20_000);
-    const onData = data => {
-      const text = data.toString();
-      if (text.includes('Server running on')) {
-        clearTimeout(timer);
-        resolvePromise(child);
+    let settled = false;
+    const failStartup = error => {
+      if (settled) {
+        if (!handle.shutdownRequested) fatalLatch.record(`[server:error] ${error.message}`);
+        return;
       }
+      settled = true;
+      clearTimeout(timer);
+      if (child.exitCode === null && !child.signalCode) {
+        handle.shutdownRequested = child.kill('SIGTERM');
+      }
+      reject(error);
     };
-    child.stdout.on('data', onData);
-    child.stderr.on('data', data => {
+    const timer = setTimeout(() => failStartup(new Error('Documentation screenshot server start timeout')), 20_000);
+    child.stdout.on('data', data => {
       const text = data.toString();
-      if (text.includes('EADDRINUSE')) {
+      if (!settled && text.includes('Server running on')) {
+        settled = true;
+        handle.ready = true;
         clearTimeout(timer);
-        reject(new Error(`Port ${port} is already in use`));
+        resolvePromise(handle);
       }
     });
-    child.once('error', reject);
-    child.once('exit', code => {
-      clearTimeout(timer);
-      reject(new Error(`Documentation screenshot server exited early (${code})`));
+    child.stderr.on('data', data => {
+      const text = data.toString();
+      if (text.includes('EADDRINUSE')) failStartup(new Error(`Port ${port} is already in use`));
+    });
+    child.on('error', error => failStartup(new Error(`Documentation screenshot server error: ${error.message}`)));
+    child.on('exit', (code, signal) => {
+      const detail = `code=${code ?? 'null'} signal=${signal || 'none'}`;
+      if (!handle.ready) {
+        failStartup(new Error(`Documentation screenshot server exited early (${detail})`));
+      } else if (!handle.shutdownRequested) {
+        fatalLatch.record(handle.injectedExitMarker || `[server:exit] Documentation screenshot server exited unexpectedly (${detail})`);
+      }
     });
   });
 }
 
-async function stopChild(child) {
-  if (!child || child.exitCode !== null) return;
-  child.kill('SIGTERM');
+async function stopChild(handle) {
+  if (!handle) return;
+  const { child } = handle;
+  if (child.exitCode !== null || child.signalCode) return;
+  const signaled = child.kill('SIGTERM');
+  if (signaled) handle.shutdownRequested = true;
   await Promise.race([
     new Promise(resolvePromise => child.once('exit', resolvePromise)),
-    sleep(3_000).then(() => { if (child.exitCode === null) child.kill('SIGKILL'); }),
+    sleep(3_000).then(() => {
+      if (child.exitCode === null && !child.signalCode) {
+        const killed = child.kill('SIGKILL');
+        if (killed) handle.shutdownRequested = true;
+      }
+    }),
   ]);
 }
 
@@ -395,29 +483,153 @@ async function seedPage(page, { locale, agentId }) {
   await page.waitForTimeout(500);
 }
 
-function browserFailureMessage(kind, value) {
-  return `[browser:${kind}] ${String(value || '').trim()}`;
+const visibleErrorSelectors = [
+  '.work-center-error',
+  '.work-center-detail-error',
+  '.work-center-settings-error',
+  '.typing-status-error',
+  '.typing-status-banner-disconnected',
+  '.typing-status-banner-agent-offline',
+  '[role="alert"]',
+  '.sp-toast.error',
+];
+
+function browserFailureMessage(locale, kind, value) {
+  return `[browser:${locale}:${kind}] ${String(value || '').trim()}`;
 }
 
-async function assertScreenshotPageClean(page, browserFailures, label) {
-  const visibleErrors = await page.locator([
-    '.work-center-error:visible',
-    '.work-center-detail-error:visible',
-    '.work-center-settings-error:visible',
-    '[role="alert"]:visible',
-    '.sp-toast.error:visible',
-  ].join(', ')).allTextContents();
-  const normalizedErrors = visibleErrors.map(text => text.trim()).filter(Boolean);
-  if (browserFailures.length || normalizedErrors.length) {
-    throw new Error([
-      `${label} contains unexpected browser/UI errors.`,
-      ...browserFailures,
-      ...normalizedErrors.map(text => `[visible-error] ${text}`),
-    ].join('\n'));
+async function installVisibleErrorObserver(page, fatalLatch, locale) {
+  await page.exposeFunction('__yeaftRecordScreenshotFailure', value => fatalLatch.record(value));
+  await page.evaluate(({ selectors, locale: pageLocale }) => {
+    const reported = new Set();
+    const isVisible = element => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) !== 0
+        && rect.width > 0 && rect.height > 0;
+    };
+    const scan = () => {
+      for (const element of document.querySelectorAll(selectors.join(', '))) {
+        if (!isVisible(element)) continue;
+        const text = element.textContent?.trim() || element.className || element.getAttribute('role') || 'unknown UI error';
+        const message = `[visible-error:${pageLocale}] ${text}`;
+        if (reported.has(message)) continue;
+        reported.add(message);
+        window.__yeaftRecordScreenshotFailure(message);
+      }
+    };
+    const observer = new MutationObserver(scan);
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden'],
+      characterData: true,
+    });
+    window.__yeaftScreenshotErrorObserver = observer;
+    scan();
+  }, { selectors: visibleErrorSelectors, locale });
+}
+
+async function installStoreHealthObserver(page, fatalLatch, locale, agentId) {
+  const initialFailures = await page.evaluate(({ pageLocale, activeAgentId }) => {
+    const chat = window.Pinia?.useChatStore?.();
+    if (!chat) return [`[store-error:${pageLocale}] Pinia chat store is unavailable`];
+    const reported = new Set();
+    const collect = () => {
+      const failures = [];
+      if (chat.connectionState !== 'connected') {
+        failures.push(`WebSocket connection state is ${chat.connectionState}`);
+      }
+      if (chat.currentAgent !== activeAgentId) {
+        failures.push('Current Agent route changed');
+      }
+      if (chat.currentAgentInfo?.id !== activeAgentId || chat.currentAgentInfo?.online !== true) {
+        failures.push('Current Agent info is offline or changed');
+      }
+      if (chat.workCenterOpen && chat.workCenterAgentId !== activeAgentId) {
+        failures.push('Work Center Agent changed');
+      }
+      for (const error of [
+        chat.workCenterErrorByAgent?.[activeAgentId],
+        chat.workCenterSettingsErrorByAgent?.[activeAgentId],
+        chat.yeaftSessionHydrateError,
+      ]) {
+        if (error) failures.push(String(error));
+      }
+      return [...new Set(failures.map(value => `[store-error:${pageLocale}] ${value}`))];
+    };
+    const report = () => {
+      for (const message of collect()) {
+        if (reported.has(message)) continue;
+        reported.add(message);
+        void window.__yeaftRecordScreenshotFailure(message);
+      }
+    };
+    const snapshot = () => [...new Set([...reported, ...collect()])];
+    const unsubscribe = chat.$subscribe(report, { detached: true, flush: 'sync' });
+    window.__yeaftCollectScreenshotStoreFailures = snapshot;
+    window.__yeaftStopScreenshotHealthObservers = () => {
+      const failures = snapshot();
+      unsubscribe();
+      window.__yeaftScreenshotErrorObserver?.disconnect();
+      return failures;
+    };
+    report();
+    return snapshot();
+  }, { pageLocale: locale, activeAgentId: agentId });
+  for (const failure of initialFailures) fatalLatch.record(failure);
+  fatalLatch.assert(`${locale} store health observer installation`);
+}
+
+async function assertScreenshotLifecycleClean(page, fatalLatch, label) {
+  const visibleErrors = await page.locator(visibleErrorSelectors.map(selector => `${selector}:visible`).join(', '))
+    .allTextContents();
+  for (const text of visibleErrors.map(value => value.trim()).filter(Boolean)) {
+    fatalLatch.record(`[visible-error] ${text}`);
   }
+  const storeFailures = await page.evaluate(() => window.__yeaftCollectScreenshotStoreFailures?.()
+    || ['[store-error] Screenshot store health observer is unavailable']);
+  for (const failure of storeFailures) fatalLatch.record(failure);
+  fatalLatch.assert(label);
 }
 
-async function captureLocale(browser, agent, locale, prefix) {
+async function stopScreenshotHealthObservers(page, fatalLatch, label) {
+  const finalStoreFailures = await page.evaluate(() => window.__yeaftStopScreenshotHealthObservers?.()
+    || ['[store-error] Screenshot health observer shutdown is unavailable']);
+  for (const failure of finalStoreFailures) fatalLatch.record(failure);
+  fatalLatch.assert(label);
+}
+
+async function injectPostScreenshotFailure(page, serverHandle, fatalLatch, locale, agentId) {
+  if (locale !== 'en' || !failureScenario) return;
+  if (failureScenario === 'post-screenshot-console') {
+    await page.evaluate(() => console.error('Injected post-screenshot console failure'));
+  } else if (failureScenario === 'post-screenshot-pageerror') {
+    await page.evaluate(() => setTimeout(() => { throw new Error('Injected post-screenshot pageerror failure'); }, 0));
+  } else if (failureScenario === 'post-screenshot-requestfailed') {
+    await page.route('**/__yeaft-doc-injected-request-failure', route => route.abort('failed'));
+    await page.evaluate(() => fetch('/__yeaft-doc-injected-request-failure').catch(() => {}));
+  } else if (failureScenario === 'visible-typing-error') {
+    await page.evaluate(activeAgentId => {
+      const chat = window.Pinia.useChatStore();
+      chat.workCenterOpen = false;
+      chat.yeaftProcessingSessions = {
+        ...chat.yeaftProcessingSessions,
+        [`${activeAgentId}\u001fdocs-session`]: true,
+      };
+      chat.connectionState = 'disconnected';
+    }, agentId);
+    await page.waitForSelector('.typing-status-error', { state: 'visible' });
+    await page.evaluate(() => console.log('Injected visible typing error failure'));
+  } else if (['post-screenshot-store-error', 'post-screenshot-agent-identity-change', 'server-exit'].includes(failureScenario)) {
+    return;
+  }
+  await fatalLatch.waitForFailure();
+  fatalLatch.assert(`Injected ${failureScenario} screenshot failure`);
+}
+
+async function captureLocale(browser, agent, serverHandle, fatalLatch, locale, prefix) {
   const context = await browser.newContext({
     viewport,
     deviceScaleFactor: 1,
@@ -426,20 +638,24 @@ async function captureLocale(browser, agent, locale, prefix) {
     locale: locale === 'zh-CN' ? 'zh-CN' : 'en-US',
   });
   const page = await context.newPage();
-  const browserFailures = [];
   page.on('console', message => {
-    const entry = browserFailureMessage(`console:${message.type()}`, message.text());
+    const entry = browserFailureMessage(locale, `console:${message.type()}`, message.text());
     console.error(entry);
-    if (message.type() === 'error') browserFailures.push(entry);
+    if (message.type() === 'error') fatalLatch.record(entry);
   });
   page.on('pageerror', error => {
-    const entry = browserFailureMessage('pageerror', error.stack || error.message);
-    browserFailures.push(entry);
+    const entry = browserFailureMessage(locale, 'pageerror', error.stack || error.message);
+    fatalLatch.record(entry);
     console.error(entry);
   });
   page.on('requestfailed', request => {
-    const entry = browserFailureMessage('requestfailed', `${request.url()} ${request.failure()?.errorText || ''}`);
-    browserFailures.push(entry);
+    const entry = browserFailureMessage(locale, 'requestfailed', `${request.url()} ${request.failure()?.errorText || ''}`);
+    fatalLatch.record(entry);
+    console.error(entry);
+  });
+  page.on('crash', () => {
+    const entry = browserFailureMessage(locale, 'crash', 'Page crashed');
+    fatalLatch.record(entry);
     console.error(entry);
   });
   await page.addInitScript(({ locale: nextLocale }) => {
@@ -451,11 +667,14 @@ async function captureLocale(browser, agent, locale, prefix) {
   }, { locale });
   await page.goto(serverUrl, { waitUntil: 'networkidle' });
   await page.waitForFunction(() => window.Pinia?.useChatStore && window.Pinia?.useSessionsStore && window.Pinia?.useVpStore);
+  await installVisibleErrorObserver(page, fatalLatch, locale);
   await seedPage(page, { locale, agentId: agent.agentId });
+  await installStoreHealthObserver(page, fatalLatch, locale, agent.agentId);
 
   const sessionPath = resolve(outputRoot, prefix, 'session.png');
-  await assertScreenshotPageClean(page, browserFailures, `${locale} Session screenshot`);
+  await assertScreenshotLifecycleClean(page, fatalLatch, `${locale} Session screenshot`);
   await page.screenshot({ path: sessionPath, type: 'png', fullPage: false });
+  await assertScreenshotLifecycleClean(page, fatalLatch, `${locale} Session screenshot completion`);
 
   await page.evaluate(({ agentId, item, detail, vps, injectedFailureOp, defaultWorkDir }) => {
     const chat = window.Pinia.useChatStore();
@@ -575,7 +794,7 @@ async function captureLocale(browser, agent, locale, prefix) {
   if (initializationFailures.length) {
     throw new Error(`${locale} Work Center initialization failed:\n${initializationFailures.join('\n')}`);
   }
-  await assertScreenshotPageClean(page, browserFailures, `${locale} Work Center initialization`);
+  await assertScreenshotLifecycleClean(page, fatalLatch, `${locale} Work Center initialization`);
   await page.locator('.work-center-card-open').first().click();
   await page.waitForFunction(({ agentId, id }) => {
     const chat = window.Pinia.useChatStore();
@@ -600,8 +819,9 @@ async function captureLocale(browser, agent, locale, prefix) {
   await page.waitForSelector('.work-center-action-list');
   await page.waitForTimeout(500);
   const workCenterPath = resolve(outputRoot, prefix, 'work-center.png');
-  await assertScreenshotPageClean(page, browserFailures, `${locale} Work Center screenshot`);
+  await assertScreenshotLifecycleClean(page, fatalLatch, `${locale} Work Center screenshot`);
   await page.screenshot({ path: workCenterPath, type: 'png', fullPage: false });
+  await injectPostScreenshotFailure(page, serverHandle, fatalLatch, locale, agent.agentId);
 
   const theme = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
   if (theme !== 'light') throw new Error(`Expected light theme, received ${theme}`);
@@ -609,26 +829,83 @@ async function captureLocale(browser, agent, locale, prefix) {
     const overflow = await page.locator(selector).evaluate(element => element.scrollWidth > element.clientWidth + 1);
     if (overflow) throw new Error(`Horizontal overflow in ${selector}`);
   }
-
+  await assertScreenshotLifecycleClean(page, fatalLatch, `${locale} Work Center screenshot completion`);
+  if (locale === 'zh-CN' && failureScenario === 'post-screenshot-store-error') {
+    await page.evaluate(activeAgentId => {
+      const chat = window.Pinia.useChatStore();
+      const marker = 'Injected post-screenshot store lifecycle failure';
+      chat.workCenterSettingsErrorByAgent = {
+        ...chat.workCenterSettingsErrorByAgent,
+        [activeAgentId]: marker,
+      };
+      console.log(marker);
+    }, agent.agentId);
+    await fatalLatch.waitForFailure();
+    fatalLatch.assert('Injected post-screenshot-store-error screenshot failure');
+  } else if (locale === 'zh-CN' && failureScenario === 'post-screenshot-agent-identity-change') {
+    await page.evaluate(() => {
+      const chat = window.Pinia.useChatStore();
+      chat.currentAgent = 'injected-other-agent';
+      console.log('Injected authoritative currentAgent identity change');
+    });
+    await fatalLatch.waitForFailure();
+    fatalLatch.assert('Injected post-screenshot-agent-identity-change screenshot failure');
+  }
+  await stopScreenshotHealthObservers(page, fatalLatch, `${locale} screenshot health observer shutdown`);
   await context.close();
+  fatalLatch.assert(`${locale} browser context close`);
   return [sessionPath, workCenterPath];
 }
 
 await mkdir(outputRoot, { recursive: true });
 await mkdir(resolve(outputRoot, 'zh-CN'), { recursive: true });
+const fatalLatch = createFatalLatch();
 let server;
 let agent;
 let browser;
+let browserShutdownRequested = false;
+let captureError = null;
 try {
-  server = await startServer();
+  server = await startServer(fatalLatch);
   agent = new MockAgent(serverUrl, 'Yeaft Docs Workstation');
   await agent.connect();
   browser = await chromium.launch({ headless: true });
-  const english = await captureLocale(browser, agent, 'en', '.');
-  const chinese = await captureLocale(browser, agent, 'zh-CN', 'zh-CN');
+  browser.on('disconnected', () => {
+    if (!browserShutdownRequested) fatalLatch.record('[browser:disconnected] Chromium disconnected unexpectedly');
+  });
+  const english = await captureLocale(browser, agent, server, fatalLatch, 'en', '.');
+  fatalLatch.assert('English documentation screenshot capture');
+  const chinese = await captureLocale(browser, agent, server, fatalLatch, 'zh-CN', 'zh-CN');
+  fatalLatch.assert('All documentation screenshot captures');
+  if (failureScenario === 'server-exit') {
+    server.injectedExitMarker = 'Injected screenshot server exit failure';
+    server.child.kill('SIGKILL');
+    await fatalLatch.waitForFailure();
+    fatalLatch.assert('Injected server-exit screenshot failure');
+  }
   for (const path of [...english, ...chinese]) console.log(path);
+} catch (error) {
+  try {
+    fatalLatch.assert('Documentation screenshot capture');
+  } catch (fatalError) {
+    captureError = fatalError;
+  }
+  captureError ||= error;
 } finally {
-  if (browser) await browser.close();
-  if (agent) await agent.disconnect();
-  await stopChild(server);
+  try {
+    if (browser) {
+      browserShutdownRequested = true;
+      await browser.close();
+    }
+  } catch (error) { captureError ||= error; }
+  try { if (agent) await agent.disconnect(); } catch (error) { captureError ||= error; }
+  try { await stopChild(server); } catch (error) { captureError ||= error; }
 }
+let finalFatalError = null;
+try {
+  fatalLatch.assert('Documentation screenshot capture after shutdown');
+} catch (error) {
+  finalFatalError = error;
+}
+if (finalFatalError) throw finalFatalError;
+if (captureError) throw captureError;
