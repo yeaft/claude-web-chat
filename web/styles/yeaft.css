@@ -1875,10 +1875,6 @@
   max-width: var(--session-content-width);
 }
 
-.yeaft-page .turn-footer {
-  opacity: 1;
-}
-
 /* ── Mobile Sidebar Overlay ── */
 
 .yeaft-sidebar-overlay {
