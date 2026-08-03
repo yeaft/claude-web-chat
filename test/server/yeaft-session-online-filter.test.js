@@ -7,8 +7,11 @@ const sendToWebClient = vi.fn(async (client, msg) => {
 const forwardToAgent = vi.fn(async () => {});
 const broadcastAgentList = vi.fn(async () => {});
 const broadcastSessionCatalog = vi.fn(async () => {});
+const buildSessionCatalog = vi.fn(() => []);
 const getByUser = vi.fn(() => []);
 const getByAgent = vi.fn(() => []);
+const getActiveChatSessions = vi.fn(() => []);
+const getSessionUiMetadataByUser = vi.fn(() => []);
 const listProjects = vi.fn(() => []);
 const listProjectsForAgent = vi.fn(() => listProjects());
 const importLegacyProjects = vi.fn(() => false);
@@ -34,13 +37,14 @@ vi.mock('../../server/ws-utils.js', () => ({
   forwardToAgent,
   broadcastAgentList,
   broadcastSessionCatalog,
+  buildSessionCatalog,
   verifyConversationOwnership,
   verifyAgentOwnership,
 }));
 
 vi.mock('../../server/database.js', () => ({
   sessionDb: {
-    getActiveByUser: vi.fn(() => []),
+    getActiveByUser: getActiveChatSessions,
     getByUser: vi.fn(() => []),
     get: getChatSession,
     update: updateChatSession,
@@ -71,7 +75,7 @@ vi.mock('../../server/database.js', () => ({
   },
   sessionUiMetadataDb: {
     get: vi.fn(() => null),
-    getByUser: vi.fn(() => []),
+    getByUser: getSessionUiMetadataByUser,
     applyBatch: applySessionUiMetadataBatch,
   },
 }));
@@ -99,6 +103,10 @@ afterEach(() => {
   getByUser.mockReturnValue([]);
   getByAgent.mockReset();
   getByAgent.mockReturnValue([]);
+  getActiveChatSessions.mockReset();
+  getActiveChatSessions.mockReturnValue([]);
+  getSessionUiMetadataByUser.mockReset();
+  getSessionUiMetadataByUser.mockReturnValue([]);
   listProjects.mockReset();
   listProjects.mockReturnValue([]);
   listProjectsForAgent.mockClear();
@@ -118,6 +126,8 @@ afterEach(() => {
   forwardToAgent.mockClear();
   broadcastAgentList.mockClear();
   broadcastSessionCatalog.mockClear();
+  buildSessionCatalog.mockReset();
+  buildSessionCatalog.mockReturnValue([]);
   getForAgent.mockReset();
   getChatSession.mockReset();
   updateChatSession.mockClear();
@@ -224,10 +234,48 @@ describe('Yeaft Session online Agent filtering', () => {
       onlineAgentIds: new Set(['chat-agent']),
     });
     expect(partiallyRanked.map(row => row.catalogKey)).toEqual([
-      'chat:ranked',
       'chat:new-unranked',
       'chat:old-unranked',
+      'chat:ranked',
     ]);
+    const duplicateRanks = projectSessionCatalog({
+      chatSessions: [
+        { id: 'duplicate-new', agent_id: 'chat-agent', created_at: 3000, metadata_updated_at: 3000, is_active: 1 },
+        { id: 'duplicate-middle', agent_id: 'chat-agent', created_at: 2000, metadata_updated_at: 2000, is_active: 1 },
+        { id: 'duplicate-old', agent_id: 'chat-agent', created_at: 1000, metadata_updated_at: 1000, is_active: 1 },
+      ],
+      metadata: [
+        { catalogKey: 'chat:duplicate-new', sortRank: 1 },
+        { catalogKey: 'chat:duplicate-middle', sortRank: 0 },
+        { catalogKey: 'chat:duplicate-old', sortRank: 0 },
+      ],
+      onlineAgentIds: new Set(['chat-agent']),
+    });
+    expect(duplicateRanks.map(row => row.catalogKey)).toEqual([
+      'chat:duplicate-new',
+      'chat:duplicate-middle',
+      'chat:duplicate-old',
+    ]);
+    const legacyAgentRanks = projectSessionCatalog({
+      chatSessions: [
+        { id: 'chat-newest', agent_id: 'chat-agent', provider: 'copilot', created_at: 4000, metadata_updated_at: 4000, is_active: 1 },
+        { id: 'chat-oldest', agent_id: 'chat-agent', created_at: 1000, metadata_updated_at: 1000, is_active: 1 },
+      ],
+      yeaftSessions: [
+        { id: 'agent-a-new', agentId: 'agent-a', sortOrder: 0, createdAt: 3000, metadataUpdatedAt: 3000 },
+        { id: 'agent-a-old', agentId: 'agent-a', sortOrder: 1, createdAt: 500, metadataUpdatedAt: 500 },
+        { id: 'agent-b-middle', agentId: 'agent-b', sortOrder: 0, createdAt: 2000, metadataUpdatedAt: 2000 },
+      ],
+      onlineAgentIds: new Set(['agent-a', 'agent-b', 'chat-agent']),
+    });
+    expect(legacyAgentRanks.map(row => row.catalogKey)).toEqual([
+      'chat:chat-newest',
+      'yeaft:agent-a:agent-a-new',
+      'yeaft:agent-b:agent-b-middle',
+      'chat:chat-oldest',
+      'yeaft:agent-a:agent-a-old',
+    ]);
+    expect(legacyAgentRanks.every(row => row.sortRank === null)).toBe(true);
     const reorderedAfterSettings = projectSessionCatalog({
       chatSessions: [
         { id: 'chat-new', agent_id: 'chat-agent', created_at: 4000, updated_at: 9000, metadata_updated_at: 4000, is_active: 1 },
@@ -466,6 +514,10 @@ describe('Yeaft Session online Agent filtering', () => {
         pinned: false,
       },
     ];
+    buildSessionCatalog.mockReturnValue(sessions.map(row => ({
+      ...row,
+      pinned: row.pinned === true,
+    })));
 
     await handleClientConversation('client-1', catalogClient, {
       type: 'reorder_session_catalog',
@@ -490,10 +542,7 @@ describe('Yeaft Session online Agent filtering', () => {
     verifyConversationOwnership.mockReturnValue(true);
     getForAgent.mockReturnValue({ id: 'offline-yeaft', agentId: 'agent-offline' });
     getChatSession.mockReturnValue({ id: 'offline-chat', user_id: 'user-1', agent_id: 'agent-offline', provider: 'copilot' });
-    await handleClientConversation('client-1', catalogClient, {
-      type: 'reorder_session_catalog',
-      requestId: 'offline-order',
-      sessions: [
+    const offlineSessions = [
         {
           catalogKey: 'yeaft:agent-offline:offline-yeaft',
           routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-offline', sessionId: 'offline-yeaft' },
@@ -504,7 +553,12 @@ describe('Yeaft Session online Agent filtering', () => {
           routeRef: { runtimeProvider: 'copilot', agentId: 'agent-offline', sessionId: 'offline-chat' },
           pinned: false,
         },
-      ],
+      ];
+    buildSessionCatalog.mockReturnValue(offlineSessions);
+    await handleClientConversation('client-1', catalogClient, {
+      type: 'reorder_session_catalog',
+      requestId: 'offline-order',
+      sessions: offlineSessions,
     }, allow);
     expect(applySessionUiMetadataBatch).toHaveBeenLastCalledWith('user-1', [
       expect.objectContaining({ catalogKey: 'yeaft:agent-offline:offline-yeaft', sortRank: 0 }),
@@ -664,6 +718,63 @@ describe('Yeaft Session online Agent filtering', () => {
     contextForSession.mockReturnValue(null);
 
     moveProjectSession.mockClear();
+    getForAgent.mockReturnValue({ id: 'same-id', agentId: 'agent-a', isArchived: false });
+    buildSessionCatalog.mockReturnValue(sessions);
+    listProjectsForAgent.mockReturnValueOnce([{
+      id: 'project-created',
+      name: 'Created',
+      members: [{ agentId: 'agent-a', sessionId: 'same-id' }],
+      sessionIds: ['same-id'],
+    }]);
+    routedClient.sent = [];
+    await handleClientConversation('client-1', routedClient, {
+      type: 'yeaft_project_mutation',
+      requestId: 'project-move-atomic',
+      op: 'move_session',
+      targetAgentId: 'agent-a',
+      sessionId: 'same-id',
+      projectId: 'project-created',
+      catalogOrder: sessions,
+    }, allow);
+    expect(moveProjectSession).toHaveBeenCalledWith('user-1', {
+      agentId: 'agent-a',
+      sessionId: 'same-id',
+      projectId: 'project-created',
+      catalogUpdates: [
+        expect.objectContaining({ catalogKey: 'yeaft:agent-a:same-id', sortRank: 0 }),
+        expect.objectContaining({ catalogKey: 'yeaft:agent-b:same-id', sortRank: 1 }),
+        expect.objectContaining({ catalogKey: 'chat:chat-1', sortRank: 2 }),
+      ],
+    });
+    expect(routedClient.sent.at(-1)).toMatchObject({
+      event: {
+        type: 'project_mutation_result',
+        requestId: 'project-move-atomic',
+        ok: true,
+      },
+    });
+
+    moveProjectSession.mockClear();
+    routedClient.sent = [];
+    await handleClientConversation('client-1', routedClient, {
+      type: 'yeaft_project_mutation',
+      requestId: 'project-move-stale-order',
+      op: 'move_session',
+      targetAgentId: 'agent-a',
+      sessionId: 'same-id',
+      projectId: 'project-created',
+      catalogOrder: sessions.slice(1),
+    }, allow);
+    expect(moveProjectSession).not.toHaveBeenCalled();
+    expect(routedClient.sent.at(-1)).toMatchObject({
+      event: {
+        type: 'project_mutation_result',
+        requestId: 'project-move-stale-order',
+        ok: false,
+        error: { code: 'invalid_catalog_order' },
+      },
+    });
+
     getForAgent.mockReturnValue({ id: 'archived-session', agentId: 'agent-a', isArchived: true });
     routedClient.sent = [];
     await handleClientConversation('client-1', routedClient, {

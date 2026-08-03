@@ -259,6 +259,10 @@ test.describe('侧边栏交互', () => {
       store.mutateProject = async (op, payload, targetAgentId) => {
         calls.moves.push({ op, payload, targetAgentId });
         if (op === 'move_session') {
+          const orderedCatalog = payload.catalogOrder.map((item, sortRank) => ({
+            ...store.sessionCatalog.find(row => row.catalogKey === item.catalogKey),
+            sortRank,
+          }));
           const projects = store.sessionProjects.map(project => ({
             ...project,
             members: project.members.filter(member => (
@@ -269,7 +273,7 @@ test.describe('侧边栏交互', () => {
             const project = projects.find(item => item.id === payload.projectId);
             project.members.push({ agentId: targetAgentId, sessionId: payload.sessionId });
           }
-          store.applySessionCatalogSnapshot(store.sessionCatalog, projects);
+          store.applySessionCatalogSnapshot(orderedCatalog, projects);
         }
         return { ok: true };
       };
@@ -325,10 +329,18 @@ test.describe('侧边栏交互', () => {
     expect(dragResult.recentOrder).toEqual([]);
     expect(dragResult.calls.moves).toEqual([{
       op: 'move_session',
-      payload: { sessionId: 'recent-drag', projectId: 'project-drag' },
+      payload: {
+        sessionId: 'recent-drag',
+        projectId: 'project-drag',
+        catalogOrder: [
+          expect.objectContaining({ catalogKey: `yeaft:${mockAgent.agentId}:project-second` }),
+          expect.objectContaining({ catalogKey: `yeaft:${mockAgent.agentId}:recent-drag` }),
+          expect.objectContaining({ catalogKey: `yeaft:${mockAgent.agentId}:project-first` }),
+        ],
+      },
       targetAgentId: mockAgent.agentId,
     }]);
-    expect(dragResult.calls.orders).toHaveLength(2);
+    expect(dragResult.calls.orders).toHaveLength(1);
   });
 
   test('点击折叠按钮收起侧边栏', async ({ chatPage }) => {

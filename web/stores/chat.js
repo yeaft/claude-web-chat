@@ -6142,6 +6142,7 @@ export const useChatStore = defineStore('chat', {
         }, 10000);
         this.projectMutationRequests[requestId] = {
           connectionGeneration: Number(this.chatHistoryConnectionGeneration || 0),
+          catalogOrder: Array.isArray(payload.catalogOrder) ? payload.catalogOrder : null,
           resolve: result => { clearTimeout(timer); resolve(result); },
         };
         const sent = this.sendWsMessage({
@@ -6190,8 +6191,23 @@ export const useChatStore = defineStore('chat', {
       if (!pending
           || pending.connectionGeneration !== Number(this.chatHistoryConnectionGeneration || 0)) return false;
       delete this.projectMutationRequests[event.requestId];
-      if (event.ok && Array.isArray(event.projects)) {
-        this.applySessionCatalogSnapshot(this.sessionCatalog, event.projects);
+      if (event.ok) {
+        if (Array.isArray(pending.catalogOrder)) {
+          const rowsByKey = new Map(this.sessionCatalog.map(row => [row.catalogKey, row]));
+          const ordered = pending.catalogOrder
+            .map((item, sortRank) => {
+              const row = rowsByKey.get(item?.catalogKey);
+              return row ? { ...row, sortRank } : null;
+            })
+            .filter(Boolean);
+          if (ordered.length === this.sessionCatalog.length) {
+            this.sessionCatalog = ordered;
+            persistCatalogYeaftOrder(ordered);
+          }
+        }
+        if (Array.isArray(event.projects)) {
+          this.applySessionCatalogSnapshot(this.sessionCatalog, event.projects);
+        }
       }
       pending.resolve(event);
       return true;

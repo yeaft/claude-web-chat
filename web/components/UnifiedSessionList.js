@@ -3,8 +3,13 @@ function timestampValue(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function sortRows(rows) {
-  const ranked = rows.some(row => Number.isFinite(row?.sortRank));
+function hasCompleteSortRanks(rows) {
+  if (rows.length === 0) return false;
+  const ranks = rows.map(row => row?.sortRank);
+  return ranks.every(Number.isFinite) && new Set(ranks).size === rows.length;
+}
+
+function sortRows(rows, ranked = hasCompleteSortRanks(rows)) {
   return [...rows].sort((left, right) => {
     if (!!left.pinned !== !!right.pinned) return left.pinned ? -1 : 1;
     if (ranked) {
@@ -160,6 +165,9 @@ export default {
       if (this.projectStore) return this.projectStore;
       try { return window.Pinia?.useChatStore?.() || null; } catch { return null; }
     },
+    hasCompleteCatalogOrder() {
+      return hasCompleteSortRanks(this.sessions);
+    },
     projectRows() {
       const projects = this.projects.length > 0 ? this.projects : (this.resolvedProjectStore?.sessionProjects || []);
       return [...projects].sort((a, b) => (
@@ -195,7 +203,7 @@ export default {
     rowsByProject() {
       const out = new Map();
       for (const [id, rows] of this.projectSessionRows) {
-        out.set(id, sortRows(rows.filter(row => this.isRowOnline(row))));
+        out.set(id, sortRows(rows.filter(row => this.isRowOnline(row)), this.hasCompleteCatalogOrder));
       }
       return out;
     },
@@ -207,7 +215,7 @@ export default {
           if (this.projectBySessionKey.has(key)) return false;
         }
         return true;
-      }));
+      }), this.hasCompleteCatalogOrder);
     },
   },
   methods: {
@@ -427,7 +435,7 @@ export default {
       this.$emit('project-action', payload);
       const store = this.resolvedProjectStore;
       if (!store?.mutateProject) return true;
-      const { action, project, row, name, agentId: explicitAgentId } = payload;
+      const { action, project, row, name, catalogOrder, agentId: explicitAgentId } = payload;
       const agentId = explicitAgentId || row?.routeRef?.agentId || null;
       if (action === 'create') return store.mutateProject('create', { name }, agentId);
       const projectId = project?.legacyProjectId || project?.id;
@@ -443,6 +451,12 @@ export default {
         return store.mutateProject('move_session', {
           sessionId: row.routeRef.sessionId,
           projectId: project?.legacyProjectId || project?.id || null,
+          ...(Array.isArray(catalogOrder) ? {
+            catalogOrder: catalogOrder.map(item => ({
+              catalogKey: item.catalogKey,
+              routeRef: item.routeRef,
+            })),
+          } : {}),
         }, agentId);
       }
       return false;
@@ -520,10 +534,10 @@ export default {
         this.projectInstructionSubmitting = false;
       }
     },
-    moveRow(row, project = null) {
+    moveRow(row, project = null, catalogOrder = null) {
       this.closeMenus();
       if (!this.canMoveRowToProject(row, project)) return false;
-      return this.dispatchProjectAction({ action: 'move-session', row, project });
+      return this.dispatchProjectAction({ action: 'move-session', row, project, catalogOrder });
     },
     projectForRow(row) {
       if (row?.runtimeProvider !== 'yeaft') return null;
@@ -672,8 +686,8 @@ export default {
       this.dragOperationPending = true;
       try {
         if (membershipChanged) {
-          const result = await this.moveRow(moved, project);
-          if (result === false || result?.ok === false) return false;
+          const result = await this.moveRow(moved, project, nextOrder);
+          return result !== false && result?.ok !== false;
         }
         if (orderChanged) {
           const accepted = await this.dispatchSessionAction({

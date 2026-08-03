@@ -29,6 +29,12 @@ function timestampValue(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function hasCompleteSortRanks(rows) {
+  if (rows.length === 0) return false;
+  const ranks = rows.map(row => row.sortRank);
+  return ranks.every(Number.isFinite) && new Set(ranks).size === rows.length;
+}
+
 export function projectSessionCatalog({
   chatSessions = [],
   yeaftSessions = [],
@@ -73,13 +79,13 @@ export function projectSessionCatalog({
       agentName: session.agentName || '',
       availability: onlineAgents.has(session.agentId) ? 'online' : 'offline',
       pinned: meta.pinned ?? !!session.pinned,
-      sortRank: meta.sortRank ?? session.sortOrder ?? null,
+      sortRank: meta.sortRank ?? null,
       createdAt: session.createdAt || null,
       metadataUpdatedAt: session.metadataUpdatedAt ?? session.createdAt ?? null,
     });
   }
 
-  const ranked = rows.some(row => Number.isFinite(row.sortRank));
+  const ranked = hasCompleteSortRanks(rows);
   return rows.sort((left, right) => {
     if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
     if (ranked) {

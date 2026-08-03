@@ -289,6 +289,9 @@ describe('message flow regressions', () => {
       .toEqual(['a', 'c', 'd', 'b']);
     expect(reorderSessionCatalogRows(orderFixture, 'missing', 'b', 'before')).toBeNull();
     expect(reorderSessionCatalogRows(orderFixture, 'b', 'missing', 'before')).toBeNull();
+    expect(UnifiedSessionList.computed.hasCompleteCatalogOrder.call({
+      sessions: [{ sortRank: 0 }, { sortRank: 0 }],
+    })).toBe(false);
 
     const catalogRows = [
       {
@@ -613,17 +616,14 @@ describe('message flow regressions', () => {
     expect(projectStore.mutateProject).toHaveBeenLastCalledWith('move_session', {
       sessionId: 'recent-yeaft',
       projectId: 'project-shared',
+      catalogOrder: [
+        expect.objectContaining({ catalogKey: 'yeaft:user_1770305719:server-instance:project-first' }),
+        expect.objectContaining({ catalogKey: 'yeaft:user_1770305719:server-instance:recent-yeaft' }),
+        expect.objectContaining({ catalogKey: 'yeaft:user_1770305719:server-instance:project-second' }),
+      ],
     }, 'user_1770305719:server-instance');
-    expect(projectStore.reorderCatalogSessions).toHaveBeenLastCalledWith(expect.arrayContaining([
-      expect.objectContaining({ catalogKey: 'yeaft:user_1770305719:server-instance:recent-yeaft' }),
-    ]));
-    expect(projectStore.reorderCatalogSessions.mock.calls.at(-1)[0].map(row => row.catalogKey)).toEqual([
-      'yeaft:user_1770305719:server-instance:project-first',
-      'yeaft:user_1770305719:server-instance:recent-yeaft',
-      'yeaft:user_1770305719:server-instance:project-second',
-    ]);
+    expect(projectStore.reorderCatalogSessions).not.toHaveBeenCalled();
 
-    const reorderCountBeforeFailedMove = projectStore.reorderCatalogSessions.mock.calls.length;
     projectStore.mutateProject.mockResolvedValueOnce({ ok: false });
     const currentProjectFirst = sidebar.findAll('.sidebar-project-sessions .session-item')
       .find(item => item.text().includes('Project first'));
@@ -632,8 +632,9 @@ describe('message flow regressions', () => {
     expect(projectStore.mutateProject).toHaveBeenLastCalledWith('move_session', {
       sessionId: 'project-first',
       projectId: null,
+      catalogOrder: expect.any(Array),
     }, 'user_1770305719:server-instance');
-    expect(projectStore.reorderCatalogSessions).toHaveBeenCalledTimes(reorderCountBeforeFailedMove);
+    expect(projectStore.reorderCatalogSessions).not.toHaveBeenCalled();
     await sidebar.setProps({ projectStore: null, sessions: catalogRows, projects: [
       {
         id: 'project-shared',
@@ -1203,6 +1204,93 @@ describe('message flow regressions', () => {
       requestId: reorderRequest.requestId,
       ok: false,
     })).toBe(false);
+    expect(persistedYeaftOrder).not.toHaveBeenCalled();
+
+    const atomicOrder = [
+      reorderStore.sessionCatalog[3],
+      reorderStore.sessionCatalog[0],
+      reorderStore.sessionCatalog[1],
+      reorderStore.sessionCatalog[2],
+    ].map(row => ({ catalogKey: row.catalogKey, routeRef: row.routeRef }));
+    reorderStore.sessionProjects = [{
+      id: 'project-old',
+      members: [{ agentId: 'agent-a', sessionId: 'a' }],
+    }];
+    reorderStore.projectMutationRequests = {};
+    reorderStore.sendWsMessage = vi.fn(() => true);
+    const rejectedMove = reorderStore.mutateProject('move_session', {
+      sessionId: 'a',
+      projectId: 'project-new',
+      catalogOrder: atomicOrder,
+    }, 'agent-a');
+    const rejectedRequest = reorderStore.sendWsMessage.mock.calls.at(-1)[0];
+    expect(reorderStore.sessionCatalog.map(row => row.catalogKey)).toEqual([
+      'yeaft:agent-a:a',
+      'chat:b',
+      'yeaft:agent-a:c',
+      'yeaft:agent-a:d',
+    ]);
+    expect(reorderStore.finishProjectMutation({
+      requestId: rejectedRequest.requestId,
+      ok: false,
+      projects: [{ id: 'project-new', members: [{ agentId: 'agent-a', sessionId: 'a' }] }],
+    })).toBe(true);
+    await expect(rejectedMove).resolves.toMatchObject({ ok: false });
+    expect(reorderStore.sessionProjects).toEqual([{
+      id: 'project-old',
+      members: [{ agentId: 'agent-a', sessionId: 'a' }],
+    }]);
+    expect(persistedYeaftOrder).not.toHaveBeenCalled();
+
+    const acceptedMove = reorderStore.mutateProject('move_session', {
+      sessionId: 'a',
+      projectId: 'project-new',
+      catalogOrder: atomicOrder,
+    }, 'agent-a');
+    const acceptedRequest = reorderStore.sendWsMessage.mock.calls.at(-1)[0];
+    expect(acceptedRequest).toMatchObject({
+      type: 'yeaft_project_mutation',
+      op: 'move_session',
+      targetAgentId: 'agent-a',
+      catalogOrder: atomicOrder,
+    });
+    expect(reorderStore.finishProjectMutation({
+      requestId: acceptedRequest.requestId,
+      ok: true,
+      projects: [{ id: 'project-new', members: [{ agentId: 'agent-a', sessionId: 'a' }] }],
+    })).toBe(true);
+    await expect(acceptedMove).resolves.toMatchObject({ ok: true });
+    expect(reorderStore.sessionCatalog.map(row => row.catalogKey)).toEqual([
+      'yeaft:agent-a:d',
+      'yeaft:agent-a:a',
+      'chat:b',
+      'yeaft:agent-a:c',
+    ]);
+    expect(reorderStore.sessionProjects).toEqual([{
+      id: 'project-new',
+      members: [{ agentId: 'agent-a', sessionId: 'a' }],
+    }]);
+    expect(persistedYeaftOrder).toHaveBeenLastCalledWith([
+      'agent-a\u001fd',
+      'agent-a\u001fa',
+      'agent-a\u001fc',
+    ]);
+
+    persistedYeaftOrder.mockClear();
+    const catalogAfterAcceptedMove = reorderStore.sessionCatalog.map(row => ({ ...row }));
+    const projectsAfterAcceptedMove = reorderStore.sessionProjects.map(project => ({
+      ...project,
+      members: project.members.map(member => ({ ...member })),
+    }));
+    reorderStore.sendWsMessage = vi.fn(() => false);
+    await expect(reorderStore.mutateProject('move_session', {
+      sessionId: 'a',
+      projectId: null,
+      catalogOrder: atomicOrder,
+    }, 'agent-a')).resolves.toMatchObject({ ok: false, error: { code: 'send_failed' } });
+    expect(reorderStore.sessionCatalog).toEqual(catalogAfterAcceptedMove);
+    expect(reorderStore.sessionProjects).toEqual(projectsAfterAcceptedMove);
+    expect(reorderStore.projectMutationRequests).toEqual({});
     expect(persistedYeaftOrder).not.toHaveBeenCalled();
     globalThis.Pinia.useSessionsStore = previousSessionsStoreForOrder;
 

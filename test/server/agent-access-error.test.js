@@ -20,17 +20,15 @@ describe('resolveAgentAccessError', () => {
     agents.clear();
   });
 
-  it('classifies a missing agent as offline, not access denied', () => {
+  it('classifies Agent access states and rejects foreign Project mutations', async () => {
     CONFIG.skipAuth = false;
-
     expect(resolveAgentAccessError('agent-missing', 'user-1', 'user')).toBe('Agent not found or offline');
-  });
 
-  it('keeps real ownership failures as access denied', async () => {
-    CONFIG.skipAuth = false;
     agents.set('agent-1', { ownerId: 'user-1', ws: { readyState: 1 } });
-
     expect(resolveAgentAccessError('agent-1', 'user-2', 'user')).toBe('Agent access denied');
+    expect(resolveAgentAccessError('agent-1', 'user-1', 'user')).toBeNull();
+    agents.get('agent-1').ws.readyState = 3;
+    expect(resolveAgentAccessError('agent-1', 'user-1', 'user')).toBe('Agent not found or offline');
 
     const forwarded = [];
     agents.set('agent-foreign', {
@@ -55,20 +53,6 @@ describe('resolveAgentAccessError', () => {
     expect(handled).toBe(true);
     expect(accessChecks).toEqual([]);
     expect(forwarded).toEqual([]);
-  });
-
-  it('accepts an owned online agent', () => {
-    CONFIG.skipAuth = false;
-    agents.set('agent-1', { ownerId: 'user-1', ws: { readyState: 1 } });
-
-    expect(resolveAgentAccessError('agent-1', 'user-1', 'user')).toBeNull();
-  });
-
-  it('classifies a closed owned websocket as offline', () => {
-    CONFIG.skipAuth = false;
-    agents.set('agent-1', { ownerId: 'user-1', ws: { readyState: 3 } });
-
-    expect(resolveAgentAccessError('agent-1', 'user-1', 'user')).toBe('Agent not found or offline');
   });
 
   it('filters NULL-owner Chat rows by Agent ACL', async () => {
@@ -204,6 +188,38 @@ describe('resolveAgentAccessError', () => {
         ]),
       }),
     ]);
+
+    expect(() => yeaftProjectDb.moveSession(userId, {
+      agentId: 'agent-a',
+      sessionId: `same-${suffix}`,
+      projectId: null,
+      catalogUpdates: [
+        {
+          catalogKey: `chat:${chatId}`,
+          runtimeProvider: 'copilot',
+          agentId: 'agent-a',
+          sessionId: chatId,
+          pinned: false,
+          sortRank: 7,
+        },
+        {
+          catalogKey: `yeaft:agent-a:missing-${suffix}`,
+          runtimeProvider: 'yeaft',
+          agentId: 'agent-a',
+          sessionId: `missing-${suffix}`,
+          pinned: false,
+          sortRank: 8,
+        },
+      ],
+    })).toThrow('Yeaft Session identity changed during metadata update');
+    expect(yeaftProjectDb.contextForSession(userId, 'agent-a', `same-${suffix}`)).toMatchObject({
+      projectId: project.id,
+    });
+    expect(sessionUiMetadataDb.get(userId, `chat:${chatId}`)).toMatchObject({
+      pinned: true,
+      sortRank: 1,
+    });
+    expect(sessionDb.get(chatId).is_pinned).toBe(1);
 
     const originalReconcileProjectSessions = yeaftProjectDb.reconcileAgentSessions;
     yeaftProjectDb.reconcileAgentSessions = () => { throw new Error('forced project reconciliation failure'); };
