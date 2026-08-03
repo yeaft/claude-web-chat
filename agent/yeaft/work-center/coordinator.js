@@ -654,6 +654,7 @@ export class WorkItemCoordinator {
     text, recovery, addedAttachments, options, abortController,
   }) {
     let providerTurn = null;
+    let candidateSpeaker = null;
     let speaker = (started.detail.messages || []).find(message => (
       message?.turnId === started.turnId && message.role === 'assistant'
     ))?.speaker || null;
@@ -700,7 +701,7 @@ export class WorkItemCoordinator {
             vps,
             priorRuns: started.detail.runs || [],
           });
-          speaker ||= {
+          candidateSpeaker = {
             id: assignment.vp.id,
             name: assignment.vp.name || assignment.vp.id,
           };
@@ -743,7 +744,7 @@ export class WorkItemCoordinator {
               };
               const claim = started.fence.claim;
               providerTurn = this.store.prepareCoordinatorProviderTurn(
-                started.detail.id, started.turnId, attemptCount, requestBody, claim, speaker,
+                started.detail.id, started.turnId, attemptCount, requestBody, claim, candidateSpeaker,
               );
               if (!providerTurn) return started.detail;
               speaker = providerTurn.speaker;
