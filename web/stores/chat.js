@@ -419,6 +419,16 @@ function getSessionsStore() {
   }
 }
 
+function persistCatalogYeaftOrder(rows) {
+  const sessionsStore = getSessionsStore();
+  if (!sessionsStore?.reorderSessionsGlobally) return;
+  const yeaftOrder = (Array.isArray(rows) ? rows : [])
+    .filter(row => row?.runtimeProvider === 'yeaft')
+    .map(row => `${row.routeRef?.agentId || ''}\u001f${row.routeRef?.sessionId || ''}`)
+    .filter(key => !key.startsWith('\u001f'));
+  sessionsStore.reorderSessionsGlobally(yeaftOrder);
+}
+
 /**
  * Resolve the agent that owns a given Yeaft session. This is the single
  * source of truth for routing session-scoped operations (send / history /
@@ -6132,6 +6142,7 @@ export const useChatStore = defineStore('chat', {
         }, 10000);
         this.projectMutationRequests[requestId] = {
           connectionGeneration: Number(this.chatHistoryConnectionGeneration || 0),
+          catalogOrder: Array.isArray(payload.catalogOrder) ? payload.catalogOrder : null,
           resolve: result => { clearTimeout(timer); resolve(result); },
         };
         const sent = this.sendWsMessage({
@@ -6180,8 +6191,23 @@ export const useChatStore = defineStore('chat', {
       if (!pending
           || pending.connectionGeneration !== Number(this.chatHistoryConnectionGeneration || 0)) return false;
       delete this.projectMutationRequests[event.requestId];
-      if (event.ok && Array.isArray(event.projects)) {
-        this.applySessionCatalogSnapshot(this.sessionCatalog, event.projects);
+      if (event.ok) {
+        if (Array.isArray(pending.catalogOrder)) {
+          const rowsByKey = new Map(this.sessionCatalog.map(row => [row.catalogKey, row]));
+          const ordered = pending.catalogOrder
+            .map((item, sortRank) => {
+              const row = rowsByKey.get(item?.catalogKey);
+              return row ? { ...row, sortRank } : null;
+            })
+            .filter(Boolean);
+          if (ordered.length === this.sessionCatalog.length) {
+            this.sessionCatalog = ordered;
+            persistCatalogYeaftOrder(ordered);
+          }
+        }
+        if (Array.isArray(event.projects)) {
+          this.applySessionCatalogSnapshot(this.sessionCatalog, event.projects);
+        }
       }
       pending.resolve(event);
       return true;
@@ -6244,7 +6270,11 @@ export const useChatStore = defineStore('chat', {
       return true;
     },
     finishSessionCatalogMutation(msg) {
-      return finishCatalogMutation(this, msg);
+      const finished = finishCatalogMutation(this, msg);
+      if (finished && msg?.type === 'session_catalog_reorder_result' && msg.ok === true) {
+        persistCatalogYeaftOrder(this.sessionCatalog);
+      }
+      return finished;
     },
     openCatalogSession(descriptor) {
       if (!descriptor?.catalogKey || !descriptor.routeRef) return false;

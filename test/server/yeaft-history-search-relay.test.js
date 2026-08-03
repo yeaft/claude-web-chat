@@ -9,6 +9,7 @@ vi.mock('../../server/ws-utils.js', () => ({
   sendToWebClient,
   forwardToAgent,
   broadcastAgentList: vi.fn(),
+  buildSessionCatalog: vi.fn(() => []),
   verifyConversationOwnership: vi.fn(() => true),
   verifyAgentOwnership: vi.fn(() => true),
 }));

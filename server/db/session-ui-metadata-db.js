@@ -1,5 +1,41 @@
 import { stmts, transaction } from './connection.js';
 
+export function applySessionUiMetadataUpdates(userId, updates, now = Date.now()) {
+  if (!userId || !Array.isArray(updates) || updates.length === 0) return false;
+  for (const update of updates) {
+    if (!update?.catalogKey) throw new Error('Catalog metadata update requires catalogKey');
+    stmts.upsertSessionUiMetadata.run(
+      userId,
+      update.catalogKey,
+      update.pinned === true ? 1 : 0,
+      Number.isFinite(update.sortRank) ? update.sortRank : null,
+      now,
+    );
+    if (update.runtimeProvider === 'yeaft') {
+      const result = stmts.setYeaftSessionPinnedForAgent.run(
+        update.pinned === true ? 1 : 0,
+        now,
+        update.sessionId,
+        userId,
+        update.agentId,
+      );
+      if (result.changes !== 1) throw new Error('Yeaft Session identity changed during metadata update');
+    } else if (update.runtimeProvider === 'claude-code' || update.runtimeProvider === 'copilot') {
+      const result = stmts.updateSessionPinnedForRoute.run(
+        update.pinned === true ? 1 : 0,
+        now,
+        update.sessionId,
+        update.agentId,
+        userId,
+      );
+      if (result.changes !== 1) throw new Error('Chat Session identity changed during metadata update');
+    } else {
+      throw new Error('Unknown Session runtime provider during metadata update');
+    }
+  }
+  return true;
+}
+
 function mapRow(row) {
   if (!row) return null;
   return {
@@ -36,39 +72,7 @@ export const sessionUiMetadataDb = {
 
   applyBatch(userId, updates) {
     if (!userId || !Array.isArray(updates) || updates.length === 0) return false;
-    return transaction(() => {
-      const now = Date.now();
-      for (const update of updates) {
-        if (!update?.catalogKey) throw new Error('Catalog metadata update requires catalogKey');
-        stmts.upsertSessionUiMetadata.run(
-          userId,
-          update.catalogKey,
-          update.pinned === true ? 1 : 0,
-          Number.isFinite(update.sortRank) ? update.sortRank : null,
-          now,
-        );
-        if (update.runtimeProvider === 'yeaft') {
-          const result = stmts.setYeaftSessionPinnedForAgent.run(
-            update.pinned === true ? 1 : 0,
-            now,
-            update.sessionId,
-            userId,
-            update.agentId,
-          );
-          if (result.changes !== 1) throw new Error('Yeaft Session identity changed during metadata update');
-        } else if (update.runtimeProvider === 'claude-code' || update.runtimeProvider === 'copilot') {
-          const result = stmts.updateSessionPinnedForRoute.run(
-            update.pinned === true ? 1 : 0,
-            now,
-            update.sessionId,
-            update.agentId,
-            userId,
-          );
-          if (result.changes !== 1) throw new Error('Chat Session identity changed during metadata update');
-        }
-      }
-      return true;
-    })();
+    return transaction(() => applySessionUiMetadataUpdates(userId, updates))();
   },
 
   delete(userId, catalogKey) {

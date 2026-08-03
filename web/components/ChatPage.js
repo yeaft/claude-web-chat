@@ -111,6 +111,7 @@ export default {
         <UnifiedSessionList
           v-if="store.sessionCatalogLoaded"
           :sessions="store.sessionCatalog"
+          :project-store="store"
           :active-route="store.activeSessionRoute"
           :is-session-unread="isCatalogSessionUnread"
           :processing-conversations="store.processingConversations"

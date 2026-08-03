@@ -236,6 +236,111 @@ test.describe('侧边栏交互', () => {
       await chatPage.locator('.projects-section').evaluate(element => { element.scrollTop = 80; });
       await expect.poll(async () => (await readLayout()).projectScrollTop).toBeGreaterThan(0);
     }
+
+    const dragSessions = [
+      { ...makeSession('project-first', 'Project first'), sortRank: 0 },
+      { ...makeSession('project-second', 'Project second'), sortRank: 1 },
+      { ...makeSession('recent-drag', 'Recent drag'), sortRank: 2 },
+    ];
+    const dragProjects = [{
+      id: 'project-drag',
+      name: 'Project drag',
+      members: [
+        { agentId: mockAgent.agentId, sessionId: 'project-first' },
+        { agentId: mockAgent.agentId, sessionId: 'project-second' },
+      ],
+    }];
+    await setSidebarData({ projects: dragProjects, sessions: dragSessions });
+    const dragResult = await chatPage.evaluate(async ({ agentId }) => {
+      const store = window.Pinia.useChatStore();
+      const originalMove = store.mutateProject;
+      const originalReorder = store.reorderCatalogSessions;
+      const calls = { moves: [], orders: [] };
+      store.mutateProject = async (op, payload, targetAgentId) => {
+        calls.moves.push({ op, payload, targetAgentId });
+        if (op === 'move_session') {
+          const orderedCatalog = payload.catalogOrder.map((item, sortRank) => ({
+            ...store.sessionCatalog.find(row => row.catalogKey === item.catalogKey),
+            sortRank,
+          }));
+          const projects = store.sessionProjects.map(project => ({
+            ...project,
+            members: project.members.filter(member => (
+              member.agentId !== targetAgentId || member.sessionId !== payload.sessionId
+            )),
+          }));
+          if (payload.projectId) {
+            const project = projects.find(item => item.id === payload.projectId);
+            project.members.push({ agentId: targetAgentId, sessionId: payload.sessionId });
+          }
+          store.applySessionCatalogSnapshot(orderedCatalog, projects);
+        }
+        return { ok: true };
+      };
+      store.reorderCatalogSessions = (rows) => {
+        calls.orders.push(rows.map(row => row.catalogKey));
+        store.applySessionCatalogSnapshot(
+          rows.map((row, sortRank) => ({ ...row, sortRank })),
+          store.sessionProjects,
+        );
+        return true;
+      };
+
+      const transfer = new DataTransfer();
+      const dispatchDrag = (element, type, clientY) => element.dispatchEvent(new DragEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: transfer,
+        clientY,
+      }));
+      const rows = () => [...document.querySelectorAll('.sidebar-project-sessions .session-item')];
+      const recent = () => document.querySelector('.recents-section .session-item');
+      const titles = selector => [...document.querySelectorAll(selector)]
+        .map(row => row.querySelector('.sidebar-session-title-text')?.textContent?.trim());
+
+      let projectRows = rows();
+      dispatchDrag(projectRows[1], 'dragstart', 0);
+      const firstBounds = projectRows[0].getBoundingClientRect();
+      dispatchDrag(projectRows[0], 'dragover', firstBounds.top + 1);
+      await window.Vue.nextTick();
+      const indicator = projectRows[0].classList.contains('drag-before');
+      dispatchDrag(projectRows[0], 'drop', firstBounds.top + 1);
+      await window.Vue.nextTick();
+      const projectOrder = titles('.sidebar-project-sessions .session-item');
+
+      const recentRow = recent();
+      projectRows = rows();
+      dispatchDrag(recentRow, 'dragstart', 0);
+      const secondBounds = projectRows[1].getBoundingClientRect();
+      dispatchDrag(projectRows[1], 'dragover', secondBounds.top + 1);
+      dispatchDrag(projectRows[1], 'drop', secondBounds.top + 1);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      await window.Vue.nextTick();
+      const crossSectionOrder = titles('.sidebar-project-sessions .session-item');
+      const recentOrder = titles('.recents-section .session-item');
+
+      store.mutateProject = originalMove;
+      store.reorderCatalogSessions = originalReorder;
+      return { calls, indicator, projectOrder, crossSectionOrder, recentOrder, agentId };
+    }, { agentId: mockAgent.agentId });
+    expect(dragResult.indicator).toBe(true);
+    expect(dragResult.projectOrder).toEqual(['Project second', 'Project first']);
+    expect(dragResult.crossSectionOrder).toEqual(['Project second', 'Recent drag', 'Project first']);
+    expect(dragResult.recentOrder).toEqual([]);
+    expect(dragResult.calls.moves).toEqual([{
+      op: 'move_session',
+      payload: {
+        sessionId: 'recent-drag',
+        projectId: 'project-drag',
+        catalogOrder: [
+          expect.objectContaining({ catalogKey: `yeaft:${mockAgent.agentId}:project-second` }),
+          expect.objectContaining({ catalogKey: `yeaft:${mockAgent.agentId}:recent-drag` }),
+          expect.objectContaining({ catalogKey: `yeaft:${mockAgent.agentId}:project-first` }),
+        ],
+      },
+      targetAgentId: mockAgent.agentId,
+    }]);
+    expect(dragResult.calls.orders).toHaveLength(1);
   });
 
   test('点击折叠按钮收起侧边栏', async ({ chatPage }) => {

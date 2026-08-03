@@ -14,6 +14,7 @@ import {
   calculateFloatingMenuPosition,
   calculateFloatingSubmenuPosition,
   default as UnifiedSessionList,
+  reorderSessionCatalogRows,
 } from '../../web/components/UnifiedSessionList.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
 import WorkCenterPage from '../../web/components/WorkCenterPage.js';
@@ -242,7 +243,9 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\s*\{[^}]*background:\s*transparent/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-title-text\s*\{[^}]*flex:\s*1[^}]*text-overflow:\s*ellipsis/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-unread\s*\{[^}]*background:\s*var\(--success\)/);
-    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\[draggable="true"\][^}]*\{[^}]*cursor:\s*default/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\[draggable="true"\]\s*\{[^}]*cursor:\s*grab/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\.drag-before\s*\{[^}]*box-shadow:\s*inset 0 2px 0 var\(--accent-blue\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\.drag-after\s*\{[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent-blue\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-create\s*\{[^}]*background:\s*var\(--bg-input-wrapper\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-results\s*\{[^}]*display:\s*flex[^}]*overflow:\s*hidden/);
     expect(yeaftSidebarCss).toMatch(/\.projects-section\s*\{[^}]*flex:\s*0 0 auto[^}]*max-height:\s*50%[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/);
@@ -276,6 +279,19 @@ describe('message flow regressions', () => {
     expect(normalizeChatRuntimeProvider('copilot')).toBe('copilot');
     expect(() => normalizeChatRuntimeProvider('unknown')).toThrow(/Unknown Chat runtime provider/);
     expect(() => chatCatalogKey('')).toThrow(/conversationId/);
+
+    const orderFixture = ['a', 'b', 'c', 'd'].map((catalogKey, sortRank) => ({ catalogKey, sortRank }));
+    expect(reorderSessionCatalogRows(orderFixture, 'd', 'b', 'before').map(row => row.catalogKey))
+      .toEqual(['a', 'd', 'b', 'c']);
+    expect(reorderSessionCatalogRows(orderFixture, 'a', 'c', 'after').map(row => row.catalogKey))
+      .toEqual(['b', 'c', 'a', 'd']);
+    expect(reorderSessionCatalogRows(orderFixture, 'b', null, 'append').map(row => row.catalogKey))
+      .toEqual(['a', 'c', 'd', 'b']);
+    expect(reorderSessionCatalogRows(orderFixture, 'missing', 'b', 'before')).toBeNull();
+    expect(reorderSessionCatalogRows(orderFixture, 'b', 'missing', 'before')).toBeNull();
+    expect(UnifiedSessionList.computed.hasCompleteCatalogOrder.call({
+      sessions: [{ sortRank: 0 }, { sortRank: 0 }],
+    })).toBe(false);
 
     const catalogRows = [
       {
@@ -449,6 +465,7 @@ describe('message flow regressions', () => {
       instruction: 'Updated Project rule.',
     });
     expect(document.body.querySelector('.project-instruction-modal')).toBeNull();
+    sidebar.vm.dispatchProjectAction = UnifiedSessionList.methods.dispatchProjectAction.bind(sidebar.vm);
 
     const projectToggles = sidebar.findAll('.sidebar-project-toggle');
     await projectToggles[0].trigger('click');
@@ -463,6 +480,172 @@ describe('message flow regressions', () => {
     expect(sidebar.text()).toContain('Visible');
     expect(sidebar.text()).toContain('Pinned');
     expect(sidebar.findAll('.session-item').map(item => item.get('.sidebar-session-title-text').text())).toEqual(['Pinned', 'Visible 2', 'Visible']);
+    const visibleRow = sidebar.findAll('.recents-section .session-item')
+      .find(item => item.text().includes('Visible') && !item.text().includes('Visible 2'));
+    const visibleTwoRow = sidebar.findAll('.recents-section .session-item')
+      .find(item => item.text().includes('Visible 2'));
+    const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() };
+    await visibleRow.trigger('dragstart', { dataTransfer });
+    expect(dataTransfer.effectAllowed).toBe('move');
+    Object.defineProperty(visibleTwoRow.element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 100, bottom: 134, height: 34 }),
+    });
+    await visibleTwoRow.trigger('dragover', { dataTransfer, clientY: 101 });
+    expect(visibleTwoRow.classes()).toContain('drag-before');
+    await visibleTwoRow.trigger('drop', { dataTransfer, clientY: 101 });
+    expect(sidebar.emitted('action').at(-1)[0]).toMatchObject({
+      action: 'reorder',
+      row: { catalogKey: 'chat:visible' },
+    });
+    expect(sidebar.emitted('action').at(-1)[0].sessions.map(row => row.catalogKey)).toEqual([
+      'yeaft:user_1770305719:server-instance:pinned',
+      'chat:visible',
+      'chat:visible-2',
+      'chat:offline',
+    ]);
+    const rejectedProjectDrag = { effectAllowed: '', setData: vi.fn() };
+    sidebar.vm.startDrag(catalogRows[2], { dataTransfer: rejectedProjectDrag });
+    expect(sidebar.vm.draggedRow?.catalogKey).toBe('chat:visible');
+    const rejectedProjectDrop = { preventDefault: vi.fn(), stopPropagation: vi.fn(), dataTransfer: rejectedProjectDrag };
+    sidebar.vm.dragOverRow(catalogRows[0], sidebar.props('projects')[0], rejectedProjectDrop);
+    expect(rejectedProjectDrop.preventDefault).not.toHaveBeenCalled();
+    sidebar.vm.finishDrag();
+
+    const projectDragRows = [
+      {
+        catalogKey: 'yeaft:user_1770305719:server-instance:project-first',
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'user_1770305719:server-instance', sessionId: 'project-first' },
+        title: 'Project first',
+        pinned: false,
+        availability: 'online',
+        sortRank: 0,
+      },
+      {
+        catalogKey: 'yeaft:user_1770305719:server-instance:project-second',
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'user_1770305719:server-instance', sessionId: 'project-second' },
+        title: 'Project second',
+        pinned: false,
+        availability: 'online',
+        sortRank: 1,
+      },
+      {
+        catalogKey: 'yeaft:user_1770305719:server-instance:recent-yeaft',
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'user_1770305719:server-instance', sessionId: 'recent-yeaft' },
+        title: 'Recent Yeaft',
+        pinned: false,
+        availability: 'online',
+        sortRank: 2,
+      },
+    ];
+    await sidebar.setProps({
+      sessions: projectDragRows,
+      projects: [{
+        id: 'project-shared',
+        name: 'Shared project',
+        members: [
+          { agentId: 'user_1770305719:server-instance', sessionId: 'project-first' },
+          { agentId: 'user_1770305719:server-instance', sessionId: 'project-second' },
+        ],
+      }],
+    });
+    const projectFirst = sidebar.findAll('.sidebar-project-sessions .session-item')
+      .find(item => item.text().includes('Project first'));
+    const projectSecond = sidebar.findAll('.sidebar-project-sessions .session-item')
+      .find(item => item.text().includes('Project second'));
+    await projectSecond.trigger('dragstart', { dataTransfer });
+    Object.defineProperty(projectFirst.element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 100, bottom: 134, height: 34 }),
+    });
+    await projectFirst.trigger('dragover', { dataTransfer, clientY: 101 });
+    await projectFirst.trigger('drop', { dataTransfer, clientY: 101 });
+    expect(sidebar.emitted('action').at(-1)[0].sessions.map(row => row.catalogKey)).toEqual([
+      'yeaft:user_1770305719:server-instance:project-second',
+      'yeaft:user_1770305719:server-instance:project-first',
+      'yeaft:user_1770305719:server-instance:recent-yeaft',
+    ]);
+
+    const legacyProject = {
+      id: 'user_1770305719:server-instance\u001flegacy-project',
+      legacyProjectId: 'legacy-project',
+      legacyAgentId: 'user_1770305719:server-instance',
+      name: 'Legacy project',
+      members: [
+        { agentId: 'user_1770305719:server-instance', sessionId: 'project-first' },
+        { agentId: 'user_1770305719:server-instance', sessionId: 'project-second' },
+      ],
+    };
+    await sidebar.setProps({ projects: [legacyProject] });
+    expect(sidebar.vm.canDragRow(projectDragRows[0], legacyProject)).toBe(true);
+    expect(sidebar.vm.canDropRow(projectDragRows[0], legacyProject)).toBe(true);
+
+    const projectStore = {
+      mutateProject: vi.fn(() => Promise.resolve({ ok: true })),
+      reorderCatalogSessions: vi.fn(() => true),
+    };
+    await sidebar.setProps({
+      sessions: projectDragRows.map(row => ({ ...row })),
+      projects: [{
+        id: 'project-shared',
+        name: 'Shared project',
+        members: [
+          { agentId: 'user_1770305719:server-instance', sessionId: 'project-first' },
+          { agentId: 'user_1770305719:server-instance', sessionId: 'project-second' },
+        ],
+      }],
+      projectStore,
+    });
+    expect(sidebar.vm.resolvedProjectStore.mutateProject).toBe(projectStore.mutateProject);
+    expect(sidebar.vm.dragOperationPending).toBe(false);
+    const recentYeaft = sidebar.get('.recents-section .session-item');
+    const currentProjectSecond = sidebar.findAll('.sidebar-project-sessions .session-item')
+      .find(item => item.text().includes('Project second'));
+    Object.defineProperty(currentProjectSecond.element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 100, bottom: 134, height: 34 }),
+    });
+    await recentYeaft.trigger('dragstart', { dataTransfer });
+    expect(sidebar.vm.draggedRow?.catalogKey).toBe('yeaft:user_1770305719:server-instance:recent-yeaft');
+    await currentProjectSecond.trigger('dragover', { dataTransfer, clientY: 101 });
+    expect(sidebar.vm.dragTargetRowKey).toBe('yeaft:user_1770305719:server-instance:project-second');
+    await currentProjectSecond.trigger('drop', { dataTransfer, clientY: 101 });
+    expect(projectStore.mutateProject).toHaveBeenLastCalledWith('move_session', {
+      sessionId: 'recent-yeaft',
+      projectId: 'project-shared',
+      catalogOrder: [
+        expect.objectContaining({ catalogKey: 'yeaft:user_1770305719:server-instance:project-first' }),
+        expect.objectContaining({ catalogKey: 'yeaft:user_1770305719:server-instance:recent-yeaft' }),
+        expect.objectContaining({ catalogKey: 'yeaft:user_1770305719:server-instance:project-second' }),
+      ],
+    }, 'user_1770305719:server-instance');
+    expect(projectStore.reorderCatalogSessions).not.toHaveBeenCalled();
+
+    projectStore.mutateProject.mockResolvedValueOnce({ ok: false });
+    const currentProjectFirst = sidebar.findAll('.sidebar-project-sessions .session-item')
+      .find(item => item.text().includes('Project first'));
+    await currentProjectFirst.trigger('dragstart', { dataTransfer });
+    await sidebar.get('.recents-section').trigger('drop', { dataTransfer });
+    expect(projectStore.mutateProject).toHaveBeenLastCalledWith('move_session', {
+      sessionId: 'project-first',
+      projectId: null,
+      catalogOrder: expect.any(Array),
+    }, 'user_1770305719:server-instance');
+    expect(projectStore.reorderCatalogSessions).not.toHaveBeenCalled();
+    await sidebar.setProps({ projectStore: null, sessions: catalogRows, projects: [
+      {
+        id: 'project-shared',
+        name: 'Shared project',
+        members: [
+          { agentId: 'user_1770305719:server-instance', sessionId: 'pinned' },
+          { agentId: 'agent-b', sessionId: 'offline' },
+        ],
+      },
+      { id: 'project-empty', name: 'Empty project', members: [] },
+    ] });
     expect(sidebar.findAll('.session-item.processing')).toHaveLength(2);
     expect(sidebar.findAll('.processing-dot')).toHaveLength(2);
     expect(sidebar.findAll('.session-pin-icon')).toHaveLength(1);
@@ -945,9 +1128,12 @@ describe('message flow regressions', () => {
     expect(chatPageSource).toContain('sidebar-work-center-header-btn');
     expect(yeaftSidebarSource).toContain(':is-session-unread="isCatalogSessionUnread"');
     expect(chatPageSource).toContain('@action="onUnifiedSessionAction"');
+    expect(yeaftSidebarSource).toContain('@action="onUnifiedSessionAction"');
     expect(yeaftSidebarSource).toContain('@create="onUnifiedCreate"');
     expect(yeaftSidebarSource).toContain('sidebar-work-center-header-btn');
+    expect(chatPageSource).toContain(':project-store="store"');
     expect(chatPageSource).toContain(':active-route="store.activeSessionRoute"');
+    expect(yeaftSidebarSource).toContain(':project-store="chatStore"');
     expect(yeaftSidebarSource).toContain(':active-route="chatStore.activeSessionRoute"');
     expect(chatPageSource).toContain(':processing-conversations="store.processingConversations"');
     expect(chatPageSource).toContain(':agents="store.agents"');
@@ -976,6 +1162,137 @@ describe('message flow regressions', () => {
     expect(finishCatalogMutation(catalogStore, { requestId: 'pin-1', ok: false })).toBe(true);
     expect(catalogStore.sessionCatalog).toEqual(previousCatalog);
     expect(catalogStore.sessionCatalogMutationRequests).toEqual({});
+
+    const persistedYeaftOrder = vi.fn(() => []);
+    const previousSessionsStoreForOrder = globalThis.Pinia.useSessionsStore;
+    globalThis.Pinia.useSessionsStore = () => ({ reorderSessionsGlobally: persistedYeaftOrder });
+    const reorderStore = useChatStore();
+    reorderStore.sessionCatalog = orderFixture.map((row, index) => ({
+      ...row,
+      catalogKey: index === 1 ? 'chat:b' : `yeaft:agent-a:${row.catalogKey}`,
+      runtimeProvider: index === 1 ? 'copilot' : 'yeaft',
+      routeRef: {
+        runtimeProvider: index === 1 ? 'copilot' : 'yeaft',
+        agentId: 'agent-a',
+        sessionId: row.catalogKey,
+      },
+    }));
+    reorderStore.sessionCatalogMutationRequests = {};
+    reorderStore.sendWsMessage = vi.fn(() => true);
+    expect(reorderStore.reorderCatalogSessions(reorderStore.sessionCatalog)).toBe(true);
+    expect(persistedYeaftOrder).not.toHaveBeenCalled();
+    const reorderRequest = reorderStore.sendWsMessage.mock.calls.at(-1)[0];
+    expect(reorderRequest).toEqual(expect.objectContaining({
+      type: 'reorder_session_catalog',
+      sessions: expect.arrayContaining([
+        expect.objectContaining({ catalogKey: 'chat:b', sortRank: 1 }),
+      ]),
+    }));
+    expect(reorderStore.finishSessionCatalogMutation({
+      type: 'session_catalog_reorder_result',
+      requestId: reorderRequest.requestId,
+      ok: true,
+    })).toBe(true);
+    expect(persistedYeaftOrder).toHaveBeenCalledWith([
+      'agent-a\u001fa',
+      'agent-a\u001fc',
+      'agent-a\u001fd',
+    ]);
+    persistedYeaftOrder.mockClear();
+    expect(reorderStore.finishSessionCatalogMutation({
+      type: 'session_catalog_reorder_result',
+      requestId: reorderRequest.requestId,
+      ok: false,
+    })).toBe(false);
+    expect(persistedYeaftOrder).not.toHaveBeenCalled();
+
+    const atomicOrder = [
+      reorderStore.sessionCatalog[3],
+      reorderStore.sessionCatalog[0],
+      reorderStore.sessionCatalog[1],
+      reorderStore.sessionCatalog[2],
+    ].map(row => ({ catalogKey: row.catalogKey, routeRef: row.routeRef }));
+    reorderStore.sessionProjects = [{
+      id: 'project-old',
+      members: [{ agentId: 'agent-a', sessionId: 'a' }],
+    }];
+    reorderStore.projectMutationRequests = {};
+    reorderStore.sendWsMessage = vi.fn(() => true);
+    const rejectedMove = reorderStore.mutateProject('move_session', {
+      sessionId: 'a',
+      projectId: 'project-new',
+      catalogOrder: atomicOrder,
+    }, 'agent-a');
+    const rejectedRequest = reorderStore.sendWsMessage.mock.calls.at(-1)[0];
+    expect(reorderStore.sessionCatalog.map(row => row.catalogKey)).toEqual([
+      'yeaft:agent-a:a',
+      'chat:b',
+      'yeaft:agent-a:c',
+      'yeaft:agent-a:d',
+    ]);
+    expect(reorderStore.finishProjectMutation({
+      requestId: rejectedRequest.requestId,
+      ok: false,
+      projects: [{ id: 'project-new', members: [{ agentId: 'agent-a', sessionId: 'a' }] }],
+    })).toBe(true);
+    await expect(rejectedMove).resolves.toMatchObject({ ok: false });
+    expect(reorderStore.sessionProjects).toEqual([{
+      id: 'project-old',
+      members: [{ agentId: 'agent-a', sessionId: 'a' }],
+    }]);
+    expect(persistedYeaftOrder).not.toHaveBeenCalled();
+
+    const acceptedMove = reorderStore.mutateProject('move_session', {
+      sessionId: 'a',
+      projectId: 'project-new',
+      catalogOrder: atomicOrder,
+    }, 'agent-a');
+    const acceptedRequest = reorderStore.sendWsMessage.mock.calls.at(-1)[0];
+    expect(acceptedRequest).toMatchObject({
+      type: 'yeaft_project_mutation',
+      op: 'move_session',
+      targetAgentId: 'agent-a',
+      catalogOrder: atomicOrder,
+    });
+    expect(reorderStore.finishProjectMutation({
+      requestId: acceptedRequest.requestId,
+      ok: true,
+      projects: [{ id: 'project-new', members: [{ agentId: 'agent-a', sessionId: 'a' }] }],
+    })).toBe(true);
+    await expect(acceptedMove).resolves.toMatchObject({ ok: true });
+    expect(reorderStore.sessionCatalog.map(row => row.catalogKey)).toEqual([
+      'yeaft:agent-a:d',
+      'yeaft:agent-a:a',
+      'chat:b',
+      'yeaft:agent-a:c',
+    ]);
+    expect(reorderStore.sessionProjects).toEqual([{
+      id: 'project-new',
+      members: [{ agentId: 'agent-a', sessionId: 'a' }],
+    }]);
+    expect(persistedYeaftOrder).toHaveBeenLastCalledWith([
+      'agent-a\u001fd',
+      'agent-a\u001fa',
+      'agent-a\u001fc',
+    ]);
+
+    persistedYeaftOrder.mockClear();
+    const catalogAfterAcceptedMove = reorderStore.sessionCatalog.map(row => ({ ...row }));
+    const projectsAfterAcceptedMove = reorderStore.sessionProjects.map(project => ({
+      ...project,
+      members: project.members.map(member => ({ ...member })),
+    }));
+    reorderStore.sendWsMessage = vi.fn(() => false);
+    await expect(reorderStore.mutateProject('move_session', {
+      sessionId: 'a',
+      projectId: null,
+      catalogOrder: atomicOrder,
+    }, 'agent-a')).resolves.toMatchObject({ ok: false, error: { code: 'send_failed' } });
+    expect(reorderStore.sessionCatalog).toEqual(catalogAfterAcceptedMove);
+    expect(reorderStore.sessionProjects).toEqual(projectsAfterAcceptedMove);
+    expect(reorderStore.projectMutationRequests).toEqual({});
+    expect(persistedYeaftOrder).not.toHaveBeenCalled();
+    globalThis.Pinia.useSessionsStore = previousSessionsStoreForOrder;
 
     const historyStore = {
       messagesMap: { a: [], b: [] },
