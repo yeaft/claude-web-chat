@@ -78,8 +78,9 @@
 .projects-section > .sidebar-section-heading, .recents-section > .sidebar-section-heading { position: sticky; top: 0; z-index: 1; background: var(--bg-sidebar); }
 .sidebar-section-heading > span:first-child { flex: 1; }
 .sidebar-recents-create { opacity: 0; pointer-events: none; transition: opacity 0.12s ease; }
-.recents-section > .sidebar-section-heading:hover .sidebar-recents-create,
-.recents-section > .sidebar-section-heading:focus-within .sidebar-recents-create { opacity: 1; pointer-events: auto; }
+.recents-section > .sidebar-section-heading > span:first-child:hover ~ .sidebar-recents-create,
+.recents-section > .sidebar-section-heading > .sidebar-recents-create:hover,
+.recents-section > .sidebar-section-heading:focus-within > .sidebar-recents-create { opacity: 1; pointer-events: auto; }
 @media (pointer: coarse) {
   .sidebar-recents-create { opacity: 1; pointer-events: auto; }
 }

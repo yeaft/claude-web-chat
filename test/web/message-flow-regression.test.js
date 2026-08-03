@@ -250,7 +250,7 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading\s*\{[^}]*min-height:\s*38px[^}]*color:\s*var\(--text-muted\)[^}]*font-size:\s*14px[^}]*font-weight:\s*600/);
     expect(yeaftSidebarCss).toMatch(/\.projects-section > \.sidebar-section-heading, \.recents-section > \.sidebar-section-heading\s*\{[^}]*position:\s*sticky[^}]*top:\s*0[^}]*z-index:\s*1[^}]*background:\s*var\(--bg-sidebar\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-recents-create\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
-    expect(yeaftSidebarCss).toMatch(/\.recents-section > \.sidebar-section-heading:hover \.sidebar-recents-create,[\s\S]*?\.recents-section > \.sidebar-section-heading:focus-within \.sidebar-recents-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/\.recents-section > \.sidebar-section-heading > span:first-child:hover ~ \.sidebar-recents-create,[\s\S]*?\.recents-section > \.sidebar-section-heading > \.sidebar-recents-create:hover,[\s\S]*?\.recents-section > \.sidebar-section-heading:focus-within > \.sidebar-recents-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-recents-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-menu-info\s*\{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row \.session-actions\s*\{[^}]*position:\s*absolute[^}]*opacity:\s*0[^}]*pointer-events:\s*none[^}]*linear-gradient\(90deg, transparent, var\(--sidebar-hover\) 22px\)/);
@@ -369,6 +369,8 @@ describe('message flow regressions', () => {
     const recentsCreate = sidebar.get('.recents-section .sidebar-recents-create');
     expect(recentsCreate.attributes('title')).toBe('sidebar.sessions.newChat');
     expect(recentsCreate.attributes('aria-label')).toBe('sidebar.sessions.newChat');
+    expect(recentsCreate.get('.sidebar-recents-create-frame').attributes('d')).toBe(createSessionButton.get('.sidebar-primary-action-frame').attributes('d'));
+    expect(recentsCreate.get('.sidebar-recents-create-pen').attributes('d')).toBe(createSessionButton.get('.sidebar-primary-action-pen').attributes('d'));
     expect(sidebar.findAll('.sidebar-section')).toHaveLength(2);
     expect(sidebar.findAll('.session-item')).toHaveLength(0);
     await sidebar.setProps({ sessions: catalogRows });

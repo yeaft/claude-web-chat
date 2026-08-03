@@ -38,6 +38,8 @@ test.describe('侧边栏交互', () => {
     const newChat = chatPage.locator('.sidebar-primary-action');
     const projectHeading = chatPage.locator('.projects-section > .sidebar-section-heading');
     const newProject = projectHeading.locator('.sidebar-project-add-button');
+    const recentsHeading = chatPage.locator('.recents-section > .sidebar-section-heading');
+    const recentsCreate = recentsHeading.locator('.sidebar-recents-create');
 
     await expect(newChat).toHaveText('New chat');
     await expect(newChat).toHaveAccessibleName('New chat');
@@ -67,6 +69,8 @@ test.describe('侧边栏交互', () => {
           sessionTitleFontSize: Number.parseFloat(getComputedStyle(firstSessionTitle).fontSize),
           chatFramePath: chatButton.querySelector('.sidebar-primary-action-frame').getAttribute('d'),
           chatPenPath: chatButton.querySelector('.sidebar-primary-action-pen').getAttribute('d'),
+          recentsFramePath: document.querySelector('.sidebar-recents-create-frame').getAttribute('d'),
+          recentsPenPath: document.querySelector('.sidebar-recents-create-pen').getAttribute('d'),
           projectMarkPath: document.querySelector('.sidebar-project-add-mark').getAttribute('d'),
         };
       });
@@ -76,6 +80,8 @@ test.describe('侧边栏交互', () => {
       expect(appearance.chatFontSize).toBe(appearance.sessionTitleFontSize);
       expect(appearance.chatFramePath).toBe('M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7');
       expect(appearance.chatPenPath).toBe('M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852Z');
+      expect(appearance.recentsFramePath).toBe(appearance.chatFramePath);
+      expect(appearance.recentsPenPath).toBe(appearance.chatPenPath);
       expect(appearance.projectMarkPath).toBe('M12 5v14M5 12h14');
     }
 
@@ -116,6 +122,32 @@ test.describe('侧边栏交互', () => {
     await expect(newProject).toHaveCSS('pointer-events', 'none');
     await chatPage.keyboard.press('Escape');
     await expect(chatPage.locator('.sidebar-project-create')).toHaveCount(0);
+
+    await chatPage.mouse.move(0, 0);
+    await expect(recentsCreate).toHaveCSS('opacity', '0');
+    await expect(recentsCreate).toHaveCSS('pointer-events', 'none');
+    const hiddenRecentsHitTarget = await recentsCreate.evaluate(button => {
+      const bounds = button.getBoundingClientRect();
+      const x = bounds.left + bounds.width / 2;
+      const y = bounds.top + bounds.height / 2;
+      const target = document.elementFromPoint(x, y);
+      return {
+        x,
+        y,
+        hitsButton: target === button || button.contains(target),
+      };
+    });
+    expect(hiddenRecentsHitTarget.hitsButton).toBe(false);
+    await chatPage.mouse.click(hiddenRecentsHitTarget.x, hiddenRecentsHitTarget.y);
+    await expect(chatPage.locator('.yeaft-session-create-modal')).toHaveCount(0);
+
+    await recentsHeading.locator('> span:first-child').hover();
+    await expect(recentsCreate).toHaveCSS('opacity', '1');
+    await expect(recentsCreate).toHaveCSS('pointer-events', 'auto');
+    await recentsCreate.click();
+    await expect(chatPage.locator('.yeaft-session-create-modal')).toBeVisible();
+    await chatPage.locator('.yeaft-session-create-modal .resume-close-btn').click();
+    await expect(chatPage.locator('.yeaft-session-create-modal')).toHaveCount(0);
 
     await newChat.click();
     await expect(chatPage.locator('.yeaft-session-create-modal')).toBeVisible();
