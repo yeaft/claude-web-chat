@@ -35,7 +35,7 @@ import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { createOutputCollector, runRipgrep, nodeGrep } from '../../../agent/yeaft/tools/grep.js';
 import { nodeDiskUsage } from '../../../agent/yeaft/tools/disk-usage.js';
 import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
-import bashTool from '../../../agent/yeaft/tools/bash.js';
+import bashTool, { createBashTool } from '../../../agent/yeaft/tools/bash.js';
 import { SEARCH_SKIP_DIRS } from '../../../agent/yeaft/tools/search-paths.js';
 
 // ─── Mock Adapter ─────────────────────────────────────────────
@@ -1864,6 +1864,103 @@ describe('Engine', () => {
       });
 
       expect(bashTool.timeoutMs).toBeGreaterThan(120_000);
+
+      const terminationChild = new EventEmitter();
+      terminationChild.pid = 4444;
+      terminationChild.stdout = new PassThrough();
+      terminationChild.stderr = new PassThrough();
+      terminationChild.kill = () => true;
+      const terminationCalls = [];
+      const recoveringBash = createBashTool({
+        runProcessImpl: (_command, _args, options) => {
+          terminationCalls.push({ signal: options.signal, timeoutMs: options.timeoutMs });
+          return runProcess('powershell.exe', [], {
+            ...options,
+            timeoutMs: 1,
+            forceSettleMs: 5,
+            platform: 'win32',
+            systemdScope: null,
+            spawnProcess: () => terminationChild,
+            spawnProcessSync: () => ({ status: 0 }),
+          });
+        },
+      });
+      const startedTasks = [];
+      const bashTaskManager = {
+        renderActiveTasksForPrompt: () => '',
+        startShellTask: input => {
+          startedTasks.push(input);
+          return { id: 'task_after_timeout', status: 'running', log: { path: '/tmp/task.log' } };
+        },
+      };
+      const recoveryAdapter = new MockAdapter();
+      recoveryAdapter.pushResponse([
+        {
+          type: 'tool_call',
+          id: 'call_unconfirmed_timeout',
+          name: 'Bash',
+          input: { command: 'Start-Sleep -Seconds 30', timeout_ms: 1000 },
+        },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      recoveryAdapter.pushResponse([
+        {
+          type: 'tool_call',
+          id: 'call_background_after_timeout',
+          name: 'Bash',
+          input: {
+            command: 'Start-Sleep -Seconds 30',
+            timeout_ms: 1000,
+            background: true,
+            taskTitle: 'continue in background',
+          },
+        },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      recoveryAdapter.pushResponse([
+        { type: 'text_delta', text: 'The foreground command timed out, so I moved it to a background task.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const recoveryRegistry = new ToolRegistry();
+      recoveryRegistry.register(recoveringBash);
+      const recoveryEngine = new Engine({
+        adapter: recoveryAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolRegistry: recoveryRegistry,
+        taskManager: bashTaskManager,
+      });
+      const recoveryEvents = [];
+      for await (const event of recoveryEngine.query({ prompt: 'run the long command' })) {
+        recoveryEvents.push(event);
+      }
+      expect(terminationCalls).toHaveLength(1);
+      expect(terminationCalls[0]).toMatchObject({ timeoutMs: 1000 });
+      expect(startedTasks).toHaveLength(1);
+      expect(startedTasks[0]).toMatchObject({
+        command: 'Start-Sleep -Seconds 30',
+        title: 'continue in background',
+      });
+      expect(recoveryAdapter.callLog).toHaveLength(3);
+      const timeoutToolMessage = recoveryAdapter.callLog[1].messages
+        .find(message => message.toolCallId === 'call_unconfirmed_timeout');
+      expect(timeoutToolMessage).toMatchObject({ isError: false });
+      expect(timeoutToolMessage.content).toContain('Exit code: 124');
+      expect(timeoutToolMessage.content).toContain('Process tree did not exit within 5ms after SIGKILL: powershell.exe');
+      expect(timeoutToolMessage.content).toContain('The command may still be running.');
+      expect(timeoutToolMessage.content).toContain('use background=true');
+      expect(recoveryAdapter.callLog[2].messages
+        .find(message => message.toolCallId === 'call_background_after_timeout')).toMatchObject({
+          isError: false,
+          content: expect.stringContaining('Started background task task_after_timeout'),
+        });
+      expect(recoveryEvents.filter(event => event.type === 'tool_end')).toHaveLength(2);
+      expect(recoveryEvents.find(event => event.type === 'error')).toBeUndefined();
+      expect(recoveryEvents.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+        stopReason: 'end_turn',
+        terminal: true,
+      });
+
       if (process.platform === 'linux') {
         const canary = `pr1483-${Date.now()}-${process.pid}`;
         const probeRoot = mkdtempSync(join(tmpdir(), 'yeaft-systemd-payload-'));
@@ -3543,6 +3640,72 @@ describe('managed CLI setup and fast tool integration', () => {
       expect(child.stdout.listenerCount('data')).toBe(0);
       expect(child.stderr.listenerCount('data')).toBe(0);
     }
+
+    const child = new EventEmitter();
+    child.pid = 4343;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    const result = await runProcess('powershell.exe', [], {
+      timeoutMs: 1,
+      forceSettleMs: 5,
+      requireExitConfirmation: true,
+      platform: 'win32',
+      spawnProcess: () => child,
+      spawnProcessSync: () => ({ status: 0 }),
+    });
+    expect(result).toMatchObject({
+      code: 124,
+      timedOut: true,
+      terminationError: 'Process tree did not exit within 5ms after SIGKILL: powershell.exe',
+    });
+    expect(child.listenerCount('close')).toBe(0);
+    expect(child.listenerCount('error')).toBe(0);
+    expect(child.stdout.listenerCount('data')).toBe(0);
+    expect(child.stderr.listenerCount('data')).toBe(0);
+
+    const abortedChild = new EventEmitter();
+    abortedChild.pid = 4545;
+    abortedChild.stdout = new PassThrough();
+    abortedChild.stderr = new PassThrough();
+    abortedChild.kill = () => true;
+    const controller = new AbortController();
+    const aborted = runProcess('powershell.exe', [], {
+      signal: controller.signal,
+      timeoutMs: 1,
+      forceSettleMs: 20,
+      requireExitConfirmation: true,
+      platform: 'win32',
+      spawnProcess: () => abortedChild,
+      spawnProcessSync: () => ({ status: 0 }),
+    });
+    setTimeout(() => controller.abort(), 5);
+    await expect(aborted).rejects.toMatchObject({ name: 'AbortError' });
+    expect(abortedChild.listenerCount('close')).toBe(0);
+    expect(abortedChild.listenerCount('error')).toBe(0);
+    expect(abortedChild.stdout.listenerCount('data')).toBe(0);
+    expect(abortedChild.stderr.listenerCount('data')).toBe(0);
+
+    const overflowChild = new EventEmitter();
+    overflowChild.pid = 4646;
+    overflowChild.stdout = new PassThrough();
+    overflowChild.stderr = new PassThrough();
+    overflowChild.kill = () => true;
+    const overflowed = runProcess('powershell.exe', [], {
+      timeoutMs: 5,
+      forceSettleMs: 20,
+      maxBytes: 1,
+      requireExitConfirmation: true,
+      platform: 'win32',
+      spawnProcess: () => overflowChild,
+      spawnProcessSync: () => ({ status: 0 }),
+    });
+    overflowChild.stdout.write('too much output');
+    await expect(overflowed).rejects.toMatchObject({ name: 'ProcessTerminationError' });
+    expect(overflowChild.listenerCount('close')).toBe(0);
+    expect(overflowChild.listenerCount('error')).toBe(0);
+    expect(overflowChild.stdout.listenerCount('data')).toBe(0);
+    expect(overflowChild.stderr.listenerCount('data')).toBe(0);
   }
 
   function verifyGrepExactBudget() {
