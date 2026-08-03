@@ -11,7 +11,12 @@ import {
   anthropicAuthHeaderModeForProvider,
 } from '../../../agent/yeaft/llm/router.js';
 import { classifyAuthError } from '../../../agent/yeaft/llm/adapter.js';
-import { _resetCacheForTests } from '../../../agent/yeaft/llm/credentials/github-copilot.js';
+import {
+  _resetCacheForTests,
+  getApiToken,
+  refreshApiToken,
+  resolveRawToken,
+} from '../../../agent/yeaft/llm/credentials/github-copilot.js';
 
 const originalFetch = global.fetch;
 const cleanup = [];
@@ -113,6 +118,81 @@ describe('LLM adapter auth headers', () => {
       baseUrl: 'https://api.anthropic.com',
       apiKey: 'static-key',
     })).toBe('x-api-key');
+  });
+
+  it('caches raw GitHub auth and exchanges once across concurrent callers', async () => {
+    const rawToken = `gho_${'a'.repeat(36)}`;
+    const ghTokenFn = vi.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 5));
+      return rawToken;
+    });
+    const readPersistedTokenFn = vi.fn(async () => null);
+    const fetchFn = vi.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 5));
+      return jsonResponse({ token: 'shared-api-token', expires_at: Math.floor(Date.now() / 1000) + 1800 });
+    });
+
+    const results = await Promise.all(Array.from({ length: 100 }, () => getApiToken({
+      fetchFn, ghTokenFn, readPersistedTokenFn,
+    })));
+    expect(results.every(result => result.token === 'shared-api-token')).toBe(true);
+    expect(ghTokenFn).toHaveBeenCalledTimes(1);
+    expect(readPersistedTokenFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+
+    await getApiToken({ fetchFn, ghTokenFn, readPersistedTokenFn });
+    expect(ghTokenFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps forced raw-token refresh separate from stale in-flight resolution', async () => {
+    let releaseFirst;
+    const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+    const ghTokenFn = vi.fn()
+      .mockImplementationOnce(async () => {
+        await firstGate;
+        return `gho_${'a'.repeat(36)}`;
+      })
+      .mockResolvedValueOnce(`gho_${'b'.repeat(36)}`);
+    const readPersistedTokenFn = vi.fn(async () => null);
+
+    const stale = resolveRawToken({ ghTokenFn, readPersistedTokenFn });
+    await vi.waitFor(() => expect(ghTokenFn).toHaveBeenCalledTimes(1));
+    const fresh = resolveRawToken({ forceRefresh: true, ghTokenFn, readPersistedTokenFn });
+    await vi.waitFor(() => expect(ghTokenFn).toHaveBeenCalledTimes(2));
+    releaseFirst();
+
+    expect((await stale).token).toBe(`gho_${'a'.repeat(36)}`);
+    expect((await fresh).token).toBe(`gho_${'b'.repeat(36)}`);
+    expect((await resolveRawToken({ ghTokenFn, readPersistedTokenFn })).token)
+      .toBe(`gho_${'b'.repeat(36)}`);
+  });
+
+  it('dedupes concurrent 401 refreshes and re-resolves raw auth only on escalation', async () => {
+    const firstRaw = `gho_${'a'.repeat(36)}`;
+    const secondRaw = `gho_${'b'.repeat(36)}`;
+    const ghTokenFn = vi.fn().mockResolvedValueOnce(firstRaw).mockResolvedValueOnce(secondRaw);
+    const readPersistedTokenFn = vi.fn(async () => null);
+    const fetchFn = vi.fn(async (_url, init) => jsonResponse({
+      token: init.headers.Authorization.includes(secondRaw)
+        ? 'api-token-3'
+        : `api-token-${fetchFn.mock.calls.length}`,
+      expires_at: Math.floor(Date.now() / 1000) + 1800,
+    }));
+    const initial = await getApiToken({ fetchFn, ghTokenFn, readPersistedTokenFn });
+    const refreshed = await Promise.all(Array.from({ length: 20 }, () => refreshApiToken({
+      fetchFn, ghTokenFn, readPersistedTokenFn, rejectedToken: initial.token,
+    })));
+    expect(new Set(refreshed.map(result => result.token))).toEqual(new Set(['api-token-2']));
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(ghTokenFn).toHaveBeenCalledTimes(1);
+
+    const escalated = await refreshApiToken({
+      fetchFn, ghTokenFn, readPersistedTokenFn, rejectedToken: 'api-token-2', refreshRaw: true,
+    });
+    expect(escalated.token).toBe('api-token-3');
+    expect(ghTokenFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
   });
 
   it('refreshes dynamic credentials once for call and stream while static keys fail once', async () => {
@@ -246,7 +326,8 @@ describe('LLM adapter auth headers', () => {
     }] });
     await expect(router.call({ model: 'github-copilot/claude-opus-4.8', system: '', messages: [] }))
       .rejects.toMatchObject({ statusCode: 401, credentialRefreshable: true });
-    expect(attempts).toBe(2);
+    expect(attempts).toBe(3);
+    expect(exchanges).toBe(3);
   });
 
   it('routes Anthropic providers configured for bearer auth through the router', async () => {

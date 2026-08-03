@@ -20,7 +20,11 @@
 import * as githubCopilot from './github-copilot.js';
 
 /**
- * @typedef {{ getApiKey: () => Promise<string>, refreshApiKey?: () => Promise<string>, name: string }} CredentialProvider
+ * @typedef {{
+ *   getApiKey: () => Promise<string>,
+ *   refreshApiKey?: (options?: {rejectedToken?: string, refreshRaw?: boolean}) => Promise<string>,
+ *   name: string,
+ * }} CredentialProvider
  */
 
 /**
@@ -42,9 +46,8 @@ export function getCredentialProvider(name) {
         }
         return r.token;
       },
-      async refreshApiKey() {
-        githubCopilot.invalidateApiTokenCache();
-        const r = await githubCopilot.getApiToken({ requireExchange: true });
+      async refreshApiKey({ rejectedToken, refreshRaw = false } = {}) {
+        const r = await githubCopilot.refreshApiToken({ rejectedToken, refreshRaw });
         if (!r?.token) {
           throw new githubCopilot.CopilotCredentialError(
             'GitHub Copilot credential refresh found no usable credential',

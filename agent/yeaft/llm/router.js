@@ -464,7 +464,7 @@ export class AdapterRouter extends LLMAdapter {
     const authModeKey = anthropicAuthHeaderMode || 'default';
     const cacheKey = `${provider.name}::${protocol}::${authModeKey}::${apiKeyFp}`;
     const cached = this.#adapterCache.get(cacheKey);
-    if (cached) return { adapter: cached, modelId: entry.id, protocol, entry };
+    if (cached) return { adapter: cached, modelId: entry.id, protocol, entry, apiKey };
 
     // Token rotation eviction: when a credential provider hands us a NEW
     // fingerprint for the same (provider, protocol) pair, drop the stale
@@ -504,7 +504,7 @@ export class AdapterRouter extends LLMAdapter {
     }
 
     this.#adapterCache.set(cacheKey, adapter);
-    return { adapter, modelId: entry.id, protocol, entry };
+    return { adapter, modelId: entry.id, protocol, entry, apiKey };
   }
 
   /**
@@ -524,7 +524,7 @@ export class AdapterRouter extends LLMAdapter {
     if (name === 'github-copilot' && provider?.githubToken) {
       const { exchangeToken } = await import('./credentials/github-copilot.js');
       const exchanged = await exchangeToken(provider.githubToken);
-      return exchanged.token;
+      return exchanged.apiToken;
     }
     if (!name) return provider?.apiKey || '';
     const { getCredentialProvider, CREDENTIAL_PROVIDER_NAMES } = await import('./credentials/index.js');
@@ -563,18 +563,18 @@ export class AdapterRouter extends LLMAdapter {
    * @param {import('./adapter.js').StreamParams} params
    * @returns {AsyncGenerator<import('./adapter.js').StreamEvent>}
    */
-  async #refreshRejectedCredential(provider, model) {
+  async #refreshRejectedCredential(provider, model, rejectedToken, refreshRaw) {
     if (!provider?.credentialProvider) return false;
     try {
       if (provider.credentialProvider === 'github-copilot' && provider.githubToken) {
         const githubCopilot = await import('./credentials/github-copilot.js');
-        githubCopilot.invalidateApiTokenCache();
-        await githubCopilot.exchangeToken(provider.githubToken);
+        if (refreshRaw) return false;
+        await githubCopilot.refreshExplicitApiToken(provider.githubToken, { rejectedToken });
       } else {
         const { getCredentialProvider } = await import('./credentials/index.js');
         const credentialProvider = getCredentialProvider(provider.credentialProvider);
         if (!credentialProvider?.refreshApiKey) return false;
-        await credentialProvider.refreshApiKey();
+        await credentialProvider.refreshApiKey({ rejectedToken, refreshRaw });
       }
     } catch (err) {
       throw new LLMAuthError('LLM credential refresh failed', err?.statusCode ?? 401, {
@@ -596,7 +596,7 @@ export class AdapterRouter extends LLMAdapter {
   }
 
   async *stream(params) {
-    let refreshedCredential = false;
+    let credentialRefreshes = 0;
     while (true) {
       const resolved = await this.#resolveAdapter(params.model);
       const provider = this.getProviderForModel(params.model);
@@ -614,9 +614,14 @@ export class AdapterRouter extends LLMAdapter {
         return;
       } catch (err) {
         this.#annotateAuthError(err, provider, params.model);
-        if (err?.statusCode !== 401 || refreshedCredential
-          || !(await this.#refreshRejectedCredential(provider, params.model))) throw err;
-        refreshedCredential = true;
+        const canRefreshRaw = provider?.credentialProvider === 'github-copilot'
+          && !provider.githubToken;
+        const maxRefreshes = canRefreshRaw ? 2 : 1;
+        if (err?.statusCode !== 401 || credentialRefreshes >= maxRefreshes
+          || !(await this.#refreshRejectedCredential(
+            provider, params.model, resolved.apiKey, credentialRefreshes === 1
+          ))) throw err;
+        credentialRefreshes += 1;
       }
     }
   }
@@ -628,7 +633,7 @@ export class AdapterRouter extends LLMAdapter {
    * @returns {Promise<{ text: string, usage: { inputTokens: number, outputTokens: number } }>}
    */
   async call(params) {
-    let refreshedCredential = false;
+    let credentialRefreshes = 0;
     while (true) {
       const resolved = await this.#resolveAdapter(params.model);
       const provider = this.getProviderForModel(params.model);
@@ -645,9 +650,14 @@ export class AdapterRouter extends LLMAdapter {
         return await resolved.adapter.call({ ...sanitized, model: resolved.modelId, effortContext });
       } catch (err) {
         this.#annotateAuthError(err, provider, params.model);
-        if (err?.statusCode !== 401 || refreshedCredential
-          || !(await this.#refreshRejectedCredential(provider, params.model))) throw err;
-        refreshedCredential = true;
+        const canRefreshRaw = provider?.credentialProvider === 'github-copilot'
+          && !provider.githubToken;
+        const maxRefreshes = canRefreshRaw ? 2 : 1;
+        if (err?.statusCode !== 401 || credentialRefreshes >= maxRefreshes
+          || !(await this.#refreshRejectedCredential(
+            provider, params.model, resolved.apiKey, credentialRefreshes === 1
+          ))) throw err;
+        credentialRefreshes += 1;
       }
     }
   }

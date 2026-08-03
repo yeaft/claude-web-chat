@@ -82,16 +82,34 @@ const _jwtCache = new Map();
 // instead of N when several requests race during a cold start or a refresh.
 const _exchangeInFlight = new Map();
 
+// Resolving the raw GitHub credential can spawn `gh auth token`. Cache the
+// result for this process and dedupe cold-start resolution across VPs.
+const _rawTokenCache = new Map();
+const _rawTokenInFlight = new Map();
+const _rawTokenGeneration = new Map();
+
+// Refreshes mutate credential state. Serialize them per account so concurrent
+// 401 responses cannot invalidate each other's replacement token.
+const _leaseMutationTail = new Map();
+
 /**
  * Reset all in-process state. Tests only.
  */
 export function _resetCacheForTests() {
   _jwtCache.clear();
   _exchangeInFlight.clear();
+  _rawTokenCache.clear();
+  _rawTokenInFlight.clear();
+  _rawTokenGeneration.clear();
+  _leaseMutationTail.clear();
 }
 
 /** Drop exchanged API tokens after the provider rejects one with HTTP 401. */
-export function invalidateApiTokenCache() {
+export function invalidateApiTokenCache(rawToken) {
+  if (rawToken) {
+    _jwtCache.delete(tokenFingerprint(rawToken));
+    return;
+  }
   _jwtCache.clear();
 }
 
@@ -215,7 +233,44 @@ export async function tryGhCliToken({ hostname } = {}) {
  * @param {string} [opts.hostname] — passed through to gh CLI
  * @returns {Promise<{token: string, source: string} | null>}
  */
-export async function resolveRawToken({ hostname } = {}) {
+export async function resolveRawToken({
+  hostname,
+  forceRefresh = false,
+  readPersistedTokenFn = readPersistedToken,
+  ghTokenFn = tryGhCliToken,
+} = {}) {
+  const cacheKey = hostname || 'github.com';
+  if (forceRefresh) {
+    const cached = _rawTokenCache.get(cacheKey);
+    if (cached?.token) invalidateApiTokenCache(cached.token);
+    _rawTokenCache.delete(cacheKey);
+    _rawTokenGeneration.set(cacheKey, (_rawTokenGeneration.get(cacheKey) || 0) + 1);
+  } else {
+    const cached = _rawTokenCache.get(cacheKey);
+    if (cached) return cached;
+  }
+
+  const generation = _rawTokenGeneration.get(cacheKey) || 0;
+  const flightKey = `${cacheKey}:${generation}`;
+  const inFlight = _rawTokenInFlight.get(flightKey);
+  if (inFlight) return inFlight;
+
+  const promise = resolveRawTokenUncached({ hostname, readPersistedTokenFn, ghTokenFn })
+    .then(result => {
+      if (result && (_rawTokenGeneration.get(cacheKey) || 0) === generation) {
+        _rawTokenCache.set(cacheKey, result);
+      }
+      return result;
+    });
+  _rawTokenInFlight.set(flightKey, promise);
+  try {
+    return await promise;
+  } finally {
+    _rawTokenInFlight.delete(flightKey);
+  }
+}
+
+async function resolveRawTokenUncached({ hostname, readPersistedTokenFn, ghTokenFn }) {
   // 1-3: env vars
   for (const name of ENV_VARS) {
     const val = (process.env[name] || '').trim();
@@ -226,13 +281,13 @@ export async function resolveRawToken({ hostname } = {}) {
   }
 
   // 4: persisted device-flow token
-  const persisted = await readPersistedToken();
+  const persisted = await readPersistedTokenFn();
   if (persisted && validateRawToken(persisted.token).valid) {
     return { token: persisted.token, source: persisted.source || 'persisted' };
   }
 
   // 5: gh CLI
-  const ghToken = await tryGhCliToken({ hostname });
+  const ghToken = await ghTokenFn({ hostname });
   if (ghToken && validateRawToken(ghToken).valid) {
     return { token: ghToken, source: 'gh-cli' };
   }
@@ -330,8 +385,14 @@ export async function exchangeToken(rawToken, { fetchFn = fetch } = {}) {
  * @param {typeof fetch} [opts.fetchFn]
  * @returns {Promise<{token: string, source: string, exchanged: boolean} | null>}
  */
-export async function getApiToken({ hostname, fetchFn = fetch, requireExchange = false } = {}) {
-  const raw = await resolveRawToken({ hostname });
+export async function getApiToken({
+  hostname,
+  fetchFn = fetch,
+  requireExchange = false,
+  readPersistedTokenFn = readPersistedToken,
+  ghTokenFn = tryGhCliToken,
+} = {}) {
+  const raw = await resolveRawToken({ hostname, readPersistedTokenFn, ghTokenFn });
   if (!raw) return null;
   try {
     const { apiToken } = await exchangeToken(raw.token, { fetchFn });
@@ -340,6 +401,64 @@ export async function getApiToken({ hostname, fetchFn = fetch, requireExchange =
     if (requireExchange) throw err;
     return { token: raw.token, source: raw.source, exchanged: false };
   }
+}
+
+/** Refresh a managed Copilot credential lease after a provider 401. */
+export async function refreshApiToken({
+  hostname,
+  fetchFn = fetch,
+  rejectedToken,
+  refreshRaw = false,
+  readPersistedTokenFn = readPersistedToken,
+  ghTokenFn = tryGhCliToken,
+} = {}) {
+  const cacheKey = hostname || 'github.com';
+  return withLeaseMutation(`managed:${cacheKey}`, async () => {
+    let raw = _rawTokenCache.get(cacheKey);
+    const current = raw?.token ? _jwtCache.get(tokenFingerprint(raw.token)) : null;
+    if (rejectedToken && current?.apiToken && current.apiToken !== rejectedToken) {
+      return { token: current.apiToken, source: raw.source, exchanged: true };
+    }
+
+    if (refreshRaw) {
+      raw = await resolveRawToken({
+        hostname, forceRefresh: true, readPersistedTokenFn, ghTokenFn,
+      });
+    } else {
+      if (raw?.token) invalidateApiTokenCache(raw.token);
+      raw ||= await resolveRawToken({ hostname, readPersistedTokenFn, ghTokenFn });
+    }
+    if (!raw?.token) return null;
+    const { apiToken } = await exchangeToken(raw.token, { fetchFn });
+    return { token: apiToken, source: raw.source, exchanged: true };
+  });
+}
+
+/** Refresh an explicit provider.githubToken without re-resolving raw auth. */
+export async function refreshExplicitApiToken(rawToken, {
+  fetchFn = fetch,
+  rejectedToken,
+} = {}) {
+  const fp = tokenFingerprint(rawToken);
+  return withLeaseMutation(`explicit:${fp}`, async () => {
+    const current = _jwtCache.get(fp);
+    if (rejectedToken && current?.apiToken && current.apiToken !== rejectedToken) {
+      return current.apiToken;
+    }
+    invalidateApiTokenCache(rawToken);
+    const { apiToken } = await exchangeToken(rawToken, { fetchFn });
+    return apiToken;
+  });
+}
+
+function withLeaseMutation(key, mutate) {
+  const previous = _leaseMutationTail.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(mutate);
+  _leaseMutationTail.set(key, current);
+  current.finally(() => {
+    if (_leaseMutationTail.get(key) === current) _leaseMutationTail.delete(key);
+  }).catch(() => {});
+  return current;
 }
 
 /**
