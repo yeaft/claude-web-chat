@@ -352,9 +352,11 @@ export default {
       if (this.workCenterOpen) this.$emit('close-work-center');
       this.$emit('create');
     },
-    selectRow(row, event) {
-      this.suppressedActionsKey = row?.catalogKey || null;
-      event?.currentTarget?.blur?.();
+    selectRow(row, event, options = {}) {
+      if (options.suppressActions === true) {
+        this.suppressedActionsKey = row?.catalogKey || null;
+        event?.currentTarget?.blur?.();
+      }
       this.closeMenus();
       if (this.workCenterOpen) this.$emit('close-work-center');
       this.$emit('select', row);
@@ -583,7 +585,7 @@ export default {
                 @dragstart="startDrag(row, $event)"
                 @dragend="finishDrag"
                 @pointerleave="restoreRowActions(row)"
-                @click="selectRow(row, $event)"
+                @click="selectRow(row, $event, { suppressActions: true })"
                 @keydown.enter="selectRowFromKeyboard(row, $event)"
                 @keydown.space="selectRowFromKeyboard(row, $event)"
               >
@@ -628,7 +630,7 @@ export default {
             @dragstart="startDrag(row, $event)"
             @dragend="finishDrag"
             @pointerleave="restoreRowActions(row)"
-            @click="selectRow(row, $event)"
+            @click="selectRow(row, $event, { suppressActions: true })"
             @keydown.enter="selectRowFromKeyboard(row, $event)"
             @keydown.space="selectRowFromKeyboard(row, $event)"
           >

@@ -477,6 +477,15 @@ describe('message flow regressions', () => {
     expect(sidebar.emitted('select')).toHaveLength(selectCountBeforeQuickActions + 1);
     await firstRow.trigger('pointerleave');
     expect(firstRow.classes()).not.toContain('actions-suppressed');
+    firstRow.element.focus();
+    await firstRow.trigger('keydown', { key: 'Enter' });
+    expect(firstRow.classes()).not.toContain('actions-suppressed');
+    expect(document.activeElement).toBe(firstRow.element);
+    await firstRow.trigger('keydown', { key: ' ' });
+    expect(firstRow.classes()).not.toContain('actions-suppressed');
+    expect(document.activeElement).toBe(firstRow.element);
+    pinnedQuickActions[0].element.focus();
+    expect(document.activeElement).toBe(pinnedQuickActions[0].element);
     const selectCountAfterRowClick = sidebar.emitted('select').length;
     await pinnedQuickActions[0].trigger('click');
     expect(sidebar.emitted('select')?.length || 0).toBe(selectCountAfterRowClick);
