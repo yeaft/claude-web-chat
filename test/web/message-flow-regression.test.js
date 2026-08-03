@@ -1048,6 +1048,8 @@ describe('message flow regressions', () => {
     expect(chatStore).toContain('const frameTurnKey = msg.turnId ? yeaftTurnStateKey(this, msg.agentId || null, msg.turnId)');
     expect(chatStore).toContain('retryRecoveryMode: _retryRecoveryMode');
     expect(chatStore).toContain("'thinking', 'retrying', 'streaming'");
+    const timelinePane = readFileSync(resolve(import.meta.dirname, '../../web/components/VpTimelinePane.js'), 'utf8');
+    expect(timelinePane).toContain("task.kind === 'sub_agent' && !!task.runtime?.subAgentId");
     expect(turnBlock).toContain('turn.isStreaming && retryText');
     expect(turnBlock).toContain("'yeaft.vp.turnBlock.retryingContinue'");
     expect(en).toContain("'yeaft.vp.turnBlock.retryingRequest': 'Response stalled;");
@@ -3401,6 +3403,16 @@ describe('message flow regressions', () => {
     expect(store.yeaftActiveTasksBySession['agent-b\u001fsession-b']['task-b']).toEqual(expect.objectContaining({
       agentId: 'agent-b', status: 'running',
     }));
+    store.handleYeaftOutput({
+      agentId: 'agent-b',
+      sessionId: 'session-b',
+      event: {
+        type: 'yeaft_task_event',
+        event: 'completed',
+        task: { id: 'task-b', sessionId: 'session-b', kind: 'sub_agent', status: 'succeeded' },
+      },
+    });
+    expect(store.yeaftActiveTasksBySession['agent-b\u001fsession-b']).toBeUndefined();
   });
 
   it('keeps background Yeaft output routed while promoting the visible local conversation', () => {
