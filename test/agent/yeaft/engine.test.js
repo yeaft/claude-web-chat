@@ -1481,6 +1481,8 @@ describe('Engine', () => {
           expect.objectContaining({ category: 'experience', scope: 'sessions/sibling-session' }),
           expect.objectContaining({ layer: 'onDemand', id: 'timeout-memory' }),
         ]));
+        expect(mockAdapter.callLog).toHaveLength(1);
+        expect(existsSync(join(yeaftDir, 'memory', 'sessions', 'current-session', 'ams.json'))).toBe(false);
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });
       }

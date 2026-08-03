@@ -434,15 +434,6 @@ export function buildResidentEntries(args) {
       if (topic?.scope && summary) out.push({ scope: topic.scope, summary });
     }
   }
-  if (Array.isArray(summaries.relatedSessions)) {
-    for (const related of summaries.relatedSessions) {
-      const relatedSessionId = typeof related?.sessionId === 'string' ? related.sessionId.trim() : '';
-      const summary = cleanMemoryPromptText(related?.summary);
-      if (relatedSessionId && relatedSessionId !== args.sessionId && summary) {
-        out.push({ scope: `sessions/${relatedSessionId}`, summary });
-      }
-    }
-  }
   // VP per-session isolation (2026-06-09): the VP summary scope MUST be
   // session-qualified. The legacy bare `vp/<id>` scope was a structural
     // (see #loadLayerASummaries, kind:'group-vp'), so labelling it `vp/<id>`
@@ -454,6 +445,18 @@ export function buildResidentEntries(args) {
   // layout 1:1.
   if (args.sessionId && args.ownVpId && vpSummary && !isVpSeedBackfillStub(vpSummary)) {
     out.push({ scope: `sessions/${args.sessionId}/vp/${args.ownVpId}`, summary: vpSummary });
+  }
+  // Related Session experience is useful but lower-priority than every memory
+  // source owned by the active Session/VP. Append it last so the resident
+  // budget can never evict current context in favour of historical prose.
+  if (Array.isArray(summaries.relatedSessions)) {
+    for (const related of summaries.relatedSessions) {
+      const relatedSessionId = typeof related?.sessionId === 'string' ? related.sessionId.trim() : '';
+      const summary = cleanMemoryPromptText(related?.summary);
+      if (relatedSessionId && relatedSessionId !== args.sessionId && summary) {
+        out.push({ scope: `sessions/${relatedSessionId}`, summary });
+      }
+    }
   }
   return out;
 }

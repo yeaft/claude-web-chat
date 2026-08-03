@@ -207,7 +207,7 @@ describe('TaskManager', () => {
       sessionId: 'session_prompt',
       ownerVpId: 'vp_linus',
       kind: 'sub_agent',
-      title: `Review timeout recovery ${'with detailed checks '.repeat(30)}`,
+      title: `Review \`/home/azureuser/projects/yeaft/.yeaft/worktrees/fix-timeout\` recovery ${'with detailed checks '.repeat(30)}`,
       runtime: { command: 'npm run dev -- --host 0.0.0.0' },
       logPath: '/private/sub-agent/events.jsonl',
     });
@@ -216,14 +216,32 @@ describe('TaskManager', () => {
 
     const rendered = manager.renderActiveTasksForPrompt('session_prompt', { language: 'zh' });
     expect(rendered).toContain('## 可能相关的任务');
-    expect(rendered).toContain('Review timeout recovery');
+    expect(rendered).toContain('Review fix-timeout recovery');
     expect(rendered).toContain('(子 Agent，运行中)');
     expect(rendered).toContain('…');
     expect(rendered).not.toContain('<active_tasks>');
     expect(rendered).not.toContain(task.id);
+    expect(rendered).not.toContain('/home/azureuser/projects');
     expect(rendered).not.toContain('/private/sub-agent/events.jsonl');
+    expect(rendered).not.toContain('`');
     expect(rendered).not.toContain('sub_agent_status');
     expect(rendered).not.toContain('npm run dev');
+  });
+
+  it('does not leak a default background shell command through its title', () => {
+    const manager = new TaskManager({ yeaftDir: dir });
+    const command = 'node server.js --token super-secret --watch';
+    manager.startTask({
+      sessionId: 'session_shell_prompt',
+      kind: 'shell',
+      title: command.slice(0, 120),
+      runtime: { command },
+    });
+
+    const rendered = manager.renderActiveTasksForPrompt('session_shell_prompt', { language: 'en' });
+    expect(rendered).toContain('- background command (background command, running)');
+    expect(rendered).not.toContain('node server.js');
+    expect(rendered).not.toContain('super-secret');
   });
 
   it('limits the task prompt list and points to task tools for the remainder', () => {

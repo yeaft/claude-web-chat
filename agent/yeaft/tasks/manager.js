@@ -56,14 +56,13 @@ function publicSnapshot(task) {
   };
 }
 
-function taskCommand(task) {
-  const command = task?.runtime?.command;
-  return typeof command === 'string' && command.trim() ? command.trim() : '';
-}
-
 function oneLineTaskText(value, maxChars = PROMPT_TASK_TITLE_CHARS) {
   const text = typeof value === 'string'
-    ? value.replace(/\s+/g, ' ').trim()
+    ? value
+      .replace(/`+/g, '')
+      .replace(/(?:[A-Za-z]:[\\/]|\/)(?:[^\s"'，。；;:：()（）]+[\\/])+([^\s"'，。；;:：()（）/\\]+)/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim()
     : '';
   if (text.length <= maxChars) return text;
   return `${text.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
@@ -74,6 +73,19 @@ function taskKindLabel(kind, language) {
   if (kind === 'sub_agent') return zh ? '子 Agent' : 'sub-agent';
   if (kind === 'shell') return zh ? '后台命令' : 'background command';
   return zh ? '后台任务' : 'background task';
+}
+
+function promptTaskTitle(task, language) {
+  const rawTitle = typeof task?.title === 'string' ? task.title.trim() : '';
+  const command = typeof task?.runtime?.command === 'string' ? task.runtime.command.trim() : '';
+  // startShellTask uses command.slice(0, 120) as the title when the caller did
+  // not supply a human label. Do not let that default command string bypass the
+  // prompt boundary through `title`; task tools remain the explicit detail path.
+  const defaultShellTitle = task?.kind === 'shell' && command
+    && rawTitle === command.slice(0, 120);
+  return defaultShellTitle
+    ? taskKindLabel(task.kind, language)
+    : (oneLineTaskText(rawTitle) || taskKindLabel(task?.kind, language));
 }
 
 function taskStatusLabel(status, language) {
@@ -397,7 +409,7 @@ export class TaskManager {
       ? '以下任务仍在后台运行。需要进度或完整输出时使用任务工具查询；不要把它们当成记忆事实。'
       : 'These tasks are still running in the background. Use the task tools for progress or full output; do not treat them as memory facts.');
     for (const task of visible) {
-      const title = oneLineTaskText(task.title) || oneLineTaskText(taskCommand(task), 160) || taskKindLabel(task.kind, language);
+      const title = promptTaskTitle(task, language);
       const detail = zh
         ? `${taskKindLabel(task.kind, language)}，${taskStatusLabel(task.status, language)}`
         : `${taskKindLabel(task.kind, language)}, ${taskStatusLabel(task.status, language)}`;
