@@ -3920,7 +3920,7 @@ describe('managed CLI setup and fast tool integration', () => {
     rmSync(capturedArgs, { force: true });
   }
 
-  it('pushes managed CLI filters down and avoids overflow rescans', async () => {
+  it('keeps managed CLI filters, process, and fallback boundaries', async () => {
     const processResult = (overrides = {}) => ({
       code: 0,
       stdout: '',
@@ -4009,9 +4009,7 @@ describe('managed CLI setup and fast tool integration', () => {
       await expect(invoke(runner)).rejects.toBeInstanceOf(SearchBackendLimitError);
       expect(calls).toBe(1);
     }
-  });
 
-  it('keeps process, platform, and fast-tool fallback boundaries', async () => {
     await verifyProcessTermination();
     await verifyWindowsProcessTreeTermination();
     verifyGrepExactBudget();
