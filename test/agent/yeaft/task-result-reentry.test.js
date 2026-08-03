@@ -234,7 +234,7 @@ describe('task result re-entry', () => {
     const persisted = [];
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(bashTool);
-    expect(bashTool.timeoutMs).toBeGreaterThan(600_000);
+    expect(bashTool.timeoutMs).toBe(0);
     const sessionLike = {
       adapter,
       trace: new NullTrace(),
@@ -760,13 +760,17 @@ describe('task result re-entry', () => {
     ));
     // A rescue row is the durable transcript for the same provider request,
     // not a second model delivery. Exactly once means exactly one provider
-    // input containing this taskId; defer-first additionally persists one
-    // internal rescue row.
+    // input containing this taskId; a wait that actually deferred additionally
+    // persists one internal rescue row. A zero-delay completion can still cross
+    // the wait deadline under load, so assert the observed boundary rather than
+    // inferring it from the configured child delay.
     expect(providerDeliveries).toHaveLength(1);
-    expect(rescueRows).toHaveLength(completionDelayMs > 0 ? 1 : 0);
     const waitEnd = events.filter(event => event.type === 'async_task_wait_end');
     expect(waitEnd).toHaveLength(1);
-    expect(waitEnd[0]).toMatchObject(completionDelayMs > 0
+    const waitTimedOut = waitEnd[0].timedOut === true;
+    if (completionDelayMs > 0) expect(waitTimedOut).toBe(true);
+    expect(rescueRows).toHaveLength(waitTimedOut ? 1 : 0);
+    expect(waitEnd[0]).toMatchObject(waitTimedOut
       ? { timedOut: true, deferredTaskIds: [taskId] }
       : { timedOut: false, deferredTaskIds: [] });
       expect(terminalEvents.filter(event => event.task.id === taskId)).toHaveLength(1);

@@ -41,7 +41,8 @@ import {
 import { nodeDiskUsage, runDust } from '../../../agent/yeaft/tools/disk-usage.js';
 import { listFilesWithFd } from '../../../agent/yeaft/tools/glob.js';
 import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
-import bashTool from '../../../agent/yeaft/tools/bash.js';
+import bashTool, { createBashTool } from '../../../agent/yeaft/tools/bash.js';
+import fileWriteTool from '../../../agent/yeaft/tools/file-write.js';
 import {
   SearchBackendLimitError,
   SEARCH_SKIP_DIRS,
@@ -1872,7 +1873,295 @@ describe('Engine', () => {
         detail: expect.objectContaining({ errorName: 'ToolExecutionTimeoutError' }),
       });
 
-      expect(bashTool.timeoutMs).toBeGreaterThan(120_000);
+      expect(bashTool.timeoutMs).toBe(0);
+
+      const systemdChild = new EventEmitter();
+      systemdChild.pid = 4344;
+      systemdChild.stdout = new PassThrough();
+      systemdChild.stderr = new PassThrough();
+      systemdChild.kill = () => true;
+      const systemdCalls = [];
+      const slowSystemctl = (_command, args) => {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+        systemdCalls.push(args.includes('kill')
+          ? args.find(arg => arg.startsWith('--signal='))
+          : 'show');
+        return args.includes('show')
+          ? { status: 0, stdout: 'active\n' }
+          : { status: 0 };
+      };
+      const ownedTimeoutBash = createBashTool({
+        runProcessImpl: (_command, _args, options) => {
+          expect(options.timeoutMs).toBe(600_000);
+          return runProcess('systemd-run', [], {
+            ...options,
+            timeoutMs: 1,
+            killGraceMs: 1,
+            forceSettleMs: 5,
+            platform: 'linux',
+            systemdScope: {
+              unit: 'yeaft-test.scope',
+              systemctlPath: '/usr/bin/systemctl',
+              env: {},
+            },
+            spawnProcess: () => systemdChild,
+            spawnProcessSync: slowSystemctl,
+          });
+        },
+      });
+      const ownedTimeoutRegistry = new ToolRegistry();
+      ownedTimeoutRegistry.register(ownedTimeoutBash);
+      const ownedTimeoutResult = await ownedTimeoutRegistry.execute('Bash', {
+        command: 'sleep 600',
+        timeout_ms: 600_000,
+      }, {
+        cwd: process.cwd(),
+        runtimePlatform: {
+          platform: 'linux',
+          isLinux: true,
+          isWindows: false,
+          shellFamily: 'posix',
+          defaultShell: '/bin/sh',
+        },
+      });
+      expect(ownedTimeoutResult).toContain('Exit code: 124');
+      expect(ownedTimeoutResult).toContain('Process tree did not exit within 5ms after SIGKILL: systemd-run');
+      expect(systemdCalls).toContain('--signal=SIGTERM');
+      expect(systemdCalls).toContain('--signal=SIGKILL');
+      expect(systemdCalls).toContain('show');
+      expect(systemdChild.listenerCount('close')).toBe(0);
+      expect(systemdChild.listenerCount('error')).toBe(0);
+      expect(systemdChild.stdout.listenerCount('data')).toBe(0);
+      expect(systemdChild.stderr.listenerCount('data')).toBe(0);
+
+      const barrierRequests = [];
+      const confirmedTimeoutOutput = await createBashTool({
+        runProcessImpl: async () => ({
+          stdout: '', stderr: '', code: 124, timedOut: true, terminationError: null,
+        }),
+      }).execute({ command: 'sleep 600', timeout_ms: 1000 }, {
+        cwd: process.cwd(),
+        requestToolBatchBarrier: reason => barrierRequests.push(reason),
+      });
+      const ordinaryFailureOutput = await createBashTool({
+        runProcessImpl: async () => ({
+          stdout: '', stderr: 'failed', code: 2, timedOut: false, terminationError: null,
+        }),
+      }).execute({ command: 'exit 2' }, {
+        cwd: process.cwd(),
+        requestToolBatchBarrier: reason => barrierRequests.push(reason),
+      });
+      expect(confirmedTimeoutOutput).toContain('Exit code: 124');
+      expect(ordinaryFailureOutput).toContain('Exit code: 2');
+      expect(barrierRequests).toEqual([
+        expect.objectContaining({ kind: 'owned_timeout' }),
+      ]);
+
+      const terminationChild = new EventEmitter();
+      terminationChild.pid = 4444;
+      terminationChild.stdout = new PassThrough();
+      terminationChild.stderr = new PassThrough();
+      terminationChild.kill = () => true;
+      const terminationCalls = [];
+      const recoveringBash = createBashTool({
+        runProcessImpl: (_command, _args, options) => {
+          terminationCalls.push({ signal: options.signal, timeoutMs: options.timeoutMs });
+          return runProcess('powershell.exe', [], {
+            ...options,
+            timeoutMs: 1,
+            forceSettleMs: 5,
+            platform: 'win32',
+            systemdScope: null,
+            spawnProcess: () => terminationChild,
+            spawnProcessSync: () => ({ status: 0 }),
+          });
+        },
+      });
+      const startedTasks = [];
+      const bashTaskManager = {
+        renderActiveTasksForPrompt: () => '',
+        startShellTask: input => {
+          startedTasks.push(input);
+          return { id: 'task_after_timeout', status: 'running', log: { path: '/tmp/task.log' } };
+        },
+      };
+      const recoveryAdapter = new MockAdapter();
+      recoveryAdapter.pushResponse([
+        {
+          type: 'tool_call',
+          id: 'call_unconfirmed_timeout',
+          name: 'Bash',
+          input: { command: 'Start-Sleep -Seconds 30', timeout_ms: 1000 },
+        },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      recoveryAdapter.pushResponse([
+        {
+          type: 'tool_call',
+          id: 'call_background_after_timeout',
+          name: 'Bash',
+          input: {
+            command: 'Start-Sleep -Seconds 30',
+            timeout_ms: 1000,
+            background: true,
+            taskTitle: 'continue in background',
+          },
+        },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      recoveryAdapter.pushResponse([
+        { type: 'text_delta', text: 'The foreground command timed out, so I moved it to a background task.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const recoveryRegistry = new ToolRegistry();
+      recoveryRegistry.register(recoveringBash);
+      const recoveryEngine = new Engine({
+        adapter: recoveryAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolRegistry: recoveryRegistry,
+        taskManager: bashTaskManager,
+      });
+      const recoveryEvents = [];
+      for await (const event of recoveryEngine.query({ prompt: 'run the long command' })) {
+        recoveryEvents.push(event);
+      }
+      expect(terminationCalls).toHaveLength(1);
+      expect(terminationCalls[0]).toMatchObject({ timeoutMs: 1000 });
+      expect(startedTasks).toHaveLength(1);
+      expect(startedTasks[0]).toMatchObject({
+        command: 'Start-Sleep -Seconds 30',
+        title: 'continue in background',
+      });
+      expect(recoveryAdapter.callLog).toHaveLength(3);
+      const timeoutToolMessage = recoveryAdapter.callLog[1].messages
+        .find(message => message.toolCallId === 'call_unconfirmed_timeout');
+      expect(timeoutToolMessage).toMatchObject({ isError: false });
+      expect(timeoutToolMessage.content).toContain('Exit code: 124');
+      expect(timeoutToolMessage.content).toContain('Process tree did not exit within 5ms after SIGKILL: powershell.exe');
+      expect(timeoutToolMessage.content).toContain('The command may still be running.');
+      expect(timeoutToolMessage.content).toContain('use background=true');
+      expect(recoveryAdapter.callLog[2].messages
+        .find(message => message.toolCallId === 'call_background_after_timeout')).toMatchObject({
+          isError: false,
+          content: expect.stringContaining('Started background task task_after_timeout'),
+        });
+      expect(recoveryEvents.filter(event => event.type === 'tool_end')).toHaveLength(2);
+      expect(recoveryEvents.find(event => event.type === 'error')).toBeUndefined();
+      expect(recoveryEvents.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+        stopReason: 'end_turn',
+        terminal: true,
+      });
+
+      const batchBarrierRoot = mkdtempSync(join(tmpdir(), 'yeaft-bash-batch-barrier-'));
+      const batchBarrierMarker = join(batchBarrierRoot, 'must-not-write.txt');
+      try {
+        const batchBarrierChild = new EventEmitter();
+        batchBarrierChild.pid = 4544;
+        batchBarrierChild.stdout = new PassThrough();
+        batchBarrierChild.stderr = new PassThrough();
+        batchBarrierChild.kill = () => true;
+        const batchBarrierBash = createBashTool({
+          runProcessImpl: (_command, _args, options) => runProcess('powershell.exe', [], {
+            ...options,
+            timeoutMs: 1,
+            forceSettleMs: 5,
+            platform: 'win32',
+            systemdScope: null,
+            spawnProcess: () => batchBarrierChild,
+            spawnProcessSync: () => ({ status: 0 }),
+          }),
+        });
+        const batchBarrierAdapter = new MockAdapter();
+        batchBarrierAdapter.pushResponse([
+          {
+            type: 'tool_call',
+            id: 'call_batch_timeout',
+            name: 'Bash',
+            input: { command: 'Start-Sleep -Seconds 30', timeout_ms: 1000 },
+          },
+          {
+            type: 'tool_call',
+            id: 'call_write_after_timeout',
+            name: 'FileWrite',
+            input: { file_path: batchBarrierMarker, content: 'must not be written' },
+          },
+          {
+            type: 'tool_call',
+            id: 'call_second_write_after_timeout',
+            name: 'FileWrite',
+            input: { file_path: `${batchBarrierMarker}.second`, content: 'must not be written either' },
+          },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        batchBarrierAdapter.pushResponse([
+          { type: 'text_delta', text: 'The write was skipped, so I will inspect the timed-out command first.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const batchBarrierRegistry = new ToolRegistry();
+        batchBarrierRegistry.register(batchBarrierBash);
+        batchBarrierRegistry.register(fileWriteTool);
+        const batchBarrierEngine = new Engine({
+          adapter: batchBarrierAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: batchBarrierRegistry,
+        });
+        const batchBarrierEvents = [];
+        for await (const event of batchBarrierEngine.query({ prompt: 'run then write' })) {
+          batchBarrierEvents.push(event);
+        }
+
+        expect(existsSync(batchBarrierMarker)).toBe(false);
+        expect(existsSync(`${batchBarrierMarker}.second`)).toBe(false);
+        expect(batchBarrierAdapter.callLog).toHaveLength(2);
+        const barrierProviderMessages = batchBarrierAdapter.callLog[1].messages;
+        expect(barrierProviderMessages
+          .find(message => message.toolCallId === 'call_batch_timeout')).toMatchObject({
+            isError: false,
+            content: expect.stringContaining('The command may still be running.'),
+          });
+        expect(barrierProviderMessages
+          .find(message => message.toolCallId === 'call_write_after_timeout')).toMatchObject({
+            isError: true,
+            content: expect.stringContaining('This tool was not executed.'),
+          });
+        expect(barrierProviderMessages
+          .find(message => message.toolCallId === 'call_second_write_after_timeout')).toMatchObject({
+            isError: true,
+            content: expect.stringContaining('This tool was not executed.'),
+          });
+        expect(barrierProviderMessages.filter(message => message.toolCallId).map(message => message.toolCallId))
+          .toEqual([
+            'call_batch_timeout',
+            'call_write_after_timeout',
+            'call_second_write_after_timeout',
+          ]);
+        expect(batchBarrierEvents.filter(event => event.type === 'tool_start').map(event => event.name))
+          .toEqual(['Bash']);
+        expect(batchBarrierEvents.filter(event => event.type === 'tool_end')).toEqual([
+          expect.objectContaining({ id: 'call_batch_timeout', name: 'Bash', isError: false }),
+          expect.objectContaining({
+            id: 'call_write_after_timeout',
+            name: 'FileWrite',
+            isError: true,
+            skipped: true,
+          }),
+          expect.objectContaining({
+            id: 'call_second_write_after_timeout',
+            name: 'FileWrite',
+            isError: true,
+            skipped: true,
+          }),
+        ]);
+        expect(batchBarrierEvents.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+          stopReason: 'end_turn',
+          terminal: true,
+        });
+      } finally {
+        rmSync(batchBarrierRoot, { recursive: true, force: true });
+      }
+
       if (process.platform === 'linux') {
         const canary = `pr1483-${Date.now()}-${process.pid}`;
         const probeRoot = mkdtempSync(join(tmpdir(), 'yeaft-systemd-payload-'));
@@ -3552,6 +3841,72 @@ describe('managed CLI setup and fast tool integration', () => {
       expect(child.stdout.listenerCount('data')).toBe(0);
       expect(child.stderr.listenerCount('data')).toBe(0);
     }
+
+    const child = new EventEmitter();
+    child.pid = 4343;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    const result = await runProcess('powershell.exe', [], {
+      timeoutMs: 1,
+      forceSettleMs: 5,
+      requireExitConfirmation: true,
+      platform: 'win32',
+      spawnProcess: () => child,
+      spawnProcessSync: () => ({ status: 0 }),
+    });
+    expect(result).toMatchObject({
+      code: 124,
+      timedOut: true,
+      terminationError: 'Process tree did not exit within 5ms after SIGKILL: powershell.exe',
+    });
+    expect(child.listenerCount('close')).toBe(0);
+    expect(child.listenerCount('error')).toBe(0);
+    expect(child.stdout.listenerCount('data')).toBe(0);
+    expect(child.stderr.listenerCount('data')).toBe(0);
+
+    const abortedChild = new EventEmitter();
+    abortedChild.pid = 4545;
+    abortedChild.stdout = new PassThrough();
+    abortedChild.stderr = new PassThrough();
+    abortedChild.kill = () => true;
+    const controller = new AbortController();
+    const aborted = runProcess('powershell.exe', [], {
+      signal: controller.signal,
+      timeoutMs: 1,
+      forceSettleMs: 20,
+      requireExitConfirmation: true,
+      platform: 'win32',
+      spawnProcess: () => abortedChild,
+      spawnProcessSync: () => ({ status: 0 }),
+    });
+    setTimeout(() => controller.abort(), 5);
+    await expect(aborted).rejects.toMatchObject({ name: 'AbortError' });
+    expect(abortedChild.listenerCount('close')).toBe(0);
+    expect(abortedChild.listenerCount('error')).toBe(0);
+    expect(abortedChild.stdout.listenerCount('data')).toBe(0);
+    expect(abortedChild.stderr.listenerCount('data')).toBe(0);
+
+    const overflowChild = new EventEmitter();
+    overflowChild.pid = 4646;
+    overflowChild.stdout = new PassThrough();
+    overflowChild.stderr = new PassThrough();
+    overflowChild.kill = () => true;
+    const overflowed = runProcess('powershell.exe', [], {
+      timeoutMs: 5,
+      forceSettleMs: 20,
+      maxBytes: 1,
+      requireExitConfirmation: true,
+      platform: 'win32',
+      spawnProcess: () => overflowChild,
+      spawnProcessSync: () => ({ status: 0 }),
+    });
+    overflowChild.stdout.write('too much output');
+    await expect(overflowed).rejects.toMatchObject({ name: 'ProcessTerminationError' });
+    expect(overflowChild.listenerCount('close')).toBe(0);
+    expect(overflowChild.listenerCount('error')).toBe(0);
+    expect(overflowChild.stdout.listenerCount('data')).toBe(0);
+    expect(overflowChild.stderr.listenerCount('data')).toBe(0);
   }
 
   function verifyGrepExactBudget() {
@@ -3757,7 +4112,7 @@ describe('managed CLI setup and fast tool integration', () => {
     rmSync(capturedArgs, { force: true });
   }
 
-  it('pushes managed CLI filters down and avoids overflow rescans', async () => {
+  it('keeps managed CLI filters, process, and fallback boundaries', async () => {
     const processResult = (overrides = {}) => ({
       code: 0,
       stdout: '',
@@ -3846,9 +4201,7 @@ describe('managed CLI setup and fast tool integration', () => {
       await expect(invoke(runner)).rejects.toBeInstanceOf(SearchBackendLimitError);
       expect(calls).toBe(1);
     }
-  });
 
-  it('keeps process, platform, and fast-tool fallback boundaries', async () => {
     await verifyProcessTermination();
     await verifyWindowsProcessTreeTermination();
     verifyGrepExactBudget();
