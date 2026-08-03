@@ -122,7 +122,7 @@ export function createSubAgentTaskDetailLines(task, translate) {
  *
  * Props:
  *   rows — TimelineRow[] (see web/stores/helpers/vp-timeline.js for shape).
- *   tasks — running and recent terminal Session task snapshots.
+ *   tasks — running Session task snapshots.
  *   announcementText — active Session announcement preview source.
  * Emits:
  *   mention-vp (vpId)      — primary row click / Enter / Space. YeaftPage
@@ -458,7 +458,10 @@ export default {
       return lines.join('\n');
     };
     const taskStopKey = (task) => `${task?.agentId || ''}\u001f${task?.sessionId || ''}::${task?.id || ''}`;
-    const isTaskCancellable = (task) => task?.kind === 'shell' && task?.status === 'running' && !!task?.runtime?.pid;
+    const isTaskCancellable = (task) => task?.status === 'running' && (
+      (task.kind === 'shell' && !!task.runtime?.pid)
+      || (task.kind === 'sub_agent' && !!task.runtime?.subAgentId)
+    );
     const isTaskStopping = (task) => !!(task?.id && props.stoppingTasksById?.[taskStopKey(task)]);
 
     const taskDetailLines = (task) => createSubAgentTaskDetailLines(task, $t);

@@ -86,7 +86,8 @@ import { listMcpServers, upsertMcpServer, removeMcpServer } from './config-api.j
 import { buildMcpFlattenedTools } from './tools/mcp-tools.js';
 import { getAgentRegistry, agentBelongsToScope } from './tools/agent.js';
 import { enqueueSubAgentPrompt } from './sub-agent/prompt-queue.js';
-import { isPromptableAgentStatus } from './sub-agent/status.js';
+import { isPromptableAgentStatus, isTerminalAgentStatus, STATUS } from './sub-agent/status.js';
+import { consumeNotificationForAgent } from './sub-agent/notifications.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
 import { recordAgentSessionCreated, recordAgentTurn } from '../metrics.js';
 import { TASK_RESULT_DELIVERY, isTerminalTaskStatus, taskResultDeliveryFor } from './tasks/store.js';
@@ -6574,6 +6575,38 @@ export function handleYeaftTaskCancel(msg) {
   }
   if (!session?.taskManager || typeof session.taskManager.cancelTask !== 'function') {
     fail('task manager unavailable');
+    return;
+  }
+
+  const existingTask = session.taskManager.getTask?.(sessionId, taskId) || null;
+  if (existingTask?.kind === 'sub_agent' && existingTask.status === 'running') {
+    const subAgentId = existingTask.runtime?.subAgentId || '';
+    const agent = subAgentId ? getAgentRegistry().get(subAgentId) : null;
+    const scope = {
+      sessionId,
+      parentVpId: existingTask.ownerVpId || null,
+      parentThreadId: existingTask.source?.threadId || 'main',
+    };
+    if (!agent || !agentBelongsToScope(agent, scope)) {
+      fail('sub-agent not found', existingTask);
+      return;
+    }
+    if (!isTerminalAgentStatus(agent.status)) {
+      agent.status = STATUS.CLOSED;
+      if (agent.abortController && !agent.abortController.signal.aborted) {
+        try { agent.abortController.abort('stopped_by_user'); } catch { /* best effort */ }
+      }
+    }
+    try { consumeNotificationForAgent(agent.id); } catch { /* best effort */ }
+    const task = session.taskManager.completeTask(sessionId, taskId, { status: 'cancelled' });
+    sendSessionEvent({
+      type: 'yeaft_task_cancel_result',
+      success: true,
+      taskId,
+      clientRequestId: clientRequestId || null,
+      pending: false,
+      task,
+    }, { sessionId, vpId: task?.ownerVpId || null, threadId: task?.source?.threadId || null });
     return;
   }
 

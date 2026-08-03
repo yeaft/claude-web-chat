@@ -92,12 +92,8 @@ function sessionTaskSortTime(task) {
 
 export function visibleSessionStatusTasks(taskMap) {
   return Object.values(taskMap || {})
-    .filter(Boolean)
-    .sort((a, b) => {
-      if (a.status === 'running' && b.status !== 'running') return -1;
-      if (a.status !== 'running' && b.status === 'running') return 1;
-      return sessionTaskSortTime(b) - sessionTaskSortTime(a);
-    });
+    .filter(task => task?.status === 'running')
+    .sort((a, b) => sessionTaskSortTime(b) - sessionTaskSortTime(a));
 }
 
 export default {

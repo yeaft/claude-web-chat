@@ -589,16 +589,11 @@ describe('task result re-entry', () => {
     chatStore.sendWsMessage = vi.fn();
     for (const frame of restartFrames) chatStore.handleYeaftOutput(frame);
 
-    const visibleRestartTasks = chatStore.yeaftActiveTasksBySession[restartTaskKey] || {};
-    expect(Object.keys(visibleRestartTasks).sort()).toEqual(restartTaskIds.slice().sort());
-    for (const taskId of restartTaskIds) {
-      expect(visibleRestartTasks[taskId]).toMatchObject({ id: taskId, status: 'orphaned' });
-    }
-    expect(visibleRestartTasks).not.toHaveProperty('stale_running');
+    expect(chatStore.yeaftActiveTasksBySession[restartTaskKey]).toBeUndefined();
 
     const readyFrame = restartFrames[readyIndex];
     chatStore.handleYeaftOutput(readyFrame);
-    expect(chatStore.yeaftActiveTasksBySession[restartTaskKey]).toEqual(visibleRestartTasks);
+    expect(chatStore.yeaftActiveTasksBySession[restartTaskKey]).toBeUndefined();
 
     expect(adapter.streamCalls).toHaveLength(7);
     const restartRescueWire = JSON.stringify(adapter.streamCalls.slice(5).map(call => call.messages));
@@ -613,7 +608,7 @@ describe('task result re-entry', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     await drainVpDriversWithin();
     expect(ctx.messageBuffer).toHaveLength(bufferedAfterFirstInstall);
-    expect(chatStore.yeaftActiveTasksBySession[restartTaskKey]).toEqual(visibleRestartTasks);
+    expect(chatStore.yeaftActiveTasksBySession[restartTaskKey]).toBeUndefined();
     expect(adapter.streamCalls).toHaveLength(7);
     expect(persisted.filter(row => row.internal === true)).toHaveLength(4);
   });
