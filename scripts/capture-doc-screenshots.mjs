@@ -13,9 +13,17 @@ import {
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const port = Number(process.env.YEAFT_DOC_SCREENSHOT_PORT || 3469);
 const serverUrl = `http://127.0.0.1:${port}`;
-const outputRoot = resolve(root, 'docs/images');
+const outputRoot = process.env.YEAFT_DOC_SCREENSHOT_OUTPUT_DIR
+  ? resolve(root, process.env.YEAFT_DOC_SCREENSHOT_OUTPUT_DIR)
+  : resolve(root, 'docs/images');
 const viewport = { width: 2560, height: 1440 };
+const workCenterDefaultWorkDir = '/home/projects/yeaft-web-code-agent';
 const baseNow = Date.UTC(2026, 7, 3, 9, 30, 0);
+const failWorkCenterOp = String(process.env.YEAFT_DOC_SCREENSHOT_FAIL_WORK_CENTER_OP || '').trim();
+const injectableWorkCenterOps = new Set(['', 'list', 'get', 'get_settings']);
+if (!injectableWorkCenterOps.has(failWorkCenterOp)) {
+  throw new Error(`Unsupported YEAFT_DOC_SCREENSHOT_FAIL_WORK_CENTER_OP: ${failWorkCenterOp}`);
+}
 const sleep = ms => new Promise(resolvePromise => setTimeout(resolvePromise, ms));
 
 function action({ id, sequence, type, status, vpId, vpName, objective, approach, expectedOutcome, response, stats, dependsOnStageIds = [] }) {
@@ -114,7 +122,7 @@ const rawWorkItemDetail = {
   lifecycle: 'active',
   attentionState: 'none',
   workItemType: 'software-change',
-  workDir: '/home/projects/yeaft-web-code-agent',
+  workDir: workCenterDefaultWorkDir,
   workflowTemplate: 'ai-planned',
   planningMode: 'ai',
   executionMode: 'graph',
@@ -449,7 +457,7 @@ async function captureLocale(browser, agent, locale, prefix) {
   await assertScreenshotPageClean(page, browserFailures, `${locale} Session screenshot`);
   await page.screenshot({ path: sessionPath, type: 'png', fullPage: false });
 
-  await page.evaluate(({ agentId, item, detail, vps }) => {
+  await page.evaluate(({ agentId, item, detail, vps, injectedFailureOp, defaultWorkDir }) => {
     const chat = window.Pinia.useChatStore();
     const localized = chat.locale === 'zh-CN';
     const localItem = {
@@ -466,48 +474,127 @@ async function captureLocale(browser, agent, locale, prefix) {
         ? { ...message, text: '基于最新代码更新中英文文档与高清 light theme 截图；所有 feature 定义必须准确。' }
         : message),
     };
+    const runtime = {
+      defaultWorkDir,
+      workItemAttachments: true,
+      workItemTypes: [{ id: 'software-change', name: localized ? '软件变更' : 'Software change', actionCount: 5 }],
+      vps,
+      models: [{ id: 'review', ref: 'github-copilot/claude-sonnet-4.5', provider: 'github-copilot', label: 'Claude Sonnet 4.5', effortOptions: ['medium', 'high'] }],
+      primaryModel: 'github-copilot/claude-sonnet-4.5',
+    };
+    const settings = { defaultWorkDir, startImmediately: true };
     chat.workCenterAgentId = agentId;
     chat.workCenterItemsByAgent = { [agentId]: [] };
     chat.workCenterDetailByAgent = { [agentId]: null };
     chat.workCenterLoadedByAgent = { [agentId]: false };
     chat.workCenterLoadingByAgent = { [agentId]: false };
     chat.workCenterErrorByAgent = { [agentId]: null };
-    chat.workCenterWatcherByAgent = { [agentId]: { enabled: true } };
-    chat.workCenterSettingsByAgent = { [agentId]: { defaultWorkDir: detail.workDir, startImmediately: true } };
-    chat.workCenterRuntimeByAgent = { [agentId]: {
-      defaultWorkDir: detail.workDir,
-      workItemAttachments: true,
-      workItemTypes: [{ id: 'software-change', name: localized ? '软件变更' : 'Software change', actionCount: 5 }],
-      vps,
-      models: [{ id: 'review', ref: 'github-copilot/claude-sonnet-4.5', provider: 'github-copilot', label: 'Claude Sonnet 4.5', effortOptions: ['medium', 'high'] }],
-      primaryModel: 'github-copilot/claude-sonnet-4.5',
-    } };
-    chat.workCenterRequest = (op, data, targetAgentId) => {
+    chat.workCenterWatcherByAgent = { [agentId]: null };
+    chat.workCenterSettingsByAgent = { [agentId]: null };
+    chat.workCenterRuntimeByAgent = { [agentId]: null };
+    chat.workCenterSettingsLoadingByAgent = { [agentId]: false };
+    chat.workCenterSettingsErrorByAgent = { [agentId]: null };
+    window.__yeaftScreenshotWorkCenterRequests = {};
+    chat.workCenterRequest = async (op, data, targetAgentId) => {
       if (targetAgentId !== agentId) {
-        return Promise.reject(new Error(`Unexpected screenshot Work Center Agent: ${targetAgentId}`));
+        throw new Error(`Unexpected screenshot Work Center Agent: ${targetAgentId}`);
       }
-      if (op === 'list') return Promise.resolve({ items: [localItem], nextCursor: null, watcher: { enabled: true } });
-      if (op === 'get' && data?.id === localDetail.id) return Promise.resolve(localDetail);
-      if (op === 'get_settings') {
-        return Promise.resolve({
-          settings: { defaultWorkDir: detail.workDir, startImmediately: true },
-          runtime: chat.workCenterRuntimeByAgent[agentId],
-        });
+      const requestState = window.__yeaftScreenshotWorkCenterRequests;
+      requestState[op] = { requested: true, completed: false, failed: false };
+      try {
+        if (op === injectedFailureOp) throw new Error(`Injected screenshot ${op} failure`);
+        let result;
+        if (op === 'list') result = { items: [localItem], nextCursor: null, watcher: { enabled: true } };
+        else if (op === 'get' && data?.id === localDetail.id) result = localDetail;
+        else if (op === 'get_settings') result = { settings, runtime };
+        else throw new Error(`Unexpected screenshot Work Center request: ${op}`);
+        requestState[op].completed = true;
+        return result;
+      } catch (error) {
+        requestState[op].failed = true;
+        requestState[op].error = error?.message || String(error);
+        throw error;
       }
-      return Promise.reject(new Error(`Unexpected screenshot Work Center request: ${op}`));
     };
     chat.workCenterOpen = true;
-  }, { agentId: agent.agentId, item: workItem, detail: workItemDetail, vps: workCenterVps });
+  }, {
+    agentId: agent.agentId,
+    item: workItem,
+    detail: workItemDetail,
+    vps: workCenterVps,
+    injectedFailureOp: failWorkCenterOp,
+    defaultWorkDir: workCenterDefaultWorkDir,
+  });
 
   await page.waitForSelector('.work-center-main');
-  await page.waitForFunction(({ agentId, id }) => {
+  await page.waitForFunction(({ agentId }) => {
     const chat = window.Pinia.useChatStore();
-    return (chat.workCenterItemsByAgent[agentId]?.some(item => item.id === id)
-      && !chat.workCenterLoadingByAgent[agentId])
-      || Boolean(document.querySelector('.work-center-error'));
+    const requests = window.__yeaftScreenshotWorkCenterRequests || {};
+    const listTerminal = requests.list?.completed || requests.list?.failed;
+    const settingsTerminal = requests.get_settings?.completed || requests.get_settings?.failed;
+    return listTerminal
+      && settingsTerminal
+      && !chat.workCenterLoadingByAgent[agentId]
+      && !chat.workCenterSettingsLoadingByAgent[agentId];
+  }, { agentId: agent.agentId });
+  const initialization = await page.evaluate(({ agentId, id }) => {
+    const chat = window.Pinia.useChatStore();
+    const requests = window.__yeaftScreenshotWorkCenterRequests || {};
+    return {
+      requests,
+      listError: chat.workCenterErrorByAgent[agentId] || '',
+      settingsError: chat.workCenterSettingsErrorByAgent[agentId] || '',
+      listLoading: Boolean(chat.workCenterLoadingByAgent[agentId]),
+      settingsLoading: Boolean(chat.workCenterSettingsLoadingByAgent[agentId]),
+      hasItem: chat.workCenterItemsByAgent[agentId]?.some(item => item.id === id) === true,
+      settingsDefaultWorkDir: chat.workCenterSettingsByAgent[agentId]?.defaultWorkDir || '',
+      settingsStartImmediately: chat.workCenterSettingsByAgent[agentId]?.startImmediately,
+      runtimeDefaultWorkDir: chat.workCenterRuntimeByAgent[agentId]?.defaultWorkDir || '',
+      runtimePrimaryModel: chat.workCenterRuntimeByAgent[agentId]?.primaryModel || '',
+    };
   }, { agentId: agent.agentId, id: workItem.id });
+  const initializationFailures = [...new Set([
+    initialization.requests.list?.error,
+    initialization.requests.get_settings?.error,
+    initialization.listError,
+    initialization.settingsError,
+    initialization.listLoading ? 'Work Center list request is still loading' : '',
+    initialization.settingsLoading ? 'Work Center settings request is still loading' : '',
+    !initialization.requests.list?.completed ? 'Work Center list request did not complete' : '',
+    !initialization.requests.get_settings?.completed ? 'Work Center get_settings request did not complete' : '',
+    !initialization.hasItem ? 'Work Center list response did not populate the item' : '',
+    initialization.settingsDefaultWorkDir !== workCenterDefaultWorkDir
+      ? 'Work Center settings response did not populate defaultWorkDir' : '',
+    initialization.settingsStartImmediately !== true
+      ? 'Work Center settings response did not populate startImmediately' : '',
+    initialization.runtimeDefaultWorkDir !== workCenterDefaultWorkDir
+      ? 'Work Center settings response did not populate runtime defaultWorkDir' : '',
+    initialization.runtimePrimaryModel !== 'github-copilot/claude-sonnet-4.5'
+      ? 'Work Center settings response did not populate runtime primaryModel' : '',
+  ].filter(Boolean))];
+  if (initializationFailures.length) {
+    throw new Error(`${locale} Work Center initialization failed:\n${initializationFailures.join('\n')}`);
+  }
   await assertScreenshotPageClean(page, browserFailures, `${locale} Work Center initialization`);
   await page.locator('.work-center-card-open').first().click();
+  await page.waitForFunction(({ agentId, id }) => {
+    const chat = window.Pinia.useChatStore();
+    const request = window.__yeaftScreenshotWorkCenterRequests?.get;
+    return request?.failed || (request?.completed && chat.workCenterDetailByAgent[agentId]?.id === id);
+  }, { agentId: agent.agentId, id: workItem.id });
+  const detailInitialization = await page.evaluate(({ agentId, id }) => {
+    const chat = window.Pinia.useChatStore();
+    const request = window.__yeaftScreenshotWorkCenterRequests?.get;
+    return {
+      failed: Boolean(request?.failed),
+      completed: Boolean(request?.completed),
+      error: request?.error || '',
+      hasDetail: chat.workCenterDetailByAgent[agentId]?.id === id,
+    };
+  }, { agentId: agent.agentId, id: workItem.id });
+  if (detailInitialization.failed || !detailInitialization.completed || !detailInitialization.hasDetail) {
+    throw new Error(detailInitialization.error || `${locale} Work Center get request failed or did not populate detail`);
+  }
   await page.waitForSelector('.work-center-conversation-pane');
   await page.locator('.work-center-actions-button').click();
   await page.waitForSelector('.work-center-action-list');

@@ -85,7 +85,7 @@ Mention each VP explicitly: `@designer @dev please review this layout`. Mentions
 
 ### How do I check what's in a VP's memory?
 
-The memory segments live in `~/.yeaft/memory/<scope>/memory.md` on the agent machine (one `memory.md` per scope, containing multiple segments). Each file is plain markdown you can read directly.
+The memory segments live at `<resolvedYeaftDir>/memory/<scope>/memory.md` on the Agent machine (one `memory.md` per scope, containing multiple segments). The default instance resolves this to `~/.yeaft/memory/...`; named `<name>` resolves it to `~/.yeaft/instances/<name>/memory/...`; an explicit `YEAFT_DIR` / `--yeaft-dir` uses that custom root. Each file is plain markdown you can read directly.
 
 ## Yeaft Engine Config
 

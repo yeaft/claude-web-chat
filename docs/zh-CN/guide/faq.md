@@ -85,7 +85,7 @@ Yeaft 用 H2-AMS 持久化记忆，但新写入的记忆段要等本 turn 末尾
 
 ### 怎么看 VP 的记忆里有什么？
 
-记忆都在 agent 机器的 `~/.yeaft/memory/<scope>/memory.md`（每个 scope 一个 `memory.md`，里面是多个段）。是普通 markdown 文件，可以直接看。
+记忆位于 Agent 机器的 `<resolvedYeaftDir>/memory/<scope>/memory.md`（每个 scope 一个 `memory.md`，包含多个 segment）。Default instance 对应 `~/.yeaft/memory/...`；named `<name>` 对应 `~/.yeaft/instances/<name>/memory/...`；显式 `YEAFT_DIR` / `--yeaft-dir` 则使用该 custom root。文件是普通 markdown，可以直接查看。
 
 ## Yeaft 引擎配置
 
