@@ -188,7 +188,7 @@ describe('task result re-entry', () => {
     tempDir = null;
   });
 
-  it('keeps explicit shell taskTitle safe through Bash, TaskManager, and the system prompt', async () => {
+  async function verifyShellTaskTitleSafety() {
     tempDir = mkdtempSync(join(tmpdir(), 'yeaft-task-prompt-shell-'));
     const taskManager = new TaskManager({ yeaftDir: tempDir });
     const toolRegistry = new ToolRegistry();
@@ -248,9 +248,9 @@ describe('task result re-entry', () => {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     expect(taskManager.getTask(sessionId, task.id)?.status).toBe('cancelled');
-  });
+  }
 
-  it('keeps SpawnAgent mission safe through TaskManager and the next system prompt', async () => {
+  async function verifySpawnAgentMissionSafety() {
     tempDir = mkdtempSync(join(tmpdir(), 'yeaft-task-prompt-agent-'));
     const taskManager = new TaskManager({ yeaftDir: tempDir });
     const childAdapter = {
@@ -351,9 +351,16 @@ describe('task result re-entry', () => {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     expect(spawnedAgents.some(({ agentId }) => getAgentRegistry().get(agentId)?.__driverStarted)).toBe(false);
-  });
+  }
 
-  it('detaches persistent shell tasks while preserving explicit model result delivery', async () => {
+  it('keeps prompt labels safe while preserving persistent task result delivery', async () => {
+    await verifyShellTaskTitleSafety();
+    rmSync(tempDir, { recursive: true, force: true });
+    tempDir = null;
+    await verifySpawnAgentMissionSafety();
+    rmSync(tempDir, { recursive: true, force: true });
+    tempDir = null;
+
     tempDir = mkdtempSync(join(tmpdir(), 'yeaft-task-reentry-'));
     const adapter = new RecordingAdapter([
       [
