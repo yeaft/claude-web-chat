@@ -1,8 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
 import {
   DEFAULT_UPGRADE_REGISTRY,
@@ -11,6 +13,7 @@ import {
   buildUpgradeMetadataUrl,
   buildWindowsUpgradeInvocation,
   launchWindowsUpgradeScript,
+  prepareWindowsUpgradeRunner,
   resolveWindowsNpmCliPath,
   resolveWindowsPm2CliPath,
 } from '../../agent/upgrade-command.js';
@@ -64,6 +67,15 @@ async function sendToServerUnderTest(ctxLike, msg) {
   } else {
     ws.send(JSON.stringify(msg));
   }
+}
+
+async function waitForFile(path, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return true;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  return false;
 }
 
 describe('agent ctx defaults and upgrade contract', () => {
@@ -332,6 +344,57 @@ describe('agent ctx defaults and upgrade contract', () => {
     expect(callbackChild.kill).toHaveBeenCalledOnce();
     expect(callbackChild.unref).not.toHaveBeenCalled();
     expect(removeHandoff).toHaveBeenCalledOnce();
+  });
+
+  it('starts the copied updater from a standalone ESM runtime directory', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'yeaft-upgrade-runtime-'));
+    const runnerPath = join(testDir, 'windows-upgrade-runner.js');
+    const commandPath = join(testDir, 'upgrade-command.js');
+    const payloadPath = join(testDir, 'payload.json');
+    const handoffPath = join(testDir, 'started');
+    const logPath = join(testDir, 'upgrade.log');
+    const sourceRunnerPath = fileURLToPath(new URL('../../agent/windows-upgrade-runner.js', import.meta.url));
+    const sourceCommandPath = fileURLToPath(new URL('../../agent/upgrade-command.js', import.meta.url));
+    const payload = {
+      parentPid: process.pid,
+      packageSpec: '@yeaft/webchat-agent@0.0.0-test',
+      globalInstall: true,
+      installDir: testDir,
+      logPath,
+      handoffPath,
+      runnerPath,
+      commandPath,
+      payloadPath,
+      nodePath: process.execPath,
+      npmCliPath: process.execPath,
+      pm2CliPath: null,
+      ecosystemPath: null,
+    };
+
+    let child;
+    try {
+      prepareWindowsUpgradeRunner({
+        sourceRunnerPath,
+        sourceCommandPath,
+        runnerPath,
+        commandPath,
+        payloadPath,
+        payload,
+      });
+      expect(JSON.parse(readFileSync(join(testDir, 'package.json'), 'utf8'))).toEqual({ type: 'module' });
+
+      child = spawn(process.execPath, [runnerPath, payloadPath], {
+        cwd: tmpdir(),
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      expect(await waitForFile(handoffPath)).toBe(true);
+      expect(child.exitCode).toBeNull();
+    } finally {
+      child?.kill();
+      if (child?.exitCode == null) await new Promise(resolve => child?.once('exit', resolve));
+      rmSync(testDir, { recursive: true, force: true });
+    }
   });
 
   it('runs the detached Windows updater without shell wrappers and with bounded retries', async () => {

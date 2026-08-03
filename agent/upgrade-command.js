@@ -90,12 +90,15 @@ export function buildWindowsUpgradeInvocation({ nodePath, runnerPath, payloadPat
  * The runner imports only this helper module, so copy both files together.
  */
 export function prepareWindowsUpgradeRunner({ sourceRunnerPath, sourceCommandPath, runnerPath, commandPath, payloadPath, payload }) {
-  mkdirSync(dirname(runnerPath), { recursive: true });
-  for (const path of [runnerPath, commandPath, payloadPath, payload.handoffPath]) {
+  const runtimeDir = dirname(runnerPath);
+  const moduleManifestPath = join(runtimeDir, 'package.json');
+  mkdirSync(runtimeDir, { recursive: true });
+  for (const path of [runnerPath, commandPath, moduleManifestPath, payloadPath, payload.handoffPath]) {
     try { rmSync(path, { force: true }); } catch {}
   }
   copyFileSync(sourceRunnerPath, runnerPath);
   copyFileSync(sourceCommandPath, commandPath);
+  writeFileSync(moduleManifestPath, JSON.stringify({ type: 'module' }));
   writeFileSync(payloadPath, JSON.stringify(payload));
 }
 
