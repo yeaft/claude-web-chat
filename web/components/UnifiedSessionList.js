@@ -544,8 +544,14 @@ export default {
                     <span v-if="isUnread(row)" class="sidebar-session-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
                   </span>
                 </span>
-                <span v-if="canEditRow(row)" class="session-actions">
-                  <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="toggleSessionMenu(row, true, $event)" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
+                <span v-if="canEditRow(row)" class="session-actions" :class="{ 'menu-open': openMenuKey === row.catalogKey }">
+                  <button type="button" class="session-quick-action" @click.stop="runAction('pin', row)" :title="row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin')" :aria-label="row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin')">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
+                  </button>
+                  <button type="button" class="session-quick-action" @click.stop="runAction('delete', row)" :title="row.runtimeProvider === 'yeaft' ? $t('yeaft.session.removeFromList') : $t('common.delete')" :aria-label="row.runtimeProvider === 'yeaft' ? $t('yeaft.session.removeFromList') : $t('common.delete')">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 7h16v13H4zM3 4h18v3H3zm6 7h6"/></svg>
+                  </button>
+                  <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="toggleSessionMenu(row, true, $event)" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
                 </span>
               </div>
               <div v-if="(rowsByProject.get(projectKey(project)) || []).length === 0" class="sidebar-section-empty">{{ $t('sidebar.projects.noSessions') }}</div>
@@ -577,8 +583,14 @@ export default {
                 <span v-if="isUnread(row)" class="sidebar-session-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
               </span>
             </span>
-            <span v-if="canEditRow(row)" class="session-actions">
-              <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="toggleSessionMenu(row, false, $event)" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
+            <span v-if="canEditRow(row)" class="session-actions" :class="{ 'menu-open': openMenuKey === row.catalogKey }">
+              <button type="button" class="session-quick-action" @click.stop="runAction('pin', row)" :title="row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin')" :aria-label="row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin')">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
+              </button>
+              <button type="button" class="session-quick-action" @click.stop="runAction('delete', row)" :title="row.runtimeProvider === 'yeaft' ? $t('yeaft.session.removeFromList') : $t('common.delete')" :aria-label="row.runtimeProvider === 'yeaft' ? $t('yeaft.session.removeFromList') : $t('common.delete')">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 7h16v13H4zM3 4h18v3H3zm6 7h6"/></svg>
+              </button>
+              <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="toggleSessionMenu(row, false, $event)" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
             </span>
           </div>
           <div v-if="recentRows.length === 0" class="sidebar-section-empty">{{ $t('sidebar.recents.empty') }}</div>
@@ -598,7 +610,6 @@ export default {
             <div v-if="projectMoveTargets(floatingMenu.row, floatingMenu.currentProject).length === 0" class="session-menu-empty">{{ $t('sidebar.projects.moveEmpty') }}</div>
           </template>
           <template v-else>
-            <button class="session-menu-item" @click.stop="runAction('pin', floatingMenu.row)">{{ floatingMenu.row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin') }}</button>
             <button class="session-menu-item" @click.stop="runAction('rename', floatingMenu.row)">{{ $t('chat.sidebar.renameConv') }}</button>
             <template v-if="floatingMenu.row.runtimeProvider === 'yeaft'">
               <button class="session-menu-item" @click.stop="runAction('settings', floatingMenu.row)">{{ $t('yeaft.session.openSettings') }}</button>
@@ -608,7 +619,6 @@ export default {
                 <span aria-hidden="true">&rsaquo;</span>
               </button>
             </template>
-            <button class="session-menu-item danger" @click.stop="runAction('delete', floatingMenu.row)">{{ $t('common.delete') }}</button>
             <div class="sidebar-session-menu-info">
               <strong :title="agentLabel(floatingMenu.row)">{{ agentLabel(floatingMenu.row) }}</strong>
               <strong>{{ providerLabel(floatingMenu.row) }}</strong>

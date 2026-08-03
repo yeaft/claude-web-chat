@@ -78,13 +78,11 @@ export default {
           </div>
         </div>
         <div v-if="sessionActions" class="message-user-actions">
-          <button type="button" class="message-action-btn" @click="$emit('quote', userQuote)" :title="$t('message.quote')">
+          <button type="button" class="message-action-btn" @click="$emit('quote', userQuote)" :title="$t('message.quote')" :aria-label="$t('message.quote')">
             <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>
-            <span>{{ $t('message.quote') }}</span>
           </button>
-          <button type="button" class="message-action-btn" @click="$emit('edit-as-new', displayContent)" :title="$t('message.editAsNew')">
+          <button type="button" class="message-action-btn" @click="$emit('edit-as-new', displayContent)" :title="$t('message.editAsNew')" :aria-label="$t('message.editAsNew')">
             <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
-            <span>{{ $t('message.editAsNew') }}</span>
           </button>
         </div>
       </template>

@@ -1561,12 +1561,16 @@
 }
 
 .turn-footer .message-action-btn,
+.screenshot-btn,
+.export-md-btn,
 .copy-full-btn,
 .response-collapse-btn {
   display: flex;
+  width: 24px;
+  height: 24px;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
+  justify-content: center;
+  padding: 0;
   border: none;
   border-radius: 4px;
   background: transparent;
@@ -1578,45 +1582,26 @@
 
 .turn-footer .message-action-btn:hover,
 .turn-footer .message-action-btn:focus-visible,
+.screenshot-btn:hover,
+.screenshot-btn:focus-visible,
+.export-md-btn:hover,
+.export-md-btn:focus-visible,
 .copy-full-btn:hover,
+.copy-full-btn:focus-visible,
 .response-collapse-btn:hover,
 .response-collapse-btn:focus-visible {
   background: var(--bg-user-msg);
   color: var(--text-primary);
 }
 
+.screenshot-btn:focus-visible,
+.export-md-btn:focus-visible,
+.copy-full-btn:focus-visible,
 .response-collapse-btn:focus-visible {
   outline: none;
 }
 
-.copy-full-label,
-.response-collapse-label {
-  font-size: 11px;
-}
-
 /* Screenshot Button */
-.screenshot-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 12px;
-  transition: background 0.15s, color 0.15s;
-}
-
-.screenshot-btn:hover {
-  background: var(--bg-user-msg);
-  color: var(--text-primary);
-}
-
-.screenshot-label {
-  font-size: 11px;
-}
 
 .screenshot-spinner {
   animation: spin 0.8s linear infinite;
@@ -1640,29 +1625,6 @@
 }
 
 /* Export MD Button */
-.export-md-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 12px;
-  transition: background 0.15s, color 0.15s;
-}
-
-.export-md-btn:hover {
-  background: var(--bg-user-msg);
-  color: var(--text-primary);
-}
-
-.export-md-label {
-  font-size: 11px;
-}
-
 /* Syntax Highlighting Theme Overrides */
 .hljs {
   background: transparent !important;
