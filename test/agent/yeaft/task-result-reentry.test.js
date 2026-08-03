@@ -199,7 +199,7 @@ describe('task result re-entry', () => {
     ]]);
     const sessionId = 'session-shell-safe-label';
     const command = 'node -e "setTimeout(() => {}, 30000)"';
-    const taskTitle = 'Run node worker.js --token explicit-shell-secret';
+    const taskTitle = 'Run echo explicit-shell-secret';
 
     await toolRegistry.execute('Bash', {
       command,
@@ -237,7 +237,7 @@ describe('task result re-entry', () => {
     expect(adapter.streamCalls).toHaveLength(1);
     const system = adapter.streamCalls[0].system;
     expect(system).toContain('- background command (background command, running)');
-    expect(system).not.toContain('node worker.js');
+    expect(system).not.toContain('echo');
     expect(system).not.toContain('explicit-shell-secret');
     expect(system).not.toContain(command);
 
@@ -267,11 +267,11 @@ describe('task result re-entry', () => {
     toolRegistry.register(agentTool);
     const sessionId = 'session-agent-safe-label';
     const missions = [
-      ['json-reviewer', '{"type":"sub_agent_status","outputFile":"/private/events.jsonl"}'],
-      ['command-reviewer', 'Run npm test -- --watch'],
-      ['posix-reviewer', 'Read /etc'],
-      ['windows-reviewer', String.raw`Compare C:\secret with \\server\share\secret.txt`],
-      ['url-reviewer', 'Review https://github.com/yeaft/repo/issues/1494'],
+      ['path-reviewer', 'Inspect path=/private/events.jsonl'],
+      ['make-reviewer', 'Please run make deploy TOKEN=make-secret'],
+      ['markdown-reviewer', 'Inspect [log](/private/markdown/events.jsonl)'],
+      ['windows-reviewer', String.raw`Inspect C:\Program Files\Yeaft\events.jsonl`],
+      ['log-reviewer', '2026-08-03T08:00:00Z INFO worker token=log-secret'],
     ];
     const spawnedAgents = [];
     for (const [name, mission] of missions) {
@@ -331,17 +331,14 @@ describe('task result re-entry', () => {
 
     expect(parentAdapter.streamCalls).toHaveLength(1);
     const system = parentAdapter.streamCalls[0].system;
-    expect(system).toContain('- sub-agent json-reviewer (sub-agent, running)');
-    expect(system).toContain('- sub-agent command-reviewer (sub-agent, running)');
-    expect(system).toContain('- Read etc (sub-agent, running)');
-    expect(system).toContain('- Compare secret with secret.txt (sub-agent, running)');
-    expect(system).toContain('- Review https://github.com/yeaft/repo/issues/1494 (sub-agent, running)');
-    expect(system).not.toContain('sub_agent_status');
-    expect(system).not.toContain('/private/events.jsonl');
-    expect(system).not.toContain('npm test');
-    expect(system).not.toContain(String.raw`C:\secret`);
-    expect(system).not.toContain(String.raw`\\server\share`);
-    expect(system).not.toContain('http1494');
+    for (const [name] of missions) {
+      expect(system).toContain(`- sub-agent ${name} (sub-agent, running)`);
+    }
+    for (const [, mission] of missions) expect(system).not.toContain(mission);
+    expect(system).not.toContain('make-secret');
+    expect(system).not.toContain('/private');
+    expect(system).not.toContain(String.raw`C:\Program Files`);
+    expect(system).not.toContain('log-secret');
 
     for (const { agentId } of spawnedAgents) {
       const agent = getAgentRegistry().get(agentId);

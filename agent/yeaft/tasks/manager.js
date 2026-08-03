@@ -6,7 +6,6 @@
  */
 
 import { randomUUID } from 'crypto';
-import { posix, win32 } from 'path';
 import {
   TaskStore,
   TASK_RESULT_DELIVERY,
@@ -22,10 +21,6 @@ const LOG_PREVIEW_BYTES = 4096;
 const SUB_AGENT_LOG_PREVIEW_BYTES = 1024 * 1024;
 const DEFAULT_CANCEL_ESCALATION_MS = 2000;
 const PROMPT_TASK_LIMIT = 5;
-const PROMPT_TASK_TITLE_CHARS = 240;
-const SHELL_COMMAND_NAME = '(?:bash|sh|zsh|cmd(?:\\.exe)?|powershell|pwsh|node|python(?:3)?|npm|npx|pnpm|yarn|git|curl|wget|rm|cp|mv|cat|sed|awk)';
-const COMMAND_AT_START_RE = new RegExp(`^(?:(?:sudo|env|nohup)\\s+)*${SHELL_COMMAND_NAME}\\b`, 'i');
-const COMMAND_ACTION_RE = new RegExp(`^(?:run|execute|start|launch|invoke|运行|执行|启动)\\s+(?:(?:sudo|env|nohup)\\s+)*${SHELL_COMMAND_NAME}\\b`, 'i');
 
 function logPreviewBytesFor(task) {
   return task?.kind === 'sub_agent' ? SUB_AGENT_LOG_PREVIEW_BYTES : LOG_PREVIEW_BYTES;
@@ -60,12 +55,6 @@ function publicSnapshot(task) {
   };
 }
 
-function truncatePromptTaskText(value, maxChars = PROMPT_TASK_TITLE_CHARS) {
-  const text = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
-}
-
 function taskKindLabel(kind, language) {
   const zh = String(language || '').toLowerCase().startsWith('zh');
   if (kind === 'sub_agent') return zh ? '子 Agent' : 'sub-agent';
@@ -78,88 +67,12 @@ function safeTaskName(task) {
   return /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,63}$/u.test(name) ? name : '';
 }
 
-function taskFallbackLabel(task, language) {
+function promptTaskLabel(task, language) {
   const name = task?.kind === 'sub_agent' ? safeTaskName(task) : '';
   if (!name) return taskKindLabel(task?.kind, language);
   return String(language || '').toLowerCase().startsWith('zh')
     ? `子 Agent ${name}`
     : `sub-agent ${name}`;
-}
-
-function isStructuredTaskText(text) {
-  if (/^[\[{]/.test(text)) {
-    try {
-      const parsed = JSON.parse(text);
-      if (parsed && typeof parsed === 'object') return true;
-    } catch { /* malformed event/log fragments are handled below */ }
-  }
-  return /(?:^|[\s,{])"?(?:type|event|level|status|timestamp|outputFile|logPath)"?\s*[:=]/i.test(text)
-    || /(?:^|\s)(?:stdout|stderr|traceback|stack trace)\s*:/i.test(text);
-}
-
-function isCommandLikeTaskText(text) {
-  if (/\r|\n/.test(text) || /```|`/.test(text)) return true;
-  if (/\s(?:&&|\|\||[|;<>])\s*/.test(text)) return true;
-  if (/^(?:\$|>|PS>)\s+/i.test(text)) return true;
-  if (COMMAND_AT_START_RE.test(text)) return true;
-  return COMMAND_ACTION_RE.test(text);
-}
-
-function stripTaskTokenPunctuation(token) {
-  let start = 0;
-  let end = token.length;
-  while (start < end && /[(`'"\[{]/.test(token[start])) start += 1;
-  while (end > start && /[)`'"\]},.;:!?，。；：！？]/.test(token[end - 1])) end -= 1;
-  return {
-    prefix: token.slice(0, start),
-    core: token.slice(start, end),
-    suffix: token.slice(end),
-  };
-}
-
-function isHttpUrl(value) {
-  if (!/^https?:\/\//i.test(value)) return false;
-  try {
-    const url = new URL(value);
-    return (url.protocol === 'http:' || url.protocol === 'https:') && !!url.hostname;
-  } catch {
-    return false;
-  }
-}
-
-function absolutePathBasename(value) {
-  let basename = '';
-  if (win32.isAbsolute(value)) basename = win32.basename(value.replace(/[\\/]+$/, ''));
-  else if (posix.isAbsolute(value)) basename = posix.basename(value.replace(/\/+$/, ''));
-  if (!basename || basename === '.' || basename === '/' || basename === '\\') return '';
-  return basename.replace(/[^\p{L}\p{N}._ -]/gu, '').slice(0, 80);
-}
-
-function sanitizeTaskPaths(text) {
-  return text.split(/(\s+)/).map(token => {
-    if (!token || /^\s+$/.test(token)) return token;
-    const { prefix, core, suffix } = stripTaskTokenPunctuation(token);
-    if (!core || isHttpUrl(core)) return token;
-    if (!win32.isAbsolute(core) && !posix.isAbsolute(core)) return token;
-    return `${prefix}${absolutePathBasename(core)}${suffix}`;
-  }).join('');
-}
-
-function promptTaskTitle(task, language) {
-  const rawTitle = typeof task?.title === 'string' ? task.title.trim() : '';
-  const command = typeof task?.runtime?.command === 'string' ? task.runtime.command.trim() : '';
-  const fallback = taskFallbackLabel(task, language);
-  // Task titles are persisted raw for task tools and the UI. The system prompt
-  // gets a separate safe label: event/log/command-shaped input is rejected,
-  // while ordinary prose keeps valid URLs and reduces absolute paths to a
-  // basename. Producers such as SpawnAgent and Bash accept arbitrary text, so
-  // this boundary must not trust a title merely because it was explicit.
-  const defaultShellTitle = task?.kind === 'shell' && command
-    && rawTitle === command.slice(0, 120);
-  if (!rawTitle || defaultShellTitle || isStructuredTaskText(rawTitle) || isCommandLikeTaskText(rawTitle)) {
-    return fallback;
-  }
-  return truncatePromptTaskText(sanitizeTaskPaths(rawTitle)) || fallback;
 }
 
 function taskStatusLabel(status, language) {
@@ -483,7 +396,7 @@ export class TaskManager {
       ? '以下任务仍在后台运行。需要进度或完整输出时使用任务工具查询；不要把它们当成记忆事实。'
       : 'These tasks are still running in the background. Use the task tools for progress or full output; do not treat them as memory facts.');
     for (const task of visible) {
-      const title = promptTaskTitle(task, language);
+      const title = promptTaskLabel(task, language);
       const detail = zh
         ? `${taskKindLabel(task.kind, language)}，${taskStatusLabel(task.status, language)}`
         : `${taskKindLabel(task.kind, language)}, ${taskStatusLabel(task.status, language)}`;

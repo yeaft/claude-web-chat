@@ -201,14 +201,14 @@ describe('TaskManager', () => {
     expect(manager.getTask('session_cancel', task.id).status).toBe('running');
   });
 
-  it('renders bounded human-readable task context without paths or log protocol', () => {
+  it('renders task kind and strict sub-agent name without arbitrary titles or log protocol', () => {
     const manager = new TaskManager({ yeaftDir: dir });
     const task = manager.startTask({
       sessionId: 'session_prompt',
       ownerVpId: 'vp_linus',
       kind: 'sub_agent',
       title: `Review /home/azureuser/projects/yeaft/.yeaft/worktrees/fix-timeout recovery ${'with detailed checks '.repeat(30)}`,
-      runtime: { command: 'npm run dev -- --host 0.0.0.0' },
+      runtime: { name: 'reviewer-1', command: 'npm run dev -- --host 0.0.0.0' },
       logPath: '/private/sub-agent/events.jsonl',
     });
     manager.store.appendLog('session_prompt', task.id, '{"type":"sub_agent_status","status":"running"}\n');
@@ -216,25 +216,26 @@ describe('TaskManager', () => {
 
     const rendered = manager.renderActiveTasksForPrompt('session_prompt', { language: 'zh' });
     expect(rendered).toContain('## 可能相关的任务');
-    expect(rendered).toContain('Review fix-timeout recovery');
-    expect(rendered).toContain('(子 Agent，运行中)');
-    expect(rendered).toContain('…');
+    expect(rendered).toContain('- 子 Agent reviewer-1 (子 Agent，运行中)');
     expect(rendered).not.toContain('<active_tasks>');
     expect(rendered).not.toContain(task.id);
+    expect(rendered).not.toContain('Review');
     expect(rendered).not.toContain('/home/azureuser/projects');
     expect(rendered).not.toContain('/private/sub-agent/events.jsonl');
     expect(rendered).not.toContain('sub_agent_status');
     expect(rendered).not.toContain('npm run dev');
   });
 
-  it('uses safe prompt labels for structured, command, path, and URL titles', () => {
+  it('never reuses sub-agent mission text as a prompt label', () => {
     const manager = new TaskManager({ yeaftDir: dir });
     const titles = [
       ['json-worker', '{"type":"sub_agent_status","outputFile":"/private/events.jsonl"}'],
-      ['command-worker', 'Run npm test -- --watch'],
-      ['posix-worker', 'Read /etc'],
-      ['windows-worker', String.raw`Read C:\secret`],
-      ['unc-worker', String.raw`Read \\server\share\secret.txt`],
+      ['echo-worker', 'Run echo explicit-shell-secret'],
+      ['make-worker', 'Please run make deploy TOKEN=make-secret'],
+      ['path-worker', 'Inspect path=/private/events.jsonl'],
+      ['markdown-worker', 'Inspect [log](/private/markdown/events.jsonl)'],
+      ['windows-worker', String.raw`Inspect C:\Program Files\Yeaft\events.jsonl`],
+      ['log-worker', '2026-08-03T08:00:00Z INFO worker token=log-secret'],
       ['url-worker', 'Review https://github.com/yeaft/repo/issues/1494'],
     ];
     for (const [name, title] of titles) {
@@ -247,21 +248,32 @@ describe('TaskManager', () => {
     }
 
     const rendered = manager.renderActiveTasksForPrompt('session_safe_labels', { language: 'en', limit: 10 });
-    expect(rendered).toContain('- sub-agent json-worker (sub-agent, running)');
-    expect(rendered).toContain('- sub-agent command-worker (sub-agent, running)');
-    expect(rendered).toContain('- Read etc (sub-agent, running)');
-    expect(rendered).toContain('- Read secret (sub-agent, running)');
-    expect(rendered).toContain('- Read secret.txt (sub-agent, running)');
-    expect(rendered).toContain('- Review https://github.com/yeaft/repo/issues/1494 (sub-agent, running)');
-    expect(rendered).not.toContain('sub_agent_status');
-    expect(rendered).not.toContain('/private/events.jsonl');
-    expect(rendered).not.toContain('npm test');
-    expect(rendered).not.toContain(String.raw`C:\secret`);
-    expect(rendered).not.toContain(String.raw`\\server\share`);
-    expect(rendered).not.toContain('http1494');
+    for (const [name] of titles) {
+      expect(rendered).toContain(`- sub-agent ${name} (sub-agent, running)`);
+    }
+    for (const [, title] of titles) expect(rendered).not.toContain(title);
+    expect(rendered).not.toContain('explicit-shell-secret');
+    expect(rendered).not.toContain('/private');
+    expect(rendered).not.toContain('log-secret');
+    expect(rendered).not.toContain('https://github.com');
   });
 
-  it('does not leak default or explicit background shell commands through task titles', () => {
+  it('rejects unsafe sub-agent names at the prompt boundary', () => {
+    const manager = new TaskManager({ yeaftDir: dir });
+    manager.startTask({
+      sessionId: 'session_unsafe_name',
+      kind: 'sub_agent',
+      title: 'ordinary mission',
+      runtime: { name: 'reviewer /private/events.jsonl' },
+    });
+
+    const rendered = manager.renderActiveTasksForPrompt('session_unsafe_name', { language: 'en' });
+    expect(rendered).toContain('- sub-agent (sub-agent, running)');
+    expect(rendered).not.toContain('reviewer');
+    expect(rendered).not.toContain('/private');
+  });
+
+  it('always uses the task kind for background shell prompt labels', () => {
     const manager = new TaskManager({ yeaftDir: dir });
     const command = 'node server.js --token super-secret --watch';
     manager.startTask({
@@ -273,7 +285,7 @@ describe('TaskManager', () => {
     manager.startTask({
       sessionId: 'session_shell_prompt',
       kind: 'shell',
-      title: 'Run node worker.js --token explicit-secret',
+      title: 'Run echo explicit-shell-secret',
       runtime: { command: 'sleep 30' },
     });
 
@@ -281,8 +293,8 @@ describe('TaskManager', () => {
     expect(rendered.match(/- background command \(background command, running\)/g)).toHaveLength(2);
     expect(rendered).not.toContain('node server.js');
     expect(rendered).not.toContain('super-secret');
-    expect(rendered).not.toContain('node worker.js');
-    expect(rendered).not.toContain('explicit-secret');
+    expect(rendered).not.toContain('echo');
+    expect(rendered).not.toContain('explicit-shell-secret');
   });
 
   it('limits the task prompt list and points to task tools for the remainder', () => {
@@ -297,8 +309,8 @@ describe('TaskManager', () => {
 
     const rendered = manager.renderActiveTasksForPrompt('session_prompt_limit', { language: 'en' });
     expect(rendered).toContain('## Possibly Relevant Tasks');
-    expect(rendered).toContain('Background check 5');
-    expect(rendered).not.toContain('Background check 6');
+    expect(rendered.match(/- background command \(background command, running\)/g)).toHaveLength(5);
+    expect(rendered).not.toContain('Background check');
     expect(rendered).toContain('2 more running tasks; use the task list to inspect them.');
   });
 

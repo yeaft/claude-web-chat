@@ -1438,6 +1438,7 @@ describe('Engine', () => {
           ownerVpId: 'linus',
           kind: 'sub_agent',
           title: 'Review timeout recovery and verify Engine continuation',
+          runtime: { name: 'timeout-reviewer' },
           logPath: '/private/sub-agent/events.jsonl',
         });
         taskManager.store.appendLog('current-session', task.id, '{"type":"sub_agent_status","status":"running"}\n');
@@ -1473,7 +1474,8 @@ describe('Engine', () => {
         expect(system).toContain('### 相关记忆');
         expect(system).toContain('Timeout cleanup failures must return a tool result');
         expect(system).toContain('## 可能相关的任务');
-        expect(system).toContain('Review timeout recovery and verify Engine continuation (子 Agent，运行中)');
+        expect(system).toContain('- 子 Agent timeout-reviewer (子 Agent，运行中)');
+        expect(system).not.toContain('Review timeout recovery and verify Engine continuation');
         expect(system).not.toContain('<active_tasks>');
         expect(system).not.toContain('/private/sub-agent/events.jsonl');
         expect(system).not.toContain('sub_agent_status');
