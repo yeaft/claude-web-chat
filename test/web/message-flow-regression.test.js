@@ -226,9 +226,10 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-action:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-action-icon\s*\{[^}]*color:\s*var\(--text-secondary\)/);
     expect(yeaftSidebarCss).not.toMatch(/\.sidebar-primary-action-icon\s*\{[^}]*color:\s*var\(--accent/);
-    expect(yeaftSidebarCss).toMatch(/\.sidebar-project-add-button\s*\{[^}]*opacity:\s*0/);
-    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading:hover > \.sidebar-project-add-button,[\s\S]*?\.sidebar-section-heading:focus-within > \.sidebar-project-add-button\s*\{[^}]*opacity:\s*1/);
-    expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-add-button\s*\{[^}]*opacity:\s*1/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-project-add-button\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading > \.sidebar-project-add-button:disabled\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading > span:first-child:hover ~ \.sidebar-project-add-button:not\(:disabled\),[\s\S]*?\.sidebar-section-heading > \.sidebar-project-add-button:not\(:disabled\):hover,[\s\S]*?\.sidebar-section-heading:focus-within > \.sidebar-project-add-button:not\(:disabled\)\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-add-button:not\(:disabled\)\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     const sectionPaddingTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'padding');
     const sectionMarginTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'margin');
     expect(sectionPaddingTopValues.length).toBeGreaterThan(0);

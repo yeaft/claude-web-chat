@@ -79,11 +79,41 @@ test.describe('侧边栏交互', () => {
       expect(appearance.projectMarkPath).toBe('M12 5v14M5 12h14');
     }
 
+    await chatPage.mouse.move(0, 0);
     await expect(newProject).toHaveCSS('opacity', '0');
-    await projectHeading.hover();
+    await expect(newProject).toHaveCSS('pointer-events', 'none');
+    const hiddenHitTarget = await newProject.evaluate(button => {
+      const bounds = button.getBoundingClientRect();
+      const x = bounds.left + bounds.width / 2;
+      const y = bounds.top + bounds.height / 2;
+      const target = document.elementFromPoint(x, y);
+      return {
+        x,
+        y,
+        hitsButton: target === button || button.contains(target),
+      };
+    });
+    expect(hiddenHitTarget.hitsButton).toBe(false);
+    await chatPage.mouse.click(hiddenHitTarget.x, hiddenHitTarget.y);
+    await expect(chatPage.locator('.sidebar-project-create')).toHaveCount(0);
+
+    await newProject.focus();
     await expect(newProject).toHaveCSS('opacity', '1');
+    await expect(newProject).toHaveCSS('pointer-events', 'auto');
+    await newChat.focus();
+    await chatPage.mouse.move(0, 0);
+    await expect(newProject).toHaveCSS('opacity', '0');
+    await expect(newProject).toHaveCSS('pointer-events', 'none');
+
+    await projectHeading.locator('> span:first-child').hover();
+    await expect(newProject).toHaveCSS('opacity', '1');
+    await expect(newProject).toHaveCSS('pointer-events', 'auto');
     await newProject.click();
     await expect(chatPage.locator('.sidebar-project-create input')).toBeFocused();
+    await expect(newProject).toBeDisabled();
+    await newChat.hover();
+    await expect(newProject).toHaveCSS('opacity', '0');
+    await expect(newProject).toHaveCSS('pointer-events', 'none');
     await chatPage.keyboard.press('Escape');
     await expect(chatPage.locator('.sidebar-project-create')).toHaveCount(0);
 

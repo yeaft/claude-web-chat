@@ -60,12 +60,14 @@
 .sidebar-primary-action:hover, .sidebar-project-header:hover, .sidebar-project-header.drag-over, .recents-section.drag-over { background: var(--sidebar-hover); }
 .sidebar-primary-action:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: -2px; }
 .sidebar-primary-action-icon { width: 18px; height: 18px; flex: 0 0 auto; color: var(--text-secondary); }
-.sidebar-project-add-button { opacity: 0; transition: opacity 0.15s ease; }
+.sidebar-project-add-button { opacity: 0; pointer-events: none; transition: opacity 0.15s ease; }
 .sidebar-project-add-button .sidebar-project-add-icon { width: 16px; height: 16px; }
-.sidebar-section-heading:hover > .sidebar-project-add-button,
-.sidebar-section-heading:focus-within > .sidebar-project-add-button { opacity: 1; }
+.sidebar-section-heading > .sidebar-project-add-button:disabled { opacity: 0; pointer-events: none; }
+.sidebar-section-heading > span:first-child:hover ~ .sidebar-project-add-button:not(:disabled),
+.sidebar-section-heading > .sidebar-project-add-button:not(:disabled):hover,
+.sidebar-section-heading:focus-within > .sidebar-project-add-button:not(:disabled) { opacity: 1; pointer-events: auto; }
 @media (pointer: coarse) {
-  .sidebar-project-add-button { opacity: 1; }
+  .sidebar-project-add-button:not(:disabled) { opacity: 1; pointer-events: auto; }
 }
 .sidebar-section { padding: 0 8px 10px; }
 .sidebar-session-results { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
