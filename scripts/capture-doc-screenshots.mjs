@@ -28,6 +28,7 @@ const injectableFailureScenarios = new Set([
   'post-screenshot-pageerror',
   'post-screenshot-requestfailed',
   'post-screenshot-store-error',
+  'post-screenshot-agent-identity-change',
   'visible-typing-error',
   'server-exit',
 ]);
@@ -540,8 +541,14 @@ async function installStoreHealthObserver(page, fatalLatch, locale, agentId) {
       if (chat.connectionState !== 'connected') {
         failures.push(`WebSocket connection state is ${chat.connectionState}`);
       }
+      if (chat.currentAgent !== activeAgentId) {
+        failures.push('Current Agent route changed');
+      }
       if (chat.currentAgentInfo?.id !== activeAgentId || chat.currentAgentInfo?.online !== true) {
-        failures.push('Current Agent is offline or changed');
+        failures.push('Current Agent info is offline or changed');
+      }
+      if (chat.workCenterOpen && chat.workCenterAgentId !== activeAgentId) {
+        failures.push('Work Center Agent changed');
       }
       for (const error of [
         chat.workCenterErrorByAgent?.[activeAgentId],
@@ -615,7 +622,7 @@ async function injectPostScreenshotFailure(page, serverHandle, fatalLatch, local
     }, agentId);
     await page.waitForSelector('.typing-status-error', { state: 'visible' });
     await page.evaluate(() => console.log('Injected visible typing error failure'));
-  } else if (failureScenario === 'post-screenshot-store-error' || failureScenario === 'server-exit') {
+  } else if (['post-screenshot-store-error', 'post-screenshot-agent-identity-change', 'server-exit'].includes(failureScenario)) {
     return;
   }
   await fatalLatch.waitForFailure();
@@ -823,7 +830,7 @@ async function captureLocale(browser, agent, serverHandle, fatalLatch, locale, p
     if (overflow) throw new Error(`Horizontal overflow in ${selector}`);
   }
   await assertScreenshotLifecycleClean(page, fatalLatch, `${locale} Work Center screenshot completion`);
-  if (failureScenario === 'post-screenshot-store-error' && locale === 'zh-CN') {
+  if (locale === 'zh-CN' && failureScenario === 'post-screenshot-store-error') {
     await page.evaluate(activeAgentId => {
       const chat = window.Pinia.useChatStore();
       const marker = 'Injected post-screenshot store lifecycle failure';
@@ -835,6 +842,14 @@ async function captureLocale(browser, agent, serverHandle, fatalLatch, locale, p
     }, agent.agentId);
     await fatalLatch.waitForFailure();
     fatalLatch.assert('Injected post-screenshot-store-error screenshot failure');
+  } else if (locale === 'zh-CN' && failureScenario === 'post-screenshot-agent-identity-change') {
+    await page.evaluate(() => {
+      const chat = window.Pinia.useChatStore();
+      chat.currentAgent = 'injected-other-agent';
+      console.log('Injected authoritative currentAgent identity change');
+    });
+    await fatalLatch.waitForFailure();
+    fatalLatch.assert('Injected post-screenshot-agent-identity-change screenshot failure');
   }
   await stopScreenshotHealthObservers(page, fatalLatch, `${locale} screenshot health observer shutdown`);
   await context.close();

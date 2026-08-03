@@ -59,6 +59,16 @@ const scenarios = [
     requiredArtifacts: ['session.png', 'work-center.png', 'zh-CN/session.png', 'zh-CN/work-center.png'],
   },
   {
+    id: 'post-screenshot-agent-identity-change',
+    env: { YEAFT_DOC_SCREENSHOT_FAILURE_SCENARIO: 'post-screenshot-agent-identity-change' },
+    markers: [
+      'Injected authoritative currentAgent identity change',
+      '[store-error:zh-CN] Current Agent route changed',
+      'fatal screenshot lifecycle errors',
+    ],
+    requiredArtifacts: ['session.png', 'work-center.png', 'zh-CN/session.png', 'zh-CN/work-center.png'],
+  },
+  {
     id: 'visible-typing-error',
     env: { YEAFT_DOC_SCREENSHOT_FAILURE_SCENARIO: 'visible-typing-error' },
     markers: ['Injected visible typing error failure', '[visible-error:en]'],
