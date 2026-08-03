@@ -20,6 +20,9 @@ const chatStore = Vue.reactive({
   currentAgent: 'agent-1',
   currentAgentInfo: { online: true },
   agents: [{ id: 'agent-1', online: true }],
+  _hasHandledAgentList: true,
+  _hasHandledYeaftSessionHydrate: true,
+  yeaftSessionHydrateError: null,
   yeaftActiveSessionFilter: 'session-1',
   sidebarCollapsed: false,
   sessionSidebarOpen: false,
@@ -51,8 +54,24 @@ beforeAll(async () => {
 
 beforeEach(() => {
   localStorage.clear();
-  sessionsStore.sessions = { 'session-1': { id: 'session-1', roster: ['omni'], defaultVpId: 'omni' } };
+  sessionsStore.sessions = {
+    'session-1': {
+      id: 'session-1',
+      title: 'Conversation title',
+      workDir: '/home/user/projects/yeaft-web-code-agent',
+      roster: ['omni'],
+      defaultVpId: 'omni',
+      config: { model: 'provider/session-model', modelEffort: 'high' },
+    },
+  };
   sessionsStore.activeSession = sessionsStore.sessions['session-1'];
+  chatStore.yeaftModel = 'provider/fallback-model';
+  chatStore.yeaftModelEffort = 'medium';
+  chatStore.yeaftAvailableModels = [
+    { id: 'session-model', provider: 'provider', ref: 'provider/session-model', effortOptions: ['low', 'medium', 'high'] },
+    { id: 'next-model', provider: 'provider', ref: 'provider/next-model', effortOptions: ['medium', 'high'] },
+  ];
+  chatStore.switchYeaftModel = vi.fn();
   chatStore.yeaftHistorySearchState = { query: '', senderKey: '' };
   chatStore.loadYeaftHistoryOutline.mockReset();
   chatStore.searchYeaftHistory.mockReset();
@@ -64,6 +83,49 @@ afterEach(() => {
 });
 
 describe('YeaftPage setup', () => {
+  it('defaults Session history search to the user without replacing an explicit sender choice', async () => {
+    const page = YeaftPage.setup();
+
+    expect(page.topbarSessionTitle.value).toBe('Conversation title');
+    expect(page.topbarFolderPath.value).toBe('/home/user/projects/yeaft-web-code-agent');
+    expect(page.topbarModel.value).toBe('provider/session-model');
+    expect(page.topbarEffort.value).toBe('high');
+
+    page.selectModel('provider/next-model', 'medium');
+    expect(chatStore.switchYeaftModel).toHaveBeenCalledWith('provider/next-model', 'session-1', 'medium');
+
+    const source = YeaftPage.template;
+    const topbarStart = source.indexOf('<div class="yeaft-topbar">');
+    const topbarEnd = source.indexOf('</div>', source.indexOf('<YeaftSessionActions', topbarStart));
+    const topbar = source.slice(topbarStart, topbarEnd);
+    expect(topbar).toContain('class="yeaft-topbar-folder"');
+    expect(topbar).toContain('class="yeaft-topbar-context"');
+    expect(topbar).not.toContain('class="yeaft-composer-model"');
+    expect(source).toContain('class="yeaft-session-input"');
+    expect(source).toContain('<template #actions-start>');
+    expect(source).toContain('class="yeaft-composer-model-control"');
+    expect(source).toContain('class="yeaft-composer-model"');
+    expect(source).toContain('class="yeaft-composer-model-effort"');
+    expect(source).toContain("$t('yeaft.modelMenu.effort.' + topbarEffort)");
+    expect(source).toContain('class="yeaft-model-effort-chip"');
+    expect(source).toContain('class="yeaft-model-option-provider"');
+    expect(source).toContain('class="yeaft-model-option-ctx"');
+    expect(source).toContain('class="yeaft-model-config-option"');
+    expect(source).toContain(':title="topbarFolderPath"');
+
+    page.toggleHistorySearch();
+    await Vue.nextTick();
+    expect(chatStore.yeaftHistorySearchState.senderKey).toBe('user');
+    expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('', { senderKey: 'user' });
+
+    page.onHistorySenderChange('vp:omni');
+    page.toggleHistorySearch();
+    page.toggleHistorySearch();
+    await Vue.nextTick();
+    expect(chatStore.yeaftHistorySearchState.senderKey).toBe('vp:omni');
+    expect(chatStore.searchYeaftHistory).toHaveBeenLastCalledWith('', { senderKey: 'vp:omni' });
+  });
+
   it('keeps the current query through sender changes and lifecycle resets', async () => {
     vi.useFakeTimers();
     chatStore.yeaftHistorySearchState = { query: 'old query', senderKey: '' };
@@ -86,10 +148,10 @@ describe('YeaftPage setup', () => {
     chatStore.searchYeaftHistory.mockClear();
     page.onHistorySenderInvalid();
 
-    expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('', { senderKey: '' });
+    expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('', { senderKey: 'user' });
     expect(loadHistorySenderPreference({
       agentId: 'agent-1', sessionId: 'session-1', validKeys: ['user'],
-    })).toBe('');
+    })).toBe('user');
     expect(loadHistorySenderPreference({
       agentId: 'agent-1', sessionId: 'session-2', validKeys: ['user'],
     })).toBe('user');
@@ -117,12 +179,17 @@ describe('YeaftPage setup', () => {
     })).toBe('user');
     expect(loadHistorySenderPreference({
       agentId: 'agent-2', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
+    })).toBe('user');
+
+    expect(saveHistorySenderPreference({ agentId: 'agent-2', sessionId: 'session-1', senderKey: '' })).toBe(true);
+    expect(loadHistorySenderPreference({
+      agentId: 'agent-2', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
     })).toBe('');
 
     saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1', senderKey: 'vp:removed' });
     expect(loadHistorySenderPreference({
       agentId: 'agent-1', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
-    })).toBe('');
+    })).toBe('user');
     expect(loadHistorySenderPreference({
       agentId: 'agent-1', sessionId: 'session-2', validKeys: ['user'],
     })).toBe('user');
@@ -133,7 +200,7 @@ describe('YeaftPage setup', () => {
       get() { throw new DOMException('blocked', 'SecurityError'); },
     });
     try {
-      expect(loadHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1' })).toBe('');
+      expect(loadHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1' })).toBe('user');
       expect(saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1', senderKey: 'user' })).toBe(false);
     } finally {
       Object.defineProperty(globalThis, 'localStorage', originalDescriptor);

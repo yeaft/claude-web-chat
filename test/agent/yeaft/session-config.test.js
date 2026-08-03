@@ -3,13 +3,25 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ctx from '../../../agent/context.js';
-import { loadConfig } from '../../../agent/yeaft/config.js';
+import { loadConfig, normalizeLlmRetry } from '../../../agent/yeaft/config.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { estimateTokens } from '../../../agent/yeaft/dream/segment.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
-import { __testGetOrCreateVpEngine, __testHooks, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
+import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftSubAgentPrompt, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
+import { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
-import { registerSessionWorkDir, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
+import { registerSessionWorkDir, renameSession, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
+import {
+  createProject,
+  deleteProject,
+  loadProjects,
+  moveSessionToProject,
+  removeSessionFromProjects,
+  renameProject,
+  sharedSessionIdsForProject,
+  updateProjectInstruction,
+} from '../../../agent/yeaft/projects/store.js';
 
 const roots = [];
 const originalConfig = ctx.CONFIG;
@@ -46,11 +58,16 @@ function createProjectSessionArtifact(root, workDir, sessionId = 'session-workdi
 afterEach(() => {
   ctx.CONFIG = originalConfig;
   __testSetSession(null);
+  _resetAgentRegistry();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe('Yeaft session-scoped model config', () => {
-  it('keeps model and effort isolated per Session', () => {
+  it('keeps model and effort isolated per Session', async () => {
+    expect(normalizeLlmRetry(null, null)).toMatchObject({
+      maxRetries: 3,
+      streamIdleTimeoutMs: 90_000,
+    });
     const root = makeDir();
     const userConfig = {
       model: 'proxy/gpt-5',
@@ -73,37 +90,195 @@ describe('Yeaft session-scoped model config', () => {
     expect(configB.model).toBe('github-copilot/claude-opus-4.8');
     expect(configB.primaryModel).toBe('github-copilot/claude-opus-4.8');
     expect(configB.modelEffort).toBe('max');
+
+    const alpha = createProject(root, 'Alpha');
+    const beta = createProject(root, 'Beta');
+    moveSessionToProject(root, 'session-a', alpha.id);
+    moveSessionToProject(root, 'session-b', alpha.id);
+    moveSessionToProject(root, 'session-a', beta.id);
+    expect(loadProjects(root)).toEqual([
+      expect.objectContaining({ id: alpha.id, sessionIds: ['session-b'] }),
+      expect.objectContaining({ id: beta.id, sessionIds: ['session-a'] }),
+    ]);
+    moveSessionToProject(root, 'session-b', beta.id);
+    expect(sharedSessionIdsForProject(root, 'session-a')).toEqual(['session-b']);
+    const siblingSummary = join(root, 'memory', 'sessions', 'session-b');
+    mkdirSync(siblingSummary, { recursive: true });
+    writeFileSync(join(siblingSummary, 'summary.zh.md'), '共享发布决策\n');
+    expect(await __testHooks.sharedProjectContext(root, 'session-a', { language: 'zh' }))
+      .toBe('[Session session-b]\n共享发布决策');
+    expect(await __testHooks.sharedProjectContext(root, 'session-a', {
+      language: 'zh',
+      sessionIds: [],
+    })).toBe('');
+    expect(__testHooks.normalizeProjectContext({
+      projectId: beta.id,
+      projectName: 'Beta',
+      projectInstruction: '  Use the shared release checklist.  ',
+      sessionIds: ['session-a', 'session-b', 'session-b'],
+    }, 'session-a')).toEqual({
+      projectId: beta.id,
+      projectName: 'Beta',
+      projectInstruction: 'Use the shared release checklist.',
+      sessionIds: ['session-b'],
+    });
+    __testHooks.handleProjectContextSyncForTest({
+      contexts: [{
+        sessionId: 'session-a',
+        projectContext: {
+          projectId: beta.id,
+          projectName: 'Beta',
+          projectInstruction: 'Use the shared release checklist.',
+          sessionIds: ['session-a', 'session-b'],
+        },
+      }],
+    });
+    expect(__testHooks.projectContextForSessionForTest('session-a')).toEqual({
+      projectId: beta.id,
+      projectName: 'Beta',
+      projectInstruction: 'Use the shared release checklist.',
+      sessionIds: ['session-b'],
+    });
+    const bridgeAgent = {
+      id: 'agent-project-prompt',
+      name: 'project-prompt',
+      status: 'idle',
+      parentSessionId: 'session-a',
+      parentVpId: 'vp-project',
+      parentThreadId: 'main',
+      pendingPrompts: [],
+      messages: [],
+    };
+    getAgentRegistry().set(bridgeAgent.id, bridgeAgent);
+    __testSetSession({
+      taskManager: {
+        getTask(sessionId, taskId) {
+          return sessionId === 'session-a' && taskId === 'task-project'
+            ? {
+                id: taskId,
+                kind: 'sub_agent',
+                status: 'running',
+                ownerVpId: 'vp-project',
+                runtime: { subAgentId: bridgeAgent.id },
+                source: { threadId: 'main' },
+              }
+            : null;
+        },
+        refreshTaskLog() {},
+      },
+    });
+    handleYeaftSubAgentPrompt({
+      sessionId: 'session-a',
+      taskId: 'task-project',
+      subAgentId: bridgeAgent.id,
+      message: 'use current Project context',
+    });
+    expect(bridgeAgent.pendingPrompts[0]).toEqual({
+      prompt: 'use current Project context',
+      projectSessionIds: ['session-b'],
+      projectInstruction: 'Use the shared release checklist.',
+    });
+    __testHooks.handleProjectContextSyncForTest({
+      contexts: [{ sessionId: 'session-a', projectContext: null }],
+    });
+    handleYeaftSubAgentPrompt({
+      sessionId: 'session-a',
+      taskId: 'task-project',
+      subAgentId: bridgeAgent.id,
+      message: 'clear Project context',
+    });
+    expect(bridgeAgent.pendingPrompts[1]).toEqual({
+      prompt: 'clear Project context',
+      projectSessionIds: [],
+      projectInstruction: '',
+    });
+    expect(__testHooks.buildProjectSharedBlock({
+      projectId: beta.id,
+      projectName: 'Beta',
+      sessionIds: [],
+    })).toContain(`Project: Beta (${beta.id})`);
+    expect(__testHooks.buildProjectSharedBlock({
+      projectId: beta.id,
+      projectName: 'Beta',
+      sessionIds: ['session-b'],
+    }, '[Session session-b]\n共享发布决策')).toContain('this Project on this Agent only');
+    expect(await __testHooks.sharedProjectContext(root, 'session-outside', {
+      language: 'zh',
+      sessionIds: ['session-b'],
+    })).toBe('[Session session-b]\n共享发布决策');
+    rmSync(join(siblingSummary, 'summary.zh.md'));
+    writeFileSync(join(siblingSummary, 'summary.md'), 'English fallback decision\n');
+    expect(await __testHooks.sharedProjectContext(root, 'session-a', { language: 'zh' }))
+      .toBe('[Session session-b]\nEnglish fallback decision');
+    writeFileSync(join(siblingSummary, 'memory.md'), 'private transcript and tool output\n');
+    expect(await __testHooks.sharedProjectContext(root, 'session-a', { language: 'zh' }))
+      .not.toContain('private transcript and tool output');
+    writeFileSync(join(siblingSummary, 'summary.md'), 'x'.repeat(32_000));
+    const smallBudgetContext = await __testHooks.sharedProjectContext(root, 'session-a', { tokenBudget: 64 });
+    expect(smallBudgetContext).toContain('[Summary truncated to Project context budget]');
+    expect(estimateTokens(smallBudgetContext)).toBeLessThanOrEqual(64);
+    const defaultBudgetContext = await __testHooks.sharedProjectContext(root, 'session-a');
+    expect(defaultBudgetContext).toContain('[Summary truncated to Project context budget]');
+    expect(estimateTokens(defaultBudgetContext)).toBeLessThanOrEqual(4096);
+    expect(estimateTokens(defaultBudgetContext)).toBeGreaterThan(64);
+    renameProject(root, beta.id, 'Beta 2');
+    updateProjectInstruction(root, beta.id, '  Follow the Project release checklist.  ');
+    removeSessionFromProjects(root, 'session-a');
+    expect(loadProjects(root)[1]).toEqual(expect.objectContaining({
+      name: 'Beta 2',
+      instruction: 'Follow the Project release checklist.',
+      sessionIds: ['session-b'],
+    }));
+    expect(() => updateProjectInstruction(root, beta.id, 'x'.repeat(20_001)))
+      .toThrow('must not exceed 20000 characters');
+    deleteProject(root, beta.id);
+    expect(loadProjects(root).map(project => project.id)).toEqual([alpha.id]);
   });
 
 
-  it('ignores project .yeaft Session config and uses the user-level Session config', () => {
-    const root = makeDir();
-    const workDir = tempRoot('yeaft-session-config-workdir-');
-    const { projectYeaftDir, sessionId } = createProjectSessionArtifact(root, workDir, 'session-workdir-first');
+  it('uses the user-level Session config for reads, writes, and metadata updates', () => {
+    {
+      const root = makeDir();
+      const workDir = tempRoot('yeaft-session-config-workdir-');
+      const { projectYeaftDir, sessionId } = createProjectSessionArtifact(root, workDir, 'session-workdir-first');
 
-    writeFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'project/claude-sonnet', modelEffort: 'high' }, null, 2)}\n`);
-    writeFileSync(join(root, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'agent/gpt-5', modelEffort: 'low' }, null, 2)}\n`);
+      writeFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'project/claude-sonnet', modelEffort: 'high' }, null, 2)}\n`);
+      writeFileSync(join(root, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'agent/gpt-5', modelEffort: 'low' }, null, 2)}\n`);
 
-    const config = loadSessionConfig(root, sessionId);
+      const config = loadSessionConfig(root, sessionId);
 
-    expect(config).toEqual({ model: 'agent/gpt-5', modelEffort: 'low' });
-  });
+      expect(config).toEqual({ model: 'agent/gpt-5', modelEffort: 'low' });
+    }
 
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-07-29T10:00:00.000Z'));
+      const root = makeDir();
+      const workDir = tempRoot('yeaft-session-config-workdir-');
+      const { projectYeaftDir, sessionId } = createProjectSessionArtifact(root, workDir, 'session-workdir-update');
+      writeFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'project/stale', modelEffort: 'low' }, null, 2)}\n`);
+      expect(snapshotSessions(root).find(session => session.id === sessionId).metadataUpdatedAt)
+        .toBe('2026-07-29T10:00:00.000Z');
 
-  it('writes Session config only to the user-level root', () => {
-    const root = makeDir();
-    const workDir = tempRoot('yeaft-session-config-workdir-');
-    const { projectYeaftDir, sessionId } = createProjectSessionArtifact(root, workDir, 'session-workdir-update');
-    writeFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), `${JSON.stringify({ model: 'project/stale', modelEffort: 'low' }, null, 2)}\n`);
+      vi.setSystemTime(new Date('2026-07-29T11:00:00.000Z'));
+      renameSession(root, sessionId, 'Renamed');
+      expect(snapshotSessions(root).find(session => session.id === sessionId).metadataUpdatedAt)
+        .toBe('2026-07-29T11:00:00.000Z');
 
-    const saved = updateSessionConfig(root, sessionId, { model: 'agent/claude-haiku', modelEffort: 'max' });
+      vi.setSystemTime(new Date('2026-07-29T12:00:00.000Z'));
+      const saved = updateSessionConfig(root, sessionId, { model: 'agent/claude-haiku', modelEffort: 'max' });
 
-    expect(saved).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
-    expect(loadSessionConfig(root, sessionId)).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
-    expect(JSON.parse(readFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), 'utf8')))
-      .toEqual({ model: 'project/stale', modelEffort: 'low' });
-    expect(JSON.parse(readFileSync(join(root, 'sessions', sessionId, 'config.json'), 'utf8')))
-      .toEqual({ model: 'agent/claude-haiku', modelEffort: 'max', modelSource: 'explicit' });
+      expect(saved).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
+      expect(loadSessionConfig(root, sessionId)).toEqual({ model: 'agent/claude-haiku', modelEffort: 'max' });
+      expect(JSON.parse(readFileSync(join(projectYeaftDir, 'sessions', sessionId, 'config.json'), 'utf8')))
+        .toEqual({ model: 'project/stale', modelEffort: 'low' });
+      expect(JSON.parse(readFileSync(join(root, 'sessions', sessionId, 'config.json'), 'utf8')))
+        .toEqual({ model: 'agent/claude-haiku', modelEffort: 'max', modelSource: 'explicit' });
+      expect(snapshotSessions(root).find(session => session.id === sessionId).metadataUpdatedAt)
+        .toBe('2026-07-29T12:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
 
@@ -190,7 +365,39 @@ describe('Yeaft session-scoped model config', () => {
   });
 
 
-  it('loads runtime config from agent root while storing message history under the user-level root', async () => {
+  it('seeds stock VPs before loading the user-level runtime', async () => {
+    const seedRoot = makeDir();
+    const previousTransport = {
+      ws: ctx.ws,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+    };
+    const send = vi.fn();
+    ctx.CONFIG = { yeaftDir: seedRoot };
+    ctx.ws = { readyState: 1, send };
+    ctx.serverEncryptionRequired = false;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
+
+    try {
+      handleYeaftVpSubscribe({ requestId: 'vp-cold-start' });
+      await vi.waitFor(() => expect(send).toHaveBeenCalled());
+      const frames = send.mock.calls.map(([raw]) => JSON.parse(raw));
+      const snapshot = frames.find(frame => frame.event?.type === 'vp_snapshot');
+      expect(snapshot.requestId).toBe('vp-cold-start');
+      expect(snapshot.event.emptyLibrary).toBe(false);
+      expect(snapshot.event.vps).toHaveLength(34);
+      expect(snapshot.event.vps.some(vp => vp.vpId === 'omni')).toBe(true);
+      expect(existsSync(join(seedRoot, 'virtual-persons', 'omni', 'role.md'))).toBe(true);
+    } finally {
+      await __testResetVpState();
+      ctx.ws = previousTransport.ws;
+      ctx.serverEncryptionRequired = previousTransport.serverEncryptionRequired;
+      ctx.outboundSendQueue = previousTransport.outboundSendQueue;
+      ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
+    }
+
     const root = makeDir();
     const workDir = mkdtempSync(join(tmpdir(), 'yeaft-session-config-workdir-'));
     writeFileSync(join(root, 'config.json'), JSON.stringify({

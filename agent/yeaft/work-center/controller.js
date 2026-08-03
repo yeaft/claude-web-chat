@@ -173,6 +173,30 @@ export class WorkflowController {
     return this.store.getWorkItemDetail(id);
   }
 
+  resume(id, input = {}) {
+    const revision = Number(input.revision);
+    if (!Number.isInteger(revision) || revision < 1) {
+      throw new Error('revision is required to resume a WorkItem');
+    }
+    const detail = this.store.resumeWorkItemAtomic(id, revision, workItem => {
+      const action = initialActionFor(workItem);
+      if (workItem.reuseMemory === false) return action;
+      const context = this.store.getReusableContext(workItem.workDir, workItem.id);
+      return {
+        ...action,
+        context,
+        instruction: actionInstruction(
+          action,
+          workItem,
+          context,
+          renderSessionContextSnapshot(workItem.sessionContext),
+        ),
+      };
+    });
+    if (!detail) throw new Error(`WorkItem not found: ${id}`);
+    return detail;
+  }
+
   guide(id, input = {}) {
     const guidance = typeof input.guidance === 'string' ? input.guidance.trim().slice(0, 8_000) : '';
     const addedAttachmentCount = Math.max(0, Number(input.addedAttachmentCount) || 0);
@@ -203,6 +227,8 @@ export class WorkflowController {
   }
 
   input(id, input = {}) {
+    const existingClientMessage = this.store.hasActionInputClientMessage(id, input.actionId, input.clientMessageId);
+    if (existingClientMessage) return this.store.getWorkItemDetail(id);
     const text = typeof input.text === 'string' ? input.text.trim().slice(0, 8_000) : '';
     const addedAttachmentCount = Math.max(0, Number(input.addedAttachmentCount) || 0);
     if (!text && addedAttachmentCount === 0) throw new Error('Action input or attachments are required');
@@ -229,7 +255,7 @@ export class WorkflowController {
         actionId: input.actionId,
         generation: expectedGeneration,
         revision: input.revision,
-      }, input.attachments, input.addedAttachments);
+      }, input.attachments, input.addedAttachments, input.clientMessageId);
     }
     if (!['waiting', 'failed'].includes(targetAction.status)) {
       throw new Error(`Action in ${targetAction.status} cannot accept input`);
@@ -240,7 +266,9 @@ export class WorkflowController {
       expected: { actionId: input.actionId, generation: input.generation, revision: input.revision },
       attachments: input.attachments,
       inputEvent: {
-        inputId: randomUUID(),
+        inputId: input.clientMessageId || randomUUID(),
+        clientMessageId: input.clientMessageId || null,
+        targetActionId: input.actionId,
         text: text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`,
         attachments: input.addedAttachments,
       },

@@ -60,6 +60,14 @@ function parseBoardCursor(value) {
   }
 }
 
+function removeUnpersistedAttachmentFiles(root, workItemId, addedAttachments, detail) {
+  if (!Array.isArray(addedAttachments) || addedAttachments.length === 0) return;
+  const persistedIds = new Set((Array.isArray(detail?.attachments) ? detail.attachments : [])
+    .map(attachment => attachment?.id).filter(Boolean));
+  const unpersisted = addedAttachments.filter(attachment => !persistedIds.has(attachment?.id));
+  if (unpersisted.length > 0) removeWorkItemAttachmentFiles(root, workItemId, unpersisted);
+}
+
 function listBoardItems(store, payload) {
   const limit = Math.min(Math.max(Number(payload.limit) || 100, 1), 200);
   const cursor = parseBoardCursor(payload.cursor);
@@ -106,7 +114,15 @@ export class WorkCenterService {
       listAvailableVpIds: options.listAvailableVpIds,
     });
     this.coordinator = options.coordinator || null;
+    if (this.coordinator) this.coordinator.ownerBootId = this.ownerBootId;
     this.onEvent = typeof options.onEvent === 'function' ? options.onEvent : () => {};
+    this.recoveryTasks = new Map();
+    this.recoveryQueue = new Map();
+    this.recoveryPollIntervalMs = Number(options.pollIntervalMs) > 0
+      ? Number(options.pollIntervalMs)
+      : 2_000;
+    this.recoveryTimer = null;
+    this.shuttingDown = false;
     this.watcher = new WorkItemWatcher({
       store: this.store,
       controller: this.controller,
@@ -165,6 +181,14 @@ export class WorkCenterService {
       case 'get_action_requests': {
         const detail = this.#requiredItem(payload.id);
         const action = this.#requiredAction(detail, payload.actionId);
+        const expectedGeneration = Number(payload.generation);
+        if (!Number.isInteger(expectedGeneration) || expectedGeneration < 1) {
+          throw new Error('generation must be a positive integer');
+        }
+        const currentGeneration = Math.max(1, Number(action.generation) || 1);
+        if (currentGeneration !== expectedGeneration) {
+          throw new Error('Action generation changed before requests were loaded');
+        }
         const entries = [];
         for (const run of detail.runs.filter(item => item.actionId === action.id)) {
           const history = await this.#debugHistory(run, { indexOnly: true });
@@ -177,6 +201,14 @@ export class WorkCenterService {
       case 'get_action_request': {
         const detail = this.#requiredItem(payload.id);
         const action = this.#requiredAction(detail, payload.actionId);
+        const expectedGeneration = Number(payload.generation);
+        if (!Number.isInteger(expectedGeneration) || expectedGeneration < 1) {
+          throw new Error('generation must be a positive integer');
+        }
+        const currentGeneration = Math.max(1, Number(action.generation) || 1);
+        if (currentGeneration !== expectedGeneration) {
+          throw new Error('Action generation changed before request detail was loaded');
+        }
         const requestId = requiredString(payload.requestId, 'requestId');
         const run = detail.runs.find(item => item.actionId === action.id && item.id === payload.runId);
         if (!run) throw new Error('Action request not found');
@@ -271,6 +303,13 @@ export class WorkCenterService {
         this.#emit({ type: 'work_item.cancelled', workItem: detail });
         return detail;
       }
+      case 'resume': {
+        const id = requiredString(payload.id, 'id');
+        const detail = this.controller.resume(id, { revision: payload.revision });
+        this.watcher.abortInvalidWorkItemRuns(id);
+        this.#emit({ type: 'work_item.resumed', workItem: detail });
+        return detail;
+      }
       case 'delete': {
         const id = requiredString(payload.id, 'id');
         const deleted = this.store.deleteWorkItemAtomic(id, Number(payload.revision));
@@ -285,21 +324,94 @@ export class WorkCenterService {
         this.#emit({ type: 'work_item.deleted', workItem: { id, revision: deleted.revision } });
         return { id, deleted: true, cleanupWarning };
       }
+      case 'post_work_item_message': {
+        const clientMessageId = requiredString(payload.clientMessageId, 'clientMessageId');
+        const target = payload.target && typeof payload.target === 'object' ? payload.target : {};
+        if (target.kind === 'coordinator') {
+          const receipt = this.store.getCoordinatorClientMessageReceipt(payload.id, clientMessageId);
+          if (receipt) return { accepted: true, turnId: receipt.turnId || null, duplicate: true };
+          return this.handle('work_item_message', { ...payload, clientMessageId }, requestContext);
+        }
+        if (target.kind === 'action') {
+          if (this.store.hasActionInputClientMessage(payload.id, target.actionId, clientMessageId)) {
+            return this.store.getWorkItemDetail(payload.id);
+          }
+          return this.handle('action_input', {
+            ...payload,
+            clientMessageId,
+            actionId: target.actionId,
+            generation: target.generation,
+          }, requestContext);
+        }
+        if (target.kind === 'request') {
+          const id = requiredString(payload.id, 'id');
+          const workItem = this.#requiredItem(id);
+          const action = this.#requiredAction(workItem, target.actionId);
+          if (action.status === 'failed' && !String(payload.text || '').trim()
+              && (!Array.isArray(payload.files) || payload.files.length === 0)) {
+            const detail = this.controller.retry(id, {
+              expected: {
+                actionId: action.id,
+                revision: payload.revision,
+                generation: target.generation,
+                statuses: ['failed'],
+              },
+            });
+            this.watcher.abortInvalidWorkItemRuns(id);
+            this.#emit({ type: 'action.retried', workItem: detail });
+            return detail;
+          }
+          return this.handle('action_input', {
+            ...payload,
+            clientMessageId,
+            actionId: target.actionId,
+            generation: target.generation,
+          }, requestContext);
+        }
+        throw new Error('WorkItem message target is invalid');
+      }
       case 'work_item_message': {
         if (!this.coordinator) throw new Error('Work Center Coordinator is unavailable');
         const id = requiredString(payload.id, 'id');
-        const turn = this.coordinator.message(id, {
-          text: typeof payload.text === 'string' ? payload.text : '',
-          revision: payload.revision,
-          planRevision: payload.planRevision,
-          ledgerRevision: payload.ledgerRevision,
-          coordinatorRevision: payload.coordinatorRevision,
-        }, {
-          onUpdate: (type, workItem) => {
-            this.watcher.abortInvalidWorkItemRuns(id);
-            this.#emit({ type, workItem });
-          },
-        });
+        const workItem = this.#requiredItem(id);
+        let addedAttachments = [];
+        let turn;
+        try {
+          addedAttachments = appendWorkItemAttachments(workItem.attachments, payload.files, {
+            root: this.attachmentRoot,
+            workItemId: id,
+          });
+          turn = this.coordinator.message(id, {
+            text: typeof payload.text === 'string' ? payload.text : '',
+            revision: payload.revision,
+            planRevision: payload.planRevision,
+            ledgerRevision: payload.ledgerRevision,
+            coordinatorRevision: payload.coordinatorRevision,
+            clientMessageId: typeof payload.clientMessageId === 'string' ? payload.clientMessageId : null,
+            addedAttachments,
+            attachments: [...(workItem.attachments || []), ...addedAttachments],
+          }, {
+            onUpdate: (type, nextWorkItem) => {
+              this.watcher.abortInvalidWorkItemRuns(id);
+              this.#emit({
+                type,
+                clientMessageId: typeof payload.clientMessageId === 'string'
+                  ? payload.clientMessageId : null,
+                workItem: nextWorkItem,
+              });
+            },
+          });
+        } catch (error) {
+          try {
+            if ((workItem.attachments || []).length === 0 && addedAttachments.length > 0) {
+              removeWorkItemAttachments(this.attachmentRoot, id);
+            } else {
+              removeWorkItemAttachmentFiles(this.attachmentRoot, id, addedAttachments);
+            }
+          } catch {}
+          throw error;
+        }
+        removeUnpersistedAttachmentFiles(this.attachmentRoot, id, addedAttachments, turn.detail);
         turn.task.catch(() => {});
         return { accepted: true, turnId: turn.detail.messages?.at(-1)?.turnId || null };
       }
@@ -324,6 +436,7 @@ export class WorkCenterService {
           throw new Error('generation must be a positive integer');
         }
         const workItem = this.#requiredItem(id);
+        this.#requiredAction(workItem, payload.actionId);
         let addedAttachments = [];
         let detail;
         try {
@@ -336,6 +449,7 @@ export class WorkCenterService {
             actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
             revision: payload.revision,
             generation,
+            clientMessageId: typeof payload.clientMessageId === 'string' ? payload.clientMessageId : null,
             addedAttachmentCount: addedAttachments.length,
             addedAttachments,
             attachments: [...(workItem.attachments || []), ...addedAttachments],
@@ -350,9 +464,15 @@ export class WorkCenterService {
           } catch {}
           throw error;
         }
+        removeUnpersistedAttachmentFiles(this.attachmentRoot, id, addedAttachments, detail);
         this.watcher.abortInvalidWorkItemRuns(id);
         this.watcher.notifyActionInput(id, payload.actionId);
-        this.#emit({ type: 'action.input_added', workItem: detail });
+        this.#emit({
+          type: 'action.input_added',
+          actionId: payload.actionId,
+          clientMessageId: typeof payload.clientMessageId === 'string' ? payload.clientMessageId : null,
+          workItem: detail,
+        });
         return detail;
       }
       case 'guide': {
@@ -449,14 +569,138 @@ export class WorkCenterService {
 
   #emit(event) {
     try { this.onEvent(event); } catch {}
+    if (['run.finished', 'coordinator.turn_completed'].includes(event?.type)) {
+      for (const action of event.workItem?.actions || []) {
+        if (action.status !== 'failed') continue;
+        this.#enqueueFailureRecovery({
+          workItemId: event.workItem.id,
+          actionId: action.id,
+          actionGeneration: action.generation,
+        });
+      }
+    }
+  }
+
+  #recoveryKey(entry) {
+    return `${entry.workItemId}:${entry.actionId}:${entry.actionGeneration}`;
+  }
+
+  #enqueueFailureRecovery(entry) {
+    if (this.shuttingDown || !this.coordinator || !entry?.workItemId || !entry.actionId) return;
+    const key = this.#recoveryKey(entry);
+    this.recoveryQueue.set(key, entry);
+    this.#drainFailureRecoveryQueue();
+  }
+
+  #scanCoordinatorProviderRecoveries() {
+    if (this.shuttingDown || !this.coordinator) return;
+    this.store.recoverCoordinatorProviderTurns();
+    this.store.recoverCoordinatorMailbox();
+    for (const recoverable of this.store.getRecoverableCoordinatorTurns?.() || []) {
+      const claim = this.store.claimCoordinatorTurn(
+        recoverable.workItemId, recoverable.turnId, this.ownerBootId,
+      );
+      if (!claim) continue;
+      const started = this.store.resumeCoordinatorTurn(
+        recoverable.workItemId, recoverable.turnId, claim,
+      );
+      if (!started) continue;
+      const turn = this.coordinator.resume(started, {
+        text: recoverable.text || '',
+        recovery: Boolean(recoverable.recovery),
+        addedAttachments: Array.isArray(recoverable.addedAttachments)
+          ? recoverable.addedAttachments : [],
+        onUpdate: (type, detail) => this.#emit({ type, workItem: detail }),
+      });
+      turn?.task?.catch?.(() => {});
+    }
+  }
+
+  #scanRecoveries() {
+    this.#scanCoordinatorProviderRecoveries();
+    this.#scanFailureRecoveries();
+  }
+
+  #scanFailureRecoveries() {
+    if (this.shuttingDown || !this.coordinator) return;
+    const now = Date.now();
+    for (const entry of this.store.listFailedActionRecoveries()) {
+      const delay = entry.recoveryAttempts > 0
+        ? Math.min(1_000 * (2 ** Math.min(entry.recoveryAttempts - 1, 9)), 300_000)
+        : 0;
+      if (entry.lastRecoveryAt > 0 && now < entry.lastRecoveryAt + delay) continue;
+      this.recoveryQueue.set(this.#recoveryKey(entry), entry);
+    }
+    this.#drainFailureRecoveryQueue();
+  }
+
+  #drainFailureRecoveryQueue() {
+    if (this.shuttingDown || !this.coordinator || this.recoveryTasks.size > 0) return;
+    let next = null;
+    for (const [key, entry] of this.recoveryQueue) {
+      const detail = this.store.getWorkItemDetail(entry.workItemId);
+      const action = detail?.actions?.find(candidate => candidate.id === entry.actionId);
+      if (!detail || ['done', 'cancelled'].includes(detail.status)
+          || action?.status !== 'failed'
+          || action.generation !== entry.actionGeneration) {
+        this.recoveryQueue.delete(key);
+        continue;
+      }
+      if (detail.actions.some(candidate => candidate.status === 'running')) continue;
+      next = [key, entry];
+      break;
+    }
+    if (!next) return;
+    const [key, entry] = next;
+    this.recoveryQueue.delete(key);
+    let turn;
+    try {
+      turn = this.coordinator.recover(entry.workItemId, {
+        actionId: entry.actionId,
+        actionGeneration: entry.actionGeneration,
+        onUpdate: (type, workItem) => {
+          this.watcher.abortInvalidWorkItemRuns(entry.workItemId);
+          this.#emit({ type, actionId: entry.actionId, workItem });
+        },
+      });
+    } catch (error) {
+      this.#emit({
+        type: 'coordinator.recovery_schedule_failed',
+        actionId: entry.actionId,
+        workItem: this.store.getWorkItemDetail(entry.workItemId),
+        error: error?.message || String(error),
+      });
+      return null;
+    }
+    if (!turn) return null;
+    const task = turn.task.finally(() => {
+      this.recoveryTasks.delete(key);
+    });
+    this.recoveryTasks.set(key, task);
+    task.catch(() => {});
+    return task;
   }
 
   start() {
+    this.#scanRecoveries();
+    if (!this.recoveryTimer) {
+      this.recoveryTimer = setInterval(
+        () => this.#scanRecoveries(),
+        this.recoveryPollIntervalMs,
+      );
+      this.recoveryTimer.unref?.();
+    }
     this.watcher.start();
   }
 
   async shutdown() {
+    this.shuttingDown = true;
+    if (this.recoveryTimer) clearInterval(this.recoveryTimer);
+    this.recoveryTimer = null;
     await this.coordinator?.shutdown?.();
+    await Promise.allSettled([...this.recoveryTasks.values()]);
+    this.recoveryTasks.clear();
+    this.recoveryQueue.clear();
     await this.watcher.stop();
     try { await this.watcher.runner?.shutdown?.(); } catch {}
     try { await this.watcher.runner?.trace?.close?.(); } catch {}

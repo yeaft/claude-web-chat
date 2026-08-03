@@ -69,12 +69,15 @@ const DEFAULTS = {
   //   • jitterRatio: ± random fraction applied to backoff; 0 disables.
   //   • streamIdleTimeoutMs: per-SSE-chunk silence budget. 0 disables the
   //     stalled-stream guard; every received chunk refreshes the budget.
+  //     Keep the default below the normal 120s Session silence watchdog so
+  //     the engine can cancel the stale response and issue a fresh request.
   llmRetry: {
     maxRetries: 3,
     baseDelayMs: 1_000,
     maxDelayMs: 30_000,
     jitterRatio: 0.25,
-    streamIdleTimeoutMs: 20_000,
+    streamIdleTimeoutMs: 90_000,
+    forbiddenRetryDelaysMs: [30_000, 120_000],
   },
 };
 
@@ -111,6 +114,12 @@ export function normalizeLlmRetry(fileConfig, overrides) {
     }
     if (Number.isFinite(src.streamIdleTimeoutMs) && src.streamIdleTimeoutMs >= 0) {
       out.streamIdleTimeoutMs = Math.min(600_000, Math.floor(src.streamIdleTimeoutMs));
+    }
+    if (Array.isArray(src.forbiddenRetryDelaysMs)) {
+      out.forbiddenRetryDelaysMs = src.forbiddenRetryDelaysMs
+        .filter(v => Number.isFinite(v) && v >= 0)
+        .slice(0, 3)
+        .map(v => Math.min(600_000, Math.floor(v)));
     }
   };
   apply(fileConfig);

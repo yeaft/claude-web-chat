@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createCoordinator } from '../../../agent/yeaft/sessions/coordinator.js';
 import { createRouter } from '../../../agent/yeaft/routing/router.js';
 import { createLoopGuard, MAX_CHAIN_DEPTH } from '../../../agent/yeaft/routing/loop-guard.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
+import { createCliSessionRunner, createCliVpEngine } from '../../../agent/yeaft/cli-session-runner.js';
+import { runStreamSessionTurn } from '../../../agent/yeaft/stdio-protocol.js';
 import routeForwardTool from '../../../agent/yeaft/tools/route-forward.js';
 import {
   __testEnqueueForVp,
@@ -357,7 +362,7 @@ describe('route_forward thread ownership', () => {
     });
   });
 
-  it('keeps explicit user @mentions visible when rescuing pending queries', () => {
+  it('keeps explicit user @mentions visible and preserves CLI Session routing boundaries', async () => {
     const envelope = __testHooks.buildPendingRescueEnvelope({
       sessionId: 'session-route-thread',
       taskId: null,
@@ -387,5 +392,283 @@ describe('route_forward thread ownership', () => {
     expect(envelope.msg.meta.injectedBy).toBeUndefined();
     expect(envelope.msg.meta.senderVpId).toBeUndefined();
     expect(envelope.msg.meta.sourceThreadId).toBeUndefined();
+
+  {
+    const deferred = () => {
+      let resolve;
+      const promise = new Promise(done => { resolve = done; });
+      return { promise, resolve };
+    };
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-cli-session-'));
+    const sessionId = 'session_cli_fanout';
+    const sessionDir = join(root, 'sessions', sessionId);
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({
+      id: sessionId,
+      name: 'CLI fan-out',
+      roster: ['vp-linus', 'vp-martin'],
+      defaultVpId: 'vp-linus',
+      announcement: '',
+      workDir: '',
+      createdAt: new Date().toISOString(),
+    }));
+    const rows = [];
+    const conversationStore = {
+      append: vi.fn(row => { rows.push(row); return row; }),
+      loadSessionHistoryForVp: vi.fn(() => rows.slice()),
+    };
+    const starts = [];
+    const engineOptions = [];
+    const managedCliReady = Promise.resolve([{ name: 'rg', status: 'available' }]);
+    const firstLinus = deferred();
+    const firstMartin = deferred();
+    let linusCalls = 0;
+    const toolRegistry = new ToolRegistry();
+    let receivedManagedCliReady = null;
+    toolRegistry.register({
+      name: 'probe_managed_cli',
+      description: 'probe managed CLI context',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_input, ctx) => {
+        receivedManagedCliReady = ctx.managedCliReady;
+        return 'ready';
+      },
+    });
+    let adapterCalls = 0;
+    const adapter = {
+      async *stream() {
+        if (adapterCalls++ === 0) {
+          yield { type: 'tool_call', id: 'probe-1', name: 'probe_managed_cli', input: {} };
+          yield { type: 'stop', stopReason: 'tool_use' };
+        } else {
+          yield { type: 'stop', stopReason: 'end_turn' };
+        }
+      },
+      async call() { return { text: '', usage: {} }; },
+    };
+    const productionEngine = createCliVpEngine({
+      yeaftDir: root,
+      config: { model: 'test-model', maxOutputTokens: 1024, _readOnly: true },
+      adapter,
+      trace: new NullTrace(),
+      toolRegistry,
+      managedCliReady,
+    }, sessionId, 'vp-proof');
+    for await (const _event of productionEngine.query({
+      prompt: 'probe',
+      sessionId,
+      workDir: root,
+      vpTurnId: 'turn-proof',
+      userAlreadyPersisted: true,
+    })) {}
+    expect(receivedManagedCliReady).toBe(managedCliReady);
+
+    const engineFactory = vi.fn((_loaded, _sessionId, vpId) => {
+      engineOptions.push({ vpId, managedCliReady: _loaded.managedCliReady });
+      return {
+        async *query(options) {
+          starts.push({ vpId, options });
+          if (vpId === 'vp-linus' && linusCalls++ === 0) await firstLinus.promise;
+          if (vpId === 'vp-martin') await firstMartin.promise;
+          yield { type: 'text_delta', text: vpId };
+        },
+        abort: () => true,
+      };
+    });
+    const runner = createCliSessionRunner({
+      loaded: { yeaftDir: root, config: {}, conversationStore, managedCliReady },
+      sessionId,
+      engineFactory,
+      personaFactory: vpId => ({ vpId }),
+    });
+
+    const broadcast = runner.run('@all inspect this');
+    await vi.waitFor(() => {
+      expect(starts.map(item => item.vpId).sort()).toEqual(['vp-linus', 'vp-martin']);
+    });
+    expect(conversationStore.append).toHaveBeenCalledTimes(1);
+    expect(starts.every(item => item.options.userAlreadyPersisted === true)).toBe(true);
+    expect(engineOptions).toHaveLength(2);
+    expect(engineOptions.every(item => item.managedCliReady === managedCliReady)).toBe(true);
+    expect(engineFactory.mock.calls.every(([loaded]) => loaded.managedCliReady === managedCliReady)).toBe(true);
+
+    const secondLinusTurn = runner.run('@vp-linus follow up');
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(starts.filter(item => item.vpId === 'vp-linus')).toHaveLength(1);
+
+    firstLinus.resolve();
+    firstMartin.resolve();
+    const [broadcastResult, secondResult] = await Promise.all([broadcast, secondLinusTurn]);
+    expect(broadcastResult.report.dispatched.sort()).toEqual(['vp-linus', 'vp-martin']);
+    expect(secondResult.report.dispatched).toEqual(['vp-linus']);
+    expect(conversationStore.append).toHaveBeenCalledTimes(2);
+
+    const error = new Error('CLI Session Engine failed');
+    const errorEvents = [];
+    const errorRunner = createCliSessionRunner({
+      loaded: { yeaftDir: root, config: {}, conversationStore, managedCliReady },
+      sessionId,
+      engineFactory: () => ({
+        async *query() {
+          yield { type: 'error', error, retryable: false };
+          yield { type: 'turn_end', stopReason: 'error', terminal: true };
+        },
+        abort: () => true,
+      }),
+      personaFactory: vpId => ({ vpId }),
+    });
+    const errorOutcome = await errorRunner.run('@vp-linus fail', {
+      onEvent: ({ event }) => errorEvents.push(event),
+    });
+    expect(errorEvents).toContainEqual(expect.objectContaining({ type: 'turn_end', terminal: true }));
+    expect(errorOutcome.results).toEqual([
+      expect.objectContaining({ vpId: 'vp-linus', error }),
+    ]);
+    await errorRunner.close();
+    await runner.close();
+  }
+
+  {
+    const deferred = () => {
+      let resolve;
+      const promise = new Promise(done => { resolve = done; });
+      return { promise, resolve };
+    };
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-cli-context-'));
+    const sessionId = 'session_cli_context';
+    const sessionDir = join(root, 'sessions', sessionId);
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({
+      id: sessionId,
+      name: 'CLI turn context',
+      roster: ['linus', 'martin'],
+      defaultVpId: 'linus',
+      announcement: '',
+      workDir: '',
+      createdAt: new Date().toISOString(),
+    }));
+    const rows = [];
+    const firstGate = deferred();
+    let linusCalls = 0;
+    let martinCalls = 0;
+    const runner = createCliSessionRunner({
+      loaded: {
+        yeaftDir: root,
+        config: {},
+        conversationStore: {
+          append: row => { rows.push(row); return row; },
+          loadSessionHistoryForVp: () => rows.slice(),
+        },
+      },
+      sessionId,
+      engineFactory: (_loaded, _sessionId, vpId) => ({
+        async *query(options) {
+          if (vpId === 'linus' && linusCalls++ === 0) {
+            await firstGate.promise;
+            yield { type: 'text_delta', text: 'linus-first' };
+            options.router.forward({
+              from: 'linus',
+              to: 'martin',
+              text: 'review first',
+              inboundEnvelope: options.inboundEnvelope,
+            });
+            return;
+          }
+          if (vpId === 'martin' && martinCalls++ === 0) {
+            yield { type: 'text_delta', text: 'martin-second' };
+            return;
+          }
+          yield { type: 'text_delta', text: 'martin-forwarded' };
+        },
+        abort: () => true,
+      }),
+      personaFactory: vpId => ({ vpId }),
+    });
+    const firstEvents = [];
+    const secondEvents = [];
+    const first = runner.run('@linus first', {
+      onEvent: ({ vpId, event }) => firstEvents.push(`${vpId}:${event.text || event.type}`),
+    });
+    await vi.waitFor(() => expect(linusCalls).toBe(1));
+    const second = runner.run('@martin second', {
+      onEvent: ({ vpId, event }) => secondEvents.push(`${vpId}:${event.text || event.type}`),
+    });
+    await vi.waitFor(() => expect(secondEvents).toContain('martin:martin-second'));
+    firstGate.resolve();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstEvents).toEqual(['linus:linus-first', 'martin:martin-forwarded']);
+    expect(secondEvents).toEqual(['martin:martin-second']);
+    expect(firstResult.results.map(item => item.vpId)).toEqual(['linus', 'martin']);
+    expect(secondResult.results.map(item => item.vpId)).toEqual(['martin']);
+    await runner.close();
+  }
+
+  {
+    const fakeRunner = eventsByVp => ({
+      async run(_prompt, options) {
+        for (const [vpId, events] of Object.entries(eventsByVp)) {
+          for (const event of events) await options.onEvent({ vpId, event });
+        }
+        return { report: { dispatched: Object.keys(eventsByVp) }, results: [] };
+      },
+    });
+    const invoke = eventsByVp => runStreamSessionTurn({
+      runner: fakeRunner(eventsByVp),
+      prompt: 'inspect',
+      sessionId: 'session-stdio',
+      write: vi.fn(),
+    });
+
+    const aborted = await invoke({
+      linus: [
+        { type: 'turn_open', turnId: 'turn-linus' },
+        { type: 'turn_end', stopReason: 'aborted' },
+      ],
+    });
+    expect(aborted).toMatchObject({ subtype: 'success', stop_reason: 'aborted', is_error: false });
+    expect(aborted.vp_results).toEqual([
+      expect.objectContaining({ vp_id: 'linus', turn_id: 'turn-linus', stop_reason: 'aborted' }),
+    ]);
+
+    const mixed = await invoke({
+      linus: [{ type: 'turn_end', stopReason: 'end_turn' }],
+      martin: [{ type: 'turn_end', stopReason: 'aborted' }],
+    });
+    expect(mixed).toMatchObject({ subtype: 'success', stop_reason: 'end_turn', is_error: false });
+    expect(mixed.vp_results.map(item => item.stop_reason)).toEqual(['end_turn', 'aborted']);
+
+    const errored = await invoke({
+      linus: [{ type: 'turn_end', stopReason: 'error' }],
+      martin: [{ type: 'turn_end', stopReason: 'aborted' }],
+    });
+    expect(errored).toMatchObject({ subtype: 'error', stop_reason: 'error', is_error: true });
+
+    const write = vi.fn();
+    const input = { waitForAnswer: vi.fn(async () => ({ answer: 'yes' })) };
+    await runStreamSessionTurn({
+      runner: {
+        async run(_prompt, options) {
+          await options.askUser(
+            { question: 'Proceed?', options: ['yes', 'no'] },
+            'martin',
+            'turn-martin',
+          );
+          return { report: { dispatched: ['martin'] }, results: [] };
+        },
+      },
+      prompt: 'ask',
+      sessionId: 'session-stdio',
+      input,
+      write,
+    });
+    const askEvents = write.mock.calls
+      .map(([event]) => event)
+      .filter(event => event.type === 'ask_user');
+    expect(askEvents).toEqual([
+      expect.objectContaining({ subtype: 'request', vp_id: 'martin', turn_id: 'turn-martin' }),
+      expect.objectContaining({ subtype: 'response', vp_id: 'martin', turn_id: 'turn-martin' }),
+    ]);
+  }
   });
 });

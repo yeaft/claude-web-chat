@@ -49,6 +49,7 @@ const {
   mergeActionMessages,
   mergeWorkItemSummary,
   workCenterActionMessageKey,
+  workCenterActionRequestScopeKey,
   workItemDetailRefreshIdentity,
 } = await import('../../../web/stores/helpers/work-center.js');
 const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
@@ -76,13 +77,54 @@ function primeStore() {
 describe('Yeaft history outline state', () => {
   beforeEach(() => vi.useFakeTimers());
 
-
-
-  it('sends sender-only searches and rejects stale sender responses', () => {
+  it('sends sender-only searches, rejects stale responses, and tracks unread Sessions', () => {
     const store = primeStore();
+    store.activeVpTurns = {
+      'turn-unread': { sessionId: 'other', vpId: 'linus', isStreaming: true },
+    };
+    store.yeaftSessionAgentById = { same: 'agent-a', other: 'agent-b' };
+
+    store.handleYeaftOutput({
+      agentId: 'agent-b',
+      conversationId: 'conv-b',
+      event: {
+        type: 'vp_turn_end',
+        reason: 'end_turn',
+        turnId: 'turn-unread',
+        sessionId: 'other',
+        vpId: 'linus',
+      },
+    });
+
+    expect(store.isYeaftSessionUnread('other', 'agent-b')).toBe(true);
+    expect(store.isYeaftSessionUnread('other', 'agent-a')).toBe(false);
+    store.setActiveSessionFilter('other', { agentId: 'agent-b' });
+    expect(store.isYeaftSessionUnread('other', 'agent-b')).toBe(false);
+
+    store.currentAgent = 'agent-a';
+    store.currentView = 'yeaft';
+    store.yeaftActiveSessionFilter = 'same';
+    expect(store.markYeaftSessionUnread('same', 'agent-a')).toBe(false);
+    store.yeaftSessionAgentById = { same: 'agent-a', other: 'agent-a' };
+    store.activeVpTurns = {
+      'turn-aborted': { sessionId: 'other', vpId: 'linus', isStreaming: true },
+    };
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: {
+        type: 'vp_turn_end',
+        reason: 'aborted',
+        turnId: 'turn-aborted',
+        sessionId: 'other',
+        vpId: 'linus',
+      },
+    });
+    expect(store.isYeaftSessionUnread('same', 'agent-a')).toBe(false);
+    expect(store.isYeaftSessionUnread('other', 'agent-a')).toBe(false);
+
     store.currentAgentInfo.capabilities.push('session_history_search');
     store.agents[0].capabilities.push('session_history_search');
-
     expect(store.searchYeaftHistory('', { senderKey: 'vp:linus' })).toBe(true);
     const first = store._sent.at(-1);
     expect(first).toMatchObject({
@@ -301,9 +343,43 @@ describe('Yeaft history outline state', () => {
     }];
 
     expect(store.revealYeaftMessage('same', 'm42')).toBe(true);
+
+    store.executionStatusMap = {};
+    store.conversations = [];
+    store.processingConversations = { 'conv-a': true };
+    store._currentYeaftSessionId = 'same';
+    store._currentYeaftTurnId = 'turn-tool';
+    store._currentYeaftVpId = 'maker';
+    store.messagesMap['conv-a'] = [{
+      id: 'progress-before-tool',
+      type: 'assistant',
+      content: 'Inspecting files',
+      sessionId: 'same',
+      turnId: 'turn-tool',
+      speakerVpId: 'maker',
+      isStreaming: true,
+      status: 'pending',
+    }];
+
+    handleAssistantOutputFrame(store, 'conv-a', {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'tool-1', name: 'FileRead', input: { file_path: 'README.md' } }],
+      },
+    });
+
+    expect(store.messagesMap['conv-a'][0]).toMatchObject({
+      isStreaming: false,
+      status: 'pending',
+      turnId: 'turn-tool',
+    });
+    expect(store.messagesMap['conv-a'][0]).not.toHaveProperty('turnEndAt');
+    expect(store.messagesMap['conv-a'][1]).toMatchObject({
+      type: 'tool-use',
+      toolName: 'FileRead',
+      turnId: 'turn-tool',
+    });
   });
-
-
 
   it('force-refreshes a loaded visible outline when a completed response has no durable anchor yet', () => {
     const store = primeStore();
@@ -419,6 +495,30 @@ describe('Yeaft history outline state', () => {
     expect(state.results).toHaveLength(1);
     expect(state.results[0]).toMatchObject({ role: 'assistant', turnId: 'response-live' });
     expect(state.totalCount).toBe(1);
+
+    store.workCenterAgentId = 'agent-action-conversation';
+    store.workCenterItemsByAgent['agent-action-conversation'] = [{ id: 'wi-action' }];
+    store.workCenterDetailByAgent['agent-action-conversation'] = {
+      id: 'wi-action', revision: 4, status: 'waiting',
+      actions: [{ id: 'action-conversation', generation: 2, status: 'waiting' }],
+    };
+    const listWorkItems = vi.spyOn(store, 'listWorkItems').mockResolvedValue([]);
+    const continuedDetail = {
+      id: 'wi-action', revision: 4, status: 'ready',
+      actions: [{ id: 'action-conversation', generation: 3, status: 'ready' }],
+    };
+    store.workCenterRequest = vi.fn().mockResolvedValue(continuedDetail);
+    const actionConversation = await store.sendWorkItemActionInput(
+      'wi-action', 'Explain the blocker, then continue.', 'action-conversation', 4, 2,
+      [], 'agent-action-conversation',
+    );
+    expect(store.workCenterRequest).toHaveBeenCalledWith('action_input', {
+      id: 'wi-action', text: 'Explain the blocker, then continue.',
+      actionId: 'action-conversation', revision: 4, generation: 2, attachments: [],
+    }, 'agent-action-conversation');
+    expect(listWorkItems).toHaveBeenCalledWith('agent-action-conversation', {});
+    expect(actionConversation).toEqual(continuedDetail);
+    listWorkItems.mockRestore();
 
     const sameTime = 100;
     const mergedActionMessages = mergeActionMessages(
@@ -617,9 +717,11 @@ describe('Yeaft history outline state', () => {
       },
     };
     const pendingRequests = [];
-    store.workCenterRequest = vi.fn(operation => new Promise(resolve => {
+    store.workCenterRequest = vi.fn((operation, payload, agentId) => new Promise(resolve => {
       const entry = {
         operation,
+        payload,
+        agentId,
         resolved: false,
         resolve(value) {
           entry.resolved = true;
@@ -669,6 +771,71 @@ describe('Yeaft history outline state', () => {
     });
     await staleMessagePage;
     expect(store.workCenterActionMessages[retryKey]).toBeUndefined();
+
+    const oldRequestScope = workCenterActionRequestScopeKey(
+      'agent-a', 'wi-1', failedAction.id, 1,
+    );
+    const retryRequestScope = workCenterActionRequestScopeKey(
+      'agent-a', 'wi-1', failedAction.id, advanced.generation,
+    );
+    store.workCenterActionRequests = {
+      [oldRequestScope]: [{ id: 'request-old-generation', runId: 'run-old', generation: 1 }],
+    };
+    const inFlightOldGenerationList = store.loadWorkItemActionRequests(
+      'wi-1', failedAction.id, 1, 'agent-a',
+    );
+    const staleRequestList = store.loadWorkItemActionRequests(
+      'wi-1', failedAction.id, advanced.generation, 'agent-a',
+    );
+    const freshRequestList = store.loadWorkItemActionRequests(
+      'wi-1', failedAction.id, advanced.generation, 'agent-a',
+    );
+    const oldGenerationRequest = pendingRequests.find(request => (
+      request.operation === 'get_action_requests' && request.payload.generation === 1
+    ));
+    const requestLists = pendingRequests.filter(request => (
+      request.operation === 'get_action_requests' && request.payload.generation === 2
+    ));
+    expect(requestLists.map(request => request.payload.generation)).toEqual([2, 2]);
+    requestLists[1].resolve({
+      actionId: failedAction.id,
+      generation: 2,
+      requests: [{ id: 'request-current', runId: 'run-current', generation: 2, attempt: 2 }],
+    });
+    await freshRequestList;
+    requestLists[0].resolve({
+      actionId: failedAction.id,
+      generation: 2,
+      requests: [{ id: 'request-late', runId: 'run-late', generation: 2, attempt: 1 }],
+    });
+    await staleRequestList;
+    oldGenerationRequest.resolve({
+      actionId: failedAction.id,
+      generation: 1,
+      requests: [{ id: 'request-old-late', runId: 'run-old-late', generation: 1 }],
+    });
+    await inFlightOldGenerationList;
+    expect(store.workCenterActionRequests[oldRequestScope]).toEqual([
+      expect.objectContaining({ id: 'request-old-late' }),
+    ]);
+    expect(store.workCenterActionRequests[retryRequestScope]).toEqual([
+      expect.objectContaining({ id: 'request-current', attempt: 2 }),
+    ]);
+
+    const staleRequestDetail = store.loadWorkItemActionRequest(
+      'wi-1', failedAction.id, advanced.generation, 'run-current', 'request-current', 'agent-a',
+    );
+    const freshRequestDetail = store.loadWorkItemActionRequest(
+      'wi-1', failedAction.id, advanced.generation, 'run-current', 'request-current', 'agent-a',
+    );
+    const requestDetails = pendingRequests.filter(request => request.operation === 'get_action_request');
+    expect(requestDetails.map(request => request.payload.generation)).toEqual([2, 2]);
+    requestDetails[1].resolve({ generation: 2, request: { id: 'request-current', marker: 'fresh' } });
+    await freshRequestDetail;
+    requestDetails[0].resolve({ generation: 2, request: { id: 'request-current', marker: 'late' } });
+    await staleRequestDetail;
+    expect(store.workCenterActionRequestDetails[`${retryRequestScope}:run-current:request-current`])
+      .toMatchObject({ marker: 'fresh' });
 
     pendingRequests.find(request => request.operation === 'get').resolve(retriedDetail);
     await Promise.resolve();
@@ -1314,11 +1481,13 @@ describe('Yeaft history outline state', () => {
       coordinatorRevision: 3,
       messages: [expect.objectContaining({ text: 'Plan updated' })],
     });
-    const sent = store.sendWorkItemMessage('wi-1', 'Change the target', 8, 'agent-a');
+    const messageAttachments = [{ fileId: 'file-1', name: 'screen.png', mimeType: 'image/png', size: 120 }];
+    const sent = store.sendWorkItemMessage('wi-1', 'Change the target', 8, messageAttachments, 'agent-a');
     const coordinatorRequest = pendingRequests.find(request => request.operation === 'work_item_message');
     expect(store.workCenterRequest).toHaveBeenLastCalledWith('work_item_message', {
       id: 'wi-1', text: 'Change the target', revision: 8,
       planRevision: 0, ledgerRevision: 0, coordinatorRevision: 3,
+      attachments: messageAttachments,
     }, 'agent-a');
     coordinatorRequest.resolve({ accepted: true, turnId: 'turn-2' });
     await expect(sent).resolves.toEqual({ accepted: true, turnId: 'turn-2' });

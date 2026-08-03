@@ -19,6 +19,7 @@ import {
   historyPrefetchThreshold,
   isTranscriptScrollbarPointer,
   resolveTranscriptBottomFollow,
+  resolveTranscriptUserFollow,
   shouldFollowTranscriptBottom,
   shouldMarkTranscriptKeyScroll,
   virtualTranscriptDefaults,
@@ -32,6 +33,7 @@ import {
 } from '../utils/message-turn-collapse.js';
 import { navigateToPersistedMessage } from '../utils/message-search-navigation.js';
 import { formatSessionMessageDateTime } from '../utils/session-message-quote.js';
+import { appendTurnResponseSegment, finalizeTurnResponseSegments } from '../utils/turn-response.js';
 // task-757: appendTypingPlaceholders removed from the pipeline.
 // The standalone typing card it produced (at the bottom of the
 // conversation) showed "[VP] is typing…" in a separate row that
@@ -60,7 +62,7 @@ export default {
       </div>
 
       <!-- Welcome Screen when no conversation -->
-      <div v-if="!store.currentConversation" class="welcome-screen">
+      <div v-if="!store.activeConversationId" class="welcome-screen">
         <div class="welcome-content">
           <div class="welcome-logo">
             <svg viewBox="0 0 48 48" width="64" height="64" aria-hidden="true">
@@ -180,7 +182,7 @@ export default {
           <div class="initial-message-loading-spinner" aria-hidden="true"></div>
           <div class="initial-message-loading-text">{{ initialMessagesLoadingText || $t('chat.session.loadingHistory') }}</div>
         </div>
-        <div v-else-if="(store.loadingMoreMessages && store.currentView !== 'yeaft') || store.yeaftLoadingMoreHistory" class="loading-more">{{ $t('message.loadingMore') }}</div>
+        <div v-else-if="(store.loadingMoreMessages && store.currentView !== 'yeaft') || showYeaftOlderHistoryLoading" class="loading-more">{{ $t('message.loadingMore') }}</div>
         <div v-else-if="(store.hasMoreMessages && store.currentView !== 'yeaft') || store.yeaftHasMoreHistory || store.hasHiddenYeaftMessages" class="load-more-hint" @click="onClickLoadMore">{{ $t('message.loadMore') }}</div>
         <VirtualTranscript
           :key="virtualTranscriptIdentity"
@@ -796,14 +798,21 @@ export default {
       if (gs.activeSessionId && typeof gs.sessionById === 'function' && gs.sessionById(gs.activeSessionId, store.currentAgent || null)) return gs.activeSessionId;
       return null;
     });
-    const virtualTranscriptIdentity = Vue.computed(() => [
-      store.activeConversationId || '',
-      store.currentView || '',
-      store.currentAgent || '',
-      store.currentView === 'yeaft'
-        ? (store.yeaftActiveSessionFilter || activeYeaftSessionId.value || '__all__')
-        : '',
-    ].join('\u001f'));
+    const virtualTranscriptIdentity = Vue.computed(() => {
+      const view = store.currentView || '';
+      const agentId = store.currentAgent || '';
+      if (view === 'yeaft') {
+        // A Yeaft bridge conversation id is transport state. Cold history and
+        // session_ready may promote local/old ids while the user is still reading
+        // the same Session; keying Vue by that id destroys and recreates the whole
+        // virtual transcript, producing a visible refresh and a transient blank
+        // pane. User navigation identity is Agent + Session, which changes only
+        // when the user actually switches context.
+        const sessionId = store.yeaftActiveSessionFilter || activeYeaftSessionId.value || '__all__';
+        return [view, agentId, sessionId].join('\u001f');
+      }
+      return [view, agentId, store.activeConversationId || ''].join('\u001f');
+    });
 
     // Issue C (2026-05-12) — IM-style dual-column layout gate.
     // The user explicitly scoped this to Yeaft Session conversations only:
@@ -927,6 +936,12 @@ export default {
 
       const finishTurn = () => {
         if (currentTurn) {
+          currentTurn.isActive = !!(currentTurn.turnId && Object.values(store.activeVpTurns || {}).some((row) => (
+            ((row?.turnId || null) === currentTurn.turnId
+              || (!row?.turnId && store.activeVpTurns?.[currentTurn.turnId] === row))
+            && (!store.currentAgent || !row?.agentId || row.agentId === store.currentAgent)
+          )));
+          finalizeTurnResponseSegments(currentTurn);
           // Has the VP produced anything the user/group can see?
           // Tools are NOT user-visible content — they're internal
           // activity. A route_forward call shows up as a tool chip
@@ -1006,7 +1021,9 @@ export default {
           type: 'assistant-turn',
           id: 'turn_' + turnCounter,
           textContent: '',
+          textSegments: [],
           isStreaming: false,
+          isActive: false,
           isHistory: false,
           todoMsg: null,
           toolMsgs: [],
@@ -1084,9 +1101,7 @@ export default {
         if (msg.type === 'assistant') {
           closeTurnIfTurnBoundaryChanged(msg);
           if (!currentTurn) startTurn();
-          if (msg.content) {
-            currentTurn.textContent += msg.content;
-          }
+          appendTurnResponseSegment(currentTurn, msg);
           if (msg.isStreaming) {
             currentTurn.isStreaming = true;
           }
@@ -1314,6 +1329,7 @@ export default {
     const isAtBottom = Vue.ref(true);
     const autoFollowPaused = Vue.ref(false);
     const SCROLL_THRESHOLD = virtualTranscriptDefaults.bottomThreshold;
+    const SCROLL_RESUME_THRESHOLD = virtualTranscriptDefaults.resumeBottomThreshold;
     let loadMoreArmed = true;
 
     const hasStreamingMessage = Vue.computed(() => {
@@ -1321,12 +1337,23 @@ export default {
     });
 
     const showInitialMessagesLoading = Vue.computed(() => {
-      if (!store.currentConversation || messageBlocks.value.length > 0) return false;
-      if (store.currentView === 'yeaft') return !!store.yeaftLoadingMoreHistory;
+      if (!store.activeConversationId || messageBlocks.value.length > 0) return false;
+      if (store.currentView === 'yeaft') return !!store.yeaftInitialHistoryLoading;
       return !!store.sessionLoading;
     });
 
-    const initialMessagesLoadingText = Vue.computed(() => store.sessionLoadingText || '');
+    // Recent/delta loads are background synchronization. Rendering the shared
+    // "loading more" row for them makes an otherwise stable Session visibly
+    // flash on open/reconnect. Only an explicit older-page request owns that UI.
+    const showYeaftOlderHistoryLoading = Vue.computed(() => (
+      store.currentView === 'yeaft'
+      && !!store.yeaftLoadingMoreHistory
+      && store.activeYeaftHistoryState?.mode === 'older'
+    ));
+
+    const initialMessagesLoadingText = Vue.computed(() => (
+      store.currentView === 'yeaft' ? '' : (store.sessionLoadingText || '')
+    ));
 
     const showSessionLoadingOverlay = Vue.computed(() => {
       return !!store.sessionLoading && !showInitialMessagesLoading.value;
@@ -1773,11 +1800,13 @@ export default {
     const resumeAutoFollow = () => {
       autoFollowPaused.value = false;
       isAtBottom.value = true;
+      virtualTranscriptRef.value?.setBottomFollowEnabled?.(true);
     };
 
     const pauseAutoFollow = () => {
       autoFollowPaused.value = true;
       isAtBottom.value = false;
+      virtualTranscriptRef.value?.setBottomFollowEnabled?.(false);
       virtualTranscriptRef.value?.cancelPendingBottomFollow?.();
     };
 
@@ -1796,6 +1825,8 @@ export default {
         atBottom,
       });
       autoFollowPaused.value = !isAtBottom.value;
+      virtualTranscriptRef.value?.setBottomFollowEnabled?.(isAtBottom.value);
+      if (!userScrollInteractionActive) lastObservedScrollTop = Number(scrollTop || 0);
       maybeLoadMoreNearTop(scrollTop || 0, clientHeight || 0);
     };
 
@@ -1871,6 +1902,7 @@ export default {
     let userScrollInteractionActive = false;
     let pointerScrollActive = false;
     let userScrollEndTimer = null;
+    let lastObservedScrollTop = 0;
     const USER_SCROLL_END_FALLBACK_MS = 250;
 
     const clearUserScrollInteraction = () => {
@@ -1887,8 +1919,11 @@ export default {
       userScrollEndTimer = setTimeout(clearUserScrollInteraction, USER_SCROLL_END_FALLBACK_MS);
     };
 
-    const markUserScrollIntent = () => {
+    const markUserScrollIntent = (event) => {
       userScrollInteractionActive = true;
+      virtualTranscriptRef.value?.clearTargetAnchor?.();
+      lastObservedScrollTop = Number(containerRef.value?.scrollTop || 0);
+      if (Number(event?.deltaY) < 0) pauseAutoFollow();
       scheduleUserScrollInteractionEnd();
     };
 
@@ -1896,6 +1931,8 @@ export default {
       if (!isTranscriptScrollbarPointer(event, containerRef.value)) return;
       pointerScrollActive = true;
       userScrollInteractionActive = true;
+      virtualTranscriptRef.value?.clearTargetAnchor?.();
+      lastObservedScrollTop = Number(containerRef.value?.scrollTop || 0);
       if (userScrollEndTimer) {
         clearTimeout(userScrollEndTimer);
         userScrollEndTimer = null;
@@ -1908,16 +1945,33 @@ export default {
     };
 
     const onScrollKey = (event) => {
-      if (shouldMarkTranscriptKeyScroll(event, containerRef.value)) markUserScrollIntent();
+      if (!shouldMarkTranscriptKeyScroll(event, containerRef.value)) return;
+      if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') pauseAutoFollow();
+      userScrollInteractionActive = true;
+      virtualTranscriptRef.value?.clearTargetAnchor?.();
+      scheduleUserScrollInteractionEnd();
     };
 
     const onScroll = () => {
-      isAtBottom.value = resolveTranscriptBottomFollow({
-        following: !autoFollowPaused.value,
-        atBottom: checkIfAtBottom(),
-        userScroll: userScrollInteractionActive,
+      const currentScrollTop = Number(containerRef.value?.scrollTop || 0);
+      const direction = userScrollInteractionActive ? currentScrollTop - lastObservedScrollTop : 0;
+      const wasFollowing = !autoFollowPaused.value;
+      lastObservedScrollTop = currentScrollTop;
+      const atBottom = checkIfAtBottom();
+      const reachedBottom = shouldFollowTranscriptBottom({
+        scrollTop: currentScrollTop,
+        scrollHeight: containerRef.value?.scrollHeight || 0,
+        clientHeight: containerRef.value?.clientHeight || 0,
+        threshold: SCROLL_RESUME_THRESHOLD,
+      });
+      isAtBottom.value = resolveTranscriptUserFollow({
+        following: wasFollowing,
+        atBottom,
+        resumeBoundaryReached: reachedBottom,
+        direction,
       });
       autoFollowPaused.value = !isAtBottom.value;
+      virtualTranscriptRef.value?.setBottomFollowEnabled?.(isAtBottom.value);
       if (isAtBottom.value) pruneYeaftWindowNearBottom();
       if (userScrollInteractionActive) scheduleUserScrollInteractionEnd();
 
@@ -2023,14 +2077,15 @@ export default {
         messageId,
         collapseStates: messageTurnCollapseStates,
         nextTick: Vue.nextTick,
-        scrollToBlock: (blockId) => {
+        scrollToBlock: (blockId, options) => {
           pauseAutoFollow();
-          return virtualTranscriptRef.value?.scrollToKey?.(blockId, { align: 'center' });
+          return virtualTranscriptRef.value?.scrollToKey?.(blockId, options);
         },
         findRow: (rowId) => {
           const rows = containerRef.value?.querySelectorAll?.('[data-msg-id]') || [];
           return Array.from(rows).find(el => el?.dataset?.msgId === rowId) || null;
         },
+        anchorRow: (blockId, _rowId, row, options) => virtualTranscriptRef.value?.anchorTarget?.(blockId, row, options),
         flashRow: (rowId) => {
           const generation = ++flashGeneration;
           flashMsgId.value = rowId;
@@ -2083,6 +2138,7 @@ export default {
       nowMs,
       showTypingDots,
       showInitialMessagesLoading,
+      showYeaftOlderHistoryLoading,
       showSessionLoadingOverlay,
       initialMessagesLoadingText,
       previewShowTypingDots,

@@ -4,8 +4,11 @@ import {
   canonicalActionId,
   canonicalExplicitActionId,
   canonicalExplicitActionIds,
+  MAX_WORK_ITEM_ACTIONS,
   validateGeneratedCompletionGate,
 } from './workflow.js';
+
+export const MAX_REPLAN_ADDED_ACTIONS = 8;
 
 function cleanProposalId(value) {
   const id = typeof value === 'string' ? value.trim().slice(0, 128) : '';
@@ -185,7 +188,10 @@ export function applyAdditivePlanProposal({ workItem, actions, proposal, availab
     workItemType: workItem.workflowSnapshot.workItemType,
     actions: orderedActions,
   };
-  const workflowSnapshot = applyGeneratedPlan(synthetic, rawPlan, { availableVpIds });
+  const workflowSnapshot = applyGeneratedPlan(synthetic, rawPlan, {
+    availableVpIds,
+    maxActions: MAX_WORK_ITEM_ACTIONS,
+  });
   const addedStages = workflowSnapshot.stages.filter(stage => addedIds.has(stage.id));
   return {
     proposalId,
@@ -269,7 +275,7 @@ export function applyCoordinatorReplan({ workItem, actions, proposal, availableV
   const workflowSnapshot = applyGeneratedPlan(synthetic, {
     workItemType: workItem.workflowSnapshot.workItemType,
     actions: [...completedInputs, ...normalizedFuture],
-  }, { availableVpIds });
+  }, { availableVpIds, maxActions: MAX_WORK_ITEM_ACTIONS });
   const stageById = new Map(workflowSnapshot.stages.map(stage => [stage.id, stage]));
 
   return {
@@ -305,6 +311,14 @@ export function applyReplanMutation({ workItem, action, actions, proposal, avail
     throw new Error('Work Center replan Action is missing its frozen candidate set');
   }
   const candidateIds = barrier.candidateActionIds;
+  for (const field of ['retain', 'replace', 'remove', 'add']) {
+    if (!Array.isArray(proposal[field])) {
+      throw new Error(`Work Center replan mutation requires ${field} to be an array`);
+    }
+  }
+  if (proposal.add.length > MAX_REPLAN_ADDED_ACTIONS) {
+    throw new Error(`Work Center replan mutation can add at most ${MAX_REPLAN_ADDED_ACTIONS} new Actions`);
+  }
   const actionById = new Map(actions.map(candidate => [candidate.id, candidate]));
   const candidates = new Map(candidateIds.map(id => [id, actionById.get(id)]));
   for (const [id, candidate] of candidates) {
@@ -377,7 +391,7 @@ export function applyReplanMutation({ workItem, action, actions, proposal, avail
   const workflowSnapshot = applyGeneratedPlan(synthetic, {
     workItemType: workItem.workflowSnapshot.workItemType,
     actions: stableTopologicalActions([...completedInputs, ...retainedInputs, ...replacementInputs, ...addedInputs]),
-  }, { availableVpIds });
+  }, { availableVpIds, maxActions: MAX_WORK_ITEM_ACTIONS });
   const stageById = new Map(workflowSnapshot.stages.map(stage => [stage.id, stage]));
   const context = (Array.isArray(action.context) ? action.context : [])
     .filter(entry => entry?.type !== 'replan-barrier' && entry?.type !== 'input');

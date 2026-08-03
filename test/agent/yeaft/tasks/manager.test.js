@@ -2,8 +2,8 @@
  * TaskManager tests — persistent Session background tasks.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { TaskManager } from '../../../../agent/yeaft/tasks/manager.js';
@@ -33,6 +33,7 @@ describe('TaskManager', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
@@ -53,7 +54,10 @@ describe('TaskManager', () => {
       source: { threadId: 'main' },
     });
 
-    expect(task.status).toBe('running');
+    expect(task).toMatchObject({
+      status: 'running',
+      resultDelivery: 'status_only',
+    });
     expect(manager.listActiveTasks('session_test')).toHaveLength(1);
 
     await waitFor(() => manager.getTask('session_test', task.id)?.status === 'succeeded');
@@ -81,16 +85,68 @@ describe('TaskManager', () => {
       title: 'Long review',
       runtime: { subAgentId: 'agent_1' },
     });
-    expect(task.status).toBe('running');
+    expect(task).toMatchObject({ status: 'running', resultDelivery: 'status_only' });
+
+    const taskPath = manager.store.taskPath('session_restart', task.id);
+    const legacyTask = JSON.parse(readFileSync(taskPath, 'utf8'));
+    delete legacyTask.resultDelivery;
+    writeFileSync(taskPath, `${JSON.stringify(legacyTask, null, 2)}\n`, 'utf8');
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const invalidTask = manager.startTask({
+      sessionId: 'session_invalid_delivery',
+      ownerVpId: 'vp_linus',
+      kind: 'sub_agent',
+      title: 'Invalid delivery',
+      resultDelivery: 'future_delivery_mode',
+    });
+    expect(invalidTask.resultDelivery).toBe('status_only');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Invalid task resultDelivery'));
+
+    const unknownTask = manager.startTask({
+      sessionId: 'session_unknown_kind',
+      ownerVpId: 'vp_linus',
+      kind: 'future_task_kind',
+      title: 'Unknown task kind',
+    });
+    expect(unknownTask.resultDelivery).toBe('status_only');
 
     const restarted = new TaskManager({
       yeaftDir: dir,
       conversationStore: { append: msg => messages.push(msg) },
     });
 
+    const firstSinkEvents = [];
+    restarted.setEventSink(event => firstSinkEvents.push(event));
+    expect(firstSinkEvents).toHaveLength(3);
+    expect(firstSinkEvents.every(event => event.event === 'completed')).toBe(true);
+    expect(firstSinkEvents.map(event => event.task.id).sort()).toEqual([
+      task.id,
+      invalidTask.id,
+      unknownTask.id,
+    ].sort());
+    expect(firstSinkEvents.map(event => event.task.resultDelivery).sort()).toEqual([
+      'model_reentry',
+      'status_only',
+      'status_only',
+    ].sort());
+
+    const replacementSinkEvents = [];
+    restarted.setEventSink(event => replacementSinkEvents.push(event));
+    expect(replacementSinkEvents).toHaveLength(0);
+    expect(firstSinkEvents).toHaveLength(3);
+
     expect(restarted.listActiveTasks('session_restart')).toHaveLength(0);
     const restored = restarted.getTask('session_restart', task.id);
-    expect(restored.status).toBe('orphaned');
+    expect(restored).toMatchObject({ status: 'orphaned', resultDelivery: 'model_reentry' });
+    expect(restarted.getTask('session_invalid_delivery', invalidTask.id)).toMatchObject({
+      status: 'orphaned',
+      resultDelivery: 'status_only',
+    });
+    expect(restarted.getTask('session_unknown_kind', unknownTask.id)).toMatchObject({
+      status: 'orphaned',
+      resultDelivery: 'status_only',
+    });
     expect(messages).toHaveLength(0);
   });
 
@@ -137,6 +193,7 @@ describe('TaskManager', () => {
       kind: 'shell',
       title: 'Unattached task',
     });
+    expect(task.resultDelivery).toBe('status_only');
 
     const result = manager.cancelTask('session_cancel', task.id);
     expect(result.ok).toBe(false);
@@ -187,7 +244,9 @@ describe('TaskManager', () => {
       ownerVpId: 'vp_linus',
       kind: 'sub_agent',
       title: 'Verbose sub-agent',
+      resultDelivery: 'model_reentry',
     });
+    expect(subAgentTask.resultDelivery).toBe('model_reentry');
     writeFileSync(join(dir, 'tasks', 'sessions', 'session_sub_log', `${subAgentTask.id}.log`), payload, 'utf8');
 
     const refreshedSubAgent = manager.refreshTaskLog('session_sub_log', subAgentTask.id);

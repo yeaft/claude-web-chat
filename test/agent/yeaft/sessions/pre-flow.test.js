@@ -72,6 +72,31 @@ describe('Yeaft memory pre-flow scopes', () => {
     expect(result.formatted).not.toContain('This session must not leak into s1.');
   });
 
+  it('limits picked recall entries by default and honors a larger caller limit', () => {
+    const rows = Array.from({ length: 12 }, (_, index) => ({
+      scope: 'sessions/s1',
+      body: `Dream relevance memory ${index}`,
+      rank: index,
+    }));
+    const load = pickLimit => runMemoryPreflow(fakeIndex(rows), {
+      sessionId: 's1',
+      vpId: 'linus',
+      userMsg: 'Dream relevance memory',
+      budgetTokens: 1000,
+      ...(pickLimit == null ? {} : { pickLimit }),
+    });
+
+    const concise = load();
+    expect(concise.entries).toHaveLength(8);
+    expect(concise.entries.map(entry => entry.body)).toEqual(Array.from({ length: 8 }, (_, index) => `Dream relevance memory ${index}`));
+    expect(concise.entries[0].score).toEqual(expect.any(Number));
+    expect(concise.meta.droppedCount).toBe(4);
+
+    const expanded = load(10);
+    expect(expanded.entries).toHaveLength(10);
+    expect(expanded.meta.droppedCount).toBe(2);
+  });
+
   it('filters foreign current sessions/* VP scopes from recall', () => {
     const result = runMemoryPreflow(fakeIndex([
       { scope: 'sessions/s1/vp/linus', body: 'Own VP memory is visible.' },

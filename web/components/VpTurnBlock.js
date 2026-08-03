@@ -69,7 +69,15 @@ export default {
             class="vp-turn-block-time"
             :title="startedTimeFullText"
           >{{ startedTimeText }}</span>
-          <template v-if="turn.isStreaming && elapsedText">
+          <template v-if="turn.isStreaming && retryText">
+            <span
+              v-if="displayName || startedTimeText"
+              class="vp-turn-block-sep"
+              aria-hidden="true"
+            >·</span>
+            <span class="vp-turn-block-elapsed" aria-live="polite">{{ retryText }}</span>
+          </template>
+          <template v-else-if="turn.isStreaming && elapsedText">
             <span
               v-if="displayName || startedTimeText"
               class="vp-turn-block-sep"
@@ -115,6 +123,8 @@ export default {
   setup(props) {
     const store = useChatStore();
     const vpStore = useVpStore();
+    const inst = Vue.getCurrentInstance();
+    const $t = (inst && inst.appContext.config.globalProperties.$t) || ((key) => key);
 
     const displayName = Vue.computed(() => {
       const vpId = props.turn && props.turn.speakerVpId;
@@ -171,6 +181,25 @@ export default {
       return formatElapsed(ms);
     });
 
+    const retryText = Vue.computed(() => {
+      const turnId = props.turn && props.turn.turnId;
+      const retry = turnId
+        ? Object.values(store.activeVpTurns || {}).find(row => (
+          row?.turnId === turnId
+          && (!store.currentAgent || !row?.agentId || row.agentId === store.currentAgent)
+        )) || store.activeVpTurns?.[turnId]
+        : null;
+      if (!retry?.retryAttempt || !retry?.retryMax) return '';
+      const key = retry.retryRecoveryMode === 'continue'
+        ? 'yeaft.vp.turnBlock.retryingContinue'
+        : 'yeaft.vp.turnBlock.retryingRequest';
+      const fallback = retry.retryRecoveryMode === 'continue'
+        ? `Response stalled; continuing with a fresh request (${retry.retryAttempt}/${retry.retryMax})`
+        : `Response stalled; retrying with a fresh request (${retry.retryAttempt}/${retry.retryMax})`;
+      const translated = $t(key, { attempt: retry.retryAttempt, max: retry.retryMax });
+      return translated === key ? fallback : translated;
+    });
+
     return {
       onStopTurn,
       isTyping,
@@ -180,6 +209,7 @@ export default {
       startedTimeText,
       startedTimeFullText,
       elapsedText,
+      retryText,
     };
   },
 };

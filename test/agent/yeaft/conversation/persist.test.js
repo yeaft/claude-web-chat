@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { chmodSync, existsSync, mkdirSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { ConversationStore, parseMessage, estimateTokens } from '../../../../agent/yeaft/conversation/persist.js';
+import {
+  ConversationStore,
+  parseMessage,
+  estimateTokens,
+  projectVisibleSessionMessages,
+} from '../../../../agent/yeaft/conversation/persist.js';
+import { searchMessages } from '../../../../agent/yeaft/conversation/search.js';
 
 const TEST_DIR = join(tmpdir(), `yeaft-test-conv-${Date.now()}`);
 
@@ -839,15 +845,22 @@ legacy session`, { encoding: 'utf8' });
   describe('loadRecentBySession / loadAllBySession', () => {
     it('returns only messages stamped with the requested sessionId', () => {
       store.appendBatch([
-        { role: 'user',      content: 'A1', sessionId: 'grp_a' },
+        { role: 'user',      content: 'A1 project needle', sessionId: 'grp_a' },
         { role: 'assistant', content: 'A2', sessionId: 'grp_a' },
-        { role: 'user',      content: 'B1', sessionId: 'grp_b' },
+        { role: 'user',      content: 'B1 project needle', sessionId: 'grp_b' },
+        { role: 'user',      content: 'C1 project needle', sessionId: 'grp_c' },
         { role: 'user',      content: 'A3', sessionId: 'grp_a' },
       ]);
       const a = store.loadRecentBySession('grp_a', 50);
       const b = store.loadRecentBySession('grp_b', 50);
-      expect(a.map(m => m.content)).toEqual(['A1', 'A2', 'A3']);
-      expect(b.map(m => m.content)).toEqual(['B1']);
+      expect(a.map(m => m.content)).toEqual(['A1 project needle', 'A2', 'A3']);
+      expect(b.map(m => m.content)).toEqual(['B1 project needle']);
+      expect(searchMessages(TEST_DIR, 'project needle', 10, {
+        sessionIds: ['grp_a', 'grp_b'],
+      }).map(m => m.sessionId).sort()).toEqual(['grp_a', 'grp_b']);
+      expect(searchMessages(TEST_DIR, 'project needle', 10, {
+        sessionIds: [],
+      })).toEqual([]);
     });
 
     it('excludes messages with no sessionId (legacy / pre-grouping)', () => {
@@ -1136,6 +1149,17 @@ legacy session`, { encoding: 'utf8' });
         toolSummaryCount: 1,
       });
       expect(page.messages[1]).not.toHaveProperty('toolCalls');
+
+      const contradictory = projectVisibleSessionMessages([{
+        role: 'assistant', content: 'Partial before failure', responseKind: 'result',
+        incomplete: true, stopReason: 'error',
+      }]);
+      expect(contradictory[0]).toMatchObject({
+        responseKind: 'progress', incomplete: true, stopReason: 'error',
+      });
+      expect(projectVisibleSessionMessages([{
+        role: 'assistant', content: 'Cancelled partial', responseKind: 'result', stopReason: 'cancelled',
+      }])[0]).toMatchObject({ responseKind: 'progress', stopReason: 'cancelled' });
     });
 
     it('loadVisibleBySession keeps interleaved multi-VP rows for the boundary turn', () => {
@@ -1721,6 +1745,8 @@ legacy session`, { encoding: 'utf8' });
         mode: 'work',
         model: 'claude-sonnet-4-20250514',
         turnNumber: 2,
+        responseKind: 'result',
+        stopReason: 'end_turn',
       });
 
       const loaded = store.loadRecent(1);
@@ -1729,6 +1755,8 @@ legacy session`, { encoding: 'utf8' });
       expect(loaded[0].mode).toBe('work');
       expect(loaded[0].model).toBe('claude-sonnet-4-20250514');
       expect(loaded[0].turnNumber).toBe(2);
+      expect(loaded[0].responseKind).toBe('result');
+      expect(loaded[0].stopReason).toBe('end_turn');
     });
 
     it('should preserve tool message fields', () => {

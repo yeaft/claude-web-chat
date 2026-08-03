@@ -93,7 +93,8 @@ export function handleWebConnection(ws, url, req = {}) {
       success: true,
       sessionKey: sessionKey ? encodeKey(sessionKey) : null,
       role,
-      acceptPlaintext: true
+      acceptPlaintext: true,
+      yeaftSessionInventoryComplete: true,
     }));
     setTimeout(() => broadcastAgentList(), 100);
   } else {

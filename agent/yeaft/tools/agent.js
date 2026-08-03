@@ -26,6 +26,7 @@ import { getPersona, listPersonaIds } from '../personas.js';
 import { startSubAgent } from '../sub-agent/runner.js';
 import { STATUS, isTerminalAgentStatus } from '../sub-agent/status.js';
 import { diagnoseAgentLiveness, makeLiveness } from '../sub-agent/liveness.js';
+import { TASK_RESULT_DELIVERY } from '../tasks/store.js';
 
 /** In-memory sub-agent registry. */
 const agents = new Map();
@@ -424,6 +425,7 @@ use it as the default workflow or call it repeatedly in a loop.`,
           ownerVpId: callerScope.parentVpId || ctx?.currentVpId || null,
           kind: 'sub_agent',
           title: spec.mission || spec.task || name,
+          resultDelivery: TASK_RESULT_DELIVERY.MODEL_REENTRY,
           runtime: { subAgentId: agentId, name, cwd: agent.cwd },
           source: { threadId: callerScope.parentThreadId || ctx?.threadId || 'main' },
         });
@@ -438,6 +440,14 @@ use it as the default workflow or call it repeatedly in a loop.`,
         }
         startSubAgent(agent, deps);
       } catch (err) {
+        if (agent.taskId && ctx?.taskManager?.completeTask) {
+          try {
+            ctx.taskManager.completeTask(callerScope.sessionId || ctx?.sessionId || 'default', agent.taskId, {
+              status: 'failed',
+              error: err && err.message ? err.message : String(err),
+            });
+          } catch { /* task terminal delivery is best-effort */ }
+        }
         agent.status = STATUS.FAILED;
         agent.error = err && err.message ? err.message : String(err);
         agent.diagnostics.push({ type: 'spawn_error', error: agent.error, at: Date.now() });

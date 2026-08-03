@@ -20,7 +20,7 @@ let shutdownPromise = null;
 let serviceFactory = null;
 
 const BROWSER_DETAIL_OPS = new Set([
-  'get', 'create', 'update', 'start', 'cancel', 'action_input', 'retry_action', 'guide', 'retry',
+  'get', 'create', 'update', 'start', 'cancel', 'resume', 'post_work_item_message', 'action_input', 'retry_action', 'guide', 'retry',
 ]);
 const BROWSER_ACTION_DEBUG_OPS = new Set(['get_action_messages', 'get_action_requests', 'get_action_request']);
 // `files` is an internal server-to-Agent field. The browser relay rejects any
@@ -29,14 +29,21 @@ const BROWSER_FILE_FIELDS = Object.freeze({
   create: [
     'title', 'goal', 'acceptanceCriteria', 'workItemType', 'workDir', 'reuseMemory', 'files', 'start',
   ],
-  work_item_message: ['id', 'text', 'revision', 'planRevision', 'ledgerRevision', 'coordinatorRevision'],
+  post_work_item_message: [
+    'id', 'clientMessageId', 'text', 'target', 'revision', 'planRevision', 'ledgerRevision',
+    'coordinatorRevision', 'files',
+  ],
+  work_item_message: [
+    'id', 'text', 'revision', 'planRevision', 'ledgerRevision', 'coordinatorRevision', 'files',
+  ],
   action_input: ['id', 'text', 'actionId', 'revision', 'generation', 'files'],
   retry_action: ['id', 'actionId', 'revision', 'generation'],
+  resume: ['id', 'revision'],
   delete: ['id', 'revision'],
   guide: ['id', 'guidance', 'actionId', 'revision', 'generation', 'files'],
   get_action_messages: ['id', 'actionId', 'generation', 'cursor', 'limit'],
-  get_action_requests: ['id', 'actionId'],
-  get_action_request: ['id', 'actionId', 'runId', 'requestId'],
+  get_action_requests: ['id', 'actionId', 'generation'],
+  get_action_request: ['id', 'actionId', 'generation', 'runId', 'requestId'],
 });
 
 function browserFilePayload(op, value) {
@@ -129,6 +136,7 @@ async function createDefaultService() {
     },
     policyProvider: async () => readWorkCenterSettings(yeaftDir),
     registry: defaultRegistry,
+    attachmentRoot: join(yeaftDir, 'work-center', 'attachments'),
   });
   const created = new WorkCenterService({
     yeaftDir,
@@ -217,7 +225,9 @@ export async function handleWorkCenterRequest(msg) {
         : (BROWSER_ACTION_DEBUG_OPS.has(op) ? browserFilePayload(op, msg.payload) : (msg.payload || {}));
       data = await workCenter.handle(op, payload);
     }
-    if (BROWSER_DETAIL_OPS.has(op)) data = workCenter.projectBrowserDetail(data);
+    if (BROWSER_DETAIL_OPS.has(op) && data?.accepted !== true) {
+      data = workCenter.projectBrowserDetail(data);
+    }
     send({
       type: 'work_center_response',
       requestId,

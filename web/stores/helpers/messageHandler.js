@@ -9,6 +9,7 @@ import { t } from '../../utils/i18n.js';
 import { stopProcessingWatchdog, startLegacyWatchdog } from './watchdog.js';
 import { clearSessionLoading } from './session.js';
 import { applyDebugRawRequestDelta } from '../../components/yeaft-debug-helpers.js';
+import { parseYeaftSessionIdentity } from './yeaft-session-identity.js';
 import { handleAgentList, handleAgentSelected } from './handlers/agentHandler.js';
 import {
   handleConversationCreated,
@@ -35,6 +36,90 @@ function defaultAgentLlmConfig(msg = {}) {
 
 const DEBUG_HISTORY_DEFAULT_LIMIT = 1;
 const DEBUG_HISTORY_SEARCH_LIMIT = 5;
+const LEGACY_YEAFT_SESSION_INVENTORY_QUIET_MS = 500;
+
+function sessionsStore() {
+  return window.Pinia?.useSessionsStore?.()
+    || (window.__useSessionsStore && window.__useSessionsStore());
+}
+
+function bufferYeaftSessionInventorySlice(store, msg) {
+  const agentId = msg.agentId || null;
+  const slices = Array.isArray(store.yeaftSessionHydrateSlices)
+    ? store.yeaftSessionHydrateSlices.filter(slice => slice.agentId !== agentId)
+    : [];
+  store.yeaftSessionHydrateSlices = [...slices, {
+    agentId,
+    sessions: Array.isArray(msg.sessions) ? msg.sessions : [],
+  }];
+}
+
+function preferredYeaftSessionInventoryIdentity(store) {
+  const sessions = sessionsStore();
+  let persistedIdentity = null;
+  try { persistedIdentity = localStorage.getItem('lastViewedYeaftSession') || null; }
+  catch (_) {}
+  const persisted = parseYeaftSessionIdentity(persistedIdentity);
+  const activeSessionId = store.yeaftActiveSessionFilter || sessions?.activeSessionId || null;
+  if (activeSessionId) {
+    const activeRow = sessions?.activeSessionKey
+      ? sessions.sessions?.[sessions.activeSessionKey]
+      : null;
+    if (activeRow?.id === activeSessionId && activeRow.agentId) {
+      return { sessionId: activeSessionId, agentId: activeRow.agentId };
+    }
+    if (persisted.sessionId === activeSessionId && persisted.agentId) return persisted;
+    return { sessionId: activeSessionId, agentId: null };
+  }
+  return persisted;
+}
+
+// New Servers send an explicit completion frame. Older Servers do not, so the
+// quiet timer below synthesizes that boundary. Both paths commit the same
+// buffered snapshot and never expose per-Agent slices to the live store.
+function commitBufferedYeaftSessionInventory(store) {
+  const sessions = sessionsStore();
+  const preferred = preferredYeaftSessionInventoryIdentity(store);
+  if (typeof sessions?.beginInventoryCommit === 'function') {
+    sessions.beginInventoryCommit(preferred.sessionId, preferred.agentId);
+  } else if (typeof sessions?.resetInventory === 'function') {
+    sessions.resetInventory();
+  }
+  const slices = Array.isArray(store.yeaftSessionHydrateSlices)
+    ? store.yeaftSessionHydrateSlices
+    : [];
+  const orderedSlices = preferred.agentId
+    ? [
+        ...slices.filter(slice => slice.agentId === preferred.agentId),
+        ...slices.filter(slice => slice.agentId !== preferred.agentId),
+      ]
+    : slices;
+  if (orderedSlices.length === 0) sessions?.applySnapshot?.([], null);
+  orderedSlices.forEach((slice, index) => {
+    sessions?.applySnapshot?.(slice.sessions || [], slice.agentId || null, {
+      deferActivation: index < orderedSlices.length - 1,
+    });
+  });
+  store.yeaftSessionHydrateSlices = [];
+}
+
+function scheduleLegacyYeaftSessionInventoryComplete(store) {
+  const requestId = store.yeaftSessionHydrateRequestId || null;
+  if (store.yeaftSessionInventoryCompleteSupported !== false || !requestId) return;
+  clearTimeout(store._legacyYeaftSessionHydrateTimer);
+  store._legacyYeaftSessionHydrateTimer = setTimeout(() => {
+    if (store.yeaftSessionHydrateRequestId !== requestId) return;
+    store._legacyYeaftSessionHydrateTimer = null;
+    commitBufferedYeaftSessionInventory(store);
+    store._hasHandledYeaftSessionHydrate = true;
+    store.yeaftSessionHydrateRequestId = null;
+    store.yeaftSessionHydrateError = null;
+    // A quiet window is only a heuristic boundary. Keep this socket available
+    // for normal traffic, but never reuse its identity-less inventory namespace:
+    // late slices from this completed request cannot be distinguished from the next.
+    store._yeaftSessionInventorySocketQuarantined = true;
+  }, LEGACY_YEAFT_SESSION_INVENTORY_QUIET_MS);
+}
 
 function cloneDebugValue(value) {
   if (value == null) return value;
@@ -127,16 +212,24 @@ export function handleMessage(store, msg) {
         if (msg.acceptPlaintext === true) {
           store.serverEncryptionRequired = false;
         }
+        store.yeaftSessionInventoryCompleteSupported = msg.yeaftSessionInventoryComplete === true;
+        store.yeaftSessionHydrateSlices = [];
+        store._hasHandledYeaftSessionHydrate = false;
+        store.yeaftSessionHydrateError = null;
 
         if (msg.role) {
           authStore.role = msg.role;
         }
 
-        const knownConvIds = store.conversations.map(c => c.id).filter(Boolean);
-        store.sendWsMessage({
-          type: 'get_agents',
-          conversationIds: knownConvIds.length > 0 ? knownConvIds : undefined
-        });
+        if (typeof store.requestYeaftSessionInventory === 'function') {
+          store.requestYeaftSessionInventory();
+        } else {
+          const knownConvIds = store.conversations.map(c => c.id).filter(Boolean);
+          store.sendWsMessage({
+            type: 'get_agents',
+            conversationIds: knownConvIds.length > 0 ? knownConvIds : undefined,
+          });
+        }
 
         store.checkPendingRecovery();
       } else {
@@ -150,20 +243,69 @@ export function handleMessage(store, msg) {
 
     case 'agent_list':
       handleAgentList(store, msg);
+      // Legacy Servers broadcast agent_list before sending any Session slices.
+      // Only an actual slice can start the quiet completion window; otherwise a
+      // slow first slice would turn the current live inventory into a fake empty one.
       if (store.workCenterOpen && store.workCenterAgentId) {
         store.listWorkItems(store.workCenterAgentId).catch(() => {});
       }
       break;
 
     case 'yeaft_session_hydrate': {
-      const sessions = window.Pinia?.useSessionsStore?.()
-        || (window.__useSessionsStore && window.__useSessionsStore());
-      if (sessions) sessions.applySnapshot(msg.sessions || [], msg.agentId || null);
+      if (store.yeaftSessionInventoryCompleteSupported === true
+          && (!msg.requestId || msg.requestId !== store.yeaftSessionHydrateRequestId)) break;
+      if (store.yeaftSessionInventoryCompleteSupported !== true
+          && !store.yeaftSessionHydrateRequestId) break;
+      if (msg.requestId && store.yeaftSessionHydrateRequestId
+          && msg.requestId !== store.yeaftSessionHydrateRequestId) break;
+      bufferYeaftSessionInventorySlice(store, msg);
+      if (store.yeaftSessionInventoryCompleteSupported !== true) {
+        scheduleLegacyYeaftSessionInventoryComplete(store);
+      }
       break;
     }
 
+    case 'yeaft_session_hydrate_complete':
+      if (store.yeaftSessionInventoryCompleteSupported === true
+          && (!msg.requestId || msg.requestId !== store.yeaftSessionHydrateRequestId)) break;
+      if (store.yeaftSessionHydrateRequestId && !msg.requestId) break;
+      if (msg.requestId && store.yeaftSessionHydrateRequestId
+          && msg.requestId !== store.yeaftSessionHydrateRequestId) break;
+      clearTimeout(store._legacyYeaftSessionHydrateTimer);
+      store._legacyYeaftSessionHydrateTimer = null;
+      if (msg.ok !== false) commitBufferedYeaftSessionInventory(store);
+      else store.yeaftSessionHydrateSlices = [];
+      store.yeaftSessionHydrateRequestId = null;
+      store._hasHandledYeaftSessionHydrate = msg.ok !== false;
+      store.yeaftSessionHydrateError = msg.ok === false
+        ? (msg.error || 'session_inventory_failed')
+        : null;
+      break;
+
+    case 'session_catalog_snapshot':
+      store.applySessionCatalogSnapshot(
+        msg.catalog,
+        msg.projectsAuthoritative === true ? msg.projects : null,
+      );
+      break;
+
+    case 'session_ui_metadata_updated': {
+      if (!store.finishSessionCatalogMutation?.(msg)) break;
+      if (msg.ok !== true) break;
+      const row = store.sessionCatalog.find(item => item.catalogKey === msg.catalogKey);
+      if (row) {
+        row.pinned = msg.pinned === true;
+        row.sortRank = Number.isFinite(msg.sortRank) ? msg.sortRank : null;
+      }
+      break;
+    }
+
+    case 'session_catalog_reorder_result':
+      store.finishSessionCatalogMutation?.(msg);
+      break;
+
     case 'agent_selected':
-      handleAgentSelected(store, msg);
+      if (!handleAgentSelected(store, msg)) break;
       if (store.workCenterOpen && store.workCenterAgentId) {
         store.listWorkItems(store.workCenterAgentId).catch(() => {});
       }
@@ -228,6 +370,10 @@ export function handleMessage(store, msg) {
       handleConversationDeleted(store, msg);
       break;
 
+    case 'conversation_delete_result':
+      if (msg.ok) handleConversationDeleted(store, msg);
+      break;
+
     case 'turn_completed':
       handleTurnCompleted(store, msg);
       break;
@@ -247,7 +393,9 @@ export function handleMessage(store, msg) {
       break;
 
     case 'yeaft_asset_ready': {
-      const conversationId = msg.conversationId || store.yeaftConversationId;
+      const conversationId = msg.conversationId
+        || store.yeaftConversationIdsByAgent?.[msg.agentId]
+        || store.yeaftConversationId;
       if (!conversationId || !msg.image) break;
       if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
       const duplicate = store.messagesMap[conversationId].some(row =>

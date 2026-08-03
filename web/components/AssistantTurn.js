@@ -75,21 +75,39 @@ export default {
 
       <div class="turn-message-block" :data-turn-id="turn.turnId || ''">
         <!-- 1. Text content -->
-        <div v-if="turn.textContent" class="turn-content">
+        <div v-if="textSegments.length > 0" class="turn-content">
           <div class="turn-header">
             <!-- Session message blocks are keyed by turn/message identity; no thread pill is rendered. -->
             <button class="copy-btn" @click="copyContent" :title="copied ? $t('message.copied') : $t('message.copy')">
-            <svg v-if="!copied" viewBox="0 0 24 24" width="16" height="16">
-              <path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-            </svg>
-            <svg v-else viewBox="0 0 24 24" width="16" height="16">
-              <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
-            </svg>
-          </button>
+              <svg v-if="!copied" viewBox="0 0 24 24" width="16" height="16">
+                <path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+              </svg>
+              <svg v-else viewBox="0 0 24 24" width="16" height="16">
+                <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+              </svg>
+            </button>
+          </div>
+          <div v-if="progressSegments.length > 0" class="turn-progress-group">
+            <div class="turn-progress-list">
+              <div
+                v-for="segment in progressSegments"
+                :key="segment.key"
+                class="turn-response-segment turn-response-progress"
+              >
+                <div class="turn-text markdown-body" v-html="renderSegment(segment.content)"></div>
+                <span v-if="segment.isStreaming" class="cursor-blink"></span>
+              </div>
+            </div>
+          </div>
+          <div
+            v-for="segment in resultSegments"
+            :key="segment.key"
+            class="turn-response-segment turn-response-result"
+          >
+            <div class="turn-text markdown-body" v-html="renderSegment(segment.content)"></div>
+            <span v-if="segment.isStreaming" class="cursor-blink"></span>
+          </div>
         </div>
-        <div class="turn-text markdown-body" v-html="renderedContent"></div>
-        <span v-if="turn.isStreaming" class="cursor-blink"></span>
-      </div>
 
       <!-- 2. VP hand-off messages (RouteForward) -->
       <div v-if="routeMessages.length > 0" class="turn-route-messages">
@@ -333,9 +351,8 @@ export default {
     };
     configureMarked();
 
-    const renderedContent = Vue.computed(() => {
-      if (!props.turn.textContent) return '';
-      let content = props.turn.textContent;
+    const renderSegment = (value) => {
+      let content = value;
       if (typeof content !== 'string') {
         if (Array.isArray(content)) {
           content = content.map(block => {
@@ -358,7 +375,18 @@ export default {
         console.error('Markdown parsing error:', e);
       }
       return simpleMarkdown(content);
+    };
+
+    const textSegments = Vue.computed(() => {
+      if (Array.isArray(props.turn?.textSegments) && props.turn.textSegments.length > 0) {
+        return props.turn.textSegments;
+      }
+      return props.turn?.textContent
+        ? [{ key: 'legacy-result', content: props.turn.textContent, kind: 'result', isStreaming: props.turn.isStreaming === true }]
+        : [];
     });
+    const progressSegments = Vue.computed(() => textSegments.value.filter(segment => segment.kind !== 'result'));
+    const resultSegments = Vue.computed(() => textSegments.value.filter(segment => segment.kind === 'result'));
 
     const addCodeBlockCopyButtons = (html) => {
       return html.replace(/<pre><code([^>]*)>([\s\S]*?)<\/code><\/pre>/g,
@@ -593,7 +621,10 @@ export default {
       toggleExpand,
       toolExpandedValue,
       updateToolExpanded,
-      renderedContent,
+      textSegments,
+      progressSegments,
+      resultSegments,
+      renderSegment,
       copyContent,
       copyFullResponse,
       exportMarkdown,

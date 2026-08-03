@@ -133,6 +133,21 @@ export function connect(store) {
     return;
   }
 
+  // Agent and Session inventories belong to the socket that delivered them.
+  // Invalidate both before replacing the socket so the UI cannot render a
+  // stale empty/content state while the new authenticated snapshot is pending.
+  clearTimeout(store._legacyYeaftSessionHydrateTimer);
+  store._legacyYeaftSessionHydrateTimer = null;
+  store._hasHandledAgentList = false;
+  store._hasHandledYeaftSessionHydrate = false;
+  store.yeaftSessionInventoryCompleteSupported = null;
+  store.yeaftSessionHydrateRequestId = null;
+  store.yeaftSessionHydrateSlices = [];
+  store.yeaftSessionHydrateError = null;
+  store._yeaftSessionInventorySocketQuarantined = false;
+  store.pendingAgentSelection = null;
+  store.agentSwitching = false;
+
   if (store.ws) {
     store.ws.onopen = null;
     store.ws.onmessage = null;
@@ -142,6 +157,41 @@ export function connect(store) {
   }
 
   store.connectionState = store.reconnectAttempts > 0 ? 'reconnecting' : 'connecting';
+  // Encryption and history request capabilities are connection-scoped. Start
+  // every socket conservatively and cancel requests owned by the old socket;
+  // reconnect catch-up will issue fresh requests after agent_list arrives.
+  store.serverEncryptionRequired = true;
+  store.chatHistoryRequestIdSupported = null;
+  store.chatHistoryConnectionGeneration = Number(store.chatHistoryConnectionGeneration || 0) + 1;
+  for (const [requestId, request] of Object.entries(store.projectMutationRequests || {})) {
+    request?.resolve?.({
+      ok: false,
+      requestId,
+      error: { code: 'connection_changed' },
+    });
+  }
+  store.projectMutationRequests = {};
+  store.sessionProjects = [];
+  for (const [catalogKey, request] of Object.entries(store.chatHistoryRequests || {})) {
+    if (!request?.loading) continue;
+    store.chatHistoryRequests[catalogKey] = {
+      ...request,
+      loading: false,
+      cancelled: true,
+      error: 'connection_changed',
+    };
+  }
+  const pendingCatalogMutations = Object.values(store.sessionCatalogMutationRequests || {});
+  if (pendingCatalogMutations.length > 0) {
+    store.sessionCatalog = pendingCatalogMutations[0].previousCatalog;
+    store.sessionCatalogMutationRequests = {};
+  }
+  // Catalog support is a capability of the current Server connection. Reset
+  // before every handshake so reconnecting to an older Server immediately
+  // restores the legacy sidebar instead of showing a stale prior snapshot.
+  store.sessionCatalogLoaded = false;
+  store.sessionCatalog = [];
+  store.activeCatalogKey = null;
   console.log(`[WS] Connecting... (attempt ${store.reconnectAttempts + 1})`);
 
   store._wsAuthToken = authToken;
@@ -197,6 +247,16 @@ export function connect(store) {
     }
     console.log('[WS] Disconnected:', event.code, event.reason);
     store.authenticated = false;
+    clearTimeout(store._legacyYeaftSessionHydrateTimer);
+    store._legacyYeaftSessionHydrateTimer = null;
+    store._hasHandledAgentList = false;
+    store._hasHandledYeaftSessionHydrate = false;
+    store.yeaftSessionInventoryCompleteSupported = null;
+    store.yeaftSessionHydrateRequestId = null;
+    store.yeaftSessionHydrateSlices = [];
+    store.yeaftSessionHydrateError = null;
+    store.pendingAgentSelection = null;
+    store.agentSwitching = false;
     const wasUpdating = store.connectionState === 'updating';
     store.connectionState = wasUpdating ? 'updating' : 'disconnected';
     store.stopHeartbeat();

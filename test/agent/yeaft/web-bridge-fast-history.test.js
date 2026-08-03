@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { beforeEach } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -22,7 +23,17 @@ vi.mock('../../../agent/yeaft/status-cache.js', () => ({
 
 const ctx = (await import('../../../agent/context.js')).default;
 const { ConversationStore } = await import('../../../agent/yeaft/conversation/persist.js');
-const { handleYeaftLoadHistory, handleYeaftLoadMoreHistory, __testSetSession, __testHooks } = await import('../../../agent/yeaft/web-bridge.js');
+const {
+  handleYeaftLoadHistory,
+  handleYeaftLoadMoreHistory,
+  handleYeaftSessionAddMember,
+  handleYeaftSessionRemoveMember,
+  handleYeaftSessionSetDefaultVp,
+  __testHandleEngineEvent,
+  __testGroupHistory,
+  __testSetSession,
+  __testHooks,
+} = await import('../../../agent/yeaft/web-bridge.js');
 
 function flushMicrotasks() {
   return new Promise(resolve => setImmediate(resolve));
@@ -45,7 +56,104 @@ describe('Yeaft load-history first paint', () => {
     ctx.CONFIG = null;
   });
 
-  it('filters internal and model-only user-role rows in the visible-history fallback path', () => {
+  it('filters internal rows and uses a collision-resistant virtual conversation id', () => {
+    const firstConversationId = __testHooks.ensureYeaftConversationIdForTest();
+    __testHooks.setYeaftConversationIdForTest(null);
+    const secondConversationId = __testHooks.ensureYeaftConversationIdForTest();
+    expect(firstConversationId).toMatch(/^yeaft-[0-9a-f-]{36}$/);
+    expect(secondConversationId).toMatch(/^yeaft-[0-9a-f-]{36}$/);
+    expect(secondConversationId).not.toBe(firstConversationId);
+
+    const hctx = {
+      assistantTextParts: [],
+      toolCallsAccum: [],
+      toolResultsAccum: [],
+      resetQueryTimer: vi.fn(),
+      sessionId: 'session-fast',
+      vpId: 'vp-linus',
+      turnId: 'turn-retry',
+      threadId: 'main',
+    };
+    __testHandleEngineEvent({
+      type: 'llm_retry',
+      attempt: 2,
+      maxRetries: 3,
+      delayMs: 2000,
+      reason: 'stream_idle_timeout',
+      recoveryMode: 'continue',
+      errorName: 'LLMStreamIdleTimeoutError',
+      statusCode: 0,
+      message: 'idle',
+    }, hctx);
+    __testHandleEngineEvent({
+      type: 'error',
+      error: new Error('OpenAI stream idle timeout after 90000ms'),
+      retryable: true,
+      reason: 'stream_idle_timeout',
+      retryExhausted: true,
+      retryAttempts: 3,
+      maxRetries: 3,
+    }, hctx);
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'llm_retry',
+        recoveryMode: 'continue',
+        attempt: 2,
+      }),
+    }));
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'vp_status_changed',
+        state: 'retrying',
+        turnId: 'turn-retry',
+      }),
+    }));
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'error',
+        retryAttempts: 3,
+        message: expect.stringContaining('after 3 fresh request retries'),
+      }),
+    }));
+    expect(sent).toContainEqual(expect.objectContaining({
+      data: expect.objectContaining({
+        type: 'assistant',
+        message: expect.objectContaining({
+          content: [{ type: 'text', text: expect.stringContaining('after 3 fresh request retries') }],
+        }),
+      }),
+    }));
+    const markEngineTerminal = vi.fn();
+    hctx.markEngineTerminal = markEngineTerminal;
+    __testHandleEngineEvent({
+      type: 'turn_end',
+      stopReason: 'error',
+      terminal: true,
+      threadId: 'main',
+    }, hctx);
+    expect(markEngineTerminal).toHaveBeenCalledWith('error', expect.objectContaining({
+      message: expect.stringContaining('after 3 fresh request retries'),
+      reason: 'stream_idle_timeout',
+      retryAttempts: 3,
+    }));
+    expect(__testHooks.decorateSessionsWithRuntimeState([{ id: 'session-fast' }])).toEqual([
+      expect.objectContaining({
+        id: 'session-fast',
+        running: false,
+        active: false,
+        runningVpCount: 0,
+      }),
+    ]);
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'vp_status_changed',
+        state: 'error',
+        runningThreadCount: 0,
+        turnId: 'turn-retry',
+      }),
+    }));
+    sent.length = 0;
+
     const rows = [
       { id: 'm0001', role: 'user', content: 'visible q', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0002', role: 'user', content: '<task-result id="task_1" kind="shell" status="succeeded">\nPASS\n</task-result>', sessionId: 'session-fast', threadId: 'main' },
@@ -65,9 +173,7 @@ describe('Yeaft load-history first paint', () => {
       'visible a',
       'In docs, <task-result> is just prose',
     ]);
-  });
 
-  it('preserves Session message quotes in the history wire projection', () => {
     const quote = {
       id: 'm0001', role: 'assistant', author: 'Linus', content: 'Prior answer',
       todos: [{ content: 'Verify', status: 'completed' }],
@@ -75,7 +181,6 @@ describe('Yeaft load-history first paint', () => {
     const projected = __testHooks.projectVisibleHistoryChunkMessages([
       { id: 'm0002', role: 'user', content: 'Follow up', sessionId: 'session-fast', quote },
     ]);
-
     expect(projected[0]).toMatchObject({ id: 'm0002', quote });
   });
 
@@ -85,6 +190,7 @@ describe('Yeaft load-history first paint', () => {
       role: 'assistant',
       content: 'Progress',
       sessionId: 'session-fast',
+      responseKind: 'progress',
       toolCalls: [
         { id: 'todo-old', name: 'TodoWrite', input: { todos: [{ content: 'Old', status: 'pending' }] } },
         { id: 'bash', name: 'Bash', input: { command: 'true' } },
@@ -95,7 +201,129 @@ describe('Yeaft load-history first paint', () => {
     expect(projected[0]).toMatchObject({
       todos: [{ content: 'New', status: 'completed' }],
       toolSummaryCount: 1,
+      responseKind: 'progress',
     });
+
+    expect(__testHooks.projectVisibleHistoryChunkMessages([{
+      id: 'm0004', role: 'assistant', content: 'Partial', sessionId: 'session-fast',
+      incomplete: true, stopReason: 'aborted',
+    }])[0]).toMatchObject({ responseKind: 'progress' });
+    expect(__testHooks.projectVisibleHistoryChunkMessages([{
+      id: 'm0005', role: 'assistant', content: 'Partial before error', sessionId: 'session-fast',
+      responseKind: 'result', incomplete: true, stopReason: 'error',
+    }])[0]).toMatchObject({
+      responseKind: 'progress', incomplete: true, stopReason: 'error',
+    });
+    expect(__testHooks.projectVisibleHistoryChunkMessages([{
+      id: 'm0006', role: 'assistant', content: 'Cancelled partial', sessionId: 'session-fast',
+      responseKind: 'result', stopReason: 'cancelled',
+    }])[0]).toMatchObject({ responseKind: 'progress', stopReason: 'cancelled' });
+
+    const markEngineTerminal = vi.fn();
+    const handlerCtx = {
+      assistantTextParts: [],
+      toolCallsAccum: [],
+      toolResultsAccum: [],
+      resetQueryTimer: vi.fn(),
+      pauseQueryTimer: vi.fn(),
+      markEngineTerminal,
+      sessionId: 'session-fast',
+      vpId: 'vp-linus',
+      turnId: 'turn-error',
+      threadId: 'main',
+    };
+    __testHandleEngineEvent({
+      type: 'error',
+      error: new Error('provider exploded'),
+      retryable: false,
+    }, handlerCtx);
+    expect(markEngineTerminal).not.toHaveBeenCalled();
+
+    handlerCtx.resetQueryTimer.mockClear();
+    handlerCtx.pauseQueryTimer.mockClear();
+    __testHandleEngineEvent({
+      type: 'llm_retry',
+      attempt: 2,
+      maxRetries: 2,
+      delayMs: 120_000,
+      reason: 'temporary_forbidden',
+      threadId: 'main',
+    }, handlerCtx);
+    expect(handlerCtx.pauseQueryTimer).toHaveBeenCalledTimes(1);
+    expect(handlerCtx.resetQueryTimer).not.toHaveBeenCalled();
+
+    handlerCtx.pauseQueryTimer.mockClear();
+    __testHandleEngineEvent({
+      type: 'tool_start',
+      id: 'call-slow',
+      name: 'Bash',
+      threadId: 'main',
+    }, handlerCtx);
+    expect(handlerCtx.pauseQueryTimer).toHaveBeenCalledTimes(1);
+    expect(handlerCtx.resetQueryTimer).not.toHaveBeenCalled();
+
+    __testHandleEngineEvent({
+      type: 'tool_end',
+      id: 'call-slow',
+      name: 'Bash',
+      output: 'done',
+      isError: false,
+      threadId: 'main',
+    }, handlerCtx);
+    expect(handlerCtx.resetQueryTimer).toHaveBeenCalledTimes(1);
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'llm_retry',
+        delayMs: 120_000,
+      }),
+    }));
+    expect(sent.at(-1)).toMatchObject({
+      sessionId: 'session-fast',
+      vpId: 'vp-linus',
+      turnId: 'turn-error',
+      threadId: 'main',
+    });
+    handlerCtx.resetQueryTimer.mockClear();
+    __testHandleEngineEvent({ type: 'turn_start', threadId: 'main' }, handlerCtx);
+    expect(handlerCtx.resetQueryTimer).toHaveBeenCalledTimes(1);
+
+    __testHandleEngineEvent({
+      type: 'turn_end',
+      stopReason: 'error',
+      terminal: true,
+      threadId: 'main',
+    }, handlerCtx);
+    expect(markEngineTerminal).toHaveBeenCalledWith('error', { message: 'provider exploded' });
+
+    sent.length = 0;
+    const waitWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      __testHandleEngineEvent({
+        type: 'async_task_wait_end',
+        turnId: 'turn-stalled-task',
+        threadId: 'main',
+        loopNumber: 2,
+        aborted: false,
+        remainingTaskIds: [],
+        timedOut: true,
+        deferredTaskIds: ['task-stalled'],
+      }, handlerCtx);
+      expect(handlerCtx.resetQueryTimer).toHaveBeenCalled();
+      expect(waitWarn).toHaveBeenCalledWith(
+        expect.stringContaining('async task wait timed out'),
+        ['task-stalled'],
+      );
+      expect(sent).toContainEqual(expect.objectContaining({
+        event: expect.objectContaining({
+          type: 'vp_async_task_wait_end',
+          timedOut: true,
+          deferredTaskIds: ['task-stalled'],
+        }),
+      }));
+    } finally {
+      waitWarn.mockRestore();
+    }
   });
 
   it('preserves TodoWrite through the real store page and history wire projection', () => {
@@ -108,6 +336,8 @@ describe('Yeaft load-history first paint', () => {
         content: 'Progress',
         sessionId: 'session-fast',
         speakerVpId: 'vp-linus',
+        responseKind: 'result',
+        stopReason: 'end_turn',
         toolCalls: [
           { id: 'todo', name: 'TodoWrite', input: { todos: [{ content: 'Verify', status: 'completed' }] } },
           { id: 'bash', name: 'Bash', input: { command: 'true' } },
@@ -120,10 +350,25 @@ describe('Yeaft load-history first paint', () => {
       expect(page.messages[1]).toMatchObject({
         todos: [{ content: 'Verify', status: 'completed' }],
         toolSummaryCount: 1,
+        responseKind: 'result',
       });
       expect(projected[1]).toMatchObject({
         todos: [{ content: 'Verify', status: 'completed' }],
         toolSummaryCount: 1,
+        responseKind: 'result',
+      });
+
+      store.append({
+        role: 'assistant', content: 'Persisted partial', sessionId: 'session-fast',
+        speakerVpId: 'vp-linus', responseKind: 'result', incomplete: true, stopReason: 'error',
+      });
+      const failedPage = __testHooks.loadVisibleGroupHistoryPage(store, 'session-fast', 1);
+      const failedProjected = __testHooks.projectVisibleHistoryChunkMessages(failedPage.messages);
+      expect(failedPage.messages.at(-1)).toMatchObject({
+        responseKind: 'progress', incomplete: true, stopReason: 'error',
+      });
+      expect(failedProjected.at(-1)).toMatchObject({
+        responseKind: 'progress', incomplete: true, stopReason: 'error',
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -223,7 +468,12 @@ describe('Yeaft load-history first paint', () => {
         { role: 'assistant', content: '', sessionId: 'session-fast', speakerVpId: 'vp-linus', toolCalls: [{ id: 'tool-1', name: 'Bash', input: { command: 'echo ok' } }] },
       ]);
 
-      const pending = handleYeaftLoadHistory({ sessionId: 'session-fast', limit: 1 });
+      const pending = handleYeaftLoadHistory({
+        sessionId: 'session-fast',
+        limit: 1,
+        requestId: 'history-request-1',
+        _requestClientId: 'web-client-1',
+      });
       await flushMicrotasks();
 
       expect(loadSession).toHaveBeenCalledTimes(1);
@@ -231,6 +481,8 @@ describe('Yeaft load-history first paint', () => {
       expect(chunk).toMatchObject({
         type: 'yeaft_history_chunk',
         sessionId: 'session-fast',
+        requestId: 'history-request-1',
+        _requestClientId: 'web-client-1',
         mode: 'recent',
         hasMore: true,
         messages: [
@@ -241,11 +493,14 @@ describe('Yeaft load-history first paint', () => {
       const historyDone = sent.find(m => m.event?.type === 'history_loaded');
       expect(historyDone).toMatchObject({
         type: 'yeaft_output',
+        requestId: 'history-request-1',
+        _requestClientId: 'web-client-1',
         event: {
           type: 'history_loaded',
           mode: 'recent',
           count: 2,
           sessionId: 'session-fast',
+          requestId: 'history-request-1',
           hasMore: true,
         },
       });
@@ -404,6 +659,30 @@ describe('Yeaft load-history first paint', () => {
       // One bounded UI replay (limit: 1) plus one bounded runtime hydrate
       // (default recentTurnsLimit) is fine; parsing the whole 1002-row session is not.
       expect(readCounts.count).toBeLessThan(80);
+
+      store.append({ role: 'user', content: 'progress q', sessionId: 'session-progress' });
+      store.append({
+        role: 'assistant', content: 'I found the request construction boundary.',
+        sessionId: 'session-progress', speakerVpId: 'vp-linus', responseKind: 'progress',
+      });
+      store.append({
+        role: 'assistant', content: 'The prior turn completed.',
+        sessionId: 'session-progress', speakerVpId: 'vp-linus',
+        responseKind: 'result', stopReason: 'end_turn',
+      });
+      expect(__testGroupHistory('session-progress')).toEqual([
+        expect.objectContaining({ role: 'user', content: 'progress q' }),
+        expect.objectContaining({
+          role: 'assistant',
+          content: 'I found the request construction boundary.',
+          responseKind: 'progress',
+        }),
+        expect.objectContaining({
+          role: 'assistant',
+          content: 'The prior turn completed.',
+          responseKind: 'result',
+        }),
+      ]);
     } finally {
       __testSetSession(null);
       rmSync(dir, { recursive: true, force: true });
@@ -728,6 +1007,41 @@ describe('Yeaft load-history first paint', () => {
         count: chunk.messages.length,
         sessionId: 'session-fast',
       });
+
+      vi.useFakeTimers();
+      const metadataDir = mkdtempSync(join(tmpdir(), 'yeaft-roster-metadata-'));
+      try {
+        ctx.CONFIG = { yeaftDir: metadataDir };
+        vi.setSystemTime(new Date('2026-07-29T10:00:00.000Z'));
+        createSession(join(metadataDir, 'sessions'), {
+          id: 'session-roster',
+          name: 'Roster',
+          roster: ['omni'],
+          defaultVpId: 'omni',
+        }).close();
+
+        const cases = [
+          [new Date('2026-07-29T11:00:00.000Z'), handleYeaftSessionAddMember, 'add_member', 'reviewer'],
+          [new Date('2026-07-29T12:00:00.000Z'), handleYeaftSessionSetDefaultVp, 'set_default_vp', 'reviewer'],
+          [new Date('2026-07-29T13:00:00.000Z'), handleYeaftSessionRemoveMember, 'remove_member', 'reviewer'],
+        ];
+        for (const [at, handler, op, vpId] of cases) {
+          vi.setSystemTime(at);
+          sent.length = 0;
+          handler({ sessionId: 'session-roster', vpId, requestId: `request-${op}` });
+          expect(sent).toContainEqual(expect.objectContaining({
+            type: 'yeaft_output',
+            event: expect.objectContaining({
+              type: 'session_roster_changed',
+              sessionId: 'session-roster',
+              metadataUpdatedAt: at.toISOString(),
+            }),
+          }));
+        }
+      } finally {
+        vi.useRealTimers();
+        rmSync(metadataDir, { recursive: true, force: true });
+      }
     } finally {
       __testSetSession(null);
       rmSync(dir, { recursive: true, force: true });

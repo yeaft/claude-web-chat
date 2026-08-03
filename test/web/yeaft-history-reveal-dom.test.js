@@ -51,6 +51,9 @@ beforeAll(async () => {
 
 function primeStore() {
   const store = useChatStore();
+  store._hasHandledAgentList = true;
+  store._hasHandledYeaftSessionHydrate = true;
+  store.yeaftSessionHydrateError = null;
   store.currentView = 'yeaft';
   store.currentAgent = 'agent-a';
   store.currentAgentInfo = {
@@ -94,6 +97,7 @@ function primeStore() {
     agentId: null,
     sessionId: null,
     query: '',
+    senderKey: '',
     loading: false,
     results: [],
     hasMore: false,
@@ -114,6 +118,29 @@ function primeStore() {
   store.sendWsMessage = message => sent.push(message);
   store._sent = sent;
   return store;
+}
+
+async function openDefaultUserSearch(wrapper, store) {
+  wrapper.vm.toggleHistorySearch();
+  await Vue.nextTick();
+  const request = store._sent.find(message => message.type === 'yeaft_search_history');
+  expect(request).toMatchObject({
+    agentId: 'agent-a',
+    sessionId: 'same',
+    query: '',
+    senderKey: 'user',
+  });
+  expect(store.handleYeaftHistorySearchResult({
+    agentId: 'agent-a',
+    sessionId: 'same',
+    requestId: request.requestId,
+    query: '',
+    senderKey: 'user',
+    results: [{ messageId: 'm42', seq: 42, role: 'user', snippet: 'old question' }],
+    hasMore: false,
+    nextBeforeSeq: null,
+  })).toBe(true);
+  await Vue.nextTick();
 }
 
 function mountPage() {
@@ -181,7 +208,7 @@ async function expectRenderedReveal(wrapper, store, scrollToKey) {
 
   expect(scrollToKey).toHaveBeenCalledTimes(1);
   const blockId = scrollToKey.mock.calls[0][0];
-  expect(scrollToKey).toHaveBeenCalledWith(blockId, { align: 'center' });
+  expect(scrollToKey).toHaveBeenCalledWith(blockId, { align: 'start' });
   const virtualRow = wrapper.get(`[data-virtual-id="${blockId}"]`);
   expect(virtualRow.exists()).toBe(true);
   // Assistant history rows are grouped into a rendered turn, so their DOM
@@ -199,9 +226,64 @@ function observeVirtualScroll(wrapper) {
   return scrollToKey;
 }
 
+async function expectSilentTransportPromotion(wrapper, store) {
+  await flushPromises();
+  await Vue.nextTick();
+
+  const before = wrapper.getComponent({ name: 'VirtualTranscript' });
+  const beforeElement = before.element;
+  const beforeRow = before.get('.virtual-transcript-item').element;
+  const existingRows = store.messagesMap['conv-a'];
+  const sessionKey = yeaftHistoryIdentityKey('agent-a', 'same');
+  store.yeaftSessionHistoryState = {
+    [sessionKey]: {
+      loaded: true,
+      loading: true,
+      mode: 'recent',
+      hasMore: true,
+      oldestSeq: 50,
+      latestSeq: 61,
+      count: existingRows.length,
+    },
+  };
+  store.yeaftLoadingMoreHistory = true;
+  expect(wrapper.find('.loading-more').exists()).toBe(false);
+
+  store.messagesMap['conv-b'] = existingRows.slice();
+  store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-b' };
+  store.yeaftConversationId = 'conv-b';
+  store.activeConversations = ['conv-b'];
+  await flushPromises();
+  await Vue.nextTick();
+
+  const after = wrapper.getComponent({ name: 'VirtualTranscript' });
+  expect(after.element).toBe(beforeElement);
+  expect(after.get('.virtual-transcript-item').element).toBe(beforeRow);
+  expect(wrapper.find('.loading-more').exists()).toBe(false);
+  expect(store.messages.map(row => row.content)).toEqual(existingRows.slice(-5).map(row => row.content));
+
+  store.yeaftSessionHistoryState[sessionKey].mode = 'older';
+  await Vue.nextTick();
+  expect(wrapper.find('.loading-more').exists()).toBe(true);
+
+  store.yeaftSessionHistoryState[sessionKey] = {
+    ...store.yeaftSessionHistoryState[sessionKey],
+    loading: false,
+    mode: 'recent',
+  };
+  store.yeaftLoadingMoreHistory = false;
+  store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-a' };
+  store.yeaftConversationId = 'conv-a';
+  store.activeConversations = ['conv-a'];
+  delete store.messagesMap['conv-b'];
+  await flushPromises();
+  await Vue.nextTick();
+}
+
 describe('Yeaft history result rendered reveal', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
+    storeFactories.clear();
     sessionsStore = Vue.reactive({
       activeSessionId: 'same',
       activeNeedsInvite: false,
@@ -223,8 +305,70 @@ describe('Yeaft history result rendered reveal', () => {
     const store = primeStore();
     const revealWindow = vi.spyOn(store, 'revealYeaftHistoryResult');
     const wrapper = mountPage();
-    wrapper.vm.toggleHistorySearch();
+    await expectSilentTransportPromotion(wrapper, store);
+    const messageList = wrapper.getComponent({ name: 'MessageList' });
+    const scroller = messageList.get('main.chat-container').element;
+    let scrollTop = 920;
+    let scrollHeight = 1000;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, get: () => 60 },
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: value => { scrollTop = Math.max(0, Number(value) || 0); },
+      },
+    });
+
+    scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 }));
+    scrollTop = 920;
+    scroller.dispatchEvent(new Event('scroll'));
     await Vue.nextTick();
+    expect(messageList.get('.scroll-to-latest').classes()).not.toContain('is-hidden');
+
+    // Moving down by 1px while still 3..80px from the bottom must not resume
+    // live following. A new tail row and delayed virtual measurement must also
+    // leave the reader where they are.
+    scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 1 }));
+    scrollTop = 921;
+    scroller.dispatchEvent(new Event('scroll'));
+    await Vue.nextTick();
+    expect(messageList.get('.scroll-to-latest').classes()).not.toContain('is-hidden');
+    await new Promise(resolve => setTimeout(resolve, 275));
+    const pausedTop = scrollTop;
+    store.messagesMap['conv-a'].push({
+      id: 'm62',
+      messageId: 'm62',
+      type: 'user',
+      content: 'new live row',
+      sessionId: 'same',
+      timestamp: 62,
+    });
+    scrollHeight = 1040;
+    await Vue.nextTick();
+    await flushPromises();
+    expect(scrollTop).toBe(pausedTop);
+    expect(messageList.get('.scroll-to-latest').classes()).not.toContain('is-hidden');
+
+    // Only the strict 2px boundary or the explicit latest button can resume.
+    scrollTop = 950;
+    scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 1 }));
+    scrollTop = 978;
+    scroller.dispatchEvent(new Event('scroll'));
+    await Vue.nextTick();
+    expect(messageList.get('.scroll-to-latest').classes()).toContain('is-hidden');
+    scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 }));
+    scrollTop = 940;
+    scroller.dispatchEvent(new Event('scroll'));
+    await Vue.nextTick();
+    expect(messageList.get('.scroll-to-latest').classes()).not.toContain('is-hidden');
+    await messageList.get('.scroll-to-latest').trigger('click');
+    await Vue.nextTick();
+    expect(scrollTop).toBe(scrollHeight);
+    expect(messageList.get('.scroll-to-latest').classes()).toContain('is-hidden');
+    store.messagesMap['conv-a'].pop();
+
+    await openDefaultUserSearch(wrapper, store);
 
     const scrollToKey = observeVirtualScroll(wrapper);
     const option = wrapper.get('[role="option"]');
@@ -242,8 +386,7 @@ describe('Yeaft history result rendered reveal', () => {
     const store = primeStore();
     const revealWindow = vi.spyOn(store, 'revealYeaftHistoryResult');
     const wrapper = mountPage();
-    wrapper.vm.toggleHistorySearch();
-    await Vue.nextTick();
+    await openDefaultUserSearch(wrapper, store);
 
     const scrollToKey = observeVirtualScroll(wrapper);
     const option = wrapper.get('[role="option"]');

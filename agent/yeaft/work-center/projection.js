@@ -829,7 +829,14 @@ function projectMainlineBrowser(detail) {
 
 function waitingReason(detail) {
   if (typeof detail?.waitingReason === 'string') return detail.waitingReason;
-  if (detail?.status !== 'waiting' || !Array.isArray(detail.runs)) return '';
+  if (detail?.status !== 'waiting') return '';
+  const waitingEvent = Array.isArray(detail?.events)
+    ? detail.events.find(event => event?.type === 'action.waiting'
+      && event?.actionId === detail.currentActionId
+      && typeof event?.data?.reason === 'string')
+    : null;
+  if (waitingEvent) return waitingEvent.data.reason;
+  if (!Array.isArray(detail.runs)) return '';
   return detail.runs.find(run => (
     run?.actionId === detail.currentActionId && typeof run.waitingReason === 'string'
   ))?.waitingReason || '';
@@ -890,15 +897,21 @@ export function projectWorkItemDetail(detail, options = {}) {
       turnId: String(message.turnId || message.id || ''),
       role: message.role === 'assistant' ? 'assistant' : message.role === 'legacy_instruction' ? 'legacy_instruction' : 'user',
       text: truncateUtf8(message.text || '', MAX_ACTION_MESSAGE_CHARS),
+      attachments: projectAttachments(message.attachments),
       status: ['thinking', 'completed', 'failed'].includes(message.status) ? message.status : 'completed',
       error: truncateUtf8(message.error || '', MAX_ACTION_DIAGNOSTIC_CHARS) || null,
       decision: message.decision && typeof message.decision === 'object' ? {
-        kind: ['answer', 'guide_actions', 'replan'].includes(message.decision.kind)
+        kind: ['answer', 'guide_actions', 'replan', 'request_human'].includes(message.decision.kind)
           ? message.decision.kind : null,
         reason: truncateUtf8(message.decision.reason || '', MAX_ACTION_DIAGNOSTIC_CHARS),
         changedContract: message.decision.changedContract === true,
         affectedActionIds: Array.isArray(message.decision.affectedActionIds)
           ? message.decision.affectedActionIds.map(id => String(id)).slice(0, 8) : [],
+      } : null,
+      recovery: message.recovery && typeof message.recovery === 'object' ? {
+        actionId: truncateUtf8(String(message.recovery.actionId || ''), 256),
+        actionGeneration: Math.max(0, count(message.recovery.actionGeneration)),
+        stageId: truncateUtf8(String(message.recovery.stageId || ''), 256),
       } : null,
       createdAt: count(message.createdAt),
       updatedAt: count(message.updatedAt || message.createdAt),
@@ -1023,6 +1036,8 @@ export function projectWorkCenterEvent(event) {
     type,
     ...(eventActionId ? { actionId: eventActionId } : {}),
     ...(typeof event?.runId === 'string' && event.runId ? { runId: event.runId } : {}),
+    ...(typeof event?.clientMessageId === 'string' && event.clientMessageId
+      ? { clientMessageId: truncateUtf8(event.clientMessageId, 256) } : {}),
     workItem: {
       ...projectWorkItemSummary(event?.workItem),
       actionStats: projectActionStats(event?.workItem, liveActionId),
@@ -1088,7 +1103,10 @@ export function projectActionRequestIndex(action, entries) {
       inputTokens: count(turn.summaryInputTokens),
       outputTokens: count(turn.summaryOutputTokens),
       totalTokens: count(turn.totalTokens),
-    })).sort((left, right) => right.openedAt - left.openedAt || right.id.localeCompare(left.id)),
+    })).sort((left, right) => right.generation - left.generation
+      || right.attempt - left.attempt
+      || right.openedAt - left.openedAt
+      || right.id.localeCompare(left.id)),
   };
 }
 
@@ -1160,6 +1178,7 @@ export function projectActionRequestDetail(action, run, history, runs = [run]) {
   });
   return enforceActionRequestDetailBudget({
     actionId: boundedDebugIdentity(action.id, MAX_ACTION_REQUEST_METADATA_BYTES),
+    generation: Math.max(1, count(action.generation) || 1),
     request: {
       id: boundedDebugIdentity(turn.turnId, MAX_ACTION_REQUEST_METADATA_BYTES),
       runId: boundedDebugIdentity(run.id, MAX_ACTION_REQUEST_METADATA_BYTES),

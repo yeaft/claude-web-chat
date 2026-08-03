@@ -74,13 +74,68 @@ export class LLMRateLimitError extends Error {
   }
 }
 
-/** Authentication error (401, 403) — need to re-authenticate. */
+/** Authentication / authorization error (401, 403). */
 export class LLMAuthError extends Error {
-  constructor(message, statusCode) {
+  constructor(message, statusCode, details = {}) {
     super(message);
     this.name = 'LLMAuthError';
     this.statusCode = statusCode;
+    this.reasonCode = details.reasonCode || (statusCode === 401 ? 'invalid_credentials' : 'permission_denied');
+    this.temporary = details.temporary === true;
+    this.provider = details.provider || null;
+    this.model = details.model || null;
+    this.credentialRefreshable = details.credentialRefreshable === true;
   }
+}
+
+const PERMANENT_FORBIDDEN_RE = /(?:access[_ -]?denied|not[_ -]?authorized|unauthori[sz]ed|authorization[_ -]?denied|policy|safety|content[_ -]?filter|entitle(?:ment|d)|subscription[_ -]?(?:required|inactive|expired)|plan[_ -]?(?:required|does[_ -]?not[_ -]?include)|model[^\n]{0,60}(?:access|permission|unavailable|not[_ -]?available|plan)|permission[^\n]{0,40}model|account[^\n]{0,40}(?:disabled|suspended)|organization[^\n]{0,40}(?:disabled|suspended)|insufficient[_ -]?(?:permission|scope))/i;
+const PERMANENT_FORBIDDEN_CODE_RE = /(?:access_denied|permission_denied|unauthorized|not_authorized|insufficient_(?:scope|permission)|model_(?:access_denied|not_available)|subscription_required|not_entitled|policy_violation|content_filter)/i;
+
+function parseProviderErrorBody(responseBody) {
+  if (typeof responseBody !== 'string') return responseBody && typeof responseBody === 'object' ? responseBody : null;
+  try {
+    const parsed = JSON.parse(responseBody);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function providerErrorSignals(responseBody) {
+  const parsed = parseProviderErrorBody(responseBody);
+  const error = parsed?.error && typeof parsed.error === 'object' ? parsed.error : parsed;
+  const code = [error?.code, error?.type, error?.reason, parsed?.code, parsed?.type]
+    .filter(value => typeof value === 'string')
+    .join(' ');
+  const message = [error?.message, parsed?.message, typeof responseBody === 'string' ? responseBody : '']
+    .filter(value => typeof value === 'string')
+    .join(' ');
+  return { code, message };
+}
+
+/**
+ * Build a user-safe auth error. The provider response body is used only for
+ * classification and is deliberately excluded from the message; raw response
+ * capture remains available in the bounded debug trace.
+ */
+export function classifyAuthError(statusCode, responseBody = '', details = {}) {
+  const status = Number(statusCode) || 0;
+  if (status === 401) {
+    return new LLMAuthError('LLM provider returned HTTP 401 (invalid credentials)', status, {
+      ...details,
+      reasonCode: 'invalid_credentials',
+      temporary: false,
+    });
+  }
+  const signals = providerErrorSignals(responseBody);
+  const permanent = PERMANENT_FORBIDDEN_CODE_RE.test(signals.code)
+    || PERMANENT_FORBIDDEN_RE.test(signals.message);
+  const reasonCode = permanent ? 'permission_denied' : 'unknown_forbidden';
+  return new LLMAuthError(`LLM provider returned HTTP 403 (${reasonCode})`, status, {
+    ...details,
+    reasonCode,
+    temporary: !permanent,
+  });
 }
 
 /** Context too long error (413 or API-specific) — need compaction. */
@@ -417,6 +472,56 @@ export function redactRawRequest(req) {
     }
   }
   return { url: req.url, method: req.method, headers, body: req.body };
+}
+
+/**
+ * Return a wire-safe copy of a JSON-compatible value.
+ *
+ * JavaScript strings may contain lone UTF-16 surrogates. JSON.stringify keeps
+ * them as `\\ud800`-style escapes, but strict API servers reject them because
+ * they cannot represent Unicode scalar values in UTF-8. Replace only malformed
+ * code units with U+FFFD; valid surrogate pairs (including emoji) are kept.
+ *
+ * @param {any} value
+ * @returns {any}
+ */
+export function toWellFormedJson(value) {
+  // Let the native serializer retain its complete semantics first: toJSON,
+  // boxed primitives, non-finite numbers, array holes, and omitted values.
+  const serialized = JSON.stringify(value, (_key, child) => {
+    if (typeof child === 'string') return child.toWellFormed();
+    // JSON.stringify invokes the replacer before unboxing String objects.
+    // String#valueOf checks the real [[StringData]] internal slot across realms;
+    // unlike instanceof or Object#toString, it cannot be spoofed by a caller.
+    if (child && typeof child === 'object') {
+      try {
+        return String.prototype.valueOf.call(child).toWellFormed();
+      } catch (err) {
+        if (!(err instanceof TypeError)) throw err;
+      }
+    }
+    return child;
+  });
+  if (serialized === undefined) return undefined;
+
+  // The replacer cannot rename object keys. Rebuild only the already-serialized
+  // plain JSON tree so malformed keys are fixed too. Null-prototype containers
+  // keep an own "__proto__" key as data rather than invoking the legacy setter.
+  const normalizeKeys = child => {
+    if (Array.isArray(child)) return child.map(normalizeKeys);
+    if (!child || typeof child !== 'object') return child;
+    const out = Object.create(null);
+    for (const [key, nested] of Object.entries(child)) {
+      Object.defineProperty(out, key.toWellFormed(), {
+        value: normalizeKeys(nested),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  };
+  return normalizeKeys(JSON.parse(serialized));
 }
 
 /**

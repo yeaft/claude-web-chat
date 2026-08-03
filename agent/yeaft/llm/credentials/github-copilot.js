@@ -59,6 +59,16 @@ const JWT_REFRESH_MARGIN_SECONDS = 120;
 const DEVICE_POLL_SAFETY_MARGIN_SECONDS = 3;
 const DEFAULT_DEVICE_TIMEOUT_SECONDS = 300;
 
+/** Safe credential exchange failure. Provider response bodies are never attached. */
+export class CopilotCredentialError extends Error {
+  constructor(message, statusCode = null, reasonCode = 'credential_exchange_failed') {
+    super(message);
+    this.name = 'CopilotCredentialError';
+    this.statusCode = Number.isFinite(statusCode) ? statusCode : null;
+    this.reasonCode = reasonCode;
+  }
+}
+
 const CREDENTIALS_DIR = join(homedir(), '.yeaft', 'credentials');
 const CREDENTIALS_FILE = join(CREDENTIALS_DIR, 'github-copilot.json');
 
@@ -78,6 +88,11 @@ const _exchangeInFlight = new Map();
 export function _resetCacheForTests() {
   _jwtCache.clear();
   _exchangeInFlight.clear();
+}
+
+/** Drop exchanged API tokens after the provider rejects one with HTTP 401. */
+export function invalidateApiTokenCache() {
+  _jwtCache.clear();
 }
 
 /**
@@ -270,12 +285,20 @@ export async function exchangeToken(rawToken, { fetchFn = fetch } = {}) {
     });
 
     if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new Error(`Copilot token exchange failed: HTTP ${res.status} ${body.slice(0, 200)}`);
+      throw new CopilotCredentialError(
+        `Copilot token exchange failed with HTTP ${res.status}`,
+        res.status,
+      );
     }
     const data = await res.json();
     const apiToken = data && typeof data.token === 'string' ? data.token : '';
-    if (!apiToken) throw new Error('Copilot token exchange returned empty token');
+    if (!apiToken) {
+      throw new CopilotCredentialError(
+        'Copilot token exchange returned no API token',
+        res.status,
+        'credential_exchange_invalid_response',
+      );
+    }
 
     const expiresAtRaw = data.expires_at;
     const expiresAt =
@@ -307,13 +330,14 @@ export async function exchangeToken(rawToken, { fetchFn = fetch } = {}) {
  * @param {typeof fetch} [opts.fetchFn]
  * @returns {Promise<{token: string, source: string, exchanged: boolean} | null>}
  */
-export async function getApiToken({ hostname, fetchFn = fetch } = {}) {
+export async function getApiToken({ hostname, fetchFn = fetch, requireExchange = false } = {}) {
   const raw = await resolveRawToken({ hostname });
   if (!raw) return null;
   try {
     const { apiToken } = await exchangeToken(raw.token, { fetchFn });
     return { token: apiToken, source: raw.source, exchanged: true };
-  } catch {
+  } catch (err) {
+    if (requireExchange) throw err;
     return { token: raw.token, source: raw.source, exchanged: false };
   }
 }

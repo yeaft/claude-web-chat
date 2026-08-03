@@ -23,8 +23,9 @@
 
 /* Turn: text content */
 .turn-content {
+  --turn-content-actions-width: 40px;
   padding: 0;
-  padding-right: 40px;
+  padding-right: var(--turn-content-actions-width);
   position: relative;
 }
 
@@ -40,6 +41,41 @@
 
 .turn-content:hover .turn-header {
   opacity: 1;
+}
+
+/* Progress and final result stay separate Markdown documents. Progress is
+   always visible; typography and whitespace provide the visual hierarchy. */
+.turn-progress-group {
+  color: var(--text-secondary);
+}
+
+.turn-progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.turn-response-segment {
+  min-width: 0;
+}
+
+.turn-response-progress {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.turn-response-result {
+  color: var(--text-primary);
+}
+
+.turn-progress-group + .turn-response-result {
+  margin-top: 16px;
+}
+
+.turn-response-progress .markdown-body {
+  color: inherit;
+  font-size: inherit;
+  line-height: 1.55;
 }
 
 /* Turn: VP route_forward messages */
@@ -78,8 +114,8 @@
 
 /* Turn: todo progress */
 .turn-todos {
-  border-top: 1px solid var(--border-light);
-  padding: 8px 16px;
+  margin-top: 16px;
+  padding: 0 16px;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -1848,11 +1884,11 @@
   text-overflow: ellipsis;
 }
 
-/* Adjust user message with attachments */
+/* Keep user metadata outside the bubble while content and actions share one block. */
 .message.user {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: stretch;
 }
 
 .message.user .message-content {

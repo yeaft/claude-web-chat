@@ -1,5 +1,5 @@
 import { Engine } from '../engine.js';
-import { ToolRegistry } from '../tools/registry.js';
+import { ToolRegistry, isToolErrorOutput, toolErrorEffect } from '../tools/registry.js';
 import { defineTool } from '../tools/types.js';
 import { allTools } from '../tools/index.js';
 import { parsePatch } from '../tools/apply-patch.js';
@@ -32,6 +32,11 @@ import { MCPManager } from '../mcp.js';
 import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
 import { recallWorkspaceSessionContext } from './workspace-context.js';
 import { applyGeneratedPlan, BUILT_IN_ACTION_TYPES } from './workflow.js';
+import {
+  applyAdditivePlanProposal,
+  applyReplanMutation,
+  MAX_REPLAN_ADDED_ACTIONS,
+} from './plan-mutation.js';
 import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
 import { normalizeEvidence } from './evidence.js';
 import {
@@ -260,7 +265,7 @@ export function workItemToolPolicySnapshot(workDir, attachmentRefs = [], mcpTool
   };
 }
 
-function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive) {
+function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle = null) {
   return {
     ...tool,
     async execute(input, ctx) {
@@ -268,12 +273,28 @@ function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunAct
       const checkedInput = tool.name.startsWith('mcp__')
         ? input
         : assertToolInput(tool.name, input, canonicalDir, canonicalAttachmentFiles);
-      const output = await tool.execute(checkedInput, {
-        ...ctx,
-        cwd: canonicalDir,
-        workDir: canonicalDir,
-        imageAllowlist: canonicalAttachmentFiles.map(file => file.root),
-      });
+      const trackOperation = typeof operationLifecycle === 'function'
+        && tool.sideEffectScope !== 'run'
+        && tool.isReadOnly?.(checkedInput) !== true;
+      const operation = trackOperation ? operationLifecycle(tool.name, checkedInput) : null;
+      let output;
+      try {
+        output = await tool.execute(checkedInput, {
+          ...ctx,
+          cwd: canonicalDir,
+          workDir: canonicalDir,
+          imageAllowlist: canonicalAttachmentFiles.map(file => file.root),
+        });
+      } catch (error) {
+        operation?.complete('unknown', { error: String(error?.message || error) });
+        throw error;
+      }
+      const outputHash = hashMainlineSnapshot({ output: String(output || '') });
+      const returnedError = tool.errorOutput === 'json-error-envelope' && isToolErrorOutput(output);
+      const effectStatus = returnedError
+        ? toolErrorEffect(output) === 'none' ? 'failed_no_effect' : 'unknown'
+        : 'applied';
+      operation?.complete(effectStatus, { outputHash });
       if (!isRunActive()) throw new Error('Work Center Run lease was lost during tool execution');
       if (['FileRead', 'ViewImage'].includes(tool.name) && typeof output === 'string') {
         const withoutFilePaths = canonicalAttachmentFiles.reduce(
@@ -371,6 +392,7 @@ export function createSubmitWorkItemPlanTool({
     },
     isConcurrencySafe: () => false,
     isReadOnly: () => false,
+    sideEffectScope: 'run',
   });
 }
 
@@ -395,13 +417,18 @@ function plannedActionSchema(vpIds, { requireCandidates = true } = {}) {
   } };
 }
 
-export function createProposeWorkItemActionsTool({ vps, workItem, actions, collector, isRunActive }) {
+export function createProposeWorkItemActionsTool({
+  vps, workItem, actions, collector, isRunActive, currentAction = null,
+}) {
   const vpCatalog = planningVpCatalog(vps);
   const vpIds = vpCatalog.map(vp => vp.id);
   const existing = actions.filter(action => !['superseded', 'cancelled'].includes(action.status));
+  const currentIdentity = currentAction
+    ? ` Current Action: stageId=${currentAction.stageId}; internalActionId=${currentAction.id}. Its graph references must use stageId.`
+    : '';
   return defineTool({
     name: 'ProposeWorkItemActions',
-    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Existing Actions: ${existing.map(action => `${action.id}/${action.stageId} (${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions.`,
+    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Use stable stageId values in dependsOnActionIds, changesRequestedActionId, and dependencyPatches[].addDependsOnActionIds. The only internal id field is dependencyPatches[].actionId, which must use the displayed internalActionId of an eligible ready attempt=0 target.${currentIdentity} Existing Actions: ${existing.map(action => `stageId=${action.stageId} (internalActionId=${action.id}, ${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions. This tool validates the complete additive DAG immediately; if validation fails, correct the proposal in the same turn.`,
     parameters: { type: 'object', additionalProperties: false,
       required: ['summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'actions'],
       properties: {
@@ -413,10 +440,18 @@ export function createProposeWorkItemActionsTool({ vps, workItem, actions, colle
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('A WorkItem plan mutation was already submitted for this Run');
+      applyAdditivePlanProposal({
+        workItem,
+        actions,
+        proposal: input,
+        availableVpIds: vpIds,
+      });
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       collector.value = { kind: 'expand', input: structuredClone(input) };
       ctx.requestEndTurn?.({ kind: 'work_item_actions_proposed', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId, actionCount: input.actions.length });
     },
+    sideEffectScope: 'run',
   });
 }
 
@@ -438,6 +473,7 @@ export function createRequestWorkItemReplanTool({ workItem, collector, isRunActi
       ctx.requestEndTurn?.({ kind: 'work_item_replan_requested', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId });
     },
+    sideEffectScope: 'run',
   });
 }
 
@@ -455,7 +491,7 @@ export function createSubmitWorkItemReplanTool({ vps, workItem, action, actions,
   const candidateIdSchema = candidateIds.length > 0
     ? { type: 'string', enum: candidateIds }
     : { type: 'string' };
-  const candidateLimit = Math.min(8, candidateIds.length);
+  const candidateLimit = candidateIds.length;
   const classification = { type: 'object', additionalProperties: false,
     required: ['actionId', 'action'], properties: {
       actionId: candidateIdSchema,
@@ -473,21 +509,32 @@ export function createSubmitWorkItemReplanTool({ vps, workItem, action, actions,
         retain: { type: 'array', maxItems: candidateLimit, items: classification },
         replace: { type: 'array', maxItems: candidateLimit, items: classification },
         remove: { type: 'array', maxItems: candidateLimit, uniqueItems: true, items: candidateIdSchema },
-        add: { type: 'array', maxItems: 8, items: plannedActionSchema(vpIds) },
+        add: { type: 'array', maxItems: MAX_REPLAN_ADDED_ACTIONS, items: plannedActionSchema(vpIds) },
       } },
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('A WorkItem plan was already submitted for this Run');
+      applyReplanMutation({
+        workItem,
+        action,
+        actions,
+        proposal: input,
+        availableVpIds: vpIds,
+      });
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       collector.value = structuredClone(input);
       ctx.requestEndTurn?.({ kind: 'work_item_replan_submitted', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId });
     },
     isConcurrencySafe: () => false,
     isReadOnly: () => false,
+    sideEffectScope: 'run',
   });
 }
 
-export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRunActive, mcpTools = [], runTools = [] }) {
+export function createWorkItemToolRegistry({
+  workDir, attachmentFiles = [], isRunActive, mcpTools = [], runTools = [], operationLifecycle = null,
+}) {
   const canonicalDir = canonicalWorkDir(path.resolve(workDir));
   const canonicalAttachmentFiles = attachmentFiles.map(file => ({
     ...file,
@@ -497,14 +544,20 @@ export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRu
   const hasAttachments = canonicalAttachmentFiles.length > 0;
   for (const tool of allTools) {
     if (!WORK_ITEM_TOOL_ALLOWLIST.has(tool.name) || (hasAttachments && tool.name === 'Bash')) continue;
-    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
+    registry.register(wrapWorkItemTool(
+      tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle,
+    ));
   }
   for (const tool of mcpTools) {
     if (!tool?.name?.startsWith('mcp__')) continue;
-    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
+    registry.register(wrapWorkItemTool(
+      tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle,
+    ));
   }
   for (const tool of runTools) {
-    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
+    registry.register(wrapWorkItemTool(
+      tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle,
+    ));
   }
   return registry;
 }
@@ -981,7 +1034,7 @@ export class WorkItemRunner {
       runTools.push(createProposeWorkItemActionsTool({
         vps: this.registry.listVps(), workItem,
         actions: this.store.getWorkItemDetail(workItem.id).actions,
-        collector: mutationCollector, isRunActive,
+        collector: mutationCollector, isRunActive, currentAction: executionAction,
       }));
       runTools.push(createRequestWorkItemReplanTool({ workItem, collector: mutationCollector, isRunActive }));
     }
@@ -991,12 +1044,37 @@ export class WorkItemRunner {
       attachmentContext.files.map(file => file.ref),
       [...mcpToolNames, ...runToolNames],
     );
+    let operationOrdinal = 0;
+    const operationLifecycle = (toolName, input) => {
+      operationOrdinal += 1;
+      const idempotencyKey = `${run.id}:tool:${operationOrdinal}`;
+      const claimed = this.store.createAndClaimOperation({
+        workItemId: workItem.id,
+        actionId: action.id,
+        runId: run.id,
+        operationType: toolName,
+        idempotencyKey,
+        replayPolicy: 'never_automatic',
+        payload: { inputHash: hashMainlineSnapshot(input) },
+      }, ownerBootId, run.leaseEpoch, false);
+      if (!claimed) throw new Error(`Work Center could not claim Operation ${idempotencyKey}`);
+      return {
+        complete: (effectStatus, result) => {
+          if (!this.store.completeOperation(
+            idempotencyKey, ownerBootId, run.leaseEpoch, effectStatus, result,
+          )) {
+            throw new Error(`Work Center Operation ${idempotencyKey} lost its execution fence`);
+          }
+        },
+      };
+    };
     const toolRegistry = createWorkItemToolRegistry({
       workDir,
       attachmentFiles: attachmentContext.files,
       isRunActive,
       mcpTools: workspaceRuntime.mcpTools,
       runTools,
+      operationLifecycle,
     });
     const config = {
       ...runtime.config,
@@ -1056,6 +1134,7 @@ export class WorkItemRunner {
     let loopCount = 0;
     let toolCount = 0;
     let checkpoint = null;
+    let terminalEngineError = null;
     const toolInputs = new Map();
     const usageStats = {
       llmRequestCount: 0,
@@ -1111,6 +1190,7 @@ export class WorkItemRunner {
     if (typeof registerInputWake === 'function') {
       registerInputWake(() => engine.wakeForPendingUserMessage?.());
     }
+    const pendingEntriesById = new Map();
     const drainPendingUserMessages = () => {
       const pending = this.store.listPendingActionInputs?.(
         action.id, run.id, ownerBootId, run.leaseEpoch,
@@ -1124,12 +1204,48 @@ export class WorkItemRunner {
         const content = [item.text, attachmentLines.length > 0
           ? `Additional WorkItem attachments:\n${attachmentLines.join('\n')}` : '']
           .filter(Boolean).join('\n\n');
-        if (!content || !this.store.acknowledgeActionInput?.(
-          item.id, action.id, run.id, ownerBootId, run.leaseEpoch,
-        )) continue;
-        accepted.push({ content, preview: item.text || '[attachments]' });
+        if (!content) continue;
+        pendingEntriesById.set(String(item.id), item);
+        accepted.push({
+          content,
+          preview: item.text || '[attachments]',
+          durableInputId: String(item.id),
+        });
       }
       return accepted;
+    };
+    const prepareProviderRequest = ({ entries, system, messages, model }) => {
+      const durableEntries = entries
+        .filter(entry => entry?.durableInputId)
+        .map(entry => pendingEntriesById.get(String(entry.durableInputId)))
+        .filter(Boolean);
+      const requestBody = { model, system, messages };
+      const turn = this.store.prepareEngineTurn?.(
+        action.id, run.id, ownerBootId, run.leaseEpoch, durableEntries,
+        { requestBody, dispatchCapability: 'unknown' },
+      );
+      if (!turn) throw new Error('Work Center could not persist the next provider turn');
+      return turn;
+    };
+    const startProviderRequest = turn => {
+      if (!turn) return;
+      const claimed = this.store.claimEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch);
+      if (!claimed) throw new Error('Work Center provider turn lost its Run lease before dispatch');
+    };
+    const finishProviderRequest = (turn, result) => {
+      if (!turn) return;
+      if (!this.store.consumeEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch, result)) {
+        throw new Error('Work Center provider response lost its EngineTurn fence');
+      }
+    };
+    const failProviderRequest = (turn, error) => {
+      if (!turn) return;
+      const failure = this.store.failEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch, error);
+      if (failure && failure.allowRetry === false) {
+        error.retryable = false;
+        error.workItemFailureKind = 'provider_dispatch_unknown';
+        error.workItemFailureCode = 'engine_turn_dispatch_unknown';
+      }
     };
     try {
       const prompt = v2Execution
@@ -1155,9 +1271,14 @@ export class WorkItemRunner {
         workDir,
         userAlreadyPersisted: true,
         drainPendingUserMessages,
+        prepareProviderRequest,
+        startProviderRequest,
+        finishProviderRequest,
+        failProviderRequest,
         closePendingUserInput: () => this.store.closeRunInput(
           run.id, ownerBootId, run.leaseEpoch,
         ),
+
         collabToolPolicy: 'single-vp',
       })) {
         if (event?.type === 'loop') {
@@ -1178,9 +1299,19 @@ export class WorkItemRunner {
             resource: checkpointResource(event.name, input, workDir),
           });
         }
+        else if (event?.type === 'error' && !terminalEngineError) {
+          terminalEngineError = event.error instanceof Error
+            ? event.error
+            : new Error(String(event.error?.message || event.error || 'Work Center Engine failed'));
+        }
         if (event?.type === 'text_delta' && typeof event.text === 'string') text += event.text;
         reportProgress(event?.type === 'loop');
       }
+      // Engine.query owns the terminal protocol and converts unexpected faults
+      // into error + terminal turn_end. Consume that boundary completely, then
+      // preserve Work Center's historical rejection semantics so Run fencing,
+      // hazardous side-effect handling, and retry policy still see the failure.
+      if (terminalEngineError) throw terminalEngineError;
     } catch (error) {
       error.workItemExecutionStats = currentProgress();
       throw error;

@@ -58,6 +58,7 @@ debug-trace.js   — Yeaft loop / tool / adapter 调试 trace 存储与查询
 prompts.js       — 双语 system prompt builder（en/zh）
 models.js        — Model 注册表（protocol、context/output limit、effort / thinking capability）
 runtime-platform.js — 运行平台探测（shell、路径、OS 提示，供工具和 prompt 注入）
+managed-cli.js   — rg / fd / dust 用户级安装、校验、解析与失败回退
 sessions/        — Session 编排（coordinator、roster、session-store、session-crud、pre-flow、config 等）
 routing/         — Turn 内路由 + loop guard
 router/          — Continuity / thinking 相关路由策略
@@ -83,13 +84,14 @@ eval/            — 评估脚本
 
 1. Pre-query：召回记忆 + project docs + runtime platform + pending sub-agent notification -> 注入 system prompt / 当前 user turn
 2. 构造 messages 数组（带 compact summary、reflection message、attachment payload 时一并带上）
-3. 调 adapter.stream() -> 收集 text、thinking blocks / reasoning、tool_calls、usage、debug trace
-4. 如果有 tool_calls -> ToolRegistry 执行；普通结果进入当前 loop，后台任务 / 子 Agent 返回 task envelope 并继续异步
+3. 调 adapter.stream() -> 收集 text、thinking blocks / reasoning、tool_calls、usage、debug trace；adapter 自己负责 stream idle timeout，Web bridge 的 provider-silence watchdog 只在 provider 阶段运行
+4. 如果有 tool_calls -> ToolRegistry 执行；工具阶段暂停 provider watchdog，由每个工具自己的 timeout 负责收束。普通工具错误作为 tool_result 进入下一轮让模型处理；无法确认停止的外部副作用工具 timeout 不做盲目续跑
 5. Tool folding：T1 在 turn 内按 `TOOL_BATCH_SIZE = 30` 折叠长工具弧；T2 在 end_turn 对超过 `TURN_SUMMARY_THRESHOLD = 8` 的长 turn 做 reflection；重复同参工具调用第 3 次会插入提醒
 6. end_turn -> 持久化 messages / raw tool output / debug trace -> acknowledge sub-agent notifications -> 检查 Dream / AMS adjust / compact 触发
 7. max_tokens -> 自动续写（最多 3 次）
 8. 遇到 LLMContextError -> 强制 compact -> 重试
-9. 可重试错误且配了 fallbackModel -> 换 model -> 重试；adapter 层会对 rate limit / 5xx / idle timeout 做分类
+9. rate limit / 5xx / idle timeout 及未明确为永久拒绝的 403 等可恢复错误会先做有界的新请求重试；若旧流已有部分文本，则把它作为不完整 assistant 上下文并用隐藏 continuation 续写，避免重放已显示内容；重试耗尽且配置了 fallbackModel 时再换 model
+10. `Engine.query()` 是 terminal boundary：正常完成、abort、handoff 或不可恢复错误都必须发出 `turn_end{terminal:true}`；内部 loop 边界的 `turn_end` 不带 terminal。任何未被内部状态机处理的异常会转成可诊断 `error` + terminal `turn_end`，不会让 VP 无声停在半个 turn
 
 ### LLM 层（agent/yeaft/llm/）— Yeaft Code Agent provider 集成
 ```
@@ -157,8 +159,10 @@ index.js     — 入口，把所有内置工具聚合成 createFullRegistry()
 ```
 按类别分文件（节选）：
 - 文件 / 编辑：`file-read.js` / `file-write.js` / `file-edit.js` / `apply-patch.js` / `notebook-edit.js`
-- 搜索 / 探索：`grep.js` / `glob.js` / `list-dir.js` / `history-search.js`
+- 搜索 / 探索：`grep.js` / `glob.js` / `list-dir.js` / `disk-usage.js` / `history-search.js`
 - 执行：`bash.js` / `js-repl.js` / `enter-worktree.js` / `exit-worktree.js`
+
+**Managed CLI 加速：** `yeaft-agent` 和 `yeaft` 启动时把 `~/.yeaft/bin` 放到 `PATH` 前端，并异步检查 `rg`、`fd`、`dust`。系统命令已存在时直接复用；否则按 OS / arch 下载固定官方 release 资产，校验固定 SHA-256、执行 `--version` 后原子安装到用户目录，不调用 `sudo` 或系统包管理器。`Grep` / `Glob` / `DiskUsage` 优先使用这些命令，安装失败、离线、平台无官方资产或运行错误时回退 Node.js；`YEAFT_SKIP_STARTUP_INSTALLS=true` 跳过 agent 启动安装，`YEAFT_SKIP_MANAGED_CLI_INSTALLS=true` 仅跳过这三个命令的安装。
 - 后台任务：`list-tasks.js` / `read-task-log.js` / `cancel-task.js`（配合 `Bash background=true` 和 `tasks/` 子系统）
 - 网络 / 媒体：`web-fetch.js` / `web-search.js` / `image-generation.js` / `view-image.js`
 - 编排：`agent.js` / `send-message.js` / `wait-agent.js` / `close-agent.js` / `list-agents.js` / `route-forward.js`
@@ -169,8 +173,10 @@ index.js     — 入口，把所有内置工具聚合成 createFullRegistry()
 
 ### 后台任务 / 子 Agent 编排
 - `Bash background=true` 进入 `tasks/` 子系统：返回 `taskId` 和日志路径；`ListTasks` / `ReadTaskLog` / `CancelTask` 读取或控制同一套任务记录
+- 持久 shell task 的 `resultDelivery` 是 `status_only`：它不阻塞前台模型回合，终止 / 取消只更新 task 状态，不自动触发新的模型回合；只有显式 `model_reentry` 的结果型异步 task 才把终态送回模型
 - `TaskManager` 按 Session 持久化任务状态和日志；agent 重启后仍标记未完成任务为 `orphaned`，不会假装进程还可控
 - `SpawnAgent` 走 `sub-agent/runner.js`，每个子 Agent 有独立 output log、liveness 计数器、预算上限和 terminal 状态
+- parent Engine 可以在同一 turn 等待 result-producing task，但只等待有活动的任务；连续 120 秒无任务活动就释放 same-turn ownership，让当前 VP 正常终态，后续 task completion 通过既有 rescue turn 回流，不能无限阻塞 `vp_turn_end`
 - 子 Agent 终止 / idle 通知会进入 `sub-agent/notifications.js` 队列；`WaitAgent` 可按 agentId drain，Engine 在 parent 下一次 user-driven turn 前也会把 pending notification 注入上下文并在 turn 成功后 acknowledge
 - sub-agent terminal notification 语义上是 parent re-entry control context，不是用户原始输入；改这条链路时要避免把它当作用户手写文本做长期语义记忆或展示
 

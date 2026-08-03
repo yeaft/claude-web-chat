@@ -44,6 +44,9 @@ export const sessionDb = {
       now,
       id
     );
+    if (updates.metadataChanged === true) {
+      stmts.touchSessionMetadata.run(now, id);
+    }
   },
 
   setActive(id, active) {
@@ -94,6 +97,11 @@ export const sessionDb = {
 
   getByUserAndAgent(userId, agentId, limit = 50) {
     return stmts.getSessionsByUserAndAgent.all(userId, agentId, limit).map(mapRow);
+  },
+
+  hasOwnedRoute(userId, agentId) {
+    if (!userId || !agentId) return false;
+    return !!stmts.hasSessionOwnedByUserAndAgent.get(userId, agentId);
   },
 
   getAll(limit = 100) {

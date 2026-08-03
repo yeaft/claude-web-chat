@@ -464,6 +464,9 @@ export function validateGeneratedCompletionGate(stages) {
   }
 }
 
+export const MAX_INITIAL_PLAN_ACTIONS = 8;
+export const MAX_WORK_ITEM_ACTIONS = 64;
+
 export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
   const source = workflowFrom(workItem);
   const forceGraph = options.forceGraph !== false;
@@ -481,8 +484,15 @@ export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
   }
   const reservedStageIds = new Set((options.reservedStageIds || [])
     .map(id => String(id || '').trim()).filter(Boolean));
-  if (!Array.isArray(rawPlan.actions) || rawPlan.actions.length < 1 || rawPlan.actions.length > 8) {
-    throw new Error('AI-planned triage requires between 1 and 8 task-specific Actions');
+  const maxActions = Math.min(
+    Math.max(Number(options.maxActions) || MAX_INITIAL_PLAN_ACTIONS, 1),
+    MAX_WORK_ITEM_ACTIONS,
+  );
+  if (!Array.isArray(rawPlan.actions) || rawPlan.actions.length < 1
+      || rawPlan.actions.length > maxActions) {
+    throw new Error(maxActions === MAX_INITIAL_PLAN_ACTIONS
+      ? 'AI-planned triage requires between 1 and 8 task-specific Actions'
+      : `AI-planned graph requires between 1 and ${maxActions} task-specific Actions`);
   }
   const availableVpIds = Array.isArray(options.availableVpIds)
     ? new Set(options.availableVpIds.map(id => String(id || '').trim()).filter(Boolean))

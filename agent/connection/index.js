@@ -4,7 +4,17 @@ import { sendToServer, parseMessage } from './buffer.js';
 import { startAgentHeartbeat, stopAgentHeartbeat, scheduleReconnect } from './heartbeat.js';
 import { handleMessage } from './message-router.js';
 
-export function connect() {
+export function resetConnectionTransport() {
+  ctx.sessionKey = null;
+  ctx.serverEncryptionRequired = true;
+  ctx.pendingAuthTempId = null;
+}
+
+export function connect(WebSocketImpl = WebSocket) {
+  // Transport negotiation is connection-scoped. Always start conservatively;
+  // only the registered frame from this socket may enable plaintext outbound.
+  resetConnectionTransport();
+
   // Don't include secret in URL - it will be sent via WebSocket message after connection.
   // instanceId is the stable local service identity; agentName is display-only.
   // Old configs without instanceId still use agentName for backward-compatible identity.
@@ -24,7 +34,7 @@ export function connect() {
     console.log(`Disallowed tools: ${ctx.CONFIG.disallowedTools.join(', ')}`);
   }
 
-  const socket = new WebSocket(url, {
+  const socket = new WebSocketImpl(url, {
     // Match server's permessage-deflate config (bounded memory,
     // skip compression for small frames). The `ws` library handles
     // streaming compression so we no longer need the synchronous

@@ -2,7 +2,7 @@ import { assertNodeVersion } from './check-node-version.js';
 assertNodeVersion({ component: '@yeaft/webchat-agent' });
 
 import 'dotenv/config';
-import { platform, homedir } from 'os';
+import { homedir } from 'os';
 import { createAssetOutbox } from './yeaft/asset-outbox.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, chmodSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
@@ -10,13 +10,21 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import ctx from './context.js';
-import { DEFAULT_INSTANCE_ID, getDefaultYeaftDir, validateInstanceId, getConfigPath, loadServiceConfig } from './service.js';
+import { getDefaultAgentName, getDefaultYeaftDir, resolveRuntimeIdentity, getConfigPath, loadServiceConfig } from './service.js';
 import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
 import { getManagedSandboxIdentity } from './managed-sandbox/identity-store.js';
+import { ensureManagedCliTools, summarizeManagedCliResults } from './yeaft/managed-cli.js';
 
 const execAsync = promisify(exec);
+
+// Startup maintenance is non-interactive. Without windowsHide, each exec()
+// creates a visible cmd.exe window on Windows before the Agent connects.
+function execHiddenAsync(command, options = {}) {
+  return execAsync(command, { ...options, windowsHide: true });
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Load package version
@@ -28,12 +36,13 @@ ctx.pkgName = pkg.name;
 const LOCAL_CONFIG_FILE = join(process.cwd(), '.claude-agent.json');
 const IS_LOCAL_RUN = process.env.YEAFT_LOCAL_RUN === 'true';
 const MANAGED_SANDBOX_IDENTITY = getManagedSandboxIdentity();
+const DEFAULT_AGENT_NAME = getDefaultAgentName();
 
 // 加载或创建配置
 function loadConfig() {
   const defaults = {
     serverUrl: 'ws://localhost:3456',
-    agentName: `Worker-${platform()}-${process.pid}`,
+    agentName: DEFAULT_AGENT_NAME,
     workDir: process.cwd(),
     reconnectInterval: 5000,
     agentSecret: 'agent-shared-secret'
@@ -69,7 +78,7 @@ function saveConfig(config) {
 }
 
 const fileConfig = loadConfig();
-const INSTANCE_ID = validateInstanceId(process.env.YEAFT_AGENT_INSTANCE || fileConfig.instanceId || DEFAULT_INSTANCE_ID);
+const { agentName: AGENT_NAME, instanceId: INSTANCE_ID } = resolveRuntimeIdentity(fileConfig);
 
 // task-fix (5-bugs): the Yeaft web-bridge reads `ctx.CONFIG.yeaftDir`
 // for every group / VP / memory operation. If unset, `path.join(undefined, …)`
@@ -90,7 +99,7 @@ try {
 const CONFIG = {
   instanceId: INSTANCE_ID,
   serverUrl: process.env.SERVER_URL || fileConfig.serverUrl,
-  agentName: process.env.AGENT_NAME || fileConfig.agentName,
+  agentName: AGENT_NAME,
   workDir: process.env.WORK_DIR || fileConfig.workDir || process.cwd(),
   yeaftDir: YEAFT_DIR,
   reconnectInterval: fileConfig.reconnectInterval,
@@ -131,12 +140,11 @@ async function detectCapabilities() {
   // agent build can speak plaintext WS frames. New servers see this and
   // flip `agent.encryptOutbound = false`, stopping outbound encryption
   // to this peer. Old servers ignore the unknown capability token.
-  const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center', 'session_history_search', 'session_history_outline', 'session_history_window_prefetch'];
+  const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center', 'work_center_message_v2', 'session_history_search', 'session_history_outline', 'session_history_window_prefetch'];
   if (MANAGED_SANDBOX_IDENTITY) capabilities.push('managed-sandbox');
   if (process.platform === 'linux') capabilities.push('work_item_attachments');
   const pty = await loadNodePty();
   if (pty) capabilities.push('terminal');
-
 
   console.log(`[Capabilities] Detected: ${capabilities.join(', ')}`);
   return capabilities;
@@ -152,7 +160,7 @@ async function ensureDependencies() {
   if (!existsSync(nodeModulesPath)) {
     console.log('[Startup] node_modules not found, running npm install...');
     try {
-      await execAsync('npm install', { cwd: agentDir, timeout: 120000 });
+      await execHiddenAsync('npm install', { cwd: agentDir, timeout: 120000 });
       console.log('[Startup] npm install completed');
     } catch (e) {
       console.warn('[Startup] npm install failed:', e.message);
@@ -183,7 +191,7 @@ async function ensureYeaftSkills() {
     if (!existsSync(installDir)) {
       console.log('[Startup] yeaft-skills not found, installing as marketplace plugin...');
       mkdirSync(marketplacesDir, { recursive: true });
-      await execAsync(`git clone ${REPO_URL} "${installDir}"`, { timeout: 60000 });
+      await execHiddenAsync(`git clone ${REPO_URL} "${installDir}"`, { timeout: 60000 });
       needsCacheUpdate = true;
       console.log('[Startup] yeaft-skills installed');
     } else {
@@ -191,10 +199,10 @@ async function ensureYeaftSkills() {
       // Record HEAD before pull to detect changes
       let headBefore = '';
       try {
-        const { stdout: h } = await execAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
+        const { stdout: h } = await execHiddenAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
         headBefore = h.trim();
       } catch { /* ignore */ }
-      const { stdout } = await execAsync('git pull --ff-only', {
+      const { stdout } = await execHiddenAsync('git pull --ff-only', {
         cwd: installDir,
         timeout: 30000
       });
@@ -207,14 +215,14 @@ async function ensureYeaftSkills() {
       // Double-check: compare HEAD after pull
       if (!needsCacheUpdate && headBefore) {
         try {
-          const { stdout: h2 } = await execAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
+          const { stdout: h2 } = await execHiddenAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
           if (h2.trim() !== headBefore) needsCacheUpdate = true;
         } catch { /* ignore */ }
       }
     }
     // Get current commit SHA for installed_plugins.json
     try {
-      const { stdout: sha } = await execAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
+      const { stdout: sha } = await execHiddenAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
       gitSha = sha.trim();
     } catch { /* non-critical */ }
 
@@ -346,10 +354,18 @@ process.on('SIGTERM', async () => {
 
 // 启动 - 先确保依赖，再检测能力，预热 models.dev 缓存，再连接
 (async () => {
+  let managedCliReady = Promise.resolve([]);
   if (process.env.YEAFT_SKIP_STARTUP_INSTALLS !== 'true') {
     await ensureDependencies();
     await ensureYeaftSkills();
+    managedCliReady = ensureManagedCliTools({ yeaftDir: YEAFT_DIR });
+    managedCliReady.then(results => {
+      console.log(`[Startup] managed CLI tools: ${summarizeManagedCliResults(results)}`);
+    }).catch(error => {
+      console.warn(`[Startup] managed CLI setup failed; using built-in fallbacks: ${error?.message || error}`);
+    });
   }
+  ctx.managedCliReady = managedCliReady;
   ctx.agentCapabilities = await detectCapabilities();
   // Prime the models.dev community catalog so the Yeaft engine's *synchronous*
   // hot path (engine.js / config.js / cli.js all read context-window inline)
