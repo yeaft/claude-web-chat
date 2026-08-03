@@ -32,6 +32,7 @@ import {
 } from '../../../agent/yeaft/managed-cli.js';
 import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
+import { TaskManager } from '../../../agent/yeaft/tasks/manager.js';
 import {
   createOutputCollector,
   listRipgrepCandidatePaths,
@@ -1431,6 +1432,16 @@ describe('Engine', () => {
             }];
           },
         };
+        const taskManager = new TaskManager({ yeaftDir });
+        const task = taskManager.startTask({
+          sessionId: 'current-session',
+          ownerVpId: 'linus',
+          kind: 'sub_agent',
+          title: 'Review timeout recovery and verify Engine continuation',
+          logPath: '/private/sub-agent/events.jsonl',
+        });
+        taskManager.store.appendLog('current-session', task.id, '{"type":"sub_agent_status","status":"running"}\n');
+        taskManager.refreshTaskLog('current-session', task.id);
         mockAdapter.pushResponse([
           { type: 'text_delta', text: 'ok' },
           { type: 'stop', stopReason: 'end_turn' },
@@ -1442,6 +1453,7 @@ describe('Engine', () => {
           sessionId: 'current-session',
           config: { model: 'claude-test', maxOutputTokens: 2048, language: 'zh' },
           memoryIndex,
+          taskManager,
         });
 
         const events = [];
@@ -1460,6 +1472,11 @@ describe('Engine', () => {
         expect(system).toContain('**sibling-session**: Reusable release experience');
         expect(system).toContain('### 相关记忆');
         expect(system).toContain('Timeout cleanup failures must return a tool result');
+        expect(system).toContain('## 可能相关的任务');
+        expect(system).toContain('Review timeout recovery and verify Engine continuation (子 Agent，运行中)');
+        expect(system).not.toContain('<active_tasks>');
+        expect(system).not.toContain('/private/sub-agent/events.jsonl');
+        expect(system).not.toContain('sub_agent_status');
         expect(events.find(event => event.type === 'memory_used')?.loaded).toEqual(expect.arrayContaining([
           expect.objectContaining({ category: 'experience', scope: 'sessions/sibling-session' }),
           expect.objectContaining({ layer: 'onDemand', id: 'timeout-memory' }),
