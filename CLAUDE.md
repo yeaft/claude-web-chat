@@ -108,7 +108,7 @@ Yeaft 原生模型配置位于当前 Agent instance 的 `<yeaftDir>/config.json`
 - 只支持 `anthropic` 与 `openai-responses`；Chat Completions 旧协议已经移除。
 - `apiKey` 是静态凭证；`credentialProvider` 是请求时动态凭证，目前内置 GitHub Copilot。
 - Protocol 解析顺序是 model override -> provider override -> model-id inference -> `openai-responses` 默认；同一 provider 可以按 model 使用两种协议。
-- Model 对象可覆盖 `contextWindow`、`maxOutputTokens`、`effortOptions`。模型能力和 token limit 由显式配置、`models.dev` cache 与 `models.js` 共同解析，禁止在 UI 或 prompt 新写死窗口大小。
+- Provider model 对象可覆盖 `contextWindow`、`maxOutput`、`effortOptions`；这里的输出上限字段是 `maxOutput`，顶层 runtime config 的 `maxOutputTokens` 是另一字段。模型能力和 token limit 由显式配置、`models.dev` cache 与 `models.js` 共同解析，禁止在 UI 或 prompt 新写死窗口大小。
 - Session override 只写 `<yeaftDir>/sessions/<sessionId>/config.json` 的允许字段（当前是 `model`、`modelEffort`），不能污染 Agent 默认模型。
 - 只有新增 1:1 CLI 后端时才改 `agent/providers/` 的 `ChatProvider`；新增 Yeaft API provider 应改 `agent/yeaft/llm/`。
 
@@ -155,7 +155,7 @@ Yeaft 原生模型配置位于当前 Agent instance 的 `<yeaftDir>/config.json`
 
 ### Memory、Dream 与 compact
 
-Memory 的 source of truth 是每个 scope 的 `memory.md` + `summary.md`；SQLite FTS 只是可重建索引。当前活跃写入使用 `user`、`sessions/<sessionId>`、`sessions/<sessionId>/user`、`sessions/<sessionId>/vp/<vpId>` 和 Dream 生成的 `sessions/<sessionId>/topic/...`。`chat/...`、单数 `session/...`、`group/...` 及 `feature/...` 只属于旧数据读取 / 迁移兼容，不得作为新功能的 scope 设计。
+Memory 的 source of truth 是每个 scope 的 `memory.md` + `summary.md`；SQLite FTS 只是可重建索引。协作 Session 的当前写入使用 `user`、`sessions/<sessionId>`、`sessions/<sessionId>/user`、`sessions/<sessionId>/vp/<vpId>` 和 Dream 生成的 `sessions/<sessionId>/topic/...`。实现仍支持 1:1 Yeaft / CLI chat 的 `chat/<chatId>` 与 `chat/<chatId>/vp/<vpId>` 写入和召回，它们不是 legacy scope。单数 `session/...`、`group/...` 及顶层 `feature/...` 才属于旧数据读取 / 迁移兼容，不得作为新功能的 scope 设计。
 
 - `memory/preflow.js` 从允许的 scopes 做 FTS recall；`ams.js` / `ams-registry.js` 管理当前 Session 的 Active Memory Set。
 - Dream 在 `agent/yeaft/dream/` 中异步把对话 diff 合并到 scope，原子更新 `memory.md` / `summary.md`，再同步 FTS。旧 `group/...` scopes 仍可被 migration / reader 看见，不能无迁移直接删除。
@@ -177,10 +177,10 @@ Work Center 是 Agent instance 级持久任务系统，入口在 `agent/yeaft/wo
 
 - 一个 WorkItem 保存 goal、acceptance criteria、workDir / canonical workspace key、workflow snapshot、conversation 和 attachments；完成 Action 的 terminal Run result / evidence 有数据库 immutability fence。Action 是可调度工作单元，Run 是一次执行尝试。
 - Triage 生成任务特定的 Action graph；依赖表达真实结果消费，不是固定 phase 顺序。Scheduler 可并行无依赖 Action，但相同 workspace 的冲突写入必须串行。
-- `read` Action 不得修改文件或外部状态；`isolated-write` 使用隔离 Git worktree；出现 isolated writes 时必须有唯一 `integrate` Action 汇总，冲突时停止而不是猜。
+- Planner 只能把保证不修改文件、Git 状态、服务或外部系统的 Action 标为 `read`；当前主要靠 triage 契约和 review 约束，Runner 不会按 `workspaceMode` 过滤写工具，因此 `read` 不是 sandbox 或 runtime enforcement boundary。`isolated-write` 使用隔离 Git worktree；出现 isolated writes 时必须有唯一 `integrate` Action 汇总，冲突时停止而不是猜。
 - Action completion 不是“模型停止输出”。Runner 要求结构化 outcome、evidence 和逐条 acceptance checks；review / deliver 是最终闸门。
 - WorkItem conversation 和 Action transcript 存在 `work-center.db`，不写入普通 Session transcript。创建时可保存一份有界 Session context，明确作为不可信背景而非当前事实。
-- `reuseMemory` 只允许 scope-bounded Agent memory 与相同 canonical workspace 的已完成 WorkItems；不能跨 workspace 泄漏。
+- `reuseMemory` 控制三类候选来源：scope-bounded Agent memory、相同 canonical workspace 的已完成 WorkItems，以及 persisted workspace 解析到同一 canonical path 的普通 Session 可见 transcript 摘要。它们都是有界、不可信的参考上下文，不能跨 workspace 读取原始 transcript 或 tool output。注入行为取决于 execution schema：schema v1 会附加 Runner 计算的 memory / workspace-Session blocks；schema v2 只渲染 immutable Mainline 与 fixed suffix，当前不会附加这两个预计算 block。不要把开启该开关理解为每类来源都必然进入 prompt。
 
 ## Web、Server 与 wire
 
@@ -270,7 +270,7 @@ npm run docs:build                            # VitePress 文档
 ### 复用现有模式
 
 - 按钮优先 `.btn-primary`、`.btn-secondary`、`.btn-ghost`。
-- Modal 使用 `.modal-overlay` + `.modal-card`；不要为每个弹窗复制 overlay。
+- Modal 应复用对应的现有 overlay 和 card shell：legacy 通用路径是 `.modal-overlay` + `.modal`，Settings / Work Center 等使用各自已有的容器类。`.modal-card` 不是全局基础类；不要把它当统一容器，也不要为每个弹窗复制一套 overlay。
 - 侧栏 tab 使用 `session-tab-bar` / `session-tab`。
 - 输入、textarea、select 沿用全局 focus / border / radius，不写局部漂移版本。
 - 配置类弹窗保持固定外壳，header / footer 不滚，中间 body 使用 `flex: 1; overflow-y: auto`；参考 Settings 和 Work Center Settings 的现有实现。
