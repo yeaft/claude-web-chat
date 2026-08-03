@@ -21,6 +21,138 @@ test.describe('侧边栏交互', () => {
     await expect(sidebar).not.toHaveClass(/collapsed/);
   });
 
+  test('新建聊天使用留白编辑图标，项目创建按钮仅在标题交互时显示', async ({ chatPage, mockAgent }) => {
+    await chatPage.evaluate(({ agentId }) => {
+      window.Pinia.useChatStore().applySessionCatalogSnapshot([{
+        catalogKey: `yeaft:${agentId}:font-reference`,
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId, sessionId: 'font-reference' },
+        title: 'Font reference',
+        availability: 'online',
+        createdAt: '2026-08-03T00:00:00.000Z',
+        metadataUpdatedAt: '2026-08-03T00:00:00.000Z',
+      }], []);
+    }, { agentId: mockAgent.agentId });
+    await expect(chatPage.locator('.sidebar-session-title-text')).toHaveCount(1);
+
+    const newChat = chatPage.locator('.sidebar-primary-action');
+    const projectHeading = chatPage.locator('.projects-section > .sidebar-section-heading');
+    const newProject = projectHeading.locator('.sidebar-project-add-button');
+    const recentsHeading = chatPage.locator('.recents-section > .sidebar-section-heading');
+    const recentsCreate = recentsHeading.locator('.sidebar-recents-create');
+
+    await expect(newChat).toHaveText('New chat');
+    await expect(newChat).toHaveAccessibleName('New chat');
+    await expect(newChat).toHaveAttribute('title', 'New chat');
+    await expect(newChat.locator('.sidebar-primary-action-icon')).toBeVisible();
+    await expect(newProject).toHaveAccessibleName('New project');
+
+    await chatPage.evaluate(() => window.Pinia.useChatStore().changeLocale('zh-CN'));
+    await expect(newChat).toHaveText('新建聊天');
+    await expect(newChat).toHaveAccessibleName('新建聊天');
+    await expect(newProject).toHaveAccessibleName('新建项目');
+
+    for (const theme of ['light', 'dark']) {
+      await chatPage.evaluate(value => {
+        document.documentElement.setAttribute('data-theme', value);
+        localStorage.setItem('theme', value);
+      }, theme);
+      const appearance = await chatPage.evaluate(() => {
+        const chatButton = document.querySelector('.sidebar-primary-action');
+        const firstSessionTitle = document.querySelector('.sidebar-session-title-text');
+        const chatStyle = getComputedStyle(chatButton);
+        return {
+          height: chatButton.getBoundingClientRect().height,
+          chatBackground: chatStyle.backgroundColor,
+          chatBorderTopWidth: chatStyle.borderTopWidth,
+          chatFontSize: Number.parseFloat(chatStyle.fontSize),
+          sessionTitleFontSize: Number.parseFloat(getComputedStyle(firstSessionTitle).fontSize),
+          chatFramePath: chatButton.querySelector('.sidebar-primary-action-frame').getAttribute('d'),
+          chatPenPath: chatButton.querySelector('.sidebar-primary-action-pen').getAttribute('d'),
+          recentsFramePath: document.querySelector('.sidebar-recents-create-frame').getAttribute('d'),
+          recentsPenPath: document.querySelector('.sidebar-recents-create-pen').getAttribute('d'),
+          projectMarkPath: document.querySelector('.sidebar-project-add-mark').getAttribute('d'),
+        };
+      });
+      expect(appearance.height).toBeGreaterThanOrEqual(34);
+      expect(appearance.chatBackground).toBe('rgba(0, 0, 0, 0)');
+      expect(appearance.chatBorderTopWidth).toBe('0px');
+      expect(appearance.chatFontSize).toBe(appearance.sessionTitleFontSize);
+      expect(appearance.chatFramePath).toBe('M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7');
+      expect(appearance.chatPenPath).toBe('M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852Z');
+      expect(appearance.recentsFramePath).toBe(appearance.chatFramePath);
+      expect(appearance.recentsPenPath).toBe(appearance.chatPenPath);
+      expect(appearance.projectMarkPath).toBe('M12 5v14M5 12h14');
+    }
+
+    await chatPage.mouse.move(0, 0);
+    await expect(newProject).toHaveCSS('opacity', '0');
+    await expect(newProject).toHaveCSS('pointer-events', 'none');
+    const hiddenHitTarget = await newProject.evaluate(button => {
+      const bounds = button.getBoundingClientRect();
+      const x = bounds.left + bounds.width / 2;
+      const y = bounds.top + bounds.height / 2;
+      const target = document.elementFromPoint(x, y);
+      return {
+        x,
+        y,
+        hitsButton: target === button || button.contains(target),
+      };
+    });
+    expect(hiddenHitTarget.hitsButton).toBe(false);
+    await chatPage.mouse.click(hiddenHitTarget.x, hiddenHitTarget.y);
+    await expect(chatPage.locator('.sidebar-project-create')).toHaveCount(0);
+
+    await newProject.focus();
+    await expect(newProject).toHaveCSS('opacity', '1');
+    await expect(newProject).toHaveCSS('pointer-events', 'auto');
+    await newChat.focus();
+    await chatPage.mouse.move(0, 0);
+    await expect(newProject).toHaveCSS('opacity', '0');
+    await expect(newProject).toHaveCSS('pointer-events', 'none');
+
+    await projectHeading.locator('> span:first-child').hover();
+    await expect(newProject).toHaveCSS('opacity', '1');
+    await expect(newProject).toHaveCSS('pointer-events', 'auto');
+    await newProject.click();
+    await expect(chatPage.locator('.sidebar-project-create input')).toBeFocused();
+    await expect(newProject).toBeDisabled();
+    await newChat.hover();
+    await expect(newProject).toHaveCSS('opacity', '0');
+    await expect(newProject).toHaveCSS('pointer-events', 'none');
+    await chatPage.keyboard.press('Escape');
+    await expect(chatPage.locator('.sidebar-project-create')).toHaveCount(0);
+
+    await chatPage.mouse.move(0, 0);
+    await expect(recentsCreate).toHaveCSS('opacity', '0');
+    await expect(recentsCreate).toHaveCSS('pointer-events', 'none');
+    const hiddenRecentsHitTarget = await recentsCreate.evaluate(button => {
+      const bounds = button.getBoundingClientRect();
+      const x = bounds.left + bounds.width / 2;
+      const y = bounds.top + bounds.height / 2;
+      const target = document.elementFromPoint(x, y);
+      return {
+        x,
+        y,
+        hitsButton: target === button || button.contains(target),
+      };
+    });
+    expect(hiddenRecentsHitTarget.hitsButton).toBe(false);
+    await chatPage.mouse.click(hiddenRecentsHitTarget.x, hiddenRecentsHitTarget.y);
+    await expect(chatPage.locator('.yeaft-session-create-modal')).toHaveCount(0);
+
+    await recentsHeading.locator('> span:first-child').hover();
+    await expect(recentsCreate).toHaveCSS('opacity', '1');
+    await expect(recentsCreate).toHaveCSS('pointer-events', 'auto');
+    await recentsCreate.click();
+    await expect(chatPage.locator('.yeaft-session-create-modal')).toBeVisible();
+    await chatPage.locator('.yeaft-session-create-modal .resume-close-btn').click();
+    await expect(chatPage.locator('.yeaft-session-create-modal')).toHaveCount(0);
+
+    await newChat.click();
+    await expect(chatPage.locator('.yeaft-session-create-modal')).toBeVisible();
+  });
+
   test('项目较少时最近列表紧随其后，项目较多时项目区半高滚动', async ({ chatPage, mockAgent }) => {
     await chatPage.setViewportSize({ width: 1400, height: 900 });
 

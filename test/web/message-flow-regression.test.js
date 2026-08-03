@@ -16,6 +16,8 @@ import {
 } from '../../web/components/UnifiedSessionList.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
 import WorkCenterPage from '../../web/components/WorkCenterPage.js';
+import enMessages from '../../web/i18n/en.js';
+import zhCNMessages from '../../web/i18n/zh-CN.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
 import { migrateYeaftConversationState } from '../../web/stores/helpers/yeaft-conversation-state.js';
 import {
@@ -219,6 +221,15 @@ describe('message flow regressions', () => {
     expect(yeaftCss).toMatch(/\.yeaft-session-input > \.input-wrapper\.chat-composer,[\s\S]*?\.yeaft-page \.expert-chips-bar\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*var\(--session-content-width\)/);
     expect(variables).not.toContain('--yeaft-composer-max-width');
     expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-actions\s*\{[^}]*padding:\s*6px 8px 4px/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-action\s*\{[^}]*min-height:\s*34px[^}]*border:\s*0[^}]*background:\s*transparent[^}]*font:\s*inherit[^}]*font-size:\s*14px/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-action:hover,[^{]*\{[^}]*background:\s*var\(--sidebar-hover\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-action:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-action-icon\s*\{[^}]*color:\s*var\(--text-secondary\)/);
+    expect(yeaftSidebarCss).not.toMatch(/\.sidebar-primary-action-icon\s*\{[^}]*color:\s*var\(--accent/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-project-add-button\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading > \.sidebar-project-add-button:disabled\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading > span:first-child:hover ~ \.sidebar-project-add-button:not\(:disabled\),[\s\S]*?\.sidebar-section-heading > \.sidebar-project-add-button:not\(:disabled\):hover,[\s\S]*?\.sidebar-section-heading:focus-within > \.sidebar-project-add-button:not\(:disabled\)\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-add-button:not\(:disabled\)\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     const sectionPaddingTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'padding');
     const sectionMarginTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'margin');
     expect(sectionPaddingTopValues.length).toBeGreaterThan(0);
@@ -239,7 +250,7 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading\s*\{[^}]*min-height:\s*38px[^}]*color:\s*var\(--text-muted\)[^}]*font-size:\s*14px[^}]*font-weight:\s*600/);
     expect(yeaftSidebarCss).toMatch(/\.projects-section > \.sidebar-section-heading, \.recents-section > \.sidebar-section-heading\s*\{[^}]*position:\s*sticky[^}]*top:\s*0[^}]*z-index:\s*1[^}]*background:\s*var\(--bg-sidebar\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-recents-create\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
-    expect(yeaftSidebarCss).toMatch(/\.recents-section > \.sidebar-section-heading:hover \.sidebar-recents-create,[\s\S]*?\.recents-section > \.sidebar-section-heading:focus-within \.sidebar-recents-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/\.recents-section > \.sidebar-section-heading > span:first-child:hover ~ \.sidebar-recents-create,[\s\S]*?\.recents-section > \.sidebar-section-heading > \.sidebar-recents-create:hover,[\s\S]*?\.recents-section > \.sidebar-section-heading:focus-within > \.sidebar-recents-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-recents-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-menu-info\s*\{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row \.session-actions\s*\{[^}]*position:\s*absolute[^}]*opacity:\s*0[^}]*pointer-events:\s*none[^}]*linear-gradient\(90deg, transparent, var\(--sidebar-hover\) 22px\)/);
@@ -334,6 +345,21 @@ describe('message flow regressions', () => {
       global: { mocks: { $t: key => key } },
     });
     expect(sidebar.findAll('.sidebar-primary-actions')).toHaveLength(1);
+    const createSessionButton = sidebar.get('.sidebar-primary-action');
+    const createProjectButton = sidebar.get('.sidebar-project-add-button');
+    expect(createSessionButton.text()).toBe('sidebar.sessions.newChat');
+    expect(createSessionButton.attributes('aria-label')).toBe('sidebar.sessions.newChat');
+    expect(createSessionButton.attributes('title')).toBe('sidebar.sessions.newChat');
+    expect(createSessionButton.find('.sidebar-primary-action-icon').exists()).toBe(true);
+    expect(createSessionButton.get('.sidebar-primary-action-frame').attributes('d')).toBe('M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7');
+    expect(createSessionButton.get('.sidebar-primary-action-pen').attributes('d')).toBe('M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852Z');
+    expect(createSessionButton.get('.sidebar-primary-action-frame').attributes('d')).not.toBe(createProjectButton.get('svg path').attributes('d'));
+    expect(createProjectButton.attributes('aria-label')).toBe('sidebar.projects.new');
+    expect(createProjectButton.attributes('title')).toBe('sidebar.projects.new');
+    expect(createProjectButton.find('.sidebar-project-add-icon').exists()).toBe(true);
+    expect(createProjectButton.get('.sidebar-project-add-mark').attributes('d')).toBe('M12 5v14M5 12h14');
+    expect(enMessages['sidebar.sessions.newChat']).toBe('New chat');
+    expect(zhCNMessages['sidebar.sessions.newChat']).toBe('新建聊天');
     expect(sidebar.get('.sidebar-navigation').element.children[0].classList).toContain('sidebar-primary-actions');
     expect(sidebar.get('.sidebar-navigation').element.children[1].classList).toContain('sidebar-session-results');
     expect(sidebar.get('.sidebar-session-results').element.children[0].classList).toContain('projects-section');
@@ -343,6 +369,8 @@ describe('message flow regressions', () => {
     const recentsCreate = sidebar.get('.recents-section .sidebar-recents-create');
     expect(recentsCreate.attributes('title')).toBe('sidebar.sessions.newChat');
     expect(recentsCreate.attributes('aria-label')).toBe('sidebar.sessions.newChat');
+    expect(recentsCreate.get('.sidebar-recents-create-frame').attributes('d')).toBe(createSessionButton.get('.sidebar-primary-action-frame').attributes('d'));
+    expect(recentsCreate.get('.sidebar-recents-create-pen').attributes('d')).toBe(createSessionButton.get('.sidebar-primary-action-pen').attributes('d'));
     expect(sidebar.findAll('.sidebar-section')).toHaveLength(2);
     expect(sidebar.findAll('.session-item')).toHaveLength(0);
     await sidebar.setProps({ sessions: catalogRows });
