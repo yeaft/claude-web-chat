@@ -12,16 +12,28 @@ import {
 import { isRetiredYeaftConversation } from '../yeaft-conversation-generation.js';
 import { clearSessionLoading } from '../session.js';
 import { sameUserMessage } from '../dedup.js';
-import { maxDbMessageId } from '../messages.js';
+import { ensureMessageUiKeys, maxDbMessageId } from '../messages.js';
 import { summarizeHistoricalToolMessages } from '../tool-window.js';
 import { t } from '../../../utils/i18n.js';
 import { recordPerfTrace, measureNextPaint } from '../perfTrace.js';
 import { activeYeaftHistoryIdentity } from '../yeaft-history-load.js';
-import { yeaftHistoryIdentityKey } from '../yeaft-history-identity.js';
+import {
+  yeaftHistoryIdentityKey,
+  yeaftOptimisticMessageIdentity,
+  yeaftPersistedMessageIdentity,
+} from '../yeaft-history-identity.js';
+import { pruneYeaftHistoryCache } from '../yeaft-history-cache.js';
+import { commitYeaftHistoryPage } from '../yeaft-history-pagination.js';
 
 /** Filter out empty user messages — tool_result artifacts stored as empty user records in DB */
 function filterEmptyUserMessages(messages) {
   return messages.filter(m => !(m.type === 'user' && (!m.content || !m.content.trim())));
+}
+
+function parsePersistedHistorySeq(messageId) {
+  const match = typeof messageId === 'string' ? messageId.match(/^m(\d+)$/) : null;
+  const seq = match ? Number(match[1]) : null;
+  return Number.isFinite(seq) ? seq : null;
 }
 
 function normalizeHistoryTimestamp(m) {
@@ -80,11 +92,31 @@ function resolveHistorySpeakerVpId(m, groupId) {
 }
 
 function stableHistoryRowId(row) {
-  return row && (row.messageId || row.id) ? (row.messageId || row.id) : null;
+  return row?.stableKey || (row && (row.messageId || row.id) ? (row.messageId || row.id) : null);
 }
 
-function sortYeaftRowsByTimestamp(rows) {
-  rows.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+function normalizeHistoryRowIdentity(row, agentId = null) {
+  if (!row || row.stableKey) return row;
+  const sessionId = rowSessionId(row);
+  const messageId = row.messageId || row.id || null;
+  const clientMessageId = row.type === 'user' ? row.clientMessageId || null : null;
+  row.stableKey = clientMessageId && messageId === clientMessageId
+    ? yeaftOptimisticMessageIdentity(agentId, sessionId, clientMessageId)
+    : yeaftPersistedMessageIdentity(agentId, sessionId, messageId);
+  if (!Number.isFinite(row.seq)) row.seq = parsePersistedHistorySeq(messageId);
+  if (!row.uiKey) row.uiKey = row.stableKey || null;
+  return row;
+}
+
+function sortYeaftRowsBySequence(rows) {
+  rows.sort((a, b) => {
+    const aSeq = Number.isFinite(a?.seq) ? a.seq : null;
+    const bSeq = Number.isFinite(b?.seq) ? b.seq : null;
+    if (aSeq !== null && bSeq !== null && aSeq !== bSeq) return aSeq - bSeq;
+    if (aSeq !== null && bSeq === null) return -1;
+    if (aSeq === null && bSeq !== null) return 1;
+    return (a?.timestamp || 0) - (b?.timestamp || 0);
+  });
 }
 
 function sameAssistantHistoryRow(existing, incoming) {
@@ -134,7 +166,12 @@ function upsertYeaftHistoryRows(existingRows, incomingRows) {
     }
     if (index !== null && index >= 0) {
       const existingId = stableHistoryRowId(existingRows[index]);
-      existingRows[index] = { ...existingRows[index], ...row };
+      const existingUiKey = existingRows[index]?.uiKey || null;
+      existingRows[index] = {
+        ...existingRows[index],
+        ...row,
+        ...(existingUiKey ? { uiKey: existingUiKey } : {}),
+      };
       if (id) indexById.set(id, index);
       if (existingId && existingId !== id && indexById.get(existingId) === index) indexById.delete(existingId);
       if (row?.type === 'user' && row.clientMessageId) userIndexByClientId.set(row.clientMessageId, index);
@@ -145,7 +182,7 @@ function upsertYeaftHistoryRows(existingRows, incomingRows) {
       inserted += 1;
     }
   }
-  sortYeaftRowsByTimestamp(existingRows);
+  sortYeaftRowsBySequence(existingRows);
   return inserted;
 }
 
@@ -155,7 +192,7 @@ function rowSessionId(row) {
 
 function isOptimisticYeaftUserRow(row) {
   if (!row || row.type !== 'user' || !row.clientMessageId) return false;
-  const id = stableHistoryRowId(row);
+  const id = row.messageId || row.id || null;
   // sendYeaftSessionMessage creates the local row with id/messageId equal to
   // clientMessageId. Once persisted history echoes it back, id/messageId become
   // the durable message id while clientMessageId remains only a dedup key.
@@ -704,8 +741,41 @@ export function handleYeaftHistoryWindow(store, msg) {
   if (!conversationId || !sessionId || !Array.isArray(msg.messages)) return null;
   if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
 
-  const { formatted } = formatYeaftHistoryMessages(msg.messages, sessionId, 'window', store.messagesMap[conversationId]);
+  const sourceMessageIds = new Set(Array.isArray(msg.sourceMessageIds) ? msg.sourceMessageIds : []);
+  for (const row of store.messagesMap[conversationId]) {
+    const persistedId = row?.persistedMessageId || row?.messageId || row?.id || null;
+    if (!msg.entryId || !sourceMessageIds.has(persistedId)) continue;
+    row.historyEntryId = msg.entryId;
+    if (Number.isFinite(msg.indexGeneration)) row.historyIndexGeneration = msg.indexGeneration;
+  }
+  const windowMessages = msg.messages.map(message => (
+    msg.entryId && sourceMessageIds.has(message?.id)
+      ? {
+          ...message,
+          historyEntryId: msg.entryId,
+          ...(Number.isFinite(msg.indexGeneration)
+            ? { historyIndexGeneration: msg.indexGeneration }
+            : {}),
+        }
+      : message
+  ));
+  const { formatted } = formatYeaftHistoryMessages(
+    windowMessages,
+    sessionId,
+    'window',
+    store.messagesMap[conversationId],
+    sessionAgentId,
+  );
   upsertYeaftHistoryRows(store.messagesMap[conversationId], formatted);
+  const activeIdentity = activeYeaftHistoryIdentity(store);
+  pruneYeaftHistoryCache(store, {
+    conversationId,
+    agentId: sessionAgentId,
+    sessionId,
+    incomingRows: formatted,
+    activeAgentId: activeIdentity.agentId,
+    activeSessionId: activeIdentity.sessionId,
+  });
   return conversationId;
 }
 
@@ -753,12 +823,10 @@ function existingAskUserRow(existingRows, scope) {
     && (row.threadId || 'main') === (scope.threadId || 'main')) || null;
 }
 
-function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existingRows) {
-  const existingIds = new Set(
-    (existingRows || [])
-      .map(m => m && (m.messageId || m.id))
-      .filter(Boolean)
-  );
+function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existingRows, agentId = null) {
+  const existingIds = new Set((existingRows || [])
+    .map(row => stableHistoryRowId(normalizeHistoryRowIdentity(row, agentId)))
+    .filter(Boolean));
   const seenIds = new Set();
   const formatted = [];
   let acceptedHistoryMessages = 0;
@@ -768,15 +836,31 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
     if (isInternalControlHistoryContent(m.content)) continue;
     const stableId = m.id || m.messageId || null;
     const clientMessageId = m.clientMessageId || null;
-    if (stableId && seenIds.has(stableId)) continue;
-    if (stableId && mode !== 'recent' && existingIds.has(stableId)) continue;
-    if (stableId) seenIds.add(stableId);
+    const rowSessionId = m.sessionId ?? m.groupId ?? msgSessionId ?? null;
+    const durableKey = yeaftPersistedMessageIdentity(agentId, rowSessionId, stableId);
+    const uiKey = clientMessageId
+      ? yeaftOptimisticMessageIdentity(agentId, rowSessionId, clientMessageId)
+      : durableKey;
+    const historyEntryMeta = m.historyEntryId
+      ? {
+          historyEntryId: m.historyEntryId,
+          ...(Number.isFinite(m.historyIndexGeneration)
+            ? { historyIndexGeneration: m.historyIndexGeneration }
+            : {}),
+        }
+      : {};
+    if (durableKey && seenIds.has(durableKey)) continue;
+    if (durableKey && mode !== 'recent' && existingIds.has(durableKey)) continue;
+    if (durableKey) seenIds.add(durableKey);
     if (m.role === 'user') {
       acceptedHistoryMessages += 1;
       const messageId = stableId || m.messageId || m.turnId || null;
-      const rowSessionId = m.sessionId ?? m.groupId ?? msgSessionId ?? null;
       formatted.push({
         ...(stableId ? { id: stableId, messageId: stableId } : {}),
+        ...(durableKey ? { stableKey: durableKey } : {}),
+        ...(uiKey ? { uiKey } : {}),
+        ...historyEntryMeta,
+        seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
         type: 'user',
         content: m.content,
         timestamp: normalizeHistoryTimestamp(m),
@@ -790,7 +874,6 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
     } else if (m.role === 'assistant') {
       acceptedHistoryMessages += 1;
       const messageId = stableId || m.messageId || m.turnId || null;
-      const rowSessionId = m.sessionId ?? m.groupId ?? msgSessionId ?? null;
       const speakerVpId = resolveHistorySpeakerVpId(m, rowSessionId);
       const timestamp = normalizeHistoryTimestamp(m);
       const hasPersistedTurnId = !!m.turnId;
@@ -800,6 +883,12 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
       if (typeof assistantContent !== 'string' || assistantContent.trim()) {
         formatted.push({
           ...(stableId ? { id: stableId, messageId: stableId } : {}),
+          ...(durableKey ? { stableKey: durableKey } : {}),
+          ...(uiKey ? { uiKey } : {}),
+          ...historyEntryMeta,
+          seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
+          ...(m.entryId ? { entryId: m.entryId } : {}),
+          ...(Array.isArray(m.sourceMessageIds) ? { sourceMessageIds: m.sourceMessageIds } : {}),
           type: 'assistant',
           content: assistantContent,
           timestamp,
@@ -817,6 +906,9 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
       if (Array.isArray(todos) && todos.length > 0) {
         formatted.push({
           ...(stableId ? { id: `${stableId}:todos`, messageId: `${stableId}:todos` } : {}),
+          ...(durableKey ? { stableKey: `${durableKey}:todos` } : {}),
+          ...historyEntryMeta,
+          seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
           type: 'tool-use',
           toolName: 'TodoWrite',
           toolInput: { todos },
@@ -834,6 +926,9 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
         formatted.push({
           id: `${stableId || messageId || turnId}:image:${image.assetId}`,
           messageId: `${stableId || messageId || turnId}:image:${image.assetId}`,
+          ...(durableKey ? { stableKey: `${durableKey}:image:${image.assetId}` } : {}),
+          ...historyEntryMeta,
+          seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
           type: 'chat-image', ...image, timestamp, sessionId: rowSessionId, turnId,
           ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
           isStreaming: false, isHistory: true,
@@ -857,12 +952,16 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
         };
         const existing = existingAskUserRow(existingRows, scope);
         if (existing) {
+          Object.assign(existing, historyEntryMeta);
           applyAskUserHistoryResult(existing, result, questions);
           continue;
         }
         const askRow = applyAskUserHistoryResult({
           id: `${stableId || messageId || turnId}:ask:${result.toolCallId}`,
           messageId: `${stableId || messageId || turnId}:ask:${result.toolCallId}`,
+          ...(durableKey ? { stableKey: `${durableKey}:ask:${result.toolCallId}` } : {}),
+          ...historyEntryMeta,
+          seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
           type: 'tool-use',
           timestamp,
           sessionId: rowSessionId,
@@ -878,6 +977,9 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
       if (toolSummaryCount > 0) {
         formatted.push({
           ...(stableId ? { id: `${stableId}:tool-summary`, messageId: `${stableId}:tool-summary`, persistedMessageId: stableId } : {}),
+          ...(durableKey ? { stableKey: `${durableKey}:tool-summary` } : {}),
+          ...historyEntryMeta,
+          seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
           type: 'tool-summary',
           count: toolSummaryCount,
           omittedCount: toolSummaryCount,
@@ -950,7 +1052,14 @@ export function handleYeaftHistoryChunk(store, msg) {
   // only user / assistant text rows. Reflection, internal, and system-only
   // records may be persisted as role=user, but they are not user-authored UI
   // messages and must never be prepended as user bubbles.
-  const { formatted, acceptedHistoryMessages } = formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, store.messagesMap[convId]);
+  const { formatted, acceptedHistoryMessages } = formatYeaftHistoryMessages(
+    incomingMessages,
+    msgSessionId,
+    mode,
+    store.messagesMap[convId],
+    sessionAgentId,
+  );
+  ensureMessageUiKeys(store, convId, formatted);
 
   let insertedRows = 0;
   let preservedEmptyRecent = false;
@@ -970,15 +1079,50 @@ export function handleYeaftHistoryChunk(store, msg) {
         // These rows were explicitly requested by scrolling upward. Keep them in
         // the render window; the near-bottom path will prune again later.
         const windowSessionId = store.yeaftActiveSessionFilter ? (msgSessionId ?? null) : null;
-        store.expandYeaftMessageWindow(windowSessionId, msg.turns || 10);
+        store.expandYeaftMessageWindow(windowSessionId, msg.turns || 10, sessionAgentId);
       }
     } else {
       insertedRows = upsertYeaftHistoryRows(store.messagesMap[convId], formatted);
     }
   }
 
+  const activeIdentityBeforeCache = activeYeaftHistoryIdentity(store);
+  pruneYeaftHistoryCache(store, {
+    conversationId: convId,
+    agentId: sessionAgentId,
+    sessionId: msgSessionId,
+    incomingRows: formatted,
+    activeAgentId: activeIdentityBeforeCache.agentId,
+    activeSessionId: activeIdentityBeforeCache.sessionId,
+  });
+
   const sessionKey = yeaftHistoryIdentityKey(msg.agentId || null, msgSessionId);
+  const cacheState = store.yeaftHistoryCacheState?.[sessionKey] || null;
   const prevState = store.yeaftSessionHistoryState?.[sessionKey] || {};
+  const preservedFrontier = Number.isFinite(prevState.serverOldestFetchedSeq)
+    ? prevState.serverOldestFetchedSeq
+    : (Number.isFinite(prevState.oldestSeq) ? prevState.oldestSeq : null);
+  const responseFrontier = Number.isFinite(msg.nextBeforeSeq)
+    ? msg.nextBeforeSeq
+    : (Number.isFinite(msg.oldestSeq)
+      ? msg.oldestSeq
+      : (preservedEmptyRecent ? preservedFrontier : null));
+  const responseHasMore = preservedEmptyRecent
+    && !Number.isFinite(msg.nextBeforeSeq)
+    && !Number.isFinite(msg.oldestSeq)
+    ? (prevState.serverHasMore ?? prevState.hasMore ?? false)
+    : msg.hasMore;
+  const committedPagination = mode === 'delta'
+    ? prevState
+    : commitYeaftHistoryPage(prevState, {
+        mode,
+        oldestSeq: responseFrontier,
+        hasMore: responseHasMore,
+        ranges: cacheState?.ranges || [],
+        pageKind: msg.pageKind,
+        stopAtSeq: msg.gapStopAtSeq,
+        cacheEpoch: cacheState?.rangeEpoch ?? msg.cacheEpoch ?? 0,
+      });
   const nextLatest = (typeof msg.latestSeq === 'number') ? msg.latestSeq : (prevState.latestSeq ?? null);
   const nextState = mode === 'delta'
     ? {
@@ -990,16 +1134,14 @@ export function handleYeaftHistoryChunk(store, msg) {
         count: (prevState.count || 0) + insertedRows,
       }
     : {
-        ...(preservedEmptyRecent ? prevState : {}),
+        ...committedPagination,
         loaded: true,
         loading: false,
-        hasMore: preservedEmptyRecent ? !!prevState.hasMore : !!msg.hasMore,
-        oldestSeq: preservedEmptyRecent
-          ? (Number.isFinite(prevState.oldestSeq) ? prevState.oldestSeq : store.yeaftOldestLoadedSeq)
-          : ((typeof msg.oldestSeq === 'number') ? msg.oldestSeq : store.yeaftOldestLoadedSeq),
-        count: mode === 'older'
-          ? (prevState.count || 0) + insertedRows
-          : (preservedEmptyRecent ? (prevState.count || 0) : acceptedHistoryMessages),
+        count: cacheState
+          ? cacheState.rowCount
+          : (mode === 'older'
+            ? (prevState.count || 0) + insertedRows
+            : (preservedEmptyRecent ? (prevState.count || 0) : acceptedHistoryMessages)),
         latestSeq: preservedEmptyRecent && !Number.isFinite(msg.latestSeq)
           ? (prevState.latestSeq ?? null)
           : nextLatest,
@@ -1044,9 +1186,11 @@ export function handleYeaftHistoryChunk(store, msg) {
   }
   if (isActiveHistoryChunk) {
     store.yeaftHasMoreHistory = nextState.hasMore;
-    if (typeof msg.oldestSeq === 'number') {
-      store.yeaftOldestLoadedSeq = msg.oldestSeq;
-    }
+    store.yeaftOldestLoadedSeq = Number.isFinite(nextState.serverOldestFetchedSeq)
+      ? nextState.serverOldestFetchedSeq
+      : (Number.isFinite(nextState.oldestSeq)
+        ? nextState.oldestSeq
+        : store.yeaftOldestLoadedSeq);
     store.yeaftLoadingMoreHistory = false;
   } else if (store.yeaftLoadingMoreHistory) {
     const activeState = store.yeaftSessionHistoryState?.[activeIdentity.sessionKey]

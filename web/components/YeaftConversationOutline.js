@@ -5,6 +5,10 @@ function parseHistoryTime(value) {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
+function historyResultIdentity(result) {
+  return result?.entryId || result?.messageId || null;
+}
+
 function formatOutlineTime(value) {
   const timestamp = parseHistoryTime(value);
   if (timestamp === null) return '';
@@ -17,16 +21,18 @@ export function sortHistoryResultsNewest(results) {
       result,
       index,
       time: parseHistoryTime(result?.timestamp),
-      seq: Number.isFinite(result?.seq) ? result.seq : null,
+      seq: Number.isFinite(result?.entryEndSeq)
+        ? result.entryEndSeq
+        : (Number.isFinite(result?.seq) ? result.seq : null),
       messageId: String(result?.messageId || ''),
     }))
     .sort((a, b) => {
+      if (a.seq === null && b.seq !== null) return -1;
+      if (a.seq !== null && b.seq === null) return 1;
+      if (a.seq !== null && a.seq !== b.seq) return b.seq - a.seq;
       if (a.time !== null && b.time === null) return -1;
       if (a.time === null && b.time !== null) return 1;
       if (a.time !== null && a.time !== b.time) return b.time - a.time;
-      if (a.seq !== null && b.seq === null) return -1;
-      if (a.seq === null && b.seq !== null) return 1;
-      if (a.seq !== null && a.seq !== b.seq) return b.seq - a.seq;
       const idComparison = b.messageId.localeCompare(a.messageId);
       return idComparison || a.index - b.index;
     })
@@ -91,11 +97,10 @@ export default {
         @scroll="onScroll"
       >
         <div v-if="errorKey" class="yeaft-conversation-outline-empty is-error">{{ $t(errorKey) }}</div>
-        <div v-else-if="searchState.query.length === 1" class="yeaft-conversation-outline-empty">{{ $t('yeaft.outline.minChars') }}</div>
         <div v-else-if="!visibleResults.length && !isLoading" class="yeaft-conversation-outline-empty">{{ $t(isSearching ? 'yeaft.outline.noMatches' : 'yeaft.outline.empty') }}</div>
         <button
           v-for="(result, index) in visibleResults"
-          :key="result.messageId"
+          :key="historyResultIdentity(result)"
           type="button"
           class="yeaft-conversation-outline-item"
           :class="{ active: index === activeIndex }"
@@ -131,7 +136,10 @@ export default {
   setup(props, { emit, expose }) {
     const inputRef = Vue.ref(null);
     const listRef = Vue.ref(null);
-    const isSearching = Vue.computed(() => String(props.searchState.query || '').trim().length >= 2 || !!props.searchState.senderKey);
+    const isSearching = Vue.computed(() => (
+      Array.from(String(props.searchState.query || '').trim()).length > 0
+      || !!props.searchState.senderKey
+    ));
     Vue.watch(
       () => props.senderOptions.map(option => option.key),
       validKeys => {
@@ -144,7 +152,7 @@ export default {
       isSearching.value ? props.searchState.results : props.outlineState.results,
     ));
     const activeIndex = Vue.computed(() => {
-      const index = visibleResults.value.findIndex(result => result?.messageId === props.activeMessageId);
+      const index = visibleResults.value.findIndex(result => historyResultIdentity(result) === props.activeMessageId);
       return index >= 0 ? index : 0;
     });
     const isLoading = Vue.computed(() => isSearching.value ? props.searchState.loading : props.outlineState.loading);
@@ -175,13 +183,13 @@ export default {
       if (list && list.scrollHeight - list.scrollTop - list.clientHeight <= 40) loadOlder();
     };
     const previewResult = (result) => {
-      emit('move', result?.messageId || null);
+      emit('move', historyResultIdentity(result));
       emit('preview', result);
     };
     const moveActive = (index) => {
       const nextIndex = Math.max(0, Math.min(visibleResults.value.length - 1, index));
       const result = visibleResults.value[nextIndex];
-      emit('move', result?.messageId || null);
+      emit('move', historyResultIdentity(result));
       if (result) emit('preview', result);
     };
     const onKeyDown = (event) => {
@@ -200,14 +208,14 @@ export default {
       }
     };
     Vue.watch([visibleResults, () => props.activeMessageId], ([results, activeMessageId]) => {
-      if (results.some(result => result?.messageId === activeMessageId)) return;
-      emit('move', results[0]?.messageId || null);
+      if (results.some(result => historyResultIdentity(result) === activeMessageId)) return;
+      emit('move', historyResultIdentity(results[0]));
     }, { immediate: true });
     const restoreOlderScroll = ({ scrollTop = 0 } = {}) => Vue.nextTick(() => {
       if (listRef.value) listRef.value.scrollTop = scrollTop;
     });
     expose({ focus, restoreOlderScroll });
     Vue.onMounted(focus);
-    return { inputRef, listRef, isSearching, visibleResults, activeIndex, isLoading, countLabel, errorKey, focus, loadOlder, onScroll, onKeyDown, previewResult, formatOutlineTime };
+    return { inputRef, listRef, isSearching, visibleResults, activeIndex, isLoading, countLabel, errorKey, focus, loadOlder, onScroll, onKeyDown, previewResult, formatOutlineTime, historyResultIdentity };
   },
 };

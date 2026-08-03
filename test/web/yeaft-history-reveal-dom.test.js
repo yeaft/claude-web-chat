@@ -49,6 +49,18 @@ beforeAll(async () => {
   ({ default: YeaftPage } = await import('../../web/components/YeaftPage.js'));
 });
 
+function indexedHistoryResult(overrides = {}) {
+  return {
+    entryId: 'entry-m42',
+    indexGeneration: 7,
+    entryStartSeq: 42,
+    messageId: 'm42',
+    seq: 42,
+    sourceMessageIds: ['m42'],
+    ...overrides,
+  };
+}
+
 function primeStore() {
   const store = useChatStore();
   store._hasHandledAgentList = true;
@@ -68,7 +80,9 @@ function primeStore() {
   store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-a' };
   store.yeaftActiveSessionFilter = 'same';
   store.yeaftSessionAgentById = { same: 'agent-a' };
-  store.yeaftMessageWindowState = { same: { visibleTurns: 5 } };
+  store.yeaftMessageWindowState = { [yeaftHistoryIdentityKey('agent-a', 'same')]: { visibleTurns: 5 } };
+  store.yeaftHistoryCacheState = {};
+  store._yeaftHistoryWindowPendingByKey = {};
   store.messagesMap = {
     'conv-a': Array.from({ length: 12 }, (_, index) => ({
       id: `m${index + 50}`,
@@ -85,7 +99,7 @@ function primeStore() {
       sessionId: 'same',
       loaded: true,
       loading: false,
-      results: [{ messageId: 'm42', seq: 42, role: 'assistant', snippet: 'old answer' }],
+      results: [indexedHistoryResult({ role: 'assistant', snippet: 'old answer' })],
       hasMore: false,
       nextBeforeSeq: null,
       totalCount: 13,
@@ -136,7 +150,7 @@ async function openDefaultUserSearch(wrapper, store) {
     requestId: request.requestId,
     query: '',
     senderKey: 'user',
-    results: [{ messageId: 'm42', seq: 42, role: 'user', snippet: 'old question' }],
+    results: [indexedHistoryResult({ role: 'user', snippet: 'old question' })],
     hasMore: false,
     nextBeforeSeq: null,
   })).toBe(true);
@@ -174,7 +188,7 @@ function mountPage() {
 }
 
 async function settleWindow(store, revealWindow = null) {
-  const request = store._sent.find(message => message.type === 'yeaft_load_history_window');
+  const request = store._sent.filter(message => message.type === 'yeaft_load_history_window').at(-1);
   expect(request).toMatchObject({
     agentId: 'agent-a',
     sessionId: 'same',
@@ -186,6 +200,13 @@ async function settleWindow(store, revealWindow = null) {
     agentId: 'agent-a',
     sessionId: 'same',
     requestId: request.requestId,
+    entryId: request.entryId,
+    indexGeneration: request.indexGeneration,
+    entryStartSeq: request.entryStartSeq,
+    entryEndSeq: request.anchorSeq,
+    sourceMessageIds: [request.anchorMessageId],
+    anchorMessageId: request.anchorMessageId,
+    anchorSeq: request.anchorSeq,
     messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
   };
   const conversationId = mergeYeaftHistoryWindow(store, response);
@@ -202,7 +223,7 @@ async function settleWindow(store, revealWindow = null) {
 }
 
 async function expectRenderedReveal(wrapper, store, scrollToKey) {
-  expect(store.yeaftMessageWindowState.same.visibleTurns).toBeGreaterThan(5);
+  expect(store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')].visibleTurns).toBeGreaterThan(5);
   await flushPromises();
   await Vue.nextTick();
 
@@ -280,6 +301,15 @@ async function expectSilentTransportPromotion(wrapper, store) {
   await Vue.nextTick();
 }
 
+const consolidatedHistoryScenarios = [];
+function historyScenario(name, run) { consolidatedHistoryScenarios.push({ name, run }); }
+async function runConsolidatedHistoryScenarios() {
+  for (const scenario of consolidatedHistoryScenarios) {
+    try { await scenario.run(); }
+    catch (error) { error.message = `[${scenario.name}] ${error.message}`; throw error; }
+  }
+}
+
 describe('Yeaft history result rendered reveal', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
@@ -301,7 +331,33 @@ describe('Yeaft history result rendered reveal', () => {
     };
   });
 
+  historyScenario('keeps existing virtual block keys stable when older history is prepended', async () => {
+    const store = primeStore();
+    store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')] = { visibleTurns: 20 };
+    const wrapper = mountPage();
+    await flushPromises();
+    await Vue.nextTick();
+
+    const before = wrapper.findAll('[data-virtual-id]').map(row => row.attributes('data-virtual-id'));
+    store.messagesMap['conv-a'].unshift({
+      id: 'm49',
+      messageId: 'm49',
+      type: 'user',
+      content: 'older row',
+      sessionId: 'same',
+      timestamp: 49,
+    });
+    await flushPromises();
+    await Vue.nextTick();
+
+    const after = wrapper.findAll('[data-virtual-id]').map(row => row.attributes('data-virtual-id'));
+    expect(after[0]).toBe('block_m49');
+    expect(after.slice(1)).toEqual(before.slice(0, after.length - 1));
+    wrapper.unmount();
+  });
+
   it('clicks an uncached outline row, expands it, and reveals the real virtual DOM row', async () => {
+    await runConsolidatedHistoryScenarios();
     const store = primeStore();
     const revealWindow = vi.spyOn(store, 'revealYeaftHistoryResult');
     const wrapper = mountPage();
@@ -375,7 +431,10 @@ describe('Yeaft history result rendered reveal', () => {
     expect(wrapper.find('[data-msg-id="m42"]').exists()).toBe(false);
 
     await option.trigger('click');
-    expect(revealWindow).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'm42' }));
+    expect(revealWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'm42' }),
+      expect.objectContaining({ token: expect.any(Number), sessionId: 'same', agentId: 'agent-a' }),
+    );
     await settleWindow(store, revealWindow);
     await expectRenderedReveal(wrapper, store, scrollToKey);
 
@@ -393,18 +452,44 @@ describe('Yeaft history result rendered reveal', () => {
 
     await option.trigger('mouseenter');
     await settleWindow(store);
-    expect(store.yeaftMessageWindowState.same.visibleTurns).toBe(5);
+    expect(store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')].visibleTurns).toBe(5);
     expect(wrapper.find('[data-msg-id="m42"]').exists()).toBe(false);
     expect(store._sent.filter(message => message.type === 'yeaft_load_history_window')).toHaveLength(1);
 
     const searchInput = wrapper.get('input[type="search"]');
     await searchInput.trigger('keydown', { key: 'Enter' });
-    expect(revealWindow).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'm42' }));
+    expect(revealWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'm42' }),
+      expect.objectContaining({ token: expect.any(Number), sessionId: 'same', agentId: 'agent-a' }),
+    );
+    expect(store._sent.filter(message => message.type === 'yeaft_load_history_window')).toHaveLength(2);
+    await settleWindow(store, revealWindow);
     await flushPromises();
     await Vue.nextTick();
 
-    expect(store._sent.filter(message => message.type === 'yeaft_load_history_window')).toHaveLength(1);
     await expectRenderedReveal(wrapper, store, scrollToKey);
+
+    store.messagesMap['conv-a'] = [
+      { type: 'user', content: 'identical idless sibling', sessionId: 'same' },
+      { type: 'user', content: 'identical idless sibling', sessionId: 'same' },
+      { type: 'system', content: 'idless system', sessionId: 'same' },
+      { type: 'legacy-unknown', content: 'idless unknown', sessionId: 'same' },
+    ];
+    store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')] = { visibleTurns: 20 };
+    await flushPromises();
+    await Vue.nextTick();
+    const idlessBefore = wrapper.findAll('[data-virtual-id]')
+      .map(row => row.attributes('data-virtual-id'));
+    expect(new Set(idlessBefore).size).toBe(idlessBefore.length);
+    store.messagesMap['conv-a'].unshift({
+      type: 'user', content: 'older idless row', sessionId: 'same',
+    });
+    await flushPromises();
+    await Vue.nextTick();
+    const idlessAfter = wrapper.findAll('[data-virtual-id]')
+      .map(row => row.attributes('data-virtual-id'));
+    expect(idlessAfter.slice(1)).toEqual(idlessBefore);
+    expect(idlessAfter.join(' ')).not.toMatch(/(?:u|s|x)_\d+/);
 
     wrapper.unmount();
   });

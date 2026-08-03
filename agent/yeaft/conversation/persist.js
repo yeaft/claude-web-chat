@@ -24,6 +24,12 @@ import { writeAtomic } from '../storage/atomic.js';
 import { pairSanitize } from '../pair-sanitize.js';
 import { sliceLastNTurns, stripVpMentionPrefix } from '../turn-utils.js';
 import { isHiddenConversationRow, isVisibleConversationRow } from './internal-control.js';
+import {
+  findLiteralSearch,
+  iterateCanonicalVisibleEntriesNewestFirst,
+  normalizeLiteralSearch,
+} from './visible-entry.js';
+import { markConversationDirty } from './history-index-state.js';
 
 /**
  * Default cold-start "recent window" size, expressed in TURNS (not raw
@@ -134,6 +140,11 @@ function applyFoldedMessageTombstones(rows, additionalIds = []) {
   return rows.filter(row => !foldedIds.has(row?.id));
 }
 
+function addScanMetric(stats, key, value = 1) {
+  if (!stats || typeof stats !== 'object' || !Number.isFinite(value) || value <= 0) return;
+  stats[key] = (Number(stats[key]) || 0) + value;
+}
+
 function segmentNameForNumber(n) {
   return `${String(n).padStart(6, '0')}.jsonl`;
 }
@@ -238,6 +249,7 @@ function maybeWarnHistoryTruncated(sessionId, storeDir, recentTurnsLimit, hasCom
  * Used to avoid spamming the console with repeated warnings.
  */
 let _permissionWarned = false;
+let _historyIndexMutationWarned = false;
 
 /** Rough token estimation: ~4 chars per token. */
 export function estimateTokens(text) {
@@ -775,7 +787,7 @@ class SegmentStore {
       : out.sort(compareMessagesBySeq);
   }
 
-  *scan({ beforeSeq = Infinity, afterSeq = -Infinity, desc = false, includeCold = false } = {}) {
+  *scan({ beforeSeq = Infinity, afterSeq = -Infinity, desc = false, includeCold = false, scanStats = null } = {}) {
     if (!this.hasData()) return;
     const idx = this.loadIndex();
     const segments = (idx.segments || [])
@@ -784,6 +796,9 @@ class SegmentStore {
       .sort((a, b) => desc ? (b.lastSeq || 0) - (a.lastSeq || 0) : (a.firstSeq || 0) - (b.firstSeq || 0));
     for (const seg of segments) {
       const rows = this.#readSegment(seg.file, { beforeSeq, afterSeq, desc, includeCold });
+      addScanMetric(scanStats, 'segments');
+      addScanMetric(scanStats, 'bytes', Number(seg.bytes) || 0);
+      addScanMetric(scanStats, 'rows', rows.length);
       yield* applyFoldedMessageTombstones(rows, idx.foldedMessageIds);
     }
   }
@@ -836,7 +851,7 @@ class SegmentStore {
   }
 
   markCold(id) {
-    return this.updateById(id, msg => ({ ...msg, cold: true })) ? 1 : 0;
+    return this.updateById(id, msg => ({ ...msg, cold: true }));
   }
 
   clear() {
@@ -1025,6 +1040,40 @@ export class ConversationStore {
 
   // ─── Write API ──────────────────────────────────────────
 
+  #markDirty(message, reason, sourceIds = null) {
+    const sessionId = message?.sessionId || null;
+    try {
+      markConversationDirty({
+        ownerRoot: this.#dir,
+        scopeKind: sessionId ? 'session' : 'chat',
+        scopeId: sessionId || message?.chatId || '*',
+        reason,
+        sourceIds,
+      });
+    } catch (error) {
+      if (!_historyIndexMutationWarned) {
+        console.warn(`[Yeaft] Cannot mark conversation index dirty: ${error?.message || error}`);
+        _historyIndexMutationWarned = true;
+      }
+    }
+  }
+
+  #markAllDirty(reason) {
+    try {
+      markConversationDirty({
+        ownerRoot: this.#dir,
+        scopeKind: 'session',
+        scopeId: '*',
+        reason,
+      });
+    } catch (error) {
+      if (!_historyIndexMutationWarned) {
+        console.warn(`[Yeaft] Cannot mark conversation index dirty: ${error?.message || error}`);
+        _historyIndexMutationWarned = true;
+      }
+    }
+  }
+
   /**
    * Append a single message to the conversation.
    *
@@ -1055,6 +1104,15 @@ export class ConversationStore {
     }
 
     this.#nextSeq = seq + 1;
+    if (fullMsg._reflection || (
+      (fullMsg.role === 'user' || fullMsg.role === 'assistant')
+      && isVisibleConversationRow(fullMsg)
+    )) {
+      this.#markDirty(fullMsg, fullMsg._reflection ? 'fold' : 'append', [
+        fullMsg.id,
+        ...(Array.isArray(fullMsg.foldedMessageIds) ? fullMsg.foldedMessageIds : []),
+      ]);
+    }
 
     return fullMsg;
   }
@@ -1082,7 +1140,20 @@ export class ConversationStore {
     if (!message?.id || !patch || typeof patch !== 'object') return null;
     try {
       const store = this.#segmentStoreFor(message, { create: false });
-      return store.updateById(message.id, current => ({ ...current, ...patch }));
+      let before = null;
+      const updated = store.updateById(message.id, current => {
+        before = { ...current };
+        return { ...current, ...patch };
+      });
+      const affectsCanonicalProjection = row => !!row && (
+        row._reflection
+        || ((row.role === 'user' || row.role === 'assistant')
+          && isVisibleConversationRow(row))
+      );
+      if (updated && (affectsCanonicalProjection(before) || affectsCanonicalProjection(updated))) {
+        this.#markDirty(updated, 'update', [message.id]);
+      }
+      return updated;
     } catch (err) {
       if (isPermissionError(err)) {
         if (!_permissionWarned) {
@@ -1122,7 +1193,7 @@ export class ConversationStore {
   moveToCold(id) {
     for (const dir of [this.#chatDir, ...this.#sessionConversationDirs({ primaryOnly: true })]) {
       const moved = this.#segmentStoreForConversationDir(dir).markCold(id);
-      if (moved > 0) return;
+      if (moved) return;
     }
     for (const [hotDir, coldDir] of this.#hotColdDirPairs({ includeLegacy: false })) {
       const src = join(hotDir, `${id}.md`);
@@ -1130,6 +1201,7 @@ export class ConversationStore {
       if (!existsSync(src)) continue;
       try {
         renameSync(src, dst);
+
       } catch (err) {
         if (isPermissionError(err)) {
           if (!_permissionWarned) {
@@ -1378,6 +1450,7 @@ export class ConversationStore {
     }
     this.#nextSeq = 1;
     this.updateIndex({ totalMessages: 0, lastMessageId: null });
+    this.#markAllDirty('clear');
   }
 
 
@@ -1618,24 +1691,37 @@ export class ConversationStore {
    * @param {number} [turnsLimit=DEFAULT_RECENT_TURNS]
    * @returns {{ messages: object[], oldestSeq: number|null, hasMore: boolean }}
    */
-  loadVisibleBySession(sessionId, beforeSeq, turnsLimit = DEFAULT_RECENT_TURNS) {
+  loadVisibleBySession(sessionId, beforeSeq, turnsLimit = DEFAULT_RECENT_TURNS, opts = {}) {
     if (!sessionId || !(turnsLimit > 0)) return { messages: [], oldestSeq: null, hasMore: false };
 
     const cutoff = Number.isFinite(beforeSeq) ? beforeSeq : Infinity;
+    const stopAtSeq = Number.isFinite(opts.stopAtSeq) ? Math.max(1, opts.stopAtSeq) : null;
     const page = this.#loadRecentSessionWindow(sessionId, turnsLimit, {
       beforeSeq: cutoff,
+      afterSeq: stopAtSeq === null ? -Infinity : stopAtSeq - 1,
       roles: null,
       stripAssistantToolCalls: false,
       visibleOnly: true,
     });
     const messages = projectVisibleSessionMessages(page.messages);
-    if (messages.length === 0) return { messages: [], oldestSeq: null, hasMore: page.truncated };
+    if (messages.length === 0) {
+      const nextBeforeSeq = Number.isFinite(page.nextBeforeSeq) ? page.nextBeforeSeq : null;
+      return {
+        messages: [],
+        oldestSeq: null,
+        nextBeforeSeq,
+        hasMore: page.truncated && (stopAtSeq === null || nextBeforeSeq > stopAtSeq),
+      };
+    }
 
     const oldestSeq = messages.length ? parseSeqFromId(messages[0].id) : null;
     return {
       messages,
       oldestSeq: Number.isFinite(oldestSeq) ? oldestSeq : null,
-      hasMore: page.truncated,
+      nextBeforeSeq: Number.isFinite(page.nextBeforeSeq)
+        ? Math.min(page.nextBeforeSeq, oldestSeq)
+        : (Number.isFinite(oldestSeq) ? oldestSeq : null),
+      hasMore: page.truncated && (stopAtSeq === null || oldestSeq > stopAtSeq),
     };
   }
 
@@ -1752,17 +1838,34 @@ export class ConversationStore {
   }
 
   /**
+   * Return every canonical visible entry newest-first. This is the single read
+   * model used by JSONL fallback search and the rebuildable SQLite worker.
+   *
+   * @param {string} sessionId
+   * @param {{ scanStats?: object }} [opts]
+   * @returns {object[]}
+   */
+  *iterateCanonicalVisibleEntriesBySession(sessionId, opts = {}) {
+    if (!sessionId) return;
+    yield* this.#iterateVisibleResponseEntries(sessionId, { scanStats: opts.scanStats });
+  }
+
+  loadCanonicalVisibleEntriesBySession(sessionId, opts = {}) {
+    return Array.from(this.iterateCanonicalVisibleEntriesBySession(sessionId, opts));
+  }
+
+  /**
    * Search user-visible messages inside one Session. The scan is newest-first
    * and stops as soon as one page plus a `hasMore` sentinel is found, so a
    * common recent hit does not materialize the full transcript.
    *
    * @param {string} sessionId
    * @param {string} query
-   * @param {{ limit?: number, beforeSeq?: number|null, senderKey?: string }} [opts]
+   * @param {{ limit?: number, beforeSeq?: number|null, senderKey?: string, scanStats?: object }} [opts]
    * @returns {{ results: object[], hasMore: boolean, nextBeforeSeq: number|null }}
    */
   searchVisibleBySession(sessionId, query, opts = {}) {
-    const needle = typeof query === 'string' ? query.trim().toLocaleLowerCase() : '';
+    const needle = normalizeLiteralSearch(typeof query === 'string' ? query.trim() : '');
     const senderKey = typeof opts.senderKey === 'string' ? opts.senderKey : '';
     if (!sessionId || (needle.length < 2 && !senderKey)) return { results: [], hasMore: false, nextBeforeSeq: null };
 
@@ -1771,7 +1874,7 @@ export class ConversationStore {
     const results = [];
     let hasMore = false;
 
-    for (const entry of this.#iterateVisibleResponseEntries(sessionId, { beforeSeq })) {
+    for (const entry of this.#iterateVisibleResponseEntries(sessionId, { beforeSeq, scanStats: opts.scanStats })) {
       const senderMatches = senderKey === 'user'
         ? entry.role === 'user'
         : (senderKey.startsWith('vp:')
@@ -1779,7 +1882,7 @@ export class ConversationStore {
           : true);
       if (!senderMatches) continue;
       const text = entry.textParts.join(' ');
-      const matchIndex = needle ? text.toLocaleLowerCase().indexOf(needle) : 0;
+      const matchIndex = needle ? findLiteralSearch(text, needle) : 0;
       if (matchIndex < 0) continue;
       if (results.length >= limit) {
         hasMore = true;
@@ -1807,7 +1910,7 @@ export class ConversationStore {
    * bodies never leave the Agent through this API.
    *
    * @param {string} sessionId
-   * @param {{ limit?: number, beforeSeq?: number|null, includeTotal?: boolean }} [opts]
+   * @param {{ limit?: number, beforeSeq?: number|null, includeTotal?: boolean, scanStats?: object }} [opts]
    * @returns {{ results: object[], hasMore: boolean, nextBeforeSeq: number|null, totalCount: number|null }}
    */
   loadVisibleOutlineBySession(sessionId, opts = {}) {
@@ -1818,7 +1921,7 @@ export class ConversationStore {
     const newestFirst = [];
     let hasMore = false;
 
-    for (const entry of this.#iterateVisibleResponseEntries(sessionId, { beforeSeq })) {
+    for (const entry of this.#iterateVisibleResponseEntries(sessionId, { beforeSeq, scanStats: opts.scanStats })) {
       if (newestFirst.length >= limit) {
         hasMore = true;
         break;
@@ -1831,9 +1934,9 @@ export class ConversationStore {
     }
 
     let totalCount = null;
-    if (opts.includeTotal !== false) {
+    if (opts.includeTotal === true) {
       totalCount = 0;
-      for (const _entry of this.#iterateVisibleResponseEntries(sessionId)) totalCount += 1;
+      for (const _entry of this.#iterateVisibleResponseEntries(sessionId, { scanStats: opts.scanStats })) totalCount += 1;
     }
 
     const oldestEntry = newestFirst[newestFirst.length - 1] || null;
@@ -1853,7 +1956,9 @@ export class ConversationStore {
    *
    * @param {string} sessionId
    * @param {number} anchorSeq
-   * @param {{ beforeTurns?: number, afterTurns?: number }} [opts]
+   * @param {{ beforeTurns?: number, afterTurns?: number, entryStartSeq?: number,
+   *   entryEndSeq?: number, sourceMessageIds?: string[], maxRows?: number,
+   *   maxBytes?: number }} [opts]
    * @returns {{ messages: object[], oldestSeq: number|null, hasMoreBefore: boolean }}
    */
   loadVisibleWindowBySession(sessionId, anchorSeq, opts = {}) {
@@ -1884,13 +1989,47 @@ export class ConversationStore {
       messages.push(message);
     }
 
+    const anchorIds = new Set(Array.isArray(opts.sourceMessageIds) ? opts.sourceMessageIds : []);
+    const entryStartSeq = Number.isFinite(opts.entryStartSeq) ? opts.entryStartSeq : anchorSeq;
+    const entryEndSeq = Number.isFinite(opts.entryEndSeq) ? opts.entryEndSeq : anchorSeq;
+    for (const message of this.#iterateSessionRows(sessionId, {
+      afterSeq: entryStartSeq - 1,
+      beforeSeq: entryEndSeq + 1,
+      desc: false,
+    })) {
+      if (!message?.id || seen.has(message.id)) continue;
+      if (anchorIds.size > 0 && !anchorIds.has(message.id)) continue;
+      seen.add(message.id);
+      messages.push(message);
+    }
+
     messages.sort(compareMessagesBySeq);
-    const visibleMessages = projectVisibleSessionMessages(messages);
-    const oldestSeq = visibleMessages.length > 0 ? parseSeqFromId(visibleMessages[0].id) : null;
+    const projected = projectVisibleSessionMessages(messages);
+    const maxRows = Math.min(500, Math.max(10, Number.isFinite(opts.maxRows) ? Math.floor(opts.maxRows) : 200));
+    const maxBytes = Math.min(2 * 1024 * 1024, Math.max(32 * 1024, Number.isFinite(opts.maxBytes) ? Math.floor(opts.maxBytes) : 512 * 1024));
+    const projectedById = new Map(projected.map(message => [message?.id, message]));
+    const anchorRows = Array.from(anchorIds, id => projectedById.get(id)).filter(Boolean);
+    const selected = anchorRows.slice();
+    const selectedIds = new Set(selected.map(message => message.id));
+    let selectedBytes = selected.reduce((sum, message) => sum + Buffer.byteLength(JSON.stringify(message)), 0);
+    const candidates = projected
+      .filter(message => !selectedIds.has(message?.id))
+      .sort((a, b) => Math.abs(parseSeqFromId(a.id) - anchorSeq) - Math.abs(parseSeqFromId(b.id) - anchorSeq));
+    for (const message of candidates) {
+      if (selected.length >= maxRows) break;
+      const bytes = Buffer.byteLength(JSON.stringify(message));
+      if (selected.length > 0 && selectedBytes + bytes > maxBytes) continue;
+      selected.push(message);
+      selectedBytes += bytes;
+    }
+    selected.sort(compareMessagesBySeq);
+    const oldestSeq = selected.length > 0 ? parseSeqFromId(selected[0].id) : null;
     return {
-      messages: visibleMessages,
+      messages: selected,
       oldestSeq: Number.isFinite(oldestSeq) ? oldestSeq : null,
-      hasMoreBefore: beforeRaw.truncated,
+      hasMoreBefore: beforeRaw.truncated || selected.length < projected.length,
+      rowCount: selected.length,
+      byteCount: selectedBytes,
     };
   }
 
@@ -2008,6 +2147,7 @@ export class ConversationStore {
       }
     }
     this.#nextSeq = null;
+    this.#markDirty({ sessionId }, 'delete-session');
     return removed;
   }
 
@@ -2092,7 +2232,10 @@ export class ConversationStore {
         }
       }
     }
-    if (removed > 0) this.#nextSeq = null;
+    if (removed > 0) {
+      this.#nextSeq = null;
+      this.#markAllDirty('compact-orphans');
+    }
     return { scanned, removed, orphans, skipped: false };
   }
 
@@ -2168,6 +2311,7 @@ export class ConversationStore {
         }
       }
     }
+    if (rewritten > 0) this.#markAllDirty('reassign-thread');
     return rewritten;
   }
 
@@ -2266,6 +2410,7 @@ export class ConversationStore {
         throw err;
       }
     }
+    if (copied > 0) this.#markAllDirty('copy-thread');
     return copied;
   }
 
@@ -2523,6 +2668,7 @@ export class ConversationStore {
 
   #loadRecentSessionWindow(sessionId, turnsLimit, {
     beforeSeq = Infinity,
+    afterSeq = -Infinity,
     roles = null,
     stripAssistantToolCalls = false,
     includeReflections = false,
@@ -2535,6 +2681,8 @@ export class ConversationStore {
     let boundaryCanonical = null;
     let truncated = false;
     let parsed = 0;
+    let oldestScannedSeq = null;
+    let scanCapped = false;
     const scanCap = recentSessionScanCap(turnsLimit);
 
     const project = (m) => {
@@ -2562,14 +2710,17 @@ export class ConversationStore {
     // and stop after the requested turn window is complete. Hidden/internal and
     // non-turn rows are not allowed to force an unbounded scan; a hard parse cap
     // conservatively marks the page truncated.
-    for (const m of this.#iterateSessionRows(sessionId, { beforeSeq, desc: true })) {
+    for (const m of this.#iterateSessionRows(sessionId, { beforeSeq, afterSeq, desc: true })) {
       if (parsed >= scanCap) {
         truncated = true;
+        scanCapped = true;
         break;
       }
       parsed += 1;
 
       if (!m || m.sessionId !== sessionId) continue;
+      const scannedSeq = parseSeqFromId(m.id);
+      if (Number.isFinite(scannedSeq)) oldestScannedSeq = scannedSeq;
 
       const boundaryComplete = turnsFromEnd >= turnsLimit;
       const hidden = isHiddenConversationRow(m)
@@ -2618,91 +2769,38 @@ export class ConversationStore {
     return {
       messages: turnsFromEnd > 0 ? sliceLastNTurns(kept, turnsLimit) : kept,
       truncated,
+      nextBeforeSeq: scanCapped
+        && pendingBoundaryRows.length === 0
+        && Number.isFinite(oldestScannedSeq)
+        ? oldestScannedSeq
+        : null,
     };
   }
 
   *#iterateVisibleResponseEntries(sessionId, opts = {}) {
     const beforeSeq = Number.isFinite(opts.beforeSeq) ? opts.beforeSeq : Infinity;
-    const seen = new Set();
-    let current = null;
-
-    const visibleRow = (message) => {
-      if (!message || message.sessionId !== sessionId || !isVisibleConversationRow(message)) return null;
-      if (message.role !== 'user' && message.role !== 'assistant') return null;
-      if (!message.id || seen.has(message.id)) return null;
-      seen.add(message.id);
-      const seq = parseSeqFromId(message.id);
-      if (!Number.isFinite(seq)) return null;
-      const text = this.#visibleSearchText(message.content);
-      // Session logs have used three sender shapes over time. Resolve them at
-      // the read boundary so existing data works without a disk migration.
-      const speakerVpId = message.speakerVpId || message.meta?.senderVpId
-        || (message.role === 'assistant' && message.from && message.from !== 'user'
-          ? message.from : null);
-      return {
-        message,
-        seq,
-        text,
-        speakerVpId,
-        groupKey: message.role === 'assistant'
-          ? `assistant:${message.turnId || message.id}:${speakerVpId || ''}`
-          : `user:${message.id}`,
-      };
-    };
-    const startEntry = (row) => ({
-      groupKey: row.groupKey,
-      role: row.message.role,
-      turnId: row.message.turnId || row.message.threadId || row.message.id,
-      speakerVpId: row.speakerVpId,
-      oldestSeq: row.seq,
-      anchor: row,
-      anchorHasText: !!row.text,
-      textParts: row.text ? [row.text] : [],
+    const rows = this.#iterateSessionRows(sessionId, {
+      beforeSeq,
+      desc: true,
+      scanStats: opts.scanStats,
     });
-    const mergeRow = (entry, row) => {
-      entry.oldestSeq = Math.min(entry.oldestSeq, row.seq);
-      if (row.text) entry.textParts.unshift(row.text);
-      if (!entry.anchorHasText && row.text) {
-        entry.anchor = row;
-        entry.anchorHasText = true;
-      }
-    };
-
-    for (const message of this.#iterateSessionRows(sessionId, { beforeSeq, desc: true })) {
-      const row = visibleRow(message);
-      if (!row) continue;
-      if (current && current.groupKey === row.groupKey) {
-        mergeRow(current, row);
-        continue;
-      }
-      if (current) yield current;
-      current = startEntry(row);
-    }
-    if (current) yield current;
+    yield* iterateCanonicalVisibleEntriesNewestFirst(rows, sessionId);
   }
 
   #projectVisibleResponseEntry(entry) {
     return {
-      messageId: entry.anchor.message.id,
-      ...(entry.anchor.message.clientMessageId ? { clientMessageId: entry.anchor.message.clientMessageId } : {}),
+      entryId: entry.entryId,
+      messageId: entry.anchorMessageId,
+      ...(entry.clientMessageId ? { clientMessageId: entry.clientMessageId } : {}),
       turnId: entry.turnId,
-      seq: entry.anchor.seq,
+      seq: entry.anchorSeq,
+      entryStartSeq: entry.entryStartSeq,
       role: entry.role,
       speakerVpId: entry.speakerVpId,
-      timestamp: entry.anchor.message.ts || entry.anchor.message.time || null,
-      _beforeSeq: entry.oldestSeq,
+      sourceMessageIds: entry.sourceMessageIds,
+      timestamp: entry.timestamp,
+      _beforeSeq: entry.entryStartSeq,
     };
-  }
-
-  #visibleSearchText(content) {
-    if (typeof content === 'string') return content.replace(/\s+/g, ' ').trim();
-    if (!Array.isArray(content)) return '';
-    return content
-      .filter(part => part && typeof part === 'object' && part.type === 'text')
-      .map(part => typeof part.text === 'string' ? part.text : '')
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim();
   }
 
   #searchSnippet(text, matchIndex, needleLength) {
@@ -2728,7 +2826,12 @@ export class ConversationStore {
     for (const entry of this.#sessionFileEntries('all', sessionId, opts)) {
       try {
         const msg = this.readMessageFile(entry.path);
-        if (msg) yield msg;
+        addScanMetric(opts.scanStats, 'legacyFiles');
+        try { addScanMetric(opts.scanStats, 'bytes', statSync(entry.path).size); } catch {}
+        if (msg) {
+          addScanMetric(opts.scanStats, 'rows');
+          yield msg;
+        }
       } catch (err) {
         if (isPermissionError(err)) continue;
         throw err;

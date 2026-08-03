@@ -45,7 +45,7 @@ describe('MessageList virtualization wiring', () => {
     expect(messageList).toContain("if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') pauseAutoFollow();");
     expect(messageList).toContain('resumeBoundaryReached: reachedBottom,');
     expect(messageList).toContain('virtualTranscriptRef.value?.cancelPendingBottomFollow?.();');
-    expect(messageList).toContain('const revealMessage = async (messageId) => {\n      if (!messageId) return false;\n      pauseAutoFollow();');
+    expect(messageList).toContain('const revealMessage = async (target) => {\n      if (!target) return false;\n      pauseAutoFollow();');
     expect(messageList).not.toContain('scrollToBlock: (blockId) => {\n          resumeAutoFollow();');
     expect(transcript).toContain('function cancelPendingBottomFollow({ preserveTarget = false } = {}) {');
     expect(transcript).toContain('pendingScrollToBottom = false;');
