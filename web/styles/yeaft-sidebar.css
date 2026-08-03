@@ -180,7 +180,11 @@
 .sidebar-session-menu-info strong { min-width: 0; overflow: hidden; color: inherit; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-session-menu-info strong:first-child { flex: 1; }
 .sidebar-session-menu-info strong:last-child { flex: 0 0 auto; text-align: right; }
-.sidebar-session-row[draggable="true"], .sidebar-session-row[draggable="true"]:active { cursor: default; }
+.sidebar-session-row[draggable="true"] { cursor: grab; user-select: none; }
+.sidebar-session-row[draggable="true"]:active { cursor: grabbing; }
+.sidebar-session-row.dragging { opacity: 0.55; }
+.sidebar-session-row.drag-before { box-shadow: inset 0 2px 0 var(--accent-blue); }
+.sidebar-session-row.drag-after { box-shadow: inset 0 -2px 0 var(--accent-blue); }
 
 .project-instruction-modal {
   width: min(640px, 92vw);

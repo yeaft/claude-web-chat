@@ -3,9 +3,20 @@ function timestampValue(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function sortRows(rows) {
+function hasCompleteSortRanks(rows) {
+  if (rows.length === 0) return false;
+  const ranks = rows.map(row => row?.sortRank);
+  return ranks.every(Number.isFinite) && new Set(ranks).size === rows.length;
+}
+
+function sortRows(rows, ranked = hasCompleteSortRanks(rows)) {
   return [...rows].sort((left, right) => {
     if (!!left.pinned !== !!right.pinned) return left.pinned ? -1 : 1;
+    if (ranked) {
+      const leftRank = Number.isFinite(left.sortRank) ? left.sortRank : Number.MAX_SAFE_INTEGER;
+      const rightRank = Number.isFinite(right.sortRank) ? right.sortRank : Number.MAX_SAFE_INTEGER;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+    }
     const metadataDelta = timestampValue(right.metadataUpdatedAt || right.createdAt)
       - timestampValue(left.metadataUpdatedAt || left.createdAt);
     if (metadataDelta !== 0) return metadataDelta;
@@ -15,6 +26,31 @@ function sortRows(rows) {
 
 function projectIdentityKey(project) {
   return project?.id || '';
+}
+
+function catalogOrderChanged(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return true;
+  return left.some((row, index) => row?.catalogKey !== right[index]?.catalogKey);
+}
+
+/**
+ * Move one catalog row before/after another row, or append it to the catalog.
+ * The complete catalog is preserved so hidden/offline Sessions keep a stable
+ * rank when a visible row is dragged.
+ */
+export function reorderSessionCatalogRows(rows, movedKey, targetKey = null, position = 'before') {
+  const ordered = Array.isArray(rows) ? [...rows] : [];
+  const fromIndex = ordered.findIndex(row => row?.catalogKey === movedKey);
+  if (fromIndex < 0) return null;
+  const [moved] = ordered.splice(fromIndex, 1);
+  if (position === 'append') {
+    ordered.push(moved);
+    return ordered;
+  }
+  const targetIndex = ordered.findIndex(row => row?.catalogKey === targetKey);
+  if (targetIndex < 0) return null;
+  ordered.splice(targetIndex + (position === 'after' ? 1 : 0), 0, moved);
+  return ordered;
 }
 
 export function calculateFloatingMenuPosition(triggerRect, menuSize, viewport = {}) {
@@ -78,6 +114,7 @@ export default {
   emits: ['select', 'create', 'action', 'project-action', 'close-work-center'],
   props: {
     sessions: { type: Array, default: () => [] },
+    projectStore: { type: Object, default: null },
     projects: { type: Array, default: () => [] },
     activeRoute: { type: Object, default: null },
     isSessionUnread: { type: Function, default: null },
@@ -94,6 +131,9 @@ export default {
       suppressedActionsKey: null,
       draggedRow: null,
       dragTargetProjectId: null,
+      dragTargetRowKey: null,
+      dragTargetPosition: null,
+      dragOperationPending: false,
       projectCreateOpen: false,
       projectCreateName: '',
       projectCreateSubmitting: false,
@@ -121,11 +161,15 @@ export default {
     window.removeEventListener('scroll', this.positionFloatingMenu, true);
   },
   computed: {
-    projectStore() {
+    resolvedProjectStore() {
+      if (this.projectStore) return this.projectStore;
       try { return window.Pinia?.useChatStore?.() || null; } catch { return null; }
     },
+    hasCompleteCatalogOrder() {
+      return hasCompleteSortRanks(this.sessions);
+    },
     projectRows() {
-      const projects = this.projects.length > 0 ? this.projects : (this.projectStore?.sessionProjects || []);
+      const projects = this.projects.length > 0 ? this.projects : (this.resolvedProjectStore?.sessionProjects || []);
       return [...projects].sort((a, b) => (
         (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER)
       ));
@@ -159,7 +203,7 @@ export default {
     rowsByProject() {
       const out = new Map();
       for (const [id, rows] of this.projectSessionRows) {
-        out.set(id, sortRows(rows.filter(row => this.isRowOnline(row))));
+        out.set(id, sortRows(rows.filter(row => this.isRowOnline(row)), this.hasCompleteCatalogOrder));
       }
       return out;
     },
@@ -171,7 +215,7 @@ export default {
           if (this.projectBySessionKey.has(key)) return false;
         }
         return true;
-      }));
+      }), this.hasCompleteCatalogOrder);
     },
   },
   methods: {
@@ -378,13 +422,20 @@ export default {
       const normalizedAction = action === 'delete' ? 'remove' : action;
       this.$emit('action', { action: normalizedAction, row });
     },
+    dispatchSessionAction(payload) {
+      if (payload?.action === 'reorder' && this.resolvedProjectStore?.reorderCatalogSessions) {
+        return this.resolvedProjectStore.reorderCatalogSessions(payload.sessions);
+      }
+      this.$emit('action', payload);
+      return true;
+    },
     dispatchProjectAction(payload) {
       if (payload?.action === 'move-session'
           && !this.canMoveRowToProject(payload?.row, payload?.project || null)) return false;
       this.$emit('project-action', payload);
-      const store = this.projectStore;
+      const store = this.resolvedProjectStore;
       if (!store?.mutateProject) return true;
-      const { action, project, row, name, agentId: explicitAgentId } = payload;
+      const { action, project, row, name, catalogOrder, agentId: explicitAgentId } = payload;
       const agentId = explicitAgentId || row?.routeRef?.agentId || null;
       if (action === 'create') return store.mutateProject('create', { name }, agentId);
       const projectId = project?.legacyProjectId || project?.id;
@@ -400,6 +451,12 @@ export default {
         return store.mutateProject('move_session', {
           sessionId: row.routeRef.sessionId,
           projectId: project?.legacyProjectId || project?.id || null,
+          ...(Array.isArray(catalogOrder) ? {
+            catalogOrder: catalogOrder.map(item => ({
+              catalogKey: item.catalogKey,
+              routeRef: item.routeRef,
+            })),
+          } : {}),
         }, agentId);
       }
       return false;
@@ -477,44 +534,173 @@ export default {
         this.projectInstructionSubmitting = false;
       }
     },
-    moveRow(row, project = null) {
+    moveRow(row, project = null, catalogOrder = null) {
       this.closeMenus();
       if (!this.canMoveRowToProject(row, project)) return false;
-      return this.dispatchProjectAction({ action: 'move-session', row, project });
+      return this.dispatchProjectAction({ action: 'move-session', row, project, catalogOrder });
+    },
+    projectForRow(row) {
+      if (row?.runtimeProvider !== 'yeaft') return null;
+      const key = `${row.routeRef?.agentId}\u001f${row.routeRef?.sessionId}`;
+      return this.projectBySessionKey.get(key) || null;
+    },
+    canDragRow(row, project = null) {
+      if (this.dragOperationPending || !this.canEditRow(row)) return false;
+      if (!project) return true;
+      if (row?.runtimeProvider !== 'yeaft') return false;
+      const sameProject = projectIdentityKey(this.projectForRow(row)) === projectIdentityKey(project);
+      return sameProject || this.canMoveRowToProject(row, project);
+    },
+    canDropRow(row, project = null) {
+      if (!row || this.dragOperationPending || !this.canEditRow(row)) return false;
+      if (!project) return row.runtimeProvider === 'yeaft' || !this.projectForRow(row);
+      if (row.runtimeProvider !== 'yeaft') return false;
+      const sameProject = projectIdentityKey(this.projectForRow(row)) === projectIdentityKey(project);
+      return sameProject ? this.canEditRow(row) : this.canMoveRowToProject(row, project);
     },
     startDrag(row, event) {
-      if (row.runtimeProvider !== 'yeaft' || !this.canEditRow(row)) return;
+      if (!this.canDragRow(row, this.projectForRow(row))) return;
+      this.closeMenus();
       this.draggedRow = row;
-      event.dataTransfer.effectAllowed = 'move';
-      event.dataTransfer.setData('text/plain', row.catalogKey);
+      this.dragTargetProjectId = null;
+      this.dragTargetRowKey = null;
+      this.dragTargetPosition = null;
+      if (event?.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', row.catalogKey);
+      }
+    },
+    dragPositionForEvent(event) {
+      const rect = event?.currentTarget?.getBoundingClientRect?.();
+      if (!rect || !Number.isFinite(event?.clientY)) return 'before';
+      return event.clientY > rect.top + rect.height / 2 ? 'after' : 'before';
+    },
+    dragOverRow(row, project, event) {
+      const moved = this.draggedRow;
+      if (!this.canDropRow(moved, project)
+          || moved.catalogKey === row?.catalogKey
+          || !!moved.pinned !== !!row?.pinned) return;
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      if (event?.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      this.dragTargetProjectId = null;
+      this.dragTargetRowKey = row.catalogKey;
+      this.dragTargetPosition = this.dragPositionForEvent(event);
+    },
+    dragLeaveRow(row, event) {
+      if (this.dragTargetRowKey !== row?.catalogKey) return;
+      const next = event?.relatedTarget;
+      if (next && event?.currentTarget?.contains?.(next)) return;
+      this.dragTargetRowKey = null;
+      this.dragTargetPosition = null;
+    },
+    async dropOnRow(row, project, event) {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      const moved = this.draggedRow;
+      const position = this.dragTargetRowKey === row?.catalogKey
+        ? this.dragTargetPosition
+        : this.dragPositionForEvent(event);
+      this.finishDrag();
+      if (!this.canDropRow(moved, project) || !position) return false;
+      return this.applySessionDrop(moved, project, row, position);
     },
     dragOverProject(project, event) {
-      if (!this.canMoveRowToProject(this.draggedRow, project)) {
-        this.dragTargetProjectId = null;
+      if (!this.canDropRow(this.draggedRow, project)) {
+        this.clearDragTarget();
         return;
       }
-      event.preventDefault();
-      event.dataTransfer.dropEffect = 'move';
+      event?.preventDefault?.();
+      if (event?.dataTransfer) event.dataTransfer.dropEffect = 'move';
       this.dragTargetProjectId = projectIdentityKey(project);
+      this.dragTargetRowKey = null;
+      this.dragTargetPosition = null;
     },
-    dropOnProject(project, event) {
-      event.preventDefault();
-      if (this.canMoveRowToProject(this.draggedRow, project)) this.moveRow(this.draggedRow, project);
+    async dropOnProject(project, event) {
+      event?.preventDefault?.();
+      const moved = this.draggedRow;
       this.finishDrag();
+      if (!this.canDropRow(moved, project)) return false;
+      return this.applySessionDropAtEnd(moved, project);
     },
     dragOverRecents(event) {
-      if (!this.draggedRow) return;
-      event.preventDefault();
+      if (!this.canDropRow(this.draggedRow, null)) {
+        this.clearDragTarget();
+        return;
+      }
+      event?.preventDefault?.();
+      if (event?.dataTransfer) event.dataTransfer.dropEffect = 'move';
       this.dragTargetProjectId = '__recents__';
+      this.dragTargetRowKey = null;
+      this.dragTargetPosition = null;
     },
-    dropOnRecents(event) {
-      event.preventDefault();
-      if (this.draggedRow) this.moveRow(this.draggedRow, null);
+    async dropOnRecents(event) {
+      event?.preventDefault?.();
+      const moved = this.draggedRow;
       this.finishDrag();
+      if (!this.canDropRow(moved, null)) return false;
+      return this.applySessionDropAtEnd(moved, null);
+    },
+    clearGroupDragTarget(key, event) {
+      if (this.dragTargetProjectId !== key) return;
+      const next = event?.relatedTarget;
+      if (next && event?.currentTarget?.contains?.(next)) return;
+      this.dragTargetProjectId = null;
+    },
+    clearDragTarget() {
+      this.dragTargetProjectId = null;
+      this.dragTargetRowKey = null;
+      this.dragTargetPosition = null;
     },
     finishDrag() {
       this.draggedRow = null;
-      this.dragTargetProjectId = null;
+      this.clearDragTarget();
+    },
+    rowsForProject(project = null) {
+      return project
+        ? (this.rowsByProject.get(projectIdentityKey(project)) || [])
+        : this.recentRows;
+    },
+    async applySessionDropAtEnd(moved, project = null) {
+      const targetRows = this.rowsForProject(project)
+        .filter(row => row.catalogKey !== moved?.catalogKey);
+      const target = targetRows.at(-1) || null;
+      return this.applySessionDrop(moved, project, target, target ? 'after' : 'append');
+    },
+    async applySessionDrop(moved, project, target, position) {
+      if (!moved?.catalogKey || !this.canDropRow(moved, project)) return false;
+      const currentOrder = sortRows(this.sessions);
+      const nextOrder = reorderSessionCatalogRows(
+        currentOrder,
+        moved.catalogKey,
+        target?.catalogKey || null,
+        position,
+      );
+      if (!nextOrder) return false;
+
+      const sourceProject = this.projectForRow(moved);
+      const membershipChanged = projectIdentityKey(sourceProject) !== projectIdentityKey(project);
+      const orderChanged = catalogOrderChanged(currentOrder, nextOrder);
+      if (!membershipChanged && !orderChanged) return false;
+
+      this.dragOperationPending = true;
+      try {
+        if (membershipChanged) {
+          const result = await this.moveRow(moved, project, nextOrder);
+          return result !== false && result?.ok !== false;
+        }
+        if (orderChanged) {
+          const accepted = await this.dispatchSessionAction({
+            action: 'reorder',
+            row: moved,
+            sessions: nextOrder,
+          });
+          return accepted !== false;
+        }
+        return true;
+      } finally {
+        this.dragOperationPending = false;
+      }
     },
   },
   template: `
@@ -564,7 +750,7 @@ export default {
               class="sidebar-project-header"
               :class="{ 'drag-over': dragTargetProjectId === projectKey(project) }"
               @dragover="dragOverProject(project, $event)"
-              @dragleave="dragTargetProjectId = null"
+              @dragleave="clearGroupDragTarget(projectKey(project), $event)"
               @drop="dropOnProject(project, $event)"
             >
               <button type="button" class="sidebar-project-toggle" @click="toggleProject(project)">
@@ -583,11 +769,14 @@ export default {
                 v-for="row in rowsByProject.get(projectKey(project)) || []"
                 :key="row.catalogKey"
                 class="session-item sidebar-session-row"
-                :class="{ active: isActive(row), processing: isProcessing(row), 'actions-suppressed': suppressedActionsKey === row.catalogKey }"
-                :draggable="row.runtimeProvider === 'yeaft' && canEditRow(row)"
+                :class="{ active: isActive(row), processing: isProcessing(row), dragging: draggedRow?.catalogKey === row.catalogKey, 'drag-before': dragTargetRowKey === row.catalogKey && dragTargetPosition === 'before', 'drag-after': dragTargetRowKey === row.catalogKey && dragTargetPosition === 'after', 'actions-suppressed': suppressedActionsKey === row.catalogKey }"
+                :draggable="canDragRow(row, project)"
                 role="button"
                 tabindex="0"
                 @dragstart="startDrag(row, $event)"
+                @dragover="dragOverRow(row, project, $event)"
+                @dragleave="dragLeaveRow(row, $event)"
+                @drop="dropOnRow(row, project, $event)"
                 @dragend="finishDrag"
                 @pointerleave="restoreRowActions(row)"
                 @click="selectRow(row, $event, { suppressActions: true })"
@@ -617,7 +806,7 @@ export default {
           </div>
         </section>
 
-        <section class="sidebar-section recents-section" :class="{ 'drag-over': dragTargetProjectId === '__recents__' }" @dragover="dragOverRecents" @dragleave="dragTargetProjectId = null" @drop="dropOnRecents">
+        <section class="sidebar-section recents-section" :class="{ 'drag-over': dragTargetProjectId === '__recents__' }" @dragover="dragOverRecents" @dragleave="clearGroupDragTarget('__recents__', $event)" @drop="dropOnRecents">
           <div class="sidebar-section-heading">
             <span>{{ $t('sidebar.recents.title') }}</span>
             <button type="button" class="sidebar-tool-button sidebar-recents-create" @click="createSession" :title="$t('sidebar.sessions.newChat')" :aria-label="$t('sidebar.sessions.newChat')">
@@ -631,11 +820,14 @@ export default {
             v-for="row in recentRows"
             :key="row.catalogKey"
             class="session-item sidebar-session-row"
-            :class="{ active: isActive(row), processing: isProcessing(row), 'actions-suppressed': suppressedActionsKey === row.catalogKey }"
-            :draggable="row.runtimeProvider === 'yeaft' && canEditRow(row)"
+            :class="{ active: isActive(row), processing: isProcessing(row), dragging: draggedRow?.catalogKey === row.catalogKey, 'drag-before': dragTargetRowKey === row.catalogKey && dragTargetPosition === 'before', 'drag-after': dragTargetRowKey === row.catalogKey && dragTargetPosition === 'after', 'actions-suppressed': suppressedActionsKey === row.catalogKey }"
+            :draggable="canDragRow(row)"
             role="button"
             tabindex="0"
             @dragstart="startDrag(row, $event)"
+            @dragover="dragOverRow(row, null, $event)"
+            @dragleave="dragLeaveRow(row, $event)"
+            @drop="dropOnRow(row, null, $event)"
             @dragend="finishDrag"
             @pointerleave="restoreRowActions(row)"
             @click="selectRow(row, $event, { suppressActions: true })"

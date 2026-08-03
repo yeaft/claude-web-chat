@@ -11,7 +11,7 @@ import {
 import { agents, pendingFiles, trackUserTurn, webClients } from '../context.js';
 import {
   sendToWebClient, forwardToAgent,
-  broadcastAgentList, broadcastSessionCatalog,
+  broadcastAgentList, broadcastSessionCatalog, buildSessionCatalog,
   verifyConversationOwnership, verifyAgentOwnership
 } from '../ws-utils.js';
 import { routeSessionPin } from './session-pin-router.js';
@@ -98,6 +98,35 @@ function persistSessionPin(userId, routeRef, pinned) {
     pinned,
     sortRank: current?.sortRank ?? null,
   }]);
+}
+
+function catalogOrderUpdates(client, items) {
+  if (!client?.userId || !Array.isArray(items) || items.length === 0) return null;
+  const canonical = buildSessionCatalog(client.userId, client.role);
+  if (canonical.length !== items.length) return null;
+  const canonicalByKey = new Map(canonical.map(row => [row.catalogKey, row]));
+  if (canonicalByKey.size !== canonical.length) return null;
+
+  const seen = new Set();
+  const updates = [];
+  for (const [sortRank, item] of items.entries()) {
+    const row = canonicalByKey.get(item?.catalogKey);
+    const routeRef = item?.routeRef;
+    if (!row || seen.has(item.catalogKey)
+        || routeRef?.runtimeProvider !== row.routeRef?.runtimeProvider
+        || routeRef?.agentId !== row.routeRef?.agentId
+        || routeRef?.sessionId !== row.routeRef?.sessionId) return null;
+    seen.add(item.catalogKey);
+    updates.push({
+      catalogKey: row.catalogKey,
+      runtimeProvider: row.routeRef.runtimeProvider,
+      agentId: row.routeRef.agentId,
+      sessionId: row.routeRef.sessionId,
+      pinned: row.pinned === true,
+      sortRank,
+    });
+  }
+  return seen.size === canonical.length ? updates : null;
 }
 
 export function groupOnlineYeaftSessions(rows, agentRegistry = agents) {
@@ -522,43 +551,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
 
     case 'reorder_session_catalog': {
       if (!client.userId || !Array.isArray(msg.sessions)) break;
-      const updates = [];
-      for (const [index, item] of msg.sessions.entries()) {
-        const routeRef = item?.routeRef;
-        if (!item?.catalogKey || !routeRef?.runtimeProvider) { updates.length = 0; break; }
-        const { runtimeProvider, agentId, sessionId } = routeRef;
-        let expectedCatalogKey = null;
-        if (runtimeProvider === 'yeaft') {
-          if (!agentId || !sessionId || !yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) {
-            updates.length = 0;
-            break;
-          }
-          expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
-        } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
-          if (!agentId || !sessionId
-            || (!CONFIG.skipAuth && !verifyConversationOwnership(sessionId, client.userId, client.role))) {
-            updates.length = 0;
-            break;
-          }
-          const row = sessionDb.get(sessionId);
-          if (!row || row.agent_id !== agentId || (row.provider || 'claude-code') !== runtimeProvider) {
-            updates.length = 0;
-            break;
-          }
-          expectedCatalogKey = chatCatalogKey(sessionId);
-        }
-        if (expectedCatalogKey !== item.catalogKey) { updates.length = 0; break; }
-        updates.push({
-          catalogKey: expectedCatalogKey,
-          runtimeProvider,
-          agentId,
-          sessionId,
-          pinned: item.pinned === true,
-          sortRank: index,
-        });
-      }
+      const updates = catalogOrderUpdates(client, msg.sessions);
       let persisted = false;
-      if (updates.length === msg.sessions.length && updates.length > 0) {
+      if (updates) {
         try {
           persisted = sessionUiMetadataDb.applyBatch(client.userId, updates);
           if (persisted) await broadcastSessionCatalog(client.userId);
@@ -1340,10 +1335,19 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
             error.code = 'session_archived';
             throw error;
           }
+          const catalogUpdates = msg.catalogOrder === undefined
+            ? null
+            : catalogOrderUpdates(client, msg.catalogOrder);
+          if (msg.catalogOrder !== undefined && !catalogUpdates) {
+            const error = new Error('Complete canonical catalog order is required');
+            error.code = 'invalid_catalog_order';
+            throw error;
+          }
           result = yeaftProjectDb.moveSession(client.userId, {
             agentId,
             sessionId,
             projectId: msg.projectId || null,
+            catalogUpdates,
           });
         } else {
           throw new Error('Unknown Project operation');

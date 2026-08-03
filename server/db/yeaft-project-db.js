@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { stmts, transaction } from './connection.js';
+import { applySessionUiMetadataUpdates } from './session-ui-metadata-db.js';
 
 export class YeaftProjectDbError extends Error {
   constructor(code, message) {
@@ -137,7 +138,12 @@ export const yeaftProjectDb = {
     return { projectId: id };
   },
 
-  moveSession(userId, { agentId, sessionId, projectId = null } = {}) {
+  moveSession(userId, {
+    agentId,
+    sessionId,
+    projectId = null,
+    catalogUpdates = null,
+  } = {}) {
     const ownerId = requireUserId(userId);
     const targetAgentId = requireId(agentId, 'invalid_agent_id', 'Agent id');
     const targetSessionId = requireId(sessionId, 'invalid_session_id', 'Session id');
@@ -145,8 +151,12 @@ export const yeaftProjectDb = {
       ? null
       : requireId(projectId, 'invalid_project_id', 'Project id');
     if (targetProjectId) requireProject(ownerId, targetProjectId);
+    if (catalogUpdates !== null && (!Array.isArray(catalogUpdates) || catalogUpdates.length === 0)) {
+      throw new YeaftProjectDbError('invalid_catalog_order', 'Complete catalog order is required');
+    }
 
-    transaction(() => {
+    return transaction(() => {
+      const now = Date.now();
       stmts.deleteYeaftProjectSessionMembership.run(ownerId, targetAgentId, targetSessionId);
       if (targetProjectId) {
         stmts.insertYeaftProjectSessionMembership.run(
@@ -154,11 +164,12 @@ export const yeaftProjectDb = {
           targetProjectId,
           targetAgentId,
           targetSessionId,
-          Date.now(),
+          now,
         );
       }
+      if (catalogUpdates) applySessionUiMetadataUpdates(ownerId, catalogUpdates, now);
+      return { agentId: targetAgentId, sessionId: targetSessionId, projectId: targetProjectId };
     })();
-    return { agentId: targetAgentId, sessionId: targetSessionId, projectId: targetProjectId };
   },
 
   reconcileAgentSessions(userId, agentId, sessionIds) {
