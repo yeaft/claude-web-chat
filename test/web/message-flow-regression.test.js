@@ -2892,18 +2892,58 @@ describe('message flow regressions', () => {
       conversationId: 'conv-b',
       event: { type: 'vp_turn_start', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a' },
     });
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: { type: 'vp_status_changed', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a', state: 'streaming' },
+    });
     expect(Object.values(store.activeVpTurns).filter(row => row.turnId === 'turn-a')).toHaveLength(2);
+    expect(store.vpStatuses['agent-a::shared::omni']?.state).toBe('streaming');
     store.handleYeaftOutput({
       agentId: 'agent-a',
       conversationId: 'conv-a',
       event: { type: 'vp_turn_end', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a', reason: 'end_turn' },
     });
     await Vue.nextTick();
+    expect(store.vpStatuses['agent-a::shared::omni']).toEqual(expect.objectContaining({
+      state: 'idle',
+      turnId: null,
+    }));
     expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(false);
     expect(store.isYeaftSessionProcessing('shared', 'agent-b')).toBe(true);
     expect(wrapper.findAll('.processing-dot')).toHaveLength(1);
     expect(wrapper.findAll('.session-item')[0].classes()).not.toContain('processing');
     expect(wrapper.findAll('.session-item')[1].classes()).toContain('processing');
+
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: { type: 'vp_turn_start', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a-1' },
+    });
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: { type: 'vp_turn_start', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a-2' },
+    });
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: { type: 'vp_status_changed', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a-2', state: 'streaming' },
+    });
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: { type: 'vp_turn_end', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a-1', reason: 'end_turn' },
+    });
+    expect(store.vpStatuses['agent-a::shared::omni']?.state).toBe('streaming');
+    expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(true);
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: { type: 'vp_turn_end', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a-2', reason: 'end_turn' },
+    });
+    expect(store.vpStatuses['agent-a::shared::omni']?.state).toBe('idle');
+    expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(false);
 
     store.activeVpTurns = {};
     store.yeaftProcessingSessions = {};
