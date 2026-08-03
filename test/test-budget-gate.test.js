@@ -23,9 +23,7 @@ describe('test budget gate', () => {
     const windowsEntry = 'C:\\repo\\scripts\\check-test-budget.mjs';
     expect(isMainModule(pathToFileURL(windowsEntry).href, windowsEntry)).toBe(true);
     expect(isMainModule(import.meta.url, windowsEntry)).toBe(false);
-  });
 
-  it('keeps the sandbox suite separate from the core budget', () => {
     expect(SANDBOX_TEST_FILES).toHaveLength(9);
     expect(REVIEWED_TEST_FILES).toEqual([...CORE_TEST_FILES, ...SANDBOX_TEST_FILES]);
     for (const file of SANDBOX_TEST_FILES) {
