@@ -1,5 +1,6 @@
 import { execFile, execFileSync, spawn } from 'child_process';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import { platform, homedir } from 'os';
 import ctx from '../context.js';
@@ -7,8 +8,10 @@ import { getConfigDir, getServiceName, getPm2AppName, getLaunchdPlistPath, DEFAU
 import {
   buildUpgradeInstallCommand,
   buildUpgradeMetadataArgs,
-  buildUpgradeUpdateCommand,
   launchWindowsUpgradeScript,
+  prepareWindowsUpgradeRunner,
+  resolveWindowsNpmCliPath,
+  resolveWindowsPm2CliPath,
 } from '../upgrade-command.js';
 import { sendToServer } from './buffer.js';
 import { stopAgentHeartbeat } from './heartbeat.js';
@@ -51,11 +54,6 @@ export function isUpgradeAvailable(currentVersion, latestVersion) {
   const latest = parseSemver(latestVersion);
   if (!current || !latest) return currentVersion !== latestVersion;
   return cmpTuple(latest, current) > 0;
-}
-
-/** Build the detached Windows npm invocation used after the Agent exits. */
-export function buildWindowsUpgradeCommand() {
-  return `call ${buildUpgradeUpdateCommand('%PKG%')}`;
 }
 
 // Shared cleanup logic for restart/upgrade
@@ -268,115 +266,65 @@ export async function handleUpgradeAgent() {
 }
 
 async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion, instanceId = DEFAULT_INSTANCE_ID) {
-  const pid = process.pid;
   const configDir = getConfigDir(instanceId);
-  mkdirSync(configDir, { recursive: true });
+  const upgradeDir = join(configDir, 'upgrade-runtime');
   const logDir = join(configDir, 'logs');
   mkdirSync(logDir, { recursive: true });
-  const batPath = join(configDir, 'upgrade.bat');
-  const handoffPath = join(configDir, 'upgrade.started');
+
+  const runnerPath = join(upgradeDir, 'windows-upgrade-runner.js');
+  const commandPath = join(upgradeDir, 'upgrade-command.js');
+  const payloadPath = join(upgradeDir, 'payload.json');
+  const handoffPath = join(upgradeDir, 'started');
   const logPath = join(logDir, 'upgrade.log');
+  const ecosystemPath = join(configDir, 'ecosystem.config.cjs');
+  const npmCliPath = resolveWindowsNpmCliPath(process.execPath);
+  if (!npmCliPath) throw new Error('npm JavaScript CLI entry point could not be resolved');
   const isPm2 = !!process.env.pm_id;
-  const installDirWin = installDir.replace(/\//g, '\\');
-  const ecoPath = join(configDir, 'ecosystem.config.cjs').replace(/\//g, '\\');
-
-  const pm2Win = pm2Path.replace(/\//g, '\\');
-
-  const batLines = [
-    '@echo off',
-    'setlocal',
-    `set PID=${pid}`,
-    `set PKG=${pkgName}`,
-    `set INSTALL_DIR=${installDirWin}`,
-    `set LOGFILE=${logPath}`,
-    `set HANDOFF=${handoffPath}`,
-    `set MAX_WAIT=30`,
-    `set COUNT=0`,
-    '',
-    ':: Change to temp dir to avoid EBUSY on cwd',
-    'cd /d "%TEMP%"',
-    '',
-    'echo started>"%HANDOFF%"',
-    'echo [Upgrade] Started at %date% %time% > "%LOGFILE%"',
-    `echo [Upgrade] Version: ${ctx.agentVersion} -> ${latestVersion} >> "%LOGFILE%"`,
-    `echo [Upgrade] PM2 managed: ${isPm2 ? 'yes (deleted pre-exit)' : 'no'} >> "%LOGFILE%"`,
-    `echo [Upgrade] Install dir: ${installDirWin} >> "%LOGFILE%"`,
-  ];
-
-  // Wait for old process to exit (PM2 already deleted before exit, so no auto-restart race)
-  batLines.push(
-    'echo [Upgrade] Waiting for PID %PID% to exit... >> "%LOGFILE%"',
-    ':WAIT_LOOP',
-    'tasklist /FI "PID eq %PID%" /NH 2>NUL | findstr /C:"%PID%" >NUL',
-    'if errorlevel 1 goto PID_EXITED',
-    'set /A COUNT+=1',
-    'if %COUNT% GEQ %MAX_WAIT% (',
-    '  echo [Upgrade] Timeout waiting for PID %PID% to exit after %MAX_WAIT%s >> "%LOGFILE%"',
-    '  goto PID_EXITED',
-    ')',
-    'ping -n 3 127.0.0.1 >NUL',
-    'goto WAIT_LOOP',
-    ':PID_EXITED',
-  );
-
-  // No need to pm2 stop — PM2 app was already deleted before process exit.
-  // Wait extra time for file locks to fully release.
-  batLines.push(
-    'echo [Upgrade] Process exited at %time%, waiting for file locks... >> "%LOGFILE%"',
-    'ping -n 5 127.0.0.1 >NUL',
-  );
-
-  // Run npm only after the Agent has released its package files. The old
-  // package-copy worker performed a second dependency install, hid failures,
-  // and bypassed npm's supported global-update transaction.
-  batLines.push(
-    'echo [Upgrade] Running npm update at %time%... >> "%LOGFILE%"',
-    `${buildWindowsUpgradeCommand()} >> "%LOGFILE%" 2>&1`,
-    'if not "%errorlevel%"=="0" (',
-    '  echo [Upgrade] npm update failed with exit code %errorlevel% at %time% >> "%LOGFILE%"',
-    '  goto RESTART_SERVICE',
-    ')',
-    'echo [Upgrade] npm update succeeded at %time% >> "%LOGFILE%"',
-  );
-
-  batLines.push(':RESTART_SERVICE');
-
-  if (isPm2) {
-    // Re-register and start via ecosystem config (PM2 app was deleted pre-exit)
-    batLines.push(
-      'echo [Upgrade] Re-registering agent via PM2... >> "%LOGFILE%"',
-      `if exist "${ecoPath}" (`,
-      `  call "${pm2Win}" start "${ecoPath}" >> "%LOGFILE%" 2>&1`,
-      `  call "${pm2Win}" save >> "%LOGFILE%" 2>&1`,
-      '  echo [Upgrade] PM2 app re-registered at %time% >> "%LOGFILE%"',
-      ') else (',
-      '  echo [Upgrade] WARNING: ecosystem.config.cjs not found, PM2 not restarted >> "%LOGFILE%"',
-      ')',
-    );
+  const pm2CliPath = isPm2 ? resolveWindowsPm2CliPath(process.execPath) : null;
+  if (isPm2 && !pm2CliPath) {
+    throw new Error('PM2 manages this Agent, but its JavaScript CLI entry point could not be resolved');
   }
 
-  batLines.push(
-    '',
-    'echo [Upgrade] Finished at %time% >> "%LOGFILE%"',
-    'del /F /Q "%HANDOFF%" 2>NUL',
-    `del /F /Q "${batPath}"`,
-  );
-
-  writeFileSync(batPath, batLines.join('\r\n'));
+  const payload = {
+    parentPid: process.pid,
+    packageSpec: `${pkgName}@${latestVersion}`,
+    globalInstall: isGlobalInstall,
+    installDir,
+    logPath,
+    handoffPath,
+    runnerPath,
+    commandPath,
+    payloadPath,
+    nodePath: process.execPath,
+    npmCliPath,
+    pm2CliPath,
+    ecosystemPath: isPm2 ? ecosystemPath : null,
+  };
+  prepareWindowsUpgradeRunner({
+    sourceRunnerPath: fileURLToPath(new URL('../windows-upgrade-runner.js', import.meta.url)),
+    sourceCommandPath: fileURLToPath(new URL('../upgrade-command.js', import.meta.url)),
+    runnerPath,
+    commandPath,
+    payloadPath,
+    payload,
+  });
 
   const launcher = await launchWindowsUpgradeScript({
-    batPath,
+    nodePath: process.execPath,
+    runnerPath,
+    payloadPath,
+    logPath,
     handoffPath,
     spawnProcess: spawn,
     onHandoff: isPm2
       ? () => {
-          execFileSync(pm2Path, ['delete', getPm2AppName(instanceId)], { stdio: 'pipe', env: safeEnv, ...shellOpt });
+          execFileSync(process.execPath, [pm2CliPath, 'delete', getPm2AppName(instanceId)], { stdio: 'pipe', env: safeEnv });
           console.log('[Agent] PM2 app deleted after upgrade handoff');
         }
       : undefined,
   });
 
-  console.log(`[Agent] Spawned upgrade via ${launcher} (PID wait for ${pid}, pm2=${isPm2}, dir=${installDir}): ${batPath}`);
+  console.log(`[Agent] Spawned Windows upgrade runner via ${launcher} (pm2=${isPm2}, dir=${installDir})`);
   await sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion, pendingRestart: true });
 }
 
