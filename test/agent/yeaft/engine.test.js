@@ -3744,6 +3744,15 @@ describe('Engine', () => {
       expect(enSystem).toContain('[Project Instruction]');
       expect(enSystem).toContain('The current Session belongs to Project Yeaft (project-123). The unified instruction for this Project is:');
       expect(enSystem).toContain('Run the shared Project verification before release.');
+      expect(buildSystemPrompt({
+        language: 'en',
+        projectInstruction: 'Use the current Project instruction.',
+      })).toContain('The current Session belongs to the current Project. The unified instruction for this Project is:');
+      expect(buildSystemPrompt({
+        language: 'zh',
+        projectLabel: '   ',
+        projectInstruction: '使用当前 Project 指令。',
+      })).toContain('当前 Session 隶属于当前 Project。当前 Project 的统一 instruction 是：');
       expect(buildSystemPrompt({ language: 'en', projectInstruction: '   ' }))
         .not.toContain('[Project Instruction]');
       expect(enSystem).toContain('Avoid an intermediate `TodoWrite`-only model round');

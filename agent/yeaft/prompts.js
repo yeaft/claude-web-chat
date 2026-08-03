@@ -205,7 +205,9 @@ const PROMPTS = {
     multiVpRoutingHeader: '## multi_vp_routing',
     sessionAnnouncementHeader: '[Session Announcement]',
     projectInstructionHeader: '[Project Instruction]',
-    projectInstructionIntro: (projectLabel) => `The current Session belongs to Project ${projectLabel}. The unified instruction for this Project is:`,
+    projectInstructionIntro: (projectLabel) => projectLabel
+      ? `The current Session belongs to Project ${projectLabel}. The unified instruction for this Project is:`
+      : 'The current Session belongs to the current Project. The unified instruction for this Project is:',
     workCenterInstructionsHeader: '[Work Center Agent Instructions]',
     workCenterInstructionsIntro: 'These Agent-level instructions apply to every Action in this WorkItem. Follow them unless they conflict with system/tool safety rules, the authoritative project document, or the WorkItem contract.',
     // Project-doc (CLAUDE.md / AGENTS.md) header + one-liner intro. Both
@@ -229,7 +231,9 @@ const PROMPTS = {
     multiVpRoutingHeader: '## multi_vp_routing',
     sessionAnnouncementHeader: '[会话公告]',
     projectInstructionHeader: '[Project 指令]',
-    projectInstructionIntro: (projectLabel) => `当前 Session 隶属于 Project ${projectLabel}。当前 Project 的统一 instruction 是：`,
+    projectInstructionIntro: (projectLabel) => projectLabel
+      ? `当前 Session 隶属于 Project ${projectLabel}。当前 Project 的统一 instruction 是：`
+      : '当前 Session 隶属于当前 Project。当前 Project 的统一 instruction 是：',
     workCenterInstructionsHeader: '[Work Center Agent 指令]',
     workCenterInstructionsIntro: '这些 Agent 级指令作用于当前 Work Item 的每个 Action。除非与系统/工具安全规则、权威项目文档或 Work Item 契约冲突，否则必须遵循。',
     // 项目文档块：CLAUDE.md / AGENTS.md（与 Codex 通用命名兼容）。
@@ -368,8 +372,7 @@ export function buildSystemPrompt({
   const projectInstructionText = typeof projectInstruction === 'string' ? projectInstruction.trim() : '';
   if (projectInstructionText) {
     const header = lang.projectInstructionHeader || '[Project Instruction]';
-    const normalizedProjectLabel = typeof projectLabel === 'string' && projectLabel.trim()
-      ? projectLabel.trim() : (effectiveLang === 'zh' ? '当前 Project' : 'the current Project');
+    const normalizedProjectLabel = typeof projectLabel === 'string' ? projectLabel.trim() : '';
     const intro = typeof lang.projectInstructionIntro === 'function'
       ? lang.projectInstructionIntro(normalizedProjectLabel)
       : '';
