@@ -29,14 +29,14 @@ const RECENT_DEFAULT_CAPACITY = 64;
 
 /**
  * @typedef {object} AmsLayers
- * @property {Map<string, string>}                resident
+ * @property {Map<string, { summary: string, category?: string }>} resident
  * @property {Array<{ id: string, seg: import('./segment.js').Segment, ts: number }>} recent
  * @property {Map<string, import('./segment.js').Segment>} onDemand
  */
 
 /**
  * @typedef {object} AmsSnapshot
- * @property {Array<{ scope: string, summary: string }>} resident
+ * @property {Array<{ scope: string, summary: string, category?: string }>} resident
  * @property {import('./segment.js').Segment[]} recent
  * @property {import('./segment.js').Segment[]} onDemand
  * @property {{ resident: number, recent: number, onDemand: number, total: number }} usage
@@ -55,8 +55,8 @@ export class ActiveMemorySet {
     this.ownVpId = opts.ownVpId || null;
     this.budget = opts.budget;
     this.recentCapacity = opts.recentCapacity || RECENT_DEFAULT_CAPACITY;
-    /** @type {Map<string, string>} */
-    this._resident = new Map();          // scope → summaryText
+    /** @type {Map<string, { summary: string, category?: string }>} */
+    this._resident = new Map();          // scope → prompt-facing summary metadata
     /** @type {Map<string, { seg: import('./segment.js').Segment, ts: number }>} */
     this._recent = new Map();            // segId → entry (insertion-order is LRU order)
     /** @type {Map<string, import('./segment.js').Segment>} */
@@ -69,7 +69,7 @@ export class ActiveMemorySet {
    * Replace the resident layer with a fresh set of scope→summary
    * pairs. Foreign VP scopes are silently dropped.
    *
-   * @param {Array<{ scope: string, summary: string }>} entries
+   * @param {Array<{ scope: string, summary: string, category?: string }>} entries
    */
   setResident(entries) {
     this._resident.clear();
@@ -77,7 +77,10 @@ export class ActiveMemorySet {
       if (this._isForeignVp(e.scope)) continue;
       const summary = cleanMemoryPromptText(e.summary);
       if (!summary) continue;
-      this._resident.set(e.scope, summary);
+      this._resident.set(e.scope, {
+        summary,
+        ...(typeof e.category === 'string' && e.category ? { category: e.category } : {}),
+      });
     }
   }
 
@@ -159,8 +162,15 @@ export class ActiveMemorySet {
     // Resident: pack scopes by priority order (caller provides via insert
     // order — current group's own vp first, then user, etc.).
     const { picked: resPicked, cost: resCost } = pickMemoryItems({
-      items: [...this._resident.entries()].map(([scope, summary]) => ({
-        scope, summary: filterMemoryPromptTextForPrompt(summary, userMsg),
+      items: [...this._resident.entries()].map(([scope, entry]) => ({
+        scope,
+        // Related-Session summaries are explicitly historical context. Keep the
+        // bounded prose intact and label it as experience instead of dropping
+        // the whole paragraph because it mentions an old PR/tag/task state.
+        summary: entry.category === 'experience'
+          ? cleanMemoryPromptText(entry.summary)
+          : filterMemoryPromptTextForPrompt(entry.summary, userMsg),
+        ...(entry.category ? { category: entry.category } : {}),
       })),
       budget: this.budget.resident,
       seen: seenPromptText,

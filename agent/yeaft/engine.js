@@ -31,6 +31,7 @@ import { evaluateCompactTriggers } from './compact/triggers.js';
 import { archiveTurn } from './archive/turn-archive.js';
 import { archiveToolResults } from './archive/tool-results.js';
 import { readSummary as readScopeSummary } from './memory/store.js';
+import { ActiveMemorySet } from './memory/ams.js';
 import { runAdjust } from './memory/adjust.js';
 import { cleanMemoryPromptText, isMemoryPromptRelevant } from './memory/prompt-cleanup.js';
 import { isVpSeedBackfillStub } from './memory/seed-backfill.js';
@@ -44,7 +45,7 @@ import { lookupModelLimitSync } from './llm/models-dev.js';
 import { countTurns } from './turn-utils.js';
 import { attachRouterPlan, extractPriorPlan, stripMetaForWire } from './router/continuity.js';
 import { resolveThinking } from './router/thinking.js';
-import { approxTokens } from './memory/budget.js';
+import { approxTokens, computeBudget } from './memory/budget.js';
 import { COLLAB_TOOL_POLICY, isToolErrorOutput, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
 import { extractDisplayImages, stripDisplayImageData } from './image-assets.js';
 import { acknowledgePendingNotifications, formatNotificationsForPrompt, peekPendingNotifications } from './sub-agent/notifications.js';
@@ -399,7 +400,7 @@ export function shouldAllowGroupReflection({
  * @param {{
  *   sessionId?: string|null,
  *   ownVpId?: string|null,
- *   summaries: { user?: string, session?: string, vp?: string, topics?: Array<{scope:string, summary:string}> }
+ *   summaries: { user?: string, session?: string, vp?: string, topics?: Array<{scope:string, summary:string}>, relatedSessions?: Array<{sessionId:string, summary:string}> }
  * }} args
  * @returns {Array<{scope: string, summary: string}>}
  */
@@ -445,11 +446,28 @@ export function buildResidentEntries(args) {
   if (args.sessionId && args.ownVpId && vpSummary && !isVpSeedBackfillStub(vpSummary)) {
     out.push({ scope: `sessions/${args.sessionId}/vp/${args.ownVpId}`, summary: vpSummary });
   }
+  // Related Session experience is useful but lower-priority than every memory
+  // source owned by the active Session/VP. Append it last so the resident
+  // budget can never evict current context in favour of historical prose.
+  if (Array.isArray(summaries.relatedSessions)) {
+    for (const related of summaries.relatedSessions) {
+      const relatedSessionId = typeof related?.sessionId === 'string' ? related.sessionId.trim() : '';
+      const summary = cleanMemoryPromptText(related?.summary);
+      if (relatedSessionId && relatedSessionId !== args.sessionId && summary) {
+        out.push({ scope: `sessions/${relatedSessionId}`, summary });
+      }
+    }
+  }
   return out;
 }
 
 function isZhRuntimeLanguage(language) {
   return String(language || '').toLowerCase().startsWith('zh');
+}
+
+function sessionIdFromMemoryScope(scope) {
+  const match = /^(?:sessions|session|group)\/([^/]+)$/.exec(String(scope || ''));
+  return match ? match[1] : null;
 }
 
 function resolveMemoryRecallLimit(config) {
@@ -476,6 +494,7 @@ function loadedResidentDebugEntries(entries) {
     kind: 'summary',
     score: null,
     tags: [],
+    category: entry.category || null,
     body: entry.summary || '',
   })).filter(entry => entry.body);
 }
@@ -910,13 +929,17 @@ export class Engine {
    * dream tick (Phase 6) is what populates these; on a fresh install they
    * all return ''.
    *
-   * @param {{sessionId?: string, vpId?: string, language?: string, topicScopes?: string[]}} ctx
-   * @returns {Promise<{user:string, session:string, vp:string, topics:Array<{scope:string, summary:string}>}>}
+   * @param {{sessionId?: string, vpId?: string, language?: string, topicScopes?: string[], relatedSessionIds?: string[]}} ctx
+   * @returns {Promise<{user:string, session:string, vp:string, topics:Array<{scope:string, summary:string}>, relatedSessions:Array<{sessionId:string, summary:string}>}>}
    */
-  async #loadLayerASummaries({ sessionId, vpId, language, topicScopes } = {}) {
-    if (!this.#yeaftDir) return { user: '', session: '', vp: '', topics: [] };
+  async #loadLayerASummaries({ sessionId, vpId, language, topicScopes, relatedSessionIds } = {}) {
+    if (!this.#yeaftDir) return { user: '', session: '', vp: '', topics: [], relatedSessions: [] };
     const memoryRoot = `${this.#yeaftDir}/memory`;
     const topicScopeList = Array.isArray(topicScopes) ? topicScopes.slice(0, 12) : [];
+    const relatedIds = Array.from(new Set((Array.isArray(relatedSessionIds) ? relatedSessionIds : [])
+      .filter(id => typeof id === 'string' && id.trim() && id.trim() !== sessionId)
+      .map(id => id.trim())))
+      .slice(0, 8);
     const tasks = [
       readScopeSummary({ kind: 'user' }, { root: memoryRoot, language }).catch(() => ''),
       sessionId
@@ -926,10 +949,18 @@ export class Engine {
         ? readScopeSummary({ kind: 'session-vp', sessionId, id: vpId }, { root: memoryRoot, language }).catch(() => '')
         : Promise.resolve(''),
       Promise.all(topicScopeList.map(scope => readTopicSummary(scope, { root: memoryRoot, language }))),
+      Promise.all(relatedIds.map(async relatedSessionId => ({
+        sessionId: relatedSessionId,
+        summary: await readScopeSummary(
+          { kind: 'session', id: relatedSessionId },
+          { root: memoryRoot, language },
+        ).catch(() => ''),
+      }))),
     ];
-    const [user, session, vp, topicsRaw] = await Promise.all(tasks);
+    const [user, session, vp, topicsRaw, relatedSessionsRaw] = await Promise.all(tasks);
     const topics = (topicsRaw || []).filter(t => t && t.summary);
-    return { user: user || '', session: session || '', vp: vp || '', topics };
+    const relatedSessions = (relatedSessionsRaw || []).filter(entry => entry && entry.summary);
+    return { user: user || '', session: session || '', vp: vp || '', topics, relatedSessions };
   }
 
   async #loadSessionTopicLabels(sessionId, limit = 8) {
@@ -967,27 +998,42 @@ export class Engine {
    * } | null}
    */
   #prepareAms(args) {
-    if (!this.#amsRegistry) return null;
     const sessionKey = args.sessionId || 'default';
     const ownVpId = args.ownVpId || null;
-    const ams = this.#amsRegistry.getOrCreate(sessionKey, { ownVpId });
+    // Some read-only Engine entry points (notably sub-agents) intentionally do
+    // not own the parent's persistent registry. They still need the single AMS
+    // render outlet, otherwise FTS recall succeeds and then vanishes before the
+    // prompt. Use an isolated per-query AMS in that case: it preserves budgets,
+    // cleanup, and dedupe without sharing mutable parent state or writing disk.
+    const ams = this.#amsRegistry
+      ? this.#amsRegistry.getOrCreate(sessionKey, { ownVpId })
+      : new ActiveMemorySet({
+          ownVpId,
+          budget: computeBudget(this.#config?.maxContextTokens),
+        });
 
     // Prime #adjustRanBySession from disk-hydrated state on first access:
     // a reactivated group resumes with whatever adjustRanThisSession bit
     // it had on disconnect, so we don't burn a fresh adjust on every
     // reload. Once set true in this session we never clear it.
-    if (!this.#adjustRanBySession.has(sessionKey)
+    if (this.#amsRegistry
+        && !this.#adjustRanBySession.has(sessionKey)
         && this.#amsRegistry.adjustRanThisSession(sessionKey)) {
       this.#adjustRanBySession.set(sessionKey, true);
     }
 
     // (a) Resident: rebuild from the same scope summaries the worker
     // prompt is already going to see.
+    const relatedSessionIds = new Set((args.summaries?.relatedSessions || [])
+      .map(entry => entry?.sessionId)
+      .filter(Boolean));
     const residentEntries = buildResidentEntries({
       sessionId: args.sessionId,
       ownVpId,
       summaries: args.summaries || {},
-    });
+    }).map(entry => relatedSessionIds.has(entry.scope.replace(/^sessions\//, ''))
+      ? { ...entry, category: 'experience' }
+      : { ...entry, category: 'memory' });
     ams.setResident(residentEntries);
 
     // (b) onDemand: replace with this turn's FTS hits.
@@ -996,7 +1042,11 @@ export class Engine {
 
     // (c) Snapshot — render the AMS layers as a single prompt block.
     const snapshot = ams.snapshot({ userMsg: args.userMsg || '' });
-    const snapshotBlock = this.#renderAmsSnapshot(snapshot, this.#config.language || 'en');
+    const snapshotBlock = this.#renderAmsSnapshot(
+      snapshot,
+      this.#config.language || 'en',
+      args.sessionId || null,
+    );
 
     const scopes = buildRelevantScopes({
       sessionId: args.sessionId,
@@ -1015,33 +1065,36 @@ export class Engine {
    * @param {string} [language]
    * @returns {string}
    */
-  #renderAmsSnapshot(snap, language = 'en') {
+  #renderAmsSnapshot(snap, language = 'en', activeSessionId = null) {
     if (!snap) return '';
     const parts = [];
     if (snap.resident.length === 0 && snap.recent.length === 0 && snap.onDemand.length === 0) {
       return '';
     }
     const zh = isZhRuntimeLanguage(language);
-    parts.push(zh ? '## 活跃记忆集' : '## Active Memory Set');
+    const experiences = snap.resident.filter(entry => entry.category === 'experience');
+    const residentMemory = snap.resident.filter(entry => entry.category !== 'experience');
+    parts.push(zh ? '## 相关上下文' : '## Relevant Context');
     parts.push(zh
-      ? '以下记忆按当前用户语言呈现；如果个别历史摘要仍是其他语言，请只把它当作事实来源，回答和新增记忆应使用中文。'
-      : 'Memory is presented for the current user language; if an older summary is in another language, treat it as factual context and continue in English.');
-    if (snap.resident.length > 0) {
-      parts.push(zh ? '### 常驻记忆' : '### Resident');
-      for (const r of snap.resident) {
-        parts.push(`- **${memoryScopeLabel(r.scope)}**: ${r.summary}`);
+      ? '以下内容来自持久记忆与相关 Session 的只读经验总结；只把它当作事实背景，不要把过期执行状态当成当前任务。'
+      : 'The following text comes from persistent memory and read-only summaries of related Sessions. Treat it as factual context, not as current execution state.');
+    if (experiences.length > 0) {
+      parts.push(zh ? '### 过去 Session 的经验总结' : '### Experience From Past Sessions');
+      for (const entry of experiences) {
+        const sourceSessionId = sessionIdFromMemoryScope(entry.scope);
+        const label = sourceSessionId && sourceSessionId !== activeSessionId
+          ? sourceSessionId
+          : memoryScopeLabel(entry.scope);
+        parts.push(`- **${label}**: ${entry.summary}`);
       }
     }
-    if (snap.recent.length > 0) {
-      parts.push(zh ? '### 最近记忆' : '### Recent');
-      for (const s of snap.recent) {
-        parts.push(`- (${memoryScopeLabel(s.scope)}) ${(s.body || '').trim()}`);
+    if (residentMemory.length > 0 || snap.recent.length > 0 || snap.onDemand.length > 0) {
+      parts.push(zh ? '### 相关记忆' : '### Relevant Memory');
+      for (const entry of residentMemory) {
+        parts.push(`- **${memoryScopeLabel(entry.scope)}**: ${entry.summary}`);
       }
-    }
-    if (snap.onDemand.length > 0) {
-      parts.push(zh ? '### 按需记忆' : '### OnDemand');
-      for (const s of snap.onDemand) {
-        parts.push(`- (${memoryScopeLabel(s.scope)}) ${(s.body || '').trim()}`);
+      for (const segment of [...snap.recent, ...snap.onDemand]) {
+        parts.push(`- (${memoryScopeLabel(segment.scope)}) ${(segment.body || '').trim()}`);
       }
     }
     return parts.join('\n');
@@ -2146,6 +2199,7 @@ export class Engine {
         : (typeof senderVpId === 'string' ? senderVpId : undefined),
       language: this.#config.language || 'en',
       topicScopes: topicScopesForResident,
+      relatedSessionIds: projectSessionIds,
     });
 
     // ─── AMS: populate + snapshot ───────────────────────────────
@@ -2211,7 +2265,9 @@ export class Engine {
 
     const projectDoc = this.#getProjectDocBlock(workDir);
     const activeTasks = this.#taskManager
-      ? this.#taskManager.renderActiveTasksForPrompt(runtimeSessionId)
+      ? this.#taskManager.renderActiveTasksForPrompt(runtimeSessionId, {
+          language: this.#config.language || 'en',
+        })
       : '';
     let resolvedSkillContent = '';
     let resolvedSkills = [];

@@ -5277,12 +5277,11 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         const projectSessionIds = projectContext?.sessionIds || [];
         queryOpts.projectSessionIds = projectSessionIds;
         queryOpts.projectInstruction = projectContext?.projectInstruction || '';
-        const projectSummaries = await sharedProjectContext(ctx.CONFIG?.yeaftDir, sessionId, {
-          sessionIds: projectSessionIds,
-          language: session?.config?.language,
-          tokenBudget: Math.max(512, Math.floor((session?.config?.messageTokenBudget || 32768) / 8)),
-        });
-        const sharedBlock = buildProjectSharedBlock(projectContext, projectSummaries);
+        // Related Session summaries now enter through Engine's single AMS
+        // memory outlet. Keep this announcement limited to Project identity and
+        // sharing boundaries so parent VP prompts do not duplicate the same prose
+        // that sub-agents receive through memory.
+        const sharedBlock = buildProjectSharedBlock(projectContext);
         if (sharedBlock) {
           queryOpts.sessionAnnouncement = queryOpts.sessionAnnouncement
             ? `${queryOpts.sessionAnnouncement}\n\n${sharedBlock}`

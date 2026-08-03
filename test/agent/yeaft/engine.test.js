@@ -32,6 +32,7 @@ import {
 } from '../../../agent/yeaft/managed-cli.js';
 import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
+import { TaskManager } from '../../../agent/yeaft/tasks/manager.js';
 import {
   createOutputCollector,
   listRipgrepCandidatePaths,
@@ -120,6 +121,27 @@ describe('Engine memory prompt hygiene', () => {
     expect(entries).toEqual([
       { scope: 'sessions/s1', summary: 'Useful session fact.' },
       { scope: 'sessions/s1/topic/dream/recall', summary: 'Topic detail stays.' },
+    ]);
+  });
+
+  it('includes related Session summaries as separate resident sources', () => {
+    const entries = buildResidentEntries({
+      sessionId: 's1',
+      ownVpId: 'linus',
+      summaries: {
+        session: 'Current Session memory.',
+        relatedSessions: [
+          { sessionId: 's2', summary: 'Past Session experience: verify the remote tag target.' },
+          { sessionId: 's1', summary: 'Duplicate current Session summary must not be re-added.' },
+          { sessionId: 's3', summary: '<!-- dream-state -->\nold metadata\n<!-- /dream-state -->\nKeep this sibling lesson.' },
+        ],
+      },
+    });
+
+    expect(entries).toEqual([
+      { scope: 'sessions/s1', summary: 'Current Session memory.' },
+      { scope: 'sessions/s2', summary: 'Past Session experience: verify the remote tag target.' },
+      { scope: 'sessions/s3', summary: 'Keep this sibling lesson.' },
     ]);
   });
 
@@ -1274,8 +1296,8 @@ describe('Engine', () => {
 
       expect(mockAdapter.callLog).toHaveLength(1);
       const system = mockAdapter.callLog[0].system;
-      expect(system).toContain('## Active Memory Set');
-      expect(system).toContain('### Resident');
+      expect(system).toContain('## Relevant Context');
+      expect(system).toContain('### Relevant Memory');
       expect(system).toContain('Dream memory loaded into the prompt');
       expect(system).toContain('User-level Dream summary should enter the prompt');
       expect(system).toContain('VP Dream summary should enter the prompt');
@@ -1384,6 +1406,88 @@ describe('Engine', () => {
         expect(memoryUsed.loaded.map(entry => entry.body).join('\n')).not.toContain('billing dashboard export');
       } finally {
         rmSync(debugYeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('loads related Session experience and FTS memory without a persistent AMS registry', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-readable-context-'));
+      try {
+        await writeSummary(
+          { kind: 'session', id: 'sibling-session' },
+          'Reusable release experience: verify origin/main and the remote tag target before publishing.',
+          { root: join(yeaftDir, 'memory'), language: 'zh' },
+        );
+        const memoryIndex = {
+          search({ scopeFilter }) {
+            if (!scopeFilter.includes('sessions/current-session')) return [];
+            return [{
+              id: 'timeout-memory',
+              scope: 'sessions/current-session',
+              kind: 'context',
+              tags: ['timeout'],
+              sourceMessages: [],
+              body: 'Timeout cleanup failures must return a tool result so the Engine can continue.',
+              rank: -1,
+              createdAt: '2026-08-01T00:00:00.000Z',
+              updatedAt: '2026-08-01T00:00:00.000Z',
+            }];
+          },
+        };
+        const taskManager = new TaskManager({ yeaftDir });
+        const task = taskManager.startTask({
+          sessionId: 'current-session',
+          ownerVpId: 'linus',
+          kind: 'sub_agent',
+          title: 'Review timeout recovery and verify Engine continuation',
+          runtime: { name: 'timeout-reviewer' },
+          logPath: '/private/sub-agent/events.jsonl',
+        });
+        taskManager.store.appendLog('current-session', task.id, '{"type":"sub_agent_status","status":"running"}\n');
+        taskManager.refreshTaskLog('current-session', task.id);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          yeaftDir,
+          sessionId: 'current-session',
+          config: { model: 'claude-test', maxOutputTokens: 2048, language: 'zh' },
+          memoryIndex,
+          taskManager,
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: '检查 timeout cleanup failure',
+          sessionId: 'current-session',
+          projectSessionIds: ['sibling-session'],
+          vpPersona: { vpId: 'linus', name: 'Linus' },
+        })) {
+          events.push(event);
+        }
+
+        const system = mockAdapter.callLog.at(-1).system;
+        expect(system).toContain('## 相关上下文');
+        expect(system).toContain('### 过去 Session 的经验总结');
+        expect(system).toContain('**sibling-session**: Reusable release experience');
+        expect(system).toContain('### 相关记忆');
+        expect(system).toContain('Timeout cleanup failures must return a tool result');
+        expect(system).toContain('## 可能相关的任务');
+        expect(system).toContain('- 子 Agent timeout-reviewer (子 Agent，运行中)');
+        expect(system).not.toContain('Review timeout recovery and verify Engine continuation');
+        expect(system).not.toContain('<active_tasks>');
+        expect(system).not.toContain('/private/sub-agent/events.jsonl');
+        expect(system).not.toContain('sub_agent_status');
+        expect(events.find(event => event.type === 'memory_used')?.loaded).toEqual(expect.arrayContaining([
+          expect.objectContaining({ category: 'experience', scope: 'sessions/sibling-session' }),
+          expect.objectContaining({ layer: 'onDemand', id: 'timeout-memory' }),
+        ]));
+        expect(mockAdapter.callLog).toHaveLength(1);
+        expect(existsSync(join(yeaftDir, 'memory', 'sessions', 'current-session', 'ams.json'))).toBe(false);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
       }
     });
 
