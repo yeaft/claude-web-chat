@@ -18,14 +18,15 @@ describe('Session message quote UI wiring', () => {
     vi.unstubAllGlobals();
   });
 
-  it('keeps the attachment badge last and separates turn progress from the final Markdown result', async () => {
+  it('keeps user attachments inside the bubble and separates turn progress from the final Markdown result', async () => {
     const user = readFileSync(resolve(process.cwd(), 'web/components/MessageItem.js'), 'utf8');
-    const footerStart = user.indexOf('class="message-user-footer"');
-    const footerEnd = user.indexOf('<!-- Expanded attachments preview -->');
-    const footer = user.slice(footerStart, footerEnd);
+    const bubbleStart = user.indexOf('class="message-user-block"');
+    const attachmentsEnd = user.indexOf('<!-- Expanded attachments preview -->');
+    const bubbleBeforeAttachments = user.slice(bubbleStart, attachmentsEnd);
 
-    expect(footer).toContain('class="attachments-badge"');
-    expect(footer.indexOf("$emit('edit-as-new')")).toBeLessThan(footer.indexOf('class="attachments-badge"'));
+    expect(bubbleBeforeAttachments).toContain('class="attachments-badge"');
+    expect(bubbleBeforeAttachments).not.toContain('class="message-action-btn"');
+    expect(user.indexOf('class="message-user-actions"')).toBeGreaterThan(user.indexOf('class="user-attachments"'));
     expect(user).not.toContain('class="user-attachments-indicator"');
 
     globalThis.Vue = Vue;
@@ -219,10 +220,16 @@ describe('Session message quote UI wiring', () => {
     expect(user).toContain('class="message-user-meta-separator"');
     expect(user.indexOf('class="message-user-meta"')).toBeLessThan(blockStart);
     expect(userBlock).toContain('class="message-content"');
-    expect(userBlock).toContain('class="message-user-footer"');
+    expect(userBlock).toContain('class="message-user-attachments"');
     expect(userBlock).toContain('class="user-attachments"');
     expect(sidebarCss).toMatch(/\.message-user-block\s*\{[\s\S]*?background: var\(--bg-user-msg-subtle\);/);
     expect(sidebarCss).toMatch(/\.message-user-meta\s*\{[\s\S]*?justify-content: flex-end;/);
+    expect(sidebarCss).toMatch(/\.message-user-actions\s*\{[^}]*opacity:\s*0;/);
+    expect(sidebarCss).toMatch(/\.message\.user:hover \.message-user-actions,[\s\S]*?\.message\.user:focus-within \.message-user-actions\s*\{[^}]*opacity:\s*1;/);
+    expect(messagesCss).toMatch(/\.turn-footer\s*\{[^}]*opacity:\s*0;/);
+    expect(messagesCss).toMatch(/\.assistant-turn:hover \.turn-footer,[\s\S]*?\.assistant-turn:focus-within \.turn-footer[\s\S]*?opacity:\s*1;/);
+    expect(readFileSync(resolve(process.cwd(), 'web/styles/yeaft.css'), 'utf8'))
+      .not.toMatch(/\.yeaft-page \.turn-footer\s*\{[^}]*opacity:\s*1;/);
     expect(messagesCss).toMatch(/\.message\.user\s*\{[\s\S]*?align-items: stretch;/);
 
     globalThis.Vue = Vue;
@@ -230,7 +237,12 @@ describe('Session message quote UI wiring', () => {
     const { default: MessageItem } = await import('../../web/components/MessageItem.js');
     const wrapper = mount(MessageItem, {
       props: {
-        message: { type: 'user', content: 'Check this again', timestamp: Date.UTC(2026, 6, 28, 8, 15) },
+        message: {
+          type: 'user',
+          content: 'Check this again',
+          timestamp: Date.UTC(2026, 6, 28, 8, 15),
+          attachments: [{ name: 'layout.png', mimeType: 'image/png', isImage: true, preview: 'data:image/png;base64,AA==' }],
+        },
         sessionActions: true,
       },
       global: {
@@ -249,9 +261,15 @@ describe('Session message quote UI wiring', () => {
     expect(wrapper.get('.message-user-meta-separator').text()).toBe('·');
     expect(wrapper.get('.message-user-meta .message-time').text()).not.toBe('');
     expect(wrapper.get('.message-user-block .message-content').text()).toBe('Check this again');
-    expect(wrapper.findAll('.message-user-block .message-action-btn')).toHaveLength(2);
+    expect(wrapper.findAll('.message-user-block .message-action-btn')).toHaveLength(0);
+    expect(wrapper.findAll('.message-user-actions .message-action-btn')).toHaveLength(2);
+    expect(wrapper.get('.message-user-block .attachments-badge').text()).toContain('message.imageCount');
+    expect(wrapper.find('.message-user-actions .attachments-badge').exists()).toBe(false);
     expect(wrapper.get('.message-user-meta').element.compareDocumentPosition(
       wrapper.get('.message-user-block').element,
+    ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(wrapper.get('.message-user-block').element.compareDocumentPosition(
+      wrapper.get('.message-user-actions').element,
     ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     wrapper.unmount();
 

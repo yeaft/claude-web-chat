@@ -1497,6 +1497,7 @@
 }
 
 .assistant-turn:hover .turn-footer,
+.assistant-turn:focus-within .turn-footer,
 .message-block:hover .message-block-collapse-footer {
   opacity: 1;
 }

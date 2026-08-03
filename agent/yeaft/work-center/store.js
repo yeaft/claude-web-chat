@@ -1361,7 +1361,14 @@ export class WorkItemStore {
       WHERE status = 'claimed' AND lease_expires_at <= ?`).run(now, now).changes);
   }
 
-  prepareCoordinatorProviderTurn(workItemId, coordinatorTurnId, attemptNumber, requestBody, claim = {}) {
+  prepareCoordinatorProviderTurn(
+    workItemId,
+    coordinatorTurnId,
+    attemptNumber,
+    requestBody,
+    claim = {},
+    speaker = null,
+  ) {
     return withTransaction(this.db, () => {
       const mailbox = this.#activeCoordinatorMailboxClaim(coordinatorTurnId, claim);
       if (!mailbox || mailbox.work_item_id !== workItemId) return null;
@@ -1374,8 +1381,14 @@ export class WorkItemStore {
         }
         if (existing.claim_owner !== claim.ownerBootId
             || Number(existing.claim_epoch) !== Number(claim.claimEpoch)) return null;
-        return this.#mapCoordinatorProviderTurn(existing);
+        const persistedSpeaker = this.#persistCoordinatorSpeaker(
+          workItemId, coordinatorTurnId, null,
+        );
+        return { ...this.#mapCoordinatorProviderTurn(existing), speaker: persistedSpeaker };
       }
+      const persistedSpeaker = this.#persistCoordinatorSpeaker(
+        workItemId, coordinatorTurnId, speaker,
+      );
       const now = this.now();
       const id = durableId('coordinator-provider-turn');
       this.db.prepare(`INSERT INTO coordinator_provider_turns
@@ -1385,8 +1398,47 @@ export class WorkItemStore {
         id, workItemId, coordinatorTurnId, attemptNumber, stringify(requestBody), requestHash,
         claim.ownerBootId, claim.claimEpoch, now, now,
       );
-      return this.getCoordinatorProviderTurn(id);
+      return { ...this.getCoordinatorProviderTurn(id), speaker: persistedSpeaker };
     });
+  }
+
+  #persistCoordinatorSpeaker(workItemId, coordinatorTurnId, speaker) {
+    const workItem = this.getWorkItem(workItemId);
+    if (!workItem) return null;
+    const messages = [...(workItem.messages || [])];
+    const index = messages.findIndex(message => (
+      message?.turnId === coordinatorTurnId
+        && message.role === 'assistant'
+        && message.status === 'thinking'
+    ));
+    if (index < 0) return null;
+    const persistedSpeaker = messages[index].speaker;
+    const persistedId = typeof persistedSpeaker?.id === 'string' ? persistedSpeaker.id.trim() : '';
+    const persistedName = typeof persistedSpeaker?.name === 'string'
+      ? persistedSpeaker.name.trim()
+      : '';
+    if (persistedId || persistedName) {
+      return { id: persistedId || null, name: persistedName || persistedId };
+    }
+    const id = typeof speaker?.id === 'string' ? speaker.id.trim() : '';
+    const name = typeof speaker?.name === 'string' ? speaker.name.trim() : '';
+    if (!id && !name) return null;
+    if (!id || !name) throw new Error('Coordinator speaker identity is incomplete');
+    const persisted = { id, name };
+    messages[index] = { ...messages[index], speaker: persisted };
+    const changed = this.db.prepare(`UPDATE work_items SET messages = ?
+      WHERE id = ? AND coordinator_revision = ?`).run(
+      stringify(messages), workItemId, workItem.coordinatorRevision,
+    );
+    if (Number(changed.changes) !== 1) {
+      throw new Error('Coordinator speaker lost its revision fence');
+    }
+    this.#appendConversationEntry(
+      workItemId,
+      messages[index],
+      `coordinator:turn:${coordinatorTurnId}:assistant`,
+    );
+    return persisted;
   }
 
   #activeCoordinatorMailboxClaim(coordinatorTurnId, claim = {}) {
@@ -3363,7 +3415,11 @@ export class WorkItemStore {
 
       const graphState = ['answer'].includes(decision.kind) ? null : this.#graphWorkItemState(workItem.id);
       messages[assistantIndex] = {
-        ...messages[assistantIndex], text: result.reply, status: 'completed', updatedAt: now,
+        ...messages[assistantIndex],
+        text: result.reply,
+        status: 'completed',
+        updatedAt: now,
+        ...(result.speaker ? { speaker: result.speaker } : {}),
         decision: {
           kind: decision.kind,
           reason: decision.reason,
@@ -3423,7 +3479,10 @@ export class WorkItemStore {
       if (index < 0) return null;
       const now = this.now();
       messages[index] = {
-        ...messages[index], status: 'failed', updatedAt: now,
+        ...messages[index],
+        status: 'failed',
+        updatedAt: now,
+        ...(expected.speaker ? { speaker: expected.speaker } : {}),
         error: String(error?.message || error || 'Coordinator failed').slice(0, 8_000),
       };
       this.#appendConversationEntry(
