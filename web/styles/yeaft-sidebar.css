@@ -127,10 +127,14 @@
   background: linear-gradient(90deg, transparent, var(--session-active) 22px);
 }
 .sidebar-session-row:hover .session-actions,
-.sidebar-session-row:focus-within .session-actions,
+.sidebar-session-row .session-actions:focus-within,
 .sidebar-session-row .session-actions.menu-open {
   opacity: 1;
   pointer-events: auto;
+}
+.sidebar-session-row.actions-suppressed .session-actions {
+  opacity: 0;
+  pointer-events: none;
 }
 .sidebar-session-row .session-quick-action,
 .sidebar-session-row .session-dots-btn {
