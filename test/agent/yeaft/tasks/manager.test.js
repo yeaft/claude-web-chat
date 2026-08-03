@@ -207,7 +207,7 @@ describe('TaskManager', () => {
       sessionId: 'session_prompt',
       ownerVpId: 'vp_linus',
       kind: 'sub_agent',
-      title: `Review \`/home/azureuser/projects/yeaft/.yeaft/worktrees/fix-timeout\` recovery ${'with detailed checks '.repeat(30)}`,
+      title: `Review /home/azureuser/projects/yeaft/.yeaft/worktrees/fix-timeout recovery ${'with detailed checks '.repeat(30)}`,
       runtime: { command: 'npm run dev -- --host 0.0.0.0' },
       logPath: '/private/sub-agent/events.jsonl',
     });
@@ -223,12 +223,45 @@ describe('TaskManager', () => {
     expect(rendered).not.toContain(task.id);
     expect(rendered).not.toContain('/home/azureuser/projects');
     expect(rendered).not.toContain('/private/sub-agent/events.jsonl');
-    expect(rendered).not.toContain('`');
     expect(rendered).not.toContain('sub_agent_status');
     expect(rendered).not.toContain('npm run dev');
   });
 
-  it('does not leak a default background shell command through its title', () => {
+  it('uses safe prompt labels for structured, command, path, and URL titles', () => {
+    const manager = new TaskManager({ yeaftDir: dir });
+    const titles = [
+      ['json-worker', '{"type":"sub_agent_status","outputFile":"/private/events.jsonl"}'],
+      ['command-worker', 'Run npm test -- --watch'],
+      ['posix-worker', 'Read /etc'],
+      ['windows-worker', String.raw`Read C:\secret`],
+      ['unc-worker', String.raw`Read \\server\share\secret.txt`],
+      ['url-worker', 'Review https://github.com/yeaft/repo/issues/1494'],
+    ];
+    for (const [name, title] of titles) {
+      manager.startTask({
+        sessionId: 'session_safe_labels',
+        kind: 'sub_agent',
+        title,
+        runtime: { name },
+      });
+    }
+
+    const rendered = manager.renderActiveTasksForPrompt('session_safe_labels', { language: 'en', limit: 10 });
+    expect(rendered).toContain('- sub-agent json-worker (sub-agent, running)');
+    expect(rendered).toContain('- sub-agent command-worker (sub-agent, running)');
+    expect(rendered).toContain('- Read etc (sub-agent, running)');
+    expect(rendered).toContain('- Read secret (sub-agent, running)');
+    expect(rendered).toContain('- Read secret.txt (sub-agent, running)');
+    expect(rendered).toContain('- Review https://github.com/yeaft/repo/issues/1494 (sub-agent, running)');
+    expect(rendered).not.toContain('sub_agent_status');
+    expect(rendered).not.toContain('/private/events.jsonl');
+    expect(rendered).not.toContain('npm test');
+    expect(rendered).not.toContain(String.raw`C:\secret`);
+    expect(rendered).not.toContain(String.raw`\\server\share`);
+    expect(rendered).not.toContain('http1494');
+  });
+
+  it('does not leak default or explicit background shell commands through task titles', () => {
     const manager = new TaskManager({ yeaftDir: dir });
     const command = 'node server.js --token super-secret --watch';
     manager.startTask({
@@ -237,11 +270,19 @@ describe('TaskManager', () => {
       title: command.slice(0, 120),
       runtime: { command },
     });
+    manager.startTask({
+      sessionId: 'session_shell_prompt',
+      kind: 'shell',
+      title: 'Run node worker.js --token explicit-secret',
+      runtime: { command: 'sleep 30' },
+    });
 
     const rendered = manager.renderActiveTasksForPrompt('session_shell_prompt', { language: 'en' });
-    expect(rendered).toContain('- background command (background command, running)');
+    expect(rendered.match(/- background command \(background command, running\)/g)).toHaveLength(2);
     expect(rendered).not.toContain('node server.js');
     expect(rendered).not.toContain('super-secret');
+    expect(rendered).not.toContain('node worker.js');
+    expect(rendered).not.toContain('explicit-secret');
   });
 
   it('limits the task prompt list and points to task tools for the remainder', () => {
