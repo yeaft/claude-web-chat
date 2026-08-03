@@ -555,7 +555,12 @@ export default {
         </section>
 
         <section class="sidebar-section recents-section" :class="{ 'drag-over': dragTargetProjectId === '__recents__' }" @dragover="dragOverRecents" @dragleave="dragTargetProjectId = null" @drop="dropOnRecents">
-          <div class="sidebar-section-heading"><span>{{ $t('sidebar.recents.title') }}</span></div>
+          <div class="sidebar-section-heading">
+            <span>{{ $t('sidebar.recents.title') }}</span>
+            <button type="button" class="sidebar-tool-button sidebar-recents-create" @click="createSession" :title="$t('sidebar.sessions.newChat')" :aria-label="$t('sidebar.sessions.newChat')">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 4h16v13H7l-3 3V4zm2 2v9.17L6.17 15H18V6H6zm5 2h2v2h2v2h-2v2h-2v-2H9v-2h2V8z"/></svg>
+            </button>
+          </div>
           <div
             v-for="row in recentRows"
             :key="row.catalogKey"
