@@ -896,6 +896,8 @@ export function projectWorkItemDetail(detail, options = {}) {
       id: String(message.id || ''),
       turnId: String(message.turnId || message.id || ''),
       role: message.role === 'assistant' ? 'assistant' : message.role === 'legacy_instruction' ? 'legacy_instruction' : 'user',
+      ...(message.role === 'assistant' && projectVpSpeaker(message.speaker)
+        ? { speaker: projectVpSpeaker(message.speaker) } : {}),
       text: truncateUtf8(message.text || '', MAX_ACTION_MESSAGE_CHARS),
       attachments: projectAttachments(message.attachments),
       status: ['thinking', 'completed', 'failed'].includes(message.status) ? message.status : 'completed',

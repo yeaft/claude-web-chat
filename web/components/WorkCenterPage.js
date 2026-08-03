@@ -465,6 +465,18 @@ export default {
     actionLabel(type) {
       return this.tr(`workCenter.action.${type}`, type || '—');
     },
+    messageSpeakerRole(name, role) {
+      if (!name) return role;
+      return this.$t('workCenter.messageSpeakerRole', { name, role });
+    },
+    workItemMessageSpeaker(message) {
+      if (message?.role === 'user') return this.tr('workCenter.you', 'You');
+      if (message?.role === 'legacy_instruction') {
+        return this.tr('workCenter.originalRequest', 'Original request');
+      }
+      const name = message?.speaker?.name || message?.speaker?.id || '';
+      return this.messageSpeakerRole(name, this.tr('workCenter.coordinator', 'Coordinator'));
+    },
     actionSequence(action) {
       const sequence = Number(action?.sequence);
       if (Number.isFinite(sequence) && sequence > 0) return sequence;
@@ -1422,9 +1434,15 @@ export default {
                   <span>{{ detailError }}</span>
                 </div>
                 <div class="work-center-detail-heading">
-                  <div>
+                  <div class="work-center-detail-heading-copy">
                     <span class="work-center-status" :data-status="selected.status"><span aria-hidden="true"></span>{{ statusLabel(selected.status) }}</span>
-                    <h2>{{ selected.title }}</h2>
+                    <div class="work-center-detail-title-row">
+                      <h2>{{ selected.title }}</h2>
+                      <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-ghost work-center-stop-action" type="button" @click="cancelSelected">
+                        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+                        {{ tr('workCenter.stopWorkItem', 'Stop work item') }}
+                      </button>
+                    </div>
                   </div>
                   <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
                   <button v-else-if="selected.status === 'cancelled'" class="btn-secondary work-center-resume-action" type="button" @click="resumeSelected">{{ tr('workCenter.resumeWorkItem', 'Resume work item') }}</button>
@@ -1497,7 +1515,7 @@ export default {
                       </header>
                       <div v-if="selected.messages?.length" class="work-center-item-message-list" role="log" aria-live="polite">
                         <article v-for="message in selected.messages" :key="message.id" :class="'role-' + message.role" :data-status="message.status">
-                          <header><strong>{{ message.role === 'assistant' ? tr('workCenter.assistant', 'Yeaft') : message.role === 'legacy_instruction' ? tr('workCenter.originalRequest', 'Original request') : tr('workCenter.you', 'You') }}</strong><small>{{ time(message.updatedAt || message.createdAt) }}</small></header>
+                          <header><strong>{{ workItemMessageSpeaker(message) }}</strong><small>{{ time(message.updatedAt || message.createdAt) }}</small></header>
                           <p v-if="message.text">{{ message.text }}</p>
                           <p v-else-if="message.status === 'thinking'" class="work-center-conversation-thinking">{{ tr('workCenter.conversationThinking', 'Working…') }}</p>
                           <div v-if="message.attachments?.length" class="work-center-attachment-list work-center-message-attachments">
@@ -1633,12 +1651,6 @@ export default {
                       @open-attachment="previewAttachment"
                     />
                   </aside>
-                </div>
-                <div v-if="!['done','cancelled'].includes(selected.status)" class="work-center-detail-controls">
-                  <button class="btn-ghost work-center-stop-action" type="button" @click="cancelSelected">
-                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
-                    {{ tr('workCenter.stopWorkItem', 'Stop work item') }}
-                  </button>
                 </div>
               </template>
               <div v-else class="work-center-detail-empty">

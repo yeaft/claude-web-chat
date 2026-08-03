@@ -98,6 +98,7 @@ const OPEN_ITEM_DETAIL = {
     response: 'Updated the existing layout styles and verified supported breakpoints.',
     messages: [{
       id: 'action-1:1', role: 'assistant', status: 'running',
+      speaker: { id: 'linus', name: 'Linus' },
       text: 'Updated the existing layout styles and verified supported breakpoints.',
       createdAt: Date.now(), updatedAt: Date.now(),
     }],
@@ -174,6 +175,7 @@ const WAITING_ITEM_DETAIL = {
   currentActionId: 'action-1',
   messages: [{
     id: 'coordinator-human-request', role: 'assistant', status: 'completed',
+    speaker: { id: 'omni', name: 'Omni' },
     text: 'Choose the database so the Work Item can continue.',
     decision: { kind: 'request_human', reason: 'The database target is missing.' },
     recovery: {
@@ -1414,6 +1416,10 @@ test.describe('Work Center responsive UI', () => {
     await expect(waitingQuestion).toContainText('Input required');
     await expect(waitingQuestion).toContainText('Choose PostgreSQL or SQLite before the migration continues.');
     const conversation = chatPage.locator('.work-center-conversation');
+    await expect(conversation.locator('.work-center-item-message-list article.role-assistant header strong'))
+      .toHaveText('Omni · Coordinator');
+    await expect(actionDetail.locator('.work-center-action-message header strong'))
+      .toHaveText('Linus · Action 1');
     const composer = conversation.locator('textarea');
     const target = conversation.getByTestId('work-center-composer-target');
     await expect(actionDetail.locator('textarea')).toHaveCount(0);
@@ -1463,16 +1469,49 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage.locator('.work-center-danger-zone')).toHaveCount(0);
     const stopBounds = await stop.evaluate(element => {
       const button = element.getBoundingClientRect();
-      const detail = element.closest('.work-center-detail').getBoundingClientRect();
+      const heading = element.closest('.work-center-detail-heading');
+      const title = heading?.querySelector('h2')?.getBoundingClientRect();
       return {
         height: button.height,
-        rightGap: detail.right - button.right,
-        bottomGap: detail.bottom - button.bottom,
+        insideHeading: !!heading,
+        afterTitle: !!title && button.left >= title.right,
       };
     });
     expect(stopBounds.height).toBeLessThanOrEqual(36);
-    expect(stopBounds.rightGap).toBeGreaterThanOrEqual(16);
-    expect(stopBounds.bottomGap).toBeGreaterThanOrEqual(12);
+    expect(stopBounds.insideHeading).toBe(true);
+    expect(stopBounds.afterTitle).toBe(true);
+    await expect(chatPage.locator('.work-center-detail-controls')).toHaveCount(0);
+
+    await chatPage.setViewportSize({ width: 430, height: 900 });
+    const compactBounds = await stop.evaluate(element => {
+      const button = element.getBoundingClientRect();
+      const heading = element.closest('.work-center-detail-heading')?.getBoundingClientRect();
+      const close = element.closest('.work-center-detail')
+        ?.querySelector('.work-center-detail-close')?.getBoundingClientRect();
+      return {
+        insideHeading: !!heading && button.left >= heading.left && button.right <= heading.right,
+        clearOfClose: !close || button.right <= close.left || button.bottom <= close.top,
+      };
+    });
+    expect(compactBounds.insideHeading).toBe(true);
+    expect(compactBounds.clearOfClose).toBe(true);
+
+    await chatPage.evaluate(() => {
+      document.documentElement.setAttribute('data-theme', 'dark');
+      localStorage.setItem('theme', 'dark');
+    });
+    await expect(chatPage.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await expect(stop).toBeVisible();
+    const stopColors = await stop.evaluate(element => {
+      const probe = document.createElement('span');
+      probe.style.color = 'var(--error)';
+      document.body.appendChild(probe);
+      const expected = getComputedStyle(probe).color;
+      probe.remove();
+      return { actual: getComputedStyle(element).color, expected };
+    });
+    expect(stopColors.actual).toBe(stopColors.expected);
+
     chatPage.once('dialog', dialog => dialog.accept());
     const cancelResponses = (async () => {
       const operations = [];
@@ -1546,6 +1585,7 @@ test.describe('Work Center responsive UI', () => {
       await expect(conversation).toContainText(item.status === 'done'
         ? 'Yeaft confirmed every acceptance criterion.'
         : 'Yeaft recorded the cancellation.');
+      await expect(conversation.locator('article.role-assistant header strong')).toHaveText('Coordinator');
       await expect(conversation.locator('.work-center-conversation-readonly')).toBeVisible();
       await expect(conversation.locator('.work-center-item-message-input')).toHaveCount(0);
       await expect(conversation.locator('textarea')).toHaveCount(0);
@@ -1555,6 +1595,7 @@ test.describe('Work Center responsive UI', () => {
       await expect(actionDetail).toContainText(item.status === 'done'
         ? 'Verified and released the layout fix.'
         : 'Execution stopped without publishing changes.');
+      await expect(actionDetail.locator('.work-center-action-message header strong')).toHaveText('Action 1');
       await expect(actionDetail.locator('.work-center-action-composer')).toHaveCount(0);
       await expect(actionDetail.locator('textarea')).toHaveCount(0);
 

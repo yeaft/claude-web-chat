@@ -204,6 +204,7 @@ describe('Work Center core', () => {
     expect(store.prepareCoordinatorProviderTurn(
       item.id, restartTurn.turnId, 1, coordinatorRequest, restartClaim,
     )).toEqual(preparedCoordinatorTurn);
+    expect(store.getWorkItemDetail(item.id).messages.at(-1)).not.toHaveProperty('speaker');
     expect(() => store.prepareCoordinatorProviderTurn(
       item.id, restartTurn.turnId, 1, { ...coordinatorRequest, model: 'other' }, restartClaim,
     )).toThrow(/changed before dispatch/);
@@ -227,8 +228,22 @@ describe('Work Center core', () => {
       item.id, respondedTurn.turnId, 'provider-response-owner',
     );
     const respondedCoordinatorTurn = store.prepareCoordinatorProviderTurn(
-      item.id, respondedTurn.turnId, 1, coordinatorRequest, respondedClaim,
+      item.id,
+      respondedTurn.turnId,
+      1,
+      coordinatorRequest,
+      respondedClaim,
+      { id: 'omni', name: 'Omni' },
     );
+    expect(respondedCoordinatorTurn.speaker).toEqual({ id: 'omni', name: 'Omni' });
+    expect(store.prepareCoordinatorProviderTurn(
+      item.id,
+      respondedTurn.turnId,
+      1,
+      coordinatorRequest,
+      respondedClaim,
+      { id: 'linus', name: 'Linus' },
+    ).speaker).toEqual({ id: 'omni', name: 'Omni' });
     store.dispatchCoordinatorProviderTurn(respondedCoordinatorTurn.id, respondedClaim);
     expect(store.respondCoordinatorProviderTurn(
       respondedCoordinatorTurn.id, respondedCoordinatorTurn.requestHash,
@@ -1382,6 +1397,9 @@ describe('Work Center core', () => {
     expect(store.db.prepare(`SELECT status, attempt_number FROM coordinator_provider_turns
       WHERE coordinator_turn_id = ?`).get(turn.detail.messages.at(-1).turnId))
       .toEqual({ status: 'dispatching', attempt_number: 1 });
+    expect(store.getWorkItemDetail(item.id).messages.at(-1)).toMatchObject({
+      role: 'assistant', status: 'thinking', speaker: { id: 'omni', name: 'Omni' },
+    });
     resolveCall({ text: JSON.stringify({
       reply: 'I replaced the impossible gate with a bounded validation Action and kept delivery downstream.',
       decision: {
@@ -1421,7 +1439,9 @@ describe('Work Center core', () => {
       acceptanceCriteria: ['Code-level validation passes', 'Delivery remains explicit'],
     });
     expect(replanned.messages.at(-1)).toMatchObject({
-      role: 'assistant', status: 'completed', decision: { kind: 'replan', changedContract: true },
+      role: 'assistant', status: 'completed',
+      speaker: { id: 'omni', name: 'Omni' },
+      decision: { kind: 'replan', changedContract: true },
     });
     const coordinatorTurnId = replanned.messages.at(-1).turnId;
     expect(projectWorkItemDetail(replanned)).toMatchObject({
@@ -1430,7 +1450,9 @@ describe('Work Center core', () => {
       messages: [
         expect.objectContaining({ role: 'user', status: 'completed' }),
         expect.objectContaining({
-          role: 'assistant', status: 'completed', decision: expect.objectContaining({ kind: 'replan' }),
+          role: 'assistant', status: 'completed',
+          speaker: { id: 'omni', name: 'Omni' },
+          decision: expect.objectContaining({ kind: 'replan' }),
         }),
       ],
     });
@@ -1546,6 +1568,7 @@ describe('Work Center core', () => {
     const invalid = await invalidTurn.task;
     expect(invalid.messages.at(-1)).toMatchObject({
       role: 'assistant', status: 'failed',
+      speaker: { id: 'omni', name: 'Omni' },
       error: 'Work Center Coordinator 未能生成有效回复。你的消息已经保留，请重试。',
     });
     expect(invalid.messages.at(-1).error).not.toContain('decision kind is invalid');
@@ -3142,7 +3165,10 @@ describe('Work Center core', () => {
       const durable = ownerA.store.getWorkItemDetail(dualOwnerItem.id);
       expect(providerCalls).toBe(1);
       expect(durable.messages.at(-1)).toMatchObject({
-        turnId: seededTurnId, status: 'completed', text: 'Recovered exactly once.',
+        turnId: seededTurnId,
+        status: 'completed',
+        text: 'Recovered exactly once.',
+        speaker: { id: 'omni', name: 'Omni' },
       });
       const journal = ownerA.store.db.prepare(`SELECT status, claim_owner, claim_epoch
         FROM coordinator_provider_turns WHERE coordinator_turn_id = ?`).get(seededTurnId);
