@@ -85,6 +85,7 @@ export default {
       <UnifiedSessionList
         v-if="chatStore && chatStore.sessionCatalogLoaded"
         :sessions="chatStore.sessionCatalog"
+        :project-store="chatStore"
         :active-route="chatStore.activeSessionRoute"
         :is-session-unread="isCatalogSessionUnread"
         :processing-conversations="chatStore.processingConversations"

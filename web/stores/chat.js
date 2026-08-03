@@ -419,6 +419,16 @@ function getSessionsStore() {
   }
 }
 
+function persistCatalogYeaftOrder(rows) {
+  const sessionsStore = getSessionsStore();
+  if (!sessionsStore?.reorderSessionsGlobally) return;
+  const yeaftOrder = (Array.isArray(rows) ? rows : [])
+    .filter(row => row?.runtimeProvider === 'yeaft')
+    .map(row => `${row.routeRef?.agentId || ''}\u001f${row.routeRef?.sessionId || ''}`)
+    .filter(key => !key.startsWith('\u001f'));
+  sessionsStore.reorderSessionsGlobally(yeaftOrder);
+}
+
 /**
  * Resolve the agent that owns a given Yeaft session. This is the single
  * source of truth for routing session-scoped operations (send / history /
@@ -6244,7 +6254,11 @@ export const useChatStore = defineStore('chat', {
       return true;
     },
     finishSessionCatalogMutation(msg) {
-      return finishCatalogMutation(this, msg);
+      const finished = finishCatalogMutation(this, msg);
+      if (finished && msg?.type === 'session_catalog_reorder_result' && msg.ok === true) {
+        persistCatalogYeaftOrder(this.sessionCatalog);
+      }
+      return finished;
     },
     openCatalogSession(descriptor) {
       if (!descriptor?.catalogKey || !descriptor.routeRef) return false;

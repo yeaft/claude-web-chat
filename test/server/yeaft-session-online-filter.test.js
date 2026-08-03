@@ -194,6 +194,40 @@ describe('Yeaft Session online Agent filtering', () => {
     ];
     expect(creationOrdered.map(row => row.catalogKey)).toEqual(stableCreationOrder);
     expect(reversedAfterActivity.map(row => row.catalogKey)).toEqual(stableCreationOrder);
+    const manuallyOrdered = projectSessionCatalog({
+      chatSessions: [
+        { id: 'manual-a', agent_id: 'chat-agent', created_at: 4000, metadata_updated_at: 4000, is_active: 1 },
+        { id: 'manual-b', agent_id: 'chat-agent', created_at: 3000, metadata_updated_at: 3000, is_active: 1 },
+      ],
+      yeaftSessions: [
+        { id: 'manual-c', agentId: 'agent-online', createdAt: 2000, metadataUpdatedAt: 2000 },
+      ],
+      metadata: [
+        { catalogKey: 'chat:manual-a', sortRank: 2 },
+        { catalogKey: 'chat:manual-b', sortRank: 0 },
+        { catalogKey: 'yeaft:agent-online:manual-c', sortRank: 1 },
+      ],
+      onlineAgentIds: new Set(['agent-online', 'chat-agent']),
+    });
+    expect(manuallyOrdered.map(row => row.catalogKey)).toEqual([
+      'chat:manual-b',
+      'yeaft:agent-online:manual-c',
+      'chat:manual-a',
+    ]);
+    const partiallyRanked = projectSessionCatalog({
+      chatSessions: [
+        { id: 'ranked', agent_id: 'chat-agent', created_at: 1000, is_active: 1 },
+        { id: 'new-unranked', agent_id: 'chat-agent', created_at: 3000, is_active: 1 },
+        { id: 'old-unranked', agent_id: 'chat-agent', created_at: 2000, is_active: 1 },
+      ],
+      metadata: [{ catalogKey: 'chat:ranked', sortRank: 4 }],
+      onlineAgentIds: new Set(['chat-agent']),
+    });
+    expect(partiallyRanked.map(row => row.catalogKey)).toEqual([
+      'chat:ranked',
+      'chat:new-unranked',
+      'chat:old-unranked',
+    ]);
     const reorderedAfterSettings = projectSessionCatalog({
       chatSessions: [
         { id: 'chat-new', agent_id: 'chat-agent', created_at: 4000, updated_at: 9000, metadata_updated_at: 4000, is_active: 1 },
