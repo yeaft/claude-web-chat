@@ -148,13 +148,15 @@ export function calculateFloatingSubmenuPosition(parentRect, menuSize, viewport 
 
 export default {
   name: 'UnifiedSessionList',
-  emits: ['select', 'create', 'action', 'project-action', 'close-work-center'],
+  emits: ['select', 'create', 'create-in-project', 'action', 'project-action', 'close-work-center'],
   props: {
     sessions: { type: Array, default: () => [] },
     projectStore: { type: Object, default: null },
     projects: { type: Array, default: () => [] },
     activeRoute: { type: Object, default: null },
     isSessionUnread: { type: Function, default: null },
+    isSessionSyncing: { type: Function, default: null },
+    sessionSyncRefreshToken: { type: Number, default: 0 },
     processingConversations: { type: Object, default: () => ({}) },
     isYeaftSessionProcessing: { type: Function, default: null },
     agents: { type: Array, default: () => [] },
@@ -351,6 +353,10 @@ export default {
     isUnread(row) {
       return typeof this.isSessionUnread === 'function' ? !!this.isSessionUnread(row) : false;
     },
+    isSyncing(row) {
+      void this.sessionSyncRefreshToken;
+      return typeof this.isSessionSyncing === 'function' ? !!this.isSessionSyncing(row) : false;
+    },
     isProjectUnread(project) {
       const rows = this.projectSessionRows.get(projectIdentityKey(project)) || [];
       return rows.some(row => this.isUnread(row));
@@ -448,6 +454,12 @@ export default {
     createSession() {
       if (this.workCenterOpen) this.$emit('close-work-center');
       this.$emit('create');
+    },
+    createSessionInProject(project) {
+      if (!this.canEditProject(project)) return;
+      this.closeMenus();
+      if (this.workCenterOpen) this.$emit('close-work-center');
+      this.$emit('create-in-project', { project });
     },
     selectRow(row, event, options = {}) {
       if (options.suppressActions === true) {
@@ -912,6 +924,9 @@ export default {
                 <span class="sidebar-project-count">{{ (rowsByProject.get(projectKey(project)) || []).length }}</span>
                 <span v-if="isProjectUnread(project)" class="sidebar-session-unread sidebar-project-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
               </button>
+              <button v-if="canEditProject(project)" type="button" class="sidebar-project-session-create" @click.stop="createSessionInProject(project)" :title="$t('sidebar.projects.newSession', { name: project.name })" :aria-label="$t('sidebar.projects.newSession', { name: project.name })">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
+              </button>
               <button v-if="canEditProject(project)" type="button" class="session-dots-btn" :class="{ 'menu-open': openProjectMenuKey === projectKey(project) }" @click.stop="toggleProjectMenu(project, $event)" :aria-label="$t('sidebar.projects.menu')">
                 <svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
               </button>
@@ -939,6 +954,9 @@ export default {
                 <span class="sidebar-session-copy">
                   <span class="title" :title="row.title">
                     <span v-if="isProcessing(row)" class="processing-dot" :aria-label="$t('sidebar.sessions.processing')"></span>
+                    <span v-if="isSyncing(row)" class="sidebar-session-syncing" role="status" :aria-label="$t('sidebar.sessions.syncing')">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    </span>
                     <span class="sidebar-session-title-text">{{ row.title }}</span>
                     <span v-if="isUnread(row)" class="sidebar-session-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
                   </span>
@@ -993,6 +1011,9 @@ export default {
             <span class="sidebar-session-copy">
               <span class="title" :title="row.title">
                 <span v-if="isProcessing(row)" class="processing-dot" :aria-label="$t('sidebar.sessions.processing')"></span>
+                <span v-if="isSyncing(row)" class="sidebar-session-syncing" role="status" :aria-label="$t('sidebar.sessions.syncing')">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                </span>
                 <span class="sidebar-session-title-text">{{ row.title }}</span>
                 <span v-if="isUnread(row)" class="sidebar-session-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
               </span>

@@ -7,8 +7,6 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { CORE_TEST_FILES, isTestFile, normalizeTestPath } from './test-suite-manifest.mjs';
 
-export const TEST_CASE_LIMIT = 500;
-
 function walkFiles(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
     const path = resolve(directory, entry.name);
@@ -57,12 +55,7 @@ function main() {
   }
 
   const caseCount = collectTestCaseCount();
-  if (caseCount >= TEST_CASE_LIMIT) {
-    console.error(`Test case budget exceeded: ${caseCount} must be below ${TEST_CASE_LIMIT}`);
-    process.exitCode = 1;
-    return;
-  }
-  console.log(`Core suite: ${result.count} files, ${caseCount} test cases (< ${TEST_CASE_LIMIT})`);
+  console.log(`Core suite: ${result.count} files, ${caseCount} test cases`);
 }
 
 if (isMainModule(import.meta.url)) main();

@@ -8,8 +8,10 @@ import { getConfigDir, getServiceName, getPm2AppName, getLaunchdPlistPath, DEFAU
 import {
   buildUpgradeInstallCommand,
   buildUpgradeMetadataArgs,
+  createWindowsUpgradeRun,
   launchWindowsUpgradeScript,
   prepareWindowsUpgradeRunner,
+  releaseWindowsUpgradeLock,
   resolveWindowsNpmCliPath,
   resolveWindowsPm2CliPath,
 } from '../upgrade-command.js';
@@ -245,8 +247,8 @@ export async function handleUpgradeAgent() {
       await spawnUnixUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion, instanceId);
     }
 
-    // Windows deletes PM2 inside the verified handoff callback. Unix keeps the
-    // existing pre-exit behavior because its detached launcher has no marker.
+    // On Windows the detached runner removes the PM2 app only after this
+    // process exits. Unix keeps the existing pre-exit service-manager behavior.
     const isPm2 = !!process.env.pm_id;
     if (!isWindows && isPm2) {
       try {
@@ -271,10 +273,6 @@ async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, l
   const logDir = join(configDir, 'logs');
   mkdirSync(logDir, { recursive: true });
 
-  const runnerPath = join(upgradeDir, 'windows-upgrade-runner.js');
-  const commandPath = join(upgradeDir, 'upgrade-command.js');
-  const payloadPath = join(upgradeDir, 'payload.json');
-  const handoffPath = join(upgradeDir, 'started');
   const logPath = join(logDir, 'upgrade.log');
   const ecosystemPath = join(configDir, 'ecosystem.config.cjs');
   const npmCliPath = resolveWindowsNpmCliPath(process.execPath);
@@ -285,45 +283,68 @@ async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, l
     throw new Error('PM2 manages this Agent, but its JavaScript CLI entry point could not be resolved');
   }
 
+  const run = createWindowsUpgradeRun(upgradeDir);
+  const {
+    runId,
+    lockPath,
+    bootstrapPath,
+    runnerPath,
+    commandPath,
+    payloadPath,
+    handoffPath,
+    authorizePath,
+    cancelPath,
+  } = run;
   const payload = {
+    runId,
+    lockPath,
     parentPid: process.pid,
     packageSpec: `${pkgName}@${latestVersion}`,
     globalInstall: isGlobalInstall,
     installDir,
     logPath,
     handoffPath,
+    authorizePath,
+    cancelPath,
+    bootstrapPath,
     runnerPath,
     commandPath,
     payloadPath,
     nodePath: process.execPath,
     npmCliPath,
     pm2CliPath,
+    pm2AppName: isPm2 ? getPm2AppName(instanceId) : null,
     ecosystemPath: isPm2 ? ecosystemPath : null,
   };
-  prepareWindowsUpgradeRunner({
-    sourceRunnerPath: fileURLToPath(new URL('../windows-upgrade-runner.js', import.meta.url)),
-    sourceCommandPath: fileURLToPath(new URL('../upgrade-command.js', import.meta.url)),
-    runnerPath,
-    commandPath,
-    payloadPath,
-    payload,
-  });
+  try {
+    prepareWindowsUpgradeRunner({
+      sourceBootstrapPath: fileURLToPath(new URL('../windows-upgrade-bootstrap.js', import.meta.url)),
+      sourceRunnerPath: fileURLToPath(new URL('../windows-upgrade-runner.js', import.meta.url)),
+      sourceCommandPath: fileURLToPath(new URL('../upgrade-command.js', import.meta.url)),
+      bootstrapPath,
+      runnerPath,
+      commandPath,
+      payloadPath,
+      payload,
+    });
+  } catch (err) {
+    releaseWindowsUpgradeLock(lockPath, runId);
+    throw err;
+  }
 
   const launcher = await launchWindowsUpgradeScript({
+    runId,
     nodePath: process.execPath,
+    bootstrapPath,
     runnerPath,
     payloadPath,
     logPath,
     handoffPath,
+    authorizePath,
+    cancelPath,
+    lockPath,
     spawnProcess: spawn,
-    onHandoff: isPm2
-      ? () => {
-          execFileSync(process.execPath, [pm2CliPath, 'delete', getPm2AppName(instanceId)], { stdio: 'pipe', env: safeEnv });
-          console.log('[Agent] PM2 app deleted after upgrade handoff');
-        }
-      : undefined,
   });
-
   console.log(`[Agent] Spawned Windows upgrade runner via ${launcher} (pm2=${isPm2}, dir=${installDir})`);
   await sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion, pendingRestart: true });
 }

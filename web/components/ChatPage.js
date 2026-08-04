@@ -114,12 +114,15 @@ export default {
           :project-store="store"
           :active-route="store.activeSessionRoute"
           :is-session-unread="isCatalogSessionUnread"
+          :is-session-syncing="isCatalogSessionSyncing"
+          :session-sync-refresh-token="store.sessionHistorySyncRefreshToken"
           :processing-conversations="store.processingConversations"
           :is-yeaft-session-processing="store.isYeaftSessionProcessing"
           :agents="store.agents"
           :work-center-open="store.workCenterOpen"
           @select="store.openCatalogSession"
           @create="onUnifiedCreate"
+          @create-in-project="onUnifiedCreateInProject"
           @close-work-center="store.leaveWorkCenter"
           @action="onUnifiedSessionAction"
         />
@@ -315,8 +318,9 @@ export default {
       <SessionCreateModal
         v-if="unifiedSessionCreateOpen"
         :initial-provider="unifiedSessionCreateProvider"
-        @close="unifiedSessionCreateOpen = false"
-        @created="unifiedSessionCreateOpen = false"
+        :initial-agent-id="unifiedSessionCreateProject?.legacyAgentId || null"
+        @close="closeUnifiedSessionCreate"
+        @created="onUnifiedSessionCreated"
       />
 
       <!-- Legacy Conversation Modal (resume and pre-catalog fallback) -->
@@ -502,6 +506,7 @@ export default {
       showConversationModal: false,
       unifiedSessionCreateOpen: false,
       unifiedSessionCreateProvider: 'yeaft',
+      unifiedSessionCreateProject: null,
       convModalAgent: '',
       convModalWorkDir: '',
       convModalProvider: 'claude-code',
@@ -601,10 +606,40 @@ export default {
       if (row?.runtimeProvider !== 'yeaft') return false;
       return this.store.isYeaftSessionUnread(row.routeRef?.sessionId, row.routeRef?.agentId);
     },
+    isCatalogSessionSyncing(row) {
+      return typeof this.store.isSessionHistorySyncing === 'function'
+        ? this.store.isSessionHistorySyncing(row?.routeRef)
+        : false;
+    },
 
     onUnifiedCreate(provider = 'yeaft') {
+      this.unifiedSessionCreateProject = null;
       this.unifiedSessionCreateProvider = ['yeaft', 'copilot', 'claude-code'].includes(provider) ? provider : 'yeaft';
       this.unifiedSessionCreateOpen = true;
+    },
+    onUnifiedCreateInProject({ project } = {}) {
+      if (!project?.id) return;
+      this.unifiedSessionCreateProject = project;
+      this.unifiedSessionCreateProvider = 'yeaft';
+      this.unifiedSessionCreateOpen = true;
+    },
+    closeUnifiedSessionCreate() {
+      this.unifiedSessionCreateOpen = false;
+      this.unifiedSessionCreateProject = null;
+    },
+    async onUnifiedSessionCreated(session) {
+      const project = this.unifiedSessionCreateProject;
+      this.closeUnifiedSessionCreate();
+      if (!project || !session?.id) return;
+      const agentId = session.agentId || project.legacyAgentId || this.store.currentAgent || null;
+      const result = await this.store.mutateProject?.('move_session', {
+        sessionId: session.id,
+        projectId: project.legacyProjectId || project.id,
+      }, agentId);
+      if (!result?.ok) {
+        const message = result?.error?.message || result?.error?.code || 'unknown';
+        alert(this.$t('sidebar.projects.assignFailed', { name: project.name, message }));
+      }
     },
     openWorkCenter(agentId = null) {
       const target = this.workCenterAgents.find(agent => agent.id === agentId)
@@ -765,7 +800,7 @@ export default {
     },
     selectConversation(conversationId, agentId) {
       this.store.leaveWorkCenter();
-      this.store.selectConversation(conversationId, agentId);
+      this.store.selectConversation(conversationId, agentId, { refresh: true });
       this.store.closeSessionSidebar();
     },
     onSessionClick(conv) {
@@ -776,7 +811,7 @@ export default {
       // In multi-panel mode, route to the active panel
       if (this.store.isSplitMode && this.store.activePanelId) {
         this.store.leaveWorkCenter();
-        this.store.setPanelConversation(this.store.activePanelId, conv.id);
+        this.store.setPanelConversation(this.store.activePanelId, conv.id, { refresh: true });
         this.store.closeSessionSidebar();
         return;
       }

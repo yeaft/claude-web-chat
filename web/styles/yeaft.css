@@ -155,7 +155,8 @@
 /* Topbar — folder + Session title + actions */
 
 .yeaft-topbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   padding: 4px 16px;
@@ -185,10 +186,20 @@
 /* ── Header folder + composer model selector ── */
 
 .yeaft-topbar-context {
-  display: contents;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  pointer-events: none;
 }
 
 .yeaft-topbar-folder {
+  grid-column: 1;
+  justify-self: start;
+  width: 100%;
+  pointer-events: auto;
   flex: 0 1 var(--yeaft-header-folder-max-width);
   min-width: 0;
   max-width: var(--yeaft-header-folder-max-width);
@@ -261,12 +272,13 @@
 }
 
 .yeaft-topbar-title-group {
-  flex: 1 1 auto;
+  grid-column: 2;
   min-width: 0;
   overflow: hidden;
   display: flex;
   justify-content: center;
   text-align: center;
+  pointer-events: auto;
 }
 
 .yeaft-topbar-session-title {
@@ -579,6 +591,13 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.yeaft-topbar-right {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+  z-index: 1;
 }
 
 .yeaft-topbar-right :where(
@@ -1975,17 +1994,20 @@
     grid-row: 1;
     min-width: 0;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto;
     align-content: center;
   }
 
   .yeaft-topbar-title-group {
+    grid-column: 1;
     grid-row: 1;
     justify-content: flex-start;
     text-align: left;
   }
 
   .yeaft-topbar-folder {
+    grid-column: 1;
     grid-row: 2;
     width: 100%;
     max-width: 100%;

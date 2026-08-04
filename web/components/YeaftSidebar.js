@@ -88,12 +88,15 @@ export default {
         :project-store="chatStore"
         :active-route="chatStore.activeSessionRoute"
         :is-session-unread="isCatalogSessionUnread"
+        :is-session-syncing="isCatalogSessionSyncing"
+        :session-sync-refresh-token="chatStore.sessionHistorySyncRefreshToken"
         :processing-conversations="chatStore.processingConversations"
         :is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"
         :agents="chatStore.agents"
         :work-center-open="chatStore.workCenterOpen"
         @select="chatStore.openCatalogSession"
         @create="onUnifiedCreate"
+        @create-in-project="onUnifiedCreateInProject"
         @close-work-center="chatStore.leaveWorkCenter"
         @action="onUnifiedSessionAction"
       />
@@ -194,7 +197,8 @@ export default {
            new-conversation modal. -->
       <SessionCreateModal
         v-if="sessionCreateOpen"
-        @close="sessionCreateOpen = false"
+        :initial-agent-id="sessionCreateProject?.legacyAgentId || null"
+        @close="closeSessionCreate"
         @created="onSessionCreated"
       />
 
@@ -226,6 +230,7 @@ export default {
       // both "create new" and "restore from disk" — the standalone
       // sessionRestoreOpen flag + SessionRestoreModal are gone.
       sessionCreateOpen: false,
+      sessionCreateProject: null,
       // task-yeaft-group-editor: per-row action menu only — the rename
       // and delete modals have been folded into the unified
       // SessionSettingsModal owned by YeaftPage.
@@ -431,6 +436,12 @@ export default {
       if (!s || typeof s.isYeaftSessionUnread !== 'function') return false;
       return s.isYeaftSessionUnread(row.routeRef?.sessionId, row.routeRef?.agentId);
     },
+    isCatalogSessionSyncing(row) {
+      const s = this.chatStore || this.store;
+      return typeof s?.isSessionHistorySyncing === 'function'
+        ? s.isSessionHistorySyncing(row?.routeRef)
+        : false;
+    },
     // task-341: workbench toggle, guarded for test env.
     onToggleWorkbench() {
       const s = this.chatStore || this.store;
@@ -459,8 +470,20 @@ export default {
     // "Restore from disk" panel, so onOpenSessionRestore +
     // onSessionRestored are gone (folded into SessionCreateModal's own
     // `created` flow).
-    onOpenSessionCreate() { this.sessionCreateOpen = true; },
+    onOpenSessionCreate() {
+      this.sessionCreateProject = null;
+      this.sessionCreateOpen = true;
+    },
     onUnifiedCreate() { this.onOpenSessionCreate(); },
+    onUnifiedCreateInProject({ project } = {}) {
+      if (!project?.id) return;
+      this.sessionCreateProject = project;
+      this.sessionCreateOpen = true;
+    },
+    closeSessionCreate() {
+      this.sessionCreateOpen = false;
+      this.sessionCreateProject = null;
+    },
     onUnifiedSessionAction({ action, row, title, sessions } = {}) {
       if (!row?.routeRef) return;
       const s = this.chatStore || this.store;
@@ -482,8 +505,20 @@ export default {
         }
       }
     },
-    onSessionCreated(_group) {
-      // groups store auto-activates via applyCrudResult; modal closes itself.
+    async onSessionCreated(session) {
+      const project = this.sessionCreateProject;
+      this.closeSessionCreate();
+      if (!project || !session?.id) return;
+      const store = this.chatStore || this.store;
+      const agentId = session.agentId || project.legacyAgentId || store?.currentAgent || null;
+      const result = await store?.mutateProject?.('move_session', {
+        sessionId: session.id,
+        projectId: project.legacyProjectId || project.id,
+      }, agentId);
+      if (!result?.ok) {
+        const message = result?.error?.message || result?.error?.code || 'unknown';
+        alert(this.$t('sidebar.projects.assignFailed', { name: project.name, message }));
+      }
     },
     onSelectGroup(g) {
       if (!g || !g.id) return;
