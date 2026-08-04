@@ -8,8 +8,10 @@ import { getConfigDir, getServiceName, getPm2AppName, getLaunchdPlistPath, DEFAU
 import {
   buildUpgradeInstallCommand,
   buildUpgradeMetadataArgs,
+  createWindowsUpgradeRun,
   launchWindowsUpgradeScript,
   prepareWindowsUpgradeRunner,
+  releaseWindowsUpgradeLock,
   resolveWindowsNpmCliPath,
   resolveWindowsPm2CliPath,
 } from '../upgrade-command.js';
@@ -271,12 +273,6 @@ async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, l
   const logDir = join(configDir, 'logs');
   mkdirSync(logDir, { recursive: true });
 
-  const bootstrapPath = join(upgradeDir, 'windows-upgrade-bootstrap.js');
-  const runnerPath = join(upgradeDir, 'windows-upgrade-runner.js');
-  const commandPath = join(upgradeDir, 'upgrade-command.js');
-  const payloadPath = join(upgradeDir, 'payload.json');
-  const handoffPath = join(upgradeDir, 'started');
-  const cancelPath = join(upgradeDir, 'cancelled');
   const logPath = join(logDir, 'upgrade.log');
   const ecosystemPath = join(configDir, 'ecosystem.config.cjs');
   const npmCliPath = resolveWindowsNpmCliPath(process.execPath);
@@ -287,13 +283,28 @@ async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, l
     throw new Error('PM2 manages this Agent, but its JavaScript CLI entry point could not be resolved');
   }
 
+  const run = createWindowsUpgradeRun(upgradeDir);
+  const {
+    runId,
+    lockPath,
+    bootstrapPath,
+    runnerPath,
+    commandPath,
+    payloadPath,
+    handoffPath,
+    authorizePath,
+    cancelPath,
+  } = run;
   const payload = {
+    runId,
+    lockPath,
     parentPid: process.pid,
     packageSpec: `${pkgName}@${latestVersion}`,
     globalInstall: isGlobalInstall,
     installDir,
     logPath,
     handoffPath,
+    authorizePath,
     cancelPath,
     bootstrapPath,
     runnerPath,
@@ -305,28 +316,35 @@ async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, l
     pm2AppName: isPm2 ? getPm2AppName(instanceId) : null,
     ecosystemPath: isPm2 ? ecosystemPath : null,
   };
-  prepareWindowsUpgradeRunner({
-    sourceBootstrapPath: fileURLToPath(new URL('../windows-upgrade-bootstrap.js', import.meta.url)),
-    sourceRunnerPath: fileURLToPath(new URL('../windows-upgrade-runner.js', import.meta.url)),
-    sourceCommandPath: fileURLToPath(new URL('../upgrade-command.js', import.meta.url)),
-    bootstrapPath,
-    runnerPath,
-    commandPath,
-    payloadPath,
-    payload,
-  });
+  try {
+    prepareWindowsUpgradeRunner({
+      sourceBootstrapPath: fileURLToPath(new URL('../windows-upgrade-bootstrap.js', import.meta.url)),
+      sourceRunnerPath: fileURLToPath(new URL('../windows-upgrade-runner.js', import.meta.url)),
+      sourceCommandPath: fileURLToPath(new URL('../upgrade-command.js', import.meta.url)),
+      bootstrapPath,
+      runnerPath,
+      commandPath,
+      payloadPath,
+      payload,
+    });
+  } catch (err) {
+    releaseWindowsUpgradeLock(lockPath, runId);
+    throw err;
+  }
 
   const launcher = await launchWindowsUpgradeScript({
+    runId,
     nodePath: process.execPath,
     bootstrapPath,
     runnerPath,
     payloadPath,
     logPath,
     handoffPath,
+    authorizePath,
     cancelPath,
+    lockPath,
     spawnProcess: spawn,
   });
-
   console.log(`[Agent] Spawned Windows upgrade runner via ${launcher} (pm2=${isPm2}, dir=${installDir})`);
   await sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion, pendingRestart: true });
 }

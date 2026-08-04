@@ -237,12 +237,15 @@ describe('agent ctx defaults and upgrade contract', () => {
     const startService = vi.fn().mockResolvedValue(true);
     const testDir = join(tmpdir(), `yeaft-upgrade-test-${process.pid}`);
     const options = {
+      runId: 'connection-runner',
+      lockPath: join(testDir, 'active.lock'),
       parentPid: 42,
       packageSpec: '@yeaft/webchat-agent@1.0.999',
       globalInstall: true,
       installDir: testDir,
       logPath: join(testDir, 'upgrade.log'),
       handoffPath: join(testDir, 'started'),
+      authorizePath: join(testDir, 'authorized'),
       cancelPath: join(testDir, 'cancelled'),
       bootstrapPath: join(testDir, 'windows-upgrade-bootstrap.js'),
       runnerPath: join(testDir, 'windows-upgrade-runner.js'),
@@ -255,6 +258,8 @@ describe('agent ctx defaults and upgrade contract', () => {
       ecosystemPath: join(testDir, 'ecosystem.config.cjs'),
     };
     await expect(runWindowsUpgrade(options, {
+      waitForHandoffAuthorization: vi.fn().mockResolvedValue(true),
+      releaseWindowsUpgradeLock: vi.fn().mockReturnValue(true),
       waitForProcessExit: vi.fn().mockResolvedValue(true),
       installWindowsUpgrade: install,
       stopPm2Service: stopService,

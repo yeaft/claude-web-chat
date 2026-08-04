@@ -1,18 +1,21 @@
 #!/usr/bin/env node
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   buildUpgradeInstallArgs,
+  releaseWindowsUpgradeLock,
   resolveWindowsNpmCliPath,
 } from './upgrade-command.js';
 
 const PID_POLL_INTERVAL_MS = 100;
 const PID_WAIT_TIMEOUT_MS = 30_000;
+const HANDOFF_AUTH_TIMEOUT_MS = 15_000;
 const FILE_LOCK_RETRY_MS = [0, 250, 750, 1_500];
+const PM2_RETRY_MS = [0, 250, 750];
 
 function appendLog(logPath, message) {
   try {
@@ -118,25 +121,79 @@ export async function stopPm2Service({ nodePath, pm2CliPath, pm2AppName, logPath
   return deleteCode === 0;
 }
 
-export async function startPm2Service({ nodePath, pm2CliPath, ecosystemPath, logPath, run = runProcess }) {
-  if (!pm2CliPath || !ecosystemPath) return true;
-  appendLog(logPath, 'Re-registering Agent via PM2');
-  const startCode = await run(nodePath, [pm2CliPath, 'start', ecosystemPath], {
-    env: process.env,
-    windowsHide: true,
-    stdio: 'ignore',
-  });
-  if (startCode !== 0) return false;
-  const saveCode = await run(nodePath, [pm2CliPath, 'save'], {
-    env: process.env,
-    windowsHide: true,
-    stdio: 'ignore',
-  });
-  return saveCode === 0;
+async function runPm2WithRetry({ nodePath, pm2CliPath, args, logPath, label, run, sleep }) {
+  for (let attempt = 0; attempt < PM2_RETRY_MS.length; attempt++) {
+    const retryDelayMs = PM2_RETRY_MS[attempt];
+    if (retryDelayMs) {
+      appendLog(logPath, `Retrying PM2 ${label} after ${retryDelayMs}ms`);
+      await sleep(retryDelayMs);
+    }
+    try {
+      const code = await run(nodePath, [pm2CliPath, ...args], {
+        env: process.env,
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+      if (code === 0) return true;
+      appendLog(logPath, `PM2 ${label} failed with exit code ${code} (attempt ${attempt + 1})`);
+    } catch (err) {
+      appendLog(logPath, `PM2 ${label} failed to run (attempt ${attempt + 1}): ${err?.message || err}`);
+    }
+  }
+  return false;
 }
 
-function removeTransientFiles(handoffPath, payloadPath, cancelPath) {
-  for (const path of [handoffPath, payloadPath, cancelPath]) {
+export async function startPm2Service({
+  nodePath,
+  pm2CliPath,
+  ecosystemPath,
+  logPath,
+  run = runProcess,
+  sleep = delay,
+}) {
+  if (!pm2CliPath || !ecosystemPath) return true;
+  appendLog(logPath, 'Re-registering Agent via PM2');
+  const started = await runPm2WithRetry({
+    nodePath,
+    pm2CliPath,
+    args: ['start', ecosystemPath],
+    logPath,
+    label: 'start',
+    run,
+    sleep,
+  });
+  if (!started) return false;
+  return runPm2WithRetry({
+    nodePath,
+    pm2CliPath,
+    args: ['save'],
+    logPath,
+    label: 'save',
+    run,
+    sleep,
+  });
+}
+
+function readRunMarker(path, runId) {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'))?.runId === runId;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForHandoffAuthorization({ authorizePath, cancelPath, runId, sleep = delay }) {
+  const deadline = Date.now() + HANDOFF_AUTH_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (readRunMarker(cancelPath, runId)) return false;
+    if (readRunMarker(authorizePath, runId)) return true;
+    await sleep(PID_POLL_INTERVAL_MS);
+  }
+  return false;
+}
+
+function removeTransientFiles(handoffPath, authorizePath, payloadPath, cancelPath) {
+  for (const path of [handoffPath, authorizePath, payloadPath, cancelPath]) {
     try { rmSync(path, { force: true }); } catch {}
   }
 }
@@ -148,12 +205,15 @@ function removeTransientFiles(handoffPath, payloadPath, cancelPath) {
  */
 export async function runWindowsUpgrade(options, dependencies = {}) {
   const {
+    runId,
+    lockPath,
     parentPid,
     packageSpec,
     globalInstall,
     installDir,
     logPath,
     handoffPath,
+    authorizePath,
     cancelPath,
     bootstrapPath,
     runnerPath,
@@ -169,69 +229,84 @@ export async function runWindowsUpgrade(options, dependencies = {}) {
   const install = dependencies.installWindowsUpgrade || installWindowsUpgrade;
   const stopService = dependencies.stopPm2Service || stopPm2Service;
   const startService = dependencies.startPm2Service || startPm2Service;
+  const authorizeHandoff = dependencies.waitForHandoffAuthorization || waitForHandoffAuthorization;
+  const releaseLock = dependencies.releaseWindowsUpgradeLock || releaseWindowsUpgradeLock;
   const cleanupPaths = [bootstrapPath, runnerPath, commandPath];
+  const cancelled = () => cancelPath && readRunMarker(cancelPath, runId);
 
-  mkdirSync(dirname(handoffPath), { recursive: true });
-  if (cancelPath && existsSync(cancelPath)) {
-    appendLog(logPath, 'Upgrade was cancelled before handoff; refusing to modify the installation');
-    removeTransientFiles(handoffPath, payloadPath, cancelPath);
-    return { exitCode: 1, restarted: false, cleanupPaths };
-  }
-  writeFileSync(handoffPath, JSON.stringify({ runnerPid: process.pid, startedAt: Date.now() }));
-  appendLog(logPath, `Started at ${new Date().toISOString()}`);
-  appendLog(logPath, `Waiting for PID ${parentPid} to exit`);
-  const exited = await wait(parentPid);
-  if (!exited) {
-    appendLog(logPath, `Timed out waiting for PID ${parentPid}; refusing to modify a live installation`);
-    removeTransientFiles(handoffPath, payloadPath, cancelPath);
-    return { exitCode: 1, restarted: false, cleanupPaths };
-  }
-  appendLog(logPath, 'Original process exited');
-  if (cancelPath && existsSync(cancelPath)) {
-    appendLog(logPath, 'Upgrade was cancelled during handoff; refusing to modify the installation');
-    removeTransientFiles(handoffPath, payloadPath, cancelPath);
-    return { exitCode: 1, restarted: false, cleanupPaths };
-  }
+  if (!runId) throw new TypeError('runId is required');
+  if (!lockPath) throw new TypeError('lockPath is required');
 
-  let stopped = false;
   try {
-    stopped = await stopService({ nodePath, pm2CliPath, pm2AppName, logPath });
-  } catch (err) {
-    appendLog(logPath, `PM2 app removal failed: ${err?.message || err}`);
-  }
-  if (!stopped) {
-    appendLog(logPath, `PM2 app ${pm2AppName} could not be removed; refusing to install`);
-    let restored = false;
-    try {
-      restored = await startService({ nodePath, pm2CliPath, ecosystemPath, logPath });
-    } catch (err) {
-      appendLog(logPath, `WARNING: PM2 recovery failed: ${err?.message || err}`);
+    mkdirSync(dirname(handoffPath), { recursive: true });
+    if (cancelled()) {
+      appendLog(logPath, 'Upgrade was cancelled before handoff; refusing to modify the installation');
+      return { exitCode: 1, restarted: false, cleanupPaths };
     }
-    if (!restored) appendLog(logPath, 'WARNING: PM2 service was not restored after removal failure');
-    removeTransientFiles(handoffPath, payloadPath, cancelPath);
-    return { exitCode: 1, restarted: restored, cleanupPaths };
-  }
+    writeFileSync(handoffPath, JSON.stringify({ runId, runnerPid: process.pid, startedAt: Date.now() }));
+    appendLog(logPath, `Started run ${runId} at ${new Date().toISOString()}`);
+    const authorized = await authorizeHandoff({ authorizePath, cancelPath, runId });
+    if (!authorized) {
+      appendLog(logPath, 'Upgrade handoff was not authorized; refusing to modify the installation');
+      return { exitCode: 1, restarted: false, cleanupPaths };
+    }
+    appendLog(logPath, `Waiting for PID ${parentPid} to exit`);
+    const exited = await wait(parentPid);
+    if (!exited) {
+      appendLog(logPath, `Timed out waiting for PID ${parentPid}; refusing to modify a live installation`);
+      return { exitCode: 1, restarted: false, cleanupPaths };
+    }
+    appendLog(logPath, 'Original process exited');
+    if (cancelled()) {
+      appendLog(logPath, 'Upgrade was cancelled during handoff; refusing to modify the installation');
+      return { exitCode: 1, restarted: false, cleanupPaths };
+    }
 
-  let result;
-  try {
-    result = await install({ nodePath, npmCliPath, packageSpec, globalInstall, installDir, logPath });
-  } catch (err) {
-    appendLog(logPath, `npm install failed to start: ${err?.message || err}`);
-    result = { exitCode: 1, attempts: 0 };
-  }
-  appendLog(logPath, `npm install ${result.exitCode === 0 ? 'succeeded' : `failed with exit code ${result.exitCode}`} after ${result.attempts} attempt(s)`);
+    let stopped = false;
+    try {
+      stopped = await stopService({ nodePath, pm2CliPath, pm2AppName, logPath });
+    } catch (err) {
+      appendLog(logPath, `PM2 app removal failed: ${err?.message || err}`);
+    }
+    if (!stopped) {
+      appendLog(logPath, `PM2 app ${pm2AppName} could not be removed; refusing to install`);
+      let restored = false;
+      try {
+        restored = await startService({ nodePath, pm2CliPath, ecosystemPath, logPath });
+      } catch (err) {
+        appendLog(logPath, `WARNING: PM2 recovery failed: ${err?.message || err}`);
+      }
+      if (!restored) appendLog(logPath, 'WARNING: PM2 service was not restored after removal failure');
+      return { exitCode: 1, restarted: restored, cleanupPaths };
+    }
 
-  let restarted = false;
-  try {
-    restarted = await startService({ nodePath, pm2CliPath, ecosystemPath, logPath });
-  } catch (err) {
-    appendLog(logPath, `WARNING: PM2 service restart failed: ${err?.message || err}`);
-  }
-  if (!restarted) appendLog(logPath, 'WARNING: PM2 service was not restarted');
-  appendLog(logPath, `Finished at ${new Date().toISOString()}`);
+    let result;
+    try {
+      result = await install({ nodePath, npmCliPath, packageSpec, globalInstall, installDir, logPath });
+    } catch (err) {
+      appendLog(logPath, `npm install failed to start: ${err?.message || err}`);
+      result = { exitCode: 1, attempts: 0 };
+    }
+    appendLog(logPath, `npm install ${result.exitCode === 0 ? 'succeeded' : `failed with exit code ${result.exitCode}`} after ${result.attempts} attempt(s)`);
 
-  removeTransientFiles(handoffPath, payloadPath, cancelPath);
-  return { exitCode: result.exitCode, restarted, cleanupPaths };
+    let restarted = false;
+    try {
+      restarted = await startService({ nodePath, pm2CliPath, ecosystemPath, logPath });
+    } catch (err) {
+      appendLog(logPath, `WARNING: PM2 service restart failed: ${err?.message || err}`);
+    }
+    if (!restarted) appendLog(logPath, 'WARNING: PM2 service was not restarted');
+    const exitCode = result.exitCode === 0 && restarted ? 0 : 1;
+    appendLog(logPath, `Finished at ${new Date().toISOString()} with exit code ${exitCode}`);
+    return { exitCode, restarted, cleanupPaths };
+  } finally {
+    removeTransientFiles(handoffPath, authorizePath, payloadPath, cancelPath);
+    if (!releaseLock(lockPath, runId)) {
+      const message = `Upgrade lock was not released for run ${runId}`;
+      appendLog(logPath, message);
+      throw new Error(message);
+    }
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
