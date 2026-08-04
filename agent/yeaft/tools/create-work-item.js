@@ -49,6 +49,9 @@ Use this when work must continue beyond the current turn, needs role handoffs, r
   },
   isConcurrencySafe: () => false,
   isReadOnly: () => false,
+  // The Work Center watcher can advance from triage into a writable Action
+  // after creation returns. A paused item has no watcher-owned execution.
+  mayMutateWorkspaceAfterReturn: input => input?.start !== false,
   async execute(input, ctx = {}) {
     const sessionId = typeof ctx.sessionId === 'string' ? ctx.sessionId.trim() : '';
     if (!sessionId) throw new Error('CreateWorkItem requires an active Session');

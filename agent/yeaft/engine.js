@@ -2709,6 +2709,13 @@ export class Engine {
       }
       const taskResultUpdatesBeforeStream = this.#drainPendingTaskResultUpdates(conversationMessages);
       if (taskResultUpdatesBeforeStream.length > 0) {
+        // A completed sub-agent can have mutated the shared workspace while
+        // this query was parked. Its task-result update is the authoritative
+        // synchronization point before the next provider loop.
+        readOnlyToolResults.clear();
+        readOnlyToolReuseDisabled = true;
+      }
+      if (taskResultUpdatesBeforeStream.length > 0) {
         for (const update of taskResultUpdatesBeforeStream) {
           yield {
             type: 'tool_result_update',
@@ -3924,7 +3931,8 @@ export class Engine {
           // operations can still mutate after returning, so disable reuse for
           // the rest of this query instead of allowing stale entries to refill.
           if (!readOnlyTool) readOnlyToolResults.clear();
-          if (mayMutateWorkspaceAfterReturn(this, tc.name, tc.input)) {
+          const mayMutateAfterReturn = mayMutateWorkspaceAfterReturn(this, tc.name, tc.input);
+          if (mayMutateAfterReturn) {
             readOnlyToolResults.clear();
             readOnlyToolReuseDisabled = true;
           }

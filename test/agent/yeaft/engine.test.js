@@ -47,12 +47,15 @@ import { nodeDiskUsage, runDust } from '../../../agent/yeaft/tools/disk-usage.js
 import { listFilesWithFd } from '../../../agent/yeaft/tools/glob.js';
 import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
 import bashTool, { createBashTool } from '../../../agent/yeaft/tools/bash.js';
+import agentTool, { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
 import fileReadTool from '../../../agent/yeaft/tools/file-read.js';
 import fileWriteTool from '../../../agent/yeaft/tools/file-write.js';
 import {
   SearchBackendLimitError,
   SEARCH_SKIP_DIRS,
 } from '../../../agent/yeaft/tools/search-paths.js';
+import { __testSetWorkCenterService } from '../../../agent/yeaft/work-center/bridge.js';
+import { WorkCenterService } from '../../../agent/yeaft/work-center/service.js';
 
 // ─── Mock Adapter ─────────────────────────────────────────────
 
@@ -2662,6 +2665,275 @@ describe('Engine', () => {
           ? taskManager.getTask(sessionId, backgroundTaskId)
           : taskManager.listActiveTasks(sessionId).find(item => item.kind === 'shell');
         if (task?.status === 'running') taskManager.cancelTask(sessionId, task.id);
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not reuse reads after a SpawnAgent writes the workspace', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-sub-agent-'));
+      const yeaftDir = join(workDir, '.yeaft');
+      const sessionId = 'session-sub-agent-read-cache';
+      const filePath = join(workDir, 'state.txt');
+      const taskManager = new TaskManager({ yeaftDir });
+      let childToolStarts = 0;
+      let spawnedAgentId = null;
+      writeFileSync(filePath, 'before');
+      try {
+        const childAdapter = {
+          async *stream() {
+            childToolStarts += 1;
+            if (childToolStarts === 1) {
+              yield { type: 'tool_call', id: 'child-write', name: 'FileWrite', input: {
+                file_path: 'state.txt',
+                content: 'after',
+              } };
+              yield { type: 'stop', stopReason: 'tool_use' };
+              return;
+            }
+            yield { type: 'text_delta', text: 'child wrote the state' };
+            yield { type: 'stop', stopReason: 'end_turn' };
+          },
+          async call() { return { text: 'ok', usage: {} }; },
+        };
+        const baseStream = mockAdapter.stream.bind(mockAdapter);
+        mockAdapter.stream = async function* streamAfterChildWrite(params) {
+          if (params.messages?.some(message => message.role === 'tool' && message.toolCallId === 'spawn-child-write')) {
+            const agent = spawnedAgentId ? getAgentRegistry().get(spawnedAgentId) : null;
+            if (!agent?.taskId) throw new Error('sub-agent task did not start');
+            const deadline = Date.now() + 2_000;
+            while (taskManager.getTask(sessionId, agent.taskId)?.status === 'running' && Date.now() < deadline) {
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            const completed = taskManager.getTask(sessionId, agent.taskId);
+            if (completed?.status !== 'succeeded') {
+              throw new Error(`sub-agent task did not complete successfully: ${completed?.status || 'missing'}`);
+            }
+          }
+          yield* baseStream(params);
+        };
+
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-child-write', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'tool_call', id: 'spawn-child-write', name: 'SpawnAgent', input: {
+            name: 'cache-write-child',
+            mission: 'Write state.txt after the release file appears.',
+          } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-child-write', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const registry = new ToolRegistry();
+        registry.register(fileReadTool).register(fileWriteTool).register({
+          ...agentTool,
+          execute: (input, toolCtx) => agentTool.execute(input, {
+            ...toolCtx,
+            parentEngineDeps: {
+              ...toolCtx.parentEngineDeps,
+              adapter: childAdapter,
+              parentToolRegistry: registry,
+              subAgentLogDir: join(yeaftDir, 'sub-agent-logs'),
+            },
+          }),
+        });
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: registry,
+          taskManager,
+          yeaftDir,
+          sessionId,
+          vpId: 'vp-owner',
+        });
+
+        const events = [];
+        const query = engine.query({
+          prompt: 'delegate the write and reread the file',
+          workDir,
+          sessionId,
+          senderVpId: 'vp-owner',
+          threadId: 'main',
+        });
+        for await (const event of query) {
+          events.push(event);
+          if (event.type === 'tool_end' && event.id === 'spawn-child-write') {
+            spawnedAgentId = JSON.parse(event.output).agentId;
+          }
+        }
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        const agent = getAgentRegistry().get(spawnedAgentId);
+        expect(spawnedAgentId).toBeTruthy();
+        expect(agent?.taskId).toBeTruthy();
+        expect(childToolStarts).toBe(2);
+        expect(toolEnds.find(event => event.id === 'read-before-child-write')?.output).toContain('before');
+        expect(toolStarts.find(event => event.id === 'read-after-child-write')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-child-write')?.output).toContain('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+        expect(taskManager.getTask(sessionId, agent.taskId)?.status).toBe('succeeded');
+      } finally {
+        for (const agent of getAgentRegistry().values()) {
+          if (agent.parentSessionId !== sessionId || agent.status === 'completed') continue;
+          agent.abortController?.abort('test cleanup');
+          agent.status = 'closed';
+        }
+        _resetAgentRegistry();
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not reuse reads after a started Work Item writes the workspace', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-work-item-'));
+      const sessionId = 'session-work-item-read-cache';
+      const filePath = join(workDir, 'state.txt');
+      const criterion = 'state.txt contains after';
+      let workCenter = null;
+      let releaseWorkItemWrite = null;
+      let resolveRunnerStarted = null;
+      let resolveWriteCompleted = null;
+      const runnerStarted = new Promise(resolve => { resolveRunnerStarted = resolve; });
+      const writeReleased = new Promise(resolve => { releaseWorkItemWrite = resolve; });
+      const writeCompleted = new Promise(resolve => { resolveWriteCompleted = resolve; });
+      writeFileSync(filePath, 'before');
+      try {
+        const runner = {
+          async run({ action }) {
+            if (action.type === 'triage') {
+              resolveRunnerStarted();
+              await writeReleased;
+              writeFileSync(filePath, 'after');
+              resolveWriteCompleted();
+              return {
+                outcome: 'completed',
+                response: 'Triage wrote the state.',
+                summary: 'State written.',
+                evidence: ['state.txt updated by the Work Item runner'],
+                acceptanceChecks: [{ criterion, status: 'passed', evidence: 'state.txt contains after' }],
+                plan: {
+                  workItemType: 'state-write',
+                  actions: [{
+                    id: 'deliver-state',
+                    name: 'Deliver state update',
+                    type: 'deliver',
+                    objective: 'Confirm the state update is ready to deliver.',
+                    approach: 'Verify state.txt after the Work Item write.',
+                    expectedOutcome: 'state.txt contains after.',
+                    dependsOnActionIds: [],
+                    workspaceMode: 'shared',
+                  }],
+                },
+              };
+            }
+            return {
+              outcome: 'completed',
+              response: 'State delivered.',
+              summary: 'State delivered.',
+              evidence: ['state.txt contains after'],
+              acceptanceChecks: [{ criterion, status: 'passed', evidence: 'state.txt contains after' }],
+            };
+          },
+        };
+        workCenter = new WorkCenterService({
+          yeaftDir: join(workDir, '.yeaft-work-center'),
+          runner,
+          pollIntervalMs: 5,
+          watcherOptions: { concurrencyProvider: () => 1 },
+          settingsReader: () => ({}),
+          listAvailableVpIds: () => ['omni'],
+        });
+        workCenter.start();
+        __testSetWorkCenterService(workCenter);
+        const baseStream = mockAdapter.stream.bind(mockAdapter);
+        mockAdapter.stream = async function* streamAfterWorkItemWrite(params) {
+          const hasStartedWorkItem = params.messages?.some(message => (
+            message.role === 'tool' && message.toolCallId === 'start-work-item'
+          ));
+          if (hasStartedWorkItem) {
+            let timer = null;
+            try {
+              await Promise.race([
+                runnerStarted,
+                new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Work Item runner did not start')), 2_000); }),
+              ]);
+            } finally {
+              if (timer) clearTimeout(timer);
+            }
+            releaseWorkItemWrite();
+            await writeCompleted;
+          }
+          yield* baseStream(params);
+        };
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-work-item', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'tool_call', id: 'start-work-item', name: 'CreateWorkItem', input: {
+            title: 'Write state',
+            goal: 'Update state.txt',
+            acceptanceCriteria: [criterion],
+            workDir,
+            start: true,
+          } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-work-item', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const { default: createWorkItemTool } = await import('../../../agent/yeaft/tools/create-work-item.js');
+        const bridge = await import('../../../agent/yeaft/web-bridge.js');
+        bridge.__testSetSession({
+          conversationStore: { loadRecentBySession: () => [] },
+        });
+        const registry = new ToolRegistry();
+        registry.register(fileReadTool).register(createWorkItemTool);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: registry,
+          sessionId,
+        });
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'start the work item and reread the state', workDir, sessionId })) {
+          events.push(event);
+        }
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        const created = JSON.parse(toolEnds.find(event => event.id === 'start-work-item')?.output || '{}');
+        expect(created.workItemId).toBeTruthy();
+        expect(toolEnds.find(event => event.id === 'read-before-work-item')?.output).toContain('before');
+        expect(toolStarts.find(event => event.id === 'read-after-work-item')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-work-item')?.output).toContain('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+        const deadline = Date.now() + 2_000;
+        while (!workCenter.store.getWorkItemDetail(created.workItemId)?.runs.some(run => (
+          run.response === 'Triage wrote the state.' && run.status === 'completed'
+        )) && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(workCenter.store.getWorkItemDetail(created.workItemId)?.runs).toEqual(expect.arrayContaining([
+          expect.objectContaining({ response: 'Triage wrote the state.', status: 'completed' }),
+        ]));
+      } finally {
+        releaseWorkItemWrite?.();
+        await workCenter?.shutdown();
+        __testSetWorkCenterService(null);
+        const bridge = await import('../../../agent/yeaft/web-bridge.js');
+        bridge.__testSetSession(null);
         rmSync(workDir, { recursive: true, force: true });
       }
     });
