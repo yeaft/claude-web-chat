@@ -28,6 +28,43 @@ function projectIdentityKey(project) {
   return project?.id || '';
 }
 
+const SIDEBAR_SECTION_COLLAPSE_KEY = 'yeaft-sidebar-section-collapse';
+
+function readCollapsedSections() {
+  try {
+    if (typeof localStorage === 'undefined') return { projects: false, recents: false };
+    const parsed = JSON.parse(localStorage.getItem(SIDEBAR_SECTION_COLLAPSE_KEY) || '{}');
+    return {
+      projects: parsed?.projects === true,
+      recents: parsed?.recents === true,
+    };
+  } catch {
+    return { projects: false, recents: false };
+  }
+}
+
+function writeCollapsedSections(value) {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(SIDEBAR_SECTION_COLLAPSE_KEY, JSON.stringify({
+        projects: value?.projects === true,
+        recents: value?.recents === true,
+      }));
+    }
+  } catch { /* browser storage is best-effort UI state */ }
+}
+
+export function reorderProjectRows(rows, movedId, targetId, position = 'before') {
+  const ordered = Array.isArray(rows) ? [...rows] : [];
+  const fromIndex = ordered.findIndex(row => projectIdentityKey(row) === movedId);
+  if (fromIndex < 0) return null;
+  const [moved] = ordered.splice(fromIndex, 1);
+  const targetIndex = ordered.findIndex(row => projectIdentityKey(row) === targetId);
+  if (targetIndex < 0) return null;
+  ordered.splice(targetIndex + (position === 'after' ? 1 : 0), 0, moved);
+  return ordered;
+}
+
 function catalogOrderChanged(left, right) {
   if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return true;
   return left.some((row, index) => row?.catalogKey !== right[index]?.catalogKey);
@@ -126,6 +163,7 @@ export default {
   data() {
     return {
       collapsedProjects: {},
+      collapsedSections: readCollapsedSections(),
       openMenuKey: null,
       openProjectMenuKey: null,
       suppressedActionsKey: null,
@@ -133,6 +171,9 @@ export default {
       dragTargetProjectId: null,
       dragTargetRowKey: null,
       dragTargetPosition: null,
+      draggedProjectId: null,
+      dragTargetProjectRowId: null,
+      dragTargetProjectPosition: null,
       dragOperationPending: false,
       projectCreateOpen: false,
       projectCreateName: '',
@@ -372,6 +413,18 @@ export default {
         maxHeight: `${position.maxHeight}px`,
       };
     },
+    isSectionCollapsed(section) {
+      return this.collapsedSections?.[section] === true;
+    },
+    toggleSection(section) {
+      if (section !== 'projects' && section !== 'recents') return;
+      this.collapsedSections = {
+        ...this.collapsedSections,
+        [section]: !this.isSectionCollapsed(section),
+      };
+      writeCollapsedSections(this.collapsedSections);
+      this.closeMenus();
+    },
     isProjectCollapsed(project) {
       return this.collapsedProjects[projectIdentityKey(project)] === true;
     },
@@ -447,6 +500,11 @@ export default {
         }, project?.legacyAgentId || agentId);
       }
       if (action === 'delete') return store.mutateProject('delete', { projectId }, project?.legacyAgentId || agentId);
+      if (action === 'reorder-projects') {
+        return store.mutateProject('reorder', {
+          projectIds: (payload.projects || []).map(item => item.id),
+        });
+      }
       if (action === 'move-session' && row?.routeRef?.sessionId) {
         return store.mutateProject('move_session', {
           sessionId: row.routeRef.sessionId,
@@ -463,6 +521,10 @@ export default {
     },
     createProject() {
       if (this.projectCreateSubmitting) return;
+      if (this.isSectionCollapsed('projects')) {
+        this.collapsedSections = { ...this.collapsedSections, projects: false };
+        writeCollapsedSections(this.collapsedSections);
+      }
       this.projectCreateOpen = true;
       this.projectCreateName = '';
       this.$nextTick(() => this.$refs.projectCreateInput?.focus?.());
@@ -544,6 +606,67 @@ export default {
       const key = `${row.routeRef?.agentId}\u001f${row.routeRef?.sessionId}`;
       return this.projectBySessionKey.get(key) || null;
     },
+    canDragProject(project) {
+      return !!project?.id
+        && !project.legacyProjectId
+        && this.projectRows.length > 1
+        && this.projectRows.every(row => row?.id && !row.legacyProjectId)
+        && !this.dragOperationPending;
+    },
+    startProjectDrag(project, event) {
+      if (!this.canDragProject(project)) return;
+      this.closeMenus();
+      this.finishDrag();
+      this.draggedProjectId = projectIdentityKey(project);
+      if (event?.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', `project:${this.draggedProjectId}`);
+      }
+    },
+    dragOverProjectRow(project, event) {
+      const targetId = projectIdentityKey(project);
+      if (!this.draggedProjectId || targetId === this.draggedProjectId || !this.canDragProject(project)) return;
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      if (event?.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      this.dragTargetProjectRowId = targetId;
+      this.dragTargetProjectPosition = this.dragPositionForEvent(event);
+    },
+    dragLeaveProjectRow(project, event) {
+      if (this.dragTargetProjectRowId !== projectIdentityKey(project)) return;
+      const next = event?.relatedTarget;
+      if (next && event?.currentTarget?.contains?.(next)) return;
+      this.dragTargetProjectRowId = null;
+      this.dragTargetProjectPosition = null;
+    },
+    async dropProjectRow(project, event) {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      const movedId = this.draggedProjectId;
+      const targetId = projectIdentityKey(project);
+      const position = this.dragTargetProjectRowId === targetId
+        ? this.dragTargetProjectPosition
+        : this.dragPositionForEvent(event);
+      this.finishProjectDrag();
+      if (!movedId || !targetId || movedId === targetId || !position) return false;
+      const nextProjects = reorderProjectRows(this.projectRows, movedId, targetId, position);
+      if (!nextProjects) return false;
+      this.dragOperationPending = true;
+      try {
+        const result = await this.dispatchProjectAction({
+          action: 'reorder-projects',
+          projects: nextProjects,
+        });
+        return result !== false && result?.ok !== false;
+      } finally {
+        this.dragOperationPending = false;
+      }
+    },
+    finishProjectDrag() {
+      this.draggedProjectId = null;
+      this.dragTargetProjectRowId = null;
+      this.dragTargetProjectPosition = null;
+    },
     canDragRow(row, project = null) {
       if (this.dragOperationPending || !this.canEditRow(row)) return false;
       if (!project) return true;
@@ -561,6 +684,7 @@ export default {
     startDrag(row, event) {
       if (!this.canDragRow(row, this.projectForRow(row))) return;
       this.closeMenus();
+      this.finishProjectDrag();
       this.draggedRow = row;
       this.dragTargetProjectId = null;
       this.dragTargetRowKey = null;
@@ -604,6 +728,24 @@ export default {
       this.finishDrag();
       if (!this.canDropRow(moved, project) || !position) return false;
       return this.applySessionDrop(moved, project, row, position);
+    },
+    dragOverProjectHeader(project, event) {
+      if (this.draggedProjectId) {
+        this.dragOverProjectRow(project, event);
+        return;
+      }
+      this.dragOverProject(project, event);
+    },
+    clearProjectHeaderDragTarget(project, event) {
+      if (this.draggedProjectId) {
+        this.dragLeaveProjectRow(project, event);
+        return;
+      }
+      this.clearGroupDragTarget(projectIdentityKey(project), event);
+    },
+    dropOnProjectHeader(project, event) {
+      if (this.draggedProjectId) return this.dropProjectRow(project, event);
+      return this.dropOnProject(project, event);
     },
     dragOverProject(project, event) {
       if (!this.canDropRow(this.draggedRow, project)) {
@@ -655,6 +797,10 @@ export default {
     finishDrag() {
       this.draggedRow = null;
       this.clearDragTarget();
+    },
+    finishAllDrag() {
+      this.finishDrag();
+      this.finishProjectDrag();
     },
     rowsForProject(project = null) {
       return project
@@ -716,9 +862,12 @@ export default {
       </div>
 
       <div class="sidebar-session-results">
-        <section class="sidebar-section projects-section">
+        <section class="sidebar-section projects-section" :class="{ 'is-collapsed': isSectionCollapsed('projects') }">
           <div class="sidebar-section-heading">
-            <span>{{ $t('sidebar.projects.title') }}</span>
+            <button type="button" class="sidebar-section-toggle" @click="toggleSection('projects')" :aria-expanded="String(!isSectionCollapsed('projects'))">
+              <svg class="sidebar-section-chevron" :class="{ collapsed: isSectionCollapsed('projects') }" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m8 10 4 4 4-4"/></svg>
+              <span>{{ $t('sidebar.projects.title') }}</span>
+            </button>
             <button type="button" class="sidebar-tool-button sidebar-project-add-button" @click="createProject" :disabled="projectCreateOpen" :title="$t('sidebar.projects.new')" :aria-label="$t('sidebar.projects.new')">
               <svg class="sidebar-project-add-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path class="sidebar-project-add-mark" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14"/>
@@ -726,7 +875,7 @@ export default {
             </button>
           </div>
 
-          <form v-if="projectCreateOpen" class="sidebar-project-create" @submit.prevent="submitProjectCreate" @keydown.escape.stop.prevent="cancelProjectCreate">
+          <form v-if="projectCreateOpen && !isSectionCollapsed('projects')" class="sidebar-project-create" @submit.prevent="submitProjectCreate" @keydown.escape.stop.prevent="cancelProjectCreate">
             <svg class="sidebar-project-create-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 6h7l2 2h9v10H3V6zm2 2v8h14v-6h-8l-2-2H5z"/></svg>
             <input
               ref="projectCreateInput"
@@ -744,18 +893,21 @@ export default {
             </button>
           </form>
 
-          <div v-if="projectRows.length === 0 && !projectCreateOpen" class="sidebar-section-empty">{{ $t('sidebar.projects.empty') }}</div>
-          <div v-for="project in projectRows" :key="projectKey(project)" class="sidebar-project">
+          <div v-if="!isSectionCollapsed('projects') && projectRows.length === 0 && !projectCreateOpen" class="sidebar-section-empty">{{ $t('sidebar.projects.empty') }}</div>
+          <div v-for="project in (isSectionCollapsed('projects') ? [] : projectRows)" :key="projectKey(project)" class="sidebar-project">
             <div
               class="sidebar-project-header"
-              :class="{ 'drag-over': dragTargetProjectId === projectKey(project) }"
-              @dragover="dragOverProject(project, $event)"
-              @dragleave="clearGroupDragTarget(projectKey(project), $event)"
-              @drop="dropOnProject(project, $event)"
+              :class="{ 'drag-over': !draggedProjectId && dragTargetProjectId === projectKey(project), dragging: draggedProjectId === projectKey(project), 'project-drag-before': dragTargetProjectRowId === projectKey(project) && dragTargetProjectPosition === 'before', 'project-drag-after': dragTargetProjectRowId === projectKey(project) && dragTargetProjectPosition === 'after' }"
+              :draggable="canDragProject(project)"
+              @dragstart="startProjectDrag(project, $event)"
+              @dragover="dragOverProjectHeader(project, $event)"
+              @dragleave="clearProjectHeaderDragTarget(project, $event)"
+              @drop="dropOnProjectHeader(project, $event)"
+              @dragend="finishAllDrag"
             >
-              <button type="button" class="sidebar-project-toggle" @click="toggleProject(project)">
-                <svg class="sidebar-project-chevron" :class="{ collapsed: isProjectCollapsed(project) }" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m7 10 5 5 5-5H7z"/></svg>
-                <svg class="sidebar-project-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 6h7l2 2h9v10H3V6zm2 2v8h14v-6h-8l-2-2H5z"/></svg>
+              <button type="button" class="sidebar-project-toggle" @click="toggleProject(project)" :aria-expanded="String(!isProjectCollapsed(project))">
+                <svg v-if="isProjectCollapsed(project)" class="sidebar-project-icon sidebar-project-icon-closed" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M3.5 6.5h6l2 2h9v9h-17z"/></svg>
+                <svg v-else class="sidebar-project-icon sidebar-project-icon-open" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M3.5 7h6l2 2h9l-2 8.5h-15zM4 7V5.5h6l2 2h7"/></svg>
                 <span>{{ project.name }}</span>
                 <span v-if="isProjectUnread(project)" class="sidebar-session-unread sidebar-project-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
                 <span class="sidebar-project-count">{{ (rowsByProject.get(projectKey(project)) || []).length }}</span>
@@ -806,9 +958,12 @@ export default {
           </div>
         </section>
 
-        <section class="sidebar-section recents-section" :class="{ 'drag-over': dragTargetProjectId === '__recents__' }" @dragover="dragOverRecents" @dragleave="clearGroupDragTarget('__recents__', $event)" @drop="dropOnRecents">
+        <section class="sidebar-section recents-section" :class="{ 'drag-over': dragTargetProjectId === '__recents__', 'is-collapsed': isSectionCollapsed('recents') }" @dragover="dragOverRecents" @dragleave="clearGroupDragTarget('__recents__', $event)" @drop="dropOnRecents">
           <div class="sidebar-section-heading">
-            <span>{{ $t('sidebar.recents.title') }}</span>
+            <button type="button" class="sidebar-section-toggle" @click="toggleSection('recents')" :aria-expanded="String(!isSectionCollapsed('recents'))">
+              <svg class="sidebar-section-chevron" :class="{ collapsed: isSectionCollapsed('recents') }" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m8 10 4 4 4-4"/></svg>
+              <span>{{ $t('sidebar.recents.title') }}</span>
+            </button>
             <button type="button" class="sidebar-tool-button sidebar-recents-create" @click="createSession" :title="$t('sidebar.sessions.newChat')" :aria-label="$t('sidebar.sessions.newChat')">
               <svg class="sidebar-recents-create-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path class="sidebar-recents-create-frame" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -817,7 +972,7 @@ export default {
             </button>
           </div>
           <div
-            v-for="row in recentRows"
+            v-for="row in (isSectionCollapsed('recents') ? [] : recentRows)"
             :key="row.catalogKey"
             class="session-item sidebar-session-row"
             :class="{ active: isActive(row), processing: isProcessing(row), dragging: draggedRow?.catalogKey === row.catalogKey, 'drag-before': dragTargetRowKey === row.catalogKey && dragTargetPosition === 'before', 'drag-after': dragTargetRowKey === row.catalogKey && dragTargetPosition === 'after', 'actions-suppressed': suppressedActionsKey === row.catalogKey }"
@@ -852,7 +1007,7 @@ export default {
               <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="toggleSessionMenu(row, false, $event)" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
             </span>
           </div>
-          <div v-if="recentRows.length === 0" class="sidebar-section-empty">{{ $t('sidebar.recents.empty') }}</div>
+          <div v-if="!isSectionCollapsed('recents') && recentRows.length === 0" class="sidebar-section-empty">{{ $t('sidebar.recents.empty') }}</div>
         </section>
       </div>
 

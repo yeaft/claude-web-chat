@@ -144,6 +144,16 @@ describe('resolveAgentAccessError', () => {
     });
 
     const project = yeaftProjectDb.create(userId, `Project ${suffix}`);
+    const secondProject = yeaftProjectDb.create(userId, `Project second ${suffix}`);
+    expect(yeaftProjectDb.reorder(userId, [secondProject.id, project.id]).map(row => row.id))
+      .toEqual([secondProject.id, project.id]);
+    expect(() => yeaftProjectDb.reorder(userId, [project.id]))
+      .toThrow('Complete Project order is required');
+    expect(() => yeaftProjectDb.reorder(userId, [project.id, project.id]))
+      .toThrow('Complete Project order is required');
+    expect(yeaftProjectDb.reorder(userId, [project.id, secondProject.id]).map(row => row.id))
+      .toEqual([project.id, secondProject.id]);
+    yeaftProjectDb.delete(userId, secondProject.id);
     yeaftProjectDb.moveSession(userId, {
       agentId: 'agent-a', sessionId: `same-${suffix}`, projectId: project.id,
     });

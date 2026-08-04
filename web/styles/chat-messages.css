@@ -1806,23 +1806,74 @@
   box-shadow: var(--modal-shadow);
 }
 
-.image-preview-close {
+.image-preview-close,
+.image-preview-navigation {
   position: absolute;
-  top: 16px;
-  right: 16px;
-  width: 44px;
-  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--image-preview-control-size);
+  height: var(--image-preview-control-size);
+  padding: 0;
   border: 1px solid var(--border-color);
-  border-radius: 10px;
+  border-radius: var(--image-preview-control-radius);
   background: var(--bg-main);
   color: var(--text-primary);
-  font-size: 24px;
   cursor: pointer;
 }
 
+.image-preview-close {
+  top: var(--image-preview-control-offset);
+  right: var(--image-preview-control-offset);
+  font-size: var(--image-preview-close-font-size);
+}
+
+.image-preview-navigation {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.image-preview-navigation svg {
+  width: var(--image-preview-navigation-icon-size);
+  height: var(--image-preview-navigation-icon-size);
+}
+
+.image-preview-previous { left: var(--image-preview-control-offset); }
+.image-preview-next { right: var(--image-preview-control-offset); }
+
+.image-preview-position {
+  position: absolute;
+  left: 50%;
+  bottom: var(--image-preview-control-offset);
+  min-height: var(--image-preview-position-min-height);
+  padding: var(--image-preview-position-padding);
+  border: 1px solid var(--border-color);
+  border-radius: var(--image-preview-control-radius);
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-size: var(--image-preview-position-font-size);
+  font-variant-numeric: tabular-nums;
+  transform: translateX(-50%);
+}
+
 .image-preview-close:hover,
-.image-preview-close:focus-visible {
+.image-preview-close:focus-visible,
+.image-preview-navigation:hover,
+.image-preview-navigation:focus-visible {
   background: var(--sidebar-hover);
+}
+
+.image-preview-close:focus-visible,
+.image-preview-navigation:focus-visible {
+  outline: var(--image-preview-focus-ring-width) solid var(--accent-blue);
+  outline-offset: var(--image-preview-focus-ring-offset);
+}
+
+@media (max-width: 640px) {
+  .image-preview-img {
+    max-width: calc(100vw - 2 * var(--image-preview-mobile-gutter));
+    max-height: calc(100vh - var(--image-preview-mobile-reserved-height));
+  }
 }
 
 .user-attachment-file {

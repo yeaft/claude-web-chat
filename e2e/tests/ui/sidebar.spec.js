@@ -111,7 +111,7 @@ test.describe('侧边栏交互', () => {
     await expect(newProject).toHaveCSS('opacity', '0');
     await expect(newProject).toHaveCSS('pointer-events', 'none');
 
-    await projectHeading.locator('> span:first-child').hover();
+    await projectHeading.locator('.sidebar-section-toggle').hover();
     await expect(newProject).toHaveCSS('opacity', '1');
     await expect(newProject).toHaveCSS('pointer-events', 'auto');
     await newProject.click();
@@ -141,7 +141,7 @@ test.describe('侧边栏交互', () => {
     await chatPage.mouse.click(hiddenRecentsHitTarget.x, hiddenRecentsHitTarget.y);
     await expect(chatPage.locator('.yeaft-session-create-modal')).toHaveCount(0);
 
-    await recentsHeading.locator('> span:first-child').hover();
+    await recentsHeading.locator('.sidebar-section-toggle').hover();
     await expect(recentsCreate).toHaveCSS('opacity', '1');
     await expect(recentsCreate).toHaveCSS('pointer-events', 'auto');
     await recentsCreate.click();
@@ -245,10 +245,16 @@ test.describe('侧边栏交互', () => {
     const dragProjects = [{
       id: 'project-drag',
       name: 'Project drag',
+      sortOrder: 0,
       members: [
         { agentId: mockAgent.agentId, sessionId: 'project-first' },
         { agentId: mockAgent.agentId, sessionId: 'project-second' },
       ],
+    }, {
+      id: 'project-empty',
+      name: 'Project empty',
+      sortOrder: 1,
+      members: [],
     }];
     await setSidebarData({ projects: dragProjects, sessions: dragSessions });
     await expect(chatPage.locator('.sidebar-session-row[draggable="true"]').first()).toHaveCSS('cursor', 'default');
@@ -256,8 +262,17 @@ test.describe('侧边栏交互', () => {
       const store = window.Pinia.useChatStore();
       const originalMove = store.mutateProject;
       const originalReorder = store.reorderCatalogSessions;
-      const calls = { moves: [], orders: [] };
+      const calls = { moves: [], orders: [], projectOrders: [] };
       store.mutateProject = async (op, payload, targetAgentId) => {
+        if (op === 'reorder') {
+          calls.projectOrders.push(payload.projectIds);
+          const byId = new Map(store.sessionProjects.map(project => [project.id, project]));
+          store.applySessionCatalogSnapshot(
+            store.sessionCatalog,
+            payload.projectIds.map((id, sortOrder) => ({ ...byId.get(id), sortOrder })),
+          );
+          return { ok: true };
+        }
         calls.moves.push({ op, payload, targetAgentId });
         if (op === 'move_session') {
           const orderedCatalog = payload.catalogOrder.map((item, sortRank) => ({
@@ -298,6 +313,35 @@ test.describe('侧边栏交互', () => {
       const recent = () => document.querySelector('.recents-section .session-item');
       const titles = selector => [...document.querySelectorAll(selector)]
         .map(row => row.querySelector('.sidebar-session-title-text')?.textContent?.trim());
+      const projectNames = () => [...document.querySelectorAll('.sidebar-project-toggle')]
+        .map(row => row.textContent.replace(/\d+$/, '').trim());
+
+      const sectionToggles = [...document.querySelectorAll('.sidebar-section-toggle')];
+      sectionToggles[1].click();
+      await window.Vue.nextTick();
+      const recentsCollapsed = document.querySelector('.recents-section').classList.contains('is-collapsed')
+        && document.querySelectorAll('.recents-section .session-item').length === 0;
+      sectionToggles[1].click();
+      await window.Vue.nextTick();
+
+      const firstProjectToggle = document.querySelector('.sidebar-project-toggle');
+      const openIconVisible = !!firstProjectToggle.querySelector('.sidebar-project-icon-open');
+      firstProjectToggle.click();
+      await window.Vue.nextTick();
+      const closedIconVisible = !!firstProjectToggle.querySelector('.sidebar-project-icon-closed');
+      firstProjectToggle.click();
+      await window.Vue.nextTick();
+
+      let projectHeaders = [...document.querySelectorAll('.sidebar-project-header')];
+      dispatchDrag(projectHeaders[1], 'dragstart', 0);
+      const firstProjectBounds = projectHeaders[0].getBoundingClientRect();
+      dispatchDrag(projectHeaders[0], 'dragover', firstProjectBounds.top + 1);
+      await window.Vue.nextTick();
+      const projectIndicator = projectHeaders[0].classList.contains('project-drag-before');
+      dispatchDrag(projectHeaders[0], 'drop', firstProjectBounds.top + 1);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      await window.Vue.nextTick();
+      const projectGroupOrder = projectNames();
 
       let projectRows = rows();
       dispatchDrag(projectRows[1], 'dragstart', 0);
@@ -307,7 +351,7 @@ test.describe('侧边栏交互', () => {
       const indicator = projectRows[0].classList.contains('drag-before');
       dispatchDrag(projectRows[0], 'drop', firstBounds.top + 1);
       await window.Vue.nextTick();
-      const projectOrder = titles('.sidebar-project-sessions .session-item');
+      const sessionOrder = titles('.sidebar-project-sessions .session-item');
 
       const recentRow = recent();
       projectRows = rows();
@@ -322,10 +366,28 @@ test.describe('侧边栏交互', () => {
 
       store.mutateProject = originalMove;
       store.reorderCatalogSessions = originalReorder;
-      return { calls, indicator, projectOrder, crossSectionOrder, recentOrder, agentId };
+      return {
+        calls,
+        indicator,
+        projectIndicator,
+        projectGroupOrder,
+        recentsCollapsed,
+        openIconVisible,
+        closedIconVisible,
+        sessionOrder,
+        crossSectionOrder,
+        recentOrder,
+        agentId,
+      };
     }, { agentId: mockAgent.agentId });
+    expect(dragResult.recentsCollapsed).toBe(true);
+    expect(dragResult.openIconVisible).toBe(true);
+    expect(dragResult.closedIconVisible).toBe(true);
+    expect(dragResult.projectIndicator).toBe(true);
+    expect(dragResult.projectGroupOrder).toEqual(['Project empty', 'Project drag']);
+    expect(dragResult.calls.projectOrders).toEqual([['project-empty', 'project-drag']]);
     expect(dragResult.indicator).toBe(true);
-    expect(dragResult.projectOrder).toEqual(['Project second', 'Project first']);
+    expect(dragResult.sessionOrder).toEqual(['Project second', 'Project first']);
     expect(dragResult.crossSectionOrder).toEqual(['Project second', 'Recent drag', 'Project first']);
     expect(dragResult.recentOrder).toEqual([]);
     expect(dragResult.calls.moves).toEqual([{

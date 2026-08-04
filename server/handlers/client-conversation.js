@@ -1336,6 +1336,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         else if (op === 'update_instruction') {
           result = yeaftProjectDb.updateInstruction(client.userId, msg.projectId, msg.instruction);
         } else if (op === 'delete') result = yeaftProjectDb.delete(client.userId, msg.projectId);
+        else if (op === 'reorder') result = yeaftProjectDb.reorder(client.userId, msg.projectIds);
         else if (op === 'move_session') {
           const agentId = msg.targetAgentId || msg.agentId;
           const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId.trim() : '';

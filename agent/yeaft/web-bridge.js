@@ -77,6 +77,7 @@ import {
   moveSessionToProject,
   removeSessionFromProjects,
   renameProject,
+  reorderProjects,
   updateProjectInstruction,
 } from './projects/store.js';
 import { readSummary as readScopeSummary } from './memory/store.js';
@@ -3239,6 +3240,7 @@ export function handleYeaftProjectMutation(msg) {
     else if (op === 'update_instruction') {
       result = updateProjectInstruction(yeaftDir, msg.projectId, msg.instruction);
     } else if (op === 'delete') result = deleteProject(yeaftDir, msg.projectId);
+    else if (op === 'reorder') result = reorderProjects(yeaftDir, msg.projectIds);
     else if (op === 'move_session') {
       if (!snapshotSessions(yeaftDir).some(row => row.id === msg.sessionId)) {
         throw new ProjectStoreError('session_not_found', 'Session not found');
