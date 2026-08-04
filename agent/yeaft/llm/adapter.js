@@ -461,6 +461,37 @@ export function classifyFetchError(err, opts = {}) {
  * @param {{ url: string, method: string, headers: object, body: any }} req
  * @returns {{ url: string, method: string, headers: object, body: any }}
  */
+export function createBoundedTextAccumulator(maxBytes = 512 * 1024) {
+  const limit = Number.isFinite(Number(maxBytes)) ? Math.max(0, Math.floor(Number(maxBytes))) : 512 * 1024;
+  const chunks = [];
+  let retainedBytes = 0;
+  let totalBytes = 0;
+  let truncated = false;
+  return {
+    push(value) {
+      const text = String(value ?? '');
+      const bytes = Buffer.byteLength(text, 'utf8');
+      totalBytes += bytes;
+      if (retainedBytes >= limit || bytes === 0) {
+        if (bytes > 0) truncated = true;
+        return;
+      }
+      const available = limit - retainedBytes;
+      let retained = text;
+      while (Buffer.byteLength(retained, 'utf8') > available && retained.length > 0) {
+        retained = retained.slice(0, -1);
+      }
+      chunks.push(retained);
+      retainedBytes += Buffer.byteLength(retained, 'utf8');
+      if (retained.length < text.length) truncated = true;
+    },
+    text() { return chunks.join(''); },
+    get totalBytes() { return totalBytes; },
+    get truncated() { return truncated; },
+    get maxBytes() { return limit; },
+  };
+}
+
 export function redactRawRequest(req) {
   if (!req || typeof req !== 'object') return req;
   const headers = { ...(req.headers || {}) };

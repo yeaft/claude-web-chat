@@ -166,6 +166,27 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       break;
     }
 
+    // Local performance telemetry settings. The agent owns the config file;
+    // the server only checks access and relays the request.
+    case 'get_telemetry_settings': {
+      const a = msg.agentId || client.currentAgent;
+      if (!a) break;
+      if (!await checkAgentAccess(a)) break;
+      await forwardToAgent(a, { type: 'get_telemetry_settings' });
+      break;
+    }
+
+    case 'update_telemetry_settings': {
+      const a = msg.agentId || client.currentAgent;
+      if (!a) break;
+      if (!await checkAgentAccess(a)) break;
+      await forwardToAgent(a, {
+        type: 'update_telemetry_settings',
+        settings: msg.settings || msg.config || {},
+      });
+      break;
+    }
+
     // Search settings (web-search backend + Tavily key + on-demand usage probe).
     // Mirrors the get/update_yeaft_settings pair: the agent owns the
     // config file, server is just a relay.

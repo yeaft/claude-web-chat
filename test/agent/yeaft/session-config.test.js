@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ctx from '../../../agent/context.js';
-import { loadConfig, normalizeLlmRetry } from '../../../agent/yeaft/config.js';
+import { loadConfig, normalizeLlmRetry, normaliseTelemetrySection } from '../../../agent/yeaft/config.js';
+import { getTelemetrySettings, updateTelemetrySettings } from '../../../agent/yeaft/config-api.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { estimateTokens } from '../../../agent/yeaft/dream/segment.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
@@ -63,6 +64,36 @@ afterEach(() => {
 });
 
 describe('Yeaft session-scoped model config', () => {
+  it('normalizes and persists bounded telemetry settings without touching other config', () => {
+    expect(normaliseTelemetrySection({
+      enabled: false,
+      retentionDays: 0,
+      flushIntervalMs: 99_999,
+      maxQueueSize: 1,
+      rawExchangeMaxBytes: 99 * 1024 * 1024,
+      traceTextMaxBytes: -1,
+      ignored: true,
+    })).toEqual({
+      enabled: false,
+      retentionDays: 1,
+      flushIntervalMs: 60_000,
+      maxQueueSize: 100,
+      rawExchangeMaxBytes: 4 * 1024 * 1024,
+      traceTextMaxBytes: 0,
+    });
+    const root = makeDir();
+    writeFileSync(join(root, 'config.json'), JSON.stringify({ primaryModel: 'proxy/model', debug: true }));
+    expect(updateTelemetrySettings({ flushIntervalMs: 250, rawExchangeMaxBytes: 65_536 }, root)).toMatchObject({
+      flushIntervalMs: 250,
+      rawExchangeMaxBytes: 65_536,
+    });
+    expect(getTelemetrySettings(root)).toMatchObject({ flushIntervalMs: 250, rawExchangeMaxBytes: 65_536 });
+    const persisted = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+    expect(persisted.primaryModel).toBe('proxy/model');
+    expect(persisted.debug).toBe(true);
+    expect(persisted.telemetry).toMatchObject({ flushIntervalMs: 250 });
+  });
+
   it('keeps model and effort isolated per Session', async () => {
     expect(normalizeLlmRetry(null, null)).toMatchObject({
       maxRetries: 3,

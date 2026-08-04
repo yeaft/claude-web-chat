@@ -348,6 +348,7 @@ describe('Engine', () => {
         }
 
         const day = new Date().toISOString().slice(0, 10);
+        await new Promise(resolve => setTimeout(resolve, 1_050));
         const rows = readFileSync(join(yeaftDir, 'perf-traces', `${day}.jsonl`), 'utf8')
           .trim()
           .split('\n')
@@ -2419,6 +2420,79 @@ describe('Engine', () => {
   });
 
   describe('multiple tool calls in one turn', () => {
+    it('reuses an identical read-only tool result within one query', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'read-1', name: 'read', input: { path: 'same.txt' } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'read-2', name: 'read', input: { path: 'same.txt' } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+      let executions = 0;
+      engine.registerTool({
+        name: 'read',
+        description: 'Read',
+        parameters: { type: 'object', properties: { path: { type: 'string' } } },
+        isReadOnly: () => true,
+        execute: async () => { executions += 1; return 'file contents'; },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'read it' })) events.push(event);
+
+      expect(executions).toBe(1);
+      expect(events.filter(event => event.type === 'tool_exec').map(event => event.reused)).toEqual([undefined, true]);
+      expect(mockAdapter.callLog).toHaveLength(3);
+      expect(mockAdapter.callLog[2].messages.at(-1).content).toContain('Already executed the identical read-only read call');
+    });
+
+    it('ends a StartPlan plus TodoWrite control batch without another LLM call', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'plan-1', name: 'StartPlan', input: { topic: 'inspect the issue' } },
+        { type: 'tool_call', id: 'todo-1', name: 'TodoWrite', input: {
+          todos: [{ content: 'Inspect the issue', status: 'in_progress', activeForm: 'Inspecting the issue' }],
+        } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+      engine.registerTool({
+        name: 'StartPlan',
+        description: 'Start plan',
+        parameters: { type: 'object' },
+        isReadOnly: () => true,
+        execute: async () => 'plan instruction',
+      });
+      engine.registerTool({
+        name: 'TodoWrite',
+        description: 'Write todos',
+        parameters: { type: 'object' },
+        isReadOnly: () => true,
+        execute: async () => '{"success":true}',
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'inspect the issue' })) events.push(event);
+
+      expect(mockAdapter.callLog).toHaveLength(1);
+      expect(events.find(event => event.type === 'turn_end' && event.stopReason === 'plan_recorded')).toMatchObject({ terminal: true });
+    });
+
     it('should execute multiple tools from a single response', async () => {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'Searching both...' },

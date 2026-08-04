@@ -35,7 +35,7 @@ import { ActiveMemorySet } from './memory/ams.js';
 import { runAdjust } from './memory/adjust.js';
 import { cleanMemoryPromptText, isMemoryPromptRelevant } from './memory/prompt-cleanup.js';
 import { isVpSeedBackfillStub } from './memory/seed-backfill.js';
-import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
+import { boundRawExchange, perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
 // Default thread marker for legacy / non-group flows. Group VP runtime may
 // pass a real threadId per (sessionId, vpId, threadId) engine instance.
 const MAIN_THREAD_ID = 'main';
@@ -86,6 +86,18 @@ const AMS_ADJUST_TIMEOUT_MS = 30_000;
 const DEFAULT_ASYNC_TASK_WAIT_TIMEOUT_MS = 120_000;
 
 const DEFAULT_MEMORY_RECALL_LIMIT = 8;
+
+function toolDefinitionFor(engine, name) {
+  return engine.getToolDefinition(name);
+}
+
+function isReadOnlyTool(engine, name, input) {
+  try {
+    return toolDefinitionFor(engine, name)?.isReadOnly?.(input) === true;
+  } catch {
+    return false;
+  }
+}
 
 // ─── LLM retry policy defaults ──────────────────────────────────
 // Hard-coded floor / ceiling for retry behaviour. The engine reads the
@@ -227,11 +239,9 @@ function sleepWithAbort(ms, signal) {
  *   - `toolCalls` on assistant turns (the LLM's function_call requests)
  *   - `toolCallId` + `isError` on tool turns (the paired tool_result)
  *
- * Content is passed through verbatim — never truncated. Debug traces must
- * mirror exactly what we sent to the LLM; a truncated copy is misleading.
- * If the resulting payload is too large for the client debug store the
- * bound is per-loop-count (see `MAX_YEAFT_DEBUG_LOOPS` in
- * `web/stores/chat.js`), not per-payload mutilation here.
+ * Content is kept intact for the live protocol. The file-backed debug trace
+ * applies its own configured byte budget at persistence time so the model
+ * request path never pays an extra copy just for diagnostics.
  *
  * Pure function — no side effects on the input message.
  *
@@ -241,6 +251,7 @@ function sleepWithAbort(ms, signal) {
 export function mapDebugMessage(m) {
   const out = { role: m.role };
   out.content = m.content;
+  if (m.rawRequest != null) out.rawRequest = m.rawRequest;
   if (Array.isArray(m.toolCalls) && m.toolCalls.length > 0) {
     out.toolCalls = m.toolCalls.map(tc => ({
       id: tc.id,
@@ -2124,6 +2135,11 @@ export class Engine {
       && typeof vpPersona.vpId === 'string'
       ? vpPersona.vpId
       : (typeof senderVpId === 'string' ? senderVpId : null);
+    // Exact read-only tool results are safe to reuse within one query only
+    // when no intervening mutation can have changed the workspace. The map is
+    // intentionally local to this query; cross-turn reuse belongs to the
+    // persistent tool log and must not silently bypass new user work.
+    const readOnlyToolResults = new Map();
 
     // Durability boundary: a valid user turn must exist on disk before any
     // memory pre-flow or provider request can fail. The Web Session bridge
@@ -2533,6 +2549,12 @@ export class Engine {
     // control to other VPs cleanly. Reset to null at the top of every
     // outer-loop iteration so the flag never carries across turns.
     let endTurnRequested = null;
+    // StartPlan is a control tool. If the model emits only the checklist after
+    // it, there is no new workspace fact to interpret: persist the plan and
+    // close the turn instead of spending another provider request on a
+    // TodoWrite-only control round. A later user turn can continue the first
+    // pending step; a batch that includes a real work tool always continues.
+    let planBootstrapPending = false;
 
     // LLM retry bookkeeping (rate-limit / 5xx / transient network errors).
     // Counts CONSECUTIVE retryable failures on the same turn — reset to 0
@@ -2624,9 +2646,12 @@ export class Engine {
       // task-344: capture redacted raw request / raw response for debug panel.
       let rawRequest = null;
       let rawResponse = null;
+      const rawExchangeMaxBytes = Number.isFinite(Number(this.#config?.telemetry?.rawExchangeMaxBytes))
+        ? Math.max(0, Number(this.#config.telemetry.rawExchangeMaxBytes))
+        : 512 * 1024;
       const captureRawExchange = (exchange) => {
-        if (exchange?.rawRequest) rawRequest = exchange.rawRequest;
-        if (exchange?.rawResponse) rawResponse = exchange.rawResponse;
+        if (exchange?.rawRequest) rawRequest = boundRawExchange(exchange.rawRequest, rawExchangeMaxBytes);
+        if (exchange?.rawResponse) rawResponse = boundRawExchange(exchange.rawResponse, rawExchangeMaxBytes);
       };
 
       // task-704b: resolve the live model's context window for this turn.
@@ -2831,6 +2856,7 @@ export class Engine {
           effortSource: userEffort ? 'user' : 'auto',
           signal,
           onRawExchange: captureRawExchange,
+          rawExchangeMaxBytes,
           onRequestStart: () => startProviderRequest?.(activeProviderRequest),
         })) {
           // task-325a (abort-stop fix): per-event abort short-circuit.
@@ -2856,7 +2882,13 @@ export class Engine {
           }
           switch (event.type) {
             case 'text_delta':
-              if (ttfbMs === null) ttfbMs = Date.now() - startTime;
+              if (ttfbMs === null) {
+                ttfbMs = Date.now() - startTime;
+                traceRequest('llm.first_text', {
+                  durationMs: perfNowMs() - requestPerfStart,
+                  detail: { model: currentModel },
+                });
+              }
               responseText += event.text;
               yield event;
               break;
@@ -2880,6 +2912,12 @@ export class Engine {
               }
               break;
             case 'tool_call':
+              if (toolCalls.length === 0) {
+                traceRequest('llm.first_tool_call', {
+                  durationMs: perfNowMs() - requestPerfStart,
+                  detail: { name: event.name || null, model: currentModel },
+                });
+              }
               toolCalls.push(event);
               yield event;
               break;
@@ -2956,6 +2994,8 @@ export class Engine {
             stopReason,
             inputTokens: totalUsage.inputTokens,
             outputTokens: totalUsage.outputTokens,
+            toolCallCount: toolCalls.length,
+            responseTextBytes: Buffer.byteLength(responseText, 'utf8'),
           },
         });
         // Stream completed without throwing — reset the retry counter so
@@ -3317,7 +3357,7 @@ export class Engine {
       // yielding any post-stream diagnostics. A consumer may stop iterating at
       // any yield; persistence therefore cannot wait for turn_end or even the
       // debug `loop` event below.
-      const assistantMsg = { role: 'assistant', content: responseText, responseKind: 'progress' };
+      const assistantMsg = { role: 'assistant', content: responseText, responseKind: 'progress', ...(rawRequest ? { rawRequest } : {}) };
       if (toolCalls.length > 0) {
         assistantMsg.toolCalls = toolCalls.map(tc => ({
           id: tc.id,
@@ -3802,6 +3842,8 @@ export class Engine {
         let output;
         let displayImages = [];
         let isError = false;
+        let reusedReadOnlyResult = false;
+        let reusedReadOnlyCallId = null;
         let toolErrorOutput = null;
         let fatalToolError = null;
         currentToolCallForAsyncTask = skipped
@@ -3842,7 +3884,25 @@ export class Engine {
           isError = true;
           yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, threadId: this.currentThreadId };
         } else {
-          try {
+          const duplicateKey = `${tc.name}\u001f${argsHashOf(tc.input)}`;
+          const cachedReadOnly = readOnlyToolResults.get(duplicateKey);
+          if (cachedReadOnly && isReadOnlyTool(this, tc.name, tc.input)) {
+            output = cachedReadOnly.output;
+            isError = Boolean(cachedReadOnly.isError);
+            reusedReadOnlyResult = true;
+            reusedReadOnlyCallId = cachedReadOnly.callId || null;
+            yield { type: 'tool_start', id: tc.id, name: tc.name, input: tc.input, threadId: this.currentThreadId, reused: true };
+            yield {
+              type: 'tool_end',
+              id: tc.id,
+              name: tc.name,
+              output,
+              displayImages: [],
+              isError: cachedReadOnly.isError,
+              reused: true,
+              threadId: this.currentThreadId,
+            };
+          } else try {
             yield { type: 'tool_start', id: tc.id, name: tc.name, input: tc.input, threadId: this.currentThreadId };
             if (this.#toolRegistry) {
               toolErrorOutput = this.#toolRegistry.get(tc.name)?.errorOutput || null;
@@ -3920,6 +3980,7 @@ export class Engine {
           durationMs: toolDurationMs,
           isError,
           toolOutput: output,
+          ...(reusedReadOnlyResult ? { reused: true, reusedCallId: reusedReadOnlyCallId } : {}),
           ...(skipped ? { skipped: true } : {}),
           ...(displayImages.length > 0 ? { displayImageCount: displayImages.length } : {}),
         };
@@ -3947,7 +4008,21 @@ export class Engine {
           durationMs: toolDurationMs,
           isError,
           skipped,
+          reused: reusedReadOnlyResult,
+          reusedCallId: reusedReadOnlyCallId,
         });
+
+        if (!skipped && !reusedReadOnlyResult && tc.name === 'StartPlan') {
+          planBootstrapPending = true;
+        }
+        if (!skipped && !reusedReadOnlyResult && isReadOnlyTool(this, tc.name, tc.input)) {
+          const cachedOutput = `Already executed the identical read-only ${tc.name} call in this turn under tool call ${tc.id}. Reuse the earlier result above; no new work was performed.`;
+          readOnlyToolResults.set(`${tc.name}\u001f${argsHashOf(tc.input)}`, {
+            output: cachedOutput,
+            isError,
+            callId: tc.id,
+          });
+        }
 
         // Append only the bounded copy to the model message history. Raw
         // `output` is still used for debug traces, UI events, exec-log, and
@@ -4002,6 +4077,36 @@ export class Engine {
       for (const reminder of pendingDupReminders) {
         conversationMessages.push({ role: 'user', content: reminder });
       }
+
+      // A plan bootstrap that produced only a TodoWrite has no executable work
+      // to feed back to the provider. Close it here. This is intentionally
+      // narrow: StartPlan + TodoWrite is a valid planning result, but a batch
+      // containing any other tool must continue so the model can inspect its
+      // result before deciding what to do next.
+      const onlyPlanControls = planBootstrapPending
+        && toolCalls.length > 0
+        && toolCalls.every(call => call.name === 'StartPlan' || call.name === 'TodoWrite')
+        && toolCalls.some(call => call.name === 'TodoWrite')
+        && !toolBatchBarrier
+        && !endTurnRequested
+        && !abortedDuringTools
+        && !signal?.aborted;
+      if (onlyPlanControls) {
+        const hasPendingStep = toolCalls
+          .filter(call => call.name === 'TodoWrite')
+          .some(call => Array.isArray(call.input?.todos)
+            && call.input.todos.some(todo => todo?.status === 'pending' || todo?.status === 'in_progress'));
+        yield {
+          type: 'turn_end',
+          turnNumber,
+          stopReason: 'plan_recorded',
+          detail: { nextStep: hasPendingStep ? 'pending_work_tools' : 'none', toolCount: toolCalls.length },
+          threadId,
+          terminal: true,
+        };
+        break;
+      }
+      planBootstrapPending = false;
 
       // A batch barrier deliberately returns control to the provider. Any
       // handoff requested by an earlier call belongs to the invalidated plan
@@ -4227,6 +4332,16 @@ export class Engine {
 
   /** @returns {import('./tools/registry.js').ToolRegistry|null} */
   get toolRegistry() { return this.#toolRegistry; }
+
+  /**
+   * Return a registered tool definition for internal loop policy checks.
+   * This keeps the duplicate-result fast path on the same registry metadata
+   * used by normal execution, without exposing the private maps.
+   */
+  getToolDefinition(name) {
+    if (this.#toolRegistry) return this.#toolRegistry.get(name);
+    return this.#tools.get(name) || null;
+  }
 
   /** @returns {import('./skills.js').SkillManager|null} */
   get skillManager() { return this.#skillManager; }

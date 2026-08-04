@@ -14,6 +14,7 @@
 import { promises as fsp } from 'fs';
 import { basename, dirname, extname, join } from 'path';
 import { randomUUID } from 'crypto';
+import { truncateUtf8Text } from './perf-trace.js';
 
 const TRACE_VERSION = 2;
 const REQUEST_RETENTION = 10;
@@ -26,6 +27,7 @@ const MAX_RAW_REQUEST_BYTES = 2 * 1024 * 1024;
 const TRACE_FLUSH_INTERVAL_MS = 5_000;
 const TRACE_FLUSH_DIRTY_LOOPS = 10;
 const MAX_SEARCH_PATTERN_CHARS = 300;
+const DEFAULT_TRACE_TEXT_MAX_BYTES = 256 * 1024;
 
 function isPlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
@@ -133,10 +135,13 @@ function traceMatchesRegex(trace, regex) {
 function truncateText(value, maxBytes = MAX_TEXT_BYTES) {
   if (value == null) return value ?? null;
   const str = String(value);
-  if (Buffer.byteLength(str, 'utf8') <= maxBytes) return str;
-  let out = str.slice(0, maxBytes);
-  while (Buffer.byteLength(out, 'utf8') > maxBytes && out.length > 0) out = out.slice(0, -1);
-  return `${out}\n... [truncated to ${maxBytes} bytes]`;
+  const budget = Math.max(0, Number(maxBytes) || 0);
+  if (Buffer.byteLength(str, 'utf8') <= budget) return str;
+  const marker = `\n... [truncated to ${budget} bytes]`;
+  const contentBudget = Math.max(0, budget - Buffer.byteLength(marker, 'utf8'));
+  let out = str.slice(0, contentBudget);
+  while (Buffer.byteLength(out, 'utf8') > contentBudget && out.length > 0) out = out.slice(0, -1);
+  return `${out}${marker}`;
 }
 
 function cloneJsonValue(value) {
@@ -373,9 +378,9 @@ function messagesPrefixLength(prevMessages, nextMessages) {
   return i;
 }
 
-function buildRequestSnapshot(info = {}) {
+function buildRequestSnapshot(info = {}, textMaxBytes = DEFAULT_TRACE_TEXT_MAX_BYTES) {
   return {
-    systemPrompt: truncateText(info.systemPrompt || '', MAX_TEXT_BYTES),
+    systemPrompt: truncateText(info.systemPrompt || '', textMaxBytes),
     messages: Array.isArray(info.messages) ? cloneJsonValue(info.messages) : [],
     rawRequest: info.rawRequest ?? null,
   };
@@ -422,7 +427,7 @@ function applyRequestDelta(previous, delta = {}) {
     const nextBase = {
       systemPrompt: delta.systemPrompt || '',
       messages: Array.isArray(delta.messages) ? delta.messages : [],
-      rawRequest: null,
+      rawRequest: Object.prototype.hasOwnProperty.call(delta, 'rawRequest') ? delta.rawRequest : null,
     };
     if (Object.prototype.hasOwnProperty.call(delta, 'rawRequestDelta')) {
       nextBase.rawRequest = applyRawRequestDelta(null, delta.rawRequestDelta);
@@ -520,7 +525,7 @@ function expandTrace(trace) {
       ttfbMs: loop.ttfbMs || null,
       stopReason: loop.stopReason || null,
       at: loop.at || null,
-      rawRequest: null,
+      rawRequest: loop.rawRequest ?? null,
       rawResponse: loop.rawResponse ?? null,
       requestDelta: loop.requestDelta || {},
       requestBase: trace.baseRequest || null,
@@ -561,7 +566,7 @@ function traceToLegacyRows(trace) {
       tool_calls_json: JSON.stringify(loop.toolCalls || []),
       usage_json: JSON.stringify(u),
       ttfb_ms: loop.ttfbMs || null,
-      raw_request: null,
+      raw_request: loop.rawRequest == null ? null : JSON.stringify(loop.rawRequest),
       raw_response: typeof loop.rawResponse === 'string' ? loop.rawResponse : JSON.stringify(loop.rawResponse ?? null),
       user_prompt: trace.userPrompt || '',
     };
@@ -685,15 +690,21 @@ export class DebugTrace {
    * @type {Promise<void>}
    */
   #flushChain = Promise.resolve();
+  /** @type {number} */
+  #textMaxBytes = DEFAULT_TRACE_TEXT_MAX_BYTES;
 
   /**
    * @param {string} tracePath — Back-compatible path. If it looks like a DB
    * file, traces are stored in a sibling `debug/` directory.
    */
-  constructor(tracePath) {
+  constructor(tracePath, options = {}) {
     const rootDir = fileTraceRoot(tracePath);
     if (!rootDir) throw new Error('DebugTrace requires a storage path');
     this.#rootDir = rootDir;
+    const configuredTextMax = Number(options?.textMaxBytes);
+    if (Number.isFinite(configuredTextMax)) {
+      this.#textMaxBytes = Math.min(4 * 1024 * 1024, Math.max(0, Math.floor(configuredTextMax)));
+    }
     // Best-effort, fire-and-forget: atomicWriteText re-ensures the request
     // subdir before every write, so a missed mkdir here is harmless.
     ensureDir(rootDir).catch(() => {});
@@ -729,13 +740,16 @@ export class DebugTrace {
     const trace = this.#loadRequest(ctx.sessionId, ctx.requestKey);
     if (!trace) return;
     const loopNumber = ctx.loopNumber || Number(info.turnNumber || 0);
-    const snapshot = buildRequestSnapshot(info);
+    const snapshot = buildRequestSnapshot({
+      ...info,
+      rawRequest: info.rawRequest ?? trace.baseRequest?.rawRequest ?? null,
+    }, this.#textMaxBytes);
     const previousSnapshot = trace._lastSnapshot || this.#reconstructLastSnapshot(trace);
     if (!trace.baseRequest) {
       trace.baseRequest = {
         systemPrompt: snapshot.systemPrompt,
         messages: Array.isArray(snapshot.messages) ? cloneJsonValue(snapshot.messages) : [],
-        rawRequest: null,
+        rawRequest: snapshot.rawRequest ?? null,
       };
     }
     const loopIndex = (trace.loops || []).findIndex(l => l.turnRowId === turnId);
@@ -745,7 +759,7 @@ export class DebugTrace {
       loopNumber,
       startedAt: trace.openedAt || Date.now(),
       model: info.model || null,
-      response: truncateText(info.responseText || '', MAX_TEXT_BYTES),
+      response: truncateText(info.responseText || '', this.#textMaxBytes),
       toolCalls: cloneJsonValue(Array.isArray(info.toolCalls) ? info.toolCalls : []),
       usage: normalizeUsage(info.usage || {}, {
         inputTokens: info.inputTokens || 0,
@@ -758,8 +772,9 @@ export class DebugTrace {
       stopReason: info.stopReason || null,
       at: Date.now(),
       rawResponse: typeof info.rawResponse === 'string'
-        ? truncateText(info.rawResponse, MAX_TEXT_BYTES)
+        ? truncateText(info.rawResponse, this.#textMaxBytes)
         : safeJsonValue(info.rawResponse),
+      rawRequest: snapshot.rawRequest ?? null,
       requestDelta: buildRequestDelta(previousSnapshot, snapshot),
     };
     if (loopIndex >= 0) trace.loops[loopIndex] = loop;
@@ -786,7 +801,7 @@ export class DebugTrace {
       toolName: toolName || '?',
       toolCallId,
       toolInput: truncateText(toolInput == null ? null : String(toolInput), MAX_TOOL_INPUT),
-      toolOutput: truncateText(toolOutput == null ? null : String(toolOutput), MAX_TEXT_BYTES),
+      toolOutput: truncateText(toolOutput == null ? null : String(toolOutput), this.#textMaxBytes),
       durationMs: Number(durationMs || 0),
       isError: !!isError,
       createdAt: Date.now(),
@@ -1006,7 +1021,7 @@ export class DebugTrace {
       sessionId: normalizedSessionId,
       vpId: vpId || null,
       threadId: threadId || null,
-      userPrompt: truncateText(userPrompt || '', MAX_TEXT_BYTES),
+      userPrompt: truncateText(userPrompt || '', this.#textMaxBytes),
       openedAt: now,
       closedAt: null,
       updatedAt: now,
@@ -1326,8 +1341,8 @@ export class NullTrace {
   async fetchRecentDebugHistory() { return { loops: [], turns: [], dreamEvents: [] }; }
 }
 
-export function createTrace({ enabled, dbPath, dirPath }) {
+export function createTrace({ enabled, dbPath, dirPath, textMaxBytes }) {
   const path = dirPath || dbPath;
   if (!enabled || !path) return new NullTrace();
-  return new DebugTrace(path);
+  return new DebugTrace(path, { textMaxBytes });
 }

@@ -325,8 +325,9 @@ function queryIndex(request) {
     const boundary = pageBoundary(db, request, generation);
     const senderKey = typeof request.senderKey === 'string' ? request.senderKey : '';
     const normalized = normalizeLiteralSearch(String(request.query || '').trim());
-    const queryLength = codePoints(normalized).length;
-    const limit = Math.min(50, Math.max(1, Number(request.limit) || 20));
+    const terms = normalized.split(/\s+/u).filter(Boolean);
+    const queryLength = codePoints(terms[0] || '').length;
+    const limit = Math.min(100, Math.max(1, Number(request.limit) || 20));
     const matches = [];
     let candidateRowsRead = 0;
     let candidateBytesRead = 0;
@@ -344,12 +345,14 @@ function queryIndex(request) {
         params.push(batchEndSeq, batchEndSeq, batchEntryId);
       }
       if (queryLength >= 3) {
-        const firstTrigram = codePoints(normalized).slice(0, 3).join('');
+        const grams = terms
+          .filter(term => codePoints(term).length >= 3)
+          .map(term => codePoints(term).slice(0, 3).join(''));
         sql += ' AND rowid IN (SELECT rowid FROM entry_fts WHERE entry_fts MATCH ?)';
-        params.push(`"${firstTrigram.replaceAll('"', '""')}"`);
+        params.push(grams.map(gram => `"${gram.replaceAll('"', '""')}"`).join(' AND '));
       } else if (queryLength > 0) {
         sql += ' AND yeaft_bloom_contains(short_bloom, ?) = 1';
-        params.push(normalized);
+        params.push(terms[0]);
       }
       if (senderKey === 'user') sql += " AND role='user'";
       else if (senderKey.startsWith('vp:')) {
@@ -374,9 +377,9 @@ function queryIndex(request) {
         candidateRowsRead += 1;
         candidateBytesRead += bytes;
         lastRow = row;
-        const matchIndex = normalized ? findLiteralSearch(row.text_body, normalized) : 0;
-        if (matchIndex < 0) continue;
-        matches.push({ row, matchIndex });
+        const matchIndexes = terms.map(term => findLiteralSearch(row.text_body, term));
+        if (matchIndexes.some(index => index < 0)) continue;
+        matches.push({ row, matchIndex: matchIndexes[0] || 0 });
         if (matches.length > limit) break;
       }
       maxBatchRows = Math.max(maxBatchRows, batchRows);
@@ -395,10 +398,10 @@ function queryIndex(request) {
       const result = parseEntry(row, generation);
       const radius = 90;
       const start = Math.max(0, matchIndex - radius);
-      const end = Math.min(row.text_body.length, matchIndex + normalized.length + radius);
+      const end = Math.min(row.text_body.length, matchIndex + (terms[0] || '').length + radius);
       return {
         ...result,
-        snippet: normalized
+        snippet: terms.length > 0
           ? `${start > 0 ? '…' : ''}${row.text_body.slice(start, end)}${end < row.text_body.length ? '…' : ''}`
           : row.text_body.slice(0, 180),
       };

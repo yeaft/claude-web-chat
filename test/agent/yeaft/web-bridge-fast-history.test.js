@@ -484,6 +484,8 @@ describe('Yeaft load-history first paint', () => {
         limit: 2,
       });
       await flushMicrotasks();
+      const { flushAllAgentPerfTraces } = await import('../../../agent/yeaft/perf-trace.js');
+      flushAllAgentPerfTraces();
 
       expect(sent.find(message => message.requestId === 'outline-counted')).toMatchObject({
         type: 'yeaft_history_outline', totalCount: 4,

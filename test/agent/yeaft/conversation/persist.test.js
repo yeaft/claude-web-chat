@@ -934,7 +934,7 @@ legacy session`, { encoding: 'utf8' });
         speakerVpId: 'linus',
       });
 
-      for (const query of ['中', '中文', '😀', '👨‍💻', 'foo.bar', 'quoted "value"', 'OLD-TOKEN']) {
+      for (const query of ['中', '中文', '😀', '👨‍💻', 'foo.bar', 'quoted "value"', 'OLD-TOKEN', '中文 foo.bar']) {
         const page = await searchConversationIndex(TEST_DIR, sessionId, query, { limit: 10 });
         expect(page.results).toEqual([expect.objectContaining({ messageId: user.id })]);
         expect(page.maxBatchRows).toBeLessThanOrEqual(128);
