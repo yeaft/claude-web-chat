@@ -553,12 +553,28 @@ export default {
       failedImages.add(image?.assetId || image?.id);
     };
 
+    const previewableImages = Vue.computed(() => (
+      (Array.isArray(props.turn?.imageMsgs) ? props.turn.imageMsgs : [])
+        .map(image => ({
+          image,
+          src: imageSrc(image),
+          alt: image?.filename || t('message.imagePreview'),
+        }))
+        .filter(entry => entry.src && !failedImages.has(entry.image?.assetId || entry.image?.id))
+    ));
+
     const previewImage = (image, trigger) => {
-      const src = imageSrc(image);
-      if (!src) return;
-      openImagePreview(src, {
-        alt: image?.filename || t('message.imagePreview'),
+      const images = previewableImages.value;
+      const initialIndex = images.findIndex(entry => entry.image === image);
+      if (initialIndex < 0) return;
+      openImagePreview(images[initialIndex].src, {
+        alt: images[initialIndex].alt,
         closeLabel: t('common.close'),
+        previousLabel: t('message.previousImage'),
+        nextLabel: t('message.nextImage'),
+        positionLabel: (current, total) => t('message.imagePosition', { current, total }),
+        gallery: images.map(({ src, alt }) => ({ src, alt })),
+        initialIndex,
         trigger,
       });
     };

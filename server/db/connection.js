@@ -702,6 +702,9 @@ export const stmts = {
   updateYeaftProjectInstruction: db.prepare(`
     UPDATE yeaft_projects SET instruction = ?, updated_at = ? WHERE user_id = ? AND id = ?
   `),
+  updateYeaftProjectSortOrder: db.prepare(`
+    UPDATE yeaft_projects SET sort_order = ?, updated_at = ? WHERE user_id = ? AND id = ?
+  `),
   deleteYeaftProject: db.prepare(`
     DELETE FROM yeaft_projects WHERE user_id = ? AND id = ?
   `),
