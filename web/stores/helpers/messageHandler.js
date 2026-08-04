@@ -481,7 +481,8 @@ export function handleMessage(store, msg) {
       const expectedRequestId = isDetailFetch
         ? store._yeaftDebugHistoryLatestDetailRequestId
         : store._yeaftDebugHistoryLatestListRequestId;
-      if (requestId && requestId !== expectedRequestId) break;
+      if (expectedRequestId && requestId !== expectedRequestId) break;
+      if (!expectedRequestId && requestId) break;
       if (store._fetchYeaftDebugHistoryTimer) {
         clearTimeout(store._fetchYeaftDebugHistoryTimer);
         store._fetchYeaftDebugHistoryTimer = null;

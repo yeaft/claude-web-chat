@@ -44,6 +44,15 @@ function safeDirComponent(value, fallback = 'unknown') {
   return raw.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 120) || fallback;
 }
 
+function storageDirComponent(value, fallback = 'unknown') {
+  const raw = String(value || '').trim();
+  if (!raw) return fallback;
+  if (/^[a-zA-Z0-9._-]+$/.test(raw) && Buffer.byteLength(raw, 'utf8') <= 200) return raw;
+  const prefix = raw.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80) || fallback;
+  const digest = createHash('sha256').update(raw).digest('hex');
+  return `${prefix}-${digest}`;
+}
+
 function fileTraceRoot(inputPath) {
   const raw = String(inputPath || '').trim();
   if (!raw) return null;
@@ -455,8 +464,19 @@ export function reconstructDebugRawRequest(baseRawRequest, requestDelta) {
 }
 
 function sessionRequestsDir(rootDir, sessionId) {
+  if (sessionId) return join(rootDir, 'sessions', storageDirComponent(sessionId, 'session'), 'debug', 'requests');
+  return join(rootDir, 'debug', 'requests');
+}
+
+function legacySessionRequestsDir(rootDir, sessionId) {
   if (sessionId) return join(rootDir, 'sessions', safeDirComponent(sessionId), 'debug', 'requests');
   return join(rootDir, 'debug', 'requests');
+}
+
+function sessionRequestDirs(rootDir, sessionId) {
+  const current = sessionRequestsDir(rootDir, sessionId);
+  const legacy = legacySessionRequestsDir(rootDir, sessionId);
+  return current === legacy ? [current] : [current, legacy];
 }
 
 function requestFilePath(requestDir) {
@@ -472,7 +492,7 @@ function requestEventsPath(requestDir) {
 }
 
 function requestDirFor(rootDir, sessionId, requestKey) {
-  return join(sessionRequestsDir(rootDir, sessionId), safeDirComponent(requestKey, 'request'));
+  return join(sessionRequestsDir(rootDir, sessionId), storageDirComponent(requestKey, 'request'));
 }
 
 function tracePathFor(rootDir, sessionId, requestKey) {
@@ -492,10 +512,33 @@ function turnLocatorPath(rootDir, sessionId, turnId) {
 function serializableTraceMeta(trace) {
   const meta = { ...trace };
   delete meta._lastSnapshot;
+  delete meta._persistedFormat;
   delete meta.baseRequest;
   delete meta.loops;
   delete meta.tools;
   return meta;
+}
+
+function traceMatchesIdentity(trace, sessionId, turnId) {
+  return !!trace
+    && trace.sessionId === sessionId
+    && (trace.requestId === turnId || trace.traceId === turnId);
+}
+
+async function prepareJsonlAppend(filePath) {
+  let text;
+  try { text = await fsp.readFile(filePath, 'utf8'); }
+  catch { return; }
+  if (!text || text.endsWith('\n')) return;
+  const lastNewline = text.lastIndexOf('\n');
+  const tail = text.slice(lastNewline + 1);
+  try {
+    JSON.parse(tail);
+    await fsp.appendFile(filePath, '\n', 'utf8');
+  } catch {
+    const validPrefix = lastNewline >= 0 ? text.slice(0, lastNewline + 1) : '';
+    await fsp.truncate(filePath, Buffer.byteLength(validPrefix, 'utf8'));
+  }
 }
 
 async function readJsonLines(filePath) {
@@ -514,9 +557,11 @@ async function readJsonLines(filePath) {
 async function readRequestDir(requestDir) {
   const meta = await readJson(requestMetaPath(requestDir));
   if (!meta?.requestId) {
-    return readJson(requestFilePath(requestDir));
+    const legacy = await readJson(requestFilePath(requestDir));
+    return legacy ? { ...legacy, _persistedFormat: 'legacy' } : null;
   }
-  const trace = { ...meta, baseRequest: null, loops: [], tools: [] };
+  const trace = { ...meta, _persistedFormat: 'events', baseRequest: meta.legacyBaseRequest || null, loops: [], tools: [] };
+  delete trace.legacyBaseRequest;
   const loopById = new Map();
   const toolById = new Map();
   for (const event of await readJsonLines(requestEventsPath(requestDir))) {
@@ -674,7 +719,9 @@ async function collectRequestDirs(rootDir, sessionId = null) {
     }
   };
   if (sessionId) {
-    await addFromRequestsDir(sessionRequestsDir(rootDir, sessionId));
+    for (const requestsDir of sessionRequestDirs(rootDir, sessionId)) {
+      await addFromRequestsDir(requestsDir);
+    }
     return dirs;
   }
   await addFromRequestsDir(sessionRequestsDir(rootDir, null));
@@ -691,6 +738,7 @@ async function readTraceSummaries(rootDir, sessionId = null) {
   for (const requestDir of await collectRequestDirs(rootDir, sessionId)) {
     const trace = await readRequestDir(requestDir);
     if (!trace || !trace.requestId) continue;
+    if (sessionId && trace.sessionId !== sessionId) continue;
     const file = requestFilePath(requestDir);
     traces.push({ trace, file, openedAt: Number(trace.openedAt || 0) });
   }
@@ -762,6 +810,8 @@ export class DebugTrace {
    * @type {Promise<void>}
    */
   #flushChain = Promise.resolve();
+  /** @type {boolean} */
+  #acceptingWrites = true;
 
   /**
    * @param {string} tracePath — Back-compatible path. If it looks like a DB
@@ -777,6 +827,7 @@ export class DebugTrace {
   }
 
   startTurn({ traceId, messageId = null, mode = null, turnNumber = null, sessionId = null, vpId = null, threadId = null, userPrompt = null } = {}) {
+    if (!this.#acceptingWrites) return 'null';
     const turnRowId = randomUUID();
     const now = Date.now();
     const request = this.#getOrCreateRequest({
@@ -876,6 +927,7 @@ export class DebugTrace {
 
   logEvent({ traceId, eventType, eventData = null } = {}) {
     const id = randomUUID();
+    if (!this.#acceptingWrites) return id;
     // In-memory authoritative ring; persisted async (fire-and-forget). The
     // dream/event sink runs on the engine hot path, so it must not block on a
     // synchronous read-modify-write of events.json.
@@ -942,16 +994,19 @@ export class DebugTrace {
     )) || null;
     if (!trace) {
       const locator = await readJson(turnLocatorPath(this.#rootDir, requestedSessionId, requestedTurnId));
-      if (locator?.requestKey) {
-        trace = await readRequestDir(requestDirFor(this.#rootDir, requestedSessionId, locator.requestKey));
-        if (trace?.requestKey) this.#requestCache.set(trace.requestKey, trace);
+      if (locator?.requestKey && locator.sessionId === requestedSessionId && locator.requestId === requestedTurnId) {
+        const located = await readRequestDir(requestDirFor(this.#rootDir, requestedSessionId, locator.requestKey));
+        if (traceMatchesIdentity(located, requestedSessionId, requestedTurnId)) {
+          trace = located;
+          this.#requestCache.set(trace.requestKey, trace);
+        }
       }
     }
     if (!trace) {
       // Legacy v2 traces have no locator. Scan only as a compatibility fallback;
       // every v3 trace takes the direct sessionId + turnId path above.
       for (const item of await readTraceSummaries(this.#rootDir, requestedSessionId)) {
-        if (item.trace?.requestId === requestedTurnId || item.trace?.traceId === requestedTurnId) {
+        if (traceMatchesIdentity(item.trace, requestedSessionId, requestedTurnId)) {
           trace = item.trace;
           this.#requestCache.set(trace.requestKey, trace);
           break;
@@ -1063,6 +1118,7 @@ export class DebugTrace {
   }
 
   async purge() {
+    this.#acceptingWrites = false;
     await this.#drainWrites();
     try { await fsp.rm(this.#rootDir, { recursive: true, force: true }); }
     catch { /* ignore */ }
@@ -1074,10 +1130,11 @@ export class DebugTrace {
     this.#hydrated = false;
     this.#hydratePromise = null;
     this.#eventsHydrated = false;
+    this.#acceptingWrites = true;
   }
 
   async close() {
-    // #drainWrites() flushes pending writes itself; no separate #flushPending().
+    this.#acceptingWrites = false;
     await this.#drainWrites();
   }
 
@@ -1220,7 +1277,7 @@ export class DebugTrace {
   }
 
   #appendTraceRecord(trace, type, record, { writeMeta = false } = {}) {
-    if (!trace?.requestKey || !record) return;
+    if (!this.#acceptingWrites || !trace?.requestKey || !record) return;
     this.#requestCache.set(trace.requestKey, trace);
     const initialize = !this.#initializedRequestKeys.has(trace.requestKey);
     if (initialize) this.#initializedRequestKeys.add(trace.requestKey);
@@ -1277,18 +1334,34 @@ export class DebugTrace {
         batches.set(requestDir, batch);
       }
       for (const [requestDir, batch] of batches) {
-        const { trace, initialize, writeMeta, lines } = batch;
+        const { trace, initialize, writeMeta } = batch;
+        const lines = [...batch.lines];
         try {
           const metaPath = requestMetaPath(requestDir);
           if (initialize) {
-            await atomicWriteText(metaPath, JSON.stringify(serializableTraceMeta(trace)));
+            const meta = serializableTraceMeta(trace);
+            if (trace._persistedFormat === 'legacy') {
+              meta.legacyBaseRequest = cloneJsonValue(trace.baseRequest);
+              const legacyLines = [];
+              for (const loop of Array.isArray(trace.loops) ? trace.loops : []) {
+                legacyLines.push(`${JSON.stringify({ type: 'loop', record: loop })}\n`);
+              }
+              for (const tool of Array.isArray(trace.tools) ? trace.tools : []) {
+                legacyLines.push(`${JSON.stringify({ type: 'tool', record: tool })}\n`);
+              }
+              lines.unshift(...legacyLines);
+            }
+            await atomicWriteText(metaPath, JSON.stringify(meta));
             await atomicWriteText(
               turnLocatorPath(this.#rootDir, trace.sessionId || null, trace.requestId),
               JSON.stringify({ requestKey: trace.requestKey, requestId: trace.requestId, sessionId: trace.sessionId || null })
             );
           }
           await ensureDir(requestDir);
-          await fsp.appendFile(requestEventsPath(requestDir), lines.join(''), 'utf8');
+          const eventPath = requestEventsPath(requestDir);
+          if (initialize) await prepareJsonlAppend(eventPath);
+          await fsp.appendFile(eventPath, lines.join(''), 'utf8');
+          trace._persistedFormat = 'events';
           if (writeMeta) await atomicWriteText(metaPath, JSON.stringify(serializableTraceMeta(trace)));
         } catch (err) {
           console.warn('[Yeaft] debug trace append failed:', err?.message || err);

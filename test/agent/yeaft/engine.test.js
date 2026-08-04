@@ -3592,6 +3592,74 @@ describe('Engine', () => {
         const recovered = await afterTornTail.fetchTurnDebug({ sessionId: 's-long', turnId: 'long-tool-turn' });
         expect(recovered.loops).toHaveLength(100);
         await afterTornTail.close();
+
+        const longPrefix = 's'.repeat(120);
+        const firstLongSession = `${longPrefix}AAAA`;
+        const secondLongSession = `${longPrefix}BBBB`;
+        const isolated = new DebugTrace(traceRoot);
+        const secretTurn = isolated.startTurn({ traceId: 'same-turn', turnNumber: 1, sessionId: firstLongSession, userPrompt: 'SECRET' });
+        isolated.endTurn(secretTurn, { responseText: 'SECRET-X', stopReason: 'end_turn' });
+        const publicTurn = isolated.startTurn({ traceId: 'same-turn', turnNumber: 1, sessionId: secondLongSession, userPrompt: 'PUBLIC' });
+        isolated.endTurn(publicTurn, { responseText: 'PUBLIC-Y', stopReason: 'end_turn' });
+        await isolated.close();
+        const isolationReader = new DebugTrace(traceRoot);
+        const isolatedDetail = await isolationReader.fetchTurnDebug({ sessionId: secondLongSession, turnId: 'same-turn' });
+        expect(isolatedDetail.loops.map(loop => loop.response)).toEqual(['PUBLIC-Y']);
+        await isolationReader.close();
+
+        const continuationRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-continuation-'));
+        try {
+          const initial = new DebugTrace(continuationRoot);
+          const initialTurn = initial.startTurn({ traceId: 'continued-turn', turnNumber: 1, sessionId: 'continued-session' });
+          initial.endTurn(initialTurn, { responseText: 'loop-1', stopReason: 'tool_use' });
+          await initial.close();
+          const requests = join(continuationRoot, 'sessions', 'continued-session', 'debug', 'requests');
+          const [continuedRequestKey] = readdirSync(requests);
+          const continuedEvents = join(requests, continuedRequestKey, 'events.jsonl');
+          appendFileSync(continuedEvents, '{"type":"loop"', 'utf8');
+
+          const continued = new DebugTrace(continuationRoot);
+          await continued.fetchTurnDebug({ sessionId: 'continued-session', turnId: 'continued-turn' });
+          const secondTurn = continued.startTurn({ traceId: 'continued-turn', turnNumber: 2, sessionId: 'continued-session' });
+          continued.endTurn(secondTurn, { responseText: 'loop-2', stopReason: 'end_turn' });
+          await continued.close();
+          const continuationReader = new DebugTrace(continuationRoot);
+          const continuedDetail = await continuationReader.fetchTurnDebug({ sessionId: 'continued-session', turnId: 'continued-turn' });
+          expect(continuedDetail.loops.map(loop => loop.response)).toEqual(['loop-1', 'loop-2']);
+          await continuationReader.close();
+        } finally {
+          rmSync(continuationRoot, { recursive: true, force: true });
+        }
+
+        const legacyRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-legacy-'));
+        try {
+          const legacyRequestDir = join(legacyRoot, 'sessions', 'legacy-session', 'debug', 'requests', 'legacy-request');
+          mkdirSync(legacyRequestDir, { recursive: true });
+          writeFileSync(join(legacyRequestDir, 'trace.json'), JSON.stringify({
+            version: 2,
+            requestKey: 'legacy-request',
+            requestId: 'legacy-turn',
+            traceId: 'legacy-turn',
+            sessionId: 'legacy-session',
+            openedAt: 1,
+            updatedAt: 1,
+            active: true,
+            baseRequest: { systemPrompt: '', messages: [], rawRequest: null },
+            loops: [{ loopInstanceId: 'legacy-loop-1', turnRowId: 'legacy-loop-1', loopNumber: 1, response: 'legacy-1', requestDelta: { base: true, systemPrompt: '', messages: [] }, at: 1 }],
+            tools: [],
+          }), 'utf8');
+          const legacyWriter = new DebugTrace(legacyRoot);
+          await legacyWriter.fetchTurnDebug({ sessionId: 'legacy-session', turnId: 'legacy-turn' });
+          const legacyNext = legacyWriter.startTurn({ traceId: 'legacy-turn', turnNumber: 2, sessionId: 'legacy-session' });
+          legacyWriter.endTurn(legacyNext, { responseText: 'legacy-2', stopReason: 'end_turn' });
+          await legacyWriter.close();
+          const legacyReader = new DebugTrace(legacyRoot);
+          const legacyDetail = await legacyReader.fetchTurnDebug({ sessionId: 'legacy-session', turnId: 'legacy-turn' });
+          expect(legacyDetail.loops.map(loop => loop.response)).toEqual(['legacy-1', 'legacy-2']);
+          await legacyReader.close();
+        } finally {
+          rmSync(legacyRoot, { recursive: true, force: true });
+        }
       } finally {
         await boundedTrace.close();
         rmSync(traceRoot, { recursive: true, force: true });
