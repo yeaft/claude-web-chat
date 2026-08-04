@@ -702,6 +702,7 @@ export const useChatStore = defineStore('chat', {
     chatHistoryRequestIdSupported: null,
     chatHistoryConnectionGeneration: 0,
     sessionCatalog: [],
+    hiddenSessionCatalog: [],
     sessionProjects: [],
     sessionCatalogLoaded: false,
     sessionCatalogMutationRequests: {},
@@ -6327,13 +6328,19 @@ export const useChatStore = defineStore('chat', {
       this.activeRightPanel = value;
     },
 
-    applySessionCatalogSnapshot(rows, projects = null) {
-      const seen = new Set();
-      this.sessionCatalog = (Array.isArray(rows) ? rows : []).filter(row => {
-        if (!row?.catalogKey || seen.has(row.catalogKey)) return false;
-        seen.add(row.catalogKey);
-        return true;
-      }).map(row => ({ ...row }));
+    applySessionCatalogSnapshot(rows, projects = null, hiddenRows = null) {
+      const normalizeCatalogRows = (source) => {
+        const seen = new Set();
+        return (Array.isArray(source) ? source : []).filter(row => {
+          if (!row?.catalogKey || seen.has(row.catalogKey)) return false;
+          seen.add(row.catalogKey);
+          return true;
+        }).map(row => ({ ...row }));
+      };
+      this.sessionCatalog = normalizeCatalogRows(rows);
+      if (Array.isArray(hiddenRows)) {
+        this.hiddenSessionCatalog = normalizeCatalogRows(hiddenRows);
+      }
       if (Array.isArray(projects)) {
         this.sessionProjects = projects
           .filter(project => project?.id)
@@ -6464,6 +6471,62 @@ export const useChatStore = defineStore('chat', {
       }
       return true;
     },
+    hideCatalogSession(row) {
+      if (!row?.catalogKey || !row?.routeRef
+        || Object.keys(this.sessionCatalogMutationRequests).length > 0) return false;
+      const requestId = `session_hide_${crypto.randomUUID()}`;
+      const previousCatalog = beginCatalogMutation(this, requestId);
+      this.sessionCatalog = this.sessionCatalog.filter(item => item.catalogKey !== row.catalogKey);
+      this.hiddenSessionCatalog = [
+        ...(this.hiddenSessionCatalog || []).filter(item => item.catalogKey !== row.catalogKey),
+        { ...row, hidden: true },
+      ];
+      const sent = this.sendWsMessage({
+        type: 'set_session_ui_metadata',
+        requestId,
+        catalogKey: row.catalogKey,
+        routeRef: row.routeRef,
+        hidden: true,
+        ...(Number.isFinite(row.sortRank) ? { sortRank: row.sortRank } : {}),
+      });
+      if (!sent) {
+        this.sessionCatalog = previousCatalog;
+        this.hiddenSessionCatalog = Array.isArray(this.sessionCatalogMutationRequests[requestId]?.previousHiddenCatalog)
+          ? this.sessionCatalogMutationRequests[requestId].previousHiddenCatalog
+          : [];
+        delete this.sessionCatalogMutationRequests[requestId];
+        return false;
+      }
+      return true;
+    },
+    restoreCatalogSession(row) {
+      if (!row?.catalogKey || !row?.routeRef
+        || Object.keys(this.sessionCatalogMutationRequests).length > 0) return false;
+      const requestId = `session_restore_${crypto.randomUUID()}`;
+      const previousCatalog = beginCatalogMutation(this, requestId);
+      this.hiddenSessionCatalog = (this.hiddenSessionCatalog || [])
+        .filter(item => item.catalogKey !== row.catalogKey);
+      this.sessionCatalog = this.sessionCatalog.some(item => item.catalogKey === row.catalogKey)
+        ? this.sessionCatalog
+        : [...this.sessionCatalog, { ...row, hidden: false }];
+      const sent = this.sendWsMessage({
+        type: 'set_session_ui_metadata',
+        requestId,
+        catalogKey: row.catalogKey,
+        routeRef: row.routeRef,
+        hidden: false,
+        ...(Number.isFinite(row.sortRank) ? { sortRank: row.sortRank } : {}),
+      });
+      if (!sent) {
+        this.sessionCatalog = previousCatalog;
+        this.hiddenSessionCatalog = Array.isArray(this.sessionCatalogMutationRequests[requestId]?.previousHiddenCatalog)
+          ? this.sessionCatalogMutationRequests[requestId].previousHiddenCatalog
+          : [];
+        delete this.sessionCatalogMutationRequests[requestId];
+        return false;
+      }
+      return true;
+    },
     renameCatalogSession({ row, title } = {}) {
       if (!row?.routeRef || !title) return false;
       const { runtimeProvider, agentId, sessionId } = row.routeRef;
@@ -6501,10 +6564,22 @@ export const useChatStore = defineStore('chat', {
     },
     finishSessionCatalogMutation(msg) {
       const finished = finishCatalogMutation(this, msg);
-      if (finished && msg?.type === 'session_catalog_reorder_result' && msg.ok === true) {
+      if (!finished) return false;
+      if (msg?.ok === true && msg?.type === 'session_ui_metadata_updated') {
+        const applyMetadata = (row) => {
+          if (!row) return;
+          row.pinned = msg.pinned === true;
+          if (Object.prototype.hasOwnProperty.call(msg, 'sortRank')) {
+            row.sortRank = Number.isFinite(msg.sortRank) ? msg.sortRank : null;
+          }
+        };
+        applyMetadata(this.sessionCatalog.find(item => item.catalogKey === msg.catalogKey));
+        applyMetadata(this.hiddenSessionCatalog.find(item => item.catalogKey === msg.catalogKey));
+      }
+      if (msg?.ok === true && msg?.type === 'session_catalog_reorder_result') {
         persistCatalogYeaftOrder(this.sessionCatalog);
       }
-      return finished;
+      return true;
     },
     openCatalogSession(descriptor) {
       if (!descriptor?.catalogKey || !descriptor.routeRef) return false;

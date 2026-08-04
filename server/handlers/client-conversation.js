@@ -11,7 +11,7 @@ import {
 import { agents, pendingFiles, trackUserTurn, webClients } from '../context.js';
 import {
   sendToWebClient, forwardToAgent,
-  broadcastAgentList, broadcastSessionCatalog, buildSessionCatalog,
+  broadcastAgentList, broadcastSessionCatalog, buildSessionCatalog, buildHiddenSessionCatalog,
   verifyConversationOwnership, verifyAgentOwnership
 } from '../ws-utils.js';
 import { routeSessionPin } from './session-pin-router.js';
@@ -100,16 +100,38 @@ function persistSessionPin(userId, routeRef, pinned) {
   }]);
 }
 
+function catalogMetadataUpdates(rows) {
+  const seen = new Set();
+  const updates = [];
+  for (const row of rows) {
+    const routeRef = row?.routeRef;
+    if (!row?.catalogKey || seen.has(row.catalogKey)
+        || !routeRef?.runtimeProvider || !routeRef?.agentId || !routeRef?.sessionId) return null;
+    seen.add(row.catalogKey);
+    updates.push({
+      catalogKey: row.catalogKey,
+      runtimeProvider: routeRef.runtimeProvider,
+      agentId: routeRef.agentId,
+      sessionId: routeRef.sessionId,
+      pinned: row.pinned === true,
+      hidden: row.hidden === true,
+      sortRank: updates.length,
+    });
+  }
+  return updates;
+}
+
 function catalogOrderUpdates(client, items) {
   if (!client?.userId || !Array.isArray(items) || items.length === 0) return null;
   const canonical = buildSessionCatalog(client.userId, client.role);
+  const hidden = buildHiddenSessionCatalog(client.userId, client.role);
   if (canonical.length !== items.length) return null;
   const canonicalByKey = new Map(canonical.map(row => [row.catalogKey, row]));
   if (canonicalByKey.size !== canonical.length) return null;
 
   const seen = new Set();
-  const updates = [];
-  for (const [sortRank, item] of items.entries()) {
+  const orderedVisible = [];
+  for (const item of items) {
     const row = canonicalByKey.get(item?.catalogKey);
     const routeRef = item?.routeRef;
     if (!row || seen.has(item.catalogKey)
@@ -117,16 +139,44 @@ function catalogOrderUpdates(client, items) {
         || routeRef?.agentId !== row.routeRef?.agentId
         || routeRef?.sessionId !== row.routeRef?.sessionId) return null;
     seen.add(item.catalogKey);
-    updates.push({
-      catalogKey: row.catalogKey,
-      runtimeProvider: row.routeRef.runtimeProvider,
-      agentId: row.routeRef.agentId,
-      sessionId: row.routeRef.sessionId,
-      pinned: row.pinned === true,
-      sortRank,
-    });
+    orderedVisible.push(row);
   }
-  return seen.size === canonical.length ? updates : null;
+  if (seen.size !== canonical.length) return null;
+
+  // Hidden rows are deliberately absent from a drag payload, but their stale
+  // ranks must not collide with the newly ordered visible catalog when they
+  // are restored. Normalize both sets in the same transaction, preserving the
+  // visible order chosen by the client and the current hidden-row order.
+  return catalogMetadataUpdates([...orderedVisible, ...hidden]);
+}
+
+function catalogVisibilityUpdates(client, row, hidden) {
+  if (!client?.userId || !row?.catalogKey || !row?.routeRef) return null;
+  const visible = buildSessionCatalog(client.userId, client.role);
+  const hiddenRows = buildHiddenSessionCatalog(client.userId, client.role);
+  const visibleByKey = new Map(visible.map(item => [item.catalogKey, item]));
+  const hiddenByKey = new Map(hiddenRows.map(item => [item.catalogKey, item]));
+  if (visibleByKey.size !== visible.length || hiddenByKey.size !== hiddenRows.length) return null;
+
+  if (hidden) {
+    const visibleRow = visibleByKey.get(row.catalogKey);
+    if (!visibleRow || hiddenByKey.has(row.catalogKey)) return null;
+    return catalogMetadataUpdates([
+      ...visible.filter(item => item.catalogKey !== row.catalogKey),
+      { ...visibleRow, hidden: true },
+      ...hiddenRows,
+    ]);
+  }
+
+  const hiddenRow = hiddenByKey.get(row.catalogKey);
+  if (!hiddenRow || visibleByKey.has(row.catalogKey)) return null;
+
+  // The UI adds a restored Session after the visible list. Keep that policy on
+  // the server and also normalize any still-hidden rows, so no stale rank can
+  // collide with this restored row during a later refresh or restore.
+  const restored = { ...hiddenRow, hidden: false };
+  const remainingHidden = hiddenRows.filter(item => item.catalogKey !== restored.catalogKey);
+  return catalogMetadataUpdates([...visible, restored, ...remainingHidden]);
 }
 
 export function groupOnlineYeaftSessions(rows, agentRegistry = agents) {
@@ -472,6 +522,11 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
 
       try {
         sessionDb.setActive(msg.conversationId, false);
+        sessionUiMetadataDb.deleteForRoute(client.userId, {
+          runtimeProvider: persisted?.provider || 'claude-code',
+          agentId: deleteAgentId,
+          sessionId: msg.conversationId,
+        });
         const deleteAgent = agents.get(deleteAgentId);
         deleteAgent?.conversations.delete(msg.conversationId);
         await broadcastAgentList();
@@ -574,31 +629,67 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (!client.userId || !msg.catalogKey || !msg.routeRef?.runtimeProvider) break;
       const { runtimeProvider, agentId, sessionId } = msg.routeRef;
       let expectedCatalogKey = null;
+      let sessionRow = null;
       if (runtimeProvider === 'yeaft') {
-        if (agentId && sessionId && yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) {
-          expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
-        }
+        sessionRow = agentId && sessionId
+          ? yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)
+          : null;
+        if (sessionRow) expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
       } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
-        const row = sessionId ? sessionDb.get(sessionId) : null;
+        sessionRow = sessionId ? sessionDb.get(sessionId) : null;
         if (agentId && sessionId
           && (CONFIG.skipAuth || verifyConversationOwnership(sessionId, client.userId, client.role))
-          && row?.agent_id === agentId
-          && (row.provider || 'claude-code') === runtimeProvider) {
+          && sessionRow?.agent_id === agentId
+          && (sessionRow.provider || 'claude-code') === runtimeProvider) {
           expectedCatalogKey = chatCatalogKey(sessionId);
         }
       }
       const authorized = expectedCatalogKey === msg.catalogKey;
+      let currentMetadata = null;
+      if (authorized) {
+        try {
+          currentMetadata = sessionUiMetadataDb.get(client.userId, expectedCatalogKey);
+        } catch (e) {
+          console.warn('[Server] Session metadata read failed:', e?.message || e);
+        }
+      }
+      const persistedPinned = runtimeProvider === 'yeaft'
+        ? (sessionRow?.pinned === true || sessionRow?.isPinned === true)
+        : sessionRow?.is_pinned === 1;
+      const nextPinned = typeof msg.pinned === 'boolean'
+        ? msg.pinned
+        : (currentMetadata?.pinned ?? !!persistedPinned);
+      const hasHidden = typeof msg.hidden === 'boolean';
+      const nextHidden = hasHidden
+        ? msg.hidden
+        : currentMetadata?.hidden === true;
+      const nextSortRank = Number.isFinite(msg.sortRank)
+        ? msg.sortRank
+        : (currentMetadata?.sortRank ?? null);
+      const hasSortRank = Object.prototype.hasOwnProperty.call(msg, 'sortRank');
       let persisted = false;
       if (authorized) {
         try {
-          persisted = sessionUiMetadataDb.applyBatch(client.userId, [{
-            catalogKey: expectedCatalogKey,
-            runtimeProvider,
-            agentId,
-            sessionId,
-            pinned: msg.pinned === true,
-            sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
-          }]);
+          // Only an explicit hidden mutation changes catalog membership. A
+          // pinned-only first update has no metadata row yet, so comparing an
+          // implicit undefined state to false would incorrectly treat it as a
+          // restore and reject the valid visible route.
+          const visibilityChanged = hasHidden && (currentMetadata?.hidden === true) !== nextHidden;
+          const updates = visibilityChanged
+            ? catalogVisibilityUpdates(client, {
+              catalogKey: expectedCatalogKey,
+              routeRef: { runtimeProvider, agentId, sessionId },
+            }, nextHidden)
+            : [{
+              catalogKey: expectedCatalogKey,
+              runtimeProvider,
+              agentId,
+              sessionId,
+              pinned: nextPinned,
+              hidden: nextHidden,
+              ...(hasSortRank ? { sortRank: nextSortRank } : {}),
+            }];
+          persisted = updates ? sessionUiMetadataDb.applyBatch(client.userId, updates) : false;
           if (persisted) await broadcastSessionCatalog(client.userId);
         } catch (e) {
           console.warn('[Server] Session metadata update failed:', e?.message || e);
@@ -611,8 +702,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         catalogKey: msg.catalogKey,
         routeRef: msg.routeRef,
         ...(persisted ? {
-          pinned: msg.pinned === true,
-          sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
+          pinned: nextPinned,
+          hidden: nextHidden,
+          sortRank: nextSortRank,
         } : { error: 'Permission denied or stale Session route' }),
       });
       break;

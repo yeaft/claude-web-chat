@@ -184,6 +184,9 @@ export function connect(store) {
   const pendingCatalogMutations = Object.values(store.sessionCatalogMutationRequests || {});
   if (pendingCatalogMutations.length > 0) {
     store.sessionCatalog = pendingCatalogMutations[0].previousCatalog;
+    if (Array.isArray(pendingCatalogMutations[0].previousHiddenCatalog)) {
+      store.hiddenSessionCatalog = pendingCatalogMutations[0].previousHiddenCatalog;
+    }
     store.sessionCatalogMutationRequests = {};
   }
   // Catalog support is a capability of the current Server connection. Reset
@@ -191,6 +194,7 @@ export function connect(store) {
   // restores the legacy sidebar instead of showing a stale prior snapshot.
   store.sessionCatalogLoaded = false;
   store.sessionCatalog = [];
+  store.hiddenSessionCatalog = [];
   store.activeCatalogKey = null;
   console.log(`[WS] Connecting... (attempt ${store.reconnectAttempts + 1})`);
 

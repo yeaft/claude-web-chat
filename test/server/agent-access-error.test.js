@@ -4,11 +4,13 @@ import { CONFIG } from '../../server/config.js';
 import { agents } from '../../server/context.js';
 import { sessionDb, yeaftProjectDb, yeaftSessionDb, sessionUiMetadataDb } from '../../server/database.js';
 import {
+  buildHiddenSessionCatalog,
   buildSessionCatalog,
   resolveAgentAccessError,
   verifyConversationOwnership,
 } from '../../server/ws-utils.js';
 import { handleAgentOutput } from '../../server/handlers/agent-output.js';
+import { handleAgentConversation } from '../../server/handlers/agent-conversation.js';
 import { handleClientConversation } from '../../server/handlers/client-conversation.js';
 import { routeSessionPin } from '../../server/handlers/session-pin-router.js';
 
@@ -107,6 +109,57 @@ describe('resolveAgentAccessError', () => {
         sessionDb.get = getSession;
         sessionDb.hasOwnedRoute = hasOwnedRoute;
       }
+
+      const deletedChatId = `agent-delete-${Date.now()}-${Math.random()}`;
+      const deletedChatRow = {
+        id: deletedChatId,
+        user_id: 'user-1',
+        agent_id: 'agent-owned',
+        provider: 'copilot',
+      };
+      const deleteAgent = {
+        ownerId: 'user-1',
+        conversations: new Map([[deletedChatId, { id: deletedChatId, userId: 'user-1' }]]),
+      };
+      const originalGet = sessionDb.get;
+      const originalSetActive = sessionDb.setActive;
+      const originalDeleteForRoute = sessionUiMetadataDb.deleteForRoute;
+      const deletionCalls = [];
+      sessionDb.get = id => id === deletedChatId ? deletedChatRow : originalGet(id);
+      sessionDb.setActive = (id, active) => deletionCalls.push(['active', id, active]);
+      sessionUiMetadataDb.deleteForRoute = (userId, route) => deletionCalls.push(['metadata', userId, route]);
+      try {
+        await handleAgentConversation('agent-owned', deleteAgent, {
+          type: 'conversation_deleted',
+          conversationId: deletedChatId,
+          // Agent payload identity must never control the cleanup target.
+          userId: 'user-2',
+          provider: 'claude-code',
+        });
+        expect(deletionCalls).toEqual([
+          ['active', deletedChatId, false],
+          ['metadata', 'user-1', {
+            runtimeProvider: 'copilot',
+            agentId: 'agent-owned',
+            sessionId: deletedChatId,
+          }],
+        ]);
+
+        const staleAgent = {
+          ownerId: 'user-1',
+          conversations: new Map([[deletedChatId, { id: deletedChatId, userId: 'user-1' }]]),
+        };
+        deletionCalls.length = 0;
+        await handleAgentConversation('agent-stale', staleAgent, {
+          type: 'conversation_deleted',
+          conversationId: deletedChatId,
+        });
+        expect(deletionCalls).toEqual([['active', deletedChatId, false]]);
+      } finally {
+        sessionDb.get = originalGet;
+        sessionDb.setActive = originalSetActive;
+        sessionUiMetadataDb.deleteForRoute = originalDeleteForRoute;
+      }
     } finally {
       sessionDb.getActiveByUser = getActive;
       sessionDb.getByUser = getByUser;
@@ -142,6 +195,97 @@ describe('resolveAgentAccessError', () => {
     expect(sessionUiMetadataDb.get(userId, `yeaft:agent-a:same-${suffix}`)).toMatchObject({
       pinned: true, sortRank: 0,
     });
+
+    // A first pin has no metadata row and intentionally omits `hidden`. It
+    // must remain a normal metadata upsert instead of being mistaken for a
+    // restore of a hidden Session.
+    const firstChatPinId = `first-chat-pin-${suffix}`;
+    const firstYeaftPinId = `first-yeaft-pin-${suffix}`;
+    sessionDb.create(firstChatPinId, 'agent-a', 'A', '/tmp', null, 'First Chat Pin', userId, 'claude-code');
+    yeaftSessionDb.upsertFromSnapshot(userId, 'agent-a', { id: firstYeaftPinId, name: 'First Yeaft Pin' });
+    const pinClient = {
+      userId,
+      role: 'user',
+      authenticated: true,
+      encryptOutbound: false,
+      sent: [],
+      ws: { readyState: WebSocket.OPEN, send(payload) { this.client.sent.push(JSON.parse(payload)); } },
+    };
+    pinClient.ws.client = pinClient;
+    const originalSkipAuth = CONFIG.skipAuth;
+    CONFIG.skipAuth = false;
+    try {
+      await handleClientConversation(`first-pin-chat-${suffix}`, pinClient, {
+        type: 'set_session_ui_metadata',
+        requestId: 'first-pin-chat',
+        catalogKey: `chat:${firstChatPinId}`,
+        routeRef: { runtimeProvider: 'claude-code', agentId: 'agent-a', sessionId: firstChatPinId },
+        pinned: true,
+        sortRank: null,
+      }, async () => true);
+      expect(pinClient.sent.at(-1)).toMatchObject({
+        type: 'session_ui_metadata_updated',
+        requestId: 'first-pin-chat',
+        ok: true,
+        pinned: true,
+        hidden: false,
+      });
+      expect(sessionUiMetadataDb.get(userId, `chat:${firstChatPinId}`)).toMatchObject({
+        pinned: true,
+        hidden: false,
+      });
+      expect(sessionDb.get(firstChatPinId).is_pinned).toBe(1);
+
+      pinClient.sent = [];
+      await handleClientConversation(`first-pin-yeaft-${suffix}`, pinClient, {
+        type: 'set_session_ui_metadata',
+        requestId: 'first-pin-yeaft',
+        catalogKey: `yeaft:agent-a:${firstYeaftPinId}`,
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: firstYeaftPinId },
+        pinned: true,
+        sortRank: null,
+      }, async () => true);
+      expect(pinClient.sent.at(-1)).toMatchObject({
+        type: 'session_ui_metadata_updated',
+        requestId: 'first-pin-yeaft',
+        ok: true,
+        pinned: true,
+        hidden: false,
+      });
+      expect(sessionUiMetadataDb.get(userId, `yeaft:agent-a:${firstYeaftPinId}`)).toMatchObject({
+        pinned: true,
+        hidden: false,
+      });
+      expect(yeaftSessionDb.getForAgent(userId, 'agent-a', firstYeaftPinId).pinned).toBe(true);
+    } finally {
+      CONFIG.skipAuth = originalSkipAuth;
+    }
+
+    sessionUiMetadataDb.applyBatch(userId, [{
+      catalogKey: `yeaft:agent-a:same-${suffix}`,
+      runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: `same-${suffix}`,
+      hidden: true,
+    }]);
+    const visibleCatalog = buildSessionCatalog(userId);
+    expect(visibleCatalog.map(row => row.catalogKey)).not.toContain(`yeaft:agent-a:same-${suffix}`);
+    expect(visibleCatalog.map(row => row.catalogKey)).toContain(`yeaft:agent-b:same-${suffix}`);
+    const hiddenMetadata = sessionUiMetadataDb.get(userId, `yeaft:agent-a:same-${suffix}`);
+    expect(hiddenMetadata).toMatchObject({ pinned: true, hidden: true, sortRank: 0 });
+    expect(buildHiddenSessionCatalog(userId)).toEqual([
+      expect.objectContaining({
+        catalogKey: `yeaft:agent-a:same-${suffix}`,
+        hidden: true,
+        pinned: true,
+      }),
+    ]);
+
+    sessionUiMetadataDb.applyBatch(userId, [{
+      catalogKey: `yeaft:agent-a:same-${suffix}`,
+      runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: `same-${suffix}`,
+      hidden: false,
+    }]);
+    expect(buildSessionCatalog(userId).map(row => row.catalogKey))
+      .toContain(`yeaft:agent-a:same-${suffix}`);
 
     const project = yeaftProjectDb.create(userId, `Project ${suffix}`);
     const secondProject = yeaftProjectDb.create(userId, `Project second ${suffix}`);

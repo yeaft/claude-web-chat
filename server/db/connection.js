@@ -235,6 +235,7 @@ db.exec(`
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     catalog_key TEXT NOT NULL,
     pinned INTEGER NOT NULL DEFAULT 0,
+    is_hidden INTEGER NOT NULL DEFAULT 0,
     sort_rank INTEGER,
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (user_id, catalog_key)
@@ -335,7 +336,15 @@ for (const migration of yeaftMigrations) {
 const yeaftProjectMigrations = [
   `ALTER TABLE yeaft_projects ADD COLUMN instruction TEXT NOT NULL DEFAULT ''`,
 ];
+
+const sessionUiMetadataMigrations = [
+  `ALTER TABLE session_ui_metadata ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0`,
+];
 for (const migration of yeaftProjectMigrations) {
+  try { db.exec(migration); } catch (_) { /* column exists */ }
+}
+
+for (const migration of sessionUiMetadataMigrations) {
   try { db.exec(migration); } catch (_) { /* column exists */ }
 }
 
@@ -663,10 +672,11 @@ export const stmts = {
   `),
 
   upsertSessionUiMetadata: db.prepare(`
-    INSERT INTO session_ui_metadata (user_id, catalog_key, pinned, sort_rank, updated_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO session_ui_metadata (user_id, catalog_key, pinned, is_hidden, sort_rank, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, catalog_key) DO UPDATE SET
       pinned = excluded.pinned,
+      is_hidden = excluded.is_hidden,
       sort_rank = excluded.sort_rank,
       updated_at = excluded.updated_at
   `),

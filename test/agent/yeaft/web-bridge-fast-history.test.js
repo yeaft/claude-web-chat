@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { beforeEach } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { searchConversationIndex } from '../../../../agent/yeaft/conversation/history-index.js';
+import { searchConversationIndex } from '../../../agent/yeaft/conversation/history-index.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
