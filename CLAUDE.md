@@ -240,7 +240,6 @@ npm run docs:build                            # VitePress 文档
 ```
 
 - `vitest.config.js` 只运行 `scripts/test-suite-manifest.mjs` 中的核心文件；`vitest.focus.config.js` 才允许任意 `test/**/*`。
-- 核心测试预算当前是 `< 500` cases。新增回归进入默认套件前必须替换 / 合并现有 case，不能偷偷抬预算。
 - 改代码至少跑 focused test + `npm test`；改 Agent / Server 再跑 syntax / release guard；改前端再跑 build；改真实浏览器路径时跑对应 E2E。
 - 所有提交前执行 `git diff --check`。测试通过必须记录实际命令和结果，不能根据代码阅读声称“已验证”。
 

@@ -41,8 +41,10 @@ import {
   buildUpgradeInstallCommand,
   buildUpgradeMetadataUrl,
   buildUpgradeVersionCommand,
+  createWindowsUpgradeRun,
   launchWindowsUpgradeScript,
   prepareWindowsUpgradeRunner,
+  releaseWindowsUpgradeLock,
   resolveWindowsNpmCliPath,
   resolveWindowsPm2CliPath,
 } from './upgrade-command.js';
@@ -511,9 +513,9 @@ async function upgrade(args = []) {
     console.log(`Upgrading to ${latest}...`);
 
     if (platform() === 'win32') {
-      // On Windows, the current process locks its own files. npm cannot overwrite
-      // them while this process is running. Spawn a detached Node runner that waits
-      // for us to exit, then runs npm install and optionally restarts the service.
+      // On Windows, the current process locks its own files. A short-lived
+      // bootstrap detaches the updater before this process exits; the updater then
+      // installs the exact version and restores the selected service instance.
       await upgradeWindows(latest, instanceId);
     } else {
       execSync(buildUpgradeInstallCommand(`${pkg.name}@${latest}`), { stdio: 'inherit' });
@@ -544,10 +546,6 @@ async function upgradeWindows(latestVersion, instanceId = DEFAULT_INSTANCE_ID) {
   const logDir = join(configDir, 'logs');
   mkdirSync(logDir, { recursive: true });
 
-  const runnerPath = join(upgradeDir, 'windows-upgrade-runner.js');
-  const commandPath = join(upgradeDir, 'upgrade-command.js');
-  const payloadPath = join(upgradeDir, 'payload.json');
-  const handoffPath = join(upgradeDir, 'started');
   const logPath = join(logDir, 'upgrade.log');
   const ecosystemPath = join(configDir, 'ecosystem.config.cjs');
   const pm2AppName = getPm2AppName(instanceId);
@@ -563,46 +561,70 @@ async function upgradeWindows(latestVersion, instanceId = DEFAULT_INSTANCE_ID) {
     } catch {}
   }
 
+  const run = createWindowsUpgradeRun(upgradeDir);
+  const {
+    runId,
+    lockPath,
+    bootstrapPath,
+    runnerPath,
+    commandPath,
+    payloadPath,
+    handoffPath,
+    authorizePath,
+    cancelPath,
+  } = run;
   const payload = {
+    runId,
+    lockPath,
     parentPid: process.pid,
     packageSpec: `${pkg.name}@${latestVersion}`,
     globalInstall: true,
     installDir: dirname(dirname(__dirname)),
     logPath,
     handoffPath,
+    authorizePath,
+    cancelPath,
+    bootstrapPath,
     runnerPath,
     commandPath,
     payloadPath,
     nodePath: process.execPath,
     npmCliPath,
     pm2CliPath: isPm2 ? pm2CliPath : null,
+    pm2AppName: isPm2 ? pm2AppName : null,
     ecosystemPath: isPm2 ? ecosystemPath : null,
   };
-  prepareWindowsUpgradeRunner({
-    sourceRunnerPath: join(__dirname, 'windows-upgrade-runner.js'),
-    sourceCommandPath: join(__dirname, 'upgrade-command.js'),
-    runnerPath,
-    commandPath,
-    payloadPath,
-    payload,
-  });
+  try {
+    prepareWindowsUpgradeRunner({
+      sourceBootstrapPath: join(__dirname, 'windows-upgrade-bootstrap.js'),
+      sourceRunnerPath: join(__dirname, 'windows-upgrade-runner.js'),
+      sourceCommandPath: join(__dirname, 'upgrade-command.js'),
+      bootstrapPath,
+      runnerPath,
+      commandPath,
+      payloadPath,
+      payload,
+    });
+  } catch (err) {
+    releaseWindowsUpgradeLock(lockPath, runId);
+    throw err;
+  }
 
   const launcher = await launchWindowsUpgradeScript({
+    runId,
     nodePath: process.execPath,
+    bootstrapPath,
     runnerPath,
     payloadPath,
     logPath,
     handoffPath,
+    authorizePath,
+    cancelPath,
+    lockPath,
     spawnProcess: spawn,
-    onHandoff: isPm2
-      ? () => {
-          execFileSync(process.execPath, [pm2CliPath, 'delete', pm2AppName], { stdio: 'pipe' });
-          console.log(`PM2 app ${pm2AppName} deleted after upgrade handoff.`);
-        }
-      : undefined,
   });
-
   console.log(`Upgrade runner spawned via ${launcher}.`);
+
   console.log('This process will exit now. The upgrade will proceed after exit.');
   console.log(`Check upgrade log: ${logPath}`);
   process.exit(0);

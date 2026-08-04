@@ -24,6 +24,14 @@ const MAX_TEXT_BYTES = 1024 * 1024;
 const MAX_TOOL_INPUT = 10 * 1024;
 const MAX_INLINE_VALUE_BYTES = 1024 * 1024;
 const MAX_RAW_REQUEST_BYTES = 2 * 1024 * 1024;
+// Raw provider responses are diagnostic duplicates of the normalized response,
+// tool calls, usage and request delta already stored on each loop. Keeping up
+// to 1 MiB per loop made long tool turns produce 100+ MiB trace files. Every
+// buffered flush then JSON.stringify()'d and rewrote that entire file on the
+// agent's single event loop, so several active Sessions appeared deadlocked.
+// A 64 KiB prefix is enough to inspect provider envelopes without letting
+// always-on diagnostics dominate runtime latency.
+const MAX_RAW_RESPONSE_BYTES = 64 * 1024;
 const TRACE_FLUSH_INTERVAL_MS = 5_000;
 const TRACE_FLUSH_DIRTY_LOOPS = 10;
 const MAX_SEARCH_PATTERN_CHARS = 300;
@@ -829,8 +837,8 @@ export class DebugTrace {
       stopReason: info.stopReason || null,
       at: Date.now(),
       rawResponse: typeof info.rawResponse === 'string'
-        ? truncateText(info.rawResponse, this.#textMaxBytes)
-        : safeJsonValue(info.rawResponse),
+        ? truncateText(info.rawResponse, Math.min(this.#textMaxBytes, MAX_RAW_RESPONSE_BYTES))
+        : safeJsonValue(info.rawResponse, Math.min(this.#textMaxBytes, MAX_RAW_RESPONSE_BYTES)),
       rawRequest: snapshot.rawRequest ?? null,
       requestDelta: buildRequestDelta(previousSnapshot, snapshot),
     };

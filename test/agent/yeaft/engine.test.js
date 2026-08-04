@@ -3701,6 +3701,46 @@ describe('Engine', () => {
       expect(Buffer.byteLength(JSON.stringify(bounded.loops[0]?.messages || []), 'utf8')).toBeLessThanOrEqual(64);
 
       await dbTrace.close();
+
+      const traceRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-raw-response-'));
+      const boundedTrace = new DebugTrace(traceRoot);
+      const rawResponse = {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        body: 'x'.repeat(420_000),
+        format: 'openai-responses',
+      };
+
+      try {
+        for (let i = 1; i <= 100; i += 1) {
+          const turnId = boundedTrace.startTurn({
+            traceId: 'long-tool-turn',
+            turnNumber: i,
+            sessionId: 's-long',
+            userPrompt: 'do long work',
+          });
+          boundedTrace.endTurn(turnId, {
+            responseText: '',
+            rawResponse,
+            stopReason: 'tool_use',
+            messages: [{ role: 'user', content: 'do long work' }],
+          });
+        }
+        await boundedTrace.close();
+
+        const requestRoot = join(traceRoot, 'sessions', 's-long', 'debug', 'requests');
+        const [requestDir] = readdirSync(requestRoot);
+        const traceFile = join(requestRoot, requestDir, 'trace.json');
+        const stored = JSON.parse(readFileSync(traceFile, 'utf8'));
+
+        expect(stored.loops).toHaveLength(100);
+        expect(stored.loops.every(loop => loop.rawResponse?.__truncated === true)).toBe(true);
+        expect(stored.loops.every(loop => loop.rawResponse?.maxBytes === 64 * 1024)).toBe(true);
+        expect(lstatSync(traceFile).size).toBeLessThan(8 * 1024 * 1024);
+      } finally {
+        await boundedTrace.close();
+        rmSync(traceRoot, { recursive: true, force: true });
+      }
     });
   });
 
