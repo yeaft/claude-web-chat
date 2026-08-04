@@ -14,6 +14,65 @@ export function messageVpOwner(msg) {
   return cleanId(msg?.speakerVpId) || cleanId(msg?.vpId);
 }
 
+const VP_TURN_MESSAGE_TYPES = new Set([
+  'assistant',
+  'chat-image',
+  'tool-result',
+  'tool-summary',
+  'tool-use',
+  'tool_result',
+]);
+
+function vpExecutionKey(msg) {
+  const owner = messageVpOwner(msg);
+  const turnId = cleanId(msg?.turnId);
+  if (!owner || !turnId) return '';
+  return [owner, turnId].join('\u0000');
+}
+
+/**
+ * Make each explicitly identified VP execution contiguous inside the current
+ * visible user turn. Parallel fan-out frames arrive in wall-clock order, so a
+ * flat stream can be A(tool), B(tool), A(text), B(text). Rendering that stream
+ * by adjacency creates four blocks. Stable bucketing keeps one block per
+ * execution while preserving both first-execution order and in-execution order.
+ *
+ * Rows without an explicit VP + turn identity are left in place and fence the
+ * reorderable run. That keeps legacy Chat/history behavior unchanged.
+ */
+export function orderYeaftVpTurnMessagesByExecution(messages) {
+  if (!Array.isArray(messages) || messages.length < 2) return messages || [];
+
+  const ordered = [];
+  let run = [];
+  const flushRun = () => {
+    if (run.length < 2) {
+      ordered.push(...run);
+      run = [];
+      return;
+    }
+    const buckets = new Map();
+    for (const msg of run) {
+      const key = vpExecutionKey(msg);
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(msg);
+    }
+    for (const bucket of buckets.values()) ordered.push(...bucket);
+    run = [];
+  };
+
+  for (const msg of messages) {
+    if (VP_TURN_MESSAGE_TYPES.has(msg?.type) && vpExecutionKey(msg)) {
+      run.push(msg);
+      continue;
+    }
+    flushRun();
+    ordered.push(msg);
+  }
+  flushRun();
+  return ordered;
+}
+
 export function shouldCloseYeaftVpTurn(currentTurn, msg) {
   if (!currentTurn || !msg) return false;
 
