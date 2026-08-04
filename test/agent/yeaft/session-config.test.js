@@ -11,7 +11,7 @@ import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { closeConversationHistoryIndexes } from '../../../agent/yeaft/conversation/history-index.js';
 import { estimateTokens } from '../../../agent/yeaft/dream/segment.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
-import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftLoadHistoryOutline, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
+import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftLoadHistoryOutline, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftUpdateSessionConfig, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
@@ -427,6 +427,73 @@ describe('Yeaft session-scoped model config', () => {
 
     expect(normalizeSessionConfig(root, sessionId, currentConfig)).toEqual({});
     expect(loadSessionConfig(root, sessionId)).toEqual({});
+  });
+
+  it('does not retire cached Session engines during a Session config update', () => {
+    const root = makeDir();
+    const sessionId = 'session-live-config';
+    mkdirSync(join(root, 'sessions', sessionId), { recursive: true });
+    ctx.CONFIG = { ...originalConfig, yeaftDir: root };
+    const currentConfig = {
+      dir: root,
+      model: 'provider/old',
+      primaryModel: 'provider/old',
+      providers: [{ name: 'provider', models: ['old', 'new'] }],
+      availableModels: [
+        { id: 'old', ref: 'provider/old', provider: 'provider' },
+        { id: 'new', ref: 'provider/new', provider: 'provider' },
+      ],
+    };
+    const adapter = { refreshProviders: vi.fn() };
+    __testSetSession({
+      config: currentConfig,
+      adapter,
+      trace: new NullTrace(),
+      conversationStore: { loadRecentBySession: () => [], readCompactSummary: () => '' },
+      memoryIndex: null,
+      amsRegistry: null,
+      toolRegistry: null,
+      skillManager: null,
+      mcpManager: null,
+      taskManager: { renderActiveTasksForPrompt: () => '' },
+      toolStats: null,
+    });
+
+    const engine = __testGetOrCreateVpEngine(sessionId, 'vp-a', 'main');
+    const refreshConfig = vi.spyOn(engine, 'refreshConfig');
+
+    // The production handler must never retire an Engine that may own active
+    // async task results, whether it accepts or rejects the persisted patch.
+    const responseStart = ctx.messageBuffer.length;
+    handleYeaftUpdateSessionConfig({
+      sessionId,
+      requestId: 'live-config-update',
+      config: { model: 'provider/new' },
+    });
+
+    const response = ctx.messageBuffer.slice(responseStart)
+      .map(frame => frame.event)
+      .find(event => event?.type === 'session_crud_result');
+    expect(response).toMatchObject({ op: 'update_config' });
+    expect(__testGetOrCreateVpEngine(sessionId, 'vp-a', 'main')).toBe(engine);
+    expect(engine.isRunning).toBe(false);
+    if (response.ok) {
+      expect(refreshConfig).toHaveBeenCalledWith(expect.objectContaining({ model: 'provider/new' }));
+    } else {
+      expect(response.error?.message).toBeTruthy();
+      expect(refreshConfig).not.toHaveBeenCalled();
+    }
+  });
+
+  it('keeps the Agent default effort when a Session only overrides its model', () => {
+    const effective = resolveSessionConfig(
+      { model: 'agent/default', primaryModel: 'agent/default', modelEffort: 'high' },
+      { model: 'provider/other-model' },
+    );
+
+    expect(effective.model).toBe('provider/other-model');
+    expect(effective.primaryModel).toBe('provider/other-model');
+    expect(effective.modelEffort).toBe('high');
   });
 
   it('never sends a removed managed-catalog override on the next turn', async () => {

@@ -390,9 +390,9 @@ export async function handleMessage(msg) {
     }
 
     case 'update_llm_config': {
-      // Saving the file and refreshing the model menu are separate outcomes.
-      // Always acknowledge the completed write; the frontend owns the single
-      // runtime reset it dispatches after a successful save.
+      // The bridge publishes the replacement config and provider index at the
+      // next Engine loop boundary. The frontend must not reset or abort the
+      // active Session turn after a successful save.
       await applyLlmConfigUpdate(msg);
       break;
     }

@@ -2606,7 +2606,11 @@ export class Engine {
     let displayImageAnchorMessage = null;
     let lastPersistedAssistantMessage = null;
     let lastPersistedAssistantTextMessage = null;
+    // `refreshConfig()` may publish a new Session model while a stream or a
+    // tool is running. Apply it only before the next provider request; the
+    // current request keeps the snapshot captured below.
     let currentModel = this.#config.model;
+    let primaryModelAtLastBoundary = currentModel;
     let cumulativeInputTokens = 0;
     let cumulativeOutputTokens = 0;
     let activeProviderRequest = null;
@@ -2631,12 +2635,26 @@ export class Engine {
     // gives up: we either fall back to a backup model or surface the
     // error to the user. LLMContextError has its own compact-retry path
     // and does NOT count against this budget.
-    const retryPolicy = resolveRetryPolicy(this.#config);
+    let retryPolicy = resolveRetryPolicy(this.#config);
     let consecutiveRetryableErrors = 0;
     let consecutiveForbiddenErrors = 0;
 
     while (true) {
       turnNumber++;
+
+      // `refreshConfig()` is called by the bridge after a persisted Session or
+      // Agent config update. This is the only point a running query adopts the
+      // new primary model, so an in-flight provider stream is never switched.
+      // Keep a retry fallback selected by this query; replacing it here would
+      // turn an exhausted primary into an endless retry loop.
+      if (currentModel === primaryModelAtLastBoundary) {
+        const refreshedPrimaryModel = this.#config.model;
+        if (refreshedPrimaryModel !== primaryModelAtLastBoundary) {
+          currentModel = refreshedPrimaryModel;
+          primaryModelAtLastBoundary = refreshedPrimaryModel;
+        }
+        retryPolicy = resolveRetryPolicy(this.#config);
+      }
 
       // task-324: no hard MAX_TURNS cap. Loop terminates on end_turn,
       // non-retryable error, LLMContextError (after compact retry), or
@@ -2682,6 +2700,9 @@ export class Engine {
         userPrompt: userQuestionPreview,
       });
 
+      // Snapshot request config before any preflight await. A save that races
+      // this loop must affect the following provider request, not this one.
+      const requestConfig = { ...this.#config };
       const startTime = Date.now();
       const requestPerfStart = perfNowMs();
       let firstEventTraced = false;
@@ -2928,7 +2949,7 @@ export class Engine {
           system: systemPrompt,
           messages: wireMessages,
           tools: toolDefs.length > 0 ? toolDefs : undefined,
-          maxTokens: this.#config.maxOutputTokens || 16384,
+          maxTokens: requestConfig.maxOutputTokens || 16384,
           effort: resolvedEffort,
           effortSource: userEffort ? 'user' : 'auto',
           signal,
@@ -3287,7 +3308,7 @@ export class Engine {
           }
         }
 
-        const earlyFallbackModel = this.#config.fallbackModel;
+        const earlyFallbackModel = requestConfig.fallbackModel;
         if (earlyFallbackModel && earlyFallbackModel !== currentModel
           && (earlyIsRateLimit || earlyIsTransient) && canReplayProviderRequest) {
           endAttemptTrace('fallback_retry');

@@ -693,6 +693,41 @@ describe('Engine', () => {
 
       expect(engine.fastConfig).toMatchObject({ model: 'new-fast', maxOutputTokens: 2048 });
     });
+
+    it('uses a refreshed config at the next adapter loop without recreating the Engine', async () => {
+      const adapter = new MockAdapter();
+      adapter.pushResponse([
+        { type: 'tool_call', id: 'call_refresh', name: 'refresh_config', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      adapter.pushResponse([
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const engine = new Engine({
+        adapter,
+        trace,
+        config: { model: 'provider/old', maxOutputTokens: 111 },
+      });
+      engine.registerTool({
+        name: 'refresh_config',
+        description: 'publish a later runtime config',
+        parameters: {},
+        execute: async () => {
+          engine.refreshConfig({ model: 'provider/new', maxOutputTokens: 222 });
+          return 'published';
+        },
+      });
+
+      for await (const _event of engine.query({ prompt: 'update after tool use' })) {
+        // Consume the complete query.
+      }
+
+      expect(adapter.callLog).toHaveLength(2);
+      expect(adapter.callLog[0]).toMatchObject({ model: 'provider/old', maxTokens: 111 });
+      expect(adapter.callLog[1]).toMatchObject({ model: 'provider/new', maxTokens: 222 });
+    });
+
   });
 
   describe('perf trace', () => {
