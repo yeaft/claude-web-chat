@@ -36,7 +36,9 @@ export function readScope(memoryRoot, scope) {
   const path = scopeFilePath(memoryRoot, scope);
   if (!existsSync(path)) return [];
   const text = readFileSync(path, 'utf8');
-  return parseSegments(stripDreamStateBlocks(text), { defaultScope: scope });
+  const stripped = stripDreamStateBlocks(text);
+  if (!stripped.trimStart().startsWith('---')) return [];
+  return parseSegments(stripped, { defaultScope: scope });
 }
 
 /**
@@ -107,6 +109,7 @@ function walk(root, dir, out) {
     let st;
     try { st = statSync(full); } catch { continue; }
     if (st.isDirectory()) {
+      if (entry.startsWith('.')) continue;
       walk(root, full, out);
     } else if (entry === 'memory.md' || entry === 'content.md') {
       const rel = relative(root, dir).split(sep).join('/');

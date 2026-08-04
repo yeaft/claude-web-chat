@@ -2,6 +2,7 @@ import {
   existsSync,
   mkdirSync,
   renameSync,
+  rmdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -154,6 +155,7 @@ async function applyConsolidationGroup(group, opts) {
     mergedSegments,
     duplicates: available.slice(1).map(record => record.path),
     ts: opts.ts,
+    fileOps: opts.fileOps,
   });
 
   try {
@@ -166,8 +168,14 @@ async function applyConsolidationGroup(group, opts) {
       }
     }
     transaction.commit();
+    removeEmptyDirectory(join(opts.root, '.topic-consolidation'));
   } catch (error) {
-    transaction.rollback();
+    try {
+      transaction.rollback();
+      removeEmptyDirectory(join(opts.root, '.topic-consolidation'));
+    } catch (rollbackError) {
+      error.rollbackError = rollbackError;
+    }
     if (opts.segmentIndex) {
       for (const record of available) {
         try { syncScope(opts.root, opts.segmentIndex, record.scope); } catch { /* best effort */ }
@@ -214,7 +222,7 @@ function dedupeSegments(segments, canonicalScope) {
   }));
 }
 
-function stageConsolidationTransaction({ root, sessionId, canonical, mergedContent, mergedSummary, mergedSegments, duplicates, ts }) {
+function stageConsolidationTransaction({ root, sessionId, canonical, mergedContent, mergedSummary, mergedSegments, duplicates, ts, fileOps }) {
   const topicRoot = join(root, 'sessions', sessionId, 'topic');
   const nonce = `${String(ts || Date.now()).replace(/[^a-zA-Z0-9_-]/g, '-')}-${Math.random().toString(36).slice(2, 10)}`;
   const transactionRoot = join(root, '.topic-consolidation', nonce);
@@ -239,6 +247,9 @@ function stageConsolidationTransaction({ root, sessionId, canonical, mergedConte
     operations.push({ scope: duplicate, file: TOPIC_REDIRECT_FILE, desired: redirectPath });
   }
 
+  const renameFile = typeof fileOps?.renameSync === 'function'
+    ? fileOps.renameSync
+    : renameSync;
   const applied = [];
   let closed = false;
   return {
@@ -246,15 +257,27 @@ function stageConsolidationTransaction({ root, sessionId, canonical, mergedConte
       for (const operation of operations) {
         const live = join(topicRoot, operation.scope, operation.file);
         const backup = join(backupRoot, operation.scope, operation.file);
-        if (existsSync(live)) {
+        const state = {
+          ...operation,
+          live,
+          backup,
+          hadLive: existsSync(live),
+          liveMoved: false,
+          desiredActivated: false,
+        };
+        // Register before the first live mutation. If staged activation fails
+        // after live moved to backup, rollback still owns this operation.
+        applied.push(state);
+        if (state.hadLive) {
           mkdirSync(dirname(backup), { recursive: true });
-          renameSync(live, backup);
+          renameFile(live, backup);
+          state.liveMoved = true;
         }
         if (operation.desired) {
           mkdirSync(dirname(live), { recursive: true });
-          renameSync(operation.desired, live);
+          renameFile(operation.desired, live);
+          state.desiredActivated = true;
         }
-        applied.push({ ...operation, live, backup });
       }
     },
     commit() {
@@ -264,17 +287,27 @@ function stageConsolidationTransaction({ root, sessionId, canonical, mergedConte
     },
     rollback() {
       if (closed) return;
-      closed = true;
+      let firstError = null;
       for (const operation of applied.slice().reverse()) {
-        rmSync(operation.live, { force: true });
-        if (existsSync(operation.backup)) {
-          mkdirSync(dirname(operation.live), { recursive: true });
-          renameSync(operation.backup, operation.live);
+        try {
+          if (operation.desiredActivated) rmSync(operation.live, { force: true });
+          if (operation.liveMoved && existsSync(operation.backup)) {
+            mkdirSync(dirname(operation.live), { recursive: true });
+            renameFile(operation.backup, operation.live);
+          }
+        } catch (error) {
+          if (!firstError) firstError = error;
         }
       }
+      if (firstError) throw firstError;
       rmSync(transactionRoot, { recursive: true, force: true });
+      closed = true;
     },
   };
+}
+
+function removeEmptyDirectory(path) {
+  try { rmdirSync(path); } catch { /* absent or not empty */ }
 }
 
 function stageFile(path, content) {

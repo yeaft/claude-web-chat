@@ -22,21 +22,44 @@ export function backfillCanonicalContent(memoryRoot) {
   for (const scope of listScopes(memoryRoot)) {
     if (scope.startsWith('.legacy/') || scope.startsWith('.dream-bak/')) continue;
     const contentPath = join(memoryRoot, scope, 'content.md');
-    if (existsSync(contentPath) && readFileSync(contentPath, 'utf8').trim()) continue;
     const rawMemory = readMemoryFile(memoryRoot, scope);
     const segments = hasSerializedSegmentEnvelope(rawMemory)
       ? readScope(memoryRoot, scope)
       : [];
     const bodies = uniqueBodies(segments);
     if (bodies.length === 0 && rawMemory) bodies.push(rawMemory);
-    if (bodies.length === 0) continue;
+    const canonicalBody = bodies.length > 0 ? `${bodies.join('\n\n')}\n` : '';
+    const currentContent = existsSync(contentPath) ? readFileSync(contentPath, 'utf8') : '';
+    if (currentContent.trim()) {
+      // A canonical document already exists. Preserve the raw legacy file in
+      // cold storage, but never leave body-only prose live as evidence.
+      if (segments.length === 0 && rawMemory) archivePlainLegacyMemory(memoryRoot, scope);
+      continue;
+    }
+    if (!canonicalBody) continue;
     mkdirSync(dirname(contentPath), { recursive: true });
     const tmp = `${contentPath}.tmp.${process.pid}.${Date.now()}`;
-    writeFileSync(tmp, `${bodies.join('\n\n')}\n`, 'utf8');
+    writeFileSync(tmp, canonicalBody, 'utf8');
     renameSync(tmp, contentPath);
+    if (readFileSync(contentPath, 'utf8') !== canonicalBody) {
+      throw new Error(`backfillCanonicalContent: canonical write verification failed for ${scope}`);
+    }
+    if (segments.length === 0 && rawMemory) archivePlainLegacyMemory(memoryRoot, scope);
     created += 1;
   }
   return { created };
+}
+
+function archivePlainLegacyMemory(memoryRoot, scope) {
+  const source = join(memoryRoot, scope, 'memory.md');
+  if (!existsSync(source)) return;
+  const archive = join(memoryRoot, '.legacy', 'plain-memory', scope, 'memory.md');
+  mkdirSync(dirname(archive), { recursive: true });
+  let destination = archive;
+  if (existsSync(destination)) {
+    destination = `${archive}.${Date.now()}`;
+  }
+  renameSync(source, destination);
 }
 
 function readMemoryFile(memoryRoot, scope) {

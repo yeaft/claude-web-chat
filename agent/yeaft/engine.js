@@ -30,7 +30,7 @@ import { runCompact as runCompactOrchestrator } from './compact/orchestrator.js'
 import { evaluateCompactTriggers } from './compact/triggers.js';
 import { archiveTurn } from './archive/turn-archive.js';
 import { archiveToolResults } from './archive/tool-results.js';
-import { readContent as readScopeContent } from './memory/store.js';
+import { isVpForeign, readContent as readScopeContent } from './memory/store.js';
 import { ActiveMemorySet } from './memory/ams.js';
 import { cleanMemoryPromptText } from './memory/prompt-cleanup.js';
 import { isVpSeedBackfillStub } from './memory/seed-backfill.js';
@@ -402,7 +402,7 @@ export function shouldAllowGroupReflection({
  * @param {{
  *   sessionId?: string|null,
  *   ownVpId?: string|null,
- *   summaries: { user?: string, session?: string, vp?: string, topics?: Array<{scope:string, summary:string}>, relatedSessions?: Array<{sessionId:string, summary:string}> }
+ *   summaries: { user?: string, session?: string, sessionScope?: string, vp?: string, vpScope?: string, topics?: Array<{scope:string, summary:string}>, relatedSessions?: Array<{sessionId:string, summary:string}> }
  * }} args
  * @returns {Array<{scope: string, summary: string}>}
  */
@@ -411,7 +411,7 @@ export function selectResidentTopicScopes(topicScopes, recallEntries) {
   const selected = [];
   for (const entry of recallEntries || []) {
     const scope = typeof entry?.scope === 'string' ? entry.scope : '';
-    if (!/^sessions\/[^/]+\/topic\//.test(scope)) continue;
+    if (!/^(?:sessions|session|group)\/[^/]+\/topic\//.test(scope)) continue;
     if (!available.has(scope) || selected.includes(scope)) continue;
     selected.push(scope);
   }
@@ -449,7 +449,10 @@ export function buildResidentEntries(args) {
   const vpSummary = cleanMemoryPromptText(summaries.vp);
   if (userSummary) out.push({ scope: 'user', summary: userSummary });
   if (args.sessionId && sessionSummary) {
-    out.push({ scope: `sessions/${args.sessionId}`, summary: sessionSummary });
+    out.push({
+      scope: summaries.sessionScope || `sessions/${args.sessionId}`,
+      summary: sessionSummary,
+    });
   }
   if (args.sessionId && Array.isArray(summaries.topics)) {
     for (const topic of summaries.topics) {
@@ -467,7 +470,10 @@ export function buildResidentEntries(args) {
   // makes the per-session boundary explicit and matches the on-disk
   // layout 1:1.
   if (args.sessionId && args.ownVpId && vpSummary && !isVpSeedBackfillStub(vpSummary)) {
-    out.push({ scope: `sessions/${args.sessionId}/vp/${args.ownVpId}`, summary: vpSummary });
+    out.push({
+      scope: summaries.vpScope || `sessions/${args.sessionId}/vp/${args.ownVpId}`,
+      summary: vpSummary,
+    });
   }
   // Related Session experience is useful but lower-priority than every memory
   // source owned by the active Session/VP. Append it last so the resident
@@ -950,45 +956,58 @@ export class Engine {
       .map(id => id.trim())))
       .slice(0, MAX_RELATED_SESSION_MEMORY_ITEMS);
     const selected = selectedScopes instanceof Set ? selectedScopes : new Set();
+    const exactSessionScope = selectExactSessionScope(selected, sessionId);
+    const exactVpScope = selectExactVpScope(selected, sessionId, vpId);
     const tasks = [
       selected.has('user')
-        ? readCanonicalMemoryItem({ kind: 'user' }, { root: memoryRoot }).catch(() => '')
+        ? readCanonicalScope('user', { root: memoryRoot, currentVpId: vpId }).catch(() => '')
         : Promise.resolve(''),
-      sessionId && ['sessions', 'session', 'group'].some(prefix => selected.has(`${prefix}/${sessionId}`))
-        ? readCanonicalMemoryItem(
-            { kind: 'session', id: sessionId },
-            { root: memoryRoot },
-          ).catch(() => '')
+      exactSessionScope
+        ? readCanonicalScope(exactSessionScope, { root: memoryRoot, currentVpId: vpId }).catch(() => '')
         : Promise.resolve(''),
-      vpId && sessionId && [...selected].some(scope => (
-        ['sessions', 'session', 'group'].some(prefix => scope === `${prefix}/${sessionId}/vp/${vpId}`)
-      ))
-        ? readCanonicalMemoryItem(
-            { kind: 'session-vp', sessionId, id: vpId },
-            { root: memoryRoot },
-          ).catch(() => '')
+      exactVpScope
+        ? readCanonicalScope(exactVpScope, { root: memoryRoot, currentVpId: vpId }).catch(() => '')
         : Promise.resolve(''),
-      Promise.all(topicScopeList.map(scope => readTopicSummary(scope, { root: memoryRoot, language }))),
-      Promise.all(relatedIds.map(async relatedSessionId => ({
-        sessionId: relatedSessionId,
-        summary: await readCanonicalMemoryItem(
-          { kind: 'session', id: relatedSessionId },
-          { root: memoryRoot },
-        ).catch(() => ''),
+      Promise.all(topicScopeList.map(scope => readTopicSummary(scope, {
+        root: memoryRoot,
+        language,
+        currentVpId: vpId,
       }))),
+      Promise.all(relatedIds.map(async relatedSessionId => {
+        const scope = selectExactSessionScope(selected, relatedSessionId);
+        return {
+          sessionId: relatedSessionId,
+          summary: scope
+            ? await readCanonicalScope(scope, { root: memoryRoot, currentVpId: vpId }).catch(() => '')
+            : '',
+        };
+      })),
     ];
     const [user, session, vp, topicsRaw, relatedSessionsRaw] = await Promise.all(tasks);
     const topics = (topicsRaw || []).filter(t => t && t.summary);
     const relatedSessions = (relatedSessionsRaw || []).filter(entry => entry && entry.summary);
-    return { user: user || '', session: session || '', vp: vp || '', topics, relatedSessions };
+    return {
+      user: user || '',
+      session: session || '',
+      sessionScope: exactSessionScope || '',
+      vp: vp || '',
+      vpScope: exactVpScope || '',
+      topics,
+      relatedSessions,
+    };
   }
 
   async #loadSessionTopicScopes(sessionId) {
     if (!this.#yeaftDir || !sessionId) return [];
-    const topicRoot = join(this.#yeaftDir, 'memory', 'sessions', sessionId, 'topic');
-    const labels = [];
-    await collectTopicLabels(topicRoot, '', labels).catch(() => {});
-    return labels.map(label => `sessions/${sessionId}/topic/${label}`);
+    const memoryRoot = join(this.#yeaftDir, 'memory');
+    const scopes = [];
+    for (const prefix of ['sessions', 'session', 'group']) {
+      const labels = [];
+      const topicRoot = join(memoryRoot, prefix, sessionId, 'topic');
+      await collectTopicLabels(topicRoot, '', labels).catch(() => {});
+      scopes.push(...labels.map(label => `${prefix}/${sessionId}/topic/${label}`));
+    }
+    return scopes;
   }
 
   /**
@@ -4567,32 +4586,64 @@ export class Engine {
   }
 }
 
-async function readCanonicalMemoryItem(scopeObject, opts) {
-  let content = await readScopeContent(scopeObject, opts).catch(() => '');
-  if (!content && scopeObject?.kind === 'session') {
-    content = await readScopeContent({ kind: 'group', id: scopeObject.id }, opts).catch(() => '');
+function selectExactSessionScope(selected, sessionId) {
+  if (!sessionId) return '';
+  for (const scope of selected || []) {
+    if (['sessions', 'session', 'group'].some(prefix => scope === `${prefix}/${sessionId}`)) {
+      return scope;
+    }
+  }
+  return '';
+}
+
+function selectExactVpScope(selected, sessionId, vpId) {
+  if (!sessionId || !vpId) return '';
+  for (const scope of selected || []) {
+    if (['sessions', 'session', 'group'].some(prefix => scope === `${prefix}/${sessionId}/vp/${vpId}`)) {
+      return scope;
+    }
+  }
+  return '';
+}
+
+async function readCanonicalScope(scope, opts) {
+  const value = String(scope || '');
+  if (isVpForeign(value, opts?.currentVpId)) return '';
+  const scopeObject = memoryScopeObject(value);
+  if (!scopeObject || !opts?.root) return '';
+  let content = await fsp.readFile(join(opts.root, value, 'content.md'), 'utf8').catch(() => '');
+  // Current Session topic redirects intentionally have no content.md at the
+  // old path. Let the store resolve that redirect, but never cross-fallback
+  // between `group/`, `session/`, and `sessions/` aliases.
+  if (!content && scopeObject.kind === 'session-topic' && value.startsWith('sessions/')) {
+    content = await readScopeContent(scopeObject, opts).catch(() => '');
   }
   return truncateMemoryContent(content, MAX_MEMORY_ITEM_TOKENS);
 }
 
-async function readTopicSummary(scope, opts) {
-  const value = String(scope || '');
-  const topicMatch = /^(sessions|session|group)\/([^/]+)\/topic\/(.+)$/.exec(value);
-  if (topicMatch) {
-    const path = topicMatch[3].split('/').filter(Boolean);
-    if (path.length === 0) return null;
-    const topic = topicMatch[1] === 'group'
-      ? { kind: 'group-topic', groupId: topicMatch[2], path }
-      : { kind: 'session-topic', sessionId: topicMatch[2], path };
-    const content = await readCanonicalMemoryItem(topic, opts);
-    return content ? { scope, summary: content } : null;
+function memoryScopeObject(scope) {
+  if (scope === 'user') return { kind: 'user' };
+  let match = /^(sessions|session|group)\/([^/]+)$/.exec(scope);
+  if (match) return match[1] === 'group'
+    ? { kind: 'group', id: match[2] }
+    : { kind: 'session', id: match[2] };
+  match = /^(sessions|session|group)\/([^/]+)\/vp\/([^/]+)$/.exec(scope);
+  if (match) return match[1] === 'group'
+    ? { kind: 'group-vp', sessionId: match[2], id: match[3] }
+    : { kind: 'session-vp', sessionId: match[2], id: match[3] };
+  match = /^(sessions|session|group)\/([^/]+)\/topic\/(.+)$/.exec(scope);
+  if (match) {
+    const path = match[3].split('/').filter(Boolean);
+    if (path.length === 0 || path.length > 2) return null;
+    return match[1] === 'group'
+      ? { kind: 'group-topic', sessionId: match[2], path }
+      : { kind: 'session-topic', sessionId: match[2], path };
   }
-  const sessionMatch = /^(sessions|session|group)\/([^/]+)$/.exec(value);
-  if (!sessionMatch) return null;
-  const sessionScope = sessionMatch[1] === 'group'
-    ? { kind: 'group', id: sessionMatch[2] }
-    : { kind: 'session', id: sessionMatch[2] };
-  const content = await readCanonicalMemoryItem(sessionScope, opts);
+  return null;
+}
+
+async function readTopicSummary(scope, opts) {
+  const content = await readCanonicalScope(scope, opts);
   return content ? { scope, summary: content } : null;
 }
 
