@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync, readdirSync, rmSync } from 'fs';
 import { join } from 'path';
+import { normalizeUtf8ByteBudget, toWellFormedText, utf8PrefixWithinBytes } from './utf8.js';
 
 const MAX_DETAIL_STRING = 512;
 const DEFAULT_RETENTION_DAYS = 3;
@@ -38,29 +39,34 @@ function queueKey(config) {
   return resolveAgentLocalRoot(config);
 }
 
-export function truncateUtf8Text(value, maxBytes) {
-  const text = String(value ?? '');
-  const bytes = Buffer.byteLength(text, 'utf8');
-  if (bytes <= maxBytes) return { value: text, truncated: false, originalBytes: bytes };
-  let end = Math.max(0, Math.floor(text.length * maxBytes / Math.max(bytes, 1)));
-  while (end > 0 && Buffer.byteLength(text.slice(0, end), 'utf8') > maxBytes) end -= 1;
-  while (end < text.length && Buffer.byteLength(text.slice(0, end + 1), 'utf8') <= maxBytes) end += 1;
-  return { value: text.slice(0, end), truncated: true, originalBytes: bytes };
+export function truncateUtf8Text(value, maxBytes = DEFAULT_RAW_EXCHANGE_MAX_BYTES) {
+  const limit = normalizeUtf8ByteBudget(maxBytes, DEFAULT_RAW_EXCHANGE_MAX_BYTES);
+  const text = toWellFormedText(value);
+  const originalBytes = Buffer.byteLength(text, 'utf8');
+  if (originalBytes <= limit) return { value: text, truncated: false, originalBytes };
+
+  // One code-point pass avoids the old repeated slice + Buffer.byteLength()
+  // backtracking loop, which could stall the event loop on a large raw
+  // request or response. The shared helper also refuses to split surrogate
+  // pairs and normalizes lone surrogates before producing a preview.
+  const prefix = utf8PrefixWithinBytes(text, limit);
+  return { value: prefix.text, truncated: true, originalBytes };
 }
 
 export function boundRawExchange(value, maxBytes = DEFAULT_RAW_EXCHANGE_MAX_BYTES) {
-  if (value == null || maxBytes <= 0) return maxBytes <= 0 && value != null ? { __truncated: true, maxBytes } : value;
+  const limit = normalizeUtf8ByteBudget(maxBytes, DEFAULT_RAW_EXCHANGE_MAX_BYTES);
+  if (value == null || limit <= 0) return limit <= 0 && value != null ? { __truncated: true, maxBytes: limit } : value;
   if (typeof value === 'string') {
-    const result = truncateUtf8Text(value, maxBytes);
-    return result.truncated ? { __truncated: true, maxBytes, originalBytes: result.originalBytes, preview: result.value } : result.value;
+    const result = truncateUtf8Text(value, limit);
+    return result.truncated ? { __truncated: true, maxBytes: limit, originalBytes: result.originalBytes, preview: result.value } : result.value;
   }
   try {
     const json = JSON.stringify(value);
-    const result = truncateUtf8Text(json, maxBytes);
+    const result = truncateUtf8Text(json, limit);
     if (!result.truncated) return JSON.parse(json);
-    return { __truncated: true, maxBytes, originalBytes: result.originalBytes, preview: result.value };
+    return { __truncated: true, maxBytes: limit, originalBytes: result.originalBytes, preview: result.value };
   } catch {
-    return { __truncated: true, maxBytes };
+    return { __truncated: true, maxBytes: limit };
   }
 }
 

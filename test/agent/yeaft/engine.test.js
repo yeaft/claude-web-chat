@@ -45,7 +45,7 @@ import {
   runAfterManagedCliRuntimeCleanup,
 } from '../../../agent/yeaft/managed-cli.js';
 import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
-import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
+import { ToolRegistry, TOOL_RESULT_MAX_BYTES } from '../../../agent/yeaft/tools/registry.js';
 import { TaskManager } from '../../../agent/yeaft/tasks/manager.js';
 import {
   createOutputCollector,
@@ -696,6 +696,40 @@ describe('Engine', () => {
   });
 
   describe('perf trace', () => {
+    it('bounds provider raw request and response previews through Engine capture', async () => {
+      const limit = 64 * 1024;
+      const mixedPayload = `${'😀'.repeat(8_000)}${'x'.repeat(320 * 1024)}`;
+      const adapter = {
+        async *stream(params) {
+          params.onRawExchange({
+            rawRequest: { body: mixedPayload },
+            rawResponse: { status: 200, body: mixedPayload },
+          });
+          yield { type: 'text_delta', text: 'ok' };
+          yield { type: 'stop', stopReason: 'end_turn' };
+        },
+      };
+      const engine = new Engine({
+        adapter,
+        trace,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          telemetry: { rawExchangeMaxBytes: limit },
+        },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'capture raw exchange' })) events.push(event);
+
+      const loop = events.find(event => event.type === 'loop');
+      for (const exchange of [loop.rawRequest, loop.rawResponse]) {
+        expect(exchange).toMatchObject({ __truncated: true, maxBytes: limit });
+        expect(exchange.preview.isWellFormed()).toBe(true);
+        expect(Buffer.byteLength(exchange.preview, 'utf8')).toBeLessThanOrEqual(limit);
+      }
+    });
+
     it('records LLM request lifecycle events when an inbound perf trace id is present', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-perf-'));
       try {
@@ -3174,6 +3208,71 @@ describe('Engine', () => {
         expect(toolEnds.find(event => event.id === 'read-after-async-result')?.output).toBe('after');
       } finally {
         rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
+    it('bounds same-turn async completion content for the model while preserving durable output', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-async-completion-budget-'));
+      const sessionId = 'session-async-completion-budget';
+      const taskId = 'task-async-completion-budget';
+      const initialOutput = 'The task is running.';
+      const completion = `completed:\n${'界'.repeat(TOOL_RESULT_MAX_BYTES)}`;
+      const conversationStore = new ConversationStore(yeaftDir);
+      let completionAccepted = false;
+      try {
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'call_async_completion', name: 'WaitForCompletion', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Waiting for completion.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Completion consumed.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 1_000 },
+          conversationStore,
+          yeaftDir,
+        });
+        engine.registerTool({
+          name: 'WaitForCompletion',
+          description: 'Wait for an asynchronous completion.',
+          parameters: { type: 'object' },
+          execute: async (_input, ctx) => {
+            ctx.registerAsyncTask(taskId);
+            return initialOutput;
+          },
+        });
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'wait for the task', sessionId })) {
+          events.push(event);
+          if (event.type === 'async_task_wait_start') {
+            completionAccepted = engine.notifyAsyncTaskCompleted(taskId, completion);
+          }
+        }
+
+        expect(completionAccepted).toBe(true);
+        expect(mockAdapter.callLog).toHaveLength(3);
+        const modelToolResult = mockAdapter.callLog[2].messages
+          .find(message => message.role === 'tool' && message.toolCallId === 'call_async_completion');
+        expect(modelToolResult.content).toContain('[truncated: WaitForCompletion returned');
+        expect(Buffer.byteLength(modelToolResult.content, 'utf8')).toBeLessThanOrEqual(TOOL_RESULT_MAX_BYTES);
+        expect(modelToolResult.content).toContain('completed:');
+
+        const durableToolResult = conversationStore.loadRecentBySession(sessionId, 10)
+          .find(message => message.role === 'tool' && message.toolCallId === 'call_async_completion');
+        expect(durableToolResult.content).toBe(`${initialOutput}\n\n${completion}`);
+        expect(Buffer.byteLength(durableToolResult.content, 'utf8')).toBeGreaterThan(TOOL_RESULT_MAX_BYTES);
+        expect(events.find(event => event.type === 'tool_result_update')?.content).toBe(completion);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
       }
     });
 

@@ -711,7 +711,7 @@ export class Engine {
   /**
    * Terminal async task results that should be appended to the original
    * tool_result message instead of injected as a synthetic user prompt.
-   * @type {Array<{taskId:string, toolCallId:string, content:string|Array, preview:string}>}
+   * @type {Array<{taskId:string, toolCallId:string, toolName?:string, content:string|Array, preview:string}>}
    */
   #pendingTaskResultUpdates = [];
 
@@ -1791,7 +1791,14 @@ export class Engine {
       const prior = typeof toolMsg.content === 'string'
         ? toolMsg.content
         : this.#formatTaskResultUpdateContent(toolMsg.content);
-      toolMsg.content = `${prior}\n\n${appendText}`;
+      // Keep the durable row complete below, but apply the same per-tool
+      // context cap used for the initial result before the next provider
+      // request. Async completions otherwise bypassed the model-facing tool
+      // result budget after their producing call had already returned.
+      toolMsg.content = truncateToolResultIfNeeded(`${prior}\n\n${appendText}`, {
+        toolName: update.toolName || 'async task result',
+        language: this.#config?.language,
+      });
       const persistedTool = this.#persistedToolMessages.get(update.toolCallId);
       if (persistedTool && typeof this.#conversationStore?.update === 'function') {
         const durablePrior = typeof persistedTool.content === 'string'
@@ -4579,6 +4586,7 @@ export class Engine {
       this.#pendingTaskResultUpdates.push({
         taskId,
         toolCallId: meta.toolCallId,
+        toolName: meta.toolName,
         content,
         preview,
       });

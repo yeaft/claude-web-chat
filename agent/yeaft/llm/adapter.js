@@ -12,6 +12,8 @@
  * The engine sees only unified types — it never knows which API is underneath.
  */
 
+import { utf8PrefixWithinBytes } from '../utf8.js';
+
 // ─── Unified Types ─────────────────────────────────────────────
 
 /**
@@ -461,24 +463,6 @@ export function classifyFetchError(err, opts = {}) {
  * @param {{ url: string, method: string, headers: object, body: any }} req
  * @returns {{ url: string, method: string, headers: object, body: any }}
  */
-function utf8PrefixWithinBytes(text, maxBytes) {
-  let end = 0;
-  let bytes = 0;
-  while (end < text.length) {
-    const code = text.charCodeAt(end);
-    const next = text.charCodeAt(end + 1);
-    const isPair = code >= 0xD800 && code <= 0xDBFF
-      && next >= 0xDC00 && next <= 0xDFFF;
-    const width = isPair ? 2 : 1;
-    const byteLength = isPair
-      ? 4
-      : (code <= 0x7F ? 1 : (code <= 0x7FF ? 2 : 3));
-    if (bytes + byteLength > maxBytes) break;
-    bytes += byteLength;
-    end += width;
-  }
-  return { text: text.slice(0, end), bytes };
-}
 
 export function createBoundedTextAccumulator(maxBytes = 512 * 1024) {
   const limit = Number.isFinite(Number(maxBytes)) ? Math.max(0, Math.floor(Number(maxBytes))) : 512 * 1024;
