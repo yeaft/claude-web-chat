@@ -3,7 +3,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync, existsSync, linkSync, lstatSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync,
-  readdirSync, symlinkSync, utimesSync,
+  appendFileSync, readdirSync, symlinkSync, utimesSync,
 } from 'fs';
 import { delimiter, join } from 'path';
 import { tmpdir } from 'os';
@@ -3567,13 +3567,31 @@ describe('Engine', () => {
 
         const requestRoot = join(traceRoot, 'sessions', 's-long', 'debug', 'requests');
         const [requestDir] = readdirSync(requestRoot);
-        const traceFile = join(requestRoot, requestDir, 'trace.json');
-        const stored = JSON.parse(readFileSync(traceFile, 'utf8'));
+        const eventFile = join(requestRoot, requestDir, 'events.jsonl');
+        const storedLoops = readFileSync(eventFile, 'utf8')
+          .trim()
+          .split('\n')
+          .map(line => JSON.parse(line))
+          .filter(event => event.type === 'loop')
+          .map(event => event.record);
 
-        expect(stored.loops).toHaveLength(100);
-        expect(stored.loops.every(loop => loop.rawResponse?.__truncated === true)).toBe(true);
-        expect(stored.loops.every(loop => loop.rawResponse?.maxBytes === 64 * 1024)).toBe(true);
-        expect(lstatSync(traceFile).size).toBeLessThan(8 * 1024 * 1024);
+        expect(storedLoops).toHaveLength(100);
+        expect(storedLoops.every(loop => loop.rawResponse?.__truncated === true)).toBe(true);
+        expect(storedLoops.every(loop => loop.rawResponse?.maxBytes === 64 * 1024)).toBe(true);
+        expect(lstatSync(eventFile).size).toBeLessThan(8 * 1024 * 1024);
+
+        const reopened = new DebugTrace(traceRoot);
+        const detail = await reopened.fetchTurnDebug({ sessionId: 's-long', turnId: 'long-tool-turn' });
+        expect(detail.turns).toHaveLength(1);
+        expect(detail.loops).toHaveLength(100);
+        expect(detail.loops.at(-1)?.loopNumber).toBe(100);
+        await reopened.close();
+
+        appendFileSync(eventFile, '{"type":"loop"', 'utf8');
+        const afterTornTail = new DebugTrace(traceRoot);
+        const recovered = await afterTornTail.fetchTurnDebug({ sessionId: 's-long', turnId: 'long-tool-turn' });
+        expect(recovered.loops).toHaveLength(100);
+        await afterTornTail.close();
       } finally {
         await boundedTrace.close();
         rmSync(traceRoot, { recursive: true, force: true });

@@ -1,21 +1,20 @@
 /**
  * debug-trace.js — file-backed debug trace for Yeaft
  *
- * Stores bounded request traces on disk without SQLite. Each request owns one
- * compact JSON file under the session's debug folder:
- *   <yeaftDir>/sessions/<sessionId>/debug/requests/<requestKey>/trace.json
+ * Stores bounded request traces on disk without SQLite. New requests use a
+ * small `meta.json` plus append-only `events.jsonl` under:
+ *   <yeaftDir>/sessions/<sessionId>/debug/requests/<requestKey>/
  *
- * The file keeps one base request snapshot plus per-loop deltas. This avoids
- * 100-200 tiny loop files and avoids repeating the whole cumulative message
- * array for every loop. Debug history remains best-effort: failures are logged
- * and dropped, never allowed to stop the agent.
+ * Loop requests remain base-plus-delta records, so cumulative messages are not
+ * repeated. Legacy `trace.json` requests stay readable. Debug history is
+ * best-effort: failures are logged and never allowed to stop the agent.
  */
 
 import { promises as fsp } from 'fs';
 import { basename, dirname, extname, join } from 'path';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
-const TRACE_VERSION = 2;
+const TRACE_VERSION = 3;
 const REQUEST_RETENTION = 10;
 const MAX_HISTORY_LIMIT = 5;
 const MAX_DREAM_EVENTS = 100;
@@ -31,8 +30,8 @@ const MAX_RAW_REQUEST_BYTES = 2 * 1024 * 1024;
 // A 64 KiB prefix is enough to inspect provider envelopes without letting
 // always-on diagnostics dominate runtime latency.
 const MAX_RAW_RESPONSE_BYTES = 64 * 1024;
-const TRACE_FLUSH_INTERVAL_MS = 5_000;
-const TRACE_FLUSH_DIRTY_LOOPS = 10;
+const TRACE_APPEND_BATCH_MS = 100;
+const EVENT_FLUSH_INTERVAL_MS = 30_000;
 const MAX_SEARCH_PATTERN_CHARS = 300;
 
 function isPlainObject(value) {
@@ -464,8 +463,80 @@ function requestFilePath(requestDir) {
   return join(requestDir, 'trace.json');
 }
 
+function requestMetaPath(requestDir) {
+  return join(requestDir, 'meta.json');
+}
+
+function requestEventsPath(requestDir) {
+  return join(requestDir, 'events.jsonl');
+}
+
+function requestDirFor(rootDir, sessionId, requestKey) {
+  return join(sessionRequestsDir(rootDir, sessionId), safeDirComponent(requestKey, 'request'));
+}
+
 function tracePathFor(rootDir, sessionId, requestKey) {
-  return requestFilePath(join(sessionRequestsDir(rootDir, sessionId), safeDirComponent(requestKey, 'request')));
+  return requestFilePath(requestDirFor(rootDir, sessionId, requestKey));
+}
+
+function turnLocatorName(turnId) {
+  const raw = String(turnId || 'turn');
+  const digest = createHash('sha256').update(raw).digest('hex').slice(0, 16);
+  return `${safeDirComponent(raw, 'turn')}-${digest}.json`;
+}
+
+function turnLocatorPath(rootDir, sessionId, turnId) {
+  return join(sessionRequestsDir(rootDir, sessionId), '..', 'turns', turnLocatorName(turnId));
+}
+
+function serializableTraceMeta(trace) {
+  const meta = { ...trace };
+  delete meta._lastSnapshot;
+  delete meta.baseRequest;
+  delete meta.loops;
+  delete meta.tools;
+  return meta;
+}
+
+async function readJsonLines(filePath) {
+  let text;
+  try { text = await fsp.readFile(filePath, 'utf8'); }
+  catch { return []; }
+  const records = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try { records.push(JSON.parse(line)); }
+    catch { /* A process can leave one torn final append; prior records remain valid. */ }
+  }
+  return records;
+}
+
+async function readRequestDir(requestDir) {
+  const meta = await readJson(requestMetaPath(requestDir));
+  if (!meta?.requestId) {
+    return readJson(requestFilePath(requestDir));
+  }
+  const trace = { ...meta, baseRequest: null, loops: [], tools: [] };
+  const loopById = new Map();
+  const toolById = new Map();
+  for (const event of await readJsonLines(requestEventsPath(requestDir))) {
+    const record = event?.record;
+    if (event?.type === 'loop' && record) {
+      const key = record.turnRowId || record.loopInstanceId || `${record.loopNumber || 0}`;
+      loopById.set(key, record);
+    } else if (event?.type === 'tool' && record) {
+      const key = record.id || `${record.turnRowId || ''}:${record.toolCallId || ''}`;
+      toolById.set(key, record);
+    }
+  }
+  trace.loops = Array.from(loopById.values()).sort((a, b) => (a.loopNumber || 0) - (b.loopNumber || 0) || String(a.turnRowId || '').localeCompare(String(b.turnRowId || '')));
+  trace.tools = Array.from(toolById.values()).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  if (trace.loops.length > 0) {
+    const last = trace.loops.at(-1);
+    trace.closedAt = meta.closedAt || last.at || null;
+    trace.updatedAt = Math.max(Number(meta.updatedAt || 0), Number(last.at || 0));
+  }
+  return trace;
 }
 
 function summarizeTrace(trace, detailsLoaded = false) {
@@ -595,21 +666,16 @@ async function readdirSafe(dir) {
   catch { return []; }
 }
 
-async function collectTraceFiles(rootDir, sessionId = null) {
-  const files = [];
+async function collectRequestDirs(rootDir, sessionId = null) {
+  const dirs = [];
   const addFromRequestsDir = async (requestsDir) => {
     for (const entry of await readdirSafe(requestsDir)) {
-      if (!entry.isDirectory()) continue;
-      const file = requestFilePath(join(requestsDir, entry.name));
-      try {
-        await fsp.access(file);
-        files.push(file);
-      } catch { /* trace.json not yet written for this request dir */ }
+      if (entry.isDirectory()) dirs.push(join(requestsDir, entry.name));
     }
   };
   if (sessionId) {
     await addFromRequestsDir(sessionRequestsDir(rootDir, sessionId));
-    return files;
+    return dirs;
   }
   await addFromRequestsDir(sessionRequestsDir(rootDir, null));
   const sessionsRoot = join(rootDir, 'sessions');
@@ -617,14 +683,15 @@ async function collectTraceFiles(rootDir, sessionId = null) {
     if (!entry.isDirectory()) continue;
     await addFromRequestsDir(join(sessionsRoot, entry.name, 'debug', 'requests'));
   }
-  return files;
+  return dirs;
 }
 
 async function readTraceSummaries(rootDir, sessionId = null) {
   const traces = [];
-  for (const file of await collectTraceFiles(rootDir, sessionId)) {
-    const trace = await readJson(file);
+  for (const requestDir of await collectRequestDirs(rootDir, sessionId)) {
+    const trace = await readRequestDir(requestDir);
     if (!trace || !trace.requestId) continue;
+    const file = requestFilePath(requestDir);
     traces.push({ trace, file, openedAt: Number(trace.openedAt || 0) });
   }
   traces.sort((a, b) => ((a.openedAt || 0) - (b.openedAt || 0)) || String(a.trace?.requestKey || a.file).localeCompare(String(b.trace?.requestKey || b.file)));
@@ -655,10 +722,12 @@ export class DebugTrace {
   #turnIndex = new Map();
   /** @type {Map<string, object>} */
   #requestCache = new Map();
-  /** @type {Map<string, { trace: object, dirtyLoops: number, firstDirtyAt: number }>} */
-  #pendingWrites = new Map();
+  /** @type {Array<{ trace: object, type: 'loop'|'tool', record: object, initialize: boolean, writeMeta: boolean }>} */
+  #pendingWrites = [];
+  /** @type {Set<string>} */
+  #initializedRequestKeys = new Set();
   /** @type {NodeJS.Timeout|null} */
-  #flushTimer = null;
+  #appendTimer = null;
   /** @type {number} */
   #sequence = 0;
   /**
@@ -777,7 +846,7 @@ export class DebugTrace {
     trace.updatedAt = loop.at;
     trace.active = info.stopReason ? !['end_turn', 'error', 'aborted'].includes(String(info.stopReason)) : false;
     trace._lastSnapshot = snapshot;
-    this.#markDirty(trace, { dirtyLoops: 1, force: !trace.active });
+    this.#appendTraceRecord(trace, 'loop', loop, { writeMeta: !trace.active });
   }
 
   logTool(turnId, { toolName, toolCallId = null, toolInput = null, toolOutput = null, durationMs = null, isError = false } = {}) {
@@ -787,7 +856,7 @@ export class DebugTrace {
     const trace = this.#loadRequest(ctx.sessionId, ctx.requestKey);
     if (!trace) return id;
     if (!Array.isArray(trace.tools)) trace.tools = [];
-    trace.tools.push({
+    const tool = {
       id,
       turnRowId: turnId,
       loopNumber: ctx.loopNumber || 0,
@@ -798,9 +867,10 @@ export class DebugTrace {
       durationMs: Number(durationMs || 0),
       isError: !!isError,
       createdAt: Date.now(),
-    });
-    trace.updatedAt = Date.now();
-    this.#markDirty(trace, { dirtyLoops: 0, force: !trace.active });
+    };
+    trace.tools.push(tool);
+    trace.updatedAt = tool.createdAt;
+    this.#appendTraceRecord(trace, 'tool', tool, { writeMeta: false });
     return id;
   }
 
@@ -858,11 +928,51 @@ export class DebugTrace {
       .flatMap(({ trace }) => traceToLegacyRows(trace));
   }
 
+  async fetchTurnDebug({ sessionId, turnId, dreamLimit = 0 } = {}) {
+    const requestedSessionId = typeof sessionId === 'string' && sessionId ? sessionId : null;
+    const requestedTurnId = typeof turnId === 'string' && turnId ? turnId : null;
+    if (!requestedSessionId || !requestedTurnId) {
+      return { loops: [], turns: [], dreamEvents: [], detailTurnId: requestedTurnId };
+    }
+    await this.#drainWrites();
+
+    let trace = Array.from(this.#requestCache.values()).find(item => (
+      item?.sessionId === requestedSessionId
+      && (item.requestId === requestedTurnId || item.traceId === requestedTurnId)
+    )) || null;
+    if (!trace) {
+      const locator = await readJson(turnLocatorPath(this.#rootDir, requestedSessionId, requestedTurnId));
+      if (locator?.requestKey) {
+        trace = await readRequestDir(requestDirFor(this.#rootDir, requestedSessionId, locator.requestKey));
+        if (trace?.requestKey) this.#requestCache.set(trace.requestKey, trace);
+      }
+    }
+    if (!trace) {
+      // Legacy v2 traces have no locator. Scan only as a compatibility fallback;
+      // every v3 trace takes the direct sessionId + turnId path above.
+      for (const item of await readTraceSummaries(this.#rootDir, requestedSessionId)) {
+        if (item.trace?.requestId === requestedTurnId || item.trace?.traceId === requestedTurnId) {
+          trace = item.trace;
+          this.#requestCache.set(trace.requestKey, trace);
+          break;
+        }
+      }
+    }
+    const dreamEvents = this.#readDreamEvents({ sessionId: requestedSessionId, dreamLimit });
+    if (!trace) return { loops: [], turns: [], dreamEvents, detailTurnId: requestedTurnId };
+    const expanded = expandTrace(trace);
+    return { ...expanded, dreamEvents, detailTurnId: requestedTurnId };
+  }
+
   async fetchRecentDebugHistory({ limit = MAX_HISTORY_LIMIT, dreamLimit = 5, sessionId = null, threadId = null, indexOnly = false, detailTurnId = null, search = '' } = {}) {
+    const requestedDetailTurnId = typeof detailTurnId === 'string' && detailTurnId ? detailTurnId : null;
+    if (requestedDetailTurnId && sessionId) {
+      const detail = await this.fetchTurnDebug({ sessionId, turnId: requestedDetailTurnId, dreamLimit });
+      return { ...detail, hasMore: false, limit: detail.loops.length, indexOnly: false };
+    }
     await this.#ensureHydrated();
     await this.#drainWrites();
     const lim = Math.max(1, Math.min(MAX_HISTORY_LIMIT, Number(limit) || MAX_HISTORY_LIMIT));
-    const requestedDetailTurnId = typeof detailTurnId === 'string' && detailTurnId ? detailTurnId : null;
     const searchRegex = requestedDetailTurnId ? null : compileTraceSearchRegex(search);
     const traces = this.#traceSummaries(sessionId)
       .filter(({ trace }) => !threadId || trace.threadId === threadId)
@@ -959,6 +1069,7 @@ export class DebugTrace {
     await ensureDir(this.#rootDir);
     this.#turnIndex.clear();
     this.#requestCache.clear();
+    this.#initializedRequestKeys.clear();
     this.#events = [];
     this.#hydrated = false;
     this.#hydratePromise = null;
@@ -1104,47 +1215,32 @@ export class DebugTrace {
     this.#events = [...older, ...this.#events].slice(-MAX_DREAM_EVENTS);
   }
 
-  #traceWriteKey(trace) {
-    return `${trace.sessionId || ''}::${trace.requestKey}`;
-  }
-
   #traceFile(trace) {
     return tracePathFor(this.#rootDir, trace.sessionId || null, trace.requestKey);
   }
 
-  #serializableTrace(trace) {
-    const toWrite = { ...trace };
-    delete toWrite._lastSnapshot;
-    return toWrite;
-  }
-
-  #markDirty(trace, { dirtyLoops = 0, force = false } = {}) {
-    if (!trace?.requestKey) return;
-    const key = this.#traceWriteKey(trace);
-    const existing = this.#pendingWrites.get(key);
-    const now = Date.now();
-    const item = existing || { trace, dirtyLoops: 0, firstDirtyAt: now };
-    item.trace = trace;
-    item.dirtyLoops += Math.max(0, Number(dirtyLoops) || 0);
-    this.#pendingWrites.set(key, item);
+  #appendTraceRecord(trace, type, record, { writeMeta = false } = {}) {
+    if (!trace?.requestKey || !record) return;
     this.#requestCache.set(trace.requestKey, trace);
-
-    if (force || item.dirtyLoops >= TRACE_FLUSH_DIRTY_LOOPS) {
+    const initialize = !this.#initializedRequestKeys.has(trace.requestKey);
+    if (initialize) this.#initializedRequestKeys.add(trace.requestKey);
+    this.#pendingWrites.push({
+      trace,
+      type,
+      record: cloneJsonValue(record),
+      initialize,
+      writeMeta: !!writeMeta,
+    });
+    if (writeMeta) {
       this.#flushPending();
       return;
     }
-    this.#scheduleFlushTimer(now);
-  }
-
-  #scheduleFlushTimer(now = Date.now()) {
-    if (this.#flushTimer || this.#pendingWrites.size === 0) return;
-    const oldestDirtyAt = Math.min(...Array.from(this.#pendingWrites.values()).map(item => item.firstDirtyAt || now));
-    const dueIn = Math.max(0, TRACE_FLUSH_INTERVAL_MS - (now - oldestDirtyAt));
-    this.#flushTimer = setTimeout(() => {
-      this.#flushTimer = null;
+    if (this.#appendTimer) return;
+    this.#appendTimer = setTimeout(() => {
+      this.#appendTimer = null;
       this.#flushPending();
-    }, dueIn);
-    if (typeof this.#flushTimer.unref === 'function') this.#flushTimer.unref();
+    }, TRACE_APPEND_BATCH_MS);
+    if (typeof this.#appendTimer.unref === 'function') this.#appendTimer.unref();
   }
 
   #scheduleEventFlush() {
@@ -1153,43 +1249,50 @@ export class DebugTrace {
     this.#eventFlushTimer = setTimeout(() => {
       this.#eventFlushTimer = null;
       this.#flushEvents();
-    }, TRACE_FLUSH_INTERVAL_MS);
+    }, EVENT_FLUSH_INTERVAL_MS);
     if (typeof this.#eventFlushTimer.unref === 'function') this.#eventFlushTimer.unref();
   }
 
-  /**
-   * Drain pending trace writes synchronously-from-the-caller's-view: snapshot
-   * each dirty trace to a JSON STRING now (so later in-place mutation of the
-   * live `loops` array can't tear the payload), then chain the async writes
-   * onto #flushChain. Returns nothing; callers that need durability await
-   * #drainWrites().
-   */
+  /** Queue append-only loop/tool records onto the single-writer chain. */
   #flushPending() {
-    if (this.#flushTimer) {
-      clearTimeout(this.#flushTimer);
-      this.#flushTimer = null;
+    if (this.#appendTimer) {
+      clearTimeout(this.#appendTimer);
+      this.#appendTimer = null;
     }
-    const entries = Array.from(this.#pendingWrites.values());
+    const entries = this.#pendingWrites.splice(0);
     if (entries.length === 0) {
       this.#flushEvents();
       return;
     }
-    this.#pendingWrites.clear();
-    // Capture point-in-time payloads synchronously (so later in-place mutation
-    // of the live `loops` array can't tear a payload), but remember each
-    // request key: a prune chained ahead of this write may evict the request
-    // before the write runs, and we must NOT resurrect a pruned trace on disk.
-    const jobs = entries.map(({ trace }) => ({
-      requestKey: trace.requestKey,
-      file: this.#traceFile(trace),
-      text: JSON.stringify(this.#serializableTrace(trace)),
-    }));
     this.#chain(async () => {
-      for (const { requestKey, file, text } of jobs) {
-        // Skip if an earlier chained prune already evicted this request.
-        if (!this.#requestCache.has(requestKey)) continue;
-        try { await atomicWriteText(file, text); }
-        catch (err) { console.warn('[Yeaft] debug trace write failed:', err?.message || err); }
+      const batches = new Map();
+      for (const entry of entries) {
+        if (!this.#requestCache.has(entry.trace.requestKey)) continue;
+        const requestDir = requestDirFor(this.#rootDir, entry.trace.sessionId || null, entry.trace.requestKey);
+        const batch = batches.get(requestDir) || { trace: entry.trace, initialize: false, writeMeta: false, lines: [] };
+        batch.trace = entry.trace;
+        batch.initialize ||= entry.initialize;
+        batch.writeMeta ||= entry.writeMeta;
+        batch.lines.push(`${JSON.stringify({ type: entry.type, record: entry.record })}\n`);
+        batches.set(requestDir, batch);
+      }
+      for (const [requestDir, batch] of batches) {
+        const { trace, initialize, writeMeta, lines } = batch;
+        try {
+          const metaPath = requestMetaPath(requestDir);
+          if (initialize) {
+            await atomicWriteText(metaPath, JSON.stringify(serializableTraceMeta(trace)));
+            await atomicWriteText(
+              turnLocatorPath(this.#rootDir, trace.sessionId || null, trace.requestId),
+              JSON.stringify({ requestKey: trace.requestKey, requestId: trace.requestId, sessionId: trace.sessionId || null })
+            );
+          }
+          await ensureDir(requestDir);
+          await fsp.appendFile(requestEventsPath(requestDir), lines.join(''), 'utf8');
+          if (writeMeta) await atomicWriteText(metaPath, JSON.stringify(serializableTraceMeta(trace)));
+        } catch (err) {
+          console.warn('[Yeaft] debug trace append failed:', err?.message || err);
+        }
       }
       try { await this.#pruneAll(REQUEST_RETENTION); }
       catch (err) { console.warn('[Yeaft] debug trace prune failed:', err?.message || err); }
@@ -1297,6 +1400,7 @@ export class DebugTrace {
       // Drop from cache first so subsequent queries never resurface it, even
       // if the async rm is still in flight or fails.
       this.#requestCache.delete(item.trace.requestKey);
+      this.#initializedRequestKeys.delete(item.trace.requestKey);
       try { await fsp.rm(dirname(item.file), { recursive: true, force: true }); }
       catch { /* ignore */ }
     }
@@ -1331,6 +1435,7 @@ export class NullTrace {
   async purge() {}
   async close() {}
   async flush() {}
+  async fetchTurnDebug() { return { loops: [], turns: [], dreamEvents: [] }; }
   async fetchRecentDebugHistory() { return { loops: [], turns: [], dreamEvents: [] }; }
 }
 

@@ -478,9 +478,10 @@ export function handleMessage(store, msg) {
     case 'yeaft_debug_history': {
       const requestId = typeof msg?.requestId === 'string' ? msg.requestId : '';
       const isDetailFetch = typeof msg?.detailTurnId === 'string' && msg.detailTurnId;
-      if (requestId && !isDetailFetch && requestId !== store._yeaftDebugHistoryLatestListRequestId) {
-        break;
-      }
+      const expectedRequestId = isDetailFetch
+        ? store._yeaftDebugHistoryLatestDetailRequestId
+        : store._yeaftDebugHistoryLatestListRequestId;
+      if (requestId && requestId !== expectedRequestId) break;
       if (store._fetchYeaftDebugHistoryTimer) {
         clearTimeout(store._fetchYeaftDebugHistoryTimer);
         store._fetchYeaftDebugHistoryTimer = null;
