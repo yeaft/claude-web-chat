@@ -877,8 +877,8 @@ export default {
         <section class="sidebar-section projects-section" :class="{ 'is-collapsed': isSectionCollapsed('projects') }">
           <div class="sidebar-section-heading">
             <button type="button" class="sidebar-section-toggle" @click="toggleSection('projects')" :aria-expanded="String(!isSectionCollapsed('projects'))">
-              <svg class="sidebar-section-chevron" :class="{ collapsed: isSectionCollapsed('projects') }" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m8 10 4 4 4-4"/></svg>
               <span>{{ $t('sidebar.projects.title') }}</span>
+              <svg class="sidebar-section-chevron" :class="{ collapsed: isSectionCollapsed('projects') }" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m8 10 4 4 4-4"/></svg>
             </button>
             <button type="button" class="sidebar-tool-button sidebar-project-add-button" @click="createProject" :disabled="projectCreateOpen" :title="$t('sidebar.projects.new')" :aria-label="$t('sidebar.projects.new')">
               <svg class="sidebar-project-add-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -918,11 +918,11 @@ export default {
               @dragend="finishAllDrag"
             >
               <button type="button" class="sidebar-project-toggle" @click="toggleProject(project)" :aria-expanded="String(!isProjectCollapsed(project))">
-                <svg v-if="isProjectCollapsed(project)" class="sidebar-project-icon sidebar-project-icon-closed" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M3.5 6.5h6l2 2h9v9h-17z"/></svg>
-                <svg v-else class="sidebar-project-icon sidebar-project-icon-open" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M3.5 7h6l2 2h9l-2 8.5h-15zM4 7V5.5h6l2 2h7"/></svg>
-                <span>{{ project.name }}</span>
-                <span v-if="isProjectUnread(project)" class="sidebar-session-unread sidebar-project-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
+                <svg v-if="isProjectCollapsed(project)" class="sidebar-project-icon sidebar-project-icon-closed" viewBox="0 0 20 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M2.5 7.5a2 2 0 0 1 2-2h4l1.8 2H15.5a2 2 0 0 1 2 2V18h-15z"/></svg>
+                <svg v-else class="sidebar-project-icon sidebar-project-icon-open" viewBox="0 0 20 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M2.5 9V7a2 2 0 0 1 2-2h4l1.8 2h5.2a2 2 0 0 1 2 2v1M3.5 10h15l-2 8h-15z"/></svg>
+                <span class="sidebar-project-name">{{ project.name }}</span>
                 <span class="sidebar-project-count">{{ (rowsByProject.get(projectKey(project)) || []).length }}</span>
+                <span v-if="isProjectUnread(project)" class="sidebar-session-unread sidebar-project-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
               </button>
               <button v-if="canEditProject(project)" type="button" class="sidebar-project-session-create" @click.stop="createSessionInProject(project)" :title="$t('sidebar.projects.newSession', { name: project.name })" :aria-label="$t('sidebar.projects.newSession', { name: project.name })">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
@@ -979,8 +979,8 @@ export default {
         <section class="sidebar-section recents-section" :class="{ 'drag-over': dragTargetProjectId === '__recents__', 'is-collapsed': isSectionCollapsed('recents') }" @dragover="dragOverRecents" @dragleave="clearGroupDragTarget('__recents__', $event)" @drop="dropOnRecents">
           <div class="sidebar-section-heading">
             <button type="button" class="sidebar-section-toggle" @click="toggleSection('recents')" :aria-expanded="String(!isSectionCollapsed('recents'))">
-              <svg class="sidebar-section-chevron" :class="{ collapsed: isSectionCollapsed('recents') }" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m8 10 4 4 4-4"/></svg>
               <span>{{ $t('sidebar.recents.title') }}</span>
+              <svg class="sidebar-section-chevron" :class="{ collapsed: isSectionCollapsed('recents') }" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m8 10 4 4 4-4"/></svg>
             </button>
             <button type="button" class="sidebar-tool-button sidebar-recents-create" @click="createSession" :title="$t('sidebar.sessions.newChat')" :aria-label="$t('sidebar.sessions.newChat')">
               <svg class="sidebar-recents-create-icon" viewBox="0 0 24 24" aria-hidden="true">

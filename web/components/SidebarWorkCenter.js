@@ -43,7 +43,7 @@ export default {
                 :class="{ active }" :disabled="onlineAgents.length === 0"
                 :aria-expanded="expanded ? 'true' : 'false'">
           <svg class="session-tab-icon sidebar-work-center-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-            <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>
+            <path fill="currentColor" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z"/>
           </svg>
           <span v-if="!collapsed" class="sidebar-work-center-label">{{ tr('workCenter.title', 'Work Center') }}</span>
           <span v-if="!collapsed && onlineAgents.length" class="session-tab-count">{{ onlineAgents.length }}</span>

@@ -368,7 +368,8 @@ describe('Session message quote UI wiring', () => {
     const inputWrapper = mount(ChatInput, {
       props: { showStop: true, workItemFn: vi.fn() },
       slots: {
-        'actions-start': '<button class="composer-model-slot" type="button">Model</button>',
+        'actions-start': '<button class="composer-start-slot" type="button">Start</button>',
+        'actions-end-before': '<button class="composer-model-slot" type="button">Model</button>',
       },
       global: {
         mocks: { $t: key => key },
@@ -389,14 +390,20 @@ describe('Session message quote UI wiring', () => {
     expect(textarea.element.compareDocumentPosition(actionRow.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(startActions.findAll('.attach-btn')).toHaveLength(1);
     expect(startActions.findAll('.work-item-draft-btn')).toHaveLength(1);
-    expect(startActions.findAll('.composer-model-slot')).toHaveLength(1);
+    expect(startActions.findAll('.composer-start-slot')).toHaveLength(1);
+    expect(startActions.findAll('.composer-model-slot')).toHaveLength(0);
     expect(startActions.get('.attach-btn').element.compareDocumentPosition(
       startActions.get('.work-item-draft-btn').element,
     ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(startActions.get('.work-item-draft-btn').element.compareDocumentPosition(
-      startActions.get('.composer-model-slot').element,
+      startActions.get('.composer-start-slot').element,
     ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(endActions.findAll('.composer-model-slot')).toHaveLength(1);
+    expect(endActions.get('.composer-model-slot').element.compareDocumentPosition(endActions.get('.stop-btn').element)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(endActions.findAll('.send-btn')).toHaveLength(2);
+    expect(endActions.get('.stop-btn').element.compareDocumentPosition(endActions.findAll('.send-btn')[1].element)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect([...composer.element.children].filter(child => child.matches('.attach-btn, .work-item-draft-btn, .send-btn'))).toHaveLength(0);
     expect(observeComposer).toHaveBeenCalledWith(composer.get('.textarea-wrapper').element);
 
@@ -434,7 +441,8 @@ describe('Session message quote UI wiring', () => {
     expect(inputWrapper.get('.chat-composer-actions-start .btw-input-tag').text()).toBe('BTW');
     expect(inputWrapper.find('.chat-composer-actions-start .attach-btn').exists()).toBe(false);
     expect(inputWrapper.find('.chat-composer-actions-start .work-item-draft-btn').exists()).toBe(false);
-    expect(inputWrapper.find('.chat-composer-actions-start .composer-model-slot').exists()).toBe(true);
+    expect(inputWrapper.find('.chat-composer-actions-start .composer-start-slot').exists()).toBe(true);
+    expect(inputWrapper.find('.chat-composer-actions-end .composer-model-slot').exists()).toBe(true);
     expect(inputWrapper.findAll('.chat-composer-actions-end .send-btn')).toHaveLength(2);
 
     const inputCss = readFileSync(resolve(process.cwd(), 'web/styles/chat-input.css'), 'utf8');
@@ -449,18 +457,19 @@ describe('Session message quote UI wiring', () => {
     const darkThemeTokens = variablesCss.slice(darkThemeStart);
     const composerTokens = [
       '--chat-composer-gap: 8px;',
-      '--chat-composer-control-gap: 4px;',
+      '--chat-composer-control-gap: 8px;',
       '--chat-composer-padding: 12px;',
       '--chat-composer-radius: 18px;',
       '--chat-composer-focus-ring-width: 2px;',
       '--chat-composer-textarea-min-height: 4.5em;',
       '--chat-composer-textarea-mobile-height: 3em;',
       '--chat-composer-control-size: 32px;',
-      '--yeaft-composer-model-max-width: 220px;',
-      '--yeaft-composer-model-mobile-max-width: 38vw;',
+      '--yeaft-composer-model-max-width: 260px;',
+      '--yeaft-composer-model-mobile-max-width: 46vw;',
       '--yeaft-composer-model-font-size: 12px;',
       '--yeaft-composer-model-border-width: 1px;',
-      '--yeaft-model-menu-width: 320px;',
+      '--yeaft-model-menu-width: 280px;',
+      '--yeaft-effort-menu-width: 180px;',
       '--yeaft-model-menu-max-height: 72dvh;',
       '--yeaft-model-menu-layer: 1300;',
       '--yeaft-header-folder-max-width: 280px;',
@@ -502,15 +511,20 @@ describe('Session message quote UI wiring', () => {
     expect(inputCss).toMatch(/\.chat-composer-actions\s*\{[^}]*justify-content:\s*space-between/);
     expect(inputCss).toMatch(/\.chat-composer-actions\s*\{[^}]*gap:\s*var\(--chat-composer-gap\)/);
     expect(inputCss).toMatch(/\.chat-composer-actions-start,[\s\S]*?gap:\s*var\(--chat-composer-control-gap\)/);
-    expect(inputCss).toMatch(/\.chat-composer \.send-btn\s*\{[^}]*width:\s*var\(--chat-composer-control-size\)/);
-    expect(inputCss).toMatch(/\.chat-composer \.send-btn\s*\{[^}]*height:\s*var\(--chat-composer-control-size\)/);
+    expect(inputCss).toMatch(/\.chat-composer \.(?:attach-btn|send-btn),[\s\S]*?\.chat-composer \.send-btn\s*\{[^}]*width:\s*var\(--chat-composer-control-size\)/);
+    expect(inputCss).toMatch(/\.chat-composer \.(?:attach-btn|send-btn),[\s\S]*?\.chat-composer \.send-btn\s*\{[^}]*height:\s*var\(--chat-composer-control-size\)/);
+    expect(inputCss).toMatch(/\.send-btn\s*\{[^}]*background:\s*var\(--accent\);[^}]*color:\s*var\(--accent-fg\)/);
+    expect(inputCss).toMatch(/\.send-btn\.stop-btn\s*\{[^}]*background:\s*var\(--accent\);[^}]*color:\s*var\(--accent-fg\)/);
+    expect(messageComposerSource).toContain('d="m7 12 5-5 5 5M12 7v10"');
+    expect(messageComposerSource).toContain('<rect x="7" y="7" width="10" height="10" rx="1.5"/>');
     expect(yeaftCss).toMatch(/\.yeaft-session-input > \.input-wrapper\.chat-composer,[\s\S]*?\.yeaft-page \.expert-chips-bar\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*var\(--session-content-width\)/);
     expect(yeaftCss).not.toContain('--yeaft-composer-max-width');
     expect(yeaftCss).not.toMatch(/\.yeaft-page \.input-wrapper(?:\.chat-composer)?\s*\{/);
     expect(yeaftCss).toMatch(/\.yeaft-topbar-folder-path\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*direction:\s*rtl;/);
-    expect(yeaftCss).toMatch(/\.yeaft-page \.chat-composer-actions-start\s*\{[^}]*position:\s*relative/);
-    expect(yeaftCss).toMatch(/\.yeaft-composer-model-control\s*\{[^}]*position:\s*static/);
-    expect(yeaftCss).toMatch(/\.yeaft-composer-model-dropdown\s*\{[^}]*bottom:\s*calc\(100% \+ var\(--chat-composer-gap\)\)[^}]*max-height:\s*var\(--yeaft-model-menu-max-height\)/);
+    expect(yeaftCss).toMatch(/\.yeaft-composer-model-controls\s*\{[^}]*display:\s*flex;[^}]*gap:\s*var\(--sidebar-section-toggle-gap\)/);
+    expect(yeaftCss).toMatch(/\.yeaft-composer-choice\s*\{[^}]*position:\s*relative/);
+    expect(yeaftCss).toMatch(/\.yeaft-composer-model,[\s\S]*?\.yeaft-composer-effort\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent/);
+    expect(yeaftCss).toMatch(/\.yeaft-composer-model-dropdown,[\s\S]*?\.yeaft-composer-effort-dropdown\s*\{[^}]*right:\s*0;[^}]*bottom:\s*calc\(100% \+ var\(--chat-composer-gap\)\)[^}]*max-height:\s*var\(--yeaft-model-menu-max-height\)/);
     expect(yeaftCss).toMatch(/@media \(max-width:\s*768px\)[\s\S]*?\.yeaft-topbar\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto;/);
     expect(yeaftCss).toMatch(/\.yeaft-topbar-context\s*\{[^}]*grid-column:\s*2;[^}]*display:\s*grid;/);
     expect(yeaftCss).toMatch(/\.yeaft-topbar-folder\s*\{[^}]*grid-row:\s*2;[^}]*width:\s*100%;[^}]*max-width:\s*100%;/);
