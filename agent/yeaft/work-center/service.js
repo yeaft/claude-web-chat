@@ -388,6 +388,7 @@ export class WorkCenterService {
             ledgerRevision: payload.ledgerRevision,
             coordinatorRevision: payload.coordinatorRevision,
             clientMessageId: typeof payload.clientMessageId === 'string' ? payload.clientMessageId : null,
+            quote: payload.quote,
             addedAttachments,
             attachments: [...(workItem.attachments || []), ...addedAttachments],
           }, {
@@ -450,6 +451,7 @@ export class WorkCenterService {
             revision: payload.revision,
             generation,
             clientMessageId: typeof payload.clientMessageId === 'string' ? payload.clientMessageId : null,
+            quote: payload.quote,
             addedAttachmentCount: addedAttachments.length,
             addedAttachments,
             attachments: [...(workItem.attachments || []), ...addedAttachments],
@@ -610,6 +612,7 @@ export class WorkCenterService {
         recovery: Boolean(recoverable.recovery),
         addedAttachments: Array.isArray(recoverable.addedAttachments)
           ? recoverable.addedAttachments : [],
+        quote: recoverable.quote || null,
         onUpdate: (type, detail) => this.#emit({ type, workItem: detail }),
       });
       turn?.task?.catch?.(() => {});

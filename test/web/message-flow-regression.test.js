@@ -17,7 +17,6 @@ import {
   reorderSessionCatalogRows,
 } from '../../web/components/UnifiedSessionList.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
-import WorkCenterPage from '../../web/components/WorkCenterPage.js';
 import enMessages from '../../web/i18n/en.js';
 import zhCNMessages from '../../web/i18n/zh-CN.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
@@ -111,6 +110,7 @@ const { useVpStore } = await import('../../web/stores/vp.js');
 const { default: SessionCreateModal } = await import('../../web/components/SessionCreateModal.js');
 const { default: ChatPage } = await import('../../web/components/ChatPage.js');
 const { default: YeaftSidebar } = await import('../../web/components/YeaftSidebar.js');
+const { default: WorkCenterPage } = await import('../../web/components/WorkCenterPage.js');
 const {
   handleConversationCreated,
   handleConversationResumed,
@@ -1438,6 +1438,18 @@ describe('message flow regressions', () => {
     const workCenterAgentListRule = workCenterCss.match(/\.work-center-agent-menu \.modern-select-list\s*\{([^}]*)\}/s)?.[1] || '';
     expect(workCenterAgentListRule).not.toMatch(/(^|[;\s])height\s*:/);
     expect(workCenterCss).toMatch(/\.work-center-agent-menu \.modern-select-option\s*\{[^}]*min-height:\s*32px;[^}]*box-sizing:\s*border-box;/s);
+    const agentList = agentMenu.querySelector('.modern-select-list');
+    Object.defineProperty(agentList, 'scrollHeight', { configurable: true, value: 260 });
+    Object.defineProperty(agentMenu, 'scrollHeight', { configurable: true, value: 48 });
+    window.dispatchEvent(new Event('scroll'));
+    await Vue.nextTick();
+    const stableMenuHeight = agentMenu.style.maxHeight;
+    expect(stableMenuHeight).not.toBe('48px');
+    for (let index = 0; index < 6; index += 1) {
+      agentList.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await Vue.nextTick();
+      expect(agentMenu.style.maxHeight).toBe(stableMenuHeight);
+    }
     agentMenu.querySelectorAll('.modern-select-option')[1].click();
     await Vue.nextTick();
     expect(workCenterStore.enterWorkCenter).toHaveBeenCalledWith('agent-b');
@@ -1486,7 +1498,15 @@ describe('message flow regressions', () => {
     expect(workCenterCss).not.toContain('width: min(100%, 1120px);');
     expect(variables).toContain('--work-center-conversation-column-width: var(--session-content-width);');
     expect(variables).toContain('--work-center-conversation-gutter: 16px;');
-    expect(variables).toContain('--work-center-actions-pane-width: 320px;');
+    expect(variables).toContain('--work-center-actions-pane-width: 400px;');
+    expect(workCenter).toContain("import UserTurnBlock from './UserTurnBlock.js'");
+    expect(workCenter).toContain("import VpTurnBlock from './VpTurnBlock.js'");
+    expect(workCenter).toContain(':display-name-override="block.speakerName"');
+    expect(workCenter).toContain('@edit-as-new="editWorkItemMessageAsNew"');
+    expect(workCenter).not.toContain('<article v-for="message in selected.messages"');
+    const modernSelect = readFileSync(resolve(import.meta.dirname, '../../web/components/ModernSelect.js'), 'utf8');
+    expect(modernSelect).toContain('const desiredHeight = Math.min(list.scrollHeight + chromeHeight, 304);');
+    expect(modernSelect).not.toContain('Math.min(menu.scrollHeight, 304)');
     expect(variables).not.toContain('--work-center-triage-max-height');
     expect(variables).not.toContain('--work-center-conversation-min-height');
     expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-detail-layout\.content-open \.work-center-conversation-pane\s*\{[\s\S]*?display: none;/);
@@ -1522,11 +1542,13 @@ describe('message flow regressions', () => {
     expect(store.hydrateWorkCenterBrowserState()).toBe(true);
     expect(store.saveWorkCenterComposerDraft('agent-a', 'work-item-owner', {
       text: 'owner A private draft',
+      quote: { id: 'assistant-1', role: 'assistant', author: 'Omni', content: 'Original answer' },
       target: { kind: 'coordinator' },
     })).toBe(true);
     const ownerAEnvelope = store.prepareWorkCenterMessageEnvelope({
       agentId: 'agent-a', workItemId: 'work-item-owner',
       target: { kind: 'coordinator' }, text: 'owner A durable outbox',
+      quote: { id: 'assistant-1', role: 'assistant', author: 'Omni', content: 'Original answer' },
       attachments: [{ fileId: 'old-file', name: 'old.txt', mimeType: 'text/plain', size: 3 }],
       revision: 1, planRevision: 2, ledgerRevision: 3, coordinatorRevision: 4,
     });
@@ -1544,6 +1566,7 @@ describe('message flow regressions', () => {
       clientMessageId: ownerAEnvelope.clientMessageId,
       target: ownerAEnvelope.target,
       text: ownerAEnvelope.text,
+      quote: ownerAEnvelope.quote,
       revision: 1,
       planRevision: 2,
       ledgerRevision: 3,
@@ -1555,9 +1578,9 @@ describe('message flow regressions', () => {
     store._workCenterBrowserFence = null;
     expect(store.hydrateWorkCenterBrowserState()).toBe(true);
     expect(store.loadWorkCenterComposerDraft('agent-a', 'work-item-owner'))
-      .toMatchObject({ text: 'owner A private draft' });
+      .toMatchObject({ text: 'owner A private draft', quote: { content: 'Original answer' } });
     expect(store.loadWorkCenterMessageEnvelope('agent-a', 'work-item-owner'))
-      .toMatchObject({ clientMessageId: ownerAEnvelope.clientMessageId });
+      .toMatchObject({ clientMessageId: ownerAEnvelope.clientMessageId, quote: { content: 'Original answer' } });
 
     bindWorkCenterBrowserOwner('owner-b');
     expect(store.workCenterComposerDrafts).toEqual({});

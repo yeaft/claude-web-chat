@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { resolveMaxOutputTokens } from '../models.js';
+import { normalizeSessionMessageQuote, sessionMessageQuotePrompt } from '../session-message-quote.js';
 import {
   LLMAuthError,
   LLMContextError,
@@ -547,11 +548,12 @@ export class WorkItemCoordinator {
     const text = typeof input.text === 'string'
       ? input.text.trim().slice(0, COORDINATOR_MAX_REPLY_CHARS)
       : '';
+    const quote = normalizeSessionMessageQuote(input.quote);
     const addedAttachments = Array.isArray(input.addedAttachments) ? input.addedAttachments : [];
     if (!text && addedAttachments.length === 0) {
       throw new Error('Work Center Coordinator message or attachments are required');
     }
-    const promptText = text || `The user added ${addedAttachments.length} attachment(s) for this WorkItem.`;
+    const promptText = `${text || `The user added ${addedAttachments.length} attachment(s) for this WorkItem.`}${sessionMessageQuotePrompt(quote)}`;
     let started = this.store.beginCoordinatorTurn(id, text, {
       revision: Number(input.revision),
       planRevision: Number(input.planRevision),
@@ -561,6 +563,7 @@ export class WorkItemCoordinator {
       attachments: input.attachments,
       addedAttachments,
       clientMessageId: input.clientMessageId,
+      quote,
     });
     if (!started) throw new Error(`WorkItem not found: ${id}`);
     if (started.duplicate) {
@@ -582,8 +585,10 @@ export class WorkItemCoordinator {
     if (!started?.turnId || !started?.detail || !started?.fence) {
       throw new Error('Coordinator provider recovery target is invalid');
     }
+    const quote = normalizeSessionMessageQuote(options.quote);
+    const text = typeof options.text === 'string' ? options.text : '';
     return this.#scheduleTurn(started, {
-      text: typeof options.text === 'string' ? options.text : '',
+      text: `${text}${sessionMessageQuotePrompt(quote)}`,
       recovery: options.recovery === true,
       addedAttachments: Array.isArray(options.addedAttachments) ? options.addedAttachments : [],
       options,

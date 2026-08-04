@@ -1,9 +1,12 @@
 import WorkCenterActionDetail from './WorkCenterActionDetail.js';
 import WorkCenterSettingsModal from './WorkCenterSettingsModal.js';
 import MessageComposer from './MessageComposer.js';
+import UserTurnBlock from './UserTurnBlock.js';
+import VpTurnBlock from './VpTurnBlock.js';
 import LlmTab from './LlmTab.js';
 import ModernSelect from './ModernSelect.js';
 import folderPickerMixin from './mixins/folder-picker-mixin.js';
+import { normalizeSessionMessageQuote } from '../utils/session-message-quote.js';
 import { openImagePreview } from '../utils/imagePreview.js';
 import {
   mergeActionMessages,
@@ -24,7 +27,10 @@ function invalidateWorkCenterUrlRestore(target) {
 
 export default {
   name: 'WorkCenterPage',
-  components: { MessageComposer, WorkCenterActionDetail, WorkCenterSettingsModal, LlmTab, ModernSelect },
+  components: {
+    MessageComposer, UserTurnBlock, VpTurnBlock, WorkCenterActionDetail,
+    WorkCenterSettingsModal, LlmTab, ModernSelect,
+  },
   mixins: [folderPickerMixin],
   data() {
     return {
@@ -38,6 +44,7 @@ export default {
       actionInputRequestGeneration: 0,
       workCenterUrlRestoreGeneration: 0,
       workItemMessage: '',
+      workItemMessageQuote: null,
       workItemMessageAttachments: [],
       workItemMessageAttachmentsUploading: false,
       workItemMessageSending: false,
@@ -225,6 +232,70 @@ export default {
         ? `${this.agentId}:${this.selected.id}:${this.workItemComposerGeneration}`
         : '';
     },
+    conversationBlocks() {
+      return (Array.isArray(this.selected?.messages) ? this.selected.messages : [])
+        .map(message => {
+          const timestamp = Number(message?.updatedAt || message?.createdAt) || 0;
+          if (message?.role === 'user') {
+            return {
+              key: message.id,
+              kind: 'user',
+              message: {
+                id: message.id,
+                messageId: message.id,
+                type: 'user',
+                content: message.text || '',
+                attachments: Array.isArray(message.attachments) ? message.attachments : [],
+                quote: normalizeSessionMessageQuote(message.quote),
+                timestamp,
+              },
+            };
+          }
+          if (message?.role === 'assistant') {
+            const speaker = message.speaker || {};
+            const speakerName = this.workItemMessageSpeaker(message);
+            const speakerId = speaker.id || `work-center-coordinator:${this.selected?.id || 'unknown'}`;
+            const statusText = message.status === 'thinking'
+              ? this.tr('workCenter.conversationThinking', 'Working…')
+              : message.error || '';
+            const decisionText = message.decision?.kind && message.decision.kind !== 'answer'
+              ? this.tr(`workCenter.coordinatorDecision.${message.decision.kind}`, message.decision.kind)
+              : '';
+            const segments = [message.text, statusText, decisionText].filter(Boolean);
+            return {
+              key: message.id,
+              kind: 'assistant',
+              speakerName,
+              turn: {
+                id: message.id,
+                messageId: message.id,
+                atMessageId: message.id,
+                turnId: message.turnId || message.id,
+                textContent: segments.join('\n\n'),
+                textSegments: segments.map((content, index) => ({
+                  key: `${message.id}:${index}`,
+                  content,
+                  kind: message.status === 'thinking' ? 'progress' : 'result',
+                  isStreaming: message.status === 'thinking',
+                })),
+                isStreaming: message.status === 'thinking',
+                speakerVpId: speakerId,
+                speakerTimestamp: timestamp,
+                showSpeakerHeader: true,
+                timestamp,
+                createdAt: timestamp,
+                todoMsg: null,
+                toolMsgs: [],
+                toolSummaryCount: 0,
+                imageMsgs: [],
+                askMsg: null,
+                attachments: Array.isArray(message.attachments) ? message.attachments : [],
+              },
+            };
+          }
+          return { key: message.id, kind: 'system', message };
+        });
+    },
     coordinatorThinking() {
       return (this.selected?.messages || []).some(message => (
         message?.role === 'assistant' && message.status === 'thinking'
@@ -364,6 +435,7 @@ export default {
         return;
       }
       this.workItemMessage = '';
+      this.workItemMessageQuote = null;
       this.workItemMessageAttachments = [];
       this.workItemMessageError = '';
       this.workItemMessageSending = false;
@@ -445,6 +517,31 @@ export default {
       }
       const name = message?.speaker?.name || message?.speaker?.id || '';
       return this.messageSpeakerRole(name, this.tr('workCenter.coordinator', 'Coordinator'));
+    },
+    quoteWorkItemMessage(quote) {
+      const normalized = normalizeSessionMessageQuote(quote);
+      if (!normalized) return;
+      this.workItemMessageQuote = normalized;
+      this.saveComposerDraft();
+      this.$nextTick(() => this.$refs.workItemComposer?.getTextarea?.()?.focus?.());
+    },
+    removeWorkItemMessageQuote() {
+      this.workItemMessageQuote = null;
+      this.saveComposerDraft();
+    },
+    editWorkItemMessageAsNew(text) {
+      this.workItemMessageQuote = null;
+      this.workItemMessage = String(text || '');
+      this.saveComposerDraft();
+      this.$nextTick(() => {
+        const textarea = this.$refs.workItemComposer?.getTextarea?.();
+        textarea?.focus?.();
+        const length = textarea?.value?.length || 0;
+        textarea?.setSelectionRange?.(length, length);
+      });
+    },
+    openConversationAttachment(payload) {
+      return this.previewAttachment(payload?.attachment || payload, payload?.trigger || null);
     },
     actionSequence(action) {
       const sequence = Number(action?.sequence);
@@ -682,6 +779,7 @@ export default {
     resetWorkItemComposer() {
       this.workItemComposerGeneration += 1;
       this.workItemMessage = '';
+      this.workItemMessageQuote = null;
       this.workItemMessageAttachments = [];
       this.workItemMessageAttachmentsUploading = false;
       this.workItemMessageError = '';
@@ -708,6 +806,7 @@ export default {
       if (!this.selectedId || !this.agentId) return;
       this.store.saveWorkCenterComposerDraft(this.agentId, this.selectedId, {
         text: this.workItemMessage,
+        quote: this.workItemMessageQuote,
         attachments: [...this.workItemMessageAttachments],
         target: this.draftTarget(),
         error: this.workItemMessageError,
@@ -717,6 +816,7 @@ export default {
       const envelope = this.store.loadWorkCenterMessageEnvelope(this.agentId, itemId);
       const draft = envelope || this.store.loadWorkCenterComposerDraft(this.agentId, itemId);
       this.workItemMessage = draft?.text || '';
+      this.workItemMessageQuote = normalizeSessionMessageQuote(draft?.quote);
       this.workItemMessageAttachments = [...(draft?.attachments || [])];
       this.composerTargetValue = this.targetValue(draft?.target);
       this.workItemMessageError = draft?.error || '';
@@ -1118,6 +1218,7 @@ export default {
       const itemId = this.selected.id;
       const revision = this.selected.revision;
       const text = this.workItemMessage.trim();
+      const quote = normalizeSessionMessageQuote(this.workItemMessageQuote);
       const attachments = this.workItemMessageAttachments.map(attachment => ({
         fileId: attachment.fileId,
         name: attachment.name,
@@ -1146,13 +1247,14 @@ export default {
             attachments,
             this.agentId,
             fence,
+            quote,
           );
         } else if (targetAction) {
           await this.store.sendWorkItemActionInput(
-            itemId, text, targetAction.id, revision, targetAction.generation, attachments, this.agentId,
+            itemId, text, targetAction.id, revision, targetAction.generation, attachments, this.agentId, quote,
           );
         } else {
-          await this.store.sendWorkItemMessage(itemId, text, revision, attachments, this.agentId, fence);
+          await this.store.sendWorkItemMessage(itemId, text, revision, attachments, this.agentId, fence, quote);
         }
         if (this.workItemComposerScope === scope
             && this.actionInputRequestGeneration === requestGeneration
@@ -1160,6 +1262,7 @@ export default {
             && this.workItemMessage.trim() === text
             && !this.store.loadWorkCenterMessageEnvelope(this.agentId, itemId)) {
           this.workItemMessage = '';
+          this.workItemMessageQuote = null;
           this.workItemMessageAttachments = [];
           this.store.removeWorkCenterComposerDraft(this.agentId, itemId);
         }
@@ -1451,22 +1554,40 @@ export default {
                           <span v-if="coordinatorThinking" class="work-center-conversation-status" aria-live="polite">
                             <span aria-hidden="true"></span>{{ tr('workCenter.conversationThinking', 'Working…') }}
                           </span>
-                          <div v-if="selected.messages?.length" class="work-center-item-message-list" role="log" aria-live="polite">
-                            <article v-for="message in selected.messages" :key="message.id" :class="'role-' + message.role" :data-status="message.status">
-                              <header><strong>{{ workItemMessageSpeaker(message) }}</strong><small>{{ time(message.updatedAt || message.createdAt) }}</small></header>
-                              <p v-if="message.text">{{ message.text }}</p>
-                              <p v-else-if="message.status === 'thinking'" class="work-center-conversation-thinking">{{ tr('workCenter.conversationThinking', 'Working…') }}</p>
-                              <div v-if="message.attachments?.length" class="work-center-attachment-list work-center-message-attachments">
-                                <button v-for="attachment in message.attachments" :key="attachment.id" type="button"
-                                        class="work-center-attachment-chip work-center-attachment-preview"
-                                        @click="previewAttachment(attachment, $event.currentTarget)" :disabled="previewingAttachmentId === attachment.id"
-                                        :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })">
-                                  <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
-                                </button>
-                              </div>
-                              <p v-if="message.error" class="work-center-error">{{ message.error }}</p>
-                              <small v-if="message.decision?.kind && message.decision.kind !== 'answer'" class="work-center-conversation-decision">{{ tr('workCenter.coordinatorDecision.' + message.decision.kind, message.decision.kind) }}</small>
-                            </article>
+                          <div v-if="conversationBlocks.length" class="work-center-item-message-list" role="log" aria-live="polite">
+                            <template v-for="block in conversationBlocks" :key="block.key">
+                              <UserTurnBlock
+                                v-if="block.kind === 'user'"
+                                class="work-center-action-message role-user"
+                                :message="block.message"
+                                :external-attachment-open="true"
+                                @quote="quoteWorkItemMessage"
+                                @edit-as-new="editWorkItemMessageAsNew"
+                                @open-attachment="openConversationAttachment"
+                              />
+                              <VpTurnBlock
+                                v-else-if="block.kind === 'assistant'"
+                                class="work-center-action-message role-assistant"
+                                :turn="block.turn"
+                                :display-name-override="block.speakerName"
+                                :can-stop="false"
+                                :interactive-speaker="false"
+                                @quote="quoteWorkItemMessage"
+                              >
+                                <div v-if="block.turn.attachments?.length" class="work-center-attachment-list work-center-message-attachments">
+                                  <button v-for="attachment in block.turn.attachments" :key="attachment.id" type="button"
+                                          class="work-center-attachment-chip work-center-attachment-preview"
+                                          @click="previewAttachment(attachment, $event.currentTarget)" :disabled="previewingAttachmentId === attachment.id"
+                                          :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })">
+                                    <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
+                                  </button>
+                                </div>
+                              </VpTurnBlock>
+                              <article v-else class="work-center-original-request">
+                                <header><strong>{{ workItemMessageSpeaker(block.message) }}</strong><small>{{ time(block.message.updatedAt || block.message.createdAt) }}</small></header>
+                                <p>{{ block.message.text }}</p>
+                              </article>
+                            </template>
                           </div>
                           <p v-if="workItemMessageError" class="work-center-error" role="alert">{{ workItemMessageError }}</p>
                         </div>
@@ -1488,6 +1609,19 @@ export default {
                               {{ tr('workCenter.targetUnavailableHelp', 'Choose another target before sending. This draft was not redirected.') }}
                               <button type="button" class="btn-ghost" @click="chooseCoordinatorTarget">{{ tr('workCenter.sendToCoordinatorInstead', 'Send to Coordinator instead') }}</button>
                             </p>
+                            <div v-if="workItemMessageQuote" class="input-quote-preview work-center-message-quote">
+                              <div class="input-quote-main">
+                                <div class="input-quote-meta">{{ $t('message.replyingTo', { author: workItemMessageQuote.author }) }}</div>
+                                <div v-if="workItemMessageQuote.content" class="input-quote-content">{{ workItemMessageQuote.content }}</div>
+                                <div v-if="workItemMessageQuote.todos?.length" class="input-quote-todos">
+                                  <div v-for="todo in workItemMessageQuote.todos" :key="todo.content" class="input-quote-todo">
+                                    <span class="input-quote-todo-status">{{ todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '→' : '○' }}</span>
+                                    <span>{{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}</span>
+                                  </div>
+                                </div>
+                              </div>
+                              <button type="button" class="input-quote-remove" @click="removeWorkItemMessageQuote" :title="$t('message.removeQuote')" :aria-label="$t('message.removeQuote')">×</button>
+                            </div>
                             <div v-if="workItemMessageAttachments.length" class="work-center-attachment-list work-center-message-draft-attachments">
                               <span v-for="(attachment, index) in workItemMessageAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
                                 <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
@@ -1588,6 +1722,8 @@ export default {
                       @back="showActionsPane"
                       @close="closeContentPanel"
                       @load-earlier-messages="loadEarlierActionMessages"
+                      @quote="quoteWorkItemMessage"
+                      @edit-as-new="editWorkItemMessageAsNew"
                       @open-attachment="previewAttachment"
                     />
                   </aside>

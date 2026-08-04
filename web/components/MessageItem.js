@@ -10,9 +10,10 @@ export default {
       type: Object,
       required: true
     },
-    sessionActions: { type: Boolean, default: false }
+    sessionActions: { type: Boolean, default: false },
+    externalAttachmentOpen: { type: Boolean, default: false }
   },
-  emits: ['quote', 'edit-as-new'],
+  emits: ['quote', 'edit-as-new', 'open-attachment'],
   template: `
     <div :class="messageClass">
       <!-- User message -->
@@ -68,6 +69,17 @@ export default {
                   class="user-attachment-image"
                 />
               </button>
+              <button
+                v-else-if="externalAttachmentOpen"
+                type="button"
+                class="user-attachment-item"
+                @click="previewAttachment(attachment, $event.currentTarget)"
+              >
+                <span class="user-attachment-file">
+                  <span class="file-icon">{{ getFileIcon(attachment.mimeType) }}</span>
+                  <span class="file-name">{{ attachment.name }}</span>
+                </span>
+              </button>
               <div v-else class="user-attachment-item">
                 <div class="user-attachment-file">
                   <span class="file-icon">{{ getFileIcon(attachment.mimeType) }}</span>
@@ -98,7 +110,7 @@ export default {
       </template>
     </div>
   `,
-  setup(props) {
+  setup(props, { emit }) {
     const store = Pinia.useChatStore();
     const showAttachments = Vue.ref(false);
     const t = Vue.inject('t');
@@ -130,6 +142,10 @@ export default {
     };
 
     const previewAttachment = (attachment, trigger) => {
+      if (props.externalAttachmentOpen) {
+        emit('open-attachment', { attachment, trigger });
+        return;
+      }
       if (!attachment?.preview) return;
       openImagePreview(attachment.preview, {
         alt: attachment.name || t('message.imagePreview'),

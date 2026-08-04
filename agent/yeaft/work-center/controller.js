@@ -10,6 +10,7 @@ import {
   RUN_OUTCOMES,
 } from './workflow.js';
 import { renderSessionContextSnapshot } from './session-context.js';
+import { normalizeSessionMessageQuote, sessionMessageQuotePrompt } from '../session-message-quote.js';
 import { normalizeEvidence } from './evidence.js';
 import { applyAdditivePlanProposal, applyReplanMutation } from './plan-mutation.js';
 import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
@@ -230,6 +231,7 @@ export class WorkflowController {
     const existingClientMessage = this.store.hasActionInputClientMessage(id, input.actionId, input.clientMessageId);
     if (existingClientMessage) return this.store.getWorkItemDetail(id);
     const text = typeof input.text === 'string' ? input.text.trim().slice(0, 8_000) : '';
+    const quote = normalizeSessionMessageQuote(input.quote);
     const addedAttachmentCount = Math.max(0, Number(input.addedAttachmentCount) || 0);
     if (!text && addedAttachmentCount === 0) throw new Error('Action input or attachments are required');
     const workItem = this.store.getWorkItem(id);
@@ -251,11 +253,12 @@ export class WorkflowController {
         throw new Error('Files cannot be added while an Action is running; send text now or wait for the next Action boundary');
       }
       const inputSummary = text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`;
+      const promptText = `${inputSummary}${sessionMessageQuotePrompt(quote)}`;
       return this.store.addActionInput(id, inputSummary, {
         actionId: input.actionId,
         generation: expectedGeneration,
         revision: input.revision,
-      }, input.attachments, input.addedAttachments, input.clientMessageId);
+      }, input.attachments, input.addedAttachments, input.clientMessageId, quote, promptText);
     }
     if (!['waiting', 'failed'].includes(targetAction.status)) {
       throw new Error(`Action in ${targetAction.status} cannot accept input`);
@@ -270,6 +273,8 @@ export class WorkflowController {
         clientMessageId: input.clientMessageId || null,
         targetActionId: input.actionId,
         text: text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`,
+        promptText: `${text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`}${sessionMessageQuotePrompt(quote)}`,
+        quote,
         attachments: input.addedAttachments,
       },
     });
@@ -302,7 +307,7 @@ export class WorkflowController {
           type: 'input',
           role: 'user',
           inputId: input.inputEvent.inputId,
-          summary: input.inputEvent.text || '',
+          summary: input.inputEvent.promptText || input.inputEvent.text || '',
           attachments: Array.isArray(input.inputEvent.attachments) ? input.inputEvent.attachments : [],
           evidence: [],
         });
