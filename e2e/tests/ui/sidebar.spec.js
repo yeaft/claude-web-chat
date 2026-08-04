@@ -251,6 +251,7 @@ test.describe('侧边栏交互', () => {
       ],
     }];
     await setSidebarData({ projects: dragProjects, sessions: dragSessions });
+    await expect(chatPage.locator('.sidebar-session-row[draggable="true"]').first()).toHaveCSS('cursor', 'default');
     const dragResult = await chatPage.evaluate(async ({ agentId }) => {
       const store = window.Pinia.useChatStore();
       const originalMove = store.mutateProject;
