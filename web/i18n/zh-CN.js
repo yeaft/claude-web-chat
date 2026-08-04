@@ -313,6 +313,7 @@ export default {
   'yeaft.hideDebug': '隐藏调试面板',
   'yeaft.reloadPage': '刷新页面',
   'yeaft.reloadMessages': '重新加载消息',
+  'sidebar.sessions.syncing': '正在同步最新消息',
   'yeaft.historySearch.label': '搜索 Session 历史消息',
   'yeaft.historySearch.button': '搜索消息',
   'yeaft.historySearch.placeholder': '搜索当前 Session 的消息',
