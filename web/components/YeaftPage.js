@@ -14,7 +14,7 @@ import LlmTab from './LlmTab.js';
 import WorkCenterPage from './WorkCenterPage.js';
 import { parseMentions } from '../utils/parseMentions.js';
 import { buildTimelineRows, resolveTimelineSession, selectGroupRosterVpList } from '../stores/helpers/vp-timeline.js';
-import { buildModelSelectionRows, getDefaultModelEffort, getSelectableModelEfforts, modelOptionMatchesRef, modelOptionRef, resolveSessionModelEffort, resolveSessionModelRef } from '../utils/modelRefs.js';
+import { buildModelSelectionRows, getDefaultModelEffort, getSelectableModelEfforts, modelOptionMatchesRef, resolveSessionModelEffort, resolveSessionModelRef } from '../utils/modelRefs.js';
 import {
   clearOverlayPointerGesture,
   shouldDismissFromOverlayClick,
@@ -353,68 +353,91 @@ export default {
           @remove-quote="messageQuote = null"
           @quote-consumed="messageQuote = null"
         >
-          <template #actions-start>
-            <!-- Model selector doubles as the LLM settings entry; no extra gear. -->
-            <div class="yeaft-composer-model-control">
-              <button
-                type="button"
-                class="yeaft-composer-model"
-                @click="toggleModelDropdown"
-                :title="$t('yeaft.modelMenu.title')"
-                aria-haspopup="listbox"
-                :aria-expanded="modelDropdownOpen ? 'true' : 'false'"
+          <template #actions-end-before>
+            <div class="yeaft-composer-model-controls">
+              <div
+                class="yeaft-composer-choice yeaft-composer-model-choice"
+                :class="{ 'is-open': composerMenuOpen === 'model' }"
+                @mouseenter="keepComposerMenuOpen('model')"
+                @mouseleave="scheduleComposerMenuClose('model')"
+                @focusin="keepComposerMenuOpen('model')"
+                @focusout="onComposerMenuFocusout($event, 'model')"
               >
-                <span class="yeaft-composer-model-name">{{ topbarModel || $t('settings.llm.selectModel') }}</span>
-                <span v-if="topbarEffort" class="yeaft-composer-model-effort">{{ $t('yeaft.modelMenu.effort.' + topbarEffort) }}</span>
-                <span v-if="store.yeaftModelsRefreshing" class="yeaft-model-refreshing">{{ $t('common.loading') || 'Loading' }}</span>
-                <svg class="yeaft-model-chevron" :class="{ open: modelDropdownOpen }" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-              </button>
-              <div class="yeaft-model-dropdown yeaft-composer-model-dropdown" v-if="modelDropdownOpen">
-                <div class="yeaft-model-selector-body">
-                  <div class="yeaft-model-list" role="listbox" :aria-label="$t('settings.llm.selectModel')">
-                    <div
+                <button
+                  type="button"
+                  class="yeaft-composer-model"
+                  @click.stop="keepComposerMenuOpen('model')"
+                  :title="$t('yeaft.modelMenu.label')"
+                  aria-haspopup="menu"
+                  :aria-expanded="composerMenuOpen === 'model' ? 'true' : 'false'"
+                >
+                  <span class="yeaft-composer-model-name">{{ topbarModelLabel || $t('settings.llm.selectModel') }}</span>
+                  <span v-if="store.yeaftModelsRefreshing" class="yeaft-model-refreshing">{{ $t('common.loading') || 'Loading' }}</span>
+                  <svg class="yeaft-model-chevron" :class="{ open: composerMenuOpen === 'model' }" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                </button>
+                <div v-if="composerMenuOpen === 'model'" class="yeaft-model-dropdown yeaft-composer-model-dropdown" role="menu" :aria-label="$t('settings.llm.selectModel')">
+                  <div class="yeaft-model-list">
+                    <button
                       v-for="row in topbarModelRows"
                       :key="row.modelRef"
+                      type="button"
                       class="yeaft-model-option"
-                      :class="{
-                        active: isModelRowActive(row),
-                        current: modelOptionMatchesRef(row.model, topbarModel),
-                        'yeaft-model-option-with-effort': row.efforts.length,
-                      }"
-                      role="option"
-                      :aria-selected="isModelRowActive(row) ? 'true' : 'false'"
+                      :class="{ active: modelOptionMatchesRef(row.model, topbarModel) }"
+                      role="menuitemradio"
+                      :aria-checked="modelOptionMatchesRef(row.model, topbarModel) ? 'true' : 'false'"
+                      @click="selectModel(row.modelRef, row.defaultEffort)"
                     >
-                      <span class="yeaft-model-check" v-if="isModelRowActive(row)">&check;</span>
-                      <span class="yeaft-model-check" v-else></span>
-                      <button
-                        type="button"
-                        class="yeaft-model-option-main"
-                        @click="selectModel(row.modelRef, row.defaultEffort)"
-                      >
+                      <span class="yeaft-model-check" aria-hidden="true">{{ modelOptionMatchesRef(row.model, topbarModel) ? '✓' : '' }}</span>
+                      <span class="yeaft-model-option-main">
                         <span class="yeaft-model-option-label">{{ row.label }}</span>
-                        <span class="yeaft-model-option-meta">
+                        <span class="yeaft-model-option-meta" v-if="row.model.provider || row.model.contextWindow">
                           <span class="yeaft-model-option-provider" v-if="row.model.provider">{{ row.model.provider }}</span>
                           <span class="yeaft-model-option-ctx" v-if="row.model.contextWindow">{{ formatModelCtx(row.model) }}</span>
                         </span>
-                      </button>
-                      <span class="yeaft-model-effort-list" v-if="row.efforts.length" :aria-label="row.label">
-                        <button
-                          v-for="effort in row.efforts"
-                          :key="row.modelRef + ':' + effort"
-                          type="button"
-                          class="yeaft-model-effort-chip"
-                          :class="{ active: isModelSelectionActive(row.model, effort) }"
-                          @click="selectModel(row.modelRef, effort)"
-                        >{{ $t('yeaft.modelMenu.effort.' + effort) }}</button>
                       </span>
-                    </div>
-                  </div>
-                  <div class="yeaft-model-fixed-controls">
-                    <button type="button" class="yeaft-model-config-option" @click="openLlmConfig">
-                      <span class="yeaft-model-config-label">{{ $t('settings.llm.configureMenu') }}</span>
-                      <span class="yeaft-model-config-hint">{{ $t('yeaft.modelMenu.configureHint') }}</span>
                     </button>
                   </div>
+                  <button type="button" class="yeaft-model-config-option" @click="openLlmConfig">
+                    <span class="yeaft-model-config-label">{{ $t('settings.llm.configureMenu') }}</span>
+                    <span class="yeaft-model-config-hint">{{ $t('yeaft.modelMenu.configureHint') }}</span>
+                  </button>
+                </div>
+              </div>
+
+              <div
+                v-if="topbarEffortOptions.length"
+                class="yeaft-composer-choice yeaft-composer-effort-choice"
+                :class="{ 'is-open': composerMenuOpen === 'effort' }"
+                @mouseenter="keepComposerMenuOpen('effort')"
+                @mouseleave="scheduleComposerMenuClose('effort')"
+                @focusin="keepComposerMenuOpen('effort')"
+                @focusout="onComposerMenuFocusout($event, 'effort')"
+              >
+                <button
+                  type="button"
+                  class="yeaft-composer-effort"
+                  @click.stop="keepComposerMenuOpen('effort')"
+                  :title="$t('yeaft.modelMenu.effort')"
+                  aria-haspopup="menu"
+                  :aria-expanded="composerMenuOpen === 'effort' ? 'true' : 'false'"
+                >
+                  <span>{{ $t('yeaft.modelMenu.effort.' + topbarEffort) }}</span>
+                  <svg class="yeaft-model-chevron" :class="{ open: composerMenuOpen === 'effort' }" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                </button>
+                <div v-if="composerMenuOpen === 'effort'" class="yeaft-model-dropdown yeaft-composer-effort-dropdown" role="menu" :aria-label="$t('yeaft.modelMenu.effort')">
+                  <button
+                    v-for="effort in topbarEffortOptions"
+                    :key="effort"
+                    type="button"
+                    class="yeaft-model-option yeaft-composer-effort-option"
+                    :class="{ active: effort === topbarEffort }"
+                    role="menuitemradio"
+                    :aria-checked="effort === topbarEffort ? 'true' : 'false'"
+                    @click="selectEffort(effort)"
+                  >
+                    <span class="yeaft-model-check" aria-hidden="true">{{ effort === topbarEffort ? '✓' : '' }}</span>
+                    <span class="yeaft-model-option-label">{{ $t('yeaft.modelMenu.effort.' + effort) }}</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -517,7 +540,7 @@ export default {
     // detail panel is only rendered when debugMode is on, so the
     // conversation column gets the full width by default.
     const debugMode = Vue.ref(false);
-    const modelDropdownOpen = Vue.ref(false);
+    const composerMenuOpen = Vue.ref(null);
     const showSettings = Vue.ref(false);
     const showLlmConfig = Vue.ref(false);
     const sessionCreateOpen = Vue.ref(false);
@@ -526,6 +549,7 @@ export default {
     const agentSecretLoading = Vue.ref(false);
     const agentSecretError = Vue.ref('');
     let copiedOnboardingTimer = null;
+    let composerMenuCloseTimer = null;
     const settingsInitialTab = Vue.ref('vp');
     const settingsInitialEditVpId = Vue.ref(null);
     // feat-vp-list-ui-polish: template ref to the embedded ChatInput so we
@@ -903,8 +927,8 @@ export default {
         closeHistorySearch();
         return;
       }
-      if (modelDropdownOpen.value) {
-        closeModelDropdown();
+      if (composerMenuOpen.value) {
+        closeComposerMenu();
         return;
       }
     };
@@ -916,7 +940,7 @@ export default {
       addMediaChangeListener(narrowDetailMedia);
       window.visualViewport?.addEventListener('resize', scheduleMobileViewportRecovery);
       window.visualViewport?.addEventListener('scroll', scheduleMobileViewportRecovery);
-      document.addEventListener('click', closeModelDropdownOutside);
+      document.addEventListener('click', closeComposerMenuOutside);
       document.addEventListener('click', closeHistorySearchOutside);
       document.addEventListener('keydown', onKeyDown);
       scheduleMobileViewportSync();
@@ -927,12 +951,13 @@ export default {
       removeMediaChangeListener(narrowDetailMedia);
       window.visualViewport?.removeEventListener('resize', scheduleMobileViewportRecovery);
       window.visualViewport?.removeEventListener('scroll', scheduleMobileViewportRecovery);
-      document.removeEventListener('click', closeModelDropdownOutside);
+      document.removeEventListener('click', closeComposerMenuOutside);
       document.removeEventListener('click', closeHistorySearchOutside);
       document.removeEventListener('keydown', onKeyDown);
       if (mobileViewportRaf != null) cancelAnimationFrame(mobileViewportRaf);
       if (mobileViewportRecoverTimer) clearTimeout(mobileViewportRecoverTimer);
       if (historySearchTimer) clearTimeout(historySearchTimer);
+      if (composerMenuCloseTimer) clearTimeout(composerMenuCloseTimer);
     });
 
     // Watch for conversationId changes (session_ready migrates local -> agent ID)
@@ -1107,6 +1132,10 @@ export default {
       return store.yeaftAvailableModels.find(m => modelOptionMatchesRef(m, id)) || null;
     });
 
+    const topbarModelLabel = Vue.computed(() => (
+      topbarModelMeta.value?.label || topbarModelMeta.value?.id || topbarModel.value
+    ));
+
     const selectableEffortsForModel = (model) => getSelectableModelEfforts(model?.effortOptions);
 
     const topbarRawEffort = Vue.computed(() => resolveSessionModelEffort(topbarGroup.value, store.yeaftModelEffort || ''));
@@ -1123,17 +1152,9 @@ export default {
 
     const topbarModelRows = Vue.computed(() => buildModelSelectionRows(store.yeaftAvailableModels));
 
-    const isModelSelectionActive = (model, effort) => {
-      if (!modelOptionMatchesRef(model, topbarModel.value)) return false;
-      if (!effort) return !selectableEffortsForModel(model).length;
-      return effort === topbarEffort.value;
-    };
-
-    const isModelRowActive = (row) => {
-      if (!row || !modelOptionMatchesRef(row.model, topbarModel.value)) return false;
-      if (!row.efforts.length) return true;
-      return row.efforts.includes(topbarEffort.value);
-    };
+    const topbarEffortOptions = Vue.computed(() => (
+      selectableEffortsForModel(topbarModelMeta.value)
+    ));
 
     // feat-6af5f9f1 PR C: the legacy debug helpers (toggleTurnExpand,
     // formatMessages, formatMsgContent, prettyJson, formatToolOutput,
@@ -1141,29 +1162,51 @@ export default {
     // here for the old inline debug panel. PR B replaced that panel
     // with <YeaftDebugPanel>; PR C removes the now-orphaned helpers.
 
-    const openModelDropdown = () => {
-      modelDropdownOpen.value = true;
-    };
-
-    const closeModelDropdown = () => {
-      modelDropdownOpen.value = false;
-    };
-
-    const toggleModelDropdown = (e) => {
-      e.stopPropagation();
-      if (!store.yeaftAvailableModels.length) return;
-      if (modelDropdownOpen.value) {
-        closeModelDropdown();
-      } else {
-        openModelDropdown();
+    const keepComposerMenuOpen = (menu) => {
+      if (menu === 'model' && !topbarModelRows.value.length) return;
+      if (menu === 'effort' && !topbarEffortOptions.value.length) return;
+      if (composerMenuCloseTimer) {
+        clearTimeout(composerMenuCloseTimer);
+        composerMenuCloseTimer = null;
       }
+      composerMenuOpen.value = menu;
+    };
+
+    const closeComposerMenu = (menu = null) => {
+      if (composerMenuCloseTimer) {
+        clearTimeout(composerMenuCloseTimer);
+        composerMenuCloseTimer = null;
+      }
+      if (!menu || composerMenuOpen.value === menu) composerMenuOpen.value = null;
+    };
+
+    const scheduleComposerMenuClose = (menu) => {
+      if (composerMenuCloseTimer) clearTimeout(composerMenuCloseTimer);
+      composerMenuCloseTimer = setTimeout(() => {
+        composerMenuCloseTimer = null;
+        closeComposerMenu(menu);
+      }, 120);
+    };
+
+    const onComposerMenuFocusout = (event, menu) => {
+      const control = event.currentTarget;
+      Vue.nextTick(() => {
+        if (!control?.contains(document.activeElement)) closeComposerMenu(menu);
+      });
     };
 
     const selectModel = (modelId, effort = null) => {
       if (!modelId) return;
-      const groupId = topbarGroup.value?.id || null;
-      store.switchYeaftModel(modelId, groupId, effort);
-      closeModelDropdown();
+      const sessionId = topbarGroup.value?.id || null;
+      store.switchYeaftModel(modelId, sessionId, effort);
+      closeComposerMenu();
+    };
+
+    const selectEffort = (effort) => {
+      if (!topbarEffortOptions.value.includes(effort) || !topbarModel.value) return;
+      const sessionId = topbarGroup.value?.id || null;
+      store.switchYeaftModel(topbarModel.value, sessionId, effort);
+      closeComposerMenu();
     };
 
     // Format a token count compactly: 400000 → "400k", 1048576 → "1m", <1000 → raw.
@@ -1185,10 +1228,10 @@ export default {
       return ctx;
     };
 
-    const closeModelDropdownOutside = (e) => {
-      if (!modelDropdownOpen.value) return;
-      const row = e.target.closest('.yeaft-composer-model-control');
-      if (!row) closeModelDropdown();
+    const closeComposerMenuOutside = (e) => {
+      if (!composerMenuOpen.value) return;
+      const control = e.target.closest('.yeaft-composer-choice');
+      if (!control) closeComposerMenu();
     };
 
     const toggleSettings = () => {
@@ -1208,7 +1251,7 @@ export default {
     };
 
     const openLlmConfig = () => {
-      modelDropdownOpen.value = false;
+      closeComposerMenu();
       showLlmConfig.value = true;
     };
 
@@ -1578,17 +1621,16 @@ export default {
       pageRef,
       effectiveSidebarCollapsed,
       debugMode,
-      modelDropdownOpen,
+      composerMenuOpen,
       topbarGroup,
       topbarSessionTitle,
       topbarFolderPath,
       topbarModel,
+      topbarModelLabel,
       topbarEffort,
       topbarModelRows,
+      topbarEffortOptions,
       selectableEffortsForModel,
-      isModelSelectionActive,
-      isModelRowActive,
-      modelOptionRef,
       modelOptionMatchesRef,
       showSettings,
       showLlmConfig,
@@ -1633,8 +1675,12 @@ export default {
       reloadMessages,
       retryConversationInventory,
       reloadPage,
-      toggleModelDropdown,
+      keepComposerMenuOpen,
+      closeComposerMenu,
+      scheduleComposerMenuClose,
+      onComposerMenuFocusout,
       selectModel,
+      selectEffort,
       openLlmConfig,
       trackOverlayPointerDown,
       trackOverlayPointerUp,
