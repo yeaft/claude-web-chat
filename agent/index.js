@@ -15,6 +15,7 @@ import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
 import {
+  cleanupManagedCliRuntimePaths,
   ensureManagedCliTools,
   prepareManagedCliToolEnvironment,
   summarizeManagedCliResults,
@@ -337,6 +338,7 @@ async function cleanup() {
     const { shutdownWorkCenter } = await import('./yeaft/work-center/bridge.js');
     await shutdownWorkCenter();
   } catch {}
+  cleanupManagedCliRuntimePaths();
   if (ctx.ws) ctx.ws.close();
 }
 

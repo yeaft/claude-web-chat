@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  existsSync, linkSync, lstatSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync,
+  chmodSync, existsSync, linkSync, lstatSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync,
   readdirSync, symlinkSync, utimesSync,
 } from 'fs';
 import { delimiter, join } from 'path';
@@ -23,6 +23,7 @@ import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
 import todoWriteTool from '../../../agent/yeaft/tools/todo-write.js';
 import startPlanTool from '../../../agent/yeaft/tools/start-plan.js';
 import {
+  cleanupManagedCliRuntimePaths,
   ensureManagedCliTools,
   extractManagedCliBinary,
   managedCliBinDir,
@@ -4295,8 +4296,174 @@ describe('managed CLI setup and fast tool integration', () => {
       }, {})).resolves.toBe('ripgrep 15.2.0\nSYSTEM-GIT\nSYSTEM-FD');
     } finally {
       process.env.PATH = originalPath;
+      cleanupManagedCliRuntimePaths();
     }
   });
+
+  it('cleans isolated managed rg paths before preserving CLI termination signals', async () => {
+    if (process.platform === 'win32') return;
+
+    for (const signal of ['SIGTERM', 'SIGINT']) {
+      const cliDir = tempDir(`cli-rg-${signal.toLowerCase()}`);
+      const binDir = managedCliBinDir(cliDir);
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(join(binDir, 'rg'), '#!/bin/sh\necho ripgrep 15.2.0\n', { mode: 0o755 });
+      trustManagedCliFixtures(cliDir, ['rg']);
+      const tmpRoot = join(cliDir, 'tmp');
+      mkdirSync(tmpRoot);
+      const child = spawn(process.execPath, [
+        join(process.cwd(), 'agent', 'yeaft', 'cli.js'),
+        '--skip-mcp',
+        '--skip-skills',
+        '--input-format', 'stream-json',
+        '--output-format', 'stream-json',
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          TMPDIR: tmpRoot,
+          YEAFT_DIR: cliDir,
+          YEAFT_SKIP_MANAGED_CLI_INSTALLS: 'true',
+        },
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      try {
+        for (let i = 0; i < 500; i += 1) {
+          if (readdirSync(tmpRoot).some(name => name.startsWith('yeaft-managed-cli-'))) break;
+          await new Promise(resolveDelay => setTimeout(resolveDelay, 10));
+        }
+        const runtimeDirectories = readdirSync(tmpRoot)
+          .filter(name => name.startsWith('yeaft-managed-cli-'));
+        expect(runtimeDirectories).toHaveLength(1);
+        for (let i = 0; i < 500; i += 1) {
+          if (stdout.includes('"subtype":"init"')) break;
+          await new Promise(resolveDelay => setTimeout(resolveDelay, 10));
+        }
+        const stdoutEvents = stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        expect(stdoutEvents).toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: 'system', subtype: 'init' }),
+        ]));
+        child.kill(signal);
+        const outcome = await new Promise((resolveClose, rejectClose) => {
+          const timer = setTimeout(() => {
+            child.kill('SIGKILL');
+            rejectClose(new Error(`CLI did not preserve ${signal}; stdout=${stdout}; stderr=${stderr}`));
+          }, 10_000);
+          child.once('error', rejectClose);
+          child.once('close', (code, closeSignal) => {
+            clearTimeout(timer);
+            resolveClose({ code, signal: closeSignal });
+          });
+        });
+        expect(outcome).toEqual({ code: null, signal });
+        expect(readdirSync(tmpRoot)).toEqual([]);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }
+    }
+  }, 30_000);
+
+  it('retries isolated managed rg cleanup after a transient removal failure', async () => {
+    if (process.platform === 'win32') return;
+
+    const yeaftDir = tempDir('cli-rg-cleanup-retry');
+    const binDir = managedCliBinDir(yeaftDir);
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'rg'), '#!/bin/sh\necho ripgrep 15.2.0\n', { mode: 0o755 });
+    trustManagedCliFixtures(yeaftDir, ['rg']);
+    const runtimeRoot = join(yeaftDir, 'runtime-root');
+    mkdirSync(runtimeRoot);
+    const originalTmpDir = process.env.TMPDIR;
+    process.env.TMPDIR = runtimeRoot;
+    try {
+      const environment = await prepareManagedCliToolEnvironment(Promise.resolve([]), 'rg', {
+        yeaftDir,
+        env: { PATH: '/usr/bin:/bin' },
+      });
+      expect(existsSync(environment.binDir)).toBe(true);
+
+      chmodSync(runtimeRoot, 0o500);
+      cleanupManagedCliRuntimePaths();
+      expect(existsSync(environment.binDir)).toBe(true);
+
+      chmodSync(runtimeRoot, 0o700);
+      cleanupManagedCliRuntimePaths();
+      expect(existsSync(environment.binDir)).toBe(false);
+    } finally {
+      chmodSync(runtimeRoot, 0o700);
+      cleanupManagedCliRuntimePaths();
+      if (originalTmpDir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = originalTmpDir;
+    }
+  });
+
+  it('cleans isolated managed rg paths after normal CLI success and failure', async () => {
+    if (process.platform === 'win32') return;
+
+    for (const scenario of [
+      { name: 'success', input: '', expectedCode: 0 },
+      { name: 'failure', input: 'not-json\n', expectedCode: 1 },
+    ]) {
+      const cliDir = tempDir(`cli-rg-normal-${scenario.name}`);
+      const binDir = managedCliBinDir(cliDir);
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(join(binDir, 'rg'), [
+        '#!/bin/sh',
+        `printf '%s' "$0" > "$YEAFT_DIR/runtime-command"`,
+        'echo ripgrep 15.2.0',
+        '',
+      ].join('\n'), { mode: 0o755 });
+      trustManagedCliFixtures(cliDir, ['rg']);
+      const tmpRoot = join(cliDir, 'tmp');
+      mkdirSync(tmpRoot);
+      const child = spawn(process.execPath, [
+        join(process.cwd(), 'agent', 'yeaft', 'cli.js'),
+        '--skip-mcp',
+        '--skip-skills',
+        '--input-format', 'stream-json',
+        '--output-format', 'stream-json',
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          TMPDIR: tmpRoot,
+          YEAFT_DIR: cliDir,
+          YEAFT_SKIP_MANAGED_CLI_INSTALLS: 'true',
+        },
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.stdin.end(scenario.input);
+      const outcome = await new Promise((resolveClose, rejectClose) => {
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL');
+          rejectClose(new Error(`CLI ${scenario.name} timed out; stdout=${stdout}; stderr=${stderr}`));
+        }, 10_000);
+        child.once('error', rejectClose);
+        child.once('close', (code, signal) => {
+          clearTimeout(timer);
+          resolveClose({ code, signal });
+        });
+      });
+      expect(outcome).toEqual({ code: scenario.expectedCode, signal: null });
+      const runtimeCommand = readFileSync(join(cliDir, 'runtime-command'), 'utf8');
+      expect(runtimeCommand.startsWith(`${tmpRoot}${process.platform === 'win32' ? '\\' : '/'}`)).toBe(true);
+      expect(existsSync(runtimeCommand)).toBe(false);
+      expect(readdirSync(tmpRoot)).toEqual([]);
+      const stdoutEvents = stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      expect(stdoutEvents).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'system', subtype: 'init' }),
+      ]));
+      if (scenario.expectedCode !== 0) {
+        expect(stderr).toContain('Invalid stream-json input');
+      }
+    }
+  }, 30_000);
 
   it('does not expose unverified managed binaries or rewrite PATH for system rg', async () => {
     if (process.platform === 'win32') return;

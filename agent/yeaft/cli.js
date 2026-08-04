@@ -41,6 +41,7 @@ import { validateSessionId } from './sessions/ids.js';
 import { createJsonlWriter, JsonlInput, runStreamTurn, runStreamSessionTurn } from './stdio-protocol.js';
 import { createCliSessionRunner } from './cli-session-runner.js';
 import {
+  cleanupManagedCliRuntimePaths,
   ensureManagedCliTools,
   prepareManagedCliToolEnvironment,
   summarizeManagedCliResults,
@@ -1037,6 +1038,26 @@ async function runOnce(config, args) {
 
 // ─── Main ──────────────────────────────────────────────────────
 
+function installManagedCliSignalCleanup() {
+  if (process.platform === 'win32') return () => {};
+  const signals = ['SIGINT', 'SIGTERM'];
+  const handlers = new Map();
+  const dispose = () => {
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+    handlers.clear();
+  };
+  for (const signal of signals) {
+    const handler = () => {
+      cleanupManagedCliRuntimePaths();
+      dispose();
+      process.kill(process.pid, signal);
+    };
+    handlers.set(signal, handler);
+    process.once(signal, handler);
+  }
+  return dispose;
+}
+
 async function main() {
   const args = parseArgs(process.argv);
 
@@ -1170,8 +1191,14 @@ async function main() {
 
 const isDirectRun = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isDirectRun) {
+  const disposeSignalCleanup = installManagedCliSignalCleanup();
+  const cleanupManagedCli = () => {
+    disposeSignalCleanup();
+    cleanupManagedCliRuntimePaths();
+  };
   main().catch(err => {
     console.error(err);
+    cleanupManagedCli();
     process.exit(1);
-  });
+  }).finally(cleanupManagedCli);
 }

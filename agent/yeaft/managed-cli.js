@@ -624,18 +624,20 @@ export function managedCliToolReady(ready, name) {
 function removeRuntimePathDirectory(path) {
   try { chmodSync(path, 0o700); } catch {}
   try { rmSync(path, { recursive: true, force: true }); } catch {}
-  runtimePathDirectories.delete(path);
+  if (!existsSync(path)) runtimePathDirectories.delete(path);
+}
+
+export function cleanupManagedCliRuntimePaths() {
+  for (const directory of [...runtimePathDirectories]) {
+    removeRuntimePathDirectory(directory);
+  }
 }
 
 function registerRuntimePathDirectory(path) {
   runtimePathDirectories.add(path);
   if (runtimePathCleanupRegistered) return;
   runtimePathCleanupRegistered = true;
-  process.once('exit', () => {
-    for (const directory of [...runtimePathDirectories]) {
-      removeRuntimePathDirectory(directory);
-    }
-  });
+  process.once('exit', cleanupManagedCliRuntimePaths);
 }
 
 function createIsolatedManagedCommand(name, managed, platform) {
