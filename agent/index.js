@@ -14,7 +14,11 @@ import { getDefaultAgentName, getDefaultYeaftDir, resolveRuntimeIdentity, getCon
 import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
-import { ensureManagedCliTools, summarizeManagedCliResults } from './yeaft/managed-cli.js';
+import {
+  ensureManagedCliTools,
+  prepareManagedCliToolEnvironment,
+  summarizeManagedCliResults,
+} from './yeaft/managed-cli.js';
 
 const execAsync = promisify(exec);
 
@@ -362,6 +366,16 @@ process.on('SIGTERM', async () => {
     });
   }
   ctx.managedCliReady = managedCliReady;
+  try {
+    const rgEnvironment = await prepareManagedCliToolEnvironment(managedCliReady, 'rg', {
+      yeaftDir: YEAFT_DIR,
+    });
+    if (rgEnvironment.activated) {
+      console.log(`[Startup] managed rg available to child processes: ${rgEnvironment.command}`);
+    }
+  } catch (error) {
+    console.warn(`[Startup] managed rg environment setup failed; using built-in fallback: ${error?.message || error}`);
+  }
   ctx.agentCapabilities = await detectCapabilities();
   // Prime the models.dev community catalog so the Yeaft engine's *synchronous*
   // hot path (engine.js / config.js / cli.js all read context-window inline)

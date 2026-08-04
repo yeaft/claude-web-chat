@@ -40,7 +40,11 @@ import { loadSessionConfig, resolveSessionConfig } from './sessions/session-conf
 import { validateSessionId } from './sessions/ids.js';
 import { createJsonlWriter, JsonlInput, runStreamTurn, runStreamSessionTurn } from './stdio-protocol.js';
 import { createCliSessionRunner } from './cli-session-runner.js';
-import { ensureManagedCliTools, summarizeManagedCliResults } from './managed-cli.js';
+import {
+  ensureManagedCliTools,
+  prepareManagedCliToolEnvironment,
+  summarizeManagedCliResults,
+} from './managed-cli.js';
 
 // ─── Argument parsing ──────────────────────────────────────────
 
@@ -1071,7 +1075,7 @@ async function main() {
     return;
   }
 
-  const prepareManagedCli = () => {
+  const prepareManagedCli = async () => {
     args.managedCliReady = ensureManagedCliTools({ yeaftDir: config.dir });
     args.managedCliReady.then(results => {
       if (results.some(result => result.status === 'installed')) {
@@ -1080,11 +1084,18 @@ async function main() {
     }).catch(error => {
       console.error(`[Yeaft] managed CLI setup failed; using built-in fallbacks: ${error?.message || error}`);
     });
+    try {
+      await prepareManagedCliToolEnvironment(args.managedCliReady, 'rg', {
+        yeaftDir: config.dir,
+      });
+    } catch (error) {
+      console.error(`[Yeaft] managed rg environment setup failed; using built-in fallback: ${error?.message || error}`);
+    }
   };
 
   // Handle interactive mode
   if (args.interactive) {
-    prepareManagedCli();
+    await prepareManagedCli();
     await runREPL(config, args);
     return;
   }
@@ -1096,7 +1107,7 @@ async function main() {
     if (!args.prompt && args.inputFormat !== 'stream-json' && process.stdin.isTTY) {
       throw new Error('stream-json output requires a prompt, piped stdin, or --input-format stream-json');
     }
-    prepareManagedCli();
+    await prepareManagedCli();
     await runStreamJson(config, args);
     return;
   }
@@ -1106,7 +1117,7 @@ async function main() {
 
   // Handle prompt (from args or stdin)
   if (args.prompt) {
-    prepareManagedCli();
+    await prepareManagedCli();
     await runOnce(config, args);
     return;
   }
@@ -1119,7 +1130,7 @@ async function main() {
     }
     args.prompt = input.trim();
     if (args.prompt) {
-      prepareManagedCli();
+      await prepareManagedCli();
       await runOnce(config, args);
       return;
     }

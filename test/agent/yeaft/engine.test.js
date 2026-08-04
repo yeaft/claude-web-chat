@@ -27,6 +27,7 @@ import {
   extractManagedCliBinary,
   managedCliBinDir,
   managedCliToolSpecs,
+  prepareManagedCliToolEnvironment,
   prependManagedCliBinToPath,
   resolveManagedCliCommand,
 } from '../../../agent/yeaft/managed-cli.js';
@@ -4236,6 +4237,86 @@ describe('managed CLI setup and fast tool integration', () => {
     expect(filteredArgs).toContain('!**/.yeaft/worktrees/**');
     rmSync(capturedArgs, { force: true });
   }
+
+  it('exposes a verified managed rg to Bash only after its startup install is ready', async () => {
+    if (process.platform === 'win32') return;
+
+    const yeaftDir = tempDir('cli-rg-environment');
+    const binDir = managedCliBinDir(yeaftDir);
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'rg'), '#!/bin/sh\necho ripgrep 15.2.0\n', { mode: 0o755 });
+    trustManagedCliFixtures(yeaftDir, ['rg']);
+
+    let markReady;
+    const rgReady = new Promise(resolveReady => { markReady = resolveReady; });
+    const ready = Promise.resolve([]);
+    ready.toolReady = { rg: rgReady };
+    const originalPath = process.env.PATH;
+    process.env.PATH = ['/usr/bin', '/bin'].join(delimiter);
+    try {
+      const pending = prepareManagedCliToolEnvironment(ready, 'rg', { yeaftDir });
+      await new Promise(resolveTick => setImmediate(resolveTick));
+      expect(process.env.PATH.split(delimiter)).not.toContain(binDir);
+
+      markReady({ name: 'rg', status: 'available', path: join(binDir, 'rg') });
+      await expect(pending).resolves.toEqual({
+        name: 'rg',
+        activated: true,
+        command: join(binDir, 'rg'),
+        binDir,
+      });
+      expect(process.env.PATH.split(delimiter)[0]).toBe(binDir);
+      const inheritedPathBash = createBashTool({
+        runProcessImpl: async (_command, _args, options) => {
+          const result = spawnSync('/bin/sh', ['-lc', 'rg --version'], {
+            encoding: 'utf8',
+            env: options.env,
+          });
+          return {
+            code: result.status,
+            stdout: result.stdout.trim(),
+            stderr: result.stderr.trim(),
+            timedOut: false,
+            terminationError: null,
+          };
+        },
+      });
+      await expect(inheritedPathBash.execute({
+        command: 'rg --version',
+        cwd: yeaftDir,
+        timeout_ms: 5000,
+      }, {})).resolves.toBe('ripgrep 15.2.0');
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it('does not expose unverified managed binaries or rewrite PATH for system rg', async () => {
+    if (process.platform === 'win32') return;
+
+    const unverifiedDir = tempDir('cli-rg-unverified');
+    const unverifiedBin = managedCliBinDir(unverifiedDir);
+    mkdirSync(unverifiedBin, { recursive: true });
+    writeFileSync(join(unverifiedBin, 'rg'), '#!/bin/sh\necho unverified\n', { mode: 0o755 });
+    const unverifiedEnv = { PATH: '' };
+    await expect(prepareManagedCliToolEnvironment(Promise.resolve([]), 'rg', {
+      yeaftDir: unverifiedDir,
+      env: unverifiedEnv,
+    })).resolves.toEqual({ name: 'rg', activated: false, command: null });
+    expect(unverifiedEnv.PATH).toBe('');
+
+    const systemDir = tempDir('cli-rg-system');
+    const systemBin = join(systemDir, 'system-bin');
+    mkdirSync(systemBin);
+    const systemRg = join(systemBin, 'rg');
+    writeFileSync(systemRg, '#!/bin/sh\necho system rg\n', { mode: 0o755 });
+    const systemEnv = { PATH: systemBin };
+    await expect(prepareManagedCliToolEnvironment(Promise.resolve([]), 'rg', {
+      yeaftDir: systemDir,
+      env: systemEnv,
+    })).resolves.toEqual({ name: 'rg', activated: false, command: systemRg });
+    expect(systemEnv.PATH).toBe(systemBin);
+  });
 
   it('keeps managed CLI filters, process, and fallback boundaries', async () => {
     const processResult = (overrides = {}) => ({

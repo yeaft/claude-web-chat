@@ -608,6 +608,32 @@ export function managedCliToolReady(ready, name) {
   return ready?.toolReady?.[name] || ready || Promise.resolve([]);
 }
 
+/**
+ * Wait for one managed command and expose its bin directory to child processes.
+ * The PATH is changed only when the resolved command is the checksum-verified
+ * managed binary. System commands already on PATH remain untouched.
+ */
+export async function prepareManagedCliToolEnvironment(
+  ready,
+  name,
+  options = {},
+) {
+  const yeaftDir = resolve(options.yeaftDir || DEFAULT_ROOT);
+  const platform = options.platform || process.platform;
+  const arch = options.arch || process.arch;
+  const env = options.env || process.env;
+  await managedCliToolReady(ready, name);
+
+  const command = resolveManagedCliCommand(name, { yeaftDir, platform, arch, env });
+  const managedPath = join(managedCliBinDir(yeaftDir), executableName(name, platform));
+  if (!command || !samePath(command, managedPath, platform)) {
+    return { name, activated: false, command };
+  }
+
+  const binDir = prependManagedCliBinToPath(yeaftDir, env, platform);
+  return { name, activated: true, command, binDir };
+}
+
 export function summarizeManagedCliResults(results) {
   return (results || []).map(result => {
     const detail = result.path || result.reason || `${result.platform || ''}-${result.arch || ''}`;
