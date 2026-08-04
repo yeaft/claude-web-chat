@@ -188,6 +188,9 @@ export default {
           <span v-if="store.btwMode" class="btw-input-tag">BTW</span>
           <slot name="actions-start"></slot>
         </template>
+        <template #end-actions-before>
+          <slot name="actions-end-before"></slot>
+        </template>
       </MessageComposer>
     </footer>
   `,

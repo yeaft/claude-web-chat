@@ -139,7 +139,7 @@ export default {
             :title="stopLabel"
             :aria-label="stopLabel"
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
           </button>
           <button
             type="button"
@@ -150,7 +150,7 @@ export default {
             :aria-label="sendLabel"
           >
             <span v-if="sending" class="message-composer-spinner" aria-hidden="true"></span>
-            <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+            <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m7 12 5-5 5 5M12 7v10"/></svg>
           </button>
         </div>
       </div>

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import * as Vue from 'vue';
 import { mount, flushPromises } from '@vue/test-utils';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const storeFactories = new Map();
 
@@ -157,32 +157,33 @@ async function openDefaultUserSearch(wrapper, store) {
   await Vue.nextTick();
 }
 
-function mountPage() {
+function mountPage({ renderComposer = false } = {}) {
+  const stubs = {
+    YeaftSidebar: true,
+    WorkbenchPanel: true,
+    WorkCenterPage: true,
+    YeaftSessionActions: true,
+    VpTimelinePane: true,
+    YeaftDebugPanel: true,
+    SettingsPanel: true,
+    SessionInviteModal: true,
+    SessionCreateModal: true,
+    SessionSettingsModal: true,
+    LlmTab: true,
+    MessageItem: { template: '<span class="message-item-stub"></span>' },
+    UserTurnBlock: { template: '<span class="user-turn-stub"></span>' },
+    AssistantTurn: { template: '<span class="assistant-turn-stub"></span>' },
+    VpTurnBlock: { template: '<span class="vp-turn-stub"></span>' },
+    VpSpeakerHeader: true,
+    ReflectionCard: true,
+    SubAgentCard: true,
+  };
+  if (!renderComposer) stubs.ChatInput = true;
   return mount(YeaftPage, {
     attachTo: document.body,
     global: {
       mocks: { $t: key => key },
-      stubs: {
-        YeaftSidebar: true,
-        WorkbenchPanel: true,
-        WorkCenterPage: true,
-        YeaftSessionActions: true,
-        ChatInput: true,
-        VpTimelinePane: true,
-        YeaftDebugPanel: true,
-        SettingsPanel: true,
-        SessionInviteModal: true,
-        SessionCreateModal: true,
-        SessionSettingsModal: true,
-        LlmTab: true,
-        MessageItem: { template: '<span class="message-item-stub"></span>' },
-        UserTurnBlock: { template: '<span class="user-turn-stub"></span>' },
-        AssistantTurn: { template: '<span class="assistant-turn-stub"></span>' },
-        VpTurnBlock: { template: '<span class="vp-turn-stub"></span>' },
-        VpSpeakerHeader: true,
-        ReflectionCard: true,
-        SubAgentCard: true,
-      },
+      stubs,
     },
   });
 }
@@ -331,6 +332,10 @@ describe('Yeaft history result rendered reveal', () => {
     };
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   historyScenario('keeps existing virtual block keys stable when older history is prepended', async () => {
     const store = primeStore();
     store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')] = { visibleTurns: 20 };
@@ -353,6 +358,74 @@ describe('Yeaft history result rendered reveal', () => {
     const after = wrapper.findAll('[data-virtual-id]').map(row => row.attributes('data-virtual-id'));
     expect(after[0]).toBe('block_m49');
     expect(after.slice(1)).toEqual(before.slice(0, after.length - 1));
+    wrapper.unmount();
+  });
+
+  it('opens composer model menus through real hover, focus, and touch-style click events', async () => {
+    vi.useFakeTimers();
+    const store = primeStore();
+    store.yeaftModel = 'provider/model-a';
+    store.yeaftModelEffort = 'medium';
+    store.yeaftAvailableModels = [
+      { id: 'model-a', provider: 'provider', ref: 'provider/model-a', effortOptions: ['low', 'medium', 'high'] },
+      { id: 'model-b', provider: 'provider', ref: 'provider/model-b', effortOptions: ['medium', 'high'] },
+    ];
+    store.switchYeaftModel = vi.fn();
+    store.inputDrafts = {};
+    sessionsStore.sessions = [{
+      id: 'same',
+      agentId: 'agent-a',
+      title: 'Session',
+      roster: ['omni'],
+      config: { model: 'provider/model-a', modelEffort: 'medium' },
+    }];
+
+    const wrapper = mountPage({ renderComposer: true });
+    await flushPromises();
+    await Vue.nextTick();
+
+    const modelChoice = wrapper.get('.yeaft-composer-model-choice');
+    const modelButton = wrapper.get('.yeaft-composer-model');
+    await modelChoice.trigger('mouseenter');
+    await Vue.nextTick();
+    expect(wrapper.get('.yeaft-composer-model-dropdown').isVisible()).toBe(true);
+
+    await modelChoice.trigger('mouseleave');
+    vi.advanceTimersByTime(80);
+    await modelChoice.trigger('mouseenter');
+    vi.advanceTimersByTime(80);
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(true);
+
+    await modelChoice.trigger('mouseleave');
+    vi.advanceTimersByTime(120);
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
+
+    await modelButton.trigger('focusin');
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(true);
+    modelButton.element.blur();
+    await modelChoice.trigger('focusout', { relatedTarget: document.body });
+    await Vue.nextTick();
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
+
+    await modelButton.trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(true);
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
+
+    const effortButton = wrapper.get('.yeaft-composer-effort');
+    await effortButton.trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-effort-dropdown').exists()).toBe(true);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-effort-dropdown').exists()).toBe(false);
+
     wrapper.unmount();
   });
 
