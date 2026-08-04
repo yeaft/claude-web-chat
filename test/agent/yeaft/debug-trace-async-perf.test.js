@@ -114,6 +114,37 @@ describe('DebugTrace async + in-memory index performance', () => {
     expect(detail.loops).toHaveLength(1);
   });
 
+  it('bounds raw provider responses so long tool turns cannot grow unbounded trace files', async () => {
+    freshRoot();
+    const writer = new DebugTrace(root);
+    const rawResponse = JSON.stringify({ output: 'x'.repeat(420_000) });
+
+    for (let i = 1; i <= 100; i++) {
+      const id = writer.startTurn({
+        traceId: 'long-tool-turn',
+        turnNumber: i,
+        sessionId: 's-long',
+        userPrompt: 'do long work',
+      });
+      writer.endTurn(id, {
+        responseText: '',
+        rawResponse,
+        stopReason: 'tool_use',
+        messages: [{ role: 'user', content: 'do long work' }],
+      });
+    }
+    await writer.close();
+
+    const requestRoot = join(root, 'sessions', 's-long', 'debug', 'requests');
+    const [requestDir] = await fsp.readdir(requestRoot);
+    const traceFile = join(requestRoot, requestDir, 'trace.json');
+    const stored = JSON.parse(await fsp.readFile(traceFile, 'utf8'));
+
+    expect(stored.loops).toHaveLength(100);
+    expect(stored.loops.every(loop => Buffer.byteLength(loop.rawResponse, 'utf8') < 70 * 1024)).toBe(true);
+    expect((await fsp.stat(traceFile)).size).toBeLessThan(8 * 1024 * 1024);
+  });
+
   it('does not destroy prior-run dream events when an event flush beats first hydrate', async () => {
     freshRoot();
     // Run 1: persist some dream events to disk.
