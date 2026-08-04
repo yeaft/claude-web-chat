@@ -33,6 +33,12 @@ function isPlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
 }
 
+function normalizeTextMaxBytes(value, fallback = DEFAULT_TRACE_TEXT_MAX_BYTES) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(4 * 1024 * 1024, Math.max(0, Math.floor(parsed)));
+}
+
 function safeDirComponent(value, fallback = 'unknown') {
   const raw = String(value || '').trim();
   if (!raw) return fallback;
@@ -137,11 +143,11 @@ function truncateText(value, maxBytes = MAX_TEXT_BYTES) {
   const str = String(value);
   const budget = Math.max(0, Number(maxBytes) || 0);
   if (Buffer.byteLength(str, 'utf8') <= budget) return str;
+  if (budget <= 0) return '';
   const marker = `\n... [truncated to ${budget} bytes]`;
-  const contentBudget = Math.max(0, budget - Buffer.byteLength(marker, 'utf8'));
-  let out = str.slice(0, contentBudget);
-  while (Buffer.byteLength(out, 'utf8') > contentBudget && out.length > 0) out = out.slice(0, -1);
-  return `${out}${marker}`;
+  const markerBytes = Buffer.byteLength(marker, 'utf8');
+  if (markerBytes >= budget) return truncateUtf8Text(str, budget).value;
+  return `${truncateUtf8Text(str, budget - markerBytes).value}${marker}`;
 }
 
 function cloneJsonValue(value) {
@@ -378,10 +384,57 @@ function messagesPrefixLength(prevMessages, nextMessages) {
   return i;
 }
 
+function snapshotTruncation(path, maxBytes, originalBytes) {
+  return { __truncated: true, path, maxBytes, originalBytes };
+}
+
+function boundedSnapshotString(value, maxBytes, path) {
+  const originalBytes = Buffer.byteLength(value, 'utf8');
+  if (originalBytes <= maxBytes) return value;
+  const marker = snapshotTruncation(path, maxBytes, originalBytes);
+  if (jsonByteLength(marker) > maxBytes) return null;
+  const markerText = `\n... [truncated to ${maxBytes} bytes]`;
+  const markerBytes = Buffer.byteLength(markerText, 'utf8');
+  if (markerBytes >= maxBytes) return marker;
+  return truncateUtf8Text(value, maxBytes - markerBytes).value + markerText;
+}
+
+function boundSnapshotValue(value, maxBytes, path = 'messages') {
+  if (maxBytes <= 0) return null;
+  const sourceBytes = jsonByteLength(value);
+  if (sourceBytes <= maxBytes) return cloneJsonValue(value);
+  const marker = snapshotTruncation(path, maxBytes, sourceBytes);
+  if (jsonByteLength(marker) > maxBytes) return null;
+  if (value == null || typeof value === 'number' || typeof value === 'boolean') return marker;
+  if (typeof value === 'string') return boundedSnapshotString(value, maxBytes, path);
+  if (Array.isArray(value)) {
+    const out = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const candidate = boundSnapshotValue(value[index], maxBytes, `${path}[${index}]`);
+      if (candidate == null || jsonByteLength([...out, candidate]) > maxBytes) break;
+      out.push(candidate);
+    }
+    return out.length > 0 ? out : marker;
+  }
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      const candidate = boundSnapshotValue(item, maxBytes, `${path}.${key}`);
+      if (candidate == null || jsonByteLength({ ...out, [key]: candidate }) > maxBytes) break;
+      out[key] = candidate;
+    }
+    return Object.keys(out).length > 0 ? out : marker;
+  }
+  return marker;
+}
+
 function buildRequestSnapshot(info = {}, textMaxBytes = DEFAULT_TRACE_TEXT_MAX_BYTES) {
+  const messageBudget = normalizeTextMaxBytes(textMaxBytes);
   return {
-    systemPrompt: truncateText(info.systemPrompt || '', textMaxBytes),
-    messages: Array.isArray(info.messages) ? cloneJsonValue(info.messages) : [],
+    systemPrompt: truncateText(info.systemPrompt || '', messageBudget),
+    messages: Array.isArray(info.messages)
+      ? boundSnapshotValue(info.messages, messageBudget, 'messages')
+      : [],
     rawRequest: info.rawRequest ?? null,
   };
 }
@@ -701,13 +754,17 @@ export class DebugTrace {
     const rootDir = fileTraceRoot(tracePath);
     if (!rootDir) throw new Error('DebugTrace requires a storage path');
     this.#rootDir = rootDir;
-    const configuredTextMax = Number(options?.textMaxBytes);
-    if (Number.isFinite(configuredTextMax)) {
-      this.#textMaxBytes = Math.min(4 * 1024 * 1024, Math.max(0, Math.floor(configuredTextMax)));
-    }
+    this.#textMaxBytes = normalizeTextMaxBytes(options?.textMaxBytes);
     // Best-effort, fire-and-forget: atomicWriteText re-ensures the request
     // subdir before every write, so a missed mkdir here is harmless.
     ensureDir(rootDir).catch(() => {});
+  }
+
+  refreshConfig(config = {}) {
+    const nextValue = config && typeof config === 'object'
+      ? config.traceTextMaxBytes
+      : config;
+    this.#textMaxBytes = normalizeTextMaxBytes(nextValue, this.#textMaxBytes);
   }
 
   startTurn({ traceId, messageId = null, mode = null, turnNumber = null, sessionId = null, vpId = null, threadId = null, userPrompt = null } = {}) {
@@ -1337,6 +1394,7 @@ export class NullTrace {
   async compact() { return { before: 0, after: 0 }; }
   async purge() {}
   async close() {}
+  refreshConfig() {}
   async flush() {}
   async fetchRecentDebugHistory() { return { loops: [], turns: [], dreamEvents: [] }; }
 }

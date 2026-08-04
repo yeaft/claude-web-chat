@@ -173,7 +173,8 @@ Results are returned newest-first with a bounded matching snippet and source met
   isReadOnly: () => true,
   async execute(input, ctx) {
     const { keyword, limit = DEFAULT_RESULT_LIMIT } = input;
-    if (!keyword) return JSON.stringify({ error: 'keyword is required' });
+    const normalizedKeyword = typeof keyword === 'string' ? keyword.trim() : '';
+    if (!normalizedKeyword) return JSON.stringify({ error: 'keyword is required' });
 
     const yeaftDir = ctx?.yeaftDir;
     if (!yeaftDir) {
@@ -197,7 +198,7 @@ Results are returned newest-first with a bounded matching snippet and source met
         // project-wide search still respects the owner/session boundary.
         const indexed = await Promise.all(scopedSessionIds.map(async sessionId => {
           const storeDir = resolveSessionYeaftDir(yeaftDir, sessionId);
-          const page = await searchConversationIndex(storeDir, sessionId, keyword, {
+          const page = await searchConversationIndex(storeDir, sessionId, normalizedKeyword, {
             limit: Math.min(100, Math.max(1, Number(limit) || DEFAULT_RESULT_LIMIT)),
           });
           return { sessionId, page };
@@ -215,7 +216,7 @@ Results are returned newest-first with a bounded matching snippet and source met
               messageId: result.messageId || null,
               sessionId: result.sessionId || sessionId,
               role: result.role,
-              content: buildSnippet(result.snippet || '', keyword),
+              content: buildSnippet(result.snippet || '', normalizedKeyword),
               mode: null,
               time: result.timestamp || null,
               source: 'session-index',
@@ -228,12 +229,12 @@ Results are returned newest-first with a bounded matching snippet and source met
         // CLI and legacy callers without a Session context retain the old
         // global search path. The indexed path requires an explicit session
         // because it is intentionally scoped and owner-safe.
-        const legacyResults = searchMessages(yeaftDir, keyword, limit, { telemetry });
+        const legacyResults = searchMessages(yeaftDir, normalizedKeyword, limit, { telemetry });
         indexedResults = legacyResults.map(msg => ({
           messageId: msg.id || null,
           sessionId: msg.sessionId || null,
           role: msg.role,
-          content: buildSnippet(msg.content, keyword),
+          content: buildSnippet(msg.content, normalizedKeyword),
           mode: msg.mode,
           time: msg.time || msg.timestamp || null,
           source: msg.historySource || null,
@@ -268,7 +269,7 @@ Results are returned newest-first with a bounded matching snippet and source met
       if (results.length === 0) {
         return serializeHistorySearchOutput({
           results: [],
-          message: `No matches found for "${keyword}"`,
+          message: `No matches found for "${normalizedKeyword}"`,
           telemetry: searchTelemetry,
         });
       }
@@ -276,7 +277,7 @@ Results are returned newest-first with a bounded matching snippet and source met
       return serializeHistorySearchOutput({
         results: results.map(({ _seq, ...result }) => result),
         totalResults: results.length,
-        keyword,
+        keyword: normalizedKeyword,
         telemetry: searchTelemetry,
       });
     } catch (err) {

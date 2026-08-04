@@ -481,6 +481,13 @@ export function createBoundedTextAccumulator(maxBytes = 512 * 1024) {
       while (Buffer.byteLength(retained, 'utf8') > available && retained.length > 0) {
         retained = retained.slice(0, -1);
       }
+      // Never retain half of a UTF-16 surrogate pair. Buffer.byteLength()
+      // counts a lone surrogate as a replacement sequence, so the byte cap
+      // alone is not enough to preserve valid Unicode text at the boundary.
+      if (retained.length > 0 && retained.charCodeAt(retained.length - 1) >= 0xD800
+          && retained.charCodeAt(retained.length - 1) <= 0xDBFF) {
+        retained = retained.slice(0, -1);
+      }
       chunks.push(retained);
       retainedBytes += Buffer.byteLength(retained, 'utf8');
       if (retained.length < text.length) truncated = true;

@@ -234,6 +234,7 @@ export async function refreshLiveSessionConfig(options = {}) {
   for (const key of Object.keys(currentConfig)) delete currentConfig[key];
   Object.assign(currentConfig, nextConfig);
   liveSession.engine?.refreshConfig?.(currentConfig);
+  liveSession.trace?.refreshConfig?.(currentConfig.telemetry || {});
   for (const { key, engine, config } of vpConfigSnapshots) {
     engine.refreshConfig?.(config);
     vpEngineConfigKeys.set(key, engineConfigKey(config));

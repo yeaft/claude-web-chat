@@ -14,6 +14,7 @@ import { PassThrough } from 'node:stream';
 import { ActiveMemorySet } from '../../../agent/yeaft/memory/ams.js';
 import { filterMemoryPromptTextForPrompt } from '../../../agent/yeaft/memory/prompt-cleanup.js';
 import { Engine, buildResidentEntries, selectResidentTopicScopes } from '../../../agent/yeaft/engine.js';
+import { flushAgentPerfTrace } from '../../../agent/yeaft/perf-trace.js';
 import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
 import { writeSummary } from '../../../agent/yeaft/memory/store.js';
@@ -350,8 +351,8 @@ describe('Engine', () => {
           // consume
         }
 
+        flushAgentPerfTrace({ yeaftDir });
         const day = new Date().toISOString().slice(0, 10);
-        await new Promise(resolve => setTimeout(resolve, 1_050));
         const rows = readFileSync(join(yeaftDir, 'perf-traces', `${day}.jsonl`), 'utf8')
           .trim()
           .split('\n')
@@ -369,7 +370,7 @@ describe('Engine', () => {
   });
 
   describe('tool registration', () => {
-    it('should register and list tools', () => {
+    it('should register, list, and unregister tools', () => {
       const engine = new Engine({
         adapter: mockAdapter,
         trace,
@@ -384,22 +385,6 @@ describe('Engine', () => {
       });
 
       expect(engine.toolNames).toEqual(['search']);
-    });
-
-    it('should unregister tools', () => {
-      const engine = new Engine({
-        adapter: mockAdapter,
-        trace,
-        config: { model: 'test-model' },
-      });
-
-      engine.registerTool({
-        name: 'search',
-        description: 'Search',
-        parameters: {},
-        execute: async () => 'ok',
-      });
-
       engine.unregisterTool('search');
       expect(engine.toolNames).toEqual([]);
     });
@@ -2423,7 +2408,7 @@ describe('Engine', () => {
   });
 
   describe('multiple tool calls in one turn', () => {
-    it('reuses an identical read-only tool result within one query', async () => {
+    async function verifyIdenticalReadReuse() {
       mockAdapter.pushResponse([
         { type: 'tool_call', id: 'read-1', name: 'read', input: { path: 'same.txt' } },
         { type: 'stop', stopReason: 'tool_use' },
@@ -2448,6 +2433,7 @@ describe('Engine', () => {
         description: 'Read',
         parameters: { type: 'object', properties: { path: { type: 'string' } } },
         isReadOnly: () => true,
+        cacheWithinQuery: () => true,
         execute: async () => { executions += 1; return 'file contents'; },
       });
 
@@ -2457,10 +2443,12 @@ describe('Engine', () => {
       expect(executions).toBe(1);
       expect(events.filter(event => event.type === 'tool_exec').map(event => event.reused)).toEqual([undefined, true]);
       expect(mockAdapter.callLog).toHaveLength(3);
-      expect(mockAdapter.callLog[2].messages.at(-1).content).toContain('Already executed the identical read-only read call');
-    });
+      expect(mockAdapter.callLog[2].messages.at(-1).content).toContain('file contents');
+    }
 
-    it('ends a StartPlan plus TodoWrite control batch without another LLM call', async () => {
+    it('reuses identical deterministic reads and ends a plan-only control batch', async () => {
+      await verifyIdenticalReadReuse();
+      mockAdapter = new MockAdapter();
       mockAdapter.pushResponse([
         { type: 'tool_call', id: 'plan-1', name: 'StartPlan', input: { topic: 'inspect the issue' } },
         { type: 'tool_call', id: 'todo-1', name: 'TodoWrite', input: {
@@ -3611,6 +3599,18 @@ describe('Engine', () => {
       expect(tools[0].tool_name).toBe('search');
       expect(tools[0].tool_output).toBe('results');
 
+      dbTrace.refreshConfig({ traceTextMaxBytes: 64 });
+      const boundedTurn = dbTrace.startTurn({ traceId: 'trace-bounded', turnNumber: 3 });
+      dbTrace.endTurn(boundedTurn, {
+        systemPrompt: 'system',
+        messages: [{ role: 'user', content: '😀'.repeat(200) }],
+        responseText: 'ok',
+        stopReason: 'end_turn',
+      });
+      await dbTrace.flush();
+      const bounded = await dbTrace.fetchRecentDebugHistory({ detailTurnId: 'trace-bounded' });
+      expect(Buffer.byteLength(JSON.stringify(bounded.loops[0]?.messages || []), 'utf8')).toBeLessThanOrEqual(64);
+
       await dbTrace.close();
     });
   });
@@ -3774,7 +3774,7 @@ describe('Engine', () => {
   });
 
   describe('language in system prompt', () => {
-    it('should use English system prompt by default', async () => {
+    async function verifyEnglishSystemPrompt() {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'ok' },
         { type: 'stop', stopReason: 'end_turn' },
@@ -3794,9 +3794,11 @@ describe('Engine', () => {
       expect(call.system).toContain('Session Participant');
       expect(call.system).not.toContain('Yeaft — AI');
       expect(call.system).not.toContain('核心原则');
-    });
+    }
 
-    it('should use Chinese system prompt when language is zh', async () => {
+    it('uses English and Chinese system prompts with configured tool guidance', async () => {
+      await verifyEnglishSystemPrompt();
+      mockAdapter = new MockAdapter();
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'ok' },
         { type: 'stop', stopReason: 'end_turn' },
@@ -3819,33 +3821,32 @@ describe('Engine', () => {
       expect(call.system).toContain('核心原则');
       expect(call.system).not.toContain('统一模式');
       expect(call.system).not.toContain('你是一个持续伴随的 AI 伙伴');
-    });
+      mockAdapter = new MockAdapter();
 
-    it('should include configured tools and dependency-aware TodoWrite guidance', async () => {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'ok' },
         { type: 'stop', stopReason: 'end_turn' },
       ]);
 
-      const engine = new Engine({
+      const toolGuidanceEngine = new Engine({
         adapter: mockAdapter,
         trace,
         config: { model: 'test-model', maxOutputTokens: 1024, language: 'zh' },
       });
 
-      engine.registerTool({
+      toolGuidanceEngine.registerTool({
         name: 'search',
         description: 'Search',
         parameters: {},
         execute: async () => 'results',
       });
 
-      for await (const _event of engine.query({ prompt: 'test' })) {
+      for await (const _event of toolGuidanceEngine.query({ prompt: 'test' })) {
         // consume
       }
 
-      const call = mockAdapter.callLog[0];
-      expect(call.system).toContain('可用工具：search');
+      const toolGuidanceCall = mockAdapter.callLog[0];
+      expect(toolGuidanceCall.system).toContain('可用工具：search');
 
       const enSystem = buildSystemPrompt({
         language: 'en',

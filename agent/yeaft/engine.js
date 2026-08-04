@@ -91,9 +91,13 @@ function toolDefinitionFor(engine, name) {
   return engine.getToolDefinition(name);
 }
 
-function isReadOnlyTool(engine, name, input) {
+function isCacheableTool(engine, name, input) {
   try {
-    return toolDefinitionFor(engine, name)?.isReadOnly?.(input) === true;
+    const tool = toolDefinitionFor(engine, name);
+    if (!tool || tool.isReadOnly?.(input) !== true) return false;
+    return typeof tool.cacheWithinQuery === 'function'
+      ? tool.cacheWithinQuery(input) === true
+      : tool.cacheWithinQuery === true;
   } catch {
     return false;
   }
@@ -3850,6 +3854,8 @@ export class Engine {
         let reusedReadOnlyCallId = null;
         let toolErrorOutput = null;
         let fatalToolError = null;
+        let cacheableTool = false;
+        let duplicateKey = null;
         currentToolCallForAsyncTask = skipped
           ? null
           : {
@@ -3888,9 +3894,10 @@ export class Engine {
           isError = true;
           yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, threadId: this.currentThreadId };
         } else {
-          const duplicateKey = `${tc.name}\u001f${argsHashOf(tc.input)}`;
+          duplicateKey = `${tc.name}\u001f${argsHashOf(tc.input)}`;
+          cacheableTool = isCacheableTool(this, tc.name, tc.input);
           const cachedReadOnly = readOnlyToolResults.get(duplicateKey);
-          if (cachedReadOnly && isReadOnlyTool(this, tc.name, tc.input)) {
+          if (cachedReadOnly && cacheableTool) {
             output = cachedReadOnly.output;
             isError = Boolean(cachedReadOnly.isError);
             reusedReadOnlyResult = true;
@@ -4019,10 +4026,9 @@ export class Engine {
         if (!skipped && !reusedReadOnlyResult && tc.name === 'StartPlan') {
           planBootstrapPending = true;
         }
-        if (!skipped && !reusedReadOnlyResult && isReadOnlyTool(this, tc.name, tc.input)) {
-          const cachedOutput = `Already executed the identical read-only ${tc.name} call in this turn under tool call ${tc.id}. Reuse the earlier result above; no new work was performed.`;
-          readOnlyToolResults.set(`${tc.name}\u001f${argsHashOf(tc.input)}`, {
-            output: cachedOutput,
+        if (!skipped && !reusedReadOnlyResult && cacheableTool) {
+          readOnlyToolResults.set(duplicateKey, {
+            output,
             isError,
             callId: tc.id,
           });
