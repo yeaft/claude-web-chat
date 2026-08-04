@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { messageDb, yeaftProjectDb, yeaftSessionDb } from '../database.js';
+import { messageDb, sessionUiMetadataDb, yeaftProjectDb, yeaftSessionDb } from '../database.js';
 import { transaction } from '../db/connection.js';
 import { broadcastAgentList, broadcastSessionCatalog, forwardToClients, sendToAgent, sendToWebClient } from '../ws-utils.js';
 import { webClients, previewFiles } from '../context.js';
@@ -95,6 +95,11 @@ function syncYeaftSessionMetadata(agentId, agent, event) {
   try {
     yeaftSessionDb.deleteForAgent(ownerId, agentId, sessionId);
     yeaftProjectDb.removeSession(ownerId, agentId, sessionId);
+    sessionUiMetadataDb.deleteForRoute(ownerId, {
+      runtimeProvider: 'yeaft',
+      agentId,
+      sessionId,
+    });
   } catch (e) {
     console.warn('[Server] Yeaft Session metadata cleanup failed:', e?.message || e);
   }

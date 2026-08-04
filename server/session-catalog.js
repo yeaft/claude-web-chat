@@ -35,11 +35,24 @@ function hasCompleteSortRanks(rows) {
   return ranks.every(Number.isFinite) && new Set(ranks).size === rows.length;
 }
 
+function catalogSort(left, right, ranked = false) {
+  if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
+  if (ranked) {
+    const leftRank = Number.isFinite(left.sortRank) ? left.sortRank : Number.MAX_SAFE_INTEGER;
+    const rightRank = Number.isFinite(right.sortRank) ? right.sortRank : Number.MAX_SAFE_INTEGER;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+  }
+  const metadataDelta = timestampValue(right.metadataUpdatedAt) - timestampValue(left.metadataUpdatedAt);
+  if (metadataDelta !== 0) return metadataDelta;
+  return left.catalogKey.localeCompare(right.catalogKey);
+}
+
 export function projectSessionCatalog({
   chatSessions = [],
   yeaftSessions = [],
   metadata = [],
   onlineAgentIds = new Set(),
+  includeHidden = false,
 } = {}) {
   const metadataByKey = new Map(metadata.map(row => [row.catalogKey, row]));
   const onlineAgents = onlineAgentIds instanceof Set ? onlineAgentIds : new Set(onlineAgentIds);
@@ -50,6 +63,7 @@ export function projectSessionCatalog({
     const catalogKey = chatCatalogKey(session.id);
     const runtimeProvider = normalizeChatRuntimeProvider(session.provider);
     const meta = metadataByKey.get(catalogKey) || {};
+    if (!includeHidden && meta.hidden === true) continue;
     rows.push({
       catalogKey,
       runtimeProvider,
@@ -60,6 +74,7 @@ export function projectSessionCatalog({
       agentName: session.agent_name || '',
       availability: onlineAgents.has(session.agent_id) ? 'online' : 'offline',
       pinned: meta.pinned ?? session.is_pinned === 1,
+      hidden: meta.hidden === true,
       sortRank: meta.sortRank ?? null,
       createdAt: session.created_at || null,
       metadataUpdatedAt: session.metadata_updated_at ?? session.created_at ?? null,
@@ -69,6 +84,7 @@ export function projectSessionCatalog({
   for (const session of yeaftSessions) {
     const catalogKey = yeaftCatalogKey(session.agentId, session.id);
     const meta = metadataByKey.get(catalogKey) || {};
+    if (!includeHidden && meta.hidden === true) continue;
     rows.push({
       catalogKey,
       runtimeProvider: 'yeaft',
@@ -79,6 +95,7 @@ export function projectSessionCatalog({
       agentName: session.agentName || '',
       availability: onlineAgents.has(session.agentId) ? 'online' : 'offline',
       pinned: meta.pinned ?? !!session.pinned,
+      hidden: meta.hidden === true,
       sortRank: meta.sortRank ?? null,
       createdAt: session.createdAt || null,
       metadataUpdatedAt: session.metadataUpdatedAt ?? session.createdAt ?? null,
@@ -86,15 +103,5 @@ export function projectSessionCatalog({
   }
 
   const ranked = hasCompleteSortRanks(rows);
-  return rows.sort((left, right) => {
-    if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
-    if (ranked) {
-      const leftRank = Number.isFinite(left.sortRank) ? left.sortRank : Number.MAX_SAFE_INTEGER;
-      const rightRank = Number.isFinite(right.sortRank) ? right.sortRank : Number.MAX_SAFE_INTEGER;
-      if (leftRank !== rightRank) return leftRank - rightRank;
-    }
-    const metadataDelta = timestampValue(right.metadataUpdatedAt) - timestampValue(left.metadataUpdatedAt);
-    if (metadataDelta !== 0) return metadataDelta;
-    return left.catalogKey.localeCompare(right.catalogKey);
-  });
+  return rows.sort((left, right) => catalogSort(left, right, ranked));
 }

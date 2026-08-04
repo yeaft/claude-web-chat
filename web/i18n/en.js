@@ -141,6 +141,8 @@ export default {
   'sidebar.sessions.unread': 'Unread',
   'sidebar.sessions.pinned': 'Pinned',
   'sidebar.sessions.processing': 'Reply in progress',
+  'sidebar.sessions.hidden': 'Hidden sessions',
+  'sidebar.sessions.remove': 'Remove from sidebar',
   'sidebar.sessions.agent': 'Agent',
   'sidebar.sessions.provider': 'Provider',
   'sidebar.projects.title': 'Projects',
