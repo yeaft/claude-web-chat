@@ -20,6 +20,7 @@ import {
   moveSessionToProject,
   removeSessionFromProjects,
   renameProject,
+  reorderProjects,
   sharedSessionIdsForProject,
   updateProjectInstruction,
 } from '../../../agent/yeaft/projects/store.js';
@@ -124,6 +125,13 @@ describe('Yeaft session-scoped model config', () => {
 
     const alpha = createProject(root, 'Alpha');
     const beta = createProject(root, 'Beta');
+    expect(reorderProjects(root, [beta.id, alpha.id]).map(project => project.id))
+      .toEqual([beta.id, alpha.id]);
+    expect(loadProjects(root).map(project => project.id)).toEqual([beta.id, alpha.id]);
+    expect(() => reorderProjects(root, [alpha.id])).toThrow('Complete Project order is required');
+    expect(() => reorderProjects(root, [alpha.id, alpha.id])).toThrow('Complete Project order is required');
+    expect(loadProjects(root).map(project => project.id)).toEqual([beta.id, alpha.id]);
+    reorderProjects(root, [alpha.id, beta.id]);
     moveSessionToProject(root, 'session-a', alpha.id);
     moveSessionToProject(root, 'session-b', alpha.id);
     moveSessionToProject(root, 'session-a', beta.id);

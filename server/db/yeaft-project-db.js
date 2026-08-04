@@ -138,6 +138,30 @@ export const yeaftProjectDb = {
     return { projectId: id };
   },
 
+  reorder(userId, projectIds) {
+    const ownerId = requireUserId(userId);
+    const projects = this.list(ownerId);
+    const ids = Array.isArray(projectIds)
+      ? projectIds.map(value => typeof value === 'string' ? value.trim() : '')
+      : [];
+    const currentIds = new Set(projects.map(project => project.id));
+    if (ids.length !== projects.length
+        || ids.some(id => !id || !currentIds.has(id))
+        || new Set(ids).size !== ids.length) {
+      throw new YeaftProjectDbError('invalid_project_order', 'Complete Project order is required');
+    }
+    const now = Date.now();
+    transaction(() => {
+      ids.forEach((id, index) => {
+        const result = stmts.updateYeaftProjectSortOrder.run(index, now, ownerId, id);
+        if (result.changes !== 1) {
+          throw new YeaftProjectDbError('project_order_changed', 'Project identity changed during reorder');
+        }
+      });
+    })();
+    return this.list(ownerId);
+  },
+
   moveSession(userId, {
     agentId,
     sessionId,

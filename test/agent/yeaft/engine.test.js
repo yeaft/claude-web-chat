@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  existsSync, linkSync, lstatSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync,
+  chmodSync, existsSync, linkSync, lstatSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync,
   readdirSync, symlinkSync, utimesSync,
 } from 'fs';
 import { delimiter, join } from 'path';
@@ -23,12 +23,15 @@ import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
 import todoWriteTool from '../../../agent/yeaft/tools/todo-write.js';
 import startPlanTool from '../../../agent/yeaft/tools/start-plan.js';
 import {
+  cleanupManagedCliRuntimePaths,
   ensureManagedCliTools,
   extractManagedCliBinary,
   managedCliBinDir,
   managedCliToolSpecs,
+  prepareManagedCliToolEnvironment,
   prependManagedCliBinToPath,
   resolveManagedCliCommand,
+  runAfterManagedCliRuntimeCleanup,
 } from '../../../agent/yeaft/managed-cli.js';
 import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
@@ -2493,7 +2496,7 @@ describe('Engine', () => {
       expect(events.find(event => event.type === 'turn_end' && event.stopReason === 'plan_recorded')).toMatchObject({ terminal: true });
     });
 
-    it('should execute multiple tools from a single response', async () => {
+    it('executes the complete tool batch before appending live user input', async () => {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'Searching both...' },
         { type: 'tool_call', id: 'call_1', name: 'search', input: { q: 'foo' } },
@@ -2502,9 +2505,25 @@ describe('Engine', () => {
       ]);
 
       mockAdapter.pushResponse([
-        { type: 'text_delta', text: 'Found both results.' },
+        { type: 'text_delta', text: 'Found both results and handled the update.' },
         { type: 'stop', stopReason: 'end_turn' },
       ]);
+
+      const pendingUserMessages = [];
+      const baseStream = mockAdapter.stream.bind(mockAdapter);
+      let appendedDuringStream = false;
+      mockAdapter.stream = async function* streamWithUserAppend(params) {
+        for await (const event of baseStream(params)) {
+          yield event;
+          if (!appendedDuringStream && event.type === 'tool_call' && event.id === 'call_2') {
+            appendedDuringStream = true;
+            pendingUserMessages.push({
+              content: 'Include the new requirement after both searches.',
+              preview: 'Include the new requirement after both searches.',
+            });
+          }
+        }
+      };
 
       const engine = new Engine({
         adapter: mockAdapter,
@@ -2520,7 +2539,10 @@ describe('Engine', () => {
       });
 
       const events = [];
-      for await (const event of engine.query({ prompt: 'search foo and bar' })) {
+      for await (const event of engine.query({
+        prompt: 'search foo and bar',
+        drainPendingUserMessages: () => pendingUserMessages.splice(0),
+      })) {
         events.push(event);
       }
 
@@ -2529,10 +2551,32 @@ describe('Engine', () => {
       expect(toolEnds[0].output).toBe('Results: foo');
       expect(toolEnds[1].output).toBe('Results: bar');
 
-      // Second call should have both tool results
+      expect(mockAdapter.callLog).toHaveLength(2);
       const secondCall = mockAdapter.callLog[1];
-      const toolMessages = secondCall.messages.filter(m => m.role === 'tool');
-      expect(toolMessages).toHaveLength(2);
+      expect(secondCall.messages.map(message => message.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'tool',
+        'user',
+      ]);
+      expect(secondCall.messages[1].toolCalls.map(call => call.id)).toEqual(['call_1', 'call_2']);
+      expect(secondCall.messages.slice(2, 4).map(message => message.toolCallId)).toEqual(['call_1', 'call_2']);
+      expect(secondCall.messages.at(-1)).toMatchObject({
+        role: 'user',
+        content: 'Include the new requirement after both searches.',
+      });
+
+      const appendEventIndex = events.findIndex(event => event.type === 'user_append');
+      const lastToolEndIndex = events.reduce(
+        (last, event, index) => event.type === 'tool_end' ? index : last,
+        -1,
+      );
+      expect(appendEventIndex).toBeGreaterThan(lastToolEndIndex);
+      expect(events.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+        stopReason: 'end_turn',
+        terminal: true,
+      });
     });
   });
 
@@ -4311,7 +4355,306 @@ describe('managed CLI setup and fast tool integration', () => {
     rmSync(capturedArgs, { force: true });
   }
 
+  async function verifyManagedRgEnvironment() {
+    if (process.platform === 'win32') return;
+
+    const yeaftDir = tempDir('cli-rg-environment');
+    const binDir = managedCliBinDir(yeaftDir);
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'rg'), '#!/bin/sh\necho ripgrep 15.2.0\n', { mode: 0o755 });
+    writeFileSync(join(binDir, 'git'), '#!/bin/sh\necho UNTRUSTED-GIT\n', { mode: 0o755 });
+    writeFileSync(join(binDir, 'fd'), '#!/bin/sh\necho UNVERIFIED-FD\n', { mode: 0o755 });
+    trustManagedCliFixtures(yeaftDir, ['rg']);
+
+    const systemBin = join(yeaftDir, 'system-bin');
+    mkdirSync(systemBin);
+    writeFileSync(join(systemBin, 'git'), '#!/bin/sh\necho SYSTEM-GIT\n', { mode: 0o755 });
+    writeFileSync(join(systemBin, 'fd'), '#!/bin/sh\necho SYSTEM-FD\n', { mode: 0o755 });
+
+    let markReady;
+    const rgReady = new Promise(resolveReady => { markReady = resolveReady; });
+    const ready = Promise.resolve([]);
+    ready.toolReady = { rg: rgReady };
+    const originalPath = process.env.PATH;
+    process.env.PATH = [systemBin, '/usr/bin', '/bin'].join(delimiter);
+    try {
+      const pending = prepareManagedCliToolEnvironment(ready, 'rg', { yeaftDir });
+      await new Promise(resolveTick => setImmediate(resolveTick));
+      expect(process.env.PATH.split(delimiter)).not.toContain(binDir);
+
+      markReady({ name: 'rg', status: 'available', path: join(binDir, 'rg') });
+      const environment = await pending;
+      expect(environment).toMatchObject({ name: 'rg', activated: true });
+      expect(environment.command).toBe(join(environment.binDir, 'rg'));
+      expect(environment.binDir).not.toBe(binDir);
+      expect(readdirSync(environment.binDir)).toEqual(['rg']);
+      expect(process.env.PATH.split(delimiter)[0]).toBe(environment.binDir);
+      expect(process.env.PATH.split(delimiter)).not.toContain(binDir);
+      const inheritedPathBash = createBashTool({
+        runProcessImpl: async (_command, _args, options) => {
+          const result = spawnSync('/bin/sh', ['-c', 'rg --version; git --version; fd --version'], {
+            encoding: 'utf8',
+            env: options.env,
+          });
+          return {
+            code: result.status,
+            stdout: result.stdout.trim(),
+            stderr: result.stderr.trim(),
+            timedOut: false,
+            terminationError: null,
+          };
+        },
+      });
+      await expect(inheritedPathBash.execute({
+        command: 'rg --version',
+        cwd: yeaftDir,
+        timeout_ms: 5000,
+      }, {})).resolves.toBe('ripgrep 15.2.0\nSYSTEM-GIT\nSYSTEM-FD');
+    } finally {
+      process.env.PATH = originalPath;
+      cleanupManagedCliRuntimePaths();
+    }
+  }
+
+  async function verifyManagedRgSignalCleanup() {
+    if (process.platform === 'win32') return;
+
+    for (const signal of ['SIGTERM', 'SIGINT']) {
+      const cliDir = tempDir(`cli-rg-${signal.toLowerCase()}`);
+      const binDir = managedCliBinDir(cliDir);
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(join(binDir, 'rg'), '#!/bin/sh\necho ripgrep 15.2.0\n', { mode: 0o755 });
+      trustManagedCliFixtures(cliDir, ['rg']);
+      const tmpRoot = join(cliDir, 'tmp');
+      mkdirSync(tmpRoot);
+      const child = spawn(process.execPath, [
+        join(process.cwd(), 'agent', 'yeaft', 'cli.js'),
+        '--skip-mcp',
+        '--skip-skills',
+        '--input-format', 'stream-json',
+        '--output-format', 'stream-json',
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          TMPDIR: tmpRoot,
+          YEAFT_DIR: cliDir,
+          YEAFT_SKIP_MANAGED_CLI_INSTALLS: 'true',
+        },
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      try {
+        for (let i = 0; i < 500; i += 1) {
+          if (readdirSync(tmpRoot).some(name => name.startsWith('yeaft-managed-cli-'))) break;
+          await new Promise(resolveDelay => setTimeout(resolveDelay, 10));
+        }
+        const runtimeDirectories = readdirSync(tmpRoot)
+          .filter(name => name.startsWith('yeaft-managed-cli-'));
+        expect(runtimeDirectories).toHaveLength(1);
+        for (let i = 0; i < 500; i += 1) {
+          if (stdout.includes('"subtype":"init"')) break;
+          await new Promise(resolveDelay => setTimeout(resolveDelay, 10));
+        }
+        const stdoutEvents = stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        expect(stdoutEvents).toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: 'system', subtype: 'init' }),
+        ]));
+        child.kill(signal);
+        const outcome = await new Promise((resolveClose, rejectClose) => {
+          const timer = setTimeout(() => {
+            child.kill('SIGKILL');
+            rejectClose(new Error(`CLI did not preserve ${signal}; stdout=${stdout}; stderr=${stderr}`));
+          }, 10_000);
+          child.once('error', rejectClose);
+          child.once('close', (code, closeSignal) => {
+            clearTimeout(timer);
+            resolveClose({ code, signal: closeSignal });
+          });
+        });
+        expect(outcome).toEqual({ code: null, signal });
+        expect(readdirSync(tmpRoot)).toEqual([]);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }
+    }
+  }
+
+  async function verifyManagedRgCleanupRetry() {
+    if (process.platform === 'win32') return;
+
+    const yeaftDir = tempDir('cli-rg-cleanup-retry');
+    const binDir = managedCliBinDir(yeaftDir);
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'rg'), '#!/bin/sh\necho ripgrep 15.2.0\n', { mode: 0o755 });
+    trustManagedCliFixtures(yeaftDir, ['rg']);
+    const runtimeRoot = join(yeaftDir, 'runtime-root');
+    mkdirSync(runtimeRoot);
+    const originalTmpDir = process.env.TMPDIR;
+    process.env.TMPDIR = runtimeRoot;
+    try {
+      const environment = await prepareManagedCliToolEnvironment(Promise.resolve([]), 'rg', {
+        yeaftDir,
+        env: { PATH: '/usr/bin:/bin' },
+      });
+      expect(existsSync(environment.binDir)).toBe(true);
+
+      chmodSync(runtimeRoot, 0o500);
+      cleanupManagedCliRuntimePaths();
+      expect(existsSync(environment.binDir)).toBe(true);
+
+      chmodSync(runtimeRoot, 0o700);
+      cleanupManagedCliRuntimePaths();
+      expect(existsSync(environment.binDir)).toBe(false);
+    } finally {
+      chmodSync(runtimeRoot, 0o700);
+      cleanupManagedCliRuntimePaths();
+      if (originalTmpDir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = originalTmpDir;
+    }
+  }
+
+  async function verifyManagedRgAgentShutdownOrder() {
+    if (process.platform === 'win32') return;
+
+    const yeaftDir = tempDir('cli-rg-agent-shutdown-order');
+    const binDir = managedCliBinDir(yeaftDir);
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'rg'), '#!/bin/sh\necho ripgrep 15.2.0\n', { mode: 0o755 });
+    trustManagedCliFixtures(yeaftDir, ['rg']);
+    const runtimeRoot = join(yeaftDir, 'runtime-root');
+    mkdirSync(runtimeRoot);
+    const originalTmpDir = process.env.TMPDIR;
+    process.env.TMPDIR = runtimeRoot;
+    try {
+      const environment = await prepareManagedCliToolEnvironment(Promise.resolve([]), 'rg', {
+        yeaftDir,
+        env: { PATH: '/usr/bin:/bin' },
+      });
+      expect(existsSync(environment.binDir)).toBe(true);
+
+      let laterShutdownStarted = false;
+      const laterShutdown = new Promise(() => {});
+      const shutdown = runAfterManagedCliRuntimeCleanup(() => {
+        laterShutdownStarted = true;
+        return laterShutdown;
+      });
+
+      expect(laterShutdownStarted).toBe(true);
+      expect(existsSync(environment.binDir)).toBe(false);
+      await expect(Promise.race([
+        shutdown.then(() => 'settled'),
+        new Promise(resolveDelay => setTimeout(() => resolveDelay('pending'), 25)),
+      ])).resolves.toBe('pending');
+    } finally {
+      cleanupManagedCliRuntimePaths();
+      if (originalTmpDir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = originalTmpDir;
+    }
+  }
+
+  async function verifyManagedRgNormalExitCleanup() {
+    if (process.platform === 'win32') return;
+
+    for (const scenario of [
+      { name: 'success', input: '', expectedCode: 0 },
+      { name: 'failure', input: 'not-json\n', expectedCode: 1 },
+    ]) {
+      const cliDir = tempDir(`cli-rg-normal-${scenario.name}`);
+      const binDir = managedCliBinDir(cliDir);
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(join(binDir, 'rg'), [
+        '#!/bin/sh',
+        `printf '%s' "$0" > "$YEAFT_DIR/runtime-command"`,
+        'echo ripgrep 15.2.0',
+        '',
+      ].join('\n'), { mode: 0o755 });
+      trustManagedCliFixtures(cliDir, ['rg']);
+      const tmpRoot = join(cliDir, 'tmp');
+      mkdirSync(tmpRoot);
+      const child = spawn(process.execPath, [
+        join(process.cwd(), 'agent', 'yeaft', 'cli.js'),
+        '--skip-mcp',
+        '--skip-skills',
+        '--input-format', 'stream-json',
+        '--output-format', 'stream-json',
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          TMPDIR: tmpRoot,
+          YEAFT_DIR: cliDir,
+          YEAFT_SKIP_MANAGED_CLI_INSTALLS: 'true',
+        },
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.stdin.end(scenario.input);
+      const outcome = await new Promise((resolveClose, rejectClose) => {
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL');
+          rejectClose(new Error(`CLI ${scenario.name} timed out; stdout=${stdout}; stderr=${stderr}`));
+        }, 10_000);
+        child.once('error', rejectClose);
+        child.once('close', (code, signal) => {
+          clearTimeout(timer);
+          resolveClose({ code, signal });
+        });
+      });
+      expect(outcome).toEqual({ code: scenario.expectedCode, signal: null });
+      const runtimeCommand = readFileSync(join(cliDir, 'runtime-command'), 'utf8');
+      expect(runtimeCommand.startsWith(`${tmpRoot}${process.platform === 'win32' ? '\\' : '/'}`)).toBe(true);
+      expect(existsSync(runtimeCommand)).toBe(false);
+      expect(readdirSync(tmpRoot)).toEqual([]);
+      const stdoutEvents = stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      expect(stdoutEvents).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'system', subtype: 'init' }),
+      ]));
+      if (scenario.expectedCode !== 0) {
+        expect(stderr).toContain('Invalid stream-json input');
+      }
+    }
+  }
+
+  async function verifyUnverifiedManagedRgIsNotExposed() {
+    if (process.platform === 'win32') return;
+
+    const unverifiedDir = tempDir('cli-rg-unverified');
+    const unverifiedBin = managedCliBinDir(unverifiedDir);
+    mkdirSync(unverifiedBin, { recursive: true });
+    writeFileSync(join(unverifiedBin, 'rg'), '#!/bin/sh\necho unverified\n', { mode: 0o755 });
+    const unverifiedEnv = { PATH: '' };
+    await expect(prepareManagedCliToolEnvironment(Promise.resolve([]), 'rg', {
+      yeaftDir: unverifiedDir,
+      env: unverifiedEnv,
+    })).resolves.toEqual({ name: 'rg', activated: false, command: null });
+    expect(unverifiedEnv.PATH).toBe('');
+
+    const systemDir = tempDir('cli-rg-system');
+    const systemBin = join(systemDir, 'system-bin');
+    mkdirSync(systemBin);
+    const systemRg = join(systemBin, 'rg');
+    writeFileSync(systemRg, '#!/bin/sh\necho system rg\n', { mode: 0o755 });
+    const systemEnv = { PATH: systemBin };
+    await expect(prepareManagedCliToolEnvironment(Promise.resolve([]), 'rg', {
+      yeaftDir: systemDir,
+      env: systemEnv,
+    })).resolves.toEqual({ name: 'rg', activated: false, command: systemRg });
+    expect(systemEnv.PATH).toBe(systemBin);
+  }
+
   it('keeps managed CLI filters, process, and fallback boundaries', async () => {
+    await verifyManagedRgEnvironment();
+    await verifyManagedRgSignalCleanup();
+    await verifyManagedRgCleanupRetry();
+    await verifyManagedRgAgentShutdownOrder();
+    await verifyManagedRgNormalExitCleanup();
+    await verifyUnverifiedManagedRgIsNotExposed();
+
     const processResult = (overrides = {}) => ({
       code: 0,
       stdout: '',
@@ -5790,5 +6133,5 @@ describe('managed CLI setup and fast tool integration', () => {
       }
     }
     await verifyRipgrepParity();
-  });
+  }, 120_000);
 });
