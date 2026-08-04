@@ -72,14 +72,16 @@ function clamp(value, minimum, maximum) {
 }
 
 function inputEventView(event, occurrence) {
+  const hasSourceIdentity = Boolean(event.data?.inputId || event.id != null);
   return withGuidanceOccurrence({
     eventId: event.id,
     inputId: event.data?.inputId || null,
     actionId: event.actionId || null,
     text: event.data?.text || '',
-    quote: event.data?.quote || null,
-    attachments: Array.isArray(event.data?.attachments) ? event.data.attachments : [],
-  }, event.data?.inputId || event.id != null ? occurrence : null);
+    quote: hasSourceIdentity ? event.data?.quote || null : null,
+    attachments: hasSourceIdentity && Array.isArray(event.data?.attachments)
+      ? event.data.attachments : [],
+  }, hasSourceIdentity ? occurrence : null);
 }
 
 function inputContextView(value, event, fallbackInputId, occurrence) {

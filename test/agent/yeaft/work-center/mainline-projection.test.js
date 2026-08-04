@@ -271,7 +271,11 @@ describe('Mainline projection', () => {
       actions: [duplicateEventAction],
       events: [{
         id: null, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
-        data: { text: 'UNIDENTIFIED INPUT', quote: { role: 'assistant', content: 'OMIT THIS QUOTE' } },
+        data: {
+          text: 'UNIDENTIFIED INPUT',
+          quote: { role: 'assistant', content: 'OMIT THIS QUOTE' },
+          attachments: [{ id: 'omit-this-attachment' }],
+        },
       }],
       sessionContext: [{ role: 'user', content: 'MISSING IDENTITY SESSION CONTEXT' }],
     }), duplicateEventAction).contextSnapshot;
@@ -279,7 +283,9 @@ describe('Mainline projection', () => {
       .find(value => value.text === 'UNIDENTIFIED INPUT');
 
     expect(unidentifiedInput).toBeDefined();
+    expect(unidentifiedInput).toMatchObject({ attachments: [] });
     expect(unidentifiedInput).not.toHaveProperty('quotedContext');
+    expect(JSON.stringify(missingIdentitySnapshot)).not.toContain('omit-this-attachment');
     expect(missingIdentitySnapshot.userContext.sessionContext)
       .toEqual([{ role: 'user', vpId: null, text: 'MISSING IDENTITY SESSION CONTEXT' }]);
     expect(missingIdentitySnapshot.userContext).toMatchObject({ includedCount: 2, omittedCount: 0 });
