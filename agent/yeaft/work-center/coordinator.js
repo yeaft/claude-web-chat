@@ -17,6 +17,7 @@ const COORDINATOR_MAX_REPLY_CHARS = 8_000;
 const COORDINATOR_MAX_INSTRUCTION_CHARS = 8_000;
 const COORDINATOR_MAX_OUTPUT_TOKENS = 8_192;
 const COORDINATOR_MAX_SNAPSHOT_BYTES = 64 * 1024;
+const COORDINATOR_MAX_QUOTE_BYTES = 8 * 1024;
 const COORDINATOR_DECISION_ATTEMPTS = 2;
 const COORDINATOR_RECOVERY_DECISION_ATTEMPTS = 2;
 const COORDINATOR_MAX_CONVERSATION_MESSAGES = 20;
@@ -46,6 +47,10 @@ function truncateUtf8(value, maxBytes) {
 
 function jsonByteLength(value) {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+function coordinatorQuotePrompt(quote) {
+  return sessionMessageQuotePrompt(quote, { maxBytes: COORDINATOR_MAX_QUOTE_BYTES });
 }
 
 function boundedJsonArray(values, maxBytes, options = {}) {
@@ -553,7 +558,7 @@ export class WorkItemCoordinator {
     if (!text && addedAttachments.length === 0) {
       throw new Error('Work Center Coordinator message or attachments are required');
     }
-    const promptText = `${text || `The user added ${addedAttachments.length} attachment(s) for this WorkItem.`}${sessionMessageQuotePrompt(quote)}`;
+    const promptText = `${text || `The user added ${addedAttachments.length} attachment(s) for this WorkItem.`}${coordinatorQuotePrompt(quote)}`;
     let started = this.store.beginCoordinatorTurn(id, text, {
       revision: Number(input.revision),
       planRevision: Number(input.planRevision),
@@ -588,7 +593,7 @@ export class WorkItemCoordinator {
     const quote = normalizeSessionMessageQuote(options.quote);
     const text = typeof options.text === 'string' ? options.text : '';
     return this.#scheduleTurn(started, {
-      text: `${text}${sessionMessageQuotePrompt(quote)}`,
+      text: `${text}${coordinatorQuotePrompt(quote)}`,
       recovery: options.recovery === true,
       addedAttachments: Array.isArray(options.addedAttachments) ? options.addedAttachments : [],
       options,
