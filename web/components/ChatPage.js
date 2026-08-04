@@ -120,6 +120,7 @@ export default {
           :work-center-open="store.workCenterOpen"
           @select="store.openCatalogSession"
           @create="onUnifiedCreate"
+          @create-in-project="onUnifiedCreateInProject"
           @close-work-center="store.leaveWorkCenter"
           @action="onUnifiedSessionAction"
         />
@@ -315,8 +316,9 @@ export default {
       <SessionCreateModal
         v-if="unifiedSessionCreateOpen"
         :initial-provider="unifiedSessionCreateProvider"
-        @close="unifiedSessionCreateOpen = false"
-        @created="unifiedSessionCreateOpen = false"
+        :initial-agent-id="unifiedSessionCreateProject?.legacyAgentId || null"
+        @close="closeUnifiedSessionCreate"
+        @created="onUnifiedSessionCreated"
       />
 
       <!-- Legacy Conversation Modal (resume and pre-catalog fallback) -->
@@ -502,6 +504,7 @@ export default {
       showConversationModal: false,
       unifiedSessionCreateOpen: false,
       unifiedSessionCreateProvider: 'yeaft',
+      unifiedSessionCreateProject: null,
       convModalAgent: '',
       convModalWorkDir: '',
       convModalProvider: 'claude-code',
@@ -603,8 +606,33 @@ export default {
     },
 
     onUnifiedCreate(provider = 'yeaft') {
+      this.unifiedSessionCreateProject = null;
       this.unifiedSessionCreateProvider = ['yeaft', 'copilot', 'claude-code'].includes(provider) ? provider : 'yeaft';
       this.unifiedSessionCreateOpen = true;
+    },
+    onUnifiedCreateInProject({ project } = {}) {
+      if (!project?.id) return;
+      this.unifiedSessionCreateProject = project;
+      this.unifiedSessionCreateProvider = 'yeaft';
+      this.unifiedSessionCreateOpen = true;
+    },
+    closeUnifiedSessionCreate() {
+      this.unifiedSessionCreateOpen = false;
+      this.unifiedSessionCreateProject = null;
+    },
+    async onUnifiedSessionCreated(session) {
+      const project = this.unifiedSessionCreateProject;
+      this.closeUnifiedSessionCreate();
+      if (!project || !session?.id) return;
+      const agentId = session.agentId || project.legacyAgentId || this.store.currentAgent || null;
+      const result = await this.store.mutateProject?.('move_session', {
+        sessionId: session.id,
+        projectId: project.legacyProjectId || project.id,
+      }, agentId);
+      if (!result?.ok) {
+        const message = result?.error?.message || result?.error?.code || 'unknown';
+        alert(this.$t('sidebar.projects.assignFailed', { name: project.name, message }));
+      }
     },
     openWorkCenter(agentId = null) {
       const target = this.workCenterAgents.find(agent => agent.id === agentId)

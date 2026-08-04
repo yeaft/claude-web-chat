@@ -76,6 +76,7 @@ export default {
   components: { VpAvatar, ModernSelect },
   props: {
     initialProvider: { type: String, default: 'yeaft' },
+    initialAgentId: { type: String, default: null },
   },
   emits: ['close', 'created'],
   template: `
@@ -388,7 +389,7 @@ export default {
         defaultVpId: null,
         workDir: '',
         // Which agent owns the new session — populated in mounted().
-        agentId: null,
+        agentId: this.initialAgentId || null,
       },
       busy: false,
       submitError: '',
