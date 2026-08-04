@@ -4245,30 +4245,37 @@ describe('managed CLI setup and fast tool integration', () => {
     const binDir = managedCliBinDir(yeaftDir);
     mkdirSync(binDir, { recursive: true });
     writeFileSync(join(binDir, 'rg'), '#!/bin/sh\necho ripgrep 15.2.0\n', { mode: 0o755 });
+    writeFileSync(join(binDir, 'git'), '#!/bin/sh\necho UNTRUSTED-GIT\n', { mode: 0o755 });
+    writeFileSync(join(binDir, 'fd'), '#!/bin/sh\necho UNVERIFIED-FD\n', { mode: 0o755 });
     trustManagedCliFixtures(yeaftDir, ['rg']);
+
+    const systemBin = join(yeaftDir, 'system-bin');
+    mkdirSync(systemBin);
+    writeFileSync(join(systemBin, 'git'), '#!/bin/sh\necho SYSTEM-GIT\n', { mode: 0o755 });
+    writeFileSync(join(systemBin, 'fd'), '#!/bin/sh\necho SYSTEM-FD\n', { mode: 0o755 });
 
     let markReady;
     const rgReady = new Promise(resolveReady => { markReady = resolveReady; });
     const ready = Promise.resolve([]);
     ready.toolReady = { rg: rgReady };
     const originalPath = process.env.PATH;
-    process.env.PATH = ['/usr/bin', '/bin'].join(delimiter);
+    process.env.PATH = [systemBin, '/usr/bin', '/bin'].join(delimiter);
     try {
       const pending = prepareManagedCliToolEnvironment(ready, 'rg', { yeaftDir });
       await new Promise(resolveTick => setImmediate(resolveTick));
       expect(process.env.PATH.split(delimiter)).not.toContain(binDir);
 
       markReady({ name: 'rg', status: 'available', path: join(binDir, 'rg') });
-      await expect(pending).resolves.toEqual({
-        name: 'rg',
-        activated: true,
-        command: join(binDir, 'rg'),
-        binDir,
-      });
-      expect(process.env.PATH.split(delimiter)[0]).toBe(binDir);
+      const environment = await pending;
+      expect(environment).toMatchObject({ name: 'rg', activated: true });
+      expect(environment.command).toBe(join(environment.binDir, 'rg'));
+      expect(environment.binDir).not.toBe(binDir);
+      expect(readdirSync(environment.binDir)).toEqual(['rg']);
+      expect(process.env.PATH.split(delimiter)[0]).toBe(environment.binDir);
+      expect(process.env.PATH.split(delimiter)).not.toContain(binDir);
       const inheritedPathBash = createBashTool({
         runProcessImpl: async (_command, _args, options) => {
-          const result = spawnSync('/bin/sh', ['-lc', 'rg --version'], {
+          const result = spawnSync('/bin/sh', ['-c', 'rg --version; git --version; fd --version'], {
             encoding: 'utf8',
             env: options.env,
           });
@@ -4285,7 +4292,7 @@ describe('managed CLI setup and fast tool integration', () => {
         command: 'rg --version',
         cwd: yeaftDir,
         timeout_ms: 5000,
-      }, {})).resolves.toBe('ripgrep 15.2.0');
+      }, {})).resolves.toBe('ripgrep 15.2.0\nSYSTEM-GIT\nSYSTEM-FD');
     } finally {
       process.env.PATH = originalPath;
     }

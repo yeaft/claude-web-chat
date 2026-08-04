@@ -3,10 +3,12 @@ import { spawnSync } from 'node:child_process';
 import {
   accessSync,
   chmodSync,
+  copyFileSync,
   constants,
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -15,7 +17,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { gunzipSync, inflateRawSync } from 'node:zlib';
 
@@ -28,6 +30,8 @@ const LOCK_STALE_MS = 2 * 60 * 1000;
 const LOCK_WAIT_MS = 15_000;
 const STATE_FILE = 'managed-cli.json';
 const installFlights = new Map();
+const runtimePathDirectories = new Set();
+let runtimePathCleanupRegistered = false;
 
 const TOOL_SPECS = Object.freeze({
   rg: {
@@ -78,8 +82,11 @@ export function managedCliBinDir(yeaftDir = DEFAULT_ROOT) {
   return join(resolve(yeaftDir), 'bin');
 }
 
-export function prependManagedCliBinToPath(yeaftDir = DEFAULT_ROOT, env = process.env, platform = process.platform) {
-  const binDir = managedCliBinDir(yeaftDir);
+function prependDirectoryToPath(
+  binDir,
+  env = process.env,
+  platform = process.platform,
+) {
   const current = typeof env.PATH === 'string'
     ? env.PATH
     : (typeof env.Path === 'string' ? env.Path : '');
@@ -91,6 +98,10 @@ export function prependManagedCliBinToPath(yeaftDir = DEFAULT_ROOT, env = proces
     if (platform === 'win32' && Object.hasOwn(env, 'Path')) env.Path = nextPath;
   }
   return binDir;
+}
+
+export function prependManagedCliBinToPath(yeaftDir = DEFAULT_ROOT, env = process.env, platform = process.platform) {
+  return prependDirectoryToPath(managedCliBinDir(yeaftDir), env, platform);
 }
 
 function canExecute(path, platform) {
@@ -155,10 +166,12 @@ function inspectManagedBinary(name, { yeaftDir, platform, arch }) {
     return { path, exists: true, valid: false };
   }
   try {
+    const binarySha256 = hashFile(path);
     return {
       path,
       exists: true,
-      valid: hashFile(path) === installation.binarySha256,
+      valid: binarySha256 === installation.binarySha256,
+      binarySha256,
     };
   } catch {
     return { path, exists: true, valid: false };
@@ -608,10 +621,57 @@ export function managedCliToolReady(ready, name) {
   return ready?.toolReady?.[name] || ready || Promise.resolve([]);
 }
 
+function removeRuntimePathDirectory(path) {
+  try { chmodSync(path, 0o700); } catch {}
+  try { rmSync(path, { recursive: true, force: true }); } catch {}
+  runtimePathDirectories.delete(path);
+}
+
+function registerRuntimePathDirectory(path) {
+  runtimePathDirectories.add(path);
+  if (runtimePathCleanupRegistered) return;
+  runtimePathCleanupRegistered = true;
+  process.once('exit', () => {
+    for (const directory of [...runtimePathDirectories]) {
+      removeRuntimePathDirectory(directory);
+    }
+  });
+}
+
+function createIsolatedManagedCommand(name, managed, platform) {
+  const binDir = mkdtempSync(join(tmpdir(), 'yeaft-managed-cli-'));
+  const command = join(binDir, executableName(name, platform));
+  const temporary = `${command}.tmp`;
+  try {
+    copyFileSync(managed.path, temporary, constants.COPYFILE_EXCL);
+    if (platform !== 'win32') chmodSync(temporary, 0o500);
+    if (hashFile(temporary) !== managed.binarySha256) {
+      throw new Error(`managed ${name} changed while preparing its runtime command`);
+    }
+    renameSync(temporary, command);
+    const verification = spawnSync(command, ['--version'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true,
+    });
+    if (verification.error || verification.status !== 0
+      || !versionOutputMatches(name, TOOL_SPECS[name].version, verification.stdout)) {
+      throw new Error(`isolated managed ${name} failed its version check`);
+    }
+    if (platform !== 'win32') chmodSync(binDir, 0o500);
+    registerRuntimePathDirectory(binDir);
+    return { binDir, command };
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    removeRuntimePathDirectory(binDir);
+    throw error;
+  }
+}
+
 /**
- * Wait for one managed command and expose its bin directory to child processes.
- * The PATH is changed only when the resolved command is the checksum-verified
- * managed binary. System commands already on PATH remain untouched.
+ * Wait for one managed command and expose it to child processes through an
+ * isolated PATH directory. The directory contains only the checksum-verified
+ * command, so unrelated files in the shared managed bin directory stay hidden.
  */
 export async function prepareManagedCliToolEnvironment(
   ready,
@@ -624,14 +684,15 @@ export async function prepareManagedCliToolEnvironment(
   const env = options.env || process.env;
   await managedCliToolReady(ready, name);
 
-  const command = resolveManagedCliCommand(name, { yeaftDir, platform, arch, env });
-  const managedPath = join(managedCliBinDir(yeaftDir), executableName(name, platform));
-  if (!command || !samePath(command, managedPath, platform)) {
+  const managed = inspectManagedBinary(name, { yeaftDir, platform, arch });
+  if (!managed.valid) {
+    const command = resolveExternalCommand(name, { yeaftDir, platform, env });
     return { name, activated: false, command };
   }
 
-  const binDir = prependManagedCliBinToPath(yeaftDir, env, platform);
-  return { name, activated: true, command, binDir };
+  const isolated = createIsolatedManagedCommand(name, managed, platform);
+  prependDirectoryToPath(isolated.binDir, env, platform);
+  return { name, activated: true, ...isolated };
 }
 
 export function summarizeManagedCliResults(results) {
