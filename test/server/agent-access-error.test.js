@@ -196,6 +196,71 @@ describe('resolveAgentAccessError', () => {
       pinned: true, sortRank: 0,
     });
 
+    // A first pin has no metadata row and intentionally omits `hidden`. It
+    // must remain a normal metadata upsert instead of being mistaken for a
+    // restore of a hidden Session.
+    const firstChatPinId = `first-chat-pin-${suffix}`;
+    const firstYeaftPinId = `first-yeaft-pin-${suffix}`;
+    sessionDb.create(firstChatPinId, 'agent-a', 'A', '/tmp', null, 'First Chat Pin', userId, 'claude-code');
+    yeaftSessionDb.upsertFromSnapshot(userId, 'agent-a', { id: firstYeaftPinId, name: 'First Yeaft Pin' });
+    const pinClient = {
+      userId,
+      role: 'user',
+      authenticated: true,
+      encryptOutbound: false,
+      sent: [],
+      ws: { readyState: WebSocket.OPEN, send(payload) { this.client.sent.push(JSON.parse(payload)); } },
+    };
+    pinClient.ws.client = pinClient;
+    const originalSkipAuth = CONFIG.skipAuth;
+    CONFIG.skipAuth = false;
+    try {
+      await handleClientConversation(`first-pin-chat-${suffix}`, pinClient, {
+        type: 'set_session_ui_metadata',
+        requestId: 'first-pin-chat',
+        catalogKey: `chat:${firstChatPinId}`,
+        routeRef: { runtimeProvider: 'claude-code', agentId: 'agent-a', sessionId: firstChatPinId },
+        pinned: true,
+        sortRank: null,
+      }, async () => true);
+      expect(pinClient.sent.at(-1)).toMatchObject({
+        type: 'session_ui_metadata_updated',
+        requestId: 'first-pin-chat',
+        ok: true,
+        pinned: true,
+        hidden: false,
+      });
+      expect(sessionUiMetadataDb.get(userId, `chat:${firstChatPinId}`)).toMatchObject({
+        pinned: true,
+        hidden: false,
+      });
+      expect(sessionDb.get(firstChatPinId).is_pinned).toBe(1);
+
+      pinClient.sent = [];
+      await handleClientConversation(`first-pin-yeaft-${suffix}`, pinClient, {
+        type: 'set_session_ui_metadata',
+        requestId: 'first-pin-yeaft',
+        catalogKey: `yeaft:agent-a:${firstYeaftPinId}`,
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: firstYeaftPinId },
+        pinned: true,
+        sortRank: null,
+      }, async () => true);
+      expect(pinClient.sent.at(-1)).toMatchObject({
+        type: 'session_ui_metadata_updated',
+        requestId: 'first-pin-yeaft',
+        ok: true,
+        pinned: true,
+        hidden: false,
+      });
+      expect(sessionUiMetadataDb.get(userId, `yeaft:agent-a:${firstYeaftPinId}`)).toMatchObject({
+        pinned: true,
+        hidden: false,
+      });
+      expect(yeaftSessionDb.getForAgent(userId, 'agent-a', firstYeaftPinId).pinned).toBe(true);
+    } finally {
+      CONFIG.skipAuth = originalSkipAuth;
+    }
+
     sessionUiMetadataDb.applyBatch(userId, [{
       catalogKey: `yeaft:agent-a:same-${suffix}`,
       runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: `same-${suffix}`,

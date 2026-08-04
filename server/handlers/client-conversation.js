@@ -659,7 +659,8 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       const nextPinned = typeof msg.pinned === 'boolean'
         ? msg.pinned
         : (currentMetadata?.pinned ?? !!persistedPinned);
-      const nextHidden = typeof msg.hidden === 'boolean'
+      const hasHidden = typeof msg.hidden === 'boolean';
+      const nextHidden = hasHidden
         ? msg.hidden
         : currentMetadata?.hidden === true;
       const nextSortRank = Number.isFinite(msg.sortRank)
@@ -669,7 +670,11 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       let persisted = false;
       if (authorized) {
         try {
-          const visibilityChanged = currentMetadata?.hidden !== nextHidden;
+          // Only an explicit hidden mutation changes catalog membership. A
+          // pinned-only first update has no metadata row yet, so comparing an
+          // implicit undefined state to false would incorrectly treat it as a
+          // restore and reject the valid visible route.
+          const visibilityChanged = hasHidden && (currentMetadata?.hidden === true) !== nextHidden;
           const updates = visibilityChanged
             ? catalogVisibilityUpdates(client, {
               catalogKey: expectedCatalogKey,
