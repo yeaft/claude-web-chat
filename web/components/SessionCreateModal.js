@@ -249,8 +249,27 @@ export default {
           </div>
         </div>
 
-        <!-- Content area: folders or existing sessions for the chosen workDir -->
+        <!-- Content area: hidden Sessions, folders, or existing Sessions for the chosen workDir -->
         <div class="resume-modal-content">
+          <div v-if="hiddenSessions.length > 0" class="resume-panel">
+            <div class="resume-panel-header">
+              <span>{{ $t('sidebar.sessions.hidden') }}</span>
+            </div>
+            <div class="resume-panel-list">
+              <div
+                v-for="session in hiddenSessions"
+                :key="session.catalogKey"
+                class="resume-list-item session-item-compact"
+                :class="{ 'is-busy': restoringHiddenKey === session.catalogKey, 'is-disabled': restoringHiddenKey && restoringHiddenKey !== session.catalogKey }"
+                :aria-disabled="restoringHiddenKey && restoringHiddenKey !== session.catalogKey ? 'true' : undefined"
+                @click="restoreHiddenSession(session)"
+              >
+                <div class="item-name">{{ session.title }}</div>
+                <div class="item-time">{{ session.workDir || session.agentName || session.routeRef.agentId }}</div>
+              </div>
+            </div>
+          </div>
+
           <!-- Folder aggregation (workDir empty) -->
           <div class="resume-panel" v-if="!form.workDir">
             <div class="resume-panel-header">
@@ -393,6 +412,7 @@ export default {
       },
       busy: false,
       submitError: '',
+      restoringHiddenKey: null,
       // Folder picker state — extracted to a shared mixin (originally
       // so SessionRestoreModal could reuse it; that modal has been
       // folded back in, but the mixin shape is preserved for future
@@ -514,6 +534,10 @@ export default {
     },
     allSessions() {
       return this.sessionsStore?.sessionList || [];
+    },
+    hiddenSessions() {
+      return (this.chat?.hiddenSessionCatalog || [])
+        .filter(row => row?.routeRef?.agentId && row?.routeRef?.sessionId);
     },
     // Sessions owned by the agent the user picked IN THIS MODAL
     // (form.agentId) — NOT the globally-active agent (chat.currentAgent /
@@ -851,6 +875,27 @@ export default {
     },
     retryVpSnapshot() {
       this.subscribeVpsFor(this.form.agentId, { force: true });
+    },
+    async restoreHiddenSession(session) {
+      if (!session?.catalogKey || this.restoringHiddenKey) return;
+      const chat = this.chat;
+      if (!chat || typeof chat.restoreCatalogSession !== 'function') return;
+      this.restoringHiddenKey = session.catalogKey;
+      try {
+        const restored = chat.restoreCatalogSession(session);
+        if (!restored) return;
+        const { runtimeProvider, agentId, sessionId } = session.routeRef;
+        if (runtimeProvider === 'yeaft') {
+          chat.enterYeaft?.(agentId, { deferBootstrap: true });
+          chat.setActiveSessionFilter?.(sessionId, { agentId, force: true });
+        } else {
+          if (chat.currentView === 'yeaft') chat.leaveYeaft?.();
+          chat.selectConversation?.(sessionId, agentId);
+        }
+        this.$emit('close');
+      } finally {
+        this.restoringHiddenKey = null;
+      }
     },
     loadProviderSessions() {
       if (this.isYeaftProvider) return this.loadRestoreCandidates();

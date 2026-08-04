@@ -8,6 +8,7 @@ const forwardToAgent = vi.fn(async () => {});
 const broadcastAgentList = vi.fn(async () => {});
 const broadcastSessionCatalog = vi.fn(async () => {});
 const buildSessionCatalog = vi.fn(() => []);
+const buildHiddenSessionCatalog = vi.fn(() => []);
 const getByUser = vi.fn(() => []);
 const getByAgent = vi.fn(() => []);
 const getActiveChatSessions = vi.fn(() => []);
@@ -25,11 +26,14 @@ const reorderProjects = vi.fn();
 const moveProjectSession = vi.fn();
 const contextForSession = vi.fn(() => null);
 const getForAgent = vi.fn(() => null);
+const deleteYeaftSessionForAgent = vi.fn();
+const getSessionUiMetadata = vi.fn(() => null);
 const reconcileFromSnapshot = vi.fn();
 const upsertFromSnapshot = vi.fn();
 const getChatSession = vi.fn(() => null);
 const updateChatSession = vi.fn();
 const applySessionUiMetadataBatch = vi.fn(() => true);
+const deleteSessionUiMetadataForRoute = vi.fn(() => true);
 const verifyConversationOwnership = vi.fn(() => true);
 const verifyAgentOwnership = vi.fn(() => true);
 
@@ -39,6 +43,7 @@ vi.mock('../../server/ws-utils.js', () => ({
   broadcastAgentList,
   broadcastSessionCatalog,
   buildSessionCatalog,
+  buildHiddenSessionCatalog,
   verifyConversationOwnership,
   verifyAgentOwnership,
 }));
@@ -73,12 +78,14 @@ vi.mock('../../server/database.js', () => ({
     getForAgent,
     reconcileFromSnapshot,
     upsertFromSnapshot,
+    deleteForAgent: deleteYeaftSessionForAgent,
     setOrderForUser: vi.fn(() => true),
   },
   sessionUiMetadataDb: {
-    get: vi.fn(() => null),
+    get: getSessionUiMetadata,
     getByUser: getSessionUiMetadataByUser,
     applyBatch: applySessionUiMetadataBatch,
+    deleteForRoute: deleteSessionUiMetadataForRoute,
   },
 }));
 
@@ -131,10 +138,16 @@ afterEach(() => {
   broadcastSessionCatalog.mockClear();
   buildSessionCatalog.mockReset();
   buildSessionCatalog.mockReturnValue([]);
+  buildHiddenSessionCatalog.mockReset();
+  buildHiddenSessionCatalog.mockReturnValue([]);
   getForAgent.mockReset();
+  deleteYeaftSessionForAgent.mockClear();
+  getSessionUiMetadata.mockReset();
+  getSessionUiMetadata.mockReturnValue(null);
   getChatSession.mockReset();
   updateChatSession.mockClear();
   applySessionUiMetadataBatch.mockClear();
+  deleteSessionUiMetadataForRoute.mockClear();
   verifyConversationOwnership.mockReset();
   verifyConversationOwnership.mockReturnValue(true);
   verifyAgentOwnership.mockReset();
@@ -298,6 +311,23 @@ describe('Yeaft Session online Agent filtering', () => {
     ]);
     expect(catalog.map(row => row.availability)).toEqual(['online', 'offline', 'offline']);
     expect(catalog.some(row => row.catalogKey === 'chat:inactive')).toBe(false);
+    const hiddenRows = projectSessionCatalog({
+      yeaftSessions: [{ id: 'hidden', agentId: 'agent-online', name: 'Hidden', createdAt: 10 }],
+      metadata: [{ catalogKey: yeaftCatalogKey('agent-online', 'hidden'), hidden: true }],
+      onlineAgentIds: new Set(['agent-online']),
+    });
+    expect(hiddenRows).toEqual([]);
+    expect(projectSessionCatalog({
+      yeaftSessions: [{ id: 'hidden', agentId: 'agent-online', name: 'Hidden', createdAt: 10 }],
+      metadata: [{ catalogKey: yeaftCatalogKey('agent-online', 'hidden'), hidden: true }],
+      onlineAgentIds: new Set(['agent-online']),
+      includeHidden: true,
+    })).toEqual([
+      expect.objectContaining({
+        catalogKey: 'yeaft:agent-online:hidden',
+        hidden: true,
+      }),
+    ]);
     expect(() => projectSessionCatalog({
       chatSessions: [{ id: 'bad', agent_id: 'a', provider: 'mystery', is_active: 1 }],
     })).toThrow(/Unknown Chat runtime provider/);
@@ -573,6 +603,137 @@ describe('Yeaft Session online Agent filtering', () => {
       ok: true,
     });
 
+    // A drag payload contains only visible rows. The server appends hidden
+    // rows to the same transaction so a later restore cannot duplicate a
+    // visible rank.
+    CONFIG.skipAuth = true;
+    const visibleRows = [
+      {
+        catalogKey: 'chat:visible-c',
+        routeRef: { runtimeProvider: 'claude-code', agentId: 'agent-a', sessionId: 'visible-c' },
+        pinned: false,
+      },
+      {
+        catalogKey: 'chat:visible-a',
+        routeRef: { runtimeProvider: 'claude-code', agentId: 'agent-a', sessionId: 'visible-a' },
+        pinned: false,
+      },
+    ];
+    const hiddenRow = {
+      catalogKey: 'chat:hidden-b',
+      routeRef: { runtimeProvider: 'claude-code', agentId: 'agent-a', sessionId: 'hidden-b' },
+      pinned: false,
+      hidden: true,
+    };
+    buildSessionCatalog.mockReturnValue(visibleRows);
+    buildHiddenSessionCatalog.mockReturnValue([hiddenRow]);
+    await handleClientConversation('client-1', catalogClient, {
+      type: 'reorder_session_catalog',
+      requestId: 'visible-only-order',
+      sessions: visibleRows,
+    }, allow);
+    expect(applySessionUiMetadataBatch).toHaveBeenLastCalledWith('user-1', [
+      expect.objectContaining({ catalogKey: 'chat:visible-c', sortRank: 0 }),
+      expect.objectContaining({ catalogKey: 'chat:visible-a', sortRank: 1 }),
+      expect.objectContaining({ catalogKey: 'chat:hidden-b', hidden: true, sortRank: 2 }),
+    ]);
+
+    // Restore re-normalizes the full catalog atomically. Its result has one
+    // rank per row even after a prior visible-only reorder.
+    getChatSession.mockReturnValue({ id: 'hidden-b', user_id: 'user-1', agent_id: 'agent-a', provider: null, is_pinned: 0 });
+    getSessionUiMetadata.mockReturnValue({ pinned: false, hidden: true, sortRank: 2 });
+    buildSessionCatalog.mockReturnValue(visibleRows);
+    buildHiddenSessionCatalog.mockReturnValue([hiddenRow]);
+    catalogClient.sent = [];
+    await handleClientConversation('client-1', catalogClient, {
+      type: 'set_session_ui_metadata',
+      requestId: 'restore-after-visible-order',
+      catalogKey: 'chat:hidden-b',
+      routeRef: { runtimeProvider: 'claude-code', agentId: 'agent-a', sessionId: 'hidden-b' },
+      hidden: false,
+    }, allow);
+    expect(applySessionUiMetadataBatch).toHaveBeenLastCalledWith('user-1', [
+      expect.objectContaining({ catalogKey: 'chat:visible-c', hidden: false, sortRank: 0 }),
+      expect.objectContaining({ catalogKey: 'chat:visible-a', hidden: false, sortRank: 1 }),
+      expect.objectContaining({ catalogKey: 'chat:hidden-b', hidden: false, sortRank: 2 }),
+    ]);
+    expect(catalogClient.sent.at(-1)).toMatchObject({
+      type: 'session_ui_metadata_updated',
+      requestId: 'restore-after-visible-order',
+      ok: true,
+      hidden: false,
+    });
+
+    // Sidebar removal is a user-scoped metadata mutation. It must preserve
+    // the Agent Session and message storage by never forwarding an archive
+    // command; the catalog broadcaster alone removes the row from view.
+    getForAgent.mockReturnValue({ id: 'same-id', agentId: 'agent-a', isArchived: false, pinned: true });
+    getSessionUiMetadata.mockReturnValue({ pinned: true, hidden: false, sortRank: 3 });
+    buildSessionCatalog.mockReturnValue([{
+      catalogKey: 'yeaft:agent-a:same-id',
+      routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: 'same-id' },
+      pinned: true,
+      hidden: false,
+    }]);
+    buildHiddenSessionCatalog.mockReturnValue([]);
+    catalogClient.sent = [];
+    await handleClientConversation('client-1', catalogClient, {
+      type: 'set_session_ui_metadata',
+      requestId: 'hide-yeaft-row',
+      catalogKey: 'yeaft:agent-a:same-id',
+      routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: 'same-id' },
+      hidden: true,
+    }, allow);
+    expect(applySessionUiMetadataBatch).toHaveBeenLastCalledWith('user-1', [
+      expect.objectContaining({
+        catalogKey: 'yeaft:agent-a:same-id',
+        pinned: true,
+        hidden: true,
+        sortRank: 0,
+      }),
+    ]);
+    expect(forwardToAgent).not.toHaveBeenCalledWith('agent-a', expect.objectContaining({
+      type: 'yeaft_archive_session',
+    }));
+    expect(catalogClient.sent.at(-1)).toMatchObject({
+      type: 'session_ui_metadata_updated',
+      requestId: 'hide-yeaft-row',
+      ok: true,
+      hidden: true,
+      pinned: true,
+      sortRank: 3,
+    });
+
+    getSessionUiMetadata.mockReturnValue({ pinned: true, hidden: true, sortRank: 3 });
+    buildSessionCatalog.mockReturnValue([]);
+    buildHiddenSessionCatalog.mockReturnValue([{
+      catalogKey: 'yeaft:agent-a:same-id',
+      routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: 'same-id' },
+      pinned: true,
+      hidden: true,
+    }]);
+    catalogClient.sent = [];
+    await handleClientConversation('client-1', catalogClient, {
+      type: 'set_session_ui_metadata',
+      requestId: 'restore-yeaft-row',
+      catalogKey: 'yeaft:agent-a:same-id',
+      routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: 'same-id' },
+      hidden: false,
+    }, allow);
+    expect(applySessionUiMetadataBatch).toHaveBeenLastCalledWith('user-1', [
+      expect.objectContaining({
+        catalogKey: 'yeaft:agent-a:same-id',
+        pinned: true,
+        hidden: false,
+      }),
+    ]);
+    expect(catalogClient.sent.at(-1)).toMatchObject({
+      type: 'session_ui_metadata_updated',
+      requestId: 'restore-yeaft-row',
+      ok: true,
+      hidden: false,
+    });
+
     applySessionUiMetadataBatch.mockClear();
     broadcastSessionCatalog.mockClear();
     CONFIG.skipAuth = true;
@@ -617,6 +778,11 @@ describe('Yeaft Session online Agent filtering', () => {
     expect(forwardToAgent).toHaveBeenCalledWith('agent-a', {
       type: 'delete_conversation',
       conversationId: 'chat-1',
+    });
+    expect(deleteSessionUiMetadataForRoute).toHaveBeenCalledWith('user-1', {
+      runtimeProvider: 'copilot',
+      agentId: 'agent-a',
+      sessionId: 'chat-1',
     });
     expect(routedClient.sent.at(-1)).toMatchObject({
       type: 'conversation_delete_result',
@@ -754,6 +920,7 @@ describe('Yeaft Session online Agent filtering', () => {
     moveProjectSession.mockClear();
     getForAgent.mockReturnValue({ id: 'same-id', agentId: 'agent-a', isArchived: false });
     buildSessionCatalog.mockReturnValue(sessions);
+    buildHiddenSessionCatalog.mockReturnValue([]);
     listProjectsForAgent.mockReturnValueOnce([{
       id: 'project-created',
       name: 'Created',
@@ -936,6 +1103,22 @@ describe('Yeaft Session online Agent filtering', () => {
       { id: 'same-id', name: 'Renamed' },
     ]);
     expect(broadcastSessionCatalog).toHaveBeenCalledTimes(1);
+
+    deleteSessionUiMetadataForRoute.mockClear();
+    deleteYeaftSessionForAgent.mockClear();
+    await handleAgentOutput('agent-a', agent, {
+      type: 'session_crud_result',
+      op: 'delete',
+      ok: true,
+      sessionId: 'same-id',
+      requestId: 'delete-yeaft-row',
+    });
+    expect(deleteYeaftSessionForAgent).toHaveBeenCalledWith('user-1', 'agent-a', 'same-id');
+    expect(deleteSessionUiMetadataForRoute).toHaveBeenCalledWith('user-1', {
+      runtimeProvider: 'yeaft',
+      agentId: 'agent-a',
+      sessionId: 'same-id',
+    });
 
     getForAgent.mockReturnValue({
       id: 'same-id',
