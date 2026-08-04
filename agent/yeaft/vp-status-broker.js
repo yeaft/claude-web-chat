@@ -11,18 +11,19 @@ export const VALID_STATES = new Set([
   'idle',
   'typing',
   'thinking',
+  'retrying',
   'streaming',
   'tool',
   'error',
 ]);
 
-const RUNNING_STATES = new Set(['typing', 'thinking', 'streaming', 'tool']);
+const RUNNING_STATES = new Set(['typing', 'thinking', 'retrying', 'streaming', 'tool']);
 
 export function isVpStatusRunning(state) {
   return RUNNING_STATES.has(state || 'idle');
 }
 
-const STATE_PRIORITY = ['tool', 'streaming', 'thinking', 'typing', 'error', 'idle'];
+const STATE_PRIORITY = ['tool', 'streaming', 'retrying', 'thinking', 'typing', 'error', 'idle'];
 const MAX_RETAINED_THREADS_PER_VP = 20;
 const COMPLETED_TTL_MS = 30 * 60 * 1000;
 
@@ -52,7 +53,7 @@ export function createVpStatusBroker({ send, now = Date.now } = {}) {
       }
     }
     if (rows.some(r => RUNNING_STATES.has(r.state))) {
-      for (const candidate of ['tool', 'streaming', 'thinking', 'typing']) {
+      for (const candidate of ['tool', 'streaming', 'retrying', 'thinking', 'typing']) {
         if (rows.some(r => r.state === candidate)) { state = candidate; break; }
       }
     }

@@ -39,6 +39,11 @@ HOW TO USE:
 - AT MOST one item may be "in_progress" at any time.
 - \`content\` is the imperative form ("Run tests"); \`activeForm\` is the present-continuous shown during execution ("Running tests").
 
+BATCH WITH WORK:
+- Avoid an intermediate TodoWrite-only model round when the next work tool and its arguments are already known. Emit TodoWrite and those independent work tool calls in the same assistant response.
+- This is batching, not speculative progress: mark work completed only after evidence. Keep calls separate when a pending result can change the next action, its arguments, or its safety.
+- A standalone TodoWrite remains valid when no work tool should follow, including final completion or a blocking user question.
+
 WHEN NOT TO USE:
 - Single trivial change, single command run, pure conversation/question.`,
     zh: `用 checklist 跟踪多步骤任务进度，用户可以实时看到勾选。
@@ -53,6 +58,11 @@ WHEN NOT TO USE:
 - 每次后续调用：重写完整列表——将刚完成的项标记为 "completed"，将下一项标记为 "in_progress"。
 - 任何时候最多只能有一个 "in_progress"。
 - content 是祈使形式（如 "Run tests"）；activeForm 是执行时显示的进行时态（如 "Running tests"）。
+
+和工作工具合批：
+- 如果下一项工作所用的工具和参数已经确定，不要让中间状态的 TodoWrite 单独占一个模型回合；应在同一个 assistant response 中发出 TodoWrite 和这些彼此独立的工作工具调用。
+- 这是合批，不是提前宣告进度：只有已有证据时才能把工作标记为完成。如果待返回结果可能改变下一动作、参数或安全性，就必须分开调用。
+- 没有工作工具应继续执行时（包括记录最终完成态或询问阻塞问题），TodoWrite 仍可单独调用。
 
 何时不使用：
 - 单个琐碎改动、单个命令执行、纯对话/提问。`

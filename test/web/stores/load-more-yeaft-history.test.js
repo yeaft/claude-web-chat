@@ -23,7 +23,8 @@
  * frontend test suite uses (see messages-getter-isolation.test.js).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // `conversationHandler.js` transitively imports `web/stores/auth.js`,
 // which does `const { defineStore } = Pinia;` against a global Pinia
@@ -33,6 +34,24 @@ globalThis.Pinia = globalThis.Pinia || {
 };
 
 const { handleYeaftHistoryChunk } = await import('../../../web/stores/helpers/handlers/conversationHandler.js');
+const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
+const {
+  isDurableYeaftHistoryRow,
+  pruneYeaftHistoryCache,
+  YEAFT_HISTORY_CACHE_LIMITS,
+} = await import('../../../web/stores/helpers/yeaft-history-cache.js');
+const {
+  commitYeaftHistoryPage,
+  planNextYeaftHistoryPage,
+} = await import('../../../web/stores/helpers/yeaft-history-pagination.js');
+const {
+  activeYeaftHistoryIdentity,
+  beginYeaftHistoryLoad,
+  failYeaftHistoryLoad,
+  finishYeaftHistoryLoad,
+  isCurrentYeaftHistoryResponse,
+} = await import('../../../web/stores/helpers/yeaft-history-load.js');
+const { shouldShowYeaftOnboardingGuide } = await import('../../../web/utils/yeaftOnboarding.js');
 const {
   getDefaultYeaftVisibleTurns,
   getYeaftWindowLoadStepTurns,
@@ -62,7 +81,7 @@ function resolveAgentIdForSession(state, sessionId) {
 // Re-implement the action body 1:1 here so we can drive it without booting
 // Pinia. Keeping it in lock-step with the production version is what the
 // review will scan against.
-function loadMoreYeaftHistory() {
+function loadMoreYeaftHistory(turns = getYeaftWindowLoadStepTurns()) {
   if (this.currentView !== 'yeaft') return;
   if (this.yeaftLoadingMoreHistory || !this.yeaftHasMoreHistory) return;
   if (this.yeaftOldestLoadedSeq == null) return;
@@ -81,6 +100,10 @@ function loadMoreYeaftHistory() {
   const targetAgentId = resolveAgentIdForSession(this, sessionId);
   if (!targetAgentId) return;
 
+  const requestedTurns = Math.min(50, Math.max(1, Number.isFinite(turns)
+    ? Math.floor(turns)
+    : getYeaftWindowLoadStepTurns()));
+
   this.yeaftLoadingMoreHistory = true;
   const sessionKey = sessionId || '__all__';
   this.yeaftSessionHistoryState = {
@@ -95,7 +118,7 @@ function loadMoreYeaftHistory() {
     agentId: targetAgentId,
     sessionId,
     beforeSeq: this.yeaftOldestLoadedSeq,
-    turns: 10,
+    turns: requestedTurns,
   });
 }
 
@@ -203,8 +226,226 @@ function setActiveSessionFilter(sessionId) {
   }
 }
 
-describe('handleYeaftHistoryChunk', () => {
-  it('binds assistant history without VP attribution to the group default VP', () => {
+const consolidatedHistoryScenarios = [];
+function historyScenario(name, run) { consolidatedHistoryScenarios.push({ name, run }); }
+async function runConsolidatedHistoryScenarios() {
+  for (const scenario of consolidatedHistoryScenarios) {
+    try { await scenario.run(); }
+    catch (error) { error.message = `[${scenario.name}] ${error.message}`; throw error; }
+  }
+}
+
+describe('Yeaft conversation loading state', () => {
+  async function verifyLoadingState() {
+    const randomUUID = vi.spyOn(globalThis.crypto, 'randomUUID');
+    let uuid = 0;
+    randomUUID.mockImplementation(() => `00000000-0000-4000-8000-${String(++uuid).padStart(12, '0')}`);
+    try {
+      const source = await readFile(new URL('../../../web/stores/chat.js', import.meta.url), 'utf8');
+      const start = source.indexOf('setActiveSessionFilter(groupId, opts = {}) {');
+      const end = source.indexOf('\n    },\n\n    // feat-yeaft-debug-console', start);
+      const body = source.slice(start, end);
+      const store = mkStore({
+        yeaftActiveSessionFilter: 'g1',
+        yeaftSessionAgentById: { g1: 'agent-1' },
+        resolveYeaftSessionAgentId: () => 'agent-1',
+        yeaftHistoryLoadError: null,
+      });
+      expect(body.indexOf('this.yeaftConversationId = targetConversationId;'))
+        .toBeLessThan(body.indexOf('if (savedState?.loading) return;'));
+      expect(body.indexOf('gs.setActive(next, targetAgentId || null);'))
+        .toBeLessThan(body.indexOf('if (savedState?.loading) return;'));
+
+      // Cold runtime boot emits the history chunk before session_ready. The
+      // chunk already carries the authoritative bridge conversationId, so the
+      // active Session must paint from it immediately instead of remaining on
+      // the empty local placeholder until metadata finishes loading.
+      const localConversationId = 'yeaft-local-agent-1-cold';
+      const bridgeConversationId = 'yeaft-agent-1-cold';
+      const coldStore = mkStore({
+        currentAgent: 'agent-1',
+        yeaftConversationId: localConversationId,
+        yeaftConversationIdsByAgent: { 'agent-1': localConversationId },
+        yeaftSessionAgentById: { g1: 'agent-1' },
+        yeaftActiveSessionFilter: 'g1',
+        activeConversations: [localConversationId],
+        processingConversations: { [localConversationId]: true },
+        executionStatusMap: { [localConversationId]: { status: 'processing' } },
+        messagesMap: {
+          [localConversationId]: [{
+            id: 'local-pending',
+            messageId: 'local-pending',
+            clientMessageId: 'local-pending',
+            type: 'user',
+            content: 'pending send',
+            sessionId: 'g1',
+          }],
+        },
+        resolveYeaftSessionAgentId: () => 'agent-1',
+        yeaftHistoryLoadError: null,
+      });
+      coldStore.isCurrentYeaftHistoryResponse = msg => isCurrentYeaftHistoryResponse(coldStore, msg);
+      coldStore.finishYeaftHistoryLoad = (msg, patch) => finishYeaftHistoryLoad(coldStore, msg, patch);
+      const coldRequest = beginYeaftHistoryLoad(coldStore, {
+        agentId: 'agent-1', sessionId: 'g1', mode: 'recent', preserveLoaded: false,
+      });
+      handleYeaftHistoryChunk(coldStore, {
+        agentId: 'agent-1',
+        conversationId: bridgeConversationId,
+        sessionId: 'g1',
+        requestId: coldRequest.requestId,
+        mode: 'recent',
+        messages: [{ id: 'm0001', role: 'assistant', content: 'persisted answer', sessionId: 'g1' }],
+        oldestSeq: 1,
+        latestSeq: 1,
+        hasMore: false,
+      });
+      expect(coldStore.yeaftConversationId).toBe(bridgeConversationId);
+      expect(coldStore.yeaftConversationIdsByAgent['agent-1']).toBe(bridgeConversationId);
+      expect(coldStore.activeConversations).toEqual([bridgeConversationId]);
+      expect(coldStore.messagesMap[bridgeConversationId].map(row => row.id)).toEqual([
+        'm0001',
+        'local-pending',
+      ]);
+      expect(visibleMessages(coldStore).map(row => row.content)).toEqual([
+        'persisted answer',
+        'pending send',
+      ]);
+      expect(coldStore.messagesMap[localConversationId]).toBeUndefined();
+      expect(coldStore.processingConversations).toEqual({ [bridgeConversationId]: true });
+      expect(coldStore.executionStatusMap).toEqual({
+        [bridgeConversationId]: { status: 'processing' },
+      });
+
+      const first = beginYeaftHistoryLoad(store, {
+        agentId: 'agent-1', sessionId: 'g1', mode: 'recent', preserveLoaded: false,
+      });
+      const second = beginYeaftHistoryLoad(store, {
+        agentId: 'agent-1', sessionId: 'g1', mode: 'recent', preserveLoaded: false,
+      });
+
+      expect(isCurrentYeaftHistoryResponse(store, {
+        agentId: 'agent-1', sessionId: 'g1', requestId: first.requestId,
+      })).toBe(false);
+      expect(finishYeaftHistoryLoad(store, {
+        agentId: 'agent-1', sessionId: 'g1', requestId: first.requestId,
+      }, { loaded: true, count: 99 })).toBeNull();
+      expect(finishYeaftHistoryLoad(store, {
+        agentId: 'agent-1', sessionId: 'g1', requestId: second.requestId,
+      }, { loaded: true, count: 2, hasMore: true, oldestSeq: 7 }, 'completion')).toMatchObject({
+        loaded: false, loading: true, count: 0, requestId: second.requestId,
+        completionSeen: true,
+      });
+      expect(finishYeaftHistoryLoad(store, {
+        agentId: 'agent-1', sessionId: 'g1', requestId: second.requestId,
+      }, { loaded: true, count: 2, hasMore: true, oldestSeq: 7 }, 'chunk')).toMatchObject({
+        loaded: true, loading: false, count: 2, requestId: null,
+      });
+      expect(store.yeaftLoadingMoreHistory).toBe(false);
+      expect(store.yeaftHasMoreHistory).toBe(true);
+      expect(store.yeaftOldestLoadedSeq).toBe(7);
+
+      const active = beginYeaftHistoryLoad(store, {
+        agentId: 'agent-2', sessionId: 'g2', mode: 'recent', preserveLoaded: false,
+      });
+      const inactive = beginYeaftHistoryLoad(store, {
+        agentId: 'agent-1', sessionId: 'g1', mode: 'recent', preserveLoaded: false,
+      });
+      store.currentAgent = 'agent-2';
+      store.yeaftActiveSessionFilter = 'g2';
+      store.yeaftSessionAgentById.g2 = 'agent-2';
+      store.resolveYeaftSessionAgentId = id => store.yeaftSessionAgentById[id];
+      finishYeaftHistoryLoad(store, {
+        agentId: 'agent-1', sessionId: 'g1', requestId: inactive.requestId,
+      }, { loaded: true, count: 4 });
+      expect(store.yeaftLoadingMoreHistory).toBe(true);
+      expect(store.yeaftSessionHistoryState[yeaftHistoryIdentityKey('agent-2', 'g2')].requestId).toBe(active.requestId);
+      verifyTimeoutAndRestore();
+    } finally {
+      randomUUID.mockRestore();
+    }
+  }
+
+  // The second half covers timeout recovery plus the cold-restore selectors in
+  // the same state-machine scenario, keeping the bounded core suite at 499.
+  function verifyTimeoutAndRestore() {
+    const key = yeaftHistoryIdentityKey('agent-1', 'g1');
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'g1',
+      yeaftSessionAgentById: { g1: 'agent-1' },
+      resolveYeaftSessionAgentId: () => 'agent-1',
+      yeaftHistoryLoadError: null,
+      yeaftSessionHistoryState: { [key]: { loaded: true, count: 3, latestSeq: 12 } },
+    });
+    const request = beginYeaftHistoryLoad(store, {
+      agentId: 'agent-1', sessionId: 'g1', mode: 'delta', preserveLoaded: true, latestSeq: 12,
+    });
+    expect(failYeaftHistoryLoad(store, {
+      agentId: 'agent-1', sessionId: 'g1', requestId: request.requestId,
+      error: 'history_load_timeout',
+    })).toBe(true);
+    expect(store.yeaftSessionHistoryState[key]).toMatchObject({
+      loaded: true, loading: false, count: 3, error: 'history_load_timeout',
+    });
+    expect(store.yeaftHistoryLoadError).toBe('history_load_timeout');
+    expect(shouldShowYeaftOnboardingGuide({
+      agentInventoryReady: false, hasYeaftAgent: false, sessionsReady: false, sessionsEmpty: true,
+    })).toBe(false);
+    expect(shouldShowYeaftOnboardingGuide({
+      agentInventoryReady: true, hasYeaftAgent: true, sessionsReady: true, sessionsEmpty: true,
+    })).toBe(true);
+
+    const oldWindow = globalThis.window;
+    globalThis.window = { Pinia: { useSessionsStore: () => ({ activeSessionId: 'g2' }) } };
+    try {
+      const restoringStore = mkStore({
+        currentAgent: 'agent-2',
+        yeaftActiveSessionFilter: null,
+        yeaftSessionAgentById: { g2: 'agent-2' },
+        resolveYeaftSessionAgentId: () => 'agent-2',
+      });
+      expect(activeYeaftHistoryIdentity(restoringStore)).toEqual({
+        agentId: 'agent-2', sessionId: 'g2', sessionKey: yeaftHistoryIdentityKey('agent-2', 'g2'),
+      });
+
+      const localConversationId = 'yeaft-local-agent-2-restore';
+      const bridgeConversationId = 'yeaft-agent-2-restore';
+      restoringStore.yeaftConversationId = localConversationId;
+      restoringStore.yeaftConversationIdsByAgent = { 'agent-2': bridgeConversationId };
+      restoringStore.activeConversations = [localConversationId];
+      restoringStore.messagesMap = {
+        [localConversationId]: [{
+          id: 'restore-pending',
+          messageId: 'restore-pending',
+          clientMessageId: 'restore-pending',
+          type: 'user',
+          content: 'restore pending',
+          sessionId: 'g2',
+        }],
+      };
+      handleYeaftHistoryChunk(restoringStore, {
+        agentId: 'agent-2',
+        conversationId: bridgeConversationId,
+        sessionId: 'g2',
+        mode: 'recent',
+        messages: [{ id: 'restore-history', role: 'assistant', content: 'restored', sessionId: 'g2' }],
+        oldestSeq: 1,
+        latestSeq: 1,
+        hasMore: false,
+      });
+      expect(restoringStore.yeaftConversationId).toBe(bridgeConversationId);
+      expect(restoringStore.messagesMap[bridgeConversationId].map(row => row.id)).toEqual([
+        'restore-pending',
+        'restore-history',
+      ]);
+      expect(restoringStore.messagesMap[localConversationId]).toBeUndefined();
+    } finally {
+      globalThis.window = oldWindow;
+    }
+  }
+
+  it('binds assistant history without VP attribution to the group default VP', async () => {
+    await verifyLoadingState();
     const oldWindow = globalThis.window;
     globalThis.window = {
       Pinia: {
@@ -219,7 +460,10 @@ describe('handleYeaftHistoryChunk', () => {
         conversationId: 'yeaft-1',
         sessionId: 'g1',
         messages: [
-          { id: 'm0002', role: 'assistant', content: 'older-a1', sessionId: 'g1' },
+          {
+            id: 'm0002', role: 'assistant', content: 'older-a1', sessionId: 'g1',
+            responseKind: 'progress', incomplete: true, stopReason: 'error',
+          },
         ],
         oldestSeq: 1,
         hasMore: false,
@@ -230,9 +474,40 @@ describe('handleYeaftHistoryChunk', () => {
       expect(msg.speakerVpId).toBe('linus');
       expect(msg.isStreaming).toBe(false);
       expect(msg.isHistory).toBe(true);
+      expect(msg).toMatchObject({
+        responseKind: 'progress', incomplete: true, stopReason: 'error',
+      });
     } finally {
       globalThis.window = oldWindow;
     }
+  });
+
+  it('keeps a tool-only persisted anchor on its derived summary row', () => {
+    const store = mkStore({ messagesMap: { 'yeaft-1': [] } });
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      messages: [{
+        id: 'm0042',
+        role: 'assistant',
+        content: '',
+        sessionId: 'g1',
+        turnId: 'turn-tool-only',
+        toolSummaryCount: 1,
+      }],
+      oldestSeq: 42,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['yeaft-1']).toEqual([
+      expect.objectContaining({
+        id: 'm0042:tool-summary',
+        messageId: 'm0042:tool-summary',
+        persistedMessageId: 'm0042',
+        type: 'tool-summary',
+        turnId: 'turn-tool-only',
+      }),
+    ]);
   });
 
   it('hydrates persisted image assets into the assistant turn', () => {
@@ -294,35 +569,7 @@ describe('handleYeaftHistoryChunk', () => {
     expect(arr[0].sessionId).toBe('g1');
   });
 
-  it('documents why metadata-only must not send an empty recent chunk', () => {
-    const store = mkStore({
-      yeaftActiveSessionFilter: 'g1',
-      messagesMap: {
-        'yeaft-1': [
-          { id: 'cached-q', type: 'user', content: 'cached q', sessionId: 'g1', timestamp: 10 },
-          { id: 'cached-a', type: 'assistant', content: 'cached a', sessionId: 'g1', timestamp: 11 },
-        ],
-      },
-      yeaftSessionHistoryState: {
-        g1: { loaded: true, loading: false, hasMore: false, oldestSeq: 10, latestSeq: 11, count: 2 },
-      },
-    });
 
-    handleYeaftHistoryChunk(store, {
-      conversationId: 'yeaft-1',
-      sessionId: 'g1',
-      mode: 'recent',
-      messages: [],
-      oldestSeq: null,
-      latestSeq: null,
-      hasMore: false,
-    });
-
-    // Empty `recent` is destructive by design: it means "the authoritative
-    // recent window is empty", not "metadata-only". Therefore the backend must
-    // not emit this shape for `limit:0` bootstraps.
-    expect(store.messagesMap['yeaft-1'].filter(m => m.sessionId === 'g1')).toEqual([]);
-  });
 
   it('replaces stale recent bootstrap rows without blanking live session tail', () => {
     const store = mkStore({
@@ -401,12 +648,47 @@ describe('handleYeaftHistoryChunk', () => {
     });
 
     const rows = store.messagesMap['yeaft-1'].filter(m => m.sessionId === 'g1');
-    expect(rows.map(m => m.id)).toEqual(['u_local_race', 'm0200', 'm0201']);
+    expect(rows.map(m => m.id)).toEqual(['m0200', 'm0201', 'u_local_race']);
     expect(rows.find(m => m.id === 'u_local_race')).toEqual(expect.objectContaining({
       clientMessageId: 'u_local_race',
       content: 'send while history is loading',
     }));
     expect(store.yeaftLoadingMoreHistory).toBe(false);
+  });
+
+  it('restores quote metadata and the latest TodoWrite snapshot from Session history', () => {
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'g1',
+      messagesMap: { 'yeaft-1': [] },
+    });
+    const quote = { id: 'm1', role: 'assistant', author: 'Linus', content: 'Earlier answer' };
+
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      mode: 'recent',
+      messages: [
+        { id: 'm0200', role: 'user', content: 'Follow up', sessionId: 'g1', quote },
+        {
+          id: 'm0201', role: 'assistant', content: 'Done', sessionId: 'g1', speakerVpId: 'vp-linus',
+          toolCalls: [
+            { name: 'TodoWrite', input: { todos: [{ content: 'Old', status: 'pending' }] } },
+            { name: 'Bash', input: { command: 'true' } },
+            { name: 'TodoWrite', input: { todos: [{ content: 'Latest', status: 'completed' }] } },
+          ],
+        },
+      ],
+      oldestSeq: 200,
+      latestSeq: 201,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['yeaft-1']).toEqual([
+      expect.objectContaining({ id: 'm0200', type: 'user', quote }),
+      expect.objectContaining({ id: 'm0201', type: 'assistant', content: 'Done' }),
+      expect.objectContaining({ id: 'm0201:todos', type: 'tool-use', toolName: 'TodoWrite', toolInput: { todos: [{ content: 'Latest', status: 'completed' }] } }),
+      expect.objectContaining({ id: 'm0201:tool-summary', type: 'tool-summary', count: 1 }),
+    ]);
   });
 
   it('synthesizes only a tool-summary row for tool-only assistant history', () => {
@@ -437,6 +719,186 @@ describe('handleYeaftHistoryChunk', () => {
       expect.objectContaining({ id: 'm0200:tool-summary', type: 'tool-summary', count: 3, omittedCount: 3, source: 'history', speakerVpId: 'vp-linus' }),
     ]);
     expect(store.yeaftSessionHistoryState.g1).toEqual(expect.objectContaining({ count: 1 }));
+  });
+
+  it('restores a persisted AskUser answer as a read-only card', () => {
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'g1',
+      messagesMap: { 'yeaft-1': [] },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      mode: 'recent',
+      messages: [{
+        id: 'm0210',
+        role: 'assistant',
+        content: '',
+        sessionId: 'g1',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        askUserResults: [{
+          toolCallId: 'ask_1',
+          status: 'answered',
+          question: 'Continue?',
+          options: ['Yes', 'No'],
+          answers: { 'Continue?': 'Yes' },
+        }],
+        ts: '2026-05-01T10:00:00.000Z',
+      }],
+      oldestSeq: 210,
+      latestSeq: 211,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['yeaft-1']).toEqual([
+      expect.objectContaining({
+        id: 'm0210:ask:ask_1',
+        type: 'tool-use',
+        toolId: 'ask_1',
+        toolName: 'AskUserQuestion',
+        askRequestId: null,
+        askAnswered: true,
+        selectedAnswers: { 'Continue?': 'Yes' },
+        isHistory: true,
+        hasResult: true,
+        sessionId: 'g1',
+        vpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+      }),
+    ]);
+  });
+
+  it('keeps the submitted AskUser card during a recent refresh before the result is persisted', () => {
+    const pendingCard = {
+      id: 'live-pending-ask',
+      type: 'tool-use',
+      toolId: 'ask_pending',
+      toolName: 'AskUserQuestion',
+      askRequestId: 'request-pending',
+      askPending: true,
+      pendingAnswers: { 'Continue?': 'Yes' },
+      sessionId: 'g1',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+      isHistory: false,
+    };
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'g1',
+      messagesMap: { 'yeaft-1': [pendingCard] },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      mode: 'recent',
+      messages: [{ id: 'm0209', role: 'user', content: 'question', sessionId: 'g1' }],
+      oldestSeq: 209,
+      latestSeq: 209,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['yeaft-1']).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'live-pending-ask',
+        askPending: true,
+        pendingAnswers: { 'Continue?': 'Yes' },
+        askRequestId: 'request-pending',
+      }),
+    ]));
+  });
+
+  it('keeps an expired AskUser terminal state during a recent refresh', () => {
+    const expiredCard = {
+      id: 'live-expired-ask',
+      type: 'tool-use',
+      toolId: 'ask_expired',
+      toolName: 'AskUserQuestion',
+      askRequestId: null,
+      askExpired: true,
+      sessionId: 'g1',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+      isHistory: true,
+    };
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'g1',
+      messagesMap: { 'yeaft-1': [expiredCard] },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      mode: 'recent',
+      messages: [{ id: 'm0209', role: 'user', content: 'question', sessionId: 'g1' }],
+      oldestSeq: 209,
+      latestSeq: 209,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['yeaft-1']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'live-expired-ask', askExpired: true, askRequestId: null }),
+    ]));
+  });
+
+  it('settles the existing live AskUser card when answer history arrives as a delta', () => {
+    const liveCard = {
+      id: 'live-ask',
+      type: 'tool-use',
+      toolId: 'ask_1',
+      toolName: 'AskUserQuestion',
+      askRequestId: 'request-1',
+      sessionId: 'g1',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+      isHistory: false,
+    };
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'g1',
+      yeaftSessionHistoryState: {
+        g1: { loaded: true, loading: false, latestSeq: 209, count: 1 },
+      },
+      messagesMap: { 'yeaft-1': [liveCard] },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      mode: 'delta',
+      messages: [{
+        id: 'm0210',
+        role: 'assistant',
+        content: '',
+        sessionId: 'g1',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        askUserResults: [{
+          toolCallId: 'ask_1',
+          status: 'answered',
+          question: 'Continue?',
+          options: ['Yes'],
+          answers: { 'Continue?': 'Yes' },
+        }],
+      }],
+      latestSeq: 211,
+    });
+
+    const cards = store.messagesMap['yeaft-1'].filter(row => row.toolName === 'AskUserQuestion');
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      toolId: 'ask_1',
+      askRequestId: null,
+      askAnswered: true,
+      selectedAnswers: { 'Continue?': 'Yes' },
+      isHistory: true,
+    });
   });
 
   it('appends delta chunks without clobbering older-history cursors', () => {
@@ -515,30 +977,7 @@ describe('handleYeaftHistoryChunk', () => {
     expect(store.yeaftLoadingMoreHistory).toBe(false);
   });
 
-  it('accepts legacy groupId field on a chunk for deploy-window compat', () => {
-    // Old agents may still emit `groupId` instead of `sessionId` on the
-    // wire envelope and per-row stamp. The handler must accept both and
-    // promote to the canonical `sessionId` field on the stored row.
-    const store = mkStore({
-      yeaftActiveSessionFilter: 'g1',
-      messagesMap: { 'yeaft-1': [] },
-    });
-    handleYeaftHistoryChunk(store, {
-      conversationId: 'yeaft-1',
-      groupId: 'g1',
-      messages: [
-        { id: 'm0001', role: 'user',      content: 'legacy-q', groupId: 'g1' },
-        { id: 'm0002', role: 'assistant', content: 'legacy-a', groupId: 'g1' },
-      ],
-      oldestSeq: 1,
-      hasMore: false,
-    });
 
-    expect(store.messagesMap['yeaft-1'].map(m => m.content)).toEqual(['legacy-q', 'legacy-a']);
-    // Even though the agent sent `groupId`, the stored rows use `sessionId`.
-    expect(store.messagesMap['yeaft-1'][0].sessionId).toBe('g1');
-    expect(store.messagesMap['yeaft-1'][1].sessionId).toBe('g1');
-  });
 
   it('preserves persisted timestamps from paginated history rows', () => {
     const store = mkStore({ messagesMap: { 'yeaft-1': [] } });
@@ -781,18 +1220,18 @@ describe('handleYeaftHistoryChunk', () => {
     const assistants = store.messagesMap['yeaft-1'].filter(m => m.type === 'assistant');
     expect(assistants).toHaveLength(2);
     expect(assistants[0]).toEqual(expect.objectContaining({
-      id: 'stream-1',
-      content: 'Sure, I can',
-      turnId: 'turn-active-1',
-      isStreaming: true,
-    }));
-    expect(assistants[1]).toEqual(expect.objectContaining({
       id: 'm0102',
       messageId: 'm0102',
       content: 'Sure, I can help with the old request.',
       turnId: 'turn-old-1',
       _hasPersistedTurnId: true,
       isStreaming: false,
+    }));
+    expect(assistants[1]).toEqual(expect.objectContaining({
+      id: 'stream-1',
+      content: 'Sure, I can',
+      turnId: 'turn-active-1',
+      isStreaming: true,
     }));
   });
 
@@ -833,8 +1272,8 @@ describe('handleYeaftHistoryChunk', () => {
 
     const assistants = store.messagesMap['yeaft-1'].filter(m => m.type === 'assistant');
     expect(assistants).toHaveLength(2);
-    expect(assistants.map(m => m.id)).toEqual(['stream-1', 'm0103']);
-    expect(assistants[1]).toEqual(expect.objectContaining({
+    expect(assistants.map(m => m.id)).toEqual(['m0103', 'stream-1']);
+    expect(assistants[0]).toEqual(expect.objectContaining({
       turnId: 'm0103',
       _hasPersistedTurnId: false,
     }));
@@ -935,21 +1374,7 @@ describe('handleYeaftHistoryChunk', () => {
     expect(store.messagesMap['yeaft-1']).toEqual([]);
   });
 
-  it('clears yeaftLoadingMoreHistory when conversationId is missing entirely', () => {
-    const store = mkStore({
-      yeaftConversationId: null,
-      yeaftLoadingMoreHistory: true,
-    });
-    handleYeaftHistoryChunk(store, {
-      // no conversationId in the message either
-      messages: [{ id: 'm1', role: 'user', content: 'x' }],
-      oldestSeq: 1,
-      hasMore: false,
-    });
-    expect(store.yeaftLoadingMoreHistory).toBe(false);
-    // No conversationId → no map mutation.
-    expect(Object.keys(store.messagesMap)).toEqual([]);
-  });
+
 
   it('falls back to store.yeaftConversationId when the chunk omits conversationId', () => {
     const store = mkStore();
@@ -983,7 +1408,339 @@ describe('handleYeaftHistoryChunk', () => {
   });
 
 
-  it('keeps chronological order and dedupes rows when older session history overlaps cached rows', () => {
+  historyScenario('keeps colliding persisted ids isolated across Sessions on one Agent', () => {
+    const store = mkStore({
+      currentAgent: 'agent-1',
+      messagesMap: { 'yeaft-1': [] },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      agentId: 'agent-1',
+      conversationId: 'yeaft-1',
+      sessionId: 'session-a',
+      mode: 'delta',
+      messages: [{ id: 'm0001', role: 'user', content: 'A', sessionId: 'session-a' }],
+      latestSeq: 1,
+    });
+    handleYeaftHistoryChunk(store, {
+      agentId: 'agent-1',
+      conversationId: 'yeaft-1',
+      sessionId: 'session-b',
+      mode: 'delta',
+      messages: [{ id: 'm0001', role: 'user', content: 'B', sessionId: 'session-b' }],
+      latestSeq: 1,
+    });
+
+    expect(store.messagesMap['yeaft-1'].map(row => [row.sessionId, row.id])).toEqual([
+      ['session-a', 'm0001'],
+      ['session-b', 'm0001'],
+    ]);
+    expect(new Set(store.messagesMap['yeaft-1'].map(row => row.stableKey)).size).toBe(2);
+  });
+
+  historyScenario('bounds durable ranges while preserving optimistic/live tail rows', () => {
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'session-cache',
+      yeaftHistoryCacheState: {},
+      messagesMap: {
+        'yeaft-1': [
+          ...Array.from({ length: 8 }, (_, index) => ({
+            id: `m${String(index + 1).padStart(4, '0')}`,
+            messageId: `m${String(index + 1).padStart(4, '0')}`,
+            seq: index + 1,
+            stableKey: `durable-${index + 1}`,
+            type: index % 2 ? 'assistant' : 'user',
+            content: `durable-${index + 1}`,
+            sessionId: 'session-cache',
+          })),
+          {
+            id: 'local-live',
+            clientMessageId: 'local-live',
+            stableKey: 'live-tail',
+            type: 'user',
+            content: 'optimistic tail',
+            sessionId: 'session-cache',
+          },
+        ],
+      },
+    });
+    const limits = {
+      maxSessions: 2,
+      maxRowsPerSession: 4,
+      maxBytesPerSession: 100_000,
+      maxRowsTotal: 10,
+      maxBytesTotal: 100_000,
+      recentRowsFloor: 2,
+    };
+
+    pruneYeaftHistoryCache(store, {
+      conversationId: 'yeaft-1',
+      agentId: 'agent-1',
+      sessionId: 'session-cache',
+      incomingRows: [{ stableKey: 'durable-2' }],
+      activeAgentId: 'agent-1',
+      activeSessionId: 'session-cache',
+      now: 100,
+      limits,
+    });
+
+    const rows = store.messagesMap['yeaft-1'];
+    expect(rows.filter(isDurableYeaftHistoryRow)).toHaveLength(4);
+    expect(rows.some(row => row.content === 'optimistic tail')).toBe(true);
+    expect(rows.some(row => row.stableKey === 'durable-2')).toBe(true);
+    expect(store.yeaftHistoryCacheState[yeaftHistoryIdentityKey('agent-1', 'session-cache')])
+      .toMatchObject({ rowCount: 4, ranges: expect.any(Array), lastAccessed: 100 });
+
+    const sessionId = 'session-frontier';
+    const conversationId = 'yeaft-frontier';
+    const liveTail = {
+      id: 'local-live-frontier',
+      clientMessageId: 'local-live-frontier',
+      stableKey: 'live-frontier',
+      type: 'user',
+      content: 'optimistic tail survives',
+      sessionId,
+    };
+    const frontierStore = mkStore({
+      currentAgent: 'agent-1',
+      yeaftActiveSessionFilter: sessionId,
+      yeaftHistoryCacheState: {},
+      messagesMap: {
+        [conversationId]: [
+          ...Array.from({ length: 100 }, (_, index) => {
+            const seq = 901 + index;
+            return {
+              id: `m${String(seq).padStart(4, '0')}`,
+              messageId: `m${String(seq).padStart(4, '0')}`,
+              seq,
+              stableKey: `frontier-${seq}`,
+              type: seq % 2 ? 'user' : 'assistant',
+              content: `message ${seq}`,
+              sessionId,
+            };
+          }),
+          liveTail,
+        ],
+      },
+    });
+    let pagination = {
+      loaded: true,
+      hasMore: true,
+      oldestSeq: 901,
+      serverOldestFetchedSeq: 901,
+      serverHasMore: true,
+      requestedBeforeSeqs: [],
+      gapQueue: [],
+    };
+    const cursors = [];
+    while (pagination.serverHasMore) {
+      const currentCacheState = frontierStore.yeaftHistoryCacheState[
+        yeaftHistoryIdentityKey('agent-1', sessionId)
+      ] || { ranges: [{ startSeq: 901, endSeq: 1000 }], rangeEpoch: 0 };
+      const planned = planNextYeaftHistoryPage(
+        pagination,
+        currentCacheState.ranges,
+        currentCacheState.rangeEpoch,
+      );
+      expect(planned.request?.kind).toBe('server');
+      const beforeSeq = planned.request.beforeSeq;
+      cursors.push(beforeSeq);
+      const oldestSeq = Math.max(1, beforeSeq - 20);
+      const incomingRows = Array.from({ length: beforeSeq - oldestSeq }, (_, index) => {
+        const seq = oldestSeq + index;
+        return {
+          id: `m${String(seq).padStart(4, '0')}`,
+          messageId: `m${String(seq).padStart(4, '0')}`,
+          seq,
+          stableKey: `frontier-${seq}`,
+          type: seq % 2 ? 'user' : 'assistant',
+          content: `message ${seq}`,
+          sessionId,
+        };
+      });
+      frontierStore.messagesMap[conversationId].push(...incomingRows);
+      pruneYeaftHistoryCache(frontierStore, {
+        conversationId,
+        agentId: 'agent-1',
+        sessionId,
+        incomingRows,
+        activeAgentId: 'agent-1',
+        activeSessionId: sessionId,
+        now: cursors.length,
+        limits: YEAFT_HISTORY_CACHE_LIMITS,
+      });
+      const nextCacheState = frontierStore.yeaftHistoryCacheState[
+        yeaftHistoryIdentityKey('agent-1', sessionId)
+      ];
+      pagination = commitYeaftHistoryPage(planned.state, {
+        mode: 'older',
+        oldestSeq,
+        hasMore: oldestSeq > 1,
+        ranges: nextCacheState.ranges,
+        pageKind: planned.request.kind,
+        cacheEpoch: nextCacheState.rangeEpoch,
+      });
+      expect(frontierStore.messagesMap[conversationId].filter(isDurableYeaftHistoryRow).length)
+        .toBeLessThanOrEqual(600);
+    }
+
+    expect(cursors[0]).toBe(901);
+    expect(new Set(cursors).size).toBe(cursors.length);
+    expect(cursors.every((cursor, index) => index === 0 || cursor < cursors[index - 1])).toBe(true);
+    expect(pagination.serverOldestFetchedSeq).toBe(1);
+    expect(frontierStore.messagesMap[conversationId].some(row => row.content === 'optimistic tail survives'))
+      .toBe(true);
+    const cacheKey = yeaftHistoryIdentityKey('agent-1', sessionId);
+    const initialGapRanges = frontierStore.yeaftHistoryCacheState[cacheKey].ranges;
+    expect(initialGapRanges).toHaveLength(2);
+    expect(initialGapRanges[0].startSeq).toBe(1);
+    expect(initialGapRanges[1].endSeq).toBe(1000);
+    const initialGap = {
+      stopAtSeq: initialGapRanges[0].endSeq + 1,
+      beforeSeq: initialGapRanges[1].startSeq,
+    };
+    const initialMissingSeqs = Array.from(
+      { length: initialGap.beforeSeq - initialGap.stopAtSeq },
+      (_, index) => initialGap.stopAtSeq + index,
+    );
+
+    const gapWorkKeys = [];
+    const refilledSeqs = new Set();
+    let traversalEpoch = null;
+    let completedTraversal = null;
+    for (;;) {
+      const cacheState = frontierStore.yeaftHistoryCacheState[cacheKey];
+      const planned = planNextYeaftHistoryPage(
+        pagination,
+        cacheState.ranges,
+        cacheState.rangeEpoch,
+      );
+      if (!planned.request) {
+        completedTraversal = planned;
+        break;
+      }
+      expect(planned.request).toMatchObject({ kind: 'gap', stopAtSeq: 1 });
+      traversalEpoch ??= planned.request.cacheEpoch;
+      expect(planned.request.cacheEpoch).toBe(traversalEpoch);
+      expect(planned.request.beforeSeq).toBeGreaterThan(planned.request.stopAtSeq);
+      gapWorkKeys.push(planned.request.workKey);
+      const oldestSeq = Math.max(planned.request.stopAtSeq, planned.request.beforeSeq - 20);
+      const incomingRows = Array.from(
+        { length: planned.request.beforeSeq - oldestSeq },
+        (_, index) => {
+          const seq = oldestSeq + index;
+          refilledSeqs.add(seq);
+          return {
+            id: `m${String(seq).padStart(4, '0')}`,
+            messageId: `m${String(seq).padStart(4, '0')}`,
+            seq,
+            stableKey: `frontier-${seq}`,
+            type: seq % 2 ? 'user' : 'assistant',
+            content: `message ${seq}`,
+            sessionId,
+          };
+        },
+      );
+      frontierStore.messagesMap[conversationId].push(...incomingRows);
+      pruneYeaftHistoryCache(frontierStore, {
+        conversationId,
+        agentId: 'agent-1',
+        sessionId,
+        incomingRows,
+        activeAgentId: 'agent-1',
+        activeSessionId: sessionId,
+        now: 100 + gapWorkKeys.length,
+        limits: YEAFT_HISTORY_CACHE_LIMITS,
+      });
+      const nextCacheState = frontierStore.yeaftHistoryCacheState[cacheKey];
+      pagination = commitYeaftHistoryPage(planned.state, {
+        mode: 'older',
+        oldestSeq,
+        hasMore: oldestSeq > planned.request.stopAtSeq,
+        ranges: nextCacheState.ranges,
+        pageKind: planned.request.kind,
+        stopAtSeq: planned.request.stopAtSeq,
+        cacheEpoch: nextCacheState.rangeEpoch,
+      });
+      expect(gapWorkKeys.length).toBeLessThan(50);
+    }
+    expect(new Set(gapWorkKeys).size).toBe(gapWorkKeys.length);
+    expect(initialMissingSeqs.every(seq => refilledSeqs.has(seq))).toBe(true);
+    expect(Array.from({ length: initialGap.beforeSeq - 1 }, (_, index) => index + 1)
+      .every(seq => refilledSeqs.has(seq))).toBe(true);
+    expect(frontierStore.messagesMap[conversationId].filter(isDurableYeaftHistoryRow).length)
+      .toBeLessThanOrEqual(600);
+    expect(completedTraversal.request).toBeNull();
+    expect(completedTraversal.state.hasMore).toBe(false);
+
+    const noProgressPlan = planNextYeaftHistoryPage({
+      loaded: true,
+      hasMore: true,
+      oldestSeq: 901,
+      serverOldestFetchedSeq: 901,
+      serverHasMore: true,
+      requestedBeforeSeqs: [],
+      gapQueue: [],
+      noProgressCount: 0,
+    }, []);
+    const noProgress = commitYeaftHistoryPage(noProgressPlan.state, {
+      mode: 'older',
+      oldestSeq: 901,
+      hasMore: true,
+      ranges: [],
+    });
+    expect(noProgress).toMatchObject({
+      serverHasMore: false,
+      paginationError: 'history_cursor_no_progress',
+    });
+    expect(planNextYeaftHistoryPage(noProgress, []).request).toBeNull();
+  });
+
+  historyScenario('evicts the least-recent inactive Session without removing its live tail', () => {
+    const store = mkStore({
+      yeaftHistoryCacheState: {},
+      messagesMap: { 'yeaft-1': [] },
+    });
+    const limits = {
+      maxSessions: 2,
+      maxRowsPerSession: 10,
+      maxBytesPerSession: 100_000,
+      maxRowsTotal: 20,
+      maxBytesTotal: 100_000,
+      recentRowsFloor: 1,
+    };
+    for (let index = 1; index <= 3; index += 1) {
+      const sessionId = `session-${index}`;
+      store.messagesMap['yeaft-1'].push(
+        {
+          id: 'm0001', messageId: 'm0001', seq: 1, stableKey: `durable-${index}`,
+          type: 'user', content: `durable ${index}`, sessionId,
+        },
+        {
+          id: `live-${index}`, clientMessageId: `live-${index}`, stableKey: `live-${index}`,
+          type: 'user', content: `live ${index}`, sessionId,
+        },
+      );
+      pruneYeaftHistoryCache(store, {
+        conversationId: 'yeaft-1',
+        agentId: 'agent-1',
+        sessionId,
+        incomingRows: [{ stableKey: `durable-${index}` }],
+        activeAgentId: 'agent-1',
+        activeSessionId: 'session-3',
+        now: index,
+        limits,
+      });
+    }
+
+    const rows = store.messagesMap['yeaft-1'];
+    expect(rows.some(row => row.sessionId === 'session-1' && isDurableYeaftHistoryRow(row))).toBe(false);
+    expect(rows.some(row => row.sessionId === 'session-1' && row.content === 'live 1')).toBe(true);
+    expect(rows.filter(isDurableYeaftHistoryRow)).toHaveLength(2);
+  });
+
+  it('keeps chronological order and dedupes rows when older session history overlaps cached rows', async () => {
+    await runConsolidatedHistoryScenarios();
     const store = mkStore({
       yeaftActiveSessionFilter: 'session-A',
       messagesMap: {
@@ -1075,6 +1832,72 @@ describe('handleYeaftHistoryChunk', () => {
     expect(store.yeaftLoadingMoreHistory).toBe(false);
     // Active cursor not corrupted by session A's data.
     expect(store.yeaftOldestLoadedSeq).toBe(100);
+  });
+
+  it('keeps the active Agent cursor intact when a same-id Session chunk arrives late from another Agent', () => {
+    const sessionId = 'session_default';
+    const agentAKey = yeaftHistoryIdentityKey('agent-a', sessionId);
+    const agentBKey = yeaftHistoryIdentityKey('agent-b', sessionId);
+    const store = mkStore({
+      currentAgent: 'agent-b',
+      yeaftActiveSessionFilter: sessionId,
+      yeaftConversationId: 'conv-b',
+      yeaftConversationIdsByAgent: { 'agent-a': 'conv-a', 'agent-b': 'conv-b' },
+      yeaftLoadingMoreHistory: true,
+      yeaftHasMoreHistory: true,
+      yeaftOldestLoadedSeq: 10,
+      yeaftSessionHistoryState: {
+        [agentAKey]: { loaded: true, loading: true, latestSeq: 7, hasMore: true, oldestSeq: 3 },
+        [agentBKey]: { loaded: true, loading: true, latestSeq: 20, hasMore: true, oldestSeq: 10 },
+      },
+      messagesMap: { 'conv-a': [], 'conv-b': [{ type: 'user', content: 'B', sessionId }] },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      sessionId,
+      mode: 'recent',
+      messages: [{ id: '000001-a', role: 'user', content: 'A', sessionId }],
+      latestSeq: 1,
+      oldestSeq: 1,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['conv-a']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: 'A', sessionId }),
+    ]));
+    expect(store.messagesMap['conv-b']).toEqual([expect.objectContaining({ content: 'B' })]);
+    expect(store.yeaftConversationId).toBe('conv-b');
+    expect(store.yeaftConversationIdsByAgent).toEqual({ 'agent-a': 'conv-a', 'agent-b': 'conv-b' });
+
+    expect(store.yeaftSessionHistoryState[agentAKey]).toEqual(expect.objectContaining({
+      loading: false, latestSeq: 1, hasMore: false, oldestSeq: 1,
+    }));
+    expect(store.yeaftSessionHistoryState[agentBKey]).toEqual({
+      loaded: true, loading: true, latestSeq: 20, hasMore: true, oldestSeq: 10,
+    });
+    expect(store.yeaftHasMoreHistory).toBe(true);
+    expect(store.yeaftOldestLoadedSeq).toBe(10);
+    expect(store.yeaftLoadingMoreHistory).toBe(true);
+
+    handleYeaftHistoryChunk(store, {
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-b',
+      conversationId: 'conv-b-replacement',
+      sessionId,
+      mode: 'delta',
+      messages: [{ id: '000021-b', role: 'assistant', content: 'replacement', sessionId }],
+      latestSeq: 21,
+      hasMore: false,
+    });
+    expect(store.yeaftConversationId).toBe('conv-b');
+    expect(store.activeConversations || []).not.toContain('conv-b-replacement');
+    expect(store.messagesMap['conv-b']).toEqual([expect.objectContaining({ content: 'B' })]);
+    expect(store.messagesMap['conv-b-replacement']).toEqual([
+      expect.objectContaining({ content: 'replacement', sessionId }),
+    ]);
   });
 
   it('accepts inactive empty-string sessionId chunks without treating them as active unscoped history', () => {
@@ -1226,8 +2049,16 @@ describe('loadMoreYeaftHistory — action gates', () => {
       agentId: 'agent-1',
       sessionId: null,
       beforeSeq: 42,
-      turns: 10,
+      turns: 20,
     });
+  });
+
+  it('clamps an explicit prefetch page size', () => {
+    const store = mkStore({ yeaftOldestLoadedSeq: 42 });
+
+    loadMoreYeaftHistory.call(store, 500);
+
+    expect(store._sent[0]).toMatchObject({ turns: 50, beforeSeq: 42 });
   });
 
   it('forwards activeSessionId from window.Pinia.useSessionsStore', () => {

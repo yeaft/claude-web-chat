@@ -9,11 +9,15 @@
  */
 
 import { defineTool } from './types.js';
-import { spawn } from 'child_process';
 import { existsSync } from 'fs';
-import { resolve } from 'path';
+import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
 import { buildShellInvocation, getRuntimePlatformInfo } from '../runtime-platform.js';
-import { wrapInvocationInSystemdUserScope } from '../systemd-scope.js';
+import {
+  wrapInvocationInSystemdUserScope,
+  wrapInvocationInSystemdUserService,
+} from '../systemd-scope.js';
+import { runProcess } from './process-runner.js';
 
 export { buildShellInvocation };
 
@@ -25,120 +29,68 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 
 /** Max timeout in ms (10 minutes). */
 const MAX_TIMEOUT_MS = 600_000;
+const LINUX_NAMESPACE_HELPER = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'linux-process-namespace.js',
+);
+const RUN_PROCESS_OVERRIDE = Symbol('runProcessOverride');
 
 /**
  * Run a command in a child process.
- * @returns {Promise<{ stdout: string, stderr: string, exitCode: number, timedOut: boolean }>}
+ * @returns {Promise<{ stdout: string, stderr: string, exitCode: number, timedOut: boolean, terminationError: string | null }>}
  */
-function runCommand(command, { cwd, timeout, signal, runtimePlatform }) {
-  return new Promise((resolve) => {
-    const platform = runtimePlatform || getRuntimePlatformInfo();
-    const env = { ...process.env, TERM: 'dumb', FORCE_COLOR: '0' };
-    const baseInvocation = buildShellInvocation(command, { runtimePlatform: platform });
-    const invocation = wrapInvocationInSystemdUserScope(baseInvocation, {
+function runCommand(command, { cwd, timeout, signal, runtimePlatform, runProcessImpl = runProcess }) {
+  const platform = runtimePlatform || getRuntimePlatformInfo();
+  const env = { ...process.env, TERM: 'dumb', FORCE_COLOR: '0' };
+  const baseInvocation = buildShellInvocation(command, { runtimePlatform: platform });
+  let invocation = wrapInvocationInSystemdUserScope(baseInvocation, {
+    runtimePlatform: platform,
+    env,
+    scopeId: `foreground-${Date.now()}-${process.pid}`,
+  });
+  if (platform.isLinux && !invocation.systemdControl) {
+    invocation = wrapInvocationInSystemdUserService(baseInvocation, {
       runtimePlatform: platform,
       env,
-      scopeId: `foreground-${Date.now()}-${process.pid}`,
-    });
-    const proc = spawn(invocation.command, invocation.args, {
       cwd,
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: !platform.isWindows,
-      windowsHide: true,
+      unitId: `foreground-${Date.now()}-${process.pid}`,
     });
-
-    let stdout = '';
-    let stderr = '';
-    let stdoutTruncated = false;
-    let stderrTruncated = false;
-    let timedOut = false;
-    let settled = false;
-    let timeoutId = null;
-
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      if (timeoutId) clearTimeout(timeoutId);
-      resolve(result);
-    };
-
-    const killProcess = () => {
-      try {
-        if (!platform.isWindows && proc.pid) {
-          process.kill(-proc.pid, 'SIGTERM');
-          return;
-        }
-      } catch {
-        // Fall back to killing the shell process below.
-      }
-      try {
-        proc.kill('SIGTERM');
-      } catch {
-        // ignore
-      }
-    };
-
-    proc.stdout.on('data', (chunk) => {
-      if (stdout.length < MAX_OUTPUT) {
-        stdout += chunk.toString();
-        if (stdout.length > MAX_OUTPUT) {
-          stdout = stdout.slice(0, MAX_OUTPUT);
-          stdoutTruncated = true;
-        }
-      }
-    });
-
-    proc.stderr.on('data', (chunk) => {
-      if (stderr.length < MAX_OUTPUT) {
-        stderr += chunk.toString();
-        if (stderr.length > MAX_OUTPUT) {
-          stderr = stderr.slice(0, MAX_OUTPUT);
-          stderrTruncated = true;
-        }
-      }
-    });
-
-    timeoutId = setTimeout(() => {
-      timedOut = true;
-      killProcess();
-      finish({
-        stdout,
-        stderr: stderr + `\nProcess timed out after ${timeout}ms`,
-        exitCode: 124,
-        timedOut: true,
-      });
-    }, timeout);
-
-    if (signal) {
-      signal.addEventListener('abort', () => {
-        killProcess();
-      }, { once: true });
+  }
+  if (platform.isLinux && !invocation.systemdControl) {
+    const unsharePath = env.YEAFT_UNSHARE_PATH || '/usr/bin/unshare';
+    if (!existsSync(unsharePath)) {
+      throw new Error(
+        'Foreground Bash requires systemd-run or unshare on Linux so timeout can guarantee complete process-tree cleanup. Use background=true or install util-linux.',
+      );
     }
-
-    proc.on('close', (code, signalName) => {
-      if (stdoutTruncated) stdout += '\n[Output truncated]';
-      if (stderrTruncated) stderr += '\n[Output truncated]';
-      finish({
-        stdout,
-        stderr,
-        exitCode: timedOut ? 124 : (code ?? (signalName ? 128 : 1)),
-        timedOut,
-      });
-    });
-
-    proc.on('error', (err) => {
-      finish({
-        stdout,
-        stderr: `Error spawning process: ${err.message}`,
-        exitCode: 1,
-        timedOut: false,
-      });
-    });
-  });
+    invocation = {
+      command: process.execPath,
+      args: [LINUX_NAMESPACE_HELPER, '--', baseInvocation.command, ...(baseInvocation.args || [])],
+      family: baseInvocation.family,
+      systemdControl: null,
+    };
+  }
+  return runProcessImpl(invocation.command, invocation.args, {
+    cwd,
+    env,
+    signal,
+    timeoutMs: timeout,
+    maxBytes: MAX_OUTPUT,
+    requireExitConfirmation: true,
+    systemdScope: invocation.systemdControl,
+    onSettled: invocation.cleanup || null,
+    platform: platform.platform,
+  }).then(result => ({
+    stdout: result.stdout,
+    stderr: result.stderr,
+    exitCode: result.code,
+    timedOut: result.timedOut,
+    terminationError: result.terminationError || null,
+  }));
 }
 
-export default defineTool({
+const bashTool = defineTool({
   name: 'Bash',
   description: {
     en: `Execute a shell command and return its output.
@@ -155,6 +107,7 @@ Guidelines:
 - Use absolute paths when possible
 - Avoid interactive commands (no stdin support)
 - Use background=true for long-running or persistent tasks that should survive across turns
+- Foreground timeout and cleanup status is returned to you; decide whether to inspect, retry, stop, or use a background task
 - stderr is captured separately and included in the result`,
     zh: `执行 Shell 命令并返回输出。
 
@@ -167,6 +120,7 @@ Guidelines:
 - 尽量使用绝对路径
 - 避免交互式命令（不支持 stdin）
 - 长时间或需要跨 turn 持续存在的任务使用 background=true
+- 前台命令的超时和清理状态会返回给你；由你决定检查、重试、停止或改用后台任务
 - stderr 单独捕获并包含在结果中`
   },
   parameters: {
@@ -210,6 +164,11 @@ Guidelines:
     },
     required: ['command'],
   },
+  errorOutput: null,
+  // Foreground Bash owns a bounded timeout and process-tree cleanup state
+  // machine. A second ToolRegistry timer can preempt that cleanup and turn an
+  // owned exit 124 into a fatal orphan, so it must stay disabled for this tool.
+  timeoutMs: 0,
   isConcurrencySafe: () => false,
   isReadOnly: () => false,
   isDestructive: (input) => {
@@ -223,7 +182,7 @@ Guidelines:
   },
   async execute(input, ctx) {
     const { command, cwd: inputCwd, timeout_ms, background = false, taskTitle } = input;
-    if (!command) return JSON.stringify({ error: 'command is required' });
+    if (!command) throw new Error('command is required');
 
     // Resolve working directory
     const cwd = inputCwd
@@ -231,7 +190,7 @@ Guidelines:
       : (ctx?.cwd || process.cwd());
 
     if (!existsSync(cwd)) {
-      return JSON.stringify({ error: `Working directory does not exist: ${cwd}` });
+      throw new Error(`Working directory does not exist: ${cwd}`);
     }
 
     // Clamp timeout
@@ -240,7 +199,7 @@ Guidelines:
 
     if (background) {
       if (!ctx?.taskManager) {
-        return JSON.stringify({ error: 'background tasks are unavailable in this runtime' });
+        throw new Error('background tasks are unavailable in this runtime');
       }
       try {
         const task = ctx.taskManager.startShellTask({
@@ -254,16 +213,9 @@ Guidelines:
             threadId: ctx.threadId || 'main',
           },
         });
-        // Same-turn parking: tell the engine "this turn has an async
-        // task in flight". The engine refuses to finalize end_turn
-        // while the set is non-empty and will splice the task result
-        // into the next adapter loop when it terminates. No-op when
-        // the engine didn't wire the hook (legacy callers / tests).
-        const currentToolCall = typeof ctx.currentToolCall === 'function' ? ctx.currentToolCall() : null;
-        try { ctx.registerAsyncTask?.(task.id, currentToolCall || {}); } catch { /* never block tool return on coord errors */ }
-        return `Started background task ${task.id}.\nStatus: ${task.status}\nLog: ${task.log?.path || ''}\nUse ListTasks, ReadTaskLog, or CancelTask to inspect or control it.`;
+        return `Started background task ${task.id}.\nStatus: ${task.status}\nLog: ${task.log?.path || ''}\nThe task is detached from this turn. Use ListTasks, ReadTaskLog, or CancelTask to inspect or control it.`;
       } catch (err) {
-        return JSON.stringify({ error: err?.message || String(err) });
+        throw new Error(err?.message || String(err));
       }
     }
 
@@ -273,6 +225,7 @@ Guidelines:
         timeout,
         signal: ctx?.signal,
         runtimePlatform,
+        runProcessImpl: ctx?.[RUN_PROCESS_OVERRIDE] || runProcess,
       });
 
       // Format output similar to Claude Code
@@ -280,6 +233,24 @@ Guidelines:
       if (result.stdout) parts.push(result.stdout);
       if (result.stderr) parts.push(`STDERR:\n${result.stderr}`);
       if (result.timedOut) parts.push(`\n(Command timed out after ${timeout}ms)`);
+      if (result.terminationError) {
+        parts.push([
+          `WARNING: ${result.terminationError}`,
+          'The command timed out, but process-tree termination could not be confirmed. The command may still be running.',
+          'Decide whether to inspect or stop it, retry, or use background=true.',
+        ].join('\n'));
+      }
+      if (result.timedOut) {
+        ctx?.requestToolBatchBarrier?.({
+          kind: 'owned_timeout',
+          message: [
+            result.terminationError
+              ? 'The foreground Bash command timed out and process-tree termination could not be confirmed.'
+              : 'The foreground Bash command timed out.',
+            'Return this result to the model before executing another tool call from the same batch.',
+          ].join(' '),
+        });
+      }
 
       const output = parts.join('\n');
       if (result.exitCode !== 0) {
@@ -287,7 +258,19 @@ Guidelines:
       }
       return output || '(no output)';
     } catch (err) {
-      return JSON.stringify({ error: err.message });
+      if (err?.name === 'ProcessTerminationError') err.fatalToolTimeout = true;
+      throw err;
     }
   },
 });
+
+export function createBashTool({ runProcessImpl = runProcess } = {}) {
+  return {
+    ...bashTool,
+    execute(input, ctx) {
+      return bashTool.execute(input, { ...ctx, [RUN_PROCESS_OVERRIDE]: runProcessImpl });
+    },
+  };
+}
+
+export default bashTool;

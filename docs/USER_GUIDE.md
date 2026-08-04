@@ -1,57 +1,49 @@
-# User Guide
+# Yeaft User Guide
 
-> **This page is now an index.** The full user guide has been split into focused chapters under [Guide → User Guide](./guide/user/login.md). External links to `USER_GUIDE` are preserved — pick the chapter you want below.
+This stable URL is a compact index of the current product documentation.
 
-**Language**: [中文版](/zh-CN/USER_GUIDE)
+**Language:** [中文](/zh-CN/USER_GUIDE)
 
-## Where Did the Content Go?
+## Start here
 
-The previous monolithic USER_GUIDE has been broken up into smaller, dedicated chapters so each feature has its own page. Use the table below to find what you're looking for.
+- [What is Yeaft?](./guide/introduction.md)
+- [Getting started](./guide/getting-started.md)
+- [Choose a code agent path](./guide/user/choose-backend.md)
 
-### Getting Started
+## Native Yeaft
 
-| Old section | New page |
-| --- | --- |
-| Getting Started | [Getting Started](./guide/getting-started.md) |
-| Login & Registration | [Login & Registration](./guide/user/login.md) |
-| Choose a Code Agent Path | [Choose a Code Agent Path](./guide/user/choose-backend.md) (NEW) |
+- [Sessions and Projects](./guide/user/yeaft-session.md)
+- [Work Center](./guide/user/work-center.md)
+- [Provider and model configuration](./guide/yeaft-config.md)
+- [Settings](./guide/user/settings.md)
 
-### Chat & Conversation Modes
+## CLI conversations and workspace
 
-| Old section | New page |
-| --- | --- |
-| Chat Mode (Claude Code) | [Chat (Claude Code)](./guide/user/chat-mode.md) |
-| Copilot Mode | [Copilot Mode](./guide/user/copilot-mode.md) (NEW) |
-| Yeaft Code Agent | [Yeaft Code Agent](./guide/user/yeaft-group.md) (NEW) |
-| Expert Panel | [Expert Panel](./guide/user/expert-panel.md) |
-| Split Screen | [Split Screen](./guide/user/split-screen.md) |
+- [Claude Code conversations](./guide/user/chat-mode.md)
+- [GitHub Copilot conversations](./guide/user/copilot-mode.md)
+- [Expert Panel](./guide/user/expert-panel.md)
+- [Split screen](./guide/user/split-screen.md)
+- [Workbench](./guide/user/workbench.md)
+- [Keyboard shortcuts](./guide/user/shortcuts.md)
 
-### Tools & Workspace
+## Install and operate
 
-| Old section | New page |
-| --- | --- |
-| Workbench (Terminal/Files/Git) | [Workbench](./guide/user/workbench.md) |
-| Settings | [Settings](./guide/user/settings.md) |
-| Keyboard Shortcuts | [Shortcuts](./guide/user/shortcuts.md) |
-| Sidebar / Session List | covered in [Chat (Claude Code)](./guide/user/chat-mode.md) |
+- [Deploy the Server](./guide/deploy-server.md)
+- [Install an Agent](./guide/deploy-agent.md)
+- [Agent and native CLI reference](./guide/agent-cli.md)
+- [Login and registration](./guide/user/login.md)
+- [Security](./guide/security.md)
+- [Admin dashboard](./guide/features-dashboard.md)
 
-### Agent & Deployment
+## Technical reference
 
-| Old section | New page |
-| --- | --- |
-| Agent Installation & Connection | [Agent Installation](./guide/deploy-agent.md) |
-| Agent CLI Reference | [Agent CLI](./guide/agent-cli.md) |
+- [Architecture](./guide/tech/architecture.md)
+- [CLI provider system](./guide/tech/providers.md)
+- [Native Yeaft engine](./guide/tech/yeaft-engine.md)
+- [H2-AMS memory](./guide/tech/yeaft-memory.md)
+- [Native LLM layer](./guide/tech/yeaft-llm.md)
+- [WebSocket protocol](./guide/tech/wire-protocol.md)
+- [Configuration reference](./guide/reference/config-reference.md)
+- [FAQ](./guide/faq.md)
 
-### Technical Reference
-
-For the technical implementation (provider system, Yeaft engine, wire protocol, etc.), see [Guide → Technical](./guide/architecture.md).
-
-## Why the Restructure?
-
-The old single-page guide was getting too long to maintain and was missing entire features:
-
-1. **Copilot CLI backend** (via ACP) has been a first-class chat provider for months — it wasn't in the guide
-2. **Yeaft Code Agent** (multi-VP parallel collaboration) is the current main dev direction — wasn't documented
-3. Splitting per feature lets each page link straight to the relevant component without overwhelming a new reader
-
-If you bookmarked a section anchor on this page, the equivalent content lives on the linked chapter — the URLs above are stable going forward.
+Internal design and migration notes under `docs/notes/` and `docs/work-center/` are maintainer references, not the public feature contract.

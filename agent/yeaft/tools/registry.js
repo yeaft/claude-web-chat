@@ -37,7 +37,7 @@ export const FORWARD_TOOL_NAMES = Object.freeze(['RouteForward']);
  * persisted transcripts need the raw result. The engine/history replay path
  * applies this only when building messages for the model.
  */
-export const TOOL_RESULT_MAX_BYTES = 10 * 1024;
+export const TOOL_RESULT_MAX_BYTES = 32 * 1024;
 
 function normalizeLanguage(language) {
   return String(language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
@@ -134,15 +134,16 @@ function localizeParameters(parameters, language, toolName, parameterOverrides =
  * does nothing.
  *
  * Fix: race the tool's promise against a timer. On timeout we throw a
- * loud error — the engine's existing catch (engine.js: tool-execute path)
- * emits `tool_end{isError:true}` and the loop continues normally. Loud
- * failure beats silent stall.
+ * loud error and the engine emits `tool_end{isError:true}`. Read-only and
+ * run-scoped failures can continue normally; an external side-effecting tool
+ * is terminal because its detached promise may still be running and replaying
+ * or continuing beside it is unsafe. Either way the query emits a diagnostic
+ * terminal boundary instead of silently stalling.
  *
- * 90s is comfortably above the typical tool budget (most tools complete
- * in <1s; bash and web-fetch can run tens of seconds; web-search is
- * usually <10s) but well below the 120s bridge-level watchdog so the
- * tool-level signal fires first and surfaces a useful per-tool diagnosis
- * rather than an opaque "VP stalled" log.
+ * 90s is comfortably above the typical tool budget (most tools complete in
+ * <1s; web-fetch can run tens of seconds; web-search is usually <10s). Tools
+ * with a longer owned deadline, such as Bash and WaitAgent, override this so
+ * their own cancellation/timeout result reaches the model first.
  *
  * Override per-tool by setting `tool.timeoutMs` on the ToolDef. Set to
  * 0 (or a negative number) to disable the timeout for that tool — only
@@ -194,24 +195,57 @@ export function normalizeToolOutput(output) {
   return text;
 }
 
+function parseToolErrorOutput(output) {
+  const text = normalizeToolOutput(output).trim();
+  if (!text.startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed
+      && typeof parsed === 'object'
+      && !Array.isArray(parsed)
+      && typeof parsed.error === 'string'
+      && parsed.error.trim()
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isToolErrorOutput(output) {
+  return parseToolErrorOutput(output) !== null;
+}
+
+export function toolErrorEffect(output) {
+  return parseToolErrorOutput(output)?.errorEffect === 'none' ? 'none' : 'unknown';
+}
+
+function truncateUtf8(text, maxBytes) {
+  if (maxBytes <= 0) return '';
+  const buffer = Buffer.from(String(text), 'utf8');
+  if (buffer.length <= maxBytes) return String(text);
+  let end = maxBytes;
+  while (end > 0 && (buffer[end] & 0xc0) === 0x80) end -= 1;
+  return buffer.subarray(0, end).toString('utf8');
+}
+
 export function truncateToolResultIfNeeded(output, { toolName, language } = {}) {
   const text = normalizeToolOutput(output);
   const originalBytes = Buffer.byteLength(text, 'utf8');
   if (originalBytes <= TOOL_RESULT_MAX_BYTES) return text;
 
-  const chunks = [];
-  let used = 0;
-  for (const ch of text) {
-    const n = Buffer.byteLength(ch, 'utf8');
-    if (used + n > TOOL_RESULT_MAX_BYTES) break;
-    chunks.push(ch);
-    used += n;
+  const markerFor = name => normalizeLanguage(language) === 'zh'
+    ? `\n\n[已截断：${name} 返回 ${formatSize(originalBytes)}，上限为 ${formatSize(TOOL_RESULT_MAX_BYTES)}；原因：单个 tool result 超过 ${formatSize(TOOL_RESULT_MAX_BYTES)}，模型消息历史不会看到剩余内容]`
+    : `\n\n[truncated: ${name} returned ${formatSize(originalBytes)}, capped at ${formatSize(TOOL_RESULT_MAX_BYTES)}; reason: single tool result exceeded ${formatSize(TOOL_RESULT_MAX_BYTES)}, the model message history will not see the rest]`;
+  let marker = markerFor(String(toolName || 'tool'));
+  if (Buffer.byteLength(marker, 'utf8') > TOOL_RESULT_MAX_BYTES) {
+    const fixedMarker = markerFor('');
+    const nameBudget = Math.max(0, TOOL_RESULT_MAX_BYTES - Buffer.byteLength(fixedMarker, 'utf8'));
+    marker = markerFor(truncateUtf8(String(toolName || 'tool'), nameBudget));
   }
-  const head = chunks.join('');
-  const marker = normalizeLanguage(language) === 'zh'
-    ? `\n\n[已截断：${toolName} 返回 ${formatSize(originalBytes)}，上限为 ${formatSize(TOOL_RESULT_MAX_BYTES)}；原因：单个 tool result 超过 ${formatSize(TOOL_RESULT_MAX_BYTES)}，模型消息历史不会看到剩余内容]`
-    : `\n\n[truncated: ${toolName} returned ${formatSize(originalBytes)}, capped at ${formatSize(TOOL_RESULT_MAX_BYTES)}; reason: single tool result exceeded ${formatSize(TOOL_RESULT_MAX_BYTES)}, the model message history will not see the rest]`;
-  return head + marker;
+  marker = truncateUtf8(marker, TOOL_RESULT_MAX_BYTES);
+  const contentBudget = Math.max(0, TOOL_RESULT_MAX_BYTES - Buffer.byteLength(marker, 'utf8'));
+  return truncateUtf8(text, contentBudget) + marker;
 }
 
 /**
@@ -410,9 +444,19 @@ export class ToolRegistry {
     const rawTimeout = Number.isFinite(tool.timeoutMs) ? tool.timeoutMs : DEFAULT_TOOL_TIMEOUT_MS;
     const useTimeout = rawTimeout > 0;
 
-    const output = useTimeout
-      ? await runWithTimeout(tool.execute(input, ctx), rawTimeout, name)
-      : await tool.execute(input, ctx);
+    let output;
+    try {
+      output = useTimeout
+        ? await runWithTimeout(tool.execute(input, ctx), rawTimeout, name)
+        : await tool.execute(input, ctx);
+    } catch (error) {
+      if (error instanceof ToolExecutionTimeoutError
+          && tool.sideEffectScope !== 'run'
+          && tool.isReadOnly?.(input) !== true) {
+        error.fatalToolTimeout = true;
+      }
+      throw error;
+    }
 
     return normalizeToolOutput(output);
   }

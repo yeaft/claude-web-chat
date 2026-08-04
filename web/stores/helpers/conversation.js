@@ -8,6 +8,17 @@ import { maxDbMessageId } from './messages.js';
 import { t } from '../../utils/i18n.js';
 import { EXPERT_ROLES, buildClientExpertMessage } from '../../utils/expert-roles.js';
 
+const YEAFT_ASK_SUBMIT_TIMEOUT_MS = 10_000;
+let yeaftAskSubmitGeneration = 0;
+
+function agentIdsForYeaftConversation(store, conversationId) {
+  if (!conversationId || !store?.yeaftConversationIdsByAgent) return [];
+  return Object.entries(store.yeaftConversationIdsByAgent)
+    .filter(([, candidateConversationId]) => candidateConversationId === conversationId)
+    .map(([agentId]) => agentId)
+    .filter(Boolean);
+}
+
 /**
  * fix-usermsg-dup: opaque client-side id stamped on optimistic user
  * messages and forwarded to the server in the `chat` payload. The
@@ -31,16 +42,25 @@ function makeClientMessageId() {
 }
 
 export function selectAgent(store, agentId) {
-  if (agentId === store.currentAgent) {
+  if (agentId === store.currentAgent && !store.pendingAgentSelection) {
     console.log('[selectAgent] Same agent, skipping:', agentId);
     return;
   }
   console.log('[selectAgent] Switching agent from', store.currentAgent, 'to', agentId);
+  const requestId = `agent_select_${crypto.randomUUID()}`;
   store.agentSwitching = true;
-  store.sendWsMessage({
+  store.pendingAgentSelection = { agentId, requestId };
+  const sent = store.sendWsMessage({
     type: 'select_agent',
-    agentId
+    agentId,
+    requestId,
   });
+  if (sent === false) {
+    store.pendingAgentSelection = null;
+    store.agentSwitching = false;
+    return null;
+  }
+  return requestId;
 }
 
 export function createConversation(store, workDir, agentId = null, disallowedTools = null, options = {}) {
@@ -169,10 +189,9 @@ export function selectConversation(store, conversationId, agentId) {
       // Cache hit + at least one persisted row → silent incremental sync.
       // Don't touch messagesMap — the cache is what the user sees the
       // instant the sidebar click resolves.
-      store.sendWsMessage({
-        type: 'sync_messages',
-        conversationId,
-        afterMessageId: lastSeenDbId
+      store.requestChatHistory?.(conversationId, {
+        mode: 'delta',
+        afterMessageId: lastSeenDbId,
       });
     } else {
       // No persisted cursor yet. If there are optimistic/unflushed messages in
@@ -182,11 +201,7 @@ export function selectConversation(store, conversationId, agentId) {
         store.messagesMap[conversationId] = [];
         setSessionLoading(store, true, t('chat.session.loadingHistory'));
       }
-      store.sendWsMessage({
-        type: 'sync_messages',
-        conversationId,
-        turns: 5
-      });
+      store.requestChatHistory?.(conversationId, { mode: 'recent', turns: 5 });
     }
   // ★ Bug #4 / perf-chat-session-switch-cache: pagination state.
   //
@@ -257,65 +272,13 @@ export function toggleConversationMcp(store, serverName, enabled) {
 }
 
 export function closeSession(store, conversationId, agentId) {
-  const conv = store.conversations.find(c => c.id === conversationId);
-
-
-  // Mark as recently deleted to prevent handleAgentList from re-adding it
-  if (!store._recentlyDeletedSessions) store._recentlyDeletedSessions = {};
-  store._recentlyDeletedSessions[conversationId] = Date.now();
-
-  // Optimistically remove from local conversations list
-  store.conversations = store.conversations.filter(c => c.id !== conversationId);
-
-  // Clean up caches
-  delete store.messagesMap[conversationId];
-  // perf-chat-session-switch-cache: per-conv cache metadata follows the
-  // messages — without this, reopening a closed-then-recreated session
-  // would inherit the stale lastSeenDbId / hasMoreOlder of the old one.
-  delete store.chatSessionState[conversationId];
-  delete store.processingConversations[conversationId];
-  stopProcessingWatchdog(store, conversationId);
-  delete store.executionStatusMap[conversationId];
-
-  // Remove from activeConversations if present
-  const activeIdx = store.activeConversations.indexOf(conversationId);
-  if (activeIdx >= 0) {
-    store.activeConversations.splice(activeIdx, 1);
-    if (store.activeConversations.length === 0) {
-      // Clear lastViewedConversation so refresh doesn't restore this session
-      localStorage.removeItem('lastViewedConversation');
-      store.lastViewedConversation = null;
-    }
-  }
-
-  // Clear from split panels if present
-  for (const pane of store.panels) {
-    if (pane.conversationId === conversationId) {
-      pane.conversationId = null;
-    }
-  }
-
-  // Clear pin state if present
-  const pinIdx = store.pinnedSessions.indexOf(conversationId);
-  if (pinIdx >= 0) {
-    store.pinnedSessions.splice(pinIdx, 1);
-    localStorage.setItem('pinned-sessions', JSON.stringify(store.pinnedSessions));
-  }
-
-  // Send delete_conversation to server (reuses existing handler which:
-  // 1. removes from agent.conversations Map
-  // 2. sets is_active=0 in DB (data preserved)
-  // 3. broadcasts updated agent list
-  // 4. forwards to agent for resource cleanup (terminals, processes))
-  if (agentId && agentId !== store.currentAgent) {
-    store.sendWsMessage({ type: 'select_agent', agentId, silent: true });
-    store.sendWsMessage({ type: 'delete_conversation', conversationId });
-    store.sendWsMessage({ type: 'select_agent', agentId: store.currentAgent, silent: true });
-  } else {
-    store.sendWsMessage({ type: 'delete_conversation', conversationId });
-  }
-
-  store.saveOpenSessions();
+  if (!conversationId) return false;
+  return store.sendWsMessage({
+    type: 'delete_conversation',
+    requestId: `delete_${crypto.randomUUID()}`,
+    conversationId,
+    ...(agentId ? { agentId } : {}),
+  });
 }
 
 export function deleteConversation(store, conversationId, agentId) {
@@ -351,23 +314,12 @@ export function deleteConversation(store, conversationId, agentId) {
     localStorage.setItem('pinned-sessions', JSON.stringify(store.pinnedSessions));
   }
 
-  // 如果目标 conversation 在其他 agent 上，需要先通知 server 切换 agent
-  // 否则 server 端 forwardToAgent 会发送到 client.currentAgent
-  if (agentId && agentId !== store.currentAgent) {
-    // 先选择目标 agent，再发删除，最后切回
-    store.sendWsMessage({ type: 'select_agent', agentId, silent: true });
-    store.sendWsMessage({
-      type: 'delete_conversation',
-      conversationId
-    });
-    // 切回原 agent
-    store.sendWsMessage({ type: 'select_agent', agentId: store.currentAgent, silent: true });
-  } else {
-    store.sendWsMessage({
-      type: 'delete_conversation',
-      conversationId
-    });
-  }
+  store.sendWsMessage({
+    type: 'delete_conversation',
+    requestId: `delete_${crypto.randomUUID()}`,
+    conversationId,
+    ...(agentId ? { agentId } : {}),
+  });
 }
 
 export function sendMessage(store, text, attachments = [], options = {}) {
@@ -511,13 +463,35 @@ export function answerUserQuestion(store, requestId, answers, conversationId) {
     m.type === 'tool-use' && m.toolName === 'AskUserQuestion' && m.askRequestId === requestId
   );
   const isYeaftPrompt = store.currentView === 'yeaft' || !!chatMsg?.sessionId;
-  store.sendWsMessage(isYeaftPrompt ? {
+  if (isYeaftPrompt && chatMsg?.askPending) return;
+  const sessionId = chatMsg?.sessionId || store.yeaftActiveSessionFilter || null;
+  const cardAgentId = typeof chatMsg?.agentId === 'string' && chatMsg.agentId
+    ? chatMsg.agentId
+    : null;
+  const conversationAgentIds = isYeaftPrompt
+    ? agentIdsForYeaftConversation(store, convId)
+    : [];
+  const conversationAgentId = conversationAgentIds.length === 1
+    ? conversationAgentIds[0]
+    : null;
+  // The card identity came from the Agent event that created the prompt. Do
+  // not replace it with a Session resolver that can fall back to the page's
+  // current Agent while ownership is still hydrating. A unique conversation
+  // mapping is also authoritative; if it conflicts with the card, fail closed
+  // before mutating local state. Ambiguous mappings cannot disprove the card.
+  if (cardAgentId && conversationAgentId && cardAgentId !== conversationAgentId) return false;
+  const legacyOwnerAgentId = isYeaftPrompt && !cardAgentId && !conversationAgentId
+    && typeof store.agentIdForSession === 'function'
+    ? store.agentIdForSession(sessionId)
+    : null;
+  const sent = store.sendWsMessage(isYeaftPrompt ? {
     type: 'yeaft_ask_user_answer',
-    agentId: store.yeaftAgentId || store.currentAgent || null,
+    agentId: cardAgentId || conversationAgentId || legacyOwnerAgentId || store.yeaftAgentId || store.currentAgent || null,
     conversationId: convId,
     requestId,
+    toolCallId: chatMsg?.toolId || null,
     answers,
-    sessionId: chatMsg?.sessionId || store.yeaftActiveSessionFilter || null,
+    sessionId,
     vpId: chatMsg?.vpId || chatMsg?.speakerVpId || null,
     turnId: chatMsg?.turnId || null,
     threadId: chatMsg?.threadId || 'main',
@@ -527,17 +501,29 @@ export function answerUserQuestion(store, requestId, answers, conversationId) {
     requestId,
     answers
   });
-  // Yeaft prompts are shared across devices. Keep the card interactive until
-  // the agent broadcasts ask_user_answered; another device may have won the
-  // first-answer race or the request may already be expired. Chat-provider
-  // prompts retain their historical optimistic collapse behavior.
+  // Yeaft prompts are shared across devices. Record a submitted answer on the
+  // message row so a component/session remount cannot reopen the card, but wait
+  // for the agent event or persisted tool result before marking it confirmed.
+  // Chat-provider prompts retain their historical optimistic collapse behavior.
   if (chatMsg && !isYeaftPrompt) {
     chatMsg.askAnswered = true;
     chatMsg.selectedAnswers = answers;
+  } else if (chatMsg && sent !== false) {
+    const submitGeneration = ++yeaftAskSubmitGeneration;
+    chatMsg.askPending = true;
+    chatMsg.pendingAnswers = answers;
+    chatMsg.askSubmitGeneration = submitGeneration;
+    const timer = setTimeout(() => {
+      if (chatMsg.askSubmitGeneration !== submitGeneration || chatMsg.askPending !== true) return;
+      chatMsg.askPending = false;
+      chatMsg.pendingAnswers = null;
+      chatMsg.askSubmitGeneration = null;
+    }, YEAFT_ASK_SUBMIT_TIMEOUT_MS);
+    if (typeof timer?.unref === 'function') timer.unref();
   }
 
   // 立刻进入 processing 状态，显示"思考中"指示器
-  if (convId && !store.processingConversations[convId]) {
+  if (sent !== false && convId && !store.processingConversations[convId]) {
     store.processingConversations[convId] = true;
     if (store._closedAt?.[convId]) {
       delete store._closedAt[convId];
@@ -557,12 +543,8 @@ export function appendColumn(store, conversationId) {
   // Ensure messagesMap entry exists
   if (!store.messagesMap[conversationId]) {
     store.messagesMap[conversationId] = [];
-    // Load messages from server
-    store.sendWsMessage({
-      type: 'sync_messages',
-      conversationId,
-      turns: 5
-    });
+    // Load messages from server with a generation-scoped request.
+    store.requestChatHistory?.(conversationId, { mode: 'recent', turns: 5 });
   }
 
   saveOpenSessions(store);
@@ -691,7 +673,11 @@ export function cancelExecutionForConversation(store, conversationId) {
 
 export function refreshAgents(store) {
   if (store.ws && store.ws.readyState === WebSocket.OPEN) {
-    store.sendWsMessage({ type: 'get_agents' });
+    if (typeof store.requestYeaftSessionInventory === 'function') {
+      store.requestYeaftSessionInventory();
+    } else {
+      store.sendWsMessage({ type: 'get_agents' });
+    }
   }
 }
 

@@ -4,6 +4,9 @@ const DEFAULT_OVERSCAN = 1;
 const DEFAULT_ITEM_GAP = 18;
 const MAX_ESTIMATED_HEIGHT = 1400;
 const DEFAULT_BOTTOM_THRESHOLD = 80;
+const DEFAULT_RESUME_BOTTOM_THRESHOLD = 2;
+const DEFAULT_HISTORY_PREFETCH_VIEWPORTS = 2;
+const DEFAULT_HISTORY_PREFETCH_MIN_PX = 600;
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -97,7 +100,7 @@ function findEndIndex(offsets, viewportBottom, itemCount) {
   return clamp(index, 0, itemCount);
 }
 
-export function computeVirtualWindow(items, params = {}) {
+export function computeVirtualWindowFromLayout(items, layout, params = {}) {
   const list = Array.isArray(items) ? items : [];
   const itemCount = list.length;
   if (!itemCount) {
@@ -116,7 +119,8 @@ export function computeVirtualWindow(items, params = {}) {
   const scrollTop = Math.max(0, Number(params.scrollTop || 0));
   const viewportHeight = Math.max(1, Number(params.viewportHeight || DEFAULT_VIEWPORT_HEIGHT));
   const overscan = Math.max(0, Number(params.overscan ?? DEFAULT_OVERSCAN));
-  const { offsets, totalHeight } = buildVirtualOffsets(list, params.heightCache || {}, params);
+  const offsets = Array.isArray(layout?.offsets) ? layout.offsets : [0];
+  const totalHeight = Number.isFinite(layout?.totalHeight) ? layout.totalHeight : 0;
   const viewportBottom = scrollTop + viewportHeight;
   const visibleStart = clamp(findStartIndex(offsets, scrollTop), 0, itemCount - 1);
   const visibleEnd = clamp(findEndIndex(offsets, viewportBottom, itemCount), visibleStart + 1, itemCount);
@@ -143,6 +147,11 @@ export function computeVirtualWindow(items, params = {}) {
   };
 }
 
+export function computeVirtualWindow(items, params = {}) {
+  const layout = buildVirtualOffsets(items, params.heightCache || {}, params);
+  return computeVirtualWindowFromLayout(items, layout, params);
+}
+
 export function virtualScrollTopForIndex(items, index, heightCache = {}, options = {}) {
   const list = Array.isArray(items) ? items : [];
   const safeIndex = Math.max(0, Math.min(list.length - 1, Number.isFinite(index) ? Math.floor(index) : 0));
@@ -161,9 +170,30 @@ export function shouldFollowTranscriptBottom({ scrollTop = 0, scrollHeight = 0, 
   return Math.max(0, Number(scrollHeight) - Number(scrollTop) - Number(clientHeight)) <= Math.max(0, Number(threshold));
 }
 
+export function historyPrefetchThreshold(clientHeight = 0, {
+  viewports = DEFAULT_HISTORY_PREFETCH_VIEWPORTS,
+  minPx = DEFAULT_HISTORY_PREFETCH_MIN_PX,
+} = {}) {
+  const safeHeight = Math.max(0, Number(clientHeight) || 0);
+  const safeViewports = Math.max(0, Number(viewports) || 0);
+  return Math.max(0, Number(minPx) || 0, safeHeight * safeViewports);
+}
+
 export function resolveTranscriptBottomFollow({ following = true, atBottom = false, userScroll = false } = {}) {
   if (userScroll) return !!atBottom;
   return !!following && !!atBottom;
+}
+
+export function resolveTranscriptUserFollow({
+  following = true,
+  atBottom = false,
+  resumeBoundaryReached = false,
+  direction = 0,
+} = {}) {
+  const scrollDirection = Number(direction) || 0;
+  if (scrollDirection < 0) return false;
+  if (!following) return scrollDirection > 0 && !!resumeBoundaryReached;
+  return !!atBottom;
 }
 
 const TRANSCRIPT_SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
@@ -214,4 +244,7 @@ export const virtualTranscriptDefaults = Object.freeze({
   overscan: DEFAULT_OVERSCAN,
   itemGap: DEFAULT_ITEM_GAP,
   bottomThreshold: DEFAULT_BOTTOM_THRESHOLD,
+  resumeBottomThreshold: DEFAULT_RESUME_BOTTOM_THRESHOLD,
+  historyPrefetchViewports: DEFAULT_HISTORY_PREFETCH_VIEWPORTS,
+  historyPrefetchMinPx: DEFAULT_HISTORY_PREFETCH_MIN_PX,
 });

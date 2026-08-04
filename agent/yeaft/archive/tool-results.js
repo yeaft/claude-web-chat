@@ -77,7 +77,7 @@ export async function archiveOne({ root, scopeDir, message }) {
   await fs.mkdir(dirname(path), { recursive: true });
   await fs.writeFile(path, body, 'utf8');
   const sizeStr = formatSize(body.length);
-  const preview = body.slice(0, STUB_PREVIEW_LEN).replace(/\s+/g, ' ');
+  const preview = body.slice(0, STUB_PREVIEW_LEN).toWellFormed().replace(/\s+/g, ' ');
   const stub = {
     role: 'tool',
     toolCallId,

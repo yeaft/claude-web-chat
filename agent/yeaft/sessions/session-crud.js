@@ -57,6 +57,11 @@ import { seedDefaultSession, DEFAULT_SESSION_ID } from './seed-default.js';
 import { nextSessionId, validateVpId, isReservedVpId } from './ids.js';
 import { scanVpLibrary, DEFAULT_VP_LIB_DIR } from '../vp/vp-store.js';
 import { seedSummaryIfMissingSync, removeScopeDirSync } from '../memory/store.js';
+import {
+  markConversationDirty,
+  removeConversationIndexScope,
+} from '../conversation/history-index-state.js';
+import { retireConversationHistoryIndex } from '../conversation/history-index.js';
 import { ensureSessionConfigFile, saveSessionConfig, loadSessionConfig } from './session-config.js';
 import { repairSessionStore } from './recovery.js';
 import {
@@ -74,6 +79,40 @@ import {
  * `<yeaftDir>/memory` through to keep test/prod isolation honest.
  */
 const DEFAULT_MEMORY_ROOT = join(homedir(), '.yeaft', 'memory');
+
+function markSessionConversationDirty(ownerRoot, sessionId, reason, paths = {}) {
+  try {
+    markConversationDirty({
+      ownerRoot,
+      scopeKind: 'session',
+      scopeId: sessionId,
+      reason,
+      ...paths,
+    });
+  } catch (error) {
+    console.warn(`[session-crud] failed to mark conversation index dirty for ${sessionId}:`, error?.message || error);
+  }
+}
+
+function invalidateSessionConversationIndex(ownerRoots, sessionId, reason, paths = {}) {
+  for (const ownerRoot of new Set((ownerRoots || []).filter(Boolean))) {
+    retireConversationHistoryIndex(ownerRoot, sessionId).catch(error => {
+      console.warn(
+        `[session-crud] failed to retire conversation index for ${sessionId}:`,
+        error?.message || error,
+      );
+    });
+    try {
+      removeConversationIndexScope(ownerRoot, sessionId);
+    } catch (error) {
+      console.warn(
+        `[session-crud] failed to remove conversation index for ${sessionId}:`,
+        error?.message || error,
+      );
+    }
+    markSessionConversationDirty(ownerRoot, sessionId, reason, paths);
+  }
+}
 
 /**
  * Build the group seed summary body. Uses the group display name + roster
@@ -353,6 +392,12 @@ export function restoreSessionToRegistry(defaultYeaftDir, sessionId, workDir) {
     handle.close();
   }
   copySessionExtras(projectYeaftDir, defaultYeaftDir, sessionId);
+  invalidateSessionConversationIndex(
+    [defaultYeaftDir],
+    sessionId,
+    'restore-session',
+    { oldPath: sourceDir, newPath: destDir },
+  );
   addOrUpdateManifestSession(defaultYeaftDir, importedMeta, destDir);
   unregisterSessionWorkDir(defaultYeaftDir, sessionId);
   return importedMeta;
@@ -541,7 +586,7 @@ export function renameSession(yeaftDir, sessionId, newName) {
   if (!name) throw new SessionCrudError('invalid_name', sessionId);
   const handle = requireSession(yeaftDir, sessionId);
   const meta = handle.getMeta();
-  handle.saveMeta({ ...meta, name });
+  handle.saveMeta({ ...meta, name, metadataUpdatedAt: new Date().toISOString() });
   const next = handle.getMeta();
   handle.close();
   return next;
@@ -561,7 +606,7 @@ export function updateSessionAnnouncement(yeaftDir, sessionId, text) {
   const announcement = text.trim();
   const handle = requireSession(yeaftDir, sessionId);
   const meta = handle.getMeta();
-  handle.saveMeta({ ...meta, announcement });
+  handle.saveMeta({ ...meta, announcement, metadataUpdatedAt: new Date().toISOString() });
   const next = handle.getMeta();
   handle.close();
   return next;
@@ -577,7 +622,10 @@ export function updateSessionAnnouncement(yeaftDir, sessionId, text) {
 export function updateSessionConfig(yeaftDir, sessionId, partial) {
   const handle = requireSession(yeaftDir, sessionId);
   try {
-    return saveSessionConfig(yeaftDir, sessionId, partial || {});
+    const saved = saveSessionConfig(yeaftDir, sessionId, partial || {});
+    const meta = handle.getMeta();
+    handle.saveMeta({ ...meta, metadataUpdatedAt: new Date().toISOString() });
+    return saved;
   } finally {
     handle.close();
   }
@@ -595,9 +643,15 @@ export function archiveSession(yeaftDir, sessionId) {
   const groupYeaftDir = resolveSessionYeaftDir(yeaftDir, sessionId);
   const root = sessionsRoot(groupYeaftDir);
   const srcDir = join(root, sessionId);
-  // Idempotent — nothing on disk, nothing to archive. Workdir-registry is
-  // still cleared in case it points at a stale row.
+  // Idempotent source deletion must still invalidate every derived generation:
+  // an active query worker may otherwise serve history after the directory is gone.
   if (!existsSync(srcDir) || !loadSessionMeta(srcDir)) {
+    invalidateSessionConversationIndex(
+      [groupYeaftDir, yeaftDir],
+      sessionId,
+      'archive-session',
+      { oldPath: srcDir },
+    );
     unregisterSessionWorkDir(yeaftDir, sessionId);
     removeManifestSession(yeaftDir, sessionId);
     return { sessionId, archivedAs: null, alreadyGone: true };
@@ -607,6 +661,12 @@ export function archiveSession(yeaftDir, sessionId) {
   const suffix = randomBytes(2).toString('hex');
   const dstDir = join(root, `.archived-${ts}-${suffix}-${sessionId}`);
   renameSync(srcDir, dstDir);
+  invalidateSessionConversationIndex(
+    [groupYeaftDir, yeaftDir],
+    sessionId,
+    'archive-session',
+    { oldPath: srcDir, newPath: dstDir },
+  );
   unregisterSessionWorkDir(yeaftDir, sessionId);
   removeManifestSession(yeaftDir, sessionId);
   return { sessionId, archivedAs: dstDir, alreadyGone: false };
@@ -666,6 +726,12 @@ export function deleteSession(yeaftDir, sessionId, options = {}) {
     console.warn(`[session-crud] failed to remove memory dir for ${sessionId}:`, err?.message || err);
   }
 
+  invalidateSessionConversationIndex(
+    [groupYeaftDir, yeaftDir],
+    sessionId,
+    'delete-session',
+    { oldPath: srcDir },
+  );
   unregisterSessionWorkDir(yeaftDir, sessionId);
   removeManifestSession(yeaftDir, sessionId);
   return {
@@ -708,7 +774,7 @@ export function addMember(yeaftDir, sessionId, vpId) {
   try {
     const meta = handle.getMeta();
     const next = rosterAdd(meta, vpId);
-    handle.saveMeta(next);
+    handle.saveMeta({ ...next, metadataUpdatedAt: new Date().toISOString() });
     return handle.getMeta();
   } finally {
     handle.close();
@@ -728,7 +794,7 @@ export function removeMember(yeaftDir, sessionId, vpId) {
       return meta;
     }
     const next = rosterRemove(meta, vpId);
-    handle.saveMeta(next);
+    handle.saveMeta({ ...next, metadataUpdatedAt: new Date().toISOString() });
     return handle.getMeta();
   } finally {
     handle.close();
@@ -741,7 +807,7 @@ export function setSessionDefaultVp(yeaftDir, sessionId, vpId) {
   try {
     const meta = handle.getMeta();
     const next = setDefaultVp(meta, vpId);
-    handle.saveMeta(next);
+    handle.saveMeta({ ...next, metadataUpdatedAt: new Date().toISOString() });
     return handle.getMeta();
   } finally {
     handle.close();

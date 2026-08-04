@@ -140,6 +140,8 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       if (!await checkAgentAccess(llmUpdateAgentId)) break;
       await forwardToAgent(llmUpdateAgentId, {
         type: 'update_llm_config',
+        agentId: llmUpdateAgentId,
+        requestId: msg.requestId,
         config: msg.config || {}
       });
       break;

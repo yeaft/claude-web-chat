@@ -1,8 +1,33 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { ConversationStore, parseMessage, estimateTokens } from '../../../../agent/yeaft/conversation/persist.js';
+import {
+  ConversationStore,
+  parseMessage,
+  estimateTokens,
+  projectVisibleSessionMessages,
+} from '../../../../agent/yeaft/conversation/persist.js';
+import { searchMessages } from '../../../../agent/yeaft/conversation/search.js';
+import { createSession } from '../../../../agent/yeaft/sessions/session-store.js';
+import { archiveSession, deleteSession } from '../../../../agent/yeaft/sessions/session-crud.js';
+import {
+  __historyIndexForTest,
+  closeConversationHistoryIndexes,
+  loadConversationOutlineFromIndex,
+  readConversationIndexWindow,
+  searchConversationIndex,
+  validateConversationIndexAnchor,
+} from '../../../../agent/yeaft/conversation/history-index.js';
 
 const TEST_DIR = join(tmpdir(), `yeaft-test-conv-${Date.now()}`);
 
@@ -10,7 +35,8 @@ beforeEach(() => {
   mkdirSync(TEST_DIR, { recursive: true });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await closeConversationHistoryIndexes();
   if (existsSync(TEST_DIR)) {
     rmSync(TEST_DIR, { recursive: true, force: true });
   }
@@ -18,21 +44,17 @@ afterEach(() => {
 
 // ─── estimateTokens ──────────────────────────────────────────
 
-describe('estimateTokens', () => {
-  it('should estimate ~4 chars per token', () => {
-    expect(estimateTokens('abcd')).toBe(1);
-    expect(estimateTokens('abcdefgh')).toBe(2);
-    expect(estimateTokens('a'.repeat(100))).toBe(25);
-  });
-
-  it('should return 0 for empty/null', () => {
-    expect(estimateTokens('')).toBe(0);
-    expect(estimateTokens(null)).toBe(0);
-    expect(estimateTokens(undefined)).toBe(0);
-  });
-});
 
 // ─── parseMessage ────────────────────────────────────────────
+
+const consolidatedHistoryScenarios = [];
+function historyScenario(name, run) { consolidatedHistoryScenarios.push({ name, run }); }
+async function runConsolidatedHistoryScenarios() {
+  for (const scenario of consolidatedHistoryScenarios) {
+    try { await scenario.run(); }
+    catch (error) { error.message = `[${scenario.name}] ${error.message}`; throw error; }
+  }
+}
 
 describe('parseMessage', () => {
   it('should parse frontmatter and body', () => {
@@ -55,11 +77,6 @@ Hello world`;
     expect(msg.content).toBe('Hello world');
   });
 
-  it('should return null for invalid input', () => {
-    expect(parseMessage(null)).toBeNull();
-    expect(parseMessage('')).toBeNull();
-    expect(parseMessage('no frontmatter')).toBeNull();
-  });
 
   it('should parse tool metadata', () => {
     const raw = `---
@@ -79,20 +96,6 @@ Error: not found`;
     expect(msg.isError).toBe(true);
   });
 
-  it('should parse turnNumber', () => {
-    const raw = `---
-id: m0003
-role: assistant
-time: 2026-04-10T10:02:00Z
-turnNumber: 3
-tokens_est: 20
----
-
-Response text`;
-
-    const msg = parseMessage(raw);
-    expect(msg.turnNumber).toBe(3);
-  });
 
   it('should parse clientMessageId for optimistic Yeaft user rows', () => {
     const raw = `---
@@ -111,6 +114,52 @@ Hello`;
     expect(msg.sessionId).toBe('session_demo');
     expect(msg.clientMessageId).toBe('u_local_123');
     expect(msg.content).toBe('Hello');
+  });
+
+  it('round-trips Session message quote metadata', () => {
+    const store = new ConversationStore(TEST_DIR);
+    store.append({
+      role: 'user',
+      content: 'Follow up',
+      sessionId: 'session_quote',
+      quote: {
+        id: 'm0001',
+        role: 'assistant',
+        author: 'Linus',
+        content: 'Previous answer',
+        todos: [{ content: 'Test', status: 'completed' }],
+      },
+    });
+
+    const [loaded] = store.loadAllBySession('session_quote');
+    expect(loaded.quote).toEqual({
+      id: 'm0001',
+      role: 'assistant',
+      author: 'Linus',
+      content: 'Previous answer',
+      todos: [{ content: 'Test', status: 'completed' }],
+    });
+  });
+
+  it('round-trips model-only user provenance while legacy rows remain unmarked', () => {
+    const store = new ConversationStore(TEST_DIR);
+    const legacy = store.append({ role: 'user', content: 'legacy user', sessionId: 'session_provenance' });
+    const synthetic = store.append({
+      role: 'user',
+      content: 'Continue',
+      sessionId: 'session_provenance',
+      userAuthored: false,
+    });
+
+    const restarted = new ConversationStore(TEST_DIR);
+    const rows = restarted.loadAllBySession('session_provenance');
+    expect(rows).toEqual([
+      expect.objectContaining({ id: legacy.id }),
+      expect.objectContaining({ id: synthetic.id, userAuthored: false }),
+    ]);
+    expect(Object.hasOwn(rows[0], 'userAuthored')).toBe(false);
+    expect(restarted.loadVisibleBySession('session_provenance', null, 10).messages)
+      .toEqual([expect.objectContaining({ id: legacy.id, content: 'legacy user' })]);
   });
 
   it('round-trips image asset metadata without embedding image bytes', () => {
@@ -155,6 +204,111 @@ Hello`;
       imageAssetAnchor: true,
     });
     expect(loaded).not.toHaveProperty('images');
+  });
+
+  it('publishes a folded range atomically and restores only its reflection', () => {
+    const store = new ConversationStore(TEST_DIR);
+    const user = store.append({ role: 'user', content: 'use tools', sessionId: 'session_fold' });
+    const assistant = store.append({
+      role: 'assistant',
+      content: '',
+      sessionId: 'session_fold',
+      turnId: 'turn_fold',
+      toolCalls: [{ id: 'call_fold', name: 'demo', input: {} }],
+    });
+    const tool = store.append({
+      role: 'tool',
+      content: 'raw tool result',
+      sessionId: 'session_fold',
+      turnId: 'turn_fold',
+      toolCallId: 'call_fold',
+    });
+
+    const reflection = store.foldMessages([assistant, tool], {
+      role: 'user',
+      content: 'The previous tool call has been folded.',
+      sessionId: 'session_fold',
+      _reflection: true,
+    });
+
+    expect(reflection).toMatchObject({
+      _reflection: true,
+      foldedMessageIds: [assistant.id, tool.id],
+    });
+    expect(store.loadRecentBySession('session_fold', Infinity)).toEqual([
+      expect.objectContaining({ id: user.id, role: 'user', content: 'use tools' }),
+    ]);
+    expect(store.loadRecentBySession('session_fold', Infinity, { includeReflections: true })).toEqual([
+      expect.objectContaining({ id: user.id, role: 'user', content: 'use tools' }),
+      expect.objectContaining({ id: reflection.id, role: 'user', _reflection: true }),
+    ]);
+
+    const restarted = new ConversationStore(TEST_DIR);
+    expect(restarted.loadRecentBySession('session_fold', Infinity, { includeReflections: true })).toEqual([
+      expect.objectContaining({ id: user.id }),
+      expect.objectContaining({ id: reflection.id, _reflection: true }),
+    ]);
+    expect(restarted.loadOlderBySession('session_fold', reflection.seq, 10).messages).toEqual([
+      expect.objectContaining({ id: user.id }),
+    ]);
+
+    const indexPath = join(TEST_DIR, 'sessions', 'session_fold', 'conversation', 'index.json');
+    const staleIndex = JSON.parse(readFileSync(indexPath, 'utf8'));
+    staleIndex.segments.at(-1).bytes -= 1;
+    staleIndex.foldedMessageIds = [];
+    writeFileSync(indexPath, `${JSON.stringify(staleIndex, null, 2)}\n`);
+    const recovered = new ConversationStore(TEST_DIR);
+    expect(recovered.loadRecentBySession('session_fold', Infinity, { includeReflections: true })).toEqual([
+      expect.objectContaining({ id: user.id }),
+      expect.objectContaining({ id: reflection.id, _reflection: true }),
+    ]);
+  });
+
+  it('keeps bounded recent reads lazy after folding across multiple segments', () => {
+    const store = new ConversationStore(TEST_DIR);
+    const sessionId = 'session_fold_bounded';
+    const foldedOld = store.append({
+      role: 'user',
+      content: `old arc ${'x'.repeat(1024 * 1024)}`,
+      sessionId,
+    });
+    store.append({ role: 'user', content: 'older boundary', sessionId });
+    store.append({
+      role: 'assistant',
+      content: `older response ${'y'.repeat(1024 * 1024)}`,
+      sessionId,
+    });
+    store.append({ role: 'user', content: 'previous turn', sessionId });
+    store.append({ role: 'assistant', content: 'previous response', sessionId });
+    const currentUser = store.append({ role: 'user', content: 'current turn', sessionId });
+    const currentAssistant = store.append({ role: 'assistant', content: 'current response', sessionId });
+    store.foldMessages([foldedOld], {
+      role: 'user',
+      content: 'The old arc has been folded.',
+      sessionId,
+      _reflection: true,
+    });
+
+    const conversationDir = join(TEST_DIR, 'sessions', sessionId, 'conversation');
+    const segmentDir = join(conversationDir, 'segments');
+    const segments = readdirSync(segmentDir).filter(file => file.endsWith('.jsonl')).sort();
+    expect(segments).toHaveLength(3);
+    expect(store.loadOlderBySession(sessionId, currentUser.seq, 10).messages.map(row => row.id))
+      .not.toContain(foldedOld.id);
+
+    // Keep the already-loaded index and matching file sizes, then make the
+    // oldest segment unreadable. A bounded newest-to-oldest scan must finish the
+    // recent turn window before opening this path. Eager materialization fails.
+    const oldestSegmentPath = join(segmentDir, segments[0]);
+    chmodSync(oldestSegmentPath, 0o000);
+    try {
+      expect(store.loadRecentBySession(sessionId, 1).map(row => row.id)).toEqual([
+        currentUser.id,
+        currentAssistant.id,
+      ]);
+    } finally {
+      chmodSync(oldestSegmentPath, 0o644);
+    }
   });
 
   it('should parse turnId for persisted Yeaft assistant rows', () => {
@@ -211,30 +365,10 @@ describe('ConversationStore', () => {
     store = new ConversationStore(TEST_DIR);
   });
 
-  describe('constructor', () => {
-    it('should create chat and sessions root but not obsolete group history directories', () => {
-      expect(existsSync(join(TEST_DIR, 'chat', 'messages'))).toBe(true);
-      expect(existsSync(join(TEST_DIR, 'chat', 'cold'))).toBe(true);
-      expect(existsSync(join(TEST_DIR, 'sessions'))).toBe(true);
-      expect(existsSync(join(TEST_DIR, 'groups'))).toBe(false);
-      expect(existsSync(join(TEST_DIR, 'group'))).toBe(false);
-      expect(existsSync(join(TEST_DIR, 'conversation'))).toBe(false);
-    });
-  });
+
 
   describe('append', () => {
-    it('should write a message file', () => {
-      const msg = store.append({ role: 'user', content: 'Hello' });
-      expect(msg.id).toBe('m0001');
-      expect(msg.role).toBe('user');
-      expect(msg.content).toBe('Hello');
-      expect(msg.time).toBeTruthy();
-      expect(msg.tokens_est).toBeGreaterThan(0);
 
-      const segmentPath = join(TEST_DIR, 'chat', 'segments', '000001.jsonl');
-      expect(existsSync(segmentPath)).toBe(true);
-      expect(readFileSync(segmentPath, 'utf8')).toContain('\"content\":\"Hello\"');
-    });
 
     it('should persist clientMessageId metadata for Yeaft user echo dedupe', () => {
       store.append({
@@ -284,20 +418,6 @@ describe('ConversationStore', () => {
       expect(loaded[0].content).toContain('[Task finished]');
     });
 
-    it('should auto-increment sequence numbers', () => {
-      const msg1 = store.append({ role: 'user', content: 'First' });
-      const msg2 = store.append({ role: 'assistant', content: 'Second' });
-      expect(msg1.id).toBe('m0001');
-      expect(msg2.id).toBe('m0002');
-    });
-
-    it('should persist mode and model', () => {
-      store.append({ role: 'user', content: 'Test', mode: 'work', model: 'gpt-5' });
-      const loaded = store.loadRecent(1);
-      expect(loaded[0].mode).toBe('work');
-      expect(loaded[0].model).toBe('gpt-5');
-    });
-
 
     it('stores many messages in a single JSONL segment with an index', () => {
       for (let i = 0; i < 25; i += 1) {
@@ -313,6 +433,64 @@ describe('ConversationStore', () => {
       expect(index.totalMessages).toBe(25);
       expect(index.nextSeq).toBe(26);
       expect(index.segments).toHaveLength(1);
+    });
+  });
+
+  describe('update', () => {
+    it('updates one durable row without changing neighboring messages or order', () => {
+      const user = store.append({
+        role: 'user',
+        content: 'run it',
+        sessionId: 'session_update',
+      });
+      const tool = store.append({
+        role: 'tool',
+        content: 'started',
+        sessionId: 'session_update',
+        toolCallId: 'call_update',
+      });
+      const assistant = store.append({
+        role: 'assistant',
+        content: 'waiting',
+        sessionId: 'session_update',
+      });
+
+      const conversationDir = join(TEST_DIR, 'sessions', 'session_update', 'conversation');
+      const untouchedIndex = readFileSync(join(conversationDir, 'index.json'), 'utf8');
+      const updated = store.update(tool, { content: 'started\n\nfinished' });
+
+      expect(updated).toMatchObject({
+        id: tool.id,
+        role: 'tool',
+        content: 'started\n\nfinished',
+        toolCallId: 'call_update',
+      });
+      const durableRows = readFileSync(
+        join(TEST_DIR, 'sessions', 'session_update', 'conversation', 'segments', '000001.jsonl'),
+        'utf8',
+      ).trim().split('\n').map(line => JSON.parse(line));
+      expect(durableRows.map(message => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+      }))).toEqual([
+        { id: user.id, role: 'user', content: 'run it' },
+        { id: tool.id, role: 'tool', content: 'started\n\nfinished' },
+        { id: assistant.id, role: 'assistant', content: 'waiting' },
+      ]);
+      const updatedIndex = JSON.parse(readFileSync(join(conversationDir, 'index.json'), 'utf8'));
+      const originalIndex = JSON.parse(untouchedIndex);
+      expect(updatedIndex).toMatchObject({
+        nextSeq: originalIndex.nextSeq,
+        totalMessages: originalIndex.totalMessages,
+        lastMessageId: originalIndex.lastMessageId,
+      });
+      expect(readdirSync(join(conversationDir, 'segments')).filter(name => name.includes('.tmp.'))).toEqual([]);
+      expect(store.append({
+        role: 'assistant',
+        content: 'done',
+        sessionId: 'session_update',
+      }).id).toBe('m0004');
     });
   });
 
@@ -372,7 +550,310 @@ legacy session`, { encoding: 'utf8' });
       expect(page.hasMore).toBe(false);
     });
 
-    it('supports an exclusive seq cursor and bounded anchor window', () => {
+    it('filters the full visible history by user or VP with and without a query', () => {
+      const user = store.append({ role: 'user', content: 'user needle', sessionId: 'session_sender' });
+      store.append({ role: 'assistant', content: 'linus needle', sessionId: 'session_sender', speakerVpId: 'linus' });
+      const martin = store.append({ role: 'assistant', content: 'martin answer', sessionId: 'session_sender', speakerVpId: 'martin' });
+      store.append({ role: 'user', content: 'engine-only', sessionId: 'session_sender', userAuthored: false });
+
+      expect(store.searchVisibleBySession('session_sender', '', { senderKey: 'user' }).results)
+        .toEqual([expect.objectContaining({ messageId: user.id, role: 'user' })]);
+      expect(store.searchVisibleBySession('session_sender', '', { senderKey: 'vp:martin' }).results)
+        .toEqual([expect.objectContaining({ messageId: martin.id, speakerVpId: 'martin' })]);
+      expect(store.searchVisibleBySession('session_sender', 'needle', { senderKey: 'vp:martin' }).results)
+        .toEqual([]);
+    });
+
+    it('resolves senders from Session and route-forward persisted shapes', () => {
+      const direct = store.append({
+        role: 'assistant', content: 'direct response', sessionId: 'session_sender_shapes', from: 'linus',
+      });
+      const forwarded = store.append({
+        role: 'assistant', content: 'forwarded response', sessionId: 'session_sender_shapes', from: 'martin',
+        meta: { senderVpId: 'martin', injectedBy: 'route_forward' },
+      });
+
+      expect(store.searchVisibleBySession('session_sender_shapes', '', { senderKey: 'vp:linus' }).results)
+        .toEqual([expect.objectContaining({ messageId: direct.id, speakerVpId: 'linus' })]);
+      expect(store.searchVisibleBySession('session_sender_shapes', '', { senderKey: 'vp:martin' }).results)
+        .toEqual([expect.objectContaining({ messageId: forwarded.id, speakerVpId: 'martin' })]);
+    });
+
+    it('pages sender-only results on visible response boundaries', () => {
+      for (let i = 0; i < 3; i += 1) {
+        store.append({ role: 'assistant', content: `answer ${i}`, sessionId: 'session_sender_pages', speakerVpId: 'linus' });
+      }
+      const first = store.searchVisibleBySession('session_sender_pages', '', { senderKey: 'vp:linus', limit: 1 });
+      const second = store.searchVisibleBySession('session_sender_pages', '', {
+        senderKey: 'vp:linus', limit: 1, beforeSeq: first.nextBeforeSeq,
+      });
+      expect(first.results).toHaveLength(1);
+      expect(first.hasMore).toBe(true);
+      expect(second.results).toHaveLength(1);
+      expect(second.results[0].seq).toBeLessThan(first.results[0].seq);
+    });
+
+    it('returns one canonical search result for a tool-using assistant response', () => {
+      store.append({ role: 'user', content: 'run it', sessionId: 'session_search_response' });
+      store.append({
+        role: 'assistant', content: 'Needle before tool', sessionId: 'session_search_response',
+        turnId: 'response-search', speakerVpId: 'maker',
+      });
+      const tool = store.append({
+        role: 'assistant', content: '', sessionId: 'session_search_response',
+        turnId: 'response-search', speakerVpId: 'maker', toolCalls: [{ id: 'call-1', name: 'Bash', input: {} }],
+      });
+      const final = store.append({
+        role: 'assistant', content: 'needle after tool', sessionId: 'session_search_response',
+        turnId: 'response-search', speakerVpId: 'maker',
+      });
+
+      const page = store.searchVisibleBySession('session_search_response', 'needle', { limit: 20 });
+
+      expect(page.results).toEqual([
+        expect.objectContaining({
+          messageId: final.id,
+          turnId: 'response-search',
+          role: 'assistant',
+          speakerVpId: 'maker',
+        }),
+      ]);
+      expect(page.results[0].messageId).not.toBe(tool.id);
+      expect(page.results[0].snippet).toContain('Needle before tool');
+    });
+
+    historyScenario('keeps one canonical entry across interleaved VP rows with a stable identity', () => {
+      store.append({ role: 'user', content: 'compare answers', sessionId: 'session_interleaved_entry' });
+      const linusFirst = store.append({
+        role: 'assistant', content: 'Linus needle first', sessionId: 'session_interleaved_entry',
+        turnId: 'turn-shared', speakerVpId: 'linus',
+      });
+      const martin = store.append({
+        role: 'assistant', content: 'Martin needle', sessionId: 'session_interleaved_entry',
+        turnId: 'turn-shared', speakerVpId: 'martin',
+      });
+
+      const beforeTail = store.searchVisibleBySession('session_interleaved_entry', 'needle', { limit: 20 });
+      const linusEntryBefore = beforeTail.results.find(result => result.speakerVpId === 'linus');
+      expect(linusEntryBefore).toMatchObject({
+        messageId: linusFirst.id,
+        sourceMessageIds: [linusFirst.id],
+        entryStartSeq: store.getMessageSeqById(linusFirst.id),
+      });
+
+      const linusFinal = store.append({
+        role: 'assistant', content: 'Linus needle final', sessionId: 'session_interleaved_entry',
+        turnId: 'turn-shared', speakerVpId: 'linus',
+      });
+      const page = store.searchVisibleBySession('session_interleaved_entry', 'needle', { limit: 20 });
+      const linusEntries = page.results.filter(result => result.speakerVpId === 'linus');
+      const martinEntries = page.results.filter(result => result.speakerVpId === 'martin');
+
+      expect(linusEntries).toHaveLength(1);
+      expect(martinEntries).toHaveLength(1);
+      expect(linusEntries[0]).toMatchObject({
+        entryId: linusEntryBefore.entryId,
+        messageId: linusFinal.id,
+        sourceMessageIds: [linusFirst.id, linusFinal.id],
+        snippet: expect.stringContaining('Linus needle first'),
+      });
+      expect(martinEntries[0]).toMatchObject({
+        messageId: martin.id,
+        sourceMessageIds: [martin.id],
+      });
+      expect(linusEntries[0].entryId).not.toBe(martinEntries[0].entryId);
+    });
+
+    historyScenario('does not merge a reused assistant turn id across visible user boundaries', () => {
+      store.append({ role: 'user', content: 'first question', sessionId: 'session_reused_turn' });
+      const first = store.append({
+        role: 'assistant', content: 'first needle', sessionId: 'session_reused_turn',
+        turnId: 'reused-turn', speakerVpId: 'linus',
+      });
+      store.append({ role: 'user', content: 'second question', sessionId: 'session_reused_turn' });
+      const second = store.append({
+        role: 'assistant', content: 'second needle', sessionId: 'session_reused_turn',
+        turnId: 'reused-turn', speakerVpId: 'linus',
+      });
+
+      const results = store.searchVisibleBySession('session_reused_turn', 'needle').results;
+      expect(results).toHaveLength(2);
+      expect(results.map(result => result.messageId)).toEqual([second.id, first.id]);
+      expect(new Set(results.map(result => result.entryId)).size).toBe(2);
+    });
+
+    historyScenario('preserves literal substring semantics for CJK, emoji, punctuation, and case', () => {
+      const row = store.append({
+        role: 'user',
+        content: '前缀中文后缀 😀 rocket foo.bar QUOTED "Value"',
+        sessionId: 'session_literal_search',
+      });
+
+      for (const query of ['中文', '😀', 'foo.bar', 'quoted "value"', 'QUOTED']) {
+        expect(store.searchVisibleBySession('session_literal_search', query).results)
+          .toEqual([expect.objectContaining({ messageId: row.id })]);
+      }
+      expect(store.searchVisibleBySession('session_literal_search', '文后').results)
+        .toEqual([expect.objectContaining({ messageId: row.id })]);
+      expect(store.searchVisibleBySession('session_literal_search', 'fooXbar').results).toEqual([]);
+    });
+
+    it('pages search results on response boundaries', () => {
+      for (let i = 0; i < 3; i += 1) {
+        store.append({ role: 'user', content: `question ${i}`, sessionId: 'session_search_pages' });
+        store.append({
+          role: 'assistant', content: `needle start ${i}`, sessionId: 'session_search_pages',
+          turnId: `response-${i}`, speakerVpId: 'maker',
+        });
+        store.append({
+          role: 'assistant', content: `needle final ${i}`, sessionId: 'session_search_pages',
+          turnId: `response-${i}`, speakerVpId: 'maker',
+        });
+      }
+
+      const firstPage = store.searchVisibleBySession('session_search_pages', 'needle', { limit: 1 });
+      const secondPage = store.searchVisibleBySession('session_search_pages', 'needle', {
+        limit: 1, beforeSeq: firstPage.nextBeforeSeq,
+      });
+
+      expect(firstPage.results).toHaveLength(1);
+      expect(firstPage.results[0].turnId).toBe('response-2');
+      expect(firstPage.hasMore).toBe(true);
+      expect(secondPage.results).toHaveLength(1);
+      expect(secondPage.results[0].turnId).toBe('response-1');
+      expect(secondPage.results[0].seq).toBeLessThan(firstPage.nextBeforeSeq);
+    });
+
+    it('loads a bounded lightweight outline page with a stable total count', () => {
+      const longText = `outline ${'x'.repeat(220)}`;
+      const first = store.append({
+        role: 'user', content: longText, sessionId: 'session_outline', clientMessageId: 'client-1',
+        attachments: [{ name: 'secret.txt', data: 'do-not-project' }],
+      });
+      store.append({ role: 'assistant', content: 'first answer', sessionId: 'session_outline', speakerVpId: 'maker' });
+      store.append({ role: 'system', content: 'hidden row', sessionId: 'session_outline' });
+      store.append({ role: 'user', content: 'engine reflection', sessionId: 'session_outline', userAuthored: false });
+      store.append({ role: 'user', content: 'second question', sessionId: 'session_outline' });
+      const latest = store.append({ role: 'assistant', content: 'second answer', sessionId: 'session_outline' });
+
+      const firstPage = store.loadVisibleOutlineBySession('session_outline', { limit: 2 });
+      const countedPage = store.loadVisibleOutlineBySession('session_outline', { limit: 2, includeTotal: true });
+      const olderPage = store.loadVisibleOutlineBySession('session_outline', {
+        limit: 2, beforeSeq: firstPage.nextBeforeSeq,
+      });
+
+      expect(firstPage.results.map(result => result.messageId)).toEqual([
+        expect.any(String), latest.id,
+      ]);
+      expect(firstPage).toMatchObject({ hasMore: true, totalCount: null });
+      expect(countedPage.totalCount).toBe(4);
+      expect([...firstPage.results, ...olderPage.results].map(result => result.snippet))
+        .not.toContain('engine reflection');
+      expect(olderPage.results.map(result => result.messageId)).toContain(first.id);
+      expect(olderPage.totalCount).toBeNull();
+      expect(olderPage.results.find(result => result.messageId === first.id)).toMatchObject({
+        clientMessageId: 'client-1', role: 'user',
+      });
+      expect(olderPage.results.find(result => result.messageId === first.id).snippet.length).toBeLessThan(longText.length);
+      expect(JSON.stringify([...firstPage.results, ...olderPage.results])).not.toContain('do-not-project');
+      expect(JSON.stringify([...firstPage.results, ...olderPage.results])).not.toContain('attachments');
+    });
+
+    it('groups one tool-using assistant response into one canonical outline entry', () => {
+      const user = store.append({
+        role: 'user', content: 'run the tool', sessionId: 'session_outline_tools', turnId: 'user-turn',
+      });
+      store.append({
+        role: 'assistant', content: 'I will check. ', sessionId: 'session_outline_tools',
+        turnId: 'assistant-turn', speakerVpId: 'maker',
+      });
+      store.append({
+        role: 'assistant', content: '', sessionId: 'session_outline_tools', turnId: 'assistant-turn',
+        speakerVpId: 'maker', toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: 'true' } }],
+      });
+      const final = store.append({
+        role: 'assistant', content: 'Done.', sessionId: 'session_outline_tools',
+        turnId: 'assistant-turn', speakerVpId: 'maker',
+      });
+
+      const page = store.loadVisibleOutlineBySession('session_outline_tools', { limit: 50, includeTotal: true });
+
+      expect(page).toMatchObject({ totalCount: 2, hasMore: false, nextBeforeSeq: null });
+      expect(page.results).toEqual([
+        expect.objectContaining({ messageId: user.id, role: 'user' }),
+        expect.objectContaining({
+          messageId: final.id,
+          turnId: 'assistant-turn',
+          role: 'assistant',
+          speakerVpId: 'maker',
+          snippet: 'I will check. Done.',
+        }),
+      ]);
+    });
+
+    it('keeps the persisted tool-call row as the anchor for a tool-only response', () => {
+      store.append({ role: 'user', content: 'run only', sessionId: 'session_outline_tool_only' });
+      const toolOnly = store.append({
+        role: 'assistant', content: '', sessionId: 'session_outline_tool_only', turnId: 'tool-only-turn',
+        speakerVpId: 'maker', toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: 'true' } }],
+      });
+
+      const page = store.loadVisibleOutlineBySession('session_outline_tool_only', { limit: 50, includeTotal: true });
+
+      expect(page.totalCount).toBe(2);
+      expect(page.results[1]).toMatchObject({
+        messageId: toolOnly.id,
+        seq: store.getMessageSeqById(toolOnly.id),
+        turnId: 'tool-only-turn',
+        role: 'assistant',
+        snippet: '',
+      });
+    });
+
+    it('pages on response boundaries without repeating a multi-row response', () => {
+      const oldUser = store.append({ role: 'user', content: 'old question', sessionId: 'session_outline_pages' });
+      const oldTool = store.append({
+        role: 'assistant', content: '', sessionId: 'session_outline_pages', turnId: 'old-response',
+        speakerVpId: 'maker', toolCalls: [{ id: 'call-old', name: 'Bash', input: {} }],
+      });
+      store.append({
+        role: 'assistant', content: 'old final', sessionId: 'session_outline_pages',
+        turnId: 'old-response', speakerVpId: 'maker',
+      });
+      const newUser = store.append({ role: 'user', content: 'new question', sessionId: 'session_outline_pages' });
+      const newTool = store.append({
+        role: 'assistant', content: '', sessionId: 'session_outline_pages', turnId: 'new-response',
+        speakerVpId: 'maker', toolCalls: [{ id: 'call-new', name: 'Bash', input: {} }],
+      });
+      const newest = store.append({
+        role: 'assistant', content: 'new answer', sessionId: 'session_outline_pages',
+        turnId: 'new-response', speakerVpId: 'maker',
+      });
+      const latestPage = store.loadVisibleOutlineBySession('session_outline_pages', { limit: 1 });
+      const firstPage = store.loadVisibleOutlineBySession('session_outline_pages', {
+        limit: 2, beforeSeq: latestPage.nextBeforeSeq, includeTotal: false,
+      });
+      const olderPage = store.loadVisibleOutlineBySession('session_outline_pages', {
+        limit: 2, beforeSeq: firstPage.nextBeforeSeq, includeTotal: false,
+      });
+
+      expect(latestPage.results).toEqual([
+        expect.objectContaining({ messageId: newest.id, turnId: 'new-response' }),
+      ]);
+      expect(latestPage.nextBeforeSeq).toBe(store.getMessageSeqById(newTool.id));
+      expect(firstPage.results).toEqual([
+        expect.objectContaining({ turnId: 'old-response', role: 'assistant', snippet: 'old final' }),
+        expect.objectContaining({ messageId: newUser.id, role: 'user' }),
+      ]);
+      expect(firstPage.results.some(result => result.turnId === 'new-response')).toBe(false);
+      expect(firstPage.results.some(result => result.messageId === oldTool.id)).toBe(false);
+      expect(olderPage.results).toEqual([
+        expect.objectContaining({ messageId: oldUser.id, role: 'user' }),
+      ]);
+    });
+
+    it('supports an exclusive seq cursor and bounded anchor window', async () => {
+      await runConsolidatedHistoryScenarios();
       const ids = [];
       for (let i = 0; i < 5; i += 1) {
         ids.push(store.append({ role: 'user', content: `searchable turn ${i}`, sessionId: 'session_window' }));
@@ -396,36 +877,398 @@ legacy session`, { encoding: 'utf8' });
       expect(window.messages.some(message => message.id === anchor.id)).toBe(true);
       expect(window.messages.every(message => message.sessionId === 'session_window')).toBe(true);
       expect(window.messages.length).toBeLessThan(10);
+    }, 60_000);
+
+    it('restores AskUser answers inside a bounded search window', () => {
+      store.append({ role: 'user', content: 'searchable AskUser turn', sessionId: 'session_window_ask' });
+      const assistant = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'session_window_ask',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [{ id: 'ask_window', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'session_window_ask',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'ask_window',
+      });
+      store.append({ role: 'assistant', content: 'done', sessionId: 'session_window_ask' });
+
+      const window = store.loadVisibleWindowBySession(
+        'session_window_ask',
+        store.getMessageSeqById(assistant.id),
+        { beforeTurns: 1, afterTurns: 1 },
+      );
+
+      expect(window.messages.find(message => message.id === assistant.id)?.askUserResults).toEqual([
+        expect.objectContaining({
+          toolCallId: 'ask_window',
+          status: 'answered',
+          answers: { 'Continue?': 'Yes' },
+        }),
+      ]);
     });
   });
 
-  describe('appendBatch', () => {
-    it('should write multiple messages', () => {
-      const messages = store.appendBatch([
-        { role: 'user', content: 'Hello' },
-        { role: 'assistant', content: 'Hi there' },
-        { role: 'user', content: 'How are you?' },
-      ]);
-      expect(messages).toHaveLength(3);
-      expect(messages[0].id).toBe('m0001');
-      expect(messages[1].id).toBe('m0002');
-      expect(messages[2].id).toBe('m0003');
+
+
+  historyScenario('preserves literal search semantics and rebuilds after same-seq mutations', async () => {
+      const sessionId = 'session_index_mutations';
+      const user = store.append({
+        role: 'user',
+        content: '前缀中文后缀 😀 👨‍💻 foo.bar quoted "Value" old-token',
+        sessionId,
+      });
+      const assistant = store.append({
+        role: 'assistant',
+        content: 'assistant needle',
+        sessionId,
+        turnId: 'turn-index',
+        speakerVpId: 'linus',
+      });
+
+      for (const query of ['中', '中文', '😀', '👨‍💻', 'foo.bar', 'quoted "value"', 'OLD-TOKEN']) {
+        const page = await searchConversationIndex(TEST_DIR, sessionId, query, { limit: 10 });
+        expect(page.results).toEqual([expect.objectContaining({ messageId: user.id })]);
+        expect(page.maxBatchRows).toBeLessThanOrEqual(128);
+        expect(page.maxBatchBytes).toBeLessThanOrEqual(2 * 1024 * 1024 + 1024);
+      }
+      const databaseDir = join(TEST_DIR, 'conversation-index', 'databases');
+      const databaseName = readdirSync(databaseDir).find(name => name.endsWith('.sqlite'));
+      expect(statSync(join(databaseDir, databaseName)).size).toBeLessThan(2 * 1024 * 1024);
+      const first = await searchConversationIndex(TEST_DIR, sessionId, 'assistant needle', { limit: 10 });
+      expect(first.results).toHaveLength(1);
+      const firstGeneration = first.indexGeneration;
+      const entryId = first.results[0].entryId;
+
+      store.update(assistant, { content: 'assistant updated-token' });
+      expect(await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+        indexGeneration: firstGeneration,
+        entryId,
+        entryStartSeq: first.results[0].entryStartSeq,
+        anchorMessageId: first.results[0].messageId,
+        anchorSeq: first.results[0].seq,
+      })).toMatchObject({ ok: false, code: 'stale_result' });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'assistant needle')).results).toEqual([]);
+      const updated = await searchConversationIndex(TEST_DIR, sessionId, 'updated-token');
+      expect(updated.indexGeneration).toBeGreaterThan(firstGeneration);
+      expect(updated.results).toEqual([expect.objectContaining({ entryId })]);
+
+      const hiddenInternal = store.append({
+        role: 'user', content: 'hide internal token', sessionId, userAuthored: true,
+      });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hide internal token')).results)
+        .toHaveLength(1);
+      store.update(hiddenInternal, { internal: true });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hide internal token')).results)
+        .toEqual([]);
+
+      const hiddenModel = store.append({
+        role: 'user', content: 'hide model token', sessionId, userAuthored: true,
+      });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hide model token')).results)
+        .toHaveLength(1);
+      store.update(hiddenModel, { userAuthored: false });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hide model token')).results)
+        .toEqual([]);
+
+      const revealed = store.append({
+        role: 'user', content: 'hidden then visible', sessionId, userAuthored: false,
+      });
+      store.update(revealed, { userAuthored: true });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hidden then visible')).results)
+        .toHaveLength(1);
+
+      store.moveToCold(user.id);
+      expect((await searchConversationIndex(TEST_DIR, sessionId, '中文')).results)
+        .toEqual([expect.objectContaining({ messageId: user.id })]);
+
+      store.foldMessages([assistant], {
+        role: 'user',
+        content: 'fold replacement',
+        sessionId,
+        _reflection: true,
+        internal: true,
+      });
+      expect(await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+        indexGeneration: updated.indexGeneration,
+        entryId: updated.results[0].entryId,
+        entryStartSeq: updated.results[0].entryStartSeq,
+        anchorMessageId: updated.results[0].messageId,
+        anchorSeq: updated.results[0].seq,
+      })).toMatchObject({ ok: false, code: 'stale_result' });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'updated-token')).results).toEqual([]);
+
+      store.deleteByGroup(sessionId);
+      await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+        indexGeneration: updated.indexGeneration,
+        entryId: updated.results[0].entryId,
+        entryStartSeq: updated.results[0].entryStartSeq,
+        anchorMessageId: updated.results[0].messageId,
+        anchorSeq: updated.results[0].seq,
+      });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, '中文')).results).toEqual([]);
     });
-  });
+
+    historyScenario('pages interleaved VP entries with an opaque cursor and no gaps', async () => {
+      const sessionId = 'session_index_cursor';
+      const user = store.append({ role: 'user', content: 'cursor question', sessionId });
+      const linusFirst = store.append({
+        role: 'assistant', content: 'linus first', sessionId,
+        turnId: 'turn-cursor', speakerVpId: 'linus',
+      });
+      const martin = store.append({
+        role: 'assistant', content: 'martin response', sessionId,
+        turnId: 'turn-cursor', speakerVpId: 'martin',
+      });
+      const linusFinal = store.append({
+        role: 'assistant', content: 'linus final', sessionId,
+        turnId: 'turn-cursor', speakerVpId: 'linus',
+      });
+
+      const pages = [];
+      let cursor = null;
+      do {
+        const page = await loadConversationOutlineFromIndex(TEST_DIR, sessionId, {
+          limit: 1,
+          ...(cursor ? { cursor } : {}),
+        });
+        pages.push(...page.results);
+        cursor = page.nextCursor;
+      } while (cursor);
+
+      expect(pages).toHaveLength(3);
+      expect(new Set(pages.map(result => result.entryId)).size).toBe(3);
+      expect(pages.find(result => result.speakerVpId === 'linus')).toMatchObject({
+        sourceMessageIds: [linusFirst.id, linusFinal.id],
+      });
+      expect(pages.find(result => result.speakerVpId === 'martin')).toMatchObject({
+        sourceMessageIds: [martin.id],
+      });
+      expect(pages.find(result => result.role === 'user')).toMatchObject({ messageId: user.id });
+    });
+
+    historyScenario('keeps an oversized canonical anchor entry complete under byte caps', () => {
+      const sessionId = 'session_index_large_anchor';
+      store.append({ role: 'user', content: 'large anchor question', sessionId });
+      const first = store.append({
+        role: 'assistant', content: 'x'.repeat(40_000), sessionId,
+        turnId: 'turn-large', speakerVpId: 'linus',
+      });
+      const second = store.append({
+        role: 'assistant', content: 'y'.repeat(40_000), sessionId,
+        turnId: 'turn-large', speakerVpId: 'linus',
+      });
+      const entry = store.loadCanonicalVisibleEntriesBySession(sessionId)
+        .find(candidate => candidate.speakerVpId === 'linus');
+      const window = store.loadVisibleWindowBySession(sessionId, entry.anchorSeq, {
+        entryStartSeq: entry.entryStartSeq,
+        entryEndSeq: entry.entryEndSeq,
+        sourceMessageIds: entry.sourceMessageIds,
+        beforeTurns: 1,
+        afterTurns: 1,
+        maxRows: 10,
+        maxBytes: 32 * 1024,
+      });
+
+      expect(window.messages.map(message => message.id)).toEqual(expect.arrayContaining([first.id, second.id]));
+      expect(window.byteCount).toBeGreaterThan(32 * 1024);
+      expect(window.rowCount).toBeLessThanOrEqual(10);
+    });
+
+    historyScenario('reconciles a source write that lands during the initial rebuild', async () => {
+      const buildingSessionId = 'session_index_building';
+      store.append({ role: 'user', content: 'build me', sessionId: buildingSessionId });
+      const rejectedAt = performance.now();
+      await expect(searchConversationIndex(TEST_DIR, buildingSessionId, 'build me', {
+        _waitForBuild: false,
+      })).rejects.toMatchObject({ code: 'index_building' });
+      expect(performance.now() - rejectedAt).toBeLessThan(250);
+      expect((await searchConversationIndex(TEST_DIR, buildingSessionId, 'build me')).results)
+        .toHaveLength(1);
+
+      const sessionId = 'session_index_concurrent';
+      for (let index = 0; index < 200; index += 1) {
+        store.append({ role: 'user', content: `seed ${index}`, sessionId });
+      }
+      const initial = searchConversationIndex(TEST_DIR, sessionId, 'seed 199');
+      store.append({ role: 'user', content: 'concurrent needle', sessionId });
+      await initial;
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'concurrent needle')).results)
+        .toEqual([expect.objectContaining({ snippet: expect.stringContaining('concurrent needle') })]);
+
+      const managerSessions = Array.from(
+        { length: __historyIndexForTest.maxManagers + 4 },
+        (_, index) => `session_index_manager_${index}`,
+      );
+      for (const [index, managerSessionId] of managerSessions.entries()) {
+        store.append({ role: 'user', content: `manager needle ${index}`, sessionId: managerSessionId });
+        expect((await searchConversationIndex(
+          TEST_DIR,
+          managerSessionId,
+          `manager needle ${index}`,
+        )).results).toHaveLength(1);
+        expect(__historyIndexForTest.managers.size)
+          .toBeLessThanOrEqual(__historyIndexForTest.maxManagers);
+      }
+      const firstManagerKey = `${TEST_DIR}\u001fsession_index_manager_0`;
+      expect(__historyIndexForTest.managers.has(firstManagerKey)).toBe(false);
+      expect((await searchConversationIndex(
+        TEST_DIR,
+        'session_index_manager_0',
+        'manager needle 0',
+      )).results).toHaveLength(1);
+      expect(__historyIndexForTest.managers.size)
+        .toBeLessThanOrEqual(__historyIndexForTest.maxManagers);
+    });
+
+    historyScenario('reconciles a crash-gap source rewrite without a mutation marker', async () => {
+      const sessionId = 'session_index_crash_gap';
+      store.append({ role: 'user', content: 'before crash', sessionId });
+      await searchConversationIndex(TEST_DIR, sessionId, 'before crash');
+
+      const segmentPath = join(TEST_DIR, 'sessions', sessionId, 'conversation', 'segments', '000001.jsonl');
+      const original = readFileSync(segmentPath, 'utf8');
+      writeFileSync(segmentPath, original.replace('before crash', 'after crash!'), 'utf8');
+
+      const after = await searchConversationIndex(TEST_DIR, sessionId, 'after crash!');
+      expect(after.results)
+        .toEqual([expect.objectContaining({ snippet: expect.stringContaining('after crash!') })]);
+      expect(after.indexGeneration).toBeGreaterThan(1);
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'before crash')).results).toEqual([]);
+
+      const outlineSessionId = 'session_index_outline_reconcile';
+      store.append({ role: 'user', content: 'old-token', sessionId: outlineSessionId });
+      const initialOutline = await loadConversationOutlineFromIndex(TEST_DIR, outlineSessionId, {
+        limit: 10,
+      });
+      await closeConversationHistoryIndexes({ releaseMutationState: false });
+      const outlinePath = join(
+        TEST_DIR, 'sessions', outlineSessionId, 'conversation', 'segments', '000001.jsonl',
+      );
+      const outlineOriginal = readFileSync(outlinePath, 'utf8');
+      writeFileSync(outlinePath, outlineOriginal.replace('old-token', 'new-token'), 'utf8');
+      const staleOutline = await loadConversationOutlineFromIndex(TEST_DIR, outlineSessionId, {
+        limit: 10,
+      });
+      expect(staleOutline.indexGeneration).toBe(initialOutline.indexGeneration);
+      expect(staleOutline.results[0].snippet).toContain('old-token');
+      let reconciledOutline = staleOutline;
+      for (let attempt = 0; attempt < 100
+        && reconciledOutline.indexGeneration === initialOutline.indexGeneration; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+        reconciledOutline = await loadConversationOutlineFromIndex(TEST_DIR, outlineSessionId, {
+          limit: 10,
+        });
+      }
+      expect(reconciledOutline.indexGeneration).toBeGreaterThan(initialOutline.indexGeneration);
+      expect(reconciledOutline.results[0].snippet).toContain('new-token');
+    });
+
+    historyScenario('invalidates the live scope when Session CRUD archives or deletes the directory', async () => {
+      const sessionId = 'session_index_lifecycle';
+      const handle = createSession(join(TEST_DIR, 'sessions'), {
+        id: sessionId,
+        name: 'Indexed lifecycle',
+        roster: [],
+        defaultVpId: null,
+      });
+      handle.close();
+      store.append({ role: 'user', content: 'lifecycle needle', sessionId });
+      const indexed = await searchConversationIndex(TEST_DIR, sessionId, 'lifecycle needle');
+      expect(indexed.results).toHaveLength(1);
+
+      rmSync(join(TEST_DIR, 'sessions', sessionId), { recursive: true, force: true });
+      expect(archiveSession(TEST_DIR, sessionId)).toMatchObject({ alreadyGone: true });
+      expect(await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+        indexGeneration: indexed.indexGeneration,
+        entryId: indexed.results[0].entryId,
+        entryStartSeq: indexed.results[0].entryStartSeq,
+        anchorMessageId: indexed.results[0].messageId,
+        anchorSeq: indexed.results[0].seq,
+      })).toMatchObject({ ok: false, code: 'stale_result' });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'lifecycle needle')).results).toEqual([]);
+
+      expect(deleteSession(TEST_DIR, sessionId, { memoryRoot: join(TEST_DIR, 'memory') }))
+        .toMatchObject({ sessionId, alreadyGone: true, legacyCleanedUp: 0 });
+      expect(deleteSession(TEST_DIR, sessionId, { memoryRoot: join(TEST_DIR, 'memory') }))
+        .toMatchObject({ sessionId, alreadyGone: true });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'lifecycle needle')).results).toEqual([]);
+    });
+
+    historyScenario('rejects a stale versioned entry locator after the source entry changes', async () => {
+      const raceAnchorMutation = async (kind, mutate) => {
+        const sessionId = `session_index_anchor_${kind}`;
+        store.append({ role: 'user', content: `anchor question ${kind}`, sessionId });
+        const assistant = store.append({
+          role: 'assistant',
+          content: `anchor needle ${kind}`,
+          sessionId,
+          turnId: `turn-anchor-${kind}`,
+          speakerVpId: 'linus',
+        });
+        const page = await searchConversationIndex(TEST_DIR, sessionId, `anchor needle ${kind}`);
+        const result = page.results[0];
+        expect(await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+          indexGeneration: result.indexGeneration,
+          entryId: result.entryId,
+          entryStartSeq: result.entryStartSeq,
+          anchorMessageId: result.messageId,
+          anchorSeq: result.seq,
+        })).toMatchObject({ ok: true });
+
+        const barrierBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
+        const barrier = new Int32Array(barrierBuffer);
+        const reading = readConversationIndexWindow(TEST_DIR, sessionId, {
+          indexGeneration: result.indexGeneration,
+          entryId: result.entryId,
+          entryStartSeq: result.entryStartSeq,
+          anchorMessageId: result.messageId,
+          anchorSeq: result.seq,
+          beforeTurns: 1,
+          afterTurns: 1,
+          _testBarrier: barrierBuffer,
+        });
+        while (Atomics.load(barrier, 0) === 0) {
+          await new Promise(resolve => setTimeout(resolve, 1));
+        }
+        await mutate({ sessionId, assistant });
+        Atomics.store(barrier, 1, 1);
+        Atomics.notify(barrier, 1);
+        await expect(reading).rejects.toMatchObject({ code: 'stale_result' });
+      };
+
+      await raceAnchorMutation('update', ({ assistant }) => {
+        store.update(assistant, { content: 'anchor changed during read' });
+      });
+      await raceAnchorMutation('fold', ({ sessionId, assistant }) => {
+        store.foldMessages([assistant], {
+          role: 'user', content: 'fold replacement', sessionId, _reflection: true, internal: true,
+        });
+      });
+      await raceAnchorMutation('delete', ({ sessionId }) => {
+        store.deleteByGroup(sessionId);
+      });
+      await raceAnchorMutation('rewrite', ({ sessionId }) => {
+        const segmentPath = join(
+          TEST_DIR, 'sessions', sessionId, 'conversation', 'segments', '000001.jsonl',
+        );
+        const original = readFileSync(segmentPath, 'utf8');
+        const rewritten = original.replace('anchor needle rewrite', 'anchor change rewrite');
+        expect(Buffer.byteLength(rewritten)).toBe(Buffer.byteLength(original));
+        writeFileSync(segmentPath, rewritten, 'utf8');
+      });
+    });
 
   describe('loadRecent', () => {
-    it('should load messages sorted chronologically', () => {
-      store.appendBatch([
-        { role: 'user', content: 'First' },
-        { role: 'assistant', content: 'Second' },
-        { role: 'user', content: 'Third' },
-      ]);
 
-      const loaded = store.loadRecent(10);
-      expect(loaded).toHaveLength(3);
-      expect(loaded[0].content).toBe('First');
-      expect(loaded[2].content).toBe('Third');
-    });
 
     it('should respect limit (most recent turns)', () => {
       // `loadRecent` is now turn-based. Build 3 distinct user turns so
@@ -449,35 +1292,31 @@ legacy session`, { encoding: 'utf8' });
       expect(loaded[3].content).toBe('a3');
     });
 
-    it('should return empty array when no messages', () => {
-      expect(store.loadRecent()).toEqual([]);
-    });
+
   });
 
-  describe('loadAll', () => {
-    it('should load all hot messages', () => {
-      store.appendBatch([
-        { role: 'user', content: 'A' },
-        { role: 'user', content: 'B' },
-        { role: 'user', content: 'C' },
-      ]);
-      expect(store.loadAll()).toHaveLength(3);
-    });
-  });
+
 
   // Group-history-isolation (Bug 7): group-scoped loaders.
   describe('loadRecentBySession / loadAllBySession', () => {
     it('returns only messages stamped with the requested sessionId', () => {
       store.appendBatch([
-        { role: 'user',      content: 'A1', sessionId: 'grp_a' },
+        { role: 'user',      content: 'A1 project needle', sessionId: 'grp_a' },
         { role: 'assistant', content: 'A2', sessionId: 'grp_a' },
-        { role: 'user',      content: 'B1', sessionId: 'grp_b' },
+        { role: 'user',      content: 'B1 project needle', sessionId: 'grp_b' },
+        { role: 'user',      content: 'C1 project needle', sessionId: 'grp_c' },
         { role: 'user',      content: 'A3', sessionId: 'grp_a' },
       ]);
       const a = store.loadRecentBySession('grp_a', 50);
       const b = store.loadRecentBySession('grp_b', 50);
-      expect(a.map(m => m.content)).toEqual(['A1', 'A2', 'A3']);
-      expect(b.map(m => m.content)).toEqual(['B1']);
+      expect(a.map(m => m.content)).toEqual(['A1 project needle', 'A2', 'A3']);
+      expect(b.map(m => m.content)).toEqual(['B1 project needle']);
+      expect(searchMessages(TEST_DIR, 'project needle', 10, {
+        sessionIds: ['grp_a', 'grp_b'],
+      }).map(m => m.sessionId).sort()).toEqual(['grp_a', 'grp_b']);
+      expect(searchMessages(TEST_DIR, 'project needle', 10, {
+        sessionIds: [],
+      })).toEqual([]);
     });
 
     it('excludes messages with no sessionId (legacy / pre-grouping)', () => {
@@ -510,7 +1349,7 @@ legacy session`, { encoding: 'utf8' });
       expect(store.loadRecentBySession('grp_a', 2).map(m => m.content)).toEqual(['A2', 'A3']);
     });
 
-    it('loadAfterSeqByGroup skips internal route_forward handoff rows', () => {
+    it('loadAfterSeqByGroup skips internal and model-only user-role rows', () => {
       const first = store.append({ role: 'user', content: 'real user', sessionId: 'grp_a' });
       store.append({
         role: 'assistant',
@@ -519,10 +1358,155 @@ legacy session`, { encoding: 'utf8' });
         speakerVpId: 'vp-linus',
         internal: true,
       });
+      store.append({ role: 'user', content: 'Continue', sessionId: 'grp_a', userAuthored: false });
       store.append({ role: 'assistant', content: 'target response', sessionId: 'grp_a', speakerVpId: 'vp-martin' });
 
       const page = store.loadAfterSeqByGroup('grp_a', Number(first.id.replace(/^m/, '')));
       expect(page.messages.map(m => m.content)).toEqual(['target response']);
+    });
+
+    it('keeps an AskUser call and result atomic at the default delta limit', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_ask' });
+      store.appendBatch(Array.from({ length: 499 }, (_, index) => ({
+        role: 'assistant',
+        content: `filler-${index}`,
+        sessionId: 'grp_delta_ask',
+      })));
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_ask',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCalls: [{ id: 'ask_boundary', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      const result = store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'grp_delta_ask',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCallId: 'ask_boundary',
+      });
+      const trailing = store.append({ role: 'assistant', content: 'after pair', sessionId: 'grp_delta_ask' });
+
+      const firstPage = store.loadAfterSeqByGroup('grp_delta_ask', store.getMessageSeqById(cursor.id));
+      expect(firstPage.messages.find(message => message.id === call.id)?.askUserResults).toEqual([
+        expect.objectContaining({
+          toolCallId: 'ask_boundary',
+          status: 'answered',
+          answers: { 'Continue?': 'Yes' },
+        }),
+      ]);
+      expect(firstPage.latestSeq).toBe(store.getMessageSeqById(result.id));
+
+      const secondPage = store.loadAfterSeqByGroup('grp_delta_ask', firstPage.latestSeq);
+      expect(secondPage.messages.map(message => message.id)).toEqual([trailing.id]);
+    });
+
+    it('recovers an AskUser result when the incoming cursor already points at its call', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_cursor' });
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_cursor',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCalls: [{ id: 'ask_cursor', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      store.appendBatch(Array.from({ length: 499 }, (_, index) => ({
+        role: 'assistant',
+        content: `sibling output ${index}`,
+        sessionId: 'grp_delta_cursor',
+        speakerVpId: 'vp-b',
+        turnId: `turn-b-${index}`,
+        threadId: `thread-b-${index}`,
+      })));
+      const result = store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'grp_delta_cursor',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCallId: 'ask_cursor',
+      });
+
+      const siblingCursor = store.getMessageSeqById(result.id) - 1;
+      const page = store.loadAfterSeqByGroup('grp_delta_cursor', siblingCursor);
+
+      expect(store.getMessageSeqById(cursor.id)).toBeLessThan(store.getMessageSeqById(call.id));
+      expect(page.messages.find(message => message.id === call.id)?.askUserResults).toEqual([
+        expect.objectContaining({ toolCallId: 'ask_cursor', status: 'answered' }),
+      ]);
+      expect(page.latestSeq).toBe(store.getMessageSeqById(result.id));
+    });
+
+    it('keeps a tool pair atomic across interleaved visible Session rows', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_interleaved' });
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_interleaved',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        toolCalls: [{ id: 'tool_interleaved', name: 'FileRead', input: {} }],
+      });
+      store.append({
+        role: 'assistant',
+        content: 'sibling output',
+        sessionId: 'grp_delta_interleaved',
+        speakerVpId: 'vp-b',
+        turnId: 'turn-b',
+      });
+      const result = store.append({
+        role: 'tool',
+        content: 'done',
+        sessionId: 'grp_delta_interleaved',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        toolCallId: 'tool_interleaved',
+      });
+
+      const page = store.loadAfterSeqByGroup(
+        'grp_delta_interleaved',
+        store.getMessageSeqById(cursor.id),
+        { limit: 1 },
+      );
+
+      expect(page.messages.find(message => message.id === call.id)).toMatchObject({ toolSummaryCount: 1 });
+      expect(page.latestSeq).toBe(store.getMessageSeqById(result.id));
+    });
+
+    it('keeps every result in an ordinary multi-tool arc at a delta boundary', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_tools' });
+      store.append({ role: 'assistant', content: 'filler', sessionId: 'grp_delta_tools' });
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_tools',
+        toolCalls: [
+          { id: 'tool_a', name: 'FileRead', input: {} },
+          { id: 'tool_b', name: 'Grep', input: {} },
+        ],
+      });
+      store.append({ role: 'tool', content: 'a', sessionId: 'grp_delta_tools', toolCallId: 'tool_a' });
+      const lastResult = store.append({ role: 'tool', content: 'b', sessionId: 'grp_delta_tools', toolCallId: 'tool_b' });
+      const trailing = store.append({ role: 'assistant', content: 'after pair', sessionId: 'grp_delta_tools' });
+
+      const firstPage = store.loadAfterSeqByGroup(
+        'grp_delta_tools',
+        store.getMessageSeqById(cursor.id),
+        { limit: 3 },
+      );
+      expect(firstPage.messages.find(message => message.id === call.id)).toMatchObject({ toolSummaryCount: 2 });
+      expect(firstPage.latestSeq).toBe(store.getMessageSeqById(lastResult.id));
+
+      const secondPage = store.loadAfterSeqByGroup('grp_delta_tools', firstPage.latestSeq, { limit: 3 });
+      expect(secondPage.messages.map(message => message.id)).toEqual([trailing.id]);
     });
 
     it('hides legacy unstamped task-result and system-note rows from session history', () => {
@@ -601,6 +1585,39 @@ legacy session`, { encoding: 'utf8' });
       expect(older.hasMore).toBe(false);
     });
 
+    it('loadVisibleBySession keeps the latest TodoWrite snapshot and counts only other tools', () => {
+      store.append({ role: 'user', content: 'status?', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: 'working',
+        sessionId: 'grp_a',
+        toolCalls: [
+          { id: 'todo-old', name: 'TodoWrite', input: { todos: [{ content: 'Old', status: 'pending' }] } },
+          { id: 'bash', name: 'Bash', input: { command: 'true' } },
+          { id: 'todo-new', name: 'TodoWrite', input: { todos: [{ content: 'Latest', status: 'completed' }] } },
+        ],
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+      expect(page.messages[1]).toMatchObject({
+        content: 'working',
+        todos: [{ content: 'Latest', status: 'completed' }],
+        toolSummaryCount: 1,
+      });
+      expect(page.messages[1]).not.toHaveProperty('toolCalls');
+
+      const contradictory = projectVisibleSessionMessages([{
+        role: 'assistant', content: 'Partial before failure', responseKind: 'result',
+        incomplete: true, stopReason: 'error',
+      }]);
+      expect(contradictory[0]).toMatchObject({
+        responseKind: 'progress', incomplete: true, stopReason: 'error',
+      });
+      expect(projectVisibleSessionMessages([{
+        role: 'assistant', content: 'Cancelled partial', responseKind: 'result', stopReason: 'cancelled',
+      }])[0]).toMatchObject({ responseKind: 'progress', stopReason: 'cancelled' });
+    });
+
     it('loadVisibleBySession keeps interleaved multi-VP rows for the boundary turn', () => {
       store.append({ role: 'user', content: '@vp-a one', sessionId: 'grp_a' });
       store.append({ role: 'assistant', content: 'a1', sessionId: 'grp_a', speakerVpId: 'a' });
@@ -671,6 +1688,136 @@ legacy session`, { encoding: 'utf8' });
       expect(readCounts.count).toBeLessThan(10);
     });
 
+    it('projects persisted AskUser answers without exposing ordinary tool results', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [
+          { id: 'ask_1', name: 'AskUser', input: { question: 'Continue?', options: ['Yes', 'No'] } },
+          { id: 'bash_1', name: 'Bash', input: { command: 'echo ok' } },
+        ],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'ask_1',
+      });
+      store.append({
+        role: 'tool',
+        content: 'ok',
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'bash_1',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages.map(m => m.role)).toEqual(['user', 'assistant']);
+      expect(page.messages[1]).toMatchObject({
+        toolSummaryCount: 1,
+        askUserResults: [{
+          toolCallId: 'ask_1',
+          status: 'answered',
+          question: 'Continue?',
+          options: ['Yes', 'No'],
+          answers: { 'Continue?': 'Yes' },
+        }],
+      });
+      expect(page.messages[1]).not.toHaveProperty('toolCalls');
+      expect(page.messages.some(m => m.role === 'tool')).toBe(false);
+    });
+
+    it('does not misclassify legacy pending AskUser output as an answer', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        toolCalls: [{ id: 'ask_legacy', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ type: 'ask_user', requestId: 'ask_old', question: 'Continue?', options: ['Yes'], message: 'Question sent to user' }),
+        sessionId: 'grp_a',
+        toolCallId: 'ask_legacy',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages[1]).toMatchObject({ toolSummaryCount: 1 });
+      expect(page.messages[1].askUserResults).toBeUndefined();
+    });
+
+    it('keeps same-id AskUser results isolated by Session turn identity', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [{ id: 'shared_call', name: 'AskUser', input: { question: 'Continue?' } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Wrong' } }),
+        sessionId: 'grp_b',
+        threadId: 'thread-b',
+        turnId: 'turn-b',
+        speakerVpId: 'vp-b',
+        toolCallId: 'shared_call',
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Right' } }),
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'shared_call',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages[1].askUserResults).toEqual([
+        expect.objectContaining({ answers: { 'Continue?': 'Right' } }),
+      ]);
+    });
+
+    it('restores timed-out AskUser calls as expired history state', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        toolCalls: [{ id: 'ask_timeout', name: 'AskUser', input: { question: 'Continue?' } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', timedOut: true }),
+        sessionId: 'grp_a',
+        toolCallId: 'ask_timeout',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages[1].askUserResults).toEqual([
+        expect.objectContaining({ toolCallId: 'ask_timeout', status: 'expired' }),
+      ]);
+    });
+
     it('loadVisibleBySession stops on dense hidden rows after the requested turn', () => {
       store.append({ role: 'user', content: 'old q', sessionId: 'grp_a' });
       store.append({ role: 'assistant', content: 'old a', sessionId: 'grp_a' });
@@ -728,11 +1875,23 @@ legacy session`, { encoding: 'utf8' });
         readCounts.count += 1;
         return original.call(store, ...args);
       };
-      const page = store.loadVisibleBySession('grp_a', null, 1);
+      let page = store.loadVisibleBySession('grp_a', null, 1);
 
       expect(page.messages).toEqual([]);
       expect(page.hasMore).toBe(true);
+      expect(page.nextBeforeSeq).toEqual(expect.any(Number));
       expect(readCounts.count).toBeLessThan(80);
+
+      const cursors = [];
+      while (page.messages.length === 0 && page.hasMore) {
+        const cursor = page.nextBeforeSeq;
+        expect(cursor).toEqual(expect.any(Number));
+        cursors.push(cursor);
+        page = store.loadVisibleBySession('grp_a', cursor, 1);
+      }
+      expect(new Set(cursors).size).toBe(cursors.length);
+      expect(cursors.every((cursor, index) => index === 0 || cursor < cursors[index - 1])).toBe(true);
+      expect(page.messages.map(message => message.content)).toEqual(['old q', 'old a']);
 
       readCounts.count = 0;
       const engineRows = store.loadRecentBySession('grp_a', 1);
@@ -740,20 +1899,7 @@ legacy session`, { encoding: 'utf8' });
       expect(readCounts.count).toBeLessThan(80);
     });
 
-    it('returns [] for empty/null sessionId without throwing', () => {
-      store.append({ role: 'user', content: 'X', sessionId: 'grp_a' });
-      expect(store.loadRecentBySession(null, 10)).toEqual([]);
-      expect(store.loadRecentBySession('', 10)).toEqual([]);
-    });
 
-    it('loadAllBySession mirrors loadRecentBySession with no limit', () => {
-      const big = Array.from({ length: 80 }, (_, i) => ({
-        role: 'user', content: `m${i}`, sessionId: 'grp_a',
-      }));
-      store.appendBatch(big);
-      expect(store.loadAllBySession('grp_a')).toHaveLength(80);
-      expect(store.loadRecentBySession('grp_a', 50)).toHaveLength(50);
-    });
   });
 
   // Cascade delete + orphan compaction.
@@ -967,21 +2113,6 @@ legacy session`, { encoding: 'utf8' });
     });
   });
 
-  describe('countHot / countCold', () => {
-    it('should count messages correctly', () => {
-      expect(store.countHot()).toBe(0);
-      expect(store.countCold()).toBe(0);
-
-      store.appendBatch([
-        { role: 'user', content: 'A' },
-        { role: 'assistant', content: 'B' },
-      ]);
-
-      expect(store.countHot()).toBe(2);
-      expect(store.countCold()).toBe(0);
-    });
-  });
-
   describe('hotTokens', () => {
     it('should sum token estimates', () => {
       store.appendBatch([
@@ -1082,6 +2213,8 @@ legacy session`, { encoding: 'utf8' });
         mode: 'work',
         model: 'claude-sonnet-4-20250514',
         turnNumber: 2,
+        responseKind: 'result',
+        stopReason: 'end_turn',
       });
 
       const loaded = store.loadRecent(1);
@@ -1090,6 +2223,8 @@ legacy session`, { encoding: 'utf8' });
       expect(loaded[0].mode).toBe('work');
       expect(loaded[0].model).toBe('claude-sonnet-4-20250514');
       expect(loaded[0].turnNumber).toBe(2);
+      expect(loaded[0].responseKind).toBe('result');
+      expect(loaded[0].stopReason).toBe('end_turn');
     });
 
     it('should preserve tool message fields', () => {

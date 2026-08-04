@@ -9,7 +9,9 @@
     "agent"
   ],
   "scripts": {
-    "test": "vitest run --exclude '**/.claude/worktrees/**' --exclude '**/.worktrees/**' --exclude '**/.yeaft/worktrees/**'",
+    "test": "npm run test:budget && vitest run --exclude '**/.claude/worktrees/**' --exclude '**/.worktrees/**' --exclude '**/.yeaft/worktrees/**'",
+    "test:budget": "node scripts/check-test-budget.mjs",
+    "test:focus": "vitest run --config vitest.focus.config.js",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test --config e2e/playwright.config.js",
@@ -30,7 +32,9 @@
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:agent\"",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "docs:screenshots": "node scripts/capture-doc-screenshots.mjs",
+    "docs:screenshots:verify-failures": "node scripts/verify-doc-screenshot-failures.mjs"
   },
   "devDependencies": {
     "@dicebear/collection": "^9.4.2",

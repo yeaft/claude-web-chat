@@ -7,7 +7,7 @@
 import { execSync } from 'child_process';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { platform, homedir } from 'os';
-import { getNodePath } from './config.js';
+import { getNodePath, resolveServiceInstanceId } from './config.js';
 import { getLaunchdPlistPath, getMacServiceStatus } from './macos.js';
 import { getSystemdServicePath, getLinuxServiceStatus } from './linux.js';
 import { getEcosystemPath, getWinServiceStatus } from './windows.js';
@@ -112,8 +112,9 @@ function tildeify(filePath) {
 
 // ── Main doctor logic ──────────────────────────────────────────────────────
 
-export function doctor() {
+export function doctor(args = []) {
   const os = platform();
+  const instanceId = resolveServiceInstanceId(args, process.env, { management: true });
   let configPath = null;
   let parsePaths = null;
   let getServiceStatus = null;
@@ -122,17 +123,17 @@ export function doctor() {
 
   // 1. Determine platform and config path
   if (os === 'darwin') {
-    configPath = getLaunchdPlistPath();
+    configPath = getLaunchdPlistPath(instanceId);
     parsePaths = parseMacPaths;
-    getServiceStatus = getMacServiceStatus;
+    getServiceStatus = () => getMacServiceStatus(instanceId);
   } else if (os === 'linux') {
-    configPath = getSystemdServicePath();
+    configPath = getSystemdServicePath(instanceId);
     parsePaths = parseLinuxPaths;
-    getServiceStatus = getLinuxServiceStatus;
+    getServiceStatus = () => getLinuxServiceStatus(instanceId);
   } else if (os === 'win32') {
-    configPath = getEcosystemPath();
+    configPath = getEcosystemPath(instanceId);
     parsePaths = parseWindowsPaths;
-    getServiceStatus = getWinServiceStatus;
+    getServiceStatus = () => getWinServiceStatus(instanceId);
   } else {
     console.log(`\u26a0\ufe0f  Unsupported platform: ${os}`);
     console.log(`   The doctor command supports macOS, Linux, and Windows.`);
@@ -143,7 +144,7 @@ export function doctor() {
   // 2. Check if service config exists
   if (!existsSync(configPath)) {
     console.log(`\u26a0\ufe0f  No service configuration found.`);
-    console.log(`   Run 'yeaft-agent install --server <url> --name <name> --secret <secret>' to set up.`);
+    console.log(`   Run 'yeaft-agent install --server <url> --secret <secret>' to set up.`);
     console.log('');
     return;
   }
@@ -209,7 +210,7 @@ export function doctor() {
   if (hasErrors) {
     console.log('Fix: Run the following commands:');
     console.log('  npm install -g @yeaft/webchat-agent');
-    console.log('  yeaft-agent install --server <your-server-url> --name <your-agent-name> --secret <your-secret>');
+    console.log('  yeaft-agent install --server <your-server-url> --secret <your-secret>');
   } else {
     console.log('All checks passed.');
   }

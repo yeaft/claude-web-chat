@@ -3,11 +3,14 @@ import {
   adjustedScrollTopForMeasuredHeight,
   buildVirtualOffsets,
   computeVirtualWindow,
+  computeVirtualWindowFromLayout,
   estimateVirtualItemHeight,
   getVirtualItemKey,
+  historyPrefetchThreshold,
   isTranscriptScrollbarPointer,
   isTranscriptScrollKey,
   resolveTranscriptBottomFollow,
+  resolveTranscriptUserFollow,
   shouldFollowTranscriptBottom,
   shouldMarkTranscriptKeyScroll,
   virtualScrollTopForIndex,
@@ -72,6 +75,27 @@ describe('virtual transcript range calculation', () => {
     expect(window.items.map((entry) => entry.key)).toEqual(['turn-499', 'turn-500', 'turn-501', 'turn-502', 'turn-503']);
     expect(window.topSpacerHeight).toBe(49900);
     expect(window.bottomSpacerHeight).toBe(49600);
+  });
+
+  it('reuses precomputed offsets across scroll window updates', () => {
+    const items = turns(1000);
+    let estimateCalls = 0;
+    const estimateHeight = () => {
+      estimateCalls += 1;
+      return 100;
+    };
+    const layout = buildVirtualOffsets(items, {}, { itemGap: 0, estimateHeight });
+
+    for (let scrollTop = 0; scrollTop < 50000; scrollTop += 500) {
+      const window = computeVirtualWindowFromLayout(items, layout, {
+        scrollTop,
+        viewportHeight: 300,
+        overscan: 1,
+      });
+      expect(window.items.length).toBeLessThan(8);
+    }
+
+    expect(estimateCalls).toBe(items.length);
   });
 
   it('keeps Yeaft message-block children together as one virtual item', () => {
@@ -139,8 +163,16 @@ describe('virtual transcript range calculation', () => {
     expect(getVirtualItemKey(longTurn, 0)).toBe('long');
   });
 
+  it('prefetches history before the viewport reaches the loaded boundary', () => {
+    expect(virtualTranscriptDefaults.historyPrefetchViewports).toBe(2);
+    expect(virtualTranscriptDefaults.historyPrefetchMinPx).toBe(600);
+    expect(historyPrefetchThreshold(720)).toBe(1440);
+    expect(historyPrefetchThreshold(200)).toBe(600);
+  });
+
   it('distinguishes bottom-follow from reading history', () => {
     expect(virtualTranscriptDefaults.bottomThreshold).toBe(80);
+    expect(virtualTranscriptDefaults.resumeBottomThreshold).toBe(2);
     expect(shouldFollowTranscriptBottom({ scrollTop: 920, scrollHeight: 1000, clientHeight: 80 })).toBe(true);
     expect(shouldFollowTranscriptBottom({ scrollTop: 500, scrollHeight: 1000, clientHeight: 80 })).toBe(false);
   });
@@ -151,6 +183,15 @@ describe('virtual transcript range calculation', () => {
     expect(resolveTranscriptBottomFollow({ following: true, atBottom: true })).toBe(true);
     expect(resolveTranscriptBottomFollow({ following: false, atBottom: true, userScroll: true })).toBe(true);
     expect(resolveTranscriptBottomFollow({ following: true, atBottom: false, userScroll: true })).toBe(false);
+
+    // A small upward move can remain inside the near-bottom threshold. User
+    // direction still owns the viewport, so live messages must not resume follow.
+    expect(resolveTranscriptUserFollow({ following: true, atBottom: true, direction: -12 })).toBe(false);
+    expect(resolveTranscriptUserFollow({ following: false, atBottom: true, resumeBoundaryReached: false, direction: 12 })).toBe(false);
+    expect(resolveTranscriptUserFollow({ following: false, atBottom: true, resumeBoundaryReached: true, direction: 12 })).toBe(true);
+    expect(resolveTranscriptUserFollow({ following: false, atBottom: true, resumeBoundaryReached: true, direction: 0 })).toBe(false);
+    expect(shouldFollowTranscriptBottom({ scrollTop: 890, scrollHeight: 1000, clientHeight: 80, threshold: 80 })).toBe(true);
+    expect(shouldFollowTranscriptBottom({ scrollTop: 890, scrollHeight: 1000, clientHeight: 80, threshold: 2 })).toBe(false);
   });
 
   it('recognizes keyboard actions that explicitly scroll the transcript', () => {
@@ -215,8 +256,8 @@ describe('virtual transcript range calculation', () => {
     const pointerQualified = isTranscriptScrollbarPointer({ button: 0, clientX: 790, clientY: 300 }, scroller);
     const keyQualified = shouldMarkTranscriptKeyScroll({ key: 'End', target: scroller }, scroller, { body: {} });
 
-    expect(resolveTranscriptBottomFollow({ following: false, atBottom: true, userScroll: pointerQualified })).toBe(true);
-    expect(resolveTranscriptBottomFollow({ following: false, atBottom: true, userScroll: keyQualified })).toBe(true);
+    expect(resolveTranscriptUserFollow({ following: false, atBottom: true, resumeBoundaryReached: true, direction: pointerQualified ? 1 : 0 })).toBe(true);
+    expect(resolveTranscriptUserFollow({ following: false, atBottom: true, resumeBoundaryReached: true, direction: keyQualified ? 1 : 0 })).toBe(true);
   });
 
   it('keeps the current anchor stable when measured heights above the window change', () => {

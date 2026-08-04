@@ -12,6 +12,7 @@ import AssistantTurn from './AssistantTurn.js';
 import ChatInput from './ChatInput.js';
 import ExpertPanel from './ExpertPanel.js';
 import SubAgentPanel from './SubAgentPanel.js';
+import { appendTurnResponseSegment, finalizeTurnResponseSegments } from '../utils/turn-response.js';
 
 export default {
   name: 'SplitPane',
@@ -552,6 +553,8 @@ export default {
 
       const finishTurn = () => {
         if (currentTurn) {
+          currentTurn.isActive = currentTurn.isStreaming === true;
+          finalizeTurnResponseSegments(currentTurn);
           if (currentTurn.textContent || currentTurn.toolMsgs.length > 0 || currentTurn.todoMsg || currentTurn.askMsg) {
             result.push(currentTurn);
           }
@@ -565,7 +568,10 @@ export default {
           type: 'assistant-turn',
           id: 'turn_' + turnCounter,
           textContent: '',
+          textSegments: [],
           isStreaming: false,
+          isActive: false,
+          isHistory: false,
           todoMsg: null,
           toolMsgs: [],
           askMsg: null,
@@ -593,8 +599,9 @@ export default {
 
         if (msg.type === 'assistant') {
           if (!currentTurn) startTurn();
-          if (msg.content) currentTurn.textContent += msg.content;
+          appendTurnResponseSegment(currentTurn, msg);
           if (msg.isStreaming) currentTurn.isStreaming = true;
+          if (msg.isHistory) currentTurn.isHistory = true;
           currentTurn.messages.push(msg);
           continue;
         }

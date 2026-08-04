@@ -4,7 +4,17 @@ import { sendToServer, parseMessage } from './buffer.js';
 import { startAgentHeartbeat, stopAgentHeartbeat, scheduleReconnect } from './heartbeat.js';
 import { handleMessage } from './message-router.js';
 
-export function connect() {
+export function resetConnectionTransport() {
+  ctx.sessionKey = null;
+  ctx.serverEncryptionRequired = true;
+  ctx.pendingAuthTempId = null;
+}
+
+export function connect(WebSocketImpl = WebSocket) {
+  // Transport negotiation is connection-scoped. Always start conservatively;
+  // only the registered frame from this socket may enable plaintext outbound.
+  resetConnectionTransport();
+
   // Don't include secret in URL - it will be sent via WebSocket message after connection.
   // instanceId is the stable local service identity; agentName is display-only.
   // Old configs without instanceId still use agentName for backward-compatible identity.
@@ -24,7 +34,7 @@ export function connect() {
     console.log(`Disallowed tools: ${ctx.CONFIG.disallowedTools.join(', ')}`);
   }
 
-  ctx.ws = new WebSocket(url, {
+  const socket = new WebSocketImpl(url, {
     // Match server's permessage-deflate config (bounded memory,
     // skip compression for small frames). The `ws` library handles
     // streaming compression so we no longer need the synchronous
@@ -35,15 +45,18 @@ export function connect() {
       threshold: 1024
     }
   });
+  ctx.ws = socket;
 
-  ctx.ws.on('open', () => {
+  socket.on('open', () => {
+    if (socket !== ctx.ws) return;
     console.log('Connected to server, waiting for auth challenge...');
     clearTimeout(ctx.reconnectTimer);
     // 启动 agent 端心跳: 每 25 秒发一次 ping 帧
     startAgentHeartbeat();
   });
 
-  ctx.ws.on('message', async (data) => {
+  socket.on('message', async (data) => {
+    if (socket !== ctx.ws) return;
     // 收到任何消息都说明连接活着
     ctx.lastPongAt = Date.now();
 
@@ -54,7 +67,7 @@ export function connect() {
         console.log('Received auth challenge, sending credentials...');
         ctx.pendingAuthTempId = msg.tempId;
         // Send authentication via WebSocket (not URL)
-        ctx.ws.send(JSON.stringify({
+        socket.send(JSON.stringify({
           type: 'auth',
           tempId: msg.tempId,
           secret: ctx.CONFIG.agentSecret,
@@ -68,6 +81,9 @@ export function connect() {
     }
 
     const msg = await parseMessage(data);
+    // Decryption can yield after a reconnect replaces this socket. Fence again
+    // before a stale command can mutate Agent-local config or runtime state.
+    if (socket !== ctx.ws) return;
     if (msg) {
       handleMessage(msg).catch(err => {
         console.error('[WS] handleMessage error:', err.message || err);
@@ -75,7 +91,8 @@ export function connect() {
     }
   });
 
-  ctx.ws.on('close', (code, reason) => {
+  socket.on('close', (code, reason) => {
+    if (socket !== ctx.ws) return;
     console.log(`Disconnected from server: ${code} ${reason}`);
     ctx.sessionKey = null;
     ctx.pendingAuthTempId = null;
@@ -89,7 +106,7 @@ export function connect() {
     scheduleReconnect(connect);
   });
 
-  ctx.ws.on('error', (err) => {
+  socket.on('error', (err) => {
     console.error('WebSocket error:', err.message);
   });
 }

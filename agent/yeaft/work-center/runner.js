@@ -1,5 +1,5 @@
 import { Engine } from '../engine.js';
-import { ToolRegistry } from '../tools/registry.js';
+import { ToolRegistry, isToolErrorOutput, toolErrorEffect } from '../tools/registry.js';
 import { defineTool } from '../tools/types.js';
 import { allTools } from '../tools/index.js';
 import { parsePatch } from '../tools/apply-patch.js';
@@ -31,7 +31,20 @@ import { loadMCPConfig } from '../config.js';
 import { MCPManager } from '../mcp.js';
 import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
 import { recallWorkspaceSessionContext } from './workspace-context.js';
-import { BUILT_IN_ACTION_TYPES } from './workflow.js';
+import { applyGeneratedPlan, BUILT_IN_ACTION_TYPES } from './workflow.js';
+import {
+  applyAdditivePlanProposal,
+  applyReplanMutation,
+  MAX_REPLAN_ADDED_ACTIONS,
+} from './plan-mutation.js';
+import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
+import { normalizeEvidence } from './evidence.js';
+import {
+  MAINLINE_CONTEXT_HARD_LIMIT_BYTES,
+  buildMainlineContextSnapshot,
+  hashMainlineSnapshot,
+  renderMainlineContextSnapshot,
+} from './mainline-projection.js';
 
 const WORK_ITEM_TOOL_NAMES = Object.freeze([
   'FileRead',
@@ -252,7 +265,7 @@ export function workItemToolPolicySnapshot(workDir, attachmentRefs = [], mcpTool
   };
 }
 
-function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive) {
+function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle = null) {
   return {
     ...tool,
     async execute(input, ctx) {
@@ -260,12 +273,28 @@ function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunAct
       const checkedInput = tool.name.startsWith('mcp__')
         ? input
         : assertToolInput(tool.name, input, canonicalDir, canonicalAttachmentFiles);
-      const output = await tool.execute(checkedInput, {
-        ...ctx,
-        cwd: canonicalDir,
-        workDir: canonicalDir,
-        imageAllowlist: canonicalAttachmentFiles.map(file => file.root),
-      });
+      const trackOperation = typeof operationLifecycle === 'function'
+        && tool.sideEffectScope !== 'run'
+        && tool.isReadOnly?.(checkedInput) !== true;
+      const operation = trackOperation ? operationLifecycle(tool.name, checkedInput) : null;
+      let output;
+      try {
+        output = await tool.execute(checkedInput, {
+          ...ctx,
+          cwd: canonicalDir,
+          workDir: canonicalDir,
+          imageAllowlist: canonicalAttachmentFiles.map(file => file.root),
+        });
+      } catch (error) {
+        operation?.complete('unknown', { error: String(error?.message || error) });
+        throw error;
+      }
+      const outputHash = hashMainlineSnapshot({ output: String(output || '') });
+      const returnedError = tool.errorOutput === 'json-error-envelope' && isToolErrorOutput(output);
+      const effectStatus = returnedError
+        ? toolErrorEffect(output) === 'none' ? 'failed_no_effect' : 'unknown'
+        : 'applied';
+      operation?.complete(effectStatus, { outputHash });
       if (!isRunActive()) throw new Error('Work Center Run lease was lost during tool execution');
       if (['FileRead', 'ViewImage'].includes(tool.name) && typeof output === 'string') {
         const withoutFilePaths = canonicalAttachmentFiles.reduce(
@@ -294,23 +323,29 @@ export function planningVpCatalog(vps) {
   }));
 }
 
-export function createSubmitWorkItemPlanTool({ vps, collector, isRunActive }) {
+export function createSubmitWorkItemPlanTool({
+  vps,
+  workItem,
+  collector,
+  isRunActive,
+  reservedStageIds = [],
+}) {
   const vpCatalog = planningVpCatalog(vps);
   const vpIds = vpCatalog.map(vp => vp.id);
   const actionTypes = BUILT_IN_ACTION_TYPES.filter(type => type !== 'triage');
   const catalogDescription = `Action types: ${actionTypes.join(', ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'}; ${vp.traits.join(', ') || 'no traits'})`).join('; ')}.`;
   return defineTool({
     name: 'SubmitWorkItemPlan',
-    description: `Submit the complete initial WorkItem contract and executable Action DAG. This tool records a Run-local proposal only; Work Center validates and persists it in the current Run finalization transaction. ${catalogDescription}`,
+    description: `Submit the complete initial WorkItem contract and executable Action DAG. Every Action must describe this WorkItem's concrete objective, repository-aware approach, and verifiable expected outcome; never copy generic Action-type text. The reference workflow catalog does not replace this Action list. If any Action uses isolated-write workspace mode, the plan must contain exactly one integrate Action in integrate workspace mode; that Action must depend directly on every isolated-write Action, and all later Actions must consume those writes through it. This tool validates the proposal immediately so you can correct an invalid graph in the same triage loop; Work Center persists only a valid proposal in the current Run finalization transaction. ${catalogDescription}`,
     parameters: {
       type: 'object',
       additionalProperties: false,
-      required: ['summary', 'evidence', 'acceptanceChecks', 'workItemType', 'actions'],
+      required: ['summary', 'evidence', 'acceptanceChecks', 'contractPatch', 'workItemType', 'actions'],
       properties: {
         summary: { type: 'string', minLength: 1, maxLength: 2_000 },
         evidence: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 1_000 } },
         acceptanceChecks: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['criterion', 'status', 'evidence'], properties: { criterion: { type: 'string' }, status: { type: 'string', enum: ['passed', 'deferred', 'not_applicable'] }, evidence: { type: 'string', minLength: 1, maxLength: 1_000 } } } },
-        contractPatch: { type: 'object', additionalProperties: false, properties: { goal: { type: 'string', minLength: 1, maxLength: 8_000 }, acceptanceCriteria: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 2_000 } } } },
+        contractPatch: { type: 'object', additionalProperties: false, required: ['title', 'goal', 'acceptanceCriteria'], properties: { title: { type: 'string', minLength: 1, maxLength: 200 }, goal: { type: 'string', minLength: 1, maxLength: 8_000 }, acceptanceCriteria: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1, maxLength: 2_000 } } } },
         workItemType: { type: 'string', minLength: 1, maxLength: 64 },
         actions: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'object', additionalProperties: false, required: ['id', 'name', 'type', 'objective', 'approach', 'expectedOutcome', 'candidateVpIds', 'assignmentReason', 'dependsOnActionIds', 'workspaceMode'], properties: {
           id: { type: 'string', minLength: 1, maxLength: 64 }, name: { type: 'string', minLength: 1, maxLength: 120 },
@@ -325,12 +360,39 @@ export function createSubmitWorkItemPlanTool({ vps, collector, isRunActive }) {
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('WorkItem plan was already submitted for this Run');
+      const contractPatch = normalizeContractPatch(input.contractPatch);
+      if (!contractPatch?.title || !contractPatch?.goal || !contractPatch?.acceptanceCriteria?.length) {
+        throw new Error('Initial WorkItem plan requires title, goal, and acceptanceCriteria');
+      }
+      const proposedResult = {
+        outcome: 'completed',
+        evidence: normalizeEvidence(input.evidence),
+        contractPatch,
+        acceptanceChecks: input.acceptanceChecks,
+      };
+      validateCompletedResult(proposedResult, { type: 'triage' }, workItem);
+      if (proposedResult.outcome !== 'completed') throw new Error(proposedResult.error);
+      const effectiveWorkItem = contractPatch ? {
+        ...workItem,
+        title: contractPatch.title ?? workItem.title,
+        goal: contractPatch.goal ?? workItem.goal,
+        acceptanceCriteria: contractPatch.acceptanceCriteria ?? workItem.acceptanceCriteria,
+      } : workItem;
+      applyGeneratedPlan(effectiveWorkItem, {
+        workItemType: input.workItemType,
+        actions: input.actions,
+      }, {
+        availableVpIds: vpIds,
+        reservedStageIds,
+      });
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       collector.value = structuredClone(input);
       ctx.requestEndTurn?.({ kind: 'work_item_plan_submitted' });
       return JSON.stringify({ submitted: true, actionCount: input.actions.length });
     },
     isConcurrencySafe: () => false,
     isReadOnly: () => false,
+    sideEffectScope: 'run',
   });
 }
 
@@ -355,13 +417,18 @@ function plannedActionSchema(vpIds, { requireCandidates = true } = {}) {
   } };
 }
 
-export function createProposeWorkItemActionsTool({ vps, workItem, actions, collector, isRunActive }) {
+export function createProposeWorkItemActionsTool({
+  vps, workItem, actions, collector, isRunActive, currentAction = null,
+}) {
   const vpCatalog = planningVpCatalog(vps);
   const vpIds = vpCatalog.map(vp => vp.id);
   const existing = actions.filter(action => !['superseded', 'cancelled'].includes(action.status));
+  const currentIdentity = currentAction
+    ? ` Current Action: stageId=${currentAction.stageId}; internalActionId=${currentAction.id}. Its graph references must use stageId.`
+    : '';
   return defineTool({
     name: 'ProposeWorkItemActions',
-    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Existing Actions: ${existing.map(action => `${action.id}/${action.stageId} (${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions.`,
+    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Use stable stageId values in dependsOnActionIds, changesRequestedActionId, and dependencyPatches[].addDependsOnActionIds. The only internal id field is dependencyPatches[].actionId, which must use the displayed internalActionId of an eligible ready attempt=0 target.${currentIdentity} Existing Actions: ${existing.map(action => `stageId=${action.stageId} (internalActionId=${action.id}, ${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions. This tool validates the complete additive DAG immediately; if validation fails, correct the proposal in the same turn.`,
     parameters: { type: 'object', additionalProperties: false,
       required: ['summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'actions'],
       properties: {
@@ -373,10 +440,18 @@ export function createProposeWorkItemActionsTool({ vps, workItem, actions, colle
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('A WorkItem plan mutation was already submitted for this Run');
+      applyAdditivePlanProposal({
+        workItem,
+        actions,
+        proposal: input,
+        availableVpIds: vpIds,
+      });
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       collector.value = { kind: 'expand', input: structuredClone(input) };
       ctx.requestEndTurn?.({ kind: 'work_item_actions_proposed', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId, actionCount: input.actions.length });
     },
+    sideEffectScope: 'run',
   });
 }
 
@@ -398,10 +473,68 @@ export function createRequestWorkItemReplanTool({ workItem, collector, isRunActi
       ctx.requestEndTurn?.({ kind: 'work_item_replan_requested', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId });
     },
+    sideEffectScope: 'run',
   });
 }
 
-export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRunActive, mcpTools = [], runTools = [] }) {
+export function createSubmitWorkItemReplanTool({ vps, workItem, action, actions, collector, isRunActive }) {
+  const vpCatalog = planningVpCatalog(vps);
+  const vpIds = vpCatalog.map(vp => vp.id);
+  const barrier = (Array.isArray(action.context) ? action.context : [])
+    .find(entry => entry?.type === 'replan-barrier');
+  const candidateIds = Array.isArray(barrier?.candidateActionIds) ? barrier.candidateActionIds : [];
+  const actionById = new Map(actions.map(candidate => [candidate.id, candidate]));
+  const candidateSummary = candidateIds.map(id => {
+    const candidate = actionById.get(id);
+    return `${id}/${candidate?.stageId || 'missing'} (${candidate?.type || 'unknown'})`;
+  }).join('; ');
+  const candidateIdSchema = candidateIds.length > 0
+    ? { type: 'string', enum: candidateIds }
+    : { type: 'string' };
+  const candidateLimit = candidateIds.length;
+  const classification = { type: 'object', additionalProperties: false,
+    required: ['actionId', 'action'], properties: {
+      actionId: candidateIdSchema,
+      action: plannedActionSchema(vpIds),
+    } };
+  return defineTool({
+    name: 'SubmitWorkItemReplan',
+    description: `Submit the complete replacement topology after a replan barrier. Classify every frozen candidate exactly once as retain, replace, or remove. Retain keeps its database Action identity and stage id but requires the complete updated specification. Replace creates a new Action linked to the old database Action. Add is only for new work. Frozen candidates: ${candidateSummary}. Available VPs: ${vpCatalog.map(vp => vp.id).join(', ')}.`,
+    parameters: { type: 'object', additionalProperties: false,
+      required: ['summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'retain', 'replace', 'remove', 'add'],
+      properties: {
+        ...terminalPlanningFields(),
+        proposalId: { type: 'string', minLength: 1, maxLength: 128 },
+        basePlanRevision: { type: 'integer', const: workItem.planRevision },
+        retain: { type: 'array', maxItems: candidateLimit, items: classification },
+        replace: { type: 'array', maxItems: candidateLimit, items: classification },
+        remove: { type: 'array', maxItems: candidateLimit, uniqueItems: true, items: candidateIdSchema },
+        add: { type: 'array', maxItems: MAX_REPLAN_ADDED_ACTIONS, items: plannedActionSchema(vpIds) },
+      } },
+    async execute(input, ctx = {}) {
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
+      if (collector.value) throw new Error('A WorkItem plan was already submitted for this Run');
+      applyReplanMutation({
+        workItem,
+        action,
+        actions,
+        proposal: input,
+        availableVpIds: vpIds,
+      });
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
+      collector.value = structuredClone(input);
+      ctx.requestEndTurn?.({ kind: 'work_item_replan_submitted', proposalId: input.proposalId });
+      return JSON.stringify({ submitted: true, proposalId: input.proposalId });
+    },
+    isConcurrencySafe: () => false,
+    isReadOnly: () => false,
+    sideEffectScope: 'run',
+  });
+}
+
+export function createWorkItemToolRegistry({
+  workDir, attachmentFiles = [], isRunActive, mcpTools = [], runTools = [], operationLifecycle = null,
+}) {
   const canonicalDir = canonicalWorkDir(path.resolve(workDir));
   const canonicalAttachmentFiles = attachmentFiles.map(file => ({
     ...file,
@@ -411,14 +544,20 @@ export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRu
   const hasAttachments = canonicalAttachmentFiles.length > 0;
   for (const tool of allTools) {
     if (!WORK_ITEM_TOOL_ALLOWLIST.has(tool.name) || (hasAttachments && tool.name === 'Bash')) continue;
-    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
+    registry.register(wrapWorkItemTool(
+      tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle,
+    ));
   }
   for (const tool of mcpTools) {
     if (!tool?.name?.startsWith('mcp__')) continue;
-    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
+    registry.register(wrapWorkItemTool(
+      tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle,
+    ));
   }
   for (const tool of runTools) {
-    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
+    registry.register(wrapWorkItemTool(
+      tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle,
+    ));
   }
   return registry;
 }
@@ -466,13 +605,17 @@ function completionContract(action, workItem) {
     ? ',\n  "reviewDecision": "approved|changes_requested"'
     : '';
   const triageField = action.type === 'triage'
-    ? ',\n  "contractPatch": { "goal": "optional refined goal", "acceptanceCriteria": ["optional refined criterion"] }'
+    ? ',\n  "contractPatch": { "title": "concise AI-generated title", "goal": "precise AI-generated goal", "acceptanceCriteria": ["verifiable AI-generated criterion"] }'
     : '';
-  const planField = action.type === 'triage' && workItem?.workflowSnapshot?.planningMode === 'ai'
+  const planField = action.type === 'triage'
+    && !action.stageId?.startsWith('replan-')
+    && workItem?.workflowSnapshot?.planningMode === 'ai'
     ? ',\n  "plan": { "workItemType": "specific-lowercase-slug", "actions": [{ "id": "stable-id", "name": "User-facing name", "type": "extensible-lowercase-slug (built-ins include research|design|diagnose|implement|migrate|test|review|document|operate|deliver|integrate|write|custom)", "capability": "specific executor capability", "objective": "task-specific concrete work this Action must do", "approach": "task-specific repository-aware method the executor must follow", "expectedOutcome": "task-specific verifiable result this Action must produce", "dependsOnActionIds": ["earlier Action id; [] means concurrent root"], "workspaceMode": "read|isolated-write|integrate|shared", "separateFromActionTypes": ["optional prior Action type"], "changesRequestedActionId": "for review: optional earlier editable Action id; omit to use nearest", "maxAttempts": 2 }] }'
     : '';
-  const toolSubmission = action.type === 'triage' && workItem?.workflowSnapshot?.planningMode === 'ai'
-    ? '\nSubmit the initial plan with SubmitWorkItemPlan. The legacy terminal JSON plan below exists only for compatibility; do not use it when the tool is available.'
+  const toolSubmission = action.type === 'triage' && action.stageId?.startsWith('replan-')
+    ? '\nSubmit the replan only with SubmitWorkItemReplan. Classify every frozen candidate exactly once; do not emit terminal JSON after calling it.'
+    : action.type === 'triage' && workItem?.workflowSnapshot?.planningMode === 'ai'
+      ? '\nSubmit the initial plan with SubmitWorkItemPlan. The legacy terminal JSON plan below exists only for compatibility; do not use it when the tool is available.'
     : workItem?.workflowSnapshot?.executionMode === 'graph'
       ? '\nIf execution discovered strictly additive work, use ProposeWorkItemActions. If the contract or existing unfinished topology must change, use RequestWorkItemReplan. Both tools submit the completed Action and end the turn; do not emit terminal JSON after calling one.'
       : '';
@@ -488,7 +631,7 @@ function completionContract(action, workItem) {
   "acceptanceChecks": ${JSON.stringify(acceptanceChecks)},
   "waitingReason": null,
   "error": null${reviewField}${triageField}${planField}
-}\nFor completed, provide at least one concrete evidence item and exactly one acceptanceChecks entry for every current acceptance criterion, in the same order, with status passed, deferred, or not_applicable and a non-empty evidence reference. Triage must use its proposed criteria when submitting a contractPatch. Test, approved review, and deliver require every criterion to be passed; if a criterion is not applicable, triage must remove or rewrite it through contractPatch before verification. This is a deterministic submission gate, not independent proof: later test, review, and deliver Actions must verify the claims. A model turn ending is not completion. Use waiting when user or external input is required. Use retryable only for a transient failure. Do not start background jobs or delegate this Action.`;
+}\nFor completed, provide at least one concrete evidence item and exactly one acceptanceChecks entry for every current acceptance criterion, in the same order, with status passed, deferred, or not_applicable and a non-empty evidence reference. Triage must use its proposed criteria when submitting a contractPatch. An intermediate Action may defer criteria outside its task-specific expected result; the final deliver Action, and an approved review with no downstream work, require every criterion to pass. If a criterion is no longer applicable, ask the WorkItem Coordinator to revise the contract instead of pretending it passed. This is a deterministic submission gate, not independent proof: later verification and delivery Actions must verify the claims. A model turn ending is not completion. Use waiting when user or external input is required. Use retryable only for a transient failure. Do not start background jobs or delegate this Action.`;
 }
 
 function safeCheckpointUrl(value) {
@@ -720,6 +863,21 @@ export class WorkItemRunner {
         };
       }
       const dependencies = this.store.listActionDependencies(workItem.id, action.dependsOnStageIds || []);
+      if (dependencies.length > 0 && dependencies.every(dependency => (
+        dependency.workspaceMode === 'shared' && !dependency.workspace?.isolated
+      ))) {
+        const persistedAction = this.store.setActionWorkspaceForRun(
+          action.id,
+          run.id,
+          ownerBootId,
+          run.leaseEpoch,
+          action.generation,
+          null,
+          'shared',
+        );
+        if (!persistedAction) throw integrationFenceError('Work Center integration fallback lost its Run lease');
+        return { ...claim, action: persistedAction };
+      }
       const integration = prepareActionIntegration({
         workDir: workItem.workspaceKey || workItem.workDir,
         dependencies,
@@ -746,17 +904,30 @@ export class WorkItemRunner {
       };
     }
     if (action.workspaceMode !== 'isolated-write') return claim;
+    if (!run?.id || !ownerBootId || !Number.isInteger(run.leaseEpoch)) {
+      throw new Error('Work Center workspace preparation requires an owned Run lease');
+    }
     if (!this.actionWorktreeRoot) {
-      return { ...claim, action: this.store.setActionWorkspace(action.id, null, 'shared') };
+      const persistedAction = this.store.setActionWorkspaceForRun(
+        action.id, run.id, ownerBootId, run.leaseEpoch, action.generation, null, 'shared',
+      );
+      if (!persistedAction) throw new Error('Work Center Action workspace lost its Run lease');
+      return { ...claim, action: persistedAction };
     }
     const workspace = createActionWorktree({
       workItem, action, runId: claim.run.id, rootDir: this.actionWorktreeRoot,
     });
     try {
-      const persistedAction = this.store.setActionWorkspace(
-        action.id, workspace.isolated ? workspace : null, workspace.isolated ? null : 'shared',
+      const persistedAction = this.store.setActionWorkspaceForRun(
+        action.id,
+        run.id,
+        ownerBootId,
+        run.leaseEpoch,
+        action.generation,
+        workspace.isolated ? workspace : null,
+        workspace.isolated ? null : 'shared',
       );
-      if (!persistedAction) throw new Error('Work Center Action workspace lost its storage fence');
+      if (!persistedAction) throw new Error('Work Center Action workspace lost its Run lease');
       return { ...claim, action: persistedAction };
     } catch (error) {
       removeActionWorktree(workspace);
@@ -764,7 +935,7 @@ export class WorkItemRunner {
     }
   }
 
-  async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader }) {
+  async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader, registerInputWake }) {
     const runtime = await this.runtimeProvider();
     const currentSettings = workItem?.workflowSnapshot?.planningMode === 'ai' && this.policyProvider
       ? await this.policyProvider()
@@ -781,7 +952,10 @@ export class WorkItemRunner {
       ? resolveWorkItemWorkDir({ workspaceKey: action.workspace.path }, runtime.defaultWorkDir)
       : workspaceDir;
     const priorRuns = this.store.listCompletedRuns(workItem.id);
-    const dependencyContext = this.store.listActionDependencies?.(workItem.id, action.dependsOnStageIds || []) || [];
+    const v2Execution = Number(workItem.executionSchemaVersion) === 2;
+    const dependencyContext = v2Execution
+      ? []
+      : this.store.listActionDependencies?.(workItem.id, action.dependsOnStageIds || []) || [];
     const dependencyBlock = dependencyContext.length === 0 ? '' : `\n\nCompleted dependency results:\n${dependencyContext.map(dependency => {
       const evidence = dependency.evidence?.length
         ? `\nEvidence: ${dependency.evidence.map(item => item.label).join('; ')}`
@@ -818,23 +992,49 @@ export class WorkItemRunner {
       reuseMemory: workItem.reuseMemory,
     });
     const attachmentContext = buildWorkItemAttachmentContext(workItem, { root: this.attachmentRoot });
+    const attachmentFileById = new Map(attachmentContext.files.map(file => [file.id, file]));
+    const fixedPromptSuffix = `${resumeBlock}${attachmentContext.promptBlock}${completionContract(executionAction, workItem)}`;
+    const reservedPromptBytes = Buffer.byteLength(fixedPromptSuffix, 'utf8');
+    const mainline = v2Execution
+      ? buildMainlineContextSnapshot(
+          this.store.getWorkItemDetail(workItem.id),
+          executionAction,
+          { reservedBytes: reservedPromptBytes },
+        )
+      : null;
     const isRunActive = () => !signal.aborted
       && this.store.isActiveRun(run.id, ownerBootId, run.leaseEpoch);
     const workspaceRuntime = await this.#workspaceRuntime(workspaceDir, workDir, isRunActive);
     const mcpToolNames = workspaceRuntime.mcpTools.map(tool => tool.name);
     const planCollector = { value: null };
     const mutationCollector = { value: null };
+    const replanToolEnabled = executionAction.type === 'triage'
+      && executionAction.stageId?.startsWith('replan-');
     const planToolEnabled = executionAction.type === 'triage'
-      && workItem?.workflowSnapshot?.planningMode === 'ai';
+      && workItem?.workflowSnapshot?.planningMode === 'ai'
+      && !replanToolEnabled;
     const runTools = [];
     if (planToolEnabled) runTools.push(createSubmitWorkItemPlanTool({
-      vps: this.registry.listVps(), collector: planCollector, isRunActive,
+      vps: this.registry.listVps(),
+      workItem,
+      collector: planCollector,
+      isRunActive,
+      reservedStageIds: [],
     }));
-    if (!planToolEnabled && workItem?.workflowSnapshot?.executionMode === 'graph') {
+    if (replanToolEnabled) runTools.push(createSubmitWorkItemReplanTool({
+      vps: this.registry.listVps(),
+      workItem,
+      action: executionAction,
+      actions: this.store.getWorkItemDetail(workItem.id).actions,
+      collector: planCollector,
+      isRunActive,
+    }));
+    if (!planToolEnabled && !replanToolEnabled
+        && workItem?.workflowSnapshot?.executionMode === 'graph') {
       runTools.push(createProposeWorkItemActionsTool({
         vps: this.registry.listVps(), workItem,
         actions: this.store.getWorkItemDetail(workItem.id).actions,
-        collector: mutationCollector, isRunActive,
+        collector: mutationCollector, isRunActive, currentAction: executionAction,
       }));
       runTools.push(createRequestWorkItemReplanTool({ workItem, collector: mutationCollector, isRunActive }));
     }
@@ -844,12 +1044,37 @@ export class WorkItemRunner {
       attachmentContext.files.map(file => file.ref),
       [...mcpToolNames, ...runToolNames],
     );
+    let operationOrdinal = 0;
+    const operationLifecycle = (toolName, input) => {
+      operationOrdinal += 1;
+      const idempotencyKey = `${run.id}:tool:${operationOrdinal}`;
+      const claimed = this.store.createAndClaimOperation({
+        workItemId: workItem.id,
+        actionId: action.id,
+        runId: run.id,
+        operationType: toolName,
+        idempotencyKey,
+        replayPolicy: 'never_automatic',
+        payload: { inputHash: hashMainlineSnapshot(input) },
+      }, ownerBootId, run.leaseEpoch, false);
+      if (!claimed) throw new Error(`Work Center could not claim Operation ${idempotencyKey}`);
+      return {
+        complete: (effectStatus, result) => {
+          if (!this.store.completeOperation(
+            idempotencyKey, ownerBootId, run.leaseEpoch, effectStatus, result,
+          )) {
+            throw new Error(`Work Center Operation ${idempotencyKey} lost its execution fence`);
+          }
+        },
+      };
+    };
     const toolRegistry = createWorkItemToolRegistry({
       workDir,
       attachmentFiles: attachmentContext.files,
       isRunActive,
       mcpTools: workspaceRuntime.mcpTools,
       runTools,
+      operationLifecycle,
     });
     const config = {
       ...runtime.config,
@@ -889,6 +1114,18 @@ export class WorkItemRunner {
           policy: resolvedModel.policy,
         },
         toolPolicySnapshot,
+        contextSnapshot: mainline?.contextSnapshot || null,
+        executionManifest: mainline ? {
+          schemaVersion: 2,
+          ledgerRevision: mainline.contextSnapshot.ledgerRevision,
+          planRevision: mainline.contextSnapshot.graph.planRevision,
+          contractRevision: mainline.contextSnapshot.contract.revision,
+          actionGeneration: mainline.contextSnapshot.action.generation,
+          actionSpecHash: mainline.contextSnapshot.action.specHash,
+          contextBytes: mainline.budget.bytes + mainline.budget.reservedBytes,
+          contextHash: hashMainlineSnapshot(mainline.contextSnapshot),
+          selectionReason: mainline.budget.selectionReason,
+        } : null,
       },
     );
     if (!snapshotsWritten) throw new Error('Work Center Run lost its lease before execution');
@@ -897,6 +1134,7 @@ export class WorkItemRunner {
     let loopCount = 0;
     let toolCount = 0;
     let checkpoint = null;
+    let terminalEngineError = null;
     const toolInputs = new Map();
     const usageStats = {
       llmRequestCount: 0,
@@ -949,8 +1187,74 @@ export class WorkItemRunner {
       taskManager: null,
       vpId: vp.id,
     });
+    if (typeof registerInputWake === 'function') {
+      registerInputWake(() => engine.wakeForPendingUserMessage?.());
+    }
+    const pendingEntriesById = new Map();
+    const drainPendingUserMessages = () => {
+      const pending = this.store.listPendingActionInputs?.(
+        action.id, run.id, ownerBootId, run.leaseEpoch,
+      ) || [];
+      const accepted = [];
+      for (const item of pending) {
+        const attachmentLines = item.attachments.map(attachment => {
+          const file = attachmentFileById.get(attachment.id);
+          return file ? `- ${attachment.name}: ${file.ref}` : `- ${attachment.name}`;
+        });
+        const content = [item.text, attachmentLines.length > 0
+          ? `Additional WorkItem attachments:\n${attachmentLines.join('\n')}` : '']
+          .filter(Boolean).join('\n\n');
+        if (!content) continue;
+        pendingEntriesById.set(String(item.id), item);
+        accepted.push({
+          content,
+          preview: item.text || '[attachments]',
+          durableInputId: String(item.id),
+        });
+      }
+      return accepted;
+    };
+    const prepareProviderRequest = ({ entries, system, messages, model }) => {
+      const durableEntries = entries
+        .filter(entry => entry?.durableInputId)
+        .map(entry => pendingEntriesById.get(String(entry.durableInputId)))
+        .filter(Boolean);
+      const requestBody = { model, system, messages };
+      const turn = this.store.prepareEngineTurn?.(
+        action.id, run.id, ownerBootId, run.leaseEpoch, durableEntries,
+        { requestBody, dispatchCapability: 'unknown' },
+      );
+      if (!turn) throw new Error('Work Center could not persist the next provider turn');
+      return turn;
+    };
+    const startProviderRequest = turn => {
+      if (!turn) return;
+      const claimed = this.store.claimEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch);
+      if (!claimed) throw new Error('Work Center provider turn lost its Run lease before dispatch');
+    };
+    const finishProviderRequest = (turn, result) => {
+      if (!turn) return;
+      if (!this.store.consumeEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch, result)) {
+        throw new Error('Work Center provider response lost its EngineTurn fence');
+      }
+    };
+    const failProviderRequest = (turn, error) => {
+      if (!turn) return;
+      const failure = this.store.failEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch, error);
+      if (failure && failure.allowRetry === false) {
+        error.retryable = false;
+        error.workItemFailureKind = 'provider_dispatch_unknown';
+        error.workItemFailureCode = 'engine_turn_dispatch_unknown';
+      }
+    };
     try {
-      const prompt = `${executionAction.instruction}${dependencyBlock}${resumeBlock}${attachmentContext.promptBlock}${workspaceSessionBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
+      const prompt = v2Execution
+        ? `${renderMainlineContextSnapshot(mainline.contextSnapshot)}${fixedPromptSuffix}`
+        : `${executionAction.instruction}${dependencyBlock}${resumeBlock}${attachmentContext.promptBlock}${workspaceSessionBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
+      const promptBytes = Buffer.byteLength(prompt, 'utf8');
+      if (v2Execution && promptBytes > MAINLINE_CONTEXT_HARD_LIMIT_BYTES) {
+        throw new Error(`Work Center Mainline prompt exceeds 64 KiB (${promptBytes} rendered UTF-8 bytes)`);
+      }
       const promptParts = attachmentContext.promptParts.length > 0
         ? [{ type: 'text', text: prompt }, ...attachmentContext.promptParts]
         : null;
@@ -966,9 +1270,24 @@ export class WorkItemRunner {
         workCenterInstructions: workItem?.workflowSnapshot?.globalInstructions || '',
         workDir,
         userAlreadyPersisted: true,
+        drainPendingUserMessages,
+        prepareProviderRequest,
+        startProviderRequest,
+        finishProviderRequest,
+        failProviderRequest,
+        closePendingUserInput: () => this.store.closeRunInput(
+          run.id, ownerBootId, run.leaseEpoch,
+        ),
+
         collabToolPolicy: 'single-vp',
       })) {
-        if (event?.type === 'loop') loopCount += 1;
+        if (event?.type === 'loop') {
+          loopCount += 1;
+          this.store.appendRunLoop?.(run.id, ownerBootId, run.leaseEpoch, {
+            ...event,
+            response: publicWorkItemResponse(event.response),
+          });
+        }
         else if (event?.type === 'tool_start') toolInputs.set(event.id, event.input);
         else if (event?.type === 'tool_end') {
           toolCount += 1;
@@ -980,9 +1299,19 @@ export class WorkItemRunner {
             resource: checkpointResource(event.name, input, workDir),
           });
         }
+        else if (event?.type === 'error' && !terminalEngineError) {
+          terminalEngineError = event.error instanceof Error
+            ? event.error
+            : new Error(String(event.error?.message || event.error || 'Work Center Engine failed'));
+        }
         if (event?.type === 'text_delta' && typeof event.text === 'string') text += event.text;
         reportProgress(event?.type === 'loop');
       }
+      // Engine.query owns the terminal protocol and converts unexpected faults
+      // into error + terminal turn_end. Consume that boundary completely, then
+      // preserve Work Center's historical rejection semantics so Run fencing,
+      // hazardous side-effect handling, and retry policy still see the failure.
+      if (terminalEngineError) throw terminalEngineError;
     } catch (error) {
       error.workItemExecutionStats = currentProgress();
       throw error;
@@ -991,7 +1320,8 @@ export class WorkItemRunner {
     }
     const response = publicWorkItemResponse(text);
     reportProgress(true);
-    const submittedPlan = planCollector.value;
+    const submittedPlan = !replanToolEnabled ? planCollector.value : null;
+    const submittedReplanMutation = replanToolEnabled ? planCollector.value : null;
     const submittedExpansion = mutationCollector.value?.kind === 'expand'
       ? mutationCollector.value.input : null;
     const submittedReplan = mutationCollector.value?.kind === 'replan'
@@ -1003,6 +1333,19 @@ export class WorkItemRunner {
       contractPatch: submittedPlan.contractPatch || null,
       plan: { workItemType: submittedPlan.workItemType, actions: submittedPlan.actions },
       acceptanceChecks: submittedPlan.acceptanceChecks,
+    } : submittedReplanMutation ? {
+      outcome: 'completed',
+      summary: submittedReplanMutation.summary,
+      evidence: submittedReplanMutation.evidence,
+      acceptanceChecks: submittedReplanMutation.acceptanceChecks,
+      replanMutation: {
+        proposalId: submittedReplanMutation.proposalId,
+        basePlanRevision: submittedReplanMutation.basePlanRevision,
+        retain: submittedReplanMutation.retain,
+        replace: submittedReplanMutation.replace,
+        remove: submittedReplanMutation.remove,
+        add: submittedReplanMutation.add,
+      },
     } : submittedExpansion ? {
       outcome: 'completed', summary: submittedExpansion.summary,
       evidence: submittedExpansion.evidence, acceptanceChecks: submittedExpansion.acceptanceChecks,
@@ -1023,12 +1366,15 @@ export class WorkItemRunner {
     } : parseStructuredResult(text, executionAction.type);
     if (parsedResult.outcome === 'completed' && action.workspace?.isolated) {
       const workspace = commitActionWorktree(action.workspace, action);
-      this.store.setActionWorkspace(action.id, workspace);
+      const persistedAction = this.store.setActionWorkspaceForRun(
+        action.id, run.id, ownerBootId, run.leaseEpoch, action.generation, workspace,
+      );
+      if (!persistedAction) throw new Error('Work Center Action workspace lost its Run lease');
       action.workspace = workspace;
     }
     return {
       ...parsedResult,
-      response,
+      response: response || parsedResult.summary,
       ...executionStats(),
       checkpoint,
     };

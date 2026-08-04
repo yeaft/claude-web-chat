@@ -75,16 +75,16 @@ Guidelines:
   isDestructive: () => false,
   async execute(input, ctx) {
     const { file_path, old_string, new_string, replace_all = false } = input;
-    if (!file_path) return JSON.stringify({ error: 'file_path is required' });
-    if (old_string === undefined) return JSON.stringify({ error: 'old_string is required' });
-    if (new_string === undefined) return JSON.stringify({ error: 'new_string is required' });
-    if (old_string === new_string) return JSON.stringify({ error: 'old_string and new_string are identical' });
+    if (!file_path) return JSON.stringify({ errorEffect: 'none', error: 'file_path is required' });
+    if (old_string === undefined) return JSON.stringify({ errorEffect: 'none', error: 'old_string is required' });
+    if (new_string === undefined) return JSON.stringify({ errorEffect: 'none', error: 'new_string is required' });
+    if (old_string === new_string) return JSON.stringify({ errorEffect: 'none', error: 'old_string and new_string are identical' });
 
     const cwd = ctx?.cwd || process.cwd();
     const absPath = resolve(cwd, file_path);
 
     if (!existsSync(absPath)) {
-      return JSON.stringify({ error: `File not found: ${absPath}` });
+      return JSON.stringify({ errorEffect: 'none', error: `File not found: ${absPath}` });
     }
 
     try {
@@ -106,6 +106,7 @@ Guidelines:
           ? old_string.slice(0, 100) + '...'
           : old_string;
         return JSON.stringify({
+          errorEffect: 'none',
           error: `old_string not found in file`,
           hint: `The exact text "${preview}" was not found in ${absPath}. Check whitespace and indentation.`,
         });
@@ -113,6 +114,7 @@ Guidelines:
 
       if (count > 1 && !replace_all) {
         return JSON.stringify({
+          errorEffect: 'none',
           error: `old_string found ${count} times — not unique. Use replace_all: true to replace all occurrences, or provide more context to make it unique.`,
           occurrences: count,
         });
@@ -137,7 +139,7 @@ Guidelines:
         message: `Replaced ${replace_all ? count : 1} occurrence(s) in ${absPath}`,
       });
     } catch (err) {
-      return JSON.stringify({ error: `Failed to edit file: ${err.message}` });
+      return JSON.stringify({ errorEffect: 'unknown', error: `Failed to edit file: ${err.message}` });
     }
   },
 });

@@ -12,6 +12,8 @@ import SidebarModeToggle from './SidebarModeToggle.js';
 import SidebarAgentHeader from './SidebarAgentHeader.js';
 import SidebarWorkCenter from './SidebarWorkCenter.js';
 import SessionSidebarShell from './SessionSidebarShell.js';
+import UnifiedSessionList from './UnifiedSessionList.js';
+import SessionCreateModal from './SessionCreateModal.js';
 import WorkCenterPage from './WorkCenterPage.js';
 import { shortenPath as shortenPathUtil } from '../utils/path-display.js';
 import { getLastPathSegment as _getLastPathSegment, formatResumeDate } from '../utils/path-segments.js';
@@ -21,7 +23,7 @@ import { collapseSidebar } from '../utils/sidebar-collapse.js';
 
 export default {
   name: 'ChatPage',
-  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, WorkCenterPage, SettingsPanel, ExpertPanel, SubAgentPanel, BtwOverlay, SplitPane, ModernSelect, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell },
+  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, WorkCenterPage, SettingsPanel, ExpertPanel, SubAgentPanel, BtwOverlay, SplitPane, ModernSelect, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell, UnifiedSessionList, SessionCreateModal },
   template: `
     <div class="chat-page" :class="{ 'show-sidebar': store.sessionSidebarOpen }">
 
@@ -44,7 +46,7 @@ export default {
               <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/>
             </svg>
           </button>
-          <button class="collapsed-icon-btn" @click="openConversationModal" :disabled="onlineAgentCount === 0" :title="$t('chat.sidebar.newConv')">
+          <button class="collapsed-icon-btn" @click="onUnifiedCreate" :disabled="onlineAgentCount === 0" :title="$t('chat.sidebar.newConv')">
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           </button>
           <div class="collapsed-spacer"></div>
@@ -69,10 +71,14 @@ export default {
             />
             <div class="sidebar-header-actions">
               <SidebarModeToggle
+                v-if="!store.sessionCatalogLoaded"
                 :view="store.currentView"
                 :disabled="onlineAgentCount === 0"
                 @flip="onModeFlip"
               />
+              <button class="sidebar-icon-btn sidebar-work-center-header-btn" :class="{ active: store.workCenterOpen }" :disabled="workCenterAgents.length === 0" @click="openWorkCenter()" :title="$t('workCenter.title')" :aria-label="$t('workCenter.title')">
+                <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>
+              </button>
               <button class="sidebar-icon-btn" @click="onSidebarCollapse" :title="$t('chat.sidebar.collapse')">
                 <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 18h13v-2H3v2zm0-5h10v-2H3v2zm0-7v2h13V6H3zm18 9.59L17.42 12 21 8.41 19.59 7l-5 5 5 5L21 15.59z"/></svg>
               </button>
@@ -102,6 +108,25 @@ export default {
 
         </div>
 
+        <UnifiedSessionList
+          v-if="store.sessionCatalogLoaded"
+          :sessions="store.sessionCatalog"
+          :project-store="store"
+          :active-route="store.activeSessionRoute"
+          :is-session-unread="isCatalogSessionUnread"
+          :processing-conversations="store.processingConversations"
+          :is-yeaft-session-processing="store.isYeaftSessionProcessing"
+          :agents="store.agents"
+          :work-center-open="store.workCenterOpen"
+          @select="store.openCatalogSession"
+          @create="onUnifiedCreate"
+          @create-in-project="onUnifiedCreateInProject"
+          @close-work-center="store.leaveWorkCenter"
+          @action="onUnifiedSessionAction"
+        />
+
+        <template v-else>
+        <!-- Legacy sidebar stays available until the catalog snapshot arrives. -->
         <SidebarWorkCenter
           :agents="store.agents"
           :active-agent-id="store.workCenterAgentId"
@@ -109,8 +134,6 @@ export default {
           :active="store.workCenterOpen"
           @open="store.enterWorkCenter"
         />
-
-        <!-- Session Tab Bar -->
         <div class="session-tab-bar">
           <div class="session-tab active session-tab-solo">
             <svg class="session-tab-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
@@ -158,10 +181,6 @@ export default {
                     <button class="session-menu-item" @click.stop="store.togglePin(conv.id); closeSessionMenu()">
                       <svg viewBox="0 0 24 24"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
                       {{ $t('chat.sidebar.unpin') }}
-                    </button>
-                    <button class="session-menu-item split-to-panel-item" v-if="!store.isInAnyPanel(conv.id)" @click.stop="splitToPanel(conv.id); closeSessionMenu()">
-                      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-                      {{ $t('splitScreen.splitToPanel') }}
                     </button>
                     <button class="session-menu-item" @click.stop="startChatRename(conv); closeSessionMenu()">
                       <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
@@ -211,10 +230,6 @@ export default {
                       <svg viewBox="0 0 24 24"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
                       {{ $t('chat.sidebar.pin') }}
                     </button>
-                    <button class="session-menu-item split-to-panel-item" v-if="!store.isInAnyPanel(conv.id)" @click.stop="splitToPanel(conv.id); closeSessionMenu()">
-                      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-                      {{ $t('splitScreen.splitToPanel') }}
-                    </button>
                     <button class="session-menu-item" @click.stop="startChatRename(conv); closeSessionMenu()">
                       <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
                       {{ $t('chat.sidebar.renameConv') }}
@@ -234,6 +249,7 @@ export default {
             </div>
 
         </div>
+        </template>
         <div class="sidebar-bottom">
           <button class="sidebar-nav-item" @click="showSettingsPanel = true">
             <svg viewBox="0 0 24 24" width="20" height="20"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" fill="currentColor"/></svg>
@@ -257,7 +273,7 @@ export default {
           <div class="chat-body" :class="{ 'expert-panel-open': store.activeRightPanel }">
             <div class="chat-body-main">
               <MessageList
-                @new-conversation="openConversationModal"
+                @new-conversation="onUnifiedCreate"
                 @resume-conversation="openConversationModalResume"
                 @open-settings="showSettingsPanel = true"
               />
@@ -279,7 +295,6 @@ export default {
               @close="store.activeRightPanel = null"
             />
           </div>
-        </template>
       </main>
 
       <!-- Multi-panel mode: SplitPane ×N -->
@@ -298,7 +313,15 @@ export default {
 
 
 
-      <!-- Unified Conversation Modal (New + Resume) -->
+      <SessionCreateModal
+        v-if="unifiedSessionCreateOpen"
+        :initial-provider="unifiedSessionCreateProvider"
+        :initial-agent-id="unifiedSessionCreateProject?.legacyAgentId || null"
+        @close="closeUnifiedSessionCreate"
+        @created="onUnifiedSessionCreated"
+      />
+
+      <!-- Legacy Conversation Modal (resume and pre-catalog fallback) -->
       <div class="modal-overlay" v-if="showConversationModal" @click.self="closeConversationModal">
         <div class="modal resume-modal">
           <!-- Top Controls -->
@@ -469,6 +492,7 @@ export default {
           </div>
         </div>
       </div>
+    </div>
   `,
   data() {
     return {
@@ -478,6 +502,9 @@ export default {
       upgradingAgents: {},
       // Unified conversation modal state
       showConversationModal: false,
+      unifiedSessionCreateOpen: false,
+      unifiedSessionCreateProvider: 'yeaft',
+      unifiedSessionCreateProject: null,
       convModalAgent: '',
       convModalWorkDir: '',
       convModalProvider: 'claude-code',
@@ -531,6 +558,9 @@ export default {
     onlineAgentCount() {
       return this.onlineAgents.length;
     },
+    workCenterAgents() {
+      return this.onlineAgents.filter(agent => Array.isArray(agent.capabilities) && agent.capabilities.includes('work_center'));
+    },
     isMobileView() {
       return this.windowWidth <= 768;
     },
@@ -570,9 +600,67 @@ export default {
     sortByActivity(conversations) {
       return sortSessionsByActivity(conversations);
     },
+    isCatalogSessionUnread(row) {
+      if (row?.runtimeProvider !== 'yeaft') return false;
+      return this.store.isYeaftSessionUnread(row.routeRef?.sessionId, row.routeRef?.agentId);
+    },
 
-    openConversationModal() {
+    onUnifiedCreate(provider = 'yeaft') {
+      this.unifiedSessionCreateProject = null;
+      this.unifiedSessionCreateProvider = ['yeaft', 'copilot', 'claude-code'].includes(provider) ? provider : 'yeaft';
+      this.unifiedSessionCreateOpen = true;
+    },
+    onUnifiedCreateInProject({ project } = {}) {
+      if (!project?.id) return;
+      this.unifiedSessionCreateProject = project;
+      this.unifiedSessionCreateProvider = 'yeaft';
+      this.unifiedSessionCreateOpen = true;
+    },
+    closeUnifiedSessionCreate() {
+      this.unifiedSessionCreateOpen = false;
+      this.unifiedSessionCreateProject = null;
+    },
+    async onUnifiedSessionCreated(session) {
+      const project = this.unifiedSessionCreateProject;
+      this.closeUnifiedSessionCreate();
+      if (!project || !session?.id) return;
+      const agentId = session.agentId || project.legacyAgentId || this.store.currentAgent || null;
+      const result = await this.store.mutateProject?.('move_session', {
+        sessionId: session.id,
+        projectId: project.legacyProjectId || project.id,
+      }, agentId);
+      if (!result?.ok) {
+        const message = result?.error?.message || result?.error?.code || 'unknown';
+        alert(this.$t('sidebar.projects.assignFailed', { name: project.name, message }));
+      }
+    },
+    openWorkCenter(agentId = null) {
+      const target = this.workCenterAgents.find(agent => agent.id === agentId)
+        || this.workCenterAgents.find(agent => agent.id === this.store.workCenterAgentId)
+        || this.workCenterAgents[0];
+      if (target) this.store.enterWorkCenter(target.id);
+    },
+    onUnifiedSessionAction({ action, row, title, sessions } = {}) {
+      if (!row?.routeRef) return;
+      const { runtimeProvider, agentId, sessionId } = row.routeRef;
+      if (action === 'rename') {
+        this.store.renameCatalogSession({ row, title });
+      } else if (action === 'reorder') {
+        this.store.reorderCatalogSessions(sessions);
+      } else if (action === 'pin') {
+        this.store.toggleCatalogSessionPin(row);
+      } else if (action === 'remove' && runtimeProvider !== 'yeaft') {
+        if (confirm(this.$t('chat.delete.confirm'))) this.closeSession(sessionId, agentId);
+      } else if (runtimeProvider === 'yeaft' && action === 'remove') {
+        this.store.sessionCrudRequest('archive', { sessionId }, { agentId });
+      } else if (runtimeProvider === 'yeaft' && action === 'settings') {
+        this.store.pendingUnifiedSessionSettings = { sessionId, agentId, section: 'session' };
+        this.store.openCatalogSession(row);
+      }
+    },
+    openConversationModal({ preserveProvider = false } = {}) {
       this.showConversationModal = true;
+      if (!preserveProvider) this.convModalProvider = 'claude-code';
       this.convModalAgent = '';
       this.convModalWorkDir = '';
       this.selectedResumeSession = null;
@@ -721,9 +809,6 @@ export default {
         return;
       }
       this.selectConversation(conv.id, conv.agentId);
-    },
-    splitToPanel(conversationId) {
-      this.store.splitToPanel(conversationId);
     },
     closeSession(conversationId, agentId) {
       this.store.closeSession(conversationId, agentId);
@@ -966,6 +1051,12 @@ export default {
     }
   },
   mounted() {
+    if (this.store.openUnifiedChatCreate) {
+      const provider = this.store.openUnifiedChatCreate;
+      this.store.openUnifiedChatCreate = false;
+      this.convModalProvider = provider === 'copilot' ? 'copilot' : 'claude-code';
+      this.openConversationModal({ preserveProvider: true });
+    }
     this._clickOutsideHandler = (e) => {
       if (!e.target.closest('.agent-selector')) {
         this.showAgentDropdown = false;

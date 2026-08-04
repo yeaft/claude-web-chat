@@ -49,6 +49,17 @@ export function nextSessionId(slug = 'default') {
   return `session_${safe}_${randEncoded(8)}`;
 }
 
+const SESSION_ID_RE = /^session_[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const SESSION_ID_MAX_LEN = 128;
+
+/** Validate an external Session ID before it reaches any filesystem-backed subsystem. */
+export function validateSessionId(id) {
+  if (!id || typeof id !== 'string') return { ok: false, reason: 'empty_or_non_string' };
+  if (id.length > SESSION_ID_MAX_LEN) return { ok: false, reason: 'too_long' };
+  if (!SESSION_ID_RE.test(id)) return { ok: false, reason: 'invalid_shape' };
+  return { ok: true };
+}
+
 /**
  * Reserved vpIds that must never be used as actual VP identifiers — they
  * collide with coordinator-level sentinels (`@all` broadcast, `user`/`system`

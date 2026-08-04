@@ -237,7 +237,7 @@ Server 是哑中继：
 ### 看 raw wire
 浏览器 DevTools → Network → WS → 选 WebSocket 连接 → Messages 标签可看每条 envelope。
 
-Agent 侧：在 `~/.yeaft/config.json` 里设 `"debug": true` 让 Yeaft 引擎事件 verbose-log 到 Agent stdout。连接层 WebSocket 流量由 Agent connection 层独立 log。
+Agent 侧：在所选 Agent instance 解析出的 `config.json` 中设置 `"debug": true` 让 Yeaft 引擎事件 verbose-log 到 Agent stdout。连接层 WebSocket 流量由 Agent connection 层独立 log。
 
 ### 看 envelope 翻译
 Web 端 Debug 面板的每个 turn 可看「raw envelope log」 — 包括 provider 翻译前的原事件 + 翻译后的 envelope。

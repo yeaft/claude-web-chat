@@ -34,6 +34,50 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024;
  *  round-trip this tool's prompt guidance promises to avoid). */
 const DEFAULT_LIMIT = 3000;
 
+/** Keep raw output close to the model-facing 32 KiB budget while leaving
+ * room for line metadata and the Registry's localized truncation marker. */
+const DEFAULT_OUTPUT_BYTES = 30 * 1024;
+
+function takeUtf8(text, maxBytes) {
+  const chars = [];
+  let bytes = 0;
+  for (const char of text) {
+    const size = Buffer.byteLength(char, 'utf8');
+    if (bytes + size > maxBytes) break;
+    chars.push(char);
+    bytes += size;
+  }
+  return { text: chars.join(''), charCount: chars.length, bytes };
+}
+
+function formatLinesWithinBudget(allLines, startLine, endLine, startColumn = 0, maxBytes = DEFAULT_OUTPUT_BYTES) {
+  const parts = [];
+  let usedBytes = 0;
+  let nextLine = startLine;
+  let nextColumn = startColumn;
+  for (let i = startLine; i < endLine; i += 1) {
+    const prefix = parts.length > 0 ? '\n' : '';
+    const lineChars = Array.from(allLines[i]);
+    const column = i === startLine ? Math.min(startColumn, lineChars.length) : 0;
+    const linePrefix = `${i + 1}\t${column > 0 ? `[column ${column}] ` : ''}`;
+    const formatted = linePrefix + lineChars.slice(column).join('');
+    const remaining = maxBytes - usedBytes - Buffer.byteLength(prefix, 'utf8');
+    if (remaining <= 0) break;
+    const bounded = takeUtf8(formatted, remaining);
+    if (!bounded.text) break;
+    parts.push(prefix + bounded.text);
+    usedBytes += Buffer.byteLength(prefix, 'utf8') + bounded.bytes;
+    if (bounded.text !== formatted) {
+      nextLine = i;
+      nextColumn = column + Math.max(0, bounded.charCount - Array.from(linePrefix).length);
+      break;
+    }
+    nextLine = i + 1;
+    nextColumn = 0;
+  }
+  return { text: parts.join(''), nextLine, nextColumn };
+}
+
 export default defineTool({
   name: 'FileRead',
   description: {
@@ -70,14 +114,21 @@ Guidelines:
         },
       },
       offset: {
-        type: 'number',
+        type: 'integer',
+        minimum: 0,
         description: {
           en: 'Line number to start reading from (0-based, default: 0)',
           zh: '起始行号（从 0 开始计数，默认 0）',
         },
       },
+      column_offset: {
+        type: 'integer',
+        minimum: 0,
+        description: { en: 'Unicode character offset within the first requested line (0-based, default: 0)', zh: '首个待读行内的 Unicode 字符偏移量（从 0 开始，默认 0）' },
+      },
       limit: {
-        type: 'number',
+        type: 'integer',
+        minimum: 1,
         description: {
           en: `Maximum number of lines to read (default: ${DEFAULT_LIMIT})`,
           zh: `最多读取行数（默认 ${DEFAULT_LIMIT} 行）`,
@@ -89,8 +140,17 @@ Guidelines:
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
   async execute(input, ctx) {
-    const { file_path, offset = 0, limit = DEFAULT_LIMIT } = input;
+    const { file_path, offset = 0, column_offset = 0, limit = DEFAULT_LIMIT } = input;
     if (!file_path) return JSON.stringify({ error: 'file_path is required' });
+    if (!Number.isInteger(offset) || offset < 0) {
+      return JSON.stringify({ error: 'offset must be a non-negative integer' });
+    }
+    if (!Number.isInteger(column_offset) || column_offset < 0) {
+      return JSON.stringify({ error: 'column_offset must be a non-negative integer' });
+    }
+    if (!Number.isInteger(limit) || limit < 1) {
+      return JSON.stringify({ error: 'limit must be a positive integer' });
+    }
 
     const cwd = ctx?.cwd || process.cwd();
     const absPath = resolve(cwd, file_path);
@@ -126,20 +186,28 @@ Guidelines:
       const allLines = content.split('\n');
       const totalLines = allLines.length;
 
+      if (offset > totalLines) {
+        return JSON.stringify({ error: `offset ${offset} exceeds file length (${totalLines} lines)` });
+      }
+      if (offset === totalLines) {
+        return `[Offset ${offset} is at end of file (${totalLines} lines total).]`;
+      }
+
       // Apply offset and limit
-      const startLine = Math.max(0, Math.min(offset, totalLines));
+      const startLine = offset;
       const endLine = Math.min(startLine + limit, totalLines);
-      const lines = allLines.slice(startLine, endLine);
+      const startColumn = column_offset;
+      const { text: numbered, nextLine, nextColumn } = formatLinesWithinBudget(allLines, startLine, endLine, startColumn);
 
-      // Format with line numbers (1-based like cat -n)
-      const numbered = lines.map((line, i) => {
-        const lineNum = startLine + i + 1;
-        return `${lineNum}\t${line}`;
-      }).join('\n');
-
-      // Add metadata if partial
-      if (startLine > 0 || endLine < totalLines) {
-        return `${numbered}\n\n[Showing lines ${startLine + 1}-${endLine} of ${totalLines} total]`;
+      const hasMoreContent = nextColumn > 0 || nextLine < totalLines;
+      if (startLine > 0 || startColumn > 0 || hasMoreContent) {
+        const continuation = hasMoreContent
+          ? nextColumn > 0
+            ? ` Continue with offset=${nextLine}, column_offset=${nextColumn}.`
+            : ` Continue with offset=${nextLine}.`
+          : '';
+        const shownEnd = nextColumn > 0 ? nextLine + 1 : nextLine;
+        return `${numbered}\n\n[Showing lines ${startLine + 1}-${shownEnd} of ${totalLines} total.${continuation}]`;
       }
 
       return numbered;

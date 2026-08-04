@@ -1,4 +1,4 @@
-import { DEFAULT_SLASH_COMMANDS, getCommandDescription, buildGroupedCommands, mergeSlashCommands, resolveDynamicSlashCommands } from '../utils/slash-commands.js';
+import { DEFAULT_SLASH_COMMANDS, YEAFT_DEFAULT_SLASH_COMMANDS, getCommandDescription, buildGroupedCommands, mergeSlashCommands, resolveDynamicSlashCommands } from '../utils/slash-commands.js';
 import { buildAutocompleteItems as buildExpertAutocomplete, getSelectionLabel, EXPERT_ROLES, MAX_SELECTIONS } from '../utils/expert-roles.js';
 import { parseMentions } from '../utils/parseMentions.js';
 import VpMentionAutocomplete, {
@@ -8,10 +8,11 @@ import VpMentionAutocomplete, {
   vpMentionListboxId,
   vpMentionOptionId,
 } from './VpMentionAutocomplete.js';
+import MessageComposer from './MessageComposer.js';
 
 export default {
   name: 'ChatInput',
-  components: { VpMentionAutocomplete },
+  components: { MessageComposer, VpMentionAutocomplete },
   props: {
     /** Custom send function: (text, attachmentInfos) => void. Overrides store.sendMessage. */
     sendFn: { type: Function, default: null },
@@ -26,11 +27,27 @@ export default {
     /** Explicit draft scope. Use this when one conversation contains multiple logical inputs. */
     draftKey: { type: String, default: null },
     /** Optional Session-only action that opens a Work Center creation draft. */
-    workItemFn: { type: Function, default: null }
+    workItemFn: { type: Function, default: null },
+    /** Structured Session message quote shown above the composer. */
+    quote: { type: Object, default: null }
   },
+  emits: ['remove-quote', 'quote-consumed'],
   template: `
     <footer class="input-area" ref="inputAreaRef">
       <!-- Expert chips bar (above attachments) — hidden in custom send mode and btw mode -->
+      <div v-if="quote" class="input-quote-preview">
+        <div class="input-quote-main">
+          <div class="input-quote-meta">{{ $t('message.replyingTo', { author: quote.author }) }}</div>
+          <div v-if="quote.content" class="input-quote-content">{{ quote.content }}</div>
+          <div v-if="quote.todos && quote.todos.length" class="input-quote-todos">
+            <div v-for="todo in quote.todos" :key="todo.content" class="input-quote-todo">
+              <span class="input-quote-todo-status">{{ todoStatusSymbol(todo.status) }}</span>
+              <span>{{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}</span>
+            </div>
+          </div>
+        </div>
+        <button type="button" class="input-quote-remove" @click="$emit('remove-quote')" :title="$t('message.removeQuote')" :aria-label="$t('message.removeQuote')">×</button>
+      </div>
       <div class="expert-chips-bar" v-if="!sendFn && !store.btwMode && expertSelections.length > 0">
         <span
           v-for="(sel, index) in expertSelections"
@@ -42,41 +59,68 @@ export default {
         </span>
       </div>
       <div class="attachments-preview" v-if="attachmentsAllowed && attachments.length > 0">
-        <div class="attachment-item" v-for="(file, index) in attachments" :key="index">
+        <div
+          class="attachment-item"
+          :class="{ 'is-uploading': file.uploading, 'has-error': file.uploadError }"
+          v-for="(file, index) in attachments"
+          :key="file.localId"
+        >
           <img v-if="file.preview" :src="file.preview" class="attachment-thumb" />
-          <span v-else class="attachment-icon">\u{1F4CE}</span>
-          <span class="attachment-name">{{ file.name }}</span>
-          <button class="attachment-remove" @click="removeAttachment(index)">&times;</button>
+          <span v-else class="attachment-icon" aria-hidden="true">\u{1F4CE}</span>
+          <span class="attachment-details">
+            <span class="attachment-name">{{ file.name }}</span>
+            <span class="attachment-status">
+              {{ file.uploading ? $t('chatInput.uploading') : (file.uploadError ? $t('chatInput.uploadFailed') : formatFileSize(file.size)) }}
+            </span>
+          </span>
+          <button
+            v-if="file.uploadError"
+            type="button"
+            class="attachment-retry"
+            @click="retryAttachment(file)"
+          >{{ $t('chatInput.retryUpload') }}</button>
+          <button
+            type="button"
+            class="attachment-remove"
+            @click="removeAttachment(index)"
+            :title="$t('chatInput.removeAttachment')"
+            :aria-label="$t('chatInput.removeAttachment')"
+          >&times;</button>
         </div>
       </div>
-      <div class="input-wrapper" :class="{ 'btw-active': store.btwMode }">
-        <input
-          v-if="attachmentsAllowed"
-          type="file"
-          ref="fileInput"
-          id="chat-file-input"
-          @change="handleFileSelect"
-          multiple
-          accept="image/*,text/*,.pdf,.doc,.docx,.xls,.xlsx,.json,.md,.py,.js,.ts,.css,.html"
-          class="file-input-hidden"
-        />
-        <label v-if="attachmentsAllowed" class="attach-btn" for="chat-file-input" :title="$t('chatInput.upload')">
-          <svg viewBox="0 0 24 24" width="20" height="20">
-            <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
-          </svg>
-        </label>
-        <button
-          v-if="workItemFn && !store.btwMode"
-          class="work-item-draft-btn"
-          type="button"
-          @click="workItemFn(inputText.trim())"
-          :title="$t('workCenter.fromSession')"
-          :aria-label="$t('workCenter.fromSession')"
-        >
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z"/></svg>
-        </button>
-        <span v-if="store.btwMode" class="btw-input-tag">BTW</span>
-        <div class="textarea-wrapper">
+      <input
+        v-if="attachmentsAllowed"
+        type="file"
+        ref="fileInput"
+        id="chat-file-input"
+        @change="handleFileSelect"
+        multiple
+        accept="image/*,text/*,.pdf,.doc,.docx,.xls,.xlsx,.json,.md,.py,.js,.ts,.css,.html"
+        class="file-input-hidden"
+      />
+      <MessageComposer
+        ref="messageComposerRef"
+        v-model="inputText"
+        :class="{ 'btw-active': store.btwMode }"
+        :placeholder="store.btwMode ? $t('btw.placeholder') : (isCompacting ? $t('chatHeader.compacting') : $t(effectivePlaceholderKey))"
+        :disabled="isCompacting"
+        :can-send="canSend"
+        :show-stop="isStopVisible"
+        :input-id="inputElementId"
+        :send-label="$t('chatInput.send')"
+        :stop-label="$t('chatInput.stop')"
+        aria-autocomplete="list"
+        aria-haspopup="listbox"
+        :aria-controls="vpMentionPopupOpen ? vpMentionPopupId : null"
+        :aria-activedescendant="vpMentionActiveOptionId"
+        @input="handleInput"
+        @keydown="handleKeydown"
+        @paste="handlePaste"
+        @blur="onBlur"
+        @send="send"
+        @stop="cancelExecution"
+      >
+        <template #overlays>
           <!-- Slash command autocomplete -->
           <div class="slash-autocomplete" v-if="!store.btwMode && showAutocomplete && flatItems.length > 0" ref="autocompleteRef">
             <template v-for="group in groupedCommands" :key="group.label">
@@ -120,55 +164,47 @@ export default {
             @select="selectVpMention"
             @hover-index="vpSelectedIndex = $event"
           />
-          <textarea
-            ref="inputRef"
-            v-model="inputText"
-            @input="handleInput"
-            @keydown="handleKeydown"
-            @paste="handlePaste"
-            @blur="onBlur"
-            :id="inputElementId"
-            aria-autocomplete="list"
-            aria-haspopup="listbox"
-            :aria-controls="vpMentionPopupOpen ? vpMentionPopupId : null"
-            :aria-activedescendant="vpMentionActiveOptionId"
-            :placeholder="store.btwMode ? $t('btw.placeholder') : (isCompacting ? $t('chatHeader.compacting') : $t(effectivePlaceholderKey))"
-            :disabled="isCompacting"
-            rows="1"
-          ></textarea>
-        </div>
-        <button
-          v-if="isStopVisible"
-          class="send-btn stop-btn"
-          @click="cancelExecution"
-          :title="$t('chatInput.stop')"
-        >
-          <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-        </button>
-        <button
-          class="send-btn"
-          @click="send"
-          :disabled="!canSend"
-          :title="$t('chatInput.send')"
-        >
-          <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-        </button>
-      </div>
+        </template>
+        <template #start-actions>
+          <label
+            v-if="attachmentsAllowed"
+            class="attach-btn"
+            for="chat-file-input"
+            :title="$t('chatInput.upload')"
+            :aria-label="$t('chatInput.upload')"
+          >
+            <svg viewBox="0 0 24 24" width="20" height="20"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
+          </label>
+          <button
+            v-if="workItemFn && !store.btwMode"
+            class="work-item-draft-btn"
+            type="button"
+            @click="workItemFn(inputText.trim())"
+            :title="$t('workCenter.fromSession')"
+            :aria-label="$t('workCenter.fromSession')"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z"/></svg>
+          </button>
+          <span v-if="store.btwMode" class="btw-input-tag">BTW</span>
+          <slot name="actions-start"></slot>
+        </template>
+      </MessageComposer>
     </footer>
   `,
-  setup(props) {
+  setup(props, { emit }) {
     const store = Pinia.useChatStore();
     const authStore = Pinia.useAuthStore();
     const vpStore = Pinia.useVpStore();
     // task-338-F4: resolve groups store for Yeaft group-chat dispatch routing.
     const sessionsStore = (Pinia.useSessionsStore ? Pinia.useSessionsStore() : null);
     const inputText = Vue.ref('');
-    const inputRef = Vue.ref(null);
+    const messageComposerRef = Vue.ref(null);
+    const inputRef = Vue.computed(() => messageComposerRef.value?.getTextarea?.() || null);
     const componentUid = Vue.getCurrentInstance()?.uid ?? 0;
     const inputElementId = `chat-input-${componentUid}`;
     const fileInput = Vue.ref(null);
-    const attachments = Vue.ref([]); // { file, name, preview?, uploading, fileId? }
-    const uploading = Vue.ref(false);
+    const attachments = Vue.ref([]); // { localId, file, name, size, preview?, uploading, uploadError, fileId? }
+    const uploading = Vue.computed(() => attachments.value.some(attachment => attachment.uploading));
     const inputAreaRef = Vue.ref(null);
     const autocompleteRef = Vue.ref(null);
     const expertAutocompleteRef = Vue.ref(null);
@@ -236,6 +272,11 @@ export default {
     };
 
     const getExpertLabel = (sel) => getSelectionLabel(sel, store.customExpertRoles);
+    const todoStatusSymbol = (status) => {
+      if (status === 'completed') return '✓';
+      if (status === 'in_progress') return '→';
+      return '○';
+    };
 
     // ★ task-334j: VP @ autocomplete state (mutually exclusive with expert autocomplete).
     // Gating: show VP autocomplete when in Yeaft multi-VP context; otherwise expert.
@@ -375,7 +416,10 @@ export default {
       const convId = props.conversationId || store.activeConversationId || store.currentConversation;
       const agentId = store.currentAgent;
       const dynamic = resolveDynamicSlashCommands(store, convId, agentId);
-      const commands = mergeSlashCommands(DEFAULT_SLASH_COMMANDS, dynamic);
+      const defaults = store.currentView === 'yeaft'
+        ? YEAFT_DEFAULT_SLASH_COMMANDS
+        : DEFAULT_SLASH_COMMANDS;
+      const commands = mergeSlashCommands(defaults, dynamic);
       return commands.map(cmd => cmd.startsWith('/') ? cmd : '/' + cmd);
     });
 
@@ -407,6 +451,10 @@ export default {
         && store.compactStatus?.conversationId === effectiveConversationId.value;
     });
 
+    const hasValidFileId = (attachment) => (
+      typeof attachment?.fileId === 'string' && attachment.fileId.trim().length > 0
+    );
+
     const canSend = Vue.computed(() => {
       if (isCompacting.value) return false;
       const hasText = !!inputText.value.trim();
@@ -414,7 +462,7 @@ export default {
 
       // Custom send mode (e.g. Yeaft page): simplified check — no conversation needed
       if (isCustomSend.value) {
-        const notUploading = !uploading.value && attachments.value.every(a => a.fileId);
+        const notUploading = !uploading.value && attachments.value.every(hasValidFileId);
         return (hasText || hasAttachments) && notUploading;
       }
 
@@ -422,17 +470,13 @@ export default {
       // Can send if: (text OR attachments OR (experts with action — pure role needs text))
       const hasActionExpert = expertSelections.value.some(s => s.action);
       const hasContent = hasText || hasAttachments || (hasExperts && (hasText || hasActionExpert));
-      const notUploading = !uploading.value && attachments.value.every(a => a.fileId);
+      const notUploading = !uploading.value && attachments.value.every(hasValidFileId);
       return hasContent && store.currentAgent && store.currentConversation && notUploading;
     });
 
-    const autoResize = () => {
-      const textarea = inputRef.value;
-      if (textarea) {
-        textarea.style.height = 'auto';
-        textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
-      }
-    };
+    const autoResize = () => messageComposerRef.value?.autoResize?.();
+
+    const resetTextareaSize = () => messageComposerRef.value?.resetTextareaSize?.();
 
     const handleInput = () => {
       autoResize();
@@ -536,28 +580,22 @@ export default {
       return `${prefix}-${Date.now()}-${index + 1}${extensionForMimeType(file?.type)}`;
     };
 
-    const addFiles = async (files) => {
-      const pendingAttachments = [];
-      for (const [index, file] of files.entries()) {
-        const uploadName = uploadNameForFile(file, index);
-        const attachment = {
-          file,
-          name: uploadName,
-          uploadName,
-          preview: null,
-          uploading: true,
-          fileId: null
-        };
+    let nextAttachmentId = 1;
 
-        if (file.type.startsWith('image/')) {
-          attachment.preview = URL.createObjectURL(file);
-        }
+    const formatFileSize = (bytes) => {
+      const size = Number(bytes);
+      if (!Number.isFinite(size) || size <= 0) return '';
+      if (size < 1024) return `${size} B`;
+      if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+      return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+    };
 
-        attachments.value.push(attachment);
-        pendingAttachments.push(attachment);
+    const uploadAttachments = async (pendingAttachments) => {
+      for (const attachment of pendingAttachments) {
+        attachment.uploading = true;
+        attachment.uploadError = false;
       }
 
-      uploading.value = true;
       try {
         const formData = new FormData();
         for (const attachment of pendingAttachments) {
@@ -575,41 +613,62 @@ export default {
           body: formData
         });
 
-        if (response.status === 401 || response.status === 403) {
-          authStore.handleAuthFailure?.(undefined, requestToken);
-          throw new Error('Upload failed: authentication required');
-        }
-
-        if (!response.ok) {
-          throw new Error('Upload failed');
-        }
-
+        if (!response.ok) throw new Error('Upload failed');
         const result = await response.json();
+        const uploadedFiles = Array.isArray(result.files) ? result.files : [];
 
-        let resultIndex = 0;
-        for (const attachment of pendingAttachments) {
-          if (attachment.uploading && !attachment.fileId) {
-            if (resultIndex < result.files.length) {
-              attachment.fileId = result.files[resultIndex].fileId;
-              attachment.uploading = false;
-              delete attachment.uploadName;
-              resultIndex++;
-            }
-          }
+        for (const [index, attachment] of pendingAttachments.entries()) {
+          const uploaded = uploadedFiles[index];
+          const fileId = typeof uploaded?.fileId === 'string' ? uploaded.fileId.trim() : '';
+          if (!fileId) throw new Error('Upload response is incomplete');
+          attachment.fileId = fileId;
+          attachment.uploading = false;
+          delete attachment.uploadName;
         }
       } catch (error) {
         console.error('Upload error:', error);
-        const failed = attachments.value.filter(a => !a.fileId);
-        for (const f of failed) {
-          if (f.preview) URL.revokeObjectURL(f.preview);
+        for (const attachment of pendingAttachments) {
+          if (!attachment.fileId) {
+            attachment.uploading = false;
+            attachment.uploadError = true;
+          }
         }
-        attachments.value = attachments.value.filter(a => a.fileId);
       } finally {
-        uploading.value = false;
-        Vue.nextTick(() => {
-          inputRef.value?.focus();
-        });
+        Vue.nextTick(() => inputRef.value?.focus());
       }
+    };
+
+    const addFiles = async (files) => {
+      const pendingAttachments = [];
+      for (const [index, file] of files.entries()) {
+        const uploadName = uploadNameForFile(file, index);
+        const attachment = Vue.reactive({
+          localId: `attachment-${nextAttachmentId++}`,
+          file,
+          name: uploadName,
+          size: file.size,
+          uploadName,
+          preview: null,
+          uploading: false,
+          uploadError: false,
+          fileId: null
+        });
+
+        if (file.type.startsWith('image/')) {
+          attachment.preview = URL.createObjectURL(file);
+        }
+
+        attachments.value.push(attachment);
+        pendingAttachments.push(attachment);
+      }
+
+      await uploadAttachments(pendingAttachments);
+    };
+
+    const retryAttachment = async (attachment) => {
+      if (!attachment || attachment.uploading || attachment.fileId) return;
+      attachment.uploadName = attachment.name;
+      await uploadAttachments([attachment]);
     };
 
     const removeAttachment = (index) => {
@@ -635,7 +694,7 @@ export default {
       // Custom send mode: delegate to provided function
       if (props.sendFn) {
         const attachmentInfos = attachments.value
-          .filter(a => a.fileId)
+          .filter(hasValidFileId)
           .map(a => ({
             fileId: a.fileId,
             name: a.name,
@@ -644,12 +703,15 @@ export default {
             mimeType: a.file?.type || ''
           }));
 
-        props.sendFn(trimmed, attachmentInfos.length > 0 ? attachmentInfos : undefined);
+        const attachmentPayload = attachmentInfos.length > 0 ? attachmentInfos : undefined;
+        if (props.quote) props.sendFn(trimmed, attachmentPayload, props.quote);
+        else props.sendFn(trimmed, attachmentPayload);
 
         attachments.value = [];
+        if (props.quote) emit('quote-consumed');
         inputText.value = '';
         if (effectiveDraftKey.value) delete store.inputDrafts[effectiveDraftKey.value];
-        if (inputRef.value) inputRef.value.style.height = 'auto';
+        resetTextareaSize();
         return;
       }
 
@@ -660,7 +722,7 @@ export default {
         if (question) store.sendBtwQuestion(question);
         inputText.value = '';
         if (effectiveDraftKey.value) delete store.inputDrafts[effectiveDraftKey.value];
-        if (inputRef.value) inputRef.value.style.height = 'auto';
+        resetTextareaSize();
         return;
       }
 
@@ -669,7 +731,7 @@ export default {
         store.sendBtwQuestion(trimmed);
         inputText.value = '';
         if (effectiveDraftKey.value) delete store.inputDrafts[effectiveDraftKey.value];
-        if (inputRef.value) inputRef.value.style.height = 'auto';
+        resetTextareaSize();
         return;
       }
 
@@ -680,7 +742,7 @@ export default {
       // forward them; we just need to make sure the array is available
       // before the dispatch.
       const attachmentInfos = attachments.value
-        .filter(a => a.fileId)
+        .filter(hasValidFileId)
         .map(a => ({
           fileId: a.fileId,
           name: a.name,
@@ -713,7 +775,7 @@ export default {
         attachments.value = [];
         inputText.value = '';
         if (effectiveDraftKey.value) delete store.inputDrafts[effectiveDraftKey.value];
-        if (inputRef.value) inputRef.value.style.height = 'auto';
+        resetTextareaSize();
         return;
       }
 
@@ -725,12 +787,14 @@ export default {
       store.expertSelections = [];
       if (effectiveDraftKey.value) delete store.inputDrafts[effectiveDraftKey.value];
 
-      if (inputRef.value) {
-        inputRef.value.style.height = 'auto';
-      }
+      resetTextareaSize();
     };
 
     const handleKeydown = (e) => {
+      // IME owns every key while composing. Safari can report isComposing=false
+      // for the confirmation keydown but keeps the standard process keyCode.
+      if (e.isComposing || e.keyCode === 229) return;
+
       // Esc exits btw mode
       if (e.key === 'Escape' && store.btwMode) {
         e.preventDefault();
@@ -824,10 +888,23 @@ export default {
       }
     };
 
+    const replaceDraft = (text) => {
+      inputText.value = typeof text === 'string' ? text : '';
+      Vue.nextTick(() => {
+        autoResize();
+        inputRef.value?.focus();
+        const length = inputText.value.length;
+        inputRef.value?.setSelectionRange(length, length);
+      });
+    };
+
+    const focusInput = () => Vue.nextTick(() => inputRef.value?.focus());
+
     return {
       store,
       inputText,
       inputRef,
+      messageComposerRef,
       inputAreaRef,
       fileInput,
       attachments,
@@ -854,6 +931,7 @@ export default {
       selectExpertItem,
       removeExpertSelection,
       getExpertLabel,
+      todoStatusSymbol,
       // Methods
       autoResize,
       handleInput,
@@ -861,6 +939,8 @@ export default {
       onBlur,
       handleFileSelect,
       handlePaste,
+      formatFileSize,
+      retryAttachment,
       removeAttachment,
       send,
       handleKeydown,
@@ -880,6 +960,8 @@ export default {
       // to append an `@<vpId> ` token to the draft. Exposed via the
       // setup return so it shows up on the template ref.
       appendMention,
+      replaceDraft,
+      focusInput,
     };
   }
 };

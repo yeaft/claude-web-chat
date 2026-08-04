@@ -1,66 +1,64 @@
 # Choose a Code Agent Path
 
-Yeaft Web Code Agent puts three execution paths side-by-side in the same Web UI. They are **not mutually exclusive**: a single connected Agent can run Claude Code sessions, Copilot sessions, and native Yeaft Sessions in parallel.
+Yeaft exposes three execution paths in one browser. A connected Agent may run all three, but each path keeps its own runtime and compatibility boundary.
 
-| Path | Good for | Not ideal for |
+| Path | Best when you need | Runtime / boundary |
 | --- | --- | --- |
-| **Claude Code Chat** | Long project collaboration, deep code understanding, Claude Code `/skills` and MCP tools | No Claude Code CLI installed; workflows that must avoid vendor CLI dependency |
-| **Copilot Mode** | Existing GitHub Copilot subscription, GPT/Claude/Gemini switching through ACP, per-call permission prompts | Need `/compact`; depend on Claude-only skill behavior |
-| **Yeaft Code Agent** | Native multi-provider coding, 1..N VPs, persistent memory, custom tool policy, provider mixing | Workflows that require exact Claude Code CLI behavior |
+| **Claude Code** | Exact Claude Code tools, skills, MCP, compact/clear commands, sub-agent events, and resume behavior | One locally installed and authenticated Claude Code CLI process per conversation |
+| **GitHub Copilot** | Copilot entitlement, ACP tool-permission prompts, and Copilot's model catalog | One locally installed and authenticated `copilot --acp` process per conversation |
+| **Yeaft Code Agent** | Native provider routing, 1..N VPs, 33 built-in tools, scoped memory, Projects, sub-agents, and Work Center | Native engine inside `yeaft-agent`; it does not emulate every vendor CLI command |
 
-## Core differences
+## Claude Code
 
-### Claude Code Chat
+Choose Claude Code when compatibility with the Claude Code CLI matters more than provider neutrality.
 
-- Each chat session is one Claude Code CLI subprocess.
-- Full Claude Code stack: skills, MCP, subagents, `/compact`, `/clear`, `/btw`.
-- Tool calls go through Claude Code's stream-json protocol.
-- Session history lives in `~/.claude/projects/` and can be resumed.
+- The Agent starts a CLI conversation and normalizes its stream-json events for the Web UI.
+- Claude Code owns its CLI session and command semantics.
+- The Yeaft Web UI can display streaming text, tools, files, sub-agents, context actions, and resume history exposed by that provider.
+- The Expert Panel is a Claude Code conversation helper; it is not the native multi-VP Session system.
 
-### Copilot Mode
+## GitHub Copilot
 
-- Each chat session is one `copilot --acp` subprocess.
-- Model availability follows your GitHub Copilot entitlement.
-- Tool permissions are confirmed per call via ask-user popup; the UI can also enable "Allow all tools".
-- Session history lives in `~/.copilot/session-store.db` and can be resumed.
+Choose Copilot when the Agent machine already has an eligible Copilot setup and you want ACP behavior.
 
-### Yeaft Code Agent
+- The Agent starts `copilot --acp` and translates ACP events to the shared browser renderer.
+- Available models follow the live Copilot catalog and the local account entitlement.
+- Tool calls can require an allow-once, allow-always, or deny response.
+- Copilot persistence and unsupported commands follow the installed CLI, not Claude Code behavior.
 
-- No external CLI dependency. The native engine, memory, tools, and LLM router ship inside `yeaft-agent`.
-- A Session can host one or many **VPs (Virtual Persons)**. Each VP has its own persona, model, memory, and tool allowlist.
-- One user message can fan out in parallel to several VPs.
-- **H2-AMS persistent memory** keeps user / VP / Session / feature scopes across tasks.
-- Multi-provider LLM routing supports Anthropic, OpenAI Responses, GitHub Copilot dynamic credentials, Azure/OpenAI-compatible gateways, and local proxies through `~/.yeaft/config.json`.
+## Yeaft Code Agent
 
-## How to pick in the UI
+Choose the native engine when you need product-level orchestration rather than exact CLI compatibility.
 
-### Claude Code Chat or Copilot Mode
+- A Session has 1..N reusable VPs and one durable timeline.
+- `@mentions` can fan one turn out to several VPs; `RouteForward` records explicit peer handoffs.
+- H2-AMS recalls scoped user, VP, Session, and related Project-Session memory.
+- Native providers route through Anthropic Messages or OpenAI Responses adapters, including supported GitHub Copilot dynamic credentials and compatible gateways.
+- The current built-in registry has 33 tools; Skills and MCP may add more.
+- A Session can create an Agent-level WorkItem for durable, planned, recoverable work.
 
-Sidebar `+` opens the session config modal:
+## How to create each one
 
-1. Pick **Agent** (machine).
-2. Pick **Provider**: `Claude Code` or `Copilot`.
-3. Pick **Working directory**.
-4. If Copilot is selected, model and permission options appear.
+Use **New chat** in the unified sidebar:
 
-### Yeaft Code Agent
+1. Select the Agent that owns the target directory.
+2. Select **Claude Code**, **Copilot**, or **Yeaft**.
+3. Enter the working directory and runtime-specific options.
+4. For Yeaft, choose the Session roster/default VP. After creation, choose model/effort in the composer and edit the announcement in Session settings.
 
-Switch the sidebar tab bar to **Yeaft**, then use `+` to create a Session:
+The sidebar catalog can show conversations from multiple Agents. Runtime identity always includes the Agent; the same Session ID on two Agents is not the same Session.
 
-1. Enter a Session name.
-2. Pick reusable VPs from the roster.
-3. Choose the default VP.
-4. Send a message; use `@VPName` to address a subset.
+## Common choices
 
-## Which one should I use?
+- Exact Claude Code workflow or Claude-specific skills → **Claude Code**.
+- Existing Copilot subscription and ACP permission flow → **GitHub Copilot**.
+- One provider-neutral coding assistant with memory → **Yeaft Session with one VP**.
+- Parallel developer/reviewer/research roles → **Yeaft Session with several VPs**.
+- Persistent goal with Action planning, waiting, retry, or recovery → **Work Center**, often created from a Yeaft Session.
 
-- **Already use Claude Code daily and need exact Claude behavior** → Claude Code Chat.
-- **Have Copilot Enterprise or want ACP permission prompts / Copilot model catalog** → Copilot Mode.
-- **Want PM + Dev + Reviewer to reason in parallel with long-term memory** → Yeaft Code Agent.
-- **Want to compare Anthropic, OpenAI, Copilot, or a proxy on the same task** → Yeaft Code Agent with multiple VPs.
+## Related pages
 
-Next:
-
-- [Claude Code Chat](./chat-mode.md)
-- [Copilot Mode](./copilot-mode.md)
-- [Yeaft Code Agent](./yeaft-group.md)
+- [Claude Code conversation](./chat-mode.md)
+- [GitHub Copilot conversation](./copilot-mode.md)
+- [Yeaft Sessions and Projects](./yeaft-session.md)
+- [Work Center](./work-center.md)

@@ -37,6 +37,7 @@ import fileEdit from './file-edit.js';
 import globTool from './glob.js';
 import grepTool from './grep.js';
 import listDir from './list-dir.js';
+import diskUsage from './disk-usage.js';
 import applyPatch from './apply-patch.js';
 import listTasks from './list-tasks.js';
 import readTaskLog from './read-task-log.js';
@@ -102,6 +103,7 @@ export const allTools = [
   globTool,
   grepTool,
   listDir,
+  diskUsage,
   applyPatch,
   listTasks,
   readTaskLog,

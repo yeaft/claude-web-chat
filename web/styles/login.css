@@ -9,6 +9,14 @@
      inside the QR canvas (which has to be black-on-white).
    ========================================================================== */
 
+.auth-bootstrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-main);
+}
+
 .login-page {
   flex: 1;
   display: flex;

@@ -45,6 +45,7 @@ db.exec(`
     title TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
+    metadata_updated_at INTEGER,
     is_active INTEGER DEFAULT 1
   );
 
@@ -153,6 +154,7 @@ const migrations = [
   `ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'`,
   `ALTER TABLE messages ADD COLUMN metadata TEXT`,
   `ALTER TABLE sessions ADD COLUMN is_pinned INTEGER DEFAULT 0`,
+  `ALTER TABLE sessions ADD COLUMN metadata_updated_at INTEGER`,
   `ALTER TABLE users ADD COLUMN aad_oid TEXT`,
   // fix-chat-title-sticky: persist the "user manually renamed this session"
   // bit so it survives agent reconnect / server restart / DB rehydration.
@@ -214,6 +216,7 @@ const yeaftSessionsTable = `
     announcement TEXT,
     created_at INTEGER,
     updated_at INTEGER NOT NULL,
+    metadata_updated_at INTEGER,
     is_archived INTEGER DEFAULT 0,
     is_pinned INTEGER DEFAULT 0,
     sort_order INTEGER,
@@ -226,6 +229,51 @@ const yeaftSessionsTable = `
   CREATE INDEX IF NOT EXISTS idx_yeaft_sessions_updated ON yeaft_sessions(updated_at DESC);
 `;
 db.exec(yeaftSessionsTable);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS session_ui_metadata (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    catalog_key TEXT NOT NULL,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    sort_rank INTEGER,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, catalog_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_session_ui_metadata_user_sort
+    ON session_ui_metadata(user_id, pinned DESC, sort_rank ASC);
+
+  -- Projects are user-owned organization metadata. Membership keeps the full
+  -- Agent + Session identity because Session ids are only unique per Agent.
+  CREATE TABLE IF NOT EXISTS yeaft_projects (
+    id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    instruction TEXT NOT NULL DEFAULT '',
+    sort_order INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, id)
+  );
+  CREATE TABLE IF NOT EXISTS yeaft_project_sessions (
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, agent_id, session_id),
+    FOREIGN KEY (user_id, project_id) REFERENCES yeaft_projects(user_id, id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_yeaft_projects_user_sort
+    ON yeaft_projects(user_id, sort_order ASC, created_at ASC);
+  CREATE INDEX IF NOT EXISTS idx_yeaft_project_sessions_project
+    ON yeaft_project_sessions(user_id, project_id, agent_id);
+  CREATE TABLE IF NOT EXISTS yeaft_project_imports (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    agent_id TEXT NOT NULL,
+    imported_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, agent_id)
+  );
+`);
 
 try {
   const tableInfo = db.prepare(`PRAGMA table_info(yeaft_sessions)`).all();
@@ -278,8 +326,16 @@ const yeaftMigrations = [
   // between chat and yeaft.
   `ALTER TABLE yeaft_sessions ADD COLUMN is_pinned INTEGER DEFAULT 0`,
   `ALTER TABLE yeaft_sessions ADD COLUMN sort_order INTEGER`,
+  `ALTER TABLE yeaft_sessions ADD COLUMN metadata_updated_at INTEGER`,
 ];
 for (const migration of yeaftMigrations) {
+  try { db.exec(migration); } catch (_) { /* column exists */ }
+}
+
+const yeaftProjectMigrations = [
+  `ALTER TABLE yeaft_projects ADD COLUMN instruction TEXT NOT NULL DEFAULT ''`,
+];
+for (const migration of yeaftProjectMigrations) {
   try { db.exec(migration); } catch (_) { /* column exists */ }
 }
 
@@ -518,6 +574,10 @@ export const stmts = {
     WHERE id = ?
   `),
 
+  touchSessionMetadata: db.prepare(`
+    UPDATE sessions SET metadata_updated_at = ? WHERE id = ?
+  `),
+
   updateSessionActive: db.prepare(`
     UPDATE sessions SET is_active = ?, updated_at = ? WHERE id = ?
   `),
@@ -536,6 +596,11 @@ export const stmts = {
 
   updateSessionPinned: db.prepare(`
     UPDATE sessions SET is_pinned = ?, updated_at = ? WHERE id = ?
+  `),
+
+  updateSessionPinnedForRoute: db.prepare(`
+    UPDATE sessions SET is_pinned = ?, updated_at = ?
+    WHERE id = ? AND agent_id = ? AND (user_id = ? OR user_id IS NULL)
   `),
 
   // fix-copilot-provider-persist: persist the conversation's code-agent
@@ -577,6 +642,10 @@ export const stmts = {
     SELECT * FROM sessions WHERE user_id = ? AND agent_id = ? ORDER BY updated_at DESC LIMIT ?
   `),
 
+  hasSessionOwnedByUserAndAgent: db.prepare(`
+    SELECT 1 FROM sessions WHERE user_id = ? AND agent_id = ? LIMIT 1
+  `),
+
   getAllSessions: db.prepare(`
     SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?
   `),
@@ -591,6 +660,89 @@ export const stmts = {
 
   deleteSession: db.prepare(`
     DELETE FROM sessions WHERE id = ?
+  `),
+
+  upsertSessionUiMetadata: db.prepare(`
+    INSERT INTO session_ui_metadata (user_id, catalog_key, pinned, sort_rank, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, catalog_key) DO UPDATE SET
+      pinned = excluded.pinned,
+      sort_rank = excluded.sort_rank,
+      updated_at = excluded.updated_at
+  `),
+
+  getSessionUiMetadata: db.prepare(`
+    SELECT * FROM session_ui_metadata WHERE user_id = ? AND catalog_key = ?
+  `),
+
+  getSessionUiMetadataByUser: db.prepare(`
+    SELECT * FROM session_ui_metadata WHERE user_id = ?
+    ORDER BY pinned DESC, sort_rank ASC, updated_at DESC
+  `),
+
+  deleteSessionUiMetadata: db.prepare(`
+    DELETE FROM session_ui_metadata WHERE user_id = ? AND catalog_key = ?
+  `),
+
+  // Project organization metadata. Projects are server-owned and may contain
+  // Sessions from multiple Agents; sharing still filters by agent_id.
+  insertYeaftProject: db.prepare(`
+    INSERT INTO yeaft_projects (id, user_id, name, instruction, sort_order, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `),
+  getYeaftProjectsByUser: db.prepare(`
+    SELECT * FROM yeaft_projects WHERE user_id = ? ORDER BY sort_order ASC, created_at ASC
+  `),
+  getYeaftProjectForUser: db.prepare(`
+    SELECT * FROM yeaft_projects WHERE user_id = ? AND id = ?
+  `),
+  updateYeaftProjectName: db.prepare(`
+    UPDATE yeaft_projects SET name = ?, updated_at = ? WHERE user_id = ? AND id = ?
+  `),
+  updateYeaftProjectInstruction: db.prepare(`
+    UPDATE yeaft_projects SET instruction = ?, updated_at = ? WHERE user_id = ? AND id = ?
+  `),
+  updateYeaftProjectSortOrder: db.prepare(`
+    UPDATE yeaft_projects SET sort_order = ?, updated_at = ? WHERE user_id = ? AND id = ?
+  `),
+  deleteYeaftProject: db.prepare(`
+    DELETE FROM yeaft_projects WHERE user_id = ? AND id = ?
+  `),
+  getYeaftProjectMembersByUser: db.prepare(`
+    SELECT * FROM yeaft_project_sessions
+    WHERE user_id = ?
+    ORDER BY created_at ASC, agent_id ASC, session_id ASC
+  `),
+  getYeaftProjectForSession: db.prepare(`
+    SELECT p.* FROM yeaft_projects p
+    JOIN yeaft_project_sessions m
+      ON m.user_id = p.user_id AND m.project_id = p.id
+    WHERE m.user_id = ? AND m.agent_id = ? AND m.session_id = ?
+  `),
+  getYeaftProjectMembersForAgent: db.prepare(`
+    SELECT agent_id, session_id FROM yeaft_project_sessions
+    WHERE user_id = ? AND project_id = ? AND agent_id = ?
+    ORDER BY created_at ASC, session_id ASC
+  `),
+  deleteYeaftProjectSessionMembership: db.prepare(`
+    DELETE FROM yeaft_project_sessions
+    WHERE user_id = ? AND agent_id = ? AND session_id = ?
+  `),
+  insertYeaftProjectSessionMembership: db.prepare(`
+    INSERT INTO yeaft_project_sessions
+      (user_id, project_id, agent_id, session_id, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `),
+  deleteYeaftProjectMembershipsForSession: db.prepare(`
+    DELETE FROM yeaft_project_sessions
+    WHERE user_id = ? AND agent_id = ? AND session_id = ?
+  `),
+  getYeaftProjectImport: db.prepare(`
+    SELECT imported_at FROM yeaft_project_imports WHERE user_id = ? AND agent_id = ?
+  `),
+  insertYeaftProjectImport: db.prepare(`
+    INSERT OR IGNORE INTO yeaft_project_imports (user_id, agent_id, imported_at)
+    VALUES (?, ?, ?)
   `),
 
   // Message 操作
@@ -849,8 +1001,17 @@ export const stmts = {
       is_archived = excluded.is_archived
   `),
 
+  touchYeaftSessionMetadata: db.prepare(`
+    UPDATE yeaft_sessions SET metadata_updated_at = ?
+    WHERE id = ? AND user_id IS ? AND agent_id = ?
+  `),
+
   getYeaftSession: db.prepare(`
     SELECT * FROM yeaft_sessions WHERE id = ? ORDER BY updated_at DESC LIMIT 1
+  `),
+
+  getYeaftSessionsById: db.prepare(`
+    SELECT * FROM yeaft_sessions WHERE id = ? ORDER BY updated_at DESC
   `),
 
   getYeaftSessionForAgent: db.prepare(`

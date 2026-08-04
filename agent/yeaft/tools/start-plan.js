@@ -46,7 +46,7 @@ export default defineTool({
 This tool returns a planning instruction. Use it to land a structured plan, then keep working in the same turn. The expected flow is:
 1. Produce a short prose plan (problem, approach, risks).
 2. Call \`TodoWrite\` with the ordered steps. Mark the first concrete step "in_progress", the rest "pending".
-3. Start executing that first step — call whatever tools the work needs. Do not end the turn just because the plan is written; the plan is the runway.
+3. When the first-step tools and arguments are already known, emit \`TodoWrite\` and those independent tool calls in the same assistant response. Wait only when a result genuinely determines the next action.
 
 WHEN TO USE:
 - Multi-step implementation (3+ steps), refactor, or open-ended investigation.
@@ -65,7 +65,7 @@ The tool takes the topic plus optional guiding fields (stuckAt, userProblem, exp
 此工具返回规划指令。用它产出一份结构化计划，然后在同一个 turn 中继续工作。预期流程是：
 1. 产出简短文字计划（问题、方法、风险）。
 2. 调用 TodoWrite 写出有序步骤。将第一个具体步骤标记为 "in_progress"，其余标记为 "pending"。
-3. 开始执行第一个步骤——调用工作所需的任何工具。不要因为计划写完了就结束 turn；计划是跑道。
+3. 如果第一步所需的工具和参数已经确定，应在同一个 assistant response 中发出 TodoWrite 和这些彼此独立的工具调用；只有某个结果确实决定下一动作时才等待。
 
 何时使用：
 - 多步骤实现（3+ 步）、重构或开放式调查。
@@ -172,7 +172,10 @@ The tool takes the topic plus optional guiding fields (stuckAt, userProblem, exp
       lines.push('</guiding-context>');
     }
     lines.push('');
-    lines.push('Next: produce the plan, call `TodoWrite` to land the ordered steps, then keep going — start executing the first step in this same turn. Only stop after the plan if the first step is "ask the user".');
+    const nextInstruction = String(language).toLowerCase().startsWith('zh')
+      ? '下一步：产出计划并调用 `TodoWrite`。如果第一步的工具和参数已经确定，在同一个 assistant response 中一并发出这些彼此独立的工具调用。只有第一步必须询问用户时才在计划后停下。'
+      : 'Next: produce the plan and call `TodoWrite`. If the first-step tools and arguments are already known, emit those independent tool calls in the same assistant response. Stop after the plan only when the first step must ask the user.';
+    lines.push(nextInstruction);
 
     return lines.join('\n');
   },

@@ -2,7 +2,9 @@
 
 Work Center 是 Yeaft 的 Agent 级持久工作管理能力。它把需要跨 turn、跨 Session、角色接力或后台恢复的目标保存为 `WorkItem`，再由 Watcher 认领当前 `Action`，复用现有 Yeaft Engine 执行。
 
-## 边界
+## 当前实现边界（待迁移）
+
+本节描述当前主线实现，不是目标领域合同。目标设计以[会话式执行模型设计](./conversation-model-design.md)为准。
 
 - WorkItem 由 Agent 拥有，保存在 Agent 本地 `<yeaftDir>/work-center/`。
 - Session 只作为来源和关联入口，不拥有 WorkItem 生命周期。
@@ -13,10 +15,11 @@ Work Center 是 Yeaft 的 Agent 级持久工作管理能力。它把需要跨 tu
 
 ## 文档
 
-1. [架构与数据流](./architecture.md)
-2. [数据和状态合同](./domain-contract.md)
-3. [Wire API](./wire-api.md)
-4. [交付阶段与验证](./delivery-plan.md)
+1. [会话式执行模型设计](./conversation-model-design.md)（目标设计，等待独立设计复审）
+2. [架构与数据流](./architecture.md)（当前实现）
+3. [数据和状态合同](./domain-contract.md)（当前实现）
+4. [Wire API](./wire-api.md)（当前实现）
+5. [交付阶段与验证](./delivery-plan.md)（当前实现）
 
 ## V1 用户路径
 

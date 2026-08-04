@@ -166,6 +166,7 @@ export default {
       term.onData((data) => {
         store.sendWsMessage({
           type: 'terminal_input',
+          agentId: store.currentAgent,
           conversationId: convId,
           terminalId,
           data,
@@ -197,6 +198,7 @@ export default {
         info.fitAddon.fit();
         store.sendWsMessage({
           type: 'terminal_create',
+          agentId: store.currentAgent,
           conversationId: convId,
           terminalId,
           cols: info.terminal.cols,
@@ -279,6 +281,7 @@ export default {
       if (info) {
         store.sendWsMessage({
           type: 'terminal_close',
+          agentId: store.currentAgent,
           conversationId: convId,
           terminalId,
           _clientId: store.clientId
@@ -319,6 +322,7 @@ export default {
             info.fitAddon.fit();
             store.sendWsMessage({
               type: 'terminal_resize',
+              agentId: store.currentAgent,
               conversationId: convId,
               terminalId: tid,
               cols: info.terminal.cols,

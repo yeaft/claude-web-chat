@@ -20,9 +20,16 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, unlinkSync, statSync, appendFileSync } from 'fs';
 import { join, basename } from 'path';
 import { isPermissionError } from '../init.js';
+import { writeAtomic } from '../storage/atomic.js';
 import { pairSanitize } from '../pair-sanitize.js';
 import { sliceLastNTurns, stripVpMentionPrefix } from '../turn-utils.js';
-import { isHiddenConversationRow } from './internal-control.js';
+import { isHiddenConversationRow, isVisibleConversationRow } from './internal-control.js';
+import {
+  findLiteralSearch,
+  iterateCanonicalVisibleEntriesNewestFirst,
+  normalizeLiteralSearch,
+} from './visible-entry.js';
+import { markConversationDirty } from './history-index-state.js';
 
 /**
  * Default cold-start "recent window" size, expressed in TURNS (not raw
@@ -57,12 +64,37 @@ let DEFAULT_RECENT_TURNS = 20;
 const RECENT_SESSION_SCAN_BASE_CAP = 64;
 const RECENT_SESSION_SCAN_PER_TURN_CAP = 4;
 const RECENT_SESSION_SCAN_MAX_CAP = 256;
+// A normal Engine loop executes at most 30 tools, but parallel VPs can append
+// many rows between a call and its result. One extra normal delta page keeps the
+// scan bounded while leaving enough room to close a legitimate interleaved arc.
+const DELTA_TOOL_PAIR_EXTENSION_CAP = 500;
 
 
 const SEGMENT_INDEX_FILE = 'index.json';
 const SEGMENT_DIR = 'segments';
 const SEGMENT_TARGET_BYTES = 1024 * 1024;
 const SEGMENT_FIRST_NAME = '000001.jsonl';
+
+function latestTodoWriteSnapshot(toolCalls) {
+  if (!Array.isArray(toolCalls)) return null;
+  for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
+    const call = toolCalls[index];
+    if (call?.name === 'TodoWrite' && Array.isArray(call?.input?.todos)) return call.input.todos;
+  }
+  return null;
+}
+
+function projectAssistantToolsForVisibleHistory(message) {
+  const { toolCalls, ...rest } = message;
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) return rest;
+  const todos = latestTodoWriteSnapshot(toolCalls);
+  const toolSummaryCount = toolCalls.filter(call => call?.name !== 'TodoWrite').length;
+  return {
+    ...rest,
+    ...(todos ? { todos } : {}),
+    ...(toolSummaryCount > 0 ? { toolSummaryCount } : {}),
+  };
+}
 
 function emptySegmentIndex() {
   return {
@@ -72,6 +104,7 @@ function emptySegmentIndex() {
     lastMessageId: null,
     activeSegment: SEGMENT_FIRST_NAME,
     segments: [],
+    foldedMessageIds: [],
   };
 }
 
@@ -85,6 +118,31 @@ function normalizeSegmentRecord(msg) {
   if (!Number.isFinite(seq)) return null;
   const out = { ...msg, seq, id: msg.id || seqId(seq) };
   return out;
+}
+
+function foldedMessageIdsFrom(rows) {
+  const ids = new Set();
+  for (const row of rows || []) {
+    if (!row?._reflection || !Array.isArray(row.foldedMessageIds)) continue;
+    for (const id of row.foldedMessageIds) {
+      if (typeof id === 'string' && id) ids.add(id);
+    }
+  }
+  return ids;
+}
+
+function applyFoldedMessageTombstones(rows, additionalIds = []) {
+  const foldedIds = foldedMessageIdsFrom(rows);
+  for (const id of additionalIds || []) {
+    if (typeof id === 'string' && id) foldedIds.add(id);
+  }
+  if (foldedIds.size === 0) return rows;
+  return rows.filter(row => !foldedIds.has(row?.id));
+}
+
+function addScanMetric(stats, key, value = 1) {
+  if (!stats || typeof stats !== 'object' || !Number.isFinite(value) || value <= 0) return;
+  stats[key] = (Number(stats[key]) || 0) + value;
 }
 
 function segmentNameForNumber(n) {
@@ -191,6 +249,7 @@ function maybeWarnHistoryTruncated(sessionId, storeDir, recentTurnsLimit, hasCom
  * Used to avoid spamming the console with repeated warnings.
  */
 let _permissionWarned = false;
+let _historyIndexMutationWarned = false;
 
 /** Rough token estimation: ~4 chars per token. */
 export function estimateTokens(text) {
@@ -235,6 +294,114 @@ function recentSessionScanCap(turnsLimit) {
   return Math.min(RECENT_SESSION_SCAN_MAX_CAP, RECENT_SESSION_SCAN_BASE_CAP + turns * RECENT_SESSION_SCAN_PER_TURN_CAP);
 }
 
+function askUserToolIdentity(row, toolCallId) {
+  if (!row || typeof toolCallId !== 'string' || !toolCallId) return null;
+  return [
+    row.sessionId || '',
+    row.speakerVpId || '',
+    row.turnId || '',
+    row.threadId || 'main',
+    toolCallId,
+  ].join('\u0000');
+}
+
+function parseAskUserResult(toolCall, toolResult) {
+  if (!toolCall || toolCall.name !== 'AskUser' || typeof toolCall.id !== 'string' || !toolCall.id
+      || !toolResult || toolResult.isError) return null;
+  let payload = toolResult.content;
+  if (typeof payload === 'string') {
+    try { payload = JSON.parse(payload); } catch { return null; }
+  }
+  if (!payload || typeof payload !== 'object') return null;
+
+  const question = typeof toolCall.input?.question === 'string'
+    ? toolCall.input.question
+    : (typeof payload.question === 'string' ? payload.question : '');
+  const options = Array.isArray(toolCall.input?.options)
+    ? toolCall.input.options.filter(option => typeof option === 'string')
+    : [];
+  if (payload.timedOut === true) {
+    return {
+      toolCallId: toolCall.id,
+      status: 'expired',
+      question,
+      options,
+    };
+  }
+  if (!payload.answers || typeof payload.answers !== 'object' || Array.isArray(payload.answers)) return null;
+  return {
+    toolCallId: toolCall.id,
+    status: 'answered',
+    question,
+    options,
+    answers: payload.answers,
+  };
+}
+
+const FAILED_RESPONSE_REASONS = new Set(['aborted', 'errored', 'error', 'cancelled', 'canceled']);
+
+function projectedResponseKind(row) {
+  if (row?.incomplete === true || FAILED_RESPONSE_REASONS.has(row?.stopReason)) {
+    return 'progress';
+  }
+  if (row?.responseKind === 'progress' || row?.responseKind === 'result') {
+    return row.responseKind;
+  }
+  if (row?.stopReason === 'end_turn') return 'result';
+  return null;
+}
+
+export function projectVisibleSessionMessages(messages) {
+  const rows = Array.isArray(messages) ? messages : [];
+  const toolResults = new Map();
+  for (const row of rows) {
+    if (row?.role !== 'tool') continue;
+    const identity = askUserToolIdentity(row, row.toolCallId);
+    if (identity) toolResults.set(identity, row);
+  }
+
+  const visible = [];
+  for (const row of rows) {
+    if (!row || (row.role !== 'user' && row.role !== 'assistant')) continue;
+    if (!isVisibleConversationRow(row)) continue;
+    if (row.role !== 'assistant' || !Array.isArray(row.toolCalls) || row.toolCalls.length === 0) {
+      if (row.role === 'assistant' && !row.content && !row.attachments && !row.images
+          && !row.todos && !row.toolSummaryCount && !row.askUserResults) continue;
+      const responseKind = row.role === 'assistant' ? projectedResponseKind(row) : null;
+      visible.push(responseKind && row.responseKind !== responseKind
+        ? { ...row, responseKind }
+        : row);
+      continue;
+    }
+
+    const askUserResults = [];
+    let omittedToolCount = 0;
+    for (const toolCall of row.toolCalls) {
+      if (toolCall?.name === 'TodoWrite') continue;
+      const identity = askUserToolIdentity(row, toolCall?.id);
+      const result = parseAskUserResult(toolCall, identity ? toolResults.get(identity) : null);
+      if (result) askUserResults.push(result);
+      else omittedToolCount += 1;
+    }
+    const { toolCalls, ...rowWithoutToolCalls } = row;
+    const responseKind = projectedResponseKind(rowWithoutToolCalls);
+    const rest = responseKind && rowWithoutToolCalls.responseKind !== responseKind
+      ? { ...rowWithoutToolCalls, responseKind }
+      : rowWithoutToolCalls;
+    const todos = latestTodoWriteSnapshot(toolCalls);
+    const projected = {
+      ...rest,
+      ...(todos ? { todos } : {}),
+      ...(omittedToolCount > 0 ? { toolSummaryCount: omittedToolCount } : {}),
+      ...(askUserResults.length > 0 ? { askUserResults } : {}),
+    };
+    if (!projected.content && !projected.attachments && !projected.images
+        && !projected.todos && !projected.toolSummaryCount && !projected.askUserResults) continue;
+    visible.push(projected);
+  }
+  return visible;
+}
+
 // ─── Frontmatter helpers ─────────────────────────────────────
 
 /**
@@ -275,11 +442,21 @@ function serializeMessage(msg) {
   if (msg.sessionId) fm.push(`sessionId: ${msg.sessionId}`);
   if (msg.chatId) fm.push(`chatId: ${msg.chatId}`);
   if (msg.clientMessageId) fm.push(`clientMessageId: ${msg.clientMessageId}`);
+  if (typeof msg.userAuthored === 'boolean') fm.push(`userAuthored: ${msg.userAuthored}`);
+  if (msg.incomplete) fm.push('incomplete: true');
+  if (msg.stopReason) fm.push(`stopReason: ${msg.stopReason}`);
+  if (msg.responseKind === 'progress' || msg.responseKind === 'result') fm.push(`responseKind: ${msg.responseKind}`);
   // Session attribution: when a VP authors an assistant turn (either
   // its own reply or a route_forward injection from another VP), stamp
   // the speaker so the UI can render the message on the correct VP track.
   // For real user messages this is unset.
   if (msg.speakerVpId) fm.push(`speakerVpId: ${msg.speakerVpId}`);
+  if (msg.quote && typeof msg.quote === 'object') {
+    try {
+      const b64 = Buffer.from(JSON.stringify(msg.quote)).toString('base64');
+      fm.push(`quoteB64: ${b64}`);
+    } catch { /* best-effort: quote metadata is not engine-critical */ }
+  }
   if (Array.isArray(msg.attachments) && msg.attachments.length > 0) {
     try {
       const b64 = Buffer.from(JSON.stringify(msg.attachments)).toString('base64');
@@ -404,7 +581,19 @@ export function parseMessage(raw) {
       case 'sessionId': msg.sessionId = value; break;
       case 'chatId': msg.chatId = value; break;
       case 'clientMessageId': msg.clientMessageId = value; break;
+      case 'userAuthored': msg.userAuthored = value === 'true'; break;
+      case 'incomplete': msg.incomplete = value === 'true'; break;
+      case 'stopReason': msg.stopReason = value; break;
+      case 'responseKind':
+        if (value === 'progress' || value === 'result') msg.responseKind = value;
+        break;
       case 'speakerVpId': msg.speakerVpId = value; break;
+      case 'quoteB64':
+        try {
+          const parsed = JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
+          if (parsed && typeof parsed === 'object') msg.quote = parsed;
+        } catch { /* best-effort: ignore malformed quote metadata */ }
+        break;
       case 'attachmentsB64':
         try {
           const parsed = JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
@@ -533,8 +722,9 @@ class SegmentStore {
         idx = null;
       }
     }
-    this.index = this.#normalizeIndex(idx || this.#rebuildIndex());
-    if (!existsSync(this.indexPath) && this.hasData()) this.saveIndex();
+    const indexWasStale = idx && !this.#indexMatchesDisk(idx);
+    this.index = this.#normalizeIndex(!idx || indexWasStale ? this.#rebuildIndex() : idx);
+    if ((!existsSync(this.indexPath) || indexWasStale) && this.hasData()) this.saveIndex();
     return this.index;
   }
 
@@ -571,6 +761,12 @@ class SegmentStore {
     idx.totalMessages = (idx.totalMessages || 0) + 1;
     idx.lastMessageId = msg.id || null;
     idx.nextSeq = Math.max(Number(idx.nextSeq) || 1, seq + 1);
+    if (msg._reflection && Array.isArray(msg.foldedMessageIds)) {
+      idx.foldedMessageIds = Array.from(new Set([
+        ...(Array.isArray(idx.foldedMessageIds) ? idx.foldedMessageIds : []),
+        ...msg.foldedMessageIds.filter(id => typeof id === 'string' && id),
+      ]));
+    }
     this.saveIndex();
   }
 
@@ -584,12 +780,14 @@ class SegmentStore {
     const out = [];
     for (const seg of segments) {
       const rows = this.#readSegment(seg.file, { beforeSeq, afterSeq, desc, includeCold });
-      out.push(...rows);
+      out.push(...applyFoldedMessageTombstones(rows, idx.foldedMessageIds));
     }
-    return desc ? out.sort((a, b) => parseSeqFromId(b.id) - parseSeqFromId(a.id)) : out.sort(compareMessagesBySeq);
+    return desc
+      ? out.sort((a, b) => parseSeqFromId(b.id) - parseSeqFromId(a.id))
+      : out.sort(compareMessagesBySeq);
   }
 
-  *scan({ beforeSeq = Infinity, afterSeq = -Infinity, desc = false, includeCold = false } = {}) {
+  *scan({ beforeSeq = Infinity, afterSeq = -Infinity, desc = false, includeCold = false, scanStats = null } = {}) {
     if (!this.hasData()) return;
     const idx = this.loadIndex();
     const segments = (idx.segments || [])
@@ -597,7 +795,11 @@ class SegmentStore {
       .slice()
       .sort((a, b) => desc ? (b.lastSeq || 0) - (a.lastSeq || 0) : (a.firstSeq || 0) - (b.firstSeq || 0));
     for (const seg of segments) {
-      for (const row of this.#readSegment(seg.file, { beforeSeq, afterSeq, desc, includeCold })) yield row;
+      const rows = this.#readSegment(seg.file, { beforeSeq, afterSeq, desc, includeCold });
+      addScanMetric(scanStats, 'segments');
+      addScanMetric(scanStats, 'bytes', Number(seg.bytes) || 0);
+      addScanMetric(scanStats, 'rows', rows.length);
+      yield* applyFoldedMessageTombstones(rows, idx.foldedMessageIds);
     }
   }
 
@@ -617,18 +819,39 @@ class SegmentStore {
     for (const msg of (rows || []).filter(Boolean).sort(compareMessagesBySeq)) this.append(msg);
   }
 
+  updateById(id, updater) {
+    if (!id || typeof updater !== 'function' || !this.hasData()) return null;
+    const targetSeq = parseSeqFromId(id);
+    const idx = this.loadIndex();
+    const segment = (idx.segments || []).find((candidate) => {
+      const first = Number(candidate.firstSeq);
+      const last = Number(candidate.lastSeq);
+      return Number.isFinite(targetSeq)
+        && Number.isFinite(first)
+        && Number.isFinite(last)
+        && targetSeq >= first
+        && targetSeq <= last;
+    });
+    if (!segment?.file) return null;
+
+    const path = join(this.segmentDir, segment.file);
+    const rows = this.#readSegment(segment.file, { includeCold: true });
+    const rowIndex = rows.findIndex(row => row?.id === id);
+    if (rowIndex < 0) return null;
+    const next = updater({ ...rows[rowIndex] });
+    if (!next || typeof next !== 'object') return null;
+    const updated = { ...next, id: rows[rowIndex].id };
+    rows[rowIndex] = updated;
+
+    const body = rows.map(row => JSON.stringify(row)).join('\n') + (rows.length > 0 ? '\n' : '');
+    writeAtomic(path, body);
+    segment.bytes = Buffer.byteLength(body);
+    this.saveIndex();
+    return updated;
+  }
+
   markCold(id) {
-    if (!id || !this.hasData()) return 0;
-    const rows = this.readAll({ includeCold: true });
-    let changed = 0;
-    for (const msg of rows) {
-      if (msg?.id === id && msg.cold !== true) {
-        msg.cold = true;
-        changed += 1;
-      }
-    }
-    if (changed > 0) this.replaceAll(rows);
-    return changed;
+    return this.updateById(id, msg => ({ ...msg, cold: true }));
   }
 
   clear() {
@@ -641,6 +864,19 @@ class SegmentStore {
     this.index = emptySegmentIndex();
   }
 
+  #indexMatchesDisk(idx) {
+    if (!existsSync(this.segmentDir)) return !(idx?.segments?.length > 0);
+    const diskFiles = readdirSync(this.segmentDir).filter(file => file.endsWith('.jsonl')).sort();
+    const indexedSegments = Array.isArray(idx?.segments) ? idx.segments : [];
+    const indexedFiles = indexedSegments.map(segment => segment?.file).filter(Boolean).sort();
+    if (diskFiles.length !== indexedFiles.length
+        || diskFiles.some((file, index) => file !== indexedFiles[index])) return false;
+    return indexedSegments.every(segment => {
+      const path = join(this.segmentDir, segment.file);
+      return existsSync(path) && statSync(path).size === Number(segment.bytes);
+    });
+  }
+
   #normalizeIndex(idx) {
     const out = { ...emptySegmentIndex(), ...(idx || {}) };
     out.segments = Array.isArray(out.segments) ? out.segments.filter(s => s && s.file) : [];
@@ -649,6 +885,9 @@ class SegmentStore {
     out.nextSeq = Math.max(Number(out.nextSeq) || 1, maxSeq + 1);
     out.activeSegment = out.activeSegment || out.segments[out.segments.length - 1]?.file || SEGMENT_FIRST_NAME;
     out.totalMessages = Number(out.totalMessages) || out.segments.reduce((sum, seg) => sum + (Number(seg.count) || 0), 0);
+    out.foldedMessageIds = Array.isArray(out.foldedMessageIds)
+      ? Array.from(new Set(out.foldedMessageIds.filter(id => typeof id === 'string' && id)))
+      : [];
     return out;
   }
 
@@ -670,10 +909,12 @@ class SegmentStore {
       };
       idx.segments.push(seg);
       idx.totalMessages += rows.length;
+      idx.foldedMessageIds.push(...foldedMessageIdsFrom(rows));
       idx.lastMessageId = rows[rows.length - 1]?.id || idx.lastMessageId;
       idx.nextSeq = Math.max(idx.nextSeq, seg.lastSeq + 1);
       idx.activeSegment = file;
     }
+    idx.foldedMessageIds = Array.from(new Set(idx.foldedMessageIds));
     return idx;
   }
 
@@ -799,6 +1040,40 @@ export class ConversationStore {
 
   // ─── Write API ──────────────────────────────────────────
 
+  #markDirty(message, reason, sourceIds = null) {
+    const sessionId = message?.sessionId || null;
+    try {
+      markConversationDirty({
+        ownerRoot: this.#dir,
+        scopeKind: sessionId ? 'session' : 'chat',
+        scopeId: sessionId || message?.chatId || '*',
+        reason,
+        sourceIds,
+      });
+    } catch (error) {
+      if (!_historyIndexMutationWarned) {
+        console.warn(`[Yeaft] Cannot mark conversation index dirty: ${error?.message || error}`);
+        _historyIndexMutationWarned = true;
+      }
+    }
+  }
+
+  #markAllDirty(reason) {
+    try {
+      markConversationDirty({
+        ownerRoot: this.#dir,
+        scopeKind: 'session',
+        scopeId: '*',
+        reason,
+      });
+    } catch (error) {
+      if (!_historyIndexMutationWarned) {
+        console.warn(`[Yeaft] Cannot mark conversation index dirty: ${error?.message || error}`);
+        _historyIndexMutationWarned = true;
+      }
+    }
+  }
+
   /**
    * Append a single message to the conversation.
    *
@@ -829,6 +1104,15 @@ export class ConversationStore {
     }
 
     this.#nextSeq = seq + 1;
+    if (fullMsg._reflection || (
+      (fullMsg.role === 'user' || fullMsg.role === 'assistant')
+      && isVisibleConversationRow(fullMsg)
+    )) {
+      this.#markDirty(fullMsg, fullMsg._reflection ? 'fold' : 'append', [
+        fullMsg.id,
+        ...(Array.isArray(fullMsg.foldedMessageIds) ? fullMsg.foldedMessageIds : []),
+      ]);
+    }
 
     return fullMsg;
   }
@@ -844,6 +1128,64 @@ export class ConversationStore {
   }
 
   /**
+   * Replace fields on one persisted message while preserving its id/order.
+   * Rewrites only the owning conversation segment set; used for async tool
+   * results that complete after their initial tool row was appended.
+   *
+   * @param {object} message — persisted row returned by append()
+   * @param {object} patch — fields to merge into the row
+   * @returns {object|null}
+   */
+  update(message, patch) {
+    if (!message?.id || !patch || typeof patch !== 'object') return null;
+    try {
+      const store = this.#segmentStoreFor(message, { create: false });
+      let before = null;
+      const updated = store.updateById(message.id, current => {
+        before = { ...current };
+        return { ...current, ...patch };
+      });
+      const affectsCanonicalProjection = row => !!row && (
+        row._reflection
+        || ((row.role === 'user' || row.role === 'assistant')
+          && isVisibleConversationRow(row))
+      );
+      if (updated && (affectsCanonicalProjection(before) || affectsCanonicalProjection(updated))) {
+        this.#markDirty(updated, 'update', [message.id]);
+      }
+      return updated;
+    } catch (err) {
+      if (isPermissionError(err)) {
+        if (!_permissionWarned) {
+          console.warn(`[Yeaft] Cannot update message ${message.id}: ${err.code}`);
+          _permissionWarned = true;
+        }
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Atomically publish a logical range replacement for tool folding.
+   *
+   * The original rows stay append-only on disk. A single reflection row owns
+   * their ids as tombstones, so readers either observe the complete old arc or
+   * the complete reflection — never a half-rewritten tool pair.
+   *
+   * @param {object[]} messages — persisted rows being folded
+   * @param {object} reflection — synthetic `_reflection` user row
+   * @returns {object|null}
+   */
+  foldMessages(messages, reflection) {
+    const foldedMessageIds = Array.from(new Set(
+      (messages || []).map(message => message?.id).filter(id => typeof id === 'string' && id),
+    ));
+    if (foldedMessageIds.length === 0 || !reflection || reflection._reflection !== true) return null;
+    return this.append({ ...reflection, foldedMessageIds });
+  }
+
+  /**
    * Move a message from hot (messages/) to cold (cold/).
    *
    * @param {string} id — message id (e.g. "m0355")
@@ -851,7 +1193,7 @@ export class ConversationStore {
   moveToCold(id) {
     for (const dir of [this.#chatDir, ...this.#sessionConversationDirs({ primaryOnly: true })]) {
       const moved = this.#segmentStoreForConversationDir(dir).markCold(id);
-      if (moved > 0) return;
+      if (moved) return;
     }
     for (const [hotDir, coldDir] of this.#hotColdDirPairs({ includeLegacy: false })) {
       const src = join(hotDir, `${id}.md`);
@@ -859,6 +1201,7 @@ export class ConversationStore {
       if (!existsSync(src)) continue;
       try {
         renameSync(src, dst);
+
       } catch (err) {
         if (isPermissionError(err)) {
           if (!_permissionWarned) {
@@ -1107,6 +1450,7 @@ export class ConversationStore {
     }
     this.#nextSeq = 1;
     this.updateIndex({ totalMessages: 0, lastMessageId: null });
+    this.#markAllDirty('clear');
   }
 
 
@@ -1176,11 +1520,12 @@ export class ConversationStore {
    * @param {number} [turnsLimit=DEFAULT_RECENT_TURNS]
    * @returns {object[]}
    */
-  loadRecentBySession(sessionId, turnsLimit = DEFAULT_RECENT_TURNS) {
+  loadRecentBySession(sessionId, turnsLimit = DEFAULT_RECENT_TURNS, { includeReflections = false } = {}) {
     if (!sessionId) return [];
     if (turnsLimit === Infinity || turnsLimit < 0) {
       const all = this.#loadSessionMessages(sessionId);
-      const filtered = all.filter(m => m && m.sessionId === sessionId && !isHiddenConversationRow(m));
+      const filtered = all.filter(m => m && m.sessionId === sessionId
+        && (!isHiddenConversationRow(m) || (includeReflections && m._reflection === true)));
       return pairSanitize(filtered);
     }
     if (!(turnsLimit > 0)) return [];
@@ -1188,6 +1533,7 @@ export class ConversationStore {
     const { messages, truncated } = this.#loadRecentSessionWindow(sessionId, turnsLimit, {
       roles: null,
       stripAssistantToolCalls: false,
+      includeReflections,
     });
     if (truncated) {
       const hasCompact = this.hasAnyCompactSummaryForSession(sessionId);
@@ -1236,9 +1582,14 @@ export class ConversationStore {
   loadSessionHistoryForVp(sessionId, vpId) {
     if (!sessionId || !vpId) return [];
     const all = this.#loadSessionMessages(sessionId);
+    const foldedIds = foldedMessageIdsFrom(all);
     const out = [];
     for (const m of all) {
-      if (!m || m.sessionId !== sessionId) continue;
+      if (!m || m.sessionId !== sessionId || foldedIds.has(m.id)) continue;
+      if (m._reflection === true) {
+        out.push(m);
+        continue;
+      }
       if (isHiddenConversationRow(m)) continue;
       if (m.role === 'user') {
         out.push(m);
@@ -1309,7 +1660,7 @@ export class ConversationStore {
     if (!sessionId) return { messages: [], oldestSeq: null, hasMore: false };
     const cutoff = Number.isFinite(beforeSeq) ? beforeSeq : Infinity;
     const prefix = this.#readSessionRows(sessionId, { beforeSeq: cutoff })
-      .filter(m => m && m.sessionId === sessionId && !isHiddenConversationRow(m));
+      .filter(m => m && m.sessionId === sessionId && isVisibleConversationRow(m));
     if (prefix.length === 0) return { messages: [], oldestSeq: null, hasMore: false };
     const sliced = pairSanitize(sliceLastNTurns(prefix, turnsLimit));
     // Turn-based hasMore: there's an EARLIER turn boundary we didn't keep.
@@ -1340,22 +1691,37 @@ export class ConversationStore {
    * @param {number} [turnsLimit=DEFAULT_RECENT_TURNS]
    * @returns {{ messages: object[], oldestSeq: number|null, hasMore: boolean }}
    */
-  loadVisibleBySession(sessionId, beforeSeq, turnsLimit = DEFAULT_RECENT_TURNS) {
+  loadVisibleBySession(sessionId, beforeSeq, turnsLimit = DEFAULT_RECENT_TURNS, opts = {}) {
     if (!sessionId || !(turnsLimit > 0)) return { messages: [], oldestSeq: null, hasMore: false };
 
     const cutoff = Number.isFinite(beforeSeq) ? beforeSeq : Infinity;
+    const stopAtSeq = Number.isFinite(opts.stopAtSeq) ? Math.max(1, opts.stopAtSeq) : null;
     const page = this.#loadRecentSessionWindow(sessionId, turnsLimit, {
       beforeSeq: cutoff,
-      roles: new Set(['user', 'assistant']),
-      stripAssistantToolCalls: true,
+      afterSeq: stopAtSeq === null ? -Infinity : stopAtSeq - 1,
+      roles: null,
+      stripAssistantToolCalls: false,
+      visibleOnly: true,
     });
-    if (page.messages.length === 0) return { messages: [], oldestSeq: null, hasMore: page.truncated };
+    const messages = projectVisibleSessionMessages(page.messages);
+    if (messages.length === 0) {
+      const nextBeforeSeq = Number.isFinite(page.nextBeforeSeq) ? page.nextBeforeSeq : null;
+      return {
+        messages: [],
+        oldestSeq: null,
+        nextBeforeSeq,
+        hasMore: page.truncated && (stopAtSeq === null || nextBeforeSeq > stopAtSeq),
+      };
+    }
 
-    const oldestSeq = page.messages.length ? parseSeqFromId(page.messages[0].id) : null;
+    const oldestSeq = messages.length ? parseSeqFromId(messages[0].id) : null;
     return {
-      messages: page.messages,
+      messages,
       oldestSeq: Number.isFinite(oldestSeq) ? oldestSeq : null,
-      hasMore: page.truncated,
+      nextBeforeSeq: Number.isFinite(page.nextBeforeSeq)
+        ? Math.min(page.nextBeforeSeq, oldestSeq)
+        : (Number.isFinite(oldestSeq) ? oldestSeq : null),
+      hasMore: page.truncated && (stopAtSeq === null || oldestSeq > stopAtSeq),
     };
   }
 
@@ -1368,8 +1734,8 @@ export class ConversationStore {
    * cursor. When no visible rows changed after `afterSeq`, keep the cursor at
    * least at `afterSeq` so an empty delta still completes the in-flight sync
    * without downgrading the client to a cursor-less loaded state. Hidden rows
-   * are also allowed to advance this cursor because they were scanned and
-   * intentionally omitted from UI replay.
+   * advance the cursor only at pair-safe boundaries; a cursor must never cross
+   * an assistant tool call before all of that call's result rows are included.
    *
    * @param {string} sessionId
    * @param {number|null} afterSeq — exclusive lower bound
@@ -1382,19 +1748,81 @@ export class ConversationStore {
     const cutoff = Number.isFinite(afterSeq) && afterSeq >= 0 ? afterSeq : null;
     if (cutoff === null) return { messages: [], latestSeq: null };
     const after = [];
-    let newestScannedSeq = cutoff;
+    const pendingToolResultIds = new Set();
+    const completedBeforeCursor = new Set();
+    const boundaryAssistants = [];
+    let boundaryLookbackRows = 0;
+    for (const previous of this.#iterateSessionRows(sessionId, { beforeSeq: cutoff + 1, desc: true })) {
+      if (!previous || previous.sessionId !== sessionId) continue;
+      boundaryLookbackRows += 1;
+      if (boundaryLookbackRows > DELTA_TOOL_PAIR_EXTENSION_CAP) break;
+      if (isHiddenConversationRow(previous)) continue;
+      if (previous.role === 'tool' && typeof previous.toolCallId === 'string') {
+        completedBeforeCursor.add(previous.toolCallId);
+        continue;
+      }
+      if (previous.role === 'assistant' && Array.isArray(previous.toolCalls) && previous.toolCalls.length > 0) {
+        const pendingIds = previous.toolCalls
+          .map(toolCall => toolCall?.id)
+          .filter(toolCallId => typeof toolCallId === 'string'
+            && toolCallId
+            && !completedBeforeCursor.has(toolCallId));
+        if (pendingIds.length > 0) boundaryAssistants.push({ message: previous, pendingIds });
+        continue;
+      }
+      if (previous.role === 'user') break;
+    }
+    boundaryAssistants.sort((a, b) => compareMessagesBySeq(a.message, b.message));
+    for (const boundary of boundaryAssistants) {
+      after.push(boundary.message);
+      for (const toolCallId of boundary.pendingIds) pendingToolResultIds.add(toolCallId);
+    }
+    const earliestBoundarySeq = boundaryAssistants.length > 0
+      ? parseSeqFromId(boundaryAssistants[0].message.id)
+      : null;
+    let safeCursorSeq = Number.isFinite(earliestBoundarySeq)
+      ? Math.max(0, earliestBoundarySeq - 1)
+      : cutoff;
+    let visibleRows = after.length;
+    let extensionRows = 0;
     for (const m of this.#iterateSessionRows(sessionId, { afterSeq: cutoff, desc: false })) {
       if (!m || m.sessionId !== sessionId) continue;
       const seq = parseSeqFromId(m.id);
-      if (Number.isFinite(seq) && seq > newestScannedSeq) newestScannedSeq = seq;
-      if (isHiddenConversationRow(m)) continue;
-      after.push(m);
-      if (after.length >= limit) break;
+      const hidden = !isVisibleConversationRow(m);
+      if (!hidden) {
+        // Keep every outstanding call open across interleaved VP rows. Session
+        // persistence is globally sequenced, so a sibling VP may append visible
+        // messages between an assistant call and that call's result.
+        after.push(m);
+        visibleRows += 1;
+        if (m.role === 'assistant' && Array.isArray(m.toolCalls)) {
+          for (const toolCall of m.toolCalls) {
+            if (typeof toolCall?.id === 'string' && toolCall.id) pendingToolResultIds.add(toolCall.id);
+          }
+        } else if (m.role === 'tool' && typeof m.toolCallId === 'string') {
+          pendingToolResultIds.delete(m.toolCallId);
+        }
+      }
+      if (pendingToolResultIds.size === 0 && Number.isFinite(seq)) safeCursorSeq = seq;
+      if (visibleRows < limit) continue;
+      if (pendingToolResultIds.size === 0) break;
+      extensionRows += 1;
+      if (extensionRows >= DELTA_TOOL_PAIR_EXTENSION_CAP) break;
     }
-    const sliced = pairSanitize(after.slice(0, limit));
-    const lastSeq = sliced.length ? parseSeqFromId(sliced[sliced.length - 1].id) : null;
-    const latestSeq = Number.isFinite(lastSeq) ? Math.max(lastSeq, newestScannedSeq) : newestScannedSeq;
-    return { messages: sliced, latestSeq };
+    // If the extension cap stopped inside a malformed arc, return only the
+    // prefix covered by the safe cursor. Returning later rows with an earlier
+    // cursor would make the next delta repeat visible messages unnecessarily.
+    const pairSafeRows = pendingToolResultIds.size === 0
+      ? after
+      : after.filter(message => {
+          const seq = parseSeqFromId(message?.id);
+          return Number.isFinite(seq) && seq <= safeCursorSeq;
+        });
+    const sliced = pairSanitize(pairSafeRows);
+    // Never advance past a row the sanitizer had to drop. A malformed or
+    // over-cap tool arc must be retried from its assistant call rather than
+    // turning the following result into a permanent orphan on the next page.
+    return { messages: projectVisibleSessionMessages(sliced), latestSeq: safeCursorSeq };
   }
 
   /**
@@ -1410,56 +1838,114 @@ export class ConversationStore {
   }
 
   /**
+   * Return every canonical visible entry newest-first. This is the single read
+   * model used by JSONL fallback search and the rebuildable SQLite worker.
+   *
+   * @param {string} sessionId
+   * @param {{ scanStats?: object }} [opts]
+   * @returns {object[]}
+   */
+  *iterateCanonicalVisibleEntriesBySession(sessionId, opts = {}) {
+    if (!sessionId) return;
+    yield* this.#iterateVisibleResponseEntries(sessionId, { scanStats: opts.scanStats });
+  }
+
+  loadCanonicalVisibleEntriesBySession(sessionId, opts = {}) {
+    return Array.from(this.iterateCanonicalVisibleEntriesBySession(sessionId, opts));
+  }
+
+  /**
    * Search user-visible messages inside one Session. The scan is newest-first
    * and stops as soon as one page plus a `hasMore` sentinel is found, so a
    * common recent hit does not materialize the full transcript.
    *
    * @param {string} sessionId
    * @param {string} query
-   * @param {{ limit?: number, beforeSeq?: number|null }} [opts]
+   * @param {{ limit?: number, beforeSeq?: number|null, senderKey?: string, scanStats?: object }} [opts]
    * @returns {{ results: object[], hasMore: boolean, nextBeforeSeq: number|null }}
    */
   searchVisibleBySession(sessionId, query, opts = {}) {
-    const needle = typeof query === 'string' ? query.trim().toLocaleLowerCase() : '';
-    if (!sessionId || needle.length < 2) return { results: [], hasMore: false, nextBeforeSeq: null };
+    const needle = normalizeLiteralSearch(typeof query === 'string' ? query.trim() : '');
+    const senderKey = typeof opts.senderKey === 'string' ? opts.senderKey : '';
+    if (!sessionId || (needle.length < 2 && !senderKey)) return { results: [], hasMore: false, nextBeforeSeq: null };
 
     const limit = Math.min(50, Math.max(1, Number.isFinite(opts.limit) ? Math.floor(opts.limit) : 20));
     const beforeSeq = Number.isFinite(opts.beforeSeq) ? opts.beforeSeq : Infinity;
     const results = [];
-    const seen = new Set();
     let hasMore = false;
 
-    for (const message of this.#iterateSessionRows(sessionId, { beforeSeq, desc: true })) {
-      if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) continue;
-      if (message.role !== 'user' && message.role !== 'assistant') continue;
-      if (!message.id || seen.has(message.id)) continue;
-      seen.add(message.id);
-
-      const text = this.#visibleSearchText(message.content);
-      const matchIndex = text.toLocaleLowerCase().indexOf(needle);
+    for (const entry of this.#iterateVisibleResponseEntries(sessionId, { beforeSeq, scanStats: opts.scanStats })) {
+      const senderMatches = senderKey === 'user'
+        ? entry.role === 'user'
+        : (senderKey.startsWith('vp:')
+          ? entry.role === 'assistant' && entry.speakerVpId === senderKey.slice(3)
+          : true);
+      if (!senderMatches) continue;
+      const text = entry.textParts.join(' ');
+      const matchIndex = needle ? findLiteralSearch(text, needle) : 0;
       if (matchIndex < 0) continue;
       if (results.length >= limit) {
         hasMore = true;
         break;
       }
-
-      const seq = parseSeqFromId(message.id);
-      if (!Number.isFinite(seq)) continue;
       results.push({
-        messageId: message.id,
-        turnId: message.turnId || message.threadId || message.id,
-        seq,
-        role: message.role,
-        speakerVpId: message.speakerVpId || null,
-        timestamp: message.ts || message.time || null,
-        snippet: this.#searchSnippet(text, matchIndex, needle.length),
+        ...this.#projectVisibleResponseEntry(entry),
+        snippet: needle
+          ? this.#searchSnippet(text, matchIndex, needle.length)
+          : this.#outlineSnippet(text),
       });
     }
 
+    const lastResult = results[results.length - 1] || null;
+    return {
+      results: results.map(({ _beforeSeq, ...result }) => result),
+      hasMore,
+      nextBeforeSeq: hasMore && lastResult ? lastResult._beforeSeq : null,
+    };
+  }
+
+  /**
+   * Load a lightweight outline page for one Session. Only user and assistant
+   * text metadata is projected; tool payloads, attachments and full message
+   * bodies never leave the Agent through this API.
+   *
+   * @param {string} sessionId
+   * @param {{ limit?: number, beforeSeq?: number|null, includeTotal?: boolean, scanStats?: object }} [opts]
+   * @returns {{ results: object[], hasMore: boolean, nextBeforeSeq: number|null, totalCount: number|null }}
+   */
+  loadVisibleOutlineBySession(sessionId, opts = {}) {
+    if (!sessionId) return { results: [], hasMore: false, nextBeforeSeq: null, totalCount: 0 };
+
+    const limit = Math.min(100, Math.max(1, Number.isFinite(opts.limit) ? Math.floor(opts.limit) : 50));
+    const beforeSeq = Number.isFinite(opts.beforeSeq) ? opts.beforeSeq : Infinity;
+    const newestFirst = [];
+    let hasMore = false;
+
+    for (const entry of this.#iterateVisibleResponseEntries(sessionId, { beforeSeq, scanStats: opts.scanStats })) {
+      if (newestFirst.length >= limit) {
+        hasMore = true;
+        break;
+      }
+      const projected = this.#projectVisibleResponseEntry(entry);
+      newestFirst.push({
+        ...projected,
+        snippet: this.#outlineSnippet(entry.textParts.join(' ')),
+      });
+    }
+
+    let totalCount = null;
+    if (opts.includeTotal === true) {
+      totalCount = 0;
+      for (const _entry of this.#iterateVisibleResponseEntries(sessionId, { scanStats: opts.scanStats })) totalCount += 1;
+    }
+
+    const oldestEntry = newestFirst[newestFirst.length - 1] || null;
+    const results = newestFirst.reverse().map(({ _beforeSeq, ...entry }) => entry);
     return {
       results,
       hasMore,
-      nextBeforeSeq: hasMore && results.length > 0 ? results[results.length - 1].seq : null,
+      nextBeforeSeq: hasMore && oldestEntry ? oldestEntry._beforeSeq : null,
+      totalCount,
     };
   }
 
@@ -1470,7 +1956,9 @@ export class ConversationStore {
    *
    * @param {string} sessionId
    * @param {number} anchorSeq
-   * @param {{ beforeTurns?: number, afterTurns?: number }} [opts]
+   * @param {{ beforeTurns?: number, afterTurns?: number, entryStartSeq?: number,
+   *   entryEndSeq?: number, sourceMessageIds?: string[], maxRows?: number,
+   *   maxBytes?: number }} [opts]
    * @returns {{ messages: object[], oldestSeq: number|null, hasMoreBefore: boolean }}
    */
   loadVisibleWindowBySession(sessionId, anchorSeq, opts = {}) {
@@ -1480,31 +1968,68 @@ export class ConversationStore {
 
     const beforeTurns = Math.min(10, Math.max(1, Number.isFinite(opts.beforeTurns) ? Math.floor(opts.beforeTurns) : 3));
     const afterTurns = Math.min(10, Math.max(1, Number.isFinite(opts.afterTurns) ? Math.floor(opts.afterTurns) : 3));
-    const before = this.loadVisibleBySession(sessionId, anchorSeq + 1, beforeTurns + 1);
-    const messages = before.messages.slice();
+    const beforeRaw = this.#loadRecentSessionWindow(sessionId, beforeTurns + 1, {
+      beforeSeq: anchorSeq + 1,
+      roles: null,
+      stripAssistantToolCalls: false,
+      visibleOnly: true,
+    });
+    const messages = beforeRaw.messages.slice();
     const seen = new Set(messages.map(message => message?.id).filter(Boolean));
     let followingUserTurns = 0;
 
     for (const message of this.#iterateSessionRows(sessionId, { afterSeq: anchorSeq, desc: false })) {
-      if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) continue;
-      if (message.role !== 'user' && message.role !== 'assistant') continue;
+      if (!message || message.sessionId !== sessionId || !isVisibleConversationRow(message)) continue;
       if (message.role === 'user') {
         followingUserTurns += 1;
         if (followingUserTurns > afterTurns) break;
       }
       if (message.id && seen.has(message.id)) continue;
-      const projected = this.#projectVisibleMessage(message);
-      if (!projected) continue;
-      if (projected.id) seen.add(projected.id);
-      messages.push(projected);
+      if (message.id) seen.add(message.id);
+      messages.push(message);
+    }
+
+    const anchorIds = new Set(Array.isArray(opts.sourceMessageIds) ? opts.sourceMessageIds : []);
+    const entryStartSeq = Number.isFinite(opts.entryStartSeq) ? opts.entryStartSeq : anchorSeq;
+    const entryEndSeq = Number.isFinite(opts.entryEndSeq) ? opts.entryEndSeq : anchorSeq;
+    for (const message of this.#iterateSessionRows(sessionId, {
+      afterSeq: entryStartSeq - 1,
+      beforeSeq: entryEndSeq + 1,
+      desc: false,
+    })) {
+      if (!message?.id || seen.has(message.id)) continue;
+      if (anchorIds.size > 0 && !anchorIds.has(message.id)) continue;
+      seen.add(message.id);
+      messages.push(message);
     }
 
     messages.sort(compareMessagesBySeq);
-    const oldestSeq = messages.length > 0 ? parseSeqFromId(messages[0].id) : null;
+    const projected = projectVisibleSessionMessages(messages);
+    const maxRows = Math.min(500, Math.max(10, Number.isFinite(opts.maxRows) ? Math.floor(opts.maxRows) : 200));
+    const maxBytes = Math.min(2 * 1024 * 1024, Math.max(32 * 1024, Number.isFinite(opts.maxBytes) ? Math.floor(opts.maxBytes) : 512 * 1024));
+    const projectedById = new Map(projected.map(message => [message?.id, message]));
+    const anchorRows = Array.from(anchorIds, id => projectedById.get(id)).filter(Boolean);
+    const selected = anchorRows.slice();
+    const selectedIds = new Set(selected.map(message => message.id));
+    let selectedBytes = selected.reduce((sum, message) => sum + Buffer.byteLength(JSON.stringify(message)), 0);
+    const candidates = projected
+      .filter(message => !selectedIds.has(message?.id))
+      .sort((a, b) => Math.abs(parseSeqFromId(a.id) - anchorSeq) - Math.abs(parseSeqFromId(b.id) - anchorSeq));
+    for (const message of candidates) {
+      if (selected.length >= maxRows) break;
+      const bytes = Buffer.byteLength(JSON.stringify(message));
+      if (selected.length > 0 && selectedBytes + bytes > maxBytes) continue;
+      selected.push(message);
+      selectedBytes += bytes;
+    }
+    selected.sort(compareMessagesBySeq);
+    const oldestSeq = selected.length > 0 ? parseSeqFromId(selected[0].id) : null;
     return {
-      messages,
+      messages: selected,
       oldestSeq: Number.isFinite(oldestSeq) ? oldestSeq : null,
-      hasMoreBefore: before.hasMore,
+      hasMoreBefore: beforeRaw.truncated || selected.length < projected.length,
+      rowCount: selected.length,
+      byteCount: selectedBytes,
     };
   }
 
@@ -1622,6 +2147,7 @@ export class ConversationStore {
       }
     }
     this.#nextSeq = null;
+    this.#markDirty({ sessionId }, 'delete-session');
     return removed;
   }
 
@@ -1706,7 +2232,10 @@ export class ConversationStore {
         }
       }
     }
-    if (removed > 0) this.#nextSeq = null;
+    if (removed > 0) {
+      this.#nextSeq = null;
+      this.#markAllDirty('compact-orphans');
+    }
     return { scanned, removed, orphans, skipped: false };
   }
 
@@ -1782,6 +2311,7 @@ export class ConversationStore {
         }
       }
     }
+    if (rewritten > 0) this.#markAllDirty('reassign-thread');
     return rewritten;
   }
 
@@ -1880,6 +2410,7 @@ export class ConversationStore {
         throw err;
       }
     }
+    if (copied > 0) this.#markAllDirty('copy-thread');
     return copied;
   }
 
@@ -2135,7 +2666,14 @@ export class ConversationStore {
     return parseMessage(readFileSync(path, 'utf8'));
   }
 
-  #loadRecentSessionWindow(sessionId, turnsLimit, { beforeSeq = Infinity, roles = null, stripAssistantToolCalls = false } = {}) {
+  #loadRecentSessionWindow(sessionId, turnsLimit, {
+    beforeSeq = Infinity,
+    afterSeq = -Infinity,
+    roles = null,
+    stripAssistantToolCalls = false,
+    includeReflections = false,
+    visibleOnly = false,
+  } = {}) {
     const kept = [];
     const pendingBoundaryRows = [];
     let turnsFromEnd = 0;
@@ -2143,15 +2681,16 @@ export class ConversationStore {
     let boundaryCanonical = null;
     let truncated = false;
     let parsed = 0;
+    let oldestScannedSeq = null;
+    let scanCapped = false;
     const scanCap = recentSessionScanCap(turnsLimit);
 
     const project = (m) => {
       if (roles && !roles.has(m.role)) return null;
       if (stripAssistantToolCalls && m.role === 'assistant') {
-        const { toolCalls, ...rest } = m;
-        if (!rest.content && !rest.attachments && (!Array.isArray(toolCalls) || toolCalls.length === 0)) return null;
-        if (Array.isArray(toolCalls) && toolCalls.length > 0) return { ...rest, toolSummaryCount: toolCalls.length };
-        return rest;
+        const projected = projectAssistantToolsForVisibleHistory(m);
+        if (!projected.content && !projected.attachments && !projected.todos && !projected.toolSummaryCount) return null;
+        return projected;
       }
       return m;
     };
@@ -2171,17 +2710,22 @@ export class ConversationStore {
     // and stop after the requested turn window is complete. Hidden/internal and
     // non-turn rows are not allowed to force an unbounded scan; a hard parse cap
     // conservatively marks the page truncated.
-    for (const m of this.#iterateSessionRows(sessionId, { beforeSeq, desc: true })) {
+    for (const m of this.#iterateSessionRows(sessionId, { beforeSeq, afterSeq, desc: true })) {
       if (parsed >= scanCap) {
         truncated = true;
+        scanCapped = true;
         break;
       }
       parsed += 1;
 
       if (!m || m.sessionId !== sessionId) continue;
+      const scannedSeq = parseSeqFromId(m.id);
+      if (Number.isFinite(scannedSeq)) oldestScannedSeq = scannedSeq;
 
       const boundaryComplete = turnsFromEnd >= turnsLimit;
-      if (isHiddenConversationRow(m)) {
+      const hidden = isHiddenConversationRow(m)
+        || (visibleOnly && !isVisibleConversationRow(m));
+      if (hidden && !(includeReflections && m._reflection === true)) {
         if (boundaryComplete) {
           truncated = true;
           break;
@@ -2225,18 +2769,38 @@ export class ConversationStore {
     return {
       messages: turnsFromEnd > 0 ? sliceLastNTurns(kept, turnsLimit) : kept,
       truncated,
+      nextBeforeSeq: scanCapped
+        && pendingBoundaryRows.length === 0
+        && Number.isFinite(oldestScannedSeq)
+        ? oldestScannedSeq
+        : null,
     };
   }
 
-  #visibleSearchText(content) {
-    if (typeof content === 'string') return content.replace(/\s+/g, ' ').trim();
-    if (!Array.isArray(content)) return '';
-    return content
-      .filter(part => part && typeof part === 'object' && part.type === 'text')
-      .map(part => typeof part.text === 'string' ? part.text : '')
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+  *#iterateVisibleResponseEntries(sessionId, opts = {}) {
+    const beforeSeq = Number.isFinite(opts.beforeSeq) ? opts.beforeSeq : Infinity;
+    const rows = this.#iterateSessionRows(sessionId, {
+      beforeSeq,
+      desc: true,
+      scanStats: opts.scanStats,
+    });
+    yield* iterateCanonicalVisibleEntriesNewestFirst(rows, sessionId);
+  }
+
+  #projectVisibleResponseEntry(entry) {
+    return {
+      entryId: entry.entryId,
+      messageId: entry.anchorMessageId,
+      ...(entry.clientMessageId ? { clientMessageId: entry.clientMessageId } : {}),
+      turnId: entry.turnId,
+      seq: entry.anchorSeq,
+      entryStartSeq: entry.entryStartSeq,
+      role: entry.role,
+      speakerVpId: entry.speakerVpId,
+      sourceMessageIds: entry.sourceMessageIds,
+      timestamp: entry.timestamp,
+      _beforeSeq: entry.entryStartSeq,
+    };
   }
 
   #searchSnippet(text, matchIndex, needleLength) {
@@ -2246,13 +2810,9 @@ export class ConversationStore {
     return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
   }
 
-  #projectVisibleMessage(message) {
-    if (!message || (message.role !== 'user' && message.role !== 'assistant')) return null;
-    if (message.role !== 'assistant' || !Array.isArray(message.toolCalls) || message.toolCalls.length === 0) {
-      return message;
-    }
-    const { toolCalls, ...rest } = message;
-    return { ...rest, toolSummaryCount: toolCalls.length };
+  #outlineSnippet(text) {
+    const limit = 180;
+    return text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text;
   }
 
   #readSegmentRows(conversationDir, opts = {}) {
@@ -2266,7 +2826,12 @@ export class ConversationStore {
     for (const entry of this.#sessionFileEntries('all', sessionId, opts)) {
       try {
         const msg = this.readMessageFile(entry.path);
-        if (msg) yield msg;
+        addScanMetric(opts.scanStats, 'legacyFiles');
+        try { addScanMetric(opts.scanStats, 'bytes', statSync(entry.path).size); } catch {}
+        if (msg) {
+          addScanMetric(opts.scanStats, 'rows');
+          yield msg;
+        }
       } catch (err) {
         if (isPermissionError(err)) continue;
         throw err;

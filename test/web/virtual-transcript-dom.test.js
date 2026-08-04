@@ -1,0 +1,272 @@
+// @vitest-environment happy-dom
+import { mount } from '@vue/test-utils';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as Vue from 'vue';
+import VirtualTranscript from '../../web/components/VirtualTranscript.js';
+
+function turns(count, prefix = 'turn') {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `${prefix}-${index}`,
+    type: 'assistant-turn',
+    text: `assistant response ${index}`,
+    toolMsgs: [],
+  }));
+}
+
+function createScroller({ viewportHeight = 300, scrollHeight = 100000 } = {}) {
+  const el = document.createElement('div');
+  el.className = 'chat-container';
+  let scrollTop = 0;
+  Object.defineProperties(el, {
+    clientHeight: { configurable: true, get: () => viewportHeight },
+    scrollHeight: { configurable: true, get: () => scrollHeight },
+    scrollTop: {
+      configurable: true,
+      get: () => scrollTop,
+      set: value => { scrollTop = Math.max(0, Number(value) || 0); },
+    },
+  });
+  document.body.appendChild(el);
+  return el;
+}
+
+function renderedIds(wrapper) {
+  return wrapper.findAll('[data-turn-id]').map(node => node.attributes('data-turn-id'));
+}
+
+async function flushAnimationFrame(rounds = 1) {
+  for (let round = 0; round < rounds; round += 1) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await Vue.nextTick();
+  }
+}
+
+function stubVirtualRowHeight(height) {
+  const original = HTMLElement.prototype.getBoundingClientRect;
+  let measurementCalls = 0;
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBoundingClientRect() {
+    if (this.classList?.contains('virtual-transcript-item')) {
+      measurementCalls += 1;
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        right: 100,
+        bottom: height,
+        left: 0,
+        width: 100,
+        height,
+        toJSON: () => ({}),
+      };
+    }
+    return original.call(this);
+  });
+  return () => measurementCalls;
+}
+
+describe('VirtualTranscript DOM windowing', () => {
+  let rafTimers;
+  let rafSequence;
+
+  beforeEach(() => {
+    globalThis.Vue = Vue;
+    rafTimers = new Map();
+    rafSequence = 0;
+    vi.stubGlobal('ResizeObserver', undefined);
+    vi.stubGlobal('requestAnimationFrame', (callback) => {
+      const id = ++rafSequence;
+      const timer = setTimeout(() => {
+        rafTimers.delete(id);
+        callback(performance.now());
+      }, 0);
+      rafTimers.set(id, timer);
+      return id;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id) => {
+      const timer = rafTimers.get(id);
+      if (timer) clearTimeout(timer);
+      rafTimers.delete(id);
+    });
+  });
+
+  afterEach(() => {
+    for (const timer of rafTimers.values()) clearTimeout(timer);
+    document.body.innerHTML = '';
+    delete globalThis.Vue;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+
+
+
+
+  it('fences stale bottom work and keeps a targeted child row aligned after block resize', async () => {
+    const scroller = createScroller({ viewportHeight: 300, scrollHeight: 10000 });
+    scroller.scrollTop = 9700;
+    let rowHeight = 90;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBoundingClientRect() {
+      if (this.classList?.contains('virtual-transcript-item')) {
+        return { x: 0, y: 0, top: 0, right: 100, bottom: rowHeight, left: 0, width: 100, height: rowHeight, toJSON: () => ({}) };
+      }
+      return { x: 0, y: 0, top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0, toJSON: () => ({}) };
+    });
+
+    const rafCallbacks = new Map();
+    let nextRafId = 0;
+    vi.stubGlobal('requestAnimationFrame', (callback) => {
+      const id = ++nextRafId;
+      rafCallbacks.set(id, callback);
+      return id;
+    });
+    vi.stubGlobal('cancelAnimationFrame', id => rafCallbacks.delete(id));
+    let resizeCallback;
+    vi.stubGlobal('ResizeObserver', class ResizeObserver {
+      constructor(callback) { resizeCallback = callback; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    const flushRafs = async () => {
+      const callbacks = Array.from(rafCallbacks.values());
+      rafCallbacks.clear();
+      callbacks.forEach(callback => callback(performance.now()));
+      await Vue.nextTick();
+    };
+
+    const wrapper = mount(VirtualTranscript, {
+      props: { items: turns(20), estimateHeight: () => 90, initialAlign: 'end', itemGap: 0, overscan: 1 },
+      slots: { default: ({ item }) => Vue.h('div', { 'data-turn-id': item.id }, item.id) },
+      attachTo: scroller,
+    });
+    await Vue.nextTick();
+    await flushRafs();
+    await flushRafs();
+
+    const row = wrapper.get('.virtual-transcript-item').element;
+    rowHeight = 120;
+    resizeCallback([{ target: row }]);
+    const queuedMeasurement = Array.from(rafCallbacks.values()).at(-1);
+    rafCallbacks.clear();
+    queuedMeasurement(performance.now());
+    wrapper.vm.cancelPendingBottomFollow();
+    scroller.scrollTop = 3000;
+    await Vue.nextTick();
+    await flushRafs();
+    expect(scroller.scrollTop).toBe(3000);
+
+    wrapper.vm.setBottomFollowEnabled(false);
+    scroller.scrollTop = 9700;
+    rowHeight = 150;
+    resizeCallback([{ target: row }]);
+    await flushRafs();
+    await Vue.nextTick();
+    await flushRafs();
+    // The measured row sits above the visible window, so preserving the same
+    // content anchor adds its 30px height delta rather than pinning the tail.
+    expect(scroller.scrollTop).toBe(9730);
+
+    wrapper.vm.setBottomFollowEnabled(true);
+    rowHeight = 180;
+    resizeCallback([{ target: row }]);
+    await flushRafs();
+    await Vue.nextTick();
+    await flushRafs();
+    expect(scroller.scrollTop).toBe(10000);
+
+    wrapper.unmount();
+
+    // Search anchors an actual persisted child row, not the aggregate virtual
+    // block. A later outer-block measurement must keep that child at the
+    // viewport start instead of falling back to the block's first line.
+    const targetScroller = createScroller({ viewportHeight: 300, scrollHeight: 12000 });
+    targetScroller.scrollTop = 5000;
+    targetScroller.getBoundingClientRect = () => ({
+      x: 0, y: 0, top: 100, right: 800, bottom: 400, left: 0, width: 800, height: 300, toJSON: () => ({}),
+    });
+    const blockHeights = Array(12).fill(1000);
+    const blockOffset = index => blockHeights.slice(0, index).reduce((sum, height) => sum + height, 0);
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBoundingClientRect() {
+      if (this.classList?.contains('virtual-transcript-item')) {
+        const index = Number(this.dataset.virtualIndex || 0);
+        const top = 100 + blockOffset(index) - targetScroller.scrollTop;
+        const height = blockHeights[index];
+        return { x: 0, y: top, top, right: 800, bottom: top + height, left: 0, width: 800, height, toJSON: () => ({}) };
+      }
+      if (this.classList?.contains('target-child')) {
+        const top = 100 + blockOffset(5) + 600 - targetScroller.scrollTop;
+        return { x: 0, y: top, top, right: 800, bottom: top + 40, left: 0, width: 800, height: 40, toJSON: () => ({}) };
+      }
+      return { x: 0, y: 0, top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0, toJSON: () => ({}) };
+    });
+    const targetWrapper = mount(VirtualTranscript, {
+      props: { items: turns(12, 'block'), estimateHeight: () => 1000, itemGap: 0, overscan: 1 },
+      slots: {
+        default: ({ item }) => Vue.h('div', { 'data-turn-id': item.id }, [
+          item.id,
+          item.id === 'block-5' ? Vue.h('div', { class: 'target-child' }, 'persisted row') : null,
+        ]),
+      },
+      attachTo: targetScroller,
+    });
+    await Vue.nextTick();
+    await flushRafs();
+    await flushRafs();
+    const predecessorBlock = targetWrapper.get('[data-virtual-id="block-4"]').element;
+    const targetBlock = targetWrapper.get('[data-virtual-id="block-5"]').element;
+    const child = targetWrapper.get('.target-child').element;
+    expect(targetWrapper.vm.anchorTarget('block-5', child, { align: 'start' })).toBe(true);
+    expect(targetScroller.scrollTop).toBe(5600);
+
+    // Target-only growth after the child does not move the persisted row.
+    blockHeights[5] = 1100;
+    resizeCallback([{ target: targetBlock }]);
+    await flushRafs();
+    await Vue.nextTick();
+    await flushRafs();
+    expect(targetScroller.scrollTop).toBe(5600);
+    expect(child.getBoundingClientRect().top).toBe(targetScroller.getBoundingClientRect().top);
+
+    // Predecessor-only growth still uses the generic content-anchor delta.
+    blockHeights[4] = 1100;
+    resizeCallback([{ target: predecessorBlock }]);
+    await flushRafs();
+    await Vue.nextTick();
+    await flushRafs();
+    expect(targetScroller.scrollTop).toBe(5700);
+    expect(child.getBoundingClientRect().top).toBe(targetScroller.getBoundingClientRect().top);
+
+    // If the predecessor and active target resize in one observer batch, target
+    // realignment owns the final scroll. Adding anchorDelta again would yield
+    // 5900 and push the persisted row 100px above the viewport.
+    blockHeights[4] = 1200;
+    blockHeights[5] = 1200;
+    resizeCallback([{ target: predecessorBlock }, { target: targetBlock }]);
+    await flushRafs();
+    await Vue.nextTick();
+    await flushRafs();
+    expect(targetScroller.scrollTop).toBe(5800);
+    expect(child.getBoundingClientRect().top).toBe(targetScroller.getBoundingClientRect().top);
+
+    // scrollToKey explicitly transfers ownership back to the aggregate block.
+    expect(await targetWrapper.vm.scrollToKey('block-5', { align: 'start' })).toBe(true);
+    await Vue.nextTick();
+    expect(targetScroller.scrollTop).toBe(5200);
+    expect(targetBlock.getBoundingClientRect().top).toBe(targetScroller.getBoundingClientRect().top);
+
+    blockHeights[4] = 1300;
+    blockHeights[5] = 1300;
+    resizeCallback([{ target: predecessorBlock }, { target: targetBlock }]);
+    await flushRafs();
+    await Vue.nextTick();
+    await flushRafs();
+    expect(targetScroller.scrollTop).toBe(5300);
+    expect(targetBlock.getBoundingClientRect().top).toBe(targetScroller.getBoundingClientRect().top);
+    targetWrapper.unmount();
+    targetScroller.remove();
+  });
+
+
+
+
+});

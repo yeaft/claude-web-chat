@@ -22,7 +22,8 @@ window.Pinia = {
 const App = {
   components: { LoginPage, ChatPage, YeaftPage },
   template: `
-    <LoginPage v-if="!authStore.isAuthenticated" />
+    <div v-if="!authStore.initialized" class="auth-bootstrap" aria-busy="true"><span class="session-loading-spinner"></span></div>
+    <LoginPage v-else-if="!authStore.isAuthenticated" />
     <template v-else>
       <YeaftPage v-if="chatStore.currentView === 'yeaft'" />
       <ChatPage v-else />
@@ -38,35 +39,19 @@ const App = {
     // Setup visibility handler for mobile app switching
     chatStore.setupVisibilityHandler();
 
-    // Check auth mode and try to restore session
-    Vue.onMounted(async () => {
-      await authStore.checkAuthMode();
+    Vue.onMounted(() => {
+      authStore.initialize();
+    });
 
-      // Consume an in-progress SSO callback (if the URL is /#/sso-complete?...)
-      // before falling back to the stored token.
-      let ssoConsumed = false;
-      if (typeof authStore.consumeSsoRedirect === 'function') {
-        ssoConsumed = authStore.consumeSsoRedirect();
-      }
-
-      // Try to restore session from stored token (if not already authenticated via skip auth or SSO)
-      if (!authStore.isAuthenticated && !ssoConsumed) {
-        await authStore.restoreSession();
-      }
-
-      // If authenticated (skip auth mode or restored session), connect WebSocket
-      if (authStore.isAuthenticated) {
+    Vue.watch(
+      () => authStore.initialized && authStore.isAuthenticated,
+      (isReady) => {
+        if (!isReady) return;
         console.log('[App] Authenticated, connecting WebSocket...');
         chatStore.connect();
-      }
-    });
-
-    // Watch for authentication changes
-    Vue.watch(() => authStore.isAuthenticated, (isAuth) => {
-      if (isAuth) {
-        chatStore.connect();
-      }
-    });
+      },
+      { immediate: true }
+    );
 
     return {
       authStore,

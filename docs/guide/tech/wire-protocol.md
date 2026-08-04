@@ -237,7 +237,7 @@ A user may have multiple agents online. Server uses `session-pin-router.js` to b
 ### Inspect raw wire
 Browser DevTools → Network → WS → select WebSocket connection → Messages tab to see every envelope.
 
-Agent side: set `"debug": true` in `~/.yeaft/config.json` to verbose-log Yeaft engine events to the Agent stdout. Connection-level WebSocket traffic is logged by the Agent's connection layer regardless.
+Agent side: set `"debug": true` in the selected Agent instance's resolved `config.json` to verbose-log Yeaft engine events to the Agent stdout. Connection-level WebSocket traffic is logged by the Agent's connection layer regardless.
 
 ### Inspect envelope translation
 The Web Debug panel for each turn has a "raw envelope log" — including provider's original events before translation + translated envelopes.

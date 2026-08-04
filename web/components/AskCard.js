@@ -3,7 +3,7 @@
  * Used by Chat mode (AssistantTurn).
  *
  * Props:
- *   askMsg   — the ask message object (askRequestId, askQuestions, toolInput, askAnswered, selectedAnswers)
+ *   askMsg   — the ask message object (request, question, submitted, and confirmed answer state)
  *  *
  * Events:
  *   submit(requestId, answers) — user submitted answers
@@ -17,7 +17,7 @@ export default {
   emits: ['submit'],
   template: `
     <div class="ask-card-wrapper">
-      <!-- Collapsed summary for answered questions -->
+      <!-- Collapsed summary after submission; history later confirms the answer. -->
       <div v-if="isAnswered" class="ask-summary">
         <span class="ask-summary-icon">✓</span>
         <span class="ask-summary-text">{{ summaryText }}</span>
@@ -102,13 +102,10 @@ export default {
   setup(props, { emit }) {
     const selectedOptions = Vue.reactive({});
     const customAnswers = Vue.reactive({});
-    const localAnswered = Vue.ref(false);
-    const localAnswers = Vue.ref(null);
 
     const isAnswered = Vue.computed(() => {
-      if (localAnswered.value) return true;
       const ask = props.askMsg;
-      return ask && (!!ask.askAnswered || !!ask.selectedAnswers);
+      return ask && (!!ask.askAnswered || !!ask.selectedAnswers || !!ask.askPending);
     });
 
     const isExpired = Vue.computed(() => {
@@ -164,7 +161,7 @@ export default {
     });
 
     const submitAnswers = () => {
-      if (isAnswered.value || !hasAnySelection.value) return;
+      if (isAnswered.value || props.askMsg.askPending || !hasAnySelection.value) return;
       const qs = questions.value;
       const answers = {};
       for (const q of qs) {
@@ -183,12 +180,10 @@ export default {
       const requestId = props.askMsg.askRequestId;
       if (!requestId) return;
       emit('submit', requestId, answers);
-      localAnswered.value = true;
-      localAnswers.value = answers;
     };
 
     const summaryText = Vue.computed(() => {
-      const answers = localAnswers.value || props.askMsg?.selectedAnswers;
+      const answers = props.askMsg?.selectedAnswers || props.askMsg?.pendingAnswers;
       if (!answers) return '';
       const values = Object.values(answers).filter(v => v && v !== '-');
       return values.join(', ');

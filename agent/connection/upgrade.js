@@ -1,10 +1,20 @@
 import { execFile, execFileSync, spawn } from 'child_process';
-import { writeFileSync, mkdirSync, existsSync, cpSync } from 'fs';
-import { join, dirname } from 'path';
+import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
+import { join, dirname } from 'path';
 import { platform, homedir } from 'os';
 import ctx from '../context.js';
 import { getConfigDir, getServiceName, getPm2AppName, getLaunchdPlistPath, DEFAULT_INSTANCE_ID } from '../service.js';
+import {
+  buildUpgradeInstallCommand,
+  buildUpgradeMetadataArgs,
+  createWindowsUpgradeRun,
+  launchWindowsUpgradeScript,
+  prepareWindowsUpgradeRunner,
+  releaseWindowsUpgradeLock,
+  resolveWindowsNpmCliPath,
+  resolveWindowsPm2CliPath,
+} from '../upgrade-command.js';
 import { sendToServer } from './buffer.js';
 import { stopAgentHeartbeat } from './heartbeat.js';
 
@@ -39,24 +49,6 @@ const shellOpt = isWin ? { shell: true, windowsHide: true } : {};
 const currentPath = process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin';
 const safePath = currentPath.includes(nodeBinDir) ? currentPath : `${nodeBinDir}:${currentPath}`;
 const safeEnv = { ...process.env, PATH: safePath };
-export const PUBLIC_NPM_REGISTRY = 'https://registry.npmjs.org/';
-
-/**
- * Build an npm metadata query that bypasses stale local metadata and registry
- * mirrors. Upgrade decisions must use the package actually published to the
- * public registry, not a cached `latest` value from a previous release.
- */
-export function buildNpmMetadataArgs(packageSpec, field) {
-  return [
-    'view',
-    packageSpec,
-    field,
-    `--registry=${PUBLIC_NPM_REGISTRY}`,
-    '--prefer-online',
-    '--prefer-offline=false',
-    '--offline=false',
-  ];
-}
 
 /** Return true only when `latestVersion` is semantically newer. */
 export function isUpgradeAvailable(currentVersion, latestVersion) {
@@ -64,11 +56,6 @@ export function isUpgradeAvailable(currentVersion, latestVersion) {
   const latest = parseSemver(latestVersion);
   if (!current || !latest) return currentVersion !== latestVersion;
   return cmpTuple(latest, current) > 0;
-}
-
-/** Build the Windows worker invocation with the same registry used for metadata. */
-export function buildWindowsWorkerCommand(nodePath) {
-  return `"${nodePath.replace(/\//g, '\\')}" "%WORKER%" "%PKG%" "%PKG_DIR%" "%LOGFILE%" "${PUBLIC_NPM_REGISTRY}"`;
 }
 
 // Shared cleanup logic for restart/upgrade
@@ -119,7 +106,7 @@ async function fetchRequiredNodeRange(pkgName, version) {
     const stdout = await new Promise((resolve, reject) => {
       execFile(
         npmPath,
-        buildNpmMetadataArgs(`${pkgName}@${version}`, 'engines.node'),
+        buildUpgradeMetadataArgs(`${pkgName}@${version}`, 'engines.node'),
         { stdio: 'pipe', env: safeEnv, ...shellOpt },
         (err, out) => { if (err) reject(err); else resolve(out.toString().trim()); },
       );
@@ -191,10 +178,10 @@ export async function handleUpgradeAgent() {
   console.log('[Agent] Upgrade requested, checking for updates...');
   try {
     const pkgName = ctx.pkgName || '@yeaft/webchat-agent';
-    // Force a public-registry refresh so stale Windows npm metadata or a lagging
-    // registry mirror cannot report the installed version as the latest one.
+    // Force an online refresh from the company-approved Yeaft registry instead
+    // of inheriting a blocked or stale registry from the user's npm config.
     const latestVersion = await new Promise((resolve, reject) => {
-      execFile(npmPath, buildNpmMetadataArgs(`${pkgName}@latest`, 'version'), { stdio: 'pipe', env: safeEnv, ...shellOpt }, (err, stdout) => {
+      execFile(npmPath, buildUpgradeMetadataArgs(`${pkgName}@latest`, 'version'), { stdio: 'pipe', env: safeEnv, ...shellOpt }, (err, stdout) => {
         if (err) reject(err); else resolve(stdout.toString().trim());
       });
     });
@@ -260,15 +247,15 @@ export async function handleUpgradeAgent() {
       await spawnUnixUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion, instanceId);
     }
 
-    // On PM2: delete the app BEFORE exiting so PM2 won't auto-restart the old version.
-    // The upgrade script will re-register it with `pm2 start <ecosystem>` after replacing files.
+    // On Windows the detached runner removes the PM2 app only after this
+    // process exits. Unix keeps the existing pre-exit service-manager behavior.
     const isPm2 = !!process.env.pm_id;
-    if (isPm2) {
+    if (!isWindows && isPm2) {
       try {
         execFileSync(pm2Path, ['delete', getPm2AppName(instanceId)], { stdio: 'pipe', env: safeEnv, ...shellOpt });
-        console.log(`[Agent] PM2 app deleted to prevent auto-restart during upgrade`);
+        console.log('[Agent] PM2 app deleted to prevent auto-restart during upgrade');
       } catch {
-        console.log(`[Agent] PM2 delete skipped (app may not be registered)`);
+        console.log('[Agent] PM2 delete skipped (app may not be registered)');
       }
     }
 
@@ -281,127 +268,84 @@ export async function handleUpgradeAgent() {
 }
 
 async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion, instanceId = DEFAULT_INSTANCE_ID) {
-  const pid = process.pid;
   const configDir = getConfigDir(instanceId);
-  mkdirSync(configDir, { recursive: true });
+  const upgradeDir = join(configDir, 'upgrade-runtime');
   const logDir = join(configDir, 'logs');
   mkdirSync(logDir, { recursive: true });
-  const batPath = join(configDir, 'upgrade.bat');
-  const vbsPath = join(configDir, 'upgrade.vbs');
+
   const logPath = join(logDir, 'upgrade.log');
+  const ecosystemPath = join(configDir, 'ecosystem.config.cjs');
+  const npmCliPath = resolveWindowsNpmCliPath(process.execPath);
+  if (!npmCliPath) throw new Error('npm JavaScript CLI entry point could not be resolved');
   const isPm2 = !!process.env.pm_id;
-  const installDirWin = installDir.replace(/\//g, '\\');
-  const ecoPath = join(configDir, 'ecosystem.config.cjs').replace(/\//g, '\\');
-
-  // Copy upgrade-worker-template.js to config dir (runs as CJS there, away from ESM context)
-  const thisDir = dirname(fileURLToPath(import.meta.url));
-  const workerSrc = join(thisDir, 'upgrade-worker-template.js');
-  const workerDst = join(configDir, 'upgrade-worker.js');
-  cpSync(workerSrc, workerDst);
-
-  // Determine the target package directory inside node_modules
-  const pkgDir = join(installDir, 'node_modules', ...pkgName.split('/')).replace(/\//g, '\\');
-
-  const pm2Win = pm2Path.replace(/\//g, '\\');
-
-  const batLines = [
-    '@echo off',
-    'setlocal',
-    `set PID=${pid}`,
-    `set PKG=${pkgName}@${latestVersion}`,
-    `set INSTALL_DIR=${installDirWin}`,
-    `set PKG_DIR=${pkgDir}`,
-    `set LOGFILE=${logPath}`,
-    `set WORKER=${workerDst}`,
-    `set MAX_WAIT=30`,
-    `set COUNT=0`,
-    '',
-    ':: Change to temp dir to avoid EBUSY on cwd',
-    'cd /d "%TEMP%"',
-    '',
-    'echo [Upgrade] Started at %date% %time% > "%LOGFILE%"',
-    `echo [Upgrade] Version: ${ctx.agentVersion} -> ${latestVersion} >> "%LOGFILE%"`,
-    `echo [Upgrade] PM2 managed: ${isPm2 ? 'yes (deleted pre-exit)' : 'no'} >> "%LOGFILE%"`,
-    `echo [Upgrade] Install dir: ${installDirWin} >> "%LOGFILE%"`,
-  ];
-
-  // Wait for old process to exit (PM2 already deleted before exit, so no auto-restart race)
-  batLines.push(
-    'echo [Upgrade] Waiting for PID %PID% to exit... >> "%LOGFILE%"',
-    ':WAIT_LOOP',
-    'tasklist /FI "PID eq %PID%" /NH 2>NUL | findstr /C:"%PID%" >NUL',
-    'if errorlevel 1 goto PID_EXITED',
-    'set /A COUNT+=1',
-    'if %COUNT% GEQ %MAX_WAIT% (',
-    '  echo [Upgrade] Timeout waiting for PID %PID% to exit after %MAX_WAIT%s >> "%LOGFILE%"',
-    '  goto PID_EXITED',
-    ')',
-    'ping -n 3 127.0.0.1 >NUL',
-    'goto WAIT_LOOP',
-    ':PID_EXITED',
-  );
-
-  // No need to pm2 stop — PM2 app was already deleted before process exit.
-  // Wait extra time for file locks to fully release.
-  batLines.push(
-    'echo [Upgrade] Process exited at %time%, waiting for file locks... >> "%LOGFILE%"',
-    'ping -n 5 127.0.0.1 >NUL',
-  );
-
-  // Use Node.js worker for file-level upgrade (avoids EBUSY on directory rename)
-  batLines.push(
-    'echo [Upgrade] Running upgrade worker at %time%... >> "%LOGFILE%"',
-    buildWindowsWorkerCommand(process.execPath),
-    'if not "%errorlevel%"=="0" (',
-    '  echo [Upgrade] Worker failed with exit code %errorlevel% at %time% >> "%LOGFILE%"',
-    '  goto CLEANUP',
-    ')',
-    'echo [Upgrade] Worker completed successfully at %time% >> "%LOGFILE%"',
-  );
-
-  batLines.push(':CLEANUP');
-
-  if (isPm2) {
-    // Re-register and start via ecosystem config (PM2 app was deleted pre-exit)
-    batLines.push(
-      'echo [Upgrade] Re-registering agent via PM2... >> "%LOGFILE%"',
-      `if exist "${ecoPath}" (`,
-      `  call "${pm2Win}" start "${ecoPath}" >> "%LOGFILE%" 2>&1`,
-      `  call "${pm2Win}" save >> "%LOGFILE%" 2>&1`,
-      '  echo [Upgrade] PM2 app re-registered at %time% >> "%LOGFILE%"',
-      ') else (',
-      '  echo [Upgrade] WARNING: ecosystem.config.cjs not found, PM2 not restarted >> "%LOGFILE%"',
-      ')',
-    );
+  const pm2CliPath = isPm2 ? resolveWindowsPm2CliPath(process.execPath) : null;
+  if (isPm2 && !pm2CliPath) {
+    throw new Error('PM2 manages this Agent, but its JavaScript CLI entry point could not be resolved');
   }
 
-  // Clean up worker, vbs launcher, and bat script
-  batLines.push(
-    '',
-    'echo [Upgrade] Finished at %time% >> "%LOGFILE%"',
-    `del /F /Q "${workerDst}" 2>NUL`,
-    `del /F /Q "${vbsPath}" 2>NUL`,
-    `del /F /Q "${batPath}"`,
-  );
+  const run = createWindowsUpgradeRun(upgradeDir);
+  const {
+    runId,
+    lockPath,
+    bootstrapPath,
+    runnerPath,
+    commandPath,
+    payloadPath,
+    handoffPath,
+    authorizePath,
+    cancelPath,
+  } = run;
+  const payload = {
+    runId,
+    lockPath,
+    parentPid: process.pid,
+    packageSpec: `${pkgName}@${latestVersion}`,
+    globalInstall: isGlobalInstall,
+    installDir,
+    logPath,
+    handoffPath,
+    authorizePath,
+    cancelPath,
+    bootstrapPath,
+    runnerPath,
+    commandPath,
+    payloadPath,
+    nodePath: process.execPath,
+    npmCliPath,
+    pm2CliPath,
+    pm2AppName: isPm2 ? getPm2AppName(instanceId) : null,
+    ecosystemPath: isPm2 ? ecosystemPath : null,
+  };
+  try {
+    prepareWindowsUpgradeRunner({
+      sourceBootstrapPath: fileURLToPath(new URL('../windows-upgrade-bootstrap.js', import.meta.url)),
+      sourceRunnerPath: fileURLToPath(new URL('../windows-upgrade-runner.js', import.meta.url)),
+      sourceCommandPath: fileURLToPath(new URL('../upgrade-command.js', import.meta.url)),
+      bootstrapPath,
+      runnerPath,
+      commandPath,
+      payloadPath,
+      payload,
+    });
+  } catch (err) {
+    releaseWindowsUpgradeLock(lockPath, runId);
+    throw err;
+  }
 
-  writeFileSync(batPath, batLines.join('\r\n'));
-
-  // Use VBScript wrapper to fully detach the bat process from the parent.
-  // WshShell.Run with 0 (hidden window) and False (don't wait) ensures the bat
-  // runs completely independently — survives parent exit, no console window flash.
-  const vbsLines = [
-    'Set WshShell = CreateObject("WScript.Shell")',
-    `WshShell.Run """${batPath}""", 0, False`,
-  ];
-  writeFileSync(vbsPath, vbsLines.join('\r\n'));
-
-  spawn('wscript.exe', [vbsPath], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  }).unref();
-
-  console.log(`[Agent] Spawned upgrade via VBScript (PID wait for ${pid}, pm2=${isPm2}, dir=${installDir}): ${batPath}`);
+  const launcher = await launchWindowsUpgradeScript({
+    runId,
+    nodePath: process.execPath,
+    bootstrapPath,
+    runnerPath,
+    payloadPath,
+    logPath,
+    handoffPath,
+    authorizePath,
+    cancelPath,
+    lockPath,
+    spawnProcess: spawn,
+  });
+  console.log(`[Agent] Spawned Windows upgrade runner via ${launcher} (pm2=${isPm2}, dir=${installDir})`);
   await sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion, pendingRestart: true });
 }
 
@@ -463,7 +407,6 @@ export function buildUnixUpgradeScript({
     '#!/bin/bash',
     `PID=${pid}`,
     `PKG="${pkgName}@${targetVersion}"`,
-    `REGISTRY="${PUBLIC_NPM_REGISTRY}"`,
     `NPM="${npmPath}"`,
     `LOGFILE="${join(configDir, 'logs', 'upgrade.log')}"`,
     `export PATH="${safePath}"`,
@@ -517,9 +460,10 @@ export function buildUnixUpgradeScript({
   }
 
   // npm install (use absolute path via $NPM variable)
+  const npmArgs = buildUpgradeInstallCommand('"$PKG"', { global: isGlobalInstall });
   const npmCmd = isGlobalInstall
-    ? `"$NPM" install -g "$PKG" --registry="$REGISTRY"`
-    : `cd "$INSTALL_DIR" && "$NPM" install "$PKG" --registry="$REGISTRY"`;
+    ? npmArgs.replace(/^npm /, '"$NPM" ')
+    : `cd "$INSTALL_DIR" && ${npmArgs.replace(/^npm /, '"$NPM" ')}`;
 
   shLines.push(
     'echo "[Upgrade] Installing $PKG..."',

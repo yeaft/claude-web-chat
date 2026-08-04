@@ -23,12 +23,13 @@ import SidebarModeToggle from './SidebarModeToggle.js';
 import SidebarAgentHeader from './SidebarAgentHeader.js';
 import SidebarWorkCenter from './SidebarWorkCenter.js';
 import SessionSidebarShell from './SessionSidebarShell.js';
+import UnifiedSessionList from './UnifiedSessionList.js';
 import { shortenPath } from '../utils/path-display.js';
 import { buildYeaftSidebarSessionList } from '../stores/helpers/yeaft-sidebar-sessions.js';
 
 export default {
   name: 'YeaftSidebar',
-  components: { SessionCreateModal, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell },
+  components: { SessionCreateModal, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell, UnifiedSessionList },
   emits: ['select-group', 'select-chat', 'toggle-sidebar', 'back', 'open-settings', 'open-group-settings'],
   template: `
     <SessionSidebarShell class="yeaft-sidebar" :collapsed="collapsed">
@@ -67,7 +68,10 @@ export default {
             @upgrade-agent="upgradeAgent"
           />
           <div class="sidebar-header-actions">
-            <SidebarModeToggle view="yeaft" @flip="onModeFlip" />
+            <SidebarModeToggle v-if="!chatStore || !chatStore.sessionCatalogLoaded" view="yeaft" @flip="onModeFlip" />
+            <button class="sidebar-icon-btn sidebar-work-center-header-btn" :class="{ active: chatStore && chatStore.workCenterOpen }" :disabled="workCenterAgents.length === 0" :title="tr('workCenter.title', 'Work Center')" :aria-label="tr('workCenter.title', 'Work Center')" @click="onOpenWorkCenter()">
+              <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>
+            </button>
             <button class="sidebar-icon-btn" :title="tr('chat.sidebar.collapse', 'Collapse')" @click="$emit('toggle-sidebar')">
               <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 18h13v-2H3v2zm0-5h10v-2H3v2zm0-7v2h13V6H3zm18 9.59L17.42 12 21 8.41 19.59 7l-5 5 5 5L21 15.59z"/></svg>
             </button>
@@ -78,17 +82,32 @@ export default {
         </div>
       </div>
 
-      <SidebarWorkCenter
-        :agents="chatStore ? chatStore.agents : []"
-        :active-agent-id="chatStore ? chatStore.workCenterAgentId : null"
-        :collapsed="false"
-        :active="chatStore ? chatStore.workCenterOpen : false"
-        @open="onOpenWorkCenter"
+      <UnifiedSessionList
+        v-if="chatStore && chatStore.sessionCatalogLoaded"
+        :sessions="chatStore.sessionCatalog"
+        :project-store="chatStore"
+        :active-route="chatStore.activeSessionRoute"
+        :is-session-unread="isCatalogSessionUnread"
+        :processing-conversations="chatStore.processingConversations"
+        :is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"
+        :agents="chatStore.agents"
+        :work-center-open="chatStore.workCenterOpen"
+        @select="chatStore.openCatalogSession"
+        @create="onUnifiedCreate"
+        @create-in-project="onUnifiedCreateInProject"
+        @close-work-center="chatStore.leaveWorkCenter"
+        @action="onUnifiedSessionAction"
       />
 
-      <div class="us-scroll us-scroll-flush">
-        <!-- Parity with Chat sidebar: session-tab-bar (single Chat tab,
-             session-item rows reusing sidebar.css classes. -->
+      <div v-else class="us-scroll us-scroll-flush">
+        <!-- Legacy Yeaft list stays available until the catalog snapshot arrives. -->
+        <SidebarWorkCenter
+          :agents="chatStore ? chatStore.agents : []"
+          :active-agent-id="chatStore ? chatStore.workCenterAgentId : null"
+          :collapsed="false"
+          :active="chatStore ? chatStore.workCenterOpen : false"
+          @open="onOpenWorkCenter"
+        />
         <div class="session-tab-bar">
           <div class="session-tab session-tab-solo active">
             <svg class="session-tab-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
@@ -113,7 +132,7 @@ export default {
                 v-for="s in sessionList"
                 :key="s.kind + ':' + sessionDragKey(s.raw)"
                 class="session-item yeaft-session-draggable"
-                :class="{ active: s.active, pinned: s.pinned, processing: s.processing || isSessionProcessing(s.id), dragging: draggedSessionKey === sessionDragKey(s.raw), 'drag-over': dragOverSessionKey === sessionDragKey(s.raw) }"
+                :class="{ active: s.active, pinned: s.pinned, processing: s.processing || isSessionProcessing(s.id, s.raw?.agentId || null), dragging: draggedSessionKey === sessionDragKey(s.raw), 'drag-over': dragOverSessionKey === sessionDragKey(s.raw) }"
                 draggable="true"
                 @dragstart="onSessionDragStart(s.raw, $event)"
                 @dragover.prevent="onSessionDragOver(s.raw, $event)"
@@ -125,7 +144,8 @@ export default {
               >
                 <div class="session-item-header">
                   <span v-if="s.pinned" class="session-pin-icon"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg></span>
-                  <span v-if="s.processing || isSessionProcessing(s.id)" class="processing-dot"></span>
+                  <span v-if="chatStore && chatStore.isYeaftSessionUnread(s.id, s.raw.agentId)" class="unread-dot" aria-hidden="true"></span>
+                  <span v-else-if="s.processing || isSessionProcessing(s.id, s.raw?.agentId || null)" class="processing-dot" aria-hidden="true"></span>
                   <div class="title" :title="groupDisplayName(s.raw)">
                     <span>{{ groupDisplayName(s.raw) }}</span>
                   </div>
@@ -175,7 +195,8 @@ export default {
            new-conversation modal. -->
       <SessionCreateModal
         v-if="sessionCreateOpen"
-        @close="sessionCreateOpen = false"
+        :initial-agent-id="sessionCreateProject?.legacyAgentId || null"
+        @close="closeSessionCreate"
         @created="onSessionCreated"
       />
 
@@ -207,6 +228,7 @@ export default {
       // both "create new" and "restore from disk" — the standalone
       // sessionRestoreOpen flag + SessionRestoreModal are gone.
       sessionCreateOpen: false,
+      sessionCreateProject: null,
       // task-yeaft-group-editor: per-row action menu only — the rename
       // and delete modals have been folded into the unified
       // SessionSettingsModal owned by YeaftPage.
@@ -232,6 +254,15 @@ export default {
     } catch (_) { /* no-fetch test env */ }
   },
   mounted() {
+    if (this.chatStore?.openUnifiedSessionCreate) {
+      this.chatStore.openUnifiedSessionCreate = false;
+      this.sessionCreateOpen = true;
+    }
+    if (this.chatStore?.pendingUnifiedSessionSettings) {
+      const pending = this.chatStore.pendingUnifiedSessionSettings;
+      this.chatStore.pendingUnifiedSessionSettings = null;
+      this.openGroupSettings({ id: pending.sessionId, agentId: pending.agentId }, pending.section || 'session');
+    }
     this._agentUpgradeAckHandler = (e) => {
       const { agentId, success, error, alreadyLatest, version, reason, currentNode, requiredNode } = e.detail || {};
       if (!agentId) return;
@@ -299,11 +330,17 @@ export default {
     activeSessionId() {
       return this.chatStore?.yeaftActiveSessionFilter || this.sessionsStore?.activeSessionId || null;
     },
+    activeSessionKey() {
+      const activeKey = this.sessionsStore?.activeSessionKey || null;
+      const activeRow = activeKey ? this.sessionsStore?.sessions?.[activeKey] : null;
+      return activeRow?.id === this.activeSessionId ? activeKey : null;
+    },
     // Phase 4: chat container removed. Session list is just sessions now.
     sessionList() {
       return buildYeaftSidebarSessionList({
         sessions: this.sessionsStore?.sessionList || [],
         activeSessionId: this.activeSessionId,
+        activeSessionKey: this.activeSessionKey,
         pinnedSessionIds: this.chatStore?.pinnedSessions || [],
         onlineAgentIds: Array.isArray(this.onlineAgents)
           ? this.onlineAgents.map(agent => agent.id)
@@ -332,6 +369,9 @@ export default {
     },
     onlineAgentCount() {
       return this.onlineAgents.length;
+    },
+    workCenterAgents() {
+      return this.onlineAgents.filter(agent => Array.isArray(agent.capabilities) && agent.capabilities.includes('work_center'));
     },
     currentAgentName() {
       const s = this.chatStore || this.store;
@@ -381,11 +421,18 @@ export default {
       }
       return fallback;
     },
-    isSessionProcessing(sessionId) {
+    isSessionProcessing(sessionId, agentId = null) {
       const s = this.chatStore || this.store;
       if (!s || !sessionId) return false;
-      if (typeof s.isYeaftSessionProcessing === 'function') return s.isYeaftSessionProcessing(sessionId);
-      return !!s.yeaftProcessingSessions?.[sessionId];
+      return typeof s.isYeaftSessionProcessing === 'function'
+        ? s.isYeaftSessionProcessing(sessionId, agentId)
+        : false;
+    },
+    isCatalogSessionUnread(row) {
+      if (row?.runtimeProvider !== 'yeaft') return false;
+      const s = this.chatStore || this.store;
+      if (!s || typeof s.isYeaftSessionUnread !== 'function') return false;
+      return s.isYeaftSessionUnread(row.routeRef?.sessionId, row.routeRef?.agentId);
     },
     // task-341: workbench toggle, guarded for test env.
     onToggleWorkbench() {
@@ -399,9 +446,12 @@ export default {
         this.$emit('back');
       }
     },
-    onOpenWorkCenter(agentId) {
+    onOpenWorkCenter(agentId = null) {
       const s = this.chatStore || this.store;
-      if (s && typeof s.enterWorkCenter === 'function') s.enterWorkCenter(agentId);
+      const target = this.workCenterAgents.find(agent => agent.id === agentId)
+        || this.workCenterAgents.find(agent => agent.id === s?.workCenterAgentId)
+        || this.workCenterAgents[0];
+      if (target && s && typeof s.enterWorkCenter === 'function') s.enterWorkCenter(target.id);
     },
     // task-334m: session-create + selection handlers.
     onGroupCreated(_group) {
@@ -412,9 +462,55 @@ export default {
     // "Restore from disk" panel, so onOpenSessionRestore +
     // onSessionRestored are gone (folded into SessionCreateModal's own
     // `created` flow).
-    onOpenSessionCreate() { this.sessionCreateOpen = true; },
-    onSessionCreated(_group) {
-      // groups store auto-activates via applyCrudResult; modal closes itself.
+    onOpenSessionCreate() {
+      this.sessionCreateProject = null;
+      this.sessionCreateOpen = true;
+    },
+    onUnifiedCreate() { this.onOpenSessionCreate(); },
+    onUnifiedCreateInProject({ project } = {}) {
+      if (!project?.id) return;
+      this.sessionCreateProject = project;
+      this.sessionCreateOpen = true;
+    },
+    closeSessionCreate() {
+      this.sessionCreateOpen = false;
+      this.sessionCreateProject = null;
+    },
+    onUnifiedSessionAction({ action, row, title, sessions } = {}) {
+      if (!row?.routeRef) return;
+      const s = this.chatStore || this.store;
+      const { runtimeProvider, agentId, sessionId } = row.routeRef;
+      if (action === 'rename') {
+        s?.renameCatalogSession?.({ row, title });
+      } else if (action === 'reorder') {
+        s?.reorderCatalogSessions?.(sessions);
+      } else if (action === 'pin') {
+        s?.toggleCatalogSessionPin?.(row);
+      } else if (runtimeProvider === 'yeaft' && action === 'settings') {
+        this.openGroupSettings({ id: sessionId, agentId }, 'session');
+      } else if (runtimeProvider === 'yeaft' && action === 'remove') {
+        this.onRemoveFromList({ id: sessionId, agentId });
+      } else if (action === 'remove') {
+        if (confirm(this.$t('chat.delete.confirm'))) {
+          s?.leaveYeaft?.();
+          s?.closeSession?.(sessionId, agentId);
+        }
+      }
+    },
+    async onSessionCreated(session) {
+      const project = this.sessionCreateProject;
+      this.closeSessionCreate();
+      if (!project || !session?.id) return;
+      const store = this.chatStore || this.store;
+      const agentId = session.agentId || project.legacyAgentId || store?.currentAgent || null;
+      const result = await store?.mutateProject?.('move_session', {
+        sessionId: session.id,
+        projectId: project.legacyProjectId || project.id,
+      }, agentId);
+      if (!result?.ok) {
+        const message = result?.error?.message || result?.error?.code || 'unknown';
+        alert(this.$t('sidebar.projects.assignFailed', { name: project.name, message }));
+      }
     },
     onSelectGroup(g) {
       if (!g || !g.id) return;
@@ -436,7 +532,8 @@ export default {
       this.$emit('select-group', g);
     },
     sessionDragKey(g) {
-      return g && g.agentId && g.id ? `${g.agentId}\u001f${g.id}` : '';
+      if (!g || !g.id) return '';
+      return g.agentId ? `${g.agentId}\u001f${g.id}` : `legacy\u001f${g.id}`;
     },
     onSessionDragStart(g, evt) {
       const key = this.sessionDragKey(g);

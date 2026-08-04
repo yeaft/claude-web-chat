@@ -5,6 +5,7 @@ import { execSync, spawn } from 'child_process';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { getConfigDir, getLogDir, getNodePath, getCliPath, getPm2AppName, loadServiceConfig, DEFAULT_INSTANCE_ID } from './config.js';
+import { buildUpgradeInstallCommand } from '../upgrade-command.js';
 
 const WIN_TASK_NAME = 'YeaftAgent';
 
@@ -17,7 +18,7 @@ function ensurePm2() {
     execSync('pm2 --version', { stdio: 'pipe' });
   } catch {
     console.log('Installing pm2...');
-    execSync('npm install -g pm2', { stdio: 'inherit' });
+    execSync(buildUpgradeInstallCommand('pm2'), { stdio: 'inherit' });
   }
 }
 

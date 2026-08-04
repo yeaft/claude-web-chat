@@ -6,6 +6,7 @@ import { normalizeRouteForwardDisplay } from '../utils/route-forward-display.js'
 import { getTodoDisplayState } from '../utils/todo-display-state.js';
 import { renderMermaidIn } from '../utils/markdown.js';
 import { openImagePreview } from '../utils/imagePreview.js';
+import { formatSessionMessageDateTime, quoteFromAssistantTurn } from '../utils/session-message-quote.js';
 
 export default {
   name: 'AssistantTurn',
@@ -51,9 +52,11 @@ export default {
     responseToggleLabel: {
       type: String,
       default: ''
-    }
+    },
+    sessionActions: { type: Boolean, default: false },
+    quoteAuthor: { type: String, default: '' }
   },
-  emits: ['update-actions-expanded', 'update-tool-expanded', 'toggle-response-collapse'],
+  emits: ['update-actions-expanded', 'update-tool-expanded', 'toggle-response-collapse', 'quote'],
   template: `
     <div class="assistant-turn" ref="turnRef" :class="{ streaming: turn.isStreaming, 'has-vp-speaker': !!turn.speakerVpId }">
       <!-- 0. task-334-ui-b: VP speaker header — only when a speakerVpId is
@@ -72,21 +75,39 @@ export default {
 
       <div class="turn-message-block" :data-turn-id="turn.turnId || ''">
         <!-- 1. Text content -->
-        <div v-if="turn.textContent" class="turn-content">
+        <div v-if="textSegments.length > 0" class="turn-content">
           <div class="turn-header">
             <!-- Session message blocks are keyed by turn/message identity; no thread pill is rendered. -->
             <button class="copy-btn" @click="copyContent" :title="copied ? $t('message.copied') : $t('message.copy')">
-            <svg v-if="!copied" viewBox="0 0 24 24" width="16" height="16">
-              <path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-            </svg>
-            <svg v-else viewBox="0 0 24 24" width="16" height="16">
-              <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
-            </svg>
-          </button>
+              <svg v-if="!copied" viewBox="0 0 24 24" width="16" height="16">
+                <path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+              </svg>
+              <svg v-else viewBox="0 0 24 24" width="16" height="16">
+                <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+              </svg>
+            </button>
+          </div>
+          <div v-if="progressSegments.length > 0" class="turn-progress-group">
+            <div class="turn-progress-list">
+              <div
+                v-for="segment in progressSegments"
+                :key="segment.key"
+                class="turn-response-segment turn-response-progress"
+              >
+                <div class="turn-text markdown-body" v-html="renderSegment(segment.content)"></div>
+                <span v-if="segment.isStreaming" class="cursor-blink"></span>
+              </div>
+            </div>
+          </div>
+          <div
+            v-for="segment in resultSegments"
+            :key="segment.key"
+            class="turn-response-segment turn-response-result"
+          >
+            <div class="turn-text markdown-body" v-html="renderSegment(segment.content)"></div>
+            <span v-if="segment.isStreaming" class="cursor-blink"></span>
+          </div>
         </div>
-        <div class="turn-text markdown-body" v-html="renderedContent"></div>
-        <span v-if="turn.isStreaming" class="cursor-blink"></span>
-      </div>
 
       <!-- 2. VP hand-off messages (RouteForward) -->
       <div v-if="routeMessages.length > 0" class="turn-route-messages">
@@ -152,7 +173,7 @@ export default {
       <!-- 4. Images from Claude response (screenshots, etc.) -->
       <div v-if="turn.imageMsgs && turn.imageMsgs.length > 0" class="turn-images">
         <button v-for="img in turn.imageMsgs" :key="img.assetId || img.id" type="button"
-                class="turn-image-item" @click="imageSrc(img) && openImagePreview(imageSrc(img))">
+                class="turn-image-item" @click="previewImage(img, $event.currentTarget)">
           <img v-if="imageSrc(img) && !failedImages.has(img.assetId || img.id)"
                :src="imageSrc(img)" :alt="img.filename || $t('message.imagePreview')"
                class="chat-screenshot" loading="lazy" decoding="async"
@@ -172,36 +193,36 @@ export default {
       </div>
 
       <!-- 6. Response footer actions (visible on hover) -->
-      <div class="turn-footer" v-if="(turn.textContent || responseCollapsible) && !turn.isStreaming">
+      <div class="turn-footer" v-if="(turn.textContent || responseCollapsible || (sessionActions && (turn.todoMsg || turn.toolMsgs?.length || turn.toolSummaryCount))) && !turn.isStreaming">
         <span
-          v-if="turnTime"
+          v-if="turnTime && !turn.speakerVpId"
           class="turn-time"
           :title="turnTimeFull"
           :aria-label="$t('yeaft.message.timeAria', { time: turnTimeFull })"
         >{{ turnTime }}</span>
-        <button v-if="turn.textContent" class="screenshot-btn" @click="screenshotContent" :title="screenshotting ? $t('message.screenshotting') : $t('message.screenshot')">
+        <button v-if="sessionActions" type="button" class="message-action-btn" @click="$emit('quote', assistantQuote)" :title="$t('message.quote')" :aria-label="$t('message.quote')">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>
+        </button>
+        <button v-if="turn.textContent" class="screenshot-btn" @click="screenshotContent" :title="screenshotting ? $t('message.screenshotting') : $t('message.screenshot')" :aria-label="screenshotting ? $t('message.screenshotting') : $t('message.screenshot')">
           <svg v-if="!screenshotting" viewBox="0 0 24 24" width="14" height="14">
             <path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/>
           </svg>
           <svg v-else class="screenshot-spinner" viewBox="0 0 24 24" width="14" height="14">
             <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" fill="none" stroke-dasharray="30 70" />
           </svg>
-          <span class="screenshot-label">{{ screenshotting ? $t('message.screenshotting') : $t('message.screenshot') }}</span>
         </button>
-        <button v-if="turn.textContent" class="export-md-btn" @click="exportMarkdown" :title="$t('message.exportMd')">
+        <button v-if="turn.textContent" class="export-md-btn" @click="exportMarkdown" :title="$t('message.exportMd')" :aria-label="$t('message.exportMd')">
           <svg viewBox="0 0 24 24" width="14" height="14">
             <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
           </svg>
-          <span class="export-md-label">{{ $t('message.exportMd') }}</span>
         </button>
-        <button v-if="turn.textContent" class="copy-full-btn" @click="copyFullResponse" :title="fullCopied ? $t('message.copied') : $t('message.copyAll')">
+        <button v-if="turn.textContent" class="copy-full-btn" @click="copyFullResponse" :title="fullCopied ? $t('message.copied') : $t('message.copyAll')" :aria-label="fullCopied ? $t('message.copied') : $t('message.copyAll')">
           <svg v-if="!fullCopied" viewBox="0 0 24 24" width="14" height="14">
             <path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
           </svg>
           <svg v-else viewBox="0 0 24 24" width="14" height="14">
             <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
           </svg>
-          <span class="copy-full-label">{{ fullCopied ? $t('message.copied') : $t('message.copyAll') }}</span>
         </button>
         <button
           v-if="responseCollapsible"
@@ -216,7 +237,6 @@ export default {
             <path v-if="responseCollapsed" fill="currentColor" d="M7 10l5 5 5-5z"/>
             <path v-else fill="currentColor" d="M7 14l5-5 5 5z"/>
           </svg>
-          <span class="response-collapse-label">{{ responseToggleLabel }}</span>
         </button>
         <!-- H2.f.6: Fork-from-here button removed (single-conversation model). -->
       </div>
@@ -326,9 +346,8 @@ export default {
     };
     configureMarked();
 
-    const renderedContent = Vue.computed(() => {
-      if (!props.turn.textContent) return '';
-      let content = props.turn.textContent;
+    const renderSegment = (value) => {
+      let content = value;
       if (typeof content !== 'string') {
         if (Array.isArray(content)) {
           content = content.map(block => {
@@ -351,7 +370,18 @@ export default {
         console.error('Markdown parsing error:', e);
       }
       return simpleMarkdown(content);
+    };
+
+    const textSegments = Vue.computed(() => {
+      if (Array.isArray(props.turn?.textSegments) && props.turn.textSegments.length > 0) {
+        return props.turn.textSegments;
+      }
+      return props.turn?.textContent
+        ? [{ key: 'legacy-result', content: props.turn.textContent, kind: 'result', isStreaming: props.turn.isStreaming === true }]
+        : [];
     });
+    const progressSegments = Vue.computed(() => textSegments.value.filter(segment => segment.kind !== 'result'));
+    const resultSegments = Vue.computed(() => textSegments.value.filter(segment => segment.kind === 'result'));
 
     const addCodeBlockCopyButtons = (html) => {
       return html.replace(/<pre><code([^>]*)>([\s\S]*?)<\/code><\/pre>/g,
@@ -523,6 +553,31 @@ export default {
       failedImages.add(image?.assetId || image?.id);
     };
 
+    const previewableImages = Vue.computed(() => (
+      (Array.isArray(props.turn?.imageMsgs) ? props.turn.imageMsgs : [])
+        .map(image => ({
+          image,
+          src: imageSrc(image),
+          alt: image?.filename || t('message.imagePreview'),
+        }))
+        .filter(entry => entry.src && !failedImages.has(entry.image?.assetId || entry.image?.id))
+    ));
+
+    const previewImage = (image, trigger) => {
+      const images = previewableImages.value;
+      const initialIndex = images.findIndex(entry => entry.image === image);
+      if (initialIndex < 0) return;
+      openImagePreview(images[initialIndex].src, {
+        alt: images[initialIndex].alt,
+        closeLabel: t('common.close'),
+        previousLabel: t('message.previousImage'),
+        nextLabel: t('message.nextImage'),
+        positionLabel: (current, total) => t('message.imagePosition', { current, total }),
+        gallery: images.map(({ src, alt }) => ({ src, alt })),
+        initialIndex,
+        trigger,
+      });
+    };
 
     const onStopTurn = (turnId) => {
       if (!turnId) return;
@@ -546,23 +601,22 @@ export default {
       if (typeof t.speakerTimestamp === 'number' && t.speakerTimestamp > 0) return t.speakerTimestamp;
       return null;
     };
-    const turnTime = Vue.computed(() => {
-      const ts = _turnTimeSource();
-      if (!ts) return '';
-      try {
-        return new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-      } catch { return ''; }
-    });
+    const turnTime = Vue.computed(() => formatSessionMessageDateTime(_turnTimeSource()));
     const turnTimeFull = Vue.computed(() => {
       const ts = _turnTimeSource();
       if (!ts) return '';
       try { return new Date(ts).toLocaleString(); } catch { return ''; }
     });
+    const assistantQuote = Vue.computed(() => quoteFromAssistantTurn(
+      props.turn,
+      props.quoteAuthor || t('message.assistant')
+    ));
 
     return {
       onStopTurn,
       turnTime,
       turnTimeFull,
+      assistantQuote,
       copied,
       fullCopied,
       expanded,
@@ -578,7 +632,10 @@ export default {
       toggleExpand,
       toolExpandedValue,
       updateToolExpanded,
-      renderedContent,
+      textSegments,
+      progressSegments,
+      resultSegments,
+      renderSegment,
       copyContent,
       copyFullResponse,
       exportMarkdown,
@@ -587,7 +644,7 @@ export default {
       imageSrc,
       failedImages,
       handleImageError,
-      openImagePreview,
+      previewImage,
       displayedTodos
     };
   }

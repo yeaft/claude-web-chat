@@ -28,9 +28,83 @@
   opacity: 0.8;
 }
 
+/* Structured Session quote above the composer. */
+.input-quote-preview {
+  max-width: var(--session-content-width);
+  margin: 0 auto 10px;
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-input-wrapper);
+  color: var(--text-primary);
+}
+
+.input-quote-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.input-quote-meta {
+  margin-bottom: 3px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.input-quote-content {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.input-quote-todos {
+  margin-top: 6px;
+  display: grid;
+  gap: 2px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.input-quote-todo {
+  display: flex;
+  gap: 6px;
+}
+
+.input-quote-todo-status {
+  flex: 0 0 auto;
+}
+
+.input-quote-remove {
+  align-self: flex-start;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.input-quote-remove:hover,
+.input-quote-remove:focus-visible {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+  outline: none;
+}
+
 /* Attachments Preview */
 .attachments-preview {
-  max-width: 60%;
+  max-width: var(--session-content-width);
   margin: 0 auto 12px;
   display: flex;
   flex-wrap: wrap;
@@ -43,9 +117,14 @@
   gap: 8px;
   padding: 6px 10px;
   background: var(--bg-input-wrapper);
+  border: 1px solid transparent;
   border-radius: 8px;
   font-size: 13px;
-  max-width: 200px;
+  max-width: 260px;
+}
+
+.attachment-item.has-error {
+  border-color: var(--error);
 }
 
 .attachment-thumb {
@@ -59,12 +138,42 @@
   font-size: 16px;
 }
 
-.attachment-name {
+.attachment-details {
+  display: flex;
   flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.attachment-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-primary);
+}
+
+.attachment-status {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.attachment-item.has-error .attachment-status {
+  color: var(--error);
+}
+
+.attachment-retry {
+  border: none;
+  background: transparent;
+  color: var(--accent-blue);
+  cursor: pointer;
+  padding: 2px;
+  font: inherit;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.attachment-retry:hover {
+  color: var(--accent-blue-hover);
 }
 
 .attachment-remove {
@@ -92,7 +201,7 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  max-width: 60%;
+  max-width: var(--session-content-width);
   margin: 0 auto 4px;
   gap: 8px;
   font-size: 12px;
@@ -104,7 +213,7 @@
 
 .input-wrapper {
   position: relative;
-  max-width: 60%;
+  max-width: var(--session-content-width);
   margin: 0 auto;
   display: flex;
   align-items: center;
@@ -120,6 +229,59 @@
   box-shadow: 0 0 0 2px var(--text-secondary);
 }
 
+.input-wrapper.chat-composer {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--chat-composer-gap);
+  padding: var(--chat-composer-padding);
+  border-radius: var(--chat-composer-radius);
+}
+
+.input-wrapper.chat-composer:focus-within {
+  box-shadow: 0 0 0 var(--chat-composer-focus-ring-width) var(--focus-ring);
+}
+
+.chat-composer > .textarea-wrapper {
+  flex: none;
+  width: 100%;
+  min-width: 0;
+}
+
+.chat-composer textarea {
+  display: block;
+  min-height: var(--chat-composer-textarea-min-height);
+}
+
+.input-wrapper.chat-composer textarea.is-scrollable {
+  overflow-y: auto;
+}
+
+.chat-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--chat-composer-gap);
+  min-width: 0;
+}
+
+.chat-composer-actions-start,
+.chat-composer-actions-end {
+  display: flex;
+  align-items: center;
+  gap: var(--chat-composer-control-gap);
+  min-width: 0;
+}
+
+.chat-composer-actions-end {
+  margin-left: auto;
+}
+
+.chat-composer .attach-btn,
+.chat-composer .send-btn {
+  width: var(--chat-composer-control-size);
+  height: var(--chat-composer-control-size);
+}
+
 .input-wrapper textarea,
 .textarea-wrapper textarea {
   flex: 1;
@@ -130,6 +292,7 @@
   font-size: 16px;
   resize: none;
   max-height: 120px;
+  overflow-y: hidden;
   line-height: 1.5;
   font-family: inherit;
   /* 移动端浏览器兼容性修复 */
@@ -328,20 +491,12 @@
 
 /* Stop Button */
 .send-btn.stop-btn {
-  background: #c45c5c;
+  background: var(--error);
   position: relative;
 }
 
 .send-btn.stop-btn:hover {
-  background: #d44a4a;
-}
-
-[data-theme="dark"] .send-btn.stop-btn {
-  background: #8c5555;
-}
-
-[data-theme="dark"] .send-btn.stop-btn:hover {
-  background: #a05050;
+  opacity: 0.8;
 }
 
 .send-btn.stop-btn svg {
@@ -355,9 +510,16 @@
     padding-bottom: calc(32px + env(safe-area-inset-bottom, 0px));
   }
   .attachments-preview,
+  .input-quote-preview,
   .input-hints,
   .input-wrapper {
-    max-width: 90%;
+    max-width: var(--session-content-width);
+  }
+
+  .input-wrapper.chat-composer textarea {
+    min-height: var(--chat-composer-textarea-mobile-height);
+    max-height: var(--chat-composer-textarea-mobile-height);
+    overflow-y: auto;
   }
 }
 

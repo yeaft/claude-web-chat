@@ -35,10 +35,16 @@ export default {
   props: {
     message: { type: Object, required: true },
   },
+  emits: ['quote', 'edit-as-new'],
   template: `
     <div class="user-turn-block" :data-msg-id="message.id || ''">
       <div class="user-turn-block-main">
-        <MessageItem :message="message" />
+        <MessageItem
+          :message="message"
+          :session-actions="true"
+          @quote="$emit('quote', $event)"
+          @edit-as-new="$emit('edit-as-new', $event)"
+        />
       </div>
     </div>
   `,

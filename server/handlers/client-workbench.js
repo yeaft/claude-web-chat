@@ -37,12 +37,17 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
       if (!await checkAgentAccess(termAgentId)) return;
       const termConvId = msg.conversationId || client.currentConversation;
       if (!termConvId) return;
-      if (!CONFIG.skipAuth && !isYeaftVirtualConversation(termConvId) && !verifyConversationOwnership(termConvId, client.userId)) {
+      if (!CONFIG.skipAuth && !isYeaftVirtualConversation(termConvId) && !verifyConversationOwnership(termConvId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} terminal access denied for ${termConvId}`);
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
       }
-      await forwardToAgent(termAgentId, { ...msg, conversationId: termConvId });
+      await forwardToAgent(termAgentId, {
+        ...msg,
+        conversationId: termConvId,
+        _requestUserId: client.userId,
+        _requestClientId: clientId,
+      });
       break;
     }
 
@@ -63,7 +68,7 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
       const writeConvId = msg.conversationId || client.currentConversation || '_explorer';
       const isAgentLevelWrite = writeConvId.startsWith('_') || isYeaftVirtualConversation(writeConvId);
       if (!isAgentLevelWrite) {
-        if (!CONFIG.skipAuth && !verifyConversationOwnership(writeConvId, client.userId)) {
+        if (!CONFIG.skipAuth && !verifyConversationOwnership(writeConvId, client.userId, client.role)) {
           console.warn(`[Security] User ${client.userId} file write denied for ${writeConvId}`);
           await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
           return;

@@ -1,14 +1,32 @@
 /**
  * glob.js — Find files by pattern matching.
  *
- * Uses Node.js glob patterns to find files matching a pattern.
- * Results are sorted by modification time (newest first).
+ * Uses fd for traversal when available and the same local glob matcher in both
+ * fast and fallback paths. Results are sorted by modification time (newest first).
  */
 
 import { defineTool } from './types.js';
 import { readdir, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve, join, relative } from 'path';
+import { managedCliToolReady, resolveManagedCliCommand } from '../managed-cli.js';
+import { runProcess } from './process-runner.js';
+import {
+  createFdPathRegex,
+  createSearchPathMatcher,
+  isAbortError,
+  isSkippedSearchDirectory,
+  SearchBackendLimitError,
+  SEARCH_SKIP_DIRS,
+  throwIfAborted,
+  waitForAbortable,
+} from './search-paths.js';
+
+const STAT_CONCURRENCY = 32;
+
+function comparePaths(left, right) {
+  return Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'));
+}
 
 /**
  * Simple glob pattern matcher (supports * and **).
@@ -17,52 +35,80 @@ import { resolve, join, relative } from 'path';
  * @returns {boolean}
  */
 function matchGlob(pattern, str) {
-  // Convert glob pattern to regex
-  // IMPORTANT: escape dots FIRST before replacing glob chars to avoid
-  // corrupting regex tokens like [^/]* and .*
-  let regex = pattern
-    .replace(/\\/g, '/')
-    .replace(/\./g, '\\.')     // Escape dots first (before glob replacements)
-    .replace(/\*\*/g, '<<<GLOBSTAR>>>')
-    .replace(/\*/g, '[^/]*')
-    .replace(/<<<GLOBSTAR>>>/g, '.*')
-    .replace(/\?/g, '[^/]');
-  regex = '^' + regex + '$';
-  return new RegExp(regex).test(str.replace(/\\/g, '/'));
+  return createSearchPathMatcher({ glob: pattern })(str);
 }
 
 /**
  * Recursively walk a directory, yielding relative paths.
  */
-async function* walkDir(dir, baseDir, maxDepth = 10, depth = 0) {
+async function* walkDir(dir, baseDir, signal, maxDepth = 10, depth = 0) {
+  throwIfAborted(signal);
   if (depth > maxDepth) return;
 
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) throw error;
     return;
   }
-
-  // Skip common large/irrelevant directories
-  const SKIP = new Set([
-    'node_modules', '.git', '__pycache__', '.next', '.nuxt',
-    'dist', 'build', '.cache', '.venv', 'venv', '.tox',
-    'vendor', 'target', '.gradle', '.idea', '.vscode',
-  ]);
+  throwIfAborted(signal);
 
   for (const entry of entries) {
+    throwIfAborted(signal);
     const fullPath = join(dir, entry.name);
     const relPath = relative(baseDir, fullPath);
 
     if (entry.isDirectory()) {
-      if (SKIP.has(entry.name)) continue;
+      const normalized = relPath.replace(/\\/g, '/');
+      if (isSkippedSearchDirectory(normalized, entry.name)) continue;
       yield { path: relPath, isDir: true };
-      yield* walkDir(fullPath, baseDir, maxDepth, depth + 1);
+      yield* walkDir(fullPath, baseDir, signal, maxDepth, depth + 1);
     } else {
       yield { path: relPath, isDir: false };
     }
   }
+}
+
+export async function listFilesWithFd(
+  fdCommand,
+  baseDir,
+  pattern,
+  signal,
+  processRunner = runProcess,
+) {
+  const args = [
+    '--full-path',
+    '--case-sensitive',
+    '--type', 'file',
+    '--type', 'symlink',
+    '--hidden',
+    '--no-ignore',
+    '--color', 'never',
+    '--max-depth', '11',
+    '--print0',
+  ];
+  for (const skipped of SEARCH_SKIP_DIRS) args.push('--exclude', skipped);
+  args.push('--exclude', '.yeaft/worktrees', '--exclude', '**/.yeaft/worktrees/**');
+  args.push('--', createFdPathRegex(pattern), '.');
+  const result = await processRunner(fdCommand, args, {
+    cwd: baseDir,
+    signal,
+    timeoutMs: 120_000,
+    maxBytes: 16 * 1024 * 1024,
+    preserveCarriageReturns: true,
+  });
+  if (result.timedOut) throw new SearchBackendLimitError('fd timed out');
+  if (result.truncated) {
+    throw new SearchBackendLimitError('fd output exceeded the tool limit');
+  }
+  if (result.code !== 0) {
+    throw new Error(result.stderr.trim() || `fd exited with code ${result.code}`);
+  }
+  return result.stdout
+    .split('\0')
+    .filter(Boolean)
+    .map(path => relative(baseDir, resolve(baseDir, path)));
 }
 
 export default defineTool({
@@ -106,7 +152,8 @@ Guidelines:
         },
       },
       limit: {
-        type: 'number',
+        type: 'integer',
+        minimum: 1,
         description: {
           en: 'Maximum number of results (default: 500)',
           zh: '最多返回结果数（默认 500）',
@@ -120,6 +167,9 @@ Guidelines:
   async execute(input, ctx) {
     const { pattern, path: searchPath, limit = 500 } = input;
     if (!pattern) return JSON.stringify({ error: 'pattern is required' });
+    if (!Number.isInteger(limit) || limit < 1) {
+      return JSON.stringify({ error: 'limit must be a positive integer' });
+    }
 
     const cwd = ctx?.cwd || process.cwd();
     const baseDir = searchPath ? resolve(cwd, searchPath) : cwd;
@@ -129,33 +179,52 @@ Guidelines:
     }
 
     try {
-      const matches = [];
-
-      for await (const entry of walkDir(baseDir, baseDir)) {
-        if (matches.length >= limit * 2) break; // over-fetch for sorting
-
-        if (!entry.isDir && matchGlob(pattern, entry.path)) {
-          // Get mtime for sorting
-          try {
-            const fileStat = await stat(join(baseDir, entry.path));
-            matches.push({
-              path: entry.path,
-              mtime: fileStat.mtimeMs,
-            });
-          } catch {
-            matches.push({ path: entry.path, mtime: 0 });
-          }
+      throwIfAborted(ctx?.signal);
+      let paths;
+      let fdCommand = resolveManagedCliCommand('fd', { yeaftDir: ctx?.yeaftDir });
+      if (!fdCommand) {
+        await waitForAbortable(managedCliToolReady(ctx?.managedCliReady, 'fd'), ctx?.signal);
+        fdCommand = resolveManagedCliCommand('fd', { yeaftDir: ctx?.yeaftDir });
+      }
+      if (fdCommand) {
+        try {
+          paths = (await listFilesWithFd(fdCommand, baseDir, pattern, ctx?.signal))
+            .filter(path => matchGlob(pattern, path));
+        } catch (error) {
+          if (isAbortError(error) || error instanceof SearchBackendLimitError) throw error;
+          paths = null;
+        }
+      }
+      if (!paths) {
+        paths = [];
+        for await (const entry of walkDir(baseDir, baseDir, ctx?.signal)) {
+          if (!entry.isDir && matchGlob(pattern, entry.path)) paths.push(entry.path);
         }
       }
 
-      // Sort by mtime (newest first)
-      matches.sort((a, b) => b.mtime - a.mtime);
-
-      // Trim to limit
+      // Exact newest-first semantics require every matching mtime. Batch the
+      // metadata reads instead of serializing one syscall per path.
+      const matches = [];
+      for (let i = 0; i < paths.length; i += STAT_CONCURRENCY) {
+        throwIfAborted(ctx?.signal);
+        matches.push(...await Promise.all(paths.slice(i, i + STAT_CONCURRENCY).map(async (path) => {
+          throwIfAborted(ctx?.signal);
+          try {
+            const fileStat = await stat(join(baseDir, path));
+            throwIfAborted(ctx?.signal);
+            return { path, mtime: fileStat.mtimeMs };
+          } catch (error) {
+            if (isAbortError(error)) throw error;
+            return { path, mtime: 0 };
+          }
+        })));
+      }
+      matches.sort((a, b) => b.mtime - a.mtime || comparePaths(a.path, b.path));
       const trimmed = matches.slice(0, limit);
 
       return trimmed.map(m => m.path).join('\n') || '(no matches)';
     } catch (err) {
+      if (isAbortError(err)) throw err;
       return JSON.stringify({ error: `Glob search failed: ${err.message}` });
     }
   },

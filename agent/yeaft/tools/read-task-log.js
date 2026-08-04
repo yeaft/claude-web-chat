@@ -7,8 +7,8 @@ import { defineTool } from './types.js';
 export default defineTool({
   name: 'ReadTaskLog',
   description: {
-    en: 'Read a background task log by taskId. Supports tail reads and byte offsets.',
-    zh: '按 taskId 读取后台任务日志。支持 tail 和字节 offset。',
+    en: 'Read a background task log by taskId. The first read defaults to the tail. For later reads, pass the previous nextOffset as offset to receive only new bytes; an explicit offset defaults tail to false.',
+    zh: '按 taskId 读取后台任务日志。首次读取默认返回末尾；后续把上次返回的 nextOffset 作为 offset 传入即可只读取新增字节，显式传 offset 时 tail 默认 false。',
   },
   parameters: {
     type: 'object',
@@ -28,10 +28,11 @@ export default defineTool({
     const taskId = input.taskId;
     if (!taskId) return JSON.stringify({ error: 'taskId is required' });
     const sessionId = input.sessionId || ctx.sessionId || 'default';
+    const hasOffset = Number.isFinite(input.offset);
     const result = ctx.taskManager.readTaskLog(sessionId, taskId, {
       offset: input.offset,
       maxBytes: input.maxBytes,
-      tail: input.tail !== false,
+      tail: typeof input.tail === 'boolean' ? input.tail : !hasOffset,
     });
     return JSON.stringify(result, null, 2);
   },

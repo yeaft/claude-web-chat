@@ -164,7 +164,7 @@ Each request gets the current valid token from the credential provider.
 
 ## Config Example
 
-`~/.yeaft/config.json`:
+the selected Agent instance's resolved `config.json` (default instance: `~/.yeaft/config.json`):
 
 ```json
 {
@@ -218,7 +218,7 @@ Per-VP / per-group / per-user totals live in `web/stores/chat.js` store state, v
 
 ## Hot Config Reload
 
-The Agent re-reads `~/.yeaft/config.json` at the start of every turn, so **model and provider changes typically take effect without a restart** — just edit the file and start a new turn. The next `engine.query()` will pick up the new config and lazy-rebuild the adapter for any new (provider, model) pair.
+The Agent re-reads its resolved instance `config.json` at the start of every turn, so **model and provider changes typically take effect without a restart**. The next `engine.query()` picks up the correct instance file and lazy-rebuilds adapters for new (provider, model) pairs.
 
 Changes that **do** require restarting the Agent (read at startup, not per-turn): `language`, `debug`, global `maxContextTokens` / `messageTokenBudget`.
 
@@ -233,7 +233,7 @@ Settings → Yeaft / LLM → pick model → **Test connection** — sends a ping
 ## Common Issues
 
 **"No LLM adapter configured"**
-- `~/.yeaft/config.json` is missing or `providers: []`
+- the selected Agent instance's resolved `config.json` is missing or has `providers: []`
 - Add a provider
 
 **"The chat-completions adapter was removed in Phase 7"**

@@ -21,12 +21,13 @@
  * Phase 7 removed the legacy "openai" (Chat Completions) protocol entirely.
  */
 
-import { LLMAdapter } from './adapter.js';
+import { LLMAdapter, LLMAuthError } from './adapter.js';
 import { getModelEffortOptions, getThinkingCapability, normalizeEffort, normalizeEffortOptions, parseModelRef } from '../models.js';
 import {
   GITHUB_COPILOT_BASE_URL,
   GITHUB_COPILOT_CREDENTIAL_PROVIDER,
   GITHUB_COPILOT_PROVIDER_NAME,
+  isGitHubCopilotProvider,
   normalizeKnownProviderForRuntime,
 } from './known-providers.js';
 import { pairSanitize } from '../pair-sanitize.js';
@@ -238,8 +239,11 @@ export class AdapterRouter extends LLMAdapter {
   /** @type {Map<string, LLMAdapter>} providerName::protocol → cached adapter */
   #adapterCache;
 
-  /** @type {object[]} raw providers array */
+  /** @type {object[]} normalized providers array */
   #providers;
+
+  /** @type {Set<string>} managed providers backed by an explicit model catalog */
+  #authoritativeManagedProviders;
 
   /** @type {number} per-SSE-chunk silence budget; <= 0 disables the guard */
   #streamIdleTimeoutMs;
@@ -267,8 +271,13 @@ export class AdapterRouter extends LLMAdapter {
    * @param {object[]} providers
    */
   refreshProviders(providers) {
-    this.#providers = (Array.isArray(providers) ? providers : [])
-      .map(provider => normalizeKnownProviderForRuntime(provider));
+    const rawProviders = Array.isArray(providers) ? providers : [];
+    this.#authoritativeManagedProviders = new Set(rawProviders
+      .filter(provider => isGitHubCopilotProvider(provider)
+        && Array.isArray(provider.models)
+        && provider.models.length > 0)
+      .map(provider => provider.name || GITHUB_COPILOT_PROVIDER_NAME));
+    this.#providers = rawProviders.map(provider => normalizeKnownProviderForRuntime(provider));
     this.#modelToProvider = new Map();
     this.#adapterCache = new Map();
 
@@ -306,6 +315,10 @@ export class AdapterRouter extends LLMAdapter {
 
     const candidates = this.#providers.filter(p => p && p.name === parsed.providerName);
     if (candidates.length === 0) return null;
+    // An explicit managed catalog is authoritative. A qualified ref is not
+    // permission to resurrect a model that catalog just removed. Legacy rows
+    // with no models still use the bundled fallback catalog above.
+    if (this.#authoritativeManagedProviders.has(parsed.providerName)) return null;
 
     const inferred = inferProtocolFromModelId(parsed.modelId);
     if (!inferred) return null;
@@ -550,18 +563,62 @@ export class AdapterRouter extends LLMAdapter {
    * @param {import('./adapter.js').StreamParams} params
    * @returns {AsyncGenerator<import('./adapter.js').StreamEvent>}
    */
+  async #refreshRejectedCredential(provider, model) {
+    if (!provider?.credentialProvider) return false;
+    try {
+      if (provider.credentialProvider === 'github-copilot' && provider.githubToken) {
+        const githubCopilot = await import('./credentials/github-copilot.js');
+        githubCopilot.invalidateApiTokenCache();
+        await githubCopilot.exchangeToken(provider.githubToken);
+      } else {
+        const { getCredentialProvider } = await import('./credentials/index.js');
+        const credentialProvider = getCredentialProvider(provider.credentialProvider);
+        if (!credentialProvider?.refreshApiKey) return false;
+        await credentialProvider.refreshApiKey();
+      }
+    } catch (err) {
+      throw new LLMAuthError('LLM credential refresh failed', err?.statusCode ?? 401, {
+        reasonCode: err?.reasonCode || 'credential_refresh_failed',
+        provider: provider.name || null,
+        model,
+        credentialRefreshable: true,
+      });
+    }
+    this.#adapterCache.clear();
+    return true;
+  }
+
+  #annotateAuthError(err, provider, model) {
+    if (err?.name !== 'LLMAuthError') return;
+    err.provider = provider?.name || null;
+    err.model = model;
+    err.credentialRefreshable = Boolean(provider?.credentialProvider);
+  }
+
   async *stream(params) {
-    const resolved = await this.#resolveAdapter(params.model);
-    const effortContext = {
-      protocol: resolved.protocol,
-      supportsEffort: resolved.entry?.supportsEffort,
-      effortOptions: resolved.entry?.effortOptions,
-      thinkingProtocol: resolved.entry?.thinkingProtocol,
-      maxBudgetTokens: resolved.entry?.maxBudgetTokens,
-    };
-    const filtered = filterEffortForModel({ ...params, model: resolved.modelId }, resolved);
-    const sanitized = sanitizeMessagesForWire(filtered);
-    yield* resolved.adapter.stream({ ...sanitized, model: resolved.modelId, effortContext });
+    let refreshedCredential = false;
+    while (true) {
+      const resolved = await this.#resolveAdapter(params.model);
+      const provider = this.getProviderForModel(params.model);
+      const effortContext = {
+        protocol: resolved.protocol,
+        supportsEffort: resolved.entry?.supportsEffort,
+        effortOptions: resolved.entry?.effortOptions,
+        thinkingProtocol: resolved.entry?.thinkingProtocol,
+        maxBudgetTokens: resolved.entry?.maxBudgetTokens,
+      };
+      const filtered = filterEffortForModel({ ...params, model: resolved.modelId }, resolved);
+      const sanitized = sanitizeMessagesForWire(filtered);
+      try {
+        yield* resolved.adapter.stream({ ...sanitized, model: resolved.modelId, effortContext });
+        return;
+      } catch (err) {
+        this.#annotateAuthError(err, provider, params.model);
+        if (err?.statusCode !== 401 || refreshedCredential
+          || !(await this.#refreshRejectedCredential(provider, params.model))) throw err;
+        refreshedCredential = true;
+      }
+    }
   }
 
   /**
@@ -571,17 +628,28 @@ export class AdapterRouter extends LLMAdapter {
    * @returns {Promise<{ text: string, usage: { inputTokens: number, outputTokens: number } }>}
    */
   async call(params) {
-    const resolved = await this.#resolveAdapter(params.model);
-    const effortContext = {
-      protocol: resolved.protocol,
-      supportsEffort: resolved.entry?.supportsEffort,
-      effortOptions: resolved.entry?.effortOptions,
-      thinkingProtocol: resolved.entry?.thinkingProtocol,
-      maxBudgetTokens: resolved.entry?.maxBudgetTokens,
-    };
-    const filtered = filterEffortForModel({ ...params, model: resolved.modelId }, resolved);
-    const sanitized = sanitizeMessagesForWire(filtered);
-    return resolved.adapter.call({ ...sanitized, model: resolved.modelId, effortContext });
+    let refreshedCredential = false;
+    while (true) {
+      const resolved = await this.#resolveAdapter(params.model);
+      const provider = this.getProviderForModel(params.model);
+      const effortContext = {
+        protocol: resolved.protocol,
+        supportsEffort: resolved.entry?.supportsEffort,
+        effortOptions: resolved.entry?.effortOptions,
+        thinkingProtocol: resolved.entry?.thinkingProtocol,
+        maxBudgetTokens: resolved.entry?.maxBudgetTokens,
+      };
+      const filtered = filterEffortForModel({ ...params, model: resolved.modelId }, resolved);
+      const sanitized = sanitizeMessagesForWire(filtered);
+      try {
+        return await resolved.adapter.call({ ...sanitized, model: resolved.modelId, effortContext });
+      } catch (err) {
+        this.#annotateAuthError(err, provider, params.model);
+        if (err?.statusCode !== 401 || refreshedCredential
+          || !(await this.#refreshRejectedCredential(provider, params.model))) throw err;
+        refreshedCredential = true;
+      }
+    }
   }
 
   /**

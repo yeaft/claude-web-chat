@@ -27,6 +27,35 @@ export const TASK_STATUS = Object.freeze({
   ORPHANED: 'orphaned',
 });
 
+export const TASK_RESULT_DELIVERY = Object.freeze({
+  MODEL_REENTRY: 'model_reentry',
+  STATUS_ONLY: 'status_only',
+});
+
+export function normalizeTaskResultDelivery(value) {
+  if (value === TASK_RESULT_DELIVERY.MODEL_REENTRY || value === TASK_RESULT_DELIVERY.STATUS_ONLY) {
+    return value;
+  }
+  return TASK_RESULT_DELIVERY.STATUS_ONLY;
+}
+
+export function taskResultDeliveryFor(task) {
+  return normalizeTaskResultDelivery(task?.resultDelivery);
+}
+
+function normalizePersistedTask(task) {
+  if (!task || typeof task !== 'object') return task;
+  if (Object.prototype.hasOwnProperty.call(task, 'resultDelivery')) {
+    return { ...task, resultDelivery: normalizeTaskResultDelivery(task.resultDelivery) };
+  }
+  return {
+    ...task,
+    resultDelivery: task.kind === 'sub_agent'
+      ? TASK_RESULT_DELIVERY.MODEL_REENTRY
+      : TASK_RESULT_DELIVERY.STATUS_ONLY,
+  };
+}
+
 const TERMINAL = new Set([
   TASK_STATUS.SUCCEEDED,
   TASK_STATUS.FAILED,
@@ -133,7 +162,7 @@ export class TaskStore {
   readTask(sessionId, taskId) {
     const path = this.taskPath(sessionId, taskId);
     if (!existsSync(path)) return null;
-    return JSON.parse(readFileSync(path, 'utf8'));
+    return normalizePersistedTask(JSON.parse(readFileSync(path, 'utf8')));
   }
 
   loadActiveTasks() {
@@ -145,7 +174,7 @@ export class TaskStore {
       for (const entry of readdirSync(sessionDir, { withFileTypes: true })) {
         if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
         try {
-          const task = JSON.parse(readFileSync(join(sessionDir, entry.name), 'utf8'));
+          const task = normalizePersistedTask(JSON.parse(readFileSync(join(sessionDir, entry.name), 'utf8')));
           if (task && task.status === TASK_STATUS.RUNNING) out.push(task);
         } catch {
           // Ignore corrupt task metadata; one bad task must not block boot.

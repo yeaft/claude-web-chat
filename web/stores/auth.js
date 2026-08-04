@@ -2,6 +2,10 @@
  * Authentication store for managing login state
  */
 import { decodeKey } from '../utils/encryption.js';
+import {
+  bindWorkCenterBrowserOwner,
+  clearWorkCenterBrowserOwner,
+} from './helpers/work-center-browser-state.js';
 
 const { defineStore } = Pinia;
 
@@ -28,9 +32,12 @@ export const useAuthStore = defineStore('auth', {
     identitiesError: null,
 
     // Current auth state
+    initialized: false,
+    authGeneration: 0,
     isAuthenticated: false,
     token: null,
     sessionKey: null, // Uint8Array for encryption
+    userId: null,
     role: null, // 'admin' | 'pro'
 
     // Login flow state
@@ -56,6 +63,25 @@ export const useAuthStore = defineStore('auth', {
   }),
 
   actions: {
+    /** Resolve the server-backed browser session before rendering login. */
+    async initialize() {
+      if (this.initialized) return this.isAuthenticated;
+      try {
+        await this.checkAuthMode();
+        if (this.skipAuth && this.isAuthenticated) return true;
+        let ssoConsumed = false;
+        if (typeof window !== 'undefined' && typeof this.consumeSsoRedirect === 'function') {
+          ssoConsumed = this.consumeSsoRedirect();
+        }
+        if (!this.isAuthenticated && !ssoConsumed) {
+          await this.restoreSession();
+        }
+        return this.isAuthenticated;
+      } finally {
+        this.initialized = true;
+      }
+    },
+
     /**
      * Check auth mode from server
      */
@@ -77,7 +103,10 @@ export const useAuthStore = defineStore('auth', {
         );
 
         if (this.skipAuth) {
-          // In skip auth mode, we're automatically authenticated
+          // In skip auth mode, one local browser owner is the complete auth boundary.
+          this.userId = 'skip-auth';
+          bindWorkCenterBrowserOwner(this.userId);
+          this.authGeneration += 1;
           this.isAuthenticated = true;
           this.loginStep = 'authenticated';
         }
@@ -135,6 +164,9 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
+        this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
 
@@ -215,6 +247,9 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
+        this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
 
@@ -269,6 +304,9 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
+        this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
         this.tempToken = null;
@@ -323,6 +361,9 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
+        this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
 
@@ -362,6 +403,9 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
+        this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
         this.tempToken = null;
@@ -480,12 +524,11 @@ export const useAuthStore = defineStore('auth', {
       try {
         const params = new URLSearchParams();
         if (intent === 'bind') {
-          if (!this.token) {
+          if (!this.isAuthenticated) {
             this.error = 'You must be logged in to bind an identity';
             return false;
           }
           params.set('intent', 'bind');
-          params.set('token', this.token);
         }
         const qs = params.toString();
         const url = `/api/auth/sso/${encodeURIComponent(provider)}/start-qr${qs ? '?' + qs : ''}`;
@@ -526,6 +569,9 @@ export const useAuthStore = defineStore('auth', {
             this.token = data.token;
             this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
             this.role = data.role || 'pro';
+            this.userId = data.userId || null;
+            bindWorkCenterBrowserOwner(this.userId);
+            this.authGeneration += 1;
             this.isAuthenticated = true;
             this.loginStep = 'authenticated';
             localStorage.setItem('authToken', data.token);
@@ -597,15 +643,14 @@ export const useAuthStore = defineStore('auth', {
 
     /**
      * Bind an additional SSO identity to the currently logged-in user.
-     * Requires an existing token (passed via query param so the redirect
-     * endpoint can verify the user without an Authorization header).
+     * The same-origin navigation carries the browser session cookie.
      */
     bindSso(provider) {
-      if (!this.token) {
+      if (!this.isAuthenticated) {
         this.error = 'You must be logged in to bind an identity';
         return;
       }
-      const params = new URLSearchParams({ intent: 'bind', token: this.token });
+      const params = new URLSearchParams({ intent: 'bind' });
       window.location.href = `/api/auth/sso/${encodeURIComponent(provider)}/start?${params.toString()}`;
     },
 
@@ -621,10 +666,14 @@ export const useAuthStore = defineStore('auth', {
       const token = params.get('token');
       const sessionKey = params.get('sessionKey');
       const role = params.get('role');
+      const userId = params.get('userId');
       if (!token) return false;
       this.token = token;
       this.sessionKey = sessionKey ? decodeKey(sessionKey) : null;
       this.role = role || 'pro';
+      this.userId = userId || null;
+      bindWorkCenterBrowserOwner(this.userId);
+      this.authGeneration += 1;
       this.isAuthenticated = true;
       this.loginStep = 'authenticated';
       localStorage.setItem('authToken', token);
@@ -638,13 +687,11 @@ export const useAuthStore = defineStore('auth', {
      * Load the current user's bound identities. Used by the Settings → Account tab.
      */
     async loadIdentities() {
-      if (!this.token) return;
+      if (!this.isAuthenticated) return;
       this.identitiesLoading = true;
       this.identitiesError = null;
       try {
-        const res = await fetch('/api/auth/identities', {
-          headers: { 'Authorization': `Bearer ${this.token}` }
-        });
+        const res = await fetch('/api/auth/identities');
         const data = await res.json();
         if (!res.ok || !data.success) {
           this.identitiesError = data.error || 'Failed to load identities';
@@ -663,12 +710,11 @@ export const useAuthStore = defineStore('auth', {
      * Unbind an SSO identity for the current user.
      */
     async unbindIdentity(provider) {
-      if (!this.token) return false;
+      if (!this.isAuthenticated) return false;
       this.identitiesError = null;
       try {
         const res = await fetch(`/api/auth/identities/${encodeURIComponent(provider)}`, {
-          method: 'DELETE',
-          headers: { 'Authorization': `Bearer ${this.token}` }
+          method: 'DELETE'
         });
         const data = await res.json();
         if (!res.ok || !data.success) {
@@ -684,20 +730,24 @@ export const useAuthStore = defineStore('auth', {
     },
 
     async refreshSession() {
-      if (!this.token) return false;
       const requestToken = this.token;
+      const requestGeneration = this.authGeneration;
+      const requestWasAuthenticated = this.isAuthenticated;
       try {
         const res = await fetch('/api/user/profile', {
-          headers: { 'Authorization': `Bearer ${requestToken}` }
+          headers: requestToken ? { 'Authorization': `Bearer ${requestToken}` } : {}
         });
 
-        if (res.status === 401 || res.status === 403) {
-          return this.handleAuthFailure(undefined, requestToken);
+        if (this.handleAuthResponse(res, requestToken, requestGeneration, requestWasAuthenticated)) {
+          return false;
         }
 
         if (!res.ok) return false;
 
         const profile = await res.json().catch(() => ({}));
+        if (requestGeneration !== this.authGeneration || this.token !== requestToken) {
+          return this.isAuthenticated;
+        }
         const freshToken = res.headers?.get?.('X-New-Token');
         const storedToken = localStorage.getItem('authToken');
         if (freshToken && this.token === requestToken && (!storedToken || storedToken === requestToken)) {
@@ -705,6 +755,8 @@ export const useAuthStore = defineStore('auth', {
           localStorage.setItem('authToken', freshToken);
         }
         if (profile?.role) this.role = profile.role;
+        this.userId = profile?.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
         return true;
       } catch (err) {
         console.warn('[Auth] Session refresh failed:', err.message || err);
@@ -714,7 +766,7 @@ export const useAuthStore = defineStore('auth', {
 
     startSessionRefresh() {
       this.stopSessionRefresh();
-      if (!this.token || this.skipAuth) return;
+      if (!this.isAuthenticated || this.skipAuth) return;
       const refreshIfVisible = () => {
         if (typeof document !== 'undefined' && document.visibilityState && document.visibilityState !== 'visible') return;
         this.refreshSession();
@@ -750,15 +802,9 @@ export const useAuthStore = defineStore('auth', {
      */
     async logout() {
       try {
-        if (this.token) {
-          await fetch('/api/auth/logout', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${this.token}`
-            }
-          });
-        }
+        const headers = { 'Content-Type': 'application/json' };
+        if (this.token) headers.Authorization = `Bearer ${this.token}`;
+        await fetch('/api/auth/logout', { method: 'POST', headers });
       } catch (err) {
         console.error('Logout error:', err);
       }
@@ -779,14 +825,31 @@ export const useAuthStore = defineStore('auth', {
       return this.token;
     },
 
-    handleAuthFailure(error = 'Session expired. Please log in again.', failedToken = undefined) {
-      // Auth failures are asynchronous: an old WebSocket or fetch request can
-      // fail after the user has already logged in again. Only clear the current
-      // session if the failed request used the token that is still active.
+    /** Only current-session authentication failures invalidate login. */
+    handleAuthResponse(
+      response,
+      failedToken = null,
+      failedGeneration = this.authGeneration,
+      requestWasAuthenticated = this.isAuthenticated,
+      error = undefined,
+    ) {
+      if (!response || response.status !== 401) return false;
+      if (!requestWasAuthenticated || failedGeneration !== this.authGeneration) return false;
       const activeToken = this.token || localStorage.getItem('authToken') || null;
-      if (failedToken !== undefined && failedToken !== activeToken) {
-        return false;
-      }
+      if (failedToken !== activeToken) return false;
+      this.handleAuthFailure(error, failedToken, failedGeneration);
+      return true;
+    },
+
+    handleAuthFailure(
+      error = 'Session expired. Please log in again.',
+      failedToken = null,
+      failedGeneration = this.authGeneration,
+    ) {
+      // Old WebSocket or fetch failures must not clear a newer login.
+      if (failedGeneration !== this.authGeneration) return false;
+      const activeToken = this.token || localStorage.getItem('authToken') || null;
+      if (failedToken !== activeToken) return false;
       this.clearStoredSession(error);
       return false;
     },
@@ -796,16 +859,17 @@ export const useAuthStore = defineStore('auth', {
      */
     async restoreSession() {
       const token = localStorage.getItem('authToken');
+      const requestGeneration = this.authGeneration;
+      const requestWasAuthenticated = this.isAuthenticated || !!token;
       console.log('[Auth] Restoring session, token exists:', !!token);
-      if (!token) return false;
 
       try {
         const res = await fetch('/api/user/profile', {
-          headers: { 'Authorization': `Bearer ${token}` }
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {}
         });
 
-        if (res.status === 401 || res.status === 403) {
-          return this.handleAuthFailure(undefined, token);
+        if (this.handleAuthResponse(res, token, requestGeneration, requestWasAuthenticated)) {
+          return false;
         }
 
         if (!res.ok) {
@@ -814,12 +878,17 @@ export const useAuthStore = defineStore('auth', {
         }
 
         const profile = await res.json();
+        if (requestGeneration !== this.authGeneration) return this.isAuthenticated;
         const headerToken = res.headers?.get?.('X-New-Token');
         const activeToken = this.getActiveToken();
-        const freshToken = headerToken && activeToken === token ? headerToken : activeToken || token;
+        if (activeToken !== token) return this.isAuthenticated;
+        const freshToken = headerToken && (!activeToken || activeToken === token) ? headerToken : activeToken || token;
         this.token = freshToken;
-        if (freshToken !== token) localStorage.setItem('authToken', freshToken);
+        if (freshToken && freshToken !== token) localStorage.setItem('authToken', freshToken);
         this.role = profile?.role || 'pro';
+        this.userId = profile?.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
+        this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
         this.startSessionRefresh();
@@ -906,13 +975,12 @@ export const useAuthStore = defineStore('auth', {
      * For SSO-only users: pass confirm: 'DELETE'.
      */
     async deleteAccount({ currentPassword, confirm } = {}) {
-      if (!this.token) return { success: false, error: 'Not authenticated' };
+      if (!this.isAuthenticated) return { success: false, error: 'Not authenticated' };
       try {
         const res = await fetch('/api/user/me', {
           method: 'DELETE',
           headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.token}`
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify({ currentPassword, confirm })
         });
@@ -920,7 +988,7 @@ export const useAuthStore = defineStore('auth', {
         if (!res.ok || !data.success) {
           return { success: false, error: data.error || 'Failed to delete account' };
         }
-        // Clear local state — server already revoked the JWT.
+        // Clear local state — server already revoked the browser session.
         this.clearStoredSession();
         return { success: true };
       } catch (err) {
@@ -932,10 +1000,13 @@ export const useAuthStore = defineStore('auth', {
      * Reset state
      */
     reset() {
+      clearWorkCenterBrowserOwner();
+      this.authGeneration += 1;
       this.stopSessionRefresh();
       this.isAuthenticated = false;
       this.token = null;
       this.sessionKey = null;
+      this.userId = null;
       this.role = null;
       this.loginStep = 'credentials';
       this.tempToken = null;

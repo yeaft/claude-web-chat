@@ -1,0 +1,888 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { resolveMaxOutputTokens } from '../models.js';
+import {
+  LLMAuthError,
+  LLMContextError,
+  LLMRateLimitError,
+  LLMServerError,
+} from '../llm/adapter.js';
+import { resolveWorkItemModel, selectWorkItemVp } from './assignment.js';
+import { normalizeContractPatch } from './completion-contract.js';
+import { applyCoordinatorReplan } from './plan-mutation.js';
+import { buildWorkItemAttachmentContext } from './attachments.js';
+import { sanitizeDiagnosticText } from './debug-projection.js';
+
+const COORDINATOR_MAX_REPLY_CHARS = 8_000;
+const COORDINATOR_MAX_INSTRUCTION_CHARS = 8_000;
+const COORDINATOR_MAX_OUTPUT_TOKENS = 8_192;
+const COORDINATOR_MAX_SNAPSHOT_BYTES = 64 * 1024;
+const COORDINATOR_DECISION_ATTEMPTS = 2;
+const COORDINATOR_RECOVERY_DECISION_ATTEMPTS = 2;
+const COORDINATOR_MAX_CONVERSATION_MESSAGES = 20;
+const COORDINATOR_MAX_ACTIONS = 64;
+const COORDINATOR_MAX_WORK_ITEM_BYTES = 14 * 1024;
+const COORDINATOR_MAX_ACTIONS_BYTES = 34 * 1024;
+const COORDINATOR_MAX_CONVERSATION_BYTES = 10 * 1024;
+const COORDINATOR_MAX_STAGE_ID_BYTES = 256;
+
+function coordinatorLanguage(value) {
+  return String(value || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+}
+
+function coordinatorTemporaryError(language) {
+  return coordinatorLanguage(language) === 'zh'
+    ? 'Work Center Coordinator 暂时不可用；系统会自动重试恢复'
+    : 'Work Center Coordinator is temporarily unavailable; automatic recovery will retry';
+}
+
+function truncateUtf8(value, maxBytes) {
+  const bytes = Buffer.from(String(value || ''), 'utf8');
+  if (bytes.length <= maxBytes) return bytes.toString('utf8');
+  let end = Math.min(maxBytes, bytes.length);
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return bytes.subarray(0, end).toString('utf8');
+}
+
+function jsonByteLength(value) {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+function boundedJsonArray(values, maxBytes, options = {}) {
+  const source = Array.isArray(values) ? values : [];
+  const selected = [];
+  const indexes = options.newestFirst
+    ? [...source.keys()].reverse()
+    : [...source.keys()];
+  for (const index of indexes) {
+    const candidate = options.newestFirst
+      ? [source[index], ...selected]
+      : [...selected, source[index]];
+    if (jsonByteLength(candidate) <= maxBytes) selected.splice(0, selected.length, ...candidate);
+  }
+  return selected;
+}
+
+function boundedEvidence(value) {
+  return (Array.isArray(value) ? value : []).slice(0, 3).map(item => ({
+    kind: truncateUtf8(item?.kind, 32) || 'text',
+    label: truncateUtf8(item?.label, 192),
+    ...(item?.ref ? { ref: truncateUtf8(item.ref, 256) } : {}),
+    ...(item?.status ? { status: truncateUtf8(item.status, 32) } : {}),
+  })).filter(item => item.label);
+}
+
+function coordinatorStageReferences(detail) {
+  const actions = (Array.isArray(detail?.actions) ? detail.actions : [])
+    .filter(action => !['superseded', 'cancelled'].includes(action?.status));
+  const stageIds = [...new Set(actions
+    .map(action => typeof action?.stageId === 'string' ? action.stageId : '')
+    .filter(Boolean))];
+  const reserved = new Set(stageIds);
+  const used = new Set();
+  const aliasByStageId = new Map();
+  const stageIdByReference = new Map();
+
+  for (const stageId of stageIds) {
+    let alias = stageId;
+    if (Buffer.byteLength(alias, 'utf8') > COORDINATOR_MAX_STAGE_ID_BYTES) {
+      const digest = createHash('sha256').update(stageId, 'utf8').digest('hex');
+      let counter = 0;
+      do {
+        const suffix = `~${digest}${counter > 0 ? `-${counter}` : ''}`;
+        alias = `${truncateUtf8(stageId, COORDINATOR_MAX_STAGE_ID_BYTES - Buffer.byteLength(suffix, 'utf8'))}${suffix}`;
+        counter += 1;
+      } while (used.has(alias) || (reserved.has(alias) && alias !== stageId));
+    }
+    if (used.has(alias)) throw new Error(`Coordinator snapshot has duplicate stage identity: ${stageId}`);
+    used.add(alias);
+    aliasByStageId.set(stageId, alias);
+    stageIdByReference.set(stageId, stageId);
+    stageIdByReference.set(alias, stageId);
+  }
+  for (const action of actions) {
+    if (typeof action?.id === 'string' && action.id && typeof action.stageId === 'string'
+        && !stageIdByReference.has(action.id)) {
+      stageIdByReference.set(action.id, action.stageId);
+    }
+  }
+  return {
+    project(value) {
+      const stageId = typeof value === 'string' ? value : '';
+      return aliasByStageId.get(stageId) || truncateUtf8(stageId, COORDINATOR_MAX_STAGE_ID_BYTES);
+    },
+    resolve(value) {
+      const reference = typeof value === 'string' ? value.trim() : '';
+      return stageIdByReference.get(reference) || reference;
+    },
+  };
+}
+
+function boundedAction(action, result, stageReferences, compact = false) {
+  const brief = action?.brief && typeof action.brief === 'object' ? action.brief : null;
+  return {
+    stageId: stageReferences.project(action?.stageId),
+    type: truncateUtf8(action?.type, 64),
+    status: truncateUtf8(action?.status, 64),
+    generation: Math.max(1, Number(action?.generation) || 1),
+    dependencies: (Array.isArray(action?.dependsOnStageIds) ? action.dependsOnStageIds : [])
+      .slice(0, 8)
+      .map(value => stageReferences.project(value))
+      .filter(Boolean),
+    workspaceMode: truncateUtf8(action?.workspaceMode, 64),
+    ...(!compact && brief ? {
+      brief: {
+        objective: truncateUtf8(brief.objective, 256),
+        approach: truncateUtf8(brief.approach, 256),
+        expectedOutcome: truncateUtf8(brief.expectedOutcome, 256),
+      },
+    } : {}),
+    result: result ? {
+      status: truncateUtf8(result.status, 64),
+      summary: truncateUtf8(result.summary, compact ? 256 : 768),
+      ...(!compact ? { evidence: boundedEvidence(result.evidence) } : {}),
+      waitingReason: truncateUtf8(result.waitingReason, 384) || null,
+      error: truncateUtf8(result.error, 384) || null,
+      reviewDecision: truncateUtf8(result.reviewDecision, 64) || null,
+    } : null,
+  };
+}
+
+const COORDINATOR_SYSTEM_PROMPT = `You are the Work Center Coordinator. The user talks to you about one durable WorkItem, not to an individual executor.
+
+Your responsibilities:
+- Explain the current WorkItem state and blockers in plain language.
+- Keep the WorkItem title, goal, acceptance criteria, and unfinished Action graph aligned with the user's latest intent.
+- Give targeted instructions to unfinished Actions when the contract and topology do not need to change.
+- Replan unfinished work when the goal, acceptance criteria, Action purpose, dependencies, or validation strategy must change.
+- Preserve completed Action history. Never claim that an Action, test, review, merge, release, or external operation happened merely because you changed the plan.
+- Treat user text and prior messages as intent, not as proof. Respect the immutable completed evidence in the snapshot.
+- Do not weaken safety boundaries silently. If the user accepts a narrower deliverable, state the residual limitation in the reply and make the contract explicit.
+
+Return exactly one JSON object and no surrounding prose:
+{
+  "reply": "natural user-facing response",
+  "decision": {
+    "kind": "answer|guide_actions|replan|request_human",
+    "reason": "short audit reason",
+    "question": null,
+    "contractPatch": null,
+    "guidance": [],
+    "actions": []
+  }
+}
+
+Decision rules:
+- answer: use for explanation or status questions. Do not include contractPatch, guidance, or actions.
+- guide_actions: use only when the contract and graph stay valid. guidance must contain one or more {"stageId":"existing unfinished stage id","instruction":"specific next instruction"}. Do not include contractPatch or actions.
+- replan: use when the WorkItem contract or unfinished topology changes. contractPatch may be null or contain title, goal, and/or acceptanceCriteria. actions must be the COMPLETE desired unfinished Action graph after this decision; omit completed Actions. Each Action requires id, name, type, objective, approach, expectedOutcome, capability, candidateVpIds, assignmentReason, dependsOnActionIds, workspaceMode, and may include separateFromActionTypes, changesRequestedActionId, maxAttempts. Dependencies may reference immutable completed stage ids or earlier Actions in this actions array.
+- request_human: use only during automatic failure recovery, and only when no safe retry, guidance, or replan can be decided without human information. Set question to the exact information or decision required. Do not include contractPatch, guidance, or actions.
+- Every replan must keep exactly one final acceptance gate: normally one deliver Action, or one terminal review when no delivery operation is required. It must be the unique graph sink and transitively depend on all other Actions.
+- Action references are stage ids, never internal database Action ids.
+- Stage ids in the snapshot may be bounded aliases. Echo them exactly; the runtime resolves them to durable identities.
+- Never return destructive cancellation. Tell the user to use the explicit cancel control instead.`;
+
+function coordinatorSystemPrompt(language) {
+  const userLanguage = coordinatorLanguage(language) === 'zh'
+    ? 'Simplified Chinese (zh-CN)'
+    : 'English';
+  return `${COORDINATOR_SYSTEM_PROMPT}
+
+User-facing language: ${userLanguage}. Write reply and question in that language. Keep JSON property names and decision enum values in English. Never expose deterministic validator errors as the user-facing reply; explain the underlying issue plainly.`;
+}
+
+function parseJsonObject(value) {
+  const source = String(value || '').trim();
+  if (!source) throw new Error('Work Center Coordinator returned an empty response');
+  const attempts = [source];
+  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+  if (fenced) attempts.push(fenced.trim());
+  const first = source.indexOf('{');
+  const last = source.lastIndexOf('}');
+  if (first >= 0 && last > first) attempts.push(source.slice(first, last + 1));
+  for (const attempt of attempts) {
+    try {
+      const parsed = JSON.parse(attempt);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+  throw new Error('Work Center Coordinator did not return valid JSON');
+}
+
+function cleanText(value, limit, name) {
+  const text = typeof value === 'string' ? value.trim().slice(0, limit) : '';
+  if (!text) throw new Error(`Work Center Coordinator ${name} is required`);
+  return text;
+}
+
+function permanentCoordinatorDiagnostic(cause, phase, language) {
+  const zh = coordinatorLanguage(language) === 'zh';
+  if (cause instanceof LLMAuthError) {
+    return zh
+      ? 'Work Center Coordinator 认证失败。请更新 Provider 凭据后再重试。'
+      : 'Work Center Coordinator authentication failed. Update the configured provider credentials before retrying this Action.';
+  }
+  if (cause instanceof LLMContextError) {
+    return zh
+      ? 'Work Center Coordinator 超过模型上下文限制。请减少 WorkItem 上下文，或改用上下文窗口更大的模型后重试。'
+      : 'Work Center Coordinator exceeded the model context limit. Reduce the WorkItem context or select a model with a larger context window before retrying this Action.';
+  }
+  const detail = sanitizeDiagnosticText(cause?.message || String(cause || ''), 2_000);
+  const label = zh
+    ? (phase === 'runtime'
+      ? '无法加载运行时'
+      : phase === 'policy'
+        ? '无法加载设置'
+        : phase === 'selection'
+          ? '执行者或模型选择失败'
+          : 'Provider 请求失败')
+    : (phase === 'runtime'
+      ? 'runtime could not be loaded'
+      : phase === 'policy'
+        ? 'settings could not be loaded'
+        : phase === 'selection'
+          ? 'executor or model selection failed'
+          : 'provider request failed');
+  return zh
+    ? `Work Center Coordinator ${label}${detail ? `：${detail}` : '。'}`
+    : `Work Center Coordinator ${label}${detail ? `: ${detail}` : '.'}`;
+}
+
+function coordinatorExecutionError(cause, phase, language) {
+  if (cause?.coordinatorClassified === true) return cause;
+  const explicitlyPermanent = cause?.retryable === false;
+  const retryable = !explicitlyPermanent && (
+    cause instanceof LLMRateLimitError
+    || cause instanceof LLMServerError
+    || (['runtime', 'policy'].includes(phase) && cause?.retryable === true)
+  );
+  const error = new Error(retryable
+    ? coordinatorTemporaryError(language)
+    : permanentCoordinatorDiagnostic(cause, phase, language));
+  error.coordinatorClassified = true;
+  error.coordinatorRetryable = retryable;
+  error.coordinatorPhase = phase;
+  error.cause = cause;
+  return error;
+}
+
+function permanentRecoveryDecision(error, language) {
+  const zh = coordinatorLanguage(language) === 'zh';
+  const diagnostic = String(error?.message || (zh
+    ? 'Work Center Coordinator 无法自动恢复这个 Action'
+    : 'Work Center Coordinator cannot recover this Action automatically'));
+  const resolution = zh
+    ? (error?.cause instanceof LLMAuthError
+      ? '请更新 Provider 凭据，然后让 Yeaft 重试或重新规划失败的 Action。'
+      : error?.cause instanceof LLMContextError
+        ? '请减少 WorkItem 上下文，或选择上下文窗口更大的模型，然后让 Yeaft 重试或重新规划失败的 Action。'
+        : error?.coordinatorPhase === 'selection'
+          ? '请配置可用的 VP 和模型，然后让 Yeaft 重试或重新规划失败的 Action。'
+          : error?.coordinatorPhase === 'policy'
+            ? '请修正 Work Center 设置，然后让 Yeaft 重试或重新规划失败的 Action。'
+            : '请修正 Coordinator 运行时或 Provider 配置，然后让 Yeaft 重试或重新规划失败的 Action。')
+    : (error?.cause instanceof LLMAuthError
+      ? 'Update the provider credentials, then tell Yeaft to retry or replan the failed Action.'
+      : error?.cause instanceof LLMContextError
+        ? 'Reduce the WorkItem context or choose a model with a larger context window, then tell Yeaft to retry or replan the failed Action.'
+        : error?.coordinatorPhase === 'selection'
+          ? 'Configure an available VP and model, then tell Yeaft to retry or replan the failed Action.'
+          : error?.coordinatorPhase === 'policy'
+            ? 'Correct the Work Center settings, then tell Yeaft to retry or replan the failed Action.'
+            : 'Correct the Coordinator runtime or provider configuration, then tell Yeaft to retry or replan the failed Action.');
+  return {
+    reply: zh
+      ? `${diagnostic} 为避免重复尝试，自动恢复已停止。`
+      : `${diagnostic} Automatic recovery stopped to avoid repeated attempts.`,
+    decision: {
+      kind: 'request_human',
+      reason: `Automatic recovery stopped after a non-retryable ${error?.coordinatorPhase || 'Coordinator'} error`,
+      question: `${diagnostic} ${resolution}`,
+      contractPatch: null,
+      guidance: [],
+      actions: [],
+    },
+  };
+}
+
+function coordinatorDecisionError(error, language) {
+  const diagnostic = sanitizeDiagnosticText(error?.message || String(error || ''), 2_000);
+  const wrapped = new Error(coordinatorLanguage(language) === 'zh'
+    ? 'Work Center Coordinator 未能生成有效回复。你的消息已经保留，请重试。'
+    : 'Work Center Coordinator could not produce a valid response. Your message was preserved; try again.');
+  wrapped.coordinatorClassified = true;
+  wrapped.coordinatorRetryable = false;
+  wrapped.coordinatorPhase = 'decision';
+  wrapped.cause = diagnostic ? new Error(diagnostic) : error;
+  return wrapped;
+}
+
+function normalizeGuidance(value, detail) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 8) {
+    throw new Error('Work Center Coordinator guidance requires between 1 and 8 targets');
+  }
+  const activeByStage = new Map((detail.actions || [])
+    .filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status))
+    .map(action => [action.stageId, action]));
+  const stageReferences = coordinatorStageReferences(detail);
+  const seen = new Set();
+  return value.map(entry => {
+    const stageId = stageReferences.resolve(entry?.stageId);
+    if (!stageId || seen.has(stageId) || !activeByStage.has(stageId)) {
+      throw new Error(`Work Center Coordinator guidance references an invalid unfinished Action: ${stageId || '(missing)'}`);
+    }
+    seen.add(stageId);
+    return {
+      stageId,
+      instruction: cleanText(entry?.instruction, COORDINATOR_MAX_INSTRUCTION_CHARS, 'guidance instruction'),
+    };
+  });
+}
+
+function normalizeCoordinatorActionReferences(actions, detail) {
+  const stageReferences = coordinatorStageReferences(detail);
+  const normalizeReference = value => typeof value === 'string'
+    ? stageReferences.resolve(value)
+    : value;
+  return actions.map(action => ({
+    ...structuredClone(action),
+    ...(typeof action?.id === 'string' ? { id: normalizeReference(action.id) } : {}),
+    ...(Array.isArray(action?.dependsOnActionIds) ? {
+      dependsOnActionIds: action.dependsOnActionIds.map(normalizeReference),
+    } : {}),
+    ...(Object.hasOwn(action || {}, 'changesRequestedActionId') ? {
+      changesRequestedActionId: normalizeReference(action.changesRequestedActionId),
+    } : {}),
+  }));
+}
+
+export function normalizeCoordinatorResponse(value, detail, options = {}) {
+  const parsed = typeof value === 'string' ? parseJsonObject(value) : value;
+  const reply = cleanText(parsed?.reply, COORDINATOR_MAX_REPLY_CHARS, 'reply');
+  const source = parsed?.decision && typeof parsed.decision === 'object' && !Array.isArray(parsed.decision)
+    ? parsed.decision
+    : {};
+  const allowedKinds = options.recovery === true
+    ? ['guide_actions', 'replan', 'request_human']
+    : ['answer', 'guide_actions', 'replan'];
+  const kind = allowedKinds.includes(source.kind) ? source.kind : '';
+  if (!kind) throw new Error('Work Center Coordinator decision kind is invalid');
+  const reason = cleanText(source.reason, 2_000, 'decision reason');
+  if (kind === 'answer') {
+    return { reply, decision: { kind, reason, contractPatch: null, guidance: [], actions: [] } };
+  }
+  if (kind === 'guide_actions') {
+    const guidance = normalizeGuidance(source.guidance, detail);
+    if (options.recovery === true) {
+      const failed = detail.actions?.find(action => (
+        action.id === options.recoveryActionId && action.status === 'failed'
+      ));
+      if (!failed || guidance.length !== 1 || guidance[0].stageId !== failed.stageId) {
+        throw new Error('Work Center Coordinator recovery guidance must target only the failed Action');
+      }
+    }
+    return {
+      reply,
+      decision: {
+        kind,
+        reason,
+        contractPatch: null,
+        guidance,
+        actions: [],
+      },
+    };
+  }
+  if (kind === 'request_human') {
+    return {
+      reply,
+      decision: {
+        kind,
+        reason,
+        question: cleanText(source.question, COORDINATOR_MAX_REPLY_CHARS, 'human question'),
+        contractPatch: null,
+        guidance: [],
+        actions: [],
+      },
+    };
+  }
+  const contractPatch = normalizeContractPatch(source.contractPatch);
+  if (!Array.isArray(source.actions) || source.actions.length < 1 || source.actions.length > 8) {
+    throw new Error('Work Center Coordinator replan requires the complete unfinished Action graph');
+  }
+  return {
+    reply,
+    decision: {
+      kind,
+      reason,
+      contractPatch,
+      guidance: [],
+      actions: normalizeCoordinatorActionReferences(source.actions, detail),
+    },
+  };
+}
+
+function coordinatorHistory(messages) {
+  const history = (Array.isArray(messages) ? messages : [])
+    .filter(message => message?.role !== 'assistant' || message.status !== 'thinking')
+    .filter(message => typeof message?.text === 'string' && message.text.trim())
+    .slice(-COORDINATOR_MAX_CONVERSATION_MESSAGES)
+    .map(message => ({
+      role: message.role === 'assistant' ? 'assistant' : 'user',
+      text: truncateUtf8(message.role === 'legacy_instruction'
+        ? `[Legacy global instruction already delivered to executors] ${message.text}`
+        : message.text, 2_000),
+    }));
+  return boundedJsonArray(history, COORDINATOR_MAX_CONVERSATION_BYTES, { newestFirst: true });
+}
+
+function coordinatorSnapshotText(detail) {
+  const snapshot = coordinatorSnapshot(detail);
+  const serialized = JSON.stringify(snapshot);
+  if (Buffer.byteLength(serialized, 'utf8') > COORDINATOR_MAX_SNAPSHOT_BYTES) {
+    throw new Error('WorkItem cannot be represented within the Coordinator snapshot budget');
+  }
+  return serialized;
+}
+
+function finalizedCriteria(detail, contractPatch) {
+  const criteria = contractPatch?.acceptanceCriteria ?? detail.acceptanceCriteria ?? [];
+  if (!Array.isArray(criteria) || criteria.length < 1 || criteria.length > 24) {
+    throw new Error('Work Center Coordinator replan requires between 1 and 24 acceptance criteria');
+  }
+  return criteria;
+}
+
+function coordinatorSnapshot(detail) {
+  const runs = Array.isArray(detail.runs) ? detail.runs : [];
+  const canonicalRunByAction = new Map();
+  for (const action of detail.actions || []) {
+    const candidates = runs
+      .filter(run => run.actionId === action.id && run.status !== 'running')
+      .sort((left, right) => Number(right.endedAt || right.startedAt) - Number(left.endedAt || left.startedAt));
+    const canonical = action.resultRunId
+      ? candidates.find(run => run.id === action.resultRunId)
+      : candidates[0];
+    if (canonical) canonicalRunByAction.set(action.id, canonical);
+  }
+
+  const acceptanceCriteria = boundedJsonArray(
+    (Array.isArray(detail.acceptanceCriteria) ? detail.acceptanceCriteria : [])
+      .slice(0, 24)
+      .map(value => truncateUtf8(value, 768))
+      .filter(Boolean),
+    8 * 1024,
+  );
+  const workItem = {
+    id: truncateUtf8(detail.id, 256),
+    revision: detail.revision,
+    planRevision: detail.planRevision,
+    ledgerRevision: detail.ledgerRevision,
+    status: truncateUtf8(detail.status, 64),
+    title: truncateUtf8(detail.title, 1 * 1024),
+    goal: truncateUtf8(detail.goal, 4 * 1024),
+    acceptanceCriteria,
+    workItemType: truncateUtf8(detail.workflowSnapshot?.workItemType, 256) || null,
+  };
+  if (jsonByteLength(workItem) > COORDINATOR_MAX_WORK_ITEM_BYTES) {
+    throw new Error('WorkItem contract cannot be represented within the Coordinator snapshot budget');
+  }
+
+  const currentActions = (Array.isArray(detail.actions) ? detail.actions : [])
+    .filter(action => !['superseded', 'cancelled'].includes(action.status));
+  const stageReferences = coordinatorStageReferences(detail);
+  const unfinished = currentActions.filter(action => action.status !== 'completed');
+  const completed = currentActions.filter(action => action.status === 'completed');
+  const selected = [
+    ...unfinished,
+    ...completed.slice(-Math.max(0, COORDINATOR_MAX_ACTIONS - unfinished.length)),
+  ].slice(0, COORDINATOR_MAX_ACTIONS);
+  let projectedActions = selected.map(action => boundedAction(
+    action,
+    canonicalRunByAction.get(action.id),
+    stageReferences,
+    action.status === 'completed',
+  ));
+  let actions = boundedJsonArray(projectedActions, COORDINATOR_MAX_ACTIONS_BYTES);
+  let includedActionIdentities = new Set(actions.map(action => `${action.stageId}:${action.generation}`));
+  if (unfinished.some(action => !includedActionIdentities.has(`${stageReferences.project(action.stageId)}:${action.generation}`))) {
+    projectedActions = selected.map(action => boundedAction(
+      action,
+      canonicalRunByAction.get(action.id),
+      stageReferences,
+      true,
+    ));
+    actions = boundedJsonArray(projectedActions, COORDINATOR_MAX_ACTIONS_BYTES);
+    includedActionIdentities = new Set(actions.map(action => `${action.stageId}:${action.generation}`));
+  }
+  if (unfinished.some(action => !includedActionIdentities.has(`${stageReferences.project(action.stageId)}:${action.generation}`))) {
+    throw new Error('Active Actions cannot be represented within the Coordinator snapshot budget');
+  }
+
+  return {
+    workItem,
+    actions,
+    omittedCompletedActionCount: Math.max(0, completed.length - actions.filter(action => action.status === 'completed').length),
+    conversation: coordinatorHistory(detail.messages),
+  };
+}
+
+export class WorkItemCoordinator {
+  constructor(options = {}) {
+    this.store = options.store;
+    this.runtimeProvider = options.runtimeProvider;
+    this.policyProvider = typeof options.policyProvider === 'function' ? options.policyProvider : async () => ({});
+    this.registry = options.registry;
+    this.ownerBootId = options.ownerBootId || randomUUID();
+    this.claimLeaseMs = Math.max(5_000, Number(options.claimLeaseMs) || 60_000);
+    this.attachmentRoot = options.attachmentRoot || null;
+    this.languageProvider = typeof options.languageProvider === 'function'
+      ? options.languageProvider
+      : runtime => runtime?.config?.language || 'en';
+    this.activeTurns = new Map();
+    this.activeTasks = new Map();
+    this.shuttingDown = false;
+  }
+
+  message(id, input = {}, options = {}) {
+    if (this.shuttingDown) throw new Error('Work Center Coordinator is shutting down');
+    const text = typeof input.text === 'string'
+      ? input.text.trim().slice(0, COORDINATOR_MAX_REPLY_CHARS)
+      : '';
+    const addedAttachments = Array.isArray(input.addedAttachments) ? input.addedAttachments : [];
+    if (!text && addedAttachments.length === 0) {
+      throw new Error('Work Center Coordinator message or attachments are required');
+    }
+    const promptText = text || `The user added ${addedAttachments.length} attachment(s) for this WorkItem.`;
+    let started = this.store.beginCoordinatorTurn(id, text, {
+      revision: Number(input.revision),
+      planRevision: Number(input.planRevision),
+      ledgerRevision: Number(input.ledgerRevision),
+      coordinatorRevision: Number(input.coordinatorRevision),
+    }, {
+      attachments: input.attachments,
+      addedAttachments,
+      clientMessageId: input.clientMessageId,
+    });
+    if (!started) throw new Error(`WorkItem not found: ${id}`);
+    if (started.duplicate) {
+      return { detail: started.detail, task: Promise.resolve(started.detail), duplicate: true };
+    }
+    const claimed = this.store.claimStartedCoordinatorTurn(started, this.ownerBootId, this.claimLeaseMs);
+    if (!claimed) return { detail: started.detail, task: Promise.resolve(started.detail), duplicate: true };
+    started = claimed;
+    options.onUpdate?.('coordinator.turn_started', started.detail);
+    return this.#scheduleTurn(started, {
+      text: promptText,
+      recovery: false,
+      addedAttachments,
+      options,
+    });
+  }
+
+  resume(started, options = {}) {
+    if (!started?.turnId || !started?.detail || !started?.fence) {
+      throw new Error('Coordinator provider recovery target is invalid');
+    }
+    return this.#scheduleTurn(started, {
+      text: typeof options.text === 'string' ? options.text : '',
+      recovery: options.recovery === true,
+      addedAttachments: Array.isArray(options.addedAttachments) ? options.addedAttachments : [],
+      options,
+    });
+  }
+
+  recover(id, options = {}) {
+    if (this.shuttingDown) throw new Error('Work Center Coordinator is shutting down');
+    const detail = this.store.getWorkItemDetail(id);
+    const hasExplicitIdentity = typeof options.actionId === 'string' && options.actionId;
+    const action = hasExplicitIdentity
+      ? detail?.actions?.find(candidate => (
+          candidate.id === options.actionId
+          && candidate.generation === options.actionGeneration
+        ))
+      : detail?.actions?.find(candidate => (
+          candidate.id === detail.currentActionId && candidate.status === 'failed'
+        ));
+    if (!detail || ['done', 'cancelled'].includes(detail.status) || action?.status !== 'failed') return null;
+    const started = this.store.beginCoordinatorTurn(id, '', {
+      revision: detail.revision,
+      planRevision: detail.planRevision,
+      ledgerRevision: detail.ledgerRevision,
+      coordinatorRevision: detail.coordinatorRevision,
+    }, {
+      recovery: {
+        actionId: action.id,
+        actionGeneration: action.generation,
+        stageId: action.stageId,
+      },
+    });
+    if (!started) return null;
+    const claimed = this.store.claimStartedCoordinatorTurn(started, this.ownerBootId, this.claimLeaseMs);
+    if (!claimed) return null;
+    options.onUpdate?.('coordinator.recovery_started', claimed.detail);
+    const text = `Action stage "${action.stageId}" failed. Decide the next safe control transition. `
+      + 'Failure is not a terminal WorkItem state: guide or replan executable work whenever possible. '
+      + 'Request human input only when the snapshot lacks information required for a safe decision.';
+    return this.#scheduleTurn(claimed, { text, recovery: true, options });
+  }
+
+  #scheduleTurn(started, {
+    text, recovery, addedAttachments = [], options,
+  }) {
+    const abortController = new AbortController();
+    this.activeTurns.set(started.turnId, abortController);
+    const claim = started.fence?.claim;
+    const renewalTimer = claim ? setInterval(() => {
+      if (!this.store.renewCoordinatorMailbox(
+        claim.mailboxId, claim.ownerBootId, claim.claimEpoch, this.claimLeaseMs,
+      )) abortController.abort('work_center_coordinator_claim_lost');
+    }, Math.max(1_000, Math.floor(this.claimLeaseMs / 3))) : null;
+    renewalTimer?.unref?.();
+    const task = new Promise(resolve => setTimeout(resolve, 0))
+      .then(() => this.#executeTurn(started, {
+        text, recovery, addedAttachments, options, abortController,
+      }))
+      .finally(() => {
+        if (renewalTimer) clearInterval(renewalTimer);
+        this.activeTurns.delete(started.turnId);
+        this.activeTasks.delete(started.turnId);
+      });
+    this.activeTasks.set(started.turnId, task);
+    return { detail: started.detail, task };
+  }
+
+  async #executeTurn(started, {
+    text, recovery, addedAttachments, options, abortController,
+  }) {
+    let providerTurn = null;
+    let candidateSpeaker = null;
+    let speaker = (started.detail.messages || []).find(message => (
+      message?.turnId === started.turnId && message.role === 'assistant'
+    ))?.speaker || null;
+    try {
+      let normalized = null;
+      let mutation = null;
+      let attemptCount = 0;
+      let lastError = null;
+      const snapshotText = coordinatorSnapshotText(started.detail);
+      let language = 'en';
+      const attachmentContext = !recovery && this.attachmentRoot
+        ? buildWorkItemAttachmentContext({ ...started.detail, attachments: addedAttachments }, {
+            root: this.attachmentRoot,
+            inlineTextBytes: 32 * 1024,
+          })
+        : { promptBlock: '', promptParts: [] };
+      try {
+        let runtime;
+        let settings;
+        try {
+          runtime = await this.runtimeProvider();
+          language = coordinatorLanguage(await this.languageProvider(runtime));
+        } catch (error) {
+          throw coordinatorExecutionError(error, 'runtime', language);
+        }
+        try {
+          settings = await this.policyProvider();
+        } catch (error) {
+          throw coordinatorExecutionError(error, 'policy', language);
+        }
+        if (this.shuttingDown) throw new Error('Work Center Coordinator is shutting down');
+        let vps;
+        let resolved;
+        try {
+          vps = this.registry?.listVps?.() || [];
+          if (vps.length === 0) {
+            const error = new Error('Work Center has no available VPs');
+            error.retryable = false;
+            throw error;
+          }
+          const assignment = selectWorkItemVp({
+            policy: { mode: 'pool', candidateVpIds: vps.map(vp => vp.id), capability: 'triage' },
+            stageType: 'triage',
+            vps,
+            priorRuns: started.detail.runs || [],
+          });
+          candidateSpeaker = {
+            id: assignment.vp.id,
+            name: assignment.vp.name || assignment.vp.id,
+          };
+          const coordinatorPolicy = settings?.coordinatorModelPolicy || {
+            ...(settings?.modelPolicy || {}),
+            effort: settings?.actionModelPolicies?.triage?.effort || settings?.modelPolicy?.effort || 'high',
+          };
+          resolved = resolveWorkItemModel(runtime.config, assignment.vp, coordinatorPolicy);
+        } catch (error) {
+          throw coordinatorExecutionError(error, 'selection', language);
+        }
+        const maxAttempts = recovery
+          ? COORDINATOR_RECOVERY_DECISION_ATTEMPTS
+          : COORDINATOR_DECISION_ATTEMPTS;
+        for (let index = 0; index < maxAttempts; index += 1) {
+          attemptCount = index + 1;
+          mutation = null;
+          const correction = lastError
+            ? `\n\nYour previous decision was rejected by the deterministic validator:\n${String(lastError.message || lastError).slice(0, 2_000)}\nReturn a corrected complete JSON decision.`
+            : '';
+          providerTurn = null;
+          try {
+            let result;
+            try {
+              const latestMessage = `Current WorkItem snapshot:\n${snapshotText}\n\n${recovery ? 'Automatic failure recovery trigger' : 'Latest user message'}:\n${text}${attachmentContext.promptBlock}${correction}`;
+              const content = attachmentContext.promptParts.length > 0
+                ? [{ type: 'text', text: latestMessage }, ...attachmentContext.promptParts]
+                : latestMessage;
+              const requestBody = {
+                model: resolved.model,
+                system: coordinatorSystemPrompt(language),
+                messages: [{ role: 'user', content }],
+                maxTokens: Math.min(
+                  resolveMaxOutputTokens(resolved.model, runtime.config),
+                  COORDINATOR_MAX_OUTPUT_TOKENS,
+                ),
+                effort: resolved.effort,
+                effortSource: resolved.source,
+                effortContext: { scenario: 'work-center-coordinator' },
+              };
+              const claim = started.fence.claim;
+              providerTurn = this.store.prepareCoordinatorProviderTurn(
+                started.detail.id, started.turnId, attemptCount, requestBody, claim, candidateSpeaker,
+              );
+              if (!providerTurn) return started.detail;
+              speaker = providerTurn.speaker;
+              if (providerTurn.status === 'unknown') {
+                throw new Error('Coordinator provider dispatch outcome is unknown and requires review');
+              }
+              if (providerTurn.status === 'responded') {
+                result = providerTurn.response;
+              } else {
+                result = await Promise.race([
+                runtime.adapter.call({
+                  ...requestBody,
+                  signal: abortController.signal,
+                  onRequestStart: () => {
+                    if (!this.store.dispatchCoordinatorProviderTurn(providerTurn.id, claim)) {
+                      abortController.abort('work_center_coordinator_dispatch_fence_lost');
+                      throw new Error('Coordinator provider turn lost its dispatch fence');
+                    }
+                  },
+                }).then(response => {
+                  const persisted = this.store.respondCoordinatorProviderTurn(
+                    providerTurn.id, providerTurn.requestHash, response, claim,
+                  );
+                  if (!persisted) throw new Error('Coordinator provider response lost its CAS fence');
+                  providerTurn = persisted;
+                  return response;
+                }),
+                new Promise((_, reject) => {
+                  abortController.signal.addEventListener('abort', () => {
+                    reject(new Error('Work Center Coordinator was interrupted'));
+                  }, { once: true });
+                }),
+              ]);
+              }
+            } catch (error) {
+              if (abortController.signal.aborted || this.shuttingDown) throw error;
+              throw coordinatorExecutionError(error, 'provider', language);
+            }
+            normalized = normalizeCoordinatorResponse(result?.text, started.detail, {
+              recovery,
+              recoveryActionId: started.fence.recovery?.actionId || null,
+            });
+            if (normalized.decision.kind === 'replan') {
+              finalizedCriteria(started.detail, normalized.decision.contractPatch);
+              mutation = applyCoordinatorReplan({
+                workItem: {
+                  ...started.detail,
+                  ...(normalized.decision.contractPatch || {}),
+                },
+                actions: started.detail.actions || [],
+                proposal: {
+                  proposalId: `coordinator:${started.turnId}`,
+                  basePlanRevision: started.detail.planRevision,
+                  reason: normalized.decision.reason,
+                  actions: normalized.decision.actions,
+                },
+                availableVpIds: vps.map(vp => vp.id),
+              });
+            }
+            lastError = null;
+            break;
+          } catch (error) {
+            normalized = null;
+            if (providerTurn?.status === 'responded') {
+              this.store.rejectCoordinatorProviderTurn(providerTurn.id, error, started.fence.claim);
+            }
+            if (abortController.signal.aborted || this.shuttingDown || error?.coordinatorClassified) {
+              throw error;
+            }
+            lastError = error;
+          }
+        }
+      } catch (error) {
+        lastError = error;
+      }
+      if (abortController.signal.aborted || this.shuttingDown) {
+        throw lastError || new Error('Work Center Coordinator was interrupted');
+      }
+      if (!normalized) {
+        if (!recovery) {
+          throw lastError?.coordinatorClassified
+            ? lastError
+            : coordinatorDecisionError(
+              lastError || new Error('Work Center Coordinator did not produce a decision'),
+              language,
+            );
+        }
+        if (lastError?.coordinatorRetryable) throw lastError;
+        normalized = lastError?.coordinatorClassified
+          ? permanentRecoveryDecision(lastError, language)
+          : {
+              reply: language === 'zh'
+                ? '自动恢复无法确定安全、可执行的下一步，需要你补充信息。'
+                : 'Automatic recovery could not choose a safe executable next step. Human input is required.',
+              decision: {
+                kind: 'request_human',
+                reason: 'Automatic recovery exhausted its bounded decision attempts',
+                question: language === 'zh'
+                  ? '请查看失败的 Action，并补充安全重试或重新规划所需的决定或约束。'
+                  : 'Review the failed Action and provide the missing decision or constraint needed to retry or replan it safely.',
+                contractPatch: null,
+                guidance: [],
+                actions: [],
+              },
+            };
+      }
+      const detail = this.store.completeCoordinatorTurn(started.turnId, {
+        reply: normalized.reply,
+        speaker,
+        decision: normalized.decision,
+        mutation,
+        attemptCount,
+      }, started.fence);
+      if (!detail) return this.store.getWorkItemDetail(started.detail.id);
+      options.onUpdate?.(recovery ? 'coordinator.recovery_completed' : 'coordinator.turn_completed', detail);
+      return detail;
+    } catch (error) {
+      if (providerTurn?.status === 'responded') {
+        this.store.rejectCoordinatorProviderTurn(providerTurn.id, error, started.fence.claim);
+      }
+      const detail = this.store.failCoordinatorTurn(started.turnId, error, {
+        ...started.fence,
+        speaker,
+      });
+      if (detail) {
+        options.onUpdate?.('coordinator.turn_failed', detail);
+        return detail;
+      }
+      return this.store.getWorkItemDetail(started.detail.id);
+    }
+  }
+
+  async shutdown() {
+    this.shuttingDown = true;
+    for (const controller of this.activeTurns.values()) controller.abort('work_center_coordinator_shutdown');
+    const tasks = [...this.activeTasks.values()];
+    if (tasks.length > 0) await Promise.allSettled(tasks);
+    this.activeTurns.clear();
+    this.activeTasks.clear();
+  }
+}

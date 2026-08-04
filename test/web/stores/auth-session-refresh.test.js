@@ -74,9 +74,16 @@ describe('auth store session restore and refresh', () => {
   });
 
   it('uses renewed tokens returned while restoring a valid session', async () => {
-    globalThis.localStorage = createLocalStorage({ authToken: 'old-token' });
+    const ownedDraft = JSON.stringify({
+      ownerId: 'user-a',
+      records: { 'agent-a:item-a': { text: 'same owner survives reload' } },
+    });
+    globalThis.localStorage = createLocalStorage({
+      authToken: 'old-token',
+      'yeaft-work-center-composer-drafts-v1': ownedDraft,
+    });
     globalThis.fetch = vi.fn(async () => jsonResponse({
-      body: { username: 'dev', role: 'admin' },
+      body: { userId: 'user-a', username: 'dev', role: 'admin' },
       headers: { 'X-New-Token': 'new-token' },
     }));
     const auth = await loadAuthStore();
@@ -87,6 +94,8 @@ describe('auth store session restore and refresh', () => {
     expect(auth.isAuthenticated).toBe(true);
     expect(auth.token).toBe('new-token');
     expect(auth.role).toBe('admin');
+    expect(auth.userId).toBe('user-a');
+    expect(globalThis.localStorage.getItem('yeaft-work-center-composer-drafts-v1')).toBe(ownedDraft);
     expect(globalThis.localStorage.setItem).toHaveBeenCalledWith('authToken', 'new-token');
   });
 
@@ -95,7 +104,7 @@ describe('auth store session restore and refresh', () => {
     globalThis.fetch = vi.fn(async () => {
       globalThis.localStorage.setItem('authToken', 'qr-login-token');
       return jsonResponse({
-        body: { username: 'dev', role: 'admin' },
+        body: { userId: 'stale-owner', username: 'dev', role: 'admin' },
         headers: { 'X-New-Token': 'renewed-old-token' },
       });
     });
@@ -103,8 +112,9 @@ describe('auth store session restore and refresh', () => {
 
     const restored = await auth.restoreSession();
 
-    expect(restored).toBe(true);
+    expect(restored).toBe(false);
     expect(auth.token).toBe('qr-login-token');
+    expect(auth.userId).toBe(null);
     expect(globalThis.localStorage.getItem('authToken')).toBe('qr-login-token');
     expect(globalThis.localStorage.setItem).not.toHaveBeenCalledWith('authToken', 'renewed-old-token');
   });
@@ -135,7 +145,7 @@ describe('auth store session restore and refresh', () => {
       auth.token = 'qr-login-token';
       globalThis.localStorage.setItem('authToken', 'qr-login-token');
       return jsonResponse({
-        body: { username: 'dev', role: 'pro' },
+        body: { userId: 'stale-owner', username: 'dev', role: 'pro' },
         headers: { 'X-New-Token': 'renewed-old-token' },
       });
     });
@@ -144,8 +154,9 @@ describe('auth store session restore and refresh', () => {
 
     const ok = await auth.refreshSession();
 
-    expect(ok).toBe(true);
+    expect(ok).toBe(false);
     expect(auth.token).toBe('qr-login-token');
+    expect(auth.userId).toBe(null);
     expect(globalThis.localStorage.getItem('authToken')).toBe('qr-login-token');
     expect(globalThis.localStorage.setItem).not.toHaveBeenCalledWith('authToken', 'renewed-old-token');
   });
@@ -162,6 +173,205 @@ describe('auth store session restore and refresh', () => {
     expect(auth.isAuthenticated).toBe(true);
     expect(auth.token).toBe('new-token');
     expect(globalThis.localStorage.removeItem).not.toHaveBeenCalledWith('authToken');
+  });
+
+  it('restores a cookie-only browser session without a local token', async () => {
+    globalThis.localStorage = createLocalStorage();
+    globalThis.fetch = vi.fn(async () => jsonResponse({
+      body: { username: 'mobile-user', role: 'pro' },
+    }));
+    const auth = await loadAuthStore();
+
+    const restored = await auth.restoreSession();
+
+    expect(restored).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/user/profile', { headers: {} });
+    expect(auth.isAuthenticated).toBe(true);
+    expect(auth.token).toBe(null);
+    expect(auth.role).toBe('pro');
+  });
+
+  it('clears an authenticated cookie-only session on a current 401', async () => {
+    globalThis.localStorage = createLocalStorage({
+      'yeaft-work-center-composer-drafts-v1': JSON.stringify({ ownerId: 'user-a', records: { draft: {} } }),
+      'yeaft-work-center-message-outbox-v1': JSON.stringify({ ownerId: 'user-a', records: { outbox: {} } }),
+    });
+    const auth = await loadAuthStore();
+    auth.isAuthenticated = true;
+    auth.authGeneration = 4;
+
+    const handled = auth.handleAuthResponse(
+      jsonResponse({ ok: false, status: 401 }),
+      null,
+      4,
+      true,
+    );
+
+    expect(handled).toBe(true);
+    expect(auth.isAuthenticated).toBe(false);
+    expect(auth.authGeneration).toBe(5);
+    expect(globalThis.localStorage.removeItem).toHaveBeenCalledWith('authToken');
+    expect(globalThis.localStorage.removeItem)
+      .toHaveBeenCalledWith('yeaft-work-center-composer-drafts-v1');
+    expect(globalThis.localStorage.removeItem)
+      .toHaveBeenCalledWith('yeaft-work-center-message-outbox-v1');
+  });
+
+  it('ignores a cookie-only 401 from an older auth generation', async () => {
+    globalThis.localStorage = createLocalStorage();
+    const auth = await loadAuthStore();
+    auth.isAuthenticated = true;
+    auth.authGeneration = 8;
+
+    const handled = auth.handleAuthResponse(
+      jsonResponse({ ok: false, status: 401 }),
+      null,
+      7,
+      true,
+    );
+
+    expect(handled).toBe(false);
+    expect(auth.isAuthenticated).toBe(true);
+    expect(auth.authGeneration).toBe(8);
+    expect(globalThis.localStorage.removeItem).not.toHaveBeenCalled();
+  });
+
+  it('always posts logout so the server can revoke a cookie-only session', async () => {
+    globalThis.localStorage = createLocalStorage({
+      'yeaft-work-center-composer-drafts-v1': JSON.stringify({ ownerId: 'user-a', records: {} }),
+      'yeaft-work-center-message-outbox-v1': JSON.stringify({ ownerId: 'user-a', records: {} }),
+    });
+    globalThis.fetch = vi.fn(async () => jsonResponse());
+    const auth = await loadAuthStore();
+    auth.isAuthenticated = true;
+
+    await auth.logout();
+
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    expect(auth.isAuthenticated).toBe(false);
+    expect(globalThis.localStorage.removeItem).toHaveBeenCalledWith('authToken');
+    expect(globalThis.localStorage.removeItem)
+      .toHaveBeenCalledWith('yeaft-work-center-composer-drafts-v1');
+    expect(globalThis.localStorage.removeItem)
+      .toHaveBeenCalledWith('yeaft-work-center-message-outbox-v1');
+  });
+
+  it('loads and unbinds identities for an authenticated cookie-only session', async () => {
+    globalThis.localStorage = createLocalStorage();
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url === '/api/auth/identities') {
+        return jsonResponse({
+          body: {
+            success: true,
+            identities: [{ provider: 'github' }],
+            hasPassword: true,
+          },
+        });
+      }
+      if (url === '/api/auth/identities/github') {
+        return jsonResponse({ body: { success: true } });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    const auth = await loadAuthStore();
+    auth.isAuthenticated = true;
+
+    await auth.loadIdentities();
+    const unbound = await auth.unbindIdentity('github');
+
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(1, '/api/auth/identities');
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(2, '/api/auth/identities/github', {
+      method: 'DELETE',
+    });
+    expect(unbound).toBe(true);
+    expect(auth.hasPassword).toBe(true);
+    expect(auth.linkedIdentities).toEqual([]);
+  });
+
+  it('deletes an account for an authenticated cookie-only session', async () => {
+    globalThis.localStorage = createLocalStorage();
+    globalThis.fetch = vi.fn(async () => jsonResponse({ body: { success: true } }));
+    const auth = await loadAuthStore();
+    auth.isAuthenticated = true;
+
+    const result = await auth.deleteAccount({ confirm: 'DELETE' });
+
+    expect(result).toEqual({ success: true });
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/user/me', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword: undefined, confirm: 'DELETE' }),
+    });
+    expect(auth.isAuthenticated).toBe(false);
+  });
+
+  it('starts SSO binding for a cookie-only session without putting a token in the URL', async () => {
+    const ownerARecords = {
+      ownerId: 'user-a',
+      records: { 'agent-a:item-a': { text: 'same owner QR draft' } },
+    };
+    globalThis.localStorage = createLocalStorage({
+      'yeaft-work-center-composer-drafts-v1': JSON.stringify(ownerARecords),
+    });
+    const responses = [
+      jsonResponse({
+        body: { success: true, authorizeUrl: 'https://provider.test/auth', state: 'state-bind' },
+      }),
+      jsonResponse({
+        body: {
+          status: 'login', token: 'token-a', sessionKey: null, userId: 'user-a', role: 'pro',
+        },
+      }),
+      jsonResponse({
+        body: {
+          status: 'login', token: 'token-b', sessionKey: null, userId: 'user-b', role: 'pro',
+        },
+      }),
+    ];
+    globalThis.fetch = vi.fn(async () => responses.shift());
+    const auth = await loadAuthStore();
+    auth.isAuthenticated = true;
+
+    const started = await auth.startSsoQr('github', { intent: 'bind' });
+
+    expect(started).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/auth/sso/github/start-qr?intent=bind');
+    expect(globalThis.fetch.mock.calls[0][0]).not.toContain('token=');
+
+    auth.qrPanel = {
+      provider: 'github', intent: 'login', state: 'state-user-a', status: 'pending', error: null,
+    };
+    auth._startQrPoll();
+    await auth._qrPollTick();
+    expect(auth).toMatchObject({
+      isAuthenticated: true, token: 'token-a', userId: 'user-a', loginStep: 'authenticated',
+    });
+    expect(globalThis.localStorage.getItem('yeaft-work-center-composer-drafts-v1'))
+      .toBe(JSON.stringify(ownerARecords));
+    const browserState = await import('../../../web/stores/helpers/work-center-browser-state.js');
+    const ownerAFence = browserState.currentWorkCenterBrowserOwner();
+    expect(ownerAFence).toMatchObject({ ownerId: 'user-a' });
+    expect(browserState.readWorkCenterBrowserState(ownerAFence).drafts)
+      .toEqual(ownerARecords.records);
+
+    auth.qrPanel = {
+      provider: 'github', intent: 'login', state: 'state-user-b', status: 'pending', error: null,
+    };
+    auth._startQrPoll();
+    await auth._qrPollTick();
+    expect(auth).toMatchObject({
+      isAuthenticated: true, token: 'token-b', userId: 'user-b', loginStep: 'authenticated',
+    });
+    expect(globalThis.localStorage.getItem('yeaft-work-center-composer-drafts-v1')).toBe(null);
+    const ownerBFence = browserState.currentWorkCenterBrowserOwner();
+    expect(ownerBFence).toMatchObject({ ownerId: 'user-b' });
+    expect(browserState.readWorkCenterBrowserState(ownerBFence).drafts).toEqual({});
+    expect(globalThis.localStorage.removeItem)
+      .toHaveBeenCalledWith('yeaft-work-center-message-outbox-v1');
+    auth.cancelSsoQr();
   });
 
   it('hydrates the active token from storage before authenticated requests', async () => {

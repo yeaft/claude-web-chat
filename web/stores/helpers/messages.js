@@ -1,6 +1,10 @@
 // Message CRUD and streaming helpers
 
 import { applyLiveToolWindow } from './tool-window.js';
+import {
+  yeaftOptimisticMessageIdentity,
+  yeaftPersistedMessageIdentity,
+} from './yeaft-history-identity.js';
 
 // Default session identifier used by the Yeaft "Default" session seed
 // (mirrors agent/yeaft/groups/seed-default.js DEFAULT_GROUP_ID).
@@ -73,9 +77,42 @@ function normalizeMessageTimestamp(msg) {
 }
 
 function explicitMessageId(msg) {
-  const id = msg?.messageId ?? msg?.dbMessageId ?? msg?.id;
+  const id = msg?.stableKey ?? msg?.messageId ?? msg?.dbMessageId ?? msg?.id;
   if (id === null || id === undefined || id === '') return null;
   return String(id);
+}
+
+export function ensureMessageUiKey(store, conversationId, message) {
+  if (!message || typeof message !== 'object') return null;
+  if (typeof message.uiKey === 'string' && message.uiKey) return message.uiKey;
+  const sourceIdentity = message.entryId
+    || message.stableKey
+    || message.atMessageId
+    || message.messageId
+    || message.dbMessageId
+    || message.id
+    || null;
+  if (sourceIdentity !== null && sourceIdentity !== undefined && sourceIdentity !== '') {
+    message.uiKey = String(sourceIdentity);
+    return message.uiKey;
+  }
+  const prefix = `legacy:${conversationId || 'conversation'}:`;
+  const usedKeys = new Set((store?.messagesMap?.[conversationId] || [])
+    .map(row => row?.uiKey)
+    .filter(key => typeof key === 'string' && key));
+  let sequence = Number(store?._messageUiKeySequence) || 0;
+  do { sequence += 1; }
+  while (usedKeys.has(`${prefix}${sequence}`));
+  if (store) store._messageUiKeySequence = sequence;
+  message.uiKey = `${prefix}${sequence}`;
+  return message.uiKey;
+}
+
+export function ensureMessageUiKeys(store, conversationId, messages) {
+  for (const message of Array.isArray(messages) ? messages : []) {
+    ensureMessageUiKey(store, conversationId, message);
+  }
+  return messages;
 }
 
 function mergeMessageFields(existing, incoming) {
@@ -89,6 +126,7 @@ function mergeMessageFields(existing, incoming) {
       if (existing.isStreaming && value === false) existing.isStreaming = false;
       continue;
     }
+    if (key === 'uiKey' && existing.uiKey) continue;
     if (key === 'id' || key === 'messageId') {
       if (existingIsLocalYeaftUser && incoming.clientMessageId === existing.clientMessageId && incoming.messageId && incoming.messageId !== existing.clientMessageId) {
         continue;
@@ -103,6 +141,10 @@ function mergeMessageFields(existing, incoming) {
     }
     if (key === 'content' && typeof value === 'string') {
       if (!existing.content) existing.content = value;
+      continue;
+    }
+    if (key === 'responseKind' && (value === 'progress' || value === 'result')) {
+      existing.responseKind = value;
       continue;
     }
     if (key === 'attachments' && Array.isArray(value)) {
@@ -192,8 +234,10 @@ function mergeAssistantTextByStableId(store, conversationId, opts, text) {
 export function addMessageToConversation(store, conversationId, msg) {
   if (!conversationId) return;
 
+  const normalizedMsg = { ...msg };
+  ensureMessageUiKey(store, conversationId, normalizedMsg);
   const newMsg = {
-    ...msg,
+    ...normalizedMsg,
     id: msg.dbMessageId || msg.id || Date.now().toString() + Math.random().toString(36).substr(2, 9),
     // Preserve persisted message time when present. History/replay paths may
     // send ISO `ts`/`time`, DB-style `created_at`, or already-normalized epoch
@@ -220,6 +264,20 @@ export function addMessageToConversation(store, conversationId, msg) {
   // every Yeaft message (assistant *or* user) still gets vpId / turnId,
   // so we keep that here.
   if (isYeaftConversation(store, conversationId)) {
+    const agentId = store._currentYeaftAgentId
+      || Object.entries(store.yeaftConversationIdsByAgent || {}).find(([, id]) => id === conversationId)?.[0]
+      || store.currentAgent
+      || null;
+    const persistedMessageId = typeof newMsg.messageId === 'string' && /^m\d+$/.test(newMsg.messageId)
+      ? newMsg.messageId
+      : (typeof newMsg.id === 'string' && /^m\d+$/.test(newMsg.id) ? newMsg.id : null);
+    const clientMessageId = typeof newMsg.clientMessageId === 'string' ? newMsg.clientMessageId : null;
+    if (!newMsg.stableKey) {
+      newMsg.stableKey = persistedMessageId
+        ? yeaftPersistedMessageIdentity(agentId, newMsg.sessionId, persistedMessageId)
+        : yeaftOptimisticMessageIdentity(agentId, newMsg.sessionId, clientMessageId);
+    }
+    if (!newMsg.uiKey) newMsg.uiKey = newMsg.stableKey || null;
     if (!newMsg.vpId && store._currentYeaftVpId) {
       newMsg.vpId = store._currentYeaftVpId;
     }
@@ -234,6 +292,7 @@ export function addMessageToConversation(store, conversationId, msg) {
   if (!store.messagesMap[conversationId]) {
     store.messagesMap[conversationId] = [];
   }
+  ensureMessageUiKey(store, conversationId, newMsg);
   const stableId = explicitMessageId(msg);
   if (stableId) {
     const existing = store.messagesMap[conversationId].find(m => explicitMessageId(m) === stableId);
@@ -326,7 +385,7 @@ export function appendToAssistantMessageForConversation(store, conversationId, t
   }
 }
 
-export function finishStreamingForConversation(store, conversationId) {
+export function finishStreamingForConversation(store, conversationId, { completeLifecycle = true } = {}) {
   if (!conversationId) return;
 
   const msgs = store.messagesMap[conversationId];
@@ -370,15 +429,7 @@ export function finishStreamingForConversation(store, conversationId) {
     }
     if (m.isStreaming) {
       m.isStreaming = false;
-      // Per-message lifecycle: promote pending → completed at finalize
-      // time. The vp_turn_end reducer in the store is the live source
-      // of truth and runs FIRST when the turn really ends; this branch
-      // catches history-replay paths (no vp_turn_end fires) and any
-      // edge where finishStreaming runs without the broker event. We
-      // guard on status === 'pending' so live 'aborted' / 'errored'
-      // stamps from the store are never silently overwritten back to
-      // 'completed'.
-      if (m.status === 'pending') {
+      if (completeLifecycle && m.status === 'pending') {
         m.status = 'completed';
         m.turnEndAt = Date.now();
       }

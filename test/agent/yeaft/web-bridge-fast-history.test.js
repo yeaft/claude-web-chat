@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { beforeEach } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { searchConversationIndex } from '../../../../agent/yeaft/conversation/history-index.js';
+import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -22,10 +24,31 @@ vi.mock('../../../agent/yeaft/status-cache.js', () => ({
 
 const ctx = (await import('../../../agent/context.js')).default;
 const { ConversationStore } = await import('../../../agent/yeaft/conversation/persist.js');
-const { handleYeaftLoadHistory, __testSetSession, __testHooks } = await import('../../../agent/yeaft/web-bridge.js');
+const {
+  handleYeaftLoadHistory,
+  handleYeaftLoadHistoryOutline,
+  handleYeaftLoadMoreHistory,
+  handleYeaftSearchHistory,
+  handleYeaftSessionAddMember,
+  handleYeaftSessionRemoveMember,
+  handleYeaftSessionSetDefaultVp,
+  __testHandleEngineEvent,
+  __testGroupHistory,
+  __testSetSession,
+  __testHooks,
+} = await import('../../../agent/yeaft/web-bridge.js');
 
 function flushMicrotasks() {
   return new Promise(resolve => setImmediate(resolve));
+}
+
+const consolidatedHistoryScenarios = [];
+function historyScenario(name, run) { consolidatedHistoryScenarios.push({ name, run }); }
+async function runConsolidatedHistoryScenarios() {
+  for (const scenario of consolidatedHistoryScenarios) {
+    try { await scenario.run(); }
+    catch (error) { error.message = `[${scenario.name}] ${error.message}`; throw error; }
+  }
 }
 
 describe('Yeaft load-history first paint', () => {
@@ -45,13 +68,111 @@ describe('Yeaft load-history first paint', () => {
     ctx.CONFIG = null;
   });
 
-  it('filters legacy internal-control rows in the visible-history fallback path', () => {
+  it('filters internal rows and uses a collision-resistant virtual conversation id', () => {
+    const firstConversationId = __testHooks.ensureYeaftConversationIdForTest();
+    __testHooks.setYeaftConversationIdForTest(null);
+    const secondConversationId = __testHooks.ensureYeaftConversationIdForTest();
+    expect(firstConversationId).toMatch(/^yeaft-[0-9a-f-]{36}$/);
+    expect(secondConversationId).toMatch(/^yeaft-[0-9a-f-]{36}$/);
+    expect(secondConversationId).not.toBe(firstConversationId);
+
+    const hctx = {
+      assistantTextParts: [],
+      toolCallsAccum: [],
+      toolResultsAccum: [],
+      resetQueryTimer: vi.fn(),
+      sessionId: 'session-fast',
+      vpId: 'vp-linus',
+      turnId: 'turn-retry',
+      threadId: 'main',
+    };
+    __testHandleEngineEvent({
+      type: 'llm_retry',
+      attempt: 2,
+      maxRetries: 3,
+      delayMs: 2000,
+      reason: 'stream_idle_timeout',
+      recoveryMode: 'continue',
+      errorName: 'LLMStreamIdleTimeoutError',
+      statusCode: 0,
+      message: 'idle',
+    }, hctx);
+    __testHandleEngineEvent({
+      type: 'error',
+      error: new Error('OpenAI stream idle timeout after 90000ms'),
+      retryable: true,
+      reason: 'stream_idle_timeout',
+      retryExhausted: true,
+      retryAttempts: 3,
+      maxRetries: 3,
+    }, hctx);
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'llm_retry',
+        recoveryMode: 'continue',
+        attempt: 2,
+      }),
+    }));
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'vp_status_changed',
+        state: 'retrying',
+        turnId: 'turn-retry',
+      }),
+    }));
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'error',
+        retryAttempts: 3,
+        message: expect.stringContaining('after 3 fresh request retries'),
+      }),
+    }));
+    expect(sent).toContainEqual(expect.objectContaining({
+      data: expect.objectContaining({
+        type: 'assistant',
+        message: expect.objectContaining({
+          content: [{ type: 'text', text: expect.stringContaining('after 3 fresh request retries') }],
+        }),
+      }),
+    }));
+    const markEngineTerminal = vi.fn();
+    hctx.markEngineTerminal = markEngineTerminal;
+    __testHandleEngineEvent({
+      type: 'turn_end',
+      stopReason: 'error',
+      terminal: true,
+      threadId: 'main',
+    }, hctx);
+    expect(markEngineTerminal).toHaveBeenCalledWith('error', expect.objectContaining({
+      message: expect.stringContaining('after 3 fresh request retries'),
+      reason: 'stream_idle_timeout',
+      retryAttempts: 3,
+    }));
+    expect(__testHooks.decorateSessionsWithRuntimeState([{ id: 'session-fast' }])).toEqual([
+      expect.objectContaining({
+        id: 'session-fast',
+        running: false,
+        active: false,
+        runningVpCount: 0,
+      }),
+    ]);
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'vp_status_changed',
+        state: 'error',
+        runningThreadCount: 0,
+        turnId: 'turn-retry',
+      }),
+    }));
+    sent.length = 0;
+
     const rows = [
       { id: 'm0001', role: 'user', content: 'visible q', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0002', role: 'user', content: '<task-result id="task_1" kind="shell" status="succeeded">\nPASS\n</task-result>', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0003', role: 'user', content: '[system note] You have called ListAgents with the same arguments 3 times. Previous result: {...}', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0004', role: 'assistant', content: 'visible a', sessionId: 'session-fast', threadId: 'main', speakerVpId: 'vp-linus' },
       { id: 'm0005', role: 'user', content: 'In docs, <task-result> is just prose', sessionId: 'session-fast', threadId: 'main' },
+      { id: 'm0006', role: 'user', content: 'model-only continuation', sessionId: 'session-fast', threadId: 'main', userAuthored: false },
     ];
     const page = __testHooks.loadVisibleGroupHistoryPage({
       loadOlderBySession() {
@@ -64,6 +185,206 @@ describe('Yeaft load-history first paint', () => {
       'visible a',
       'In docs, <task-result> is just prose',
     ]);
+
+    const quote = {
+      id: 'm0001', role: 'assistant', author: 'Linus', content: 'Prior answer',
+      todos: [{ content: 'Verify', status: 'completed' }],
+    };
+    const projected = __testHooks.projectVisibleHistoryChunkMessages([
+      { id: 'm0002', role: 'user', content: 'Follow up', sessionId: 'session-fast', quote },
+    ]);
+    expect(projected[0]).toMatchObject({ id: 'm0002', quote });
+  });
+
+  it('projects the latest TodoWrite snapshot without counting it as a generic tool summary', () => {
+    const projected = __testHooks.projectVisibleHistoryChunkMessages([{
+      id: 'm0003',
+      role: 'assistant',
+      content: 'Progress',
+      sessionId: 'session-fast',
+      responseKind: 'progress',
+      toolCalls: [
+        { id: 'todo-old', name: 'TodoWrite', input: { todos: [{ content: 'Old', status: 'pending' }] } },
+        { id: 'bash', name: 'Bash', input: { command: 'true' } },
+        { id: 'todo-new', name: 'TodoWrite', input: { todos: [{ content: 'New', status: 'completed' }] } },
+      ],
+    }]);
+
+    expect(projected[0]).toMatchObject({
+      todos: [{ content: 'New', status: 'completed' }],
+      toolSummaryCount: 1,
+      responseKind: 'progress',
+    });
+
+    expect(__testHooks.projectVisibleHistoryChunkMessages([{
+      id: 'm0004', role: 'assistant', content: 'Partial', sessionId: 'session-fast',
+      incomplete: true, stopReason: 'aborted',
+    }])[0]).toMatchObject({ responseKind: 'progress' });
+    expect(__testHooks.projectVisibleHistoryChunkMessages([{
+      id: 'm0005', role: 'assistant', content: 'Partial before error', sessionId: 'session-fast',
+      responseKind: 'result', incomplete: true, stopReason: 'error',
+    }])[0]).toMatchObject({
+      responseKind: 'progress', incomplete: true, stopReason: 'error',
+    });
+    expect(__testHooks.projectVisibleHistoryChunkMessages([{
+      id: 'm0006', role: 'assistant', content: 'Cancelled partial', sessionId: 'session-fast',
+      responseKind: 'result', stopReason: 'cancelled',
+    }])[0]).toMatchObject({ responseKind: 'progress', stopReason: 'cancelled' });
+
+    const markEngineTerminal = vi.fn();
+    const handlerCtx = {
+      assistantTextParts: [],
+      toolCallsAccum: [],
+      toolResultsAccum: [],
+      resetQueryTimer: vi.fn(),
+      pauseQueryTimer: vi.fn(),
+      markEngineTerminal,
+      sessionId: 'session-fast',
+      vpId: 'vp-linus',
+      turnId: 'turn-error',
+      threadId: 'main',
+    };
+    __testHandleEngineEvent({
+      type: 'error',
+      error: new Error('provider exploded'),
+      retryable: false,
+    }, handlerCtx);
+    expect(markEngineTerminal).not.toHaveBeenCalled();
+
+    handlerCtx.resetQueryTimer.mockClear();
+    handlerCtx.pauseQueryTimer.mockClear();
+    __testHandleEngineEvent({
+      type: 'llm_retry',
+      attempt: 2,
+      maxRetries: 2,
+      delayMs: 120_000,
+      reason: 'temporary_forbidden',
+      threadId: 'main',
+    }, handlerCtx);
+    expect(handlerCtx.pauseQueryTimer).toHaveBeenCalledTimes(1);
+    expect(handlerCtx.resetQueryTimer).not.toHaveBeenCalled();
+
+    handlerCtx.pauseQueryTimer.mockClear();
+    __testHandleEngineEvent({
+      type: 'tool_start',
+      id: 'call-slow',
+      name: 'Bash',
+      threadId: 'main',
+    }, handlerCtx);
+    expect(handlerCtx.pauseQueryTimer).toHaveBeenCalledTimes(1);
+    expect(handlerCtx.resetQueryTimer).not.toHaveBeenCalled();
+
+    __testHandleEngineEvent({
+      type: 'tool_end',
+      id: 'call-slow',
+      name: 'Bash',
+      output: 'done',
+      isError: false,
+      threadId: 'main',
+    }, handlerCtx);
+    expect(handlerCtx.resetQueryTimer).toHaveBeenCalledTimes(1);
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'llm_retry',
+        delayMs: 120_000,
+      }),
+    }));
+    expect(sent.at(-1)).toMatchObject({
+      sessionId: 'session-fast',
+      vpId: 'vp-linus',
+      turnId: 'turn-error',
+      threadId: 'main',
+    });
+    handlerCtx.resetQueryTimer.mockClear();
+    __testHandleEngineEvent({ type: 'turn_start', threadId: 'main' }, handlerCtx);
+    expect(handlerCtx.resetQueryTimer).toHaveBeenCalledTimes(1);
+
+    __testHandleEngineEvent({
+      type: 'turn_end',
+      stopReason: 'error',
+      terminal: true,
+      threadId: 'main',
+    }, handlerCtx);
+    expect(markEngineTerminal).toHaveBeenCalledWith('error', { message: 'provider exploded' });
+
+    sent.length = 0;
+    const waitWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      __testHandleEngineEvent({
+        type: 'async_task_wait_end',
+        turnId: 'turn-stalled-task',
+        threadId: 'main',
+        loopNumber: 2,
+        aborted: false,
+        remainingTaskIds: [],
+        timedOut: true,
+        deferredTaskIds: ['task-stalled'],
+      }, handlerCtx);
+      expect(handlerCtx.resetQueryTimer).toHaveBeenCalled();
+      expect(waitWarn).toHaveBeenCalledWith(
+        expect.stringContaining('async task wait timed out'),
+        ['task-stalled'],
+      );
+      expect(sent).toContainEqual(expect.objectContaining({
+        event: expect.objectContaining({
+          type: 'vp_async_task_wait_end',
+          timedOut: true,
+          deferredTaskIds: ['task-stalled'],
+        }),
+      }));
+    } finally {
+      waitWarn.mockRestore();
+    }
+  });
+
+  it('preserves TodoWrite through the real store page and history wire projection', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-todo-history-'));
+    try {
+      const store = new ConversationStore(dir);
+      store.append({ role: 'user', content: 'status?', sessionId: 'session-fast' });
+      store.append({
+        role: 'assistant',
+        content: 'Progress',
+        sessionId: 'session-fast',
+        speakerVpId: 'vp-linus',
+        responseKind: 'result',
+        stopReason: 'end_turn',
+        toolCalls: [
+          { id: 'todo', name: 'TodoWrite', input: { todos: [{ content: 'Verify', status: 'completed' }] } },
+          { id: 'bash', name: 'Bash', input: { command: 'true' } },
+        ],
+      });
+
+      const page = __testHooks.loadVisibleGroupHistoryPage(store, 'session-fast', 1);
+      const projected = __testHooks.projectVisibleHistoryChunkMessages(page.messages);
+
+      expect(page.messages[1]).toMatchObject({
+        todos: [{ content: 'Verify', status: 'completed' }],
+        toolSummaryCount: 1,
+        responseKind: 'result',
+      });
+      expect(projected[1]).toMatchObject({
+        todos: [{ content: 'Verify', status: 'completed' }],
+        toolSummaryCount: 1,
+        responseKind: 'result',
+      });
+
+      store.append({
+        role: 'assistant', content: 'Persisted partial', sessionId: 'session-fast',
+        speakerVpId: 'vp-linus', responseKind: 'result', incomplete: true, stopReason: 'error',
+      });
+      const failedPage = __testHooks.loadVisibleGroupHistoryPage(store, 'session-fast', 1);
+      const failedProjected = __testHooks.projectVisibleHistoryChunkMessages(failedPage.messages);
+      expect(failedPage.messages.at(-1)).toMatchObject({
+        responseKind: 'progress', incomplete: true, stopReason: 'error',
+      });
+      expect(failedProjected.at(-1)).toMatchObject({
+        responseKind: 'progress', incomplete: true, stopReason: 'error',
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('preserves the canonical image asset anchor in the history wire projection', () => {
@@ -80,6 +401,159 @@ describe('Yeaft load-history first paint', () => {
     });
   });
 
+  it('projects a persisted AskUser answer as terminal history metadata', () => {
+    const projected = __testHooks.projectVisibleHistoryChunkMessages([
+      {
+        id: 'm0100',
+        role: 'assistant',
+        content: '',
+        sessionId: 'session-fast',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [{ id: 'ask_1', name: 'AskUser', input: { question: 'Continue?', options: ['Yes', 'No'] } }],
+      },
+      {
+        id: 'm0101',
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'session-fast',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'ask_1',
+      },
+    ]);
+
+    expect(projected).toEqual([
+      expect.objectContaining({
+        id: 'm0100',
+        role: 'assistant',
+        askUserResults: [{
+          toolCallId: 'ask_1',
+          status: 'answered',
+          question: 'Continue?',
+          options: ['Yes', 'No'],
+          answers: { 'Continue?': 'Yes' },
+        }],
+      }),
+    ]);
+    expect(projected[0].toolSummaryCount).toBeUndefined();
+  });
+
+  historyScenario('keeps outline totals opt-in and traces bounded outline/search scans', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-history-scan-trace-'));
+    try {
+      ctx.CONFIG = { yeaftDir: dir };
+      const store = new ConversationStore(dir);
+      store.appendBatch([
+        { role: 'user', content: 'first needle', sessionId: 'session-trace' },
+        { role: 'assistant', content: 'first answer', sessionId: 'session-trace', speakerVpId: 'vp-linus' },
+        { role: 'user', content: 'second question', sessionId: 'session-trace' },
+        { role: 'assistant', content: 'second needle', sessionId: 'session-trace', speakerVpId: 'vp-linus' },
+      ]);
+
+      await handleYeaftLoadHistoryOutline({
+        type: 'yeaft_load_history_outline',
+        sessionId: 'session-trace',
+        requestId: 'outline-default',
+        perfTraceId: 'pt-outline-default',
+        limit: 2,
+      });
+      expect(sent.find(message => message.requestId === 'outline-default')).toMatchObject({
+        type: 'yeaft_history_outline',
+        totalCount: null,
+        error: 'index_building',
+        perfTraceId: 'pt-outline-default',
+      });
+      await searchConversationIndex(dir, 'session-trace', 'needle');
+      await handleYeaftLoadHistoryOutline({
+        type: 'yeaft_load_history_outline',
+        sessionId: 'session-trace',
+        requestId: 'outline-counted',
+        perfTraceId: 'pt-outline-counted',
+        includeTotal: true,
+        limit: 2,
+      });
+      await handleYeaftSearchHistory({
+        type: 'yeaft_search_history',
+        sessionId: 'session-trace',
+        requestId: 'search-traced',
+        perfTraceId: 'pt-search',
+        query: 'needle',
+        limit: 2,
+      });
+      await flushMicrotasks();
+
+      expect(sent.find(message => message.requestId === 'outline-counted')).toMatchObject({
+        type: 'yeaft_history_outline', totalCount: 4,
+      });
+      expect(sent.find(message => message.requestId === 'search-traced')).toMatchObject({
+        type: 'yeaft_history_search_result', perfTraceId: 'pt-search',
+        results: expect.arrayContaining([expect.objectContaining({ snippet: expect.stringContaining('needle') })]),
+      });
+
+      const day = new Date().toISOString().slice(0, 10);
+      const traces = readFileSync(join(dir, 'perf-traces', `${day}.jsonl`), 'utf8')
+        .trim()
+        .split('\n')
+        .map(line => JSON.parse(line));
+      const outlineScan = traces.find(row => row.traceId === 'pt-outline-counted' && row.phase === 'history_outline.store_scan');
+      const searchScan = traces.find(row => row.traceId === 'pt-search' && row.phase === 'history_search.store_scan');
+      expect(outlineScan).toMatchObject({
+        detail: {
+          includeTotal: true,
+          resultCount: 2,
+          indexGeneration: expect.any(Number),
+          indexFallback: false,
+        },
+      });
+      expect(searchScan).toMatchObject({
+        detail: {
+          queryLength: 6,
+          resultCount: 2,
+          indexGeneration: expect.any(Number),
+          indexFallback: false,
+        },
+      });
+      expect(JSON.stringify(traces)).not.toContain('first needle');
+      expect(traces).toEqual(expect.arrayContaining([
+        expect.objectContaining({ traceId: 'pt-outline-counted', phase: 'history_outline.event_loop_delay' }),
+        expect.objectContaining({ traceId: 'pt-search', phase: 'history_search.event_loop_delay' }),
+      ]));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loads older pages from persisted history before runtime boot resolves', async () => {
+    await runConsolidatedHistoryScenarios();
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-fast-older-history-'));
+    try {
+      ctx.CONFIG = { yeaftDir: dir };
+      const store = new ConversationStore(dir);
+      const appended = store.appendBatch(Array.from({ length: 24 }, (_, index) => ({
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        content: `history ${index + 1}`,
+        sessionId: 'session-fast-older',
+        ...(index % 2 === 0 ? {} : { speakerVpId: 'vp-linus' }),
+      })));
+
+      await handleYeaftLoadMoreHistory({
+        sessionId: 'session-fast-older',
+        beforeSeq: store.getMessageSeqById(appended.at(-1).id) + 1,
+        turns: 20,
+      });
+
+      expect(loadSession).not.toHaveBeenCalled();
+      const chunk = sent.find(message => message.type === 'yeaft_history_chunk' && message.mode === 'older');
+      expect(chunk).toMatchObject({ sessionId: 'session-fast-older', turns: 20 });
+      expect(chunk.messages).toHaveLength(24);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('replays the recent message window before full session boot resolves', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-fast-history-'));
     try {
@@ -92,7 +566,12 @@ describe('Yeaft load-history first paint', () => {
         { role: 'assistant', content: '', sessionId: 'session-fast', speakerVpId: 'vp-linus', toolCalls: [{ id: 'tool-1', name: 'Bash', input: { command: 'echo ok' } }] },
       ]);
 
-      const pending = handleYeaftLoadHistory({ sessionId: 'session-fast', limit: 1 });
+      const pending = handleYeaftLoadHistory({
+        sessionId: 'session-fast',
+        limit: 1,
+        requestId: 'history-request-1',
+        _requestClientId: 'web-client-1',
+      });
       await flushMicrotasks();
 
       expect(loadSession).toHaveBeenCalledTimes(1);
@@ -100,6 +579,8 @@ describe('Yeaft load-history first paint', () => {
       expect(chunk).toMatchObject({
         type: 'yeaft_history_chunk',
         sessionId: 'session-fast',
+        requestId: 'history-request-1',
+        _requestClientId: 'web-client-1',
         mode: 'recent',
         hasMore: true,
         messages: [
@@ -110,11 +591,14 @@ describe('Yeaft load-history first paint', () => {
       const historyDone = sent.find(m => m.event?.type === 'history_loaded');
       expect(historyDone).toMatchObject({
         type: 'yeaft_output',
+        requestId: 'history-request-1',
+        _requestClientId: 'web-client-1',
         event: {
           type: 'history_loaded',
           mode: 'recent',
           count: 2,
           sessionId: 'session-fast',
+          requestId: 'history-request-1',
           hasMore: true,
         },
       });
@@ -140,6 +624,59 @@ describe('Yeaft load-history first paint', () => {
         sessionId: 'session-fast',
         event: { type: 'session_ready' },
       });
+
+      const hiddenSessionId = 'session-hidden-continuation';
+      store.appendBatch([
+        { role: 'user', content: 'reachable old question', sessionId: hiddenSessionId },
+        { role: 'assistant', content: 'reachable old answer', sessionId: hiddenSessionId },
+        ...Array.from({ length: 300 }, (_, index) => ({
+          role: 'user', content: `hidden ${index}`, sessionId: hiddenSessionId, internal: true,
+        })),
+      ]);
+      sent.length = 0;
+      await handleYeaftLoadHistory({
+        sessionId: hiddenSessionId,
+        limit: 1,
+        requestId: 'hidden-recent',
+      });
+      const hiddenRecent = sent.find(message => (
+        message.type === 'yeaft_history_chunk' && message.requestId === 'hidden-recent'
+      ));
+      const hiddenDone = sent.find(message => message.event?.requestId === 'hidden-recent');
+      expect(hiddenRecent).toMatchObject({
+        mode: 'recent', messages: [], oldestSeq: null, hasMore: true,
+        nextBeforeSeq: expect.any(Number),
+      });
+      expect(hiddenDone.event).toMatchObject({
+        type: 'history_loaded', mode: 'recent', oldestSeq: null, hasMore: true,
+        nextBeforeSeq: hiddenRecent.nextBeforeSeq,
+      });
+
+      let beforeSeq = hiddenRecent.nextBeforeSeq;
+      let visibleMessages = [];
+      const cursors = [];
+      for (let attempt = 0; attempt < 4 && visibleMessages.length === 0; attempt += 1) {
+        cursors.push(beforeSeq);
+        const requestId = `hidden-older-${attempt}`;
+        await handleYeaftLoadMoreHistory({
+          sessionId: hiddenSessionId,
+          requestId,
+          beforeSeq,
+          pageKind: 'server',
+          cacheEpoch: 0,
+          turns: 20,
+        });
+        const page = sent.find(message => (
+          message.type === 'yeaft_history_chunk' && message.requestId === requestId
+        ));
+        visibleMessages = page.messages;
+        beforeSeq = page.nextBeforeSeq;
+      }
+      expect(new Set(cursors).size).toBe(cursors.length);
+      expect(cursors.every((cursor, index) => index === 0 || cursor < cursors[index - 1])).toBe(true);
+      expect(visibleMessages.map(message => message.content)).toEqual([
+        'reachable old question', 'reachable old answer',
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -273,6 +810,30 @@ describe('Yeaft load-history first paint', () => {
       // One bounded UI replay (limit: 1) plus one bounded runtime hydrate
       // (default recentTurnsLimit) is fine; parsing the whole 1002-row session is not.
       expect(readCounts.count).toBeLessThan(80);
+
+      store.append({ role: 'user', content: 'progress q', sessionId: 'session-progress' });
+      store.append({
+        role: 'assistant', content: 'I found the request construction boundary.',
+        sessionId: 'session-progress', speakerVpId: 'vp-linus', responseKind: 'progress',
+      });
+      store.append({
+        role: 'assistant', content: 'The prior turn completed.',
+        sessionId: 'session-progress', speakerVpId: 'vp-linus',
+        responseKind: 'result', stopReason: 'end_turn',
+      });
+      expect(__testGroupHistory('session-progress')).toEqual([
+        expect.objectContaining({ role: 'user', content: 'progress q' }),
+        expect.objectContaining({
+          role: 'assistant',
+          content: 'I found the request construction boundary.',
+          responseKind: 'progress',
+        }),
+        expect.objectContaining({
+          role: 'assistant',
+          content: 'The prior turn completed.',
+          responseKind: 'result',
+        }),
+      ]);
     } finally {
       __testSetSession(null);
       rmSync(dir, { recursive: true, force: true });
@@ -337,6 +898,7 @@ describe('Yeaft load-history first paint', () => {
         role: 'user',
         content: 'hello at the real send time',
         time: '2026-06-20T01:02:03.456Z',
+        userAuthored: true,
       });
     } finally {
       __testSetSession(null);
@@ -427,7 +989,7 @@ describe('Yeaft load-history first paint', () => {
     }
   });
 
-  it('does not emit an empty delta chunk when no rows changed after the cursor', async () => {
+  it('emits an empty delta acknowledgement when no visible rows changed after the cursor', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-empty-delta-'));
     try {
       ctx.CONFIG = { yeaftDir: dir };
@@ -448,7 +1010,12 @@ describe('Yeaft load-history first paint', () => {
       const pending = handleYeaftLoadHistory({ sessionId: 'session-fast', afterSeq: Number(anchor.id.slice(1)) });
       await flushMicrotasks();
 
-      expect(sent.some(m => m.type === 'yeaft_history_chunk' && m.mode === 'delta')).toBe(false);
+      expect(sent.find(m => m.type === 'yeaft_history_chunk' && m.mode === 'delta')).toMatchObject({
+        sessionId: 'session-fast',
+        messages: [],
+        latestSeq: Number(hidden.id.slice(1)),
+        afterSeq: Number(anchor.id.slice(1)),
+      });
       const event = sent.find(m => m.event?.type === 'history_loaded')?.event;
       expect(event).toMatchObject({
         mode: 'delta',
@@ -591,6 +1158,41 @@ describe('Yeaft load-history first paint', () => {
         count: chunk.messages.length,
         sessionId: 'session-fast',
       });
+
+      vi.useFakeTimers();
+      const metadataDir = mkdtempSync(join(tmpdir(), 'yeaft-roster-metadata-'));
+      try {
+        ctx.CONFIG = { yeaftDir: metadataDir };
+        vi.setSystemTime(new Date('2026-07-29T10:00:00.000Z'));
+        createSession(join(metadataDir, 'sessions'), {
+          id: 'session-roster',
+          name: 'Roster',
+          roster: ['omni'],
+          defaultVpId: 'omni',
+        }).close();
+
+        const cases = [
+          [new Date('2026-07-29T11:00:00.000Z'), handleYeaftSessionAddMember, 'add_member', 'reviewer'],
+          [new Date('2026-07-29T12:00:00.000Z'), handleYeaftSessionSetDefaultVp, 'set_default_vp', 'reviewer'],
+          [new Date('2026-07-29T13:00:00.000Z'), handleYeaftSessionRemoveMember, 'remove_member', 'reviewer'],
+        ];
+        for (const [at, handler, op, vpId] of cases) {
+          vi.setSystemTime(at);
+          sent.length = 0;
+          handler({ sessionId: 'session-roster', vpId, requestId: `request-${op}` });
+          expect(sent).toContainEqual(expect.objectContaining({
+            type: 'yeaft_output',
+            event: expect.objectContaining({
+              type: 'session_roster_changed',
+              sessionId: 'session-roster',
+              metadataUpdatedAt: at.toISOString(),
+            }),
+          }));
+        }
+      } finally {
+        vi.useRealTimers();
+        rmSync(metadataDir, { recursive: true, force: true });
+      }
     } finally {
       __testSetSession(null);
       rmSync(dir, { recursive: true, force: true });

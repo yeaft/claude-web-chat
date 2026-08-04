@@ -1,77 +1,88 @@
 # Security
 
-Yeaft has three independent credential layers to think about:
+Yeaft has three independent credential layers:
 
-1. **Web user auth** — how humans log into the web UI
-2. **Agent auth** — how an agent process proves it's allowed to connect to the server
-3. **Yeaft engine credentials** — how the agent's Yeaft engine reaches third-party LLM APIs
+1. **Web user authentication** — how a human logs into the Web UI.
+2. **Agent authentication** — how an Agent proves that it may connect and which owner may use it.
+3. **Native Yeaft provider credentials** — how the Agent calls third-party LLM APIs.
 
-They don't share secrets and don't fall back on each other.
+They do not share secrets or fall back to one another.
 
-## Web User Authentication
+## Web user authentication
 
-1. **Username + Password** (bcrypt hashed)
-2. **TOTP 2FA** (optional, Google/Microsoft Authenticator)
-3. **Email verification** (optional, requires SMTP)
+- username/password with bcrypt hashes;
+- optional TOTP;
+- optional email verification when SMTP is configured;
+- JWTs for subsequent REST and WebSocket authorization;
+- configurable SSO providers where enabled by the deployment.
 
-JWT tokens are issued after login and used for subsequent REST + WebSocket calls.
+Production startup rejects a default `JWT_SECRET`. If no user exists, the Server warns and the operator must create the first administrator.
 
-## Production Requirements
+## Agent authentication and ownership
 
-The server **refuses to start** in production mode if:
-- `JWT_SECRET` is left at default
+- Agents authenticate in a WebSocket message; the secret is not placed in the URL.
+- A per-user Agent secret binds an Agent to one owner and takes precedence for that user.
+- A global `AGENT_SECRET` is the administrative fallback.
+- The Server performs owner/access checks before relaying browser requests or Agent output.
 
-If no users are configured, the server starts with a warning — create the first user via `docker compose exec`.
+Authentication and authorization do not by themselves provide transport confidentiality. They prove identity and constrain routing.
 
-## Agent Authentication
+## WebSocket transport confidentiality
 
-- Agents authenticate via WebSocket message (secret never in URL)
-- **Per-user agent secret**: Agent bound to a specific user (only that user can see it) — created in **Settings → Security**, takes precedence for that user
-- **Global AGENT_SECRET**: Env var fallback, only visible to admin users
-- Each connection gets a unique session key for encryption (TweetNaCl XSalsa20-Poly1305)
+Current Web and Agent peers explicitly negotiate **plaintext JSON WebSocket payloads**:
 
-## Yeaft Engine Credentials
+- the Web client sends `client_hello { plaintextOk: true }`;
+- a current Agent advertises the `plaintext-ok` capability;
+- the Server then disables per-frame TweetNaCl payload encryption for that peer.
 
-When the agent runs Yeaft Code Agent it talks directly to the LLM providers you list in `~/.yeaft/config.json`. Each provider entry has **one of two** credential modes:
+Therefore, a production deployment must terminate **HTTPS/WSS** at the Server or a trusted reverse proxy. Plain `ws://` is appropriate only on loopback or another already protected trusted transport.
 
-| Mode | Field | What happens |
+TweetNaCl XSalsa20-Poly1305 payload encryption remains in the code as a **legacy-peer compatibility fallback** when an older peer does not negotiate plaintext. It is not the default confidentiality layer for a current Web + Server + Agent combination. Do not describe the current relay as end-to-end encrypted: the Server routes normal plaintext JSON after the WSS endpoint and can inspect message bodies.
+
+| Path | Current confidentiality boundary |
+| --- | --- |
+| Browser ↔ Server | TLS from HTTPS/WSS in production; current application payload is plaintext JSON inside that transport |
+| Agent ↔ Server | TLS from WSS in production; current application payload is plaintext JSON inside that transport |
+| Legacy peer fallback | TweetNaCl per-frame payload encryption when plaintext capability is absent |
+| Agent ↔ LLM provider | Provider HTTPS/TLS |
+
+## Native Yeaft provider credentials
+
+Native Yeaft calls configured LLM providers directly from the Agent. The config path belongs to the Agent instance:
+
+- default service instance: `~/.yeaft/config.json`;
+- named instance `<name>`: `~/.yeaft/instances/<name>/config.json` unless `YEAFT_DIR` / `--yeaft-dir` overrides it.
+
+Provider entries use one of two credential modes:
+
+| Mode | Field | Behavior |
 | --- | --- | --- |
-| **Static API key** | `apiKey: "sk-..."` | Used as-is for every request to that provider |
-| **Dynamic credential** | `credentialProvider: "github-copilot"` | At request time the engine asks the credential provider for a short-lived token. Currently supported: `github-copilot` (uses your existing GitHub OAuth, exchanges it for a Copilot API token) |
+| Static API key | `apiKey` | Stored in the instance config and reused for requests |
+| Dynamic credential | `credentialProvider: "github-copilot"` | Obtains short-lived Copilot API credentials from the local GitHub credential flow |
 
-**Security consequences:**
+Security consequences:
 
-- `apiKey` sits in `~/.yeaft/config.json` in plain text — chmod 600 the file, don't commit it
-- `credentialProvider` keeps no long-lived secret on disk; tokens live in memory and refresh as needed
-- Yeaft credentials are **not** seen by the server — only the agent uses them. The server never proxies LLM calls
-- **Two-factor effect**: to run Yeaft against Copilot you need both a working agent secret (server-side gate) AND a working GitHub OAuth token (provider-side gate)
+- static `apiKey` values are plaintext on the Agent disk; restrict file permissions and never commit the config;
+- dynamic provider tokens remain process-local and refresh as required;
+- the Server does not proxy native LLM requests or own provider credentials;
+- raw provider traces, prompts, tool inputs/outputs, attachments, memory, and project files are sensitive Agent data.
 
-## Encryption
+## Roles and permissions
 
-| Layer | Algorithm | Key source |
-| --- | --- | --- |
-| Web ↔ Server WebSocket | TweetNaCl XSalsa20-Poly1305 | Per-connection session key (Diffie-Hellman key exchange at connect) |
-| Agent ↔ Server WebSocket | TweetNaCl XSalsa20-Poly1305 | Per-connection session key |
-| LLM API traffic | TLS (standard HTTPS) | Provider TLS cert |
-
-End-to-end encryption refers to the web ↔ agent path *through* the server — the server is a routing relay and cannot read message bodies in clear text.
-
-## Roles & Permissions
-
-All registered users are **Pro** by default. The first user created via CLI is **Admin**.
+All registered users are currently Pro by default; the first CLI-created user is Admin.
 
 | Feature | `pro` | `admin` |
-|---|:---:|:---:|
-| Chat | yes | yes |
-| Own agents (per-user secret) | yes | yes |
-| Global agents (AGENT_SECRET) | - | yes |
-| Workbench (Terminal, Git, Files) | yes | yes |
-| Port Proxy | yes | yes |
-| Manage invitations | - | yes |
-| Admin Dashboard | - | yes |
+| --- | :---: | :---: |
+| Conversations and owned Agents | yes | yes |
+| Global-secret Agents | - | yes |
+| Workbench and port proxy | yes | yes |
+| Invitation administration | - | yes |
+| Admin dashboard | - | yes |
 
-## Threat Model — What Yeaft Does Not Protect Against
+## Threat model: what Yeaft does not protect against
 
-- **Compromised agent machine**: an attacker with root on the agent box can read `~/.yeaft/config.json`, intercept Yeaft credentials, exfiltrate `~/.yeaft/memory/**` memory files, and tail running CLI processes. Run agents on machines you trust.
-- **Malicious server operator**: encryption protects message body confidentiality through routing, but the server still sees metadata (who connects to which agent, timing, message sizes). A hostile server can also serve modified web JS to clients.
-- **Browser-side XSS**: the web client renders agent output as HTML/markdown. The renderer sanitizes, but if you connect to an agent you don't trust, that agent can craft messages that try to abuse the sanitizer. Don't connect to agents you don't trust.
+- **Compromised Agent machine:** an attacker with sufficient local access can read instance config, project files, memory, traces, and process data.
+- **Malicious or compromised Server:** the current Server can see relayed plaintext message bodies after TLS termination and can serve modified Web JavaScript. Do not treat it as an oblivious encrypted relay.
+- **Missing TLS:** authentication over public `ws://` does not protect message confidentiality. Use WSS.
+- **Browser-side compromise/XSS:** a compromised client can read everything visible to that user.
+- **Unsafe Agent tools:** authentication does not sandbox shell, Git, file, provider, or external side effects. Tool and repository policies remain part of the security boundary.

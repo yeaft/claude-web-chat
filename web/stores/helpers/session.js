@@ -2,6 +2,7 @@
 
 import { useAuthStore } from '../auth.js';
 import { t } from '../../utils/i18n.js';
+import { chatCatalogKey, normalizeChatRuntimeProvider } from './session-catalog.js';
 
 // ★ sessionLoading 超时保护：防止 loading 状态永远卡住
 const SESSION_LOADING_TIMEOUT = 30000; // 30 秒
@@ -46,7 +47,9 @@ export function checkPendingRecovery(store) {
         agentId: lastAgent,
         agentName: agent.name,
         sessionId: lastSession.sessionId,
-        workDir: lastSession.workDir
+        workDir: lastSession.workDir,
+        provider: normalizeChatRuntimeProvider(lastSession.provider),
+        catalogKey: lastSession.catalogKey || null,
       };
       store.recoveryDismissed = false;
       console.log('[Recovery] Found recoverable session:', store.pendingRecovery);
@@ -57,13 +60,13 @@ export function checkPendingRecovery(store) {
 export function performRecovery(store) {
   if (!store.pendingRecovery) return;
 
-  const { agentId, sessionId, workDir } = store.pendingRecovery;
+  const { agentId, sessionId, workDir, provider } = store.pendingRecovery;
   console.log('[Recovery] Performing recovery:', sessionId);
 
   store.selectAgent(agentId);
 
   setTimeout(() => {
-    store.resumeConversation(sessionId, workDir, agentId);
+    store.resumeConversation(sessionId, workDir, agentId, { provider: normalizeChatRuntimeProvider(provider) });
     store.pendingRecovery = null;
     store.recoveryDismissed = false;
   }, 500);
@@ -99,11 +102,7 @@ export function autoRestoreConversation(store, conversationId) {
   } else {
     store.messagesMap[conversationId] = [];
     // ★ Phase 6.1: 使用 turns 加载最近 5 个 turn
-    store.sendWsMessage({
-      type: 'sync_messages',
-      conversationId,
-      turns: 5
-    });
+    store.requestChatHistory?.(conversationId, { mode: 'recent', turns: 5 });
   }
 
   store.sendWsMessage({
@@ -168,7 +167,7 @@ export function restorePanels(store) {
         store.messagesMap[panel.conversationId] = [];
       }
       if (!store.messagesMap[panel.conversationId].length) {
-        store.sendWsMessage({ type: 'sync_messages', conversationId: panel.conversationId, turns: 5 });
+        store.requestChatHistory?.(panel.conversationId, { mode: 'recent', turns: 5 });
       }
     }
   }
@@ -186,12 +185,18 @@ export function saveOpenSessions(store) {
   if (store.currentConversation) {
     const conv = store.conversations.find(c => c.id === store.currentConversation);
     if (conv?.claudeSessionId && conv?.workDir) {
-      localStorage.setItem('lastUsedSession', JSON.stringify({
+      const provider = normalizeChatRuntimeProvider(conv.provider);
+      const persisted = {
         sessionId: conv.claudeSessionId,
         workDir: conv.workDir,
-        agentId: store.currentAgent
-      }));
-      store.lastUsedSession = { sessionId: conv.claudeSessionId, workDir: conv.workDir, agentId: store.currentAgent };
+        agentId: conv.agentId || store.currentAgent,
+        provider,
+        catalogKey: chatCatalogKey(conv.id),
+        version: 2,
+      };
+      localStorage.setItem('lastUsedSession', JSON.stringify(persisted));
+      localStorage.setItem('lastViewedSessionRef', JSON.stringify(persisted));
+      store.lastUsedSession = persisted;
     }
   }
   store.lastUsedAgent = store.currentAgent;
@@ -211,6 +216,7 @@ export function getLastSession(store) {
 export function clearLastSession(store) {
   localStorage.removeItem('lastUsedAgent');
   localStorage.removeItem('lastUsedSession');
+  localStorage.removeItem('lastViewedSessionRef');
   localStorage.removeItem('lastViewedConversation');
   localStorage.removeItem('panels');
   localStorage.removeItem('splitPanesSaved');
@@ -355,15 +361,11 @@ export function listHistorySessionsForAgent(store, agentId, workDir, provider) {
 
 export async function loadGlobalSessions(store, limit = 20) {
   const authStore = useAuthStore();
-  if (!authStore.token) return;
+  if (!authStore.isAuthenticated) return;
 
   store.globalSessionsLoading = true;
   try {
-    const response = await fetch(`/api/sessions?limit=${limit}`, {
-      headers: {
-        'Authorization': `Bearer ${authStore.token}`
-      }
-    });
+    const response = await fetch(`/api/sessions?limit=${limit}`);
     if (response.ok) {
       const data = await response.json();
       store.globalSessions = data.sessions || [];
@@ -377,14 +379,11 @@ export async function loadGlobalSessions(store, limit = 20) {
 
 export async function deleteGlobalSession(store, sessionId) {
   const authStore = useAuthStore();
-  if (!authStore.token) return false;
+  if (!authStore.isAuthenticated) return false;
 
   try {
     const response = await fetch(`/api/sessions/${sessionId}`, {
-      method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${authStore.token}`
-      }
+      method: 'DELETE'
     });
     if (response.ok) {
       store.globalSessions = store.globalSessions.filter(s => s.id !== sessionId);

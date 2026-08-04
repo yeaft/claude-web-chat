@@ -2124,7 +2124,7 @@
   min-width: 140px;
 }
 
-.modern-select {
+select.modern-select {
   width: 100%;
   padding: 12px 36px 12px 14px;
   border: 1px solid var(--border-color);
@@ -2137,7 +2137,7 @@
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.modern-select:focus {
+select.modern-select:focus {
   outline: none;
   border-color: var(--text-secondary);
   box-shadow: 0 0 0 3px rgba(128, 128, 128, 0.1);

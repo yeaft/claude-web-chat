@@ -56,9 +56,9 @@ Guidelines:
   isDestructive: () => false,
   async execute(input, ctx) {
     const { file_path, content } = input;
-    if (!file_path) return JSON.stringify({ error: 'file_path is required' });
+    if (!file_path) return JSON.stringify({ errorEffect: 'none', error: 'file_path is required' });
     if (content === undefined || content === null) {
-      return JSON.stringify({ error: 'content is required' });
+      return JSON.stringify({ errorEffect: 'none', error: 'content is required' });
     }
 
     const cwd = ctx?.cwd || process.cwd();

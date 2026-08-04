@@ -59,6 +59,7 @@ export function startProcessingWatchdog(store, conversationId) {
  * Clears health warnings and restarts the appropriate watchdog type.
  */
 export function resetProcessingWatchdog(store, conversationId) {
+  if (store._yeaftWatchdogPauseReasons?.[conversationId]?.size) return;
   if (store.processingConversations[conversationId] && store._processingWatchdogs?.[conversationId]) {
     // Clear pong timeout
     if (store._pongTimeouts?.[conversationId]) {
@@ -101,6 +102,35 @@ export function stopProcessingWatchdog(store, conversationId) {
   }
   // Clean up Yeaft watchdog tracking
   store._yeaftWatchdogConvs?.delete(conversationId);
+  if (store._yeaftWatchdogPauseReasons) {
+    delete store._yeaftWatchdogPauseReasons[conversationId];
+  }
+}
+
+/** Pause stale-state cleanup while the backend owns a declared long phase. */
+export function pauseYeaftWatchdog(store, conversationId, reason = 'phase') {
+  if (!conversationId || !store.processingConversations[conversationId]) return;
+  if (!store._yeaftWatchdogPauseReasons) store._yeaftWatchdogPauseReasons = {};
+  const reasons = store._yeaftWatchdogPauseReasons[conversationId] || new Set();
+  reasons.add(reason);
+  store._yeaftWatchdogPauseReasons[conversationId] = reasons;
+  if (store._processingWatchdogs?.[conversationId]) {
+    clearTimeout(store._processingWatchdogs[conversationId]);
+    clearInterval(store._processingWatchdogs[conversationId]);
+    delete store._processingWatchdogs[conversationId];
+  }
+}
+
+/** Resume stale-state cleanup after the declared long phase completes. */
+export function resumeYeaftWatchdog(store, conversationId, reason = null) {
+  if (!conversationId) return;
+  const reasons = store._yeaftWatchdogPauseReasons?.[conversationId];
+  if (!reasons) return;
+  if (reason) reasons.delete(reason);
+  else reasons.clear();
+  if (reasons.size) return;
+  delete store._yeaftWatchdogPauseReasons[conversationId];
+  if (store.processingConversations[conversationId]) startYeaftWatchdog(store, conversationId);
 }
 
 /**
@@ -135,16 +165,20 @@ export function startLegacyWatchdog(store, conversationId) {
 /**
  * Yeaft watchdog — simpler than ping-based watchdog since Yeaft
  * doesn't support ping_session. After 150s of silence (no events
- * received), force-clears processing state. The 150s is deliberately
- * longer than the 120s agent-side query timeout, so the agent aborts
- * first under normal conditions. This is a last-resort safety net.
- *
- * Reuses the same _processingWatchdogs slot so resetProcessingWatchdog
- * (called from handleAssistantOutputFrame on every event) keeps resetting it.
+ * received), force-clears processing state. Declared long-running backend
+ * phases pause this fallback timer and own their own deadlines.
  */
 export function startYeaftWatchdog(store, conversationId) {
+  const pauseReasons = store._yeaftWatchdogPauseReasons?.[conversationId];
   stopProcessingWatchdog(store, conversationId);
   if (!store._processingWatchdogs) store._processingWatchdogs = {};
+  if (pauseReasons?.size) {
+    if (!store._yeaftWatchdogConvs) store._yeaftWatchdogConvs = new Set();
+    if (!store._yeaftWatchdogPauseReasons) store._yeaftWatchdogPauseReasons = {};
+    store._yeaftWatchdogConvs.add(conversationId);
+    store._yeaftWatchdogPauseReasons[conversationId] = new Set(pauseReasons);
+    return;
+  }
   // Track this as a Yeaft watchdog so resetProcessingWatchdog restarts the correct type
   if (!store._yeaftWatchdogConvs) store._yeaftWatchdogConvs = new Set();
   store._yeaftWatchdogConvs.add(conversationId);

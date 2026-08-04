@@ -38,7 +38,7 @@
  */
 
 /**
- * @typedef {'idle'|'typing'|'thinking'|'streaming'|'tool'|'error'|'offline'} VpStatus
+ * @typedef {'idle'|'typing'|'thinking'|'retrying'|'streaming'|'tool'|'error'|'offline'} VpStatus
  */
 
 /**

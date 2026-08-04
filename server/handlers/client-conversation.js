@@ -1,13 +1,25 @@
 import { randomUUID } from 'crypto';
 import { CONFIG } from '../config.js';
-import { sessionDb, messageDb, userDb, yeaftSessionDb } from '../database.js';
+import {
+  sessionDb,
+  messageDb,
+  userDb,
+  yeaftProjectDb,
+  yeaftSessionDb,
+  sessionUiMetadataDb,
+} from '../database.js';
 import { agents, pendingFiles, trackUserTurn, webClients } from '../context.js';
 import {
   sendToWebClient, forwardToAgent,
-  broadcastAgentList, verifyConversationOwnership, verifyAgentOwnership
+  broadcastAgentList, broadcastSessionCatalog, buildSessionCatalog,
+  verifyConversationOwnership, verifyAgentOwnership
 } from '../ws-utils.js';
 import { routeSessionPin } from './session-pin-router.js';
 import { recordPerfTraceEvent } from '../perf-trace.js';
+import {
+  chatCatalogKey,
+  yeaftCatalogKey,
+} from '../session-catalog.js';
 
 
 function isRetiredCollabSessionId(id) {
@@ -25,12 +37,96 @@ function emptyYeaftToolStats(reason = '') {
   return payload;
 }
 
+async function sendVpSnapshotError(client, msg, error) {
+  await sendToWebClient(client, {
+    type: 'yeaft_output',
+    agentId: msg?.agentId || null,
+    requestId: msg?.requestId || null,
+    event: {
+      type: 'vp_snapshot_error',
+      error,
+    },
+  });
+}
+
+export async function syncProjectContextsToAgents(userId) {
+  try {
+    const sessionsByAgent = groupOnlineYeaftSessions(yeaftSessionDb.getByUser(userId));
+    await Promise.all(Object.entries(sessionsByAgent).map(async ([agentId, sessions]) => {
+      try {
+        const contexts = sessions.map(session => ({
+          sessionId: session.id,
+          projectContext: yeaftProjectDb.contextForSession(userId, agentId, session.id) || {
+            projectId: null,
+            projectName: null,
+            projectInstruction: '',
+            sessionIds: [],
+          },
+        }));
+        await forwardToAgent(agentId, {
+          type: 'yeaft_project_context_sync',
+          contexts,
+        });
+      } catch (err) {
+        console.warn(`[Yeaft] Project context sync failed for Agent ${agentId}:`, err?.message || err);
+      }
+    }));
+  } catch (err) {
+    console.warn('[Yeaft] Project context sync failed:', err?.message || err);
+  }
+}
+
 async function broadcastSessionPin(userId, payload) {
   for (const [, target] of webClients) {
     if (!target?.authenticated) continue;
     if (!CONFIG.skipAuth && target.userId !== userId) continue;
     await sendToWebClient(target, payload);
   }
+}
+
+function persistSessionPin(userId, routeRef, pinned) {
+  const { runtimeProvider, agentId, sessionId } = routeRef;
+  const catalogKey = runtimeProvider === 'yeaft'
+    ? yeaftCatalogKey(agentId, sessionId)
+    : chatCatalogKey(sessionId);
+  const current = sessionUiMetadataDb.get(userId, catalogKey);
+  return sessionUiMetadataDb.applyBatch(userId, [{
+    catalogKey,
+    runtimeProvider,
+    agentId,
+    sessionId,
+    pinned,
+    sortRank: current?.sortRank ?? null,
+  }]);
+}
+
+function catalogOrderUpdates(client, items) {
+  if (!client?.userId || !Array.isArray(items) || items.length === 0) return null;
+  const canonical = buildSessionCatalog(client.userId, client.role);
+  if (canonical.length !== items.length) return null;
+  const canonicalByKey = new Map(canonical.map(row => [row.catalogKey, row]));
+  if (canonicalByKey.size !== canonical.length) return null;
+
+  const seen = new Set();
+  const updates = [];
+  for (const [sortRank, item] of items.entries()) {
+    const row = canonicalByKey.get(item?.catalogKey);
+    const routeRef = item?.routeRef;
+    if (!row || seen.has(item.catalogKey)
+        || routeRef?.runtimeProvider !== row.routeRef?.runtimeProvider
+        || routeRef?.agentId !== row.routeRef?.agentId
+        || routeRef?.sessionId !== row.routeRef?.sessionId) return null;
+    seen.add(item.catalogKey);
+    updates.push({
+      catalogKey: row.catalogKey,
+      runtimeProvider: row.routeRef.runtimeProvider,
+      agentId: row.routeRef.agentId,
+      sessionId: row.routeRef.sessionId,
+      pinned: row.pinned === true,
+      sortRank,
+    });
+  }
+  return seen.size === canonical.length ? updates : null;
 }
 
 export function groupOnlineYeaftSessions(rows, agentRegistry = agents) {
@@ -157,71 +253,138 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           });
         }
       }
-      await broadcastAgentList();
       // Yeaft session rows are only actionable while their owning Agent is
       // connected. Keep offline rows in the DB for reconnect recovery, but do
       // not hydrate them into the sidebar where remove/settings cannot work.
-      // Group by agentId so the web store can keep using per-agent snapshots.
-      if (client.userId) {
-        try {
-          const allRows = yeaftSessionDb.getByUser(client.userId);
-          const byAgent = groupOnlineYeaftSessions(allRows);
-          for (const [agentId, sessions] of Object.entries(byAgent)) {
-            await sendToWebClient(client, {
-              type: 'yeaft_session_hydrate',
-              agentId,
-              sessions,
-              fromDb: true,
-            });
-          }
-        } catch (e) {
-          console.warn('[Server] yeaft session hydrate failed:', e?.message || e);
+      // Send every authoritative slice before a single completion frame; the UI
+      // must not promote a partial multi-Agent inventory to its visible state.
+      let hydrateError = null;
+      try {
+        if (!client.userId) throw new Error('session owner unavailable');
+        const allRows = yeaftSessionDb.getByUser(client.userId);
+        const byAgent = groupOnlineYeaftSessions(allRows);
+        for (const [agentId, agent] of agents) {
+          const visible = agent?.ws?.readyState === 1 && (
+            CONFIG.skipAuth
+            || agent.ownerId === client.userId
+            || (!agent.ownerId && client.role === 'admin')
+          );
+          if (visible && !byAgent[agentId]) byAgent[agentId] = [];
         }
+        for (const [agentId, sessions] of Object.entries(byAgent)) {
+          await sendToWebClient(client, {
+            type: 'yeaft_session_hydrate',
+            ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
+            agentId,
+            sessions,
+            fromDb: true,
+          });
+        }
+        if (Object.keys(byAgent).length === 0) {
+          await sendToWebClient(client, {
+            type: 'yeaft_session_hydrate',
+            ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
+            agentId: null,
+            sessions: [],
+            fromDb: true,
+          });
+        }
+      } catch (e) {
+        hydrateError = e?.message || String(e);
+        console.warn('[Server] yeaft session hydrate failed:', hydrateError);
       }
+      await broadcastAgentList();
+      await sendToWebClient(client, {
+        type: 'yeaft_session_hydrate_complete',
+        ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
+        ok: hydrateError === null,
+        ...(hydrateError ? { error: hydrateError } : {}),
+      });
       break;
 
     case 'select_agent': {
-      if (!await checkAgentAccess(msg.agentId)) break;
-      const agent = agents.get(msg.agentId);
-      if (agent && agent.ws.readyState === 1 /* WebSocket.OPEN */) {
-        client.currentAgent = msg.agentId;
-        if (!msg.silent) {
-          client.currentConversation = null;
-        }
-
-        if (msg.silent) break;
-
-        const filteredConvs = Array.from(agent.conversations.values()).filter(c =>
-          CONFIG.skipAuth || !c.userId || c.userId === client.userId
-        ).map(c => {
-          // fix-chat-title-sticky: lazy-hydrate the title AND the
-          // sticky bit on send. This catches conversations rebuilt
-          // before the bit was wired through (older code paths,
-          if (!c.title || c.customTitle === undefined) {
-            const dbSession = sessionDb.get(c.id);
-            if (dbSession?.title && !c.title) c.title = dbSession.title;
-            if (c.customTitle === undefined) c.customTitle = !!dbSession?.customTitle;
-          }
-          return c;
-        });
-        await sendToWebClient(client, {
-          type: 'agent_selected',
-          agentId: msg.agentId,
-          agentName: agent.name,
-          workDir: agent.workDir,
-          capabilities: agent.capabilities || ['terminal', 'file_editor', 'background_tasks'],
-          version: agent.version || null,
-          conversations: filteredConvs,
-          slashCommands: agent.slashCommands || [],
-          slashCommandDescriptions: agent.slashCommandDescriptions || {}
-        });
-
-        // If slash commands cache is empty, ask Agent to reload from filesystem
-        if (!agent.slashCommands?.length) {
-          await forwardToAgent(msg.agentId, { type: 'request_slash_commands' });
-        }
+      const silentSelection = msg.silent === true;
+      const explicitGenerationAtStart = Number(client.agentSelectionGeneration || 0);
+      let selectionGeneration;
+      if (silentSelection) {
+        // Background reconnect/restore is advisory. It cannot supersede a user
+        // selection, but concurrent silent restores still obey newest-wins.
+        if (client.pendingAgentSelectionGeneration != null) break;
+        selectionGeneration = Number(client.silentAgentSelectionGeneration || 0) + 1;
+        client.silentAgentSelectionGeneration = selectionGeneration;
       } else {
-        await sendToWebClient(client, { type: 'error', message: 'Agent not found or offline' });
+        selectionGeneration = explicitGenerationAtStart + 1;
+        client.agentSelectionGeneration = selectionGeneration;
+        client.pendingAgentSelectionGeneration = selectionGeneration;
+      }
+      const selectionIsCurrent = () => silentSelection
+        ? client.pendingAgentSelectionGeneration == null
+          && Number(client.agentSelectionGeneration || 0) === explicitGenerationAtStart
+          && client.silentAgentSelectionGeneration === selectionGeneration
+        : client.agentSelectionGeneration === selectionGeneration
+          && client.pendingAgentSelectionGeneration === selectionGeneration;
+      try {
+        const allowed = await checkAgentAccess(msg.agentId);
+        if (!selectionIsCurrent()) break;
+        if (!allowed) {
+          if (typeof msg.requestId === 'string' && msg.requestId) {
+            await sendToWebClient(client, {
+              type: 'agent_selected', requestId: msg.requestId, agentId: msg.agentId, ok: false,
+            });
+          }
+          break;
+        }
+        const agent = agents.get(msg.agentId);
+        if (agent && agent.ws.readyState === 1 /* WebSocket.OPEN */) {
+          client.currentAgent = msg.agentId;
+          if (!silentSelection) {
+            client.currentConversation = null;
+          }
+
+          if (silentSelection) break;
+
+          const filteredConvs = Array.from(agent.conversations.values()).filter(c =>
+            CONFIG.skipAuth || !c.userId || c.userId === client.userId
+          ).map(c => {
+            // fix-chat-title-sticky: lazy-hydrate the title AND the
+            // sticky bit on send. This catches conversations rebuilt
+            // before the bit was wired through (older code paths,
+            if (!c.title || c.customTitle === undefined) {
+              const dbSession = sessionDb.get(c.id);
+              if (dbSession?.title && !c.title) c.title = dbSession.title;
+              if (c.customTitle === undefined) c.customTitle = !!dbSession?.customTitle;
+            }
+            return c;
+          });
+          await sendToWebClient(client, {
+            type: 'agent_selected',
+            ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
+            agentId: msg.agentId,
+            agentName: agent.name,
+            workDir: agent.workDir,
+            capabilities: agent.capabilities || ['terminal', 'file_editor', 'background_tasks'],
+            version: agent.version || null,
+            conversations: filteredConvs,
+            slashCommands: agent.slashCommands || [],
+            slashCommandDescriptions: agent.slashCommandDescriptions || {}
+          });
+
+          // If slash commands cache is empty, ask Agent to reload from filesystem
+          if (!agent.slashCommands?.length) {
+            await forwardToAgent(msg.agentId, { type: 'request_slash_commands' });
+          }
+        } else {
+          await sendToWebClient(client, { type: 'error', message: 'Agent not found or offline' });
+          if (typeof msg.requestId === 'string' && msg.requestId) {
+            await sendToWebClient(client, {
+              type: 'agent_selected', requestId: msg.requestId, agentId: msg.agentId, ok: false,
+            });
+          }
+        }
+      } finally {
+        if (!silentSelection && client.pendingAgentSelectionGeneration === selectionGeneration) {
+          client.pendingAgentSelectionGeneration = null;
+        }
       }
       break;
     }
@@ -289,44 +452,58 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
     }
 
     case 'delete_conversation': {
-      if (!client.currentAgent) return;
-
-      // ★ DB cleanup: always execute regardless of agent online status
-      // Use verifyConversationOwnership (checks DB) instead of checkAgentAccess (requires agent in memory)
-      // This ensures close/delete works even when the agent is offline
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId)) {
-        console.warn(`[Security] User ${client.userId} attempted to delete conversation ${msg.conversationId} they don't own`);
-        await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
+      const persisted = sessionDb.get(msg.conversationId);
+      const deleteAgentId = msg.agentId || persisted?.agent_id || client.currentAgent;
+      if (!deleteAgentId) return;
+      if (!CONFIG.skipAuth && (!verifyConversationOwnership(msg.conversationId, client.userId, client.role)
+        || (agents.has(deleteAgentId) && !verifyAgentOwnership(deleteAgentId, client.userId, client.role))
+        || (persisted?.agent_id && persisted.agent_id !== deleteAgentId))) {
+        console.warn(`[Security] User ${client.userId} attempted to delete conversation ${msg.conversationId} on agent ${deleteAgentId}`);
+        await sendToWebClient(client, {
+          type: 'conversation_delete_result',
+          requestId: msg.requestId || null,
+          conversationId: msg.conversationId,
+          agentId: deleteAgentId,
+          ok: false,
+          error: 'Permission denied',
+        });
         return;
       }
 
-      // Always deactivate in DB — this is the critical fix
       try {
         sessionDb.setActive(msg.conversationId, false);
+        const deleteAgent = agents.get(deleteAgentId);
+        deleteAgent?.conversations.delete(msg.conversationId);
+        await broadcastAgentList();
+        if (deleteAgent?.ws?.readyState === 1) {
+          await forwardToAgent(deleteAgentId, {
+            type: 'delete_conversation',
+            conversationId: msg.conversationId,
+          });
+        }
+        await sendToWebClient(client, {
+          type: 'conversation_delete_result',
+          requestId: msg.requestId || null,
+          conversationId: msg.conversationId,
+          agentId: deleteAgentId,
+          ok: true,
+        });
       } catch (e) {
         console.error('Failed to deactivate session in database:', e.message);
-      }
-
-      // Remove from agent's in-memory conversations (if agent is online)
-      const deleteAgent = agents.get(client.currentAgent);
-      if (deleteAgent) {
-        deleteAgent.conversations.delete(msg.conversationId);
-      }
-      await broadcastAgentList();
-
-      // Forward to agent for resource cleanup (terminals, processes, etc.) — best effort
-      // Only attempt if agent is online with an open WebSocket
-      if (deleteAgent?.ws?.readyState === 1) {
-        await forwardToAgent(client.currentAgent, {
-          type: 'delete_conversation',
-          conversationId: msg.conversationId
+        await sendToWebClient(client, {
+          type: 'conversation_delete_result',
+          requestId: msg.requestId || null,
+          conversationId: msg.conversationId,
+          agentId: deleteAgentId,
+          ok: false,
+          error: e.message,
         });
       }
       break;
     }
 
     case 'select_conversation':
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} attempted to select conversation ${msg.conversationId} they don't own`);
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
@@ -361,12 +538,82 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       } catch (e) {
         console.warn('[Server] yeaftSessionDb reorder failed:', e?.message || e);
       }
+      if (ok) await broadcastSessionCatalog(client.userId);
       await sendToWebClient(client, {
         type: 'session_crud_result',
         op: 'reorder',
         requestId: msg.requestId,
         ...(agentId ? { agentId } : {}),
         ok,
+      });
+      break;
+    }
+
+    case 'reorder_session_catalog': {
+      if (!client.userId || !Array.isArray(msg.sessions)) break;
+      const updates = catalogOrderUpdates(client, msg.sessions);
+      let persisted = false;
+      if (updates) {
+        try {
+          persisted = sessionUiMetadataDb.applyBatch(client.userId, updates);
+          if (persisted) await broadcastSessionCatalog(client.userId);
+        } catch (e) {
+          console.warn('[Server] Session catalog reorder failed:', e?.message || e);
+        }
+      }
+      await sendToWebClient(client, {
+        type: 'session_catalog_reorder_result',
+        requestId: msg.requestId || null,
+        ok: persisted,
+        ...(!persisted ? { error: 'Permission denied or stale Session route' } : {}),
+      });
+      break;
+    }
+
+    case 'set_session_ui_metadata': {
+      if (!client.userId || !msg.catalogKey || !msg.routeRef?.runtimeProvider) break;
+      const { runtimeProvider, agentId, sessionId } = msg.routeRef;
+      let expectedCatalogKey = null;
+      if (runtimeProvider === 'yeaft') {
+        if (agentId && sessionId && yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) {
+          expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
+        }
+      } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
+        const row = sessionId ? sessionDb.get(sessionId) : null;
+        if (agentId && sessionId
+          && (CONFIG.skipAuth || verifyConversationOwnership(sessionId, client.userId, client.role))
+          && row?.agent_id === agentId
+          && (row.provider || 'claude-code') === runtimeProvider) {
+          expectedCatalogKey = chatCatalogKey(sessionId);
+        }
+      }
+      const authorized = expectedCatalogKey === msg.catalogKey;
+      let persisted = false;
+      if (authorized) {
+        try {
+          persisted = sessionUiMetadataDb.applyBatch(client.userId, [{
+            catalogKey: expectedCatalogKey,
+            runtimeProvider,
+            agentId,
+            sessionId,
+            pinned: msg.pinned === true,
+            sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
+          }]);
+          if (persisted) await broadcastSessionCatalog(client.userId);
+        } catch (e) {
+          console.warn('[Server] Session metadata update failed:', e?.message || e);
+        }
+      }
+      await sendToWebClient(client, {
+        type: 'session_ui_metadata_updated',
+        requestId: msg.requestId || null,
+        ok: persisted,
+        catalogKey: msg.catalogKey,
+        routeRef: msg.routeRef,
+        ...(persisted ? {
+          pinned: msg.pinned === true,
+          sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
+        } : { error: 'Permission denied or stale Session route' }),
       });
       break;
     }
@@ -388,22 +635,17 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         }
         const isPinned = msg.type === 'pin_session';
         try {
-          const ok = yeaftSessionDb.setPinnedForAgent(
-            client.userId,
-            explicitYeaftAgentId,
-            {
-              id: msg.conversationId,
-              name: msg.sessionName || msg.conversationId,
-              workDir: msg.workDir || '',
-            },
-            isPinned,
-          );
-          if (!ok) {
+          const row = yeaftSessionDb.getForAgent(client.userId, explicitYeaftAgentId, msg.conversationId);
+          if (!row || !persistSessionPin(client.userId, {
+            runtimeProvider: 'yeaft',
+            agentId: explicitYeaftAgentId,
+            sessionId: msg.conversationId,
+          }, isPinned)) {
             console.warn(`[Server] Unauthorized yeaft pin ${msg.conversationId} by ${client.userId}`);
             break;
           }
         } catch (e) {
-          console.warn(`[Server] yeaftSessionDb.setPinnedForAgent failed for ${msg.conversationId}:`, e?.message || e);
+          console.warn(`[Server] Yeaft Session pin failed for ${msg.conversationId}:`, e?.message || e);
           break;
         }
         await broadcastSessionPin(client.userId, {
@@ -413,13 +655,14 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           sessionKind: 'yeaft',
           pinned: isPinned,
         });
+        await broadcastSessionCatalog(client.userId);
         break;
       }
 
       const route = routeSessionPin(
         {
-          getYeaftRow: (id) => yeaftSessionDb.get(id),
-          verifyChatOwnership: (id, userId) => verifyConversationOwnership(id, userId),
+          getYeaftRows: (id) => yeaftSessionDb.getAllById(id),
+          verifyChatOwnership: (id, userId) => verifyConversationOwnership(id, userId, client.role),
           skipAuth: CONFIG.skipAuth,
         },
         client,
@@ -433,24 +676,45 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         break;
       }
       if (route.kind === 'yeaft') {
-        try { yeaftSessionDb.setPinned(route.id, route.isPinned); }
-        catch (e) { console.warn(`[Server] yeaftSessionDb.setPinned failed for ${route.id}:`, e?.message || e); }
-        await sendToWebClient(client, { type: 'session_pinned', conversationId: route.id, pinned: route.isPinned });
+        try {
+          persistSessionPin(client.userId, {
+            runtimeProvider: 'yeaft',
+            agentId: route.agentId,
+            sessionId: route.id,
+          }, route.isPinned);
+        } catch (e) {
+          console.warn(`[Server] Yeaft Session pin failed for ${route.id}:`, e?.message || e);
+          break;
+        }
+        await sendToWebClient(client, {
+          type: 'session_pinned',
+          conversationId: route.id,
+          agentId: route.agentId,
+          sessionKind: 'yeaft',
+          pinned: route.isPinned,
+        });
+        await broadcastSessionCatalog(client.userId);
         break;
       }
       // route.kind === 'chat'
       try {
-        sessionDb.setPinned(route.id, route.isPinned);
+        const row = sessionDb.get(route.id);
+        persistSessionPin(client.userId, {
+          runtimeProvider: row?.provider || 'claude-code',
+          agentId: row?.agent_id || null,
+          sessionId: route.id,
+        }, route.isPinned);
         // If pinning, also ensure session is active (reactivate if it was auto-deactivated)
         if (route.isPinned) sessionDb.setActive(route.id, true);
-      } catch (e) { /* ignore */ }
+      } catch (e) { break; }
       await sendToWebClient(client, { type: 'session_pinned', conversationId: route.id, pinned: route.isPinned });
+      await broadcastSessionCatalog(client.userId);
       break;
     }
 
     case 'sync_messages':
       if (msg.conversationId) {
-        if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId)) {
+        if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId, client.role)) {
           console.warn(`[Security] User ${client.userId} attempted to sync messages for conversation ${msg.conversationId} they don't own`);
           return;
         }
@@ -486,9 +750,17 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
 
           const total = messageDb.getCount(msg.conversationId);
           console.log(`[sync_messages] Found ${messages.length} messages (total=${total}, hasMore=${hasMore})`);
+          const mode = msg.afterMessageId !== undefined && msg.afterMessageId !== null
+            ? 'delta'
+            : (msg.beforeId ? 'older' : 'recent');
           await sendToWebClient(client, {
             type: 'sync_messages_result',
             conversationId: msg.conversationId,
+            catalogKey: chatCatalogKey(msg.conversationId),
+            requestId: msg.requestId || null,
+            mode,
+            cursor: msg.beforeId ?? msg.afterMessageId ?? null,
+            afterMessageId: msg.afterMessageId ?? null,
             messages,
             hasMore,
             total
@@ -509,7 +781,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
 
       // Ownership check when explicit conversationId is provided
       if (msg.conversationId && !CONFIG.skipAuth) {
-        if (!verifyConversationOwnership(msg.conversationId, client.userId)) {
+        if (!verifyConversationOwnership(msg.conversationId, client.userId, client.role)) {
           await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
           return;
         }
@@ -684,7 +956,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (!client.currentAgent) return;
       if (!await checkAgentAccess(client.currentAgent)) return;
       const cancelConvId = msg.conversationId || client.currentConversation;
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(cancelConvId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(cancelConvId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} cancel denied for ${cancelConvId}`);
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
@@ -701,7 +973,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (!refreshAgent) return;
       if (!await checkAgentAccess(refreshAgent)) return;
       const refreshConvId = msg.conversationId || client.currentConversation;
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(refreshConvId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(refreshConvId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} refresh denied for ${refreshConvId}`);
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
@@ -746,11 +1018,14 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
     }
 
     case 'update_conversation_settings': {
-      if (!client.currentAgent) return;
-      if (!await checkAgentAccess(client.currentAgent)) return;
       const settingsConvId = msg.conversationId || client.currentConversation;
-      if (!settingsConvId) return;
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(settingsConvId, client.userId)) {
+      const settingsRow = settingsConvId ? sessionDb.get(settingsConvId) : null;
+      const settingsAgentId = msg.agentId || settingsRow?.agent_id || client.currentAgent;
+      if (!settingsConvId || !settingsAgentId) return;
+      if (msg.disallowedTools !== undefined && !await checkAgentAccess(settingsAgentId)) return;
+      if (!CONFIG.skipAuth && (!verifyConversationOwnership(settingsConvId, client.userId, client.role)
+        || (agents.has(settingsAgentId) && !verifyAgentOwnership(settingsAgentId, client.userId, client.role))
+        || (settingsRow?.agent_id && settingsRow.agent_id !== settingsAgentId))) {
         console.warn(`[Security] User ${client.userId} settings update denied for ${settingsConvId}`);
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
@@ -762,26 +1037,27 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       // line 351 silently clobbers the user's renamed title the next
       // time `convInfo.customTitle` is reset to undefined.
       if (msg.title !== undefined) {
-        const titleAgent = agents.get(client.currentAgent);
+        const titleAgent = agents.get(settingsAgentId);
         const titleConvInfo = titleAgent?.conversations.get(settingsConvId);
         if (msg.title) {
-          sessionDb.update(settingsConvId, { title: msg.title, isCustomTitle: 1 });
+          sessionDb.update(settingsConvId, { title: msg.title, isCustomTitle: 1, metadataChanged: true });
           if (titleConvInfo) { titleConvInfo.title = msg.title; titleConvInfo.customTitle = true; }
         } else {
           // Clearing the custom title returns the session to auto-naming
           // mode — the next user prompt repopulates the title.
-          sessionDb.update(settingsConvId, { isCustomTitle: 0 });
+          sessionDb.update(settingsConvId, { isCustomTitle: 0, metadataChanged: true });
           if (titleConvInfo) { titleConvInfo.customTitle = false; }
         }
       }
       // Only forward to agent if disallowedTools present
       if (msg.disallowedTools) {
-        await forwardToAgent(client.currentAgent, {
+        await forwardToAgent(settingsAgentId, {
           type: 'update_conversation_settings',
           conversationId: settingsConvId,
           disallowedTools: msg.disallowedTools
         });
       }
+      if (msg.title !== undefined) await broadcastSessionCatalog(client.userId);
       break;
     }
 
@@ -790,7 +1066,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (!await checkAgentAccess(client.currentAgent)) return;
       const answerConvId = msg.conversationId || client.currentConversation;
       if (!answerConvId) return;
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(answerConvId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(answerConvId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} ask_user_answer denied for ${answerConvId}`);
         return;
       }
@@ -841,7 +1117,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         await sendToWebClient(client, { type: 'btw_error', error: 'No conversation selected' });
         return;
       }
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(btwConvId, client.userId)) {
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(btwConvId, client.userId, client.role)) {
         console.warn(`[Security] User ${client.userId} btw_question denied for ${btwConvId}`);
         await sendToWebClient(client, { type: 'btw_error', conversationId: btwConvId, error: 'Permission denied' });
         return;
@@ -893,9 +1169,11 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         type: 'yeaft_load_history',
         limit: msg.limit,
         sessionId: msg.sessionId || null,
+        ...(typeof msg.requestId === 'string' ? { requestId: msg.requestId } : {}),
         ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
         ...(Number.isFinite(msg.afterSeq) ? { afterSeq: msg.afterSeq } : {}),
         ...(typeof msg.afterMessageId === 'string' ? { afterMessageId: msg.afterMessageId } : {}),
+        _requestClientId: clientId,
       };
       if (forwarded.perfTraceId) {
         recordPerfTraceEvent({
@@ -914,6 +1192,26 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       break;
     }
 
+    case 'yeaft_load_history_outline': {
+      const outlineAgentId = msg.agentId;
+      const outlineSessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+      if (!outlineAgentId || !outlineSessionId) return;
+      if (!await checkAgentAccess(outlineAgentId)) return;
+      if (!CONFIG.skipAuth && !yeaftSessionDb.getForAgent(client.userId, outlineAgentId, outlineSessionId)) return;
+      await forwardToAgent(outlineAgentId, {
+        type: 'yeaft_load_history_outline',
+        sessionId: outlineSessionId,
+        requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+        limit: typeof msg.limit === 'number' ? msg.limit : 50,
+        beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
+        ...(msg.cursor && typeof msg.cursor === 'object' ? { cursor: msg.cursor } : {}),
+        includeTotal: msg.includeTotal === true,
+        ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
+        _requestClientId: clientId,
+      });
+      break;
+    }
+
     case 'yeaft_search_history': {
       const searchAgentId = msg.agentId;
       const searchSessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
@@ -925,8 +1223,11 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         sessionId: searchSessionId,
         requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
         query: typeof msg.query === 'string' ? msg.query.slice(0, 500) : '',
+        senderKey: typeof msg.senderKey === 'string' ? msg.senderKey.slice(0, 103) : '',
         limit: typeof msg.limit === 'number' ? msg.limit : 20,
         beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
+        ...(msg.cursor && typeof msg.cursor === 'object' ? { cursor: msg.cursor } : {}),
+        ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
         _requestClientId: clientId,
       });
       break;
@@ -942,10 +1243,15 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         type: 'yeaft_load_history_window',
         sessionId: windowSessionId,
         requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+        entryId: typeof msg.entryId === 'string' ? msg.entryId : null,
+        indexGeneration: typeof msg.indexGeneration === 'number' ? msg.indexGeneration : null,
+        entryStartSeq: typeof msg.entryStartSeq === 'number' ? msg.entryStartSeq : null,
         anchorMessageId: typeof msg.anchorMessageId === 'string' ? msg.anchorMessageId : null,
         anchorSeq: typeof msg.anchorSeq === 'number' ? msg.anchorSeq : null,
         beforeTurns: typeof msg.beforeTurns === 'number' ? msg.beforeTurns : 3,
         afterTurns: typeof msg.afterTurns === 'number' ? msg.afterTurns : 3,
+        maxRows: typeof msg.maxRows === 'number' ? msg.maxRows : 200,
+        maxBytes: typeof msg.maxBytes === 'number' ? msg.maxBytes : 512 * 1024,
         _requestClientId: clientId,
       });
       break;
@@ -959,9 +1265,14 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       await forwardToAgent(moreAgentId, {
         type: 'yeaft_load_more_history',
         sessionId: msg.sessionId || null,
+        requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
         beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
+        pageKind: msg.pageKind === 'gap' ? 'gap' : 'server',
+        gapStopAtSeq: typeof msg.gapStopAtSeq === 'number' ? msg.gapStopAtSeq : null,
+        cacheEpoch: typeof msg.cacheEpoch === 'number' ? msg.cacheEpoch : 0,
         turns: typeof msg.turns === 'number' ? msg.turns : 20,
         ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
+        _requestClientId: clientId,
       });
       break;
     }
@@ -998,6 +1309,78 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       await forwardToAgent(resetAgentId, {
         type: 'yeaft_reset',
       });
+      break;
+    }
+
+    case 'yeaft_project_mutation': {
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      const op = msg.op;
+      const respond = async (payload) => {
+        await sendToWebClient(client, {
+          type: 'yeaft_output',
+          agentId: msg.targetAgentId || msg.agentId || client.currentAgent || null,
+          event: {
+            type: 'project_mutation_result',
+            requestId,
+            op,
+            projectsAuthoritative: true,
+            ...payload,
+          },
+        });
+      };
+      try {
+        if (!client.userId) throw new Error('User identity is required');
+        let result = null;
+        if (op === 'create') result = yeaftProjectDb.create(client.userId, msg.name);
+        else if (op === 'rename') result = yeaftProjectDb.rename(client.userId, msg.projectId, msg.name);
+        else if (op === 'update_instruction') {
+          result = yeaftProjectDb.updateInstruction(client.userId, msg.projectId, msg.instruction);
+        } else if (op === 'delete') result = yeaftProjectDb.delete(client.userId, msg.projectId);
+        else if (op === 'reorder') result = yeaftProjectDb.reorder(client.userId, msg.projectIds);
+        else if (op === 'move_session') {
+          const agentId = msg.targetAgentId || msg.agentId;
+          const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId.trim() : '';
+          if (!agentId || !sessionId) throw new Error('Agent and Session identities are required');
+          const targetSession = yeaftSessionDb.getForAgent(client.userId, agentId, sessionId);
+          if (!targetSession) throw new Error('Session not found');
+          if (targetSession.isArchived) {
+            const error = new Error('Archived Sessions cannot be moved to Projects');
+            error.code = 'session_archived';
+            throw error;
+          }
+          const catalogUpdates = msg.catalogOrder === undefined
+            ? null
+            : catalogOrderUpdates(client, msg.catalogOrder);
+          if (msg.catalogOrder !== undefined && !catalogUpdates) {
+            const error = new Error('Complete canonical catalog order is required');
+            error.code = 'invalid_catalog_order';
+            throw error;
+          }
+          result = yeaftProjectDb.moveSession(client.userId, {
+            agentId,
+            sessionId,
+            projectId: msg.projectId || null,
+            catalogUpdates,
+          });
+        } else {
+          throw new Error('Unknown Project operation');
+        }
+        const responseAgentId = msg.targetAgentId || msg.agentId || client.currentAgent || null;
+        const projects = responseAgentId
+          ? yeaftProjectDb.listForAgent(client.userId, responseAgentId)
+          : yeaftProjectDb.list(client.userId);
+        await respond({ ok: true, result, projects });
+        await syncProjectContextsToAgents(client.userId);
+        await broadcastSessionCatalog(client.userId);
+      } catch (err) {
+        await respond({
+          ok: false,
+          error: {
+            code: err?.code || 'project_mutation_failed',
+            message: err?.message || String(err),
+          },
+        });
+      }
       break;
     }
 
@@ -1083,12 +1466,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
             await sendToWebClient(client, emptyYeaftToolStats('No agent selected.'));
           } else if (relayType === 'yeaft_dream_trigger') {
             await sendToWebClient(client, skippedYeaftDreamResult(msg, 'no-agent-selected'));
+          } else if (relayType === 'yeaft_vp_subscribe') {
+            await sendVpSnapshotError(client, msg, 'No Agent is available for the VP library.');
           } else {
-            // fix-session-restore-modal-unify: every prior swallow was
-            // invisible — the user-facing symptom (e.g. VP roster stuck
-            // on "加载中...") doesn't point back to "the server has no
-            // agent to route this to." A WARN log is one grep away
-            // from the root cause next time this happens.
             console.warn(
               `[Server] swallowed yeaft message ${relayType} (no agent resolved)`
               + ` userId=${client.userId || '?'}`
@@ -1101,6 +1481,8 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
             await sendToWebClient(client, emptyYeaftToolStats('Agent is not available.'));
           } else if (relayType === 'yeaft_dream_trigger') {
             await sendToWebClient(client, skippedYeaftDreamResult(msg, 'agent-not-available'));
+          } else if (relayType === 'yeaft_vp_subscribe') {
+            await sendVpSnapshotError(client, msg, 'The selected Agent is not available.');
           }
           return true;
         }
@@ -1114,6 +1496,10 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
             await sendToWebClient(client, skippedYeaftDreamResult(msg, 'agent-offline'));
             return true;
           }
+          if (relayType === 'yeaft_vp_subscribe') {
+            await sendVpSnapshotError(client, msg, 'The selected Agent is offline.');
+            return true;
+          }
         }
         if (relayType === 'yeaft_fetch_agent_metrics') {
           await forwardToAgent(relayAgentId, { type: 'get_agent_metrics' });
@@ -1125,6 +1511,20 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         rest.type = relayType;
         if (rest.type === 'yeaft_session_send' || rest.type === 'yeaft_session_chat') {
           trackUserTurn(client.userId, Buffer.byteLength(JSON.stringify(msg)));
+          const sessionId = typeof rest.sessionId === 'string' ? rest.sessionId.trim() : '';
+          if (sessionId && client.userId) {
+            const projectContext = yeaftProjectDb.contextForSession(
+              client.userId,
+              relayAgentId,
+              sessionId,
+            );
+            rest.projectContext = projectContext || {
+              projectId: null,
+              projectName: null,
+              projectInstruction: '',
+              sessionIds: [],
+            };
+          }
         }
 
         if (rest.type === 'yeaft_session_chat' && !rest.id) {

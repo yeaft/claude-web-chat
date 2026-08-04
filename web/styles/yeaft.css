@@ -152,10 +152,11 @@
   flex: 1 1 auto;
 }
 
-/* Topbar — model selector + mode toggle + actions */
+/* Topbar — folder + Session title + actions */
 
 .yeaft-topbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   padding: 4px 16px;
@@ -182,33 +183,83 @@
   color: var(--text-primary);
 }
 
-/* ── Model Selector (topbar compact dropdown) ── */
+/* ── Header folder + composer model selector ── */
 
-.yeaft-topbar-model {
+.yeaft-topbar-context {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  pointer-events: none;
+}
+
+.yeaft-topbar-folder {
+  grid-column: 1;
+  justify-self: start;
+  width: 100%;
+  pointer-events: auto;
+  flex: 0 1 var(--yeaft-header-folder-max-width);
+  min-width: 0;
+  max-width: var(--yeaft-header-folder-max-width);
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--yeaft-header-folder-font-size);
+}
+
+.yeaft-topbar-folder-path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.yeaft-page .chat-composer-actions-start {
+  position: relative;
+}
+
+.yeaft-composer-model-control {
+  position: static;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.yeaft-composer-model {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--chat-composer-control-gap);
+  min-width: 0;
+  width: 100%;
+  max-width: var(--yeaft-composer-model-max-width);
+  height: var(--chat-composer-control-size);
+  color: var(--text-secondary);
+  font: inherit;
   cursor: pointer;
-  padding: 5px 10px;
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
+  padding: 0 var(--chat-composer-gap);
+  border: var(--yeaft-composer-model-border-width) solid var(--border-color);
+  border-radius: var(--chat-composer-radius);
   position: relative;
-  background: var(--bg-input-wrapper);
+  background: transparent;
   transition: background 0.15s, border-color 0.15s;
 }
 
-.yeaft-topbar-model:hover {
+.yeaft-composer-model:hover {
   background: var(--sidebar-hover);
   border-color: var(--border-color);
 }
 
 .yeaft-topbar-title-group {
-  flex: 1 1 auto;
+  grid-column: 2;
   min-width: 0;
   overflow: hidden;
   display: flex;
   justify-content: center;
   text-align: center;
+  pointer-events: auto;
 }
 
 .yeaft-topbar-session-title {
@@ -245,14 +296,22 @@
   padding: 20px;
 }
 
-.yeaft-topbar-model-name {
-  font-size: 13px;
+.yeaft-composer-model-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: var(--yeaft-composer-model-max-width);
+  font-size: var(--yeaft-composer-model-font-size);
   font-weight: 500;
-  color: var(--text-primary);
-  max-width: 220px;
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.yeaft-composer-model-effort {
+  flex-shrink: 0;
+  font-size: var(--yeaft-composer-model-font-size);
+  color: var(--accent-blue);
 }
 
 .yeaft-model-refreshing {
@@ -270,25 +329,33 @@
   transform: rotate(180deg);
 }
 
-.yeaft-topbar-model-dropdown {
+.yeaft-composer-model-dropdown {
   position: absolute;
-  top: calc(100% + 8px);
   left: 0;
-  right: auto;
-  min-width: 280px;
-  width: min(320px, calc(100vw - 32px));
-  max-width: min(320px, calc(100vw - 32px));
-  z-index: 1300;
+  bottom: calc(100% + var(--chat-composer-gap));
+  min-width: min(var(--yeaft-model-menu-width), calc(100vw - var(--chat-composer-padding) * 2));
+  width: min(var(--yeaft-model-menu-width), calc(100vw - var(--chat-composer-padding) * 2));
+  max-width: min(var(--yeaft-model-menu-width), calc(100vw - var(--chat-composer-padding) * 2));
+  max-height: var(--yeaft-model-menu-max-height);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: var(--yeaft-model-menu-layer);
 }
 
 .yeaft-model-selector-body {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  overflow: hidden;
 }
 
 .yeaft-model-list {
+  flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
   max-height: 320px;
   overflow-y: auto;
 }
@@ -463,36 +530,10 @@
   background: var(--session-active);
 }
 
-@media (max-width: 640px) {
-  .yeaft-topbar-model {
-    position: static;
-  }
-
-  .yeaft-topbar-model-dropdown {
-    position: fixed;
-    left: 12px;
-    right: 12px;
-    top: calc(52px + env(safe-area-inset-top, 0px));
-    bottom: auto;
-    min-width: 0;
-    width: auto;
-    max-width: none;
-    max-height: min(72dvh, calc(100dvh - 64px));
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  .yeaft-model-selector-body {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .yeaft-model-list {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
+@media (max-width: 768px) {
+  .yeaft-composer-model-control,
+  .yeaft-composer-model {
+    max-width: var(--yeaft-composer-model-mobile-max-width);
   }
 
   .yeaft-model-option {
@@ -576,6 +617,13 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.yeaft-topbar-right {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+  z-index: 1;
 }
 
 .yeaft-topbar-right :where(
@@ -818,31 +866,66 @@
   color: var(--text-primary);
 }
 
-.yeaft-transcript-search {
+.yeaft-conversation-outline {
   position: absolute;
   top: 44px;
-  left: 50%;
-  width: min(720px, calc(100% - 32px));
-  max-height: min(520px, 60vh);
+  right: 12px;
+  width: min(420px, calc(100% - 24px));
+  height: min(640px, calc(100% - 72px));
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border-color);
   border-radius: 12px;
   background: var(--bg-main);
   box-shadow: var(--modal-shadow);
   overflow: hidden;
   z-index: 20;
-  transform: translateX(-50%);
 }
 
-.yeaft-transcript-search-bar {
+.yeaft-conversation-outline-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
   padding: 10px 12px;
-  color: var(--text-muted);
+  color: var(--text-primary);
 }
 
-.yeaft-transcript-search-bar input {
+.yeaft-conversation-outline-count {
+  margin-left: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.yeaft-conversation-outline-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 10px 8px;
+}
+
+.yeaft-conversation-outline-search {
   min-width: 0;
+  height: 40px;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  color: var(--text-muted);
+  background: var(--bg-input);
+}
+
+.yeaft-conversation-outline-search:focus-within {
+  border-color: var(--accent-blue);
+}
+
+.yeaft-conversation-outline-search input {
+  min-width: 0;
+  height: 100%;
   flex: 1;
   border: none;
   background: transparent;
@@ -851,13 +934,39 @@
   box-shadow: none;
 }
 
-.yeaft-transcript-search-status {
+.yeaft-conversation-outline-sender {
+  width: auto;
+  min-width: 112px;
+  max-width: 148px;
+  flex: 0 1 auto;
   font-size: 12px;
+}
+
+.yeaft-conversation-outline-sender .modern-select-trigger {
+  height: 40px;
+  min-height: 40px;
+  padding: 0 8px 0 10px;
+  color: var(--text-secondary);
+}
+
+.yeaft-conversation-outline-sender-menu {
+  font-size: 12px;
+  box-shadow: var(--modal-shadow);
+}
+
+.yeaft-conversation-outline-sender-menu .modern-select-option {
+  min-height: 34px;
+  padding: 8px 30px 8px 10px;
+}
+
+.yeaft-conversation-outline-status {
+  flex-shrink: 0;
   color: var(--text-muted);
+  font-size: 12px;
   white-space: nowrap;
 }
 
-.yeaft-transcript-search-close {
+.yeaft-conversation-outline-close {
   width: 28px;
   height: 28px;
   border: none;
@@ -869,39 +978,40 @@
   line-height: 1;
 }
 
-.yeaft-transcript-search-close:hover,
-.yeaft-transcript-search-result:hover,
-.yeaft-transcript-search-result.active,
-.yeaft-transcript-search-more:hover {
-  background: var(--sidebar-hover);
-  color: var(--text-primary);
-}
-
-.yeaft-transcript-search-results {
-  max-height: min(440px, 52vh);
+.yeaft-conversation-outline-list {
+  min-height: 0;
+  flex: 1;
   overflow-y: auto;
-  padding: 4px 8px 8px;
+  padding: 0 8px 8px;
 }
 
-.yeaft-transcript-search-result,
-.yeaft-transcript-search-more {
+.yeaft-conversation-outline-item,
+.yeaft-conversation-outline-more {
   width: 100%;
   border: none;
   border-radius: 10px;
   background: transparent;
   color: var(--text-primary);
   cursor: pointer;
-  text-align: left;
 }
 
-.yeaft-transcript-search-result {
+.yeaft-conversation-outline-item {
   display: flex;
   flex-direction: column;
   gap: 5px;
   padding: 10px 12px;
+  text-align: left;
 }
 
-.yeaft-transcript-search-result-meta {
+.yeaft-conversation-outline-close:hover,
+.yeaft-conversation-outline-item:hover,
+.yeaft-conversation-outline-item.active,
+.yeaft-conversation-outline-more:hover:not(:disabled) {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+.yeaft-conversation-outline-meta {
   display: flex;
   justify-content: space-between;
   gap: 12px;
@@ -909,11 +1019,11 @@
   font-size: 12px;
 }
 
-.yeaft-transcript-search-result-meta time {
+.yeaft-conversation-outline-meta time {
   color: var(--text-muted);
 }
 
-.yeaft-transcript-search-result-snippet {
+.yeaft-conversation-outline-snippet {
   display: -webkit-box;
   overflow: hidden;
   color: var(--text-primary);
@@ -923,20 +1033,25 @@
   -webkit-line-clamp: 2;
 }
 
-.yeaft-transcript-search-more {
+.yeaft-conversation-outline-more {
   padding: 9px 12px;
   color: var(--text-secondary);
   text-align: center;
 }
 
-.yeaft-transcript-search-empty {
+.yeaft-conversation-outline-more:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.yeaft-conversation-outline-empty {
   padding: 18px 20px;
   color: var(--text-muted);
   text-align: center;
   font-size: 13px;
 }
 
-.yeaft-transcript-search-empty.is-error {
+.yeaft-conversation-outline-empty.is-error {
   color: var(--error);
 }
 
@@ -953,6 +1068,39 @@
 .yeaft-reload-btn:disabled {
   cursor: default;
   opacity: 0.55;
+}
+
+.yeaft-reload-btn.is-loading svg {
+  animation: yeaft-history-refresh-spin 0.8s linear infinite;
+}
+
+@keyframes yeaft-history-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+
+.yeaft-conversation-bootstrap-loading {
+  flex: 1;
+  min-height: 0;
+}
+
+.yeaft-history-load-error {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.yeaft-history-load-error.has-messages {
+  flex: 0 0 auto;
+  min-height: auto;
+  flex-direction: row;
+  padding: 8px 16px;
 }
 
 /* ── Right Detail Panel ── */
@@ -1725,12 +1873,11 @@
   cursor: not-allowed;
 }
 
-/* ── Yeaft Conversation Width Overrides ── */
-/* Shared .messages and .input-wrapper default to max-width: 60%.
-   In Yeaft, we want wider content — the sidebar already eats horizontal space. */
+/* ── Yeaft Conversation Spacing Overrides ── */
+/* Content width is shared across messages, the composer, and its previews.
+   Yeaft only uses tighter horizontal padding. */
 
 .yeaft-page .messages {
-  max-width: 90%;
   padding: 0 16px;
 }
 
@@ -1739,12 +1886,12 @@
   padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
 }
 
-.yeaft-page .input-wrapper {
-  max-width: 90%;
-}
-
-.yeaft-page .attachments-preview {
-  max-width: 90%;
+.yeaft-session-input > .input-wrapper.chat-composer,
+.yeaft-page .input-quote-preview,
+.yeaft-page .attachments-preview,
+.yeaft-page .expert-chips-bar {
+  width: 100%;
+  max-width: var(--session-content-width);
 }
 
 /* ── Mobile Sidebar Overlay ── */
@@ -1842,6 +1989,61 @@
   font-weight: 600;
 }
 @media (max-width: 768px) {
+  .yeaft-conversation-outline {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100dvh;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    z-index: 108;
+  }
+
+  .yeaft-conversation-outline-sender {
+    max-width: 38%;
+  }
+
+  .yeaft-topbar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .yeaft-topbar-sidebar-toggle {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .yeaft-topbar-context {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    align-content: center;
+  }
+
+  .yeaft-topbar-title-group {
+    grid-column: 1;
+    grid-row: 1;
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .yeaft-topbar-folder {
+    grid-column: 1;
+    grid-row: 2;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .yeaft-topbar-right {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
   /* Yeaft conversation: narrower padding on mobile */
   .yeaft-page .messages {
     max-width: 100%;
@@ -1853,11 +2055,11 @@
     padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   }
 
-  .yeaft-page .input-wrapper {
-    max-width: 100%;
-  }
-
-  .yeaft-page .attachments-preview {
+  .yeaft-session-input > .input-wrapper.chat-composer,
+  .yeaft-page .input-quote-preview,
+  .yeaft-page .attachments-preview,
+  .yeaft-page .expert-chips-bar {
+    width: 100%;
     max-width: 100%;
   }
 
@@ -1897,10 +2099,6 @@
   }
   /* On mobile, fully hide the icon bar too — sidebar slides off-screen. */
   .yeaft-sidebar.collapsed .sidebar-collapsed-bar {
-    display: none;
-  }
-
-  .yeaft-topbar-model-name {
     display: none;
   }
 
@@ -2490,7 +2688,14 @@
 }
 
 .yeaft-debug-mem-list li {
-  padding: 2px 0;
+  padding: 6px 0;
+}
+
+.yeaft-debug-mem-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .yeaft-debug-mem-list code {
@@ -2503,9 +2708,28 @@
 }
 
 .yeaft-debug-mem-meta {
-  margin-left: 8px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+.yeaft-debug-mem-body {
+  margin: 4px 0 0 0;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--code-bg, var(--bg-input-wrapper));
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.yeaft-debug-mem-tags {
+  display: inline-block;
+  margin-top: 4px;
+  color: var(--text-muted);
 }
 
 /* Error body — render as a code block, not flowing text. Long JSON
@@ -3519,14 +3743,12 @@
   background: var(--accent-soft, rgba(99, 102, 241, 0.12));
 }
 
-/* Streaming/typing/thinking/tool breathing animation on the row name.
-   Uses an identical 3 s ease-in-out infinite cycle. All four
-   "in-flight" labels share the same animation so a turn that switches
-   thinking → streaming → tool visually reads as one continuous
-   activity instead of stop-start. */
+/* In-flight breathing animation on the row name. Retrying is a live turn,
+   not an error terminal, so it shares the existing activity treatment. */
 .yeaft-vp-timeline-row.is-status-streaming .yeaft-vp-timeline-row-name,
 .yeaft-vp-timeline-row.is-status-typing .yeaft-vp-timeline-row-name,
 .yeaft-vp-timeline-row.is-status-thinking .yeaft-vp-timeline-row-name,
+.yeaft-vp-timeline-row.is-status-retrying .yeaft-vp-timeline-row-name,
 .yeaft-vp-timeline-row.is-status-tool .yeaft-vp-timeline-row-name {
   animation: yeaftVpNameBreathing 3s ease-in-out infinite;
 }
@@ -3538,6 +3760,7 @@
   .yeaft-vp-timeline-row.is-status-streaming .yeaft-vp-timeline-row-name,
   .yeaft-vp-timeline-row.is-status-typing .yeaft-vp-timeline-row-name,
   .yeaft-vp-timeline-row.is-status-thinking .yeaft-vp-timeline-row-name,
+  .yeaft-vp-timeline-row.is-status-retrying .yeaft-vp-timeline-row-name,
   .yeaft-vp-timeline-row.is-status-tool .yeaft-vp-timeline-row-name {
     animation: none;
   }
@@ -3967,7 +4190,8 @@
     padding: 4px 8px;
   }
 
-  .yeaft-topbar-model,
+  .yeaft-composer-model,
+  .yeaft-topbar-folder,
   .yeaft-topbar-group {
     min-width: 0;
   }

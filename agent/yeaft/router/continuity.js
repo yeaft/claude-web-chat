@@ -98,9 +98,10 @@ export function stripMetaForWire(messages) {
   let mutated = false;
   const out = messages.map(m => {
     if (m && typeof m === 'object'
-        && ('_meta' in m || '_runtimeTurnId' in m || '_partialTurn' in m)) {
+        && ('_meta' in m || '_runtimeTurnId' in m || '_partialTurn' in m
+          || '_persistedMessageId' in m || 'userAuthored' in m)) {
       mutated = true;
-      const { _meta, _runtimeTurnId, _partialTurn, ...rest } = m;
+      const { _meta, _runtimeTurnId, _partialTurn, _persistedMessageId, userAuthored, ...rest } = m;
       return rest;
     }
     return m;

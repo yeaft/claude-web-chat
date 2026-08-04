@@ -1,463 +1,232 @@
 # Yeaft Web Code Agent
 
-![CI](https://github.com/yeaft/claude-web-chat/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/yeaft/yeaft-web-code-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/yeaft/yeaft-web-code-agent/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@yeaft/webchat-agent)](https://www.npmjs.com/package/@yeaft/webchat-agent)
-[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://ghcr.io/yeaft/claude-web-chat)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://ghcr.io/yeaft/yeaft-web-code-agent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Node.js](https://img.shields.io/badge/node-%3E%3D18-green)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22.5-green)](package.json)
 
-[English](README.md) | [中文](README.zh-CN.md) | [Documentation](https://yeaft.github.io/claude-web-chat/)
+[English](README.md) | [中文](README.zh-CN.md) | [Documentation](https://yeaft.github.io/yeaft-web-code-agent/)
 
-> Web-based multi-provider code agent platform — run Claude Code CLI, GitHub Copilot CLI, or Yeaft's native Code Agent from one browser UI. Connect many worker machines, keep execution local, route models across providers, and collaborate with persistent multi-VP Sessions.
+Yeaft is a web control plane for code agents running on your own machines. One browser can connect to multiple Agents, open Claude Code or GitHub Copilot CLI conversations, and run Yeaft's native multi-provider engine with durable Sessions, reusable Virtual Persons (VPs), scoped memory, Projects, and Work Center.
 
-**🌐 Try it now: [cc.yeaft.com](https://cc.yeaft.com)** — open registration, no invite code required.
+**Try the hosted service:** [cc.yeaft.com](https://cc.yeaft.com)
 
-## Terminology
+![A Yeaft Session with an implementation and independent review handoff](docs/images/session.png)
 
-- **Yeaft Web Code Agent** — the whole web-based product: server, browser UI, connected worker agents, docs, and deployment story.
-- **Yeaft Code Agent** — the native code-agent capability running inside `yeaft-agent`; it owns the Yeaft engine, tools, memory, and direct LLM provider routing.
-- **Yeaft Session** — the native engine's durable collaboration unit. A Session can have one VP for focused coding or many VPs for parallel collaboration.
-- **Legacy wire/storage names** — some code and protocol fields still say `group`, `groupId`, `yeaft_session_chat`, `unify_*`, or `claude_output`. Those names are compatibility contracts, not new product language. New docs and new code should use Yeaft + Session terminology unless they are explicitly describing compatibility.
+## Why Yeaft
 
-![Screenshot](docs/images/hero.jpg)
+- **Keep execution near the code.** Shell commands, files, Git operations, providers, credentials, Session data, and Work Center state stay on the connected Agent machine. The server authenticates users and relays browser-to-Agent traffic.
+- **Use the right runtime for each task.** Claude Code CLI, GitHub Copilot CLI over ACP, and the native Yeaft engine share one Web UI without pretending they have identical behavior.
+- **Scale a Session from one VP to many.** A native Yeaft Session is the only collaboration unit: use one VP for focused work, or address several VPs for parallel implementation, review, research, or design.
+- **Carry context deliberately.** H2-AMS recalls scoped user, VP, Session, and related Project-Session memory instead of copying one global transcript everywhere.
+- **Move long work out of a chat turn.** Work Center persists a goal as a WorkItem, lets an AI planner create a validated Action graph, assigns Actions to VPs, records Runs and tool evidence, and can continue after a browser disconnect or Agent restart.
 
-## Features
+## Product model
 
-### Pick Your Code Agent Path
-
-Yeaft Web Code Agent is not bound to a single AI vendor or one execution model. When starting work, choose:
-
-| Backend | Best for |
+| Concept | What it means |
 | --- | --- |
-| **Claude Code** | 1:1 chat with Claude Code CLI — full Claude toolset |
-| **Copilot** | 1:1 chat via GitHub Copilot CLI (ACP protocol) — pick any Claude / GPT model |
-| **Yeaft Code Agent** | Native multi-provider code agent with 1..N VPs, parallel fan-out, persistent memory, and 30+ built-in tools |
+| **Agent** | A Node.js worker on a laptop, VM, server, or container. It owns execution, local configuration, and native Yeaft runtime data. |
+| **Session** | A durable native Yeaft conversation with 1..N VPs, one message timeline, a working directory, model override, announcement, and memory scopes. |
+| **VP (Virtual Person)** | A reusable persona with localized metadata, traits, prompt, and a primary/fast model hint. A VP is a role, not a separate machine. |
+| **Project** | A browser-visible grouping of native Sessions. It carries a shared Project instruction and lets sibling Sessions on the same Agent recall read-only scoped summaries while preserving source identity. |
+| **Work Center** | An Agent-level durable task system. A WorkItem has a contract and conversation; planned Actions are executed as fenced Runs with status, evidence, retries, human input, and review outcomes. |
 
-### Chat (Claude Code)
+Some internal wire types and storage paths retain historical names such as `group`, `unify_*`, or `claude_output` for compatibility. They are not current product terminology.
 
-ChatGPT-style conversational interface with real-time tool tracking, session management, and file uploads.
+## Three execution paths
 
-- Real-time streaming of Claude responses
-- Visual display of Read, Edit, Bash, and other tool executions
-- Slash commands (`/model`, `/memory`, `/skills`, etc.) with autocomplete
-- `/btw` side questions — ask Claude a quick follow-up without interrupting the current task
-- Sub-agent panel — monitor and inspect nested agent tool calls in real time
-- Session persistence with SQLite-backed history
-- Session pinning — pin important conversations to the top of the sidebar
-- Drag-and-drop file/image attachments
-- Dark / light theme with one-click toggle
-- Bilingual interface (English / 中文) with runtime language switching
-- Mobile-responsive layout
+| Path | Runtime and strengths | Important boundary |
+| --- | --- | --- |
+| **Claude Code** | One Claude Code CLI process per conversation; Claude Code tools, skills, MCP, compact/clear, sub-agent events, and resume behavior | Requires a locally installed and authenticated Claude Code CLI |
+| **GitHub Copilot** | One `copilot --acp` process per conversation; Copilot model catalog and explicit tool-permission prompts | Requires the Copilot CLI and an eligible GitHub Copilot account |
+| **Yeaft Code Agent** | Native engine inside `yeaft-agent`; 1..N VPs, 33 built-in tools, provider routing, H2-AMS memory, Projects, sub-agents, and Work Center handoff | Does not emulate every Claude Code or Copilot CLI command |
 
-### Copilot CLI Backend
+The Web UI also includes a terminal, Git status/diff, file browser/editor, port proxy, split-screen CLI conversations, an Expert Panel for Claude Code conversations, usage administration, light/dark themes, and English/Chinese localization.
 
-The same chat surface but powered by `copilot --acp` instead of `claude`. Speaks ACP (Agent Client Protocol); the agent translates every ACP event into the same `claude_output` envelope, so the rendering pipeline is shared.
+## Current native Yeaft capabilities
 
-- Pick any Claude / GPT model from Copilot's catalog
-- Per-session permission dialog (allow once / always / deny)
-- Session resume + history
-- Uses your existing GitHub Copilot OAuth — no separate API key
+### Sessions and Projects
 
-### Yeaft Code Agent
+- Create a Session with an Agent, working directory, roster, and default VP. After creation, choose model/effort in the composer and edit the announcement in Session settings.
+- Address one or more VPs with `@mentions`; selected VPs execute the same turn independently and can hand work to a peer with `RouteForward`.
+- Search and page durable Session history, inspect per-VP turns, running background tasks, model choice, memory recall, tool calls, token usage, and stop reasons.
+- Organize native Sessions into Projects, drag them between Project and Recents sections, and attach a Project instruction to all member Sessions.
+- Start a persistent WorkItem from the current Session; origin identity is stamped by the runtime.
 
-Yeaft's native code-agent engine runs inside `yeaft-agent` with no external CLI subprocess required. It is Session-first: a Session can have one VP for focused coding or many VPs for product / architecture / implementation / review collaboration.
+### Providers, tools, and memory
 
-- Build Sessions with reusable VPs, each with independent persona, provider/model, memory, and tool policy
-- Use `@mention` to decide which VPs handle a turn; multiple VPs run in parallel
-- Keep cross-session persistent memory through H2-AMS, scoped by user / VP / Session / feature
-- Route LLM calls across Anthropic, OpenAI Responses, GitHub Copilot dynamic credentials, Azure/OpenAI-compatible gateways, or local proxies
-- Use 30+ built-in tools for files, patching, shell, git worktrees, web, notebooks, planning, and sub-agent orchestration
-- Inspect model routing, recalled memory, tool calls, token usage, and stop reasons in the Yeaft debug panel
+- Native adapters support Anthropic Messages and OpenAI Responses protocols.
+- A configured provider can use a static API key or a dynamic GitHub Copilot credential provider. Per-model protocol, context window, output limit, and reasoning-effort metadata are supported.
+- The current native registry exposes **33 built-in tools** for files/patches, shell and background jobs, Git worktrees, search, Web access, images, notebooks, planning, persistent work creation, and sub-agent/VP orchestration. Skills and MCP can extend that registry.
+- H2-AMS combines resident summaries, recent context, and on-demand full-text recall. Dream maintenance extracts durable segments in the background; memory remains scope- and owner-aware.
 
-Read the full [Yeaft Code Agent guide](docs/guide/user/yeaft-group.md) for usage patterns, provider setup, and design principles.
+### Work Center
 
-![Chat](docs/images/chat.jpg)
+![Work Center showing a persistent WorkItem, its conversation, and Action graph](docs/images/work-center.png)
 
-### Split Screen
+Work Center is for goals that must survive beyond one interactive turn. Its current implementation provides:
 
-Open multiple conversations side by side — up to 3 panels at once.
+- a durable WorkItem contract (`goal`, acceptance criteria, working directory, attachments, and memory-reuse policy);
+- a WorkItem-level Coordinator conversation for status questions, guidance, contract changes, and replanning;
+- AI-planned Action graphs with validated dependencies, one final acceptance gate, and up to the configured concurrent Action limit;
+- automatic/pool/fixed VP assignment, model and effort policies, review separation, retry/waiting/failed states, and explicit human recovery input;
+- shared, read-only, isolated-write, and integrate workspace policies, with fenced Runs and retained tool evidence;
+- Agent-local SQLite persistence and restart recovery. WorkItems are linked to their source Session but are not stored inside that Session.
 
-- Split any session into a new panel from the sidebar
-- Each panel is a fully independent conversation view
-- Active-panel focus indicator for keyboard and sidebar interaction
-- Panels can be closed individually; closing all returns to single-panel mode
+Work Center does **not** mean arbitrary unattended deployment. Side effects still depend on the tools, repository policy, credentials, and delivery instructions available to the selected Agent and VP.
 
-### Expert Panel
+## Quick start
 
-AI expert teams that assist your conversations — select a team (e.g. Writing, Trading) and get multi-perspective advice in a side panel.
+### Local, single-machine evaluation
 
-- Multiple pre-built expert teams with specialized roles
-- Expert responses appear in a collapsible side panel
-- Team selection via chip-style tabs
-- Works alongside normal chat without interrupting the flow
-
-
-
-### Admin Dashboard
-
-Usage statistics and system monitoring for administrators.
-
-- User activity metrics with time-based filtering (today/week/month)
-- Per-user usage breakdown (messages, sessions, requests, traffic)
-- Connected agent status and latency monitoring
-- Mobile-responsive card layout
-
-![Dashboard](docs/images/dashboard.jpg)
-
-### Workbench
-
-Integrated development environment with terminal, Git operations, file browser, and port proxy.
-
-- Full terminal emulator (xterm.js) with PTY support
-- Git status, diff viewer, and branch management
-- File browser with CodeMirror editor
-- Port proxy: forward agent local ports to your browser
-
-![Workbench](docs/images/workbench.jpg)
-
-## Prerequisites
-
-- **Server**: Node.js >= 22.5, Docker (recommended for production)
-- **Agent**: Node.js >= 22.5, plus at least one of:
-  - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — required for Claude Chat mode
-  - [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) — required for Copilot mode (optional)
-  - **Yeaft Code Agent is bundled** in the npm package; no extra CLI required for native Yeaft Sessions
-- **Web Client**: Modern browser (Chrome, Firefox, Safari, Edge)
-
-### Configure Yeaft LLM providers from the agent CLI
-
-Installed agents expose local LLM configuration through `yeaft-agent llm`. These commands write only this machine's `~/.yeaft/config.json`; they do not update any server-global or UI-global provider list.
+Install the published Agent package, then start its bundled local Web UI, Server, and Agent on loopback:
 
 ```bash
-yeaft-agent llm setup
-```
-
-```bash
-yeaft-agent llm use github-copilot --model claude-sonnet-4.5 --fast gpt-4.1
-```
-
-GitHub Copilot uses the local device token / `gh auth` credential provider, refreshes the live model catalog from the Copilot API, and never writes a token to config. For custom OpenAI-compatible endpoints:
-
-```bash
-OPENAI_KEY=sk-... yeaft-agent llm use openai-compatible --name openai --base-url https://api.openai.com/v1 --api-key-env OPENAI_KEY --model gpt-5
-```
-
-Advanced manual setup is still available:
-
-```bash
-OPENAI_KEY=sk-... yeaft-agent llm add-provider --name openai --base-url https://api.openai.com/v1 --models gpt-5,gpt-4.1 --api-key-env OPENAI_KEY --protocol openai-responses --set-primary gpt-5
-```
-
-```bash
-yeaft-agent llm show
-```
-
-```bash
-yeaft-agent llm set-model --primary openai/gpt-5 --fast openai/gpt-4.1
-```
-
-```bash
-yeaft-agent llm remove-provider --name openai
-```
-
-Run `yeaft-agent llm --help` for the full command list and examples. The Yeaft Code Agent session header's LLM config button edits the same local agent config.
-
-## Architecture
-
-```
-┌──────────────────────────────────────────┐
-│          Server  (@yeaft/webchat-server)  │
-│         Express + WebSocket Hub          │
-│   - Agent/web client management          │
-│   - Multi-layer authentication           │
-│   - End-to-end encryption (TweetNaCl)    │
-│   - Message routing & queue              │
-│   - SQLite session persistence           │
-└──────────────────┬───────────────────────┘
-                   │ Encrypted WebSocket
-        ┌──────────┴──────────┐
-        │                     │
-┌───────▼───────┐      ┌──────▼──────────┐
-│    Agent      │      │   Web Client    │
-│ @yeaft/       │      │    (web/)       │
-│ webchat-agent │      │                 │
-│               │      │ - Vue 3 + Pinia │
-│ - Native      │      │ - Split-screen  │
-│   Yeaft Code  │      │   multi-panel   │
-│   Agent       │      │ - E2E encrypted │
-│ - Claude /    │      │ - Dark / light  │
-│   Copilot CLI │      │ - en / zh-CN    │
-│ - Git / Files │      │ - File upload   │
-└───────────────┘      └─────────────────┘
-```
-
-## Quick Start
-
-### Option A: npm (Agent only)
-
-```bash
-# Install the agent globally
 npm install -g @yeaft/webchat-agent
-
-# Connect to a server
-yeaft-agent --server wss://your-server.com --name my-worker --secret your-secret
-
-# Upgrade to latest
-yeaft-agent upgrade
 ```
 
-### Option B: Full development setup
+`yeaft-agent local` uses a named Agent instance. Without `--name`, the name is the sanitized computer hostname; this example makes it explicit:
 
 ```bash
-git clone https://github.com/yeaft/claude-web-chat.git
-cd claude-web-chat
+yeaft-agent local --name local
+```
 
-# Install all dependencies
+Open `http://127.0.0.1:6868`. Local mode disables Web authentication and binds to loopback, so use it for a trusted workstation rather than as a public deployment.
+
+In another shell, configure the same instance. The `llm` subcommand does not infer it, so pass the config path explicitly:
+
+```bash
+YEAFT_CONFIG="$HOME/.yeaft/instances/local/config.json"
+yeaft-agent llm setup --config "$YEAFT_CONFIG"
+```
+
+A GitHub Copilot-backed native provider can use local `gh auth` / device credentials without writing the token itself into the instance config:
+
+```bash
+yeaft-agent llm use github-copilot --config "$YEAFT_CONFIG" \
+  --model claude-sonnet-4.5 \
+  --fast gpt-4.1
+```
+
+The default service instance is the exception: it uses `~/.yeaft/config.json`. A custom `YEAFT_DIR` / `--yeaft-dir` requires the matching `<yeaftDir>/config.json` path.
+
+Claude Code and Copilot CLI conversations require their corresponding CLI to be installed and authenticated separately.
+
+### Connect an Agent to an existing server
+
+```bash
+npm install -g @yeaft/webchat-agent
+yeaft-agent --server wss://your-server.example --name my-worker --secret your-agent-secret
+```
+
+Install it as a managed system service when the machine should reconnect after reboot:
+
+```bash
+yeaft-agent install --server wss://your-server.example --name my-worker --secret your-agent-secret
+yeaft-agent status --name my-worker
+```
+
+### Run from source
+
+```bash
+git clone https://github.com/yeaft/yeaft-web-code-agent.git
+cd yeaft-web-code-agent
 npm install
-
-# Start server + agent in dev mode (no auth)
 npm run dev
 ```
 
-Then open `http://localhost:3456` in your browser.
+Then open `http://localhost:3456`.
 
-## Production Deployment
+## CLI surfaces
 
-### Server (Docker)
+The npm package installs two primary commands:
 
-```bash
-cd server
-cp .env.example .env
-# Edit .env — set JWT_SECRET, AGENT_SECRET
-```
+- `yeaft-agent` runs or manages the Web-connected worker and local mode. Its `llm` subcommand edits the explicit `--config` path, or `~/.yeaft/config.json` by default; it does not infer a named running instance.
+- `yeaft` runs the native engine directly from a terminal. One-shot/interactive text mode can target an **existing** formal Web Session with `--session-id`. `stream-json` can also use a new validated ID as an ad-hoc CLI conversation key, but that does not create `session.json`, a roster, or a Web product Session.
 
-```yaml
-# docker-compose.yaml
-services:
-  webchat:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    expose:
-      - "3456"
-    env_file:
-      - server/.env
-    environment:
-      - NODE_ENV=production
-      - SKIP_AUTH=false
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
-```
+Example machine-readable ad-hoc CLI conversation:
 
 ```bash
-# Start the server (data/ and SQLite DB are auto-created on first run)
-docker compose up -d --build webchat
-
-# Create the first admin user
-docker compose exec webchat node server/create-user.js admin your-password admin@example.com
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"Inspect this repository and report the test command."}}' \
+  | yeaft --session-id session_docs \
+      --cwd "$PWD" \
+      --input-format stream-json \
+      --output-format stream-json
 ```
 
-Additional users can register directly from the login page (open registration, no invite code required).
+The ID scopes persisted CLI messages; it is not a newly created Web Session. To execute an existing multi-VP Session, pass its existing Session ID. See the [Agent and native CLI reference](docs/guide/agent-cli.md) for the exact current commands and JSONL boundary.
 
-![Login](docs/images/login.png)
+## Architecture and ownership
 
-### Agent
+```text
+Browser (Vue 3 + Pinia)
+        │ authenticated WebSocket relay (WSS in production)
+        ▼
+Server (Express + ws + SQLite)
+        │ owner-checked relay and browser-facing catalog
+        ▼
+Agent (Node.js on the code machine)
+        ├── Claude Code CLI provider
+        ├── GitHub Copilot CLI provider (ACP)
+        ├── Native Yeaft engine
+        │   ├── Session + VP orchestration
+        │   ├── Anthropic / OpenAI Responses adapters
+        │   ├── 33 built-in tools + Skills + MCP
+        │   ├── H2-AMS memory + Dream maintenance
+        │   └── Work Center (WorkItem → Action → Run)
+        └── Workbench (terminal, Git, files, port proxy)
+```
 
-**Via npm** (recommended):
+The server owns authentication, user-visible catalog metadata, and relay state. The Agent owns code execution and Agent-local Yeaft runtime data. A Session `workDir` selects project context; it does not become the storage root for Session transcripts, memory, tasks, or Work Center records.
+
+## Configuration and deployment
+
+- **Runtime requirement:** Node.js `>=22.5.0`; release CI uses Node.js 24.
+- **Agent config:** each Agent instance resolves its own Yeaft directory and `config.json`. Provider credentials are not a server-global setting.
+- **Server:** Docker is the recommended production path. Set non-default authentication secrets, create the first administrator, terminate TLS at a reverse proxy, and persist the server data directory.
+- **Registration:** the current production route accepts open registration. Invitation administration remains in the codebase, but an invitation code is not currently required by `server/auth/register.js`.
+- **Security boundary:** the product supports password/JWT authentication, optional TOTP and email verification, per-user Agent secrets, and owner-checked relay. Current Web/Agent peers negotiate plaintext JSON payloads, so production deployments must use HTTPS/WSS; TweetNaCl payload encryption remains only as a compatibility fallback for legacy peers. Treat raw debug traces, tool outputs, attachments, and local provider credentials as sensitive Agent data.
+
+Detailed guides:
+
+- [Getting started](docs/guide/getting-started.md)
+- [Yeaft Sessions and Projects](docs/guide/user/yeaft-session.md)
+- [Work Center](docs/guide/user/work-center.md)
+- [Provider and model configuration](docs/guide/yeaft-config.md)
+- [Architecture](docs/guide/tech/architecture.md)
+- [Security](docs/guide/security.md)
+- [Server deployment](docs/guide/deploy-server.md)
+- [Agent installation](docs/guide/deploy-agent.md)
+
+## Development and verification
 
 ```bash
-npm install -g @yeaft/webchat-agent
-
-# Run once (foreground)
-yeaft-agent --server wss://your-server.com --name worker-1 --secret your-secret
-
-# Or install as system service (auto-start on boot, auto-restart on crash)
-yeaft-agent install --server wss://your-server.com --name worker-1 --secret your-secret
-
-# Manage installed service
-yeaft-agent status                 # check if running
-yeaft-agent logs                   # view logs (follow mode)
-yeaft-agent restart                # restart
-yeaft-agent uninstall              # remove service
+npm install
+npm test                 # core Vitest suite
+npm run test:e2e         # Playwright browser suite
+npm run release:guard    # server/Agent import guard + startup smoke
+npm run build            # production Web assets
+npm run docs:build       # bilingual VitePress site
 ```
 
-**From source** (for development or without npm global install):
+At this revision, the core manifest contains 49 Vitest files / 499 listed tests, and the E2E tree contains 11 Playwright spec files. These counts are descriptive, not a compatibility promise.
 
-```bash
-cd agent
-cp .env.example .env
-# Edit .env — set SERVER_URL, AGENT_NAME, AGENT_SECRET, WORK_DIR
+The repository uses ES modules, Node.js 22.5+, plain JavaScript with JSDoc, Vue 3 + Pinia, Express + `ws`, SQLite, esbuild, Vitest, Playwright, and VitePress.
 
-# Run in foreground
-node index.js
+## Documentation and compatibility
 
-# Or install as system service (reads config from .env)
-node cli.js install
+Published user documentation is bilingual. English pages live under `docs/guide/`; Chinese counterparts live under `docs/zh-CN/guide/`. Internal design notes under `docs/notes/` and `docs/work-center/` may describe migrations or historical decisions and should not be treated as the public feature contract.
 
-# Manage installed service
-node cli.js status
-node cli.js logs
-node cli.js uninstall
-```
-
-You can find the Agent secret in **Settings > Security** within the web interface:
-
-![Setup Agent](docs/images/setup-agent.jpg)
-
-When no Agent is connected, the welcome page guides you to Settings:
-
-![No Agent](docs/images/no-agent.jpg)
-
-### Agent CLI
-
-```
-yeaft-agent [options]              Run agent in foreground
-yeaft-agent install [options]      Install as system service (Linux/macOS/Windows)
-yeaft-agent uninstall              Remove system service
-yeaft-agent start                  Start installed service
-yeaft-agent stop                   Stop installed service
-yeaft-agent restart                Restart installed service
-yeaft-agent status                 Show service status
-yeaft-agent logs                   View service logs
-yeaft-agent upgrade                Upgrade to latest version
-yeaft-agent --version              Show version
-
-Options:
-  --server <url>      WebSocket server URL
-  --name <name>       Agent display name
-  --secret <secret>   Authentication secret
-  --work-dir <dir>    Default working directory
-  --auto-upgrade      Check for updates on startup
-
-Environment variables (alternative to flags):
-  SERVER_URL, AGENT_NAME, AGENT_SECRET, WORK_DIR
-```
-
-## Security
-
-### Authentication
-
-1. **Username + Password** (bcrypt hashed)
-2. **TOTP 2FA** (optional, Google/Microsoft Authenticator)
-3. **Email verification** (optional, requires SMTP)
-
-### Production Requirements
-
-The server **refuses to start** in production mode if:
-- `JWT_SECRET` is left at default
-
-If no users are configured, the server starts with a warning — create the first user via `docker compose exec`.
-
-### Agent Authentication
-
-- Agents authenticate via WebSocket message (secret never in URL)
-- **Per-user agent secret**: Agent bound to a specific user (only that user can see it)
-- **Global AGENT_SECRET**: Env var fallback, only visible to admin users
-- Each connection gets a unique session key for encryption
-
-### Roles & Permissions
-
-All registered users are **Pro** by default. The first user created via CLI is **Admin**.
-
-| Feature | `pro` | `admin` |
-|---|:---:|:---:|
-| Chat | yes | yes |
-| Expert Panel | yes | yes |
-| Own agents (per-user secret) | yes | yes |
-| Global agents (AGENT_SECRET) | - | yes |
-| Workbench (Terminal, Git, Files) | yes | yes |
-| Port Proxy | yes | yes |
-| Admin Dashboard | - | yes |
-| Manage invitations | - | yes |
-
-## Project Structure
-
-```
-yeaft-web-code-agent/
-├── server/              # Central WebSocket hub (Express + ws)
-│   ├── index.js         # Entry point
-│   ├── handlers/        # Message handlers (agent↔client routing)
-│   ├── api.js           # REST endpoints (auth, sessions, users)
-│   ├── proxy.js         # Port proxy forwarding
-│   ├── database.js      # SQLite storage
-│   └── auth.js          # JWT + TOTP + email verification
-├── agent/               # Worker machine agent
-│   ├── cli.js           # CLI entry point (yeaft-agent command)
-│   ├── index.js         # Agent startup & capability detection
-│   ├── connection/      # WebSocket connection, auth & message routing
-│   ├── providers/       # ChatProvider abstraction
-│   │   ├── base.js      # ChatProvider interface + capabilities
-│   │   ├── claude-code.js # Claude CLI driver
-│   │   ├── copilot.js   # GitHub Copilot CLI driver (ACP)
-│   │   └── acp-client.js# ACP JSON-RPC client
-│   ├── yeaft/           # Yeaft's own AI engine (no external CLI)
-│   │   ├── engine.js    # Main query loop
-│   │   ├── memory/      # H2-AMS memory subsystem
-│   │   ├── llm/         # Multi-provider LLM adapters
-│   │   ├── sessions/    # Session orchestration
-│   │   └── tools/       # 30+ built-in tools
-│   ├── claude.js        # Legacy Claude CLI process management
-│   ├── conversation.js  # Chat session lifecycle & slash commands
-│   ├── sdk/             # Claude CLI stream-json SDK
-│   ├── terminal.js      # PTY terminal (node-pty)
-│   └── workbench/       # Git + file operations
-├── web/                 # Vue 3 frontend
-│   ├── app.js           # Vue app entry
-│   ├── build.js         # Production build (esbuild)
-│   ├── stores/          # Pinia stores + helpers
-│   ├── styles/          # CSS (23 stylesheets, dark/light theme)
-│   ├── i18n/            # Translations (en, zh-CN)
-│   └── vendor/          # Third-party libs (local, no CDN)
-├── test/                # Vitest unit & integration tests (68 files, 2700+ tests)
-├── e2e/                 # Playwright end-to-end tests
-├── docs/                # VitePress documentation site
-├── Dockerfile           # Multi-stage production build
-└── LICENSE              # MIT
-```
-
-## Tech Stack
-
-- **Server**: Node.js, Express, ws, node:sqlite, compression
-- **Frontend**: Vue 3, Pinia, xterm.js, CodeMirror 5, marked, highlight.js
-- **Build**: esbuild (frontend bundling)
-- **Testing**: Vitest (2,700+ unit/integration tests), Playwright (E2E)
-- **Encryption**: TweetNaCl (XSalsa20-Poly1305)
-- **Auth**: JWT, bcrypt, speakeasy (TOTP), nodemailer
-- **Docs**: VitePress
-- **Deploy**: Docker multi-stage build
-
-## CI/CD
-
-GitHub Actions workflows included:
-
-- **CI** (`ci.yml`): Tests on Node 24 + frontend build (manual trigger via `workflow_dispatch`)
-- **Release** (`release.yml`): On tag `release-*` — runs tests, publishes `@yeaft/webchat-agent` to npm, builds Docker image to GHCR, creates GitHub Release
-
-### Publishing a release
-
-```bash
-# Tag and push (use release- prefix)
-git tag release-v1.0.0
-git push origin release-v1.0.0
-# GitHub Actions handles the rest
-```
-
-## FAQ
-
-See [README.zh-CN.md](README.zh-CN.md#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98) for detailed troubleshooting (in Chinese).
+The canonical repository is [github.com/yeaft/yeaft-web-code-agent](https://github.com/yeaft/yeaft-web-code-agent). Historical package names and image aliases remain where changing them would break installations.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+Read [CONTRIBUTING.md](CONTRIBUTING.md). Keep changes small, preserve compatibility boundaries, add focused tests, and verify documentation claims against the current implementation.
 
 ## Disclaimer
 
-This is an independent, community-driven open-source project. It is **not** affiliated with, endorsed by, or officially connected to Anthropic, OpenAI, GitHub, or any other model provider.
-
-"Claude" is a trademark of Anthropic. Yeaft can connect to Claude Code CLI and Anthropic APIs, but it does not modify or redistribute Anthropic software. Other provider names are trademarks of their respective owners.
-
-Use at your own risk. The authors assume no liability for any issues arising from the use of this software.
+Yeaft is an independent open-source project. It is not affiliated with or endorsed by Anthropic, OpenAI, GitHub, or any other model provider. Provider and model names are trademarks of their respective owners.
 
 ## License
 

@@ -20,3 +20,13 @@ export function isHiddenConversationRow(row) {
   if (row.kind === 'compact_summary' || row._compactSummary) return true;
   return isInternalControlContent(row.content);
 }
+
+/**
+ * Whether a persisted row may be shown as a human-authored conversation turn.
+ * Legacy user rows predate provenance metadata and remain visible; new Engine
+ * protocol rows carry `userAuthored: false` and are model-only.
+ */
+export function isVisibleConversationRow(row) {
+  if (isHiddenConversationRow(row)) return false;
+  return row?.role !== 'user' || row.userAuthored !== false;
+}

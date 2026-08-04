@@ -1,9 +1,22 @@
 import { CONFIG, isEmailConfigured, isTotpEnabled, isAadEnabled, getEnabledSsoProviders, getUserByUsername } from '../config.js';
 import { loginStep1, loginStep2, logout, verifyTotpStep, completeTotpSetup, register, loginWithAad } from '../auth.js';
 import { buildAuthorizeUrl, handleCallback, peekStateMode, storePendingResult, consumePendingResult } from '../auth/oauth-flow.js';
-import { verifyToken } from '../auth/token.js';
+import { authenticateRequest, clearSessionCookie, setSessionCookie } from '../auth/request-auth.js';
 import { requestPasswordReset, verifyPasswordReset } from '../auth/password-reset.js';
 import { identityDb, userDb } from '../database.js';
+
+function sendLoginResult(req, res, result) {
+  if (result?.success && result.token) setSessionCookie(req, res, result.token);
+  return res.json(result);
+}
+
+function authenticateBrowserRequest(req, queryToken = undefined) {
+  return authenticateRequest({
+    authorizationHeader: req.headers.authorization,
+    cookieHeader: req.headers.cookie,
+    queryToken,
+  });
+}
 
 /**
  * Register authentication-related API routes.
@@ -39,7 +52,7 @@ export function registerAuthRoutes(app, { requireAuth, checkRateLimit }) {
     }
     try {
       const result = await loginStep1(username, password);
-      res.json(result);
+      sendLoginResult(req, res, result);
     } catch (err) {
       console.error('Login error:', err);
       res.status(500).json({ success: false, error: 'Internal server error' });
@@ -55,14 +68,15 @@ export function registerAuthRoutes(app, { requireAuth, checkRateLimit }) {
       return res.status(400).json({ success: false, error: 'Token and code are required' });
     }
     const result = loginStep2(tempToken, code);
-    res.json(result);
+    sendLoginResult(req, res, result);
   });
 
   app.post('/api/auth/logout', (req, res) => {
-    const token = req.headers.authorization?.replace('Bearer ', '');
-    if (token) {
-      logout(token);
-    }
+    const bearerSession = authenticateRequest({ authorizationHeader: req.headers.authorization });
+    const cookieSession = authenticateRequest({ cookieHeader: req.headers.cookie });
+    const tokens = new Set([bearerSession?.token, cookieSession?.token].filter(Boolean));
+    for (const token of tokens) logout(token);
+    clearSessionCookie(req, res);
     res.json({ success: true });
   });
 
@@ -76,7 +90,7 @@ export function registerAuthRoutes(app, { requireAuth, checkRateLimit }) {
     }
     try {
       const result = await verifyTotpStep(tempToken, totpCode);
-      res.json(result);
+      sendLoginResult(req, res, result);
     } catch (err) {
       console.error('TOTP verification error:', err);
       res.status(500).json({ success: false, error: 'Internal server error' });
@@ -90,7 +104,7 @@ export function registerAuthRoutes(app, { requireAuth, checkRateLimit }) {
     }
     try {
       const result = await completeTotpSetup(setupToken, totpCode);
-      res.json(result);
+      sendLoginResult(req, res, result);
     } catch (err) {
       console.error('TOTP setup error:', err);
       res.status(500).json({ success: false, error: 'Internal server error' });
@@ -156,7 +170,7 @@ export function registerAuthRoutes(app, { requireAuth, checkRateLimit }) {
     }
     try {
       const result = await loginWithAad(idToken);
-      res.json(result);
+      sendLoginResult(req, res, result);
     } catch (err) {
       console.error('AAD login error:', err);
       res.status(500).json({ success: false, error: 'Internal server error' });
@@ -177,9 +191,8 @@ export function registerAuthRoutes(app, { requireAuth, checkRateLimit }) {
       // here directly so we read the token from the `Authorization` query
       // parameter (frontend hands it over explicitly because top-level navigation
       // can't set headers).
-      const token = String(req.query.token || '');
-      const ver = verifyToken(token);
-      if (!ver.valid) {
+      const ver = authenticateBrowserRequest(req, String(req.query.token || ''));
+      if (!ver) {
         return res.status(401).send('Authentication required to bind an identity');
       }
       const u = userDb.getByUsername(ver.username);
@@ -204,9 +217,8 @@ export function registerAuthRoutes(app, { requireAuth, checkRateLimit }) {
     const intent = req.query.intent === 'bind' ? 'bind' : 'login';
     let userId = null;
     if (intent === 'bind') {
-      const token = String(req.query.token || '');
-      const ver = verifyToken(token);
-      if (!ver.valid) return res.status(401).json({ success: false, error: 'auth required' });
+      const ver = authenticateBrowserRequest(req, String(req.query.token || ''));
+      if (!ver) return res.status(401).json({ success: false, error: 'auth required' });
       const u = userDb.getByUsername(ver.username);
       if (!u) return res.status(401).json({ success: false, error: 'user not found' });
       userId = u.id;
@@ -226,7 +238,14 @@ export function registerAuthRoutes(app, { requireAuth, checkRateLimit }) {
     const r = consumePendingResult(req.params.state);
     if (!r) return res.json({ status: 'pending' });
     if (r.kind === 'login') {
-      return res.json({ status: 'login', token: r.token, sessionKey: r.sessionKey, role: r.role });
+      setSessionCookie(req, res, r.token);
+      return res.json({
+        status: 'login',
+        token: r.token,
+        sessionKey: r.sessionKey,
+        userId: r.userId,
+        role: r.role,
+      });
     }
     if (r.kind === 'bind') {
       return res.json({ status: 'bind', provider: r.provider });
@@ -261,9 +280,11 @@ export function registerAuthRoutes(app, { requireAuth, checkRateLimit }) {
       }
 
       if (result.kind === 'login') {
+        setSessionCookie(req, res, result.token);
         const params = new URLSearchParams({
           token: result.token,
           sessionKey: result.sessionKey,
+          userId: result.userId || '',
           role: result.role
         });
         return res.redirect(`/#/sso-complete?${params.toString()}`);

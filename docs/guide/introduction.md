@@ -1,79 +1,93 @@
 # What is Yeaft?
 
-**Yeaft Web Code Agent** is a web-based, multi-provider code agent platform. It gives you one browser UI for Claude Code CLI, GitHub Copilot CLI, and Yeaft's native Code Agent engine, while execution stays on your connected Agent machines.
+Yeaft Web Code Agent is a browser control plane for code agents that execute on your connected machines. It combines vendor CLI conversations with Yeaft's native multi-provider engine instead of forcing every workflow through one provider or one runtime.
 
-![Screenshot](/images/hero.jpg)
+![A native Yeaft Session with implementation and review VPs](/images/session.png)
 
-## Three Code Agent Paths, Each Has Its Strengths
+## The system in five objects
 
-Yeaft doesn't lock you to a single AI backend. When you start a new session you pick:
+| Object | Responsibility |
+| --- | --- |
+| **Agent** | Runs on the machine that owns the code. It executes tools, starts optional CLI providers, calls native LLM providers, and stores Agent-local Yeaft data. |
+| **Session** | The native engine's durable conversation unit. A Session has 1..N VPs, one timeline, a working directory, model settings, announcement, and scoped memory. |
+| **VP** | A reusable Virtual Person with a persona, localized role metadata, traits, and a primary/fast model hint. |
+| **Project** | Groups native Sessions and supplies a shared instruction. Related Sessions on the same Agent can recall scoped summaries without merging their transcripts. |
+| **WorkItem** | A persistent Work Center goal that is planned into Actions and executed as fenced Runs. It is Agent-level and can outlive the source Session turn. |
 
-| Backend | Best for | Details |
+A one-VP Session is the normal focused coding-assistant shape. Adding VPs does not switch to a different mode; it only gives the same Session more roles to address in parallel.
+
+## Choose an execution path
+
+| Path | Use it when | Runtime boundary |
 | --- | --- | --- |
-| **Claude Code** | 1:1 chat with the full Claude toolset | [Chat Mode](./user/chat-mode.md) |
-| **Copilot** | Same 1:1 shape but via GitHub Copilot CLI (ACP), pick any Claude / GPT model | [Copilot Mode](./user/copilot-mode.md) |
-| **Yeaft Code Agent** | Native multi-provider code agent, 1..N VPs, parallel fan-out, persistent memory, 30+ tools | [Yeaft Code Agent](./user/yeaft-group.md) |
+| **Claude Code** | You want Claude Code's exact tools, skills, MCP behavior, compact/clear commands, and resume model | A locally installed Claude Code CLI process per conversation |
+| **GitHub Copilot** | You want Copilot entitlement, ACP permission prompts, and Copilot's model catalog | A locally installed `copilot --acp` process per conversation |
+| **Yeaft Code Agent** | You want provider-neutral native execution, 1..N VPs, scoped memory, Projects, 33 tools, or Work Center handoff | The native engine inside `yeaft-agent`; no vendor CLI subprocess |
 
-Not sure which? See [Choose a Code Agent Path](./user/choose-backend.md).
+The three paths share navigation and rendering where their event models overlap, but their provider-specific commands and persistence semantics remain explicit. See [Choose a code agent path](./user/choose-backend.md).
 
-## Core Capabilities
+## Native Session collaboration
 
-### 💬 Multi-mode chat
-- ChatGPT-style UI, streaming output
-- Live tool execution visualization (Read / Edit / Bash / WebFetch, etc.)
-- Slash commands + autocomplete
-- Drag-drop file / image attachments
-- Bilingual UI (English / 中文) + dark / light theme
+A Yeaft Session can:
 
-![Chat](/images/chat.jpg)
+- route one user turn to a default VP or to several `@mentioned` VPs;
+- show each VP's streamed response and tool evidence in the shared timeline;
+- use explicit `RouteForward` handoffs between current Session members;
+- run background shell jobs and sub-agents with durable status records;
+- search and page persisted history;
+- inspect model routing, memory recall, token usage, tool calls, and stop reasons;
+- create a persistent WorkItem when work should continue beyond the interactive turn.
 
-### 👥 Yeaft Code Agent
-- Create a Session with one focused VP or many VPs (Virtual Persons with independent persona / model / tools)
-- `@mention` decides which VPs handle the message — parallel fan-out
-- Cross-session persistent memory (H2-AMS) — VPs remember project decisions and preferences
-- Multi-provider routing across Anthropic, OpenAI Responses, GitHub Copilot dynamic credentials, and compatible gateways
-- Explicit VP→VP handoff (`route_forward` tool) plus sub-agent orchestration
+Projects add organization and controlled context sharing. A Project instruction is injected into each member Session. Related Session summaries are read-only context, preserve source identity, and are limited to siblings on the same Agent.
 
-### 🧠 Expert Panel
-AI expert teams in a side panel that assist your main conversation.
-- Multiple pre-built expert teams
-- Chip-style team switcher
-- Runs alongside main chat without interrupting
+## Durable work with Work Center
 
+![Work Center with a persistent WorkItem and planned Actions](/images/work-center.png)
 
-### 🖥️ Split Screen + Workbench
-- **Split screen**: up to 3 panels showing different sessions at once
-- **Workbench**: terminal / Git / files / port proxy, all in one
+Work Center is an Agent-level task system, not a second conversation mode. A WorkItem stores a goal, acceptance criteria, working directory, attachments, and its own Coordinator conversation. AI triage can produce a validated Action graph; the scheduler assigns eligible VPs and executes ready Actions up to the configured concurrency limit.
 
-![Workbench](/images/workbench.jpg)
+Current Work Center behavior includes:
 
-### 📊 Admin Dashboard
-User activity / agent status / traffic stats.
+- dependency-checked Action graphs with a unique final acceptance gate;
+- auto, pool, or fixed VP assignment and optional role separation for review;
+- per-Action model/effort policies and explicit workspace policies;
+- shared, read-only, isolated-write, and integration execution paths;
+- waiting, retryable, failed, cancelled, and completed outcomes;
+- human guidance to the Coordinator or a specific Action;
+- persisted Run identity, usage, messages, tool evidence, and restart recovery.
 
-![Dashboard](/images/dashboard.jpg)
+A WorkItem is linked to its origin Session, but its lifecycle and SQLite data belong to the Agent's Work Center.
 
-## Prerequisites
+## Providers, tools, and memory
 
-- **Server**: Node.js >= 22.5, Docker recommended for production
-- **Agent**: Node.js >= 22.5, plus:
-  - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (required for Claude Chat mode)
-  - [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) (optional, required for Copilot mode)
-  - Yeaft engine is bundled in the npm package — **no extra CLI needed**
-- **Web Client**: Modern browser (Chrome / Firefox / Safari / Edge)
+The native LLM layer supports Anthropic Messages and OpenAI Responses protocols. Providers may use static API keys or supported dynamic credentials such as GitHub Copilot, and each model can override protocol and limits.
 
-## Tech Stack
+The built-in native registry currently contains 33 tools covering files, patches, shell/background tasks, Git worktrees, search, Web access, images, notebooks, planning, WorkItem creation, and agent/VP orchestration. Skills and MCP servers may add more tools, so the effective list depends on the Agent and Session policy.
 
-- **Server**: Node.js, Express, ws, node:sqlite, compression
-- **Frontend**: Vue 3, Pinia, xterm.js, CodeMirror 5, marked, highlight.js
-- **Build**: esbuild
-- **Testing**: Vitest (2,700+ unit/integration tests), Playwright (E2E)
-- **Encryption**: TweetNaCl (XSalsa20-Poly1305)
-- **Auth**: JWT, bcrypt, speakeasy (TOTP), nodemailer
-- **Docs**: VitePress
-- **Deploy**: Docker multi-stage build
+H2-AMS is the native memory system. Before a turn it recalls relevant full-text segments into a budgeted Active Memory Set; after work completes, Dream maintenance extracts durable scoped segments and summaries. User, VP, Session, and related Project-Session scopes remain distinct.
 
-## What's Next
+## Browser workspace
 
-- Never installed → [Getting Started](./getting-started.md)
-- Picking a backend → [Choose a Code Agent Path](./user/choose-backend.md)
-- Understanding the architecture → [Architecture Overview](./tech/architecture.md)
+Beyond the native engine, the Web application provides:
+
+- a unified, Agent-aware Session catalog with Project and Recents sections;
+- terminal, Git status/diff, file browser/editor, and port proxy;
+- up to three side-by-side Claude Code/Copilot conversation panes;
+- an Expert Panel for Claude Code conversations;
+- Work Center board, WorkItem conversation, Action inspection, and retained execution evidence;
+- English/Chinese localization and light/dark themes;
+- authentication, optional TOTP/email verification, per-user Agent secrets, and administration views.
+
+## Ownership and security boundary
+
+Code execution and native Yeaft runtime data stay on the Agent. The central server authenticates users, stores browser-facing account/catalog metadata, and relays owner-checked WebSocket traffic. A Session `workDir` selects the project execution context; it does not own Session transcripts, memory, tasks, or Work Center data.
+
+Raw tool output, debug traces, attachments, model credentials, and local project files are sensitive. See [Security](./security.md) before exposing a deployment beyond a trusted network.
+
+## Next steps
+
+- [Get started locally or connect an Agent](./getting-started.md)
+- [Learn Sessions and Projects](./user/yeaft-session.md)
+- [Use Work Center](./user/work-center.md)
+- [Configure providers and models](./yeaft-config.md)
+- [Understand the architecture](./tech/architecture.md)

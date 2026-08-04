@@ -1077,7 +1077,13 @@ export default {
       if (turn.memoryLoaded && turn.memoryLoaded.length > 0) {
         lines.push(`## Memory loaded (${turn.memoryLoaded.length})`);
         for (const m of turn.memoryLoaded) {
-          lines.push(`- ${m.id || '?'}  score=${m.score == null ? '-' : m.score.toFixed(3)}  kind=${m.kind || '-'}`);
+          lines.push(`- ${m.id || '?'}  layer=${m.layer || '-'}  score=${m.score == null ? '-' : m.score.toFixed(3)}  kind=${m.kind || '-'}  scope=${m.label || m.scope || '-'}`);
+          if (m.body) {
+            lines.push('');
+            lines.push('```text');
+            lines.push(m.body);
+            lines.push('```');
+          }
         }
         lines.push('');
       }
@@ -1441,7 +1447,7 @@ export default {
             <div class="yeaft-debug-section" v-if="turn.memoryLoaded && turn.memoryLoaded.length > 0">
               <div class="yeaft-debug-section-row">
                 <span class="yeaft-debug-section-title">Memory loaded</span>
-                <span class="yeaft-debug-section-meta">{{ turn.memoryLoaded.length }}</span>
+                <span class="yeaft-debug-section-meta">{{ turn.memoryLoaded.length }} loaded<span v-if="turn.memoryLoadedMeta && turn.memoryLoadedMeta.recallCandidates != null"> / {{ turn.memoryLoadedMeta.recallCandidates }} candidates</span></span>
                 <button class="yeaft-debug-copy-btn" @click="copyText(turn.memoryLoaded, 'memory loaded')">copy</button>
                 <button class="yeaft-debug-show-btn" @click="toggleSection(turn.turnId, 'mem')">
                   {{ isSectionExpanded(turn.turnId, 'mem') ? 'hide' : 'show' }}
@@ -1449,8 +1455,12 @@ export default {
               </div>
               <ul v-if="isSectionExpanded(turn.turnId, 'mem')" class="yeaft-debug-mem-list">
                 <li v-for="m in turn.memoryLoaded" :key="m.id">
-                  <code>{{ m.id }}</code>
-                  <span class="yeaft-debug-mem-meta">score={{ m.score == null ? '-' : m.score.toFixed(3) }} · kind={{ m.kind || '-' }}</span>
+                  <div class="yeaft-debug-mem-head">
+                    <code>{{ m.id }}</code>
+                    <span class="yeaft-debug-mem-meta">layer={{ m.layer || '-' }} · score={{ m.score == null ? '-' : m.score.toFixed(3) }} · kind={{ m.kind || '-' }} · scope={{ m.label || m.scope || '-' }}</span>
+                  </div>
+                  <pre v-if="m.body" class="yeaft-debug-mem-body">{{ m.body }}</pre>
+                  <span v-if="m.tags && m.tags.length" class="yeaft-debug-mem-tags">{{ m.tags.join(', ') }}</span>
                 </li>
               </ul>
             </div>

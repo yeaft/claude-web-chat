@@ -3,16 +3,39 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const originalLocation = globalThis.location;
 const originalWebSocket = globalThis.WebSocket;
 const originalPinia = globalThis.Pinia;
+const originalLocalStorage = globalThis.localStorage;
+
+function installMemoryLocalStorage() {
+  const values = new Map();
+  globalThis.localStorage = {
+    getItem: key => values.get(String(key)) ?? null,
+    setItem: (key, value) => values.set(String(key), String(value)),
+    removeItem: key => values.delete(String(key)),
+    clear: () => values.clear(),
+  };
+}
 
 async function loadWebsocketHelpers(authStore) {
   vi.resetModules();
+  const stores = new Map();
   globalThis.Pinia = {
-    defineStore: () => () => ({}),
+    defineStore: (id, options = {}) => () => {
+      if (stores.has(id)) return stores.get(id);
+      const store = { ...(typeof options.state === 'function' ? options.state() : {}) };
+      for (const [name, action] of Object.entries(options.actions || {})) {
+        store[name] = action.bind(store);
+      }
+      stores.set(id, store);
+      return store;
+    },
   };
   vi.doMock('../../../web/stores/auth.js', () => ({
     useAuthStore: () => authStore,
   }));
-  return import('../../../web/stores/helpers/websocket.js');
+  return {
+    ...await import('../../../web/stores/helpers/websocket.js'),
+    ...await import('../../../web/stores/chat.js'),
+  };
 }
 
 function createStore() {
@@ -22,6 +45,15 @@ function createStore() {
     reconnectAttempts: 0,
     connectionState: 'disconnected',
     authenticated: false,
+    _hasHandledAgentList: true,
+    _hasHandledYeaftSessionHydrate: true,
+    yeaftSessionInventoryCompleteSupported: true,
+    yeaftSessionHydrateRequestId: 'old-inventory',
+    _yeaftSessionInventorySocketQuarantined: true,
+    serverEncryptionRequired: false,
+    chatHistoryRequestIdSupported: true,
+    chatHistoryConnectionGeneration: 4,
+    chatHistoryRequests: {},
     currentView: 'chat',
     startHeartbeat: vi.fn(),
     stopHeartbeat: vi.fn(),
@@ -54,10 +86,12 @@ function installFakeWebSocket() {
 function createRaceAuthStore() {
   return {
     token: 'old-token',
+    authGeneration: 1,
     getActiveToken: vi.fn(function getActiveToken() { return this.token; }),
-    handleAuthFailure: vi.fn(function handleAuthFailure(_, failedToken) {
-      if (failedToken !== this.token) return false;
+    handleAuthFailure: vi.fn(function handleAuthFailure(_, failedToken, failedGeneration = this.authGeneration) {
+      if (failedToken !== this.token || failedGeneration !== this.authGeneration) return false;
       this.token = null;
+      this.authGeneration += 1;
       return false;
     }),
   };
@@ -69,23 +103,102 @@ afterEach(() => {
   globalThis.location = originalLocation;
   globalThis.WebSocket = originalWebSocket;
   globalThis.Pinia = originalPinia;
+  if (originalLocalStorage === undefined) delete globalThis.localStorage;
+  else globalThis.localStorage = originalLocalStorage;
 });
 
 describe('websocket auth token races', () => {
   it('ignores 1008 close events from an older token after a newer login wins', async () => {
     const authStore = createRaceAuthStore();
     const sockets = installFakeWebSocket();
+    installMemoryLocalStorage();
     globalThis.location = { protocol: 'https:', host: 'example.test' };
-    const { connect } = await loadWebsocketHelpers(authStore);
+    const { connect, useChatStore } = await loadWebsocketHelpers(authStore);
     const store = createStore();
+    const resolveProjectMutation = vi.fn();
+    store.projectMutationRequests = {
+      staleProjectMutation: { resolve: resolveProjectMutation },
+    };
+    store.sessionProjects = [{
+      id: 'server-p',
+      members: [{ agentId: 'agent-a', sessionId: 'server-session' }],
+    }];
+    store.sessionCatalogLoaded = true;
+    store.sessionCatalog = [{ catalogKey: 'chat:stale' }];
+    store.activeCatalogKey = 'chat:stale';
+    store.sessionCatalogMutationRequests = {
+      oldMutation: { previousCatalog: [{ catalogKey: 'chat:before-reconnect' }] },
+    };
+    store.chatHistoryRequests['chat:stale'] = {
+      requestId: 'old-request',
+      loading: true,
+      connectionGeneration: 4,
+    };
 
     connect(store);
+    expect(store._hasHandledAgentList).toBe(false);
+    expect(store._hasHandledYeaftSessionHydrate).toBe(false);
+    expect(store.yeaftSessionInventoryCompleteSupported).toBeNull();
+    expect(store.yeaftSessionHydrateRequestId).toBeNull();
+    expect(store._yeaftSessionInventorySocketQuarantined).toBe(false);
+    expect(store.serverEncryptionRequired).toBe(true);
+    expect(store.chatHistoryRequestIdSupported).toBe(null);
+    expect(store.chatHistoryConnectionGeneration).toBe(5);
+    expect(resolveProjectMutation).toHaveBeenCalledWith({
+      ok: false,
+      requestId: 'staleProjectMutation',
+      error: { code: 'connection_changed' },
+    });
+    expect(store.projectMutationRequests).toEqual({});
+    expect(store.sessionProjects).toEqual([]);
+    const chatStore = useChatStore();
+    chatStore.sessionCatalog = [];
+    chatStore.sessionProjects = store.sessionProjects;
+    chatStore.applyLegacyProjectSnapshot([{
+      id: 'local-p',
+      name: 'Local project',
+      sessionIds: ['local-session'],
+    }], 'agent-a');
+    expect(chatStore.sessionProjects.map(project => project.id)).toEqual(['agent-a\u001flocal-p']);
+    expect(chatStore.sessionProjects.flatMap(project => project.members)).toEqual([
+      { agentId: 'agent-a', sessionId: 'local-session' },
+    ]);
+    expect(store.chatHistoryRequests['chat:stale']).toMatchObject({
+      loading: false,
+      cancelled: true,
+      error: 'connection_changed',
+    });
+    expect(store.sessionCatalogMutationRequests).toEqual({});
+    expect(store.sessionCatalogLoaded).toBe(false);
+    expect(store.sessionCatalog).toEqual([]);
+    expect(store.activeCatalogKey).toBe(null);
     authStore.token = 'new-token';
+    authStore.authGeneration = 2;
     sockets[0].onclose({ code: 1008, reason: 'Authentication required' });
 
     expect(sockets[0].url).toContain('token=old-token');
-    expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token');
+    expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token', 1);
     expect(authStore.token).toBe('new-token');
+    expect(store._hasHandledAgentList).toBe(false);
+    expect(store._hasHandledYeaftSessionHydrate).toBe(false);
+    expect(store.yeaftSessionInventoryCompleteSupported).toBeNull();
+    expect(store.yeaftSessionHydrateRequestId).toBeNull();
+  });
+
+  it('restores encrypted outbound mode before reconnecting to a legacy Server', async () => {
+    const authStore = createRaceAuthStore();
+    const sockets = installFakeWebSocket();
+    globalThis.location = { protocol: 'https:', host: 'example.test' };
+    const { connect } = await loadWebsocketHelpers(authStore);
+    const store = createStore();
+    store.sessionKey = new Uint8Array(32).fill(7);
+    store.serverEncryptionRequired = false;
+
+    connect(store);
+    sockets[0].readyState = globalThis.WebSocket.OPEN;
+    store.ws = sockets[0];
+    expect(store.serverEncryptionRequired).toBe(true);
+    expect(sockets[0].sent).toEqual([]);
   });
 
   it('ignores auth_result failures from an older socket after a newer login wins', async () => {
@@ -96,7 +209,7 @@ describe('websocket auth token races', () => {
     const store = createStore();
     store.handleMessage = vi.fn(msg => {
       if (msg.type === 'auth_result' && msg.success === false) {
-        authStore.handleAuthFailure(undefined, msg._wsAuthToken);
+        authStore.handleAuthFailure(undefined, msg._wsAuthToken, msg._wsAuthGeneration);
       }
     });
 
@@ -122,7 +235,7 @@ describe('websocket auth token races', () => {
     const store = createStore();
     store.handleMessage = vi.fn(msg => {
       if (msg.type === 'auth_result' && msg.success === false) {
-        authStore.handleAuthFailure(undefined, msg._wsAuthToken);
+        authStore.handleAuthFailure(undefined, msg._wsAuthToken, msg._wsAuthGeneration);
       }
     });
 
@@ -134,7 +247,7 @@ describe('websocket auth token races', () => {
       success: false,
       _wsAuthToken: 'old-token',
     }));
-    expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token');
+    expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token', 1);
     expect(authStore.token).toBe(null);
   });
 });

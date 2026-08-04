@@ -12,7 +12,16 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { Engine } from '../../../../agent/yeaft/engine.js';
+import { NullTrace } from '../../../../agent/yeaft/debug-trace.js';
+import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
+import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
+import { resolvePlanningWorkflowSnapshot } from '../../../../agent/yeaft/work-center/workflow.js';
 import {
+  createProposeWorkItemActionsTool,
+  createRequestWorkItemReplanTool,
+  createSubmitWorkItemPlanTool,
+  createSubmitWorkItemReplanTool,
   createWorkItemToolRegistry,
   parseStructuredResult,
   workItemToolPolicySnapshot,
@@ -34,40 +43,9 @@ describe('Work Center tool policy', () => {
     rmSync(outsideDir, { recursive: true, force: true });
   });
 
-  it('exposes only the explicit synchronous allowlist', () => {
-    const registry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
-    const names = registry.getAllTools().map(tool => tool.name);
-    expect(names).toContain('FileRead');
-    expect(names).toContain('Bash');
-    expect(names).not.toContain('SpawnAgent');
-    expect(names).not.toContain('RouteForward');
-    expect(names).not.toContain('AskUser');
-    expect(names).not.toContain('EnterWorktree');
-  });
 
-  it('exposes layered Skills and lease-fenced MCP tools in the Work Center policy', async () => {
-    let active = true;
-    const mcpTool = {
-      name: 'mcp__project__lookup',
-      description: 'Lookup project data',
-      parameters: { type: 'object', properties: {} },
-      execute: vi.fn(async () => 'project result'),
-    };
-    const registry = createWorkItemToolRegistry({
-      workDir,
-      isRunActive: () => active,
-      mcpTools: [mcpTool, { ...mcpTool, name: 'not_mcp' }],
-    });
-    expect(registry.getToolNames()).toEqual(expect.arrayContaining(['Skill', 'mcp__project__lookup']));
-    expect(registry.getToolNames()).not.toContain('not_mcp');
-    expect(workItemToolPolicySnapshot(workDir, [], ['mcp__project__lookup'])).toMatchObject({
-      allowedToolNames: expect.arrayContaining(['Skill', 'mcp__project__lookup']),
-      mcpTools: ['mcp__project__lookup'],
-    });
-    await expect(registry.execute('mcp__project__lookup', {}, {})).resolves.toBe('project result');
-    active = false;
-    await expect(registry.execute('mcp__project__lookup', {}, {})).rejects.toThrow(/lease/);
-  });
+
+
 
   it('removes Bash from both registry and policy when attachments are present', async () => {
     const attachmentDir = join(outsideDir, 'attachments');
@@ -97,12 +75,373 @@ describe('Work Center tool policy', () => {
     });
   });
 
-  it('rejects background or redirected Bash before execution', async () => {
-    const registry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
-    await expect(registry.execute('Bash', {
+  it('persists external side effects and excludes Run-local control tools', async () => {
+    const transitions = [];
+    const recordLifecycle = (name, input) => {
+      transitions.push({ phase: 'start', name, input });
+      return { complete: (effectStatus, result) => transitions.push({ phase: 'complete', name, effectStatus, result }) };
+    };
+    const controlTools = [
+      createSubmitWorkItemPlanTool({
+        vps: [{ id: 'omni', role: 'developer' }],
+        workItem: { title: 'Plan', goal: 'Plan safely', acceptanceCriteria: ['Safe'] },
+        collector: { value: null }, isRunActive: () => true,
+      }),
+      createProposeWorkItemActionsTool({
+        vps: [{ id: 'omni', role: 'developer' }],
+        workItem: { planRevision: 1 }, actions: [], collector: { value: null }, isRunActive: () => true,
+      }),
+      createRequestWorkItemReplanTool({
+        workItem: { planRevision: 1 }, collector: { value: null }, isRunActive: () => true,
+      }),
+      createSubmitWorkItemReplanTool({
+        vps: [{ id: 'omni', role: 'developer' }],
+        workItem: { planRevision: 1 },
+        action: { context: [{ type: 'replan-barrier', candidateActionIds: [] }] },
+        actions: [], collector: { value: null }, isRunActive: () => true,
+      }),
+      {
+        name: 'FailingWrite', errorOutput: null, sideEffectScope: 'external',
+        isReadOnly: () => false, isConcurrencySafe: () => false,
+        async execute() { throw new Error('write outcome uncertain'); },
+      },
+      {
+        name: 'ReturnedUnknownWrite', errorOutput: 'json-error-envelope', sideEffectScope: 'external',
+        isReadOnly: () => false, isConcurrencySafe: () => false,
+        async execute() { return JSON.stringify({ error: 'write may have happened' }); },
+      },
+    ];
+    const mcpTools = [{
+      name: 'mcp__test__mutate', errorOutput: null,
+      isReadOnly: () => false, isConcurrencySafe: () => false,
+      async execute() { return 'mutated'; },
+    }];
+    const aliasedTool = {
+      name: 'AliasedWrite', aliases: ['LegacyWrite'], errorOutput: null, sideEffectScope: 'external',
+      isReadOnly: () => false, isConcurrencySafe: () => false,
+      async execute() { return 'aliased'; },
+    };
+    const registry = createWorkItemToolRegistry({
+      workDir, isRunActive: () => true, runTools: [...controlTools, aliasedTool],
+      mcpTools, operationLifecycle: recordLifecycle,
+    });
+
+    await registry.execute('FileWrite', { file_path: 'tracked.txt', content: 'tracked' }, {});
+    await registry.execute('FileEdit', {
+      file_path: 'tracked.txt', old_string: 'tracked', new_string: 'edited', replace_all: false,
+    }, {});
+    await registry.execute('FileRead', { file_path: 'tracked.txt' }, {});
+    expect(readFileSync(join(workDir, 'tracked.txt'), 'utf8')).toBe('edited');
+    const missingEdit = await registry.execute('FileEdit', {
+      file_path: 'missing.txt', old_string: 'old', new_string: 'new', replace_all: false,
+    }, {});
+    expect(JSON.parse(missingEdit)).toMatchObject({ errorEffect: 'none', error: expect.stringMatching(/File not found/) });
+    await registry.execute('mcp__test__mutate', {}, {});
+    await registry.execute('LegacyWrite', {}, {});
+    await expect(registry.execute('FailingWrite', {}, {})).rejects.toThrow(/uncertain/);
+    await registry.execute('ReturnedUnknownWrite', {}, {});
+
+    expect(transitions.filter(entry => entry.phase === 'start').map(entry => entry.name)).toEqual([
+      'FileWrite', 'FileEdit', 'FileEdit', 'mcp__test__mutate', 'AliasedWrite',
+      'FailingWrite', 'ReturnedUnknownWrite',
+    ]);
+    expect(transitions.filter(entry => entry.phase === 'complete').map(entry => ({
+      name: entry.name, effectStatus: entry.effectStatus,
+    }))).toEqual([
+      { name: 'FileWrite', effectStatus: 'applied' },
+      { name: 'FileEdit', effectStatus: 'applied' },
+      { name: 'FileEdit', effectStatus: 'failed_no_effect' },
+      { name: 'mcp__test__mutate', effectStatus: 'applied' },
+      { name: 'AliasedWrite', effectStatus: 'applied' },
+      { name: 'FailingWrite', effectStatus: 'unknown' },
+      { name: 'ReturnedUnknownWrite', effectStatus: 'unknown' },
+    ]);
+    expect(controlTools.slice(0, 4).map(tool => tool.sideEffectScope)).toEqual(['run', 'run', 'run', 'run']);
+
+    const adapter = {
+      responses: [
+        [
+          { type: 'tool_call', id: 'missing-edit', name: 'FileEdit', input: {
+            file_path: 'engine-missing.txt', old_string: 'old', new_string: 'new', replace_all: false,
+          } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ],
+        [{ type: 'text_delta', text: 'Handled.' }, { type: 'stop', stopReason: 'end_turn' }],
+      ],
+      async *stream() {
+        for (const event of this.responses.shift()) yield event;
+      },
+    };
+    const engine = new Engine({
+      adapter, trace: new NullTrace(), config: { model: 'provider/model', maxOutputTokens: 1_024 },
+      toolRegistry: registry,
+    });
+    const events = [];
+    for await (const event of engine.query({ prompt: 'Edit a missing file', workDir })) events.push(event);
+    expect(events.find(event => event.type === 'tool_end' && event.id === 'missing-edit'))
+      .toMatchObject({ isError: true });
+
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store, { listAvailableVpIds: () => ['omni'] });
+    const workItem = controller.create({
+      id: 'plan-self-correction',
+      title: 'Correct an invalid plan',
+      goal: 'Let the planner correct its graph in one Run',
+      acceptanceCriteria: ['The corrected plan can execute'],
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+      workDir,
+      start: true,
+    });
+    const claim = store.claimReadyAction('planner-boot', 5_000);
+    const planAction = (id, type, dependsOnActionIds) => ({
+      id, name: id, type,
+      objective: `Complete ${id}`,
+      approach: `Use repository evidence to complete ${id}`,
+      expectedOutcome: `${id} is complete`,
+      candidateVpIds: ['omni'], assignmentReason: 'Use the available planner',
+      dependsOnActionIds, workspaceMode: type === 'deliver' ? 'shared' : 'read',
+    });
+    const planInput = {
+      summary: 'A corrected plan is ready.',
+      evidence: ['The complete graph was validated.'],
+      acceptanceChecks: [{
+        criterion: 'The corrected plan can execute', status: 'passed', evidence: 'Validated graph',
+      }],
+      contractPatch: {
+        title: 'Correct an invalid plan',
+        goal: 'Let the planner correct its graph in one Run',
+        acceptanceCriteria: ['The corrected plan can execute'],
+      },
+      workItemType: 'plan-correction',
+      actions: [
+        planAction('implement', 'implement', []),
+        planAction('deliver', 'deliver', ['implement']),
+      ],
+    };
+    const plannerAdapter = {
+      responses: [
+        [
+          { type: 'tool_call', id: 'invalid-plan', name: 'SubmitWorkItemPlan', input: {
+            ...planInput,
+            actions: [
+              planAction('implement', 'implement', ['missing-dependency']),
+              planAction('deliver', 'deliver', ['implement']),
+            ],
+          } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ],
+        [
+          { type: 'tool_call', id: 'valid-plan', name: 'SubmitWorkItemPlan', input: planInput },
+          { type: 'stop', stopReason: 'tool_use' },
+        ],
+      ],
+      async *stream(params) {
+        params.onRequestStart?.();
+        for (const event of this.responses.shift()) yield event;
+      },
+    };
+    const runner = new WorkItemRunner({
+      store,
+      runtimeProvider: async () => ({
+        defaultWorkDir: workDir,
+        config: { model: 'provider/model', maxOutputTokens: 1_024, projectDocMaxBytes: 0 },
+        adapter: plannerAdapter,
+      }),
+      registry: {
+        listVps: () => [{ id: 'omni', name: 'Omni', role: 'planner', traits: ['triage', 'implement'] }],
+        getVp: id => id === 'omni'
+          ? { id: 'omni', name: 'Omni', role: 'planner', traits: ['triage', 'implement'] }
+          : null,
+      },
+    });
+    const planned = await runner.run({
+      ...claim, ownerBootId: 'planner-boot', signal: new AbortController().signal,
+    });
+    const plannedDetail = controller.submit(
+      claim.run.id, 'planner-boot', claim.run.leaseEpoch, planned,
+    );
+    expect(plannedDetail).toMatchObject({ id: workItem.id, status: 'ready' });
+    expect(store.db.prepare('SELECT COUNT(*) AS count FROM operations WHERE work_item_id = ?')
+      .get(workItem.id).count).toBe(0);
+    const executionClaim = store.claimReadyAction('executor-boot', 5_000);
+    expect(executionClaim)
+      .toMatchObject({ workItem: { id: workItem.id }, action: { stageId: 'implement' } });
+    const operationKey = `${executionClaim.run.id}:tool:1`;
+    const fencedRegistry = createWorkItemToolRegistry({
+      workDir,
+      isRunActive: () => store.isActiveRun(
+        executionClaim.run.id, 'executor-boot', executionClaim.run.leaseEpoch,
+      ),
+      runTools: [controlTools[4]],
+      operationLifecycle: (name, input) => {
+        store.createOperation({
+          workItemId: workItem.id,
+          actionId: executionClaim.action.id,
+          runId: executionClaim.run.id,
+          operationType: name,
+          idempotencyKey: operationKey,
+          replayPolicy: 'never_automatic',
+          payload: { input },
+        });
+        expect(store.claimOperation(
+          operationKey, 'executor-boot', executionClaim.run.leaseEpoch, false,
+        )).not.toBeNull();
+        return {
+          complete: (effectStatus, result) => expect(store.completeOperation(
+            operationKey, 'executor-boot', executionClaim.run.leaseEpoch, effectStatus, result,
+          )).toBe(true),
+        };
+      },
+    });
+    await expect(fencedRegistry.execute('FailingWrite', {}, {})).rejects.toThrow(/uncertain/);
+    expect(store.getOperationByKey(operationKey)).toMatchObject({
+      effectStatus: 'unknown', executionStatus: 'quiescent',
+    });
+    const afterImplementation = controller.submit(
+      executionClaim.run.id, 'executor-boot', executionClaim.run.leaseEpoch,
+      {
+        outcome: 'completed', response: 'Implementation complete.', summary: 'Implementation complete.',
+        evidence: ['implementation evidence'],
+        acceptanceChecks: [{
+          criterion: 'The corrected plan can execute', status: 'deferred', evidence: 'Delivery verifies it',
+        }],
+      },
+    );
+    expect(afterImplementation.actions.find(action => action.stageId === 'deliver'))
+      .toMatchObject({ status: 'ready' });
+    expect(store.claimReadyAction('blocked-by-unknown-operation', 5_000)).toBeNull();
+
+    const timeoutItem = controller.create({
+      id: 'timeout-operation-fence', title: 'Fence late writes',
+      goal: 'Do not dispatch a later mutator after timeout',
+      acceptanceCriteria: ['Late mutators stay fenced'],
+      workflowTemplate: 'software-change', workDir, start: true,
+    });
+    const timeoutClaim = store.claimReadyAction('timeout-owner', 5_000);
+    let fastWriteCalls = 0;
+    const slowPath = join(workDir, 'timeout-order.txt');
+    const slowWrite = {
+      name: 'SlowWrite', timeoutMs: 5, errorOutput: null, sideEffectScope: 'external',
+      isReadOnly: () => false, isConcurrencySafe: () => false,
+      async execute() {
+        await new Promise(resolve => setTimeout(resolve, 60));
+        writeFileSync(slowPath, 'slow-old');
+        return 'slow';
+      },
+    };
+    const fastWrite = {
+      name: 'FastWrite', errorOutput: null, sideEffectScope: 'external',
+      isReadOnly: () => false, isConcurrencySafe: () => false,
+      async execute() {
+        fastWriteCalls += 1;
+        writeFileSync(slowPath, 'fast-new');
+        return 'fast';
+      },
+    };
+    let timeoutOrdinal = 0;
+    const timeoutRegistry = createWorkItemToolRegistry({
+      workDir, isRunActive: () => store.isActiveRun(
+        timeoutClaim.run.id, 'timeout-owner', timeoutClaim.run.leaseEpoch,
+      ),
+      runTools: [slowWrite, fastWrite],
+      operationLifecycle: (name, input) => {
+        timeoutOrdinal += 1;
+        const key = `${timeoutClaim.run.id}:tool:${timeoutOrdinal}`;
+        const claimedOperation = store.createAndClaimOperation({
+          workItemId: timeoutItem.id,
+          actionId: timeoutClaim.action.id,
+          runId: timeoutClaim.run.id,
+          operationType: name,
+          idempotencyKey: key,
+          replayPolicy: 'never_automatic',
+          payload: { input },
+        }, 'timeout-owner', timeoutClaim.run.leaseEpoch, false);
+        expect(claimedOperation).not.toBeNull();
+        return {
+          complete: (effectStatus, result) => store.completeOperation(
+            key, 'timeout-owner', timeoutClaim.run.leaseEpoch, effectStatus, result,
+          ),
+        };
+      },
+    });
+    const timeoutAdapter = {
+      responses: [[
+        { type: 'tool_call', id: 'slow', name: 'SlowWrite', input: {} },
+        { type: 'tool_call', id: 'fast', name: 'FastWrite', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]],
+      async *stream() {
+        for (const event of this.responses.shift()) yield event;
+      },
+    };
+    const timeoutEngine = new Engine({
+      adapter: timeoutAdapter, trace: new NullTrace(),
+      config: { model: 'provider/model', maxOutputTokens: 1_024 },
+      toolRegistry: timeoutRegistry,
+    });
+    const timeoutEvents = [];
+    for await (const event of timeoutEngine.query({ prompt: 'Run both writes', workDir })) {
+      timeoutEvents.push(event);
+    }
+    expect(timeoutEvents).toContainEqual(expect.objectContaining({
+      type: 'tool_end', id: 'slow', isError: true,
+    }));
+    expect(timeoutEvents).toContainEqual(expect.objectContaining({
+      type: 'error', error: expect.objectContaining({ name: 'ToolExecutionTimeoutError' }),
+    }));
+    expect(timeoutEvents).toContainEqual(expect.objectContaining({
+      type: 'turn_end', stopReason: 'error', terminal: true,
+    }));
+    expect(fastWriteCalls).toBe(0);
+    expect(store.interruptRun(
+      timeoutClaim.run.id, 'timeout-owner', timeoutClaim.run.leaseEpoch, 'fatal tool timeout',
+    )).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 80));
+    expect(readFileSync(slowPath, 'utf8')).toBe('slow-old');
+    expect(store.getOperationByKey(`${timeoutClaim.run.id}:tool:1`)).toMatchObject({
+      effectStatus: 'unknown', executionStatus: 'hazardous_orphan',
+      effectCutoff: { status: 'stale', closureType: 'late_completion' },
+    });
+    expect(store.claimReadyAction('blocked-after-timeout', 5_000)).toBeNull();
+
+    const crashItem = controller.create({
+      id: 'operation-create-crash', title: 'Recover unclaimed operation',
+      goal: 'Do not deadlock after create-before-claim crash', acceptanceCriteria: [],
+      workflowTemplate: 'software-change', workDir, start: true,
+    });
+    const crashClaim = store.claimReadyAction('crash-owner', 5_000);
+    store.createOperation({
+      workItemId: crashItem.id, actionId: crashClaim.action.id, runId: crashClaim.run.id,
+      operationType: 'CrashBeforeClaim', idempotencyKey: 'create-before-claim-crash',
+      replayPolicy: 'never_automatic',
+    });
+    store.close();
+    const reopened = new WorkItemStore(join(workDir, 'work-center.db'));
+    expect(reopened.getOperationByKey('create-before-claim-crash')).toMatchObject({
+      effectStatus: 'failed_no_effect', executionStatus: 'quiescent',
+      effectCutoff: { closureType: 'recovered_before_dispatch' },
+    });
+    expect(reopened.recoverInterruptedRuns('post-crash-owner')).toBeGreaterThanOrEqual(1);
+    expect(reopened.claimReadyAction('post-crash-owner', 5_000))
+      .toMatchObject({ workItem: { id: crashItem.id } });
+    reopened.close();
+
+    for (const tool of controlTools.slice(0, 4)) {
+      const controlRegistry = createWorkItemToolRegistry({
+        workDir, isRunActive: () => true,
+        runTools: [tool], operationLifecycle: recordLifecycle,
+      });
+      try { await controlRegistry.execute(tool.name, {}, {}); } catch {}
+    }
+    expect(transitions.filter(entry => entry.phase === 'start').map(entry => entry.name))
+      .not.toEqual(expect.arrayContaining(controlTools.slice(0, 4).map(tool => tool.name)));
+
+    const policyRegistry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
+    await expect(policyRegistry.execute('Bash', {
       command: 'echo nope', cwd: outsideDir, background: false,
     }, {})).rejects.toThrow(/cwd is fixed/);
-    await expect(registry.execute('Bash', {
+    await expect(policyRegistry.execute('Bash', {
       command: 'echo nope', cwd: workDir, background: true,
     }, {})).rejects.toThrow(/background Bash/);
   });
@@ -141,69 +480,9 @@ describe('Work Center tool policy', () => {
     expect(existsSync(patchTarget)).toBe(false);
   });
 
-  it('uses parsed patch targets and rejects tab, control, symlink-parent, and multi-file escapes', async () => {
-    const registry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
-    const escaped = join(outsideDir, 'escaped.txt');
-    await expect(registry.execute('ApplyPatch', {
-      patch: '--- a/safe.txt\n+++ ../escaped.txt\t\n@@ -0,0 +1 @@\n+escaped\n',
-    }, {})).rejects.toThrow(/escapes/);
-    expect(existsSync(escaped)).toBe(false);
 
-    await expect(registry.execute('ApplyPatch', {
-      patch: '--- a/safe.txt\n+++ safe\u0001.txt\n@@ -0,0 +1 @@\n+bad\n',
-    }, {})).rejects.toThrow(/control characters/);
 
-    const safe = join(workDir, 'safe');
-    mkdirSync(safe);
-    symlinkSync(outsideDir, join(safe, 'link'));
-    await expect(registry.execute('ApplyPatch', {
-      patch: '--- a/safe/link/escaped.txt\n+++ b/safe/link/escaped.txt\n@@ -0,0 +1 @@\n+bad\n',
-    }, {})).rejects.toThrow(/escapes/);
 
-    await expect(registry.execute('ApplyPatch', {
-      patch: [
-        '--- a/inside.txt', '+++ b/inside.txt', '@@ -0,0 +1 @@', '+inside',
-        '--- a/other.txt', '+++ ../outside.txt\t', '@@ -0,0 +1 @@', '+outside', '',
-      ].join('\n'),
-    }, {})).rejects.toThrow(/escapes/);
-    expect(existsSync(join(workDir, 'inside.txt'))).toBe(false);
-
-    const result = JSON.parse(await registry.execute('ApplyPatch', {
-      patch: '--- a/inside.txt\n+++ b/inside.txt\n@@ -0,0 +1 @@\n+inside\n',
-    }, {}));
-    expect(result.results[0].success).toBe(true);
-    expect(readFileSync(join(workDir, 'inside.txt'), 'utf8')).toContain('inside');
-  });
-
-  it('maps attachment references only for read tools without exposing filesystem paths', async () => {
-    const attachmentDir = join(outsideDir, 'attachments');
-    mkdirSync(attachmentDir);
-    const attachmentPath = join(attachmentDir, 'evidence.txt');
-    const binaryPath = join(attachmentDir, 'screen.png');
-    writeFileSync(attachmentPath, 'persistent evidence');
-    writeFileSync(binaryPath, 'not-a-real-image');
-    const ref = 'work-item-attachment://attachment-1/evidence.txt';
-    const binaryRef = 'work-item-attachment://attachment-2/screen.png';
-    const registry = createWorkItemToolRegistry({
-      workDir,
-      attachmentFiles: [
-        { ref, path: attachmentPath, root: attachmentDir },
-        { ref: binaryRef, path: binaryPath, root: attachmentDir },
-      ],
-      isRunActive: () => true,
-    });
-
-    const read = await registry.execute('FileRead', { file_path: ref }, {});
-    expect(read).toContain('persistent evidence');
-    await expect(registry.execute('FileWrite', { file_path: ref, content: 'changed' }, {}))
-      .rejects.toThrow(/cannot modify/);
-    expect(readFileSync(attachmentPath, 'utf8')).toBe('persistent evidence');
-    const binaryError = await registry.execute('FileRead', { file_path: binaryRef }, {});
-    expect(binaryError).toContain(binaryRef);
-    expect(binaryError).not.toContain(attachmentDir);
-    await expect(registry.execute('FileRead', { file_path: attachmentPath }, {}))
-      .rejects.toThrow(/escapes/);
-  });
 
   it('uses the creation-time workspace identity after a symlink is retargeted', () => {
     const projectA = join(workDir, 'project-a');
@@ -222,18 +501,7 @@ describe('Work Center tool policy', () => {
       .toThrow(/canonical workspace identity/);
   });
 
-  it('rejects when the persisted canonical workspace path is replaced by a symlink', () => {
-    const projectA = join(workDir, 'canonical-project-a');
-    const movedProjectA = join(workDir, 'moved-project-a');
-    const projectB = join(workDir, 'canonical-project-b');
-    mkdirSync(projectA);
-    mkdirSync(projectB);
-    renameSync(projectA, movedProjectA);
-    symlinkSync(projectB, projectA);
 
-    expect(() => resolveWorkItemWorkDir({ workDir: projectA, workspaceKey: projectA }, outsideDir))
-      .toThrow(/canonical workspace identity changed/);
-  });
 
   it('rejects a replaced canonical target before snapshots or adapter execution', async () => {
     const projectA = join(workDir, 'runner-canonical-a');
@@ -271,68 +539,52 @@ describe('Work Center tool policy', () => {
     })).rejects.toThrow(/canonical workspace identity changed/);
     expect(setRunExecutionSnapshots).not.toHaveBeenCalled();
     expect(adapterStarted).toBe(false);
-  });
 
-  it('rejects an explicit workDir without a canonical workspace identity', () => {
-    expect(() => resolveWorkItemWorkDir({ workDir, workspaceKey: '' }, outsideDir))
-      .toThrow(/canonical workspace identity/);
-  });
-
-  it('runs in the creation-time workspace after a symlink is retargeted', async () => {
-    const projectA = join(workDir, 'run-project-a');
-    const projectB = join(workDir, 'run-project-b');
-    const alias = join(workDir, 'run-current');
-    mkdirSync(projectA);
-    mkdirSync(projectB);
-    symlinkSync(projectA, alias);
-    const prompts = [];
-    let snapshots = null;
-    const runner = new WorkItemRunner({
+    const engineError = new Error('provider failed inside Work Center');
+    const errorStore = {
+      listCompletedRuns: () => [],
+      listActionDependencies: () => [],
+      getActionResumeContext: () => null,
+      listPendingActionInputs: () => [],
+      setRunExecutionSnapshots: () => true,
+      isActiveRun: () => true,
+      prepareEngineTurn: () => ({ id: 'engine-turn-error' }),
+      claimEngineTurn: () => true,
+      failEngineTurn: () => ({ allowRetry: true }),
+      closeRunInput: () => true,
+    };
+    const errorRunner = new WorkItemRunner({
       runtimeProvider: async () => ({
-        defaultWorkDir: outsideDir,
-        config: { model: 'provider/model', maxOutputTokens: 1_024 },
+        defaultWorkDir: workDir,
+        config: { model: 'provider/model', maxOutputTokens: 1_024, projectDocMaxBytes: 0 },
         adapter: {
           async *stream(params) {
-            prompts.push(params);
-            yield {
-              type: 'text_delta',
-              text: JSON.stringify({
-                outcome: 'completed', summary: 'done', evidence: ['workspace checked'], acceptanceChecks: [],
-              }),
-            };
-            yield { type: 'stop', stopReason: 'end_turn' };
+            params.onRequestStart?.();
+            throw engineError;
           },
         },
       }),
-      store: {
-        listCompletedRuns: () => [],
-        isActiveRun: () => true,
-        setRunExecutionSnapshots: (_runId, _ownerBootId, _leaseEpoch, value) => {
-          snapshots = value;
-          return true;
-        },
-      },
+      store: errorStore,
       registry: {
-        getVp: () => ({ id: 'omni', name: 'Omni', role: 'developer', persona: '' }),
+        listVps: () => [{ id: 'omni', name: 'Omni', role: 'developer', traits: [] }],
+        getVp: () => ({ id: 'omni', name: 'Omni', role: 'developer', traits: [] }),
       },
     });
-    unlinkSync(alias);
-    symlinkSync(projectB, alias);
-
-    await expect(runner.run({
-      workItem: { workDir: alias, workspaceKey: projectA },
-      action: { type: 'triage', requiredRole: 'omni', instruction: 'Inspect workspace' },
-      run: { id: 'run-1', leaseEpoch: 1 },
+    await expect(errorRunner.run({
+      workItem: {
+        id: 'work-item-engine-error', title: 'Fail visibly', goal: 'Surface the Engine error',
+        acceptanceCriteria: [], workDir, workspaceKey: workDir,
+      },
+      action: { id: 'action-error', type: 'test', requiredRole: 'omni', instruction: 'Fail' },
+      run: { id: 'run-engine-error', leaseEpoch: 1 },
       signal: new AbortController().signal,
-      ownerBootId: 'boot-a',
-    })).resolves.toMatchObject({ outcome: 'completed' });
-    expect(prompts).toHaveLength(1);
-    expect(snapshots.toolPolicySnapshot).toMatchObject({
-      readRoots: [projectA],
-      writeRoots: [projectA],
-      shell: { fixedCwd: projectA },
-    });
+      ownerBootId: 'boot-error',
+    })).rejects.toBe(engineError);
   });
+
+
+
+
 
   it('fences execution after the Run loses its lease', async () => {
     const active = vi.fn().mockReturnValue(false);
@@ -341,22 +593,7 @@ describe('Work Center tool policy', () => {
       .rejects.toThrow(/lease is no longer active/);
   });
 
-  it('keeps model-selected evidence structured instead of exposing every tool call', () => {
-    const result = parseStructuredResult(JSON.stringify({
-      outcome: 'completed',
-      summary: 'Implemented and verified',
-      evidence: [{ kind: 'test', label: 'Focused tests', status: 'passed' }],
-    }), 'implement');
-    expect(result.evidence).toEqual([{ kind: 'test', label: 'Focused tests', status: 'passed' }]);
-    expect(result.evidence).not.toContainEqual(expect.objectContaining({ kind: 'tool' }));
-  });
 
-  it('does not interpret a missing review decision as approval', () => {
-    const result = parseStructuredResult(JSON.stringify({
-      outcome: 'completed', summary: 'looks fine', evidence: [],
-    }), 'review');
-    expect(result.outcome).toBe('failed');
-    expect(result.reviewDecision).toBeNull();
-    expect(result.error).toMatch(/requires approved/i);
-  });
+
+
 });

@@ -10,7 +10,7 @@ Agent 是一个跑在你自己机器（笔记本、VPS、开发容器）上的 N
 | --- | --- | --- |
 | **Claude Code** 聊天 | [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)（`claude` 命令，已登录） | `npm install -g @anthropic-ai/claude-code`，然后 `claude login` |
 | **Copilot** 聊天 | [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli)（`copilot` 命令，已 GitHub 鉴权） | `gh extension install github/gh-copilot` 或者独立的 Copilot CLI，然后 `copilot auth login` |
-| **Yeaft Code Agent** | **无** —— 引擎随 npm 包一起发；你只需要在 `~/.yeaft/config.json` 里配好至少一个 LLM provider | 见 [Yeaft 引擎配置](./yeaft-config.md) |
+| **Yeaft Code Agent** | **无** —— 引擎随 npm 包一起发；需要在当前 Agent instance 的 `config.json` 配置至少一个 LLM provider | 见 [Yeaft 引擎配置](./yeaft-config.md) |
 
 Agent 启动时会做能力检测，只把本机能跑通的后端暴露出来 —— 比如本机没装 Copilot CLI，新建会话弹窗里就不会出现 Copilot 选项。
 
@@ -19,11 +19,11 @@ Agent 启动时会做能力检测，只把本机能跑通的后端暴露出来 �
 ```bash
 npm install -g @yeaft/webchat-agent
 
-# 前台运行
-yeaft-agent --server wss://your-server.com --name worker-1 --secret your-secret
+# 前台运行。--name 可省略，默认使用计算机名，其中非法字符替换为 "-"。
+yeaft-agent --server wss://your-server.com --secret your-secret
 
 # 或安装为系统服务（开机自启、崩溃自重启）
-yeaft-agent install --server wss://your-server.com --name worker-1 --secret your-secret
+yeaft-agent install --server wss://your-server.com --secret your-secret
 
 # 管理已安装的服务
 yeaft-agent status                 # 查看运行状态
@@ -69,6 +69,6 @@ Agent 连接成功后，打开 Web UI 新建一个会话：
 
 - **Claude Code** 选项消失 → 说明 agent 机器上 `claude --version` 不能跑，或 Claude CLI 没登录
 - **Copilot** 选项消失 → 说明 agent 机器上 `copilot --version` 不能跑，或 Copilot CLI 没鉴权
-- **Yeaft Code Agent** 选项始终在 —— 引擎已经打包好了，但实际跑聊天前需要先在 `~/.yeaft/config.json` 里配至少一个 provider
+- **Yeaft Code Agent** 选项始终在 —— 引擎已经打包，但所选 Agent instance 的 resolved `config.json` 仍需至少一个 provider
 
 Yeaft 引擎配置详见 [Yeaft 引擎配置](./yeaft-config.md)。

@@ -9,7 +9,7 @@ import WorkbenchPanel from './WorkbenchPanel.js';
 import YeaftDebugPanel from './YeaftDebugPanel.js';
 import VpTimelinePane from './VpTimelinePane.js';
 import YeaftSessionActions from './YeaftSessionActions.js';
-import YeaftTranscriptSearch from './YeaftTranscriptSearch.js';
+import YeaftConversationOutline from './YeaftConversationOutline.js';
 import LlmTab from './LlmTab.js';
 import WorkCenterPage from './WorkCenterPage.js';
 import { parseMentions } from '../utils/parseMentions.js';
@@ -23,6 +23,66 @@ import {
 } from '../utils/overlay-dismiss.js';
 import { shouldShowYeaftOnboardingGuide } from '../utils/yeaftOnboarding.js';
 import { hasUsableYeaftAgent, resolveActiveSessionIdForSettings } from '../utils/yeaftSessionSettings.js';
+import { shouldCloseLlmConfigAfterSave } from '../utils/llm-config-save.js';
+import { revealOutlineResult, shouldDismissHistorySearch } from '../utils/message-search-navigation.js';
+
+const HISTORY_SENDER_PREFERENCES_KEY = 'yeaft-history-sender-preferences';
+const HISTORY_SENDER_ALL = '__all__';
+const DEFAULT_HISTORY_SENDER = 'user';
+
+function historySenderPreferenceId(agentId, sessionId) {
+  return agentId && sessionId ? `${agentId}:${sessionId}` : '';
+}
+
+function resolveHistorySenderStorage(storage) {
+  if (storage !== undefined) return storage;
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readHistorySenderPreferences(storage) {
+  try {
+    const value = JSON.parse(storage?.getItem(HISTORY_SENDER_PREFERENCES_KEY) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+export function loadHistorySenderPreference({ agentId, sessionId, validKeys = [], storage } = {}) {
+  const defaultSender = validKeys.length === 0 || validKeys.includes(DEFAULT_HISTORY_SENDER)
+    ? DEFAULT_HISTORY_SENDER
+    : '';
+  const id = historySenderPreferenceId(agentId, sessionId);
+  if (!id) return defaultSender;
+  const resolvedStorage = resolveHistorySenderStorage(storage);
+  const preferences = readHistorySenderPreferences(resolvedStorage);
+  if (!Object.prototype.hasOwnProperty.call(preferences, id)) return defaultSender;
+  const senderKey = typeof preferences[id] === 'string' ? preferences[id] : '';
+  if (senderKey === HISTORY_SENDER_ALL) return '';
+  if (senderKey && validKeys.includes(senderKey)) return senderKey;
+  delete preferences[id];
+  try { resolvedStorage?.setItem(HISTORY_SENDER_PREFERENCES_KEY, JSON.stringify(preferences)); } catch { /* best effort */ }
+  return defaultSender;
+}
+
+export function saveHistorySenderPreference({ agentId, sessionId, senderKey, storage } = {}) {
+  const id = historySenderPreferenceId(agentId, sessionId);
+  if (!id) return false;
+  const resolvedStorage = resolveHistorySenderStorage(storage);
+  if (!resolvedStorage) return false;
+  const preferences = readHistorySenderPreferences(resolvedStorage);
+  preferences[id] = senderKey || HISTORY_SENDER_ALL;
+  try {
+    resolvedStorage.setItem(HISTORY_SENDER_PREFERENCES_KEY, JSON.stringify(preferences));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function sessionTaskSortTime(task) {
   const raw = task?.updatedAt || task?.endedAt || task?.createdAt;
@@ -32,17 +92,13 @@ function sessionTaskSortTime(task) {
 
 export function visibleSessionStatusTasks(taskMap) {
   return Object.values(taskMap || {})
-    .filter(Boolean)
-    .sort((a, b) => {
-      if (a.status === 'running' && b.status !== 'running') return -1;
-      if (a.status !== 'running' && b.status === 'running') return 1;
-      return sessionTaskSortTime(b) - sessionTaskSortTime(a);
-    });
+    .filter(task => task?.status === 'running')
+    .sort((a, b) => sessionTaskSortTime(b) - sessionTaskSortTime(a));
 }
 
 export default {
   name: 'YeaftPage',
-  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftTranscriptSearch, LlmTab },
+  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftConversationOutline, LlmTab },
   template: `
     <div class="yeaft-page" ref="pageRef">
       <!-- Mobile sidebar overlay -->
@@ -88,69 +144,20 @@ export default {
 
         <!-- task-339-F1: SessionSelector removed from topbar — groups now surface via sidebar section. -->
 
-          <!-- Model selector doubles as the LLM settings entry; no extra gear. -->
-          <div class="yeaft-topbar-model" @click="toggleModelDropdown" :title="$t('yeaft.modelMenu.title')">
-            <span class="yeaft-topbar-model-name">{{ topbarModel || $t('settings.llm.selectModel') }}</span>
-            <span v-if="store.yeaftModelsRefreshing" class="yeaft-model-refreshing">{{ $t('common.loading') || 'Loading' }}</span>
-            <svg class="yeaft-model-chevron" :class="{ open: modelDropdownOpen }" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-            <div class="yeaft-model-dropdown yeaft-topbar-model-dropdown" v-if="modelDropdownOpen" @click.stop>
-              <div class="yeaft-model-selector-body">
-                <div class="yeaft-model-list" role="listbox" :aria-label="$t('settings.llm.selectModel')">
-                  <div
-                    v-for="row in topbarModelRows"
-                    :key="row.modelRef"
-                    class="yeaft-model-option"
-                    :class="{
-                      active: isModelRowActive(row),
-                      current: modelOptionMatchesRef(row.model, topbarModel),
-                      'yeaft-model-option-with-effort': row.efforts.length,
-                    }"
-                    role="option"
-                    :aria-selected="isModelRowActive(row) ? 'true' : 'false'"
-                  >
-                    <span class="yeaft-model-check" v-if="isModelRowActive(row)">&check;</span>
-                    <span class="yeaft-model-check" v-else></span>
-                    <button
-                      type="button"
-                      class="yeaft-model-option-main"
-                      @click="selectModel(row.modelRef, row.defaultEffort)"
-                    >
-                      <span class="yeaft-model-option-label">{{ row.label }}</span>
-                      <span class="yeaft-model-option-meta">
-                        <span class="yeaft-model-option-provider" v-if="row.model.provider">{{ row.model.provider }}</span>
-                        <span class="yeaft-model-option-ctx" v-if="row.model.contextWindow">{{ formatModelCtx(row.model) }}</span>
-                      </span>
-                    </button>
-                    <span class="yeaft-model-effort-list" v-if="row.efforts.length" :aria-label="row.label">
-                      <button
-                        v-for="effort in row.efforts"
-                        :key="row.modelRef + ':' + effort"
-                        type="button"
-                        class="yeaft-model-effort-chip"
-                        :class="{ active: isModelSelectionActive(row.model, effort) }"
-                        @click="selectModel(row.modelRef, effort)"
-                      >{{ $t('yeaft.modelMenu.effort.' + effort) }}</button>
-                    </span>
-                  </div>
-                </div>
-                <div class="yeaft-model-fixed-controls">
-                  <button type="button" class="yeaft-model-config-option" @click="openLlmConfig">
-                    <span class="yeaft-model-config-label">{{ $t('settings.llm.configureMenu') }}</span>
-                    <span class="yeaft-model-config-hint">{{ $t('yeaft.modelMenu.configureHint') }}</span>
-                  </button>
-                </div>
-              </div>
+          <div class="yeaft-topbar-context">
+            <div v-if="topbarFolderPath" class="yeaft-topbar-folder" :title="topbarFolderPath">
+              <span class="yeaft-topbar-folder-path">{{ topbarFolderPath }}</span>
             </div>
-          </div>
-          <div class="yeaft-topbar-title-group" :title="showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || topbarGroup?.id || '')">
-            <div class="yeaft-topbar-session-title">{{ showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || $t('yeaft.session.create.untitled')) }}</div>
+            <div class="yeaft-topbar-title-group" :title="showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || topbarGroup?.id || '')">
+              <div class="yeaft-topbar-session-title">{{ showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || $t('yeaft.session.create.untitled')) }}</div>
+            </div>
           </div>
 
           <YeaftSessionActions
             v-if="!showOnboardingGuide"
             class="yeaft-topbar-right"
             :search-open="historySearchOpen"
-            :loading-more-history="store.yeaftLoadingMoreHistory"
+            :loading-more-history="store.yeaftLoadingMoreHistory || !!store.yeaftSessionHydrateRequestId"
             :session-status-visible="sessionStatusVisible"
             :debug-mode="debugMode"
             :show-page-reload="isMobile"
@@ -162,19 +169,34 @@ export default {
           />
         </div>
 
-        <YeaftTranscriptSearch
+        <YeaftConversationOutline
           v-if="historySearchOpen && !showOnboardingGuide"
           ref="historySearchRef"
-          :state="store.yeaftHistorySearchState"
-          :active-index="historySearchActiveIndex"
+          :outline-state="historyOutlineState"
+          :search-state="store.yeaftHistorySearchState"
+          :sender-options="historySenderOptions"
+          :active-message-id="historySearchActiveMessageId"
           @query="onHistorySearchQuery"
-          @move="historySearchActiveIndex = $event"
+          @sender="onHistorySenderChange"
+          @sender-invalid="onHistorySenderInvalid"
+          @move="historySearchActiveMessageId = $event"
+          @preview="previewHistorySearchResult"
           @select="selectHistorySearchResult"
-          @load-more="loadMoreHistorySearchResults"
+          @load-older="loadOlderHistoryOutline"
+          @load-more-search="loadMoreHistorySearchResults"
           @close="closeHistorySearch"
         />
 
         <div class="yeaft-conversation-body">
+          <div
+            v-if="!showSettings && !showOnboardingGuide && (store.yeaftSessionHydrateError || store.yeaftHistoryLoadError)"
+            class="yeaft-history-load-error"
+            :class="{ 'has-messages': store.yeaftVisibleMessages.length > 0 }"
+            role="alert"
+          >
+            <span>{{ $t(store.yeaftSessionHydrateError ? 'yeaft.sessionInventory.error' : 'yeaft.historyLoad.error') }}</span>
+            <button type="button" class="btn-secondary" @click="store.yeaftSessionHydrateError ? retryConversationInventory() : reloadMessages()">{{ $t(store.yeaftSessionHydrateError ? 'yeaft.sessionInventory.retry' : 'yeaft.historyLoad.retry') }}</button>
+          </div>
         <!-- H2.f.6: YeaftFeatureDetailView removed — cross-thread aggregation
              retired with the multi-thread engine; the task-detail view had
              no message data source after H2.f.1, so it's been deleted.
@@ -258,13 +280,23 @@ export default {
           </div>
         </section>
 
+        <div
+          v-if="!showSettings && !showOnboardingGuide && !conversationInventoryReady && !store.yeaftSessionHydrateError && store.yeaftVisibleMessages.length === 0"
+          class="initial-message-loading yeaft-conversation-bootstrap-loading"
+          role="status"
+          aria-live="polite"
+        >
+          <div class="initial-message-loading-spinner" aria-hidden="true"></div>
+          <div class="initial-message-loading-text">{{ $t('chat.session.loadingHistory') }}</div>
+        </div>
+
         <!-- Messages Area — reuse standard MessageList for identical rendering -->
         <!-- task-fix-empty-group: hero state replaces MessageList when the
              active group has no roster — gives the user a single, clear
              next step instead of a blank canvas. The modal still pops on
              top for groups the user hasn't dismissed yet. -->
         <div
-          v-if="!showSettings && !showOnboardingGuide && isActiveGroupEmpty"
+          v-if="!showSettings && !showOnboardingGuide && conversationInventoryReady && isActiveGroupEmpty && store.yeaftVisibleMessages.length === 0 && !store.yeaftInitialHistoryLoading && !store.yeaftHistoryLoadError"
           class="yeaft-empty-group-hero"
         >
           <div class="yeaft-empty-group-hero__icon" aria-hidden="true">
@@ -278,7 +310,12 @@ export default {
             {{ $t('yeaft.session.empty.cta') }}
           </button>
         </div>
-        <MessageList ref="messageListRef" v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty" />
+        <MessageList
+          ref="messageListRef"
+          v-if="!showSettings && !showOnboardingGuide && (conversationInventoryReady || store.yeaftVisibleMessages.length > 0) && (!isActiveGroupEmpty || store.yeaftVisibleMessages.length > 0 || store.yeaftInitialHistoryLoading)"
+          @quote-message="setMessageQuote"
+          @edit-message-as-new="editMessageAsNew"
+        />
         </div>
 
         <div
@@ -304,14 +341,85 @@ export default {
         <ChatInput
           v-if="!showSettings && !showOnboardingGuide"
           ref="chatInputRef"
+          class="yeaft-session-input"
           :conversation-id="store.yeaftConversationId"
           :draft-key="yeaftInputDraftKey"
           :send-fn="sendMessage"
+          :quote="messageQuote"
           :cancel-fn="cancelYeaft"
           :show-stop="isProcessing"
           :work-item-fn="openWorkItemDraft"
           placeholder-key="yeaft.placeholder"
-        />
+          @remove-quote="messageQuote = null"
+          @quote-consumed="messageQuote = null"
+        >
+          <template #actions-start>
+            <!-- Model selector doubles as the LLM settings entry; no extra gear. -->
+            <div class="yeaft-composer-model-control">
+              <button
+                type="button"
+                class="yeaft-composer-model"
+                @click="toggleModelDropdown"
+                :title="$t('yeaft.modelMenu.title')"
+                aria-haspopup="listbox"
+                :aria-expanded="modelDropdownOpen ? 'true' : 'false'"
+              >
+                <span class="yeaft-composer-model-name">{{ topbarModel || $t('settings.llm.selectModel') }}</span>
+                <span v-if="topbarEffort" class="yeaft-composer-model-effort">{{ $t('yeaft.modelMenu.effort.' + topbarEffort) }}</span>
+                <span v-if="store.yeaftModelsRefreshing" class="yeaft-model-refreshing">{{ $t('common.loading') || 'Loading' }}</span>
+                <svg class="yeaft-model-chevron" :class="{ open: modelDropdownOpen }" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+              </button>
+              <div class="yeaft-model-dropdown yeaft-composer-model-dropdown" v-if="modelDropdownOpen">
+                <div class="yeaft-model-selector-body">
+                  <div class="yeaft-model-list" role="listbox" :aria-label="$t('settings.llm.selectModel')">
+                    <div
+                      v-for="row in topbarModelRows"
+                      :key="row.modelRef"
+                      class="yeaft-model-option"
+                      :class="{
+                        active: isModelRowActive(row),
+                        current: modelOptionMatchesRef(row.model, topbarModel),
+                        'yeaft-model-option-with-effort': row.efforts.length,
+                      }"
+                      role="option"
+                      :aria-selected="isModelRowActive(row) ? 'true' : 'false'"
+                    >
+                      <span class="yeaft-model-check" v-if="isModelRowActive(row)">&check;</span>
+                      <span class="yeaft-model-check" v-else></span>
+                      <button
+                        type="button"
+                        class="yeaft-model-option-main"
+                        @click="selectModel(row.modelRef, row.defaultEffort)"
+                      >
+                        <span class="yeaft-model-option-label">{{ row.label }}</span>
+                        <span class="yeaft-model-option-meta">
+                          <span class="yeaft-model-option-provider" v-if="row.model.provider">{{ row.model.provider }}</span>
+                          <span class="yeaft-model-option-ctx" v-if="row.model.contextWindow">{{ formatModelCtx(row.model) }}</span>
+                        </span>
+                      </button>
+                      <span class="yeaft-model-effort-list" v-if="row.efforts.length" :aria-label="row.label">
+                        <button
+                          v-for="effort in row.efforts"
+                          :key="row.modelRef + ':' + effort"
+                          type="button"
+                          class="yeaft-model-effort-chip"
+                          :class="{ active: isModelSelectionActive(row.model, effort) }"
+                          @click="selectModel(row.modelRef, effort)"
+                        >{{ $t('yeaft.modelMenu.effort.' + effort) }}</button>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="yeaft-model-fixed-controls">
+                    <button type="button" class="yeaft-model-config-option" @click="openLlmConfig">
+                      <span class="yeaft-model-config-label">{{ $t('settings.llm.configureMenu') }}</span>
+                      <span class="yeaft-model-config-hint">{{ $t('yeaft.modelMenu.configureHint') }}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </ChatInput>
         </div><!-- /.yeaft-main-center -->
       </div>
 
@@ -425,17 +533,64 @@ export default {
     // pane emits a VP mention request. Keeps the Yeaft-specific @-syntax out
     // of ChatInput (review fix — Fowler C2, PR #763).
     const chatInputRef = Vue.ref(null);
+    const messageQuote = Vue.ref(null);
     const pageRef = Vue.ref(null);
     const messageListRef = Vue.ref(null);
     const historySearchRef = Vue.ref(null);
     const historySearchOpen = Vue.ref(false);
-    const historySearchActiveIndex = Vue.ref(0);
+    const historySearchActiveMessageId = Vue.ref(null);
+    const historyOutlineState = Vue.computed(() => store.getYeaftHistoryOutlineState());
+    const historySenderOptions = Vue.computed(() => {
+      const gs = sessionsStore();
+      const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
+      const session = sessionId ? resolveTimelineSession(gs, sessionId, store.currentAgent || null) : null;
+      const roster = Array.isArray(session?.roster) ? session.roster : [];
+      return [
+        { key: 'user', label: $t('yeaft.outline.you') },
+        ...roster.map(vpId => ({ key: `vp:${vpId}`, label: vpStore.vpLabel(vpId) })),
+      ];
+    });
+    const historySearchQuery = Vue.ref(store.yeaftHistorySearchState?.query || '');
     let historySearchTimer = null;
+    const sessionsStore = () => {
+      try {
+        return window.Pinia?.useSessionsStore?.() || null;
+      } catch { return null; }
+    };
+    const historySearchIdentity = () => {
+      const gs = sessionsStore();
+      return {
+        agentId: store.currentAgent || null,
+        sessionId: store.yeaftActiveSessionFilter || gs?.activeSessionId || null,
+      };
+    };
+    const rememberedHistorySender = () => loadHistorySenderPreference({
+      ...historySearchIdentity(),
+      validKeys: historySenderOptions.value.map(option => option.key),
+    });
+    const resetHistorySearchState = (senderKey = '') => {
+      const { agentId, sessionId } = historySearchIdentity();
+      store.yeaftHistorySearchState = {
+        requestId: null,
+        agentId,
+        sessionId,
+        query: '',
+        senderKey,
+        loading: false,
+        results: [],
+        hasMore: false,
+        nextBeforeSeq: null,
+        error: null,
+      };
+    };
     const yeaftInputDraftKey = Vue.computed(() => {
       const agentId = store.currentAgent || 'agent';
       const gs = sessionsStore();
       const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || 'session';
       return `yeaft:${agentId}:${sessionId}`;
+    });
+    Vue.watch(yeaftInputDraftKey, () => {
+      messageQuote.value = null;
     });
     let mobileViewportRaf = null;
     let mobileViewportRecoverTimer = null;
@@ -500,7 +655,7 @@ export default {
     const onSelectGroupV2 = (g) => {
       const id = g && g.id ? g.id : null;
       if (!id) return;
-      store.setActiveSessionFilter(id);
+      store.setActiveSessionFilter(id, { agentId: g.agentId || null });
       if (isMobile.value) store.closeSessionSidebar();
     };
 
@@ -661,30 +816,78 @@ export default {
         clearTimeout(historySearchTimer);
         historySearchTimer = null;
       }
-      store.searchYeaftHistory('');
+      historySearchQuery.value = '';
+      resetHistorySearchState(rememberedHistorySender());
       historySearchOpen.value = false;
-      historySearchActiveIndex.value = 0;
+      historySearchActiveMessageId.value = null;
     };
     const openHistorySearch = () => {
+      const senderKey = rememberedHistorySender();
+      historySearchQuery.value = '';
+      resetHistorySearchState(senderKey);
       historySearchOpen.value = true;
+      store.loadYeaftHistoryOutline();
+      if (senderKey) store.searchYeaftHistory('', { senderKey });
       Vue.nextTick(() => historySearchRef.value?.focus?.());
     };
     const toggleHistorySearch = () => {
       if (historySearchOpen.value) closeHistorySearch();
       else openHistorySearch();
     };
-    const onHistorySearchQuery = (query) => {
-      if (historySearchTimer) clearTimeout(historySearchTimer);
-      historySearchActiveIndex.value = 0;
-      historySearchTimer = setTimeout(() => store.searchYeaftHistory(query), 220);
+    const closeHistorySearchOutside = (event) => {
+      if (historySearchOpen.value && shouldDismissHistorySearch(event.target)) closeHistorySearch();
     };
-    const loadMoreHistorySearchResults = () => store.searchYeaftHistory(store.yeaftHistorySearchState.query, { append: true });
-    const selectHistorySearchResult = async (result) => {
-      if (!result) return;
-      const loaded = await store.loadYeaftHistoryWindow(result);
-      if (!loaded) return;
-      await Vue.nextTick();
-      await messageListRef.value?.revealMessage?.(result.messageId);
+    const onHistorySearchQuery = (query) => {
+      historySearchQuery.value = query;
+      if (historySearchTimer) clearTimeout(historySearchTimer);
+      historySearchActiveMessageId.value = null;
+      historySearchTimer = setTimeout(() => {
+        historySearchTimer = null;
+        store.searchYeaftHistory(historySearchQuery.value, { senderKey: store.yeaftHistorySearchState.senderKey });
+      }, 220);
+    };
+    const onHistorySenderChange = (senderKey) => {
+      if (historySearchTimer) clearTimeout(historySearchTimer);
+      historySearchTimer = null;
+      historySearchActiveMessageId.value = null;
+      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey });
+      store.searchYeaftHistory(historySearchQuery.value, { senderKey });
+    };
+    const onHistorySenderInvalid = () => {
+      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey: DEFAULT_HISTORY_SENDER });
+      historySearchActiveMessageId.value = null;
+      store.searchYeaftHistory(historySearchQuery.value, { senderKey: DEFAULT_HISTORY_SENDER });
+    };
+    const loadOlderHistoryOutline = (scrollSnapshot) => {
+      if (!store.loadYeaftHistoryOutline({ append: true })) return;
+      const stop = Vue.watch(
+        () => historyOutlineState.value.loading,
+        loading => {
+          if (loading) return;
+          stop();
+          historySearchRef.value?.restoreOlderScroll?.(scrollSnapshot);
+        },
+      );
+    };
+    const loadMoreHistorySearchResults = () => store.searchYeaftHistory(store.yeaftHistorySearchState.query, { append: true, senderKey: store.yeaftHistorySearchState.senderKey });
+    const previewHistorySearchResult = result => {
+      // Warm a bounded anchor window while the user points at a result. Preview
+      // stays cache-only; click revalidates the indexed generation before it
+      // expands or scrolls, so a source mutation cannot reveal a stale locator.
+      if (store.hasCapability('session_history_window_prefetch')) {
+        store.loadYeaftHistoryWindow(result);
+      }
+    };
+    const selectHistorySearchResult = (result) => {
+      const revealLease = store.beginYeaftHistoryReveal?.(result) || null;
+      return revealOutlineResult({
+        result,
+        revealWindow: candidate => store.revealYeaftHistoryResult(candidate, revealLease),
+        nextTick: () => Vue.nextTick(),
+        revealMessage: target => messageListRef.value?.revealMessage?.(target),
+        isMobile: isMobile.value,
+        closeOutline: closeHistorySearch,
+      }).finally(() => store.finishYeaftHistoryReveal?.(revealLease));
     };
 
     // Esc handling — close transient controls. Detail drill-down layers were
@@ -714,6 +917,7 @@ export default {
       window.visualViewport?.addEventListener('resize', scheduleMobileViewportRecovery);
       window.visualViewport?.addEventListener('scroll', scheduleMobileViewportRecovery);
       document.addEventListener('click', closeModelDropdownOutside);
+      document.addEventListener('click', closeHistorySearchOutside);
       document.addEventListener('keydown', onKeyDown);
       scheduleMobileViewportSync();
     });
@@ -724,6 +928,7 @@ export default {
       window.visualViewport?.removeEventListener('resize', scheduleMobileViewportRecovery);
       window.visualViewport?.removeEventListener('scroll', scheduleMobileViewportRecovery);
       document.removeEventListener('click', closeModelDropdownOutside);
+      document.removeEventListener('click', closeHistorySearchOutside);
       document.removeEventListener('keydown', onKeyDown);
       if (mobileViewportRaf != null) cancelAnimationFrame(mobileViewportRaf);
       if (mobileViewportRecoverTimer) clearTimeout(mobileViewportRecoverTimer);
@@ -738,24 +943,14 @@ export default {
     });
     Vue.watch(() => [store.currentAgent, store.yeaftActiveSessionFilter], () => {
       closeHistorySearch();
-      store.yeaftHistorySearchState = {
-        requestId: null,
-        agentId: null,
-        sessionId: null,
-        query: '',
-        loading: false,
-        results: [],
-        hasMore: false,
-        nextBeforeSeq: null,
-        error: null,
-      };
+      resetHistorySearchState(rememberedHistorySender());
     });
 
     const goBack = () => {
       store.leaveYeaft();
     };
 
-    const sendMessage = (text, attachmentInfos) => {
+    const sendMessage = (text, attachmentInfos, quote) => {
       // task-334m: Pre-check `no_default_vp` before the WS round-trip.
       // If the active group has no roster + no defaultVpId, surface the
       // invite modal instead of sending a message that would round-trip
@@ -778,7 +973,18 @@ export default {
       // store helper strips `fileId` shape for the wire and keeps the
       // preview/name/mimeType on the local message render.
       const attachments = Array.isArray(attachmentInfos) ? attachmentInfos : undefined;
-      store.sendYeaftSessionMessage({ groupId, text, mentions, attachments });
+      store.sendYeaftSessionMessage({ groupId, text, mentions, attachments, quote });
+    };
+
+    const setMessageQuote = (quote) => {
+      if (!quote) return;
+      messageQuote.value = quote;
+      chatInputRef.value?.focusInput?.();
+    };
+
+    const editMessageAsNew = (text) => {
+      messageQuote.value = null;
+      chatInputRef.value?.replaceDraft?.(text || '');
     };
 
     // Yeaft stop is session-scoped. The virtual Yeaft conversation can have
@@ -818,19 +1024,25 @@ export default {
       store.reloadYeaftMessages();
     };
 
+    const retryConversationInventory = () => {
+      if (typeof store.requestYeaftSessionInventory === 'function') {
+        store.requestYeaftSessionInventory();
+        return;
+      }
+      store._hasHandledAgentList = false;
+      store._hasHandledYeaftSessionHydrate = false;
+      store.yeaftSessionHydrateError = null;
+      store.sendWsMessage({ type: 'get_agents' });
+    };
+
     const reloadPage = () => {
       window.location.reload();
     };
 
-    const sessionsStore = () => {
-      try {
-        return window.Pinia?.useSessionsStore?.() || null;
-      } catch { return null; }
-    };
     const isProcessing = Vue.computed(() => {
       const gs = sessionsStore();
       const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
-      return sessionId ? store.isYeaftSessionProcessing(sessionId) : false;
+      return sessionId ? store.isYeaftSessionProcessing(sessionId, store.currentAgent || null) : false;
     });
     // task-fix-mobile-group-settings: surface a group ⚙ in the topbar
     // so the conversation always has a settings entry-point — sidebar
@@ -873,6 +1085,11 @@ export default {
         return value;
       }
       return '';
+    });
+
+    const topbarFolderPath = Vue.computed(() => {
+      const workDir = topbarGroup.value?.workDir;
+      return typeof workDir === 'string' ? workDir.trim() : '';
     });
 
     const sessionStatusAnnouncementText = Vue.computed(() => {
@@ -970,7 +1187,7 @@ export default {
 
     const closeModelDropdownOutside = (e) => {
       if (!modelDropdownOpen.value) return;
-      const row = e.target.closest('.yeaft-topbar-model, .yeaft-topbar-model-dropdown');
+      const row = e.target.closest('.yeaft-composer-model-control');
       if (!row) closeModelDropdown();
     };
 
@@ -1057,10 +1274,10 @@ export default {
       else console.log('[Yeaft] LLM config:', msg);
     };
 
-    const onLlmConfigSaved = () => {
-      showLlmConfig.value = false;
-      const agentId = store.currentAgent;
-      if (agentId) store.sendWsMessage({ type: 'yeaft_reset', agentId });
+    const onLlmConfigSaved = (result = {}) => {
+      // The Agent installs the persisted catalog before acknowledging the save.
+      // Keep the modal open on partial success so the warning remains visible.
+      if (shouldCloseLlmConfigAfterSave(result)) showLlmConfig.value = false;
     };
 
     // task-334m: Group invite modal wiring. The modal is shown whenever
@@ -1107,11 +1324,19 @@ export default {
       const gs = sessionsStore();
       return !!(gs && gs.activeNeedsInvite);
     });
+    const conversationInventoryReady = Vue.computed(() => {
+      const gs = sessionsStore();
+      return store._hasHandledAgentList === true
+        && store._hasHandledYeaftSessionHydrate === true
+        && !!(gs && gs.hasLoadedSnapshot);
+    });
     const showOnboardingGuide = Vue.computed(() => {
       const gs = sessionsStore();
       return shouldShowYeaftOnboardingGuide({
+        agentInventoryReady: store._hasHandledAgentList === true,
         hasYeaftAgent: hasUsableYeaftAgent(store),
-        sessionsReady: !!(gs && gs.hasLoadedSnapshot),
+        sessionsReady: store._hasHandledYeaftSessionHydrate === true
+          && !!(gs && gs.hasLoadedSnapshot),
         sessionsEmpty: !!(gs && gs.isEmpty),
       });
     });
@@ -1240,7 +1465,12 @@ export default {
       const gs = sessionsStore();
       const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
       if (!sessionId) return [];
-      const map = store.yeaftActiveTasksBySession?.[sessionId] || {};
+      const activeSession = typeof gs?.sessionById === 'function'
+        ? gs.sessionById(sessionId, store.currentAgent || null)
+        : null;
+      const agentId = activeSession?.agentId || store.currentAgent || null;
+      const taskKey = agentId ? `${agentId}\u001f${sessionId}` : sessionId;
+      const map = store.yeaftActiveTasksBySession?.[taskKey] || {};
       return visibleSessionStatusTasks(map);
     });
 
@@ -1277,18 +1507,29 @@ export default {
       // the composite key isn't a usable VP id by itself.
       const rawStatuses = store.vpStatuses || {};
       const scopedStatuses = {};
+      const activeAgentId = store.currentAgent || null;
       for (const entry of Object.values(rawStatuses)) {
         if (!entry || !entry.vpId) continue;
         const entrySessionId = entry.sessionId ?? entry.groupId;
         if (entrySessionId && entrySessionId !== filter) continue;
+        if (activeAgentId && entry.agentId && entry.agentId !== activeAgentId) continue;
         if (!rosterSet.has(entry.vpId)) continue;
         scopedStatuses[entry.vpId] = entry;
+      }
+
+      const scopedStoppingTurnIds = {};
+      for (const row of Object.values(store.activeVpTurns || {})) {
+        if (!row?.turnId || !row?.sessionId) continue;
+        if (row.sessionId !== filter || (activeAgentId && row.agentId && row.agentId !== activeAgentId)) continue;
+        if (Object.entries(store.stoppingVpTurnIds || {}).some(([key]) => store.activeVpTurns?.[key] === row)) {
+          scopedStoppingTurnIds[row.turnId] = true;
+        }
       }
 
       return buildTimelineRows({
         vpList,
         vpStatuses: scopedStatuses,
-        stoppingVpTurnIds: store.stoppingVpTurnIds || {},
+        stoppingVpTurnIds: scopedStoppingTurnIds,
         connectionState: store.connectionState,
         vpLabelOf: (id) => vpStore.vpLabel(id),
         vpDescriptionOf: (id) => vpStore.vpDescription(id),
@@ -1329,7 +1570,7 @@ export default {
 
     const onCancelTaskFromTimeline = (task) => {
       if (!task?.id || !task.sessionId || typeof store.cancelYeaftTask !== 'function') return false;
-      return store.cancelYeaftTask({ sessionId: task.sessionId, taskId: task.id });
+      return store.cancelYeaftTask({ agentId: task.agentId, sessionId: task.sessionId, taskId: task.id });
     };
 
     return {
@@ -1340,6 +1581,7 @@ export default {
       modelDropdownOpen,
       topbarGroup,
       topbarSessionTitle,
+      topbarFolderPath,
       topbarModel,
       topbarEffort,
       topbarModelRows,
@@ -1354,14 +1596,21 @@ export default {
       settingsInitialTab,
       settingsInitialEditVpId,
       chatInputRef,
+      messageQuote,
       messageListRef,
       historySearchRef,
       historySearchOpen,
-      historySearchActiveIndex,
+      historySearchActiveMessageId,
+      historyOutlineState,
+      historySenderOptions,
       toggleHistorySearch,
       closeHistorySearch,
       onHistorySearchQuery,
+      onHistorySenderChange,
+      onHistorySenderInvalid,
+      loadOlderHistoryOutline,
       loadMoreHistorySearchResults,
+      previewHistorySearchResult,
       selectHistorySearchResult,
       yeaftInputDraftKey,
       openSettings,
@@ -1374,12 +1623,15 @@ export default {
       isProcessing,
       goBack,
       sendMessage,
+      setMessageQuote,
+      editMessageAsNew,
       cancelYeaft,
       openWorkItemDraft,
       toggleSidebar,
       toggleDebug,
       closeDebug,
       reloadMessages,
+      retryConversationInventory,
       reloadPage,
       toggleModelDropdown,
       selectModel,
@@ -1409,6 +1661,7 @@ export default {
       onInviteOpenLibrary,
       onInviteDismiss,
       isActiveGroupEmpty,
+      conversationInventoryReady,
       showOnboardingGuide,
       installAgentCommand,
       connectAgentCommand,

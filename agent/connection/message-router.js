@@ -27,9 +27,10 @@ import { sendAgentMetricsSnapshot } from '../metrics.js';
 import { handleRestartAgent, handleUpgradeAgent } from './upgrade.js';
 import { loadMcpServers, updateMcpConfig } from '../mcp.js';
 import { getLlmConfig, updateLlmConfig, getYeaftSettings, updateYeaftSettings, getSearchSettings, updateSearchSettings, fetchTavilyUsage } from '../yeaft/config-api.js';
+import { loadConfig } from '../yeaft/config.js';
 import { discoverLlmModels } from '../llm-model-discovery.js';
 import { fetchModelsDev } from '../yeaft/llm/models-dev.js';
-import { handleYeaftSessionSend, handleYeaftAskUserAnswer, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftModeSwitch, handleYeaftModelSwitch, resetYeaftSession, handleYeaftLoadHistory, handleYeaftSearchHistory, handleYeaftLoadHistoryWindow, handleYeaftLoadMoreHistory, handleYeaftAbortThread, handleYeaftAbortAll, handleYeaftAbortTurn, handleYeaftVpSubscribe, handleYeaftVpCreate, handleYeaftVpUpdate, handleYeaftVpDelete, handleYeaftVpRead, handleYeaftListSessions, handleYeaftCreateSession, handleYeaftRenameSession, handleYeaftUpdateSession, handleYeaftUpdateSessionConfig, handleYeaftArchiveSession, handleYeaftDeleteSession, handleYeaftSessionAddMember, handleYeaftSessionRemoveMember, handleYeaftSessionSetDefaultVp, handleYeaftScanWorkdirSessions, handleYeaftRestoreSession, handleYeaftDreamTrigger, handleYeaftFetchToolStats, handleYeaftFetchDebugHistory, handleYeaftMcpList, handleYeaftMcpAdd, handleYeaftMcpRemove, handleYeaftMcpReload, broadcastLanguageChange, broadcastYeaftSessionSnapshotEager, preloadYeaftSkillSlashCommands } from '../yeaft/web-bridge.js';
+import { handleYeaftSessionSend, handleYeaftAskUserAnswer, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftModeSwitch, handleYeaftModelSwitch, resetYeaftSession, refreshLiveSessionConfig, handleYeaftLoadHistory, handleYeaftLoadHistoryOutline, handleYeaftSearchHistory, handleYeaftLoadHistoryWindow, handleYeaftLoadMoreHistory, handleYeaftAbortThread, handleYeaftAbortAll, handleYeaftAbortTurn, handleYeaftVpSubscribe, handleYeaftVpCreate, handleYeaftVpUpdate, handleYeaftVpDelete, handleYeaftVpRead, handleYeaftListSessions, handleYeaftProjectContextSync, handleYeaftProjectMutation, handleYeaftCreateSession, handleYeaftRenameSession, handleYeaftUpdateSession, handleYeaftUpdateSessionConfig, handleYeaftArchiveSession, handleYeaftDeleteSession, handleYeaftSessionAddMember, handleYeaftSessionRemoveMember, handleYeaftSessionSetDefaultVp, handleYeaftScanWorkdirSessions, handleYeaftRestoreSession, handleYeaftDreamTrigger, handleYeaftFetchToolStats, handleYeaftFetchDebugHistory, handleYeaftMcpList, handleYeaftMcpAdd, handleYeaftMcpRemove, handleYeaftMcpReload, broadcastLanguageChange, broadcastYeaftSessionSnapshotEager, broadcastYeaftVpSnapshotEager, preloadYeaftSkillSlashCommands } from '../yeaft/web-bridge.js';
 import { startYeaftStatusRefresh, forceRefreshYeaftStatus } from '../yeaft/status-cache.js';
 import { handleWorkCenterRequest } from '../yeaft/work-center/bridge.js';
 
@@ -37,45 +38,65 @@ export async function applyLlmConfigUpdate(msg, dependencies = {}) {
   const updateConfig = dependencies.updateLlmConfig || updateLlmConfig;
   const broadcastLanguage = dependencies.broadcastLanguageChange || broadcastLanguageChange;
   const forceStatusRefresh = dependencies.forceRefreshYeaftStatus || forceRefreshYeaftStatus;
+  const refreshRuntimeConfig = dependencies.refreshLiveSessionConfig || refreshLiveSessionConfig;
+  const readConfig = dependencies.loadConfig || loadConfig;
   const send = dependencies.sendToServer || sendToServer;
   const yeaftDir = dependencies.yeaftDir ?? ctx.CONFIG?.yeaftDir;
   const incomingLanguage = typeof msg.config?.language === 'string' && msg.config.language
     ? msg.config.language
     : null;
+  let previousDefaultModel = null;
+  try {
+    const previousConfig = readConfig({ dir: yeaftDir });
+    previousDefaultModel = previousConfig?.primaryModel || previousConfig?.model || null;
+  } catch { /* updateLlmConfig will report the actual config error */ }
   const result = updateConfig(msg.config || {}, yeaftDir);
   if (!result.error && incomingLanguage) broadcastLanguage(result.language);
 
   let statusRefreshError = null;
   if (!result.error) {
     try {
-      const statusEvent = await forceStatusRefresh({ reason: 'llm_config_updated' });
-      statusRefreshError = statusEvent?.refreshError || null;
+      await refreshRuntimeConfig({ previousDefaultModel });
     } catch (err) {
       statusRefreshError = err?.message || String(err);
     }
+    try {
+      const statusEvent = await forceStatusRefresh({ reason: 'llm_config_updated' });
+      statusRefreshError = statusRefreshError || statusEvent?.refreshError || null;
+    } catch (err) {
+      statusRefreshError = statusRefreshError || err?.message || String(err);
+    }
   }
 
-  const response = { type: 'llm_config_updated', ...result, statusRefreshError };
+  const response = {
+    type: 'llm_config_updated',
+    ...result,
+    agentId: msg.agentId ?? null,
+    requestId: msg.requestId ?? null,
+    statusRefreshError,
+  };
   send(response);
   return response;
+}
+
+export function applyRegisteredTransport(msg) {
+  if (msg.sessionKey) {
+    ctx.sessionKey = decodeKey(msg.sessionKey);
+    console.log('Encryption enabled');
+  }
+
+  // New servers advertise plaintext acceptance. This mutation is scoped to
+  // the active connection because connect() restores conservative defaults.
+  if (msg.acceptPlaintext === true) {
+    ctx.serverEncryptionRequired = false;
+    console.log('[WS] Server accepts plaintext, disabling outbound encryption');
+  }
 }
 
 export async function handleMessage(msg) {
   switch (msg.type) {
     case 'registered':
-      if (msg.sessionKey) {
-        ctx.sessionKey = decodeKey(msg.sessionKey);
-        console.log('Encryption enabled');
-      }
-
-      // feat-ws-plaintext-negotiation: new server advertises that it
-      // will accept plaintext frames from us. Stop encrypting outbound.
-      // The receive path (parseMessage) stays unconditional so the old
-      // ciphertext that may already be in flight still decrypts.
-      if (msg.acceptPlaintext === true) {
-        ctx.serverEncryptionRequired = false;
-        console.log('[WS] Server accepts plaintext, disabling outbound encryption');
-      }
+      applyRegisteredTransport(msg);
 
       // 只保存基本配置。instanceId 是本地服务实例身份；agentName 只用于展示。
       ctx.saveConfig({
@@ -110,6 +131,10 @@ export async function handleMessage(msg) {
       // The callee already wraps its FS scan + emit in try/catch and
       // logs via console.warn — no second guard needed here.
       broadcastYeaftSessionSnapshotEager();
+      // Stock VPs are bundled Agent data. Seed + publish them during register so
+      // a first-install user can open the create dialog immediately instead of
+      // depending on a later Session runtime or modal subscription race.
+      broadcastYeaftVpSnapshotEager();
 
       // ★ Flush 断连期间缓冲的消息
       await flushMessageBuffer();
@@ -481,9 +506,21 @@ export async function handleMessage(msg) {
       await handleYeaftSessionSend(msg);
       break;
 
+    case 'yeaft_project_context_sync':
+      handleYeaftProjectContextSync(msg);
+      break;
+
+    case 'yeaft_project_mutation':
+      handleYeaftProjectMutation(msg);
+      break;
+
     case 'yeaft_load_history':
     case 'unify_load_history':
       await handleYeaftLoadHistory(msg);
+      break;
+
+    case 'yeaft_load_history_outline':
+      await handleYeaftLoadHistoryOutline(msg);
       break;
 
     case 'yeaft_search_history':

@@ -22,6 +22,7 @@
  */
 import VpBadge from './VpBadge.js';
 import { useChatStore } from '../stores/chat.js';
+import { formatSessionMessageDateTime } from '../utils/session-message-quote.js';
 
 export default {
   name: 'VpSpeakerHeader',
@@ -71,14 +72,7 @@ export default {
       // false, so cross-mode state never leaks here.
       return chat.isVpTypingInCurrentConv(props.vpId);
     });
-    const timestampText = Vue.computed(() => {
-      if (!props.timestamp) return '';
-      try {
-        return new Date(props.timestamp).toLocaleTimeString(undefined, {
-          hour: '2-digit', minute: '2-digit',
-        });
-      } catch { return ''; }
-    });
+    const timestampText = Vue.computed(() => formatSessionMessageDateTime(props.timestamp));
     const timestampFullText = Vue.computed(() => {
       if (!props.timestamp) return '';
       try { return new Date(props.timestamp).toLocaleString(); } catch { return ''; }

@@ -11,7 +11,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { DEFAULT_YEAFT_DIR } from './init.js';
-import { normalizeProviderModels, serializeModelForPersistence } from './models.js';
+import { normalizeProviderModels, parseModelRef, serializeModelForPersistence } from './models.js';
 import { normaliseYeaftSection } from './config.js';
 import { isGitHubCopilotProvider, serializeKnownProviderForPersistence } from './llm/known-providers.js';
 
@@ -51,6 +51,58 @@ export function getLlmConfig(dir) {
     };
   } catch (e) {
     return { error: `Failed to read config.json: ${e.message}` };
+  }
+}
+
+function providerModelIds(provider) {
+  return new Set(normalizeProviderModels(provider).map(model => model.id));
+}
+
+function bareModelOwners(providers, modelId) {
+  const owners = new Set();
+  for (const provider of providers) {
+    if (provider?.name && providerModelIds(provider).has(modelId)) owners.add(provider.name);
+  }
+  return owners;
+}
+
+function modelSelectionIsValid(selection, providers, authoritativeManagedNames) {
+  if (!selection) return false;
+  const parsed = parseModelRef(selection);
+  if (!parsed.modelId) return false;
+  if (!parsed.providerName) return bareModelOwners(providers, parsed.modelId).size === 1;
+  if (!authoritativeManagedNames.has(parsed.providerName)) return true;
+  const provider = providers.find(item => item?.name === parsed.providerName);
+  return !!provider && providerModelIds(provider).has(parsed.modelId);
+}
+
+function normalizeManagedModelDefaults(config) {
+  const providers = Array.isArray(config.providers) ? config.providers : [];
+  const authoritativeManagedProviders = providers.filter(provider =>
+    isGitHubCopilotProvider(provider)
+      && Array.isArray(provider.models)
+      && provider.models.length > 0);
+  if (authoritativeManagedProviders.length === 0) return;
+
+  const authoritativeManagedNames = new Set(authoritativeManagedProviders.map(provider => provider.name));
+  const fallbackProvider = authoritativeManagedProviders.find(provider => providerModelIds(provider).size > 0);
+  const fallbackModelId = fallbackProvider
+    ? providerModelIds(fallbackProvider).values().next().value
+    : null;
+  const managedFallback = fallbackProvider && fallbackModelId
+    ? `${fallbackProvider.name}/${fallbackModelId}`
+    : null;
+
+  if (config.primaryModel
+    && !modelSelectionIsValid(config.primaryModel, providers, authoritativeManagedNames)) {
+    config.primaryModel = managedFallback;
+  }
+  const validPrimary = modelSelectionIsValid(config.primaryModel, providers, authoritativeManagedNames)
+    ? config.primaryModel
+    : managedFallback;
+  if (config.fastModel
+    && !modelSelectionIsValid(config.fastModel, providers, authoritativeManagedNames)) {
+    config.fastModel = validPrimary;
   }
 }
 
@@ -109,13 +161,16 @@ export function updateLlmConfig(update, dir) {
     });
   }
 
-  // Update model selections
+  // Update model selections. A managed provider catalog is authoritative:
+  // when it drops the old Agent default, keep no hidden reference to that
+  // model in primaryModel or fastModel.
   if (update.primaryModel !== undefined) {
     existing.primaryModel = update.primaryModel || null;
   }
   if (update.fastModel !== undefined) {
     existing.fastModel = update.fastModel || null;
   }
+  if (update.providers !== undefined) normalizeManagedModelDefaults(existing);
   if (update.language !== undefined) {
     existing.language = update.language;
   }
