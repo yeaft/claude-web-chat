@@ -23,10 +23,6 @@ const VP_TURN_MESSAGE_TYPES = new Set([
   'tool_result',
 ]);
 
-// Private renderer metadata: marks rows that passed through an explicit
-// execution bucket without cloning or writing fields onto store data.
-const executionBoundaryRows = new WeakSet();
-
 function vpExecutionKey(msg) {
   const owner = messageVpOwner(msg);
   const turnId = cleanId(msg?.turnId);
@@ -57,12 +53,7 @@ export function orderYeaftVpTurnMessagesByExecution(messages) {
       if (!buckets.has(key)) buckets.set(key, []);
       buckets.get(key).push(msg);
     }
-    for (const bucket of buckets.values()) {
-      for (const msg of bucket) {
-        executionBoundaryRows.add(msg);
-        ordered.push(msg);
-      }
-    }
+    for (const bucket of buckets.values()) ordered.push(...bucket);
     run = [];
   };
 
@@ -87,18 +78,17 @@ export function shouldCloseYeaftVpTurn(currentTurn, msg) {
 
   const curTurnId = cleanId(currentTurn.turnId);
   const msgTurnId = cleanId(msg.turnId);
-  if (currentTurn.messages?.length > 0
-      && executionBoundaryRows.has(msg)
+  // Persisted history can contain several runtime turnIds for one visible
+  // reply: partial writes, abort/retry, and tool-loop continuation all stamp
+  // their own delivery id. Only a durable RouteForward origin proves that a
+  // same-speaker history row starts a new semantic execution.
+  if (currentTurn.isHistory && msg.isHistory) {
+    return currentTurn.messages?.length > 0
+      && msg.executionOrigin === 'route_forward'
       && curTurnId
       && msgTurnId
-      && curTurnId !== msgTurnId) return true;
-
-  // Legacy persisted history can contain several runtime turnIds for one
-  // visible user turn: partial writes, abort/retry, and tool-loop continuation
-  // all stamp their own delivery id. Keep that compatibility rule for callers
-  // without explicit execution metadata. The sorter above marks every real
-  // VP + turnId row, so a replayed RouteForward execution still closes here.
-  if (currentTurn.isHistory && msg.isHistory) return false;
+      && curTurnId !== msgTurnId;
+  }
 
   if (curTurnId && msgTurnId && curTurnId !== msgTurnId) return true;
 

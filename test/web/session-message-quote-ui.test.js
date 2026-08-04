@@ -9,7 +9,33 @@ import {
   finalizeTurnResponseSegments,
   markTurnResponseKinds,
 } from '../../web/utils/turn-response.js';
-import { shouldCloseYeaftVpTurn } from '../../web/stores/helpers/yeaft-turn-boundary.js';
+import {
+  messageVpOwner,
+  orderYeaftVpTurnMessagesByExecution,
+  shouldCloseYeaftVpTurn,
+} from '../../web/stores/helpers/yeaft-turn-boundary.js';
+
+function groupYeaftHistoryRows(messages) {
+  const turns = [];
+  let currentTurn = null;
+  for (const msg of orderYeaftVpTurnMessagesByExecution(messages)) {
+    if (currentTurn && shouldCloseYeaftVpTurn(currentTurn, msg)) {
+      turns.push(currentTurn);
+      currentTurn = null;
+    }
+    if (!currentTurn) {
+      currentTurn = {
+        speakerVpId: messageVpOwner(msg),
+        turnId: msg.turnId,
+        isHistory: msg.isHistory === true,
+        messages: [],
+      };
+    }
+    currentTurn.messages.push(msg);
+  }
+  if (currentTurn) turns.push(currentTurn);
+  return turns;
+}
 
 describe('Session message quote UI wiring', () => {
   afterEach(() => {
@@ -60,18 +86,37 @@ describe('Session message quote UI wiring', () => {
     markTurnResponseKinds(errored, { sessionId: 's1', vpId: 'linus', turnId: 't4', reason: 'errored' });
     expect(errored[0].responseKind).toBe('progress');
 
-    const legacyHistoryTurn = {
-      speakerVpId: 'linus',
-      turnId: 'runtime-a',
-      isHistory: true,
-      messages: [{ id: 'partial-a' }],
-    };
-    expect(shouldCloseYeaftVpTurn(legacyHistoryTurn, {
-      type: 'assistant',
-      speakerVpId: 'linus',
-      turnId: 'runtime-b',
-      isHistory: true,
-    })).toBe(false);
+    const legacyHistoryTurns = groupYeaftHistoryRows([
+      { id: 'partial-a', type: 'assistant', speakerVpId: 'linus', turnId: 'runtime-a', isHistory: true },
+      { id: 'partial-b', type: 'assistant', speakerVpId: 'linus', turnId: 'runtime-b', isHistory: true },
+      { id: 'result-c', type: 'assistant', speakerVpId: 'linus', turnId: 'runtime-c', isHistory: true },
+    ]);
+    expect(legacyHistoryTurns).toHaveLength(1);
+    expect(legacyHistoryTurns[0].messages.map(message => message.id))
+      .toEqual(['partial-a', 'partial-b', 'result-c']);
+
+    const routeForwardTurns = groupYeaftHistoryRows([
+      ...legacyHistoryTurns[0].messages,
+      {
+        id: 'handoff-d',
+        type: 'assistant',
+        speakerVpId: 'linus',
+        turnId: 'runtime-d',
+        executionOrigin: 'route_forward',
+        isHistory: true,
+      },
+      {
+        id: 'handoff-tool',
+        type: 'tool-summary',
+        speakerVpId: 'linus',
+        turnId: 'runtime-d',
+        executionOrigin: 'route_forward',
+        isHistory: true,
+      },
+    ]);
+    expect(routeForwardTurns).toHaveLength(2);
+    expect(routeForwardTurns[1].messages.map(message => message.id))
+      .toEqual(['handoff-d', 'handoff-tool']);
 
     const turn = {
       id: 'turn-row', turnId: 't1', textContent: '', textSegments: [], toolMsgs: [], toolSummaryCount: 0,

@@ -398,7 +398,17 @@ describe('Yeaft history result rendered reveal', () => {
     ]);
 
     store.messagesMap['conv-a'].push(
-      { id: 'martin-handoff', type: 'assistant', content: 'Martin follow-up', sessionId: 'same', speakerVpId: 'martin', turnId: 'turn-martin-2', status: 'completed', timestamp: 7, ...history },
+      {
+        id: 'martin-handoff',
+        type: 'assistant',
+        content: 'Martin follow-up',
+        sessionId: 'same',
+        speakerVpId: 'martin',
+        turnId: 'turn-martin-2',
+        status: 'completed',
+        timestamp: 7,
+        ...(isHistory ? { isHistory: true, executionOrigin: 'route_forward' } : {}),
+      },
     );
     await flushPromises();
     await Vue.nextTick();
