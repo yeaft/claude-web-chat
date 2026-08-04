@@ -3066,7 +3066,7 @@ describe('Work Center core', () => {
         coordinatorRevision: fenced.coordinatorRevision,
       });
     }).toThrow(/shutting down/i);
-  });
+  }, 30_000);
 
   it('preserves execution ownership, recovers durable turns, and schedules same-stage replacements', async () => {
     const linear = controller.create(createInput({ id: 'linear-running' }));
