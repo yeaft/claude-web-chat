@@ -2213,6 +2213,8 @@ legacy session`, { encoding: 'utf8' });
         mode: 'work',
         model: 'claude-sonnet-4-20250514',
         turnNumber: 2,
+        turnId: 'turn-route-forward',
+        executionOrigin: 'route_forward',
         responseKind: 'result',
         stopReason: 'end_turn',
       });
@@ -2223,6 +2225,8 @@ legacy session`, { encoding: 'utf8' });
       expect(loaded[0].mode).toBe('work');
       expect(loaded[0].model).toBe('claude-sonnet-4-20250514');
       expect(loaded[0].turnNumber).toBe(2);
+      expect(loaded[0].turnId).toBe('turn-route-forward');
+      expect(loaded[0].executionOrigin).toBe('route_forward');
       expect(loaded[0].responseKind).toBe('result');
       expect(loaded[0].stopReason).toBe('end_turn');
     });

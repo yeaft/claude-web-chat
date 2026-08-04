@@ -539,6 +539,36 @@ describe('Yeaft conversation loading state', () => {
     ]);
   });
 
+  it('projects the durable RouteForward execution origin onto history rows', () => {
+    const store = mkStore({ messagesMap: { 'yeaft-1': [] } });
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      messages: [{
+        id: 'm-route',
+        role: 'assistant',
+        content: 'handoff response',
+        sessionId: 'g1',
+        turnId: 'turn-route',
+        speakerVpId: 'martin',
+        executionOrigin: 'route_forward',
+      }],
+      oldestSeq: 1,
+      hasMore: false,
+    });
+
+    expect(store.messagesMap['yeaft-1']).toEqual([
+      expect.objectContaining({
+        id: 'm-route',
+        type: 'assistant',
+        turnId: 'turn-route',
+        speakerVpId: 'martin',
+        executionOrigin: 'route_forward',
+        isHistory: true,
+      }),
+    ]);
+  });
+
   it('prepends user + assistant rows at index 0 with isStreaming=false', () => {
     const store = mkStore({
       messagesMap: {
