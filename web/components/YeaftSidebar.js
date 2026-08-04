@@ -88,6 +88,8 @@ export default {
         :project-store="chatStore"
         :active-route="chatStore.activeSessionRoute"
         :is-session-unread="isCatalogSessionUnread"
+        :is-session-syncing="isCatalogSessionSyncing"
+        :session-sync-refresh-token="chatStore.sessionHistorySyncRefreshToken"
         :processing-conversations="chatStore.processingConversations"
         :is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"
         :agents="chatStore.agents"
@@ -430,6 +432,12 @@ export default {
       const s = this.chatStore || this.store;
       if (!s || typeof s.isYeaftSessionUnread !== 'function') return false;
       return s.isYeaftSessionUnread(row.routeRef?.sessionId, row.routeRef?.agentId);
+    },
+    isCatalogSessionSyncing(row) {
+      const s = this.chatStore || this.store;
+      return typeof s?.isSessionHistorySyncing === 'function'
+        ? s.isSessionHistorySyncing(row?.routeRef)
+        : false;
     },
     // task-341: workbench toggle, guarded for test env.
     onToggleWorkbench() {
