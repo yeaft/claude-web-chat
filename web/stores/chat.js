@@ -249,11 +249,13 @@ function normalizedWorkCenterDraftTarget(target) {
 }
 
 function workCenterEnvelopePayload(value = {}) {
+  const quote = normalizeSessionMessageQuote(value.quote);
   return {
     agentId: value.agentId || '',
     workItemId: value.workItemId || '',
     target: normalizedWorkCenterMessageTarget(value.target),
     text: String(value.text || ''),
+    ...(quote ? { quote } : {}),
     attachments: Array.isArray(value.attachments) ? value.attachments.map(attachment => ({
       fileId: attachment?.fileId || '',
       name: attachment?.name || '',
@@ -1665,10 +1667,12 @@ export const useChatStore = defineStore('chat', {
     saveWorkCenterComposerDraft(agentId, workItemId, draft = {}) {
       const key = workCenterClientMessageKey(agentId, workItemId);
       if (!agentId || !workItemId) return;
+      const quote = normalizeSessionMessageQuote(draft.quote);
       const next = {
         ...(this.workCenterComposerDrafts || {}),
         [key]: {
           text: String(draft.text || ''),
+          ...(quote ? { quote } : {}),
           attachments: Array.isArray(draft.attachments) ? draft.attachments : [],
           target: normalizedWorkCenterDraftTarget(draft.target),
           error: String(draft.error || ''),
@@ -2253,7 +2257,7 @@ export const useChatStore = defineStore('chat', {
       this.removeWorkItemState(target, id);
       return result;
     },
-    async postWorkItemMessage(id, text, targetRef, revision, attachments = [], agentId = null, fence = {}) {
+    async postWorkItemMessage(id, text, targetRef, revision, attachments = [], agentId = null, fence = {}, quote = null) {
       if (!this.hydrateWorkCenterBrowserState()) {
         throw new Error('Work Center browser owner is unavailable; sign in again and retry');
       }
@@ -2263,6 +2267,7 @@ export const useChatStore = defineStore('chat', {
         workItemId: id,
         target: targetRef,
         text,
+        quote,
         attachments,
         revision,
         planRevision: fence.planRevision,
@@ -2283,6 +2288,7 @@ export const useChatStore = defineStore('chat', {
         ledgerRevision: envelope.ledgerRevision || Number(current?.ledgerRevision) || 0,
         coordinatorRevision: Number.isInteger(Number(envelope.coordinatorRevision))
           ? Number(envelope.coordinatorRevision) : Number(current?.coordinatorRevision) || 0,
+        ...(envelope.quote ? { quote: envelope.quote } : {}),
         attachments: envelope.attachments,
       }, target);
       if (envelope.target.kind === 'coordinator') {
@@ -2294,7 +2300,7 @@ export const useChatStore = defineStore('chat', {
       this.confirmWorkCenterMessageEnvelope(target, id, clientMessageId);
       return detail;
     },
-    async sendWorkItemMessage(id, text, revision, attachments = [], agentId = null, fence = {}) {
+    async sendWorkItemMessage(id, text, revision, attachments = [], agentId = null, fence = {}, quote = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const current = this.workCenterDetailByAgent[target]?.id === id
         ? this.workCenterDetailByAgent[target] : null;
@@ -2308,6 +2314,7 @@ export const useChatStore = defineStore('chat', {
           ? Number(fence.ledgerRevision) : Number(current?.ledgerRevision) || 0,
         coordinatorRevision: Number.isInteger(Number(fence.coordinatorRevision))
           ? Number(fence.coordinatorRevision) : Number(current?.coordinatorRevision) || 0,
+        ...(normalizeSessionMessageQuote(quote) ? { quote: normalizeSessionMessageQuote(quote) } : {}),
         attachments: Array.isArray(attachments) ? attachments : [],
       }, target);
       if (!accepted?.accepted) throw new Error('Work Center Coordinator did not accept the message');
@@ -2323,15 +2330,17 @@ export const useChatStore = defineStore('chat', {
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
-    async sendWorkItemActionInput(id, text, actionId, revision, actionGeneration, attachments = [], agentId = null) {
+    async sendWorkItemActionInput(id, text, actionId, revision, actionGeneration, attachments = [], agentId = null, quote = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = Number(this._workCenterActionInputGenerationByAgent[target] || 0) + 1;
       this._workCenterActionInputGenerationByAgent = {
         ...this._workCenterActionInputGenerationByAgent,
         [target]: generation,
       };
+      const safeQuote = normalizeSessionMessageQuote(quote);
       const detail = await this.workCenterRequest('action_input', {
         id, text, actionId, revision, generation: actionGeneration, attachments,
+        ...(safeQuote ? { quote: safeQuote } : {}),
       }, target);
       await this.listWorkItems(target, this._workCenterListFiltersByAgent[target] || {});
       const current = this.workCenterDetailByAgent[target];

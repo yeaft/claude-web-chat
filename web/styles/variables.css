@@ -226,7 +226,7 @@ select option:checked {
   --work-center-conversation-column-width: var(--session-content-width);
   --work-center-conversation-gutter: 16px;
   --work-center-conversation-gutter-compact: 10px;
-  --work-center-actions-pane-width: 320px;
+  --work-center-actions-pane-width: 400px;
   /* Chat composer geometry */
   --chat-composer-gap: 8px;
   --chat-composer-control-gap: 8px;

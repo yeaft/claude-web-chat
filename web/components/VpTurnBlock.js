@@ -42,6 +42,9 @@ export default {
     responseCollapsible: { type: Boolean, default: false },
     responseCollapsed: { type: Boolean, default: false },
     responseToggleLabel: { type: String, default: '' },
+    displayNameOverride: { type: String, default: '' },
+    canStop: { type: Boolean, default: true },
+    interactiveSpeaker: { type: Boolean, default: true },
   },
   emits: ['toggle-response-collapse', 'quote'],
   template: `
@@ -57,6 +60,7 @@ export default {
           <span
             v-if="displayName"
             class="vp-turn-block-name"
+            :class="{ 'is-static': !interactiveSpeaker }"
             :style="speakerNameStyle"
           >{{ displayName }}</span>
           <span
@@ -117,6 +121,7 @@ export default {
           @quote="$emit('quote', $event)"
           @toggle-response-collapse="$emit('toggle-response-collapse')"
         />
+        <slot></slot>
       </div>
     </div>
   `,
@@ -127,6 +132,7 @@ export default {
     const $t = (inst && inst.appContext.config.globalProperties.$t) || ((key) => key);
 
     const displayName = Vue.computed(() => {
+      if (props.displayNameOverride) return props.displayNameOverride;
       const vpId = props.turn && props.turn.speakerVpId;
       if (!vpId) return '';
       // vpLabel lives on the VP store (same as VpAvatar / VpBadge); calling
@@ -160,7 +166,7 @@ export default {
     });
 
     const showStop = Vue.computed(
-      () => !!(props.turn && props.turn.isStreaming && props.turn.turnId)
+      () => !!(props.canStop && props.turn && props.turn.isStreaming && props.turn.turnId)
     );
 
     const startedTimeText = Vue.computed(() => formatSessionMessageDateTime(props.turn.speakerTimestamp));

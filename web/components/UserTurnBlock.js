@@ -34,16 +34,19 @@ export default {
   components: { MessageItem },
   props: {
     message: { type: Object, required: true },
+    externalAttachmentOpen: { type: Boolean, default: false },
   },
-  emits: ['quote', 'edit-as-new'],
+  emits: ['quote', 'edit-as-new', 'open-attachment'],
   template: `
     <div class="user-turn-block" :data-msg-id="message.id || ''">
       <div class="user-turn-block-main">
         <MessageItem
           :message="message"
           :session-actions="true"
+          :external-attachment-open="externalAttachmentOpen"
           @quote="$emit('quote', $event)"
           @edit-as-new="$emit('edit-as-new', $event)"
+          @open-attachment="$emit('open-attachment', $event)"
         />
       </div>
     </div>

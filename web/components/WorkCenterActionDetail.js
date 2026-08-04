@@ -1,7 +1,11 @@
-import { renderMarkdown, renderMermaidIn } from '../utils/markdown.js';
+import UserTurnBlock from './UserTurnBlock.js';
+import VpTurnBlock from './VpTurnBlock.js';
+
+import { renderMermaidIn } from '../utils/markdown.js';
 
 export default {
   name: 'WorkCenterActionDetail',
+  components: { UserTurnBlock, VpTurnBlock },
   props: {
     action: { type: Object, default: null },
     canMessage: { type: Boolean, default: false },
@@ -12,7 +16,7 @@ export default {
     previewingAttachmentId: { type: String, default: null },
     attachmentError: { type: String, default: '' },
   },
-  emits: ['back', 'close', 'load-earlier-messages', 'open-attachment'],
+  emits: ['back', 'close', 'load-earlier-messages', 'open-attachment', 'quote', 'edit-as-new'],
   computed: {
     executorName() {
       return this.action?.assignedVp?.name || this.action?.assignedVp?.id
@@ -24,6 +28,59 @@ export default {
     waitingQuestion() {
       if (this.action?.status !== 'waiting') return '';
       return String(this.action?.canonicalResult?.waitingReason || '').trim();
+    },
+    conversationBlocks() {
+      return this.messages.map(message => {
+        const timestamp = Number(message?.updatedAt || message?.createdAt) || 0;
+        if (message?.role === 'user') {
+          return {
+            key: message.id,
+            kind: 'user',
+            message: {
+              id: message.id,
+              messageId: message.id,
+              type: 'user',
+              content: message.text || '',
+              attachments: Array.isArray(message.attachments) ? message.attachments : [],
+              quote: message.quote || null,
+              timestamp,
+            },
+          };
+        }
+        const speaker = message.speaker || {};
+        const speakerName = this.messageSpeaker(message);
+        const speakerId = speaker.id || `work-center-action:${this.action?.id || 'unknown'}`;
+        return {
+          key: message.id,
+          kind: 'assistant',
+          speakerName,
+          turn: {
+            id: message.id,
+            messageId: message.id,
+            atMessageId: message.id,
+            turnId: message.turnId || message.id,
+            textContent: message.text || '',
+            textSegments: message.text ? [{
+              key: message.id,
+              content: message.text,
+              kind: message.status === 'running' ? 'progress' : 'result',
+              isStreaming: message.status === 'running',
+            }] : [],
+            isStreaming: message.status === 'running',
+            speakerVpId: speakerId,
+            speakerTimestamp: timestamp,
+            showSpeakerHeader: true,
+            timestamp,
+            createdAt: timestamp,
+            todoMsg: null,
+            toolMsgs: [],
+            toolSummaryCount: 0,
+            imageMsgs: [],
+            askMsg: null,
+            attachments: Array.isArray(message.attachments) ? message.attachments : [],
+          },
+        };
+      });
     },
   },
   watch: {
@@ -63,8 +120,8 @@ export default {
       if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
       return `${(size / 1024 / 1024).toFixed(1)} MB`;
     },
-    messageHtml(text) {
-      return renderMarkdown(String(text || ''));
+    openAttachment(payload) {
+      this.$emit('open-attachment', payload?.attachment || payload, payload?.trigger || null);
     },
   },
   template: `
@@ -114,22 +171,36 @@ export default {
           </button>
           <p v-if="messagesError" class="work-center-error">{{ messagesError }}</p>
           <div class="work-center-action-message-list">
-            <article v-for="message in messages" :key="message.id" class="work-center-action-message" :class="'role-' + message.role" :data-status="message.status">
-              <header>
-                <strong>{{ messageSpeaker(message) }}</strong>
-                <small>{{ time(message.updatedAt || message.createdAt) }}</small>
-              </header>
-              <div v-if="message.text" class="markdown-body" v-html="messageHtml(message.text)"></div>
-              <div v-if="message.attachments?.length" class="work-center-attachment-list">
-                <button v-for="attachment in message.attachments" :key="attachment.id" type="button"
-                        class="work-center-attachment-chip work-center-attachment-preview"
-                        :disabled="previewingAttachmentId === attachment.id"
-                        :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })"
-                        @click="$emit('open-attachment', attachment, $event.currentTarget)">
-                  <span>{{ attachment.name }}</span><small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
-                </button>
-              </div>
-            </article>
+            <template v-for="block in conversationBlocks" :key="block.key">
+              <UserTurnBlock
+                v-if="block.kind === 'user'"
+                class="work-center-action-message role-user"
+                :message="block.message"
+                :external-attachment-open="true"
+                @quote="$emit('quote', $event)"
+                @edit-as-new="$emit('edit-as-new', $event)"
+                @open-attachment="openAttachment"
+              />
+              <VpTurnBlock
+                v-else
+                class="work-center-action-message role-assistant"
+                :turn="block.turn"
+                :display-name-override="block.speakerName"
+                :can-stop="false"
+                :interactive-speaker="false"
+                @quote="$emit('quote', $event)"
+              >
+                <div v-if="block.turn.attachments?.length" class="work-center-attachment-list">
+                  <button v-for="attachment in block.turn.attachments" :key="attachment.id" type="button"
+                          class="work-center-attachment-chip work-center-attachment-preview"
+                          :disabled="previewingAttachmentId === attachment.id"
+                          :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })"
+                          @click="$emit('open-attachment', attachment, $event.currentTarget)">
+                    <span>{{ attachment.name }}</span><small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
+                  </button>
+                </div>
+              </VpTurnBlock>
+            </template>
           </div>
           <p v-if="attachmentError" class="work-center-error" role="alert">{{ attachmentError }}</p>
           <p v-if="!hasMessages" class="work-center-action-empty">{{ tr('workCenter.noActionMessages', 'No messages yet.') }}</p>

@@ -259,6 +259,25 @@ function compareProjectedMessages(left, right) {
     || String(left?.id || '').localeCompare(String(right?.id || ''));
 }
 
+function projectedMessageQuote(value) {
+  if (!value || typeof value !== 'object') return null;
+  const content = truncateUtf8(value.content || '', MAX_ACTION_MESSAGE_CHARS);
+  const todos = Array.isArray(value.todos) ? value.todos.slice(0, 100).map(todo => ({
+    content: truncateUtf8(todo?.content || '', 2_000),
+    status: ['pending', 'in_progress', 'completed'].includes(todo?.status) ? todo.status : 'pending',
+    ...(todo?.activeForm ? { activeForm: truncateUtf8(todo.activeForm, 2_000) } : {}),
+  })).filter(todo => todo.content) : [];
+  if (!content && todos.length === 0) return null;
+  return {
+    id: truncateUtf8(value.id || '', 256) || null,
+    role: value.role === 'assistant' ? 'assistant' : 'user',
+    author: truncateUtf8(value.author || '', 256) || (value.role === 'assistant' ? 'Assistant' : 'User'),
+    content,
+    ...(Number(value.timestamp) > 0 ? { timestamp: Number(value.timestamp) } : {}),
+    ...(todos.length > 0 ? { todos } : {}),
+  };
+}
+
 function normalizeProjectedMessage(message) {
   if (!message || typeof message !== 'object') return null;
   const text = typeof message.text === 'string'
@@ -274,6 +293,7 @@ function normalizeProjectedMessage(message) {
     status: message.status || null,
     text,
     attachments,
+    ...(projectedMessageQuote(message.quote) ? { quote: projectedMessageQuote(message.quote) } : {}),
     createdAt: count(message.createdAt),
     updatedAt: count(message.updatedAt || message.createdAt),
     ...(message.progressRevision == null ? {} : { progressRevision: count(message.progressRevision) }),
@@ -295,6 +315,7 @@ function actionInputMessages(action, events, generation = actionGeneration(actio
       kind: 'input',
       status: 'sent',
       text: event.data?.text || event.data?.guidance || '',
+      quote: event.data?.quote,
       attachments: event.data?.attachments,
       createdAt: event.createdAt,
     }))
@@ -904,6 +925,8 @@ export function projectWorkItemDetail(detail, options = {}) {
       ...(message.role === 'assistant' && projectVpSpeaker(message.speaker)
         ? { speaker: projectVpSpeaker(message.speaker) } : {}),
       text: truncateUtf8(message.text || '', MAX_ACTION_MESSAGE_CHARS),
+      ...(message.role !== 'assistant' && projectedMessageQuote(message.quote)
+        ? { quote: projectedMessageQuote(message.quote) } : {}),
       attachments: projectAttachments(message.attachments),
       status: ['thinking', 'completed', 'failed'].includes(message.status) ? message.status : 'completed',
       error: truncateUtf8(message.error || '', MAX_ACTION_DIAGNOSTIC_CHARS) || null,
