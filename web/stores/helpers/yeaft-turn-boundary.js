@@ -23,6 +23,10 @@ const VP_TURN_MESSAGE_TYPES = new Set([
   'tool_result',
 ]);
 
+// Private renderer metadata: marks rows that passed through an explicit
+// execution bucket without cloning or writing fields onto store data.
+const executionBoundaryRows = new WeakSet();
+
 function vpExecutionKey(msg) {
   const owner = messageVpOwner(msg);
   const turnId = cleanId(msg?.turnId);
@@ -46,18 +50,19 @@ export function orderYeaftVpTurnMessagesByExecution(messages) {
   const ordered = [];
   let run = [];
   const flushRun = () => {
-    if (run.length < 2) {
-      ordered.push(...run);
-      run = [];
-      return;
-    }
+    if (run.length === 0) return;
     const buckets = new Map();
     for (const msg of run) {
       const key = vpExecutionKey(msg);
       if (!buckets.has(key)) buckets.set(key, []);
       buckets.get(key).push(msg);
     }
-    for (const bucket of buckets.values()) ordered.push(...bucket);
+    for (const bucket of buckets.values()) {
+      for (const msg of bucket) {
+        executionBoundaryRows.add(msg);
+        ordered.push(msg);
+      }
+    }
     run = [];
   };
 
@@ -80,16 +85,21 @@ export function shouldCloseYeaftVpTurn(currentTurn, msg) {
   const msgSpeaker = messageVpOwner(msg);
   if (curSpeaker && msgSpeaker && curSpeaker !== msgSpeaker) return true;
 
-  // Persisted history can contain several runtime turnIds for one visible
-  // user turn: partial writes, abort/retry, and tool-loop continuation all
-  // stamp their own delivery id. The user row is the visible boundary in
-  // history; splitting same-speaker historical rows by runtime turnId creates
-  // duplicate-looking VP blocks for one semantic turn. Keep the strict turnId
-  // boundary for live rows, where it prevents concurrent VP streams merging.
-  if (currentTurn.isHistory && msg.isHistory) return false;
-
   const curTurnId = cleanId(currentTurn.turnId);
   const msgTurnId = cleanId(msg.turnId);
+  if (currentTurn.messages?.length > 0
+      && executionBoundaryRows.has(msg)
+      && curTurnId
+      && msgTurnId
+      && curTurnId !== msgTurnId) return true;
+
+  // Legacy persisted history can contain several runtime turnIds for one
+  // visible user turn: partial writes, abort/retry, and tool-loop continuation
+  // all stamp their own delivery id. Keep that compatibility rule for callers
+  // without explicit execution metadata. The sorter above marks every real
+  // VP + turnId row, so a replayed RouteForward execution still closes here.
+  if (currentTurn.isHistory && msg.isHistory) return false;
+
   if (curTurnId && msgTurnId && curTurnId !== msgTurnId) return true;
 
   return false;

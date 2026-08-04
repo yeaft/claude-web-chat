@@ -9,6 +9,7 @@ import {
   finalizeTurnResponseSegments,
   markTurnResponseKinds,
 } from '../../web/utils/turn-response.js';
+import { shouldCloseYeaftVpTurn } from '../../web/stores/helpers/yeaft-turn-boundary.js';
 
 describe('Session message quote UI wiring', () => {
   afterEach(() => {
@@ -58,6 +59,19 @@ describe('Session message quote UI wiring', () => {
     const errored = [{ type: 'assistant', content: 'Partial before error', sessionId: 's1', speakerVpId: 'linus', turnId: 't4' }];
     markTurnResponseKinds(errored, { sessionId: 's1', vpId: 'linus', turnId: 't4', reason: 'errored' });
     expect(errored[0].responseKind).toBe('progress');
+
+    const legacyHistoryTurn = {
+      speakerVpId: 'linus',
+      turnId: 'runtime-a',
+      isHistory: true,
+      messages: [{ id: 'partial-a' }],
+    };
+    expect(shouldCloseYeaftVpTurn(legacyHistoryTurn, {
+      type: 'assistant',
+      speakerVpId: 'linus',
+      turnId: 'runtime-b',
+      isHistory: true,
+    })).toBe(false);
 
     const turn = {
       id: 'turn-row', turnId: 't1', textContent: '', textSegments: [], toolMsgs: [], toolSummaryCount: 0,
