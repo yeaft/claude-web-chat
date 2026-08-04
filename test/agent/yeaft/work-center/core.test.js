@@ -3588,29 +3588,40 @@ describe('Work Center core', () => {
     const item = controller.create(createInput());
     const firstAction = store.getAction(item.currentActionId);
     const older = controller.input(item.id, {
-      text: 'OLDER INPUT '.repeat(650),
+      text: 'OLDER_SENTINEL',
       actionId: firstAction.id,
       generation: firstAction.generation,
       revision: item.revision,
-      clientMessageId: 'older-large-input',
+      clientMessageId: 'older-input',
     });
     const currentAction = older.actions.find(candidate => candidate.id === firstAction.id);
     const corrected = controller.input(item.id, {
-      text: 'LATEST USER CORRECTION',
+      text: 'LATEST_SENTINEL',
       actionId: currentAction.id,
       generation: currentAction.generation,
       revision: older.revision,
       clientMessageId: 'latest-correction',
-      quote: { role: 'assistant', author: 'Reviewer', content: 'Q'.repeat(20_000) },
+      quote: { role: 'assistant', author: 'Reviewer', content: 'LATEST_QUOTE_SENTINEL' },
     });
     const correctedAction = corrected.actions.find(candidate => candidate.id === firstAction.id);
-    const built = buildMainlineContextSnapshot(corrected, correctedAction);
+    const built = buildMainlineContextSnapshot({
+      ...corrected,
+      sessionContext: [{ role: 'user', content: 'SESSION_SENTINEL' }],
+    }, correctedAction);
     const rendered = renderMainlineContextSnapshot(built.contextSnapshot);
+    const selectedUserContext = built.contextSnapshot.userContext;
 
-    expect(rendered).toContain('LATEST USER CORRECTION');
-    expect(built.contextSnapshot.userContext.guidance
-      .find(entry => entry.text === 'LATEST USER CORRECTION'))
-      .toMatchObject({ text: 'LATEST USER CORRECTION' });
+    expect(rendered).toContain('OLDER_SENTINEL');
+    expect(rendered).toContain('LATEST_SENTINEL');
+    expect(rendered).toContain('SESSION_SENTINEL');
+    expect(selectedUserContext.guidance.map(entry => entry.text))
+      .toEqual(['OLDER_SENTINEL', 'LATEST_SENTINEL']);
+    expect(selectedUserContext.guidance.at(-1))
+      .toMatchObject({ text: 'LATEST_SENTINEL', quotedContext: expect.stringContaining('LATEST_QUOTE_SENTINEL') });
+    expect(selectedUserContext.sessionContext)
+      .toEqual([{ role: 'user', vpId: null, text: 'SESSION_SENTINEL' }]);
+    expect(selectedUserContext).toMatchObject({ includedCount: 3, omittedCount: 0 });
+    expect(selectedUserContext.includedCount + selectedUserContext.omittedCount).toBe(3);
     expect(built.budget.bytes).toBeLessThanOrEqual(MAINLINE_CONTEXT_HARD_LIMIT_BYTES);
     }
 

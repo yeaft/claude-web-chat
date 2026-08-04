@@ -98,8 +98,18 @@ function requiredGuidanceValue(value) {
   return Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'quote'));
 }
 
-function guidanceQuoteValue(snapshot, guidanceIndex, quote, limitBytes) {
-  if (!quote) return null;
+function guidanceIdentity(value) {
+  if (!value) return null;
+  if (value.inputId) return `input:${value.inputId}`;
+  if (value.eventId != null) return `event:${value.eventId}`;
+  return null;
+}
+
+function guidanceWithQuote(snapshot, identity, quote, limitBytes) {
+  if (!quote || !identity) return null;
+  const guidanceIndex = snapshot.userContext.guidance
+    .findIndex(value => guidanceIdentity(value) === identity);
+  if (guidanceIndex < 0) return null;
   const availableBytes = Math.min(
     MAINLINE_QUOTE_TARGET_BYTES,
     Math.max(0, limitBytes - renderedContextBytes(snapshot)),
@@ -108,7 +118,7 @@ function guidanceQuoteValue(snapshot, guidanceIndex, quote, limitBytes) {
   if (!quotedContext) return null;
   const values = [...snapshot.userContext.guidance];
   values[guidanceIndex] = { ...values[guidanceIndex], quotedContext };
-  return { ...snapshot.userContext, guidance: values };
+  return values;
 }
 
 function canonicalActionUserContext(events, action) {
@@ -358,7 +368,7 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
   const requiredInputIndex = guidance.length > 0 ? guidance.length - 1 : -1;
   const requiredInput = requiredInputIndex >= 0 ? guidance[requiredInputIndex] : null;
   const requiredInputValue = requiredInput ? requiredGuidanceValue(requiredInput) : null;
-  let requiredQuote = null;
+  const requiredInputIdentity = guidanceIdentity(requiredInputValue);
   if (requiredInputValue) {
     const required = {
       ...snapshot.userContext,
@@ -369,12 +379,6 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
     if (!setWithin(effectiveHardLimitBytes, 'userContext', required)) {
       throw mainlineContextBlocked('Latest Action input exceeds the 64 KiB Mainline prompt budget');
     }
-    requiredQuote = guidanceQuoteValue(
-      snapshot,
-      0,
-      requiredInput.quote,
-      effectiveHardLimitBytes,
-    );
   }
 
   const olderUserEntries = [
@@ -395,21 +399,37 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
     };
     if (!trySet('userContext', next)) continue;
     if (entry.kind === 'guidance' && entry.value.quote) {
-      const quoted = guidanceQuoteValue(
+      const quotedGuidance = guidanceWithQuote(
         snapshot,
-        Math.max(0, snapshot.userContext.guidance.length - 1),
+        guidanceIdentity(requiredValue),
         entry.value.quote,
         selectedLimit,
       );
-      if (quoted) trySet('userContext', quoted);
+      if (quotedGuidance) trySet('userContext', {
+        ...snapshot.userContext,
+        guidance: quotedGuidance,
+      });
     }
   }
   const userEntryCount = guidance.length + sessionContext.length;
+  snapshot.userContext.includedCount = snapshot.userContext.guidance.length
+    + snapshot.userContext.sessionContext.length;
   snapshot.userContext.omittedCount = userEntryCount - snapshot.userContext.includedCount;
-  if (requiredQuote) setWithin(effectiveHardLimitBytes, 'userContext', {
-    ...requiredQuote,
-    omittedCount: snapshot.userContext.omittedCount,
-  });
+  if (requiredInput?.quote && requiredInputIdentity) {
+    const quotedGuidance = guidanceWithQuote(
+      snapshot,
+      requiredInputIdentity,
+      requiredInput.quote,
+      effectiveHardLimitBytes,
+    );
+    if (quotedGuidance) setWithin(effectiveHardLimitBytes, 'userContext', {
+      ...snapshot.userContext,
+      guidance: quotedGuidance,
+    });
+  }
+  snapshot.userContext.includedCount = snapshot.userContext.guidance.length
+    + snapshot.userContext.sessionContext.length;
+  snapshot.userContext.omittedCount = userEntryCount - snapshot.userContext.includedCount;
   snapshot.userContext.guidance.sort((left, right) => {
     const rank = value => value.inputId == null
       ? 1
