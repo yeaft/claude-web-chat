@@ -130,7 +130,7 @@ export async function runDream(opts) {
 
     if (newCount === 0 && !rerunScopedManual) {
       const topics = await resolveTopicSummaries(sessionId);
-      if (opts.manual && topics.length >= 24) {
+      if (opts.manual && topics.length >= 2) {
         try {
           const result = await consolidateSessionTopics({
             root: opts.root,
@@ -182,6 +182,7 @@ export async function runDream(opts) {
     try {
       const topicSummaries = await resolveTopicSummaries(sessionId);
       actions = await triageGroupSegments({
+        root: opts.root,
         sessionId,
         segments,
         topicSummaries,

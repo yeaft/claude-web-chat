@@ -1,8 +1,8 @@
 /**
- * memory/ams-registry.js — session-keyed AMS lifecycle.
+ * memory/ams-registry.js — Session + VP keyed AMS lifecycle.
  *
- * The Active Memory Set is conceptually session-scoped, with `sessionId`
- * as the unit. A deactivated Session can be reactivated later. Historical
+ * A Session can run multiple VPs concurrently. Each VP needs an isolated
+ * prompt snapshot because `ownVpId` is part of the memory ACL. Historical
  * onDemand/recent ids stay in the version-1 payload for disk compatibility,
  * but prompt state is rebuilt from query-selected canonical content each turn.
  *
@@ -45,11 +45,12 @@ export const DEFAULT_SESSION_KEY = 'default';
  * @typedef {object} AmsCacheEntry
  * @property {ActiveMemorySet} ams
  * @property {string|null}     ownVpId
+ * @property {string}          sessionKey
  * @property {boolean}         adjustRanThisSession
  */
 
 /**
- * Session-keyed in-memory cache + disk persistence for AMS instances.
+ * Session + VP keyed in-memory cache with Session-level disk compatibility.
  *
  * Lifecycle:
  *   - getOrCreate(sessionId, {ownVpId}) — returns the cached AMS or loads
@@ -110,18 +111,23 @@ export class AmsRegistry {
    * @returns {ActiveMemorySet}
    */
   getOrCreate(sessionId, opts = {}) {
-    const key = sessionId || DEFAULT_SESSION_KEY;
+    const sessionKey = sessionId || DEFAULT_SESSION_KEY;
+    const ownVpId = opts.ownVpId || null;
+    const key = this._cacheKey(sessionKey, ownVpId);
     const cached = this._cache.get(key);
     if (cached) return cached.ams;
 
-    const ownVpId = opts.ownVpId || null;
     const budget = this._budget();
     const ams = new ActiveMemorySet({ ownVpId, budget });
-    const entry = { ams, ownVpId, adjustRanThisSession: false };
-    // Best-effort hydrate from disk — populates ams + entry flags.
-    this._hydrate(key, entry);
+    const entry = { ams, ownVpId, adjustRanThisSession: false, sessionKey };
+    // Best-effort hydrate Session-level compatibility metadata only.
+    this._hydrate(sessionKey, entry);
     this._cache.set(key, entry);
     return ams;
+  }
+
+  _cacheKey(sessionId, ownVpId) {
+    return `${sessionId || DEFAULT_SESSION_KEY}\u0000${ownVpId || ''}`;
   }
 
   /**
@@ -132,8 +138,10 @@ export class AmsRegistry {
    * @returns {boolean}
    */
   adjustRanThisSession(sessionId) {
-    const key = sessionId || DEFAULT_SESSION_KEY;
-    return this._cache.get(key)?.adjustRanThisSession === true;
+    const sessionKey = sessionId || DEFAULT_SESSION_KEY;
+    return [...this._cache.values()].some(entry => (
+      entry.sessionKey === sessionKey && entry.adjustRanThisSession === true
+    ));
   }
 
   /**
@@ -144,9 +152,10 @@ export class AmsRegistry {
    * @param {boolean} value
    */
   setAdjustRanThisSession(sessionId, value) {
-    const key = sessionId || DEFAULT_SESSION_KEY;
-    const entry = this._cache.get(key);
-    if (entry) entry.adjustRanThisSession = Boolean(value);
+    const sessionKey = sessionId || DEFAULT_SESSION_KEY;
+    for (const entry of this._cache.values()) {
+      if (entry.sessionKey === sessionKey) entry.adjustRanThisSession = Boolean(value);
+    }
   }
 
   /**
@@ -172,7 +181,7 @@ export class AmsRegistry {
    */
   persist(sessionId, opts = {}) {
     const key = sessionId || DEFAULT_SESSION_KEY;
-    const entry = this._cache.get(key);
+    const entry = [...this._cache.values()].find(item => item.sessionKey === key);
     if (!entry) return false;
     if (!opts.force && !this._dirty.has(key)) return false;
 

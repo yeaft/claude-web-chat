@@ -115,6 +115,7 @@ async function createDefaultService() {
       }
       return {
         ...runtime,
+        yeaftDir: requireYeaftDir(),
         defaultWorkDir: ctx.CONFIG?.workDir || process.cwd(),
       };
     },

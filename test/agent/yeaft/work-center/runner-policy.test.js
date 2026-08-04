@@ -24,6 +24,7 @@ import {
   createSubmitWorkItemReplanTool,
   createWorkItemToolRegistry,
   parseStructuredResult,
+  recallWorkItemMemory,
   workItemToolPolicySnapshot,
   resolveWorkItemWorkDir,
   WorkItemRunner,
@@ -46,6 +47,39 @@ describe('Work Center tool policy', () => {
 
 
 
+
+  it('injects canonical WorkItem memory and never raw evidence rows', () => {
+    const yeaftDir = join(workDir, '.yeaft-runtime');
+    const scope = 'sessions/session-memory';
+    mkdirSync(join(yeaftDir, 'memory', scope), { recursive: true });
+    writeFileSync(join(yeaftDir, 'memory', scope, 'content.md'), 'CANONICAL_MEMORY_FACT\n');
+    writeFileSync(join(yeaftDir, 'memory', scope, 'memory.md'), 'RAW_EVIDENCE_SECRET\n');
+    const requiredTags = [];
+    const memoryIndex = {
+      search({ requiredTag }) {
+        requiredTags.push(requiredTag);
+        return [{
+          id: 'canonical-selector', scope, kind: 'context', tags: ['canonical-content'],
+          sourceMessages: [], body: 'RAW_EVIDENCE_SECRET', rank: -1,
+          createdAt: '2026-08-04T00:00:00.000Z', updatedAt: '2026-08-04T00:00:00.000Z',
+        }];
+      },
+    };
+    const block = recallWorkItemMemory(
+      { memoryIndex, yeaftDir },
+      {
+        goal: 'Use canonical memory fact',
+        origin: { sessionId: 'session-memory', trustedSession: true },
+        linkedSessionIds: ['session-memory'],
+        reuseMemory: true,
+      },
+      { instruction: 'Use canonical memory fact', expectedOutcome: 'Fact retained', type: 'implement' },
+      { id: 'omni' },
+    );
+    expect(requiredTags).toEqual(['canonical-content']);
+    expect(block).toContain('CANONICAL_MEMORY_FACT');
+    expect(block).not.toContain('RAW_EVIDENCE_SECRET');
+  });
 
   it('removes Bash from both registry and policy when attachments are present', async () => {
     const attachmentDir = join(outsideDir, 'attachments');

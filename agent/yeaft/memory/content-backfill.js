@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path';
 
 import { listScopes, readScope } from './segment-store.js';
+import { parseSegments } from './segment.js';
+import { stripDreamStateBlocks } from './prompt-cleanup.js';
 
 /**
  * Seed canonical content.md for legacy scopes that only have Dream evidence
@@ -16,12 +18,12 @@ export function backfillCanonicalContent(memoryRoot) {
     if (scope.startsWith('.legacy/') || scope.startsWith('.dream-bak/')) continue;
     const contentPath = join(memoryRoot, scope, 'content.md');
     if (existsSync(contentPath) && readFileSync(contentPath, 'utf8').trim()) continue;
-    const segments = readScope(memoryRoot, scope);
+    const rawMemory = readMemoryFile(memoryRoot, scope);
+    const segments = hasSerializedSegmentEnvelope(rawMemory)
+      ? readScope(memoryRoot, scope)
+      : [];
     const bodies = uniqueBodies(segments);
-    if (bodies.length === 0) {
-      const legacyBody = readLegacyPlainBody(memoryRoot, scope);
-      if (legacyBody) bodies.push(legacyBody);
-    }
+    if (bodies.length === 0 && rawMemory) bodies.push(rawMemory);
     if (bodies.length === 0) continue;
     mkdirSync(dirname(contentPath), { recursive: true });
     const tmp = `${contentPath}.tmp.${process.pid}.${Date.now()}`;
@@ -32,12 +34,19 @@ export function backfillCanonicalContent(memoryRoot) {
   return { created };
 }
 
-function readLegacyPlainBody(memoryRoot, scope) {
+function readMemoryFile(memoryRoot, scope) {
   const path = join(memoryRoot, scope, 'memory.md');
   if (!existsSync(path)) return '';
-  const body = readFileSync(path, 'utf8').trim();
-  if (!body || /^---\s*$/m.test(body)) return '';
-  return body;
+  return stripDreamStateBlocks(readFileSync(path, 'utf8'));
+}
+
+function hasSerializedSegmentEnvelope(text) {
+  if (!text || !/^---\s*$/m.test(text)) return false;
+  const envelope = /^---\s*\n([\s\S]*?)\n---\s*(?:\n|$)/m.exec(text);
+  if (!envelope || !/^\s*(?:id|scope|kind|tags|sourceMessages|createdAt|updatedAt):/m.test(envelope[1])) {
+    return false;
+  }
+  return parseSegments(text, { defaultScope: 'user' }).some(segment => segment.body);
 }
 
 function uniqueBodies(segments) {

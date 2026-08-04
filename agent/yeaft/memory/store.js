@@ -52,6 +52,7 @@ import {
 } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { resolveTopicRedirect } from './topic-redirect.js';
 
 /** Default memory root. Tests override via `opts.root`. */
 export const DEFAULT_MEMORY_ROOT = join(homedir(), '.yeaft', 'memory');
@@ -91,9 +92,13 @@ export const SCOPE_KINDS = Object.freeze([
  * @param {Scope} scope
  * @returns {string}
  */
-export function scopeDir(scope) {
+export function scopeDir(scope, opts = {}) {
   if (!scope || typeof scope !== 'object') {
     throw new Error('scopeDir: scope is required');
+  }
+  if (scope.kind === 'session-topic' && opts.root) {
+    const redirected = resolveTopicRedirect(opts.root, scope.sessionId, (scope.path || []).join('/'));
+    if (redirected) scope = { ...scope, path: redirected.split('/') };
   }
   switch (scope.kind) {
     case 'user':
@@ -284,7 +289,7 @@ async function atomicWrite(absPath, content) {
  */
 export async function readContent(scope, opts = {}) {
   const { root = DEFAULT_MEMORY_ROOT, currentVpId } = opts;
-  const rel = `${scopeDir(scope)}/content.md`;
+  const rel = `${scopeDir(scope, { root })}/content.md`;
   enforceVpAcl(rel, currentVpId);
   const abs = join(root, rel);
   try { return await fsp.readFile(abs, 'utf8'); }
@@ -303,7 +308,7 @@ export async function readContent(scope, opts = {}) {
  */
 export async function writeContent(scope, content, opts = {}) {
   const { root = DEFAULT_MEMORY_ROOT, currentVpId } = opts;
-  const rel = `${scopeDir(scope)}/content.md`;
+  const rel = `${scopeDir(scope, { root })}/content.md`;
   enforceVpAcl(rel, currentVpId);
   await atomicWrite(join(root, rel), typeof content === 'string' ? content : '');
 }
@@ -319,7 +324,7 @@ export async function writeContent(scope, content, opts = {}) {
  */
 export async function readMemory(scope, opts = {}) {
   const { root = DEFAULT_MEMORY_ROOT, currentVpId } = opts;
-  const rel = `${scopeDir(scope)}/memory.md`;
+  const rel = `${scopeDir(scope, { root })}/memory.md`;
   enforceVpAcl(rel, currentVpId);
   const abs = join(root, rel);
   try { return await fsp.readFile(abs, 'utf8'); }
@@ -338,7 +343,7 @@ export async function readMemory(scope, opts = {}) {
  */
 export async function writeMemory(scope, content, opts = {}) {
   const { root = DEFAULT_MEMORY_ROOT, currentVpId } = opts;
-  const rel = `${scopeDir(scope)}/memory.md`;
+  const rel = `${scopeDir(scope, { root })}/memory.md`;
   enforceVpAcl(rel, currentVpId);
   const abs = join(root, rel);
   await atomicWrite(abs, typeof content === 'string' ? content : '');
@@ -360,7 +365,7 @@ export async function writeMemory(scope, content, opts = {}) {
  */
 export async function appendMemory(scope, chunk, opts = {}) {
   const { root = DEFAULT_MEMORY_ROOT, currentVpId } = opts;
-  const rel = `${scopeDir(scope)}/memory.md`;
+  const rel = `${scopeDir(scope, { root })}/memory.md`;
   enforceVpAcl(rel, currentVpId);
   const abs = join(root, rel);
   await fsp.mkdir(dirname(abs), { recursive: true });
@@ -377,8 +382,8 @@ function summaryFileName(language) {
   return normalized === 'zh' ? 'summary.zh.md' : 'summary.md';
 }
 
-function summaryCandidateRels(scope, language) {
-  const dir = scopeDir(scope);
+function summaryCandidateRels(scope, language, root) {
+  const dir = scopeDir(scope, { root });
   const primary = `${dir}/${summaryFileName(language)}`;
   const fallback = `${dir}/summary.md`;
   return primary === fallback ? [fallback] : [primary, fallback];
@@ -393,7 +398,7 @@ function summaryCandidateRels(scope, language) {
  */
 export async function readSummary(scope, opts = {}) {
   const { root = DEFAULT_MEMORY_ROOT, currentVpId, language } = opts;
-  for (const rel of summaryCandidateRels(scope, language)) {
+  for (const rel of summaryCandidateRels(scope, language, root)) {
     enforceVpAcl(rel, currentVpId);
     const abs = join(root, rel);
     try { return (await fsp.readFile(abs, 'utf8')).trim(); }
@@ -414,7 +419,7 @@ export async function readSummary(scope, opts = {}) {
  */
 export async function writeSummary(scope, body, opts = {}) {
   const { root = DEFAULT_MEMORY_ROOT, currentVpId, language } = opts;
-  const rel = `${scopeDir(scope)}/${summaryFileName(language)}`;
+  const rel = `${scopeDir(scope, { root })}/${summaryFileName(language)}`;
   enforceVpAcl(rel, currentVpId);
   const abs = join(root, rel);
   await atomicWrite(abs, `${(body || '').trim()}\n`);
@@ -460,7 +465,7 @@ export async function seedSummaryIfMissing(scope, body, opts = {}) {
  */
 export function seedSummaryIfMissingSync(scope, body, opts = {}) {
   const { root = DEFAULT_MEMORY_ROOT } = opts;
-  const rel = `${scopeDir(scope)}/summary.md`;
+  const rel = `${scopeDir(scope, { root })}/summary.md`;
   const abs = join(root, rel);
   let existing = '';
   if (existsSync(abs)) {
@@ -485,7 +490,7 @@ export function seedSummaryIfMissingSync(scope, body, opts = {}) {
  */
 export function removeScopeDirSync(scope, opts = {}) {
   const { root = DEFAULT_MEMORY_ROOT } = opts;
-  const abs = join(root, scopeDir(scope));
+  const abs = join(root, scopeDir(scope, { root }));
   if (!existsSync(abs)) return;
   rmSync(abs, { recursive: true, force: true });
 }
@@ -500,7 +505,7 @@ export function removeScopeDirSync(scope, opts = {}) {
  */
 export function ensureScopeSync(scope, opts = {}) {
   const { root = DEFAULT_MEMORY_ROOT } = opts;
-  const dir = join(root, scopeDir(scope));
+  const dir = join(root, scopeDir(scope, { root }));
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
@@ -512,7 +517,7 @@ export function ensureScopeSync(scope, opts = {}) {
  */
 export async function ensureScope(scope, opts = {}) {
   const { root = DEFAULT_MEMORY_ROOT } = opts;
-  const dir = join(root, scopeDir(scope));
+  const dir = join(root, scopeDir(scope, { root }));
   await fsp.mkdir(dir, { recursive: true });
 }
 

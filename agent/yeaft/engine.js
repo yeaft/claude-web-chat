@@ -954,13 +954,15 @@ export class Engine {
       selected.has('user')
         ? readCanonicalMemoryItem({ kind: 'user' }, { root: memoryRoot }).catch(() => '')
         : Promise.resolve(''),
-      sessionId && selected.has(`sessions/${sessionId}`)
+      sessionId && ['sessions', 'session', 'group'].some(prefix => selected.has(`${prefix}/${sessionId}`))
         ? readCanonicalMemoryItem(
             { kind: 'session', id: sessionId },
             { root: memoryRoot },
           ).catch(() => '')
         : Promise.resolve(''),
-      vpId && sessionId && selected.has(`sessions/${sessionId}/vp/${vpId}`)
+      vpId && sessionId && [...selected].some(scope => (
+        ['sessions', 'session', 'group'].some(prefix => scope === `${prefix}/${sessionId}/vp/${vpId}`)
+      ))
         ? readCanonicalMemoryItem(
             { kind: 'session-vp', sessionId, id: vpId },
             { root: memoryRoot },
@@ -2135,7 +2137,7 @@ export class Engine {
     });
 
     // ─── AMS: populate + snapshot ───────────────────────────────
-    // Session-keyed AMS is rebuilt each turn from selected canonical content.
+    // Session + VP keyed AMS is rebuilt each turn from selected canonical content.
     // FTS segment hits choose scopes but their bodies are not rendered. The
     // budget-aware Resident snapshot is the sole Memory prompt outlet.
     const ownVpIdForAms = vpPersona && typeof vpPersona === 'object'
@@ -4566,17 +4568,31 @@ export class Engine {
 }
 
 async function readCanonicalMemoryItem(scopeObject, opts) {
-  const content = await readScopeContent(scopeObject, opts).catch(() => '');
+  let content = await readScopeContent(scopeObject, opts).catch(() => '');
+  if (!content && scopeObject?.kind === 'session') {
+    content = await readScopeContent({ kind: 'group', id: scopeObject.id }, opts).catch(() => '');
+  }
   return truncateMemoryContent(content, MAX_MEMORY_ITEM_TOKENS);
 }
 
 async function readTopicSummary(scope, opts) {
-  const m = /^sessions\/([^/]+)\/topic\/(.+)$/.exec(String(scope || ''));
-  if (!m) return null;
-  const path = m[2].split('/').filter(Boolean);
-  if (path.length === 0) return null;
-  const topic = { kind: 'session-topic', sessionId: m[1], path };
-  const content = await readCanonicalMemoryItem(topic, opts);
+  const value = String(scope || '');
+  const topicMatch = /^(sessions|session|group)\/([^/]+)\/topic\/(.+)$/.exec(value);
+  if (topicMatch) {
+    const path = topicMatch[3].split('/').filter(Boolean);
+    if (path.length === 0) return null;
+    const topic = topicMatch[1] === 'group'
+      ? { kind: 'group-topic', groupId: topicMatch[2], path }
+      : { kind: 'session-topic', sessionId: topicMatch[2], path };
+    const content = await readCanonicalMemoryItem(topic, opts);
+    return content ? { scope, summary: content } : null;
+  }
+  const sessionMatch = /^(sessions|session|group)\/([^/]+)$/.exec(value);
+  if (!sessionMatch) return null;
+  const sessionScope = sessionMatch[1] === 'group'
+    ? { kind: 'group', id: sessionMatch[2] }
+    : { kind: 'session', id: sessionMatch[2] };
+  const content = await readCanonicalMemoryItem(sessionScope, opts);
   return content ? { scope, summary: content } : null;
 }
 

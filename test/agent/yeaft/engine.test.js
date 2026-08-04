@@ -24,6 +24,8 @@ import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
 import { writeContent, writeSummary } from '../../../agent/yeaft/memory/store.js';
 import { NullTrace, DebugTrace } from '../../../agent/yeaft/debug-trace.js';
 import { consolidateSessionTopics } from '../../../agent/yeaft/dream/topic-consolidation.js';
+import { resolveTopicRedirect } from '../../../agent/yeaft/memory/topic-redirect.js';
+import { runDream } from '../../../agent/yeaft/dream/runner.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
 import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
 import todoWriteTool from '../../../agent/yeaft/tools/todo-write.js';
@@ -306,10 +308,17 @@ describe('Engine memory prompt hygiene', () => {
 
       const legacyPlainScope = 'sessions/s1/topic/catalog/legacy-plain';
       mkdirSync(join(root, legacyPlainScope), { recursive: true });
-      writeFileSync(join(root, legacyPlainScope, 'memory.md'), 'Legacy body-only canonical fact.\n');
+      writeFileSync(
+        join(root, legacyPlainScope, 'memory.md'),
+        '# Before\n\nalpha\n\n---\n\nTHIS MUST SURVIVE\n\n---\n\nomega\n',
+      );
       expect(backfillCanonicalContent(root)).toEqual({ created: 31 });
-      expect(readFileSync(join(root, legacyPlainScope, 'content.md'), 'utf8')).toContain('Legacy body-only');
+      const legacyContent = readFileSync(join(root, legacyPlainScope, 'content.md'), 'utf8');
+      expect(legacyContent).toContain('# Before');
+      expect(legacyContent).toContain('THIS MUST SURVIVE');
+      expect(legacyContent).toContain('omega');
       expect(backfillCanonicalContent(root)).toEqual({ created: 0 });
+      expect(readFileSync(join(root, legacyPlainScope, 'content.md'), 'utf8')).toBe(legacyContent);
       index = openSegmentIndex(join(root, 'index.db'));
       expect(syncAll(root, index)).toMatchObject({ scopes: 31 });
       index.upsert({
@@ -368,9 +377,19 @@ describe('Engine memory prompt hygiene', () => {
       });
 
       expect(result.merged).toBe(1);
-      expect(existsSync(join(root, duplicateScope))).toBe(false);
+      expect(existsSync(join(root, duplicateScope, 'content.md'))).toBe(false);
+      expect(JSON.parse(readFileSync(join(root, duplicateScope, 'redirect.json'), 'utf8'))).toEqual({
+        version: 1,
+        canonical: 'catalog/topic-29',
+      });
       expect(readFileSync(join(root, topics[29], 'content.md'), 'utf8')).toContain('Merged attachment');
       expect(index.listByScope(duplicateScope)).toEqual([]);
+      expect(index.search({
+        query: 'duplicate',
+        scopeFilter: [duplicateScope],
+        limit: 10,
+        requiredTag: 'canonical-content',
+      })).toEqual([]);
       expect(index.listByScope(topics[29]).some(segment => (
         segment.sourceMessages.includes('m29') && segment.sourceMessages.includes('m-duplicate')
       ))).toBe(true);
@@ -384,6 +403,109 @@ describe('Engine memory prompt hygiene', () => {
       if (index) index.close();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('runs low-cardinality consolidation during a manual no-new-message Dream pass', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-manual-topic-consolidation-'));
+    const sessionId = 'manual-session';
+    for (const topic of ['alpha', 'beta']) {
+      const dir = join(root, 'sessions', sessionId, 'topic', topic);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'content.md'), `${topic.toUpperCase()}_CONTENT\n`);
+      writeFileSync(join(dir, 'summary.md'), 'Same durable subject.\n');
+    }
+    let calls = 0;
+    const report = await runDream({
+      root,
+      manual: true,
+      llm: async ({ pass }) => {
+        calls += 1;
+        return pass === 'topic-consolidation'
+          ? JSON.stringify({ groups: [{ canonical: 'alpha', merge: ['beta'] }] })
+          : JSON.stringify({ content_md: 'MERGED_MANUAL_CONTENT', summary_md: 'Merged subject.' });
+      },
+      listSessions: async () => [sessionId],
+      countMessages: async () => 0,
+      loadOverlapPreamble: async () => [],
+      listTopicSummaries: async () => [
+        { path: 'alpha', summary: 'Same durable subject.' },
+        { path: 'beta', summary: 'Same durable subject.' },
+      ],
+    });
+    expect(calls).toBe(2);
+    expect(report.sessions[0]).toMatchObject({ sessionId, status: 'consolidated', merged: 1 });
+    expect(readFileSync(join(root, 'sessions', sessionId, 'topic', 'alpha', 'content.md'), 'utf8'))
+      .toContain('MERGED_MANUAL_CONTENT');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('consolidates two topics, preserves nested canonical paths, and rolls back index failures', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-topic-consolidation-'));
+    const sessionId = 'nested-session';
+    const canonicalDir = join(root, 'sessions', sessionId, 'topic', 'parent', 'child');
+    const duplicateDir = join(root, 'sessions', sessionId, 'topic', 'parent');
+    mkdirSync(canonicalDir, { recursive: true });
+    writeFileSync(join(canonicalDir, 'content.md'), 'CHILD_CANONICAL\n');
+    writeFileSync(join(canonicalDir, 'summary.md'), 'Child canonical.\n');
+    writeFileSync(join(duplicateDir, 'content.md'), 'PARENT_DUPLICATE\n');
+    writeFileSync(join(duplicateDir, 'summary.md'), 'Parent duplicate.\n');
+
+    let calls = 0;
+    const llm = async ({ pass }) => {
+      calls += 1;
+      return pass === 'topic-consolidation'
+        ? JSON.stringify({ groups: [{ canonical: 'parent/child', merge: ['parent'] }] })
+        : JSON.stringify({ content_md: 'MERGED_NESTED_CONTENT', summary_md: 'Merged nested topic.' });
+    };
+    const failingIndex = {
+      listByScope() { return []; },
+      upsert() { throw new Error('synthetic index failure'); },
+      deleteMany() {},
+      deleteScope() {},
+    };
+
+    await expect(consolidateSessionTopics({
+      root,
+      sessionId,
+      topics: [
+        { path: 'parent/child', summary: 'Child canonical.' },
+        { path: 'parent', summary: 'Parent duplicate.' },
+      ],
+      segmentIndex: failingIndex,
+      llm,
+      ts: '2026-08-04T01-00-00-000Z',
+    })).rejects.toThrow('synthetic index failure');
+    expect(calls).toBe(2);
+    expect(readFileSync(join(canonicalDir, 'content.md'), 'utf8')).toContain('CHILD_CANONICAL');
+    expect(readFileSync(join(duplicateDir, 'content.md'), 'utf8')).toContain('PARENT_DUPLICATE');
+    expect(existsSync(join(duplicateDir, 'redirect.json'))).toBe(false);
+
+    const result = await consolidateSessionTopics({
+      root,
+      sessionId,
+      topics: [
+        { path: 'parent/child', summary: 'Child canonical.' },
+        { path: 'parent', summary: 'Parent duplicate.' },
+      ],
+      llm,
+      ts: '2026-08-04T02-00-00-000Z',
+    });
+    expect(result.merged).toBe(1);
+    expect(readFileSync(join(canonicalDir, 'content.md'), 'utf8')).toContain('MERGED_NESTED_CONTENT');
+    expect(existsSync(join(duplicateDir, 'content.md'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(duplicateDir, 'redirect.json'), 'utf8'))).toEqual({
+      version: 1,
+      canonical: 'parent/child',
+    });
+    expect(resolveTopicRedirect(root, sessionId, 'parent')).toBe('parent/child');
+    await writeContent(
+      { kind: 'session-topic', sessionId, path: ['parent'] },
+      'FUTURE_UPDATE_FOLLOWS_REDIRECT',
+      { root },
+    );
+    expect(readFileSync(join(canonicalDir, 'content.md'), 'utf8')).toContain('FUTURE_UPDATE_FOLLOWS_REDIRECT');
+    expect(existsSync(join(duplicateDir, 'content.md'))).toBe(false);
+    rmSync(root, { recursive: true, force: true });
   });
 });
 
@@ -1384,6 +1506,7 @@ describe('Engine', () => {
               'user',
               'sessions/g1',
               'sessions/g1/vp/vp1',
+              'sessions/g1/vp/vp2',
               'sessions/g1/topic/dream/recall',
             ].filter(scope => scopeFilter.includes(scope));
             return scopes.map((scope, index) => ({
@@ -1421,6 +1544,24 @@ describe('Engine', () => {
       expect(system).not.toContain('Catalog-only topic summary');
       expect(system).not.toContain('Dream recall canonical evidence selector.');
 
+      await writeContent(
+        { kind: 'session-vp', sessionId: 'g1', id: 'vp2' },
+        'SECOND_VP_CANONICAL must remain visible after vp1 populated the shared registry.',
+        { root: join(yeaftDir, 'memory') },
+      );
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'ok' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      for await (const _event of engine.query({
+        prompt: 'dream recall test',
+        sessionId: 'g1',
+        vpPersona: { vpId: 'vp2', name: 'VP Two' },
+      })) { /* exhaust */ }
+      const secondVpSystem = mockAdapter.callLog.at(-1).system;
+      expect(secondVpSystem).toContain('SECOND_VP_CANONICAL');
+      expect(secondVpSystem).not.toContain('VP canonical content should enter the prompt');
+
       const loaded = events.find(e => e.type === 'dream_memory_loaded');
       expect(loaded).toBeTruthy();
       expect(loaded.loadedInto).toBe('system_prompt.memory');
@@ -1441,6 +1582,43 @@ describe('Engine', () => {
       const topicLoaded = loaded.resident.find(entry => entry.scope === 'sessions/g1/topic/dream/recall');
       expect(topicLoaded.summary).toContain('完整正文细节');
       expect(topicLoaded.summary).toContain('Additional canonical topic content omitted by prompt budget.');
+
+      const legacyDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-legacy-group-'));
+      await writeContent(
+        { kind: 'group', id: 'legacy-session' },
+        'LEGACY_GROUP_CANONICAL must survive the compatibility read path.',
+        { root: join(legacyDir, 'memory') },
+      );
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'ok' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const legacyEngine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        yeaftDir: legacyDir,
+        sessionId: 'legacy-session',
+        config: { model: 'claude-test', maxOutputTokens: 2048, language: 'en' },
+        memoryIndex: {
+          search({ scopeFilter, requiredTag }) {
+            return requiredTag === 'canonical-content' && scopeFilter.includes('group/legacy-session')
+              ? [{
+                id: 'legacy-content', scope: 'group/legacy-session', kind: 'context',
+                tags: ['canonical-content'], sourceMessages: [], body: 'selector only', rank: -1,
+                createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
+              }]
+              : [];
+          },
+        },
+        amsRegistry: new AmsRegistry({ yeaftDir: legacyDir, config: {} }),
+      });
+      for await (const _event of legacyEngine.query({
+        prompt: 'legacy recall',
+        sessionId: 'legacy-session',
+        vpPersona: { vpId: 'vp1', name: 'VP One' },
+      })) { /* exhaust */ }
+      expect(mockAdapter.callLog.at(-1).system).toContain('LEGACY_GROUP_CANONICAL');
+      rmSync(legacyDir, { recursive: true, force: true });
 
       const debugYeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-memory-debug-'));
       try {
