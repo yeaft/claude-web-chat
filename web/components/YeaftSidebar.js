@@ -172,7 +172,7 @@ export default {
                       {{ $t('yeaft.session.openSettings') }}
                     </button>
                     <button type="button" role="menuitem" class="session-menu-item" @click="onRemoveFromList(s.raw)">
-                      {{ $t('yeaft.session.removeFromList') }}
+                      {{ $t('sidebar.sessions.remove') }}
                     </button>
                   </div>
                 </div>
@@ -339,7 +339,7 @@ export default {
     },
     // Phase 4: chat container removed. Session list is just sessions now.
     sessionList() {
-      return buildYeaftSidebarSessionList({
+      const rows = buildYeaftSidebarSessionList({
         sessions: this.sessionsStore?.sessionList || [],
         activeSessionId: this.activeSessionId,
         activeSessionKey: this.activeSessionKey,
@@ -348,6 +348,11 @@ export default {
           ? this.onlineAgents.map(agent => agent.id)
           : undefined,
       });
+      const hidden = new Set((this.chatStore?.hiddenSessionCatalog || [])
+        .filter(row => row?.runtimeProvider === 'yeaft')
+        .map(row => `${row.routeRef?.agentId || ''}\u001f${row.routeRef?.sessionId || ''}`));
+      const currentAgentId = this.chatStore?.currentAgent || '';
+      return rows.filter(row => !hidden.has(`${row.raw?.agentId || currentAgentId}\u001f${row.id || ''}`));
     },
     chatStore() {
       // Needed for `sessionCrudRequest` and the Yeaft session pin menu.
@@ -496,13 +501,8 @@ export default {
         s?.toggleCatalogSessionPin?.(row);
       } else if (runtimeProvider === 'yeaft' && action === 'settings') {
         this.openGroupSettings({ id: sessionId, agentId }, 'session');
-      } else if (runtimeProvider === 'yeaft' && action === 'remove') {
-        this.onRemoveFromList({ id: sessionId, agentId });
       } else if (action === 'remove') {
-        if (confirm(this.$t('chat.delete.confirm'))) {
-          s?.leaveYeaft?.();
-          s?.closeSession?.(sessionId, agentId);
-        }
+        s?.hideCatalogSession?.(row);
       }
     },
     async onSessionCreated(session) {
@@ -654,15 +654,26 @@ export default {
         });
       }
     },
-    // "Remove from list" — soft-archive only. Server marks
-    // is_archived=1 in yeaft_sessions; the agent's on-disk session is
-    // untouched. Real delete (DELETE FROM yeaft_sessions + on-disk
-    // cleanup) lives in SessionSettingsModal's danger zone.
+    // "Remove from list" only hides the Session from this user's sidebar.
+    // It intentionally does not call the Agent archive/delete APIs: the
+    // on-disk Session and its messages must stay available for re-adding.
     onRemoveFromList(g) {
       this.groupMenu = { open: false, groupId: null };
       if (!g || !g.id) return;
-      const fn = this.chatStore && this.chatStore.sessionCrudRequest;
-      if (typeof fn === 'function') fn.call(this.chatStore, 'archive', { sessionId: g.id }, { agentId: g.agentId || null });
+      const agentId = g.agentId || this.chatStore?.currentAgent || null;
+      if (!agentId || typeof this.chatStore?.hideCatalogSession !== 'function') return;
+      const catalogKey = `yeaft:${agentId}:${g.id}`;
+      const row = this.chatStore.sessionCatalog?.find(item => item.catalogKey === catalogKey) || {
+        catalogKey,
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId, sessionId: g.id },
+        title: g.name || g.id,
+        workDir: g.workDir || '',
+        agentName: this.sessionAgentName(g),
+        availability: this.onlineAgents.some(agent => agent.id === agentId) ? 'online' : 'offline',
+        pinned: !!g.pinned,
+      };
+      this.chatStore.hideCatalogSession(row);
     },
     groupDisplayName(g) {
       if (!g) return '';

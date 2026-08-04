@@ -472,6 +472,11 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
 
       try {
         sessionDb.setActive(msg.conversationId, false);
+        sessionUiMetadataDb.deleteForRoute(client.userId, {
+          runtimeProvider: persisted?.provider || 'claude-code',
+          agentId: deleteAgentId,
+          sessionId: msg.conversationId,
+        });
         const deleteAgent = agents.get(deleteAgentId);
         deleteAgent?.conversations.delete(msg.conversationId);
         await broadcastAgentList();
@@ -574,20 +579,43 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (!client.userId || !msg.catalogKey || !msg.routeRef?.runtimeProvider) break;
       const { runtimeProvider, agentId, sessionId } = msg.routeRef;
       let expectedCatalogKey = null;
+      let sessionRow = null;
       if (runtimeProvider === 'yeaft') {
-        if (agentId && sessionId && yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) {
-          expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
-        }
+        sessionRow = agentId && sessionId
+          ? yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)
+          : null;
+        if (sessionRow) expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
       } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
-        const row = sessionId ? sessionDb.get(sessionId) : null;
+        sessionRow = sessionId ? sessionDb.get(sessionId) : null;
         if (agentId && sessionId
           && (CONFIG.skipAuth || verifyConversationOwnership(sessionId, client.userId, client.role))
-          && row?.agent_id === agentId
-          && (row.provider || 'claude-code') === runtimeProvider) {
+          && sessionRow?.agent_id === agentId
+          && (sessionRow.provider || 'claude-code') === runtimeProvider) {
           expectedCatalogKey = chatCatalogKey(sessionId);
         }
       }
       const authorized = expectedCatalogKey === msg.catalogKey;
+      let currentMetadata = null;
+      if (authorized) {
+        try {
+          currentMetadata = sessionUiMetadataDb.get(client.userId, expectedCatalogKey);
+        } catch (e) {
+          console.warn('[Server] Session metadata read failed:', e?.message || e);
+        }
+      }
+      const persistedPinned = runtimeProvider === 'yeaft'
+        ? (sessionRow?.pinned === true || sessionRow?.isPinned === true)
+        : sessionRow?.is_pinned === 1;
+      const nextPinned = typeof msg.pinned === 'boolean'
+        ? msg.pinned
+        : (currentMetadata?.pinned ?? !!persistedPinned);
+      const nextHidden = typeof msg.hidden === 'boolean'
+        ? msg.hidden
+        : currentMetadata?.hidden === true;
+      const nextSortRank = Number.isFinite(msg.sortRank)
+        ? msg.sortRank
+        : (currentMetadata?.sortRank ?? null);
+      const hasSortRank = Object.prototype.hasOwnProperty.call(msg, 'sortRank');
       let persisted = false;
       if (authorized) {
         try {
@@ -596,8 +624,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
             runtimeProvider,
             agentId,
             sessionId,
-            pinned: msg.pinned === true,
-            sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
+            pinned: nextPinned,
+            hidden: nextHidden,
+            ...(hasSortRank ? { sortRank: nextSortRank } : {}),
           }]);
           if (persisted) await broadcastSessionCatalog(client.userId);
         } catch (e) {
@@ -611,8 +640,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         catalogKey: msg.catalogKey,
         routeRef: msg.routeRef,
         ...(persisted ? {
-          pinned: msg.pinned === true,
-          sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
+          pinned: nextPinned,
+          hidden: nextHidden,
+          sortRank: nextSortRank,
         } : { error: 'Permission denied or stale Session route' }),
       });
       break;

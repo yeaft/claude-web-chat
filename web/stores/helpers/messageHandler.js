@@ -286,19 +286,13 @@ export function handleMessage(store, msg) {
       store.applySessionCatalogSnapshot(
         msg.catalog,
         msg.projectsAuthoritative === true ? msg.projects : null,
+        msg.hiddenCatalog,
       );
       break;
 
-    case 'session_ui_metadata_updated': {
-      if (!store.finishSessionCatalogMutation?.(msg)) break;
-      if (msg.ok !== true) break;
-      const row = store.sessionCatalog.find(item => item.catalogKey === msg.catalogKey);
-      if (row) {
-        row.pinned = msg.pinned === true;
-        row.sortRank = Number.isFinite(msg.sortRank) ? msg.sortRank : null;
-      }
+    case 'session_ui_metadata_updated':
+      store.finishSessionCatalogMutation?.(msg);
       break;
-    }
 
     case 'session_catalog_reorder_result':
       store.finishSessionCatalogMutation?.(msg);

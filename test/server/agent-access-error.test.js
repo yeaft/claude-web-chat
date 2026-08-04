@@ -4,6 +4,7 @@ import { CONFIG } from '../../server/config.js';
 import { agents } from '../../server/context.js';
 import { sessionDb, yeaftProjectDb, yeaftSessionDb, sessionUiMetadataDb } from '../../server/database.js';
 import {
+  buildHiddenSessionCatalog,
   buildSessionCatalog,
   resolveAgentAccessError,
   verifyConversationOwnership,
@@ -142,6 +143,32 @@ describe('resolveAgentAccessError', () => {
     expect(sessionUiMetadataDb.get(userId, `yeaft:agent-a:same-${suffix}`)).toMatchObject({
       pinned: true, sortRank: 0,
     });
+
+    sessionUiMetadataDb.applyBatch(userId, [{
+      catalogKey: `yeaft:agent-a:same-${suffix}`,
+      runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: `same-${suffix}`,
+      hidden: true,
+    }]);
+    const visibleCatalog = buildSessionCatalog(userId);
+    expect(visibleCatalog.map(row => row.catalogKey)).not.toContain(`yeaft:agent-a:same-${suffix}`);
+    expect(visibleCatalog.map(row => row.catalogKey)).toContain(`yeaft:agent-b:same-${suffix}`);
+    const hiddenMetadata = sessionUiMetadataDb.get(userId, `yeaft:agent-a:same-${suffix}`);
+    expect(hiddenMetadata).toMatchObject({ pinned: true, hidden: true, sortRank: 0 });
+    expect(buildHiddenSessionCatalog(userId)).toEqual([
+      expect.objectContaining({
+        catalogKey: `yeaft:agent-a:same-${suffix}`,
+        hidden: true,
+        pinned: true,
+      }),
+    ]);
+
+    sessionUiMetadataDb.applyBatch(userId, [{
+      catalogKey: `yeaft:agent-a:same-${suffix}`,
+      runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: `same-${suffix}`,
+      hidden: false,
+    }]);
+    expect(buildSessionCatalog(userId).map(row => row.catalogKey))
+      .toContain(`yeaft:agent-a:same-${suffix}`);
 
     const project = yeaftProjectDb.create(userId, `Project ${suffix}`);
     const secondProject = yeaftProjectDb.create(userId, `Project second ${suffix}`);

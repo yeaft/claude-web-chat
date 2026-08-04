@@ -869,7 +869,7 @@ describe('message flow regressions', () => {
     const pinnedQuickActions = firstRow.findAll('.session-quick-action');
     expect(pinnedQuickActions.map(button => button.attributes('aria-label'))).toEqual([
       'chat.sidebar.unpin',
-      'yeaft.session.removeFromList',
+      'sidebar.sessions.remove',
     ]);
     const selectCountBeforeQuickActions = sidebar.emitted('select')?.length || 0;
     firstRow.element.focus();
@@ -1261,6 +1261,9 @@ describe('message flow regressions', () => {
       enterWorkCenter: vi.fn(),
       leaveWorkCenter: vi.fn(),
       openCatalogSession: vi.fn(),
+      hideCatalogSession: vi.fn(),
+      isSessionPinned: vi.fn(() => false),
+      getConversationTitle: vi.fn(() => 'Legacy chat'),
       enterYeaft: vi.fn(),
       leaveYeaft: vi.fn(),
     });
@@ -1307,6 +1310,19 @@ describe('message flow regressions', () => {
     chatPage.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
     await chatPage.vm.onUnifiedSessionCreated({ id: 'unassigned-session', agentId: 'agent-a' });
     expect(alertSpy).toHaveBeenLastCalledWith('sidebar.projects.assignFailed');
+    chatPage.vm.hideSessionFromSidebar({
+      id: 'legacy-chat',
+      provider: 'copilot',
+      agentId: 'agent-a',
+      workDir: '/repo',
+      agentName: 'Agent A',
+      agentOnline: true,
+    });
+    expect(parentStore.hideCatalogSession).toHaveBeenCalledWith(expect.objectContaining({
+      catalogKey: 'chat:legacy-chat',
+      runtimeProvider: 'copilot',
+      routeRef: { runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: 'legacy-chat' },
+    }));
     await chatPage.get('.sidebar-work-center-header-btn').trigger('click');
     expect(parentStore.enterWorkCenter).toHaveBeenCalledWith('agent-a');
     chatPage.unmount();
@@ -1318,6 +1334,10 @@ describe('message flow regressions', () => {
       sessionId: 'pinned',
     };
     parentStore.openUnifiedChatCreate = false;
+    parentStore.currentAgent = 'user_1770305719:server-instance';
+    parentStore.sessionCatalog = [];
+    parentStore.hiddenSessionCatalog = [];
+    parentStore.hideCatalogSession.mockClear();
     const yeaftSidebar = mount(YeaftSidebar, {
       global: {
         mocks: { $t: key => key },
@@ -1346,6 +1366,21 @@ describe('message flow regressions', () => {
     await yeaftSidebar.vm.onSessionCreated({ id: 'unassigned-from-yeaft', agentId: 'agent-a' });
     expect(alertSpy).toHaveBeenLastCalledWith('sidebar.projects.assignFailed');
     vi.unstubAllGlobals();
+    yeaftSidebar.vm.onRemoveFromList({
+      id: 'legacy-yeaft',
+      name: 'Legacy Yeaft',
+      agentId: 'user_1770305719:server-instance',
+      workDir: '/repo',
+    });
+    expect(parentStore.hideCatalogSession).toHaveBeenCalledWith(expect.objectContaining({
+      catalogKey: 'yeaft:user_1770305719:server-instance:legacy-yeaft',
+      runtimeProvider: 'yeaft',
+      routeRef: {
+        runtimeProvider: 'yeaft',
+        agentId: 'user_1770305719:server-instance',
+        sessionId: 'legacy-yeaft',
+      },
+    }));
     yeaftSidebar.unmount();
     globalThis.fetch = originalFetch;
     delete globalThis.Pinia.useChatStore;
@@ -3996,6 +4031,66 @@ describe('message flow regressions', () => {
     expect(exactChatStore.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_load_history')).toEqual([
       expect.objectContaining({ agentId: 'agent-b', sessionId: 'grp_default' }),
     ]);
+
+    // Sidebar removal is logical: it only hides the exact catalog row and
+    // sends metadata, never the Agent archive/delete command. Re-adding from
+    // the create modal reverses the same metadata and opens the preserved
+    // Session identity.
+    const hiddenRow = {
+      catalogKey: 'yeaft:agent-b:grp_default',
+      runtimeProvider: 'yeaft',
+      routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-b', sessionId: 'grp_default' },
+      title: 'Restored default',
+      workDir: '/repo-b',
+      availability: 'online',
+      pinned: false,
+    };
+    exactChatStore.sessionCatalog = [hiddenRow];
+    exactChatStore.hiddenSessionCatalog = [];
+    exactChatStore.sessionCatalogMutationRequests = {};
+    exactChatStore.sendWsMessage = vi.fn(() => true);
+    expect(exactChatStore.hideCatalogSession(hiddenRow)).toBe(true);
+    expect(exactChatStore.sessionCatalog).toEqual([]);
+    expect(exactChatStore.hiddenSessionCatalog).toEqual([
+      expect.objectContaining({ catalogKey: hiddenRow.catalogKey, hidden: true }),
+    ]);
+    const hideRequest = exactChatStore.sendWsMessage.mock.calls.at(-1)[0];
+    expect(hideRequest).toEqual(expect.objectContaining({
+      type: 'set_session_ui_metadata',
+      catalogKey: hiddenRow.catalogKey,
+      routeRef: hiddenRow.routeRef,
+      hidden: true,
+    }));
+    expect(exactChatStore.sendWsMessage.mock.calls.map(call => call[0].type)).not.toContain('yeaft_archive_session');
+    exactChatStore.finishSessionCatalogMutation({
+      type: 'session_ui_metadata_updated',
+      requestId: hideRequest.requestId,
+      ok: true,
+      catalogKey: hiddenRow.catalogKey,
+      hidden: true,
+      pinned: false,
+      sortRank: null,
+    });
+    await Vue.nextTick();
+    expect(exactModal.vm.hiddenSessions).toEqual([
+      expect.objectContaining({ catalogKey: hiddenRow.catalogKey }),
+    ]);
+
+    exactChatStore.sendWsMessage.mockClear();
+    await exactModal.vm.restoreHiddenSession(exactModal.vm.hiddenSessions[0]);
+    expect(exactChatStore.sessionCatalog).toEqual([
+      expect.objectContaining({ catalogKey: hiddenRow.catalogKey, hidden: false }),
+    ]);
+    expect(exactChatStore.hiddenSessionCatalog).toEqual([]);
+    const unhideRequest = exactChatStore.sendWsMessage.mock.calls.find(call => (
+      call[0].type === 'set_session_ui_metadata'
+    ))?.[0];
+    expect(unhideRequest).toEqual(expect.objectContaining({
+      catalogKey: hiddenRow.catalogKey,
+      routeRef: hiddenRow.routeRef,
+      hidden: false,
+    }));
+    expect(exactChatStore.sendWsMessage.mock.calls.map(call => call[0].type)).not.toContain('yeaft_archive_session');
 
     exactChatStore.sendWsMessage.mockClear();
     exactChatStore.sendYeaftSessionMessage({ groupId: 'grp_default', text: 'route only to B' });
