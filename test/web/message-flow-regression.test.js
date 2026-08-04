@@ -243,7 +243,9 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\s*\{[^}]*background:\s*transparent/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-title-text\s*\{[^}]*flex:\s*1[^}]*text-overflow:\s*ellipsis/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-unread\s*\{[^}]*background:\s*var\(--success\)/);
-    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\[draggable="true"\]\s*\{[^}]*cursor:\s*grab/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\[role="button"\]\s*\{[^}]*cursor:\s*default/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\[draggable="true"\]\s*\{[^}]*user-select:\s*none/);
+    expect(yeaftSidebarCss).not.toMatch(/\.sidebar-session-row\[draggable="true"\](?::active)?\s*\{[^}]*cursor:\s*grab(?:bing)?/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\.drag-before\s*\{[^}]*box-shadow:\s*inset 0 2px 0 var\(--accent-blue\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\.drag-after\s*\{[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent-blue\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-create\s*\{[^}]*background:\s*var\(--bg-input-wrapper\)/);
