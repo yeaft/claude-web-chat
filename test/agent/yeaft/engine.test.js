@@ -47,6 +47,7 @@ import { nodeDiskUsage, runDust } from '../../../agent/yeaft/tools/disk-usage.js
 import { listFilesWithFd } from '../../../agent/yeaft/tools/glob.js';
 import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
 import bashTool, { createBashTool } from '../../../agent/yeaft/tools/bash.js';
+import fileReadTool from '../../../agent/yeaft/tools/file-read.js';
 import fileWriteTool from '../../../agent/yeaft/tools/file-write.js';
 import {
   SearchBackendLimitError,
@@ -2482,6 +2483,94 @@ describe('Engine', () => {
 
       expect(mockAdapter.callLog).toHaveLength(1);
       expect(events.find(event => event.type === 'turn_end' && event.stopReason === 'plan_recorded')).toMatchObject({ terminal: true });
+    });
+
+    it('invalidates cached reads before successful and failed workspace mutations', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-mutation-'));
+      const filePath = join(workDir, 'state.txt');
+      writeFileSync(filePath, 'before');
+      try {
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'tool_call', id: 'write', name: 'FileWrite', input: { file_path: 'state.txt', content: 'after' } },
+          { type: 'tool_call', id: 'read-after', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const registry = new ToolRegistry();
+        registry.register(fileReadTool).register(fileWriteTool);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: registry,
+        });
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'update and reread the file', workDir })) events.push(event);
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        expect(toolStarts.find(event => event.id === 'read-after')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-before')?.output).toContain('before');
+        expect(toolEnds.find(event => event.id === 'read-after')?.output).toContain('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+
+        let contents = 'before';
+        mockAdapter = new MockAdapter();
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-failure', name: 'read', input: { path: 'state.txt' } },
+          { type: 'tool_call', id: 'write-and-fail', name: 'write', input: { path: 'state.txt' } },
+          { type: 'tool_call', id: 'read-after-failure', name: 'read', input: { path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const failingEngine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+        });
+        failingEngine.registerTool({
+          name: 'read',
+          description: 'Read state',
+          parameters: { type: 'object', properties: { path: { type: 'string' } } },
+          isReadOnly: () => true,
+          cacheWithinQuery: true,
+          execute: async () => contents,
+        });
+        failingEngine.registerTool({
+          name: 'write',
+          description: 'Write state',
+          parameters: { type: 'object', properties: { path: { type: 'string' } } },
+          isReadOnly: () => false,
+          execute: async () => {
+            contents = 'after';
+            throw new Error('write failed after changing state');
+          },
+        });
+
+        const failingEvents = [];
+        for await (const event of failingEngine.query({ prompt: 'update and reread the state' })) failingEvents.push(event);
+
+        const failingToolStarts = failingEvents.filter(event => event.type === 'tool_start');
+        const failingToolEnds = failingEvents.filter(event => event.type === 'tool_end');
+        expect(failingToolStarts.find(event => event.id === 'read-after-failure')?.reused).not.toBe(true);
+        expect(failingToolEnds.find(event => event.id === 'write-and-fail')).toMatchObject({
+          isError: true,
+          output: 'Error: write failed after changing state',
+        });
+        expect(failingToolEnds.find(event => event.id === 'read-after-failure')?.output).toBe('after');
+      } finally {
+        rmSync(workDir, { recursive: true, force: true });
+      }
     });
 
     it('executes the complete tool batch before appending live user input', async () => {

@@ -91,10 +91,18 @@ function toolDefinitionFor(engine, name) {
   return engine.getToolDefinition(name);
 }
 
+function isReadOnlyTool(engine, name, input) {
+  try {
+    return toolDefinitionFor(engine, name)?.isReadOnly?.(input) === true;
+  } catch {
+    return false;
+  }
+}
+
 function isCacheableTool(engine, name, input) {
   try {
     const tool = toolDefinitionFor(engine, name);
-    if (!tool || tool.isReadOnly?.(input) !== true) return false;
+    if (!tool || !isReadOnlyTool(engine, name, input)) return false;
     return typeof tool.cacheWithinQuery === 'function'
       ? tool.cacheWithinQuery(input) === true
       : tool.cacheWithinQuery === true;
@@ -3895,7 +3903,12 @@ export class Engine {
           yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, threadId: this.currentThreadId };
         } else {
           duplicateKey = `${tc.name}\u001f${argsHashOf(tc.input)}`;
+          const readOnlyTool = isReadOnlyTool(this, tc.name, tc.input);
           cacheableTool = isCacheableTool(this, tc.name, tc.input);
+          // The cache is only valid while the workspace has not changed. Clear
+          // it before every potential mutation, including a tool that later
+          // reports or throws an error after making a partial change.
+          if (!readOnlyTool) readOnlyToolResults.clear();
           const cachedReadOnly = readOnlyToolResults.get(duplicateKey);
           if (cachedReadOnly && cacheableTool) {
             output = cachedReadOnly.output;
