@@ -135,6 +135,21 @@ export function deleteProject(yeaftDir, projectId) {
   return { projectId };
 }
 
+export function reorderProjects(yeaftDir, projectIds) {
+  const projects = loadProjects(yeaftDir);
+  const ids = Array.isArray(projectIds)
+    ? projectIds.map(value => typeof value === 'string' ? value.trim() : '')
+    : [];
+  const currentIds = new Set(projects.map(project => project.id));
+  if (ids.length !== projects.length
+      || ids.some(id => !id || !currentIds.has(id))
+      || new Set(ids).size !== ids.length) {
+    throw new ProjectStoreError('invalid_project_order', 'Complete Project order is required');
+  }
+  const projectsById = new Map(projects.map(project => [project.id, project]));
+  return saveProjects(yeaftDir, ids.map(id => projectsById.get(id)));
+}
+
 export function moveSessionToProject(yeaftDir, sessionId, projectId = null) {
   const id = typeof sessionId === 'string' ? sessionId.trim() : '';
   if (!id) throw new ProjectStoreError('invalid_session_id', 'Session id is required');

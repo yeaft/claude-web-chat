@@ -21,6 +21,7 @@ const createProject = vi.fn(() => ({ id: 'project-created', name: 'Created', mem
 const renameProject = vi.fn();
 const updateProjectInstruction = vi.fn();
 const deleteProject = vi.fn();
+const reorderProjects = vi.fn();
 const moveProjectSession = vi.fn();
 const contextForSession = vi.fn(() => null);
 const getForAgent = vi.fn(() => null);
@@ -62,6 +63,7 @@ vi.mock('../../server/database.js', () => ({
     rename: renameProject,
     updateInstruction: updateProjectInstruction,
     delete: deleteProject,
+    reorder: reorderProjects,
     moveSession: moveProjectSession,
     contextForSession,
   },
@@ -117,6 +119,7 @@ afterEach(() => {
   renameProject.mockClear();
   updateProjectInstruction.mockClear();
   deleteProject.mockClear();
+  reorderProjects.mockClear();
   moveProjectSession.mockClear();
   contextForSession.mockReset();
   contextForSession.mockReturnValue(null);
@@ -647,6 +650,37 @@ describe('Yeaft Session online Agent filtering', () => {
         projectsAuthoritative: true,
         ok: true,
         projects: [{ id: 'project-created', sessionIds: [] }],
+      },
+    });
+
+    reorderProjects.mockReturnValueOnce([
+      { id: 'project-b', name: 'B', sortOrder: 0 },
+      { id: 'project-a', name: 'A', sortOrder: 1 },
+    ]);
+    listProjectsForAgent.mockReturnValueOnce([
+      { id: 'project-b', name: 'B', sortOrder: 0, sessionIds: [] },
+      { id: 'project-a', name: 'A', sortOrder: 1, sessionIds: [] },
+    ]);
+    routedClient.sent = [];
+    await handleClientConversation('client-1', routedClient, {
+      type: 'yeaft_project_mutation',
+      requestId: 'project-reorder-1',
+      op: 'reorder',
+      projectIds: ['project-b', 'project-a'],
+    }, allow);
+    expect(reorderProjects).toHaveBeenCalledWith('user-1', ['project-b', 'project-a']);
+    expect(forwardToAgent).not.toHaveBeenCalled();
+    expect(routedClient.sent.at(-1)).toMatchObject({
+      type: 'yeaft_output',
+      event: {
+        type: 'project_mutation_result',
+        requestId: 'project-reorder-1',
+        projectsAuthoritative: true,
+        ok: true,
+        projects: [
+          { id: 'project-b', sortOrder: 0 },
+          { id: 'project-a', sortOrder: 1 },
+        ],
       },
     });
 

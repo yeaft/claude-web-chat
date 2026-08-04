@@ -40,7 +40,12 @@ import { loadSessionConfig, resolveSessionConfig } from './sessions/session-conf
 import { validateSessionId } from './sessions/ids.js';
 import { createJsonlWriter, JsonlInput, runStreamTurn, runStreamSessionTurn } from './stdio-protocol.js';
 import { createCliSessionRunner } from './cli-session-runner.js';
-import { ensureManagedCliTools, summarizeManagedCliResults } from './managed-cli.js';
+import {
+  cleanupManagedCliRuntimePaths,
+  ensureManagedCliTools,
+  prepareManagedCliToolEnvironment,
+  summarizeManagedCliResults,
+} from './managed-cli.js';
 
 // ─── Argument parsing ──────────────────────────────────────────
 
@@ -1033,6 +1038,26 @@ async function runOnce(config, args) {
 
 // ─── Main ──────────────────────────────────────────────────────
 
+function installManagedCliSignalCleanup() {
+  if (process.platform === 'win32') return () => {};
+  const signals = ['SIGINT', 'SIGTERM'];
+  const handlers = new Map();
+  const dispose = () => {
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+    handlers.clear();
+  };
+  for (const signal of signals) {
+    const handler = () => {
+      cleanupManagedCliRuntimePaths();
+      dispose();
+      process.kill(process.pid, signal);
+    };
+    handlers.set(signal, handler);
+    process.once(signal, handler);
+  }
+  return dispose;
+}
+
 async function main() {
   const args = parseArgs(process.argv);
 
@@ -1071,7 +1096,7 @@ async function main() {
     return;
   }
 
-  const prepareManagedCli = () => {
+  const prepareManagedCli = async () => {
     args.managedCliReady = ensureManagedCliTools({ yeaftDir: config.dir });
     args.managedCliReady.then(results => {
       if (results.some(result => result.status === 'installed')) {
@@ -1080,11 +1105,18 @@ async function main() {
     }).catch(error => {
       console.error(`[Yeaft] managed CLI setup failed; using built-in fallbacks: ${error?.message || error}`);
     });
+    try {
+      await prepareManagedCliToolEnvironment(args.managedCliReady, 'rg', {
+        yeaftDir: config.dir,
+      });
+    } catch (error) {
+      console.error(`[Yeaft] managed rg environment setup failed; using built-in fallback: ${error?.message || error}`);
+    }
   };
 
   // Handle interactive mode
   if (args.interactive) {
-    prepareManagedCli();
+    await prepareManagedCli();
     await runREPL(config, args);
     return;
   }
@@ -1096,7 +1128,7 @@ async function main() {
     if (!args.prompt && args.inputFormat !== 'stream-json' && process.stdin.isTTY) {
       throw new Error('stream-json output requires a prompt, piped stdin, or --input-format stream-json');
     }
-    prepareManagedCli();
+    await prepareManagedCli();
     await runStreamJson(config, args);
     return;
   }
@@ -1106,7 +1138,7 @@ async function main() {
 
   // Handle prompt (from args or stdin)
   if (args.prompt) {
-    prepareManagedCli();
+    await prepareManagedCli();
     await runOnce(config, args);
     return;
   }
@@ -1119,7 +1151,7 @@ async function main() {
     }
     args.prompt = input.trim();
     if (args.prompt) {
-      prepareManagedCli();
+      await prepareManagedCli();
       await runOnce(config, args);
       return;
     }
@@ -1159,8 +1191,14 @@ async function main() {
 
 const isDirectRun = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isDirectRun) {
+  const disposeSignalCleanup = installManagedCliSignalCleanup();
+  const cleanupManagedCli = () => {
+    disposeSignalCleanup();
+    cleanupManagedCliRuntimePaths();
+  };
   main().catch(err => {
     console.error(err);
+    cleanupManagedCli();
     process.exit(1);
-  });
+  }).finally(cleanupManagedCli);
 }

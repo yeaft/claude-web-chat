@@ -14,8 +14,10 @@ import {
   calculateFloatingMenuPosition,
   calculateFloatingSubmenuPosition,
   default as UnifiedSessionList,
+  reorderProjectRows,
   reorderSessionCatalogRows,
 } from '../../web/components/UnifiedSessionList.js';
+import { openImagePreview } from '../../web/utils/imagePreview.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
 import enMessages from '../../web/i18n/en.js';
 import zhCNMessages from '../../web/i18n/zh-CN.js';
@@ -105,6 +107,8 @@ globalThis.Pinia = {
   useSessionsStore: () => runtimeSessionsStore,
 };
 const { useChatStore } = await import('../../web/stores/chat.js');
+const { default: AssistantTurn } = await import('../../web/components/AssistantTurn.js');
+const { default: MessageItem } = await import('../../web/components/MessageItem.js');
 const { useSessionsStore } = await import('../../web/stores/sessions.js');
 const { useVpStore } = await import('../../web/stores/vp.js');
 const { default: SessionCreateModal } = await import('../../web/components/SessionCreateModal.js');
@@ -204,6 +208,7 @@ describe('message flow regressions', () => {
     const chatPageSource = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatPage.js'), 'utf8');
     const yeaftSidebarSource = readFileSync(resolve(import.meta.dirname, '../../web/components/YeaftSidebar.js'), 'utf8');
     const vpAvatarSource = readFileSync(resolve(import.meta.dirname, '../../web/components/VpAvatar.js'), 'utf8');
+    const chatMessagesCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/chat-messages.css'), 'utf8');
     const vpCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/yeaft-vp.css'), 'utf8');
     const sidebarCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/sidebar.css'), 'utf8');
     const chatInputCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/chat-input.css'), 'utf8');
@@ -230,7 +235,7 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).not.toMatch(/\.sidebar-primary-action-icon\s*\{[^}]*color:\s*var\(--accent/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-add-button\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading > \.sidebar-project-add-button:disabled\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
-    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading > span:first-child:hover ~ \.sidebar-project-add-button:not\(:disabled\),[\s\S]*?\.sidebar-section-heading > \.sidebar-project-add-button:not\(:disabled\):hover,[\s\S]*?\.sidebar-section-heading:focus-within > \.sidebar-project-add-button:not\(:disabled\)\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading > \.sidebar-section-toggle:hover ~ \.sidebar-project-add-button:not\(:disabled\),[\s\S]*?\.sidebar-section-heading > \.sidebar-project-add-button:not\(:disabled\):hover,[\s\S]*?\.sidebar-section-heading:focus-within > \.sidebar-project-add-button:not\(:disabled\)\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-add-button:not\(:disabled\)\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     const sectionPaddingTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'padding');
     const sectionMarginTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'margin');
@@ -256,7 +261,7 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading\s*\{[^}]*min-height:\s*38px[^}]*color:\s*var\(--text-muted\)[^}]*font-size:\s*14px[^}]*font-weight:\s*600/);
     expect(yeaftSidebarCss).toMatch(/\.projects-section > \.sidebar-section-heading, \.recents-section > \.sidebar-section-heading\s*\{[^}]*position:\s*sticky[^}]*top:\s*0[^}]*z-index:\s*1[^}]*background:\s*var\(--bg-sidebar\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-recents-create\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
-    expect(yeaftSidebarCss).toMatch(/\.recents-section > \.sidebar-section-heading > span:first-child:hover ~ \.sidebar-recents-create,[\s\S]*?\.recents-section > \.sidebar-section-heading > \.sidebar-recents-create:hover,[\s\S]*?\.recents-section > \.sidebar-section-heading:focus-within > \.sidebar-recents-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/\.recents-section > \.sidebar-section-heading > \.sidebar-section-toggle:hover ~ \.sidebar-recents-create,[\s\S]*?\.recents-section > \.sidebar-section-heading > \.sidebar-recents-create:hover,[\s\S]*?\.recents-section > \.sidebar-section-heading:focus-within > \.sidebar-recents-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-recents-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-menu-info\s*\{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row \.session-actions\s*\{[^}]*position:\s*absolute[^}]*opacity:\s*0[^}]*pointer-events:\s*none[^}]*linear-gradient\(90deg, transparent, var\(--sidebar-hover\) 22px\)/);
@@ -267,6 +272,13 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-header > \.session-dots-btn:focus-visible\s*\{[^}]*opacity:\s*1/);
     expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-header > \.session-dots-btn\s*\{[^}]*opacity:\s*1/);
     expect(yeaftSidebarCss).not.toContain('.sidebar-session-menu-divider');
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-toggle\s*\{[^}]*background:\s*transparent/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-project-header\.project-drag-before\s*\{[^}]*var\(--accent-blue\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-project-header\.project-drag-after\s*\{[^}]*var\(--accent-blue\)/);
+    expect(chatMessagesCss).toMatch(/\.image-preview-navigation\s*\{[^}]*background:\s*var\(--bg-main\)/);
+    expect(chatMessagesCss).toMatch(/\.image-preview-position\s*\{[^}]*color:\s*var\(--text-primary\)/);
+    expect(lightThemeVariables).toContain('--image-preview-control-size: 44px');
+    expect(darkThemeVariables).toContain('--image-preview-control-size: 44px');
     expect(vpAvatarSource).not.toContain('/assets/avatars/');
     expect(vpAvatarSource).not.toContain('<img');
     expect(vpCss).not.toContain('.vp-avatar-img');
@@ -291,10 +303,134 @@ describe('message flow regressions', () => {
       .toEqual(['a', 'c', 'd', 'b']);
     expect(reorderSessionCatalogRows(orderFixture, 'missing', 'b', 'before')).toBeNull();
     expect(reorderSessionCatalogRows(orderFixture, 'b', 'missing', 'before')).toBeNull();
+    const projectOrderFixture = ['project-a', 'project-b', 'project-c']
+      .map((id, sortOrder) => ({ id, sortOrder }));
+    expect(reorderProjectRows(projectOrderFixture, 'project-c', 'project-a', 'before').map(row => row.id))
+      .toEqual(['project-c', 'project-a', 'project-b']);
+    expect(reorderProjectRows(projectOrderFixture, 'project-a', 'project-c', 'after').map(row => row.id))
+      .toEqual(['project-b', 'project-c', 'project-a']);
+    expect(reorderProjectRows(projectOrderFixture, 'missing', 'project-a', 'before')).toBeNull();
     expect(UnifiedSessionList.computed.hasCompleteCatalogOrder.call({
       sessions: [{ sortRank: 0 }, { sortRank: 0 }],
     })).toBe(false);
 
+    const previewTrigger = document.createElement('button');
+    document.body.appendChild(previewTrigger);
+    const previewOverlay = openImagePreview('/preview-a.png', {
+      alt: 'First preview',
+      closeLabel: 'Close preview',
+      previousLabel: 'Previous preview',
+      nextLabel: 'Next preview',
+      positionLabel: (current, total) => `${current} / ${total}`,
+      gallery: [
+        { src: '/preview-a.png', alt: 'First preview' },
+        { src: '/preview-b.png', alt: 'Second preview' },
+        { src: '/preview-c.png', alt: 'Third preview' },
+      ],
+      initialIndex: 0,
+      trigger: previewTrigger,
+    });
+    expect(previewOverlay.querySelector('.image-preview-img').getAttribute('src')).toBe('/preview-a.png');
+    expect(previewOverlay.querySelector('.image-preview-position').textContent).toBe('1 / 3');
+    previewOverlay.querySelector('.image-preview-next').click();
+    expect(previewOverlay.querySelector('.image-preview-img').getAttribute('src')).toBe('/preview-b.png');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    expect(previewOverlay.querySelector('.image-preview-img').getAttribute('src')).toBe('/preview-a.png');
+    previewOverlay.querySelector('.image-preview-previous').click();
+    expect(previewOverlay.querySelector('.image-preview-img').getAttribute('src')).toBe('/preview-c.png');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    previewOverlay.dispatchEvent(new Event('transitionend'));
+    expect(document.body.querySelector('.image-preview-overlay')).toBeNull();
+    expect(document.activeElement).toBe(previewTrigger);
+    previewTrigger.remove();
+
+    const previousImagePreviewStore = globalThis.Pinia.useChatStore;
+    const previousGlobalVue = globalThis.Vue;
+    globalThis.Pinia.useChatStore = useChatStore;
+    globalThis.Vue = Vue;
+    const userImageMessage = mount(MessageItem, {
+      attachTo: document.body,
+      props: {
+        message: {
+          type: 'user',
+          attachments: [
+            { isImage: true, preview: '/user-a.png', name: 'User A' },
+            { isImage: true, preview: '/user-b.png', name: 'User B' },
+            { isImage: false, name: 'notes.txt', mimeType: 'text/plain' },
+          ],
+        },
+      },
+      global: { mocks: { $t: key => key }, provide: { t: key => key } },
+    });
+    await userImageMessage.get('.attachments-badge').trigger('click');
+    await userImageMessage.findAll('.user-attachment-item.is-image')[1].trigger('click');
+    expect(document.body.querySelector('.image-preview-img').getAttribute('src')).toBe('/user-b.png');
+    expect(document.body.querySelector('.image-preview-position').textContent).toBe('message.imagePosition');
+    document.body.querySelector('.image-preview-close').click();
+    document.body.querySelector('.image-preview-overlay').dispatchEvent(new Event('transitionend'));
+    userImageMessage.unmount();
+
+    const externalImage = {
+      id: 'work-center-image', isImage: true, preview: '/work-center-image.png', name: 'Work Center image',
+    };
+    const externalFile = {
+      id: 'work-center-file', isImage: false, name: 'work-center.txt', mimeType: 'text/plain',
+    };
+    const workCenterMessage = mount(MessageItem, {
+      attachTo: document.body,
+      props: {
+        externalAttachmentOpen: true,
+        message: { type: 'user', attachments: [externalImage, externalFile] },
+      },
+      global: { mocks: { $t: key => key }, provide: { t: key => key } },
+    });
+    await workCenterMessage.get('.attachments-badge').trigger('click');
+    const externalAttachmentButtons = workCenterMessage.findAll('.user-attachment-item');
+    await externalAttachmentButtons[0].trigger('click');
+    await externalAttachmentButtons[1].trigger('click');
+    expect(workCenterMessage.emitted('open-attachment')).toEqual([
+      [expect.objectContaining({
+        attachment: expect.objectContaining({ id: externalImage.id }),
+        trigger: externalAttachmentButtons[0].element,
+      })],
+      [expect.objectContaining({
+        attachment: expect.objectContaining({ id: externalFile.id }),
+        trigger: externalAttachmentButtons[1].element,
+      })],
+    ]);
+    expect(document.body.querySelector('.image-preview-overlay')).toBeNull();
+    workCenterMessage.unmount();
+
+    const assistantImages = mount(AssistantTurn, {
+      attachTo: document.body,
+      props: {
+        turn: {
+          imageMsgs: [
+            { id: 'assistant-a', src: '/assistant-a.png', filename: 'Assistant A' },
+            { id: 'assistant-b', src: '/assistant-b.png', filename: 'Assistant B' },
+          ],
+          textContent: '',
+          toolMsgs: [],
+        },
+      },
+      global: { mocks: { $t: key => key }, provide: { t: key => key } },
+    });
+    await assistantImages.findAll('.turn-image-item')[0].trigger('click');
+    document.body.querySelector('.image-preview-next').click();
+    expect(document.body.querySelector('.image-preview-img').getAttribute('src')).toBe('/assistant-b.png');
+    document.body.querySelector('.image-preview-close').click();
+    document.body.querySelector('.image-preview-overlay').dispatchEvent(new Event('transitionend'));
+    assistantImages.unmount();
+    if (previousImagePreviewStore) globalThis.Pinia.useChatStore = previousImagePreviewStore;
+    else delete globalThis.Pinia.useChatStore;
+    if (previousGlobalVue) globalThis.Vue = previousGlobalVue;
+    else delete globalThis.Vue;
+
+    localStorage.removeItem('yeaft-sidebar-section-collapse');
+    const projectStore = {
+      mutateProject: vi.fn(() => Promise.resolve({ ok: true })),
+      reorderCatalogSessions: vi.fn(() => true),
+    };
     const catalogRows = [
       {
         catalogKey: 'yeaft:user_1770305719:server-instance:pinned',
@@ -393,11 +529,21 @@ describe('message flow regressions', () => {
     expect(recentsCreate.get('.sidebar-recents-create-frame').attributes('d')).toBe(createSessionButton.get('.sidebar-primary-action-frame').attributes('d'));
     expect(recentsCreate.get('.sidebar-recents-create-pen').attributes('d')).toBe(createSessionButton.get('.sidebar-primary-action-pen').attributes('d'));
     expect(sidebar.findAll('.sidebar-section')).toHaveLength(2);
+    const sectionToggles = sidebar.findAll('.sidebar-section-toggle');
+    expect(sectionToggles).toHaveLength(2);
+    expect(sectionToggles.map(button => button.attributes('aria-expanded'))).toEqual(['true', 'true']);
+    await sectionToggles[0].trigger('click');
+    expect(sidebar.get('.projects-section').classes()).toContain('is-collapsed');
+    expect(sidebar.findAll('.sidebar-project')).toHaveLength(0);
+    expect(JSON.parse(localStorage.getItem('yeaft-sidebar-section-collapse'))).toMatchObject({ projects: true });
+    await sectionToggles[0].trigger('click');
     expect(sidebar.findAll('.session-item')).toHaveLength(0);
     await sidebar.setProps({ sessions: catalogRows });
     expect(sidebar.findAll('.session-item')).toHaveLength(3);
     expect(sidebar.findAll('.session-item').some(item => item.text().includes('Offline'))).toBe(false);
     expect(sidebar.findAll('.sidebar-project')).toHaveLength(2);
+    expect(sidebar.findAll('.sidebar-project-icon-open')).toHaveLength(2);
+    expect(sidebar.findAll('.sidebar-project-icon-closed')).toHaveLength(0);
     expect(sidebar.findAll('.sidebar-project-unread')).toHaveLength(1);
     expect(Object.fromEntries(sidebar.findAll('.sidebar-project').map(item => [
       item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
@@ -472,6 +618,8 @@ describe('message flow regressions', () => {
     const projectToggles = sidebar.findAll('.sidebar-project-toggle');
     await projectToggles[0].trigger('click');
     expect(sidebar.findAll('.sidebar-project-sessions')).toHaveLength(1);
+    expect(sidebar.findAll('.sidebar-project-icon-open')).toHaveLength(1);
+    expect(sidebar.findAll('.sidebar-project-icon-closed')).toHaveLength(1);
     expect(sidebar.findAll('.sidebar-project-unread')).toHaveLength(1);
     expect(Object.fromEntries(sidebar.findAll('.sidebar-project').map(item => [
       item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
@@ -482,6 +630,11 @@ describe('message flow regressions', () => {
     expect(sidebar.text()).toContain('Visible');
     expect(sidebar.text()).toContain('Pinned');
     expect(sidebar.findAll('.session-item').map(item => item.get('.sidebar-session-title-text').text())).toEqual(['Pinned', 'Visible 2', 'Visible']);
+    await sectionToggles[1].trigger('click');
+    expect(sidebar.get('.recents-section').classes()).toContain('is-collapsed');
+    expect(sidebar.findAll('.recents-section .session-item')).toHaveLength(0);
+    expect(JSON.parse(localStorage.getItem('yeaft-sidebar-section-collapse'))).toMatchObject({ recents: true });
+    await sectionToggles[1].trigger('click');
     const visibleRow = sidebar.findAll('.recents-section .session-item')
       .find(item => item.text().includes('Visible') && !item.text().includes('Visible 2'));
     const visibleTwoRow = sidebar.findAll('.recents-section .session-item')
@@ -513,6 +666,26 @@ describe('message flow regressions', () => {
     sidebar.vm.dragOverRow(catalogRows[0], sidebar.props('projects')[0], rejectedProjectDrop);
     expect(rejectedProjectDrop.preventDefault).not.toHaveBeenCalled();
     sidebar.vm.finishDrag();
+
+    projectStore.mutateProject.mockClear();
+    await sidebar.setProps({ projectStore });
+    const projectHeaders = sidebar.findAll('.sidebar-project-header');
+    expect(projectHeaders.map(header => header.attributes('draggable'))).toEqual(['true', 'true']);
+    const projectDataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() };
+    await projectHeaders[1].trigger('dragstart', { dataTransfer: projectDataTransfer });
+    expect(projectDataTransfer.effectAllowed).toBe('move');
+    Object.defineProperty(projectHeaders[0].element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 100, bottom: 134, height: 34 }),
+    });
+    await projectHeaders[0].trigger('dragover', { dataTransfer: projectDataTransfer, clientY: 101 });
+    expect(projectHeaders[0].classes()).toContain('project-drag-before');
+    await projectHeaders[0].trigger('drop', { dataTransfer: projectDataTransfer, clientY: 101 });
+    await Promise.resolve();
+    expect(projectStore.mutateProject).toHaveBeenLastCalledWith('reorder', {
+      projectIds: ['project-empty', 'project-shared'],
+    });
+    await sidebar.setProps({ projectStore: null });
 
     const projectDragRows = [
       {
@@ -582,13 +755,13 @@ describe('message flow regressions', () => {
       ],
     };
     await sidebar.setProps({ projects: [legacyProject] });
+    expect(sidebar.vm.canDragProject(legacyProject)).toBe(false);
+    expect(sidebar.find('.sidebar-project-header').attributes('draggable')).toBe('false');
     expect(sidebar.vm.canDragRow(projectDragRows[0], legacyProject)).toBe(true);
     expect(sidebar.vm.canDropRow(projectDragRows[0], legacyProject)).toBe(true);
 
-    const projectStore = {
-      mutateProject: vi.fn(() => Promise.resolve({ ok: true })),
-      reorderCatalogSessions: vi.fn(() => true),
-    };
+    projectStore.mutateProject.mockClear();
+    projectStore.reorderCatalogSessions.mockClear();
     await sidebar.setProps({
       sessions: projectDragRows.map(row => ({ ...row })),
       projects: [{
@@ -879,6 +1052,7 @@ describe('message flow regressions', () => {
     const windowAdd = vi.spyOn(window, 'addEventListener');
     const windowRemove = vi.spyOn(window, 'removeEventListener');
     sidebar.unmount();
+    localStorage.setItem('yeaft-sidebar-section-collapse', JSON.stringify({ projects: true, recents: false }));
     const lifecycleSidebar = mount(UnifiedSessionList, {
       attachTo: document.body,
       props: { sessions: catalogRows, agents: [{ id: 'agent-a', online: true }] },
@@ -888,6 +1062,8 @@ describe('message flow regressions', () => {
     expect(documentAdd).toHaveBeenCalledWith('keydown', expect.any(Function));
     expect(windowAdd).toHaveBeenCalledWith('resize', expect.any(Function));
     expect(windowAdd).toHaveBeenCalledWith('scroll', expect.any(Function), true);
+    expect(lifecycleSidebar.findAll('.sidebar-section-toggle').map(button => button.attributes('aria-expanded')))
+      .toEqual(['false', 'true']);
     await lifecycleSidebar.find('.session-dots-btn').trigger('click');
     expect(document.body.querySelector('.session-menu-floating')).not.toBeNull();
     expect(lifecycleSidebar.find('.session-menu').exists()).toBe(false);
@@ -895,6 +1071,7 @@ describe('message flow regressions', () => {
     await Vue.nextTick();
     expect(document.body.querySelector('.session-menu-floating')).toBeNull();
     lifecycleSidebar.unmount();
+    localStorage.removeItem('yeaft-sidebar-section-collapse');
     expect(documentRemove).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
     expect(documentRemove).toHaveBeenCalledWith('keydown', expect.any(Function));
     expect(windowRemove).toHaveBeenCalledWith('resize', expect.any(Function));

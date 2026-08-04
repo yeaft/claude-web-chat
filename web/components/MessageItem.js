@@ -141,15 +141,32 @@ export default {
       showAttachments.value = !showAttachments.value;
     };
 
+    const previewableAttachments = Vue.computed(() => (
+      (Array.isArray(props.message?.attachments) ? props.message.attachments : [])
+        .filter(attachment => attachment?.isImage && attachment?.preview)
+        .map(attachment => ({
+          attachment,
+          src: attachment.preview,
+          alt: attachment.name || t('message.imagePreview'),
+        }))
+    ));
+
     const previewAttachment = (attachment, trigger) => {
       if (props.externalAttachmentOpen) {
         emit('open-attachment', { attachment, trigger });
         return;
       }
-      if (!attachment?.preview) return;
-      openImagePreview(attachment.preview, {
-        alt: attachment.name || t('message.imagePreview'),
+      const images = previewableAttachments.value;
+      const initialIndex = images.findIndex(entry => entry.attachment === attachment);
+      if (initialIndex < 0) return;
+      openImagePreview(images[initialIndex].src, {
+        alt: images[initialIndex].alt,
         closeLabel: t('common.close'),
+        previousLabel: t('message.previousImage'),
+        nextLabel: t('message.nextImage'),
+        positionLabel: (current, total) => t('message.imagePosition', { current, total }),
+        gallery: images.map(({ src, alt }) => ({ src, alt })),
+        initialIndex,
         trigger,
       });
     };
