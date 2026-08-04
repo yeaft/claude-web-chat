@@ -3437,24 +3437,28 @@ export class Engine {
 
       // If new user input was appended while this loop was streaming and
       // there are no tools to force another loop, splice it now and continue
-      // instead of ending the thread. This preserves token streaming and
-      // still only mutates messages at a clean loop boundary.
-      const appendedAfterAssistant = this.#drainPendingUserMessages(drainPendingUserMessages);
-      if (appendedAfterAssistant.length > 0) {
-        for (const item of appendedAfterAssistant) {
-          this.#persistAppendedUserMessage(item, runtimeSessionId);
-          conversationMessages.push({ role: 'user', content: item.content });
-          yield {
-            type: 'user_append',
-            turnId: queryTurnId,
-            loopNumber: turnNumber,
-            threadId,
-            preview: String(item.preview || '').slice(0, 200),
-            internal: Boolean(item.internal),
-          };
+      // instead of ending the thread. A tool response must execute first: an
+      // append between assistant(toolCalls) and its tool results would break
+      // the provider protocol and discard the entire tool batch. The regular
+      // pre-stream drain on the next iteration appends input after those results.
+      if (toolCalls.length === 0) {
+        const appendedAfterAssistant = this.#drainPendingUserMessages(drainPendingUserMessages);
+        if (appendedAfterAssistant.length > 0) {
+          for (const item of appendedAfterAssistant) {
+            this.#persistAppendedUserMessage(item, runtimeSessionId);
+            conversationMessages.push({ role: 'user', content: item.content });
+            yield {
+              type: 'user_append',
+              turnId: queryTurnId,
+              loopNumber: turnNumber,
+              threadId,
+              preview: String(item.preview || '').slice(0, 200),
+              internal: Boolean(item.internal),
+            };
+          }
+          yield { type: 'turn_end', turnNumber, stopReason: 'user_append_continue', threadId };
+          continue;
         }
-        yield { type: 'turn_end', turnNumber, stopReason: 'user_append_continue', threadId };
-        continue;
       }
 
       // If no tool calls, we're done — UNLESS we still own a pending

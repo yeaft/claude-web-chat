@@ -2422,7 +2422,7 @@ describe('Engine', () => {
   });
 
   describe('multiple tool calls in one turn', () => {
-    it('should execute multiple tools from a single response', async () => {
+    it('executes the complete tool batch before appending live user input', async () => {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'Searching both...' },
         { type: 'tool_call', id: 'call_1', name: 'search', input: { q: 'foo' } },
@@ -2431,9 +2431,25 @@ describe('Engine', () => {
       ]);
 
       mockAdapter.pushResponse([
-        { type: 'text_delta', text: 'Found both results.' },
+        { type: 'text_delta', text: 'Found both results and handled the update.' },
         { type: 'stop', stopReason: 'end_turn' },
       ]);
+
+      const pendingUserMessages = [];
+      const baseStream = mockAdapter.stream.bind(mockAdapter);
+      let appendedDuringStream = false;
+      mockAdapter.stream = async function* streamWithUserAppend(params) {
+        for await (const event of baseStream(params)) {
+          yield event;
+          if (!appendedDuringStream && event.type === 'tool_call' && event.id === 'call_2') {
+            appendedDuringStream = true;
+            pendingUserMessages.push({
+              content: 'Include the new requirement after both searches.',
+              preview: 'Include the new requirement after both searches.',
+            });
+          }
+        }
+      };
 
       const engine = new Engine({
         adapter: mockAdapter,
@@ -2449,7 +2465,10 @@ describe('Engine', () => {
       });
 
       const events = [];
-      for await (const event of engine.query({ prompt: 'search foo and bar' })) {
+      for await (const event of engine.query({
+        prompt: 'search foo and bar',
+        drainPendingUserMessages: () => pendingUserMessages.splice(0),
+      })) {
         events.push(event);
       }
 
@@ -2458,10 +2477,32 @@ describe('Engine', () => {
       expect(toolEnds[0].output).toBe('Results: foo');
       expect(toolEnds[1].output).toBe('Results: bar');
 
-      // Second call should have both tool results
+      expect(mockAdapter.callLog).toHaveLength(2);
       const secondCall = mockAdapter.callLog[1];
-      const toolMessages = secondCall.messages.filter(m => m.role === 'tool');
-      expect(toolMessages).toHaveLength(2);
+      expect(secondCall.messages.map(message => message.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'tool',
+        'user',
+      ]);
+      expect(secondCall.messages[1].toolCalls.map(call => call.id)).toEqual(['call_1', 'call_2']);
+      expect(secondCall.messages.slice(2, 4).map(message => message.toolCallId)).toEqual(['call_1', 'call_2']);
+      expect(secondCall.messages.at(-1)).toMatchObject({
+        role: 'user',
+        content: 'Include the new requirement after both searches.',
+      });
+
+      const appendEventIndex = events.findIndex(event => event.type === 'user_append');
+      const lastToolEndIndex = events.reduce(
+        (last, event, index) => event.type === 'tool_end' ? index : last,
+        -1,
+      );
+      expect(appendEventIndex).toBeGreaterThan(lastToolEndIndex);
+      expect(events.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+        stopReason: 'end_turn',
+        terminal: true,
+      });
     });
   });
 
