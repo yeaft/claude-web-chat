@@ -270,7 +270,7 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\.actions-suppressed \.session-actions\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
     expect(yeaftSidebarCss).not.toMatch(/\.yeaft-sidebar \.session-dots-btn\s*\{[^}]*opacity:\s*1/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-header > \.session-dots-btn:focus-visible\s*\{[^}]*opacity:\s*1/);
-    expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-header > \.session-dots-btn\s*\{[^}]*opacity:\s*1/);
+    expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)[\s\S]*?\.sidebar-project-header > \.sidebar-project-session-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto[\s\S]*?\.sidebar-project-header > \.session-dots-btn\s*\{[^}]*opacity:\s*1/);
     expect(yeaftSidebarCss).not.toContain('.sidebar-session-menu-divider');
     expect(yeaftSidebarCss).toMatch(/\.sidebar-section-toggle\s*\{[^}]*background:\s*transparent/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-header\.project-drag-before\s*\{[^}]*var\(--accent-blue\)/);
@@ -486,6 +486,10 @@ describe('message flow regressions', () => {
     expect(createProjectButton.get('.sidebar-project-add-mark').attributes('d')).toBe('M12 5v14M5 12h14');
     expect(enMessages['sidebar.sessions.newChat']).toBe('New chat');
     expect(zhCNMessages['sidebar.sessions.newChat']).toBe('新建聊天');
+    expect(enMessages['sidebar.projects.newSession']).toBe('New Session in {name}');
+    expect(zhCNMessages['sidebar.projects.newSession']).toBe('在{name}中创建 Session');
+    expect(enMessages['sidebar.projects.assignFailed']).toContain('{message}');
+    expect(zhCNMessages['sidebar.projects.assignFailed']).toContain('{message}');
     expect(sidebar.get('.sidebar-navigation').element.children[0].classList).toContain('sidebar-primary-actions');
     expect(sidebar.get('.sidebar-navigation').element.children[1].classList).toContain('sidebar-session-results');
     expect(sidebar.get('.sidebar-session-results').element.children[0].classList).toContain('projects-section');
@@ -518,6 +522,14 @@ describe('message flow regressions', () => {
       item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
       item.get('.sidebar-project-count').text(),
     ]))).toEqual({ 'Shared project': '1', 'Empty project': '0' });
+    expect(sidebar.findAll('.sidebar-project-header .sidebar-project-session-create')).toHaveLength(2);
+    const projectCreateSessionButton = sidebar.findAll('.sidebar-project-header .sidebar-project-session-create')[0];
+    expect(projectCreateSessionButton.attributes('aria-label')).toBe('sidebar.projects.newSession');
+    await projectCreateSessionButton.trigger('click');
+    expect(sidebar.emitted('create-in-project').at(-1)[0]).toEqual({
+      project: sidebar.props('projects')[0],
+    });
+    expect(sidebar.emitted('close-work-center')).toHaveLength(1);
     expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(2);
     const projectMenuButton = sidebar.findAll('.sidebar-project-header .session-dots-btn')[0];
     expect(projectMenuButton.attributes('aria-label')).toBe('sidebar.projects.menu');
@@ -1199,6 +1211,9 @@ describe('message flow regressions', () => {
       agents: [{ id: 'agent-a', name: 'Agent A', online: true, capabilities: ['work_center'] }],
       workCenterOpen: false,
       workCenterAgentId: 'stale-agent',
+      sessionProjects: [{ id: 'project-shared', name: 'Shared project', members: [] }],
+      mutateProject: vi.fn(() => Promise.resolve({ ok: true })),
+      currentAgent: 'agent-a',
       currentView: 'chat',
       activeConversationId: 'visible',
       conversations: [],
@@ -1241,6 +1256,21 @@ describe('message flow regressions', () => {
     await chatPage.get('.sidebar-primary-action').trigger('click');
     expect(chatPage.vm.unifiedSessionCreateOpen).toBe(true);
     expect(chatPage.vm.unifiedSessionCreateProvider).toBe('yeaft');
+    chatPage.vm.closeUnifiedSessionCreate();
+    chatPage.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
+    expect(chatPage.vm.unifiedSessionCreateProject).toBe(parentStore.sessionProjects[0]);
+    await chatPage.vm.onUnifiedSessionCreated({ id: 'created-session', agentId: 'agent-a' });
+    expect(parentStore.mutateProject).toHaveBeenCalledWith('move_session', {
+      sessionId: 'created-session',
+      projectId: 'project-shared',
+    }, 'agent-a');
+    expect(chatPage.vm.unifiedSessionCreateProject).toBeNull();
+    const alertSpy = vi.fn();
+    vi.stubGlobal('alert', alertSpy);
+    parentStore.mutateProject.mockResolvedValueOnce({ ok: false, error: { code: 'timeout' } });
+    chatPage.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
+    await chatPage.vm.onUnifiedSessionCreated({ id: 'unassigned-session', agentId: 'agent-a' });
+    expect(alertSpy).toHaveBeenLastCalledWith('sidebar.projects.assignFailed');
     await chatPage.get('.sidebar-work-center-header-btn').trigger('click');
     expect(parentStore.enterWorkCenter).toHaveBeenCalledWith('agent-a');
     chatPage.unmount();
@@ -1266,18 +1296,34 @@ describe('message flow regressions', () => {
     });
     await yeaftSidebar.get('.sidebar-primary-action').trigger('click');
     expect(yeaftSidebar.vm.sessionCreateOpen).toBe(true);
+    yeaftSidebar.vm.closeSessionCreate();
+    yeaftSidebar.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
+    expect(yeaftSidebar.vm.sessionCreateProject).toBe(parentStore.sessionProjects[0]);
+    await yeaftSidebar.vm.onSessionCreated({ id: 'created-from-yeaft', agentId: 'agent-a' });
+    expect(parentStore.mutateProject).toHaveBeenLastCalledWith('move_session', {
+      sessionId: 'created-from-yeaft',
+      projectId: 'project-shared',
+    }, 'agent-a');
+    expect(yeaftSidebar.vm.sessionCreateProject).toBeNull();
+    parentStore.mutateProject.mockResolvedValueOnce({ ok: false, error: { message: 'denied' } });
+    yeaftSidebar.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
+    await yeaftSidebar.vm.onSessionCreated({ id: 'unassigned-from-yeaft', agentId: 'agent-a' });
+    expect(alertSpy).toHaveBeenLastCalledWith('sidebar.projects.assignFailed');
+    vi.unstubAllGlobals();
     yeaftSidebar.unmount();
     globalThis.fetch = originalFetch;
     delete globalThis.Pinia.useChatStore;
     storeFactories.clear();
 
     expect(chatPageSource).toContain('@create="onUnifiedCreate"');
+    expect(chatPageSource).toContain('@create-in-project="onUnifiedCreateInProject"');
     expect(chatPageSource).not.toContain('</template>\n      </main>');
     expect(chatPageSource).toContain('sidebar-work-center-header-btn');
     expect(yeaftSidebarSource).toContain(':is-session-unread="isCatalogSessionUnread"');
     expect(chatPageSource).toContain('@action="onUnifiedSessionAction"');
     expect(yeaftSidebarSource).toContain('@action="onUnifiedSessionAction"');
     expect(yeaftSidebarSource).toContain('@create="onUnifiedCreate"');
+    expect(yeaftSidebarSource).toContain('@create-in-project="onUnifiedCreateInProject"');
     expect(yeaftSidebarSource).toContain('sidebar-work-center-header-btn');
     expect(chatPageSource).toContain(':project-store="store"');
     expect(chatPageSource).toContain(':active-route="store.activeSessionRoute"');
