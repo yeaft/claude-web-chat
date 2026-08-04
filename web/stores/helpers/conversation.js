@@ -4,7 +4,6 @@ import { startProcessingWatchdog, stopProcessingWatchdog } from './watchdog.js';
 import { setSessionLoading, saveOpenSessions } from './session.js';
 import { ensureConnected } from './websocket.js';
 import { markAllToolsCompleted } from './handlers/conversationHandler.js';
-import { maxDbMessageId } from './messages.js';
 import { t } from '../../utils/i18n.js';
 import { EXPERT_ROLES, buildClientExpertMessage } from '../../utils/expert-roles.js';
 
@@ -128,17 +127,23 @@ export function resumeConversation(store, claudeSessionId, workDir, agentId = nu
   store.sendWsMessage(msg);
 }
 
-export function selectConversation(store, conversationId, agentId) {
-  // In split mode, selectConversation from sidebar routes to the active panel
+export function selectConversation(store, conversationId, agentId, { refresh = false } = {}) {
+  // In split mode, selectConversation from sidebar routes to the active panel.
   if (store.panels.length > 1) {
     const targetPanelId = store.activePanelId || store.panels[0]?.id;
     if (targetPanelId) {
-      store.setPanelConversation(targetPanelId, conversationId);
+      store.setPanelConversation(targetPanelId, conversationId, { refresh });
     }
     return;
   }
 
-  if (conversationId === store.currentConversation) return;
+  if (conversationId === store.currentConversation) {
+    if (refresh) {
+      store.syncChatConversationHistory?.(conversationId);
+      saveOpenSessions(store);
+    }
+    return;
+  }
 
   const conv = store.conversations.find(c => c.id === conversationId && c.type !== 'yeaft');
   if (conv && conv.agentId && conv.agentId !== store.currentAgent) {
@@ -172,37 +177,14 @@ export function selectConversation(store, conversationId, agentId) {
     store.currentWorkDir = conv.workDir;
   }
 
-    // perf-chat-session-switch-cache: when this conv was loaded before,
-    // reuse messagesMap as-is and ask the server only for the delta
-    // since max(dbMessageId). Old code unconditionally blew the cache
-    // away and refetched 5 turns on every sidebar click (a dead-code
-    // `currentView !== 'chat'` gate made the cache-reuse predicate
-    // always false in chat view — the only view we run in daily).
-    //
-    // `maxDbMessageId` (web/stores/helpers/messages.js) is the
-    // single source of truth for the cursor selection rule
-    // (tail-safe, order-safe, zero-safe).
-    const cachedMessages = store.messagesMap[conversationId];
-    const lastSeenDbId = maxDbMessageId(cachedMessages);
-
-    if (lastSeenDbId !== null) {
-      // Cache hit + at least one persisted row → silent incremental sync.
-      // Don't touch messagesMap — the cache is what the user sees the
-      // instant the sidebar click resolves.
-      store.requestChatHistory?.(conversationId, {
-        mode: 'delta',
-        afterMessageId: lastSeenDbId,
-      });
-    } else {
-      // No persisted cursor yet. If there are optimistic/unflushed messages in
-      // memory, keep them visible while asking for the persisted recent page;
-      // clearing here makes a quick switch away/back look like data loss.
-      if (!cachedMessages || cachedMessages.length === 0) {
-        store.messagesMap[conversationId] = [];
-        setSessionLoading(store, true, t('chat.session.loadingHistory'));
-      }
-      store.requestChatHistory?.(conversationId, { mode: 'recent', turns: 5 });
-    }
+  // Paint cached rows immediately, then ask for the persisted delta. A click
+  // is an explicit freshness boundary; cache presence must not suppress sync.
+  const cachedMessages = store.messagesMap[conversationId];
+  if (!cachedMessages || cachedMessages.length === 0) {
+    store.messagesMap[conversationId] = [];
+    setSessionLoading(store, true, t('chat.session.loadingHistory'));
+  }
+  store.syncChatConversationHistory?.(conversationId);
   // ★ Bug #4 / perf-chat-session-switch-cache: pagination state.
   //
   // Reset loadingMoreMessages unconditionally — any in-flight load-more

@@ -13,6 +13,7 @@ import { formatPickedForInjection } from '../sessions/pre-flow.js';
 import { cleanMemoryPromptText } from '../memory/prompt-cleanup.js';
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { sessionMessageQuotePrompt } from '../session-message-quote.js';
 import { buildWorkItemAttachmentContext } from './attachments.js';
 import { withUsageAccounting } from '../llm/usage-accounting.js';
 import {
@@ -63,6 +64,21 @@ const WORK_ITEM_TOOL_NAMES = Object.freeze([
 ]);
 const WORK_ITEM_TOOL_ALLOWLIST = new Set(WORK_ITEM_TOOL_NAMES);
 const DEFAULT_PROGRESS_INTERVAL_MS = 200;
+const ACTION_INPUT_QUOTE_MAX_BYTES = 8 * 1024;
+
+export function renderPendingActionInput(item, attachmentFileById = new Map()) {
+  const attachments = Array.isArray(item?.attachments) ? item.attachments : [];
+  const attachmentLines = attachments.map(attachment => {
+    const file = attachmentFileById.get(attachment.id);
+    return file ? `- ${attachment.name}: ${file.ref}` : `- ${attachment.name}`;
+  });
+  const quoteContext = sessionMessageQuotePrompt(item?.quote, {
+    maxBytes: ACTION_INPUT_QUOTE_MAX_BYTES,
+  });
+  return [item?.text || '', quoteContext, attachmentLines.length > 0
+    ? `Additional WorkItem attachments:\n${attachmentLines.join('\n')}` : '']
+    .filter(Boolean).join('\n\n');
+}
 
 function structuredOutcome(value) {
   return value && typeof value === 'object'
@@ -1226,13 +1242,7 @@ export class WorkItemRunner {
       ) || [];
       const accepted = [];
       for (const item of pending) {
-        const attachmentLines = item.attachments.map(attachment => {
-          const file = attachmentFileById.get(attachment.id);
-          return file ? `- ${attachment.name}: ${file.ref}` : `- ${attachment.name}`;
-        });
-        const content = [item.text, attachmentLines.length > 0
-          ? `Additional WorkItem attachments:\n${attachmentLines.join('\n')}` : '']
-          .filter(Boolean).join('\n\n');
+        const content = renderPendingActionInput(item, attachmentFileById);
         if (!content) continue;
         pendingEntriesById.set(String(item.id), item);
         accepted.push({

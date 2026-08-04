@@ -155,6 +155,8 @@ export default {
     projects: { type: Array, default: () => [] },
     activeRoute: { type: Object, default: null },
     isSessionUnread: { type: Function, default: null },
+    isSessionSyncing: { type: Function, default: null },
+    sessionSyncRefreshToken: { type: Number, default: 0 },
     processingConversations: { type: Object, default: () => ({}) },
     isYeaftSessionProcessing: { type: Function, default: null },
     agents: { type: Array, default: () => [] },
@@ -350,6 +352,10 @@ export default {
     },
     isUnread(row) {
       return typeof this.isSessionUnread === 'function' ? !!this.isSessionUnread(row) : false;
+    },
+    isSyncing(row) {
+      void this.sessionSyncRefreshToken;
+      return typeof this.isSessionSyncing === 'function' ? !!this.isSessionSyncing(row) : false;
     },
     isProjectUnread(project) {
       const rows = this.projectSessionRows.get(projectIdentityKey(project)) || [];
@@ -948,6 +954,9 @@ export default {
                 <span class="sidebar-session-copy">
                   <span class="title" :title="row.title">
                     <span v-if="isProcessing(row)" class="processing-dot" :aria-label="$t('sidebar.sessions.processing')"></span>
+                    <span v-if="isSyncing(row)" class="sidebar-session-syncing" role="status" :aria-label="$t('sidebar.sessions.syncing')">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    </span>
                     <span class="sidebar-session-title-text">{{ row.title }}</span>
                     <span v-if="isUnread(row)" class="sidebar-session-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
                   </span>
@@ -1002,6 +1011,9 @@ export default {
             <span class="sidebar-session-copy">
               <span class="title" :title="row.title">
                 <span v-if="isProcessing(row)" class="processing-dot" :aria-label="$t('sidebar.sessions.processing')"></span>
+                <span v-if="isSyncing(row)" class="sidebar-session-syncing" role="status" :aria-label="$t('sidebar.sessions.syncing')">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                </span>
                 <span class="sidebar-session-title-text">{{ row.title }}</span>
                 <span v-if="isUnread(row)" class="sidebar-session-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
               </span>

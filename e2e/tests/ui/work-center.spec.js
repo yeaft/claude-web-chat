@@ -590,6 +590,7 @@ test.describe('Work Center responsive UI', () => {
         [],
         agentId,
         { planRevision: item.planRevision, ledgerRevision: item.ledgerRevision, coordinatorRevision: 0 },
+        { id: 'assistant-1', role: 'assistant', author: 'Omni', content: 'Original answer' },
       );
     }, { agentId: mockAgent.agentId, item: OPEN_ITEM_DETAIL });
     const request = await requestPromise;
@@ -603,6 +604,7 @@ test.describe('Work Center responsive UI', () => {
         planRevision: 2,
         ledgerRevision: 4,
         coordinatorRevision: 0,
+        quote: { id: 'assistant-1', role: 'assistant', author: 'Omni', content: 'Original answer' },
       },
     });
     expect(request.payload.clientMessageId).toEqual(expect.any(String));
@@ -757,8 +759,22 @@ test.describe('Work Center responsive UI', () => {
   test('keeps Conversation primary and opens Actions only on demand', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 1600, height: 900 });
+    const conversationDetail = {
+      ...OPEN_ITEM_DETAIL,
+      messages: [
+        {
+          id: 'conversation-user', role: 'user', status: 'completed',
+          text: 'Keep this change small.', createdAt: Date.now() - 1, updatedAt: Date.now() - 1,
+        },
+        {
+          id: 'conversation-assistant', role: 'assistant', status: 'completed',
+          speaker: { id: 'omni', name: 'Omni' }, text: 'I will update only the required surfaces.',
+          createdAt: Date.now(), updatedAt: Date.now(),
+        },
+      ],
+    };
     const select = chatPage.locator('.work-center-card').click();
-    await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
+    await respondToWorkCenterOp(mockAgent, 'get', conversationDetail);
     await select;
 
     const detail = chatPage.locator('.work-center-detail');
@@ -772,6 +788,26 @@ test.describe('Work Center responsive UI', () => {
     await expect(actionsButton).toHaveAttribute('aria-expanded', 'false');
     await expect(chatPage).not.toHaveURL(/workContent=/);
     await expect(detail.locator('textarea')).toHaveCount(1);
+    const userTurn = conversation.locator('.user-turn-block');
+    const assistantTurn = conversation.locator('.vp-turn-block');
+    await expect(userTurn.locator('.message-user-block')).toContainText('Keep this change small.');
+    await expect(userTurn.locator('.message-user-actions')).toHaveCount(1);
+    await expect(assistantTurn.locator('.turn-footer')).toHaveCount(1);
+    await userTurn.getByRole('button', { name: 'Edit' }).click();
+    await expect(conversation.locator('textarea')).toHaveValue('Keep this change small.');
+    await conversation.locator('textarea').fill('');
+    await assistantTurn.getByRole('button', { name: 'Quote' }).click();
+    await expect(conversation.locator('.work-center-message-quote')).toContainText('I will update only the required surfaces.');
+    const quotedSend = respondToWorkCenterOp(mockAgent, 'post_work_item_message', {
+      accepted: true, turnId: 'quoted-turn',
+    });
+    await conversation.locator('textarea').fill('Follow this exact context.');
+    await conversation.getByRole('button', { name: 'Send to Coordinator' }).click();
+    const quotedRequest = await quotedSend;
+    expect(quotedRequest.payload.quote).toMatchObject({
+      role: 'assistant', author: 'Omni · Coordinator', content: 'I will update only the required surfaces.',
+    });
+    await expect(conversation.locator('.work-center-message-quote')).toHaveCount(0);
 
     await actionsButton.click();
     await expect(content).toBeVisible();
@@ -857,8 +893,8 @@ test.describe('Work Center responsive UI', () => {
       waitingText: '.work-center-action-waiting p',
       messageList: '.work-center-action-message-list',
       message: '.work-center-action-message',
-      messageHeader: '.work-center-action-message header',
-      speaker: '.work-center-action-message header strong',
+      messageHeader: '.work-center-action-message .vp-turn-block-main-header',
+      speaker: '.work-center-action-message .vp-turn-block-name',
       attachmentList: '.work-center-attachment-list',
       attachmentChip: '.work-center-attachment-chip',
     });
@@ -880,8 +916,8 @@ test.describe('Work Center responsive UI', () => {
       waitingText: '.work-center-action-waiting p',
       messageList: '.work-center-action-message-list',
       message: '.work-center-action-message',
-      messageHeader: '.work-center-action-message header',
-      speaker: '.work-center-action-message header strong',
+      messageHeader: '.work-center-action-message .vp-turn-block-main-header',
+      speaker: '.work-center-action-message .vp-turn-block-name',
       attachmentList: '.work-center-attachment-list',
       attachmentChip: '.work-center-attachment-chip',
     });
@@ -914,10 +950,28 @@ test.describe('Work Center responsive UI', () => {
     const cards = actionList.locator('.work-center-action-card');
     const workflow = chatPage.locator('.work-center-workflow');
     await expect(cards).toHaveCount(24);
+    const target = chatPage.getByTestId('work-center-composer-target');
+    await workflow.getByRole('button', { name: 'Close Actions' }).click();
+    await target.locator('.modern-select-trigger').click();
+    const targetMenu = chatPage.locator('.work-center-composer-target-menu');
+    const targetList = targetMenu.locator('.modern-select-list');
+    await expect(targetMenu).toBeVisible();
+    await chatPage.waitForTimeout(180);
+    const targetMenuHeight = await targetMenu.evaluate(element => element.getBoundingClientRect().height);
+    for (let index = 0; index < 8; index += 1) {
+      await targetList.evaluate((element, step) => {
+        element.scrollTop = step % 2 ? element.scrollHeight : 0;
+        element.dispatchEvent(new Event('scroll', { bubbles: true }));
+      }, index);
+      await expect.poll(() => targetMenu.evaluate(element => element.getBoundingClientRect().height))
+        .toBeCloseTo(targetMenuHeight, 0);
+    }
+    await chatPage.keyboard.press('Escape');
+    await chatPage.getByRole('button', { name: /^\d+ Actions$/ }).click();
     const paneWidth = await chatPage.locator('.work-center-content-pane')
       .evaluate(element => element.getBoundingClientRect().width);
-    expect(paneWidth).toBeGreaterThanOrEqual(280);
-    expect(paneWidth).toBeLessThanOrEqual(340);
+    expect(paneWidth).toBeGreaterThanOrEqual(380);
+    expect(paneWidth).toBeLessThanOrEqual(420);
     await cards.last().scrollIntoViewIfNeeded();
     await expect(cards.last()).toBeInViewport();
     const scroll = await workflow.locator('.work-center-content-scroll').evaluate(element => ({
@@ -1643,9 +1697,9 @@ test.describe('Work Center responsive UI', () => {
     await expect(waitingQuestion).toContainText('Input required');
     await expect(waitingQuestion).toContainText('Choose PostgreSQL or SQLite before the migration continues.');
     const conversation = chatPage.locator('.work-center-conversation');
-    await expect(conversation.locator('.work-center-item-message-list article.role-assistant header strong'))
+    await expect(conversation.locator('.work-center-item-message-list .role-assistant .vp-turn-block-name'))
       .toHaveText('Omni · Coordinator');
-    await expect(actionDetail.locator('.work-center-action-message header strong'))
+    await expect(actionDetail.locator('.work-center-action-message .vp-turn-block-name'))
       .toHaveText('Linus · Action 1');
     const composer = conversation.locator('textarea');
     const target = conversation.getByTestId('work-center-composer-target');
@@ -1823,7 +1877,7 @@ test.describe('Work Center responsive UI', () => {
       await expect(conversation).toContainText(item.status === 'done'
         ? 'Yeaft confirmed every acceptance criterion.'
         : 'Yeaft recorded the cancellation.');
-      await expect(conversation.locator('article.role-assistant header strong')).toHaveText('Coordinator');
+      await expect(conversation.locator('.role-assistant .vp-turn-block-name')).toHaveText('Coordinator');
       await expect(conversation.locator('.work-center-conversation-readonly')).toBeVisible();
       await expect(conversation.locator('.work-center-item-message-input')).toHaveCount(0);
       await expect(conversation.locator('textarea')).toHaveCount(0);
@@ -1834,7 +1888,7 @@ test.describe('Work Center responsive UI', () => {
       await expect(actionDetail).toContainText(item.status === 'done'
         ? 'Verified and released the layout fix.'
         : 'Execution stopped without publishing changes.');
-      await expect(actionDetail.locator('.work-center-action-message header strong')).toHaveText('Action 1');
+      await expect(actionDetail.locator('.work-center-action-message .vp-turn-block-name')).toHaveText('Action 1');
       await expect(actionDetail.locator('.work-center-action-composer')).toHaveCount(0);
       await expect(actionDetail.locator('textarea')).toHaveCount(0);
       await expect(actionDetail).not.toContainText('Choose this Action in the Work Item composer');
@@ -1906,14 +1960,15 @@ test.describe('Work Center responsive UI', () => {
           const rect = root.getBoundingClientRect();
           const assistant = root.querySelector('.role-assistant');
           const user = root.querySelector('.role-user');
+          const userBubble = user.querySelector('.message-user-block');
           return {
             left: rect.left,
             right: rect.right,
             width: rect.width,
             scrollWidth: root.scrollWidth,
             assistantText: getComputedStyle(assistant).color,
-            userText: getComputedStyle(user).color,
-            userBackground: getComputedStyle(user).backgroundColor,
+            userText: getComputedStyle(userBubble).color,
+            userBackground: getComputedStyle(userBubble).backgroundColor,
           };
         });
         expect(layout.left).toBeGreaterThanOrEqual(0);
@@ -1927,8 +1982,8 @@ test.describe('Work Center responsive UI', () => {
           waitingText: '.work-center-action-waiting p',
           messageList: '.work-center-action-message-list',
           message: '.work-center-action-message',
-          messageHeader: '.work-center-action-message header',
-          speaker: '.work-center-action-message header strong',
+          messageHeader: '.work-center-action-message .vp-turn-block-main-header',
+          speaker: '.work-center-action-message .vp-turn-block-name',
           attachmentList: '.work-center-attachment-list',
           attachmentChip: '.work-center-attachment-chip',
         });
@@ -2435,9 +2490,9 @@ test.describe('Work Center responsive UI', () => {
     await select;
 
     const conversation = chatPage.locator('.work-center-conversation');
-    const userMessage = conversation.locator('.work-center-item-message-list article.role-user');
+    const userMessage = conversation.locator('.work-center-item-message-list .role-user');
     await expect(userMessage).toContainText(longUserMessage);
-    await expect(userMessage.locator('p')).toHaveText(longUserMessage);
+    await expect(userMessage.locator('.message-content')).toHaveText(longUserMessage);
     const sharedComposer = conversation.locator('[data-message-composer]');
     await expect(sharedComposer).toHaveCount(1);
     await expect(sharedComposer.locator('textarea')).toHaveAttribute('rows', '2');
@@ -2506,7 +2561,7 @@ test.describe('Work Center responsive UI', () => {
         const conversation = detail.querySelector('.work-center-conversation');
         const messageList = detail.querySelector('.work-center-item-message-list');
         const userArticle = messageList.querySelector('.role-user');
-        const userText = userArticle.querySelector('p');
+        const userText = userArticle.querySelector('.message-content');
         const overflowArticle = messageList.lastElementChild;
         const renderedAttachmentList = overflowArticle.querySelector('.work-center-message-attachments');
         const renderedAttachmentChip = renderedAttachmentList.querySelector('.work-center-attachment-chip');
@@ -2648,8 +2703,8 @@ test.describe('Work Center responsive UI', () => {
       expect(metrics.breadcrumbTop).toBeGreaterThanOrEqual(4);
       expect(metrics.actionsRight).toBeGreaterThanOrEqual(10);
       if (width === 1400) {
-        expect(metrics.workflowWidth).toBeGreaterThanOrEqual(280);
-        expect(metrics.workflowWidth).toBeLessThanOrEqual(340);
+        expect(metrics.workflowWidth).toBeGreaterThanOrEqual(380);
+        expect(metrics.workflowWidth).toBeLessThanOrEqual(420);
       } else {
         expect(metrics.workflowWidth).toBe(0);
       }
@@ -2720,9 +2775,9 @@ test.describe('Work Center responsive UI', () => {
         main: '.work-center-detail-main',
         conversation: '.work-center-conversation',
         messageList: '.work-center-item-message-list',
-        article: '.work-center-item-message-list article:last-child',
-        attachmentList: '.work-center-item-message-list article:last-child .work-center-message-attachments',
-        attachmentChip: '.work-center-item-message-list article:last-child .work-center-attachment-chip',
+        message: '.work-center-item-message-list > :last-child',
+        attachmentList: '.work-center-item-message-list > :last-child .work-center-message-attachments',
+        attachmentChip: '.work-center-item-message-list > :last-child .work-center-attachment-chip',
         composer: '[data-message-composer]',
       });
     }

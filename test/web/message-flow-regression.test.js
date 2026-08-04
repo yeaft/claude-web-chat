@@ -19,7 +19,6 @@ import {
 } from '../../web/components/UnifiedSessionList.js';
 import { openImagePreview } from '../../web/utils/imagePreview.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
-import WorkCenterPage from '../../web/components/WorkCenterPage.js';
 import enMessages from '../../web/i18n/en.js';
 import zhCNMessages from '../../web/i18n/zh-CN.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
@@ -115,6 +114,7 @@ const { useVpStore } = await import('../../web/stores/vp.js');
 const { default: SessionCreateModal } = await import('../../web/components/SessionCreateModal.js');
 const { default: ChatPage } = await import('../../web/components/ChatPage.js');
 const { default: YeaftSidebar } = await import('../../web/components/YeaftSidebar.js');
+const { default: WorkCenterPage } = await import('../../web/components/WorkCenterPage.js');
 const {
   handleConversationCreated,
   handleConversationResumed,
@@ -370,6 +370,37 @@ describe('message flow regressions', () => {
     document.body.querySelector('.image-preview-overlay').dispatchEvent(new Event('transitionend'));
     userImageMessage.unmount();
 
+    const externalImage = {
+      id: 'work-center-image', isImage: true, preview: '/work-center-image.png', name: 'Work Center image',
+    };
+    const externalFile = {
+      id: 'work-center-file', isImage: false, name: 'work-center.txt', mimeType: 'text/plain',
+    };
+    const workCenterMessage = mount(MessageItem, {
+      attachTo: document.body,
+      props: {
+        externalAttachmentOpen: true,
+        message: { type: 'user', attachments: [externalImage, externalFile] },
+      },
+      global: { mocks: { $t: key => key }, provide: { t: key => key } },
+    });
+    await workCenterMessage.get('.attachments-badge').trigger('click');
+    const externalAttachmentButtons = workCenterMessage.findAll('.user-attachment-item');
+    await externalAttachmentButtons[0].trigger('click');
+    await externalAttachmentButtons[1].trigger('click');
+    expect(workCenterMessage.emitted('open-attachment')).toEqual([
+      [expect.objectContaining({
+        attachment: expect.objectContaining({ id: externalImage.id }),
+        trigger: externalAttachmentButtons[0].element,
+      })],
+      [expect.objectContaining({
+        attachment: expect.objectContaining({ id: externalFile.id }),
+        trigger: externalAttachmentButtons[1].element,
+      })],
+    ]);
+    expect(document.body.querySelector('.image-preview-overlay')).toBeNull();
+    workCenterMessage.unmount();
+
     const assistantImages = mount(AssistantTurn, {
       attachTo: document.body,
       props: {
@@ -449,6 +480,7 @@ describe('message flow regressions', () => {
         activeRoute: { runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: 'visible' },
         processingConversations: { visible: true },
         isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'user_1770305719:server-instance',
+        isSessionSyncing: row => row.catalogKey === 'chat:visible',
         isSessionUnread: row => row.catalogKey === 'chat:visible' || row.catalogKey.endsWith(':pinned'),
         workCenterOpen: true,
         agents: [
@@ -804,6 +836,10 @@ describe('message flow regressions', () => {
     ] });
     expect(sidebar.findAll('.session-item.processing')).toHaveLength(2);
     expect(sidebar.findAll('.processing-dot')).toHaveLength(2);
+    expect(sidebar.findAll('.sidebar-session-syncing')).toHaveLength(1);
+    expect(sidebar.get('.sidebar-session-syncing').attributes('aria-label')).toBe('sidebar.sessions.syncing');
+    await sidebar.setProps({ isSessionSyncing: () => false, sessionSyncRefreshToken: 1 });
+    expect(sidebar.findAll('.sidebar-session-syncing')).toHaveLength(0);
     expect(sidebar.findAll('.session-pin-icon')).toHaveLength(1);
     expect(sidebar.findAll('.sidebar-session-meta')).toHaveLength(0);
     expect(sidebar.findAll('.sidebar-session-unread')).toHaveLength(3);
@@ -1330,8 +1366,12 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarSource).toContain(':project-store="chatStore"');
     expect(yeaftSidebarSource).toContain(':active-route="chatStore.activeSessionRoute"');
     expect(chatPageSource).toContain(':processing-conversations="store.processingConversations"');
+    expect(chatPageSource).toContain(':is-session-syncing="isCatalogSessionSyncing"');
+    expect(chatPageSource).toContain(':session-sync-refresh-token="store.sessionHistorySyncRefreshToken"');
     expect(chatPageSource).toContain(':agents="store.agents"');
     expect(yeaftSidebarSource).toContain(':is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"');
+    expect(yeaftSidebarSource).toContain(':is-session-syncing="isCatalogSessionSyncing"');
+    expect(yeaftSidebarSource).toContain(':session-sync-refresh-token="chatStore.sessionHistorySyncRefreshToken"');
     expect(yeaftSidebarSource).toContain(':agents="chatStore.agents"');
     expect(chatPageSource).not.toContain("action === 'split'");
     expect(chatPageSource).not.toContain('splitScreen.splitToPanel');
@@ -1341,6 +1381,7 @@ describe('message flow regressions', () => {
     expect(websocket).toContain('store.sessionCatalog = [];');
     expect(chatStoreSource).toContain("this.setActiveSessionFilter(sessionId, { agentId, force: true });");
     expect(chatStoreSource).toContain('requestChatHistory(conversationId');
+    expect(readFileSync(resolve(import.meta.dirname, '../../web/components/ChatHeader.js'), 'utf8')).not.toContain('store.messagesMap[effectiveConvId.value] = []');
     expect(chatStoreSource).toContain("type: 'set_session_ui_metadata'");
     expect(chatStoreSource).toContain("type: 'reorder_session_catalog'");
     expect((chatStoreSource.match(/type: 'sync_messages'/g) || [])).toHaveLength(1);
@@ -1632,6 +1673,18 @@ describe('message flow regressions', () => {
     const workCenterAgentListRule = workCenterCss.match(/\.work-center-agent-menu \.modern-select-list\s*\{([^}]*)\}/s)?.[1] || '';
     expect(workCenterAgentListRule).not.toMatch(/(^|[;\s])height\s*:/);
     expect(workCenterCss).toMatch(/\.work-center-agent-menu \.modern-select-option\s*\{[^}]*min-height:\s*32px;[^}]*box-sizing:\s*border-box;/s);
+    const agentList = agentMenu.querySelector('.modern-select-list');
+    Object.defineProperty(agentList, 'scrollHeight', { configurable: true, value: 260 });
+    Object.defineProperty(agentMenu, 'scrollHeight', { configurable: true, value: 48 });
+    window.dispatchEvent(new Event('scroll'));
+    await Vue.nextTick();
+    const stableMenuHeight = agentMenu.style.maxHeight;
+    expect(stableMenuHeight).not.toBe('48px');
+    for (let index = 0; index < 6; index += 1) {
+      agentList.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await Vue.nextTick();
+      expect(agentMenu.style.maxHeight).toBe(stableMenuHeight);
+    }
     agentMenu.querySelectorAll('.modern-select-option')[1].click();
     await Vue.nextTick();
     expect(workCenterStore.enterWorkCenter).toHaveBeenCalledWith('agent-b');
@@ -1680,7 +1733,15 @@ describe('message flow regressions', () => {
     expect(workCenterCss).not.toContain('width: min(100%, 1120px);');
     expect(variables).toContain('--work-center-conversation-column-width: var(--session-content-width);');
     expect(variables).toContain('--work-center-conversation-gutter: 16px;');
-    expect(variables).toContain('--work-center-actions-pane-width: 320px;');
+    expect(variables).toContain('--work-center-actions-pane-width: 400px;');
+    expect(workCenter).toContain("import UserTurnBlock from './UserTurnBlock.js'");
+    expect(workCenter).toContain("import VpTurnBlock from './VpTurnBlock.js'");
+    expect(workCenter).toContain(':display-name-override="block.speakerName"');
+    expect(workCenter).toContain('@edit-as-new="editWorkItemMessageAsNew"');
+    expect(workCenter).not.toContain('<article v-for="message in selected.messages"');
+    const modernSelect = readFileSync(resolve(import.meta.dirname, '../../web/components/ModernSelect.js'), 'utf8');
+    expect(modernSelect).toContain('const desiredHeight = Math.min(list.scrollHeight + chromeHeight, 304);');
+    expect(modernSelect).not.toContain('Math.min(menu.scrollHeight, 304)');
     expect(variables).not.toContain('--work-center-triage-max-height');
     expect(variables).not.toContain('--work-center-conversation-min-height');
     expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-detail-layout\.content-open \.work-center-conversation-pane\s*\{[\s\S]*?display: none;/);
@@ -1716,11 +1777,13 @@ describe('message flow regressions', () => {
     expect(store.hydrateWorkCenterBrowserState()).toBe(true);
     expect(store.saveWorkCenterComposerDraft('agent-a', 'work-item-owner', {
       text: 'owner A private draft',
+      quote: { id: 'assistant-1', role: 'assistant', author: 'Omni', content: 'Original answer' },
       target: { kind: 'coordinator' },
     })).toBe(true);
     const ownerAEnvelope = store.prepareWorkCenterMessageEnvelope({
       agentId: 'agent-a', workItemId: 'work-item-owner',
       target: { kind: 'coordinator' }, text: 'owner A durable outbox',
+      quote: { id: 'assistant-1', role: 'assistant', author: 'Omni', content: 'Original answer' },
       attachments: [{ fileId: 'old-file', name: 'old.txt', mimeType: 'text/plain', size: 3 }],
       revision: 1, planRevision: 2, ledgerRevision: 3, coordinatorRevision: 4,
     });
@@ -1738,6 +1801,7 @@ describe('message flow regressions', () => {
       clientMessageId: ownerAEnvelope.clientMessageId,
       target: ownerAEnvelope.target,
       text: ownerAEnvelope.text,
+      quote: ownerAEnvelope.quote,
       revision: 1,
       planRevision: 2,
       ledgerRevision: 3,
@@ -1749,9 +1813,9 @@ describe('message flow regressions', () => {
     store._workCenterBrowserFence = null;
     expect(store.hydrateWorkCenterBrowserState()).toBe(true);
     expect(store.loadWorkCenterComposerDraft('agent-a', 'work-item-owner'))
-      .toMatchObject({ text: 'owner A private draft' });
+      .toMatchObject({ text: 'owner A private draft', quote: { content: 'Original answer' } });
     expect(store.loadWorkCenterMessageEnvelope('agent-a', 'work-item-owner'))
-      .toMatchObject({ clientMessageId: ownerAEnvelope.clientMessageId });
+      .toMatchObject({ clientMessageId: ownerAEnvelope.clientMessageId, quote: { content: 'Original answer' } });
 
     bindWorkCenterBrowserOwner('owner-b');
     expect(store.workCenterComposerDrafts).toEqual({});
@@ -3962,6 +4026,142 @@ describe('message flow regressions', () => {
     window.Pinia = originalWindowPinia;
 
     wrapper.unmount();
+  });
+
+  it('refreshes repeated catalog clicks without clearing cached Session messages', () => {
+    storeFactories.clear();
+    runtimeSessionsStore.sessionList = [
+      { id: 'session-a', agentId: 'agent-a' },
+      { id: 'chat-a', agentId: 'agent-a' },
+    ];
+    runtimeSessionsStore.sessions = {
+      'agent-a\u001fsession-a': { id: 'session-a', agentId: 'agent-a' },
+    };
+    runtimeSessionsStore.setActive('session-a', 'agent-a');
+
+    const store = useChatStore();
+    store.sendWsMessage = vi.fn(() => true);
+    store.loadOpenedYeaftSessionsForConnectedAgents = vi.fn();
+    store.currentView = 'yeaft';
+    store.currentAgent = 'agent-a';
+    store.currentAgentInfo = { id: 'agent-a' };
+    store.agents = [{ id: 'agent-a', online: true }];
+    store.yeaftActiveSessionFilter = 'session-a';
+    store.yeaftSessionAgentById = { 'session-a': 'agent-a' };
+    store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-a' };
+    store.yeaftConversationId = 'conv-a';
+    store.activeConversations = ['conv-a'];
+    const cachedYeaftRow = {
+      id: 'cached-yeaft', type: 'assistant', content: 'cached answer', sessionId: 'session-a', timestamp: 1,
+    };
+    store.messagesMap = { 'conv-a': [cachedYeaftRow] };
+    store.yeaftSessionHistoryState = {
+      'agent-a\u001fsession-a': {
+        loaded: true, loading: false, latestSeq: 7, hasMore: false, count: 1,
+      },
+    };
+
+    const yeaftDescriptor = {
+      catalogKey: 'yeaft:agent-a:session-a',
+      routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: 'session-a' },
+    };
+    expect(store.openCatalogSession(yeaftDescriptor)).toBe(true);
+    expect(store.messagesMap['conv-a']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'cached-yeaft', content: 'cached answer' }),
+    ]));
+    const firstYeaftLoads = store.sendWsMessage.mock.calls
+      .map(call => call[0])
+      .filter(msg => msg.type === 'yeaft_load_history');
+    expect(firstYeaftLoads).toHaveLength(1);
+    expect(firstYeaftLoads[0]).toMatchObject({
+      agentId: 'agent-a', sessionId: 'session-a', limit: 5,
+    });
+    expect(firstYeaftLoads[0]).not.toHaveProperty('afterSeq');
+    expect(store.isSessionHistorySyncing(yeaftDescriptor.routeRef)).toBe(true);
+    expect(store.openCatalogSession(yeaftDescriptor)).toBe(true);
+    expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_load_history')).toHaveLength(1);
+    expect(store.messagesMap['conv-a']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'cached-yeaft', content: 'cached answer' }),
+    ]));
+
+    store.handleMessage({
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      sessionId: 'session-a',
+      requestId: firstYeaftLoads[0].requestId,
+      mode: 'recent',
+      messages: [{ id: 'fresh-yeaft', role: 'assistant', content: 'fresh answer', sessionId: 'session-a', ts: 2 }],
+      latestSeq: 8,
+      hasMore: false,
+    });
+    expect(store.isSessionHistorySyncing(yeaftDescriptor.routeRef)).toBe(false);
+    expect(store.messagesMap['conv-a']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'fresh-yeaft', content: 'fresh answer' }),
+    ]));
+
+    store.conversations = [{ id: 'chat-a', agentId: 'agent-a', type: 'chat', workDir: '/repo-a' }];
+    store.currentView = 'chat';
+    store._yeaftTransitionActive = false;
+    store._savedActiveConversations = null;
+    store._savedChatIdentity = null;
+    store.panels = [];
+    store.activePanelId = null;
+    store.activeConversations = ['chat-a'];
+    const cachedChatRow = {
+      id: 'cached-chat', type: 'assistant', content: 'cached chat', dbMessageId: 12,
+    };
+    store.messagesMap['chat-a'] = [cachedChatRow];
+    store.chatHistoryRequests = {};
+    store.sendWsMessage.mockClear();
+    const chatDescriptor = {
+      catalogKey: 'chat:chat-a',
+      routeRef: { runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: 'chat-a' },
+    };
+    expect(store.openCatalogSession(chatDescriptor)).toBe(true);
+    expect(store.messagesMap['chat-a']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'cached-chat', content: 'cached chat', dbMessageId: 12 }),
+    ]));
+    expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'sync_messages')).toEqual([
+      expect.objectContaining({ conversationId: 'chat-a', afterMessageId: 12 }),
+    ]);
+    expect(store.isSessionHistorySyncing(chatDescriptor.routeRef)).toBe(true);
+    store.openCatalogSession(chatDescriptor);
+    expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'sync_messages')).toHaveLength(1);
+
+    store.sendWsMessage = vi.fn(() => false);
+    store.chatHistoryRequests = {};
+    expect(store.syncChatConversationHistory('chat-a')).toBeNull();
+    expect(store.isSessionHistorySyncing(chatDescriptor.routeRef)).toBe(false);
+  });
+
+  it('keeps split-pane cached messages visible while repeated clicks synchronize once', () => {
+    storeFactories.clear();
+    const store = useChatStore();
+    store.sendWsMessage = vi.fn(() => true);
+    store.currentView = 'chat';
+    store.currentAgent = 'agent-a';
+    store.conversations = [{ id: 'chat-a', agentId: 'agent-a', type: 'chat', workDir: '/repo-a' }];
+    store.panels = [
+      { id: 'panel-a', conversationId: 'chat-a' },
+      { id: 'panel-b', conversationId: null },
+    ];
+    store.activePanelId = 'panel-a';
+    store.activeConversations = ['chat-a'];
+    const cachedRow = { id: 'split-cache', type: 'assistant', content: 'cached split', dbMessageId: 21 };
+    store.messagesMap = { 'chat-a': [cachedRow] };
+    store.chatHistoryRequests = {};
+
+    store.setPanelConversation('panel-a', 'chat-a', { refresh: true });
+    store.setPanelConversation('panel-a', 'chat-a', { refresh: true });
+
+    expect(store.messagesMap['chat-a']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'split-cache', content: 'cached split', dbMessageId: 21 }),
+    ]));
+    expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'sync_messages')).toEqual([
+      expect.objectContaining({ conversationId: 'chat-a', afterMessageId: 21 }),
+    ]);
+    expect(store.isSessionHistorySyncing({ runtimeProvider: 'copilot', sessionId: 'chat-a' })).toBe(true);
   });
 
   it('opens an exact cross-Agent Session without loading the previous Agent and migrates the full runtime state', () => {
