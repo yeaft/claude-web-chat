@@ -15,9 +15,9 @@ import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
 import {
-  cleanupManagedCliRuntimePaths,
   ensureManagedCliTools,
   prepareManagedCliToolEnvironment,
+  runAfterManagedCliRuntimeCleanup,
   summarizeManagedCliResults,
 } from './yeaft/managed-cli.js';
 
@@ -315,31 +315,32 @@ async function ensureYeaftSkills() {
 }
 
 // 优雅退出
-async function cleanup() {
-  // 清理所有终端
-  for (const [, term] of ctx.terminals) {
-    if (term.pty) {
-      try { term.pty.kill(); } catch {}
+function cleanup() {
+  return runAfterManagedCliRuntimeCleanup(async () => {
+    // 清理所有终端
+    for (const [, term] of ctx.terminals) {
+      if (term.pty) {
+        try { term.pty.kill(); } catch {}
+      }
+      if (term.timer) clearTimeout(term.timer);
     }
-    if (term.timer) clearTimeout(term.timer);
-  }
-  ctx.terminals.clear();
+    ctx.terminals.clear();
 
-  for (const [, state] of ctx.conversations) {
-    if (state.abortController) {
-      state.abortController.abort();
+    for (const [, state] of ctx.conversations) {
+      if (state.abortController) {
+        state.abortController.abort();
+      }
+      if (state.inputStream) {
+        state.inputStream.done();
+      }
     }
-    if (state.inputStream) {
-      state.inputStream.done();
-    }
-  }
-  ctx.conversations.clear();
-  try {
-    const { shutdownWorkCenter } = await import('./yeaft/work-center/bridge.js');
-    await shutdownWorkCenter();
-  } catch {}
-  cleanupManagedCliRuntimePaths();
-  if (ctx.ws) ctx.ws.close();
+    ctx.conversations.clear();
+    try {
+      const { shutdownWorkCenter } = await import('./yeaft/work-center/bridge.js');
+      await shutdownWorkCenter();
+    } catch {}
+    if (ctx.ws) ctx.ws.close();
+  });
 }
 
 process.on('SIGINT', async () => {

@@ -633,6 +633,15 @@ export function cleanupManagedCliRuntimePaths() {
   }
 }
 
+/**
+ * Run shutdown work only after managed CLI runtime paths are synchronously
+ * cleaned. The returned task may remain pending without delaying that cleanup.
+ */
+export function runAfterManagedCliRuntimeCleanup(task) {
+  cleanupManagedCliRuntimePaths();
+  return task();
+}
+
 function registerRuntimePathDirectory(path) {
   runtimePathDirectories.add(path);
   if (runtimePathCleanupRegistered) return;

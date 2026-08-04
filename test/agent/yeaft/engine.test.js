@@ -31,6 +31,7 @@ import {
   prepareManagedCliToolEnvironment,
   prependManagedCliBinToPath,
   resolveManagedCliCommand,
+  runAfterManagedCliRuntimeCleanup,
 } from '../../../agent/yeaft/managed-cli.js';
 import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
@@ -4239,7 +4240,7 @@ describe('managed CLI setup and fast tool integration', () => {
     rmSync(capturedArgs, { force: true });
   }
 
-  it('exposes a verified managed rg to Bash only after its startup install is ready', async () => {
+  async function verifyManagedRgEnvironment() {
     if (process.platform === 'win32') return;
 
     const yeaftDir = tempDir('cli-rg-environment');
@@ -4298,9 +4299,9 @@ describe('managed CLI setup and fast tool integration', () => {
       process.env.PATH = originalPath;
       cleanupManagedCliRuntimePaths();
     }
-  });
+  }
 
-  it('cleans isolated managed rg paths before preserving CLI termination signals', async () => {
+  async function verifyManagedRgSignalCleanup() {
     if (process.platform === 'win32') return;
 
     for (const signal of ['SIGTERM', 'SIGINT']) {
@@ -4364,9 +4365,9 @@ describe('managed CLI setup and fast tool integration', () => {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       }
     }
-  }, 30_000);
+  }
 
-  it('retries isolated managed rg cleanup after a transient removal failure', async () => {
+  async function verifyManagedRgCleanupRetry() {
     if (process.platform === 'win32') return;
 
     const yeaftDir = tempDir('cli-rg-cleanup-retry');
@@ -4398,9 +4399,48 @@ describe('managed CLI setup and fast tool integration', () => {
       if (originalTmpDir === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = originalTmpDir;
     }
-  });
+  }
 
-  it('cleans isolated managed rg paths after normal CLI success and failure', async () => {
+  async function verifyManagedRgAgentShutdownOrder() {
+    if (process.platform === 'win32') return;
+
+    const yeaftDir = tempDir('cli-rg-agent-shutdown-order');
+    const binDir = managedCliBinDir(yeaftDir);
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'rg'), '#!/bin/sh\necho ripgrep 15.2.0\n', { mode: 0o755 });
+    trustManagedCliFixtures(yeaftDir, ['rg']);
+    const runtimeRoot = join(yeaftDir, 'runtime-root');
+    mkdirSync(runtimeRoot);
+    const originalTmpDir = process.env.TMPDIR;
+    process.env.TMPDIR = runtimeRoot;
+    try {
+      const environment = await prepareManagedCliToolEnvironment(Promise.resolve([]), 'rg', {
+        yeaftDir,
+        env: { PATH: '/usr/bin:/bin' },
+      });
+      expect(existsSync(environment.binDir)).toBe(true);
+
+      let laterShutdownStarted = false;
+      const laterShutdown = new Promise(() => {});
+      const shutdown = runAfterManagedCliRuntimeCleanup(() => {
+        laterShutdownStarted = true;
+        return laterShutdown;
+      });
+
+      expect(laterShutdownStarted).toBe(true);
+      expect(existsSync(environment.binDir)).toBe(false);
+      await expect(Promise.race([
+        shutdown.then(() => 'settled'),
+        new Promise(resolveDelay => setTimeout(() => resolveDelay('pending'), 25)),
+      ])).resolves.toBe('pending');
+    } finally {
+      cleanupManagedCliRuntimePaths();
+      if (originalTmpDir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = originalTmpDir;
+    }
+  }
+
+  async function verifyManagedRgNormalExitCleanup() {
     if (process.platform === 'win32') return;
 
     for (const scenario of [
@@ -4463,9 +4503,9 @@ describe('managed CLI setup and fast tool integration', () => {
         expect(stderr).toContain('Invalid stream-json input');
       }
     }
-  }, 30_000);
+  }
 
-  it('does not expose unverified managed binaries or rewrite PATH for system rg', async () => {
+  async function verifyUnverifiedManagedRgIsNotExposed() {
     if (process.platform === 'win32') return;
 
     const unverifiedDir = tempDir('cli-rg-unverified');
@@ -4490,9 +4530,16 @@ describe('managed CLI setup and fast tool integration', () => {
       env: systemEnv,
     })).resolves.toEqual({ name: 'rg', activated: false, command: systemRg });
     expect(systemEnv.PATH).toBe(systemBin);
-  });
+  }
 
   it('keeps managed CLI filters, process, and fallback boundaries', async () => {
+    await verifyManagedRgEnvironment();
+    await verifyManagedRgSignalCleanup();
+    await verifyManagedRgCleanupRetry();
+    await verifyManagedRgAgentShutdownOrder();
+    await verifyManagedRgNormalExitCleanup();
+    await verifyUnverifiedManagedRgIsNotExposed();
+
     const processResult = (overrides = {}) => ({
       code: 0,
       stdout: '',
@@ -5971,5 +6018,5 @@ describe('managed CLI setup and fast tool integration', () => {
       }
     }
     await verifyRipgrepParity();
-  });
+  }, 120_000);
 });
