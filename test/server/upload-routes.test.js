@@ -37,7 +37,9 @@ describe('upload routes', () => {
       op: 'post_work_item_message',
       payload: {
         id: 'work-item-a', clientMessageId, text: 'same durable request', revision: 1,
-        target: { kind: 'coordinator' }, attachments: [staged(fileId)],
+        target: { kind: 'coordinator' },
+        quote: { id: 'assistant-1', role: 'assistant', author: 'Omni', content: 'Original answer' },
+        attachments: [staged(fileId)],
       },
     });
     try {
@@ -49,6 +51,7 @@ describe('upload routes', () => {
       expect(agentFrames).toHaveLength(1);
       expect(agentFrames[0].payload).toMatchObject({
         clientMessageId,
+        quote: { id: 'assistant-1', role: 'assistant', author: 'Omni', content: 'Original answer' },
         files: [{ name: 'note.txt', mimeType: 'text/plain', data: Buffer.from('old!').toString('base64') }],
       });
 
@@ -68,6 +71,7 @@ describe('upload routes', () => {
       expect(agentFrames).toHaveLength(2);
       expect(agentFrames[1].payload).toMatchObject({
         clientMessageId,
+        quote: { id: 'assistant-1', role: 'assistant', author: 'Omni', content: 'Original answer' },
         files: [{ name: 'note.txt', mimeType: 'text/plain', data: Buffer.from('new!').toString('base64') }],
       });
     } finally {

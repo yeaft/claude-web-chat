@@ -1497,53 +1497,30 @@
 }
 
 .work-center-action-message-list {
-  display: grid;
+  display: flex;
   min-width: 0;
-  gap: 18px;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.work-center-action-message-list .user-turn-block-main {
+  max-width: 92%;
 }
 
 .work-center-action-message {
-  display: grid;
   width: 100%;
   min-width: 0;
-  gap: 5px;
   color: var(--text-primary);
 }
 
 .work-center-action-message.role-user {
-  justify-self: end;
-  width: min(92%, 100%);
-  padding: 10px 12px;
-  border-radius: 14px 14px 4px 14px;
-  background: var(--bg-user-msg);
-}
-
-.work-center-action-message header {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.work-center-action-message header strong {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-
-.work-center-action-message header small {
-  flex: 0 0 auto;
-  color: var(--text-muted);
-  font-size: 10px;
+  width: 100%;
 }
 
 .work-center-action-message .markdown-body {
   min-width: 0;
   overflow-wrap: anywhere;
-  color: var(--text-primary);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.55;
 }
 
@@ -1553,6 +1530,34 @@
 
 .work-center-action-message .markdown-body > :last-child {
   margin-bottom: 0;
+}
+
+.work-center-action-message .vp-turn-block-name {
+  min-width: 0;
+  flex-shrink: 1;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.work-center-action-message .vp-turn-block-name.is-static {
+  cursor: default;
+  user-select: text;
+}
+
+.work-center-action-message .vp-turn-block-name.is-static:hover {
+  text-decoration: none;
+}
+
+.work-center-action-message .work-center-attachment-list,
+.work-center-action-message .work-center-attachment-chip {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.work-center-action-message .work-center-attachment-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .work-center-action-empty {
@@ -1706,39 +1711,40 @@
 }
 
 .work-center-item-message-list {
-  display: grid;
+  display: flex;
   width: 100%;
   min-width: 0;
-  gap: 22px;
+  flex-direction: column;
+  gap: 4px;
   padding: 8px 0 20px;
 }
 
-.work-center-item-message-list article {
+.work-center-item-message-list .user-turn-block,
+.work-center-item-message-list .vp-turn-block,
+.work-center-item-message-list > .work-center-original-request {
   width: 100%;
   min-width: 0;
-  color: var(--text-primary);
 }
 
-.work-center-item-message-list article.role-user {
-  justify-self: end;
-  width: min(92%, 920px);
-  padding: 12px 16px;
-  border-radius: 16px 16px 4px 16px;
-  background: var(--bg-user-msg);
+.work-center-item-message-list .user-turn-block-main {
+  max-width: 80%;
 }
 
-.work-center-item-message-list article.role-legacy_instruction {
-  justify-self: start;
+.work-center-item-message-list .user-attachment-item:is(button) {
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.work-center-original-request {
+  margin: 12px 0;
   padding: 10px 12px;
   border-radius: var(--radius-md);
   background: var(--bg-input-wrapper);
+  color: var(--text-primary);
 }
 
-.work-center-item-message-list article.role-assistant {
-  justify-self: start;
-}
-
-.work-center-item-message-list article header {
+.work-center-original-request header {
   display: flex;
   min-width: 0;
   align-items: baseline;
@@ -1747,18 +1753,13 @@
   margin-bottom: 5px;
 }
 
-.work-center-item-message-list article header strong {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--text-secondary);
+.work-center-original-request header strong,
+.work-center-original-request header small {
+  color: var(--text-muted);
   font-size: 11px;
 }
 
-.work-center-item-message-list article small {
-  color: var(--text-muted);
-}
-
-.work-center-item-message-list p {
+.work-center-original-request p {
   margin: 0;
   overflow-wrap: anywhere;
   color: var(--text-primary);
@@ -1767,15 +1768,10 @@
   white-space: pre-wrap;
 }
 
-.work-center-conversation-thinking {
-  color: var(--text-muted) !important;
-}
-
-.work-center-conversation-decision {
-  display: inline-flex;
-  margin-top: 7px;
-  color: var(--accent-blue) !important;
-  font-weight: 600;
+.work-center-message-quote.input-quote-preview {
+  width: 100%;
+  max-width: none;
+  margin: 0;
 }
 
 .work-center-conversation-readonly {

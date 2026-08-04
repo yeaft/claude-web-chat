@@ -385,6 +385,8 @@ function carryCurrentActionInputContext(db, action, extraInputs = [], explicitOn
     return [{
       ...entry,
       inputId,
+      summary: event?.data?.text || entry.summary || '',
+      quote: event?.data?.quote || entry.quote || null,
       attachments: Array.isArray(entry.attachments) && entry.attachments.length > 0
         ? entry.attachments
         : inputAttachments(event),
@@ -400,6 +402,7 @@ function carryCurrentActionInputContext(db, action, extraInputs = [], explicitOn
       role: 'user',
       inputId,
       summary: event.data?.text || '',
+      quote: event.data?.quote || null,
       attachments: inputAttachments(event),
       evidence: [],
     });
@@ -1755,7 +1758,7 @@ export class WorkItemStore {
     return true;
   }
 
-  addActionInput(id, input, expected, attachments = null, addedAttachments = [], clientMessageId = null) {
+  addActionInput(id, input, expected, attachments = null, addedAttachments = [], clientMessageId = null, quote = null) {
     return withTransaction(this.db, () => {
       const sourceKey = typeof clientMessageId === 'string' && clientMessageId
         ? `client:message:${id}:${clientMessageId}` : null;
@@ -1818,6 +1821,7 @@ export class WorkItemStore {
           role: 'user',
           inputId,
           summary: input,
+          quote,
           attachments: projectedAttachments,
           evidence: [],
         });
@@ -1871,6 +1875,7 @@ export class WorkItemStore {
         inputId,
         clientMessageId,
         text: input,
+        quote,
         attachments: projectedAttachments,
       }, { actionId: action.id, runId: eventRunId, actionGeneration: eventGeneration });
       if (action.status === 'running') {
@@ -1896,7 +1901,7 @@ export class WorkItemStore {
           status: 'pending',
           text: input,
           attachments: projectedAttachments,
-          payload: { eventId, inputId, actionGeneration: eventGeneration, actionSpecHash: eventSpecHash },
+          payload: { eventId, inputId, quote, actionGeneration: eventGeneration, actionSpecHash: eventSpecHash },
           createdAt: now,
         }, sourceKey || `pending_action_inputs:event:${eventId}`);
       } else if (sourceKey) {
@@ -1909,7 +1914,7 @@ export class WorkItemStore {
           status: 'consumed',
           text: input,
           attachments: projectedAttachments,
-          payload: { eventId, inputId, actionGeneration: eventGeneration, actionSpecHash: eventSpecHash },
+          payload: { eventId, inputId, quote, actionGeneration: eventGeneration, actionSpecHash: eventSpecHash },
           createdAt: now,
         }, sourceKey);
       }
@@ -1920,8 +1925,8 @@ export class WorkItemStore {
   listPendingActionInputs(actionId, runId, ownerBootId, leaseEpoch) {
     const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
     if (!active || active.action_id !== actionId) return [];
-    return this.db.prepare(`SELECT p.*, ae.id AS action_entry_id, ae.sequence AS action_entry_sequence
-      FROM pending_action_inputs p
+    return this.db.prepare(`SELECT p.*, ae.id AS action_entry_id, ae.sequence AS action_entry_sequence,
+      ae.payload AS action_entry_payload FROM pending_action_inputs p
       LEFT JOIN action_entries ae ON CAST(json_extract(ae.payload, '$.eventId') AS INTEGER) = p.event_id
         AND ae.action_id = p.action_id
       WHERE p.action_id = ? AND p.run_id = ? AND p.action_generation = ? AND p.action_spec_hash = ?
@@ -1932,6 +1937,7 @@ export class WorkItemStore {
       actionEntryId: row.action_entry_id || null,
       sequence: row.action_entry_sequence == null ? null : Number(row.action_entry_sequence),
       text: row.text || '',
+      quote: parseJson(row.action_entry_payload, null)?.quote || null,
       attachments: parseJson(row.attachments, []),
     }));
   }
@@ -3155,9 +3161,11 @@ export class WorkItemStore {
         throw new Error('WorkItem Coordinator message or attachments are required');
       }
       const turnId = randomUUID();
+      const quote = options.quote && typeof options.quote === 'object' ? options.quote : null;
       const userMessage = automaticRecovery ? null : {
         id: randomUUID(), turnId, role: 'user', text, attachments: projectedAttachments,
         status: 'completed', createdAt: now,
+        ...(quote ? { quote } : {}),
       };
       const assistantMessage = {
         id: randomUUID(), turnId, role: 'assistant', text: '', status: 'thinking',
@@ -3177,6 +3185,7 @@ export class WorkItemStore {
         text,
         recovery,
         clientMessageId,
+        ...(quote ? { quote } : {}),
         addedAttachments: projectedAttachments,
       }, clientMessageId ? `client:message:${id}:${clientMessageId}` : `coordinator:turn:${turnId}`);
       const messages = [...(workItem.messages || []), ...(userMessage ? [userMessage] : []), assistantMessage]
