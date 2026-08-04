@@ -153,7 +153,7 @@ export default {
 
     function onSessionClick(conv) {
       if (conv.agentOnline === false) return;
-      store.setPanelConversation(props.paneId, conv.id);
+      store.setPanelConversation(props.paneId, conv.id, { refresh: true });
       dropdownOpen.value = false;
     }
 

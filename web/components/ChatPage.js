@@ -114,6 +114,8 @@ export default {
           :project-store="store"
           :active-route="store.activeSessionRoute"
           :is-session-unread="isCatalogSessionUnread"
+          :is-session-syncing="isCatalogSessionSyncing"
+          :session-sync-refresh-token="store.sessionHistorySyncRefreshToken"
           :processing-conversations="store.processingConversations"
           :is-yeaft-session-processing="store.isYeaftSessionProcessing"
           :agents="store.agents"
@@ -604,6 +606,11 @@ export default {
       if (row?.runtimeProvider !== 'yeaft') return false;
       return this.store.isYeaftSessionUnread(row.routeRef?.sessionId, row.routeRef?.agentId);
     },
+    isCatalogSessionSyncing(row) {
+      return typeof this.store.isSessionHistorySyncing === 'function'
+        ? this.store.isSessionHistorySyncing(row?.routeRef)
+        : false;
+    },
 
     onUnifiedCreate(provider = 'yeaft') {
       this.unifiedSessionCreateProject = null;
@@ -793,7 +800,7 @@ export default {
     },
     selectConversation(conversationId, agentId) {
       this.store.leaveWorkCenter();
-      this.store.selectConversation(conversationId, agentId);
+      this.store.selectConversation(conversationId, agentId, { refresh: true });
       this.store.closeSessionSidebar();
     },
     onSessionClick(conv) {
@@ -804,7 +811,7 @@ export default {
       // In multi-panel mode, route to the active panel
       if (this.store.isSplitMode && this.store.activePanelId) {
         this.store.leaveWorkCenter();
-        this.store.setPanelConversation(this.store.activePanelId, conv.id);
+        this.store.setPanelConversation(this.store.activePanelId, conv.id, { refresh: true });
         this.store.closeSessionSidebar();
         return;
       }

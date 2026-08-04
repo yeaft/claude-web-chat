@@ -313,6 +313,7 @@ export default {
   'yeaft.hideDebug': 'Hide debug panel',
   'yeaft.reloadPage': 'Reload page',
   'yeaft.reloadMessages': 'Reload messages',
+  'sidebar.sessions.syncing': 'Syncing latest messages',
   'yeaft.historySearch.label': 'Search Session history',
   'yeaft.historySearch.button': 'Search messages',
   'yeaft.historySearch.placeholder': 'Search messages in this Session',
