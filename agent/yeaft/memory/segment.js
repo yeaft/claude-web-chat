@@ -57,6 +57,10 @@ export const KIND_VALUES = new Set([
 const TOPIC_PART = '[\\w.\\-\\u4e00-\\u9fff]+';
 const SCOPE_RE = new RegExp(`^(user|global|group\\/[\\w-]+(?:\\/(?:user|vp\\/[\\w-]+|feature\\/[\\w-]+|topic\\/${TOPIC_PART}(?:\\/${TOPIC_PART})?))?|sessions\\/[\\w-]+(?:\\/(?:user|vp\\/[\\w-]+|feature\\/[\\w-]+|topic\\/${TOPIC_PART}(?:\\/${TOPIC_PART})?))?|chat\\/[\\w-]+(?:\\/vp\\/[\\w-]+)?|session\\/[\\w-]+(?:\\/vp\\/[\\w-]+)?)$`);
 
+export function isValidSegmentScope(value) {
+  return typeof value === 'string' && SCOPE_RE.test(value);
+}
+
 /**
  * Compute a stable id from segment content. Same body + scope + kind →
  * same id, even across rewrites of unchanged content.

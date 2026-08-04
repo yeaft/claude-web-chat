@@ -312,15 +312,62 @@ describe('Engine memory prompt hygiene', () => {
         join(root, legacyPlainScope, 'memory.md'),
         '# Before\n\nalpha\n\n---\n\nTHIS MUST SURVIVE\n\n---\n\nomega\n',
       );
-      expect(backfillCanonicalContent(root)).toEqual({ created: 31 });
+      const metadataLikeFixtures = [
+        [
+          'legacy-kind-prose',
+          '# Before\n\n---\nkind: important\nTHIS PROSE MUST SURVIVE\n---\n\nafter',
+        ],
+        [
+          'legacy-id-prose',
+          'Intro\n\n---\nid: human-readable-section\nThis line is prose, not metadata.\n---\n\nTail',
+        ],
+        [
+          'legacy-leading-kind-prose',
+          '---\nkind: important\nTHIS LEADING PROSE MUST SURVIVE\n---\n\nafter',
+        ],
+        [
+          'legacy-leading-id-prose',
+          '---\nid: human-readable-section\nThis leading line is prose, not metadata.\n---\n\nTail',
+        ],
+        [
+          'legacy-full-looking-invalid-schema',
+          [
+            '---',
+            'id: seg_deadbeef',
+            'scope: user',
+            'kind: important',
+            'tags: [human-note]',
+            'sourceMessages: []',
+            'createdAt: someday',
+            'updatedAt: later',
+            '---',
+            'THIS FULL-LOOKING PROSE MUST SURVIVE',
+          ].join('\n'),
+        ],
+      ];
+      for (const [name, body] of metadataLikeFixtures) {
+        const scope = `sessions/s1/topic/catalog/${name}`;
+        mkdirSync(join(root, scope), { recursive: true });
+        writeFileSync(join(root, scope, 'memory.md'), `${body}\n`);
+      }
+
+      expect(backfillCanonicalContent(root)).toEqual({ created: 36 });
       const legacyContent = readFileSync(join(root, legacyPlainScope, 'content.md'), 'utf8');
       expect(legacyContent).toContain('# Before');
       expect(legacyContent).toContain('THIS MUST SURVIVE');
       expect(legacyContent).toContain('omega');
+      for (const [name, body] of metadataLikeFixtures) {
+        const contentPath = join(root, 'sessions/s1/topic/catalog', name, 'content.md');
+        expect(readFileSync(contentPath, 'utf8')).toBe(`${body}\n`);
+      }
       expect(backfillCanonicalContent(root)).toEqual({ created: 0 });
       expect(readFileSync(join(root, legacyPlainScope, 'content.md'), 'utf8')).toBe(legacyContent);
+      for (const [name, body] of metadataLikeFixtures) {
+        const contentPath = join(root, 'sessions/s1/topic/catalog', name, 'content.md');
+        expect(readFileSync(contentPath, 'utf8')).toBe(`${body}\n`);
+      }
       index = openSegmentIndex(join(root, 'index.db'));
-      expect(syncAll(root, index)).toMatchObject({ scopes: 31 });
+      expect(syncAll(root, index)).toMatchObject({ scopes: 36 });
       index.upsert({
         id: 'near-match-tag',
         scope: topics[0],

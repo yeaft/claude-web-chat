@@ -2,7 +2,12 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path';
 
 import { listScopes, readScope } from './segment-store.js';
-import { parseSegments } from './segment.js';
+import {
+  KIND_VALUES,
+  isValidSegmentScope,
+  parseSegments,
+  serializeSegments,
+} from './segment.js';
 import { stripDreamStateBlocks } from './prompt-cleanup.js';
 
 /**
@@ -41,12 +46,38 @@ function readMemoryFile(memoryRoot, scope) {
 }
 
 function hasSerializedSegmentEnvelope(text) {
-  if (!text || !/^---\s*$/m.test(text)) return false;
-  const envelope = /^---\s*\n([\s\S]*?)\n---\s*(?:\n|$)/m.exec(text);
-  if (!envelope || !/^\s*(?:id|scope|kind|tags|sourceMessages|createdAt|updatedAt):/m.test(envelope[1])) {
-    return false;
-  }
-  return parseSegments(text, { defaultScope: 'user' }).some(segment => segment.body);
+  const source = String(text || '').replace(/^﻿/, '').trim();
+  if (!source.startsWith('---\n')) return false;
+
+  const segments = parseSegments(source);
+  if (segments.length === 0 || segments.some(segment => !isWriterSegment(segment))) return false;
+
+  // The internal writer owns one exact wire format. Re-serializing parsed
+  // segments must reproduce the file byte-for-byte after outer trimming;
+  // otherwise this is user-authored Markdown and must remain opaque.
+  return serializeSegments(segments).trim() === source;
+}
+
+function isWriterSegment(segment) {
+  return /^seg_[0-9a-f]{8}$/.test(segment.id)
+    && isValidSegmentScope(segment.scope)
+    && KIND_VALUES.has(segment.kind)
+    && isStringArray(segment.tags)
+    && isStringArray(segment.sourceMessages)
+    && isValidTimestamp(segment.createdAt)
+    && isValidTimestamp(segment.updatedAt)
+    && typeof segment.body === 'string'
+    && segment.body.length > 0;
+}
+
+function isStringArray(value) {
+  return Array.isArray(value) && value.every(item => typeof item === 'string');
+}
+
+function isValidTimestamp(value) {
+  return typeof value === 'string'
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)
+    && Number.isFinite(Date.parse(value));
 }
 
 function uniqueBodies(segments) {
