@@ -12,12 +12,18 @@ import { lstat as lstatAsync, readdir as readdirAsync, stat as statAsync } from 
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { ActiveMemorySet } from '../../../agent/yeaft/memory/ams.js';
+import { backfillCanonicalContent } from '../../../agent/yeaft/memory/content-backfill.js';
+import { openSegmentIndex } from '../../../agent/yeaft/memory/index-db.js';
+import { runPreflow } from '../../../agent/yeaft/memory/preflow.js';
 import { filterMemoryPromptTextForPrompt } from '../../../agent/yeaft/memory/prompt-cleanup.js';
-import { Engine, buildResidentEntries, selectResidentTopicScopes } from '../../../agent/yeaft/engine.js';
+import { makeSegment, serializeSegments } from '../../../agent/yeaft/memory/segment.js';
+import { syncAll } from '../../../agent/yeaft/memory/segment-sync.js';
+import { Engine, buildResidentEntries, selectCanonicalMemoryScopes, selectResidentTopicScopes, selectRelatedSessionIds } from '../../../agent/yeaft/engine.js';
 import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
-import { writeSummary } from '../../../agent/yeaft/memory/store.js';
+import { writeContent, writeSummary } from '../../../agent/yeaft/memory/store.js';
 import { NullTrace, DebugTrace } from '../../../agent/yeaft/debug-trace.js';
+import { consolidateSessionTopics } from '../../../agent/yeaft/dream/topic-consolidation.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
 import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
 import todoWriteTool from '../../../agent/yeaft/tools/todo-write.js';
@@ -283,18 +289,101 @@ describe('Engine memory prompt hygiene', () => {
     ].join('\n'));
   });
 
-  it('loads resident topic summaries only for topics recalled or named this turn', () => {
-    expect(selectResidentTopicScopes([
-      'sessions/s1/topic/dream/relevance',
-      'sessions/s1/topic/dream/recall',
-      'sessions/s1/topic/billing/export',
-    ], [
-      { scope: 'sessions/s1/topic/dream/relevance', body: 'Relevant Dream memory.' },
-      { scope: 'sessions/s1', body: 'Session memory.' },
-    ], 'please inspect dream recall')).toEqual([
-      'sessions/s1/topic/dream/relevance',
-      'sessions/s1/topic/dream/recall',
-    ]);
+  it('migrates, selects, and consolidates canonical topic content without the old 24-topic cutoff', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-canonical-topic-'));
+    const topics = Array.from({ length: 30 }, (_, index) => `sessions/s1/topic/catalog/topic-${index}`);
+    let index;
+    try {
+      for (const [position, scope] of topics.entries()) {
+        mkdirSync(join(root, scope), { recursive: true });
+        const body = position === 29
+          ? 'Attachment input identity must be isolated by occurrence and never injected twice.'
+          : `Unrelated catalog record ${position}.`;
+        writeFileSync(join(root, scope, 'memory.md'), serializeSegments([
+          makeSegment({ scope, body, sourceMessages: [`m${position}`] }),
+        ]));
+      }
+
+      const legacyPlainScope = 'sessions/s1/topic/catalog/legacy-plain';
+      mkdirSync(join(root, legacyPlainScope), { recursive: true });
+      writeFileSync(join(root, legacyPlainScope, 'memory.md'), 'Legacy body-only canonical fact.\n');
+      expect(backfillCanonicalContent(root)).toEqual({ created: 31 });
+      expect(readFileSync(join(root, legacyPlainScope, 'content.md'), 'utf8')).toContain('Legacy body-only');
+      expect(backfillCanonicalContent(root)).toEqual({ created: 0 });
+      index = openSegmentIndex(join(root, 'index.db'));
+      expect(syncAll(root, index)).toMatchObject({ scopes: 31 });
+      index.upsert({
+        id: 'near-match-tag',
+        scope: topics[0],
+        kind: 'context',
+        tags: ['not-canonical-content'],
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+        body: 'Attachment input identity duplicate occurrence.',
+      });
+
+      const recall = runPreflow(index, {
+        userMsg: 'prevent duplicate attachment input identity injection by occurrence',
+        relevantScopes: [...topics, legacyPlainScope],
+        pickLimit: 8,
+        uniqueScopes: true,
+        canonicalOnly: true,
+        topK: 500,
+      });
+      expect(recall.picked[0]?.scope).toBe(topics[29]);
+      expect(recall.hits.some(hit => hit.id === 'near-match-tag')).toBe(false);
+      expect(selectCanonicalMemoryScopes(recall.picked)).toEqual(new Set([topics[29]]));
+      expect(selectResidentTopicScopes(topics, recall.picked)).toEqual([topics[29]]);
+
+      const duplicateScope = 'sessions/s1/topic/catalog/topic-duplicate';
+      mkdirSync(join(root, duplicateScope), { recursive: true });
+      writeFileSync(join(root, duplicateScope, 'memory.md'), serializeSegments([
+        makeSegment({
+          scope: duplicateScope,
+          body: 'Attachment input identity must be isolated by occurrence and never injected twice.',
+          sourceMessages: ['m-duplicate'],
+        }),
+      ]));
+      writeFileSync(join(root, duplicateScope, 'content.md'), 'Duplicate attachment identity rule.\n');
+      writeFileSync(join(root, duplicateScope, 'summary.md'), 'Duplicate attachment identity rule.\n');
+      writeFileSync(join(root, topics[29], 'summary.md'), 'Attachment identity rule.\n');
+      syncAll(root, index);
+
+      const result = await consolidateSessionTopics({
+        root,
+        sessionId: 's1',
+        segmentIndex: index,
+        ts: '2026-08-04T00-00-00-000Z',
+        topics: [
+          ...topics.map((scope, position) => ({
+            path: scope.split('/topic/')[1],
+            summary: position === 29 ? 'Attachment identity rule.' : `Record ${position}.`,
+          })),
+          { path: 'catalog/topic-duplicate', summary: 'Duplicate attachment identity rule.' },
+        ],
+        llm: async ({ pass }) => pass === 'topic-consolidation'
+          ? JSON.stringify({ groups: [{ canonical: 'catalog/topic-29', merge: ['catalog/topic-duplicate'] }] })
+          : JSON.stringify({ content_md: 'Merged attachment identity rule.', summary_md: 'Attachment identity rule.' }),
+      });
+
+      expect(result.merged).toBe(1);
+      expect(existsSync(join(root, duplicateScope))).toBe(false);
+      expect(readFileSync(join(root, topics[29], 'content.md'), 'utf8')).toContain('Merged attachment');
+      expect(index.listByScope(duplicateScope)).toEqual([]);
+      expect(index.listByScope(topics[29]).some(segment => (
+        segment.sourceMessages.includes('m29') && segment.sourceMessages.includes('m-duplicate')
+      ))).toBe(true);
+
+      const recalled = [
+        ...recall.picked,
+        { scope: 'sessions/sibling/topic/release', body: 'Sibling release evidence.' },
+      ];
+      expect(selectRelatedSessionIds(['sibling', 'other'], recalled)).toEqual(['sibling']);
+    } finally {
+      if (index) index.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1250,26 +1339,31 @@ describe('Engine', () => {
       }
     });
 
-    it('loads Dream session summary into the system prompt Memory section and debug event', async () => {
+    it('loads query-selected canonical content into the system prompt and debug event', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-dream-load-'));
-      await writeSummary(
+      await writeContent(
         { kind: 'session', id: 'g1' },
         'The user prefers concrete execution notes and wants Dream memory loaded into the prompt.\n<!-- dream-state -->\nlastDreamAt: 2026-07-17T00:00:00.000Z\n<!-- /dream-state -->',
         { root: join(yeaftDir, 'memory') },
       );
-      await writeSummary(
+      await writeContent(
         { kind: 'user' },
-        'User-level Dream summary should enter the prompt but not the dream_memory_loaded browser payload.',
+        'User-level canonical content should enter the prompt but not the dream_memory_loaded browser payload.',
         { root: join(yeaftDir, 'memory') },
       );
-      await writeSummary(
+      await writeContent(
         { kind: 'session-vp', sessionId: 'g1', id: 'vp1' },
-        'VP Dream summary should enter the prompt but not the session prompt-load payload.',
+        'VP canonical content should enter the prompt but not the session prompt-load payload.',
         { root: join(yeaftDir, 'memory') },
       );
       await writeSummary(
         { kind: 'session-topic', sessionId: 'g1', path: ['dream', 'recall'] },
-        `Topic Dream summary should enter the prompt through AMS Resident. ${'完整摘要细节'.repeat(800)}`,
+        'Catalog-only topic summary must not enter the prompt.',
+        { root: join(yeaftDir, 'memory') },
+      );
+      await writeContent(
+        { kind: 'session-topic', sessionId: 'g1', path: ['dream', 'recall'] },
+        `Canonical Dream content should enter the prompt. ${'完整正文细节'.repeat(800)}`,
         { root: join(yeaftDir, 'memory') },
       );
       mockAdapter.pushResponse([
@@ -1283,6 +1377,22 @@ describe('Engine', () => {
         yeaftDir,
         sessionId: 'g1',
         config: { model: 'claude-test', maxOutputTokens: 2048, language: 'en' },
+        memoryIndex: {
+          search({ scopeFilter, requiredTag }) {
+            if (requiredTag !== 'canonical-content') return [];
+            const scopes = [
+              'user',
+              'sessions/g1',
+              'sessions/g1/vp/vp1',
+              'sessions/g1/topic/dream/recall',
+            ].filter(scope => scopeFilter.includes(scope));
+            return scopes.map((scope, index) => ({
+              id: `content-${index}`, scope, kind: 'context', tags: ['canonical-content'],
+              sourceMessages: [], body: 'Dream recall canonical evidence selector.', rank: -1 - index,
+              createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
+            }));
+          },
+        },
         amsRegistry: new AmsRegistry({ yeaftDir, config: {} }),
       });
 
@@ -1300,15 +1410,16 @@ describe('Engine', () => {
       expect(system).toContain('## Relevant Context');
       expect(system).toContain('### Relevant Memory');
       expect(system).toContain('Dream memory loaded into the prompt');
-      expect(system).toContain('User-level Dream summary should enter the prompt');
-      expect(system).toContain('VP Dream summary should enter the prompt');
+      expect(system).toContain('User-level canonical content should enter the prompt');
+      expect(system).toContain('VP canonical content should enter the prompt');
       expect(system).toContain('**session**: The user prefers concrete execution notes and wants Dream memory loaded into the prompt.');
       expect(system).not.toContain('dream-state');
       expect(system).not.toContain('lastDreamAt:');
-      expect(system).toContain('**topic: dream/recall**: Topic Dream summary should enter the prompt through AMS Resident.');
+      expect(system).toContain('**topic: dream/recall**: Canonical Dream content should enter the prompt.');
       expect(system).not.toContain('**sessions/g1/topic/dream/recall**');
       expect(system).not.toContain('**sessions/g1**');
-      expect(system).toContain('Topic Dream summary should enter the prompt through AMS Resident.');
+      expect(system).not.toContain('Catalog-only topic summary');
+      expect(system).not.toContain('Dream recall canonical evidence selector.');
 
       const loaded = events.find(e => e.type === 'dream_memory_loaded');
       expect(loaded).toBeTruthy();
@@ -1323,12 +1434,13 @@ describe('Engine', () => {
         }),
         expect.objectContaining({
           scope: 'sessions/g1/topic/dream/recall',
-          source: 'resident-summary',
+          source: 'canonical-topic-content',
           truncated: false,
         }),
       ]));
       const topicLoaded = loaded.resident.find(entry => entry.scope === 'sessions/g1/topic/dream/recall');
-      expect(topicLoaded.summary).toContain('完整摘要细节'.repeat(800));
+      expect(topicLoaded.summary).toContain('完整正文细节');
+      expect(topicLoaded.summary).toContain('Additional canonical topic content omitted by prompt budget.');
 
       const debugYeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-memory-debug-'));
       try {
@@ -1387,24 +1499,10 @@ describe('Engine', () => {
         }
 
         const debugSystem = mockAdapter.callLog.at(-1).system;
-        expect(debugSystem).toContain('Dream relevance loaded memory item 1.');
-        expect(debugSystem).toContain('Dream relevance loaded memory item 7.');
+        expect(debugSystem).not.toContain('Dream relevance loaded memory item 1.');
         expect(debugSystem).not.toContain('billing dashboard export');
-        expect(debugSystem).not.toContain('Dream relevance loaded memory item 8.');
 
-        const memoryUsed = debugEvents.find(e => e.type === 'memory_used');
-        expect(memoryUsed).toBeTruthy();
-        expect(memoryUsed.meta).toMatchObject({ recallLimit: 8, recallCandidates: 10 });
-        expect(memoryUsed.loaded).toHaveLength(7);
-        expect(memoryUsed.loaded[0]).toMatchObject({
-          id: 'dream-relevance-1',
-          layer: 'onDemand',
-          scope: 'sessions/g1',
-          label: 'session',
-          body: 'Dream relevance loaded memory item 1.',
-        });
-        expect(memoryUsed.loaded[0].score).toEqual(expect.any(Number));
-        expect(memoryUsed.loaded.map(entry => entry.body).join('\n')).not.toContain('billing dashboard export');
+        expect(debugEvents.find(e => e.type === 'memory_used')).toBeUndefined();
       } finally {
         rmSync(debugYeaftDir, { recursive: true, force: true });
       }
@@ -1416,17 +1514,17 @@ describe('Engine', () => {
     async function verifyReadableContextWithoutPersistentAms() {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-readable-context-'));
       try {
-        await writeSummary(
+        await writeContent(
           { kind: 'session', id: 'sibling-session' },
           'Reusable release experience: verify origin/main and the remote tag target before publishing.',
           { root: join(yeaftDir, 'memory'), language: 'zh' },
         );
         const memoryIndex = {
-          search({ scopeFilter }) {
-            if (!scopeFilter.includes('sessions/current-session')) return [];
+          search({ scopeFilter, requiredTag }) {
+            if (requiredTag !== 'canonical-content' || !scopeFilter.includes('sessions/sibling-session')) return [];
             return [{
               id: 'timeout-memory',
-              scope: 'sessions/current-session',
+              scope: 'sessions/sibling-session',
               kind: 'context',
               tags: ['timeout'],
               sourceMessages: [],
@@ -1476,8 +1574,8 @@ describe('Engine', () => {
         expect(system).toContain('## 相关上下文');
         expect(system).toContain('### 过去 Session 的经验总结');
         expect(system).toContain('**sibling-session**: Reusable release experience');
-        expect(system).toContain('### 相关记忆');
-        expect(system).toContain('Timeout cleanup failures must return a tool result');
+        expect(system).not.toContain('### 相关记忆');
+        expect(system).not.toContain('Timeout cleanup failures must return a tool result');
         expect(system).toContain('## 可能相关的任务');
         expect(system).toContain('- 子 Agent timeout-reviewer (子 Agent，运行中)');
         expect(system).not.toContain('Review timeout recovery and verify Engine continuation');
@@ -1486,7 +1584,6 @@ describe('Engine', () => {
         expect(system).not.toContain('sub_agent_status');
         expect(events.find(event => event.type === 'memory_used')?.loaded).toEqual(expect.arrayContaining([
           expect.objectContaining({ category: 'experience', scope: 'sessions/sibling-session' }),
-          expect.objectContaining({ layer: 'onDemand', id: 'timeout-memory' }),
         ]));
         expect(mockAdapter.callLog).toHaveLength(1);
         expect(existsSync(join(yeaftDir, 'memory', 'sessions', 'current-session', 'ams.json'))).toBe(false);
@@ -3657,17 +3754,18 @@ describe('Engine', () => {
       expect(call.system).not.toContain('session_members:');
       expect(call.system).not.toContain('session_topics:');
       expect(call.system).toContain('Session members: vp-omni, vp-martin, vp-linus');
-      expect(call.system).toContain('Current focus: Dream memory segment extraction and organization; current session context prompt rendering');
+      expect(call.system).not.toContain('Current focus:');
       expect(call.system).not.toContain('group: session_active');
       expect(call.system).not.toContain('\nvp: vp-linus');
       expect(call.system).not.toContain('\nmembers: vp-omni');
     });
 
-    it('loads session topics from memory topic scopes when not passed explicitly', async () => {
+    it('derives current focus only from query-selected canonical topic scopes', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-topics-'));
       try {
         mkdirSync(join(yeaftDir, 'memory', 'sessions', 'session_active', 'topic', 'dream', 'segments'), { recursive: true });
         writeFileSync(join(yeaftDir, 'memory', 'sessions', 'session_active', 'topic', 'dream', 'segments', 'memory.md'), 'segment memory');
+        writeFileSync(join(yeaftDir, 'memory', 'sessions', 'session_active', 'topic', 'dream', 'segments', 'content.md'), 'Canonical topic content.');
 
         mockAdapter.pushResponse([
           { type: 'text_delta', text: 'ok' },
@@ -3679,10 +3777,20 @@ describe('Engine', () => {
           trace,
           yeaftDir,
           config: { model: 'test-model', maxOutputTokens: 1024, language: 'en' },
+          memoryIndex: {
+            search({ scopeFilter, requiredTag }) {
+              const scope = 'sessions/session_active/topic/dream/segments';
+              return requiredTag === 'canonical-content' && scopeFilter.includes(scope) ? [{
+                id: 'topic-selector', scope, kind: 'context', tags: [], sourceMessages: [],
+                body: 'Canonical topic content.', rank: -1,
+                createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
+              }] : [];
+            },
+          },
         });
 
         for await (const _event of engine.query({
-          prompt: 'test',
+          prompt: 'inspect canonical segments',
           sessionId: 'session_active',
           sessionMembers: ['vp-linus'],
           vpPersona: { vpId: 'vp-linus', displayName: 'Linus' },

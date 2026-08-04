@@ -1,16 +1,18 @@
 /**
- * memory/store.js — per-scope memory.md + summary.md (Layer-A storage).
+ * memory/store.js — per-scope canonical content + summary storage.
  *
- * One pair of files per scope. No shards, no entries/, no index.md, no
- * index.json. The five scope kinds — user, vp, group, feature, topic — share
- * a single shape:
+ * Every scope can carry three distinct representations:
+ *
+ *   - content.md: Dream-maintained canonical prose. This is the prompt-facing
+ *     source and preserves all currently valid durable information.
+ *   - summary.md: a short catalog / triage index. It is not authoritative.
+ *   - memory.md: atomic evidence segments with source message ids. Segment I/O
+ *     lives in segment-store.js; this module retains the legacy raw accessors.
  *
  *   ~/.yeaft/memory/
- *     user/                    memory.md  summary.md
- *     vp/<vpId>/               memory.md  summary.md
- *     group/<sessionId>/         memory.md  summary.md
- *     feature/<featureId>/     memory.md  summary.md
- *     topic/<l1>[/<l2>]/       memory.md  summary.md     (≤ 2 levels)
+ *     user/                    content.md  memory.md  summary.md
+ *     sessions/<sessionId>/    content.md  memory.md  summary.md
+ *     .../topic/<l1>[/<l2>]/   content.md  memory.md  summary.md  (≤ 2 levels)
  *
  * Atomicity contract:
  *   - Every write goes via `.tmp.<rand>` + rename. Renames are atomic on a
@@ -21,7 +23,7 @@
  *
  * Concurrency rules:
  *   - Two writers to the same memory.md: last-rename wins. Dream is the only
- *     code path that overwrites memory.md in v2; daily writes append. Append
+ *     code path that overwrites memory.md; daily writes append. Append
  *     is a single fs.appendFile call that POSIX guarantees is atomic for
  *     buffers ≤ PIPE_BUF (≥ 4KB on every supported platform), which fits a
  *     single fragment.
@@ -54,7 +56,7 @@ import { homedir } from 'os';
 /** Default memory root. Tests override via `opts.root`. */
 export const DEFAULT_MEMORY_ROOT = join(homedir(), '.yeaft', 'memory');
 
-/** Scope kinds recognised by v2 (group-isolated layout). */
+/** Scope kinds recognised by the current store, including legacy aliases. */
 export const SCOPE_KINDS = Object.freeze([
   'user',
   'group',
@@ -230,9 +232,8 @@ export function isValidTopic(scope) {
 // ─── ACL ───────────────────────────────────────────────────────
 
 /**
- * The single ACL: `group/<g>/vp/<other>` is foreign when `currentVpId` is given.
- * Across groups, every `group/<g>/vp/...` path is foreign by construction
- * (the calling VP only runs inside its own group dir).
+ * The single ACL: a Session VP path owned by another VP is foreign when
+ * `currentVpId` is given. The `group/` spelling remains a legacy storage alias.
  *
  * @param {string} relPath
  * @param {string} currentVpId
@@ -268,7 +269,46 @@ async function atomicWrite(absPath, content) {
   await fsp.rename(tmp, absPath);
 }
 
-// ─── memory.md ─────────────────────────────────────────────────
+// ─── content.md ────────────────────────────────────────────────
+
+/**
+ * Read a scope's canonical Dream content. Missing → empty string.
+ *
+ * Deliberately does not fall back to memory.md: modern memory.md is the
+ * segment evidence store. Migration callers must make an explicit,
+ * format-aware fallback decision instead of injecting evidence blocks as prose.
+ *
+ * @param {Scope} scope
+ * @param {{ root?: string, currentVpId?: string }} [opts]
+ * @returns {Promise<string>}
+ */
+export async function readContent(scope, opts = {}) {
+  const { root = DEFAULT_MEMORY_ROOT, currentVpId } = opts;
+  const rel = `${scopeDir(scope)}/content.md`;
+  enforceVpAcl(rel, currentVpId);
+  const abs = join(root, rel);
+  try { return await fsp.readFile(abs, 'utf8'); }
+  catch (err) {
+    if (err && err.code === 'ENOENT') return '';
+    throw err;
+  }
+}
+
+/**
+ * Atomically rewrite a scope's canonical Dream content.
+ *
+ * @param {Scope} scope
+ * @param {string} content
+ * @param {{ root?: string, currentVpId?: string }} [opts]
+ */
+export async function writeContent(scope, content, opts = {}) {
+  const { root = DEFAULT_MEMORY_ROOT, currentVpId } = opts;
+  const rel = `${scopeDir(scope)}/content.md`;
+  enforceVpAcl(rel, currentVpId);
+  await atomicWrite(join(root, rel), typeof content === 'string' ? content : '');
+}
+
+// ─── memory.md (segment evidence / legacy raw access) ──────────
 
 /**
  * Read a scope's memory.md. Missing → empty string.
@@ -382,14 +422,12 @@ export async function writeSummary(scope, body, opts = {}) {
 
 /**
  * Seed a scope's summary.md if (and only if) it is missing or empty. Used
- * at create-time for VPs and groups so a fresh session has SOMETHING for
- * `engine.#prepareAms` to pull into the Layer-A resident summary — the
- * earlier behavior of "no summary.md until Dream-v2 runs" left the memory
- * section empty for the entire first session.
+ * at create-time for legacy bootstrap and catalog readers. The prompt path no
+ * longer consumes these seeds; it selects canonical content.md instead.
  *
  * Intentionally a no-op if a non-empty summary.md already exists, so this
- * is safe to call from any place that creates the scope (VP create, group
- * create, first-session bootstrap) without clobbering Dream-v2's writes.
+ * is safe to call from any existing scope-creation path without clobbering
+ * Dream's catalog writes.
  *
  * @param {Scope} scope
  * @param {string} body
@@ -438,7 +476,7 @@ export function seedSummaryIfMissingSync(scope, body, opts = {}) {
 /**
  * Synchronously remove a scope's directory under the memory root. Used by
  * `deleteVp` / `deleteSession` to cascade memory cleanup so a recreate of the
- * same id doesn't see stale `summary.md` / `memory.md` / `segments/` files.
+ * same id doesn't see stale `content.md` / `summary.md` / `memory.md` files.
  *
  * Idempotent — missing directory is a no-op.
  *
@@ -488,7 +526,8 @@ export async function ensureScope(scope, opts = {}) {
  *   group/<g>/user/                        → { kind: 'group-user', sessionId: g }
  *   group/<g>/vp/<v>/                      → { kind: 'group-vp', sessionId: g, id: v }
  *   group/<g>/feature/<f>/                 → { kind: 'group-feature', sessionId: g, id: f }
- *   group/<g>/topic/<l1>[/<l2>]/           → { kind: 'group-topic', sessionId: g, path: [...] }
+ *   group/<g>/topic/<l1>[/<l2>]/           → legacy group-topic
+ *   sessions/<s>/topic/<l1>[/<l2>]/        → { kind: 'session-topic', sessionId: s, path: [...] }
  *
  * Skips `.legacy/` and any dotfile / unsafe segment.
  *
@@ -646,14 +685,20 @@ export async function listScopes(opts = {}) {
     for (const tent of topics) {
       if (!tent.isDirectory()) continue;
       if (!isSafeId(tent.name)) continue;
-      out.push({ kind: 'session-topic', sessionId: s, path: [tent.name] });
+      const topicAbs = join(topicDir, tent.name);
       let subTopics;
-      try { subTopics = await fsp.readdir(join(topicDir, tent.name), { withFileTypes: true }); }
+      try { subTopics = await fsp.readdir(topicAbs, { withFileTypes: true }); }
       catch { subTopics = []; }
+      const hasOwnMemory = ['content.md', 'memory.md', 'summary.md', 'summary.zh.md']
+        .some(name => existsSync(join(topicAbs, name)));
+      if (hasOwnMemory) out.push({ kind: 'session-topic', sessionId: s, path: [tent.name] });
       for (const sub of subTopics) {
         if (!sub.isDirectory()) continue;
         if (!isSafeId(sub.name)) continue;
-        out.push({ kind: 'session-topic', sessionId: s, path: [tent.name, sub.name] });
+        const subAbs = join(topicAbs, sub.name);
+        const hasSubMemory = ['content.md', 'memory.md', 'summary.md', 'summary.zh.md']
+          .some(name => existsSync(join(subAbs, name)));
+        if (hasSubMemory) out.push({ kind: 'session-topic', sessionId: s, path: [tent.name, sub.name] });
       }
     }
   }

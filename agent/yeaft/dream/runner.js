@@ -17,7 +17,7 @@
  *
  *   mergeByTarget()                    → per-target actions
  *   for each merged target:
- *       applyMergedTarget()            (snapshot + UPDATE/CREATE + atomic write)
+ *       applyMergedTarget()            (snapshot + canonical content UPDATE/CREATE)
  *
  *   bookkeep:
  *     for each processed session:
@@ -41,7 +41,7 @@
 import { existsSync } from 'fs';
 import { join } from 'path';
 
-import { listScopes, readSummary } from '../memory/store.js';
+import { listScopes, readContent, readSummary } from '../memory/store.js';
 import {
   DEFAULT_LIMITS,
 } from './limits.js';
@@ -51,6 +51,7 @@ import { triageGroupSegments } from './triage.js';
 import { mergeByTarget } from './merge.js';
 import { applyMergedTarget } from './apply.js';
 import { extractAndWriteMemorySegments } from './segment-extract.js';
+import { consolidateSessionTopics } from './topic-consolidation.js';
 import { tsForBackup, pruneOldSnapshots } from './snapshot.js';
 
 /**
@@ -64,7 +65,7 @@ import { tsForBackup, pruneOldSnapshots } from './snapshot.js';
  * @property {(sessionId: string, sinceMessageId: string|null) => Promise<Array<object>>} [loadSessionDiff]
  * @property {(sessionId: string, sinceMessageId: string|null) => Promise<Array<object>>} [loadGroupDiff] — legacy alias for loadSessionDiff
  * @property {(sessionId: string, beforeMessageId: string|null, count: number) => Promise<Array<object>>} loadOverlapPreamble
- * @property {() => Promise<Array<{path:string, summary:string}>>} [listTopicSummaries]
+ * @property {(sessionId:string) => Promise<Array<{path:string, summary:string}>>} [listTopicSummaries]
  * @property {(target: string) => Promise<Array<{path:string, summary:string}>>} [siblingTopicsFor]
  * @property {import('../memory/index-db.js').SegmentIndex|null} [segmentIndex] — optional derived FTS segment index to sync after segment writes
  * @property {(event: object) => void} [onProgress]
@@ -98,8 +99,8 @@ export async function runDream(opts) {
   const processedSessions = [];
 
   // 2. per-session: skip / segment / triage
-  // Topic summaries are resolved inside the per-session loop
-  // them inside the per-session loop instead of once up front.
+  // Topic summaries are resolved inside the per-session loop so every Session
+  // sees its complete current canonical catalog.
   const resolveTopicSummaries = async (sessionId) => {
     if (opts.listTopicSummaries) {
       return await safeCall(() => opts.listTopicSummaries(sessionId), []);
@@ -128,7 +129,25 @@ export async function runDream(opts) {
       && beforeCount > 0;
 
     if (newCount === 0 && !rerunScopedManual) {
-      sessionsReport.push({ sessionId, new: 0, status: 'skipped', reason: 'no-new-messages' });
+      const topics = await resolveTopicSummaries(sessionId);
+      if (opts.manual && topics.length >= 24) {
+        try {
+          const result = await consolidateSessionTopics({
+            root: opts.root,
+            sessionId,
+            topics,
+            llm: dreamLlmForSession(opts.llm, sessionId),
+            language: opts.language,
+            ts,
+            segmentIndex: opts.segmentIndex || null,
+          });
+          sessionsReport.push({ sessionId, new: 0, status: 'consolidated', ...result });
+        } catch (err) {
+          sessionsReport.push({ sessionId, new: 0, status: 'error', phase: 'topic-consolidation', error: err.message });
+        }
+      } else {
+        sessionsReport.push({ sessionId, new: 0, status: 'skipped', reason: 'no-new-messages' });
+      }
       continue;
     }
     if (!opts.manual && newCount < limits.MIN_NEW_PER_GROUP) {
@@ -213,6 +232,7 @@ export async function runDream(opts) {
         nowIso: opts.nowIso || (() => nowIso),
         onProgress,
         siblingTopicsFor: opts.siblingTopicsFor,
+        segmentIndex: opts.segmentIndex || null,
         language: opts.language,
       });
       await clearDreamError(opts.root, merged.target);
@@ -238,9 +258,10 @@ export async function runDream(opts) {
     }
   }
 
-  // 5. extract atomic H2 memory segments. The apply step above keeps the
-  // coarse summary layer (`summary.md`); this step keeps bounded, evidence-
-  // backed current details in segment-formatted `memory.md`.
+  // 5. Extract atomic H2 evidence segments. Apply owns canonical `content.md`
+  // plus the short catalog `summary.md`; this step owns only provenance-backed
+  // segment records in `memory.md`, so the two writers never overwrite each
+  // other's representation.
   const segmentReports = [];
   for (const triage of sessionTriages) {
     const appliedTargets = new Set(targetsReport.filter(r => r.status === 'done').map(r => r.target));
@@ -272,7 +293,37 @@ export async function runDream(opts) {
     }
   }
 
-  // 6. bookkeep — only when at least one apply for this session's actions
+  // 6. Consolidate the complete topic catalog after new content and evidence
+  // have landed. This is the only stage allowed to retire duplicate scopes.
+  const topicConsolidation = [];
+  const consolidatedSessionIds = [...new Set(sessionTriages.map(triage => triage.sessionId))];
+  for (const sessionId of consolidatedSessionIds) {
+    try {
+      const topics = await resolveTopicSummaries(sessionId);
+      onProgress({ phase: 'topic-consolidation', sessionId, status: 'running', topics: topics.length });
+      const result = await consolidateSessionTopics({
+        root: opts.root,
+        sessionId,
+        topics,
+        llm: dreamLlmForSession(opts.llm, sessionId),
+        language: opts.language,
+        ts,
+        segmentIndex: opts.segmentIndex || null,
+      });
+      topicConsolidation.push({ sessionId, status: 'done', ...result });
+      onProgress({ phase: 'topic-consolidation', sessionId, status: 'done', ...result });
+    } catch (err) {
+      topicConsolidation.push({ sessionId, status: 'error', error: err.message });
+      onProgress({ phase: 'topic-consolidation', sessionId, status: 'error', error: err.message });
+      await writeDreamError(opts.root, `sessions/${sessionId}`, {
+        phase: 'topic-consolidation',
+        message: err.message,
+        stack: err.stack,
+      });
+    }
+  }
+
+  // 7. bookkeep — only when at least one apply for this session's actions
   // succeeded. We use a permissive policy: if ANY merged-target apply
   // succeeded for a session's contributed actions, advance that session's
   // cursor. (If everything errored, we keep the cursor so next run
@@ -292,7 +343,7 @@ export async function runDream(opts) {
     }
   }
 
-  // 6. prune backups
+  // 8. prune backups
   const pruned = await pruneOldSnapshots(opts.root, limits.DREAM_BACKUP_KEEP);
 
   const duration = Date.now() - startedAt;
@@ -311,6 +362,7 @@ export async function runDream(opts) {
     sessions: sessionsReport,
     targets: targetsReport,
     memorySegments: segmentReports,
+    topicConsolidation,
     backups: pruned,
     ts,
   };
@@ -360,10 +412,13 @@ async function defaultListTopicSummaries(root, sessionId, language) {
   const all = await listScopes({ root });
   const out = [];
   for (const sc of all) {
-    if (sc.kind !== 'group-topic') continue;
+    if (sc.kind !== 'session-topic') continue;
     if (sc.sessionId !== sessionId) continue;
     const summary = await readSummary(sc, { root, language });
-    out.push({ path: sc.path.join('/'), summary });
+    const content = summary ? '' : await readContent(sc, { root });
+    const catalogText = String(summary || content || '').trim();
+    if (!catalogText) continue;
+    out.push({ path: sc.path.join('/'), summary: catalogText });
   }
   return out;
 }

@@ -35,18 +35,16 @@ import { TaskManager } from './tasks/manager.js';
 //
 // GC.1 (final): the session opens a SegmentIndex (SQLite FTS5 over
 // memory.md) and passes it to the Engine. Engine.#recallMemory routes
-// pre-turn recall through groups/pre-flow.js → memory/preflow.js (the
+// pre-turn recall through sessions/pre-flow.js → memory/preflow.js (the
 // previous per-scope file reader recall-v2.js has been deleted).
 // The `config.memoryV2` opt-out flag was retired in task-710; wiring is
 // unconditional.
 //
-// GC.1 follow-up: when memoryIndex is wired we also open an
-// AmsRegistry. The registry caches per-group ActiveMemorySet
-// instances and persists their identity-only state under
-// `~/.yeaft/memory/groups/<gid>/ams.json` so a deactivated group
-// resumes with the same onDemand/recent membership it had on
-// disconnect. Engine.#runQuery uses the registry to populate the
-// AMS each turn and to run `memory/adjust.js` post-turn.
+// When memoryIndex is wired we also open an AmsRegistry. It caches the
+// per-Session ActiveMemorySet object and keeps the version-1 ams.json shape for
+// disk compatibility. Engine rebuilds prompt-facing Resident entries from
+// query-selected canonical content on every turn; persisted segment ids are
+// never rehydrated into the prompt.
 import { ensureDefaultSessionIfEmpty, migrateRegisteredWorkDirSessions } from './sessions/session-crud.js';
 import { seedDefaultVps } from './vp/seed-defaults.js';
 import { topUpDefaultVps } from './vp/seed-topup.js';
@@ -54,6 +52,7 @@ import { archiveLegacyScopes } from './memory/seed-backfill.js';
 import { createV2DreamScheduler, bootInitEmptyGroups, bootCatchUpStaleDream } from './dream/session-wiring.js';
 import { openSegmentIndex } from './memory/index-db.js';
 import { syncAll as syncSegmentIndex } from './memory/segment-sync.js';
+import { backfillCanonicalContent } from './memory/content-backfill.js';
 import { openAmsRegistry } from './memory/ams-registry.js';
 import { join } from 'path';
 import { existsSync as existsSyncSafe, readFileSync as readFileSyncSafe, mkdirSync as mkdirSyncSafe } from 'fs';
@@ -278,9 +277,10 @@ export async function loadSession(options = {}) {
   const conversationStore = new ConversationStore(yeaftDir);
 
   // ─── 5-fts. (GC.1) Open SegmentIndex for FTS pre-flow ────
-  //     Build a SQLite FTS5 index over ~/.yeaft/memory/<scope>/memory.md
-  //     and pass it to the Engine. Engine.#recallMemory uses it via
-  //     groups/pre-flow.js → memory/preflow.js. Disk is the source of
+  //     Build a SQLite FTS5 index over per-scope evidence memory.md and
+  //     canonical content.md, then pass it to Engine for scope selection.
+  //     Engine.#recallMemory uses it via sessions/pre-flow.js →
+  //     memory/preflow.js. Disk is the source of
   //     truth; on boot we reconcile disk → index via syncAll. Failure
   //     to open the index is non-fatal: #recallMemory returns an empty
   //     result and the turn proceeds without pre-injected memory.
@@ -301,6 +301,7 @@ export async function loadSession(options = {}) {
         }
       }
       try {
+        backfillCanonicalContent(memoryRoot);
         syncSegmentIndex(memoryRoot, memoryIndex);
       } catch (syncErr) {
         // Sync is best-effort; an empty / partial index just produces
@@ -315,12 +316,11 @@ export async function loadSession(options = {}) {
     }
   }
 
-  // ─── 5-ams. (GC.1 follow-up) Group-keyed AMS registry ────
+  // ─── 5-ams. Session-keyed AMS registry ─────────────────
   //     The registry caches one ActiveMemorySet per sessionId and
-  //     persists their state to disk so a deactivated group can be
-  //     reactivated with the same onDemand/recent membership it had
-  //     on disconnect. Without memoryIndex we have nothing to
-  //     re-hydrate against, so the registry is left null in that case.
+  //     retains version-1 metadata for disk compatibility. Prompt state is
+  //     rebuilt from selected canonical content each turn; old segment ids are
+  //     not rehydrated. Without memoryIndex the registry remains disabled.
   let amsRegistry = null;
   if (memoryIndex && !config._readOnly) {
     try {
@@ -570,9 +570,8 @@ export async function loadSession(options = {}) {
 
   // H2.f.5 retired the old session-level thread engine registry, input queue,
   // and dispatcher. The session exposes a default `engine`; PR #797 keeps
-  // group VP thread engines in web-bridge runtime state and calls engine.query()
-  // directly. Memory recall happens via memory/preflow.js (pre-turn) and
-  // memory/adjust.js (post-turn).
+  // Session VP thread engines in web-bridge runtime state and calls engine.query()
+  // directly. Query-time recall happens via memory/preflow.js.
 
   // ─── 10. Build session ─────────────────────────────────
   const status = {

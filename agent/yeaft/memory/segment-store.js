@@ -1,9 +1,10 @@
 /**
- * memory/segment-store.js — disk I/O for segment-formatted memory.md.
+ * memory/segment-store.js — disk I/O for segment evidence in memory.md.
  *
- * Bridges between the on-disk format (memory.md per scope, multiple
- * segment blocks) and the SQLite segment index. This layer handles
- * scope <-> file path mapping; the index layer is scope-agnostic.
+ * Bridges between the on-disk evidence format (memory.md per scope, multiple
+ * segment blocks) and the SQLite segment index. Canonical prompt-facing prose
+ * is stored separately in content.md. This layer handles scope <-> file path
+ * mapping; the index layer is scope-agnostic.
  *
  * Path conventions:
  *   ~/.yeaft/memory/user/memory.md
@@ -18,8 +19,10 @@ import {
   readFileSync, writeFileSync, existsSync, mkdirSync,
   readdirSync, statSync, renameSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, dirname, relative, sep } from 'node:path';
 import { stripDreamStateBlocks } from './prompt-cleanup.js';
+import { extractKeywords } from './keywords.js';
 import { parseSegments, serializeSegments } from './segment.js';
 
 /**
@@ -56,7 +59,37 @@ export function writeScope(memoryRoot, scope, segments) {
 }
 
 /**
- * Walk the memory root and return all scopes that have a memory.md.
+ * Read canonical content as a derived FTS record. The stable id lets normal
+ * sync delete or update it without changing the segment schema. This record is
+ * a scope selector only; Engine always reloads prompt text from content.md.
+ *
+ * @param {string} memoryRoot
+ * @param {string} scope
+ * @returns {import('./segment.js').Segment|null}
+ */
+export function readCanonicalContentRecord(memoryRoot, scope) {
+  const path = join(memoryRoot, scope, 'content.md');
+  if (!existsSync(path)) return null;
+  const body = readFileSync(path, 'utf8').trim();
+  if (!body) return null;
+  const stat = statSync(path);
+  const timestamp = stat.mtime.toISOString();
+  const digest = createHash('sha256').update(scope).digest('hex').slice(0, 12);
+  return {
+    id: `content_${digest}`,
+    scope,
+    kind: 'context',
+    tags: ['canonical-content', ...extractKeywords(`${scope} ${body}`).slice(0, 128)],
+    sourceMessages: [],
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    body,
+  };
+}
+
+/**
+ * Walk the memory root and return all scopes that have evidence memory.md or
+ * canonical content.md. Either representation must be queryable.
  *
  * @param {string} memoryRoot
  * @returns {string[]}
@@ -75,9 +108,9 @@ function walk(root, dir, out) {
     try { st = statSync(full); } catch { continue; }
     if (st.isDirectory()) {
       walk(root, full, out);
-    } else if (entry === 'memory.md') {
+    } else if (entry === 'memory.md' || entry === 'content.md') {
       const rel = relative(root, dir).split(sep).join('/');
-      if (rel) out.push(rel);
+      if (rel && !out.includes(rel)) out.push(rel);
     }
   }
 }

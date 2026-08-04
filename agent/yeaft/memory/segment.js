@@ -5,8 +5,10 @@
  * a self-contained semantic chunk (one segment per topic). NOT a copy
  * of messages — messages already live in conversation/messages/.
  *
- * Physical layout: each scope's `memory.md` is multiple segments
- * concatenated, each with a YAML frontmatter block and a body.
+ * Physical layout: each scope's `memory.md` is the evidence store containing
+ * multiple segments concatenated with YAML frontmatter. Prompt-facing canonical
+ * prose lives separately in `content.md`; segment bodies are never injected
+ * directly into the normal system prompt.
  *
  *   ---
  *   id: seg_<8hex>
@@ -52,7 +54,8 @@ export const KIND_VALUES = new Set([
   'workflow', 'pitfall', 'correction', 'project-convention',
 ]);
 
-const SCOPE_RE = /^(user|group\/[\w-]+(?:\/(?:user|vp\/[\w-]+|feature\/[\w-]+|topic\/[\w-]+(?:\/[\w-]+)?))?|sessions\/[\w-]+(?:\/(?:user|vp\/[\w-]+|feature\/[\w-]+|topic\/[\w-]+(?:\/[\w-]+)?))?|chat\/[\w-]+(?:\/vp\/[\w-]+)?|session\/[\w-]+(?:\/vp\/[\w-]+)?)$/;
+const TOPIC_PART = '[\\w.\\-\\u4e00-\\u9fff]+';
+const SCOPE_RE = new RegExp(`^(user|global|group\\/[\\w-]+(?:\\/(?:user|vp\\/[\\w-]+|feature\\/[\\w-]+|topic\\/${TOPIC_PART}(?:\\/${TOPIC_PART})?))?|sessions\\/[\\w-]+(?:\\/(?:user|vp\\/[\\w-]+|feature\\/[\\w-]+|topic\\/${TOPIC_PART}(?:\\/${TOPIC_PART})?))?|chat\\/[\\w-]+(?:\\/vp\\/[\\w-]+)?|session\\/[\\w-]+(?:\\/vp\\/[\\w-]+)?)$`);
 
 /**
  * Compute a stable id from segment content. Same body + scope + kind →

@@ -86,7 +86,7 @@ import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { defineTool } from '../../../agent/yeaft/tools/types.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { TaskManager } from '../../../agent/yeaft/tasks/manager.js';
-import { writeSummary } from '../../../agent/yeaft/memory/store.js';
+import { writeContent } from '../../../agent/yeaft/memory/store.js';
 
 // -------------------------------------------------------------------------
 // Shared scripted adapter + helpers
@@ -374,31 +374,41 @@ describe('wait-agent envelope shape', () => {
     const adapter = new TextAdapter('done');
     const scopeFilters = [];
     const memoryRoot = path.join(logDir, 'memory');
-    await writeSummary(
+    await writeContent(
       { kind: 'session', id: 'old-sibling' },
       'Old sibling experience should be visible only on the initial sub-agent turn.',
       { root: memoryRoot },
     );
-    await writeSummary(
+    await writeContent(
       { kind: 'session', id: 'new-sibling' },
       'New sibling experience should replace the old Project context.',
+      { root: memoryRoot },
+    );
+    await writeContent(
+      { kind: 'session', id: 'session-live' },
+      'Sub-agent recall must survive the single AMS render outlet.',
       { root: memoryRoot },
     );
     const memoryIndex = {
       search({ scopeFilter }) {
         scopeFilters.push([...scopeFilter]);
         if (!scopeFilter.includes('sessions/session-live')) return [];
-        return [{
-          id: 'sub-agent-recall',
-          scope: 'sessions/session-live',
+        const scopes = [
+          'sessions/session-live',
+          ...['sessions/old-sibling', 'sessions/new-sibling']
+            .filter(scope => scopeFilter.includes(scope)),
+        ];
+        return scopes.map((scope, index) => ({
+          id: `canonical-${index}`,
+          scope,
           kind: 'context',
-          tags: ['project'],
+          tags: ['canonical-content', 'project'],
           sourceMessages: [],
-          body: 'Sub-agent recall must survive the single AMS render outlet.',
-          rank: -1,
+          body: 'Canonical content selector only.',
+          rank: -1 - index,
           createdAt: '2026-08-01T00:00:00.000Z',
           updatedAt: '2026-08-01T00:00:00.000Z',
-        }];
+        }));
       },
     };
     const agent = {

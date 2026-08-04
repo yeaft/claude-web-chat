@@ -1,8 +1,8 @@
 /**
  * memory/segment-sync.js — disk → SQLite reconciliation.
  *
- * Source of truth is on-disk memory.md per scope. SQLite is a derived
- * index. This module reads disk, diffs against SQLite, and emits
+ * Sources of truth are on-disk memory.md evidence and canonical content.md.
+ * SQLite is a derived index. This module reads disk, diffs against SQLite, and emits
  * upsert / delete operations.
  *
  * Strategy:
@@ -16,7 +16,7 @@
  * scope to limit work (`syncScope`).
  */
 
-import { listScopes, readScope } from './segment-store.js';
+import { listScopes, readCanonicalContentRecord, readScope } from './segment-store.js';
 
 /**
  * Full sync: walk disk, reconcile every scope into the index. Returns
@@ -61,7 +61,11 @@ export function syncAll(memoryRoot, index) {
  * @returns {{ upserted: number, deleted: number }}
  */
 export function syncScope(memoryRoot, index, scope) {
-  const onDisk = readScope(memoryRoot, scope);
+  const contentRecord = readCanonicalContentRecord(memoryRoot, scope);
+  const onDisk = [
+    ...readScope(memoryRoot, scope),
+    ...(contentRecord ? [contentRecord] : []),
+  ];
   const onDiskIds = new Set(onDisk.map(s => s.id));
   const inIndex = index.listByScope(scope);
   const inIndexIds = new Set(inIndex.map(s => s.id));

@@ -1,9 +1,9 @@
 /**
  * dream/segment-extract.js.
  *
- * Minimal H2 Dream bridge: extract atomic memory segments for the session
- * scopes touched by a Dream pass and persist them through memory/segment-store.
- * The existing apply path still maintains summary.md as the coarse layer.
+ * Extract atomic evidence segments for scopes touched by a Dream pass and
+ * persist them through memory/segment-store. Dream Apply separately maintains
+ * canonical content.md and the short catalog summary.md.
  */
 
 import { readScope, writeScope } from '../memory/segment-store.js';
@@ -12,7 +12,6 @@ import { makeSegment } from '../memory/segment.js';
 import { render, extractTemplateForScope } from './prompts/index.js';
 import { parseJsonSafe } from './triage.js';
 
-const MAX_TARGETS = 24;
 const MAX_MESSAGES = 80;
 const MAX_BODY_CHARS = 1200;
 const MAX_SEGMENTS_PER_SCOPE = 64;
@@ -57,7 +56,7 @@ export async function extractAndWriteMemorySegments(opts) {
   let scopeCount = 0;
   const errors = [];
 
-  for (const scope of targetScopes.slice(0, MAX_TARGETS)) {
+  for (const scope of targetScopes) {
     let extracted = [];
     try {
       extracted = await extractScopeSegments({

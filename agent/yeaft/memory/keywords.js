@@ -1,7 +1,7 @@
 /**
  * keywords.js — pure-rule keyword extraction shared by memory recall paths.
  *
- * Pure CPU, no LLM, <1ms. Used by `groups/pre-flow.js` to derive FTS
+ * Pure CPU, no LLM, <1ms. Used by `sessions/pre-flow.js` to derive FTS
  * query terms from the user message before hitting `memory/preflow.js`.
  */
 
@@ -27,6 +27,14 @@ const STOP_WORDS = new Set([
   '他', '她', '吗', '呢', '吧', '把', '被',
   '那', '它', '让', '给', '可以', '什么',
   '怎么', '帮', '帮我', '请', '能', '想',
+  // Generic execution / memory vocabulary is not discriminative enough to
+  // select persistent context on its own.
+  'current', 'state', 'work', 'task', 'item', 'items', 'todo', 'next', 'step',
+  'merge', 'review', 'release', 'tag', 'tags', 'pr', 'pull', 'request', 'issue',
+  'fix', 'feat', 'test', 'tests', 'dream', 'memory', 'session', 'topic', 'status',
+  'blocker', 'blocked', 'context', 'latest',
+  '当前', '状态', '任务', '工作', '工作项', '待办', '下一步', '完成', '合并',
+  '评审', '发布', '标签', '记忆', '主题', '阻塞', '正在', '上下文', '最新',
 ]);
 
 /**
@@ -38,12 +46,22 @@ const STOP_WORDS = new Set([
 export function extractKeywords(prompt) {
   if (!prompt || !prompt.trim()) return [];
 
-  // Tokenize: split on whitespace + punctuation, keep CJK chars.
-  const tokens = prompt
-    .toLowerCase()
-    .replace(/[^\w\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]+/g, ' ')
-    .split(/\s+/)
-    .filter(t => t.length > 1 && !STOP_WORDS.has(t));
+  const normalized = prompt.toLowerCase();
+  const tokens = [];
+  for (const match of normalized.matchAll(/[a-z0-9_]{2,}/g)) {
+    if (!STOP_WORDS.has(match[0])) tokens.push(match[0]);
+  }
+  for (const match of normalized.matchAll(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]{2,}/g)) {
+    const run = match[0];
+    if (STOP_WORDS.has(run)) continue;
+    if (run.length === 2) tokens.push(run);
+    else {
+      for (let i = 0; i < run.length - 1; i += 1) {
+        const term = run.slice(i, i + 2);
+        if (!STOP_WORDS.has(term)) tokens.push(term);
+      }
+    }
+  }
 
   const freq = new Map();
   for (const t of tokens) {

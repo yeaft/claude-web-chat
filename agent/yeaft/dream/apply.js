@@ -2,17 +2,18 @@
  * dream/apply.js.
  *
  * Execute one merged-target action: either UPDATE an existing scope's
- * memory.md/summary.md, or CREATE a new one (currently topic-only).
+ * canonical content.md/summary.md, or CREATE a new one (currently topic-only).
+ * Atomic evidence segments remain in memory.md and are maintained separately.
  *
  * The flow per target:
  *   1. snapshot existing files into .dream-bak/<ts>/<scope>/
  *   2. if total content fits, run UPDATE (or CREATE) once
  *   3. if it doesn't, batch the sources by group (segment.batchSourcesForApply)
  *      and chain the LLM calls — each batch's output becomes the next
- *      batch's `current memory.md`. The prompt threads "this is batch K
+ *      batch's current content.md. The prompt threads "this is batch K
  *      of N" so the LLM doesn't think previous content was lost.
- *   4. write tmp + rename for memory.md and summary.md
- *   5. update the per-scope dream-state marker inside memory.md
+ *   4. atomically write content.md and summary.md
+ *   5. sync canonical content into the derived FTS scope index
  *
  * The LLM call is injected (`opts.llm`). Snapshots are injectable too
  * (`opts.snapshot`) to allow tests to skip the .dream-bak side-effect.
@@ -22,8 +23,9 @@ import { promises as fsp } from 'fs';
 import { join, dirname } from 'path';
 import { inspect } from 'util';
 
-import { writeMemory, writeSummary, readMemory, readSummary } from '../memory/store.js';
-import { withDreamMarker } from './state.js';
+import { writeContent, writeSummary, readContent, readMemory, readSummary } from '../memory/store.js';
+import { parseSegments } from '../memory/segment.js';
+import { syncScope } from '../memory/segment-sync.js';
 import { batchSourcesForApply, needsBatchedApply, truncateMessage } from './segment.js';
 import { snapshotScope } from './snapshot.js';
 import { parseJsonSafe } from './triage.js';
@@ -43,8 +45,8 @@ function rawResponseSnippet(raw) {
 
 function applySystem(language) {
   return String(language || '').toLowerCase().startsWith('zh')
-    ? '你是梦境流水线的 Apply 阶段。你会根据最近的 session 对话重写单个 scope 的 memory.md 和 summary.md。请只回复严格 JSON，不要输出说明文字或 markdown fence。memory_md 和 summary_md 的自然语言内容必须使用中文；JSON key、scope、schema 字段和代码标识符保持英文。'
-    : 'You are the Apply stage of a dream pipeline. You rewrite a single scope\'s memory.md and summary.md based on recent session conversations. Reply with strict JSON only — no prose, no fences.';
+    ? '你是梦境流水线的 Apply 阶段。你会根据最近的 session 对话重写单个 scope 的 canonical content.md 和目录 summary.md。请只回复严格 JSON，不要输出说明文字或 markdown fence。content_md 和 summary_md 的自然语言内容必须使用中文；JSON key、scope、schema 字段和代码标识符保持英文。'
+    : 'You are the Apply stage of a dream pipeline. You rewrite a single scope\'s canonical content.md and catalog summary.md based on recent session conversations. Reply with strict JSON only — no prose, no fences.';
 }
 
 function isPrimarySessionTarget(target) {
@@ -114,23 +116,25 @@ function summaryFromLines(lines, zh) {
  *
  * @param {{
  *   target: string,
- *   memoryMd: string,
+ *   contentMd?: string,
+ *   memoryMd?: string,
  *   summaryMd: string,
  *   sources: Array<{ sessionId: string, diff: Array<object> }>,
  *   batchInfo?: { index: number, total: number },
  * }} ctx
  */
 export function buildUpdatePrompt(ctx) {
+  const contentMd = typeof ctx.contentMd === 'string' ? ctx.contentMd : (ctx.memoryMd || '');
   const batchHeader = (ctx.batchInfo && ctx.batchInfo.total > 1)
     ? (String(ctx.language || '').toLowerCase().startsWith('zh')
-      ? `这是第 ${ctx.batchInfo.index}/${ctx.batchInfo.total} 批。前面的批次已经合并进下面当前的 memory.md。\n`
-      : `This is batch ${ctx.batchInfo.index} of ${ctx.batchInfo.total}.\nEarlier batches have already been folded into the current memory.md below.\n`)
+      ? `这是第 ${ctx.batchInfo.index}/${ctx.batchInfo.total} 批。前面的批次已经合并进下面当前的 content.md。\n`
+      : `This is batch ${ctx.batchInfo.index} of ${ctx.batchInfo.total}.\nEarlier batches have already been folded into the current content.md below.\n`)
     : '';
   const sources = renderSourceBlocks(ctx.sources, ctx.language);
   return render('update', {
     target: ctx.target,
     batchHeader,
-    memoryMd: ctx.memoryMd || '',
+    contentMd,
     summaryMd: ctx.summaryMd || '',
     sources,
   }, { language: ctx.language });
@@ -240,6 +244,7 @@ export function targetToScope(target) {
  *   nowIso?: () => string,
  *   onProgress?: (event: object) => void,
  *   siblingTopicsFor?: (target: string) => Promise<Array<{path:string, summary:string}>>,
+ *   segmentIndex?: import('../memory/index-db.js').SegmentIndex|null,
  * }} opts
  */
 export async function applyMergedTarget(merged, opts) {
@@ -247,17 +252,20 @@ export async function applyMergedTarget(merged, opts) {
   if (!opts.llm) throw new Error('apply.applyMergedTarget: opts.llm required');
   const ts = opts.ts || new Date().toISOString().replace(/[:.]/g, '-');
   const snapFn = opts.snapshot || snapshotScope;
-  const nowIso = opts.nowIso ? opts.nowIso() : new Date().toISOString();
   const scope = targetToScope(merged.target);
   const scopeDirRel = scopeRelDir(scope);
 
   if (opts.onProgress) opts.onProgress({ phase: 'apply', target: merged.target, status: 'snapshot' });
   await snapFn(opts.root, ts, scopeDirRel);
 
-  let memoryMd = await readMemory(scope, { root: opts.root });
+  let contentMd = await readContent(scope, { root: opts.root });
+  const legacyMemoryMd = contentMd ? '' : await readMemory(scope, { root: opts.root });
+  if (!contentMd && isLegacyCanonicalMemory(legacyMemoryMd, merged.target)) {
+    contentMd = legacyMemoryMd;
+  }
   let summaryMd = await readSummary(scope, { root: opts.root, language: opts.language });
 
-  if (merged.kind === 'create' && (memoryMd || summaryMd)) {
+  if (merged.kind === 'create' && (contentMd || summaryMd)) {
     // Race / partial state: the scope already exists. Treat as update —
     // safer than overwriting arbitrary bytes.
     merged = { ...merged, kind: 'update' };
@@ -277,26 +285,29 @@ export async function applyMergedTarget(merged, opts) {
     if (opts.onProgress) opts.onProgress({ phase: 'apply', target: merged.target, status: 'llm', batch: 1, of: 1 });
     const raw = await opts.llm({ pass: 'create', prompt, system: applySystem(opts.language) });
     const parsed = parseJsonSafe(raw);
-    if (!parsed || typeof parsed.memory_md !== 'string') {
+    const parsedContent = parsed && typeof parsed.content_md === 'string'
+      ? parsed.content_md
+      : (parsed && typeof parsed.memory_md === 'string' ? parsed.memory_md : null);
+    if (parsedContent === null) {
       throw malformedJsonError(`apply: CREATE returned malformed JSON for ${merged.target}`, raw);
     }
     const ensured = ensurePrimarySessionOutput({
       target: merged.target,
-      memoryMd: parsed.memory_md,
+      memoryMd: parsedContent,
       summaryMd: typeof parsed.summary_md === 'string' ? parsed.summary_md : '',
       sources: merged.sources,
       language: opts.language,
     });
-    memoryMd = ensured.memoryMd;
+    contentMd = ensured.memoryMd;
     summaryMd = ensured.summaryMd;
     batchesUsed = 1;
   } else {
     // UPDATE — possibly batched.
     const batches = needsBatchedApply(
-      { memoryMd, summaryMd, sources: merged.sources },
+      { memoryMd: contentMd, summaryMd, sources: merged.sources },
       maxApply,
     )
-      ? batchSourcesForApply({ memoryMd, summaryMd, sources: merged.sources }, maxApply)
+      ? batchSourcesForApply({ memoryMd: contentMd, summaryMd, sources: merged.sources }, maxApply)
       : [merged.sources];
 
     let i = 0;
@@ -304,7 +315,7 @@ export async function applyMergedTarget(merged, opts) {
       i += 1;
       const prompt = buildUpdatePrompt({
         target: merged.target,
-        memoryMd,
+        contentMd,
         summaryMd,
         sources: batch,
         batchInfo: { index: i, total: batches.length },
@@ -313,26 +324,32 @@ export async function applyMergedTarget(merged, opts) {
       if (opts.onProgress) opts.onProgress({ phase: 'apply', target: merged.target, status: 'llm', batch: i, of: batches.length });
       const raw = await opts.llm({ pass: 'update', prompt, system: applySystem(opts.language) });
       const parsed = parseJsonSafe(raw);
-      if (!parsed || typeof parsed.memory_md !== 'string') {
+      const parsedContent = parsed && typeof parsed.content_md === 'string'
+        ? parsed.content_md
+        : (parsed && typeof parsed.memory_md === 'string' ? parsed.memory_md : null);
+      if (parsedContent === null) {
         throw malformedJsonError(`apply: UPDATE batch ${i} returned malformed JSON for ${merged.target}`, raw);
       }
       const ensured = ensurePrimarySessionOutput({
         target: merged.target,
-        memoryMd: parsed.memory_md,
+        memoryMd: parsedContent,
         summaryMd: typeof parsed.summary_md === 'string' ? parsed.summary_md : summaryMd,
         sources: batch,
         language: opts.language,
       });
-      memoryMd = ensured.memoryMd;
+      contentMd = ensured.memoryMd;
       summaryMd = ensured.summaryMd;
     }
     batchesUsed = batches.length;
   }
 
-  // Stamp the per-scope dream marker, then atomically write both files.
-  const stamped = withDreamMarker(memoryMd, { lastDreamAt: nowIso });
-  await writeMemory(scope, stamped, { root: opts.root });
+  // Canonical content and the catalog summary are independent atomic files.
+  // Per-session Dream control state is stored in .dream-state by runner.js;
+  // do not mix scheduler metadata into prompt-facing content.
+  const canonicalContent = String(contentMd || '').trim();
+  await writeContent(scope, canonicalContent ? `${canonicalContent}\n` : '', { root: opts.root });
   await writeSummary(scope, summaryMd || '', { root: opts.root, language: opts.language });
+  if (opts.segmentIndex) syncScope(opts.root, opts.segmentIndex, merged.target);
 
   if (opts.onProgress) {
     // feat-dream-debug-detail: surface a truncated copy of what was
@@ -345,9 +362,12 @@ export async function applyMergedTarget(merged, opts) {
       status: 'done',
       batches: batchesUsed,
       kind: merged.kind,
-      memoryMdPreview: truncateForDebug(stamped),
+      contentMdPreview: truncateForDebug(canonicalContent),
+      contentMdLength: canonicalContent.length,
+      // Legacy debug aliases kept until the Dream panel consumes contentMd*.
+      memoryMdPreview: truncateForDebug(canonicalContent),
       summaryMdPreview: truncateForDebug(summaryMd || ''),
-      memoryMdLength: (stamped || '').length,
+      memoryMdLength: canonicalContent.length,
       summaryMdLength: (summaryMd || '').length,
     });
   }
@@ -372,12 +392,21 @@ function scopeRelDir(scope) {
 
 function oneLine(s) { return String(s || '').replace(/\s+/g, ' ').trim().slice(0, 200); }
 
+function isLegacyCanonicalMemory(memoryMd, scope) {
+  const raw = String(memoryMd || '').trim();
+  if (!raw) return false;
+  const parsed = parseSegments(raw, { defaultScope: scope });
+  // Body-only legacy prose parses as one anonymous segment. Frontmatter-backed
+  // records are evidence and must never be promoted into canonical content.
+  return parsed.length === 1 && !/^---\s*$/m.test(raw);
+}
+
 /**
  * Per-field truncation cap for debug previews emitted on `apply/done`.
  * Keep this small — the dream panel only needs a recognisable snippet.
  * Total worst-case payload is `PREVIEW_MAX * 2 * targets_per_run` per
  * dream pass; with N=50 targets that's ~200 KB. The full bytes are on
- * disk under <root>/<scope>/{memory,summary}.md anyway — these previews
+ * disk under <root>/<scope>/{content,summary}.md anyway — these previews
  * are for at-a-glance debugging only.
  */
 const PREVIEW_MAX = 2048;
