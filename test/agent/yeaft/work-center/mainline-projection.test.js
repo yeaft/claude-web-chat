@@ -222,6 +222,51 @@ describe('Mainline projection', () => {
       .toEqual([{ role: 'user', vpId: null, text: 'DUPLICATE EVENT SESSION CONTEXT' }]);
     expect(duplicateEventSnapshot.userContext).toMatchObject({ includedCount: 3, omittedCount: 0 });
 
+    const ambiguousAction = {
+      ...action,
+      context: [
+        {
+          type: 'input', role: 'user', inputId: 'ambiguous-input',
+          summary: 'AMBIGUOUS SAME TEXT', attachments: [], evidence: [],
+        },
+        {
+          type: 'input', role: 'user', inputId: 'ambiguous-input',
+          summary: 'AMBIGUOUS SAME TEXT', attachments: [], evidence: [],
+        },
+      ],
+    };
+    const ambiguousSnapshot = buildMainlineContextSnapshot(detail({
+      actions: [ambiguousAction],
+      events: [
+        {
+          id: 11, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+          data: {
+            inputId: 'ambiguous-input', text: 'AMBIGUOUS SAME TEXT',
+            quote: { role: 'assistant', content: 'DO NOT BORROW QUOTE ONE' },
+            attachments: [{ id: 'ambiguous-attachment-one' }],
+          },
+        },
+        {
+          id: 12, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+          data: {
+            inputId: 'ambiguous-input', text: 'AMBIGUOUS SAME TEXT',
+            quote: { role: 'assistant', content: 'DO NOT BORROW QUOTE TWO' },
+            attachments: [{ id: 'ambiguous-attachment-two' }],
+          },
+        },
+      ],
+    }), ambiguousAction).contextSnapshot;
+
+    expect(ambiguousSnapshot.userContext.guidance).toHaveLength(2);
+    expect(ambiguousSnapshot.userContext.guidance.every(value => (
+      value.eventId == null
+      && value.attachments.length === 0
+      && !Object.hasOwn(value, 'quotedContext')
+    ))).toBe(true);
+    expect(JSON.stringify(ambiguousSnapshot)).not.toContain('DO NOT BORROW');
+    expect(JSON.stringify(ambiguousSnapshot)).not.toContain('ambiguous-attachment');
+    expect(ambiguousSnapshot.userContext).toMatchObject({ includedCount: 2, omittedCount: 0 });
+
     const missingIdentitySnapshot = buildMainlineContextSnapshot(detail({
       actions: [duplicateEventAction],
       events: [{

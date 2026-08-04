@@ -71,7 +71,7 @@ function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-function inputEventView(event) {
+function inputEventView(event, occurrence) {
   return withGuidanceOccurrence({
     eventId: event.id,
     inputId: event.data?.inputId || null,
@@ -79,10 +79,10 @@ function inputEventView(event) {
     text: event.data?.text || '',
     quote: event.data?.quote || null,
     attachments: Array.isArray(event.data?.attachments) ? event.data.attachments : [],
-  }, Boolean(event.data?.inputId || event.id != null));
+  }, event.data?.inputId || event.id != null ? occurrence : null);
 }
 
-function inputContextView(value, event, fallbackInputId) {
+function inputContextView(value, event, fallbackInputId, occurrence) {
   return withGuidanceOccurrence({
     eventId: event?.id ?? null,
     inputId: value.inputId || event?.data?.inputId || fallbackInputId,
@@ -92,7 +92,7 @@ function inputContextView(value, event, fallbackInputId) {
     attachments: Array.isArray(value.attachments)
       ? value.attachments
       : Array.isArray(event?.data?.attachments) ? event.data.attachments : [],
-  }, Boolean(value.inputId || event?.data?.inputId || event?.id != null));
+  }, occurrence);
 }
 
 function requiredGuidanceValue(value) {
@@ -101,9 +101,13 @@ function requiredGuidanceValue(value) {
   return required;
 }
 
-function withGuidanceOccurrence(value, hasSourceIdentity) {
-  if (!hasSourceIdentity) return value;
-  return { ...value, [GUIDANCE_OCCURRENCE]: Symbol() };
+function withGuidanceOccurrence(value, occurrence = null) {
+  if (!occurrence) return value;
+  return { ...value, [GUIDANCE_OCCURRENCE]: occurrence };
+}
+
+function sourceOccurrence() {
+  return Symbol();
 }
 
 function guidanceWithoutOccurrence(value) {
@@ -130,78 +134,114 @@ function guidanceWithQuote(snapshot, occurrence, quote, limitBytes) {
   return values;
 }
 
+function claimSourceOccurrence(records, sourceMatches, text) {
+  const sourceCandidates = records.filter(record => sourceMatches(record.event));
+  const available = sourceCandidates.filter(record => !record.consumed);
+  if (available.length === 0) return { record: null, metadataTrusted: false };
+  const sourceTextMatches = sourceCandidates
+    .filter(record => (record.event.data?.text || '') === text);
+  const availableTextMatches = sourceTextMatches.filter(record => !record.consumed);
+  const record = availableTextMatches.length > 0 ? availableTextMatches[0] : available[0];
+  record.consumed = true;
+  return {
+    record,
+    metadataTrusted: sourceCandidates.length === 1 || sourceTextMatches.length === 1,
+  };
+}
+
 function canonicalActionUserContext(events, action) {
   const actionEvents = (Array.isArray(events) ? events : [])
     .filter(event => event?.actionId === action?.id
       && ['action.guidance_added', 'action.input_added'].includes(event.type))
     .slice()
     .sort((left, right) => count(left.id) - count(right.id));
-  const inputEvents = actionEvents.filter(event => event.type === 'action.input_added');
+  const eventRecords = actionEvents.map(event => ({
+    event,
+    occurrence: sourceOccurrence(),
+    consumed: false,
+  }));
+  const inputRecords = eventRecords.filter(record => record.event.type === 'action.input_added');
   const validInputEventIds = currentActionInputEventIds(events, action);
-  const eventByInputId = new Map(inputEvents
-    .filter(event => event.data?.inputId)
-    .map(event => [event.data.inputId, event]));
-  const currentInputEvents = inputEvents.filter(event => validInputEventIds.has(String(event.id)));
-  const usedEventIds = new Set();
+  const currentInputRecords = inputRecords
+    .filter(record => validInputEventIds.has(String(record.event.id)));
   const contextEntries = (Array.isArray(action?.context) ? action.context : [])
     .filter(entry => ['input', 'guidance', 'coordinator-guidance'].includes(entry?.type)
       && typeof entry.summary === 'string');
   const values = contextEntries.flatMap((entry, index) => {
+    const occurrence = sourceOccurrence();
     if (entry.type !== 'input') {
-      const event = actionEvents.find(candidate => !usedEventIds.has(candidate.id)
-        && candidate.type === 'action.guidance_added'
-        && (candidate.data?.guidance || '') === entry.summary) || null;
-      if (event) usedEventIds.add(event.id);
+      const match = claimSourceOccurrence(
+        eventRecords,
+        event => event.type === 'action.guidance_added'
+          && (event.data?.guidance || '') === entry.summary,
+        '',
+      );
       return [inputContextView({
         inputId: null,
         actionId: action.id,
         text: entry.summary,
         attachments: entry.attachments,
-      }, event, null)];
+      }, match.metadataTrusted ? match.record?.event : null, null,
+      match.record?.event.id != null ? occurrence : null)];
     }
-    let event = entry.inputId ? eventByInputId.get(entry.inputId) : null;
-    if (!event && typeof entry.inputId === 'string' && entry.inputId.startsWith('legacy-event:')) {
-      const legacyEventId = Number(entry.inputId.slice('legacy-event:'.length));
-      event = inputEvents.find(candidate => candidate.id === legacyEventId) || null;
+
+    let match = { record: null, metadataTrusted: false };
+    if (typeof entry.inputId === 'string' && entry.inputId.startsWith('legacy-event:')) {
+      const legacyEventId = entry.inputId.slice('legacy-event:'.length);
+      match = claimSourceOccurrence(
+        inputRecords,
+        event => String(event.id) === legacyEventId,
+        entry.summary,
+      );
+    } else if (entry.inputId) {
+      match = claimSourceOccurrence(
+        inputRecords,
+        event => event.data?.inputId === entry.inputId,
+        entry.summary,
+      );
+    } else {
+      match = claimSourceOccurrence(
+        currentInputRecords,
+        event => (event.data?.text || '') === entry.summary,
+        entry.summary,
+      );
     }
-    if (!event && !entry.inputId) {
-      event = currentInputEvents.find(candidate => !usedEventIds.has(candidate.id)
-        && (candidate.data?.text || '') === entry.summary) || null;
-    }
-    if (!entry.inputId && !event) return [];
-    if (event) usedEventIds.add(event.id);
+    if (!entry.inputId && !match.record) return [];
+    const matchedEvent = match.metadataTrusted ? match.record?.event : null;
+    const hasSourceIdentity = Boolean(entry.inputId
+      || match.record?.event.data?.inputId
+      || match.record?.event.id != null);
     return [inputContextView({
       inputId: entry.inputId,
       actionId: action.id,
       text: entry.summary,
       quote: entry.quote,
       attachments: entry.attachments,
-    }, event, `legacy-context:${index}`)];
+    }, matchedEvent, `legacy-context:${index}`, hasSourceIdentity ? occurrence : null)];
   });
-  return { values, usedEventIds, validInputEventIds };
+  return { values, eventRecords, validInputEventIds };
 }
 
 function guidanceView(events, action) {
   const allEvents = Array.isArray(events) ? events : [];
   const canonicalEntries = canonicalActionUserContext(allEvents, action);
-  const currentEvents = allEvents
-    .filter(event => event?.actionId === action?.id
-      && ((event.type === 'action.input_added'
-        && canonicalEntries.validInputEventIds.has(String(event.id)))
-        || (event.type === 'action.guidance_added' && eventMatchesActionGeneration(event, action)))
-      && !canonicalEntries.usedEventIds.has(event.id))
-    .slice()
-    .sort((left, right) => count(left.id) - count(right.id))
-    .map(event => event.type === 'action.input_added'
-      ? inputEventView(event)
+  const currentEvents = canonicalEntries.eventRecords
+    .filter(record => !record.consumed
+      && ((record.event.type === 'action.input_added'
+        && canonicalEntries.validInputEventIds.has(String(record.event.id)))
+        || (record.event.type === 'action.guidance_added'
+          && eventMatchesActionGeneration(record.event, action))))
+    .map(record => record.event.type === 'action.input_added'
+      ? inputEventView(record.event, record.occurrence)
       : withGuidanceOccurrence({
-          eventId: event.id,
+          eventId: record.event.id,
           inputId: null,
-          actionId: event.actionId || null,
-          text: event.data?.guidance || '',
+          actionId: record.event.actionId || null,
+          text: record.event.data?.guidance || '',
           quote: null,
-          attachments: Array.isArray(event.data?.attachments) ? event.data.attachments : [],
-        }, event.id != null));
+          attachments: Array.isArray(record.event.data?.attachments)
+            ? record.event.data.attachments : [],
+        }, record.event.id != null ? record.occurrence : null));
   return [...canonicalEntries.values, ...currentEvents];
 }
 

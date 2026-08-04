@@ -3626,6 +3626,99 @@ describe('Work Center core', () => {
     }
 
     {
+    const item = controller.create(createInput({
+      sessionContext: [{ role: 'user', content: 'DUPLICATE SOURCE SESSION CONTEXT' }],
+    }));
+    const firstAction = store.getAction(item.currentActionId);
+    const olderAttachment = {
+      id: 'older-source-attachment', name: 'older-source.txt', mimeType: 'text/plain', size: 11, isImage: false,
+    };
+    const latestAttachment = {
+      id: 'latest-source-attachment', name: 'latest-source.txt', mimeType: 'text/plain', size: 12, isImage: false,
+    };
+    const older = controller.input(item.id, {
+      text: 'OLDER SMALL INPUT',
+      actionId: firstAction.id,
+      generation: firstAction.generation,
+      revision: item.revision,
+      clientMessageId: 'older-source-message',
+      quote: { role: 'assistant', author: 'Reviewer', content: 'OLDER SOURCE QUOTE' },
+      addedAttachmentCount: 1,
+      addedAttachments: [olderAttachment],
+      attachments: [olderAttachment],
+    });
+    const currentAction = older.actions.find(candidate => candidate.id === firstAction.id);
+    const latestCorrection = `LATEST CANONICAL CORRECTION ${'新'.repeat(5_000)}`;
+    const corrected = controller.input(item.id, {
+      text: latestCorrection,
+      actionId: currentAction.id,
+      generation: currentAction.generation,
+      revision: older.revision,
+      clientMessageId: 'latest-source-message',
+      quote: { role: 'assistant', author: 'Reviewer', content: 'LATEST SOURCE QUOTE' },
+      addedAttachmentCount: 1,
+      addedAttachments: [latestAttachment],
+      attachments: [olderAttachment, latestAttachment],
+    });
+    const correctedAction = corrected.actions.find(candidate => candidate.id === firstAction.id);
+    const sourceEvents = store.listActionEvents(correctedAction.id)
+      .filter(event => event.type === 'action.input_added');
+    expect(sourceEvents).toHaveLength(2);
+
+    const duplicateSourceId = 'historical-duplicate-source';
+    for (const event of sourceEvents) {
+      store.db.prepare('UPDATE events SET data = ? WHERE id = ?').run(
+        JSON.stringify({ ...event.data, inputId: duplicateSourceId }),
+        event.id,
+      );
+    }
+    const collidedContext = correctedAction.context.map(entry => {
+      if (entry.type !== 'input') return entry;
+      const { quote: _quote, attachments: _attachments, ...value } = entry;
+      return { ...value, inputId: duplicateSourceId };
+    });
+    store.db.prepare('UPDATE actions SET context = ? WHERE id = ?')
+      .run(JSON.stringify(collidedContext), correctedAction.id);
+    store.appendEvent(item.id, 'action.input_rebound', {
+      sourceEventId: sourceEvents[0].id,
+      reason: 'historical_duplicate_source_repair',
+    }, {
+      actionId: correctedAction.id,
+      actionGeneration: correctedAction.generation,
+    });
+
+    const persisted = store.getWorkItemDetail(item.id);
+    const persistedAction = persisted.actions.find(candidate => candidate.id === correctedAction.id);
+    const built = buildMainlineContextSnapshot(persisted, persistedAction);
+    const selectedUserContext = built.contextSnapshot.userContext;
+    const olderGuidance = selectedUserContext.guidance
+      .find(entry => entry.text === 'OLDER SMALL INPUT');
+    const latestGuidance = selectedUserContext.guidance
+      .find(entry => entry.text === latestCorrection);
+
+    expect(selectedUserContext.guidance).toHaveLength(2);
+    expect(selectedUserContext.guidance.filter(entry => entry.text === 'OLDER SMALL INPUT')).toHaveLength(1);
+    expect(olderGuidance).toMatchObject({
+      inputId: duplicateSourceId,
+      attachments: [expect.objectContaining({ id: olderAttachment.id })],
+      quotedContext: expect.stringContaining('OLDER SOURCE QUOTE'),
+    });
+    expect(olderGuidance.quotedContext).not.toContain('LATEST SOURCE QUOTE');
+    expect(latestGuidance).toMatchObject({
+      inputId: duplicateSourceId,
+      attachments: [expect.objectContaining({ id: latestAttachment.id })],
+      quotedContext: expect.stringContaining('LATEST SOURCE QUOTE'),
+    });
+    expect(latestGuidance.quotedContext).not.toContain('OLDER SOURCE QUOTE');
+    expect(selectedUserContext.sessionContext)
+      .toEqual([{ role: 'user', vpId: null, text: 'DUPLICATE SOURCE SESSION CONTEXT' }]);
+    expect(selectedUserContext).toMatchObject({ includedCount: 3, omittedCount: 0 });
+    expect(selectedUserContext.includedCount + selectedUserContext.omittedCount).toBe(3);
+    expect(selectedUserContext.guidance.every(entry => Object.getOwnPropertySymbols(entry).length === 0)).toBe(true);
+    expect(built.budget.bytes).toBeLessThanOrEqual(MAINLINE_CONTEXT_HARD_LIMIT_BYTES);
+    }
+
+    {
     const schemaOneDir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-schema-one-quote-'));
     const schemaOneStore = new WorkItemStore(join(schemaOneDir, 'work-center.db'), { now: () => now });
     const schemaOneController = new WorkflowController(schemaOneStore);
