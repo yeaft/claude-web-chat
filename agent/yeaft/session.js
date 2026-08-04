@@ -249,22 +249,11 @@ export async function loadSession(options = {}) {
   }
 
   // ─── 3. Create trajectory trace ─────────────────────────
-  // Always-on request trace for the Debug panel. It is file-backed, not
-  // SQLite-backed: each request writes one bounded JSON file under
-  // `<yeaftDir>/debug/` (session traces are nested under
-  // `<yeaftDir>/sessions/<sessionId>/debug/requests/`). A request file stores one
-  // base request snapshot plus per-loop deltas, so 100-200 loop requests do
-  // not become hundreds of tiny files or repeated cumulative payloads.
+  // Debug traces can contain prompts, tool payloads, and provider envelopes.
+  // Keep collection opt-in and avoid scanning trace history during Session boot.
   const trace = createTrace({
-    enabled: true,
+    enabled: config.debug === true,
     dirPath: yeaftDir,
-  });
-  // Hard cap debug history to the most recent 10 requests per Session. Trace
-  // failures are best-effort and must never stop the agent loop. cleanup() is
-  // now async (it hydrates the in-memory index, then prunes); run it
-  // fire-and-forget so session load never blocks on the startup disk scan.
-  Promise.resolve(trace.cleanup?.(10)).catch((err) => {
-    console.warn('[Yeaft] trace.cleanup failed:', err?.message || err);
   });
 
   // ─── 4. Create LLM adapter ────────────────────────────

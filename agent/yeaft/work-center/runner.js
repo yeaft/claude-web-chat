@@ -821,7 +821,7 @@ export class WorkItemRunner {
     this.policyProvider = typeof options.policyProvider === 'function' ? options.policyProvider : null;
     this.attachmentRoot = options.attachmentRoot || null;
     this.trace = options.trace || createTrace({
-      enabled: Boolean(options.yeaftDir),
+      enabled: options.debug === true && Boolean(options.yeaftDir),
       dirPath: options.yeaftDir || null,
     });
     this.actionWorktreeRoot = options.actionWorktreeRoot || null;
