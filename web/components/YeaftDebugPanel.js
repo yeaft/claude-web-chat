@@ -100,20 +100,6 @@ export default {
         this.expandedTurns = turnsOpen;
       }
     },
-    // feat-always-on-trajectory-store: watch the active agent. The mount-time
-    // hydration silently no-ops when the panel is opened before the
-    // agent socket finishes connecting (loadYeaftDebugHistory bails on
-    // !this.currentAgent). Without this watcher the panel stays empty
-    // for that whole session because mounted() never runs again.
-    //
-    // Condition is `now && now !== prev` (not just `now && !prev`) so an
-    // agent A → agent B switch also re-fetches; otherwise the panel would
-    // keep showing agent A's trajectory after the user switches.
-    'store.currentAgent'(now, prev) {
-      if (now && now !== prev && this.store && typeof this.store.loadYeaftDebugHistory === 'function') {
-        this.store.loadYeaftDebugHistory({ limit: INITIAL_REQUEST_HISTORY_LIMIT, dreamLimit: 5, indexOnly: true });
-      }
-    },
   },
   computed: {
     store() {
@@ -303,15 +289,6 @@ export default {
         evt.request || evt.response || evt.rawRequest || evt.rawResponse || evt.systemPrompt || this.dreamLoopUserContent(evt)
       ));
     },
-  },
-  mounted() {
-    // Hydrate from the agent's persistent file-backed trace as soon as the
-    // panel is mounted. The request log intentionally starts with the newest
-    // 5 requests across all Sessions; regex search asks the agent to find older
-    // matching requests, but the returned list is still capped at 5 rows.
-    if (this.store && typeof this.store.loadYeaftDebugHistory === 'function') {
-      this.store.loadYeaftDebugHistory({ limit: INITIAL_REQUEST_HISTORY_LIMIT, dreamLimit: 5, indexOnly: true });
-    }
   },
   methods: {
     debugSessionId(turn) {

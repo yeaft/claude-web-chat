@@ -1964,6 +1964,26 @@ describe('message flow regressions', () => {
     expect(staleTimeoutState.yeaftSessionHydrateError).toBe('session_inventory_timeout');
     vi.useRealTimers();
 
+    const staleDebugDetailStore = {
+      _yeaftDebugHistoryLatestDetailRequestId: 'detail-current',
+      _yeaftDebugHistoryLatestListRequestId: null,
+      _fetchYeaftDebugHistoryTimer: 'pending',
+      _yeaftDebugHistoryInFlightKey: 'session-a:turn-a',
+      yeaftDebugTurnsById: { current: { turnId: 'current' } },
+      yeaftDebugLoops: [],
+      yeaftDebugTurnOrder: ['current'],
+      yeaftDebugHistoryLoading: true,
+    };
+    handleMessage(staleDebugDetailStore, {
+      type: 'yeaft_debug_history', detailTurnId: 'turn-old', turns: [{ turnId: 'stale' }], loops: [],
+    });
+    expect(staleDebugDetailStore.yeaftDebugTurnOrder).toEqual(['current']);
+    expect(staleDebugDetailStore._fetchYeaftDebugHistoryTimer).toBe('pending');
+    handleMessage(staleDebugDetailStore, {
+      type: 'yeaft_debug_history', requestId: 'detail-old', detailTurnId: 'turn-old', turns: [{ turnId: 'stale' }], loops: [],
+    });
+    expect(staleDebugDetailStore.yeaftDebugTurnOrder).toEqual(['current']);
+
     const hydrateSessions = {
       live: [],
       applySnapshot: vi.fn(function applySnapshot(rows, agentId, options = {}) {

@@ -121,6 +121,7 @@ async function createDefaultService() {
     policyProvider: async () => readWorkCenterSettings(yeaftDir),
     attachmentRoot: join(yeaftDir, 'work-center', 'attachments'),
     yeaftDir,
+    debug: ctx.CONFIG?.debug === true,
     actionWorktreeRoot: join(yeaftDir, 'work-center', 'worktrees'),
     registry: defaultRegistry,
     store: null,
