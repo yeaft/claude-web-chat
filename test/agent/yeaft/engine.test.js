@@ -3538,11 +3538,9 @@ describe('Engine', () => {
       expect(tools[0].tool_output).toBe('results');
 
       await dbTrace.close();
-    });
 
-    it('bounds raw provider responses across long tool turns', async () => {
       const traceRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-raw-response-'));
-      const dbTrace = new DebugTrace(traceRoot);
+      const boundedTrace = new DebugTrace(traceRoot);
       const rawResponse = {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -3552,20 +3550,20 @@ describe('Engine', () => {
 
       try {
         for (let i = 1; i <= 100; i += 1) {
-          const turnId = dbTrace.startTurn({
+          const turnId = boundedTrace.startTurn({
             traceId: 'long-tool-turn',
             turnNumber: i,
             sessionId: 's-long',
             userPrompt: 'do long work',
           });
-          dbTrace.endTurn(turnId, {
+          boundedTrace.endTurn(turnId, {
             responseText: '',
             rawResponse,
             stopReason: 'tool_use',
             messages: [{ role: 'user', content: 'do long work' }],
           });
         }
-        await dbTrace.close();
+        await boundedTrace.close();
 
         const requestRoot = join(traceRoot, 'sessions', 's-long', 'debug', 'requests');
         const [requestDir] = readdirSync(requestRoot);
@@ -3577,7 +3575,7 @@ describe('Engine', () => {
         expect(stored.loops.every(loop => loop.rawResponse?.maxBytes === 64 * 1024)).toBe(true);
         expect(lstatSync(traceFile).size).toBeLessThan(8 * 1024 * 1024);
       } finally {
-        await dbTrace.close();
+        await boundedTrace.close();
         rmSync(traceRoot, { recursive: true, force: true });
       }
     });
