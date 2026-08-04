@@ -245,8 +245,8 @@ export async function handleUpgradeAgent() {
       await spawnUnixUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion, instanceId);
     }
 
-    // Windows deletes PM2 inside the verified handoff callback. Unix keeps the
-    // existing pre-exit behavior because its detached launcher has no marker.
+    // On Windows the detached runner removes the PM2 app only after this
+    // process exits. Unix keeps the existing pre-exit service-manager behavior.
     const isPm2 = !!process.env.pm_id;
     if (!isWindows && isPm2) {
       try {
@@ -271,10 +271,12 @@ async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, l
   const logDir = join(configDir, 'logs');
   mkdirSync(logDir, { recursive: true });
 
+  const bootstrapPath = join(upgradeDir, 'windows-upgrade-bootstrap.js');
   const runnerPath = join(upgradeDir, 'windows-upgrade-runner.js');
   const commandPath = join(upgradeDir, 'upgrade-command.js');
   const payloadPath = join(upgradeDir, 'payload.json');
   const handoffPath = join(upgradeDir, 'started');
+  const cancelPath = join(upgradeDir, 'cancelled');
   const logPath = join(logDir, 'upgrade.log');
   const ecosystemPath = join(configDir, 'ecosystem.config.cjs');
   const npmCliPath = resolveWindowsNpmCliPath(process.execPath);
@@ -292,17 +294,22 @@ async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, l
     installDir,
     logPath,
     handoffPath,
+    cancelPath,
+    bootstrapPath,
     runnerPath,
     commandPath,
     payloadPath,
     nodePath: process.execPath,
     npmCliPath,
     pm2CliPath,
+    pm2AppName: isPm2 ? getPm2AppName(instanceId) : null,
     ecosystemPath: isPm2 ? ecosystemPath : null,
   };
   prepareWindowsUpgradeRunner({
+    sourceBootstrapPath: fileURLToPath(new URL('../windows-upgrade-bootstrap.js', import.meta.url)),
     sourceRunnerPath: fileURLToPath(new URL('../windows-upgrade-runner.js', import.meta.url)),
     sourceCommandPath: fileURLToPath(new URL('../upgrade-command.js', import.meta.url)),
+    bootstrapPath,
     runnerPath,
     commandPath,
     payloadPath,
@@ -311,17 +318,13 @@ async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, l
 
   const launcher = await launchWindowsUpgradeScript({
     nodePath: process.execPath,
+    bootstrapPath,
     runnerPath,
     payloadPath,
     logPath,
     handoffPath,
+    cancelPath,
     spawnProcess: spawn,
-    onHandoff: isPm2
-      ? () => {
-          execFileSync(process.execPath, [pm2CliPath, 'delete', getPm2AppName(instanceId)], { stdio: 'pipe', env: safeEnv });
-          console.log('[Agent] PM2 app deleted after upgrade handoff');
-        }
-      : undefined,
   });
 
   console.log(`[Agent] Spawned Windows upgrade runner via ${launcher} (pm2=${isPm2}, dir=${installDir})`);

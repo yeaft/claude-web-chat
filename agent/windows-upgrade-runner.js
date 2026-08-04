@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -107,6 +107,17 @@ export async function installWindowsUpgrade({
   return { exitCode: 1, attempts: FILE_LOCK_RETRY_MS.length, command, args };
 }
 
+export async function stopPm2Service({ nodePath, pm2CliPath, pm2AppName, logPath, run = runProcess }) {
+  if (!pm2CliPath || !pm2AppName) return true;
+  appendLog(logPath, `Removing PM2 app ${pm2AppName} before install`);
+  const deleteCode = await run(nodePath, [pm2CliPath, 'delete', pm2AppName], {
+    env: process.env,
+    windowsHide: true,
+    stdio: 'ignore',
+  });
+  return deleteCode === 0;
+}
+
 export async function startPm2Service({ nodePath, pm2CliPath, ecosystemPath, logPath, run = runProcess }) {
   if (!pm2CliPath || !ecosystemPath) return true;
   appendLog(logPath, 'Re-registering Agent via PM2');
@@ -124,9 +135,16 @@ export async function startPm2Service({ nodePath, pm2CliPath, ecosystemPath, log
   return saveCode === 0;
 }
 
+function removeTransientFiles(handoffPath, payloadPath, cancelPath) {
+  for (const path of [handoffPath, payloadPath, cancelPath]) {
+    try { rmSync(path, { force: true }); } catch {}
+  }
+}
+
 /**
- * Run after the original Agent exits. No shell pipeline is involved: Windows
- * PID polling is handled by Node and npm/PM2 run through their JS entry points.
+ * Wait for the original Agent to exit, remove its PM2 registration, install the
+ * exact package version, and restore the selected PM2 instance. Every process
+ * invocation is shell-free.
  */
 export async function runWindowsUpgrade(options, dependencies = {}) {
   const {
@@ -136,25 +154,63 @@ export async function runWindowsUpgrade(options, dependencies = {}) {
     installDir,
     logPath,
     handoffPath,
+    cancelPath,
+    bootstrapPath,
     runnerPath,
     commandPath,
     payloadPath,
     nodePath,
     npmCliPath,
     pm2CliPath,
+    pm2AppName,
     ecosystemPath,
   } = options;
   const wait = dependencies.waitForProcessExit || waitForProcessExit;
   const install = dependencies.installWindowsUpgrade || installWindowsUpgrade;
+  const stopService = dependencies.stopPm2Service || stopPm2Service;
   const startService = dependencies.startPm2Service || startPm2Service;
+  const cleanupPaths = [bootstrapPath, runnerPath, commandPath];
 
   mkdirSync(dirname(handoffPath), { recursive: true });
-  writeFileSync(handoffPath, 'started');
+  if (cancelPath && existsSync(cancelPath)) {
+    appendLog(logPath, 'Upgrade was cancelled before handoff; refusing to modify the installation');
+    removeTransientFiles(handoffPath, payloadPath, cancelPath);
+    return { exitCode: 1, restarted: false, cleanupPaths };
+  }
+  writeFileSync(handoffPath, JSON.stringify({ runnerPid: process.pid, startedAt: Date.now() }));
   appendLog(logPath, `Started at ${new Date().toISOString()}`);
   appendLog(logPath, `Waiting for PID ${parentPid} to exit`);
   const exited = await wait(parentPid);
-  if (!exited) appendLog(logPath, `Timed out waiting for PID ${parentPid}; continuing with bounded npm retries`);
-  else appendLog(logPath, 'Original process exited');
+  if (!exited) {
+    appendLog(logPath, `Timed out waiting for PID ${parentPid}; refusing to modify a live installation`);
+    removeTransientFiles(handoffPath, payloadPath, cancelPath);
+    return { exitCode: 1, restarted: false, cleanupPaths };
+  }
+  appendLog(logPath, 'Original process exited');
+  if (cancelPath && existsSync(cancelPath)) {
+    appendLog(logPath, 'Upgrade was cancelled during handoff; refusing to modify the installation');
+    removeTransientFiles(handoffPath, payloadPath, cancelPath);
+    return { exitCode: 1, restarted: false, cleanupPaths };
+  }
+
+  let stopped = false;
+  try {
+    stopped = await stopService({ nodePath, pm2CliPath, pm2AppName, logPath });
+  } catch (err) {
+    appendLog(logPath, `PM2 app removal failed: ${err?.message || err}`);
+  }
+  if (!stopped) {
+    appendLog(logPath, `PM2 app ${pm2AppName} could not be removed; refusing to install`);
+    let restored = false;
+    try {
+      restored = await startService({ nodePath, pm2CliPath, ecosystemPath, logPath });
+    } catch (err) {
+      appendLog(logPath, `WARNING: PM2 recovery failed: ${err?.message || err}`);
+    }
+    if (!restored) appendLog(logPath, 'WARNING: PM2 service was not restored after removal failure');
+    removeTransientFiles(handoffPath, payloadPath, cancelPath);
+    return { exitCode: 1, restarted: restored, cleanupPaths };
+  }
 
   let result;
   try {
@@ -174,12 +230,8 @@ export async function runWindowsUpgrade(options, dependencies = {}) {
   if (!restarted) appendLog(logPath, 'WARNING: PM2 service was not restarted');
   appendLog(logPath, `Finished at ${new Date().toISOString()}`);
 
-  // Do not delete the running script. Windows keeps it executable until exit,
-  // but deferred cleanup on the next upgrade is more reliable than self-delete.
-  for (const path of [handoffPath, payloadPath]) {
-    try { rmSync(path, { force: true }); } catch {}
-  }
-  return { exitCode: result.exitCode, restarted, cleanupPaths: [runnerPath, commandPath] };
+  removeTransientFiles(handoffPath, payloadPath, cancelPath);
+  return { exitCode: result.exitCode, restarted, cleanupPaths };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
