@@ -2,16 +2,29 @@ import { test } from '../../fixtures/test-server.js';
 import { expect } from '@playwright/test';
 
 test.describe('侧边栏交互', () => {
-  /** Helper: create a conversation via modal */
+  /** Create a Claude Code chat through the catalog modal or legacy fallback. */
   async function createConversation(chatPage) {
-    await chatPage.locator('.session-tab-add-btn').click();
-    await chatPage.waitForSelector('.modal-overlay', { timeout: 5000 });
-    await chatPage.waitForFunction(() => {
-      const sel = document.querySelector('.resume-select');
-      return sel && sel.options.length > 1;
-    }, { timeout: 5000 });
-    await chatPage.locator('.resume-select').first().selectOption({ index: 1 });
-    await chatPage.click('.modern-btn');
+    const catalogCreate = chatPage.locator('.sidebar-primary-action');
+    if (await catalogCreate.isVisible().catch(() => false)) {
+      await catalogCreate.click();
+      const modal = chatPage.locator('.yeaft-session-create-modal');
+      await expect(modal).toBeVisible({ timeout: 5000 });
+      await modal.locator('.resume-control-row').nth(1).locator('.modern-select-trigger').click();
+      await chatPage.locator('.yeaft-session-create-select-menu .modern-select-option', {
+        hasText: 'Claude Code',
+      }).click();
+      await modal.locator('.resume-modal-footer .modern-btn').click();
+      await expect(modal).not.toBeVisible({ timeout: 5000 });
+    } else {
+      await chatPage.locator('.session-tab-add-btn').click();
+      await chatPage.waitForSelector('.modal-overlay', { timeout: 5000 });
+      await chatPage.waitForFunction(() => {
+        const sel = document.querySelector('.resume-select');
+        return sel && sel.options.length > 1;
+      }, { timeout: 5000 });
+      await chatPage.locator('.resume-select').first().selectOption({ index: 1 });
+      await chatPage.click('.modern-btn');
+    }
     await chatPage.waitForSelector('.session-item.active', { timeout: 5000 });
   }
 
@@ -440,14 +453,14 @@ test.describe('侧边栏交互', () => {
 
   test('点击折叠按钮收起侧边栏', async ({ chatPage }) => {
     const sidebar = chatPage.locator('.sidebar');
-    await chatPage.locator('.sidebar-header-row .sidebar-header-actions .sidebar-icon-btn').first().click();
+    await chatPage.getByTitle('Collapse sidebar').click();
     await expect(sidebar).toHaveClass(/collapsed/, { timeout: 3000 });
     await expect(chatPage.locator('.sidebar-collapsed-bar')).toBeVisible();
   });
 
   test('折叠后点击展开按钮恢复侧边栏', async ({ chatPage }) => {
     const sidebar = chatPage.locator('.sidebar');
-    await chatPage.locator('.sidebar-header-row .sidebar-header-actions .sidebar-icon-btn').first().click();
+    await chatPage.getByTitle('Collapse sidebar').click();
     await expect(sidebar).toHaveClass(/collapsed/, { timeout: 3000 });
     await chatPage.locator('.sidebar-collapsed-bar .collapsed-icon-btn').first().click();
     await expect(sidebar).not.toHaveClass(/collapsed/, { timeout: 3000 });
@@ -481,17 +494,38 @@ test.describe('侧边栏交互', () => {
     await expect(chatPage.locator('.session-item.active')).toHaveCount(1);
   });
 
-  test('删除会话：点击删除按钮移除会话', async ({ chatPage, mockAgent }) => {
+  test('移除会话：侧栏图标只隐藏会话而不删除数据', async ({ chatPage, mockAgent }) => {
     await createConversation(chatPage);
     const after = await chatPage.locator('.session-item').count();
     expect(after).toBeGreaterThanOrEqual(1);
+    const created = mockAgent._receivedMessages.filter(m => m.type === 'create_conversation').at(-1);
+    expect(created?.conversationId).toBeTruthy();
 
-    // Auto-accept the confirm dialog
-    chatPage.on('dialog', dialog => dialog.accept());
-
-    await chatPage.locator('.session-item.active').hover();
-    await chatPage.locator('.session-item.active .session-dots-btn').click();
-    await chatPage.locator('.session-menu-item.danger').click();
+    const activeItem = chatPage.locator('.session-item.active');
+    const removeButton = activeItem.locator('.session-quick-action:has(.session-remove-icon)');
+    await activeItem.hover();
+    await expect(removeButton).toBeVisible({ timeout: 3000 });
+    await removeButton.click();
     await expect(chatPage.locator('.session-item')).toHaveCount(after - 1, { timeout: 5000 });
+    expect(mockAgent._receivedMessages.filter(m => m.type === 'delete_conversation'
+      && m.conversationId === created.conversationId)).toHaveLength(0);
+
+    await chatPage.locator('.sidebar-primary-action').click();
+    await expect(chatPage.locator('.yeaft-session-create-modal')).toBeVisible();
+    const hiddenSession = chatPage.locator('.yeaft-session-create-modal .resume-list-item', {
+      hasText: created.conversationId.slice(0, 8),
+    });
+    await expect(hiddenSession).toBeVisible();
+    await hiddenSession.click();
+    await expect(chatPage.locator('.yeaft-session-create-modal')).not.toBeVisible({ timeout: 5000 });
+    await expect.poll(() => chatPage.evaluate(id => {
+      const store = window.Pinia.useChatStore();
+      return {
+        visible: store.sessionCatalog.some(row => row.routeRef?.sessionId === id),
+        hidden: store.hiddenSessionCatalog.some(row => row.routeRef?.sessionId === id),
+      };
+    }, created.conversationId), { timeout: 10000 }).toEqual({ visible: true, hidden: false });
+    expect(mockAgent._receivedMessages.filter(m => m.type === 'delete_conversation'
+      && m.conversationId === created.conversationId)).toHaveLength(0);
   });
 });

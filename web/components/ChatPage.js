@@ -188,9 +188,9 @@ export default {
                       <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
                       {{ $t('chat.sidebar.renameConv') }}
                     </button>
-                    <button class="session-menu-item danger" @click.stop="closeSession(conv.id, conv.agentId); closeSessionMenu()">
+                    <button class="session-menu-item danger" @click.stop="hideSessionFromSidebar(conv); closeSessionMenu()">
                       <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-                      {{ $t('chat.sidebar.closeConv') }}
+                      {{ $t('sidebar.sessions.remove') }}
                     </button>
                   </div>
                 </div>
@@ -236,9 +236,9 @@ export default {
                       <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
                       {{ $t('chat.sidebar.renameConv') }}
                     </button>
-                    <button class="session-menu-item danger" @click.stop="closeSession(conv.id, conv.agentId); closeSessionMenu()">
+                    <button class="session-menu-item danger" @click.stop="hideSessionFromSidebar(conv); closeSessionMenu()">
                       <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-                      {{ $t('chat.sidebar.closeConv') }}
+                      {{ $t('sidebar.sessions.remove') }}
                     </button>
                   </div>
                 </div>
@@ -570,20 +570,40 @@ export default {
       return this.isMobileView ? !this.store.sessionSidebarOpen : this.store.sidebarCollapsed;
     },
     normalConversations() {
-      return this.sortByActivity(this.store.conversations.filter(c => c.agentOnline !== false));
+      return this.sortByActivity(this.store.conversations.filter(c => (
+        c.agentOnline !== false && !this.isConversationHidden(c)
+      )));
     },
     pinnedChatConversations() {
-      const pinned = this.store.conversations.filter(c => c.agentOnline !== false && this.store.isSessionPinned(c.id));
+      const pinned = this.store.conversations.filter(c => (
+        c.agentOnline !== false
+        && !this.isConversationHidden(c)
+        && this.store.isSessionPinned(c.id)
+      ));
       return this.sortByActivity(pinned);
     },
     unpinnedChatConversations() {
-      return this.sortByActivity(this.store.conversations.filter(c => c.agentOnline !== false && !this.store.isSessionPinned(c.id)));
+      return this.sortByActivity(this.store.conversations.filter(c => (
+        c.agentOnline !== false
+        && !this.isConversationHidden(c)
+        && !this.store.isSessionPinned(c.id)
+      )));
     },
     chatSessionCount() {
-      return this.store.conversations.filter(c => c.agentOnline !== false).length;
+      return this.store.conversations.filter(c => (
+        c.agentOnline !== false && !this.isConversationHidden(c)
+      )).length;
     },
   },
   methods: {
+    isConversationHidden(conv) {
+      if (!conv?.id) return false;
+      return (this.store.hiddenSessionCatalog || []).some(row => (
+        row?.runtimeProvider === (conv.provider || 'claude-code')
+        && row?.routeRef?.sessionId === conv.id
+        && row?.routeRef?.agentId === (conv.agentId || this.store.currentAgent || null)
+      ));
+    },
     onSidebarCollapse() {
       collapseSidebar({
         isMobileView: this.isMobileView,
@@ -656,10 +676,8 @@ export default {
         this.store.reorderCatalogSessions(sessions);
       } else if (action === 'pin') {
         this.store.toggleCatalogSessionPin(row);
-      } else if (action === 'remove' && runtimeProvider !== 'yeaft') {
-        if (confirm(this.$t('chat.delete.confirm'))) this.closeSession(sessionId, agentId);
-      } else if (runtimeProvider === 'yeaft' && action === 'remove') {
-        this.store.sessionCrudRequest('archive', { sessionId }, { agentId });
+      } else if (action === 'remove') {
+        this.store.hideCatalogSession(row);
       } else if (runtimeProvider === 'yeaft' && action === 'settings') {
         this.store.pendingUnifiedSessionSettings = { sessionId, agentId, section: 'session' };
         this.store.openCatalogSession(row);
@@ -816,6 +834,24 @@ export default {
         return;
       }
       this.selectConversation(conv.id, conv.agentId);
+    },
+    hideSessionFromSidebar(conv) {
+      if (!conv?.id) return;
+      const runtimeProvider = conv.provider || 'claude-code';
+      this.store.hideCatalogSession({
+        catalogKey: `chat:${conv.id}`,
+        runtimeProvider,
+        routeRef: {
+          runtimeProvider,
+          agentId: conv.agentId || this.store.currentAgent || null,
+          sessionId: conv.id,
+        },
+        title: this.getConversationTitle(conv),
+        workDir: conv.workDir || '',
+        agentName: conv.agentName || '',
+        availability: conv.agentOnline === false ? 'offline' : 'online',
+        pinned: this.store.isSessionPinned(conv.id),
+      });
     },
     closeSession(conversationId, agentId) {
       this.store.closeSession(conversationId, agentId);

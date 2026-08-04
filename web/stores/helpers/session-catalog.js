@@ -50,9 +50,16 @@ export function catalogKeyForRoute(routeRef) {
   return chatCatalogKey(routeRef?.sessionId);
 }
 
-export function beginCatalogMutation(store, requestId) {
+export function beginCatalogMutation(store, requestId, metadata = {}) {
   const previousCatalog = store.sessionCatalog.map(item => ({ ...item }));
-  store.sessionCatalogMutationRequests[requestId] = { previousCatalog };
+  const previousHiddenCatalog = Array.isArray(store.hiddenSessionCatalog)
+    ? store.hiddenSessionCatalog.map(item => ({ ...item }))
+    : null;
+  store.sessionCatalogMutationRequests[requestId] = {
+    previousCatalog,
+    previousHiddenCatalog,
+    ...metadata,
+  };
   return previousCatalog;
 }
 
@@ -60,7 +67,12 @@ export function finishCatalogMutation(store, msg) {
   const request = msg?.requestId ? store.sessionCatalogMutationRequests[msg.requestId] : null;
   if (!request) return false;
   delete store.sessionCatalogMutationRequests[msg.requestId];
-  if (msg.ok !== true) store.sessionCatalog = request.previousCatalog;
+  if (msg.ok !== true) {
+    store.sessionCatalog = request.previousCatalog;
+    if (Array.isArray(request.previousHiddenCatalog)) {
+      store.hiddenSessionCatalog = request.previousHiddenCatalog;
+    }
+  }
   return true;
 }
 
