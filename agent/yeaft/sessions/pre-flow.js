@@ -1,5 +1,5 @@
 /**
- * groups/pre-flow.js — explicit pre-flow stage for Yeaft.
+ * sessions/pre-flow.js — explicit pre-flow stage for Yeaft.
  *
  * Pre-flow is the "before any VP runs" stage. It owns:
  *
@@ -252,14 +252,16 @@ export function formatPickedForInjection(picked) {
 /**
  * @typedef {object} MemoryPreflowOptions
  * @property {string}         userMsg              The user's message
- * @property {string}         [sessionId]            Active group, if any
+ * @property {string}         [sessionId]            Active Session, if any
  * @property {string}         [vpId]               Responding VP id, if any
  * @property {string}         [featureId]          Active feature, if any
  * @property {string[]}       [extraScopes]        Additional scopes to include
  * @property {string[]}       [currentTags]        Contextual tags for rerank
- * @property {number}         [topK]               Max FTS rows fetched (default 50)
+ * @property {number}         [topK]               Max FTS rows fetched (default 200)
  * @property {number}         [budgetTokens]       Token budget for picked segments
  * @property {number}         [pickLimit]          Max picked segments (default 8)
+ * @property {boolean}        [uniqueScopes]       Pick only the best hit per scope
+ * @property {boolean}        [canonicalOnly]      Search canonical content records only
  * @property {boolean}        [fallbackOnEmpty]    Include bounded recent scoped segments when FTS has no hits
  * @property {number}         [fallbackPerScope]   Max fallback segments per scope
  */
@@ -355,6 +357,8 @@ export function runMemoryPreflow(index, opts) {
     topK: opts.topK,
     budgetTokens: opts.budgetTokens,
     pickLimit: opts.pickLimit,
+    uniqueScopes: opts.uniqueScopes === true,
+    canonicalOnly: opts.canonicalOnly === true,
   });
 
   let fallbackUsed = false;

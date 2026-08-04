@@ -353,7 +353,16 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
     // Seed: mission becomes the first user prompt.
     if (!agent.pendingPrompts) agent.pendingPrompts = [];
     if (agent.mission && !agent.__missionSeeded) {
-      agent.pendingPrompts.push(agent.mission);
+      agent.pendingPrompts.push({
+        prompt: agent.mission,
+        projectSessionIds: Array.isArray(deps.projectSessionIds)
+          ? deps.projectSessionIds.slice()
+          : [],
+        projectLabel: typeof deps.projectLabel === 'string' ? deps.projectLabel : '',
+        projectInstruction: typeof deps.projectInstruction === 'string'
+          ? deps.projectInstruction
+          : '',
+      });
       agent.__missionSeeded = true;
     }
 

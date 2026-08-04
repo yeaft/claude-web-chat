@@ -30,10 +30,9 @@ import { runCompact as runCompactOrchestrator } from './compact/orchestrator.js'
 import { evaluateCompactTriggers } from './compact/triggers.js';
 import { archiveTurn } from './archive/turn-archive.js';
 import { archiveToolResults } from './archive/tool-results.js';
-import { readSummary as readScopeSummary } from './memory/store.js';
+import { isVpForeign, readContent as readScopeContent } from './memory/store.js';
 import { ActiveMemorySet } from './memory/ams.js';
-import { runAdjust } from './memory/adjust.js';
-import { cleanMemoryPromptText, isMemoryPromptRelevant } from './memory/prompt-cleanup.js';
+import { cleanMemoryPromptText } from './memory/prompt-cleanup.js';
 import { isVpSeedBackfillStub } from './memory/seed-backfill.js';
 import { boundRawExchange, perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
 // Default thread marker for legacy / non-group flows. Group VP runtime may
@@ -80,12 +79,15 @@ import {
 const MAX_CONTINUE_TURNS = 3;
 
 /** Bound the best-effort post-turn AMS LLM call independently of the user turn. */
-const AMS_ADJUST_TIMEOUT_MS = 30_000;
+const MAINTENANCE_CALL_TIMEOUT_MS = 30_000;
 
 /** Maximum silence while a visible turn waits for a result-producing task. */
 const DEFAULT_ASYNC_TASK_WAIT_TIMEOUT_MS = 120_000;
 
 const DEFAULT_MEMORY_RECALL_LIMIT = 8;
+const MAX_PROMPT_MEMORY_ITEMS = 8;
+const MAX_RELATED_SESSION_MEMORY_ITEMS = 2;
+const MAX_MEMORY_ITEM_TOKENS = 1600;
 
 function toolDefinitionFor(engine, name) {
   return engine.getToolDefinition(name);
@@ -412,7 +414,7 @@ export function shouldAllowGroupReflection({
 
 /**
  * buildResidentEntries — pure helper that builds the AMS Resident entry
- * list from the per-turn Layer-A summaries.
+ * list from per-turn query-selected canonical content.
  *
  * Encodes one non-trivial rule on top of "push if non-empty":
  *
@@ -425,29 +427,50 @@ export function shouldAllowGroupReflection({
  *   PR #722. Once Dream-v2 writes a real summary for this scope it
  *   lacks the marker and is surfaced normally.
  *
- * Other-VP entries (group collaborators) are NOT considered here — only
- * the local VP's summary is loaded into `summaries.vp` upstream by
- * `#loadLayerASummaries`. Cross-VP context flows through onDemand recall.
+ * Other-VP entries (Session collaborators) are NOT considered here — only
+ * the local VP's summary is loaded into `summaries.vp` upstream. FTS evidence
+ * selects canonical topic content but is never itself rendered into the prompt.
  *
  * @param {{
  *   sessionId?: string|null,
  *   ownVpId?: string|null,
- *   summaries: { user?: string, session?: string, vp?: string, topics?: Array<{scope:string, summary:string}>, relatedSessions?: Array<{sessionId:string, summary:string}> }
+ *   summaries: { user?: string, session?: string, sessionScope?: string, vp?: string, vpScope?: string, topics?: Array<{scope:string, summary:string}>, relatedSessions?: Array<{sessionId:string, summary:string}> }
  * }} args
  * @returns {Array<{scope: string, summary: string}>}
  */
-export function selectResidentTopicScopes(topicScopes, recallEntries, userMsg = '') {
-  const recalledTopicScopes = new Set((recallEntries || [])
-    .map(entry => entry?.scope)
-    .filter(scope => typeof scope === 'string' && /^sessions\/[^/]+\/topic\//.test(scope)));
-  return (Array.isArray(topicScopes) ? topicScopes : [])
-    .filter(scope => recalledTopicScopes.has(scope) || isTopicScopeRelevant(scope, userMsg));
+export function selectResidentTopicScopes(topicScopes, recallEntries) {
+  const available = new Set(Array.isArray(topicScopes) ? topicScopes : []);
+  const selected = [];
+  for (const entry of recallEntries || []) {
+    const scope = typeof entry?.scope === 'string' ? entry.scope : '';
+    if (!/^(?:sessions|session|group)\/[^/]+\/topic\//.test(scope)) continue;
+    if (!available.has(scope) || selected.includes(scope)) continue;
+    selected.push(scope);
+  }
+  return selected;
 }
 
-function isTopicScopeRelevant(scope, userMsg) {
-  if (!userMsg || typeof scope !== 'string') return false;
-  const label = scope.replace(/^sessions\/[^/]+\/topic\//, '').replace(/[/-]+/g, ' ');
-  return isMemoryPromptRelevant(label, userMsg);
+export function selectCanonicalMemoryScopes(recallEntries) {
+  const selected = new Set();
+  for (const entry of recallEntries || []) {
+    const scope = typeof entry?.scope === 'string' ? entry.scope.trim() : '';
+    if (scope) selected.add(scope);
+  }
+  return selected;
+}
+
+export function selectRelatedSessionIds(projectSessionIds, recallEntries) {
+  const candidates = new Set((Array.isArray(projectSessionIds) ? projectSessionIds : [])
+    .filter(id => typeof id === 'string' && id.trim())
+    .map(id => id.trim()));
+  const selected = [];
+  for (const entry of recallEntries || []) {
+    const id = sessionIdFromMemoryScope(entry?.scope);
+    if (!id || !candidates.has(id) || selected.includes(id)) continue;
+    selected.push(id);
+    if (selected.length >= MAX_RELATED_SESSION_MEMORY_ITEMS) break;
+  }
+  return selected;
 }
 
 export function buildResidentEntries(args) {
@@ -458,7 +481,10 @@ export function buildResidentEntries(args) {
   const vpSummary = cleanMemoryPromptText(summaries.vp);
   if (userSummary) out.push({ scope: 'user', summary: userSummary });
   if (args.sessionId && sessionSummary) {
-    out.push({ scope: `sessions/${args.sessionId}`, summary: sessionSummary });
+    out.push({
+      scope: summaries.sessionScope || `sessions/${args.sessionId}`,
+      summary: sessionSummary,
+    });
   }
   if (args.sessionId && Array.isArray(summaries.topics)) {
     for (const topic of summaries.topics) {
@@ -468,7 +494,7 @@ export function buildResidentEntries(args) {
   }
   // VP per-session isolation (2026-06-09): the VP summary scope MUST be
   // session-qualified. The legacy bare `vp/<id>` scope was a structural
-    // (see #loadLayerASummaries, kind:'group-vp'), so labelling it `vp/<id>`
+  // mismatch, so labelling it `vp/<id>`
   // in the Resident layer (a) collides with the ACL regex in store
   // (which only recognises `<root>/<sid>/vp/...`) and (b) makes the same
   // VP persona leak across DIFFERENT sessions whenever the AMS rehydrates
@@ -476,7 +502,10 @@ export function buildResidentEntries(args) {
   // makes the per-session boundary explicit and matches the on-disk
   // layout 1:1.
   if (args.sessionId && args.ownVpId && vpSummary && !isVpSeedBackfillStub(vpSummary)) {
-    out.push({ scope: `sessions/${args.sessionId}/vp/${args.ownVpId}`, summary: vpSummary });
+    out.push({
+      scope: summaries.vpScope || `sessions/${args.sessionId}/vp/${args.ownVpId}`,
+      summary: vpSummary,
+    });
   }
   // Related Session experience is useful but lower-priority than every memory
   // source owned by the active Session/VP. Append it last so the resident
@@ -498,7 +527,7 @@ function isZhRuntimeLanguage(language) {
 }
 
 function sessionIdFromMemoryScope(scope) {
-  const match = /^(?:sessions|session|group)\/([^/]+)$/.exec(String(scope || ''));
+  const match = /^(?:sessions|session|group)\/([^/]+)(?:\/|$)/.exec(String(scope || ''));
   return match ? match[1] : null;
 }
 
@@ -566,7 +595,7 @@ export class Engine {
   /** @type {import('./memory/index-db.js').SegmentIndex|null} — GC.1: SQLite FTS5 segment index */
   #memoryIndex;
 
-  /** @type {import('./memory/ams-registry.js').AmsRegistry|null} — group-keyed AMS cache */
+  /** @type {import('./memory/ams-registry.js').AmsRegistry|null} — Session-keyed AMS cache */
   #amsRegistry;
 
   /** @type {import('./tools/registry.js').ToolRegistry|null} */
@@ -741,14 +770,6 @@ export class Engine {
    * } | null}
    */
   #asyncTaskCoordinator = null;
-
-  /**
-   * Per-group "adjust has run at least once this engine lifetime" flag.
-   * Keyed by sessionId (or 'default'). The first turn always runs adjust;
-   * subsequent turns only run on budget pressure or new memory.
-   * @type {Map<string, boolean>}
-   */
-  #adjustRanBySession = new Map();
 
   /** @type {string|null} */
   #abortReason = null;
@@ -950,62 +971,75 @@ export class Engine {
   }
 
   /**
-   * Load Layer A scope summaries from `<memoryRoot>/<scope>/summary.md`.
+   * Load prompt-facing canonical scope content. Every durable memory scope is
+   * query-gated; summary.md remains catalog metadata for Dream triage only.
    *
-   * Scopes:
-   *   - user           → `user/summary.md`            (always attempted)
-   *   - session <sid>  → `sessions/<sid>/summary.md`   (if sessionId)
-   *   - session-vp     → `sessions/<sid>/vp/<vpId>/summary.md` (if vpId)
+   * Each fetch is best-effort — missing files / read errors return ''.
    *
-   * Each fetch is best-effort — missing files / read errors return ''. The
-   * dream tick (Phase 6) is what populates these; on a fresh install they
-   * all return ''.
-   *
-   * @param {{sessionId?: string, vpId?: string, language?: string, topicScopes?: string[], relatedSessionIds?: string[]}} ctx
+   * @param {{sessionId?: string, vpId?: string, language?: string, selectedScopes?: Set<string>, topicScopes?: string[], relatedSessionIds?: string[]}} ctx
    * @returns {Promise<{user:string, session:string, vp:string, topics:Array<{scope:string, summary:string}>, relatedSessions:Array<{sessionId:string, summary:string}>}>}
    */
-  async #loadLayerASummaries({ sessionId, vpId, language, topicScopes, relatedSessionIds } = {}) {
+  async #loadLayerASummaries({ sessionId, vpId, language, selectedScopes, topicScopes, relatedSessionIds } = {}) {
     if (!this.#yeaftDir) return { user: '', session: '', vp: '', topics: [], relatedSessions: [] };
     const memoryRoot = `${this.#yeaftDir}/memory`;
-    const topicScopeList = Array.isArray(topicScopes) ? topicScopes.slice(0, 12) : [];
+    const topicScopeList = Array.isArray(topicScopes) ? topicScopes.slice(0, MAX_PROMPT_MEMORY_ITEMS) : [];
     const relatedIds = Array.from(new Set((Array.isArray(relatedSessionIds) ? relatedSessionIds : [])
       .filter(id => typeof id === 'string' && id.trim() && id.trim() !== sessionId)
       .map(id => id.trim())))
-      .slice(0, 8);
+      .slice(0, MAX_RELATED_SESSION_MEMORY_ITEMS);
+    const selected = selectedScopes instanceof Set ? selectedScopes : new Set();
+    const exactSessionScope = selectExactSessionScope(selected, sessionId);
+    const exactVpScope = selectExactVpScope(selected, sessionId, vpId);
     const tasks = [
-      readScopeSummary({ kind: 'user' }, { root: memoryRoot, language }).catch(() => ''),
-      sessionId
-        ? readScopeSummary({ kind: 'session', id: sessionId }, { root: memoryRoot, language }).catch(() => '')
+      selected.has('user')
+        ? readCanonicalScope('user', { root: memoryRoot, currentVpId: vpId }).catch(() => '')
         : Promise.resolve(''),
-      vpId && sessionId
-        ? readScopeSummary({ kind: 'session-vp', sessionId, id: vpId }, { root: memoryRoot, language }).catch(() => '')
+      exactSessionScope
+        ? readCanonicalScope(exactSessionScope, { root: memoryRoot, currentVpId: vpId }).catch(() => '')
         : Promise.resolve(''),
-      Promise.all(topicScopeList.map(scope => readTopicSummary(scope, { root: memoryRoot, language }))),
-      Promise.all(relatedIds.map(async relatedSessionId => ({
-        sessionId: relatedSessionId,
-        summary: await readScopeSummary(
-          { kind: 'session', id: relatedSessionId },
-          { root: memoryRoot, language },
-        ).catch(() => ''),
+      exactVpScope
+        ? readCanonicalScope(exactVpScope, { root: memoryRoot, currentVpId: vpId }).catch(() => '')
+        : Promise.resolve(''),
+      Promise.all(topicScopeList.map(scope => readTopicSummary(scope, {
+        root: memoryRoot,
+        language,
+        currentVpId: vpId,
       }))),
+      Promise.all(relatedIds.map(async relatedSessionId => {
+        const scope = selectExactSessionScope(selected, relatedSessionId);
+        return {
+          sessionId: relatedSessionId,
+          summary: scope
+            ? await readCanonicalScope(scope, { root: memoryRoot, currentVpId: vpId }).catch(() => '')
+            : '',
+        };
+      })),
     ];
     const [user, session, vp, topicsRaw, relatedSessionsRaw] = await Promise.all(tasks);
     const topics = (topicsRaw || []).filter(t => t && t.summary);
     const relatedSessions = (relatedSessionsRaw || []).filter(entry => entry && entry.summary);
-    return { user: user || '', session: session || '', vp: vp || '', topics, relatedSessions };
+    return {
+      user: user || '',
+      session: session || '',
+      sessionScope: exactSessionScope || '',
+      vp: vp || '',
+      vpScope: exactVpScope || '',
+      topics,
+      relatedSessions,
+    };
   }
 
-  async #loadSessionTopicLabels(sessionId, limit = 8) {
-    return (await this.#loadSessionTopicScopes(sessionId, limit))
-      .map(scope => scope.replace(/^sessions\/[^/]+\/topic\//, ''));
-  }
-
-  async #loadSessionTopicScopes(sessionId, limit = 24) {
+  async #loadSessionTopicScopes(sessionId) {
     if (!this.#yeaftDir || !sessionId) return [];
-    const topicRoot = join(this.#yeaftDir, 'memory', 'sessions', sessionId, 'topic');
-    const labels = [];
-    await collectTopicLabels(topicRoot, '', labels, limit).catch(() => {});
-    return labels.map(label => `sessions/${sessionId}/topic/${label}`);
+    const memoryRoot = join(this.#yeaftDir, 'memory');
+    const scopes = [];
+    for (const prefix of ['sessions', 'session', 'group']) {
+      const labels = [];
+      const topicRoot = join(memoryRoot, prefix, sessionId, 'topic');
+      await collectTopicLabels(topicRoot, '', labels).catch(() => {});
+      scopes.push(...labels.map(label => `${prefix}/${sessionId}/topic/${label}`));
+    }
+    return scopes;
   }
 
   /**
@@ -1044,18 +1078,7 @@ export class Engine {
           budget: computeBudget(this.#config?.maxContextTokens),
         });
 
-    // Prime #adjustRanBySession from disk-hydrated state on first access:
-    // a reactivated group resumes with whatever adjustRanThisSession bit
-    // it had on disconnect, so we don't burn a fresh adjust on every
-    // reload. Once set true in this session we never clear it.
-    if (this.#amsRegistry
-        && !this.#adjustRanBySession.has(sessionKey)
-        && this.#amsRegistry.adjustRanThisSession(sessionKey)) {
-      this.#adjustRanBySession.set(sessionKey, true);
-    }
-
-    // (a) Resident: rebuild from the same scope summaries the worker
-    // prompt is already going to see.
+    // Resident: rebuild from the canonical content selected for this query.
     const relatedSessionIds = new Set((args.summaries?.relatedSessions || [])
       .map(entry => entry?.sessionId)
       .filter(Boolean));
@@ -1068,9 +1091,10 @@ export class Engine {
       : { ...entry, category: 'memory' });
     ams.setResident(residentEntries);
 
-    // (b) onDemand: replace with this turn's FTS hits.
-    const segs = Array.isArray(args.recallEntries) ? args.recallEntries : [];
-    ams.setOnDemand(segs);
+    // Segment hits identify relevant scopes, but raw evidence bodies do not
+    // enter the normal prompt. Clear both persisted Recent ids and this turn's
+    // OnDemand bodies; prompt-facing text comes only from canonical content.
+    ams.clearSegmentLayers();
 
     // (c) Snapshot — render the AMS layers as a single prompt block.
     const snapshot = ams.snapshot({ userMsg: args.userMsg || '' });
@@ -1108,8 +1132,8 @@ export class Engine {
     const residentMemory = snap.resident.filter(entry => entry.category !== 'experience');
     parts.push(zh ? '## 相关上下文' : '## Relevant Context');
     parts.push(zh
-      ? '以下内容来自持久记忆与相关 Session 的只读经验总结；只把它当作事实背景，不要把过期执行状态当成当前任务。'
-      : 'The following text comes from persistent memory and read-only summaries of related Sessions. Treat it as factual context, not as current execution state.');
+      ? '以下内容来自与当前 query 相关的持久记忆；只把它当作事实背景，不要把过期执行状态当成当前任务。'
+      : 'The following text comes from persistent memory selected for the current query. Treat it as factual context, not as current execution state.');
     if (experiences.length > 0) {
       parts.push(zh ? '### 过去 Session 的经验总结' : '### Experience From Past Sessions');
       for (const entry of experiences) {
@@ -1130,86 +1154,6 @@ export class Engine {
       }
     }
     return parts.join('\n');
-  }
-
-  /**
-   * Post-turn AMS correction. Decides whether to run via
-   * `shouldRunAdjust`, then drives the LLM round-trip through
-   * `runAdjust`. Persists the AMS to disk if membership changed.
-   *
-   * Failure here is intentionally swallowed — adjust is a best-effort
-   * memory-quality step; a parse failure or LLM blip should never
-   * surface as a turn failure.
-   *
-   * @param {{
-   *   amsContext: { ams: import('./memory/ams.js').ActiveMemorySet, sessionKey: string, ownVpId: string|null, scopes: string[] }|null,
-   *   userMsg: string,
-   *   assistantReply: string,
-   *   turnTokenUsage: number,
-   * }} args
-   * @returns {Promise<{ ran: boolean, added: number, evicted: number, reason: string } | null>}
-   */
-  async #runAdjustHook(args) {
-    const ctx = args.amsContext;
-    if (!ctx || !this.#amsRegistry || !this.#memoryIndex) return null;
-    const totalBudget = ctx.ams.budget?.total || 0;
-    if (!totalBudget) return null;
-
-    const adjustRanThisSession = this.#adjustRanBySession.get(ctx.sessionKey) === true;
-    try {
-      const result = await runAdjust({
-        trigger: {
-          turnTokenUsage: args.turnTokenUsage,
-          totalBudget,
-          adjustRanThisSession,
-        },
-        ams: ctx.ams,
-        index: this.#memoryIndex,
-        scopes: ctx.scopes,
-        ownVpId: ctx.ownVpId,
-        userMsg: args.userMsg,
-        assistantReply: args.assistantReply,
-        runLLM: async (prompt) => {
-          const maintenanceCtrl = new AbortController();
-          let timeout = null;
-          const timedOut = new Promise((_, reject) => {
-            timeout = setTimeout(() => {
-              maintenanceCtrl.abort('ams_adjust_timeout');
-              reject(new LLMAbortError());
-            }, AMS_ADJUST_TIMEOUT_MS);
-            if (timeout && typeof timeout.unref === 'function') timeout.unref();
-          });
-          try {
-            const request = this.#adapter.call({
-              model: this.#fastConfig.model,
-              system: (String(this.#config?.language || '').toLowerCase().startsWith('zh')
-            ? '你是记忆管理子程序。请按要求只回复一个 JSON 对象，不要输出额外说明。'
-            : 'You are a memory-management subroutine. Reply with a single JSON object as instructed.'),
-              messages: [{ role: 'user', content: prompt }],
-              maxTokens: 1024,
-              signal: maintenanceCtrl.signal,
-            });
-            const out = await Promise.race([request, timedOut]);
-            return out?.text || '';
-          } finally {
-            if (timeout) clearTimeout(timeout);
-          }
-        },
-      });
-      if (result?.ran) {
-        this.#adjustRanBySession.set(ctx.sessionKey, true);
-        // Always persist when we ran — even with no membership change,
-        // the adjustRanThisSession bit is part of the on-disk state we
-        // want to preserve.
-        this.#amsRegistry.markDirty(ctx.sessionKey);
-        this.#amsRegistry.persist(ctx.sessionKey, {
-          adjustRanThisSession: true,
-        });
-      }
-      return result;
-    } catch {
-      return null;
-    }
   }
 
   /**
@@ -1493,7 +1437,7 @@ export class Engine {
    * Perform memory recall for a given prompt.
    *
    * Single path (GC.1 follow-up): SQLite FTS5 pre-flow via
-   * `groups/pre-flow.js` → `memory/preflow.js`. When the index isn't
+   * `sessions/pre-flow.js` → `memory/preflow.js`. When the index isn't
    * wired (e.g. read-only sessions or pre-FTS yeaft dirs) recall is
    * skipped and an empty memory shape is returned — engine continues
    * without injection.
@@ -1513,7 +1457,10 @@ export class Engine {
         vpId: ctx.vpId,
         extraScopes: ctx.extraScopes,
         pickLimit: resolveMemoryRecallLimit(this.#config),
-        fallbackOnEmpty: true,
+        uniqueScopes: true,
+        canonicalOnly: true,
+        topK: 500,
+        fallbackOnEmpty: false,
       });
       memory.profile = result.profile || '';
       memory.entries = result.entries || [];
@@ -1730,7 +1677,7 @@ export class Engine {
             timeout = setTimeout(() => {
               maintenanceCtrl.abort('compact_summary_timeout');
               reject(new LLMAbortError());
-            }, AMS_ADJUST_TIMEOUT_MS);
+            }, MAINTENANCE_CALL_TIMEOUT_MS);
             if (timeout && typeof timeout.unref === 'function') timeout.unref();
           });
           try {
@@ -2007,7 +1954,7 @@ export class Engine {
     }
   }
 
-  async *#queryLifecycle({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', projectLabel = '', sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null } = {}) {
+  async *#queryLifecycle({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', projectLabel = '', vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null } = {}) {
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
       const error = new Error('prompt is required and must be a non-empty string');
       yield {
@@ -2093,7 +2040,7 @@ export class Engine {
     };
     try {
       this.#currentThreadId = threadId || MAIN_THREAD_ID;
-      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds, projectInstruction, projectLabel, sessionTopics, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, prepareProviderRequest, startProviderRequest, finishProviderRequest, failProviderRequest, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName, retryLifecycle });
+      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds, projectInstruction, projectLabel, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, prepareProviderRequest, startProviderRequest, finishProviderRequest, failProviderRequest, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName, retryLifecycle });
     } finally {
       // Closing the async generator at a visible retry boundary means the
       // continuation never reached a provider. Keep it out of history and
@@ -2141,7 +2088,7 @@ export class Engine {
    * in a try/finally without indenting the whole loop.
    * @private
    */
-  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', projectLabel = '', sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null, explicitSkillName = null, retryLifecycle }) {
+  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', projectLabel = '', vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null, explicitSkillName = null, retryLifecycle }) {
 
     const effectiveCollabToolPolicy = collabToolPolicy === COLLAB_TOOL_POLICY.SINGLE_VP || collabToolPolicy === COLLAB_TOOL_POLICY.MULTI_VP
       ? collabToolPolicy
@@ -2204,14 +2151,11 @@ export class Engine {
     };
 
     // ─── Pre-query: FTS5 Memory Recall + AMS snapshot ─────
-    // Memory has a SINGLE render outlet now (DESIGN-PROMPT §3 ③):
-    //   1. FTS5 pre-flow recall produces a list of segments;
-    //   2. those segments are pushed into AMS OnDemand;
-    //   3. AMS renders a budget-aware snapshot (Resident + Recent +
-    //      OnDemand) — that snapshot IS `memoryInjection`.
-    // The legacy second path (`recallResult.formatted` concatenated
-    // directly into `memoryInjection`) was a duplicate render of the
-    // same segments AMS would also surface, so it's gone.
+    // Memory has one render outlet:
+    //   1. FTS5 ranks canonical-content records and chooses scopes;
+    //   2. Engine reloads those scopes from content.md;
+    //   3. AMS renders the budget-aware Resident snapshot as memoryInjection.
+    // Raw memory.md evidence and summary.md catalog text never enter the prompt.
     let memoryInjection = '';
     let recallEntryCount = 0;
 
@@ -2239,32 +2183,33 @@ export class Engine {
     if (recallEntryCount > 0) {
       yield { type: 'recall', entryCount: recallEntryCount, cached: false, threadId };
     }
+    const selectedMemoryScopes = selectCanonicalMemoryScopes(recallResult?.entries || []);
     const topicScopesForResident = selectResidentTopicScopes(
       topicScopesForMemory,
       recallResult?.entries || [],
-      prompt,
+    );
+    const recalledRelatedSessionIds = selectRelatedSessionIds(
+      projectSessionIds,
+      recallResult?.entries || [],
     );
 
-    // Layer-A summaries — same scopes AMS Resident will surface, loaded
-    // here so we can pass them into #prepareAms. (Rolling per-scope
-    // synopsis maintained by the dream tick.) Failures are non-fatal.
+    // Load canonical content only for scopes selected by ranked FTS records.
+    // summary.md remains catalog metadata and never enters the prompt.
     const summaries = await this.#loadLayerASummaries({
       sessionId,
       vpId: vpPersona && typeof vpPersona === 'object' && typeof vpPersona.vpId === 'string'
         ? vpPersona.vpId
         : (typeof senderVpId === 'string' ? senderVpId : undefined),
       language: this.#config.language || 'en',
+      selectedScopes: selectedMemoryScopes,
       topicScopes: topicScopesForResident,
-      relatedSessionIds: projectSessionIds,
+      relatedSessionIds: recalledRelatedSessionIds,
     });
 
     // ─── AMS: populate + snapshot ───────────────────────────────
-    // Group-keyed and persisted across session deactivation. Each turn:
-    //   (a) resident layer is rebuilt from <scope>/summary.md;
-    //   (b) onDemand is replaced with this turn's FTS hits;
-    //   (c) we render a budget-aware snapshot block — this is the SOLE
-    //       Memory section in the system prompt. Adjust runs post-turn
-    //       (see end_turn below).
+    // Session + VP keyed AMS is rebuilt each turn from selected canonical content.
+    // FTS segment hits choose scopes but their bodies are not rendered. The
+    // budget-aware Resident snapshot is the sole Memory prompt outlet.
     const ownVpIdForAms = vpPersona && typeof vpPersona === 'object'
       && typeof vpPersona.vpId === 'string'
       ? vpPersona.vpId
@@ -2300,7 +2245,9 @@ export class Engine {
           scope: e.scope,
           summary: String(e.summary),
           truncated: false,
-          source: 'resident-summary',
+          source: e.scope?.startsWith(activeTopicDreamPrefix || '\u0000')
+            ? 'canonical-topic-content'
+            : 'resident-summary',
         }))
       : [];
 
@@ -2308,9 +2255,8 @@ export class Engine {
     // Structured per-turn scope summary: session + vp + members + envelope routing
     // info. Long-form scope content lives in AMS — this block carries
     // only IDs + tiny labels. (Feature scope retired 2026-05-13.)
-    const activeSessionTopics = Array.isArray(sessionTopics)
-      ? sessionTopics
-      : topicScopesForMemory.slice(0, 8).map(scope => scope.replace(/^sessions\/[^/]+\/topic\//, ''));
+    const activeSessionTopics = topicScopesForResident
+      .map(scope => scope.replace(/^sessions\/[^/]+\/topic\//, ''));
     const activeScope = {
       sessionId: sessionId || '',
       sessionMember: ownVpIdForAms || '',
@@ -2372,9 +2318,9 @@ export class Engine {
     // a `<conversation_summary>` user/assistant pair. It MUST NEVER appear
     // in the system prompt — that was the bug DESIGN-PROMPT §4.3 banned.
     //
-    // Inversely: Dream V2's output (per-scope `memory.md` / `summary.md`)
-    // flows exclusively through `prompts.js#buildSystemPrompt`'s §6 Memory
-    // section via the AMS Resident layer (see `engine.js#buildResidentEntries`).
+    // Inversely: Dream's prompt-facing `content.md` flows exclusively through
+    // `prompts.js#buildSystemPrompt`'s Memory section via AMS Resident (see
+    // `engine.js#buildResidentEntries`). Evidence and catalog files stay out.
     // It MUST NEVER appear in the messages array.
     //
     // Two write roots, two scheduler triggers, two prompt slots — never
@@ -3701,30 +3647,6 @@ export class Engine {
           yield { type: 'consolidate', archivedCount: consolidated.archivedCount, extractedCount: consolidated.extractedCount };
         }
 
-        // ─── Post-turn AMS adjust ────────────────────────────────
-        // shouldRunAdjust gates the LLM round-trip so most turns are
-        // free; first turn always runs, plus on budget pressure.
-        if (amsContext) {
-          const adjustResult = await this.#runAdjustHook({
-            amsContext,
-            userMsg: prompt,
-            assistantReply: fullResponseText,
-            turnTokenUsage: cumulativeInputTokens + cumulativeOutputTokens,
-          });
-          if (adjustResult && adjustResult.ran) {
-            yield {
-              type: 'memory_adjust',
-              turnId: queryTurnId,
-              threadId,
-              sessionKey: amsContext.sessionKey,
-              added: adjustResult.added,
-              evicted: adjustResult.evicted,
-              skipped: adjustResult.skipped || 0,
-              reason: adjustResult.reason,
-            };
-          }
-        }
-
         // PR-L: T2 end-of-turn (asynchronous) reflection. Fires when the
         // total tool count for this query() exceeds TURN_SUMMARY_THRESHOLD
         // (8) AND no T1 has actually rewritten the arc yet. Kicks off the
@@ -4842,33 +4764,96 @@ export class Engine {
   }
 }
 
-async function readTopicSummary(scope, opts) {
-  const m = /^sessions\/([^/]+)\/topic\/(.+)$/.exec(String(scope || ''));
-  if (!m) return null;
-  const path = m[2].split('/').filter(Boolean);
-  if (path.length === 0) return null;
-  const summary = await readScopeSummary(
-    { kind: 'session-topic', sessionId: m[1], path },
-    opts,
-  ).catch(() => '');
-  return summary ? { scope, summary } : null;
+function selectExactSessionScope(selected, sessionId) {
+  if (!sessionId) return '';
+  for (const scope of selected || []) {
+    if (['sessions', 'session', 'group'].some(prefix => scope === `${prefix}/${sessionId}`)) {
+      return scope;
+    }
+  }
+  return '';
 }
 
-async function collectTopicLabels(dir, prefix, labels, limit) {
-  if (labels.length >= limit) return;
+function selectExactVpScope(selected, sessionId, vpId) {
+  if (!sessionId || !vpId) return '';
+  for (const scope of selected || []) {
+    if (['sessions', 'session', 'group'].some(prefix => scope === `${prefix}/${sessionId}/vp/${vpId}`)) {
+      return scope;
+    }
+  }
+  return '';
+}
+
+async function readCanonicalScope(scope, opts) {
+  const value = String(scope || '');
+  if (isVpForeign(value, opts?.currentVpId)) return '';
+  const scopeObject = memoryScopeObject(value);
+  if (!scopeObject || !opts?.root) return '';
+  let content = await fsp.readFile(join(opts.root, value, 'content.md'), 'utf8').catch(() => '');
+  // Current Session topic redirects intentionally have no content.md at the
+  // old path. Let the store resolve that redirect, but never cross-fallback
+  // between `group/`, `session/`, and `sessions/` aliases.
+  if (!content && scopeObject.kind === 'session-topic' && value.startsWith('sessions/')) {
+    content = await readScopeContent(scopeObject, opts).catch(() => '');
+  }
+  return truncateMemoryContent(content, MAX_MEMORY_ITEM_TOKENS);
+}
+
+function memoryScopeObject(scope) {
+  if (scope === 'user') return { kind: 'user' };
+  let match = /^(sessions|session|group)\/([^/]+)$/.exec(scope);
+  if (match) return match[1] === 'group'
+    ? { kind: 'group', id: match[2] }
+    : { kind: 'session', id: match[2] };
+  match = /^(sessions|session|group)\/([^/]+)\/vp\/([^/]+)$/.exec(scope);
+  if (match) return match[1] === 'group'
+    ? { kind: 'group-vp', sessionId: match[2], id: match[3] }
+    : { kind: 'session-vp', sessionId: match[2], id: match[3] };
+  match = /^(sessions|session|group)\/([^/]+)\/topic\/(.+)$/.exec(scope);
+  if (match) {
+    const path = match[3].split('/').filter(Boolean);
+    if (path.length === 0 || path.length > 2) return null;
+    return match[1] === 'group'
+      ? { kind: 'group-topic', sessionId: match[2], path }
+      : { kind: 'session-topic', sessionId: match[2], path };
+  }
+  return null;
+}
+
+async function readTopicSummary(scope, opts) {
+  const content = await readCanonicalScope(scope, opts);
+  return content ? { scope, summary: content } : null;
+}
+
+function truncateMemoryContent(content, maxTokens) {
+  const text = cleanMemoryPromptText(content);
+  if (!text || approxTokens(text) <= maxTokens) return text;
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (approxTokens(text.slice(0, mid)) <= maxTokens) lo = mid;
+    else hi = mid - 1;
+  }
+  const cut = text.slice(0, lo);
+  const boundary = Math.max(cut.lastIndexOf('\n\n'), cut.lastIndexOf('\n- '));
+  const body = (boundary > lo * 0.6 ? cut.slice(0, boundary) : cut).trimEnd();
+  return `${body}\n\n[Additional canonical topic content omitted by prompt budget.]`;
+}
+
+async function collectTopicLabels(dir, prefix, labels) {
   let entries;
   try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
+  const hasContent = entries.some(entry => entry.isFile() && entry.name === 'content.md');
   const hasMemory = entries.some(entry => entry.isFile() && entry.name === 'memory.md');
   const hasSummary = entries.some(entry => entry.isFile() && entry.name === 'summary.md');
-  if (prefix && (hasMemory || hasSummary)) labels.push(prefix);
-  if (labels.length >= limit) return;
+  if (prefix && (hasContent || hasMemory || hasSummary)) labels.push(prefix);
   const dirs = entries
     .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
     .map(entry => entry.name)
     .sort();
   for (const name of dirs) {
     const nextPrefix = prefix ? `${prefix}/${name}` : name;
-    await collectTopicLabels(join(dir, name), nextPrefix, labels, limit);
-    if (labels.length >= limit) return;
+    await collectTopicLabels(join(dir, name), nextPrefix, labels);
   }
 }

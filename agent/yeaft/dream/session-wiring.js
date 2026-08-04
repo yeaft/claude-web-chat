@@ -32,8 +32,8 @@
  *                        targets, error, skipped, skippedReason } }
  *   dream_progress:    runner-emitted phase events (`start`/`load-diff`/`triage`/
  *                      `merge`/`apply`/`done`). The `apply/done` variant carries
- *                      `kind, memoryMdPreview, summaryMdPreview, memoryMdLength,
- *                      summaryMdLength` (see apply.js).
+ *                      `kind, contentMdPreview, summaryMdPreview, contentMdLength,
+ *                      summaryMdLength` plus legacy memoryMd* debug aliases (see apply.js).
  *
  * `sessionId` may be inherited via `stampDreamScope()` when a scope is active.
  */
