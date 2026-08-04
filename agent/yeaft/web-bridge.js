@@ -6441,7 +6441,13 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
   let dreamEvents = [];
   let hasMore = false;
   try {
-    if (session?.trace && typeof session.trace.fetchRecentDebugHistory === 'function') {
+    if (session?.trace && detailTurnId && sessionId && typeof session.trace.fetchTurnDebug === 'function') {
+      const out = await session.trace.fetchTurnDebug({ sessionId, turnId: detailTurnId, dreamLimit });
+      loops = Array.isArray(out?.loops) ? out.loops : [];
+      turns = Array.isArray(out?.turns) ? out.turns : [];
+      dreamEvents = Array.isArray(out?.dreamEvents) ? out.dreamEvents : [];
+      hasMore = false;
+    } else if (session?.trace && typeof session.trace.fetchRecentDebugHistory === 'function') {
       const out = await session.trace.fetchRecentDebugHistory({ limit, dreamLimit, sessionId, threadId, indexOnly, detailTurnId, search });
       loops = Array.isArray(out?.loops) ? out.loops : [];
       turns = Array.isArray(out?.turns) ? out.turns : [];

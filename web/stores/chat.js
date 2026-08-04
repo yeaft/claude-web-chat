@@ -3008,7 +3008,8 @@ export const useChatStore = defineStore('chat', {
       });
       if (this._yeaftDebugHistoryInFlightKey === requestKey) return;
       this._yeaftDebugHistoryInFlightKey = requestKey;
-      if (!isDetailRequest) this._yeaftDebugHistoryLatestListRequestId = requestId;
+      if (isDetailRequest) this._yeaftDebugHistoryLatestDetailRequestId = requestId;
+      else this._yeaftDebugHistoryLatestListRequestId = requestId;
       this.yeaftDebugHistoryLimit = requestedLimit;
       this.yeaftDebugHistoryLoading = true;
       this.yeaftDebugHistoryError = null;
@@ -6287,6 +6288,7 @@ export const useChatStore = defineStore('chat', {
       }
       this._yeaftDebugHistoryInFlightKey = null;
       this._yeaftDebugHistoryLatestListRequestId = null;
+      this._yeaftDebugHistoryLatestDetailRequestId = null;
       this.yeaftReflectionCards = {};
       this.yeaftSubAgentCards = {};
       // VP-block redesign (2026-05-08): per-turn detail drawer retired.
