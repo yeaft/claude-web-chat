@@ -488,6 +488,8 @@ describe('message flow regressions', () => {
     expect(zhCNMessages['sidebar.sessions.newChat']).toBe('新建聊天');
     expect(enMessages['sidebar.projects.newSession']).toBe('New Session in {name}');
     expect(zhCNMessages['sidebar.projects.newSession']).toBe('在{name}中创建 Session');
+    expect(enMessages['sidebar.projects.assignFailed']).toContain('{message}');
+    expect(zhCNMessages['sidebar.projects.assignFailed']).toContain('{message}');
     expect(sidebar.get('.sidebar-navigation').element.children[0].classList).toContain('sidebar-primary-actions');
     expect(sidebar.get('.sidebar-navigation').element.children[1].classList).toContain('sidebar-session-results');
     expect(sidebar.get('.sidebar-session-results').element.children[0].classList).toContain('projects-section');
@@ -1263,6 +1265,12 @@ describe('message flow regressions', () => {
       projectId: 'project-shared',
     }, 'agent-a');
     expect(chatPage.vm.unifiedSessionCreateProject).toBeNull();
+    const alertSpy = vi.fn();
+    vi.stubGlobal('alert', alertSpy);
+    parentStore.mutateProject.mockResolvedValueOnce({ ok: false, error: { code: 'timeout' } });
+    chatPage.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
+    await chatPage.vm.onUnifiedSessionCreated({ id: 'unassigned-session', agentId: 'agent-a' });
+    expect(alertSpy).toHaveBeenLastCalledWith('sidebar.projects.assignFailed');
     await chatPage.get('.sidebar-work-center-header-btn').trigger('click');
     expect(parentStore.enterWorkCenter).toHaveBeenCalledWith('agent-a');
     chatPage.unmount();
@@ -1297,6 +1305,11 @@ describe('message flow regressions', () => {
       projectId: 'project-shared',
     }, 'agent-a');
     expect(yeaftSidebar.vm.sessionCreateProject).toBeNull();
+    parentStore.mutateProject.mockResolvedValueOnce({ ok: false, error: { message: 'denied' } });
+    yeaftSidebar.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
+    await yeaftSidebar.vm.onSessionCreated({ id: 'unassigned-from-yeaft', agentId: 'agent-a' });
+    expect(alertSpy).toHaveBeenLastCalledWith('sidebar.projects.assignFailed');
+    vi.unstubAllGlobals();
     yeaftSidebar.unmount();
     globalThis.fetch = originalFetch;
     delete globalThis.Pinia.useChatStore;

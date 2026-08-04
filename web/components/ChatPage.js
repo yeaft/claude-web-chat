@@ -625,10 +625,14 @@ export default {
       this.closeUnifiedSessionCreate();
       if (!project || !session?.id) return;
       const agentId = session.agentId || project.legacyAgentId || this.store.currentAgent || null;
-      await this.store.mutateProject?.('move_session', {
+      const result = await this.store.mutateProject?.('move_session', {
         sessionId: session.id,
         projectId: project.legacyProjectId || project.id,
       }, agentId);
+      if (!result?.ok) {
+        const message = result?.error?.message || result?.error?.code || 'unknown';
+        alert(this.$t('sidebar.projects.assignFailed', { name: project.name, message }));
+      }
     },
     openWorkCenter(agentId = null) {
       const target = this.workCenterAgents.find(agent => agent.id === agentId)

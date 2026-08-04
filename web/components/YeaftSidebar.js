@@ -503,10 +503,14 @@ export default {
       if (!project || !session?.id) return;
       const store = this.chatStore || this.store;
       const agentId = session.agentId || project.legacyAgentId || store?.currentAgent || null;
-      await store?.mutateProject?.('move_session', {
+      const result = await store?.mutateProject?.('move_session', {
         sessionId: session.id,
         projectId: project.legacyProjectId || project.id,
       }, agentId);
+      if (!result?.ok) {
+        const message = result?.error?.message || result?.error?.code || 'unknown';
+        alert(this.$t('sidebar.projects.assignFailed', { name: project.name, message }));
+      }
     },
     onSelectGroup(g) {
       if (!g || !g.id) return;

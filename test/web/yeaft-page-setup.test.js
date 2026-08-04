@@ -119,6 +119,10 @@ describe('YeaftPage setup', () => {
     expect(yeaftCss).toMatch(/\.yeaft-topbar-context\s*\{[^}]*grid-column:\s*1 \/ -1;[^}]*grid-row:\s*1;/s);
     expect(yeaftCss).toMatch(/\.yeaft-topbar-title-group\s*\{[^}]*grid-column:\s*2;/s);
     expect(yeaftCss).toMatch(/\.yeaft-topbar-right\s*\{[^}]*grid-column:\s*3;[^}]*justify-self:\s*end;/s);
+    const mobileTopbar = yeaftCss.slice(yeaftCss.indexOf('@media (max-width: 768px)'));
+    expect(mobileTopbar).toMatch(/\.yeaft-topbar-context\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
+    expect(mobileTopbar).toMatch(/\.yeaft-topbar-title-group\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;/s);
+    expect(mobileTopbar).toMatch(/\.yeaft-topbar-folder\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*2;/s);
 
     page.toggleHistorySearch();
     await Vue.nextTick();

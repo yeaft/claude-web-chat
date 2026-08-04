@@ -2020,17 +2020,20 @@
     grid-row: 1;
     min-width: 0;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto;
     align-content: center;
   }
 
   .yeaft-topbar-title-group {
+    grid-column: 1;
     grid-row: 1;
     justify-content: flex-start;
     text-align: left;
   }
 
   .yeaft-topbar-folder {
+    grid-column: 1;
     grid-row: 2;
     width: 100%;
     max-width: 100%;
