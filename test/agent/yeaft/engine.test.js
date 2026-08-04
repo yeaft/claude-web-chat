@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  chmodSync, existsSync, linkSync, lstatSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync,
+  chmodSync, existsSync, linkSync, lstatSync, mkdirSync, renameSync, rmSync, mkdtempSync, writeFileSync, readFileSync,
   appendFileSync, readdirSync, symlinkSync, utimesSync,
 } from 'fs';
 import { delimiter, join } from 'path';
@@ -3659,6 +3659,55 @@ describe('Engine', () => {
           await legacyReader.close();
         } finally {
           rmSync(legacyRoot, { recursive: true, force: true });
+        }
+
+        const retentionRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-retention-'));
+        try {
+          const sessionId = `${'r'.repeat(120)}TAIL`;
+          const firstProcess = new DebugTrace(retentionRoot);
+          for (let i = 1; i <= 10; i += 1) {
+            const id = `retention-${i}`;
+            const rowId = firstProcess.startTurn({ traceId: id, turnNumber: 1, sessionId });
+            firstProcess.endTurn(rowId, { responseText: id, stopReason: 'end_turn' });
+          }
+          await firstProcess.close();
+          const currentRequests = join(retentionRoot, 'sessions', sessionId, 'debug', 'requests');
+          const currentTurns = join(retentionRoot, 'sessions', sessionId, 'debug', 'turns');
+          expect(readdirSync(currentRequests)).toHaveLength(10);
+          const firstLocator = readdirSync(currentTurns).find(name => name.startsWith('retention-1-'));
+          expect(firstLocator).toBeTruthy();
+
+          // Simulate coexistence with the old lossy directory mapping. The
+          // retained request is moved, not copied, so the unified timeline is
+          // still exactly ten requests before process B appends one.
+          const [firstRequestDir] = readdirSync(currentRequests).sort();
+          const legacyDebugDir = join(retentionRoot, 'sessions', sessionId.slice(0, 120), 'debug');
+          const legacyRequests = join(legacyDebugDir, 'requests');
+          const legacyTurns = join(legacyDebugDir, 'turns');
+          mkdirSync(legacyRequests, { recursive: true });
+          mkdirSync(legacyTurns, { recursive: true });
+          renameSync(join(currentRequests, firstRequestDir), join(legacyRequests, firstRequestDir));
+          renameSync(join(currentTurns, firstLocator), join(legacyTurns, firstLocator));
+
+          const secondProcess = new DebugTrace(retentionRoot);
+          const eleventh = secondProcess.startTurn({ traceId: 'retention-11', turnNumber: 1, sessionId });
+          secondProcess.endTurn(eleventh, { responseText: 'retention-11', stopReason: 'end_turn' });
+          await secondProcess.close();
+
+          const remainingCurrent = readdirSync(currentRequests);
+          const remainingLegacy = readdirSync(legacyRequests);
+          expect(remainingCurrent.length + remainingLegacy.length).toBe(10);
+          expect(remainingLegacy).toHaveLength(0);
+          expect(existsSync(join(currentTurns, firstLocator))).toBe(false);
+          expect(existsSync(join(legacyTurns, firstLocator))).toBe(false);
+          const retentionReader = new DebugTrace(retentionRoot);
+          const newest = await retentionReader.fetchTurnDebug({ sessionId, turnId: 'retention-11' });
+          expect(newest.loops.map(loop => loop.response)).toEqual(['retention-11']);
+          const pruned = await retentionReader.fetchTurnDebug({ sessionId, turnId: 'retention-1' });
+          expect(pruned.loops).toEqual([]);
+          await retentionReader.close();
+        } finally {
+          rmSync(retentionRoot, { recursive: true, force: true });
         }
       } finally {
         await boundedTrace.close();

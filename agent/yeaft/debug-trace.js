@@ -740,10 +740,35 @@ async function readTraceSummaries(rootDir, sessionId = null) {
     if (!trace || !trace.requestId) continue;
     if (sessionId && trace.sessionId !== sessionId) continue;
     const file = requestFilePath(requestDir);
-    traces.push({ trace, file, openedAt: Number(trace.openedAt || 0) });
+    traces.push({ trace, file, requestDir, openedAt: Number(trace.openedAt || 0) });
   }
   traces.sort((a, b) => ((a.openedAt || 0) - (b.openedAt || 0)) || String(a.trace?.requestKey || a.file).localeCompare(String(b.trace?.requestKey || b.file)));
   return traces;
+}
+
+async function readTraceHeaders(rootDir, sessionId) {
+  const traces = [];
+  const requestDirs = sessionId == null
+    ? await (async () => {
+      const dirs = [];
+      for (const entry of await readdirSafe(sessionRequestsDir(rootDir, null))) {
+        if (entry.isDirectory()) dirs.push(join(sessionRequestsDir(rootDir, null), entry.name));
+      }
+      return dirs;
+    })()
+    : await collectRequestDirs(rootDir, sessionId);
+  for (const requestDir of requestDirs) {
+    const meta = await readJson(requestMetaPath(requestDir));
+    const trace = meta?.requestId ? meta : await readJson(requestFilePath(requestDir));
+    if (!trace?.requestId || !trace?.requestKey || trace.sessionId !== sessionId) continue;
+    traces.push({
+      trace,
+      file: requestFilePath(requestDir),
+      requestDir,
+      openedAt: Number(trace.openedAt || 0),
+    });
+  }
+  return traces.sort((a, b) => ((a.openedAt || 0) - (b.openedAt || 0)) || String(a.trace.requestKey).localeCompare(String(b.trace.requestKey)));
 }
 
 async function countDirFiles(rootDir) {
@@ -774,6 +799,10 @@ export class DebugTrace {
   #pendingWrites = [];
   /** @type {Set<string>} */
   #initializedRequestKeys = new Set();
+  /** @type {Set<string>} */
+  #reconciledRetentionSessions = new Set();
+  /** @type {Map<string, Map<string, { trace: object, requestDir: string, openedAt: number }>>} */
+  #retentionIndex = new Map();
   /** @type {NodeJS.Timeout|null} */
   #appendTimer = null;
   /** @type {number} */
@@ -1126,6 +1155,8 @@ export class DebugTrace {
     this.#turnIndex.clear();
     this.#requestCache.clear();
     this.#initializedRequestKeys.clear();
+    this.#reconciledRetentionSessions.clear();
+    this.#retentionIndex.clear();
     this.#events = [];
     this.#hydrated = false;
     this.#hydratePromise = null;
@@ -1457,25 +1488,57 @@ export class DebugTrace {
   }
 
   async #pruneAll(keep) {
-    // Cache-only enumeration; rm the pruned request dirs async. No disk scan.
-    const sessions = new Set([null]);
+    const sessions = new Set();
     for (const trace of this.#requestCache.values()) sessions.add(trace.sessionId || null);
-    for (const sid of sessions) await this.#pruneSession(sid, keep);
+    for (const sessionId of sessions) await this.#pruneSession(sessionId, keep);
   }
 
   async #pruneSession(sessionId, keep = REQUEST_RETENTION) {
-    const traces = this.#traceSummaries(sessionId);
+    const sessionKey = sessionId || '';
+    let index = this.#retentionIndex.get(sessionKey);
+    if (!this.#reconciledRetentionSessions.has(sessionKey)) {
+      index = new Map();
+      for (const item of await readTraceHeaders(this.#rootDir, sessionId)) {
+        index.set(item.requestDir, item);
+      }
+      this.#retentionIndex.set(sessionKey, index);
+      this.#reconciledRetentionSessions.add(sessionKey);
+    }
+    for (const trace of this.#requestCache.values()) {
+      if ((trace.sessionId || null) !== sessionId) continue;
+      const requestDir = requestDirFor(this.#rootDir, sessionId, trace.requestKey);
+      index.set(requestDir, {
+        trace,
+        requestDir,
+        openedAt: Number(trace.openedAt || 0),
+      });
+    }
+    const traces = Array.from(index.values()).sort((a, b) => (
+      (a.openedAt || 0) - (b.openedAt || 0)
+      || String(a.trace.requestKey).localeCompare(String(b.trace.requestKey))
+    ));
     const activeCutoff = Date.now() - 6 * 60 * 60 * 1000;
     const protectedItems = traces.filter(item => item.trace?.active && Number(item.trace?.updatedAt || 0) >= activeCutoff);
     const pruneCandidates = traces.filter(item => !protectedItems.includes(item));
     const stale = pruneCandidates.slice(0, Math.max(0, traces.length - protectedItems.length - keep));
     for (const item of stale) {
-      // Drop from cache first so subsequent queries never resurface it, even
-      // if the async rm is still in flight or fails.
       this.#requestCache.delete(item.trace.requestKey);
       this.#initializedRequestKeys.delete(item.trace.requestKey);
-      try { await fsp.rm(dirname(item.file), { recursive: true, force: true }); }
+      index.delete(item.requestDir);
+      try { await fsp.rm(item.requestDir, { recursive: true, force: true }); }
       catch { /* ignore */ }
+      const locatorPaths = new Set(sessionRequestDirs(this.#rootDir, sessionId).map(requestsDir => (
+        join(requestsDir, '..', 'turns', turnLocatorName(item.trace.requestId))
+      )));
+      for (const locatorPath of locatorPaths) {
+        const locator = await readJson(locatorPath);
+        if (locator?.sessionId === sessionId
+          && locator.requestId === item.trace.requestId
+          && locator.requestKey === item.trace.requestKey) {
+          try { await fsp.rm(locatorPath, { force: true }); }
+          catch { /* ignore */ }
+        }
+      }
     }
   }
 
