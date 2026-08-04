@@ -880,6 +880,9 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
       const turnId = m.turnId || messageId;
       const assistantContent = typeof m.content === 'string' ? m.content : (m.content || '');
       const todos = Array.isArray(m.todos) ? m.todos : latestTodoSnapshot(m.toolCalls);
+      const executionOriginMeta = m.executionOrigin === 'route_forward'
+        ? { executionOrigin: 'route_forward' }
+        : {};
       if (typeof assistantContent !== 'string' || assistantContent.trim()) {
         formatted.push({
           ...(stableId ? { id: stableId, messageId: stableId } : {}),
@@ -895,6 +898,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           sessionId: rowSessionId,
           turnId,
           _hasPersistedTurnId: hasPersistedTurnId,
+          ...executionOriginMeta,
           ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
           ...(m.responseKind === 'progress' || m.responseKind === 'result' ? { responseKind: m.responseKind } : {}),
           ...(m.incomplete === true ? { incomplete: true } : {}),
@@ -915,6 +919,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           timestamp,
           sessionId: rowSessionId,
           turnId,
+          ...executionOriginMeta,
           ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
           isStreaming: false,
           isHistory: true,
@@ -930,6 +935,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           ...historyEntryMeta,
           seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
           type: 'chat-image', ...image, timestamp, sessionId: rowSessionId, turnId,
+          ...executionOriginMeta,
           ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
           isStreaming: false, isHistory: true,
         });
@@ -967,6 +973,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           sessionId: rowSessionId,
           turnId,
           threadId: scope.threadId,
+          ...executionOriginMeta,
           ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
           isStreaming: false,
         }, result, questions);
@@ -987,6 +994,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           timestamp,
           sessionId: rowSessionId,
           turnId,
+          ...executionOriginMeta,
           ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
           isStreaming: false,
           isHistory: true,
