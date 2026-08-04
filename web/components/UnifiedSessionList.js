@@ -148,7 +148,7 @@ export function calculateFloatingSubmenuPosition(parentRect, menuSize, viewport 
 
 export default {
   name: 'UnifiedSessionList',
-  emits: ['select', 'create', 'action', 'project-action', 'close-work-center'],
+  emits: ['select', 'create', 'create-in-project', 'action', 'project-action', 'close-work-center'],
   props: {
     sessions: { type: Array, default: () => [] },
     projectStore: { type: Object, default: null },
@@ -448,6 +448,12 @@ export default {
     createSession() {
       if (this.workCenterOpen) this.$emit('close-work-center');
       this.$emit('create');
+    },
+    createSessionInProject(project) {
+      if (!this.canEditProject(project)) return;
+      this.closeMenus();
+      if (this.workCenterOpen) this.$emit('close-work-center');
+      this.$emit('create-in-project', { project });
     },
     selectRow(row, event, options = {}) {
       if (options.suppressActions === true) {
@@ -911,6 +917,9 @@ export default {
                 <span>{{ project.name }}</span>
                 <span v-if="isProjectUnread(project)" class="sidebar-session-unread sidebar-project-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
                 <span class="sidebar-project-count">{{ (rowsByProject.get(projectKey(project)) || []).length }}</span>
+              </button>
+              <button v-if="canEditProject(project)" type="button" class="sidebar-project-session-create" @click.stop="createSessionInProject(project)" :title="$t('sidebar.projects.newSession', { name: project.name })" :aria-label="$t('sidebar.projects.newSession', { name: project.name })">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
               </button>
               <button v-if="canEditProject(project)" type="button" class="session-dots-btn" :class="{ 'menu-open': openProjectMenuKey === projectKey(project) }" @click.stop="toggleProjectMenu(project, $event)" :aria-label="$t('sidebar.projects.menu')">
                 <svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>

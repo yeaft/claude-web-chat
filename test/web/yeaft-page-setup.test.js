@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 import * as Vue from 'vue';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let YeaftPage;
@@ -112,6 +114,11 @@ describe('YeaftPage setup', () => {
     expect(source).toContain('class="yeaft-model-option-ctx"');
     expect(source).toContain('class="yeaft-model-config-option"');
     expect(source).toContain(':title="topbarFolderPath"');
+    const yeaftCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/yeaft.css'), 'utf8');
+    expect(yeaftCss).toMatch(/\.yeaft-topbar\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\) minmax\(0, 1fr\);/s);
+    expect(yeaftCss).toMatch(/\.yeaft-topbar-context\s*\{[^}]*grid-column:\s*1 \/ -1;[^}]*grid-row:\s*1;/s);
+    expect(yeaftCss).toMatch(/\.yeaft-topbar-title-group\s*\{[^}]*grid-column:\s*2;/s);
+    expect(yeaftCss).toMatch(/\.yeaft-topbar-right\s*\{[^}]*grid-column:\s*3;[^}]*justify-self:\s*end;/s);
 
     page.toggleHistorySearch();
     await Vue.nextTick();

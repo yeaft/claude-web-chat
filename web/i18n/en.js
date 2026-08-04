@@ -146,6 +146,7 @@ export default {
   'sidebar.projects.title': 'Projects',
   'sidebar.projects.menu': 'Project menu',
   'sidebar.projects.new': 'New project',
+  'sidebar.projects.newSession': 'New Session in {name}',
   'sidebar.projects.empty': 'No projects yet',
   'sidebar.projects.noSessions': 'Drag a Yeaft chat here',
   'sidebar.projects.namePrompt': 'Project name',

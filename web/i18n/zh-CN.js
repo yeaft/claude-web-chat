@@ -146,6 +146,7 @@ export default {
   'sidebar.projects.title': '项目',
   'sidebar.projects.menu': '项目菜单',
   'sidebar.projects.new': '新建项目',
+  'sidebar.projects.newSession': '在{name}中创建 Session',
   'sidebar.projects.empty': '暂无项目',
   'sidebar.projects.noSessions': '将 Yeaft 聊天拖到这里',
   'sidebar.projects.namePrompt': '项目名称',
