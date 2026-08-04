@@ -38,6 +38,7 @@ import { isValidTopic } from '../memory/store.js';
 
 import { truncateMessage } from './segment.js';
 import { render } from './prompts/index.js';
+import { resolveTopicRedirect } from '../memory/topic-redirect.js';
 
 function triageSystem(language) {
   return String(language || '').toLowerCase().startsWith('zh')
@@ -182,7 +183,10 @@ export async function classifySoft({ sessionId, messages, topicSummaries, llm, l
     const segs = path.split('/').filter(Boolean);
     if (!sessionId || sessionId === '_no-session') continue;
     if (!isValidTopic({ kind: 'session-topic', sessionId, path: segs })) continue;
-    const scope = `sessions/${sessionId}/topic/${segs.join('/')}`;
+    const redirected = args.root
+      ? resolveTopicRedirect(args.root, sessionId, segs.join('/'))
+      : segs.join('/');
+    const scope = `sessions/${sessionId}/topic/${redirected}`;
     if (pass2.decision === 'match') {
       out.push({ kind: 'update', scope });
     } else if (pass2.decision === 'new') {
@@ -223,13 +227,14 @@ export async function triageOneSegment(args) {
  * }} args
  * @returns {Promise<Array<{ kind: 'update'|'create', scope: string }>>}
  */
-export async function triageGroupSegments({ sessionId, segments, topicSummaries, llm, onProgress, language }) {
+export async function triageGroupSegments({ root, sessionId, segments, topicSummaries, llm, onProgress, language }) {
   let acc = [];
   let i = 0;
   for (const seg of (segments || [])) {
     i += 1;
     if (onProgress) onProgress({ phase: 'triage', sessionId, segment: i, total: segments.length });
     const segActions = await triageOneSegment({
+      root,
       sessionId,
       messages: seg.messages,
       topicSummaries,

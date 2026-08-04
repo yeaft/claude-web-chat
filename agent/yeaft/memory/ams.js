@@ -1,15 +1,13 @@
 /**
  * memory/ams.js — DESIGN-H2-AMS §5. Active Memory Set.
  *
- * Per-group session state. Three layers:
+ * Per-Session prompt state. The data structure retains three compatible
+ * layers, but normal query flow now rebuilds only `resident` from ranked,
+ * canonical `content.md` files. `recent` and `onDemand` segment membership is
+ * cleared before rendering because `memory.md` is evidence, not prompt prose.
  *
- *   resident   summaries of all relevant scopes — always-on, high precision
- *   recent     LRU of segments touched in last N turns — warm cache
- *   onDemand   segments the pre-flow FTS pulled in this turn — hot recall
- *
- * AMS is in-memory; it's rebuilt at session start. The disk source of
- * truth is `<scope>/memory.md` + `<scope>/summary.md`. AMS itself
- * doesn't write to disk — that's Dream's job.
+ * AMS is in-memory and does not write to disk; Dream owns canonical content,
+ * catalog summaries, and evidence persistence.
  *
  * Privacy: `vp/<other>` scopes are ALWAYS filtered out
  * for any worker that isn't `<other>`. The owning code passes its own
@@ -145,6 +143,16 @@ export class ActiveMemorySet {
     for (const id of ids) this._onDemand.delete(id);
   }
 
+  /**
+   * Clear persisted segment membership before prompt assembly. Segment ids are
+   * retained on disk for migration/debug compatibility, but canonical content
+   * is now the only prompt-facing representation.
+   */
+  clearSegmentLayers() {
+    this._recent.clear();
+    this._onDemand.clear();
+  }
+
   // ────────────────────────── snapshot ──────────────────────────
 
   /**
@@ -160,7 +168,7 @@ export class ActiveMemorySet {
     const seenPromptText = new Set();
 
     // Resident: pack scopes by priority order (caller provides via insert
-    // order — current group's own vp first, then user, etc.).
+    // order — current Session's own VP first, then user, etc.).
     const { picked: resPicked, cost: resCost } = pickMemoryItems({
       items: [...this._resident.entries()].map(([scope, entry]) => ({
         scope,

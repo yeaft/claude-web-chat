@@ -10,7 +10,8 @@ import { resolveWorkItemModel, selectWorkItemVp } from './assignment.js';
 import { approxTokens } from '../memory/budget.js';
 import { runPreflow } from '../memory/preflow.js';
 import { formatPickedForInjection } from '../sessions/pre-flow.js';
-import { existsSync, lstatSync, realpathSync } from 'node:fs';
+import { cleanMemoryPromptText } from '../memory/prompt-cleanup.js';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { sessionMessageQuotePrompt } from '../session-message-quote.js';
 import { buildWorkItemAttachmentContext } from './attachments.js';
@@ -767,7 +768,7 @@ function finalizeOwnedIntegration(store, action, run, ownerBootId) {
   }
 }
 
-function recallWorkItemMemory(runtime, workItem, action, vp) {
+export function recallWorkItemMemory(runtime, workItem, action, vp) {
   if (workItem?.reuseMemory === false || !runtime?.memoryIndex) return '';
   const query = workItemMemoryQuery(workItem, action);
   if (!query.trim()) return '';
@@ -780,15 +781,38 @@ function recallWorkItemMemory(runtime, workItem, action, vp) {
       currentTags: [action.type, action.stageId, vp.id].filter(Boolean),
       topK: 20,
       budgetTokens: WORK_ITEM_MEMORY_TOKEN_BUDGET,
+      canonicalOnly: true,
     });
     const allowed = new Set(scopes);
     if ((result.picked || []).some(entry => !allowed.has(entry.scope))) return '';
-    const formatted = formatPickedForInjection(result.picked || []);
+    const canonical = (result.picked || []).map(entry => {
+      const body = readCanonicalMemoryScope(runtime.yeaftDir, entry.scope);
+      return body ? { ...entry, body } : null;
+    }).filter(Boolean);
+    const formatted = formatPickedForInjection(canonical);
     if (!formatted) return '';
     return boundedMemoryBlock(escapeMemoryText(formatted));
   } catch {
     return '';
   }
+}
+
+function readCanonicalMemoryScope(yeaftDir, scope) {
+  if (!yeaftDir || !isCanonicalMemoryScope(scope)) return '';
+  const memoryRoot = path.join(yeaftDir, 'memory');
+  const contentPath = path.resolve(memoryRoot, scope, 'content.md');
+  if (!isPathInsideOrEqual(memoryRoot, contentPath)) return '';
+  if (!existsSync(contentPath) || !lstatSync(contentPath).isFile()) return '';
+  return cleanMemoryPromptText(readFileSync(contentPath, 'utf8'));
+}
+
+function isCanonicalMemoryScope(scope) {
+  const parts = String(scope || '').split('/').filter(Boolean);
+  if (parts[0] === 'user' && parts.length === 1) return true;
+  if (parts[0] === 'vp' && parts.length >= 2) return true;
+  if (!['sessions', 'session', 'group'].includes(parts[0]) || parts.length < 2) return false;
+  if (parts.length === 2) return true;
+  return ['user', 'vp', 'feature', 'topic'].includes(parts[2]);
 }
 
 export class WorkItemRunner {
@@ -998,7 +1022,12 @@ export class WorkItemRunner {
       throw error;
     }
     const resolvedModel = resolveWorkItemModel(runtime.config, vp, executionAction.modelPolicy);
-    const memoryBlock = recallWorkItemMemory(runtime, workItem, executionAction, vp);
+    const memoryBlock = recallWorkItemMemory(
+      { ...runtime, yeaftDir: runtime.yeaftDir || this.yeaftDir },
+      workItem,
+      executionAction,
+      vp,
+    );
     const workspaceSessionBlock = recallWorkspaceSessionContext({
       yeaftDir: this.yeaftDir,
       conversationStore: runtime.conversationStore,

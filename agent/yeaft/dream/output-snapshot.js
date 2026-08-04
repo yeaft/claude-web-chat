@@ -3,13 +3,13 @@
  *
  * Read-only projection of Dream-owned output files for UI observability.
  * The Dream write path remains `runner -> apply -> memory/store`; callers use
- * this module to load the current `memory.md` / `summary.md` contents for a
+ * this module to load current `content.md` / `memory.md` / `summary.md` for a
  * single Yeaft session when emitting status or restoring a switched session.
  */
 
 import { join } from 'node:path';
 
-import { readMemory, readSummary } from '../memory/store.js';
+import { readContent, readMemory, readSummary } from '../memory/store.js';
 import { readDreamError, readSessionState } from './state.js';
 import { buildRunDreamOpts } from './session-wiring.js';
 
@@ -33,7 +33,8 @@ export async function buildDreamOutputSnapshot(sessionLike, sessionId) {
   const scope = `sessions/${sessionId}`;
   const memoryScope = { kind: 'session', id: sessionId };
   const root = join(sessionLike.yeaftDir, 'memory');
-  const [memoryRaw, summaryRaw, state, lastError] = await Promise.all([
+  const [contentRaw, memoryRaw, summaryRaw, state, lastError] = await Promise.all([
+    readContent(memoryScope, { root }).catch(() => ''),
     readMemory(memoryScope, { root }).catch(() => ''),
     readSummary(memoryScope, { root }).catch(() => ''),
     readSessionState(root, sessionId).catch(() => ({
@@ -44,6 +45,7 @@ export async function buildDreamOutputSnapshot(sessionLike, sessionId) {
     readDreamError(root, scope).catch(() => null),
   ]);
   const totalMessageCount = await countSessionMessages(sessionLike, sessionId);
+  const content = truncateDreamText(contentRaw);
   const memory = truncateDreamText(memoryRaw);
   const summary = truncateDreamText(summaryRaw);
   return {
@@ -54,8 +56,10 @@ export async function buildDreamOutputSnapshot(sessionLike, sessionId) {
     lastDreamMessageId: state?.lastDreamMessageId || null,
     messageCount: Number.isFinite(state?.messageCount) ? state.messageCount : 0,
     totalMessageCount,
-    hasOutput: !!(memoryRaw || summaryRaw),
+    hasOutput: !!(contentRaw || memoryRaw || summaryRaw),
     lastError,
+    contentText: content.text,
+    contentTruncated: content.truncated,
     memoryText: memory.text,
     memoryTruncated: memory.truncated,
     summaryText: summary.text,
