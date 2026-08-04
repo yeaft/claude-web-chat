@@ -207,38 +207,57 @@
   text-align: left;
 }
 
-.yeaft-page .chat-composer-actions-start {
-  position: relative;
+.yeaft-composer-model-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sidebar-section-toggle-gap);
+  min-width: 0;
 }
 
-.yeaft-composer-model-control {
-  position: static;
+.yeaft-composer-choice {
+  position: relative;
   min-width: 0;
+}
+
+.yeaft-composer-model-choice {
   flex: 0 1 auto;
 }
 
-.yeaft-composer-model {
+.yeaft-composer-model,
+.yeaft-composer-effort {
   display: flex;
   align-items: center;
-  gap: var(--chat-composer-control-gap);
+  gap: var(--sidebar-section-toggle-gap);
   min-width: 0;
-  width: 100%;
-  max-width: var(--yeaft-composer-model-max-width);
   height: var(--chat-composer-control-size);
+  padding: 0 var(--sidebar-section-toggle-gap);
+  border: 0;
+  border-radius: var(--sidebar-section-toggle-radius);
+  background: transparent;
   color: var(--text-secondary);
   font: inherit;
+  font-size: var(--yeaft-composer-model-font-size);
   cursor: pointer;
-  padding: 0 var(--chat-composer-gap);
-  border: var(--yeaft-composer-model-border-width) solid var(--border-color);
-  border-radius: var(--chat-composer-radius);
-  position: relative;
-  background: transparent;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background-color 0.15s, color 0.15s;
 }
 
-.yeaft-composer-model:hover {
+.yeaft-composer-model {
+  max-width: var(--yeaft-composer-model-max-width);
+}
+
+.yeaft-composer-model:hover,
+.yeaft-composer-model:focus-visible,
+.yeaft-composer-effort:hover,
+.yeaft-composer-effort:focus-visible,
+.yeaft-composer-choice.is-open > button {
   background: var(--sidebar-hover);
-  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+.yeaft-composer-model:focus-visible,
+.yeaft-composer-effort:focus-visible {
+  outline: var(--sidebar-focus-ring-width) solid var(--accent-blue);
+  outline-offset: var(--sidebar-focus-ring-offset);
 }
 
 .yeaft-topbar-title-group {
@@ -285,21 +304,14 @@
 }
 
 .yeaft-composer-model-name {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
-  max-width: var(--yeaft-composer-model-max-width);
   font-size: var(--yeaft-composer-model-font-size);
   font-weight: 500;
-  color: var(--text-secondary);
+  color: inherit;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.yeaft-composer-model-effort {
-  flex-shrink: 0;
-  font-size: var(--yeaft-composer-model-font-size);
-  color: var(--accent-blue);
 }
 
 .yeaft-model-refreshing {
@@ -317,9 +329,10 @@
   transform: rotate(180deg);
 }
 
-.yeaft-composer-model-dropdown {
+.yeaft-composer-model-dropdown,
+.yeaft-composer-effort-dropdown {
   position: absolute;
-  left: 0;
+  right: 0;
   bottom: calc(100% + var(--chat-composer-gap));
   min-width: min(var(--yeaft-model-menu-width), calc(100vw - var(--chat-composer-padding) * 2));
   width: min(var(--yeaft-model-menu-width), calc(100vw - var(--chat-composer-padding) * 2));
@@ -331,13 +344,18 @@
   z-index: var(--yeaft-model-menu-layer);
 }
 
-.yeaft-model-selector-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  overflow: hidden;
+.yeaft-composer-effort-dropdown {
+  min-width: min(var(--yeaft-effort-menu-width), calc(100vw - var(--chat-composer-padding) * 2));
+  width: min(var(--yeaft-effort-menu-width), calc(100vw - var(--chat-composer-padding) * 2));
+}
+
+.yeaft-composer-model-dropdown .yeaft-model-list {
+  max-height: 320px;
+}
+
+.yeaft-composer-effort-option {
+  align-items: center;
+  cursor: pointer;
 }
 
 .yeaft-model-list {
@@ -346,19 +364,6 @@
   min-height: 0;
   max-height: 320px;
   overflow-y: auto;
-}
-
-.yeaft-model-fixed-controls {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.yeaft-model-dropdown-separator {
-  height: 1px;
-  background: var(--border-light);
-  margin: 4px 0;
 }
 
 .yeaft-model-config-option {
@@ -417,10 +422,6 @@
   transition: background 0.12s;
 }
 
-.yeaft-model-option-with-effort {
-  align-items: center;
-}
-
 .yeaft-model-option:hover {
   background: var(--sidebar-hover);
 }
@@ -429,10 +430,6 @@
   color: var(--text-primary);
   font-weight: 500;
   background: var(--session-active);
-}
-
-.yeaft-model-option.current:not(.active) {
-  color: var(--text-primary);
 }
 
 .yeaft-model-check {
@@ -489,39 +486,16 @@
   opacity: 0.75;
 }
 
-.yeaft-model-effort-list {
-  flex-shrink: 0;
-  align-self: center;
-  display: inline-flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px;
-}
-
-.yeaft-model-effort-chip {
-  border: 1px solid var(--border-color);
-  border-radius: 999px;
-  padding: 3px 8px;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.2;
-  color: var(--text-secondary);
-  background: var(--bg-input-wrapper);
-  cursor: pointer;
-}
-
-.yeaft-model-effort-chip:hover,
-.yeaft-model-effort-chip.active {
-  border-color: var(--accent-blue);
-  color: var(--text-primary);
-  background: var(--session-active);
-}
-
 @media (max-width: 768px) {
-  .yeaft-composer-model-control,
   .yeaft-composer-model {
     max-width: var(--yeaft-composer-model-mobile-max-width);
+  }
+
+  .yeaft-composer-model-dropdown,
+  .yeaft-composer-effort-dropdown {
+    position: fixed;
+    right: var(--chat-composer-padding);
+    bottom: calc(var(--chat-composer-control-size) + var(--chat-composer-padding) * 2 + env(safe-area-inset-bottom, 0px));
   }
 
   .yeaft-model-option {

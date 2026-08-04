@@ -235,8 +235,8 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).not.toMatch(/\.sidebar-primary-action-icon\s*\{[^}]*color:\s*var\(--accent/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-add-button\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading > \.sidebar-project-add-button:disabled\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
-    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading > \.sidebar-section-toggle:hover ~ \.sidebar-project-add-button:not\(:disabled\),[\s\S]*?\.sidebar-section-heading > \.sidebar-project-add-button:not\(:disabled\):hover,[\s\S]*?\.sidebar-section-heading:focus-within > \.sidebar-project-add-button:not\(:disabled\)\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
-    expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-add-button:not\(:disabled\)\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading:hover > \.sidebar-project-add-button:not\(:disabled\),[\s\S]*?\.sidebar-section-heading > \.sidebar-project-add-button:not\(:disabled\):hover,[\s\S]*?\.sidebar-section-heading:focus-within > \.sidebar-project-add-button:not\(:disabled\)\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-add-button:not\(:disabled\), \.sidebar-section-chevron\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     const sectionPaddingTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'padding');
     const sectionMarginTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'margin');
     expect(sectionPaddingTopValues.length).toBeGreaterThan(0);
@@ -273,6 +273,10 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-header > \.session-dots-btn\s*\{[^}]*opacity:\s*1/);
     expect(yeaftSidebarCss).not.toContain('.sidebar-session-menu-divider');
     expect(yeaftSidebarCss).toMatch(/\.sidebar-section-toggle\s*\{[^}]*background:\s*transparent/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-chevron\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading:hover \.sidebar-section-chevron,[\s\S]*?\.sidebar-section-heading:focus-within \.sidebar-section-chevron\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-project-icon\s*\{[^}]*width:\s*var\(--sidebar-project-icon-width\)[^}]*height:\s*var\(--sidebar-project-icon-height\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-project-count\s*\{[^}]*font-size:\s*var\(--sidebar-project-count-font-size\)[^}]*font-variant-numeric:\s*tabular-nums/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-header\.project-drag-before\s*\{[^}]*var\(--accent-blue\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-header\.project-drag-after\s*\{[^}]*var\(--accent-blue\)/);
     expect(chatMessagesCss).toMatch(/\.image-preview-navigation\s*\{[^}]*background:\s*var\(--bg-main\)/);
@@ -501,6 +505,10 @@ describe('message flow regressions', () => {
     const sectionToggles = sidebar.findAll('.sidebar-section-toggle');
     expect(sectionToggles).toHaveLength(2);
     expect(sectionToggles.map(button => button.attributes('aria-expanded'))).toEqual(['true', 'true']);
+    expect(sectionToggles.every(button => (
+      button.get('span').element.compareDocumentPosition(button.get('.sidebar-section-chevron').element)
+      & Node.DOCUMENT_POSITION_FOLLOWING
+    ))).toBe(true);
     await sectionToggles[0].trigger('click');
     expect(sidebar.get('.projects-section').classes()).toContain('is-collapsed');
     expect(sidebar.findAll('.sidebar-project')).toHaveLength(0);
@@ -513,11 +521,16 @@ describe('message flow regressions', () => {
     expect(sidebar.findAll('.sidebar-project')).toHaveLength(2);
     expect(sidebar.findAll('.sidebar-project-icon-open')).toHaveLength(2);
     expect(sidebar.findAll('.sidebar-project-icon-closed')).toHaveLength(0);
+    expect(sidebar.findAll('.sidebar-project-icon-open').every(icon => icon.attributes('viewBox') === '0 0 20 24')).toBe(true);
     expect(sidebar.findAll('.sidebar-project-unread')).toHaveLength(1);
     expect(Object.fromEntries(sidebar.findAll('.sidebar-project').map(item => [
       item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
       item.get('.sidebar-project-count').text(),
     ]))).toEqual({ 'Shared project': '1', 'Empty project': '0' });
+    expect(sidebar.findAll('.sidebar-project').every(item => (
+      item.get('.sidebar-project-name').element.compareDocumentPosition(item.get('.sidebar-project-count').element)
+      & Node.DOCUMENT_POSITION_FOLLOWING
+    ))).toBe(true);
     expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(2);
     const projectMenuButton = sidebar.findAll('.sidebar-project-header .session-dots-btn')[0];
     expect(projectMenuButton.attributes('aria-label')).toBe('sidebar.projects.menu');
@@ -1177,6 +1190,9 @@ describe('message flow regressions', () => {
       global: { mocks: { $t: key => key } },
     });
     expect(fallbackWorkCenter.get('.sidebar-work-center-trigger').attributes('disabled')).toBeDefined();
+    expect(fallbackWorkCenter.get('.sidebar-work-center-icon path').attributes('d'))
+      .toBe('M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z');
+    expect(component).toContain('M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z');
     await fallbackWorkCenter.get('.sidebar-work-center-trigger').trigger('click');
     expect(fallbackWorkCenter.emitted('open')).toBeUndefined();
     fallbackWorkCenter.unmount();
@@ -1279,6 +1295,10 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarSource).toContain('@action="onUnifiedSessionAction"');
     expect(yeaftSidebarSource).toContain('@create="onUnifiedCreate"');
     expect(yeaftSidebarSource).toContain('sidebar-work-center-header-btn');
+    const workItemIconPath = 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z';
+    expect(component).toContain(workItemIconPath);
+    expect(chatPageSource).toContain(workItemIconPath);
+    expect(yeaftSidebarSource).toContain(workItemIconPath);
     expect(chatPageSource).toContain(':project-store="store"');
     expect(chatPageSource).toContain(':active-route="store.activeSessionRoute"');
     expect(yeaftSidebarSource).toContain(':project-store="chatStore"');

@@ -91,8 +91,13 @@ describe('YeaftPage setup', () => {
     expect(page.topbarModel.value).toBe('provider/session-model');
     expect(page.topbarEffort.value).toBe('high');
 
+    expect(page.topbarModelLabel.value).toBe('session-model');
+    expect(page.topbarEffortOptions.value).toEqual(['medium', 'high']);
+
     page.selectModel('provider/next-model', 'medium');
     expect(chatStore.switchYeaftModel).toHaveBeenCalledWith('provider/next-model', 'session-1', 'medium');
+    page.selectEffort('medium');
+    expect(chatStore.switchYeaftModel).toHaveBeenLastCalledWith('provider/session-model', 'session-1', 'medium');
 
     const source = YeaftPage.template;
     const topbarStart = source.indexOf('<div class="yeaft-topbar">');
@@ -102,16 +107,28 @@ describe('YeaftPage setup', () => {
     expect(topbar).toContain('class="yeaft-topbar-context"');
     expect(topbar).not.toContain('class="yeaft-composer-model"');
     expect(source).toContain('class="yeaft-session-input"');
-    expect(source).toContain('<template #actions-start>');
-    expect(source).toContain('class="yeaft-composer-model-control"');
+    expect(source).toContain('<template #actions-end-before>');
+    expect(source).toContain('class="yeaft-composer-model-controls"');
+    expect(source).toContain('class="yeaft-composer-choice yeaft-composer-model-choice"');
     expect(source).toContain('class="yeaft-composer-model"');
-    expect(source).toContain('class="yeaft-composer-model-effort"');
+    expect(source).toContain('class="yeaft-composer-choice yeaft-composer-effort-choice"');
+    expect(source).toContain('class="yeaft-composer-effort"');
+    expect(source).toContain("@mouseenter=\"keepComposerMenuOpen('model')\"");
+    expect(source).toContain("@mouseenter=\"keepComposerMenuOpen('effort')\"");
     expect(source).toContain("$t('yeaft.modelMenu.effort.' + topbarEffort)");
-    expect(source).toContain('class="yeaft-model-effort-chip"');
     expect(source).toContain('class="yeaft-model-option-provider"');
     expect(source).toContain('class="yeaft-model-option-ctx"');
     expect(source).toContain('class="yeaft-model-config-option"');
     expect(source).toContain(':title="topbarFolderPath"');
+
+    page.keepComposerMenuOpen('model');
+    expect(page.composerMenuOpen.value).toBe('model');
+    page.keepComposerMenuOpen('effort');
+    expect(page.composerMenuOpen.value).toBe('effort');
+    page.selectEffort('low');
+    expect(chatStore.switchYeaftModel).not.toHaveBeenLastCalledWith('provider/session-model', 'session-1', 'low');
+    page.closeComposerMenu();
+    expect(page.composerMenuOpen.value).toBeNull();
 
     page.toggleHistorySearch();
     await Vue.nextTick();
