@@ -2634,6 +2634,83 @@ describe('Engine', () => {
       }
     });
 
+    it('invalidates cached reads when a task result arrives during async wait', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-async-result-'));
+      const filePath = join(workDir, 'state.txt');
+      const taskId = 'task-read-cache-boundary';
+      writeFileSync(filePath, 'before');
+      try {
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-async-result', name: 'read_state', input: {} },
+          { type: 'tool_call', id: 'wait-for-task-result', name: 'wait_for_state', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Waiting for the state update.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-async-result', name: 'read_state', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'The state is current.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 1_000 },
+        });
+        let readExecutions = 0;
+        engine.registerTool({
+          name: 'read_state',
+          description: 'Read state',
+          parameters: { type: 'object' },
+          isReadOnly: () => true,
+          cacheWithinQuery: true,
+          execute: async () => {
+            readExecutions += 1;
+            return readFileSync(filePath, 'utf8');
+          },
+        });
+        engine.registerTool({
+          name: 'wait_for_state',
+          description: 'Wait for a task result',
+          parameters: { type: 'object' },
+          // This tool only starts observation. It does not synchronously
+          // mutate the workspace, so the task-result synchronization boundary
+          // must invalidate a read cached before the async wait.
+          isReadOnly: () => true,
+          execute: async (_input, ctx) => {
+            ctx.registerAsyncTask(taskId);
+            return 'waiting';
+          },
+        });
+
+        const events = [];
+        let completionAccepted = false;
+        for await (const event of engine.query({ prompt: 'wait for the state update', workDir })) {
+          events.push(event);
+          if (event.type === 'async_task_wait_start') {
+            writeFileSync(filePath, 'after');
+            completionAccepted = engine.notifyAsyncTaskCompleted(taskId, 'state updated');
+          }
+        }
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        expect(completionAccepted).toBe(true);
+        expect(readExecutions).toBe(2);
+        expect(toolEnds.find(event => event.id === 'read-before-async-result')?.output).toBe('before');
+        expect(toolStarts.find(event => event.id === 'read-after-async-result')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-async-result')?.output).toBe('after');
+      } finally {
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
     it('does not reuse reads after a background Bash task mutates the workspace', async () => {
       const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-background-'));
       const yeaftDir = join(workDir, '.yeaft');

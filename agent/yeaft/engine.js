@@ -2171,6 +2171,10 @@ export class Engine {
     // for stale entries to be repopulated.
     const readOnlyToolResults = new Map();
     let readOnlyToolReuseDisabled = false;
+    const invalidateReadOnlyToolReuse = () => {
+      readOnlyToolResults.clear();
+      readOnlyToolReuseDisabled = true;
+    };
 
     // Durability boundary: a valid user turn must exist on disk before any
     // memory pre-flow or provider request can fail. The Web Session bridge
@@ -2719,8 +2723,7 @@ export class Engine {
         // A completed sub-agent can have mutated the shared workspace while
         // this query was parked. Its task-result update is the authoritative
         // synchronization point before the next provider loop.
-        readOnlyToolResults.clear();
-        readOnlyToolReuseDisabled = true;
+        invalidateReadOnlyToolReuse();
       }
       if (taskResultUpdatesBeforeStream.length > 0) {
         for (const update of taskResultUpdatesBeforeStream) {
@@ -3609,6 +3612,10 @@ export class Engine {
         if (!signal?.aborted) {
           const taskResultUpdatesAfterAsyncWait = this.#drainPendingTaskResultUpdates(conversationMessages);
           if (taskResultUpdatesAfterAsyncWait.length > 0) {
+            // This drain bypasses the next loop's pre-stream drain. A task
+            // that completed while we waited may have changed the workspace,
+            // so it is the same cache synchronization boundary.
+            invalidateReadOnlyToolReuse();
             for (const update of taskResultUpdatesAfterAsyncWait) {
               yield {
                 type: 'tool_result_update',
@@ -3941,10 +3948,7 @@ export class Engine {
           // the rest of this query instead of allowing stale entries to refill.
           if (!readOnlyTool) readOnlyToolResults.clear();
           const mayMutateAfterReturn = mayMutateWorkspaceAfterReturn(this, tc.name, tc.input);
-          if (mayMutateAfterReturn) {
-            readOnlyToolResults.clear();
-            readOnlyToolReuseDisabled = true;
-          }
+          if (mayMutateAfterReturn) invalidateReadOnlyToolReuse();
           const cachedReadOnly = readOnlyToolResults.get(duplicateKey);
           if (!readOnlyToolReuseDisabled && cachedReadOnly && cacheableTool) {
             output = cachedReadOnly.output;

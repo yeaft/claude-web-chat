@@ -27,10 +27,15 @@ function telemetryConfig(config) {
   };
 }
 
+export function resolveAgentLocalRoot(config) {
+  for (const candidate of [config?.yeaftDir, config?.dir]) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  return null;
+}
+
 function queueKey(config) {
-  return typeof config?.yeaftDir === 'string' && config.yeaftDir.trim()
-    ? config.yeaftDir.trim()
-    : null;
+  return resolveAgentLocalRoot(config);
 }
 
 export function truncateUtf8Text(value, maxBytes) {

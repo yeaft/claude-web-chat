@@ -436,6 +436,54 @@ describe('Yeaft session-scoped model config', () => {
   });
 
 
+  it('flushes lifecycle telemetry through a Session config dir', async () => {
+    const root = makeDir();
+    const originalFetch = global.fetch;
+    let session = null;
+    writeFileSync(join(root, 'config.json'), JSON.stringify({
+      providers: [{
+        name: 'session-test',
+        baseUrl: 'https://session-test.invalid/v1',
+        apiKey: 'test-key',
+        protocol: 'openai-responses',
+        models: ['gpt-5'],
+      }],
+      primaryModel: 'session-test/gpt-5',
+      telemetry: { flushIntervalMs: 60_000 },
+    }, null, 2));
+
+    try {
+      global.fetch = async () => new Response([
+        'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}',
+        '',
+      ].join('\n'), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      session = await loadSession({ dir: root, skipMCP: true, skipSkills: true });
+      expect(session.config.dir).toBe(root);
+      expect(session.config.yeaftDir).toBeUndefined();
+
+      for await (const _event of session.engine.query({
+        prompt: 'trace this lifecycle',
+        sessionId: 'session-perf-trace',
+        inboundEnvelope: { _perfTraceId: 'session-config-dir-trace' },
+      })) { /* consume */ }
+      await session.shutdown();
+      session = null;
+
+      const day = new Date().toISOString().slice(0, 10);
+      const tracePath = join(root, 'perf-traces', `${day}.jsonl`);
+      expect(existsSync(tracePath)).toBe(true);
+      const rows = readFileSync(tracePath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(rows.filter(row => row.traceId === 'session-config-dir-trace').map(row => row.phase)).toEqual(expect.arrayContaining([
+        'llm.request_start',
+        'llm.first_event',
+        'llm.request_complete',
+      ]));
+    } finally {
+      global.fetch = originalFetch;
+      await session?.shutdown?.();
+    }
+  });
+
   it('seeds stock VPs before loading the user-level runtime', async () => {
     const seedRoot = makeDir();
     const previousTransport = {

@@ -7,7 +7,7 @@
  * engine relies on (`LLMRateLimitError.retryAfterMs`, `LLMServerError`),
  * so the engine's retry loop has the metadata it needs.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AnthropicAdapter } from '../../../agent/yeaft/llm/anthropic.js';
 import { OpenAIResponsesAdapter } from '../../../agent/yeaft/llm/openai-responses.js';
 import {
@@ -16,6 +16,7 @@ import {
   LLMAuthError,
   LLMContextError,
   LLMStreamIdleTimeoutError,
+  createBoundedTextAccumulator,
 } from '../../../agent/yeaft/llm/adapter.js';
 
 const originalFetch = global.fetch;
@@ -114,6 +115,42 @@ function failedResponsesStreamResponse() {
     }),
   };
 }
+
+describe('bounded raw SSE capture', () => {
+  it('bounds one oversized chunk with a constant number of byte-length scans', () => {
+    const limit = 512 * 1024;
+    const chunk = 'x'.repeat(768 * 1024);
+    const byteLength = vi.spyOn(Buffer, 'byteLength');
+    try {
+      const accumulator = createBoundedTextAccumulator(limit);
+      accumulator.push(chunk);
+
+      expect(byteLength).toHaveBeenCalledTimes(1);
+      expect(accumulator.totalBytes).toBe(chunk.length);
+      expect(accumulator.text()).toBe('x'.repeat(limit));
+      expect(accumulator.truncated).toBe(true);
+    } finally {
+      byteLength.mockRestore();
+    }
+  });
+
+  it('respects UTF-8 budgets without splitting a Unicode code point', () => {
+    const accumulator = createBoundedTextAccumulator(5);
+    accumulator.push('a😀b');
+
+    expect(accumulator.text()).toBe('a😀');
+    expect(Buffer.byteLength(accumulator.text(), 'utf8')).toBe(5);
+    expect(accumulator.text().isWellFormed()).toBe(true);
+    expect(accumulator.totalBytes).toBe(6);
+    expect(accumulator.truncated).toBe(true);
+
+    const zero = createBoundedTextAccumulator(0);
+    zero.push('😀');
+    expect(zero.text()).toBe('');
+    expect(zero.totalBytes).toBe(4);
+    expect(zero.truncated).toBe(true);
+  });
+});
 
 describe('AnthropicAdapter error classification', () => {
   afterEach(() => {

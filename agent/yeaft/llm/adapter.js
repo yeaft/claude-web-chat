@@ -461,6 +461,25 @@ export function classifyFetchError(err, opts = {}) {
  * @param {{ url: string, method: string, headers: object, body: any }} req
  * @returns {{ url: string, method: string, headers: object, body: any }}
  */
+function utf8PrefixWithinBytes(text, maxBytes) {
+  let end = 0;
+  let bytes = 0;
+  while (end < text.length) {
+    const code = text.charCodeAt(end);
+    const next = text.charCodeAt(end + 1);
+    const isPair = code >= 0xD800 && code <= 0xDBFF
+      && next >= 0xDC00 && next <= 0xDFFF;
+    const width = isPair ? 2 : 1;
+    const byteLength = isPair
+      ? 4
+      : (code <= 0x7F ? 1 : (code <= 0x7FF ? 2 : 3));
+    if (bytes + byteLength > maxBytes) break;
+    bytes += byteLength;
+    end += width;
+  }
+  return { text: text.slice(0, end), bytes };
+}
+
 export function createBoundedTextAccumulator(maxBytes = 512 * 1024) {
   const limit = Number.isFinite(Number(maxBytes)) ? Math.max(0, Math.floor(Number(maxBytes))) : 512 * 1024;
   const chunks = [];
@@ -477,20 +496,17 @@ export function createBoundedTextAccumulator(maxBytes = 512 * 1024) {
         return;
       }
       const available = limit - retainedBytes;
-      let retained = text;
-      while (Buffer.byteLength(retained, 'utf8') > available && retained.length > 0) {
-        retained = retained.slice(0, -1);
+      if (bytes <= available) {
+        chunks.push(text);
+        retainedBytes += bytes;
+        return;
       }
-      // Never retain half of a UTF-16 surrogate pair. Buffer.byteLength()
-      // counts a lone surrogate as a replacement sequence, so the byte cap
-      // alone is not enough to preserve valid Unicode text at the boundary.
-      if (retained.length > 0 && retained.charCodeAt(retained.length - 1) >= 0xD800
-          && retained.charCodeAt(retained.length - 1) <= 0xDBFF) {
-        retained = retained.slice(0, -1);
-      }
-      chunks.push(retained);
-      retainedBytes += Buffer.byteLength(retained, 'utf8');
-      if (retained.length < text.length) truncated = true;
+      // Walk UTF-16 code points once. The old slice(0, -1) loop repeatedly
+      // rescanned an oversized SSE chunk and went quadratic in its length.
+      const retained = utf8PrefixWithinBytes(text, available);
+      if (retained.text) chunks.push(retained.text);
+      retainedBytes += retained.bytes;
+      truncated = true;
     },
     text() { return chunks.join(''); },
     get totalBytes() { return totalBytes; },
