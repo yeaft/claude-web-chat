@@ -1,3 +1,4 @@
+import { sessionMessageQuotePrompt } from '../session-message-quote.js';
 import { renderSessionContextSnapshot } from './session-context.js';
 
 export const BUILT_IN_ACTION_TYPES = Object.freeze([
@@ -22,6 +23,7 @@ const MODEL_MODES = new Set(['inherit', 'primary', 'fast', 'specific']);
 const MODEL_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const WORKSPACE_MODES = new Set(['shared', 'read', 'isolated-write', 'integrate']);
 const HIGH_EFFORT_ACTION_TYPES = new Set(['triage', 'research', 'design', 'diagnose', 'review']);
+const ACTION_CONTEXT_QUOTE_MAX_BYTES = 8 * 1024;
 
 const DEFAULT_STAGE_INSTRUCTIONS = Object.freeze({
   triage: 'Turn the request into an executable contract. Inspect relevant repository facts before deciding the flow. Classify the WorkItem, identify constraints, risks, dependencies, and missing acceptance criteria, then plan only the Actions needed for this task. Do not implement. If the goal or acceptance criteria must change, submit a contractPatch and explain why.',
@@ -716,8 +718,11 @@ function renderContext(context = []) {
     const decision = entry.reviewDecision ? `\nReview decision: ${entry.reviewDecision}` : '';
     const waitingReason = entry.waitingReason ? `\nWaiting reason: ${entry.waitingReason}` : '';
     const answer = entry.answer ? `\nUser answer: ${entry.answer}` : '';
+    const quote = entry.quote
+      ? sessionMessageQuotePrompt(entry.quote, { maxBytes: ACTION_CONTEXT_QUOTE_MAX_BYTES })
+      : '';
     const source = entry.sourceTitle ? ` from ${entry.sourceTitle}` : '';
-    return `### ${entry.type}${source} (${entry.vpId || entry.role || 'unknown VP'})\n${entry.summary || '(no summary)'}${decision}${waitingReason}${answer}${evidence}`;
+    return `### ${entry.type}${source} (${entry.vpId || entry.role || 'unknown VP'})\n${entry.summary || '(no summary)'}${decision}${waitingReason}${answer}${quote}${evidence}`;
   });
   return `\n\nReusable Work Center context and prior Action results:\n${blocks.join('\n\n')}`;
 }
