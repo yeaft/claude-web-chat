@@ -21,6 +21,38 @@ test.describe('侧边栏交互', () => {
     await expect(sidebar).not.toHaveClass(/collapsed/);
   });
 
+  test.describe('coarse pointer controls', () => {
+    test.use({
+      viewport: { width: 375, height: 667 },
+      hasTouch: true,
+      isMobile: true,
+    });
+
+    test('触屏设备保持 section 展开图标可见且可交互', async ({ page, serverUrl, mockAgent }) => {
+      await page.goto(serverUrl);
+      await page.waitForSelector('.chat-page', { timeout: 10000 });
+      await page.waitForFunction(agentId => {
+        const store = window.Pinia?.useChatStore?.();
+        return (store?.agents || []).some(agent => agent.id === agentId
+          && agent.online === true
+          && agent.status === 'ready');
+      }, mockAgent.agentId, { timeout: 10000 });
+
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+      expect(page.viewportSize()).toEqual({ width: 375, height: 667 });
+      const chevrons = page.locator('.sidebar-section-chevron');
+      await expect(chevrons).toHaveCount(2);
+      const computedStyles = await chevrons.evaluateAll(elements => elements.map(element => {
+        const style = getComputedStyle(element);
+        return { opacity: style.opacity, pointerEvents: style.pointerEvents };
+      }));
+      expect(computedStyles).toEqual([
+        { opacity: '1', pointerEvents: 'auto' },
+        { opacity: '1', pointerEvents: 'auto' },
+      ]);
+    });
+  });
+
   test('新建聊天使用留白编辑图标，项目创建按钮仅在标题交互时显示', async ({ chatPage, mockAgent }) => {
     await chatPage.evaluate(({ agentId }) => {
       window.Pinia.useChatStore().applySessionCatalogSnapshot([{
