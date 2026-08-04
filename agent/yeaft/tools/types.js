@@ -69,6 +69,7 @@
  * @property {(input?: object) => boolean} [isConcurrencySafe] — can run in parallel?
  * @property {(input?: object) => boolean} [isReadOnly] — read-only operation?
  * @property {boolean | ((input?: object) => boolean)} [cacheWithinQuery] — explicitly safe to reuse for identical calls in one query
+ * @property {boolean | ((input?: object) => boolean)} [mayMutateWorkspaceAfterReturn] — may keep changing the workspace after execute() resolves; disables same-query read reuse
  * @property {(input?: object) => boolean} [isDestructive] — destructive operation?
  * @property {'json-error-envelope' | null} [errorOutput] — explicit returned-output error contract; null means only thrown errors fail
  * @property {'external' | 'run'} [sideEffectScope] — whether mutations escape the current Run collector
@@ -85,6 +86,7 @@
  *   isConcurrencySafe?: (input?: object) => boolean,
  *   isReadOnly?: (input?: object) => boolean,
  *   cacheWithinQuery?: boolean | ((input?: object) => boolean),
+ *   mayMutateWorkspaceAfterReturn?: boolean | ((input?: object) => boolean),
  *   isDestructive?: (input?: object) => boolean,
  *   errorOutput?: 'json-error-envelope' | null,
  *   sideEffectScope?: 'external' | 'run',
@@ -101,6 +103,7 @@ export function defineTool({
   isConcurrencySafe = () => false,
   isReadOnly = () => false,
   cacheWithinQuery = false,
+  mayMutateWorkspaceAfterReturn = false,
   isDestructive = () => false,
   errorOutput = 'json-error-envelope',
   sideEffectScope = 'external',
@@ -117,6 +120,7 @@ export function defineTool({
     isConcurrencySafe,
     isReadOnly,
     cacheWithinQuery,
+    mayMutateWorkspaceAfterReturn,
     isDestructive,
     errorOutput,
     sideEffectScope,

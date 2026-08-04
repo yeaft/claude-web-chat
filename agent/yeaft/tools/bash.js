@@ -171,6 +171,10 @@ Guidelines:
   timeoutMs: 0,
   isConcurrencySafe: () => false,
   isReadOnly: () => false,
+  // A detached shell task can write after this tool has returned. Once one is
+  // launched, same-query filesystem reads must execute instead of reusing a
+  // snapshot captured before the task's eventual mutation.
+  mayMutateWorkspaceAfterReturn: input => input?.background === true,
   isDestructive: (input) => {
     if (!input?.command) return false;
     const cmd = input.command.toLowerCase();

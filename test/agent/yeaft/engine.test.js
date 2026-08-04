@@ -2573,6 +2573,99 @@ describe('Engine', () => {
       }
     });
 
+    it('does not reuse reads after a background Bash task mutates the workspace', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-background-'));
+      const yeaftDir = join(workDir, '.yeaft');
+      const sessionId = 'session-background-read-cache';
+      const filePath = join(workDir, 'state.txt');
+      const releasePath = join(workDir, 'release');
+      const taskManager = new TaskManager({ yeaftDir });
+      let backgroundTaskId = null;
+      writeFileSync(filePath, 'before');
+      try {
+        const waitForReleaseScript = [
+          "const fs = require('fs');",
+          'const [releasePath, filePath] = process.argv.slice(1);',
+          'const timer = setInterval(() => {',
+          '  if (!fs.existsSync(releasePath)) return;',
+          '  clearInterval(timer);',
+          "  fs.writeFileSync(filePath, 'after');",
+          '}, 5);',
+        ].join(' ');
+        const backgroundCommand = process.platform === 'win32'
+          ? `& ${JSON.stringify(process.execPath)} -e ${JSON.stringify(waitForReleaseScript)} ${JSON.stringify(releasePath)} ${JSON.stringify(filePath)}`
+          : `${JSON.stringify(process.execPath)} -e ${JSON.stringify(waitForReleaseScript)} ${JSON.stringify(releasePath)} ${JSON.stringify(filePath)}`;
+        const baseStream = mockAdapter.stream.bind(mockAdapter);
+        let streamCalls = 0;
+        mockAdapter.stream = async function* streamAfterBackgroundWrite(params) {
+          streamCalls += 1;
+          if (streamCalls === 2) {
+            const task = taskManager.listActiveTasks(sessionId).find(item => item.kind === 'shell');
+            if (!task) throw new Error('background shell task did not start');
+            backgroundTaskId = task.id;
+            writeFileSync(releasePath, 'go');
+            const deadline = Date.now() + 2_000;
+            while (taskManager.getTask(sessionId, backgroundTaskId)?.status === 'running' && Date.now() < deadline) {
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            const completed = taskManager.getTask(sessionId, backgroundTaskId);
+            if (completed?.status !== 'succeeded') {
+              throw new Error(`background shell task did not complete successfully: ${completed?.status || 'missing'}`);
+            }
+          }
+          yield* baseStream(params);
+        };
+
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'start-background-write', name: 'Bash', input: {
+            command: backgroundCommand,
+            background: true,
+            taskTitle: 'Write state after release',
+          } },
+          { type: 'tool_call', id: 'read-before-release', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-background-write', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const registry = new ToolRegistry();
+        registry.register(bashTool).register(fileReadTool).register(fileWriteTool);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: registry,
+          taskManager,
+          sessionId,
+        });
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'update and reread the file', workDir })) events.push(event);
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        expect(backgroundTaskId).toBeTruthy();
+        expect(toolEnds.find(event => event.id === 'read-before-release')?.output).toContain('before');
+        expect(toolStarts.find(event => event.id === 'read-after-background-write')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-background-write')?.output).toContain('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+        expect(taskManager.getTask(sessionId, backgroundTaskId)?.status).toBe('succeeded');
+      } finally {
+        if (!existsSync(releasePath)) writeFileSync(releasePath, 'go');
+        const task = backgroundTaskId
+          ? taskManager.getTask(sessionId, backgroundTaskId)
+          : taskManager.listActiveTasks(sessionId).find(item => item.kind === 'shell');
+        if (task?.status === 'running') taskManager.cancelTask(sessionId, task.id);
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
     it('executes the complete tool batch before appending live user input', async () => {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'Searching both...' },

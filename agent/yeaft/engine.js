@@ -111,6 +111,15 @@ function isCacheableTool(engine, name, input) {
   }
 }
 
+function mayMutateWorkspaceAfterReturn(engine, name, input) {
+  try {
+    const value = toolDefinitionFor(engine, name)?.mayMutateWorkspaceAfterReturn;
+    return typeof value === 'function' ? value(input) === true : value === true;
+  } catch {
+    return true;
+  }
+}
+
 // ─── LLM retry policy defaults ──────────────────────────────────
 // Hard-coded floor / ceiling for retry behaviour. The engine reads the
 // effective policy from `config.llmRetry` so users can dial these via
@@ -2150,8 +2159,12 @@ export class Engine {
     // Exact read-only tool results are safe to reuse within one query only
     // when no intervening mutation can have changed the workspace. The map is
     // intentionally local to this query; cross-turn reuse belongs to the
-    // persistent tool log and must not silently bypass new user work.
+    // persistent tool log and must not silently bypass new user work. A
+    // detached operation can mutate after its tool call returns, so it disables
+    // reuse for the remainder of this query rather than leaving a timing window
+    // for stale entries to be repopulated.
     const readOnlyToolResults = new Map();
+    let readOnlyToolReuseDisabled = false;
 
     // Durability boundary: a valid user turn must exist on disk before any
     // memory pre-flow or provider request can fail. The Web Session bridge
@@ -3907,10 +3920,16 @@ export class Engine {
           cacheableTool = isCacheableTool(this, tc.name, tc.input);
           // The cache is only valid while the workspace has not changed. Clear
           // it before every potential mutation, including a tool that later
-          // reports or throws an error after making a partial change.
+          // reports or throws an error after making a partial change. Detached
+          // operations can still mutate after returning, so disable reuse for
+          // the rest of this query instead of allowing stale entries to refill.
           if (!readOnlyTool) readOnlyToolResults.clear();
+          if (mayMutateWorkspaceAfterReturn(this, tc.name, tc.input)) {
+            readOnlyToolResults.clear();
+            readOnlyToolReuseDisabled = true;
+          }
           const cachedReadOnly = readOnlyToolResults.get(duplicateKey);
-          if (cachedReadOnly && cacheableTool) {
+          if (!readOnlyToolReuseDisabled && cachedReadOnly && cacheableTool) {
             output = cachedReadOnly.output;
             isError = Boolean(cachedReadOnly.isError);
             reusedReadOnlyResult = true;
@@ -4039,7 +4058,7 @@ export class Engine {
         if (!skipped && !reusedReadOnlyResult && tc.name === 'StartPlan') {
           planBootstrapPending = true;
         }
-        if (!skipped && !reusedReadOnlyResult && cacheableTool) {
+        if (!skipped && !reusedReadOnlyResult && !readOnlyToolReuseDisabled && cacheableTool) {
           readOnlyToolResults.set(duplicateKey, {
             output,
             isError,
