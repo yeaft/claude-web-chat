@@ -10,6 +10,7 @@ import {
   verifyConversationOwnership,
 } from '../../server/ws-utils.js';
 import { handleAgentOutput } from '../../server/handlers/agent-output.js';
+import { handleAgentConversation } from '../../server/handlers/agent-conversation.js';
 import { handleClientConversation } from '../../server/handlers/client-conversation.js';
 import { routeSessionPin } from '../../server/handlers/session-pin-router.js';
 
@@ -107,6 +108,57 @@ describe('resolveAgentAccessError', () => {
       } finally {
         sessionDb.get = getSession;
         sessionDb.hasOwnedRoute = hasOwnedRoute;
+      }
+
+      const deletedChatId = `agent-delete-${Date.now()}-${Math.random()}`;
+      const deletedChatRow = {
+        id: deletedChatId,
+        user_id: 'user-1',
+        agent_id: 'agent-owned',
+        provider: 'copilot',
+      };
+      const deleteAgent = {
+        ownerId: 'user-1',
+        conversations: new Map([[deletedChatId, { id: deletedChatId, userId: 'user-1' }]]),
+      };
+      const originalGet = sessionDb.get;
+      const originalSetActive = sessionDb.setActive;
+      const originalDeleteForRoute = sessionUiMetadataDb.deleteForRoute;
+      const deletionCalls = [];
+      sessionDb.get = id => id === deletedChatId ? deletedChatRow : originalGet(id);
+      sessionDb.setActive = (id, active) => deletionCalls.push(['active', id, active]);
+      sessionUiMetadataDb.deleteForRoute = (userId, route) => deletionCalls.push(['metadata', userId, route]);
+      try {
+        await handleAgentConversation('agent-owned', deleteAgent, {
+          type: 'conversation_deleted',
+          conversationId: deletedChatId,
+          // Agent payload identity must never control the cleanup target.
+          userId: 'user-2',
+          provider: 'claude-code',
+        });
+        expect(deletionCalls).toEqual([
+          ['active', deletedChatId, false],
+          ['metadata', 'user-1', {
+            runtimeProvider: 'copilot',
+            agentId: 'agent-owned',
+            sessionId: deletedChatId,
+          }],
+        ]);
+
+        const staleAgent = {
+          ownerId: 'user-1',
+          conversations: new Map([[deletedChatId, { id: deletedChatId, userId: 'user-1' }]]),
+        };
+        deletionCalls.length = 0;
+        await handleAgentConversation('agent-stale', staleAgent, {
+          type: 'conversation_deleted',
+          conversationId: deletedChatId,
+        });
+        expect(deletionCalls).toEqual([['active', deletedChatId, false]]);
+      } finally {
+        sessionDb.get = originalGet;
+        sessionDb.setActive = originalSetActive;
+        sessionUiMetadataDb.deleteForRoute = originalDeleteForRoute;
       }
     } finally {
       sessionDb.getActiveByUser = getActive;
