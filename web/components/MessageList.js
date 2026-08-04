@@ -13,7 +13,10 @@ import ReflectionCard from './ReflectionCard.js';
 import SubAgentCard from './SubAgentCard.js';
 import UserTurnBlock from './UserTurnBlock.js';
 import VirtualTranscript from './VirtualTranscript.js';
-import { shouldCloseYeaftVpTurn } from '../stores/helpers/yeaft-turn-boundary.js';
+import {
+  orderYeaftVpTurnMessagesByExecution,
+  shouldCloseYeaftVpTurn,
+} from '../stores/helpers/yeaft-turn-boundary.js';
 import {
   estimateVirtualItemHeight,
   historyPrefetchThreshold,
@@ -958,7 +961,9 @@ export default {
 
     // Turn aggregation: group flat messages into turn groups
     const turnGroups = Vue.computed(() => {
-      const messages = store.messages;
+      const messages = store.currentView === 'yeaft'
+        ? orderYeaftVpTurnMessagesByExecution(store.messages)
+        : store.messages;
       const result = [];
       let currentTurn = null;
 

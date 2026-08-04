@@ -1466,7 +1466,7 @@ export class Engine {
     return Boolean(this.#conversationStore) && !this.#config._readOnly;
   }
 
-  #conversationRecord(message, { sessionId, turnId, model, incomplete = false, stopReason = null } = {}) {
+  #conversationRecord(message, { sessionId, turnId, model, incomplete = false, stopReason = null, executionOrigin = null } = {}) {
     const record = {
       role: message.role,
       content: typeof message.content === 'string'
@@ -1492,6 +1492,9 @@ export class Engine {
       record.foldedMessageIds = [...message.foldedMessageIds];
     }
     if (turnId && (message.role === 'assistant' || message.role === 'tool')) record.turnId = turnId;
+    if (executionOrigin === 'route_forward' && (message.role === 'assistant' || message.role === 'tool')) {
+      record.executionOrigin = executionOrigin;
+    }
     if (this.#vpId && (message.role === 'assistant' || message.role === 'tool')) record.speakerVpId = this.#vpId;
     if (incomplete) record.incomplete = true;
     if (stopReason) record.stopReason = stopReason;
@@ -2064,6 +2067,9 @@ export class Engine {
     const runtimeThreadId = (typeof threadId === 'string' && threadId.trim())
       ? threadId.trim()
       : MAIN_THREAD_ID;
+    const executionOrigin = inboundEnvelope?.msg?.meta?.injectedBy === 'route_forward'
+      ? 'route_forward'
+      : null;
     const queryTurnId = randomUUID();
     const queryStartedAt = Date.now();
     const userQuestionPreview = String(prompt || '').slice(0, 200);
@@ -2561,6 +2567,7 @@ export class Engine {
           model: currentModel,
           incomplete: true,
           stopReason: reason,
+          executionOrigin,
         });
       };
       const toolCalls = [];
@@ -3309,6 +3316,7 @@ export class Engine {
         sessionId: runtimeSessionId,
         turnId: vpTurnId || queryTurnId,
         model: currentModel,
+        executionOrigin,
       });
       if (persistedAssistantMessage) {
         assistantMsg._persistedMessageId = persistedAssistantMessage.id;
@@ -3609,6 +3617,7 @@ export class Engine {
               count: pairs.length,
               originalUserMsg: prompt,
               originatingTurnId: queryTurnId,
+              executionOrigin,
               ready: false,
               result: null,
               error: null,
@@ -3895,6 +3904,7 @@ export class Engine {
           sessionId: runtimeSessionId,
           turnId: vpTurnId || queryTurnId,
           model: currentModel,
+          executionOrigin,
         });
         if (persistedToolMessage) {
           toolMessage._persistedMessageId = persistedToolMessage.id;
@@ -4032,7 +4042,7 @@ export class Engine {
             batchStart,
             batchEnd,
             reflectionMessage,
-            { sessionId: runtimeSessionId, model: currentModel },
+            { sessionId: runtimeSessionId, model: currentModel, executionOrigin },
           );
           if (durableRowsInRange && !persistedReflection) {
             throw new Error('T1 reflection could not publish its durable range replacement');
@@ -4225,7 +4235,10 @@ export class Engine {
         startIdx,
         endIdx,
         reflectionMessage,
-        context,
+        {
+          ...context,
+          executionOrigin: info.executionOrigin === 'route_forward' ? 'route_forward' : null,
+        },
       );
       if (durableRowsInRange && !persistedReflection) continue;
       // Mutate in place so caller's reference stays valid.

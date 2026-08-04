@@ -86,7 +86,8 @@ export function extractPriorPlan(messages, vpId) {
 
 /**
  * Return a copy of the messages array with engine-private metadata stripped
- * from every message. The serialisers (anthropic/openai-responses) read this;
+ * from every message. This includes durable UI-only execution provenance.
+ * The serialisers (anthropic/openai-responses) read this;
  * these fields are NEVER part of the wire payload. Cheap because we only
  * shallow-clone the messages that actually have private fields.
  *
@@ -99,9 +100,17 @@ export function stripMetaForWire(messages) {
   const out = messages.map(m => {
     if (m && typeof m === 'object'
         && ('_meta' in m || '_runtimeTurnId' in m || '_partialTurn' in m
-          || '_persistedMessageId' in m || 'userAuthored' in m)) {
+          || '_persistedMessageId' in m || 'userAuthored' in m || 'executionOrigin' in m)) {
       mutated = true;
-      const { _meta, _runtimeTurnId, _partialTurn, _persistedMessageId, userAuthored, ...rest } = m;
+      const {
+        _meta,
+        _runtimeTurnId,
+        _partialTurn,
+        _persistedMessageId,
+        userAuthored,
+        executionOrigin,
+        ...rest
+      } = m;
       return rest;
     }
     return m;

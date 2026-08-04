@@ -173,7 +173,10 @@ function mountPage({ renderComposer = false } = {}) {
     MessageItem: { template: '<span class="message-item-stub"></span>' },
     UserTurnBlock: { template: '<span class="user-turn-stub"></span>' },
     AssistantTurn: { template: '<span class="assistant-turn-stub"></span>' },
-    VpTurnBlock: { template: '<span class="vp-turn-stub"></span>' },
+    VpTurnBlock: {
+      props: ['turn'],
+      template: '<span class="vp-turn-stub" :data-vp-id="turn.speakerVpId" :data-turn-id="turn.turnId" :data-message-count="turn.messages.length">{{ turn.textContent }}</span>',
+    },
     VpSpeakerHeader: true,
     ReflectionCard: true,
     SubAgentCard: true,
@@ -359,6 +362,70 @@ describe('Yeaft history result rendered reveal', () => {
     expect(after[0]).toBe('block_m49');
     expect(after.slice(1)).toEqual(before.slice(0, after.length - 1));
     wrapper.unmount();
+  });
+
+  async function expectInterleavedVpExecutionBlocks({ isHistory }) {
+    const history = isHistory ? { isHistory: true } : {};
+    const store = primeStore();
+    store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')] = { visibleTurns: 20 };
+    store.messagesMap['conv-a'] = [
+      { id: 'u1', type: 'user', content: '@martin @grace inspect', sessionId: 'same', timestamp: 1 },
+      { id: 'grace-plan', type: 'tool-use', toolName: 'StartPlan', sessionId: 'same', speakerVpId: 'grace', turnId: 'turn-grace-1', timestamp: 2, ...history },
+      { id: 'martin-plan', type: 'tool-use', toolName: 'StartPlan', sessionId: 'same', speakerVpId: 'martin', turnId: 'turn-martin-1', timestamp: 3, ...history },
+    ];
+
+    const wrapper = mountPage();
+    const readTurns = () => wrapper.findAll('.vp-turn-stub').map(row => ({
+      vpId: row.attributes('data-vp-id'),
+      turnId: row.attributes('data-turn-id'),
+      messageCount: Number(row.attributes('data-message-count')),
+      text: row.text(),
+    }));
+    await flushPromises();
+    await Vue.nextTick();
+    expect(readTurns()).toHaveLength(2);
+
+    store.messagesMap['conv-a'].push(
+      { id: 'grace-text', type: 'assistant', content: 'Grace result', sessionId: 'same', speakerVpId: 'grace', turnId: 'turn-grace-1', status: 'completed', timestamp: 4, ...history },
+      { id: 'grace-route', type: 'tool-use', toolName: 'RouteForward', toolInput: { to: 'martin', text: 'Continue the review' }, sessionId: 'same', speakerVpId: 'grace', turnId: 'turn-grace-1', timestamp: 5, ...history },
+      { id: 'martin-text', type: 'assistant', content: 'Martin result', sessionId: 'same', speakerVpId: 'martin', turnId: 'turn-martin-1', status: 'completed', timestamp: 6, ...history },
+    );
+    await flushPromises();
+    await Vue.nextTick();
+    expect(readTurns()).toEqual([
+      { vpId: 'grace', turnId: 'turn-grace-1', messageCount: 3, text: 'Grace result' },
+      { vpId: 'martin', turnId: 'turn-martin-1', messageCount: 2, text: 'Martin result' },
+    ]);
+
+    store.messagesMap['conv-a'].push(
+      {
+        id: 'martin-handoff',
+        type: 'assistant',
+        content: 'Martin follow-up',
+        sessionId: 'same',
+        speakerVpId: 'martin',
+        turnId: 'turn-martin-2',
+        status: 'completed',
+        timestamp: 7,
+        ...(isHistory ? { isHistory: true, executionOrigin: 'route_forward' } : {}),
+      },
+    );
+    await flushPromises();
+    await Vue.nextTick();
+    expect(readTurns()).toEqual([
+      { vpId: 'grace', turnId: 'turn-grace-1', messageCount: 3, text: 'Grace result' },
+      { vpId: 'martin', turnId: 'turn-martin-1', messageCount: 2, text: 'Martin result' },
+      { vpId: 'martin', turnId: 'turn-martin-2', messageCount: 1, text: 'Martin follow-up' },
+    ]);
+    wrapper.unmount();
+  }
+
+  historyScenario('keeps interleaved live fan-out frames in one block per VP execution and splits a later handoff', async () => {
+    await expectInterleavedVpExecutionBlocks({ isHistory: false });
+  });
+
+  historyScenario('keeps interleaved history frames in one block per VP execution and splits a later handoff', async () => {
+    await expectInterleavedVpExecutionBlocks({ isHistory: true });
   });
 
   it('opens composer model menus through real hover, focus, and touch-style click events', async () => {

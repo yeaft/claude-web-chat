@@ -1124,7 +1124,12 @@ describe('Engine', () => {
         messages: [
           { role: 'user', content: 'Original question' },
           { role: 'assistant', content: 'I found the relevant state boundary.', responseKind: 'progress' },
-          { role: 'assistant', content: 'The previous turn completed.', responseKind: 'result' },
+          {
+            role: 'assistant',
+            content: 'The previous turn completed.',
+            responseKind: 'result',
+            executionOrigin: 'route_forward',
+          },
         ],
       })) {
         // consume
@@ -1176,6 +1181,57 @@ describe('Engine', () => {
       }
     });
 
+    it('persists RouteForward execution origin on assistant and tool rows', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-route-origin-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const adapter = new MockAdapter();
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'handoff work' },
+          { type: 'tool_call', id: 'call_route_origin', name: 'route_origin_tool', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'handoff complete' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+          vpId: 'vp-martin',
+        });
+        engine.registerTool({
+          name: 'route_origin_tool',
+          description: 'returns a durable result',
+          parameters: { type: 'object', properties: {} },
+          execute: async () => 'tool result',
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'Continue the review',
+          sessionId: 'session-route-origin',
+          vpTurnId: 'vp-turn-route-origin',
+          inboundEnvelope: { msg: { meta: { injectedBy: 'route_forward' } } },
+        })) {
+          // consume
+        }
+
+        const rows = conversationStore.loadRecentBySession('session-route-origin', 10)
+          .filter(message => message.role === 'assistant' || message.role === 'tool');
+        expect(rows).toHaveLength(3);
+        expect(rows).toEqual(rows.map(row => expect.objectContaining({
+          turnId: 'vp-turn-route-origin',
+          speakerVpId: 'vp-martin',
+          executionOrigin: 'route_forward',
+        })));
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
     it('persists partial assistant text when the provider fails mid-stream', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-partial-persist-'));
       try {
@@ -1203,7 +1259,8 @@ describe('Engine', () => {
           // consume
         }
 
-        expect(conversationStore.loadRecentBySession('session-partial', 10)).toEqual([
+        const persisted = conversationStore.loadRecentBySession('session-partial', 10);
+        expect(persisted).toEqual([
           expect.objectContaining({ role: 'user', content: 'hello' }),
           expect.objectContaining({
             role: 'assistant',
@@ -1215,6 +1272,7 @@ describe('Engine', () => {
             responseKind: 'progress',
           }),
         ]);
+        expect(persisted[1]).not.toHaveProperty('executionOrigin');
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });
       }
