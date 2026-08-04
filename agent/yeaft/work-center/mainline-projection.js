@@ -4,6 +4,7 @@ import {
   eventMatchesActionGeneration,
   runMatchesActionIdentity,
 } from './action-identity.js';
+import { sessionMessageQuotePrompt } from '../session-message-quote.js';
 import { normalizeSessionContextSnapshot } from './session-context.js';
 
 export const MAINLINE_CONTEXT_HARD_LIMIT_BYTES = 64 * 1024;
@@ -11,6 +12,7 @@ export const MAINLINE_CONTEXT_TARGET_MIN_BYTES = 16 * 1024;
 export const MAINLINE_CONTEXT_TARGET_MAX_BYTES = 32 * 1024;
 export const MAINLINE_DYNAMIC_CONTEXT_MIN_BYTES = 4 * 1024;
 export const MAINLINE_DYNAMIC_CONTEXT_MAX_BYTES = 16 * 1024;
+const MAINLINE_QUOTE_TARGET_BYTES = 8 * 1024;
 
 const TERMINAL_RUN_STATUSES = new Set([
   'completed', 'failed', 'waiting', 'cancelled', 'interrupted', 'retryable', 'superseded',
@@ -74,8 +76,39 @@ function inputEventView(event) {
     inputId: event.data?.inputId || null,
     actionId: event.actionId || null,
     text: event.data?.text || '',
+    quote: event.data?.quote || null,
     attachments: Array.isArray(event.data?.attachments) ? event.data.attachments : [],
   };
+}
+
+function inputContextView(value, event, fallbackInputId) {
+  return {
+    eventId: event?.id ?? null,
+    inputId: value.inputId || event?.data?.inputId || fallbackInputId,
+    actionId: value.actionId || event?.actionId || null,
+    text: value.text || '',
+    quote: value.quote || event?.data?.quote || null,
+    attachments: Array.isArray(value.attachments)
+      ? value.attachments
+      : Array.isArray(event?.data?.attachments) ? event.data.attachments : [],
+  };
+}
+
+function requiredGuidanceValue(value) {
+  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'quote'));
+}
+
+function guidanceQuoteValue(snapshot, guidanceIndex, quote, limitBytes) {
+  if (!quote) return null;
+  const availableBytes = Math.min(
+    MAINLINE_QUOTE_TARGET_BYTES,
+    Math.max(0, limitBytes - renderedContextBytes(snapshot)),
+  );
+  const quotedContext = sessionMessageQuotePrompt(quote, { maxBytes: availableBytes });
+  if (!quotedContext) return null;
+  const values = [...snapshot.userContext.guidance];
+  values[guidanceIndex] = { ...values[guidanceIndex], quotedContext };
+  return { ...snapshot.userContext, guidance: values };
 }
 
 function canonicalActionUserContext(events, action) {
@@ -100,15 +133,12 @@ function canonicalActionUserContext(events, action) {
         && candidate.type === 'action.guidance_added'
         && (candidate.data?.guidance || '') === entry.summary) || null;
       if (event) usedEventIds.add(event.id);
-      return [{
-        eventId: event?.id ?? null,
+      return [inputContextView({
         inputId: null,
         actionId: action.id,
         text: entry.summary,
-        attachments: Array.isArray(entry.attachments)
-          ? entry.attachments
-          : Array.isArray(event?.data?.attachments) ? event.data.attachments : [],
-      }];
+        attachments: entry.attachments,
+      }, event, null)];
     }
     let event = entry.inputId ? eventByInputId.get(entry.inputId) : null;
     if (!event && typeof entry.inputId === 'string' && entry.inputId.startsWith('legacy-event:')) {
@@ -121,15 +151,13 @@ function canonicalActionUserContext(events, action) {
     }
     if (!entry.inputId && !event) return [];
     if (event) usedEventIds.add(event.id);
-    return [{
-      eventId: event?.id ?? null,
-      inputId: entry.inputId || event?.data?.inputId || `legacy-context:${index}`,
+    return [inputContextView({
+      inputId: entry.inputId,
       actionId: action.id,
       text: entry.summary,
-      attachments: Array.isArray(entry.attachments)
-        ? entry.attachments
-        : Array.isArray(event?.data?.attachments) ? event.data.attachments : [],
-    }];
+      quote: entry.quote,
+      attachments: entry.attachments,
+    }, event, `legacy-context:${index}`)];
   });
   return { values, usedEventIds, validInputEventIds };
 }
@@ -152,6 +180,7 @@ function guidanceView(events, action) {
           inputId: null,
           actionId: event.actionId || null,
           text: event.data?.guidance || '',
+          quote: null,
           attachments: Array.isArray(event.data?.attachments) ? event.data.attachments : [],
         });
   return [...canonicalEntries.values, ...currentEvents];
@@ -316,29 +345,77 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
     budget.dynamicMaxBytes,
   ));
   const selectedLimit = Math.min(effectiveHardLimitBytes, pinnedBytes + dynamicBudgetBytes);
-  const trySet = (key, value) => {
+  const setWithin = (limitBytes, key, value) => {
     const previous = snapshot[key];
     snapshot[key] = value;
-    if (renderedContextBytes(snapshot) <= selectedLimit) return true;
+    if (renderedContextBytes(snapshot) <= limitBytes) return true;
     snapshot[key] = previous;
     return false;
   };
+  const trySet = (key, value) => setWithin(selectedLimit, key, value);
   const sessionContext = normalizeSessionContextSnapshot(detail.sessionContext);
   const guidance = guidanceView(detail.events, action);
-  const otherUserEntries = [
-    ...guidance.map(value => ({ kind: 'guidance', value })),
+  const requiredInputIndex = guidance.length > 0 ? guidance.length - 1 : -1;
+  const requiredInput = requiredInputIndex >= 0 ? guidance[requiredInputIndex] : null;
+  const requiredInputValue = requiredInput ? requiredGuidanceValue(requiredInput) : null;
+  let requiredQuote = null;
+  if (requiredInputValue) {
+    const required = {
+      ...snapshot.userContext,
+      guidance: [requiredInputValue],
+      includedCount: 1,
+      omittedCount: 0,
+    };
+    if (!setWithin(effectiveHardLimitBytes, 'userContext', required)) {
+      throw mainlineContextBlocked('Latest Action input exceeds the 64 KiB Mainline prompt budget');
+    }
+    requiredQuote = guidanceQuoteValue(
+      snapshot,
+      0,
+      requiredInput.quote,
+      effectiveHardLimitBytes,
+    );
+  }
+
+  const olderUserEntries = [
+    ...guidance.filter((_, index) => index !== requiredInputIndex)
+      .map(value => ({ kind: 'guidance', value })),
     ...sessionContext.map(value => ({ kind: 'sessionContext', value })),
   ];
-  for (const entry of otherUserEntries) {
+  for (const entry of olderUserEntries) {
+    const requiredValue = entry.kind === 'guidance' ? requiredGuidanceValue(entry.value) : entry.value;
+    const values = entry.kind === 'guidance'
+      ? [...snapshot.userContext.guidance, requiredValue]
+      : [...snapshot.userContext[entry.kind], requiredValue];
     const next = {
       ...snapshot.userContext,
-      [entry.kind]: [...snapshot.userContext[entry.kind], entry.value],
+      [entry.kind]: values,
       includedCount: snapshot.userContext.includedCount + 1,
       omittedCount: 0,
     };
-    trySet('userContext', next);
+    if (!trySet('userContext', next)) continue;
+    if (entry.kind === 'guidance' && entry.value.quote) {
+      const quoted = guidanceQuoteValue(
+        snapshot,
+        Math.max(0, snapshot.userContext.guidance.length - 1),
+        entry.value.quote,
+        selectedLimit,
+      );
+      if (quoted) trySet('userContext', quoted);
+    }
   }
-  snapshot.userContext.omittedCount = otherUserEntries.length - snapshot.userContext.includedCount;
+  const userEntryCount = guidance.length + sessionContext.length;
+  snapshot.userContext.omittedCount = userEntryCount - snapshot.userContext.includedCount;
+  if (requiredQuote) setWithin(effectiveHardLimitBytes, 'userContext', {
+    ...requiredQuote,
+    omittedCount: snapshot.userContext.omittedCount,
+  });
+  snapshot.userContext.guidance.sort((left, right) => {
+    const rank = value => value.inputId == null
+      ? 1
+      : String(value.inputId).startsWith('rebound-') ? 2 : 0;
+    return rank(left) - rank(right) || count(left.eventId) - count(right.eventId);
+  });
 
   const siblingEntries = Object.entries(projection.canonicalActionResults)
     .filter(([actionId]) => actionId !== action.id && !dependencies.some(item => item.actionId === actionId))

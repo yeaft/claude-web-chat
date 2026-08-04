@@ -375,7 +375,7 @@ function carryCurrentActionInputContext(db, action, extraInputs = [], explicitOn
     }
     if (!event && !entry.inputId) {
       event = inputEvents.find(candidate => !usedEventIds.has(candidate.id)
-        && (candidate.data?.promptText || candidate.data?.text || '') === (entry.summary || '')) || null;
+        && (candidate.data?.text || '') === (entry.summary || '')) || null;
     }
     if (!entry.inputId && !event) return explicitOnly ? [entry] : [];
     const inputId = entry.inputId || event.data?.inputId || `legacy-event:${event.id}`;
@@ -385,6 +385,8 @@ function carryCurrentActionInputContext(db, action, extraInputs = [], explicitOn
     return [{
       ...entry,
       inputId,
+      summary: event?.data?.text || entry.summary || '',
+      quote: event?.data?.quote || entry.quote || null,
       attachments: Array.isArray(entry.attachments) && entry.attachments.length > 0
         ? entry.attachments
         : inputAttachments(event),
@@ -399,7 +401,8 @@ function carryCurrentActionInputContext(db, action, extraInputs = [], explicitOn
       type: 'input',
       role: 'user',
       inputId,
-      summary: event.data?.promptText || event.data?.text || '',
+      summary: event.data?.text || '',
+      quote: event.data?.quote || null,
       attachments: inputAttachments(event),
       evidence: [],
     });
@@ -600,7 +603,7 @@ function repairReviewBuildActionInputIdentity(db, now) {
           row.run_work_item_id === action.workItemId && row.run_action_id === action.id
         ));
       const sourceRunStopped = !row.run_id || (row.run_status && row.run_status !== 'running');
-      const eventText = event.data?.promptText || event.data?.text || '';
+      const eventText = event.data?.text || '';
       if (!sameOwner || !sourceRunStopped || (row.text || '') !== eventText) return [];
       const alreadyCurrent = currentEventIds.has(String(event.id))
         && Math.max(1, Number(row.action_generation) || 1) === action.generation
@@ -1755,7 +1758,7 @@ export class WorkItemStore {
     return true;
   }
 
-  addActionInput(id, input, expected, attachments = null, addedAttachments = [], clientMessageId = null, quote = null, promptText = input) {
+  addActionInput(id, input, expected, attachments = null, addedAttachments = [], clientMessageId = null, quote = null) {
     return withTransaction(this.db, () => {
       const sourceKey = typeof clientMessageId === 'string' && clientMessageId
         ? `client:message:${id}:${clientMessageId}` : null;
@@ -1817,7 +1820,8 @@ export class WorkItemStore {
           type: 'input',
           role: 'user',
           inputId,
-          summary: promptText,
+          summary: input,
+          quote,
           attachments: projectedAttachments,
           evidence: [],
         });
@@ -1871,7 +1875,6 @@ export class WorkItemStore {
         inputId,
         clientMessageId,
         text: input,
-        promptText,
         quote,
         attachments: projectedAttachments,
       }, { actionId: action.id, runId: eventRunId, actionGeneration: eventGeneration });
@@ -1886,7 +1889,7 @@ export class WorkItemStore {
           action.currentRunId,
           eventGeneration,
           eventSpecHash,
-          promptText,
+          input,
           stringify(projectedAttachments),
         );
         this.#appendActionEntry({
@@ -1896,9 +1899,9 @@ export class WorkItemStore {
           kind: 'message',
           role: 'user',
           status: 'pending',
-          text: promptText,
+          text: input,
           attachments: projectedAttachments,
-          payload: { eventId, inputId, actionGeneration: eventGeneration, actionSpecHash: eventSpecHash },
+          payload: { eventId, inputId, quote, actionGeneration: eventGeneration, actionSpecHash: eventSpecHash },
           createdAt: now,
         }, sourceKey || `pending_action_inputs:event:${eventId}`);
       } else if (sourceKey) {
@@ -1909,9 +1912,9 @@ export class WorkItemStore {
           kind: 'message',
           role: 'user',
           status: 'consumed',
-          text: promptText,
+          text: input,
           attachments: projectedAttachments,
-          payload: { eventId, inputId, actionGeneration: eventGeneration, actionSpecHash: eventSpecHash },
+          payload: { eventId, inputId, quote, actionGeneration: eventGeneration, actionSpecHash: eventSpecHash },
           createdAt: now,
         }, sourceKey);
       }
@@ -1922,8 +1925,8 @@ export class WorkItemStore {
   listPendingActionInputs(actionId, runId, ownerBootId, leaseEpoch) {
     const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
     if (!active || active.action_id !== actionId) return [];
-    return this.db.prepare(`SELECT p.*, ae.id AS action_entry_id, ae.sequence AS action_entry_sequence
-      FROM pending_action_inputs p
+    return this.db.prepare(`SELECT p.*, ae.id AS action_entry_id, ae.sequence AS action_entry_sequence,
+      ae.payload AS action_entry_payload FROM pending_action_inputs p
       LEFT JOIN action_entries ae ON CAST(json_extract(ae.payload, '$.eventId') AS INTEGER) = p.event_id
         AND ae.action_id = p.action_id
       WHERE p.action_id = ? AND p.run_id = ? AND p.action_generation = ? AND p.action_spec_hash = ?
@@ -1934,6 +1937,7 @@ export class WorkItemStore {
       actionEntryId: row.action_entry_id || null,
       sequence: row.action_entry_sequence == null ? null : Number(row.action_entry_sequence),
       text: row.text || '',
+      quote: parseJson(row.action_entry_payload, null)?.quote || null,
       attachments: parseJson(row.attachments, []),
     }));
   }

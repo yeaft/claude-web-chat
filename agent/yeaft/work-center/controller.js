@@ -10,7 +10,7 @@ import {
   RUN_OUTCOMES,
 } from './workflow.js';
 import { renderSessionContextSnapshot } from './session-context.js';
-import { normalizeSessionMessageQuote, sessionMessageQuotePrompt } from '../session-message-quote.js';
+import { normalizeSessionMessageQuote } from '../session-message-quote.js';
 import { normalizeEvidence } from './evidence.js';
 import { applyAdditivePlanProposal, applyReplanMutation } from './plan-mutation.js';
 import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
@@ -253,12 +253,11 @@ export class WorkflowController {
         throw new Error('Files cannot be added while an Action is running; send text now or wait for the next Action boundary');
       }
       const inputSummary = text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`;
-      const promptText = `${inputSummary}${sessionMessageQuotePrompt(quote)}`;
       return this.store.addActionInput(id, inputSummary, {
         actionId: input.actionId,
         generation: expectedGeneration,
         revision: input.revision,
-      }, input.attachments, input.addedAttachments, input.clientMessageId, quote, promptText);
+      }, input.attachments, input.addedAttachments, input.clientMessageId, quote);
     }
     if (!['waiting', 'failed'].includes(targetAction.status)) {
       throw new Error(`Action in ${targetAction.status} cannot accept input`);
@@ -273,7 +272,6 @@ export class WorkflowController {
         clientMessageId: input.clientMessageId || null,
         targetActionId: input.actionId,
         text: text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`,
-        promptText: `${text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`}${sessionMessageQuotePrompt(quote)}`,
         quote,
         attachments: input.addedAttachments,
       },
@@ -300,6 +298,7 @@ export class WorkflowController {
           answer: answer || (addedAttachmentCount > 0
             ? `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`
             : null),
+          quote: input.inputEvent?.quote || null,
         });
       }
       if (Number(workItem.executionSchemaVersion) === 2 && input.inputEvent?.inputId) {
@@ -307,7 +306,8 @@ export class WorkflowController {
           type: 'input',
           role: 'user',
           inputId: input.inputEvent.inputId,
-          summary: input.inputEvent.promptText || input.inputEvent.text || '',
+          summary: input.inputEvent.text || '',
+          quote: input.inputEvent.quote || null,
           attachments: Array.isArray(input.inputEvent.attachments) ? input.inputEvent.attachments : [],
           evidence: [],
         });

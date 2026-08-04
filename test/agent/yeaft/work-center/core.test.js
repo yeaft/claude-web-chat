@@ -43,7 +43,11 @@ import {
   projectWorkItemDetail,
   projectWorkItemSummary,
 } from '../../../../agent/yeaft/work-center/projection.js';
-import { buildMainlineContextSnapshot } from '../../../../agent/yeaft/work-center/mainline-projection.js';
+import {
+  MAINLINE_CONTEXT_HARD_LIMIT_BYTES,
+  buildMainlineContextSnapshot,
+  renderMainlineContextSnapshot,
+} from '../../../../agent/yeaft/work-center/mainline-projection.js';
 
 function createInput(overrides = {}) {
   return {
@@ -2023,10 +2027,11 @@ describe('Work Center core', () => {
       expect(actionConversationEvents.find(event => event.type === 'action.input_added')).toMatchObject({
         data: expect.objectContaining({
           text: 'Explain the blocker in plain language, then continue this review.',
-          promptText: expect.stringContaining('<quoted-message untrusted-reference="true">'),
           quote: expect.objectContaining({ content: 'The test budget still needs registration.' }),
         }),
       });
+      expect(actionConversationEvents.find(event => event.type === 'action.input_added').data)
+        .not.toHaveProperty('promptText');
       const projectedAction = projectWorkItemDetail(continuedAction).actions
         .find(action => action.id === actionConversation.review.action.id);
       expect(projectedAction.messages.find(message => message.role === 'user'))
@@ -3540,6 +3545,123 @@ describe('Work Center core', () => {
     }
   });
 
+
+  it('keeps Action input text across Mainline quote budgets, ordering, and schema-1 retry', () => {
+    {
+    const item = controller.create(createInput());
+    const action = store.getAction(item.currentActionId);
+    const answer = 'IMPORTANT USER ANSWER';
+    const quoteContent = '引用😀'.repeat(10_000);
+
+    const updated = controller.input(item.id, {
+      text: answer,
+      actionId: action.id,
+      generation: action.generation,
+      revision: item.revision,
+      clientMessageId: 'large-action-quote',
+      quote: {
+        id: 'quoted-assistant-message',
+        role: 'assistant',
+        author: 'Omni',
+        content: quoteContent,
+      },
+    });
+    const nextAction = updated.actions.find(candidate => candidate.id === action.id);
+    const built = buildMainlineContextSnapshot(updated, nextAction);
+    const rendered = renderMainlineContextSnapshot(built.contextSnapshot);
+    const guidance = built.contextSnapshot.userContext.guidance
+      .find(entry => entry.inputId && entry.text === answer);
+
+    expect(guidance).toMatchObject({ text: answer, quotedContext: expect.any(String) });
+    expect(guidance.quotedContext).toContain('<quoted-message untrusted-reference="true">');
+    expect(guidance.quotedContext).toContain('[quoted message truncated to fit the execution context budget]');
+    expect(Buffer.byteLength(guidance.quotedContext, 'utf8')).toBeLessThanOrEqual(8 * 1024);
+    expect(rendered).toContain(answer);
+    expect(rendered).not.toContain(quoteContent);
+    expect(built.contextSnapshot.userContext).toMatchObject({ includedCount: 1, omittedCount: 0 });
+    expect(built.budget.bytes).toBeLessThanOrEqual(MAINLINE_CONTEXT_HARD_LIMIT_BYTES);
+    expect(store.listActionEvents(action.id).find(event => event.type === 'action.input_added').data)
+      .not.toHaveProperty('promptText');
+    }
+
+    {
+    const item = controller.create(createInput());
+    const firstAction = store.getAction(item.currentActionId);
+    const older = controller.input(item.id, {
+      text: 'OLDER INPUT '.repeat(650),
+      actionId: firstAction.id,
+      generation: firstAction.generation,
+      revision: item.revision,
+      clientMessageId: 'older-large-input',
+    });
+    const currentAction = older.actions.find(candidate => candidate.id === firstAction.id);
+    const corrected = controller.input(item.id, {
+      text: 'LATEST USER CORRECTION',
+      actionId: currentAction.id,
+      generation: currentAction.generation,
+      revision: older.revision,
+      clientMessageId: 'latest-correction',
+      quote: { role: 'assistant', author: 'Reviewer', content: 'Q'.repeat(20_000) },
+    });
+    const correctedAction = corrected.actions.find(candidate => candidate.id === firstAction.id);
+    const built = buildMainlineContextSnapshot(corrected, correctedAction);
+    const rendered = renderMainlineContextSnapshot(built.contextSnapshot);
+
+    expect(rendered).toContain('LATEST USER CORRECTION');
+    expect(built.contextSnapshot.userContext.guidance
+      .find(entry => entry.text === 'LATEST USER CORRECTION'))
+      .toMatchObject({ text: 'LATEST USER CORRECTION' });
+    expect(built.budget.bytes).toBeLessThanOrEqual(MAINLINE_CONTEXT_HARD_LIMIT_BYTES);
+    }
+
+    {
+    const schemaOneDir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-schema-one-quote-'));
+    const schemaOneStore = new WorkItemStore(join(schemaOneDir, 'work-center.db'), { now: () => now });
+    const schemaOneController = new WorkflowController(schemaOneStore);
+    const item = schemaOneController.create(createInput());
+    schemaOneStore.db.prepare('UPDATE work_items SET execution_schema_version = 1 WHERE id = ?').run(item.id);
+    const claim = schemaOneStore.claimReadyAction('schema-1-waiting', 5_000);
+    const waiting = schemaOneController.submit(claim.run.id, 'schema-1-waiting', claim.run.leaseEpoch, {
+      outcome: 'waiting',
+      response: 'Need a decision.',
+      summary: 'Need a decision.',
+      evidence: [],
+      waitingReason: 'Choose a supported target.',
+    });
+    const waitingAction = waiting.actions.find(candidate => candidate.id === claim.action.id);
+
+    const retried = schemaOneController.input(item.id, {
+      text: 'Use the supported target.',
+      actionId: waitingAction.id,
+      generation: waitingAction.generation,
+      revision: waiting.revision,
+      clientMessageId: 'schema-1-quoted-retry',
+      quote: {
+        role: 'assistant',
+        author: 'Reviewer',
+        content: 'Only the supported target passed validation.'.repeat(1_000),
+      },
+    });
+    const replacement = retried.actions.find(action => action.status === 'ready');
+
+    expect(retried.executionSchemaVersion).toBe(1);
+    expect(replacement.instruction).toContain('User answer: Use the supported target.');
+    expect(replacement.instruction).toContain('<quoted-message untrusted-reference="true">');
+    expect(replacement.instruction).toContain('Only the supported target passed validation.');
+    expect(replacement.instruction).toContain('[quoted message truncated to fit the execution context budget]');
+    expect(replacement.instruction).not.toContain('Only the supported target passed validation.'.repeat(1_000));
+    expect(retried.events.find(event => event.type === 'action.input_added')).toMatchObject({
+      data: expect.objectContaining({
+        text: 'Use the supported target.',
+        quote: expect.objectContaining({
+          content: expect.stringContaining('Only the supported target passed validation.'),
+        }),
+      }),
+    });
+    schemaOneStore.close();
+    rmSync(schemaOneDir, { recursive: true, force: true });
+    }
+  });
 
   it('increments the v2 ledger for terminal Runs and fences canonical results', () => {
     for (const result of [

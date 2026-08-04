@@ -143,6 +143,22 @@ describe('Mainline projection', () => {
     ]);
     expect(JSON.stringify(snapshot)).not.toContain('Input for the superseded generation');
     expect(JSON.stringify(snapshot)).not.toContain('Legacy input without a generation');
+
+    const newestFirst = buildMainlineContextSnapshot(detail({
+      actions: [action],
+      events: [
+        {
+          id: 8, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+          data: { inputId: 'older-large', text: '旧'.repeat(8_000) },
+        },
+        {
+          id: 9, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+          data: { inputId: 'latest-correction', text: 'LATEST UTF8 CORRECTION' },
+        },
+      ],
+    }), { ...action, context: [] }).contextSnapshot;
+    expect(JSON.stringify(newestFirst)).toContain('LATEST UTF8 CORRECTION');
+    expect(JSON.stringify(newestFirst)).not.toContain('旧旧旧');
   });
 
   it('reserves final prompt wrapper bytes inside the 64 KiB hard limit', () => {

@@ -24,6 +24,7 @@ import {
   createSubmitWorkItemReplanTool,
   createWorkItemToolRegistry,
   parseStructuredResult,
+  renderPendingActionInput,
   workItemToolPolicySnapshot,
   resolveWorkItemWorkDir,
   WorkItemRunner,
@@ -446,7 +447,51 @@ describe('Work Center tool policy', () => {
     }, {})).rejects.toThrow(/background Bash/);
   });
 
+  const verifyRunningQuotedActionInput = () => {
+    const store = new WorkItemStore(join(workDir, 'running-quote.db'), { now: () => 1_000 });
+    const controller = new WorkflowController(store);
+    try {
+      const item = controller.create({
+        id: 'running-quoted-input',
+        title: 'Use a live correction',
+        goal: 'Deliver the latest user correction to the active executor',
+        acceptanceCriteria: ['The correction reaches the active executor'],
+        workflowTemplate: 'software-change',
+        workDir,
+        start: true,
+      });
+      const claim = store.claimReadyAction('running-quote-owner', 60_000);
+      controller.input(item.id, {
+        text: 'LATEST RUNNING CORRECTION',
+        actionId: claim.action.id,
+        generation: claim.action.generation,
+        revision: store.getWorkItem(item.id).revision,
+        clientMessageId: 'running-large-quote',
+        quote: { role: 'assistant', author: 'Reviewer', content: 'Q'.repeat(20_000) },
+      });
+
+      const pending = store.listPendingActionInputs(
+        claim.action.id,
+        claim.run.id,
+        'running-quote-owner',
+        claim.run.leaseEpoch,
+      );
+      const rendered = renderPendingActionInput(pending[0]);
+
+      expect(pending).toHaveLength(1);
+      expect(rendered).toContain('LATEST RUNNING CORRECTION');
+      expect(rendered).toContain('<quoted-message untrusted-reference="true">');
+      expect(rendered).toContain('[quoted message truncated to fit the execution context budget]');
+      expect(Buffer.byteLength(rendered, 'utf8')).toBeLessThanOrEqual(
+        Buffer.byteLength('LATEST RUNNING CORRECTION\n\n', 'utf8') + (8 * 1024),
+      );
+    } finally {
+      store.close();
+    }
+  };
+
   it('rejects lexical, patch, and symlink escapes', async () => {
+    verifyRunningQuotedActionInput();
     const registry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
     await expect(registry.execute('FileRead', { file_path: '../secret' }, {}))
       .rejects.toThrow(/escapes/);
@@ -460,10 +505,7 @@ describe('Work Center tool policy', () => {
     await expect(registry.execute('FileWrite', {
       file_path: join(safe, 'link', 'escaped.txt'), content: 'nope',
     }, {})).rejects.toThrow(/escapes/);
-  });
 
-  it('rejects dangling symlink targets before FileWrite or ApplyPatch can create external files', async () => {
-    const registry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
     const writeTarget = join(outsideDir, 'write-target.txt');
     const patchTarget = join(outsideDir, 'patch-target.txt');
     symlinkSync(writeTarget, join(workDir, 'write-link.txt'));
