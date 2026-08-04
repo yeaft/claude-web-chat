@@ -3709,6 +3709,59 @@ describe('Engine', () => {
         } finally {
           rmSync(retentionRoot, { recursive: true, force: true });
         }
+
+        const duplicateRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-legacy-duplicate-'));
+        try {
+          const sessionId = `${'d'.repeat(120)}TAIL`;
+          const currentRequests = join(duplicateRoot, 'sessions', sessionId, 'debug', 'requests');
+          const legacyRequests = join(duplicateRoot, 'sessions', sessionId.slice(0, 120), 'debug', 'requests');
+          const normalWriter = new DebugTrace(duplicateRoot);
+          for (let i = 1; i <= 9; i += 1) {
+            const id = `normal-${i}`;
+            const rowId = normalWriter.startTurn({ traceId: id, turnNumber: 1, sessionId });
+            normalWriter.endTurn(rowId, { responseText: id, stopReason: 'end_turn' });
+          }
+          await normalWriter.close();
+          const legacyRequestDir = join(legacyRequests, 'legacy-active-request');
+          mkdirSync(legacyRequestDir, { recursive: true });
+          writeFileSync(join(legacyRequestDir, 'trace.json'), JSON.stringify({
+            version: 2,
+            requestKey: 'legacy-active-request',
+            requestId: 'legacy-active-turn',
+            traceId: 'legacy-active-turn',
+            sessionId,
+            openedAt: Date.now(),
+            updatedAt: Date.now(),
+            active: true,
+            baseRequest: { systemPrompt: '', messages: [], rawRequest: null },
+            loops: [{ loopInstanceId: 'legacy-active-1', turnRowId: 'legacy-active-1', loopNumber: 1, response: 'legacy-active-1', requestDelta: { base: true, systemPrompt: '', messages: [] }, at: Date.now() }],
+            tools: [],
+          }), 'utf8');
+
+          const migrationWriter = new DebugTrace(duplicateRoot);
+          await migrationWriter.fetchTurnDebug({ sessionId, turnId: 'legacy-active-turn' });
+          const migratedTurn = migrationWriter.startTurn({ traceId: 'legacy-active-turn', turnNumber: 2, sessionId });
+          migrationWriter.endTurn(migratedTurn, { responseText: 'legacy-active-2', stopReason: 'tool_use' });
+          await migrationWriter.flush();
+          expect(readdirSync(currentRequests)).toHaveLength(10);
+          expect(readdirSync(legacyRequests)).toHaveLength(0);
+
+          // A later loop must keep using the same live request after retention.
+          const nextTurn = migrationWriter.startTurn({ traceId: 'legacy-active-turn', turnNumber: 3, sessionId });
+          migrationWriter.endTurn(nextTurn, { responseText: 'legacy-active-3', stopReason: 'end_turn' });
+          await migrationWriter.close();
+          expect(readdirSync(currentRequests)).toHaveLength(10);
+          const duplicateReader = new DebugTrace(duplicateRoot);
+          const migratedDetail = await duplicateReader.fetchTurnDebug({ sessionId, turnId: 'legacy-active-turn' });
+          expect(migratedDetail.loops.map(loop => loop.response)).toEqual([
+            'legacy-active-1',
+            'legacy-active-2',
+            'legacy-active-3',
+          ]);
+          await duplicateReader.close();
+        } finally {
+          rmSync(duplicateRoot, { recursive: true, force: true });
+        }
       } finally {
         await boundedTrace.close();
         rmSync(traceRoot, { recursive: true, force: true });

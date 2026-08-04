@@ -513,6 +513,7 @@ function serializableTraceMeta(trace) {
   const meta = { ...trace };
   delete meta._lastSnapshot;
   delete meta._persistedFormat;
+  delete meta._persistedRequestDir;
   delete meta.baseRequest;
   delete meta.loops;
   delete meta.tools;
@@ -558,9 +559,9 @@ async function readRequestDir(requestDir) {
   const meta = await readJson(requestMetaPath(requestDir));
   if (!meta?.requestId) {
     const legacy = await readJson(requestFilePath(requestDir));
-    return legacy ? { ...legacy, _persistedFormat: 'legacy' } : null;
+    return legacy ? { ...legacy, _persistedFormat: 'legacy', _persistedRequestDir: requestDir } : null;
   }
-  const trace = { ...meta, _persistedFormat: 'events', baseRequest: meta.legacyBaseRequest || null, loops: [], tools: [] };
+  const trace = { ...meta, _persistedFormat: 'events', _persistedRequestDir: requestDir, baseRequest: meta.legacyBaseRequest || null, loops: [], tools: [] };
   delete trace.legacyBaseRequest;
   const loopById = new Map();
   const toolById = new Map();
@@ -746,6 +747,30 @@ async function readTraceSummaries(rootDir, sessionId = null) {
   return traces;
 }
 
+async function readTraceIdentity(requestDir) {
+  const meta = await readJson(requestMetaPath(requestDir));
+  if (meta?.requestId) return meta;
+  return readJson(requestFilePath(requestDir));
+}
+
+function sameTraceIdentity(trace, expected) {
+  return !!trace && !!expected
+    && trace.sessionId === expected.sessionId
+    && trace.requestKey === expected.requestKey
+    && trace.requestId === expected.requestId;
+}
+
+async function removeRequestDirIfIdentityMatches(requestDir, expected) {
+  const identity = await readTraceIdentity(requestDir);
+  if (!sameTraceIdentity(identity, expected)) return false;
+  try {
+    await fsp.rm(requestDir, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function readTraceHeaders(rootDir, sessionId) {
   const traces = [];
   const requestDirs = sessionId == null
@@ -801,7 +826,7 @@ export class DebugTrace {
   #initializedRequestKeys = new Set();
   /** @type {Set<string>} */
   #reconciledRetentionSessions = new Set();
-  /** @type {Map<string, Map<string, { trace: object, requestDir: string, openedAt: number }>>} */
+  /** @type {Map<string, Map<string, { trace: object, requestDirs: Set<string>, openedAt: number }>>} */
   #retentionIndex = new Map();
   /** @type {NodeJS.Timeout|null} */
   #appendTimer = null;
@@ -1367,11 +1392,14 @@ export class DebugTrace {
       for (const [requestDir, batch] of batches) {
         const { trace, initialize, writeMeta } = batch;
         const lines = [...batch.lines];
+        const legacyRequestDir = trace._persistedFormat === 'legacy'
+          ? trace._persistedRequestDir || null
+          : null;
         try {
           const metaPath = requestMetaPath(requestDir);
           if (initialize) {
             const meta = serializableTraceMeta(trace);
-            if (trace._persistedFormat === 'legacy') {
+            if (legacyRequestDir) {
               meta.legacyBaseRequest = cloneJsonValue(trace.baseRequest);
               const legacyLines = [];
               for (const loop of Array.isArray(trace.loops) ? trace.loops : []) {
@@ -1392,8 +1420,12 @@ export class DebugTrace {
           const eventPath = requestEventsPath(requestDir);
           if (initialize) await prepareJsonlAppend(eventPath);
           await fsp.appendFile(eventPath, lines.join(''), 'utf8');
-          trace._persistedFormat = 'events';
           if (writeMeta) await atomicWriteText(metaPath, JSON.stringify(serializableTraceMeta(trace)));
+          trace._persistedFormat = 'events';
+          trace._persistedRequestDir = requestDir;
+          if (legacyRequestDir && legacyRequestDir !== requestDir) {
+            await removeRequestDirIfIdentityMatches(legacyRequestDir, trace);
+          }
         } catch (err) {
           console.warn('[Yeaft] debug trace append failed:', err?.message || err);
         }
@@ -1499,7 +1531,21 @@ export class DebugTrace {
     if (!this.#reconciledRetentionSessions.has(sessionKey)) {
       index = new Map();
       for (const item of await readTraceHeaders(this.#rootDir, sessionId)) {
-        index.set(item.requestDir, item);
+        const existing = index.get(item.trace.requestKey);
+        if (existing) {
+          existing.requestDirs.add(item.requestDir);
+          const currentDir = requestDirFor(this.#rootDir, sessionId, item.trace.requestKey);
+          if (item.requestDir === currentDir || existing.trace?._persistedFormat === 'legacy') {
+            existing.trace = item.trace;
+          }
+          existing.openedAt = Math.min(existing.openedAt, item.openedAt);
+        } else {
+          index.set(item.trace.requestKey, {
+            trace: item.trace,
+            requestDirs: new Set([item.requestDir]),
+            openedAt: item.openedAt,
+          });
+        }
       }
       this.#retentionIndex.set(sessionKey, index);
       this.#reconciledRetentionSessions.add(sessionKey);
@@ -1507,10 +1553,11 @@ export class DebugTrace {
     for (const trace of this.#requestCache.values()) {
       if ((trace.sessionId || null) !== sessionId) continue;
       const requestDir = requestDirFor(this.#rootDir, sessionId, trace.requestKey);
-      index.set(requestDir, {
+      const existing = index.get(trace.requestKey);
+      index.set(trace.requestKey, {
         trace,
-        requestDir,
-        openedAt: Number(trace.openedAt || 0),
+        requestDirs: new Set([...(existing?.requestDirs || []), requestDir]),
+        openedAt: Math.min(Number(trace.openedAt || 0), existing?.openedAt ?? Infinity),
       });
     }
     const traces = Array.from(index.values()).sort((a, b) => (
@@ -1524,9 +1571,10 @@ export class DebugTrace {
     for (const item of stale) {
       this.#requestCache.delete(item.trace.requestKey);
       this.#initializedRequestKeys.delete(item.trace.requestKey);
-      index.delete(item.requestDir);
-      try { await fsp.rm(item.requestDir, { recursive: true, force: true }); }
-      catch { /* ignore */ }
+      index.delete(item.trace.requestKey);
+      for (const requestDir of item.requestDirs) {
+        await removeRequestDirIfIdentityMatches(requestDir, item.trace);
+      }
       const locatorPaths = new Set(sessionRequestDirs(this.#rootDir, sessionId).map(requestsDir => (
         join(requestsDir, '..', 'turns', turnLocatorName(item.trace.requestId))
       )));
