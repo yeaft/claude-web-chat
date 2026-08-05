@@ -118,6 +118,17 @@ describe('agent ctx defaults and upgrade contract', () => {
     expect(parseLocalServiceArgs(['--yeaft-dir', '/tmp/local-data'], { YEAFT_DIR: '/tmp/env-data' })).toEqual({
       name: computerName, port: 6868, yeaftDir: '/tmp/local-data',
     });
+    expect(() => parseLocalServiceArgs([
+      '--name', 'local-ui', '--yeaft-dir', '/tmp/line\nbreak',
+    ], {})).toThrow('Yeaft data directory cannot contain control characters');
+    expect(() => parseLocalServiceArgs([
+      '--name', 'local-ui',
+    ], { YEAFT_DIR: '/tmp/carriage\rreturn' })).toThrow('Yeaft data directory cannot contain control characters');
+    expect(() => parseLocalServiceArgs([
+      '--name', 'local-ui',
+    ], {}, {
+      existing: { name: 'local-ui', port: 6868, yeaftDir: '/tmp/legacy\0root' },
+    })).toThrow('Yeaft data directory cannot contain control characters');
     expect(resolveYeaftDir([], { YEAFT_DIR: '/tmp/env-data' }, 'local-ui')).toBe('/tmp/env-data');
     expect(resolveYeaftDir(['--yeaft-dir', '/tmp/flag-data'], { YEAFT_DIR: '/tmp/env-data' }, 'local-ui')).toBe('/tmp/flag-data');
     expect(() => parseLocalServiceArgs(['--background'], {})).toThrow('Unknown local service option');
@@ -154,6 +165,12 @@ describe('agent ctx defaults and upgrade contract', () => {
       cliPath: '/opt/yeaft/cli.js',
       workingDirectory: '/workspace/yeaft',
     });
+    expect(() => generateLocalSystemdUnit({
+      name: 'local-ui', port: 7777, yeaftDir: '/tmp/line\nbreak',
+    }, {
+      cliPath: '/opt/yeaft/cli.js',
+      workingDirectory: '/workspace/yeaft',
+    })).toThrow('systemd unit value cannot contain control characters');
     expect(localUnit).toContain('Description=Yeaft Local Web UI (local-ui)');
     expect(localUnit).toContain('ExecStart=');
     expect(localUnit).toContain("'/opt/yeaft/cli.js' local --name 'local-ui' --port 7777");

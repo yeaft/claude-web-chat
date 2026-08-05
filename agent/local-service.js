@@ -14,6 +14,7 @@ import {
 
 const LOCAL_SERVICE_PREFIX = 'yeaft-local';
 const DEFAULT_PORT = 6868;
+const SYSTEMD_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
 /** Parse local service identity, runtime port, and resolved persistent data root. */
 export function parseLocalServiceArgs(args, env = process.env, options = {}) {
@@ -44,7 +45,14 @@ export function parseLocalServiceArgs(args, env = process.env, options = {}) {
   parsed.yeaftDir = hasExplicitYeaftDir
     ? resolveYeaftDir(args, env, parsed.name)
     : existing?.yeaftDir || getDefaultYeaftDir(parsed.name);
+  assertSystemdValue(parsed.yeaftDir, 'Yeaft data directory');
   return parsed;
+}
+
+function assertSystemdValue(value, label) {
+  if (SYSTEMD_CONTROL_CHARACTERS.test(String(value))) {
+    throw new Error(`${label} cannot contain control characters when installing a systemd service`);
+  }
 }
 
 export function getLocalServiceName(name) {
@@ -68,6 +76,7 @@ function shellQuote(value) {
 }
 
 function systemdEscape(value) {
+  assertSystemdValue(value, 'systemd unit value');
   return String(value)
     .replaceAll('%', '%%')
     .replaceAll('\\', '\\\\')
