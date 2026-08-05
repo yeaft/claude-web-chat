@@ -107,6 +107,7 @@ export function buildMcpFlattenedTools(mcpManager) {
 
     return defineTool({
       name: flattenedName,
+      mcpServer: t.server,
       description: truncateDescription(
         t.description || `MCP tool ${fullName.split('__').slice(1).join('__')} from server ${t.server}`
       ),

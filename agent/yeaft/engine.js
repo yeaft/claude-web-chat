@@ -46,6 +46,7 @@ import { attachRouterPlan, extractPriorPlan, stripMetaForWire } from './router/c
 import { resolveThinking } from './router/thinking.js';
 import { approxTokens } from './memory/budget.js';
 import { COLLAB_TOOL_POLICY, isToolErrorOutput, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
+import { createPluginSkillManager } from './plugins.js';
 import { extractDisplayImages, stripDisplayImageData } from './image-assets.js';
 import { acknowledgePendingNotifications, formatNotificationsForPrompt, peekPendingNotifications } from './sub-agent/notifications.js';
 import {
@@ -473,6 +474,9 @@ export class Engine {
   /** @type {import('./skills.js').SkillManager|null} */
   #skillManager;
 
+  /** @type {import('./skills.js').SkillManager|null} */
+  #baseSkillManager;
+
   /** @type {import('./mcp.js').MCPManager|null} */
   #mcpManager;
 
@@ -682,7 +686,10 @@ export class Engine {
     this.#amsRegistry = amsRegistry || null;
     this.#toolRegistry = toolRegistry || null;
     this.#taskManager = taskManager || null;
-    this.#skillManager = skillManager || null;
+    this.#baseSkillManager = skillManager || null;
+    this.#skillManager = this.#baseSkillManager && Array.isArray(config?.plugins?.skills)
+      ? createPluginSkillManager(this.#baseSkillManager, config.plugins)
+      : this.#baseSkillManager;
     this.#mcpManager = mcpManager || null;
     this.#yeaftDir = yeaftDir || null;
     this.#toolStats = toolStats || null;
@@ -782,6 +789,9 @@ export class Engine {
   refreshConfig(config) {
     if (!config || typeof config !== 'object') return;
     this.#config = config;
+    this.#skillManager = this.#baseSkillManager && Array.isArray(config.plugins?.skills)
+      ? createPluginSkillManager(this.#baseSkillManager, config.plugins)
+      : this.#baseSkillManager;
     const fastModelId = config.fastModelId || config.model;
     this.#fastConfig = fastModelId !== config.model
       ? { ...config, model: fastModelId }
@@ -797,7 +807,10 @@ export class Engine {
    */
   setRuntimeManagers(managers = {}) {
     if (Object.prototype.hasOwnProperty.call(managers, 'skillManager')) {
-      this.#skillManager = managers.skillManager || null;
+      this.#baseSkillManager = managers.skillManager || null;
+      this.#skillManager = this.#baseSkillManager && Array.isArray(this.#config?.plugins?.skills)
+        ? createPluginSkillManager(this.#baseSkillManager, this.#config.plugins)
+        : this.#baseSkillManager;
     }
     if (Object.prototype.hasOwnProperty.call(managers, 'mcpManager')) {
       this.#mcpManager = managers.mcpManager || null;
@@ -824,7 +837,10 @@ export class Engine {
    */
   #getToolDefs(collabToolPolicy = null) {
     if (this.#toolRegistry) {
-      return this.#toolRegistry.getToolDefs(this.#config?.language || 'en', { collabToolPolicy });
+      return this.#toolRegistry.getToolDefs(this.#config?.language || 'en', {
+        collabToolPolicy,
+        plugins: this.#config?.plugins,
+      });
     }
     // Legacy path: no mode filtering
     const defs = [];
@@ -1109,7 +1125,7 @@ export class Engine {
 
     // Get tool names from the appropriate source
     const toolNames = this.#toolRegistry
-      ? this.#toolRegistry.getToolNames()
+      ? this.#toolRegistry.getToolNames({ plugins: this.#config?.plugins })
       : Array.from(this.#tools.keys());
 
     return buildWorkerPrompt({
@@ -3520,7 +3536,10 @@ export class Engine {
 
         // Resolve tool: prefer ToolRegistry, fallback to legacy #tools Map
         const hasTool = this.#toolRegistry
-          ? this.#toolRegistry.isAllowed(tc.name, { collabToolPolicy: effectiveCollabToolPolicy })
+          ? this.#toolRegistry.isAllowed(tc.name, {
+            collabToolPolicy: effectiveCollabToolPolicy,
+            plugins: this.#config?.plugins,
+          })
           : this.#tools.has(tc.name);
 
         if (!hasTool) {

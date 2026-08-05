@@ -77,6 +77,7 @@ describe('Yeaft session-scoped model config', () => {
     expect(configB.model).toBe('github-copilot/claude-opus-4.8');
     expect(configB.primaryModel).toBe('github-copilot/claude-opus-4.8');
     expect(configB.modelEffort).toBe('max');
+
   });
 
 

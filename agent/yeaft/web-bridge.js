@@ -25,6 +25,7 @@ import { Engine } from './engine.js';
 import { loadSession } from './session.js';
 import { loadConfig, loadMCPConfig } from './config.js';
 import { createSkillManager } from './skills.js';
+import { buildPluginCatalog } from './plugins.js';
 import { MCPManager } from './mcp.js';
 import { sendToServer } from '../connection/buffer.js';
 import ctx from '../context.js';
@@ -186,6 +187,8 @@ export async function refreshLiveSessionConfig(options = {}) {
 
   const liveSession = session;
   const currentConfig = liveSession.config || {};
+  const pluginsChanged = JSON.stringify(currentConfig.plugins || {})
+    !== JSON.stringify(freshConfig.plugins || {});
   const runtimeOnly = {};
   for (const key of ['serverMode', '_readOnly', 'modelEffort']) {
     if (Object.prototype.hasOwnProperty.call(currentConfig, key)) runtimeOnly[key] = currentConfig[key];
@@ -211,9 +214,15 @@ export async function refreshLiveSessionConfig(options = {}) {
   if (typeof liveSession.adapter?.refreshProviders === 'function') {
     liveSession.adapter.refreshProviders(freshConfig.providers || []);
   }
+  // Plugin selections affect connected MCP processes as well as model-visible
+  // schemas. Retire cached project runtimes before applying the new selection;
+  // the base runtime is rebuilt below so the default Session cannot retain old
+  // MCP tools or a stale manager after a save.
+  if (pluginsChanged) await shutdownProjectRuntimes();
   for (const key of Object.keys(currentConfig)) delete currentConfig[key];
   Object.assign(currentConfig, nextConfig);
   liveSession.engine?.refreshConfig?.(currentConfig);
+  if (pluginsChanged) scheduleBaseRuntimeLoad();
   for (const { key, engine, config } of vpConfigSnapshots) {
     engine.refreshConfig?.(config);
     vpEngineConfigKeys.set(key, engineConfigKey(config));
@@ -578,8 +587,29 @@ function engineConfigKey(config) {
     fastModel: config?.fastModel || '',
     fastModelId: config?.fastModelId || '',
     fallbackModel: config?.fallbackModel || '',
+    plugins: config?.plugins || {},
     providers: Array.isArray(config?.providers) ? config.providers : [],
   });
+}
+
+function filterMcpConfigByPlugins(mcpConfig, plugins) {
+  if (!Array.isArray(plugins?.mcpServers)) return mcpConfig;
+  const allowed = new Set(plugins.mcpServers);
+  return {
+    ...(mcpConfig || {}),
+    servers: Array.isArray(mcpConfig?.servers)
+      ? mcpConfig.servers.filter(server => allowed.has(server?.name))
+      : [],
+  };
+}
+
+function effectiveRuntimeManagers(skillManager, mcpManager, _config = session?.config) {
+  // Engine owns the final skill-policy wrapper so refreshConfig() can safely
+  // reapply a changed Agent plugin selection without mutating shared managers.
+  return {
+    skillManager: skillManager || null,
+    mcpManager: mcpManager || null,
+  };
 }
 
 function normalizeSessionWorkDir(workDir) {
@@ -721,7 +751,7 @@ function activateBaseRuntime(owner = captureRuntimeOwner(), { reloadSkills = tru
   if (!isCurrentRuntimeOwner(owner)) return { removed: 0, added: 0, skipped: true };
   activeRuntimeKey = BASE_RUNTIME_KEY;
   const swap = replaceSessionMcpTools(owner, mcpManager);
-  retargetVpEngines(owner, { skillManager: skillManager || null, mcpManager: mcpManager || null });
+  retargetVpEngines(owner, effectiveRuntimeManagers(skillManager, mcpManager, ownerSession.config));
   if (status) {
     status.skills = skillManager?.size || 0;
     status.mcpServers = Array.isArray(status.mcpServers) ? status.mcpServers : [];
@@ -748,10 +778,11 @@ function activateProjectRuntime(runtime, owner = captureRuntimeOwner(), { reload
   if (!runtimeBelongsToOwner(runtime, owner)) return { removed: 0, added: 0, skipped: true };
   activeRuntimeKey = runtimeKey;
   const swap = replaceSessionMcpTools(owner, runtime.mcpManager);
-  retargetVpEngines(owner, {
-    skillManager: runtime.skillManager,
-    mcpManager: runtime.mcpManager,
-  });
+  retargetVpEngines(owner, effectiveRuntimeManagers(
+    runtime.skillManager,
+    runtime.mcpManager,
+    owner.ownerSession.config,
+  ));
   runtime.status = {
     ...runtime.status,
     skills: runtime.skillManager?.size || 0,
@@ -1677,6 +1708,9 @@ function getOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
   // Per-session config overlay (v1: model only). Falls back to the
   // session's user-level config when no override is set. Session config is
   // always resolved from the agent-local root; project `.yeaft` is ignored.
+  // Agent-level plugin config is already part of session.config; Session
+  // config still only overlays model/effort. Keep the runtime policy Agent
+  // scoped even though each VP Engine has its own effective config snapshot.
   const effectiveConfig = resolveLiveSessionConfig(session.config, sessionId);
   const configKey = engineConfigKey(effectiveConfig);
   let eng = vpEngines.get(key);
@@ -2496,7 +2530,8 @@ async function loadBaseRuntime(owner = captureRuntimeOwner()) {
   const previousSkillManager = ownerSession.skillManager;
   const previousMcpManager = ownerSession.mcpManager;
   const skillManager = createRuntimeSkillManager(yeaftDir, process.cwd());
-  const mcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, process.cwd());
+  const rawMcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, process.cwd());
+  const mcpConfig = filterMcpConfigByPlugins(rawMcpConfig, ownerSession.config?.plugins);
   const mcpManager = createRuntimeMcpManager();
   let mcpStatus = { connected: [], failed: [] };
   const runtime = {
@@ -2615,7 +2650,8 @@ async function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
     ? `${process.cwd()}${delimiter}${normalizedWorkDir}`
     : normalizedWorkDir;
   const skillManager = createRuntimeSkillManager(yeaftDir, skillRoots);
-  const mcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, normalizedWorkDir);
+  const rawMcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, normalizedWorkDir);
+  const mcpConfig = filterMcpConfigByPlugins(rawMcpConfig, ownerSession.config?.plugins);
   const mcpManager = createRuntimeMcpManager();
   let mcpStatus = { connected: [], failed: [] };
   const runtime = {
@@ -2973,6 +3009,51 @@ function sendSessionCrudResult(payload) {
     ? { ...payload, sessions: decorateSessionsWithRuntimeState(payload.sessions) }
     : payload;
   sendSessionEvent({ type: 'session_crud_result', ...next });
+}
+
+function resolvePluginCatalogRuntime(workDir = '') {
+  const owner = captureRuntimeOwner();
+  const normalizedWorkDir = normalizeSessionWorkDir(workDir);
+  const runtime = normalizedWorkDir
+    ? projectRuntimes.get(projectRuntimeKey(normalizedWorkDir))
+    : null;
+  const active = runtimeBelongsToOwner(runtime, owner)
+    ? runtime
+    : (baseRuntime && runtimeBelongsToOwner(baseRuntime, owner) ? baseRuntime : null);
+  return {
+    toolRegistry: session?.toolRegistry || null,
+    skillManager: active?.skillManager || session?.skillManager || null,
+    mcpConfig: active?.mcpConfig || null,
+    mcpManager: active?.mcpManager || session?.mcpManager || null,
+  };
+}
+
+export function handleYeaftPluginCatalog(msg = {}) {
+  const requestId = msg.requestId || null;
+  const requestedWorkDir = normalizeSessionWorkDir(msg.workDir);
+  try {
+    const runtime = resolvePluginCatalogRuntime(requestedWorkDir);
+    if (!runtime.mcpConfig) {
+      const yeaftDir = ctx.CONFIG?.yeaftDir || session?.yeaftDir || DEFAULT_YEAFT_DIR;
+      runtime.mcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, requestedWorkDir || process.cwd());
+    }
+    const catalog = buildPluginCatalog(runtime);
+    sendToServer({
+      type: 'yeaft_plugin_catalog_result',
+      requestId,
+      ...(msg._requestClientId ? { _requestClientId: msg._requestClientId } : {}),
+      catalog,
+      error: null,
+    });
+  } catch (err) {
+    sendToServer({
+      type: 'yeaft_plugin_catalog_result',
+      requestId,
+      ...(msg._requestClientId ? { _requestClientId: msg._requestClientId } : {}),
+      catalog: { tools: [], skills: [], mcpServers: [] },
+      error: err?.message || String(err),
+    });
+  }
 }
 
 function sendSessionSnapshotBroadcast() {
@@ -5016,15 +5097,17 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         escalationState.engineKey = threadKey(sessionId, vpId, threadId);
       }
       if (projectRuntime) {
-        vpEngine.setRuntimeManagers?.({
-          skillManager: projectRuntime.skillManager,
-          mcpManager: projectRuntime.mcpManager,
-        });
+        vpEngine.setRuntimeManagers?.(effectiveRuntimeManagers(
+          projectRuntime.skillManager,
+          projectRuntime.mcpManager,
+          session?.config?.plugins,
+        ));
       } else {
-        vpEngine.setRuntimeManagers?.({
-          skillManager: session?.skillManager || null,
-          mcpManager: session?.mcpManager || null,
-        });
+        vpEngine.setRuntimeManagers?.(effectiveRuntimeManagers(
+          session?.skillManager || null,
+          session?.mcpManager || null,
+          session?.config?.plugins,
+        ));
       }
       if (thread) thread.engine = vpEngine;
 

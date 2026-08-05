@@ -281,6 +281,39 @@ export function isToolHiddenByCollabPolicy(toolName, policy) {
   return normalized === COLLAB_TOOL_POLICY.SINGLE_VP && FORWARD_TOOL_NAMES.includes(toolName);
 }
 
+/**
+ * Normalise an optional Agent-level plugin selection. Missing category fields
+ * preserve historical behavior; explicit empty arrays disable that category.
+ *
+ * @param {object|null|undefined} plugins
+ * @returns {{ tools: Set<string>|null, mcpServers: Set<string>|null }}
+ */
+export function normalizePluginToolPolicy(plugins) {
+  const normalize = (value) => {
+    if (!Array.isArray(value)) return null;
+    return new Set(value
+      .filter(item => typeof item === 'string' && item.trim())
+      .map(item => item.trim()));
+  };
+  return {
+    tools: normalize(plugins?.tools),
+    mcpServers: normalize(plugins?.mcpServers),
+  };
+}
+
+/**
+ * Check a canonical ToolDef against the Agent-level plugin selection. MCP
+ * tools are controlled by server name; built-ins use their canonical name.
+ */
+export function isToolHiddenByPluginPolicy(tool, plugins) {
+  if (!tool) return true;
+  const policy = normalizePluginToolPolicy(plugins);
+  if (tool.mcpServer) {
+    return policy.mcpServers !== null && !policy.mcpServers.has(tool.mcpServer);
+  }
+  return policy.tools !== null && !policy.tools.has(tool.name);
+}
+
 export class ToolRegistry {
   /** @type {Map<string, import('./types.js').ToolDef>} */
   #tools = new Map();
@@ -370,7 +403,7 @@ export class ToolRegistry {
    * specific collaboration tool invalid, such as RouteForward in single-VP
    * sessions.
    * @param {string} [language='en']
-   * @param {{ collabToolPolicy?: string }} [opts]
+   * @param {{ collabToolPolicy?: string, plugins?: object }} [opts]
    * @returns {{ name: string, description: string, parameters: object }[]}
    */
   getToolDefs(language = 'en', opts = {}) {
@@ -378,6 +411,7 @@ export class ToolRegistry {
     const collabToolPolicy = normalizeCollabToolPolicy(opts?.collabToolPolicy);
     return this.getAllTools()
       .filter(t => !isToolHiddenByCollabPolicy(t.name, collabToolPolicy))
+      .filter(t => !isToolHiddenByPluginPolicy(t, opts?.plugins))
       .map(t => {
         return {
           name: t.name,
@@ -392,22 +426,28 @@ export class ToolRegistry {
    * Unknown / absent policy keeps the historical behavior: all registered
    * tools remain callable.
    * @param {string} name
-   * @param {{ collabToolPolicy?: string }} [opts]
+   * @param {{ collabToolPolicy?: string, plugins?: object }} [opts]
    * @returns {boolean}
    */
   isAllowed(name, opts = {}) {
     const tool = this.#tools.get(name);
     if (!tool) return false;
-    return !isToolHiddenByCollabPolicy(tool.name, opts?.collabToolPolicy);
+    return !isToolHiddenByCollabPolicy(tool.name, opts?.collabToolPolicy)
+      && !isToolHiddenByPluginPolicy(tool, opts?.plugins);
   }
 
   /**
-   * Get all registered tool names (canonical only — aliases are excluded
-   * so debug surfaces like the tool-stats panel show one row per tool).
+   * Get registered canonical tool names under an optional policy. Aliases are
+   * excluded so debug surfaces still show one row per real tool.
+   * @param {{ collabToolPolicy?: string, plugins?: object }} [opts]
    * @returns {string[]}
    */
-  getToolNames() {
-    return this.getAllTools().map(t => t.name);
+  getToolNames(opts = {}) {
+    const collabToolPolicy = normalizeCollabToolPolicy(opts?.collabToolPolicy);
+    return this.getAllTools()
+      .filter(t => !isToolHiddenByCollabPolicy(t.name, collabToolPolicy))
+      .filter(t => !isToolHiddenByPluginPolicy(t, opts?.plugins))
+      .map(t => t.name);
   }
 
   /**

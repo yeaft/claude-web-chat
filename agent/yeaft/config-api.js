@@ -13,6 +13,7 @@ import { join } from 'path';
 import { DEFAULT_YEAFT_DIR } from './init.js';
 import { normalizeProviderModels, parseModelRef, serializeModelForPersistence } from './models.js';
 import { normaliseYeaftSection } from './config.js';
+import { normalizePluginConfig } from './plugins.js';
 import { isGitHubCopilotProvider, serializeKnownProviderForPersistence } from './llm/known-providers.js';
 
 /**
@@ -441,6 +442,48 @@ export async function fetchTavilyUsage(dir) {
   } catch (e) {
     return { error: e.message || String(e) };
   }
+}
+
+// ─── Agent plugin selection ────────────────────────────────────
+
+/**
+ * Read the Agent-local plugin allowlists. Missing category fields mean
+ * inheritance (all discovered capabilities remain available).
+ */
+export function getPluginConfig(dir) {
+  const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
+  const configPath = join(root, 'config.json');
+  try {
+    const json = readConfigJson(configPath);
+    return { plugins: normalizePluginConfig(json.plugins) };
+  } catch (err) {
+    return { error: `Failed to read plugin config: ${err?.message || err}` };
+  }
+}
+
+/**
+ * Persist Agent-local plugin allowlists without touching providers, MCP server
+ * definitions, or any other config.json field.
+ */
+export function updatePluginConfig(plugins, dir) {
+  const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
+  const configPath = join(root, 'config.json');
+  let normalized;
+  try {
+    normalized = normalizePluginConfig(plugins);
+  } catch (err) {
+    return { error: err?.message || String(err) };
+  }
+
+  const existing = readConfigJson(configPath);
+  if (Object.keys(normalized).length === 0) delete existing.plugins;
+  else existing.plugins = normalized;
+  try {
+    writeFileSync(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf8');
+  } catch (err) {
+    return { error: `Failed to write plugin config: ${err?.message || err}` };
+  }
+  return { plugins: normalized };
 }
 
 // ─── MCP server config (mcpServers array in config.json) ──

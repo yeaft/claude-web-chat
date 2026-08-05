@@ -356,6 +356,27 @@ export async function handleAgentSync(agentId, agent, msg) {
       break;
     }
 
+    // Agent-level plugin selection. The Agent owns config.json; the server
+    // only stamps ownership and relays request-scoped replies to the UI.
+    case 'yeaft_plugins':
+    case 'yeaft_plugins_updated': {
+      for (const [, client] of webClients) {
+        if (client.authenticated && (CONFIG.skipAuth ||
+          (agent.ownerId && client.userId === agent.ownerId) ||
+          (!agent.ownerId && client.role === 'admin')
+        )) {
+          await sendToWebClient(client, {
+            type: msg.type,
+            agentId,
+            requestId: msg.requestId || null,
+            plugins: msg.plugins || {},
+            error: msg.error || null,
+          });
+        }
+      }
+      break;
+    }
+
     // Search settings + Tavily usage relays. We pass the whole msg
     // through (minus agentId, which we set ourselves) — the payload
     // shapes differ per type and the front-end already filters on

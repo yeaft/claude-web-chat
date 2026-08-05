@@ -63,6 +63,7 @@
  * @property {(input?: object) => boolean} [isReadOnly] — read-only operation?
  * @property {(input?: object) => boolean} [isDestructive] — destructive operation?
  * @property {'json-error-envelope' | null} [errorOutput] — explicit returned-output error contract; null means only thrown errors fail
+ * @property {string} [mcpServer] — owning MCP server for flattened MCP tools
  */
 
 /**
@@ -77,6 +78,7 @@
  *   isReadOnly?: (input?: object) => boolean,
  *   isDestructive?: (input?: object) => boolean,
  *   errorOutput?: 'json-error-envelope' | null,
+ *   mcpServer?: string,
  *   timeoutMs?: number,
  * }} def
  * @returns {ToolDef}
@@ -91,6 +93,7 @@ export function defineTool({
   isReadOnly = () => false,
   isDestructive = () => false,
   errorOutput = 'json-error-envelope',
+  mcpServer,
   timeoutMs,
 }) {
   if (!name) throw new Error('Tool must have a name');
@@ -111,6 +114,9 @@ export function defineTool({
   // but excluded from the LLM-visible catalogue.
   if (Array.isArray(aliases) && aliases.length > 0) {
     def.aliases = aliases.slice();
+  }
+  if (typeof mcpServer === 'string' && mcpServer.trim()) {
+    def.mcpServer = mcpServer.trim();
   }
   // Only attach `timeoutMs` when the tool author opts in. Leaving it
   // unset means ToolRegistry.execute uses DEFAULT_TOOL_TIMEOUT_MS — set

@@ -5,6 +5,7 @@ import YeaftSidebar from './YeaftSidebar.js';
 import SessionInviteModal from './SessionInviteModal.js';
 import SessionCreateModal from './SessionCreateModal.js';
 import SessionSettingsModal from './SessionSettingsModal.js';
+import PluginCenterPage from './PluginCenterPage.js';
 import WorkbenchPanel from './WorkbenchPanel.js';
 import YeaftDebugPanel from './YeaftDebugPanel.js';
 import VpTimelinePane from './VpTimelinePane.js';
@@ -96,7 +97,7 @@ export function visibleSessionStatusTasks(taskMap) {
 
 export default {
   name: 'YeaftPage',
-  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftConversationOutline, LlmTab },
+  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, PluginCenterPage, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftConversationOutline, LlmTab },
   template: `
     <div class="yeaft-page" ref="pageRef">
       <!-- Mobile sidebar overlay -->
@@ -118,6 +119,7 @@ export default {
       <WorkbenchPanel v-if="canUseWorkbench" />
 
       <WorkCenterPage v-if="store.workCenterOpen" />
+      <PluginCenterPage v-else-if="store.pluginCenterOpen" @close="store.closePluginCenter()" />
 
       <!-- Center Conversation. The Session status pane is rendered as a
            sibling to the RIGHT of this main column so the visual order is
@@ -386,7 +388,7 @@ export default {
       <!-- Session status pane: announcement + VP roster + background tasks.
            It sits to the right of the conversation and to the left of debug. -->
       <VpTimelinePane
-        v-if="!store.workCenterOpen && showVpTimeline"
+        v-if="!store.workCenterOpen && !store.pluginCenterOpen && showVpTimeline"
         :rows="vpTimelineRows"
         :tasks="sessionStatusTasksForActiveSession"
         :announcement-text="sessionStatusAnnouncementText"
@@ -408,7 +410,7 @@ export default {
            right-pane content today, and it should not occupy layout space
            unless explicitly opened. -->
       <aside
-        v-if="!store.workCenterOpen && debugMode"
+        v-if="!store.workCenterOpen && !store.pluginCenterOpen && debugMode"
         class="yeaft-detail"
         :class="{ resizing: isResizingDetail, 'mobile-debug': isNarrowDetail }"
         :style="detailWidthStyle"

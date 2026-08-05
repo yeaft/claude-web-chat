@@ -26,6 +26,7 @@ import { DEFAULT_YEAFT_DIR } from './init.js';
 import { getModelEffortOptions, getThinkingCapability, modelSupportsEffort, resolveModel, parseModelRef, normalizeProviderModels, resolveContextWindow, resolveMaxOutputTokens } from './models.js';
 import { inferProtocolFromModelId } from './llm/router.js';
 import { normalizeKnownProviderForRuntime } from './llm/known-providers.js';
+import { normalizePluginConfig } from './plugins.js';
 import { readWorkspaceFile } from './workspace-file.js';
 
 /** Default configuration values. */
@@ -306,6 +307,7 @@ function loadLegacyConfig(dir, overrides) {
     projectDocMaxBytes: overrides.projectDocMaxBytes ?? fileConfig.projectDocMaxBytes ?? DEFAULTS.projectDocMaxBytes,
     // task-318: legacy path never had the `yeaft` section — defaults.
     yeaft: normaliseYeaftSection(null),
+    plugins: {},
     providers: null,
     primaryModel: null,
     fastModel: null,
@@ -439,6 +441,13 @@ export function loadConfig(overrides = {}) {
     // task-318: Yeaft runtime caps. `yeaft` is a nested section so we
     // don't pollute the flat config namespace used by chat code.
     yeaft: normaliseYeaftSection(jsonConfig.yeaft),
+
+    // Agent-level tools / skills / MCP server allowlists. Missing fields mean
+    // all currently discovered capabilities remain enabled.
+    plugins: (() => {
+      try { return normalizePluginConfig(jsonConfig.plugins); }
+      catch { return {}; }
+    })(),
 
     // Legacy fields (null when using config.json)
     apiKey: overrides.apiKey || null,

@@ -10,6 +10,8 @@ import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
 import { writeSummary } from '../../../agent/yeaft/memory/store.js';
 import { NullTrace, DebugTrace } from '../../../agent/yeaft/debug-trace.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
+import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
+import { defineTool } from '../../../agent/yeaft/tools/types.js';
 import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
 import todoWriteTool from '../../../agent/yeaft/tools/todo-write.js';
 import startPlanTool from '../../../agent/yeaft/tools/start-plan.js';
@@ -2394,6 +2396,64 @@ describe('Engine', () => {
       expect(call.tools).toHaveLength(1);
       expect(call.tools[0].name).toBe('calculator');
       expect(call.tools[0].description).toBe('Calculate math');
+
+      const registry = new ToolRegistry();
+      let disabledCalls = 0;
+      registry.register(defineTool({
+        name: 'EnabledTool',
+        description: 'Enabled',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => 'ok',
+      }));
+      registry.register(defineTool({
+        name: 'DisabledTool',
+        description: 'Disabled',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => { disabledCalls += 1; return 'must not run'; },
+      }));
+      registry.register(defineTool({
+        name: 'mcp__github__list_prs',
+        mcpServer: 'github',
+        description: 'GitHub',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => 'github',
+      }));
+      registry.register(defineTool({
+        name: 'mcp__slack__send_message',
+        mcpServer: 'slack',
+        description: 'Slack',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => 'slack',
+      }));
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'call-disabled', name: 'DisabledTool', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'handled' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const filteredEngine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          plugins: { tools: ['EnabledTool'], mcpServers: ['github'] },
+        },
+        toolRegistry: registry,
+      });
+      const events = [];
+      for await (const event of filteredEngine.query({ prompt: 'try disabled tool' })) events.push(event);
+      expect(mockAdapter.callLog.at(-2).tools.map(tool => tool.name)).toEqual([
+        'EnabledTool',
+        'mcp__github__list_prs',
+      ]);
+      expect(disabledCalls).toBe(0);
+      expect(events.find(event => event.type === 'tool_end')).toMatchObject({
+        name: 'DisabledTool',
+        isError: true,
+      });
     });
 
     it('should not pass tools when none are registered', async () => {

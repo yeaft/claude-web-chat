@@ -399,19 +399,26 @@ export async function loadSession(options = {}) {
   // present, is only a project tier overlay plus the storage root.
   const projectTierRoot = sessionWorkDir || process.cwd();
 
-  let skillManager;
+  let loadedSkillManager;
   if (skipSkills) {
     // Pass the literal user-tier dir (matches the normal branch's tier 2)
     // so any save/remove calls land in the same place users expect. New
     // `SkillManager` API takes literal scan dirs — no auto-suffix of /skills.
-    skillManager = new SkillManager(join(configDir, 'skills'));
+    loadedSkillManager = new SkillManager(join(configDir, 'skills'));
     // Don't call .load() — empty skill manager
   } else {
-    skillManager = createSkillManager(configDir, projectTierRoot);
+    loadedSkillManager = createSkillManager(configDir, projectTierRoot);
   }
+  const skillManager = loadedSkillManager;
 
   // ─── 7. Connect MCP servers ────────────────────────────
-  const mcpConfig = loadMCPConfig(configDir, undefined, projectTierRoot);
+  const rawMcpConfig = loadMCPConfig(configDir, undefined, projectTierRoot);
+  const mcpConfig = {
+    ...rawMcpConfig,
+    servers: Array.isArray(config?.plugins?.mcpServers)
+      ? rawMcpConfig.servers.filter(server => config.plugins.mcpServers.includes(server?.name))
+      : rawMcpConfig.servers,
+  };
   const mcpManager = new MCPManager();
   let mcpStatus = { connected: [], failed: [] };
 

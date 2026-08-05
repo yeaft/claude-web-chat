@@ -936,6 +936,52 @@ export function handleMessage(store, msg) {
       }
       break;
 
+    // Agent-level plugin configuration. Replies are request-scoped because
+    // the Plugin Center can inspect a non-current Agent.
+    case 'yeaft_plugins':
+    case 'yeaft_plugins_updated': {
+      const record = {
+        plugins: msg.plugins && typeof msg.plugins === 'object' ? msg.plugins : {},
+        error: msg.error || null,
+        loaded: true,
+        at: Date.now(),
+      };
+      if (msg.agentId) {
+        store.pluginConfigByAgent = { ...store.pluginConfigByAgent, [msg.agentId]: record };
+      }
+      const pending = msg.requestId ? store._pluginPending?.[msg.requestId] : null;
+      if (pending) {
+        clearTimeout(pending.timer);
+        delete store._pluginPending[msg.requestId];
+        pending.resolve(record);
+      }
+      break;
+    }
+
+    case 'yeaft_plugin_catalog_result': {
+      const pending = msg.requestId ? store._pluginPending?.[msg.requestId] : null;
+      const catalog = msg.catalog && typeof msg.catalog === 'object'
+        ? {
+            tools: Array.isArray(msg.catalog.tools) ? msg.catalog.tools : [],
+            skills: Array.isArray(msg.catalog.skills) ? msg.catalog.skills : [],
+            mcpServers: Array.isArray(msg.catalog.mcpServers) ? msg.catalog.mcpServers : [],
+          }
+        : { tools: [], skills: [], mcpServers: [] };
+      const key = pending?.key || store.pluginCatalogKey?.(msg.agentId, '');
+      if (key) {
+        store.pluginCatalogByKey = {
+          ...store.pluginCatalogByKey,
+          [key]: { catalog, loading: false, error: msg.error || null, loaded: true, at: Date.now() },
+        };
+      }
+      if (pending) {
+        clearTimeout(pending.timer);
+        delete store._pluginPending[msg.requestId];
+        pending.resolve({ catalog, error: msg.error || null });
+      }
+      break;
+    }
+
     // Search settings — Search tab in YeaftSettings. The store's
     // `loadSearchSettings` / `updateSearchSettings` register one-shot
     // resolvers under `_searchPending`; we pop the matching resolver
