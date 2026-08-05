@@ -1035,18 +1035,19 @@ async function waitForRoutePromises(msgId) {
 }
 
 /**
- * Drop the cached coordinator + router for a group AND abort/clear any
- * in-flight VP turns belonging to it. Call this from every CRUD handler
- * that mutates the group's roster, meta, or lifecycle state on disk —
- * the cached coord holds a closed `sessionHandle`, so without invalidation
- * later route_forward / ingest calls would read zombie meta (stale
- * roster, pre-rename announcement, kicked members still routable).
+ * Drop the cached coordinator + router for a Session. Metadata changes must
+ * not abort in-flight work: a rename, announcement sync, or default-VP update
+ * can race any provider request, and the running coordinator already owns a
+ * consistent snapshot for that turn. Future turns rebuild from disk.
+ *
+ * Destructive lifecycle operations opt into runtime teardown.
  *
  * Idempotent — safe to call when no entry exists.
  */
-function invalidateGroupContext(sessionId) {
+function invalidateGroupContext(sessionId, { abortRuntime = false } = {}) {
   if (!sessionId) return;
   sessionContexts.delete(sessionId);
+  if (!abortRuntime) return;
   const prefix = `${sessionId}::`;
   for (const [k, ctrl] of vpAborts) {
     if (!k.startsWith(prefix)) continue;
@@ -1066,7 +1067,7 @@ function invalidateGroupContext(sessionId) {
     if (k.startsWith(prefix)) vpThreads.delete(k);
   }
   // Reap per-(group,vp) TodoWrite snapshots for this group so a
-  // deleted/renamed group doesn't pin a stale checklist forever.
+  // deleted/archived group doesn't pin a stale checklist forever.
   for (const k of vpCurrentTodos.keys()) {
     if (k.startsWith(prefix)) vpCurrentTodos.delete(k);
   }
@@ -3438,7 +3439,7 @@ export function handleYeaftArchiveSession(msg) {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const result = archiveSession(yeaftDir, sessionId);
     projectContextBySession.delete(sessionId);
-    invalidateGroupContext(sessionId);
+    invalidateGroupContext(sessionId, { abortRuntime: true });
     sendSessionCrudResult({
       op: 'archive',
       requestId,
@@ -3478,7 +3479,7 @@ export function handleYeaftDeleteSession(msg) {
     // turns for the deleted group. Engines for the deleted group are
     // also dropped — unlike rename/announcement updates, the group is
     // gone for good and there's nothing to preserve.
-    invalidateGroupContext(sessionId);
+    invalidateGroupContext(sessionId, { abortRuntime: true });
     const prefix = `${sessionId}::`;
     for (const k of Array.from(vpEngines.keys())) {
       if (k.startsWith(prefix)) {
