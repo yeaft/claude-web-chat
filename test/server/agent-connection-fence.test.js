@@ -91,7 +91,11 @@ describe('Agent connection replacement fence', () => {
     const newSocket = new MockWebSocket(WS_OPEN);
 
     handleAgentConnection(oldSocket, agentUrl());
+    authenticate(oldSocket);
+    await settleMessages();
     handleAgentConnection(newSocket, agentUrl());
+    authenticate(newSocket);
+    await settleMessages();
 
     expect(agents.get('agent-1')?.ws).toBe(newSocket);
     expect(oldSocket.readyState).toBe(WS_CLOSED);
@@ -115,12 +119,16 @@ describe('Agent connection replacement fence', () => {
     expect(handleAgentOutput.mock.calls[0][1].ws).toBe(newSocket);
   });
 
-  it('does not let an old close delete or rebroadcast over the replacement record', () => {
+  it('does not let an old close delete or rebroadcast over the replacement record', async () => {
     const oldSocket = new MockWebSocket(WS_OPEN);
     const newSocket = new MockWebSocket(WS_OPEN);
 
     handleAgentConnection(oldSocket, agentUrl());
+    authenticate(oldSocket);
+    await settleMessages();
     handleAgentConnection(newSocket, agentUrl());
+    authenticate(newSocket);
+    await settleMessages();
     broadcastAgentList.mockClear();
 
     oldSocket.emit('close', 1000, 'late old close');

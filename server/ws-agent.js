@@ -31,54 +31,12 @@ export function handleAgentConnection(ws, url) {
   const instanceId = url.searchParams.get('instanceId') || clientAgentId;
   const workDir = url.searchParams.get('workDir') || '';
 
-  // In development mode (SKIP_AUTH), register immediately
-  if (CONFIG.skipAuth) {
-    // Dev mode: no owner isolation, use clientAgentId as-is for backward compat
-    const capabilities = (url.searchParams.get('capabilities') || '').split(',').filter(Boolean);
-    completeAgentRegistration(ws, clientAgentId, agentName, workDir, null, capabilities, null, null, null, instanceId);
+  // Both authenticated and SKIP_AUTH connections use the existing auth frame
+  // for registration metadata. Released Agents already send their version there;
+  // SKIP_AUTH only bypasses secret validation and owner scoping.
+  const skipAgentAuth = CONFIG.skipAuth;
+  const urlCapabilities = (url.searchParams.get('capabilities') || '').split(',').filter(Boolean);
 
-    ws.on('message', async (data) => {
-      const agent = agents.get(clientAgentId);
-      if (!agent || agent.ws !== ws) {
-        if (!agent) console.error(`[Agent] No agent found for id: ${clientAgentId}`);
-        return;
-      }
-      markAgentHeartbeatSeen(agent);
-      const msg = await parseMessage(data, agent.sessionKey);
-      if (msg) {
-        console.log(`[Agent] Received message from ${clientAgentId}: ${msg.type}`);
-        if (msg.perfTraceId) {
-          recordPerfTraceEvent({
-            traceId: msg.perfTraceId,
-            source: 'server',
-            phase: 'websocket.agent_received',
-            at: Date.now(),
-            agentId: clientAgentId,
-            sessionId: msg.sessionId || null,
-            vpId: msg.vpId || null,
-            turnId: msg.turnId || null,
-            threadId: msg.threadId || null,
-            messageType: msg.type,
-            bytes: data.length || 0,
-          });
-        }
-        handleAgentMessage(clientAgentId, msg, ws);
-      } else {
-        console.error(`[Agent] Failed to parse message from ${clientAgentId}`);
-      }
-    });
-
-    ws.on('close', () => {
-      handleAgentDisconnect(clientAgentId, agentName, ws);
-    });
-
-    ws.on('error', (err) => {
-      console.error(`Agent error (${agentName}):`, err.message);
-    });
-    return;
-  }
-
-  // In production mode, wait for auth message with secret
   const tempId = randomUUID();
   // Mutable: will be updated to the owner-scoped key after auth succeeds
   let resolvedAgentId = null;
@@ -98,7 +56,7 @@ export function handleAgentConnection(ws, url) {
     timeout: authTimeout
   });
 
-  // Request authentication
+  // Request the existing registration frame. SKIP_AUTH ignores its secret.
   ws.send(JSON.stringify({
     type: 'auth_required',
     tempId
@@ -114,19 +72,22 @@ export function handleAgentConnection(ws, url) {
           clearTimeout(pending.timeout);
           pendingAgentConnections.delete(tempId);
 
-          const authResult = verifyAgent(msg.secret);
+          const authResult = skipAgentAuth
+            ? { valid: true, sessionKey: null, userId: null, username: null }
+            : verifyAgent(msg.secret);
           if (!authResult.valid) {
             console.log(`Agent auth failed: ${agentName}`);
             ws.close(1008, 'Invalid agent secret');
             return;
           }
 
-          const capabilities = msg.capabilities || [];
+          const capabilities = Array.isArray(msg.capabilities) ? msg.capabilities : urlCapabilities;
           const agentVersion = msg.version || null;
-          // Build owner-scoped key to prevent cross-user collision. New agents
-          // identify local service instances separately from display names;
-          // old agents keep using their name as the stable id.
-          resolvedAgentId = buildAgentMapKey(authResult.userId, pending.instanceId || pending.agentId || pending.agentName);
+          // Authenticated Agents use an owner-scoped key. SKIP_AUTH preserves
+          // its historical unscoped id while still receiving version metadata.
+          resolvedAgentId = skipAgentAuth
+            ? clientAgentId
+            : buildAgentMapKey(authResult.userId, pending.instanceId || pending.agentId || pending.agentName);
           completeAgentRegistration(ws, resolvedAgentId, pending.agentName, pending.workDir, authResult.sessionKey, capabilities, authResult.userId, authResult.username, agentVersion, pending.instanceId || pending.agentId || pending.agentName);
         }
       } catch (e) {

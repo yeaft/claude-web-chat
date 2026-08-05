@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CONFIG } from '../../server/config.js';
-import { agents } from '../../server/context.js';
+import { agents, pendingAgentConnections } from '../../server/context.js';
 import { sessionDb, yeaftProjectDb, yeaftSessionDb, sessionUiMetadataDb } from '../../server/database.js';
 import {
   buildHiddenSessionCatalog,
@@ -18,13 +18,22 @@ import {
   requiresManualUpgradeBridge,
 } from '../../server/handlers/client-misc.js';
 import { routeSessionPin } from '../../server/handlers/session-pin-router.js';
+import { handleAgentConnection } from '../../server/ws-agent.js';
+import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
 
 describe('resolveAgentAccessError', () => {
   const originalSkipAuth = CONFIG.skipAuth;
 
   afterEach(() => {
     CONFIG.skipAuth = originalSkipAuth;
+    for (const agent of agents.values()) {
+      if (agent._syncTimeout) clearTimeout(agent._syncTimeout);
+    }
+    for (const pending of pendingAgentConnections.values()) {
+      if (pending.timeout) clearTimeout(pending.timeout);
+    }
     agents.clear();
+    pendingAgentConnections.clear();
   });
 
   it('classifies Agent access states and rejects foreign Project mutations', async () => {
@@ -468,6 +477,64 @@ describe('resolveAgentAccessError', () => {
       agentId: 'agent-safe',
     }, async () => true);
     expect(safeCommands).toEqual([{ type: 'upgrade_agent' }]);
+  });
+
+  it('preserves safe self-upgrades through the real SKIP_AUTH registration handshake', async () => {
+    CONFIG.skipAuth = true;
+    const client = {
+      encryptOutbound: false,
+      sent: [],
+      ws: {
+        readyState: WS_OPEN,
+        send(payload) { client.sent.push(JSON.parse(payload)); },
+      },
+    };
+
+    for (const [agentId, version, shouldUpgrade] of [
+      ['skip-old', '1.0.337', false],
+      ['skip-minimum', '1.0.342', true],
+      ['skip-current', '1.0.350', true],
+    ]) {
+      const socket = new MockWebSocket(WS_OPEN);
+      const url = new URL(`ws://localhost/?type=agent&id=${agentId}&name=${agentId}&instanceId=${agentId}&capabilities=plaintext-ok`);
+      expect(url.searchParams.has('version')).toBe(false);
+
+      handleAgentConnection(socket, url);
+      const challenge = socket.getLastMessage();
+      expect(challenge).toMatchObject({ type: 'auth_required' });
+      socket.simulateMessage({
+        type: 'auth',
+        tempId: challenge.tempId,
+        secret: '',
+        capabilities: ['plaintext-ok'],
+        version,
+      });
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      expect(agents.get(agentId)).toMatchObject({
+        version,
+        ownerId: null,
+        encryptOutbound: false,
+      });
+      socket.clearMessages();
+      client.sent.length = 0;
+      await handleClientMisc('client-1', client, {
+        type: 'upgrade_agent',
+        agentId,
+      }, async () => true);
+
+      if (shouldUpgrade) {
+        expect(socket.getSentMessages()).toEqual([{ type: 'upgrade_agent' }]);
+        expect(client.sent).toEqual([]);
+      } else {
+        expect(socket.getSentMessages()).toEqual([]);
+        expect(client.sent.at(-1)).toMatchObject({
+          type: 'upgrade_agent_ack',
+          reason: 'manual_upgrade_required',
+          version,
+        });
+      }
+    }
   });
 
   it('fails closed when legacy Yeaft pin identity is ambiguous', () => {
