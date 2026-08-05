@@ -16,6 +16,7 @@
 import { initYeaftDir, DEFAULT_YEAFT_DIR, isWritable } from './init.js';
 import { loadConfig, loadMCPConfig } from './config.js';
 import { createTrace } from './debug-trace.js';
+import { flushAgentPerfTrace } from './perf-trace.js';
 import { createLLMAdapter } from './llm/adapter.js';
 import { withUsageAccounting } from './llm/usage-accounting.js';
 import { recordAgentTokenUsage } from '../metrics.js';
@@ -254,6 +255,7 @@ export async function loadSession(options = {}) {
   const trace = createTrace({
     enabled: config.debug === true,
     dirPath: yeaftDir,
+    textMaxBytes: config.telemetry?.traceTextMaxBytes,
   });
 
   // ─── 4. Create LLM adapter ────────────────────────────
@@ -590,6 +592,11 @@ export async function loadSession(options = {}) {
       await trace.close();
     } catch {
       // Trace might not have close() (NullTrace)
+    }
+    try {
+      flushAgentPerfTrace(config);
+    } catch {
+      // Performance telemetry is best-effort and must not block shutdown.
     }
     try {
       if (memoryIndex) memoryIndex.close();

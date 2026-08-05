@@ -34,7 +34,7 @@ import { isVpForeign, readContent as readScopeContent } from './memory/store.js'
 import { ActiveMemorySet } from './memory/ams.js';
 import { cleanMemoryPromptText } from './memory/prompt-cleanup.js';
 import { isVpSeedBackfillStub } from './memory/seed-backfill.js';
-import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
+import { boundRawExchange, perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
 // Default thread marker for legacy / non-group flows. Group VP runtime may
 // pass a real threadId per (sessionId, vpId, threadId) engine instance.
 const MAIN_THREAD_ID = 'main';
@@ -88,6 +88,39 @@ const DEFAULT_MEMORY_RECALL_LIMIT = 8;
 const MAX_PROMPT_MEMORY_ITEMS = 8;
 const MAX_RELATED_SESSION_MEMORY_ITEMS = 2;
 const MAX_MEMORY_ITEM_TOKENS = 1600;
+
+function toolDefinitionFor(engine, name) {
+  return engine.getToolDefinition(name);
+}
+
+function isReadOnlyTool(engine, name, input) {
+  try {
+    return toolDefinitionFor(engine, name)?.isReadOnly?.(input) === true;
+  } catch {
+    return false;
+  }
+}
+
+function isCacheableTool(engine, name, input) {
+  try {
+    const tool = toolDefinitionFor(engine, name);
+    if (!tool || !isReadOnlyTool(engine, name, input)) return false;
+    return typeof tool.cacheWithinQuery === 'function'
+      ? tool.cacheWithinQuery(input) === true
+      : tool.cacheWithinQuery === true;
+  } catch {
+    return false;
+  }
+}
+
+function mayMutateWorkspaceAfterReturn(engine, name, input) {
+  try {
+    const value = toolDefinitionFor(engine, name)?.mayMutateWorkspaceAfterReturn;
+    return typeof value === 'function' ? value(input) === true : value === true;
+  } catch {
+    return true;
+  }
+}
 
 // ─── LLM retry policy defaults ──────────────────────────────────
 // Hard-coded floor / ceiling for retry behaviour. The engine reads the
@@ -229,11 +262,9 @@ function sleepWithAbort(ms, signal) {
  *   - `toolCalls` on assistant turns (the LLM's function_call requests)
  *   - `toolCallId` + `isError` on tool turns (the paired tool_result)
  *
- * Content is passed through verbatim — never truncated. Debug traces must
- * mirror exactly what we sent to the LLM; a truncated copy is misleading.
- * If the resulting payload is too large for the client debug store the
- * bound is per-loop-count (see `MAX_YEAFT_DEBUG_LOOPS` in
- * `web/stores/chat.js`), not per-payload mutilation here.
+ * Content is kept intact for the live protocol. The file-backed debug trace
+ * applies its own configured byte budget at persistence time so the model
+ * request path never pays an extra copy just for diagnostics.
  *
  * Pure function — no side effects on the input message.
  *
@@ -243,6 +274,7 @@ function sleepWithAbort(ms, signal) {
 export function mapDebugMessage(m) {
   const out = { role: m.role };
   out.content = m.content;
+  if (m.rawRequest != null) out.rawRequest = m.rawRequest;
   if (Array.isArray(m.toolCalls) && m.toolCalls.length > 0) {
     out.toolCalls = m.toolCalls.map(tc => ({
       id: tc.id,
@@ -649,6 +681,18 @@ export class Engine {
   /** @type {string} */
   #currentThreadId = MAIN_THREAD_ID;
 
+  /** Wire turn id of the active query, used by late async completion rows. */
+  #currentQueryTurnId = null;
+
+  /**
+   * Identity-bound hook into the active query's local read-only result cache.
+   * Async task terminal events can arrive while an adapter stream is already
+   * producing tool calls, so they must invalidate reuse immediately rather
+   * than waiting for the next queue-drain boundary.
+   * @type {{ owner: AbortController, invalidate: () => void }|null}
+   */
+  #activeReadOnlyToolReuse = null;
+
   /** @type {Array<{content:string|Array, preview:string}>} */
   #pendingUserMessages = [];
 
@@ -679,7 +723,7 @@ export class Engine {
   /**
    * Terminal async task results that should be appended to the original
    * tool_result message instead of injected as a synthetic user prompt.
-   * @type {Array<{taskId:string, toolCallId:string, content:string|Array, preview:string}>}
+   * @type {Array<{taskId:string, toolCallId:string, toolName?:string, content:string|Array, preview:string}>}
    */
   #pendingTaskResultUpdates = [];
 
@@ -705,7 +749,7 @@ export class Engine {
    * Async task ownership metadata captured when a tool registers a
    * background task. Keyed by taskId so terminal events can update the
    * original tool_result instead of fabricating a separate turn.
-   * @type {Map<string, { toolCallId?: string, toolName?: string, threadId?: string }>}
+   * @type {Map<string, { toolCallId?: string, toolName?: string, threadId?: string, sessionId?: string, vpId?: string, turnId?: string }>}
    */
   #asyncTaskToolMeta = new Map();
 
@@ -1467,6 +1511,8 @@ export class Engine {
   }
 
   #conversationRecord(message, { sessionId, turnId, model, incomplete = false, stopReason = null, executionOrigin = null } = {}) {
+    const effectiveTurnId = turnId || message.turnId || null;
+    const effectiveVpId = message.speakerVpId || this.#vpId || null;
     const record = {
       role: message.role,
       content: typeof message.content === 'string'
@@ -1483,6 +1529,7 @@ export class Engine {
     if (message.isError) record.isError = true;
     if (message.imageAssetAnchor) record.imageAssetAnchor = true;
     if (message._reflection) record._reflection = true;
+    if (message._asyncTaskCompletion === true) record._asyncTaskCompletion = true;
     if (message.role === 'user') record.userAuthored = message.userAuthored === true;
     if (message.internal === true) record.internal = true;
     if (message.responseKind === 'progress' || message.responseKind === 'result') {
@@ -1491,11 +1538,15 @@ export class Engine {
     if (Array.isArray(message.foldedMessageIds) && message.foldedMessageIds.length > 0) {
       record.foldedMessageIds = [...message.foldedMessageIds];
     }
-    if (turnId && (message.role === 'assistant' || message.role === 'tool')) record.turnId = turnId;
+    if (effectiveTurnId && (message.role === 'assistant' || message.role === 'tool' || message.internal === true)) {
+      record.turnId = effectiveTurnId;
+    }
     if (executionOrigin === 'route_forward' && (message.role === 'assistant' || message.role === 'tool')) {
       record.executionOrigin = executionOrigin;
     }
-    if (this.#vpId && (message.role === 'assistant' || message.role === 'tool')) record.speakerVpId = this.#vpId;
+    if (effectiveVpId && (message.role === 'assistant' || message.role === 'tool' || message.internal === true)) {
+      record.speakerVpId = effectiveVpId;
+    }
     if (incomplete) record.incomplete = true;
     if (stopReason) record.stopReason = stopReason;
     return record;
@@ -1744,22 +1795,53 @@ export class Engine {
       if (!update?.toolCallId) continue;
       const appendText = this.#formatTaskResultUpdateContent(update.content);
       if (!appendText.trim()) continue;
-      const toolMsg = [...conversationMessages].reverse().find((msg) => (
-        msg && msg.role === 'tool' && msg.toolCallId === update.toolCallId
-      ));
+      const toolMsg = update.folded
+        ? null
+        : [...conversationMessages].reverse().find((msg) => (
+          msg && msg.role === 'tool' && msg.toolCallId === update.toolCallId
+        ));
       if (!toolMsg) {
-        this.#pendingTaskResultMessages.push({
-          content: update.content,
-          preview: update.preview,
-          internal: true,
-          taskId: update.taskId,
+        // T1/T2 may have folded the original tool row before this task
+        // completed. The reflection is the canonical history, so a late
+        // completion must not recreate the hidden tool arc on disk or in the
+        // provider transcript. This is engine control context, not a fresh
+        // user-authored message; ConversationStore keeps it off the visible
+        // transcript while retaining it for the next provider boundary.
+        const contextContent = truncateToolResultIfNeeded(appendText, {
+          toolName: update.toolName || 'async task result',
+          language: this.#config?.language,
         });
+        const continuation = {
+          role: 'user',
+          content: `[system note] Async task completion for ${update.toolName || 'a folded tool call'}:\n${contextContent}`,
+          internal: true,
+          _asyncTaskCompletion: true,
+          turnId: update.turnId || null,
+          speakerVpId: update.vpId || null,
+        };
+        const persistedContinuation = this.#persistConversationMessage(continuation, {
+          sessionId: update.sessionId || this.#sessionId,
+          turnId: update.turnId || null,
+        });
+        if (persistedContinuation?.id) continuation._persistedMessageId = persistedContinuation.id;
+        conversationMessages.push(continuation);
+        applied.push(update);
+        if (this.#acceptedAsyncTaskResults.has(update.taskId)) {
+          this.#pendingAsyncTaskConfirmIds.add(update.taskId);
+        }
         continue;
       }
       const prior = typeof toolMsg.content === 'string'
         ? toolMsg.content
         : this.#formatTaskResultUpdateContent(toolMsg.content);
-      toolMsg.content = `${prior}\n\n${appendText}`;
+      // Keep the durable row complete below, but apply the same per-tool
+      // context cap used for the initial result before the next provider
+      // request. Async completions otherwise bypassed the model-facing tool
+      // result budget after their producing call had already returned.
+      toolMsg.content = truncateToolResultIfNeeded(`${prior}\n\n${appendText}`, {
+        toolName: update.toolName || 'async task result',
+        language: this.#config?.language,
+      });
       const persistedTool = this.#persistedToolMessages.get(update.toolCallId);
       if (persistedTool && typeof this.#conversationStore?.update === 'function') {
         const durablePrior = typeof persistedTool.content === 'string'
@@ -2027,10 +2109,16 @@ export class Engine {
         try { signal.removeEventListener('abort', onExternalAbort); } catch { /* ignore */ }
       }
       this.retireAsyncTasks(abortCtrl.signal.aborted ? 'query_aborted' : 'query_closed');
+      // The closure is local to this query. Do not let a late callback from a
+      // retired run touch a later query's independent read cache.
+      if (this.#activeReadOnlyToolReuse?.owner === abortCtrl) {
+        this.#activeReadOnlyToolReuse = null;
+      }
       // Clear current-run state so engine.isRunning flips back to false
       // and a subsequent query() starts with a clean slate.
       this.#currentAbortCtrl = null;
       this.#abortReason = null;
+      this.#currentQueryTurnId = null;
       this.#currentThreadId = MAIN_THREAD_ID;
       this.#pendingUserMessages.length = 0;
       this.#externalUserWakePending = false;
@@ -2071,12 +2159,39 @@ export class Engine {
       ? 'route_forward'
       : null;
     const queryTurnId = randomUUID();
+    this.#currentQueryTurnId = vpTurnId || queryTurnId;
+    // Bind the live query scope before tools can register async work. The
+    // constructor's Session id is only guaranteed for bridge-owned engines;
+    // standalone/CLI callers pass it per query.
+    this.#sessionId = runtimeSessionId || null;
+    this.#currentThreadId = runtimeThreadId;
     const queryStartedAt = Date.now();
     const userQuestionPreview = String(prompt || '').slice(0, 200);
     const queryVpId = vpPersona && typeof vpPersona === 'object'
       && typeof vpPersona.vpId === 'string'
       ? vpPersona.vpId
       : (typeof senderVpId === 'string' ? senderVpId : null);
+    // Exact read-only tool results are safe to reuse within one query only
+    // when no intervening mutation can have changed the workspace. The map is
+    // intentionally local to this query; cross-turn reuse belongs to the
+    // persistent tool log and must not silently bypass new user work. A
+    // detached operation can mutate after its tool call returns, so it disables
+    // reuse for the remainder of this query rather than leaving a timing window
+    // for stale entries to be repopulated.
+    const readOnlyToolResults = new Map();
+    let readOnlyToolReuseDisabled = false;
+    const invalidateReadOnlyToolReuse = () => {
+      readOnlyToolResults.clear();
+      readOnlyToolReuseDisabled = true;
+    };
+    // Completion callbacks run outside this lexical loop. Publish an
+    // identity-bound hook so an accepted completion can close the reuse window
+    // even after the next provider stream has started.
+    const readOnlyToolReuseOwner = this.#currentAbortCtrl;
+    this.#activeReadOnlyToolReuse = {
+      owner: readOnlyToolReuseOwner,
+      invalidate: invalidateReadOnlyToolReuse,
+    };
 
     // Durability boundary: a valid user turn must exist on disk before any
     // memory pre-flow or provider request can fail. The Web Session bridge
@@ -2485,6 +2600,12 @@ export class Engine {
     // control to other VPs cleanly. Reset to null at the top of every
     // outer-loop iteration so the flag never carries across turns.
     let endTurnRequested = null;
+    // StartPlan is a control tool. If the model emits only the checklist after
+    // it, there is no new workspace fact to interpret: persist the plan and
+    // close the turn instead of spending another provider request on a
+    // TodoWrite-only control round. A later user turn can continue the first
+    // pending step; a batch that includes a real work tool always continues.
+    let planBootstrapPending = false;
 
     // LLM retry bookkeeping (rate-limit / 5xx / transient network errors).
     // Counts CONSECUTIVE retryable failures on the same turn — reset to 0
@@ -2574,12 +2695,17 @@ export class Engine {
       const thinkingBlocks = []; // task-327d: collected from adapter for round-trip
       let stopReason = 'end_turn';
       const totalUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheInputDeltaTokens: 0 };
-      // task-344: capture redacted raw request / raw response for debug panel.
+      // task-344: capture bounded raw request / raw response for the debug
+      // panel. Both exchanges obey the live telemetry budget before they
+      // reach durable debug trace storage.
       let rawRequest = null;
       let rawResponse = null;
+      const rawExchangeMaxBytes = Number.isFinite(Number(this.#config?.telemetry?.rawExchangeMaxBytes))
+        ? Math.max(0, Number(this.#config.telemetry.rawExchangeMaxBytes))
+        : 512 * 1024;
       const captureRawExchange = (exchange) => {
-        if (exchange?.rawRequest) rawRequest = exchange.rawRequest;
-        if (exchange?.rawResponse) rawResponse = exchange.rawResponse;
+        if (exchange?.rawRequest) rawRequest = boundRawExchange(exchange.rawRequest, rawExchangeMaxBytes);
+        if (exchange?.rawResponse) rawResponse = boundRawExchange(exchange.rawResponse, rawExchangeMaxBytes);
       };
 
       // task-704b: resolve the live model's context window for this turn.
@@ -2611,6 +2737,12 @@ export class Engine {
         }
       }
       const taskResultUpdatesBeforeStream = this.#drainPendingTaskResultUpdates(conversationMessages);
+      if (taskResultUpdatesBeforeStream.length > 0) {
+        // A completed sub-agent can have mutated the shared workspace while
+        // this query was parked. Its task-result update is the authoritative
+        // synchronization point before the next provider loop.
+        invalidateReadOnlyToolReuse();
+      }
       if (taskResultUpdatesBeforeStream.length > 0) {
         for (const update of taskResultUpdatesBeforeStream) {
           yield {
@@ -2784,6 +2916,7 @@ export class Engine {
           effortSource: userEffort ? 'user' : 'auto',
           signal,
           onRawExchange: captureRawExchange,
+          rawExchangeMaxBytes,
           onRequestStart: () => startProviderRequest?.(activeProviderRequest),
         })) {
           // task-325a (abort-stop fix): per-event abort short-circuit.
@@ -2809,7 +2942,13 @@ export class Engine {
           }
           switch (event.type) {
             case 'text_delta':
-              if (ttfbMs === null) ttfbMs = Date.now() - startTime;
+              if (ttfbMs === null) {
+                ttfbMs = Date.now() - startTime;
+                traceRequest('llm.first_text', {
+                  durationMs: perfNowMs() - requestPerfStart,
+                  detail: { model: currentModel },
+                });
+              }
               responseText += event.text;
               yield event;
               break;
@@ -2833,6 +2972,12 @@ export class Engine {
               }
               break;
             case 'tool_call':
+              if (toolCalls.length === 0) {
+                traceRequest('llm.first_tool_call', {
+                  durationMs: perfNowMs() - requestPerfStart,
+                  detail: { name: event.name || null, model: currentModel },
+                });
+              }
               toolCalls.push(event);
               yield event;
               break;
@@ -2909,6 +3054,8 @@ export class Engine {
             stopReason,
             inputTokens: totalUsage.inputTokens,
             outputTokens: totalUsage.outputTokens,
+            toolCallCount: toolCalls.length,
+            responseTextBytes: Buffer.byteLength(responseText, 'utf8'),
           },
         });
         // Stream completed without throwing — reset the retry counter so
@@ -3270,7 +3417,7 @@ export class Engine {
       // yielding any post-stream diagnostics. A consumer may stop iterating at
       // any yield; persistence therefore cannot wait for turn_end or even the
       // debug `loop` event below.
-      const assistantMsg = { role: 'assistant', content: responseText, responseKind: 'progress' };
+      const assistantMsg = { role: 'assistant', content: responseText, responseKind: 'progress', ...(rawRequest ? { rawRequest } : {}) };
       if (toolCalls.length > 0) {
         assistantMsg.toolCalls = toolCalls.map(tc => ({
           id: tc.id,
@@ -3483,6 +3630,10 @@ export class Engine {
         if (!signal?.aborted) {
           const taskResultUpdatesAfterAsyncWait = this.#drainPendingTaskResultUpdates(conversationMessages);
           if (taskResultUpdatesAfterAsyncWait.length > 0) {
+            // This drain bypasses the next loop's pre-stream drain. A task
+            // that completed while we waited may have changed the workspace,
+            // so it is the same cache synchronization boundary.
+            invalidateReadOnlyToolReuse();
             for (const update of taskResultUpdatesAfterAsyncWait) {
               yield {
                 type: 'tool_result_update',
@@ -3737,8 +3888,12 @@ export class Engine {
         let output;
         let displayImages = [];
         let isError = false;
+        let reusedReadOnlyResult = false;
+        let reusedReadOnlyCallId = null;
         let toolErrorOutput = null;
         let fatalToolError = null;
+        let cacheableTool = false;
+        let duplicateKey = null;
         currentToolCallForAsyncTask = skipped
           ? null
           : {
@@ -3777,7 +3932,35 @@ export class Engine {
           isError = true;
           yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, threadId: this.currentThreadId };
         } else {
-          try {
+          duplicateKey = `${tc.name}\u001f${argsHashOf(tc.input)}`;
+          const readOnlyTool = isReadOnlyTool(this, tc.name, tc.input);
+          cacheableTool = isCacheableTool(this, tc.name, tc.input);
+          // The cache is only valid while the workspace has not changed. Clear
+          // it before every potential mutation, including a tool that later
+          // reports or throws an error after making a partial change. Detached
+          // operations can still mutate after returning, so disable reuse for
+          // the rest of this query instead of allowing stale entries to refill.
+          if (!readOnlyTool) readOnlyToolResults.clear();
+          const mayMutateAfterReturn = mayMutateWorkspaceAfterReturn(this, tc.name, tc.input);
+          if (mayMutateAfterReturn) invalidateReadOnlyToolReuse();
+          const cachedReadOnly = readOnlyToolResults.get(duplicateKey);
+          if (!readOnlyToolReuseDisabled && cachedReadOnly && cacheableTool) {
+            output = cachedReadOnly.output;
+            isError = Boolean(cachedReadOnly.isError);
+            reusedReadOnlyResult = true;
+            reusedReadOnlyCallId = cachedReadOnly.callId || null;
+            yield { type: 'tool_start', id: tc.id, name: tc.name, input: tc.input, threadId: this.currentThreadId, reused: true };
+            yield {
+              type: 'tool_end',
+              id: tc.id,
+              name: tc.name,
+              output,
+              displayImages: [],
+              isError: cachedReadOnly.isError,
+              reused: true,
+              threadId: this.currentThreadId,
+            };
+          } else try {
             yield { type: 'tool_start', id: tc.id, name: tc.name, input: tc.input, threadId: this.currentThreadId };
             if (this.#toolRegistry) {
               toolErrorOutput = this.#toolRegistry.get(tc.name)?.errorOutput || null;
@@ -3855,6 +4038,7 @@ export class Engine {
           durationMs: toolDurationMs,
           isError,
           toolOutput: output,
+          ...(reusedReadOnlyResult ? { reused: true, reusedCallId: reusedReadOnlyCallId } : {}),
           ...(skipped ? { skipped: true } : {}),
           ...(displayImages.length > 0 ? { displayImageCount: displayImages.length } : {}),
         };
@@ -3882,7 +4066,20 @@ export class Engine {
           durationMs: toolDurationMs,
           isError,
           skipped,
+          reused: reusedReadOnlyResult,
+          reusedCallId: reusedReadOnlyCallId,
         });
+
+        if (!skipped && !reusedReadOnlyResult && tc.name === 'StartPlan') {
+          planBootstrapPending = true;
+        }
+        if (!skipped && !reusedReadOnlyResult && !readOnlyToolReuseDisabled && cacheableTool) {
+          readOnlyToolResults.set(duplicateKey, {
+            output,
+            isError,
+            callId: tc.id,
+          });
+        }
 
         // Append only the bounded copy to the model message history. Raw
         // `output` is still used for debug traces, UI events, exec-log, and
@@ -3938,6 +4135,36 @@ export class Engine {
       for (const reminder of pendingDupReminders) {
         conversationMessages.push({ role: 'user', content: reminder });
       }
+
+      // A plan bootstrap that produced only a TodoWrite has no executable work
+      // to feed back to the provider. Close it here. This is intentionally
+      // narrow: StartPlan + TodoWrite is a valid planning result, but a batch
+      // containing any other tool must continue so the model can inspect its
+      // result before deciding what to do next.
+      const onlyPlanControls = planBootstrapPending
+        && toolCalls.length > 0
+        && toolCalls.every(call => call.name === 'StartPlan' || call.name === 'TodoWrite')
+        && toolCalls.some(call => call.name === 'TodoWrite')
+        && !toolBatchBarrier
+        && !endTurnRequested
+        && !abortedDuringTools
+        && !signal?.aborted;
+      if (onlyPlanControls) {
+        const hasPendingStep = toolCalls
+          .filter(call => call.name === 'TodoWrite')
+          .some(call => Array.isArray(call.input?.todos)
+            && call.input.todos.some(todo => todo?.status === 'pending' || todo?.status === 'in_progress'));
+        yield {
+          type: 'turn_end',
+          turnNumber,
+          stopReason: 'plan_recorded',
+          detail: { nextStep: hasPendingStep ? 'pending_work_tools' : 'none', toolCount: toolCalls.length },
+          threadId,
+          terminal: true,
+        };
+        break;
+      }
+      planBootstrapPending = false;
 
       // A batch barrier deliberately returns control to the provider. Any
       // handoff requested by an earlier call belongs to the invalidated plan
@@ -4046,6 +4273,16 @@ export class Engine {
           );
           if (durableRowsInRange && !persistedReflection) {
             throw new Error('T1 reflection could not publish its durable range replacement');
+          }
+          // Raw tool rows inside the replacement range are now tombstoned in
+          // durable history. Late async completions must follow the folded
+          // continuation path rather than appending to those stale rows.
+          const foldedToolCallIds = conversationMessages
+            .slice(batchStart, batchEnd + 1)
+            .filter(message => message?.role === 'tool' && message.toolCallId)
+            .map(message => message.toolCallId);
+          for (const toolCallId of foldedToolCallIds) {
+            this.#persistedToolMessages.delete(toolCallId);
           }
           conversationMessages.length = 0;
           for (const m of next) conversationMessages.push(m);
@@ -4164,6 +4401,16 @@ export class Engine {
   /** @returns {import('./tools/registry.js').ToolRegistry|null} */
   get toolRegistry() { return this.#toolRegistry; }
 
+  /**
+   * Return a registered tool definition for internal loop policy checks.
+   * This keeps the duplicate-result fast path on the same registry metadata
+   * used by normal execution, without exposing the private maps.
+   */
+  getToolDefinition(name) {
+    if (this.#toolRegistry) return this.#toolRegistry.get(name);
+    return this.#tools.get(name) || null;
+  }
+
   /** @returns {import('./skills.js').SkillManager|null} */
   get skillManager() { return this.#skillManager; }
 
@@ -4241,6 +4488,16 @@ export class Engine {
         },
       );
       if (durableRowsInRange && !persistedReflection) continue;
+      // T2 replaces this arc in durable and in-memory history just like T1.
+      // Forget its raw result handles before a late async task can append to a
+      // tombstoned tool row at the next provider boundary.
+      const foldedToolCallIds = conversationMessages
+        .slice(startIdx, endIdx + 1)
+        .filter(message => message?.role === 'tool' && message.toolCallId)
+        .map(message => message.toolCallId);
+      for (const toolCallId of foldedToolCallIds) {
+        this.#persistedToolMessages.delete(toolCallId);
+      }
       // Mutate in place so caller's reference stays valid.
       conversationMessages.length = 0;
       for (const m of next) conversationMessages.push(m);
@@ -4381,7 +4638,7 @@ export class Engine {
    *
    * @param {string} taskId
    * @param {string|Array} content — pre-formatted task result body
-   * @param {{ preview?: string, sessionId?: string, vpId?: string, threadId?: string, taskKind?: string, taskStatus?: string }} [opts]
+   * @param {{ preview?: string, sessionId?: string, vpId?: string, threadId?: string, taskKind?: string, taskStatus?: string, turnId?: string }} [opts]
    * @returns {boolean}
    */
   notifyAsyncTaskCompleted(taskId, content, opts = {}) {
@@ -4394,19 +4651,34 @@ export class Engine {
     // forward and bill for. Production callers (formatTaskResultForVp)
     // always emit a non-empty string today; this guards future refactors.
     if (Array.isArray(content) && content.length === 0) return false;
+    // This is the actual workspace-synchronization boundary. The next
+    // provider stream may already be yielding tool calls, so waiting until a
+    // later queue drain leaves one stale-cache reuse window open.
+    const activeReadOnlyReuse = this.#activeReadOnlyToolReuse;
+    if (activeReadOnlyReuse?.owner === this.#currentAbortCtrl) {
+      activeReadOnlyReuse.invalidate();
+    }
     this.#pendingAsyncTaskIds.delete(taskId);
     const preview = typeof opts.preview === 'string'
       ? opts.preview
       : (typeof content === 'string' ? content.slice(0, 200) : '[task result]');
     const meta = this.#asyncTaskToolMeta.get(taskId) || {};
+    // A completion that lands while its original tool arc is still present
+    // can update that tool result in-place. Once T1/T2 folded the arc, the
+    // provider must receive only a continuation note; otherwise we recreate
+    // a raw tool row after the reflection and invalidate the fold.
+    const hasLiveToolRow = typeof meta.toolCallId === 'string'
+      && meta.toolCallId
+      && Boolean(this.#persistedToolMessages.get(meta.toolCallId));
     const delivery = {
       content,
       preview,
-      sessionId: opts.sessionId,
-      vpId: opts.vpId,
+      sessionId: opts.sessionId || meta.sessionId || this.#sessionId || null,
+      vpId: opts.vpId || meta.vpId || this.#vpId || null,
       threadId: opts.threadId || meta.threadId,
       taskKind: opts.taskKind,
       taskStatus: opts.taskStatus,
+      turnId: opts.turnId || meta.turnId || null,
     };
     this.#acceptedAsyncTaskResults.set(taskId, delivery);
     this.#asyncTaskToolMeta.delete(taskId);
@@ -4414,8 +4686,16 @@ export class Engine {
       this.#pendingTaskResultUpdates.push({
         taskId,
         toolCallId: meta.toolCallId,
+        toolName: meta.toolName,
         content,
         preview,
+        sessionId: delivery.sessionId,
+        vpId: delivery.vpId,
+        turnId: delivery.turnId,
+        // #persistedToolMessages is cleared as soon as folding publishes its
+        // durable reflection. Capture that boundary at completion time so a
+        // later drain cannot infer stale liveness from an unrelated row.
+        folded: !hasLiveToolRow,
       });
     } else {
       this.#pendingTaskResultMessages.push({
@@ -4433,7 +4713,7 @@ export class Engine {
    * Register a result-producing async task as belonging to the current query.
    * Called by tools such as SpawnAgent via `toolCtx.registerAsyncTask`.
    * @param {string} taskId
-   * @param {{ id?: string, name?: string, threadId?: string, toolCallId?: string, toolName?: string }} [meta]
+   * @param {{ id?: string, name?: string, threadId?: string, toolCallId?: string, toolName?: string, sessionId?: string, vpId?: string, turnId?: string }} [meta]
    * @returns {void}
    */
   #registerAsyncTask(taskId, meta = {}) {
@@ -4447,6 +4727,16 @@ export class Engine {
         toolCallId,
         toolName: typeof meta.toolName === 'string' && meta.toolName ? meta.toolName : (typeof meta.name === 'string' ? meta.name : undefined),
         threadId: typeof meta.threadId === 'string' && meta.threadId ? meta.threadId : undefined,
+        sessionId: typeof meta.sessionId === 'string' && meta.sessionId
+          ? meta.sessionId
+          : (this.#sessionId || null),
+        vpId: typeof meta.vpId === 'string' && meta.vpId ? meta.vpId : (this.#vpId || null),
+        // query() exposes the wire turn id while the task is registered.
+        // Persist it with a late completion even after T1/T2 removed the
+        // original tool row from the in-memory arc.
+        turnId: typeof meta.turnId === 'string' && meta.turnId
+          ? meta.turnId
+          : (this.#currentQueryTurnId || null),
       });
     }
     try { this.#asyncTaskCoordinator?.onRegister?.(taskId, this); } catch { /* coord must not throw into tools */ }

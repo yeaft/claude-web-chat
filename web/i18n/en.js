@@ -732,6 +732,11 @@ export default {
   'settings.general.lightTheme': 'Light',
   'settings.general.darkTheme': 'Dark',
   'settings.general.language': 'Language',
+  'settings.general.telemetry': 'Performance telemetry',
+  'settings.general.telemetryDesc': 'Buffer local timing diagnostics without sending trace content to the server.',
+  'settings.general.telemetryOn': 'On',
+  'settings.general.telemetryOff': 'Off',
+  'settings.general.telemetryRawLimit': 'Raw provider response limit (bytes)',
 
   // Settings - Invitations
   'settings.invite.create': 'Create Invite Code',

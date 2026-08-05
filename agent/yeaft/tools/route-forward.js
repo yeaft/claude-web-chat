@@ -104,6 +104,10 @@ Returns JSON: { ok, dispatched?, error?, detail? }.`,
   },
   isConcurrencySafe: () => false,
   isReadOnly: () => false,
+  // A handoff can start another VP on the shared workDir while this query
+  // still has queued tool calls. Conservatively disable reuse even when the
+  // dispatch is rejected; the cost is one fresh read, not stale workspace data.
+  mayMutateWorkspaceAfterReturn: () => true,
   async execute(input, ctx = {}) {
     const { to, text, reason } = input || {};
     if (!to || typeof to !== 'string') {

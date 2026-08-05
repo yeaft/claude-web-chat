@@ -26,7 +26,7 @@ import { sendToServer, flushMessageBuffer } from './buffer.js';
 import { sendAgentMetricsSnapshot } from '../metrics.js';
 import { handleRestartAgent, handleUpgradeAgent } from './upgrade.js';
 import { loadMcpServers, updateMcpConfig } from '../mcp.js';
-import { getLlmConfig, updateLlmConfig, getYeaftSettings, updateYeaftSettings, getSearchSettings, updateSearchSettings, fetchTavilyUsage } from '../yeaft/config-api.js';
+import { getLlmConfig, updateLlmConfig, getYeaftSettings, updateYeaftSettings, getTelemetrySettings, updateTelemetrySettings, getSearchSettings, updateSearchSettings, fetchTavilyUsage } from '../yeaft/config-api.js';
 import { loadConfig } from '../yeaft/config.js';
 import { discoverLlmModels } from '../llm-model-discovery.js';
 import { fetchModelsDev } from '../yeaft/llm/models-dev.js';
@@ -445,6 +445,34 @@ export async function handleMessage(msg) {
         ctx.yeaftRuntimeSettings.autoArchiveIdleDays = result.autoArchiveIdleDays;
       }
       sendToServer({ type: 'yeaft_settings_updated', ...result });
+      break;
+    }
+
+    // Local performance telemetry settings — read/write the `telemetry`
+    // section of config.json. This does not expose trace payloads.
+    case 'get_telemetry_settings': {
+      const settings = getTelemetrySettings(ctx.CONFIG?.yeaftDir);
+      sendToServer({ type: 'telemetry_settings', ...settings });
+      break;
+    }
+
+    case 'update_telemetry_settings': {
+      const result = updateTelemetrySettings(msg.settings || msg.config || {}, ctx.CONFIG?.yeaftDir);
+      if (!result.error) {
+        // Bridge trace producers use the agent-owned config object directly.
+        // The result is the normalized section that was successfully written,
+        // so apply it before refresh can yield and leave no enabled-by-default
+        // gap for diagnostics emitted outside a loaded Session.
+        if (ctx.CONFIG && typeof ctx.CONFIG === 'object') {
+          ctx.CONFIG.telemetry = { ...result };
+        }
+        try {
+          await refreshLiveSessionConfig({});
+        } catch (error) {
+          result.runtimeRefreshError = error?.message || String(error);
+        }
+      }
+      sendToServer({ type: 'telemetry_settings_updated', ...result });
       break;
     }
 
