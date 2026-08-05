@@ -71,7 +71,8 @@ afterEach(async () => {
 });
 
 describe('Yeaft session-scoped model config', () => {
-  it('normalizes and persists bounded telemetry settings without touching other config', () => {
+  it("updates bounded telemetry settings and disables bridge traces", async () => {
+    {
     expect(normaliseTelemetrySection({
       enabled: false,
       retentionDays: 0,
@@ -99,9 +100,10 @@ describe('Yeaft session-scoped model config', () => {
     expect(persisted.primaryModel).toBe('proxy/model');
     expect(persisted.debug).toBe(true);
     expect(persisted.telemetry).toMatchObject({ flushIntervalMs: 250 });
-  });
 
-  it('disables bridge traces through the telemetry update message immediately', async () => {
+    }
+
+    {
     const root = makeDir();
     writeFileSync(join(root, 'config.json'), JSON.stringify({
       primaryModel: 'session-test/gpt-5',
@@ -142,6 +144,8 @@ describe('Yeaft session-scoped model config', () => {
       ctx.serverEncryptionRequired = previousTransport.serverEncryptionRequired;
       ctx.outboundSendQueue = previousTransport.outboundSendQueue;
       ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
+    }
+
     }
   });
 
@@ -361,7 +365,8 @@ describe('Yeaft session-scoped model config', () => {
   });
 
 
-  it('uses canonical Session config storage and clears stale managed overrides', () => {
+  it("uses canonical Session config and refreshes cached engines safely", () => {
+    {
     {
       const root = makeDir();
       const workDir = tempRoot('yeaft-session-config-workdir-');
@@ -425,9 +430,10 @@ describe('Yeaft session-scoped model config', () => {
 
     expect(normalizeSessionConfig(staleRoot, sessionId, currentConfig)).toEqual({});
     expect(loadSessionConfig(staleRoot, sessionId)).toEqual({});
-  });
 
-  it('refreshes cached engines without losing inherited default effort', () => {
+    }
+
+    {
     const root = makeDir();
     const sessionId = 'session-live-config';
     mkdirSync(join(root, 'sessions', sessionId), { recursive: true });
@@ -491,6 +497,8 @@ describe('Yeaft session-scoped model config', () => {
     expect(effective.model).toBe('provider/other-model');
     expect(effective.primaryModel).toBe('provider/other-model');
     expect(effective.modelEffort).toBe('high');
+
+    }
   });
 
   it('never sends a removed managed-catalog override on the next turn', async () => {

@@ -2931,8 +2931,8 @@ export class Engine {
         // Engine configuration is deliberately captured here, before the yield.
         // AdapterRouter then freezes only its provider catalog; bridge config
         // refreshes while `turn_start` is visible cannot alter this request.
-        const capturesProviderRoute = typeof this.#adapter.captureStream === 'function';
-        const captureStream = capturesProviderRoute
+        const hasCaptureStream = typeof this.#adapter.captureStream === 'function';
+        const captureStream = hasCaptureStream
           ? this.#adapter.captureStream.bind(this.#adapter)
           : this.#adapter.stream.bind(this.#adapter);
         let continuationCommitted = false;
@@ -2982,11 +2982,11 @@ export class Engine {
         yield { type: 'turn_start', turnNumber, threadId };
 
         // Provider iteration begins after the visible boundary. Native adapters
-        // commit in onRequestStart immediately before fetch. Legacy adapters
-        // without route capture commit before their generator can execute so
-        // existing stream() contracts retain their durable retry semantics.
+        // commit in onRequestStart immediately before fetch. A plain legacy
+        // adapter only enters its generator at iteration, so preserve its old
+        // dispatch semantics while keeping captured Router requests inert.
         if (signal?.aborted) throw new LLMAbortError();
-        if (!capturesProviderRoute) commitDispatch();
+        if (!hasCaptureStream) commitDispatch();
 
         // Snapshot task results carried by this exact request. Request start
         // is not delivery: fetch may remain pending and then be aborted before

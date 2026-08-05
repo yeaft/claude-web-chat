@@ -20,21 +20,27 @@ import {
 } from '../../agent/yeaft/llm/router.js';
 
 describe('normalizeModelEntry', () => {
-  it('normalizes valid model entries', () => {
+  it("normalizes valid and invalid model entries", () => {
+    {
     expect(normalizeModelEntry('gpt-5')).toEqual({ id: 'gpt-5' });
     expect(normalizeModelEntry({ id: 'claude-sonnet-4', protocol: 'anthropic' }))
       .toEqual({ id: 'claude-sonnet-4', protocol: 'anthropic' });
-  });
-  it('drops invalid entries', () => {
+
+    }
+
+    {
     expect(normalizeModelEntry('')).toBeNull();
     expect(normalizeModelEntry({})).toBeNull();
     expect(normalizeModelEntry(null)).toBeNull();
     expect(normalizeModelEntry({ id: 123 })).toBeNull();
+
+    }
   });
 });
 
 describe('inferProtocolFromModelId', () => {
-  it('matches supported model protocol families', () => {
+  it("classifies known and unknown model protocol ids", () => {
+    {
     expect(inferProtocolFromModelId('claude-sonnet-4-20250514')).toBe('anthropic');
     expect(inferProtocolFromModelId('claude-opus-4')).toBe('anthropic');
     expect(inferProtocolFromModelId('claude-opus-4-8')).toBe('anthropic');
@@ -45,17 +51,22 @@ describe('inferProtocolFromModelId', () => {
     expect(inferProtocolFromModelId('o1-preview')).toBe('openai-responses');
     expect(inferProtocolFromModelId('o3-mini')).toBe('openai-responses');
     expect(inferProtocolFromModelId('chatgpt-5')).toBe('openai-responses');
-  });
-  it('returns null for unknown ids', () => {
+
+    }
+
+    {
     expect(inferProtocolFromModelId('deepseek-chat')).toBeNull();
     expect(inferProtocolFromModelId('llama-3')).toBeNull();
     expect(inferProtocolFromModelId('')).toBeNull();
     expect(inferProtocolFromModelId(null)).toBeNull();
+
+    }
   });
 });
 
 describe('AdapterRouter resolution', () => {
-  it('preserves captured catalogs and resolves stale provider refs', async () => {
+  it("preserves captured catalogs and routes managed protocol refs", async () => {
+    {
     const oldFetch = globalThis.fetch;
     const requests = [];
     globalThis.fetch = async (url, init) => {
@@ -110,9 +121,10 @@ describe('AdapterRouter resolution', () => {
     });
 
     expect(staleCatalogRouter.getProviderForModel('copilot/claude-opus-4.8')?.protocol).toBe('anthropic');
-  });
 
-  it('routes managed GitHub Copilot Claude and GPT refs through their catalog protocols', async () => {
+    }
+
+    {
     const responsesCompletedBody = [
       'event: response.completed',
       'data: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":0,"output_tokens":0}}}',
@@ -149,9 +161,12 @@ describe('AdapterRouter resolution', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+
+    }
   });
 
-  it('rejects a removed model from an authoritative managed catalog before any network call', async () => {
+  it("rejects removed refs and routes bare Claude refs safely", async () => {
+    {
     const fetchFn = vi.fn();
     const originalFetch = globalThis.fetch;
     globalThis.fetch = fetchFn;
@@ -171,9 +186,10 @@ describe('AdapterRouter resolution', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
-  });
 
-  it('routes a bare Claude entry from existing Copilot config through Anthropic despite provider-level Responses', async () => {
+    }
+
+    {
     const fetchFn = vi.fn(async () => ({ ok: true, body: { getReader: () => ({ read: async () => ({ done: true }), releaseLock: () => {} }) } }));
     const originalFetch = globalThis.fetch;
     globalThis.fetch = fetchFn;
@@ -194,9 +210,12 @@ describe('AdapterRouter resolution', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+
+    }
   });
 
-  it('resolves a stale Claude ref from a single mixed-protocol provider row', async () => {
+  it("resolves stale and mixed-protocol provider entries", async () => {
+    {
     const fetchFn = vi.fn(async () => ({ ok: true, body: { getReader: () => ({ read: async () => ({ done: true }), releaseLock: () => {} }) } }));
     const originalFetch = globalThis.fetch;
     globalThis.fetch = fetchFn;
@@ -224,9 +243,10 @@ describe('AdapterRouter resolution', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
-  });
 
-  it('supports legacy and inferred mixed-model provider entries', async () => {
+    }
+
+    {
     const legacyRouter = new AdapterRouter({
       providers: [
         { name: 'p1', baseUrl: 'https://x/', apiKey: 'k', protocol: 'openai-responses', models: ['gpt-5'] },
@@ -249,9 +269,12 @@ describe('AdapterRouter resolution', () => {
     // Both should resolve to the same provider but two different adapters.
     expect(inferredRouter.getProviderForModel('gpt-5')?.name).toBe('github-copilot');
     expect(inferredRouter.getProviderForModel('claude-sonnet-4-20250514')?.name).toBe('github-copilot');
+
+    }
   });
 
-  it('honors overrides and rejects impossible Claude protocol routes', async () => {
+  it("honors valid routes and rejects invalid provider references", async () => {
+    {
     const overrideRouter = new AdapterRouter({
       providers: [
         {
@@ -280,13 +303,16 @@ describe('AdapterRouter resolution', () => {
       const gen = invalidRouter.stream({ model: 'claude-sonnet-4', messages: [] });
       await gen.next();
     }).rejects.toThrow(/Claude models require protocol="anthropic"/);
-  });
 
-  it('throws on unknown model id', async () => {
+    }
+
+    {
     const r = new AdapterRouter({ providers: [] });
     await expect(async () => {
       const gen = r.stream({ model: 'nope', messages: [] });
       await gen.next();
     }).rejects.toThrow(/not found in any provider/);
+
+    }
   });
 });
