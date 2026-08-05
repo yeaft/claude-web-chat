@@ -125,6 +125,7 @@ export default {
   'chat.agent.upgradeConfirm': '升级 Agent "{name}" 到最新版本？\n升级完成后 Agent 会自动重启。',
   'chat.agent.alreadyLatest': 'Agent 已是最新版本 (v{version})，无需升级。',
   'chat.agent.nodeIncompatible': 'Agent 升级中止：目标版本 v{version} 需要 Node {required}，但当前机器运行的是 Node {current}。请先升级 Node.js 再重试。',
+  'chat.agent.manualUpgradeRequired': 'Agent v{version} 早于安全远程升级的引导基线；旧客户端又没有上报足够的平台信息，Server 无法证明这次升级安全。为避免将 Agent 打离线，本次操作已被阻止。请在该机器上手动执行一次 "npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/"，然后重新启动 Agent。自 v{minimum} 起支持安全自动升级。',
   'chat.agent.online': '{count} 个 Agent 在线',
   'chat.agent.selectFirst': '请先选择一个 Agent',
   'chat.agent.yeaft': 'Yeaft 对话',
