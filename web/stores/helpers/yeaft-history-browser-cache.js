@@ -5,8 +5,10 @@ import {
 } from './yeaft-history-cache.js';
 
 const DATABASE_NAME = 'yeaft-history-cache';
-const DATABASE_VERSION = 2;
+const DATABASE_VERSION = 3;
 const SESSION_STORE = 'sessions';
+const METADATA_STORE = 'metadata';
+const ACTIVE_OWNER_KEY = 'active-owner';
 const CACHE_SCHEMA_VERSION = 2;
 
 export const YEAFT_HISTORY_BROWSER_CACHE_LIMITS = Object.freeze({
@@ -17,10 +19,10 @@ export const YEAFT_HISTORY_BROWSER_CACHE_LIMITS = Object.freeze({
 });
 
 let browserOwnerId = null;
-let browserOwnerEpoch = 0;
+let browserOwnerFence = null;
 let databasePromise = null;
 let ownerCleanupPromise = Promise.resolve(true);
-let fullCleanupRequired = false;
+let cleanupRecoveryRequired = false;
 
 function normalizeId(value) {
   const normalized = String(value || '').trim();
@@ -38,6 +40,13 @@ function cacheDatabase() {
 function cacheAvailable() {
   const db = cacheDatabase();
   return !!db && typeof db.open === 'function';
+}
+
+function createGeneration() {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function requestPromise(request) {
@@ -66,9 +75,12 @@ async function openCacheDatabase() {
         const store = db.createObjectStore(SESSION_STORE, { keyPath: 'key' });
         store.createIndex('ownerAccess', ['ownerId', 'lastAccessed']);
       } else {
-        // Version 1 could collapse several UI projections that shared one seq.
-        // Do not hydrate already-corrupted records after the projection fix.
+        // Older schemas had no durable owner generation. Discard their rows so
+        // a stale realm cannot retain plaintext across the v3 security boundary.
         request.transaction.objectStore(SESSION_STORE).clear();
+      }
+      if (!db.objectStoreNames.contains(METADATA_STORE)) {
+        db.createObjectStore(METADATA_STORE, { keyPath: 'key' });
       }
     };
     request.onsuccess = () => {
@@ -88,7 +100,15 @@ function isFenceCurrent(fence) {
   return !!fence
     && !!browserOwnerId
     && fence.ownerId === browserOwnerId
-    && fence.epoch === browserOwnerEpoch;
+    && fence === browserOwnerFence;
+}
+
+function persistentFenceMatches(record, fence) {
+  return !!record
+    && !!fence
+    && record.key === ACTIVE_OWNER_KEY
+    && record.ownerId === fence.ownerId
+    && record.generation === fence.generation;
 }
 
 function plainHistoryRow(row) {
@@ -168,45 +188,66 @@ function chooseRows(rows, limits) {
   return { rows: selected, bytes };
 }
 
-async function deleteRecordsWhere(predicate) {
+async function persistActiveOwner(fence) {
   const db = await openCacheDatabase();
-  // No IndexedDB means no durable browser cache exists to clean.
-  if (!db) return true;
-  const transaction = db.transaction(SESSION_STORE, 'readwrite');
-  const store = transaction.objectStore(SESSION_STORE);
-  const records = await requestPromise(store.getAll());
-  for (const record of records) {
-    if (predicate(record)) store.delete(record.key);
+  const generation = createGeneration();
+  if (!db) {
+    fence.generation = generation;
+    return true;
   }
+  const transaction = db.transaction([METADATA_STORE, SESSION_STORE], 'readwrite');
+  const metadataStore = transaction.objectStore(METADATA_STORE);
+  const sessionStore = transaction.objectStore(SESSION_STORE);
+  const activeOwner = await requestPromise(metadataStore.get(ACTIVE_OWNER_KEY));
+  const canReuse = !cleanupRecoveryRequired
+    && !!fence.ownerId
+    && activeOwner?.ownerId === fence.ownerId
+    && typeof activeOwner?.generation === 'string';
+  const nextGeneration = canReuse ? activeOwner.generation : generation;
+  if (!canReuse) sessionStore.clear();
+  metadataStore.put({
+    key: ACTIVE_OWNER_KEY,
+    ownerId: fence.ownerId,
+    generation: nextGeneration,
+  });
   await transactionComplete(transaction);
+  fence.generation = nextGeneration;
   return true;
 }
 
-function queueOwnerCleanup(cleanup, { full = false } = {}) {
-  if (full) fullCleanupRequired = true;
+function queueOwnerTransition(fence) {
   const waitForPrevious = ownerCleanupPromise.catch(() => {
-    if (!fullCleanupRequired) throw new Error('Browser history owner cleanup failed');
+    if (!cleanupRecoveryRequired) throw new Error('Browser history owner cleanup failed');
   });
-  ownerCleanupPromise = waitForPrevious.then(async () => {
-    const runFullCleanup = fullCleanupRequired;
-    const cleaned = await (runFullCleanup ? deleteRecordsWhere(() => true) : cleanup());
-    if (!cleaned) throw new Error('Browser history owner cleanup is unavailable');
-    if (runFullCleanup) fullCleanupRequired = false;
-    return true;
-  });
+  ownerCleanupPromise = waitForPrevious
+    .then(() => persistActiveOwner(fence))
+    .then((result) => {
+      cleanupRecoveryRequired = false;
+      return result;
+    }, (error) => {
+      cleanupRecoveryRequired = true;
+      throw error;
+    });
   // bind callers do not await cleanup directly; keep the rejected promise as a
   // read/write fence without leaking an unhandled rejection to the browser.
   void ownerCleanupPromise.catch(() => {});
   return ownerCleanupPromise;
 }
 
-async function pruneOwnerRecords(ownerId, limits) {
+async function pruneOwnerRecords(fence, limits) {
   const db = await openCacheDatabase();
   if (!db) return;
-  const transaction = db.transaction(SESSION_STORE, 'readwrite');
+  const transaction = db.transaction([METADATA_STORE, SESSION_STORE], 'readwrite');
+  const activeOwner = await requestPromise(
+    transaction.objectStore(METADATA_STORE).get(ACTIVE_OWNER_KEY),
+  );
   const store = transaction.objectStore(SESSION_STORE);
+  if (!persistentFenceMatches(activeOwner, fence)) {
+    await transactionComplete(transaction);
+    return;
+  }
   const records = (await requestPromise(store.getAll()))
-    .filter(record => record?.ownerId === ownerId)
+    .filter(record => record?.ownerId === fence.ownerId)
     .sort((left, right) => (Number(right.lastAccessed) || 0) - (Number(left.lastAccessed) || 0));
   const expiredBefore = Date.now() - limits.maxAgeMs;
   records.forEach((record, index) => {
@@ -223,26 +264,26 @@ export function bindYeaftHistoryBrowserOwner(value) {
     void clearYeaftHistoryBrowserOwner();
     return null;
   }
-  if (browserOwnerId !== ownerId) {
+  if (browserOwnerId !== ownerId || cleanupRecoveryRequired) {
     browserOwnerId = ownerId;
-    browserOwnerEpoch += 1;
-    // Module memory is empty after reload/new tab. Scan persistent records instead
-    // of relying on previousOwnerId so another user's plaintext cannot survive.
-    queueOwnerCleanup(() => deleteRecordsWhere(record => record?.ownerId !== ownerId));
+    browserOwnerFence = { ownerId, generation: null };
+    // The transaction either adopts the generation already owned by this user
+    // or atomically rotates it and removes every previous owner's plaintext.
+    queueOwnerTransition(browserOwnerFence);
   }
   return currentYeaftHistoryBrowserFence();
 }
 
 export function clearYeaftHistoryBrowserOwner() {
   browserOwnerId = null;
-  browserOwnerEpoch += 1;
-  // Clear all records, including the reload case where the in-memory owner is
-  // unknown. Callers may await the returned promise for physical deletion.
-  return queueOwnerCleanup(() => deleteRecordsWhere(() => true), { full: true });
+  browserOwnerFence = null;
+  // Persist a generation with no owner and clear rows in the same transaction.
+  // Stale tabs must fail metadata validation before they can write again.
+  return queueOwnerTransition({ ownerId: null, generation: null });
 }
 
 export function currentYeaftHistoryBrowserFence() {
-  return browserOwnerId ? { ownerId: browserOwnerId, epoch: browserOwnerEpoch } : null;
+  return browserOwnerFence;
 }
 
 export async function readYeaftHistoryBrowserCache({
@@ -259,8 +300,15 @@ export async function readYeaftHistoryBrowserCache({
     const db = await openCacheDatabase();
     if (!db || !isFenceCurrent(fence)) return null;
     const key = identityKey(fence.ownerId, normalizedAgentId, normalizedSessionId);
-    const transaction = db.transaction(SESSION_STORE, 'readwrite');
+    const transaction = db.transaction([METADATA_STORE, SESSION_STORE], 'readwrite');
+    const activeOwner = await requestPromise(
+      transaction.objectStore(METADATA_STORE).get(ACTIVE_OWNER_KEY),
+    );
     const store = transaction.objectStore(SESSION_STORE);
+    if (!persistentFenceMatches(activeOwner, fence)) {
+      await transactionComplete(transaction);
+      return null;
+    }
     const record = await requestPromise(store.get(key));
     const expiredBefore = Date.now() - limits.maxAgeMs;
     const expired = !!record && (Number(record.lastAccessed) || 0) < expiredBefore;
@@ -293,7 +341,14 @@ export async function writeYeaftHistoryBrowserCache({
     const db = await openCacheDatabase();
     if (!db || !isFenceCurrent(fence)) return false;
     const now = Date.now();
-    const transaction = db.transaction(SESSION_STORE, 'readwrite');
+    const transaction = db.transaction([METADATA_STORE, SESSION_STORE], 'readwrite');
+    const activeOwner = await requestPromise(
+      transaction.objectStore(METADATA_STORE).get(ACTIVE_OWNER_KEY),
+    );
+    if (!persistentFenceMatches(activeOwner, fence)) {
+      await transactionComplete(transaction);
+      return false;
+    }
     transaction.objectStore(SESSION_STORE).put({
       key: identityKey(fence.ownerId, normalizedAgentId, normalizedSessionId),
       schemaVersion: CACHE_SCHEMA_VERSION,
@@ -310,7 +365,7 @@ export async function writeYeaftHistoryBrowserCache({
     });
     await transactionComplete(transaction);
     if (!isFenceCurrent(fence)) return false;
-    void pruneOwnerRecords(fence.ownerId, limits).catch(() => {});
+    void pruneOwnerRecords(fence, limits).catch(() => {});
     return true;
   } catch {
     return false;
@@ -323,11 +378,21 @@ export async function removeYeaftHistoryBrowserCache({ fence, agentId, sessionId
   if (!isFenceCurrent(fence) || !normalizedAgentId || !normalizedSessionId) return false;
   await ownerCleanupPromise;
   const db = await openCacheDatabase();
-  if (!db || !isFenceCurrent(fence)) return false;
-  const transaction = db.transaction(SESSION_STORE, 'readwrite');
+  // No IndexedDB means there is no durable browser cache to remove.
+  if (!db) return true;
+  if (!isFenceCurrent(fence)) return false;
+  const transaction = db.transaction([METADATA_STORE, SESSION_STORE], 'readwrite');
+  const activeOwner = await requestPromise(
+    transaction.objectStore(METADATA_STORE).get(ACTIVE_OWNER_KEY),
+  );
+  if (!persistentFenceMatches(activeOwner, fence)) {
+    // A generation change atomically clears the previous generation's rows.
+    await transactionComplete(transaction);
+    return true;
+  }
   transaction.objectStore(SESSION_STORE).delete(
     identityKey(fence.ownerId, normalizedAgentId, normalizedSessionId),
   );
   await transactionComplete(transaction);
-  return isFenceCurrent(fence);
+  return true;
 }

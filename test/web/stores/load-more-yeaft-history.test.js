@@ -257,8 +257,8 @@ describe('Yeaft conversation loading state', () => {
       }
     }
     class MemoryTransaction {
-      constructor(records) {
-        this.records = records;
+      constructor(stores) {
+        this.stores = stores;
         this.completed = false;
         this._oncomplete = null;
       }
@@ -267,29 +267,33 @@ describe('Yeaft conversation loading state', () => {
         if (this.completed && handler) queueMicrotask(handler);
       }
       get oncomplete() { return this._oncomplete; }
-      objectStore() {
+      objectStore(name) {
+        const records = this.stores[name];
         const request = run => new MemoryRequest(() => {
           const value = run();
           queueMicrotask(() => { this.completed = true; this._oncomplete?.(); });
           return value;
         });
         return {
-          get: key => request(() => this.records.get(key)),
-          getAll: () => request(() => Array.from(this.records.values())),
-          put: record => request(() => { this.records.set(record.key, structuredClone(record)); return record.key; }),
-          delete: key => request(() => this.records.delete(key)),
+          get: key => request(() => records.get(key)),
+          getAll: () => request(() => Array.from(records.values())),
+          put: record => request(() => { records.set(record.key, structuredClone(record)); return record.key; }),
+          delete: key => request(() => records.delete(key)),
+          clear: () => request(() => records.clear()),
         };
       }
     }
     const records = new Map();
+    const metadata = new Map();
+    const stores = { sessions: records, metadata };
     const previousIndexedDB = globalThis.indexedDB;
     globalThis.indexedDB = {
       open() {
         const request = {};
         queueMicrotask(() => {
           request.result = {
-            objectStoreNames: { contains: name => name === 'sessions' },
-            transaction: () => new MemoryTransaction(records),
+            objectStoreNames: { contains: name => name === 'sessions' || name === 'metadata' },
+            transaction: () => new MemoryTransaction(stores),
           };
           request.onsuccess?.();
         });

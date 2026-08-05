@@ -37,7 +37,7 @@ function harnessHtml() {
 
 async function readPhysicalRecords(page) {
   return page.evaluate(async () => {
-    const request = indexedDB.open('yeaft-history-cache', 2);
+    const request = indexedDB.open('yeaft-history-cache', 3);
     const db = await new Promise((resolveOpen, reject) => {
       request.onsuccess = () => resolveOpen(request.result);
       request.onerror = () => reject(request.error);
@@ -87,6 +87,111 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   if (!server) return;
   await new Promise(resolveClose => server.close(resolveClose));
+});
+
+test('rejects a stale tab after another tab changes owner', async ({ browser }) => {
+  const context = await browser.newContext();
+  const stalePage = await context.newPage();
+  const currentPage = await context.newPage();
+  try {
+    await Promise.all([
+      stalePage.goto(`${baseUrl}/__history-cache`),
+      currentPage.goto(`${baseUrl}/__history-cache`),
+    ]);
+    await Promise.all([stalePage, currentPage].map(page => expect.poll(() => page.evaluate(() => (
+      window.__historyCacheError || (window.__historyCacheReady ? 'ready' : null)
+    ))).toBe('ready')));
+
+    const firstWrite = await stalePage.evaluate(async () => {
+      const cache = window.__historyCache;
+      await cache.clearYeaftHistoryBrowserOwner();
+      const fence = cache.bindYeaftHistoryBrowserOwner('owner-a');
+      return cache.writeYeaftHistoryBrowserCache({
+        fence,
+        agentId: 'agent-a',
+        sessionId: 'session-a',
+        rows: [{
+          id: 'm0001', messageId: 'm0001', seq: 1, type: 'user',
+          content: 'owner-a private', sessionId: 'session-a', isHistory: true,
+        }],
+      });
+    });
+    expect(firstWrite).toBe(true);
+    expect(await readPhysicalRecords(stalePage)).toHaveLength(1);
+
+    const currentWrite = await currentPage.evaluate(async () => {
+      const cache = window.__historyCache;
+      const fence = cache.bindYeaftHistoryBrowserOwner('owner-b');
+      return cache.writeYeaftHistoryBrowserCache({
+        fence,
+        agentId: 'agent-b',
+        sessionId: 'session-b',
+        rows: [{
+          id: 'm0002', messageId: 'm0002', seq: 2, type: 'user',
+          content: 'owner-b private', sessionId: 'session-b', isHistory: true,
+        }],
+      });
+    });
+    expect(currentWrite).toBe(true);
+
+    const staleWrite = await stalePage.evaluate(async () => {
+      const cache = window.__historyCache;
+      const fence = cache.currentYeaftHistoryBrowserFence();
+      return cache.writeYeaftHistoryBrowserCache({
+        fence,
+        agentId: 'agent-a',
+        sessionId: 'session-after-switch',
+        rows: [{
+          id: 'm0003', messageId: 'm0003', seq: 3, type: 'user',
+          content: 'must not return', sessionId: 'session-after-switch', isHistory: true,
+        }],
+      });
+    });
+    expect(staleWrite).toBe(false);
+    expect(await readPhysicalRecords(currentPage)).toEqual([
+      expect.objectContaining({ ownerId: 'owner-b', sessionId: 'session-b' }),
+    ]);
+  } finally {
+    await context.close();
+  }
+});
+
+test('treats Session removal as complete when IndexedDB is unavailable', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(globalThis, 'indexedDB', {
+      configurable: true,
+      value: undefined,
+    });
+  });
+  await page.goto(`${baseUrl}/__history-cache`);
+  await expect.poll(() => page.evaluate(() => (
+    window.__historyCacheError || (window.__historyCacheReady ? 'ready' : null)
+  ))).toBe('ready');
+
+  const result = await page.evaluate(async () => {
+    const cache = window.__historyCache;
+    const chat = window.__chatStore;
+    const fence = cache.bindYeaftHistoryBrowserOwner('owner-a');
+    let resolveCrud;
+    const crud = new Promise(resolve => { resolveCrud = resolve; });
+    chat._sessionCrudPending = new Map([['delete-no-idb', { resolve: resolveCrud }]]);
+    chat.handleYeaftOutput({
+      agentId: 'agent-a',
+      event: {
+        type: 'session_crud_result', requestId: 'delete-no-idb', ok: true,
+        op: 'delete', sessionId: 'session-a',
+      },
+    });
+    const result = await crud;
+    return {
+      fenceReady: typeof fence?.generation === 'string',
+      result,
+    };
+  });
+  expect(result).toEqual({
+    fenceReady: true,
+    result: expect.objectContaining({ ok: true, op: 'delete', sessionId: 'session-a' }),
+  });
 });
 
 test('persists projections and completes cache lifecycle transactions', async ({ page }) => {
@@ -180,7 +285,7 @@ test('persists projections and completes cache lifecycle transactions', async ({
       sessionId: 'session-c',
       rows: [{ id: 'm0004', messageId: 'm0004', seq: 4, type: 'user', content: 'expired', sessionId: 'session-c', isHistory: true }],
     });
-    const request = indexedDB.open('yeaft-history-cache', 2);
+    const request = indexedDB.open('yeaft-history-cache', 3);
     const db = await new Promise((resolveOpen, reject) => {
       request.onsuccess = () => resolveOpen(request.result);
       request.onerror = () => reject(request.error);
