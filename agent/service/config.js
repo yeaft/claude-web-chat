@@ -98,6 +98,10 @@ export function resolveRuntimeIdentity(fileConfig = {}, env = process.env) {
   return { agentName, instanceId };
 }
 
+export function shouldLoadLegacyLocalConfig(env = process.env) {
+  return !String(env.YEAFT_AGENT_INSTANCE || '').trim();
+}
+
 export function resolveServiceInstanceId(args = [], env = process.env, options = {}) {
   const { deprecatedInstanceId, explicitName } = readIdentityArgs(args);
   if (explicitName) return explicitName;

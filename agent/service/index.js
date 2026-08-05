@@ -29,6 +29,7 @@ export {
   resolveDisplayName,
   resolveRuntimeIdentity,
   resolveServiceInstanceId,
+  shouldLoadLegacyLocalConfig,
   normalizeInstanceId,
   isDefaultInstance,
   validateInstanceId,

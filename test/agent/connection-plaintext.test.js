@@ -38,7 +38,9 @@ import {
   resolveYeaftDir,
   resolveRuntimeIdentity,
   resolveServiceInstanceId,
+  shouldLoadLegacyLocalConfig,
 } from '../../agent/service/config.js';
+import { shouldLoadLegacyLocalConfig as shouldLoadLegacyLocalConfigFromService } from '../../agent/service.js';
 import { handleLocalCommand } from '../../agent/cli.js';
 import { applyRegisteredTransport } from '../../agent/connection/message-router.js';
 import { generateSessionKey, isEncrypted } from '../../agent/encryption.js';
@@ -198,6 +200,11 @@ describe('agent ctx defaults and upgrade contract', () => {
       agentName: 'Display Name',
       instanceId: 'saved-instance',
     });
+    expect(shouldLoadLegacyLocalConfig({})).toBe(true);
+    expect(shouldLoadLegacyLocalConfig({ YEAFT_AGENT_INSTANCE: '' })).toBe(true);
+    expect(shouldLoadLegacyLocalConfig({ YEAFT_AGENT_INSTANCE: 'server' })).toBe(false);
+    expect(shouldLoadLegacyLocalConfig({ YEAFT_AGENT_INSTANCE: 'default' })).toBe(false);
+    expect(shouldLoadLegacyLocalConfigFromService).toBe(shouldLoadLegacyLocalConfig);
     expect(resolveServiceInstanceId([], { YEAFT_AGENT_INSTANCE: 'named' }, { management: true })).toBe('named');
     expect(() => resolveServiceInstanceId([], { YEAFT_AGENT_INSTANCE: 'bad name' }, { management: true })).toThrow('Instance id');
     expect(applyAgentIdentityToEnv(['--instance', 'legacy', '--name', 'explicit-name'], env)).toBe('explicit-name');

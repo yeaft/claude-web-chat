@@ -10,7 +10,14 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import ctx from './context.js';
-import { getDefaultAgentName, getDefaultYeaftDir, resolveRuntimeIdentity, getConfigPath, loadServiceConfig } from './service.js';
+import {
+  getDefaultAgentName,
+  getDefaultYeaftDir,
+  resolveRuntimeIdentity,
+  getConfigPath,
+  loadServiceConfig,
+  shouldLoadLegacyLocalConfig,
+} from './service.js';
 import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
@@ -37,7 +44,8 @@ const pkg = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf-8'));
 ctx.agentVersion = pkg.version;
 ctx.pkgName = pkg.name;
 
-// 配置文件路径（向后兼容：先查当前目录 .claude-agent.json）
+// Legacy direct launches may still read cwd/.claude-agent.json. Explicit
+// service instances must stay scoped to their standard per-instance config.
 const LOCAL_CONFIG_FILE = join(process.cwd(), '.claude-agent.json');
 const IS_LOCAL_RUN = process.env.YEAFT_LOCAL_RUN === 'true';
 const DEFAULT_AGENT_NAME = getDefaultAgentName();
@@ -56,8 +64,10 @@ function loadConfig() {
   // must not inherit a remote agent's persisted configuration.
   if (IS_LOCAL_RUN) return defaults;
 
-  // Priority 1: Local .claude-agent.json (backward compat)
-  if (existsSync(LOCAL_CONFIG_FILE)) {
+  // Priority 1: Local .claude-agent.json (backward compat for unscoped launches only).
+  // A named service can share its cwd with an unrelated legacy launch, so the
+  // process-level instance identity must fence this unscoped file out.
+  if (shouldLoadLegacyLocalConfig(process.env) && existsSync(LOCAL_CONFIG_FILE)) {
     try {
       const saved = JSON.parse(readFileSync(LOCAL_CONFIG_FILE, 'utf-8'));
       const { agentId, ...rest } = saved;
@@ -77,7 +87,7 @@ function loadConfig() {
 }
 
 function saveConfig(config) {
-  if (IS_LOCAL_RUN) return;
+  if (IS_LOCAL_RUN || !shouldLoadLegacyLocalConfig(process.env)) return;
   writeFileSync(LOCAL_CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
