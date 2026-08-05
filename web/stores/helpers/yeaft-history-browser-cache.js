@@ -1,12 +1,13 @@
 import {
   isDurableYeaftHistoryRow,
   yeaftHistoryRowSeq,
+  yeaftHistoryUnitKey,
 } from './yeaft-history-cache.js';
 
 const DATABASE_NAME = 'yeaft-history-cache';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const SESSION_STORE = 'sessions';
-const CACHE_SCHEMA_VERSION = 1;
+const CACHE_SCHEMA_VERSION = 2;
 
 export const YEAFT_HISTORY_BROWSER_CACHE_LIMITS = Object.freeze({
   maxSessionsPerOwner: 12,
@@ -18,6 +19,7 @@ export const YEAFT_HISTORY_BROWSER_CACHE_LIMITS = Object.freeze({
 let browserOwnerId = null;
 let browserOwnerEpoch = 0;
 let databasePromise = null;
+let ownerCleanupPromise = Promise.resolve(false);
 
 function normalizeId(value) {
   const normalized = String(value || '').trim();
@@ -62,9 +64,16 @@ async function openCacheDatabase() {
       if (!db.objectStoreNames.contains(SESSION_STORE)) {
         const store = db.createObjectStore(SESSION_STORE, { keyPath: 'key' });
         store.createIndex('ownerAccess', ['ownerId', 'lastAccessed']);
+      } else {
+        // Version 1 could collapse several UI projections that shared one seq.
+        // Do not hydrate already-corrupted records after the projection fix.
+        request.transaction.objectStore(SESSION_STORE).clear();
       }
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      request.result.onversionchange = () => request.result.close();
+      resolve(request.result);
+    };
     request.onerror = () => reject(request.error || new Error('Failed to open history cache'));
     request.onblocked = () => reject(new Error('History cache upgrade is blocked'));
   }).catch((error) => {
@@ -81,54 +90,102 @@ function isFenceCurrent(fence) {
     && fence.epoch === browserOwnerEpoch;
 }
 
+function plainHistoryRow(row) {
+  try {
+    // Pinia exposes messagesMap rows as Vue proxies. IndexedDB structured clone
+    // rejects proxies, while JSON projection strips runtime-only functions and
+    // produces an independent snapshot for persistent storage.
+    return JSON.parse(JSON.stringify(row));
+  } catch {
+    return null;
+  }
+}
+
 function rowBytes(row) {
   try { return new TextEncoder().encode(JSON.stringify(row)).length; }
   catch { return 0; }
 }
 
 function rowCacheKey(row) {
-  const seq = yeaftHistoryRowSeq(row);
-  if (Number.isFinite(seq)) return `seq:${seq}`;
-  return row?.stableKey || row?.uiKey || row?.messageId || row?.id || null;
+  const explicit = row?.stableKey || row?.uiKey;
+  if (explicit) return String(explicit);
+  const unit = yeaftHistoryUnitKey(row);
+  const projection = [
+    row?.type || '',
+    row?.toolName || '',
+    row?.toolCallId || '',
+    row?.speakerVpId || row?.vpId || '',
+    row?.id || row?.messageId || '',
+  ].join(':');
+  return `${unit}:projection:${projection}`;
 }
 
 function chooseRows(rows, limits) {
-  const byKey = new Map();
-  for (const row of Array.isArray(rows) ? rows : []) {
+  const units = new Map();
+  for (const [index, sourceRow] of (Array.isArray(rows) ? rows : []).entries()) {
+    const row = plainHistoryRow(sourceRow);
     if (!isDurableYeaftHistoryRow(row)) continue;
-    const key = rowCacheKey(row);
-    if (!key) continue;
-    byKey.set(key, row);
+    const unitKey = yeaftHistoryUnitKey(row);
+    const rowKey = rowCacheKey(row);
+    const unit = units.get(unitKey) || {
+      key: unitKey,
+      seq: yeaftHistoryRowSeq(row),
+      lastIndex: index,
+      rowsByKey: new Map(),
+    };
+    unit.seq = Math.max(unit.seq ?? -1, yeaftHistoryRowSeq(row) ?? -1);
+    unit.lastIndex = Math.max(unit.lastIndex, index);
+    unit.rowsByKey.set(rowKey, { row, index });
+    units.set(unitKey, unit);
   }
-  const newest = Array.from(byKey.values()).sort((left, right) => (
-    (yeaftHistoryRowSeq(right) ?? -1) - (yeaftHistoryRowSeq(left) ?? -1)
+  const newest = Array.from(units.values()).map(unit => {
+    const entries = Array.from(unit.rowsByKey.values());
+    return {
+      ...unit,
+      entries,
+      rowCount: entries.length,
+      bytes: entries.reduce((sum, entry) => sum + rowBytes(entry.row), 0),
+    };
+  }).sort((left, right) => (
+    (right.seq ?? -1) - (left.seq ?? -1) || right.lastIndex - left.lastIndex
   ));
-  const selected = [];
+  const selectedUnits = [];
+  let rowCount = 0;
   let bytes = 0;
-  for (const row of newest) {
-    const nextBytes = rowBytes(row);
-    if (selected.length >= limits.maxRowsPerSession) break;
-    if (selected.length > 0 && bytes + nextBytes > limits.maxBytesPerSession) break;
-    selected.push(row);
-    bytes += nextBytes;
+  for (const unit of newest) {
+    const exceedsLimit = rowCount + unit.rowCount > limits.maxRowsPerSession
+      || bytes + unit.bytes > limits.maxBytesPerSession;
+    if (selectedUnits.length > 0 && exceedsLimit) break;
+    selectedUnits.push(unit);
+    rowCount += unit.rowCount;
+    bytes += unit.bytes;
   }
-  selected.sort((left, right) => (
-    (yeaftHistoryRowSeq(left) ?? -1) - (yeaftHistoryRowSeq(right) ?? -1)
-  ));
+  const selected = selectedUnits
+    .flatMap(unit => unit.entries)
+    .sort((left, right) => left.index - right.index)
+    .map(entry => entry.row);
   return { rows: selected, bytes };
 }
 
-async function deleteOwnerRecords(ownerId) {
+async function deleteRecordsWhere(predicate) {
   const db = await openCacheDatabase();
   if (!db) return false;
   const transaction = db.transaction(SESSION_STORE, 'readwrite');
   const store = transaction.objectStore(SESSION_STORE);
   const records = await requestPromise(store.getAll());
   for (const record of records) {
-    if (record?.ownerId === ownerId) store.delete(record.key);
+    if (predicate(record)) store.delete(record.key);
   }
   await transactionComplete(transaction);
   return true;
+}
+
+function queueOwnerCleanup(cleanup) {
+  ownerCleanupPromise = ownerCleanupPromise
+    .catch(() => false)
+    .then(cleanup)
+    .catch(() => false);
+  return ownerCleanupPromise;
 }
 
 async function pruneOwnerRecords(ownerId, limits) {
@@ -150,20 +207,26 @@ async function pruneOwnerRecords(ownerId, limits) {
 
 export function bindYeaftHistoryBrowserOwner(value) {
   const ownerId = normalizeId(value);
+  if (!ownerId) {
+    void clearYeaftHistoryBrowserOwner();
+    return null;
+  }
   if (browserOwnerId !== ownerId) {
-    const previousOwnerId = browserOwnerId;
     browserOwnerId = ownerId;
     browserOwnerEpoch += 1;
-    if (previousOwnerId) void deleteOwnerRecords(previousOwnerId).catch(() => {});
+    // Module memory is empty after reload/new tab. Scan persistent records instead
+    // of relying on previousOwnerId so another user's plaintext cannot survive.
+    queueOwnerCleanup(() => deleteRecordsWhere(record => record?.ownerId !== ownerId));
   }
   return currentYeaftHistoryBrowserFence();
 }
 
 export function clearYeaftHistoryBrowserOwner() {
-  const previousOwnerId = browserOwnerId;
   browserOwnerId = null;
   browserOwnerEpoch += 1;
-  if (previousOwnerId) void deleteOwnerRecords(previousOwnerId).catch(() => {});
+  // Clear all records, including the reload case where the in-memory owner is
+  // unknown. Callers may await the returned promise for physical deletion.
+  return queueOwnerCleanup(() => deleteRecordsWhere(() => true));
 }
 
 export function currentYeaftHistoryBrowserFence() {
@@ -175,6 +238,7 @@ export async function readYeaftHistoryBrowserCache({ fence, agentId, sessionId }
   const normalizedSessionId = normalizeId(sessionId);
   if (!isFenceCurrent(fence) || !normalizedAgentId || !normalizedSessionId) return null;
   try {
+    await ownerCleanupPromise;
     const db = await openCacheDatabase();
     if (!db || !isFenceCurrent(fence)) return null;
     const transaction = db.transaction(SESSION_STORE, 'readonly');
@@ -205,6 +269,7 @@ export async function writeYeaftHistoryBrowserCache({
   const selected = chooseRows(rows, limits);
   if (selected.rows.length === 0) return false;
   try {
+    await ownerCleanupPromise;
     const db = await openCacheDatabase();
     if (!db || !isFenceCurrent(fence)) return false;
     const now = Date.now();
@@ -237,6 +302,7 @@ export async function removeYeaftHistoryBrowserCache({ fence, agentId, sessionId
   const normalizedSessionId = normalizeId(sessionId);
   if (!isFenceCurrent(fence) || !normalizedAgentId || !normalizedSessionId) return false;
   try {
+    await ownerCleanupPromise;
     const db = await openCacheDatabase();
     if (!db || !isFenceCurrent(fence)) return false;
     const transaction = db.transaction(SESSION_STORE, 'readwrite');

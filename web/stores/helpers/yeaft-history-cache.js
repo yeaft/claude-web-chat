@@ -43,7 +43,7 @@ function rowBytes(row) {
   catch { return 0; }
 }
 
-function unitKey(row) {
+export function yeaftHistoryUnitKey(row) {
   if (row?.historyEntryId) return `entry:${row.historyEntryId}`;
   const seq = yeaftHistoryRowSeq(row);
   return Number.isFinite(seq) ? `seq:${seq}` : (row?.stableKey || row?.uiKey || row?.id || row?.messageId || 'legacy');
@@ -53,7 +53,7 @@ function durableUnits(rows) {
   const units = new Map();
   for (const row of rows) {
     if (!isDurableYeaftHistoryRow(row)) continue;
-    const key = unitKey(row);
+    const key = yeaftHistoryUnitKey(row);
     const unit = units.get(key) || { key, rows: [], seq: yeaftHistoryRowSeq(row), bytes: 0, touchedAt: 0 };
     unit.rows.push(row);
     unit.bytes += rowBytes(row);
@@ -137,10 +137,10 @@ function pruneOneSession(store, { conversationId, agentId, sessionId, incomingRo
   touchIncomingRows(scoped, incomingRows, now);
   const pinnedKeys = new Set((incomingRows || [])
     .filter(row => row?.historyEntryId)
-    .map(unitKey));
+    .map(yeaftHistoryUnitKey));
   const units = durableUnits(scoped);
   const selectedUnits = chooseDurableUnits(units, limits, pinnedKeys);
-  const keptScoped = scoped.filter(row => !isDurableYeaftHistoryRow(row) || selectedUnits.has(unitKey(row)));
+  const keptScoped = scoped.filter(row => !isDurableYeaftHistoryRow(row) || selectedUnits.has(yeaftHistoryUnitKey(row)));
   const keptSet = new Set(keptScoped);
   store.messagesMap[conversationId] = allRows.filter(row => rowSessionId(row) !== sessionId || keptSet.has(row));
   const summary = summarizeRows(keptScoped);

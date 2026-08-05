@@ -822,13 +822,14 @@ export const useAuthStore = defineStore('auth', {
         console.error('Logout error:', err);
       }
 
-      this.clearStoredSession();
+      await this.clearStoredSession();
     },
 
     clearStoredSession(error = null) {
-      this.reset();
+      const historyCleanup = this.reset();
       localStorage.removeItem('authToken');
       if (error) this.error = error;
+      return historyCleanup;
     },
 
     getActiveToken() {
@@ -1003,7 +1004,7 @@ export const useAuthStore = defineStore('auth', {
           return { success: false, error: data.error || 'Failed to delete account' };
         }
         // Clear local state — server already revoked the browser session.
-        this.clearStoredSession();
+        await this.clearStoredSession();
         return { success: true };
       } catch (err) {
         return { success: false, error: err.message || 'Network error' };
@@ -1015,7 +1016,7 @@ export const useAuthStore = defineStore('auth', {
      */
     reset() {
       clearWorkCenterBrowserOwner();
-      clearYeaftHistoryBrowserOwner();
+      const historyCleanup = clearYeaftHistoryBrowserOwner();
       this.authGeneration += 1;
       this.stopSessionRefresh();
       this.isAuthenticated = false;
@@ -1031,6 +1032,7 @@ export const useAuthStore = defineStore('auth', {
       this.qrCode = null;
       this.error = null;
       this.loading = false;
+      return historyCleanup;
     }
   }
 });

@@ -51,6 +51,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.doUnmock('../../../web/stores/helpers/yeaft-history-browser-cache.js');
   globalThis.Pinia = originalPinia;
   globalThis.fetch = originalFetch;
   globalThis.localStorage = originalLocalStorage;
@@ -236,16 +237,30 @@ describe('auth store session restore and refresh', () => {
     expect(globalThis.localStorage.removeItem).not.toHaveBeenCalled();
   });
 
-  it('always posts logout so the server can revoke a cookie-only session', async () => {
+  it('always posts logout and waits for physical browser-history cleanup', async () => {
     globalThis.localStorage = createLocalStorage({
       'yeaft-work-center-composer-drafts-v1': JSON.stringify({ ownerId: 'user-a', records: {} }),
       'yeaft-work-center-message-outbox-v1': JSON.stringify({ ownerId: 'user-a', records: {} }),
     });
     globalThis.fetch = vi.fn(async () => jsonResponse());
+    let finishCleanup;
+    const historyCleanup = new Promise(resolve => { finishCleanup = resolve; });
+    const clearYeaftHistoryBrowserOwner = vi.fn(() => historyCleanup);
+    vi.doMock('../../../web/stores/helpers/yeaft-history-browser-cache.js', () => ({
+      bindYeaftHistoryBrowserOwner: vi.fn(),
+      clearYeaftHistoryBrowserOwner,
+      currentYeaftHistoryBrowserFence: () => null,
+    }));
     const auth = await loadAuthStore();
     auth.isAuthenticated = true;
 
-    await auth.logout();
+    let completed = false;
+    const logout = auth.logout().then(() => { completed = true; });
+    await Promise.resolve();
+    expect(clearYeaftHistoryBrowserOwner).toHaveBeenCalledOnce();
+    expect(completed).toBe(false);
+    finishCleanup(true);
+    await logout;
 
     expect(globalThis.fetch).toHaveBeenCalledWith('/api/auth/logout', {
       method: 'POST',
@@ -257,8 +272,7 @@ describe('auth store session restore and refresh', () => {
       .toHaveBeenCalledWith('yeaft-work-center-composer-drafts-v1');
     expect(globalThis.localStorage.removeItem)
       .toHaveBeenCalledWith('yeaft-work-center-message-outbox-v1');
-    const historyCache = await import('../../../web/stores/helpers/yeaft-history-browser-cache.js');
-    expect(historyCache.currentYeaftHistoryBrowserFence()).toBeNull();
+    expect(completed).toBe(true);
   });
 
   it('loads and unbinds identities for an authenticated cookie-only session', async () => {
@@ -293,13 +307,31 @@ describe('auth store session restore and refresh', () => {
     expect(auth.linkedIdentities).toEqual([]);
   });
 
-  it('deletes an account for an authenticated cookie-only session', async () => {
+  it('deletes an account only after browser history is physically cleared', async () => {
     globalThis.localStorage = createLocalStorage();
     globalThis.fetch = vi.fn(async () => jsonResponse({ body: { success: true } }));
+    let finishCleanup;
+    const historyCleanup = new Promise(resolve => { finishCleanup = resolve; });
+    const clearYeaftHistoryBrowserOwner = vi.fn(() => historyCleanup);
+    vi.doMock('../../../web/stores/helpers/yeaft-history-browser-cache.js', () => ({
+      bindYeaftHistoryBrowserOwner: vi.fn(),
+      clearYeaftHistoryBrowserOwner,
+      currentYeaftHistoryBrowserFence: () => null,
+    }));
     const auth = await loadAuthStore();
     auth.isAuthenticated = true;
 
-    const result = await auth.deleteAccount({ confirm: 'DELETE' });
+    let completed = false;
+    const deleting = auth.deleteAccount({ confirm: 'DELETE' }).then((result) => {
+      completed = true;
+      return result;
+    });
+    await vi.waitFor(() => {
+      expect(clearYeaftHistoryBrowserOwner).toHaveBeenCalledOnce();
+    });
+    expect(completed).toBe(false);
+    finishCleanup(true);
+    const result = await deleting;
 
     expect(result).toEqual({ success: true });
     expect(globalThis.fetch).toHaveBeenCalledWith('/api/user/me', {
@@ -308,6 +340,7 @@ describe('auth store session restore and refresh', () => {
       body: JSON.stringify({ currentPassword: undefined, confirm: 'DELETE' }),
     });
     expect(auth.isAuthenticated).toBe(false);
+    expect(completed).toBe(true);
   });
 
   it('starts SSO binding for a cookie-only session without putting a token in the URL', async () => {

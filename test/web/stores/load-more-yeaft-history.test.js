@@ -27,6 +27,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { isProxy, reactive } from 'vue';
 
 // `conversationHandler.js` transitively imports `web/stores/auth.js`,
 // which does `const { defineStore } = Pinia;` against a global Pinia
@@ -298,23 +299,46 @@ describe('Yeaft conversation loading state', () => {
     clearYeaftHistoryBrowserOwner();
     try {
       const ownerA = bindYeaftHistoryBrowserOwner('owner-a');
+      const projectedRows = reactive([
+        {
+          id: 'm0001', messageId: 'm0001', historyEntryId: 'entry-1', stableKey: 'entry-1:assistant',
+          seq: 1, type: 'assistant', content: 'persisted', sessionId: 'session-a', isHistory: true,
+        },
+        {
+          id: 'm0001-todos', messageId: 'm0001', historyEntryId: 'entry-1', stableKey: 'entry-1:todos',
+          seq: 1, type: 'tool-use', toolName: 'TodoWrite', sessionId: 'session-a', isHistory: true,
+        },
+        {
+          id: 'm0001-summary', messageId: 'm0001', historyEntryId: 'entry-1', stableKey: 'entry-1:tool-summary',
+          seq: 1, type: 'tool-summary', content: 'read files', sessionId: 'session-a', isHistory: true,
+        },
+        { id: 'live', type: 'assistant', content: 'streaming', sessionId: 'session-a', isStreaming: true },
+      ]);
+      expect(isProxy(projectedRows[0])).toBe(true);
       expect(await writeYeaftHistoryBrowserCache({
         fence: ownerA,
         agentId: 'agent-a',
         sessionId: 'session-a',
-        rows: [
-          { id: 'm0001', messageId: 'm0001', seq: 1, type: 'user', content: 'persisted', sessionId: 'session-a', isHistory: true },
-          { id: 'live', type: 'assistant', content: 'streaming', sessionId: 'session-a', isStreaming: true },
-        ],
+        rows: projectedRows,
         historyState: { latestSeq: 1, oldestSeq: 1, hasMore: true },
+        limits: {
+          maxSessionsPerOwner: 12,
+          maxRowsPerSession: 2,
+          maxBytesPerSession: 4 * 1024 * 1024,
+          maxAgeMs: 30 * 24 * 60 * 60 * 1000,
+        },
       })).toBe(true);
       await new Promise(resolve => setTimeout(resolve, 0));
       expect(await readYeaftHistoryBrowserCache({
         fence: ownerA, agentId: 'agent-a', sessionId: 'session-a',
       })).toMatchObject({
         ownerId: 'owner-a', agentId: 'agent-a', sessionId: 'session-a',
-        rowCount: 1, latestSeq: 1, oldestSeq: 1, hasMore: true,
-        rows: [expect.objectContaining({ id: 'm0001' })],
+        rowCount: 3, latestSeq: 1, oldestSeq: 1, hasMore: true,
+        rows: [
+          expect.objectContaining({ stableKey: 'entry-1:assistant' }),
+          expect.objectContaining({ stableKey: 'entry-1:todos' }),
+          expect.objectContaining({ stableKey: 'entry-1:tool-summary' }),
+        ],
       });
       expect(await readYeaftHistoryBrowserCache({
         fence: ownerA, agentId: 'agent-b', sessionId: 'session-a',
