@@ -376,21 +376,29 @@ export default {
                  standalone YeaftSettings modal — everything Yeaft-scoped
                  lives behind this single nav entry. -->
             <div v-show="activeTab === 'yeaft'" class="settings-pane settings-pane-yeaft">
-              <div class="sp-subtab-bar">
+              <div class="sp-subtab-bar" role="tablist" :aria-label="$t('settings.tabs.yeaft')">
                 <button v-for="st in yeaftSubTabs" :key="st.key"
                   class="sp-subtab"
+                  type="button"
+                  role="tab"
+                  :id="'yeaft-settings-tab-' + st.key"
+                  :aria-controls="'yeaft-settings-panel-' + st.key"
+                  :aria-selected="yeaftSubTab === st.key"
                   :class="{ active: yeaftSubTab === st.key }"
                   @click="yeaftSubTab = st.key">
                   {{ st.label }}
                 </button>
               </div>
-              <div v-show="yeaftSubTab === 'vp'" class="sp-subpane">
+              <div v-show="yeaftSubTab === 'vp'" id="yeaft-settings-panel-vp" class="sp-subpane"
+                role="tabpanel" aria-labelledby="yeaft-settings-tab-vp">
                 <VpCrudPanel :initial-edit-vp-id="initialEditVpId" />
               </div>
-              <div v-show="yeaftSubTab === 'search'" class="sp-subpane">
+              <div v-show="yeaftSubTab === 'search'" id="yeaft-settings-panel-search" class="sp-subpane"
+                role="tabpanel" aria-labelledby="yeaft-settings-tab-search">
                 <SearchSettingsTab @message="onLlmMessage" />
               </div>
-              <div v-show="yeaftSubTab === 'mcp'" class="sp-subpane">
+              <div v-show="yeaftSubTab === 'mcp'" id="yeaft-settings-panel-mcp" class="sp-subpane"
+                role="tabpanel" aria-labelledby="yeaft-settings-tab-mcp">
                 <McpTab @message="onLlmMessage" />
               </div>
             </div>

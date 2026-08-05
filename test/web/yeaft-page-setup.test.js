@@ -98,6 +98,22 @@ afterEach(() => {
 });
 
 describe('YeaftPage setup', () => {
+  it('uses an accessible flat tab bar for Yeaft settings', () => {
+    const panel = readFileSync(resolve(import.meta.dirname, '../../web/components/SettingsPanel.js'), 'utf8');
+    const css = readFileSync(resolve(import.meta.dirname, '../../web/styles/settings.css'), 'utf8');
+
+    expect(panel).toContain('class="sp-subtab-bar" role="tablist"');
+    expect(panel).toContain('role="tab"');
+    expect(panel).toContain(':aria-selected="yeaftSubTab === st.key"');
+    expect(panel).toContain('role="tabpanel"');
+
+    expect(css).toMatch(/\.sp-subtab-bar\s*\{[^}]*border-bottom:\s*1px solid var\(--border-color\);/s);
+    expect(css).toMatch(/\.sp-subtab::after\s*\{[^}]*height:\s*2px;[^}]*background:\s*transparent;/s);
+    expect(css).toMatch(/\.sp-subtab\.active::after[^}]*\{[^}]*background:\s*var\(--text-primary\);/s);
+    expect(css).not.toMatch(/\.sp-subtab-bar\s*\{[^}]*border-radius:/s);
+    expect(css).not.toMatch(/\.sp-subtab\.active\s*\{[^}]*box-shadow:/s);
+  });
+
   it('defaults Session history search to the user without replacing an explicit sender choice', async () => {
     const page = YeaftPage.setup();
 
