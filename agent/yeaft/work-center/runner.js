@@ -776,16 +776,20 @@ export class WorkItemRunner {
     removeActionWorktree(action?.workspace);
   }
 
-  async shutdown() {
-    this.shuttingDown = true;
+  async invalidatePluginRuntimes() {
     const entries = [...this.workspaceRuntimes.values()];
+    this.workspaceRuntimes.clear();
     const runtimes = await Promise.all(entries.map(async entry => {
       try { return await entry; } catch { return null; }
     }));
-    this.workspaceRuntimes.clear();
     await Promise.all(runtimes.map(async runtime => {
       try { await runtime?.mcpManager?.disconnectAll?.(); } catch {}
     }));
+  }
+
+  async shutdown() {
+    this.shuttingDown = true;
+    await this.invalidatePluginRuntimes();
   }
 
   // Work Center uses the Agent's MCP allowlist, but keeps its own run tools

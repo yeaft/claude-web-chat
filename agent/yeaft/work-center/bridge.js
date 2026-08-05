@@ -182,6 +182,18 @@ export async function snapshotCurrentSessionContext(sessionId) {
   return snapshotSessionContext(runtime?.conversationStore, sessionId);
 }
 
+/**
+ * Disconnect cached Work Center MCP runtimes after the Agent-level Plugin
+ * policy changes. A running Action keeps its current turn, but subsequent
+ * runtime lookups cannot reuse a connection created under the old policy.
+ */
+export async function invalidateWorkCenterPluginRuntimes() {
+  const current = service;
+  if (!current) return false;
+  await current.watcher?.runner?.invalidatePluginRuntimes?.();
+  return true;
+}
+
 export async function createWorkItemFromProducer(payload) {
   const workCenter = await ensureWorkCenter();
   return workCenter.handle('create', payload, { trustedProducer: true });

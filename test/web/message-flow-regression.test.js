@@ -13,6 +13,7 @@ import {
 import UnifiedSessionList from '../../web/components/UnifiedSessionList.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
 import WorkCenterPage from '../../web/components/WorkCenterPage.js';
+import PluginCenterPage from '../../web/components/PluginCenterPage.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
 import {
   beginCatalogMutation,
@@ -690,6 +691,43 @@ describe('message flow regressions', () => {
       },
     });
     expect(workCenterPage.get('.work-center-agent-picker .modern-select-label').text()).toBe('server');
+
+    const pluginStore = Vue.reactive({
+      agents: [{ id: 'agent-a', name: 'Agent A', online: true }],
+      currentAgent: 'agent-a',
+      pluginCenterAgentId: 'agent-a',
+      pluginConfigByAgent: {
+        'agent-a': { loaded: true, plugins: { tools: ['FileRead'] } },
+      },
+      pluginCatalogByKey: {
+        'agent-a:': {
+          loading: false,
+          catalog: {
+            tools: [{ id: 'FileRead', label: 'FileRead' }],
+            skills: [{ id: 'skill-a', label: 'skill-a' }, { id: 'skill-b', label: 'skill-b' }],
+            mcpServers: [],
+          },
+        },
+      },
+      pluginCatalogKey: (agentId, workDir = '') => `${agentId}:${workDir}`,
+      loadPluginConfig: vi.fn(() => Promise.resolve()),
+      loadPluginCatalog: vi.fn(() => Promise.resolve()),
+      savePluginConfig: vi.fn(() => Promise.resolve({ plugins: {} })),
+    });
+    globalThis.Pinia.useChatStore = () => pluginStore;
+    const pluginCenter = mount(PluginCenterPage, {
+      global: { mocks: { $t: key => key } },
+    });
+    await Vue.nextTick();
+    pluginCenter.vm.toggle('skills', 'skill-a', false);
+    expect(pluginCenter.vm.selection).toEqual({
+      tools: ['FileRead'],
+      skills: ['skill-b'],
+    });
+    expect(pluginCenter.vm.enabledCount).toBe(2);
+    pluginCenter.unmount();
+
+    globalThis.Pinia.useChatStore = () => workCenterStore;
     await workCenterPage.get('.work-center-agent-picker .modern-select-trigger').trigger('click');
     await Vue.nextTick();
     const agentMenu = document.body.querySelector('.work-center-agent-menu');

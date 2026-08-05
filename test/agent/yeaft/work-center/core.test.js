@@ -22,6 +22,7 @@ import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.j
 import {
   __testSetWorkCenterService,
   handleWorkCenterRequest,
+  invalidateWorkCenterPluginRuntimes,
 } from '../../../../agent/yeaft/work-center/bridge.js';
 import ctx from '../../../../agent/context.js';
 import {
@@ -133,6 +134,19 @@ describe('Work Center core', () => {
     })]);
     __testSetWorkCenterService(null);
     ctx.ws = null;
+
+    const activeManager = { disconnectAll: vi.fn(async () => {}) };
+    const pendingManager = { disconnectAll: vi.fn(async () => {}) };
+    const runner = new WorkItemRunner({ store });
+    runner.workspaceRuntimes.set('active', { mcpManager: activeManager });
+    runner.workspaceRuntimes.set('pending', Promise.resolve({ mcpManager: pendingManager }));
+    __testSetWorkCenterService({ watcher: { runner } });
+    expect(await invalidateWorkCenterPluginRuntimes()).toBe(true);
+    expect(runner.workspaceRuntimes.size).toBe(0);
+    expect(activeManager.disconnectAll).toHaveBeenCalledOnce();
+    expect(pendingManager.disconnectAll).toHaveBeenCalledOnce();
+    __testSetWorkCenterService(null);
+    await expect(invalidateWorkCenterPluginRuntimes()).resolves.toBe(false);
 
     const item = controller.create(createInput({ id: 'run-identity' }));
     const first = store.claimReadyAction('boot-a', 5_000);

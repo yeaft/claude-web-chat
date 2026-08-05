@@ -6,7 +6,7 @@ import ctx from '../../../agent/context.js';
 import { loadConfig, normalizeLlmRetry } from '../../../agent/yeaft/config.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
-import { __testGetOrCreateVpEngine, __testHooks, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
+import { __testGetOrCreateVpEngine, __testHooks, __testLoadPluginCatalogMcpConfig, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { registerSessionWorkDir, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
@@ -77,6 +77,34 @@ describe('Yeaft session-scoped model config', () => {
     expect(configB.model).toBe('github-copilot/claude-opus-4.8');
     expect(configB.primaryModel).toBe('github-copilot/claude-opus-4.8');
     expect(configB.modelEffort).toBe('max');
+
+    // Simulate an already-loaded runtime whose MCP manager still reflects the
+    // pre-CRUD connection set. The catalog must read the saved Agent config.
+    __testSetSession({
+      yeaftDir: root,
+      config: { dir: root },
+      toolRegistry: null,
+      skillManager: null,
+      mcpManager: { status: () => [{ name: 'stale-runtime', ready: true, toolCount: 1 }] },
+    });
+    writeFileSync(join(root, 'config.json'), `${JSON.stringify({
+      mcpServers: [
+        { name: 'github', command: 'node', args: ['github.js'] },
+        { name: 'slack', command: 'node', args: ['slack.js'] },
+      ],
+    }, null, 2)}\n`);
+    const firstCatalog = __testLoadPluginCatalogMcpConfig(root);
+    expect(firstCatalog.servers.map(server => server.name)).toEqual(expect.arrayContaining(['github', 'slack']));
+    expect(firstCatalog.servers.map(server => server.name)).not.toContain('stale-runtime');
+
+    writeFileSync(join(root, 'config.json'), `${JSON.stringify({
+      mcpServers: [{ name: 'github', command: 'node', args: ['github-v2.js'] }],
+    }, null, 2)}\n`);
+    const refreshedCatalog = __testLoadPluginCatalogMcpConfig(root);
+    expect(refreshedCatalog.servers.find(server => server.name === 'github')).toMatchObject({
+      args: ['github-v2.js'],
+    });
+    expect(refreshedCatalog.servers.map(server => server.name)).not.toContain('slack');
 
   });
 

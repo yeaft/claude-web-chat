@@ -82,15 +82,13 @@ export default {
       return this.selection[field].includes(id);
     },
     toggle(field, id, checked) {
-      if (!this.hasExplicitSelection) {
-        this.selection = {
-          [field]: this.catalog[field].map(item => item.id),
-        };
-      }
-      const current = new Set(this.selection[field] || []);
+      const selection = this.selection || {};
+      const current = new Set(Array.isArray(selection[field])
+        ? selection[field]
+        : this.catalog[field].map(item => item.id));
       if (checked) current.add(id);
       else current.delete(id);
-      this.selection = { ...this.selection, [field]: [...current] };
+      this.selection = { ...selection, [field]: [...current] };
     },
     useAll() {
       this.selection = {};
