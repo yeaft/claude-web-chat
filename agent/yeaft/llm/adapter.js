@@ -12,6 +12,8 @@
  * The engine sees only unified types — it never knows which API is underneath.
  */
 
+import { utf8PrefixWithinBytes } from '../utf8.js';
+
 // ─── Unified Types ─────────────────────────────────────────────
 
 /**
@@ -461,6 +463,42 @@ export function classifyFetchError(err, opts = {}) {
  * @param {{ url: string, method: string, headers: object, body: any }} req
  * @returns {{ url: string, method: string, headers: object, body: any }}
  */
+
+export function createBoundedTextAccumulator(maxBytes = 512 * 1024) {
+  const limit = Number.isFinite(Number(maxBytes)) ? Math.max(0, Math.floor(Number(maxBytes))) : 512 * 1024;
+  const chunks = [];
+  let retainedBytes = 0;
+  let totalBytes = 0;
+  let truncated = false;
+  return {
+    push(value) {
+      const text = String(value ?? '');
+      const bytes = Buffer.byteLength(text, 'utf8');
+      totalBytes += bytes;
+      if (retainedBytes >= limit || bytes === 0) {
+        if (bytes > 0) truncated = true;
+        return;
+      }
+      const available = limit - retainedBytes;
+      if (bytes <= available) {
+        chunks.push(text);
+        retainedBytes += bytes;
+        return;
+      }
+      // Walk UTF-16 code points once. The old slice(0, -1) loop repeatedly
+      // rescanned an oversized SSE chunk and went quadratic in its length.
+      const retained = utf8PrefixWithinBytes(text, available);
+      if (retained.text) chunks.push(retained.text);
+      retainedBytes += retained.bytes;
+      truncated = true;
+    },
+    text() { return chunks.join(''); },
+    get totalBytes() { return totalBytes; },
+    get truncated() { return truncated; },
+    get maxBytes() { return limit; },
+  };
+}
+
 export function redactRawRequest(req) {
   if (!req || typeof req !== 'object') return req;
   const headers = { ...(req.headers || {}) };

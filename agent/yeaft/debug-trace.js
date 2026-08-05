@@ -13,6 +13,7 @@
 import { promises as fsp } from 'fs';
 import { basename, dirname, extname, join } from 'path';
 import { createHash, randomUUID } from 'crypto';
+import { truncateUtf8Text } from './perf-trace.js';
 
 const TRACE_VERSION = 3;
 const REQUEST_RETENTION = 10;
@@ -33,9 +34,16 @@ const MAX_RAW_RESPONSE_BYTES = 64 * 1024;
 const TRACE_APPEND_BATCH_MS = 100;
 const EVENT_FLUSH_INTERVAL_MS = 30_000;
 const MAX_SEARCH_PATTERN_CHARS = 300;
+const DEFAULT_TRACE_TEXT_MAX_BYTES = 256 * 1024;
 
 function isPlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeTextMaxBytes(value, fallback = DEFAULT_TRACE_TEXT_MAX_BYTES) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(4 * 1024 * 1024, Math.max(0, Math.floor(parsed)));
 }
 
 function safeDirComponent(value, fallback = 'unknown') {
@@ -149,10 +157,13 @@ function traceMatchesRegex(trace, regex) {
 function truncateText(value, maxBytes = MAX_TEXT_BYTES) {
   if (value == null) return value ?? null;
   const str = String(value);
-  if (Buffer.byteLength(str, 'utf8') <= maxBytes) return str;
-  let out = str.slice(0, maxBytes);
-  while (Buffer.byteLength(out, 'utf8') > maxBytes && out.length > 0) out = out.slice(0, -1);
-  return `${out}\n... [truncated to ${maxBytes} bytes]`;
+  const budget = Math.max(0, Number(maxBytes) || 0);
+  if (Buffer.byteLength(str, 'utf8') <= budget) return str;
+  if (budget <= 0) return '';
+  const marker = `\n... [truncated to ${budget} bytes]`;
+  const markerBytes = Buffer.byteLength(marker, 'utf8');
+  if (markerBytes >= budget) return truncateUtf8Text(str, budget).value;
+  return `${truncateUtf8Text(str, budget - markerBytes).value}${marker}`;
 }
 
 function cloneJsonValue(value) {
@@ -165,12 +176,26 @@ function safeJsonValue(value, maxBytes = MAX_INLINE_VALUE_BYTES) {
   if (value == null) return value;
   try {
     const json = JSON.stringify(value);
-    if (Buffer.byteLength(json, 'utf8') <= maxBytes) return JSON.parse(json);
-    return {
-      __truncated: true,
-      originalBytes: Buffer.byteLength(json, 'utf8'),
-      maxBytes,
-    };
+    const originalBytes = Buffer.byteLength(json, 'utf8');
+    if (originalBytes <= maxBytes) return JSON.parse(json);
+    // A bounded raw-exchange sentinel already carries the useful preview.
+    // Preserve a re-bounded preview rather than reducing persisted history to
+    // metadata after an outer trace record crosses its storage budget.
+    if (value && typeof value === 'object' && value.__truncated === true
+      && typeof value.preview === 'string') {
+      const previewBudget = Math.max(0, maxBytes - 512);
+      const preview = truncateText(value.preview, previewBudget);
+      return {
+        __truncated: true,
+        ...(value.reason ? { reason: value.reason } : {}),
+        originalBytes: Number.isFinite(Number(value.originalBytes))
+          ? Number(value.originalBytes)
+          : originalBytes,
+        maxBytes,
+        ...(preview ? { preview } : {}),
+      };
+    }
+    return { __truncated: true, originalBytes, maxBytes };
   } catch {
     return null;
   }
@@ -207,8 +232,11 @@ function jsonByteLength(value) {
 }
 
 function rawRequestSentinel(reason, value = null, maxBytes = MAX_RAW_REQUEST_BYTES) {
-  const preview = typeof value === 'string'
-    ? truncateText(value, Math.min(64 * 1024, maxBytes))
+  const previewSource = typeof value === 'string'
+    ? value
+    : (() => { try { return JSON.stringify(value); } catch { return null; } })();
+  const preview = typeof previewSource === 'string'
+    ? truncateText(previewSource, Math.min(64 * 1024, maxBytes))
     : null;
   const originalBytes = value == null ? null : jsonByteLength(value);
   return {
@@ -226,25 +254,6 @@ function boundRawValue(value, reason = 'raw_request_budget') {
   if (cloned == null) return null;
   if (jsonByteLength(cloned) <= MAX_RAW_REQUEST_BYTES) return cloned;
   return rawRequestSentinel(reason, value);
-}
-
-function buildRawRequestBase(value) {
-  if (value == null) return null;
-  if (typeof value === 'string') return truncateText(value, MAX_RAW_REQUEST_BYTES);
-  if (!isPlainObject(value)) return boundRawValue(value);
-  const base = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (key === 'body' && isPlainObject(item)) {
-      const body = {};
-      for (const [bodyKey, bodyValue] of Object.entries(item)) {
-        body[bodyKey] = boundRawValue(bodyValue, `raw_request_body_${bodyKey}_budget`);
-      }
-      base.body = body;
-    } else {
-      base[key] = boundRawValue(item, `raw_request_${key}_budget`);
-    }
-  }
-  return base;
 }
 
 function buildRawMessagesDelta(previousMessages, nextMessages) {
@@ -373,6 +382,11 @@ export function applyRawRequestDelta(previous, delta) {
       const existing = Array.isArray(body[messageKey]) ? body[messageKey] : [];
       const from = Number.isFinite(Number(delta.body.messagesFrom)) ? Number(delta.body.messagesFrom) : existing.length;
       body[messageKey] = existing.slice(0, from).concat(cloneJsonValue(delta.body.messagesAppend) || []);
+    } else if (Object.prototype.hasOwnProperty.call(delta.body, 'messagesAppend')) {
+      // A huge append is represented by a bounded raw-request sentinel, not
+      // an array. Preserve that sentinel rather than silently dropping the
+      // entire request body during hydration.
+      body[messageKey] = cloneJsonValue(delta.body.messagesAppend) ?? delta.body.messagesAppend;
     }
     next.body = body;
   }
@@ -389,10 +403,82 @@ function messagesPrefixLength(prevMessages, nextMessages) {
   return i;
 }
 
-function buildRequestSnapshot(info = {}) {
+function snapshotTruncation(path, maxBytes, originalBytes) {
+  return { __truncated: true, path, maxBytes, originalBytes };
+}
+
+function boundedSnapshotString(value, maxBytes, path) {
+  const originalBytes = Buffer.byteLength(value, 'utf8');
+  if (originalBytes <= maxBytes) return value;
+  const marker = snapshotTruncation(path, maxBytes, originalBytes);
+  if (jsonByteLength(marker) > maxBytes) return null;
+  const markerText = `\n... [truncated to ${maxBytes} bytes]`;
+  const markerBytes = Buffer.byteLength(markerText, 'utf8');
+  if (markerBytes >= maxBytes) return marker;
+  return truncateUtf8Text(value, maxBytes - markerBytes).value + markerText;
+}
+
+function boundSnapshotValue(value, maxBytes, path = 'messages') {
+  if (maxBytes <= 0) return null;
+  const sourceBytes = jsonByteLength(value);
+  if (sourceBytes <= maxBytes) return cloneJsonValue(value);
+  const marker = snapshotTruncation(path, maxBytes, sourceBytes);
+  if (jsonByteLength(marker) > maxBytes) return null;
+  if (value == null || typeof value === 'number' || typeof value === 'boolean') return marker;
+  if (typeof value === 'string') return boundedSnapshotString(value, maxBytes, path);
+
+  // Account JSON framing incrementally. The old clone-and-stringify-prefix
+  // loop reserialized the full growing array/object per member and blocked
+  // DebugTrace.endTurn for tens of seconds on a large provider history.
+  if (Array.isArray(value)) {
+    const out = [];
+    let usedBytes = 2; // []
+    for (let index = 0; index < value.length; index += 1) {
+      const separatorBytes = out.length > 0 ? 1 : 0;
+      const remaining = Math.max(0, maxBytes - usedBytes - separatorBytes);
+      const candidate = boundSnapshotValue(value[index], remaining, `${path}[${index}]`);
+      if (candidate == null) break;
+      let encoded;
+      try { encoded = JSON.stringify(candidate); } catch { break; }
+      const candidateBytes = Buffer.byteLength(encoded, 'utf8');
+      if (usedBytes + separatorBytes + candidateBytes > maxBytes) break;
+      out.push(candidate);
+      usedBytes += separatorBytes + candidateBytes;
+    }
+    return out.length > 0 ? out : marker;
+  }
+  if (typeof value === 'object') {
+    const out = {};
+    let usedBytes = 2; // {}
+    let count = 0;
+    for (const [key, item] of Object.entries(value)) {
+      let keyJson;
+      try { keyJson = JSON.stringify(key); } catch { break; }
+      const keyBytes = Buffer.byteLength(keyJson, 'utf8');
+      const separatorBytes = count > 0 ? 1 : 0;
+      const remaining = Math.max(0, maxBytes - usedBytes - separatorBytes - keyBytes - 1);
+      const candidate = boundSnapshotValue(item, remaining, `${path}.${key}`);
+      if (candidate == null) break;
+      let encoded;
+      try { encoded = JSON.stringify(candidate); } catch { break; }
+      const candidateBytes = Buffer.byteLength(encoded, 'utf8');
+      if (usedBytes + separatorBytes + keyBytes + 1 + candidateBytes > maxBytes) break;
+      out[key] = candidate;
+      usedBytes += separatorBytes + keyBytes + 1 + candidateBytes;
+      count += 1;
+    }
+    return count > 0 ? out : marker;
+  }
+  return marker;
+}
+
+function buildRequestSnapshot(info = {}, textMaxBytes = DEFAULT_TRACE_TEXT_MAX_BYTES) {
+  const messageBudget = normalizeTextMaxBytes(textMaxBytes);
   return {
-    systemPrompt: truncateText(info.systemPrompt || '', MAX_TEXT_BYTES),
-    messages: Array.isArray(info.messages) ? cloneJsonValue(info.messages) : [],
+    systemPrompt: truncateText(info.systemPrompt || '', messageBudget),
+    messages: Array.isArray(info.messages)
+      ? boundSnapshotValue(info.messages, messageBudget, 'messages')
+      : [],
     rawRequest: info.rawRequest ?? null,
   };
 }
@@ -438,7 +524,7 @@ function applyRequestDelta(previous, delta = {}) {
     const nextBase = {
       systemPrompt: delta.systemPrompt || '',
       messages: Array.isArray(delta.messages) ? delta.messages : [],
-      rawRequest: null,
+      rawRequest: Object.prototype.hasOwnProperty.call(delta, 'rawRequest') ? delta.rawRequest : null,
     };
     if (Object.prototype.hasOwnProperty.call(delta, 'rawRequestDelta')) {
       nextBase.rawRequest = applyRawRequestDelta(null, delta.rawRequestDelta);
@@ -627,9 +713,13 @@ function summarizeTrace(trace, detailsLoaded = false) {
 function expandTrace(trace) {
   const turnsById = new Map([[trace.requestId || trace.traceId, summarizeTrace(trace, true)]]);
   let snapshot = null;
+  let rawRequest = trace?.baseRequest?.rawRequest ?? null;
   const loops = [];
   for (const loop of Array.isArray(trace?.loops) ? trace.loops : []) {
     snapshot = applyRequestDelta(snapshot || trace.baseRequest || null, loop.requestDelta || {});
+    if (loop?.requestDelta && Object.prototype.hasOwnProperty.call(loop.requestDelta, 'rawRequestDelta')) {
+      rawRequest = reconstructDebugRawRequest(rawRequest, loop.requestDelta);
+    }
     const usage = normalizeUsage(loop?.usage || {});
     loops.push({
       turnId: trace.requestId || trace.traceId,
@@ -645,7 +735,7 @@ function expandTrace(trace) {
       ttfbMs: loop.ttfbMs || null,
       stopReason: loop.stopReason || null,
       at: loop.at || null,
-      rawRequest: null,
+      rawRequest,
       rawResponse: loop.rawResponse ?? null,
       requestDelta: loop.requestDelta || {},
       requestBase: trace.baseRequest || null,
@@ -659,8 +749,12 @@ function expandTrace(trace) {
 
 function traceToLegacyRows(trace) {
   let snapshot = null;
+  let rawRequest = trace?.baseRequest?.rawRequest ?? null;
   return (Array.isArray(trace?.loops) ? trace.loops : []).map((loop) => {
     snapshot = applyRequestDelta(snapshot || trace.baseRequest || null, loop.requestDelta || {});
+    if (loop?.requestDelta && Object.prototype.hasOwnProperty.call(loop.requestDelta, 'rawRequestDelta')) {
+      rawRequest = reconstructDebugRawRequest(rawRequest, loop.requestDelta);
+    }
     const u = normalizeUsage(loop?.usage || {});
     return {
       id: loop.turnRowId || loop.loopInstanceId || randomUUID(),
@@ -686,7 +780,7 @@ function traceToLegacyRows(trace) {
       tool_calls_json: JSON.stringify(loop.toolCalls || []),
       usage_json: JSON.stringify(u),
       ttfb_ms: loop.ttfbMs || null,
-      raw_request: null,
+      raw_request: rawRequest == null ? null : JSON.stringify(rawRequest),
       raw_response: typeof loop.rawResponse === 'string' ? loop.rawResponse : JSON.stringify(loop.rawResponse ?? null),
       user_prompt: trace.userPrompt || '',
     };
@@ -864,6 +958,8 @@ export class DebugTrace {
    * @type {Promise<void>}
    */
   #flushChain = Promise.resolve();
+  /** @type {number} */
+  #textMaxBytes = DEFAULT_TRACE_TEXT_MAX_BYTES;
   /** @type {boolean} */
   #acceptingWrites = true;
 
@@ -871,13 +967,21 @@ export class DebugTrace {
    * @param {string} tracePath — Back-compatible path. If it looks like a DB
    * file, traces are stored in a sibling `debug/` directory.
    */
-  constructor(tracePath) {
+  constructor(tracePath, options = {}) {
     const rootDir = fileTraceRoot(tracePath);
     if (!rootDir) throw new Error('DebugTrace requires a storage path');
     this.#rootDir = rootDir;
+    this.#textMaxBytes = normalizeTextMaxBytes(options?.textMaxBytes);
     // Best-effort, fire-and-forget: atomicWriteText re-ensures the request
     // subdir before every write, so a missed mkdir here is harmless.
     ensureDir(rootDir).catch(() => {});
+  }
+
+  refreshConfig(config = {}) {
+    const nextValue = config && typeof config === 'object'
+      ? config.traceTextMaxBytes
+      : config;
+    this.#textMaxBytes = normalizeTextMaxBytes(nextValue, this.#textMaxBytes);
   }
 
   startTurn({ traceId, messageId = null, mode = null, turnNumber = null, sessionId = null, vpId = null, threadId = null, userPrompt = null } = {}) {
@@ -911,13 +1015,21 @@ export class DebugTrace {
     const trace = this.#loadRequest(ctx.sessionId, ctx.requestKey);
     if (!trace) return;
     const loopNumber = ctx.loopNumber || Number(info.turnNumber || 0);
-    const snapshot = buildRequestSnapshot(info);
+    const snapshot = buildRequestSnapshot({
+      ...info,
+      // An explicit null describes this loop: no provider raw request was
+      // captured. Do not inherit a previous loop's body and falsely attribute
+      // it to a transport failure or another uncaptured attempt.
+      rawRequest: Object.prototype.hasOwnProperty.call(info, 'rawRequest')
+        ? info.rawRequest
+        : (trace.baseRequest?.rawRequest ?? null),
+    }, this.#textMaxBytes);
     const previousSnapshot = trace._lastSnapshot || this.#reconstructLastSnapshot(trace);
     if (!trace.baseRequest) {
       trace.baseRequest = {
         systemPrompt: snapshot.systemPrompt,
         messages: Array.isArray(snapshot.messages) ? cloneJsonValue(snapshot.messages) : [],
-        rawRequest: null,
+        rawRequest: snapshot.rawRequest ?? null,
       };
     }
     const loopIndex = (trace.loops || []).findIndex(l => l.turnRowId === turnId);
@@ -927,7 +1039,7 @@ export class DebugTrace {
       loopNumber,
       startedAt: trace.openedAt || Date.now(),
       model: info.model || null,
-      response: truncateText(info.responseText || '', MAX_TEXT_BYTES),
+      response: truncateText(info.responseText || '', this.#textMaxBytes),
       toolCalls: cloneJsonValue(Array.isArray(info.toolCalls) ? info.toolCalls : []),
       usage: normalizeUsage(info.usage || {}, {
         inputTokens: info.inputTokens || 0,
@@ -940,8 +1052,12 @@ export class DebugTrace {
       stopReason: info.stopReason || null,
       at: Date.now(),
       rawResponse: typeof info.rawResponse === 'string'
-        ? truncateText(info.rawResponse, MAX_RAW_RESPONSE_BYTES)
-        : safeJsonValue(info.rawResponse, MAX_RAW_RESPONSE_BYTES),
+        ? truncateText(info.rawResponse, Math.min(this.#textMaxBytes, MAX_RAW_RESPONSE_BYTES))
+        : safeJsonValue(info.rawResponse, Math.min(this.#textMaxBytes, MAX_RAW_RESPONSE_BYTES)),
+      // Raw request is canonical base-plus-delta data. Persisting the full
+      // snapshot on every loop made a 512 KiB request consume N × 512 KiB for
+      // an N-loop trace and kept the same duplication in the hydrated cache.
+      rawRequest: null,
       requestDelta: buildRequestDelta(previousSnapshot, snapshot),
     };
     if (loopIndex >= 0) trace.loops[loopIndex] = loop;
@@ -968,7 +1084,7 @@ export class DebugTrace {
       toolName: toolName || '?',
       toolCallId,
       toolInput: truncateText(toolInput == null ? null : String(toolInput), MAX_TOOL_INPUT),
-      toolOutput: truncateText(toolOutput == null ? null : String(toolOutput), MAX_TEXT_BYTES),
+      toolOutput: truncateText(toolOutput == null ? null : String(toolOutput), this.#textMaxBytes),
       durationMs: Number(durationMs || 0),
       isError: !!isError,
       createdAt: Date.now(),
@@ -1238,7 +1354,7 @@ export class DebugTrace {
       sessionId: normalizedSessionId,
       vpId: vpId || null,
       threadId: threadId || null,
-      userPrompt: truncateText(userPrompt || '', MAX_TEXT_BYTES),
+      userPrompt: truncateText(userPrompt || '', this.#textMaxBytes),
       openedAt: now,
       closedAt: null,
       updatedAt: now,
@@ -1618,13 +1734,14 @@ export class NullTrace {
   async compact() { return { before: 0, after: 0 }; }
   async purge() {}
   async close() {}
+  refreshConfig() {}
   async flush() {}
   async fetchTurnDebug() { return { loops: [], turns: [], dreamEvents: [] }; }
   async fetchRecentDebugHistory() { return { loops: [], turns: [], dreamEvents: [] }; }
 }
 
-export function createTrace({ enabled, dbPath, dirPath }) {
+export function createTrace({ enabled, dbPath, dirPath, textMaxBytes }) {
   const path = dirPath || dbPath;
   if (!enabled || !path) return new NullTrace();
-  return new DebugTrace(path);
+  return new DebugTrace(path, { textMaxBytes });
 }

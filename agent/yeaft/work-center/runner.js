@@ -866,6 +866,7 @@ export class WorkItemRunner {
     this.trace = options.trace || createTrace({
       enabled: options.debug === true && Boolean(options.yeaftDir),
       dirPath: options.yeaftDir || null,
+      textMaxBytes: options.config?.telemetry?.traceTextMaxBytes,
     });
     this.actionWorktreeRoot = options.actionWorktreeRoot || null;
     this.store = options.store;

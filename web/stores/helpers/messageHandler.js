@@ -1058,6 +1058,31 @@ export function handleMessage(store, msg) {
       }
       break;
 
+    // Local telemetry settings. Only bounded config is returned; raw trace
+    // payloads remain agent-local.
+    case 'telemetry_settings':
+    case 'telemetry_settings_updated': {
+      const record = {
+        enabled: msg.enabled !== false,
+        retentionDays: msg.retentionDays ?? 3,
+        flushIntervalMs: msg.flushIntervalMs ?? 1000,
+        maxQueueSize: msg.maxQueueSize ?? 5000,
+        rawExchangeMaxBytes: msg.rawExchangeMaxBytes ?? 524288,
+        traceTextMaxBytes: msg.traceTextMaxBytes ?? 262144,
+        error: msg.error || null,
+        loaded: true,
+        at: Date.now(),
+      };
+      store.telemetrySettings = record;
+      const pending = store._telemetryPending;
+      const key = msg.type === 'telemetry_settings' ? 'load' : 'update';
+      if (pending && pending[key]) {
+        pending[key](record);
+        delete pending[key];
+      }
+      break;
+    }
+
     // Search settings — Search tab in YeaftSettings. The store's
     // `loadSearchSettings` / `updateSearchSettings` register one-shot
     // resolvers under `_searchPending`; we pop the matching resolver

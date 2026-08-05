@@ -696,6 +696,11 @@ export default {
   'settings.general.lightTheme': '浅色',
   'settings.general.darkTheme': '深色',
   'settings.general.language': '语言',
+  'settings.general.telemetry': '性能遥测',
+  'settings.general.telemetryDesc': '在本地批量记录耗时诊断；trace 内容不会发送到服务器。',
+  'settings.general.telemetryOn': '开启',
+  'settings.general.telemetryOff': '关闭',
+  'settings.general.telemetryRawLimit': 'Provider 原始响应上限（字节）',
 
   // Settings - Invitations
   'settings.invite.create': '创建邀请码',

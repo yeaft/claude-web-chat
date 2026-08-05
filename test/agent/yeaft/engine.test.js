@@ -20,6 +20,7 @@ import { makeSegment, serializeSegments } from '../../../agent/yeaft/memory/segm
 import { readScope } from '../../../agent/yeaft/memory/segment-store.js';
 import { syncAll } from '../../../agent/yeaft/memory/segment-sync.js';
 import { Engine, buildResidentEntries, selectCanonicalMemoryScopes, selectResidentTopicScopes, selectRelatedSessionIds } from '../../../agent/yeaft/engine.js';
+import { flushAgentPerfTrace } from '../../../agent/yeaft/perf-trace.js';
 import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
 import { writeContent, writeSummary } from '../../../agent/yeaft/memory/store.js';
@@ -44,7 +45,7 @@ import {
   runAfterManagedCliRuntimeCleanup,
 } from '../../../agent/yeaft/managed-cli.js';
 import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
-import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
+import { ToolRegistry, TOOL_RESULT_MAX_BYTES } from '../../../agent/yeaft/tools/registry.js';
 import { TaskManager } from '../../../agent/yeaft/tasks/manager.js';
 import {
   createOutputCollector,
@@ -56,11 +57,15 @@ import { nodeDiskUsage, runDust } from '../../../agent/yeaft/tools/disk-usage.js
 import { listFilesWithFd } from '../../../agent/yeaft/tools/glob.js';
 import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
 import bashTool, { createBashTool } from '../../../agent/yeaft/tools/bash.js';
+import agentTool, { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
+import fileReadTool from '../../../agent/yeaft/tools/file-read.js';
 import fileWriteTool from '../../../agent/yeaft/tools/file-write.js';
 import {
   SearchBackendLimitError,
   SEARCH_SKIP_DIRS,
 } from '../../../agent/yeaft/tools/search-paths.js';
+import { __testSetWorkCenterService } from '../../../agent/yeaft/work-center/bridge.js';
+import { WorkCenterService } from '../../../agent/yeaft/work-center/service.js';
 
 // ─── Mock Adapter ─────────────────────────────────────────────
 
@@ -691,6 +696,40 @@ describe('Engine', () => {
   });
 
   describe('perf trace', () => {
+    it('bounds provider raw request and response previews through Engine capture', async () => {
+      const limit = 64 * 1024;
+      const mixedPayload = `${'😀'.repeat(8_000)}${'x'.repeat(320 * 1024)}`;
+      const adapter = {
+        async *stream(params) {
+          params.onRawExchange({
+            rawRequest: { body: mixedPayload },
+            rawResponse: { status: 200, body: mixedPayload },
+          });
+          yield { type: 'text_delta', text: 'ok' };
+          yield { type: 'stop', stopReason: 'end_turn' };
+        },
+      };
+      const engine = new Engine({
+        adapter,
+        trace,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          telemetry: { rawExchangeMaxBytes: limit },
+        },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'capture raw exchange' })) events.push(event);
+
+      const loop = events.find(event => event.type === 'loop');
+      for (const exchange of [loop.rawRequest, loop.rawResponse]) {
+        expect(exchange).toMatchObject({ __truncated: true, maxBytes: limit });
+        expect(exchange.preview.isWellFormed()).toBe(true);
+        expect(Buffer.byteLength(exchange.preview, 'utf8')).toBeLessThanOrEqual(limit);
+      }
+    });
+
     it('records LLM request lifecycle events when an inbound perf trace id is present', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-perf-'));
       try {
@@ -717,6 +756,7 @@ describe('Engine', () => {
           // consume
         }
 
+        flushAgentPerfTrace({ yeaftDir });
         const day = new Date().toISOString().slice(0, 10);
         const rows = readFileSync(join(yeaftDir, 'perf-traces', `${day}.jsonl`), 'utf8')
           .trim()
@@ -735,7 +775,7 @@ describe('Engine', () => {
   });
 
   describe('tool registration', () => {
-    it('should register and list tools', () => {
+    it('should register, list, and unregister tools', () => {
       const engine = new Engine({
         adapter: mockAdapter,
         trace,
@@ -750,22 +790,6 @@ describe('Engine', () => {
       });
 
       expect(engine.toolNames).toEqual(['search']);
-    });
-
-    it('should unregister tools', () => {
-      const engine = new Engine({
-        adapter: mockAdapter,
-        trace,
-        config: { model: 'test-model' },
-      });
-
-      engine.registerTool({
-        name: 'search',
-        description: 'Search',
-        parameters: {},
-        execute: async () => 'ok',
-      });
-
       engine.unregisterTool('search');
       expect(engine.toolNames).toEqual([]);
     });
@@ -2946,6 +2970,867 @@ describe('Engine', () => {
   });
 
   describe('multiple tool calls in one turn', () => {
+    async function verifyIdenticalReadReuse() {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'read-1', name: 'read', input: { path: 'same.txt' } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'read-2', name: 'read', input: { path: 'same.txt' } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+      let executions = 0;
+      engine.registerTool({
+        name: 'read',
+        description: 'Read',
+        parameters: { type: 'object', properties: { path: { type: 'string' } } },
+        isReadOnly: () => true,
+        cacheWithinQuery: () => true,
+        execute: async () => { executions += 1; return 'file contents'; },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'read it' })) events.push(event);
+
+      expect(executions).toBe(1);
+      expect(events.filter(event => event.type === 'tool_exec').map(event => event.reused)).toEqual([undefined, true]);
+      expect(mockAdapter.callLog).toHaveLength(3);
+      expect(mockAdapter.callLog[2].messages.at(-1).content).toContain('file contents');
+    }
+
+    it('reuses identical deterministic reads and ends a plan-only control batch', async () => {
+      await verifyIdenticalReadReuse();
+      mockAdapter = new MockAdapter();
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'plan-1', name: 'StartPlan', input: { topic: 'inspect the issue' } },
+        { type: 'tool_call', id: 'todo-1', name: 'TodoWrite', input: {
+          todos: [{ content: 'Inspect the issue', status: 'in_progress', activeForm: 'Inspecting the issue' }],
+        } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+      engine.registerTool({
+        name: 'StartPlan',
+        description: 'Start plan',
+        parameters: { type: 'object' },
+        isReadOnly: () => true,
+        execute: async () => 'plan instruction',
+      });
+      engine.registerTool({
+        name: 'TodoWrite',
+        description: 'Write todos',
+        parameters: { type: 'object' },
+        isReadOnly: () => true,
+        execute: async () => '{"success":true}',
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'inspect the issue' })) events.push(event);
+
+      expect(mockAdapter.callLog).toHaveLength(1);
+      expect(events.find(event => event.type === 'turn_end' && event.stopReason === 'plan_recorded')).toMatchObject({ terminal: true });
+    });
+
+    it('invalidates cached reads before successful and failed workspace mutations', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-mutation-'));
+      const filePath = join(workDir, 'state.txt');
+      writeFileSync(filePath, 'before');
+      try {
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'tool_call', id: 'write', name: 'FileWrite', input: { file_path: 'state.txt', content: 'after' } },
+          { type: 'tool_call', id: 'read-after', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const registry = new ToolRegistry();
+        registry.register(fileReadTool).register(fileWriteTool);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: registry,
+        });
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'update and reread the file', workDir })) events.push(event);
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        expect(toolStarts.find(event => event.id === 'read-after')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-before')?.output).toContain('before');
+        expect(toolEnds.find(event => event.id === 'read-after')?.output).toContain('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+
+        let contents = 'before';
+        mockAdapter = new MockAdapter();
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-failure', name: 'read', input: { path: 'state.txt' } },
+          { type: 'tool_call', id: 'write-and-fail', name: 'write', input: { path: 'state.txt' } },
+          { type: 'tool_call', id: 'read-after-failure', name: 'read', input: { path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const failingEngine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+        });
+        failingEngine.registerTool({
+          name: 'read',
+          description: 'Read state',
+          parameters: { type: 'object', properties: { path: { type: 'string' } } },
+          isReadOnly: () => true,
+          cacheWithinQuery: true,
+          execute: async () => contents,
+        });
+        failingEngine.registerTool({
+          name: 'write',
+          description: 'Write state',
+          parameters: { type: 'object', properties: { path: { type: 'string' } } },
+          isReadOnly: () => false,
+          execute: async () => {
+            contents = 'after';
+            throw new Error('write failed after changing state');
+          },
+        });
+
+        const failingEvents = [];
+        for await (const event of failingEngine.query({ prompt: 'update and reread the state' })) failingEvents.push(event);
+
+        const failingToolStarts = failingEvents.filter(event => event.type === 'tool_start');
+        const failingToolEnds = failingEvents.filter(event => event.type === 'tool_end');
+        expect(failingToolStarts.find(event => event.id === 'read-after-failure')?.reused).not.toBe(true);
+        expect(failingToolEnds.find(event => event.id === 'write-and-fail')).toMatchObject({
+          isError: true,
+          output: 'Error: write failed after changing state',
+        });
+        expect(failingToolEnds.find(event => event.id === 'read-after-failure')?.output).toBe('after');
+      } finally {
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
+    it('invalidates cached reads when a task result arrives during async wait', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-async-result-'));
+      const filePath = join(workDir, 'state.txt');
+      const taskId = 'task-read-cache-boundary';
+      writeFileSync(filePath, 'before');
+      try {
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-async-result', name: 'read_state', input: {} },
+          { type: 'tool_call', id: 'wait-for-task-result', name: 'wait_for_state', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Waiting for the state update.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-async-result', name: 'read_state', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'The state is current.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 1_000 },
+        });
+        let readExecutions = 0;
+        engine.registerTool({
+          name: 'read_state',
+          description: 'Read state',
+          parameters: { type: 'object' },
+          isReadOnly: () => true,
+          cacheWithinQuery: true,
+          execute: async () => {
+            readExecutions += 1;
+            return readFileSync(filePath, 'utf8');
+          },
+        });
+        engine.registerTool({
+          name: 'wait_for_state',
+          description: 'Wait for a task result',
+          parameters: { type: 'object' },
+          // This tool only starts observation. It does not synchronously
+          // mutate the workspace, so the task-result synchronization boundary
+          // must invalidate a read cached before the async wait.
+          isReadOnly: () => true,
+          execute: async (_input, ctx) => {
+            ctx.registerAsyncTask(taskId);
+            return 'waiting';
+          },
+        });
+
+        const events = [];
+        let completionAccepted = false;
+        for await (const event of engine.query({ prompt: 'wait for the state update', workDir })) {
+          events.push(event);
+          if (event.type === 'async_task_wait_start') {
+            writeFileSync(filePath, 'after');
+            completionAccepted = engine.notifyAsyncTaskCompleted(taskId, 'state updated');
+          }
+        }
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        expect(completionAccepted).toBe(true);
+        expect(readExecutions).toBe(2);
+        expect(toolEnds.find(event => event.id === 'read-before-async-result')?.output).toBe('before');
+        expect(toolStarts.find(event => event.id === 'read-after-async-result')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-async-result')?.output).toBe('after');
+      } finally {
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
+    it('invalidates cached reads when completion arrives after the next provider stream starts', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-post-stream-completion-'));
+      const filePath = join(workDir, 'state.txt');
+      const taskId = 'task-read-cache-post-stream';
+      writeFileSync(filePath, 'before');
+      try {
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-post-stream-completion', name: 'ReadState', input: {} },
+          { type: 'tool_call', id: 'start-async-state-update', name: 'StartAsync', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-post-stream-completion', name: 'ReadState', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'The updated state was read.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 1_000 },
+        });
+        let readExecutions = 0;
+        engine.registerTool({
+          name: 'ReadState',
+          description: 'Read workspace state.',
+          parameters: { type: 'object' },
+          isReadOnly: () => true,
+          cacheWithinQuery: true,
+          execute: async () => {
+            readExecutions += 1;
+            return readFileSync(filePath, 'utf8');
+          },
+        });
+        engine.registerTool({
+          name: 'StartAsync',
+          description: 'Start an asynchronous state update.',
+          parameters: { type: 'object' },
+          // This only registers the detached task; its completion is the
+          // workspace mutation boundary under test.
+          isReadOnly: () => true,
+          execute: async (_input, ctx) => {
+            ctx.registerAsyncTask(taskId);
+            return 'state update started';
+          },
+        });
+
+        const baseStream = mockAdapter.stream.bind(mockAdapter);
+        let streamCalls = 0;
+        let completionAccepted = false;
+        mockAdapter.stream = async function* streamWithCompletionAfterStart(params) {
+          streamCalls += 1;
+          if (streamCalls === 2) {
+            // The Engine already completed its pre-stream task-result drain.
+            // Deliver the completion before this stream yields ReadState so
+            // the tool execution path must observe immediate invalidation.
+            writeFileSync(filePath, 'after');
+            completionAccepted = engine.notifyAsyncTaskCompleted(taskId, 'state updated');
+          }
+          yield* baseStream(params);
+        };
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'read then refresh state', workDir })) events.push(event);
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        expect(completionAccepted).toBe(true);
+        expect(streamCalls).toBe(3);
+        expect(readExecutions).toBe(2);
+        expect(toolEnds.find(event => event.id === 'read-before-post-stream-completion')?.output).toBe('before');
+        expect(toolStarts.find(event => event.id === 'read-after-post-stream-completion')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-post-stream-completion')?.output).toBe('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+      } finally {
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists a late completion after T1 folding without restoring a raw tool arc', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-folded-async-completion-'));
+      const sessionId = 'session-folded-async-completion';
+      const vpTurnId = 'vp-turn-folded-async-completion';
+      const taskId = 'task-folded-async-completion';
+      const toolCallId = 'call-folded-async-completion';
+      const completion = 'late task output after the tool arc was folded';
+      const conversationStore = new ConversationStore(yeaftDir);
+      let completionAccepted = false;
+      try {
+        const makeToolCall = index => ({
+          type: 'tool_call',
+          id: index === 0 ? toolCallId : `call-fold-helper-${index}`,
+          name: 'FoldHelper',
+          input: { index },
+        });
+        mockAdapter.pushResponse([
+          ...Array.from({ length: 31 }, (_, index) => makeToolCall(index)),
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        // T1 reflection uses adapter.call(), which is recorded between the
+        // initial tool stream and the continuation stream.
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Waiting for the late task result.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Late result consumed.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: {
+            model: 'test-model',
+            maxOutputTokens: 1024,
+            asyncTaskWaitTimeoutMs: 1_000,
+            // Session reflection is pressure-gated. Make the 31-call batch
+            // exceed the threshold so this covers the durable T1 path.
+            maxContextTokens: 1,
+          },
+          conversationStore,
+          yeaftDir,
+        });
+        engine.registerTool({
+          name: 'FoldHelper',
+          description: 'Produce a foldable tool result.',
+          parameters: { type: 'object' },
+          execute: async (input, ctx) => {
+            if (input.index === 0) ctx.registerAsyncTask(taskId);
+            return `tool output ${input.index}`;
+          },
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'run enough tools to fold then wait for completion',
+          sessionId,
+          vpTurnId,
+        })) {
+          events.push(event);
+          if (event.type === 'async_task_wait_start') {
+            completionAccepted = engine.notifyAsyncTaskCompleted(taskId, completion);
+          }
+        }
+
+        expect(completionAccepted).toBe(true);
+        // stream #1, the synchronous T1 reflector call, stream #2 (which
+        // waits), then stream #3 carrying the continuation note.
+        expect(mockAdapter.callLog).toHaveLength(4);
+        const continuationMessages = mockAdapter.callLog[3].messages;
+        // The provider transcript retains the original folded tool result as
+        // historical context, but the late completion itself must be injected
+        // only as a continuation note rather than a reconstructed raw arc.
+        const lateCompletionTool = continuationMessages.find(message => (
+          message.role === 'tool'
+            && message.toolCallId === toolCallId
+            && String(message.content).includes(completion)
+        ));
+        expect(lateCompletionTool).toBeUndefined();
+        expect(continuationMessages.some(message => (
+          message.role === 'user'
+            && message._asyncTaskCompletion === true
+            && String(message.content).includes(completion)
+        ))).toBe(true);
+        expect(events.find(event => event.type === 'tool_result_update')).toMatchObject({
+          taskId,
+          toolCallId,
+          content: completion,
+        });
+
+        // Completion notes are internal control rows rather than reflections.
+        // Inspect the durable transcript directly; normal history deliberately
+        // hides engine-private control context from user-visible replay.
+        const storedAll = conversationStore.loadAll();
+        const storedCompletion = storedAll.find(message => message.role === 'user'
+            && message.internal === true
+            && message._asyncTaskCompletion === true
+            && String(message.content).includes(completion));
+        expect(storedCompletion).toMatchObject({
+          sessionId,
+          turnId: vpTurnId,
+          userAuthored: false,
+          internal: true,
+        });
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('bounds same-turn async completion content for the model while preserving durable output', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-async-completion-budget-'));
+      const sessionId = 'session-async-completion-budget';
+      const taskId = 'task-async-completion-budget';
+      const initialOutput = 'The task is running.';
+      const completion = `completed:\n${'界'.repeat(TOOL_RESULT_MAX_BYTES)}`;
+      const conversationStore = new ConversationStore(yeaftDir);
+      let completionAccepted = false;
+      try {
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'call_async_completion', name: 'WaitForCompletion', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Waiting for completion.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Completion consumed.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 1_000 },
+          conversationStore,
+          yeaftDir,
+        });
+        engine.registerTool({
+          name: 'WaitForCompletion',
+          description: 'Wait for an asynchronous completion.',
+          parameters: { type: 'object' },
+          execute: async (_input, ctx) => {
+            ctx.registerAsyncTask(taskId);
+            return initialOutput;
+          },
+        });
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'wait for the task', sessionId })) {
+          events.push(event);
+          if (event.type === 'async_task_wait_start') {
+            completionAccepted = engine.notifyAsyncTaskCompleted(taskId, completion);
+          }
+        }
+
+        expect(completionAccepted).toBe(true);
+        expect(mockAdapter.callLog).toHaveLength(3);
+        const modelToolResult = mockAdapter.callLog[2].messages
+          .find(message => message.role === 'tool' && message.toolCallId === 'call_async_completion');
+        expect(modelToolResult.content).toContain('[truncated: WaitForCompletion returned');
+        expect(Buffer.byteLength(modelToolResult.content, 'utf8')).toBeLessThanOrEqual(TOOL_RESULT_MAX_BYTES);
+        expect(modelToolResult.content).toContain('completed:');
+
+        const durableToolResult = conversationStore.loadRecentBySession(sessionId, 10)
+          .find(message => message.role === 'tool' && message.toolCallId === 'call_async_completion');
+        expect(durableToolResult.content).toBe(`${initialOutput}\n\n${completion}`);
+        expect(Buffer.byteLength(durableToolResult.content, 'utf8')).toBeGreaterThan(TOOL_RESULT_MAX_BYTES);
+        expect(events.find(event => event.type === 'tool_result_update')?.content).toBe(completion);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not reuse reads after a background Bash task mutates the workspace', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-background-'));
+      const yeaftDir = join(workDir, '.yeaft');
+      const sessionId = 'session-background-read-cache';
+      const filePath = join(workDir, 'state.txt');
+      const releasePath = join(workDir, 'release');
+      const taskManager = new TaskManager({ yeaftDir });
+      let backgroundTaskId = null;
+      writeFileSync(filePath, 'before');
+      try {
+        const waitForReleaseScript = [
+          "const fs = require('fs');",
+          'const [releasePath, filePath] = process.argv.slice(1);',
+          'const timer = setInterval(() => {',
+          '  if (!fs.existsSync(releasePath)) return;',
+          '  clearInterval(timer);',
+          "  fs.writeFileSync(filePath, 'after');",
+          '}, 5);',
+        ].join(' ');
+        const backgroundCommand = process.platform === 'win32'
+          ? `& ${JSON.stringify(process.execPath)} -e ${JSON.stringify(waitForReleaseScript)} ${JSON.stringify(releasePath)} ${JSON.stringify(filePath)}`
+          : `${JSON.stringify(process.execPath)} -e ${JSON.stringify(waitForReleaseScript)} ${JSON.stringify(releasePath)} ${JSON.stringify(filePath)}`;
+        const baseStream = mockAdapter.stream.bind(mockAdapter);
+        let streamCalls = 0;
+        mockAdapter.stream = async function* streamAfterBackgroundWrite(params) {
+          streamCalls += 1;
+          if (streamCalls === 2) {
+            const task = taskManager.listActiveTasks(sessionId).find(item => item.kind === 'shell');
+            if (!task) throw new Error('background shell task did not start');
+            backgroundTaskId = task.id;
+            writeFileSync(releasePath, 'go');
+            const deadline = Date.now() + 2_000;
+            while (taskManager.getTask(sessionId, backgroundTaskId)?.status === 'running' && Date.now() < deadline) {
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            const completed = taskManager.getTask(sessionId, backgroundTaskId);
+            if (completed?.status !== 'succeeded') {
+              throw new Error(`background shell task did not complete successfully: ${completed?.status || 'missing'}`);
+            }
+          }
+          yield* baseStream(params);
+        };
+
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'start-background-write', name: 'Bash', input: {
+            command: backgroundCommand,
+            background: true,
+            taskTitle: 'Write state after release',
+          } },
+          { type: 'tool_call', id: 'read-before-release', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-background-write', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const registry = new ToolRegistry();
+        registry.register(bashTool).register(fileReadTool).register(fileWriteTool);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: registry,
+          taskManager,
+          sessionId,
+        });
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'update and reread the file', workDir })) events.push(event);
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        expect(backgroundTaskId).toBeTruthy();
+        expect(toolEnds.find(event => event.id === 'read-before-release')?.output).toContain('before');
+        expect(toolStarts.find(event => event.id === 'read-after-background-write')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-background-write')?.output).toContain('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+        expect(taskManager.getTask(sessionId, backgroundTaskId)?.status).toBe('succeeded');
+      } finally {
+        if (!existsSync(releasePath)) writeFileSync(releasePath, 'go');
+        const task = backgroundTaskId
+          ? taskManager.getTask(sessionId, backgroundTaskId)
+          : taskManager.listActiveTasks(sessionId).find(item => item.kind === 'shell');
+        if (task?.status === 'running') taskManager.cancelTask(sessionId, task.id);
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not reuse reads after a SpawnAgent writes the workspace', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-sub-agent-'));
+      const yeaftDir = join(workDir, '.yeaft');
+      const sessionId = 'session-sub-agent-read-cache';
+      const filePath = join(workDir, 'state.txt');
+      const taskManager = new TaskManager({ yeaftDir });
+      let childToolStarts = 0;
+      let spawnedAgentId = null;
+      writeFileSync(filePath, 'before');
+      try {
+        const childAdapter = {
+          async *stream() {
+            childToolStarts += 1;
+            if (childToolStarts === 1) {
+              yield { type: 'tool_call', id: 'child-write', name: 'FileWrite', input: {
+                file_path: 'state.txt',
+                content: 'after',
+              } };
+              yield { type: 'stop', stopReason: 'tool_use' };
+              return;
+            }
+            yield { type: 'text_delta', text: 'child wrote the state' };
+            yield { type: 'stop', stopReason: 'end_turn' };
+          },
+          async call() { return { text: 'ok', usage: {} }; },
+        };
+        const baseStream = mockAdapter.stream.bind(mockAdapter);
+        mockAdapter.stream = async function* streamAfterChildWrite(params) {
+          if (params.messages?.some(message => message.role === 'tool' && message.toolCallId === 'spawn-child-write')) {
+            const agent = spawnedAgentId ? getAgentRegistry().get(spawnedAgentId) : null;
+            if (!agent?.taskId) throw new Error('sub-agent task did not start');
+            const deadline = Date.now() + 2_000;
+            while (taskManager.getTask(sessionId, agent.taskId)?.status === 'running' && Date.now() < deadline) {
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            const completed = taskManager.getTask(sessionId, agent.taskId);
+            if (completed?.status !== 'succeeded') {
+              throw new Error(`sub-agent task did not complete successfully: ${completed?.status || 'missing'}`);
+            }
+          }
+          yield* baseStream(params);
+        };
+
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-child-write', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'tool_call', id: 'spawn-child-write', name: 'SpawnAgent', input: {
+            name: 'cache-write-child',
+            mission: 'Write state.txt after the release file appears.',
+          } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-child-write', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const registry = new ToolRegistry();
+        registry.register(fileReadTool).register(fileWriteTool).register({
+          ...agentTool,
+          execute: (input, toolCtx) => agentTool.execute(input, {
+            ...toolCtx,
+            parentEngineDeps: {
+              ...toolCtx.parentEngineDeps,
+              adapter: childAdapter,
+              parentToolRegistry: registry,
+              subAgentLogDir: join(yeaftDir, 'sub-agent-logs'),
+            },
+          }),
+        });
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: registry,
+          taskManager,
+          yeaftDir,
+          sessionId,
+          vpId: 'vp-owner',
+        });
+
+        const events = [];
+        const query = engine.query({
+          prompt: 'delegate the write and reread the file',
+          workDir,
+          sessionId,
+          senderVpId: 'vp-owner',
+          threadId: 'main',
+        });
+        for await (const event of query) {
+          events.push(event);
+          if (event.type === 'tool_end' && event.id === 'spawn-child-write') {
+            spawnedAgentId = JSON.parse(event.output).agentId;
+          }
+        }
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        const agent = getAgentRegistry().get(spawnedAgentId);
+        expect(spawnedAgentId).toBeTruthy();
+        expect(agent?.taskId).toBeTruthy();
+        expect(childToolStarts).toBe(2);
+        expect(toolEnds.find(event => event.id === 'read-before-child-write')?.output).toContain('before');
+        expect(toolStarts.find(event => event.id === 'read-after-child-write')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-child-write')?.output).toContain('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+        expect(taskManager.getTask(sessionId, agent.taskId)?.status).toBe('succeeded');
+      } finally {
+        for (const agent of getAgentRegistry().values()) {
+          if (agent.parentSessionId !== sessionId || agent.status === 'completed') continue;
+          agent.abortController?.abort('test cleanup');
+          agent.status = 'closed';
+        }
+        _resetAgentRegistry();
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not reuse reads after a started Work Item writes the workspace', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-work-item-'));
+      const sessionId = 'session-work-item-read-cache';
+      const filePath = join(workDir, 'state.txt');
+      const criterion = 'state.txt contains after';
+      let workCenter = null;
+      let releaseWorkItemWrite = null;
+      let resolveRunnerStarted = null;
+      let resolveWriteCompleted = null;
+      const runnerStarted = new Promise(resolve => { resolveRunnerStarted = resolve; });
+      const writeReleased = new Promise(resolve => { releaseWorkItemWrite = resolve; });
+      const writeCompleted = new Promise(resolve => { resolveWriteCompleted = resolve; });
+      writeFileSync(filePath, 'before');
+      try {
+        const runner = {
+          async run({ action }) {
+            if (action.type === 'triage') {
+              resolveRunnerStarted();
+              await writeReleased;
+              writeFileSync(filePath, 'after');
+              resolveWriteCompleted();
+              return {
+                outcome: 'completed',
+                response: 'Triage wrote the state.',
+                summary: 'State written.',
+                evidence: ['state.txt updated by the Work Item runner'],
+                acceptanceChecks: [{ criterion, status: 'passed', evidence: 'state.txt contains after' }],
+                plan: {
+                  workItemType: 'state-write',
+                  actions: [{
+                    id: 'deliver-state',
+                    name: 'Deliver state update',
+                    type: 'deliver',
+                    objective: 'Confirm the state update is ready to deliver.',
+                    approach: 'Verify state.txt after the Work Item write.',
+                    expectedOutcome: 'state.txt contains after.',
+                    dependsOnActionIds: [],
+                    workspaceMode: 'shared',
+                  }],
+                },
+              };
+            }
+            return {
+              outcome: 'completed',
+              response: 'State delivered.',
+              summary: 'State delivered.',
+              evidence: ['state.txt contains after'],
+              acceptanceChecks: [{ criterion, status: 'passed', evidence: 'state.txt contains after' }],
+            };
+          },
+        };
+        workCenter = new WorkCenterService({
+          yeaftDir: join(workDir, '.yeaft-work-center'),
+          runner,
+          pollIntervalMs: 5,
+          watcherOptions: { concurrencyProvider: () => 1 },
+          settingsReader: () => ({}),
+          listAvailableVpIds: () => ['omni'],
+        });
+        workCenter.start();
+        __testSetWorkCenterService(workCenter);
+        const baseStream = mockAdapter.stream.bind(mockAdapter);
+        mockAdapter.stream = async function* streamAfterWorkItemWrite(params) {
+          const hasStartedWorkItem = params.messages?.some(message => (
+            message.role === 'tool' && message.toolCallId === 'start-work-item'
+          ));
+          if (hasStartedWorkItem) {
+            let timer = null;
+            try {
+              await Promise.race([
+                runnerStarted,
+                new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Work Item runner did not start')), 2_000); }),
+              ]);
+            } finally {
+              if (timer) clearTimeout(timer);
+            }
+            releaseWorkItemWrite();
+            await writeCompleted;
+          }
+          yield* baseStream(params);
+        };
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-work-item', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'tool_call', id: 'start-work-item', name: 'CreateWorkItem', input: {
+            title: 'Write state',
+            goal: 'Update state.txt',
+            acceptanceCriteria: [criterion],
+            workDir,
+            start: true,
+          } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-work-item', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const { default: createWorkItemTool } = await import('../../../agent/yeaft/tools/create-work-item.js');
+        const bridge = await import('../../../agent/yeaft/web-bridge.js');
+        bridge.__testSetSession({
+          conversationStore: { loadRecentBySession: () => [] },
+        });
+        const registry = new ToolRegistry();
+        registry.register(fileReadTool).register(createWorkItemTool);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: registry,
+          sessionId,
+        });
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'start the work item and reread the state', workDir, sessionId })) {
+          events.push(event);
+        }
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        const created = JSON.parse(toolEnds.find(event => event.id === 'start-work-item')?.output || '{}');
+        expect(created.workItemId).toBeTruthy();
+        expect(toolEnds.find(event => event.id === 'read-before-work-item')?.output).toContain('before');
+        expect(toolStarts.find(event => event.id === 'read-after-work-item')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-work-item')?.output).toContain('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+        const deadline = Date.now() + 2_000;
+        while (!workCenter.store.getWorkItemDetail(created.workItemId)?.runs.some(run => (
+          run.response === 'Triage wrote the state.' && run.status === 'completed'
+        )) && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(workCenter.store.getWorkItemDetail(created.workItemId)?.runs).toEqual(expect.arrayContaining([
+          expect.objectContaining({ response: 'Triage wrote the state.', status: 'completed' }),
+        ]));
+      } finally {
+        releaseWorkItemWrite?.();
+        await workCenter?.shutdown();
+        __testSetWorkCenterService(null);
+        const bridge = await import('../../../agent/yeaft/web-bridge.js');
+        bridge.__testSetSession(null);
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
     it('executes the complete tool batch before appending live user input', async () => {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'Searching both...' },
@@ -4061,6 +4946,18 @@ describe('Engine', () => {
       expect(tools[0].tool_name).toBe('search');
       expect(tools[0].tool_output).toBe('results');
 
+      dbTrace.refreshConfig({ traceTextMaxBytes: 64 });
+      const boundedTurn = dbTrace.startTurn({ traceId: 'trace-bounded', turnNumber: 3 });
+      dbTrace.endTurn(boundedTurn, {
+        systemPrompt: 'system',
+        messages: [{ role: 'user', content: '😀'.repeat(200) }],
+        responseText: 'ok',
+        stopReason: 'end_turn',
+      });
+      await dbTrace.flush();
+      const bounded = await dbTrace.fetchRecentDebugHistory({ detailTurnId: 'trace-bounded' });
+      expect(Buffer.byteLength(JSON.stringify(bounded.loops[0]?.messages || []), 'utf8')).toBeLessThanOrEqual(64);
+
       await dbTrace.close();
 
       const traceRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-raw-response-'));
@@ -4286,6 +5183,40 @@ describe('Engine', () => {
         } finally {
           rmSync(duplicateRoot, { recursive: true, force: true });
         }
+
+        const snapshotTraceRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-snapshot-budget-'));
+        const snapshotTrace = new DebugTrace(snapshotTraceRoot);
+        try {
+          const largeMessages = Array.from({ length: 2_000 }, (_, index) => ({
+            role: index % 2 === 0 ? 'user' : 'assistant',
+            content: `message ${index}: ${'x'.repeat(256)}`,
+          }));
+          const startedAt = Date.now();
+          const snapshotTurn = snapshotTrace.startTurn({
+            traceId: 'snapshot-budget-turn',
+            turnNumber: 1,
+            sessionId: 's-snapshot-budget',
+          });
+          snapshotTrace.endTurn(snapshotTurn, {
+            responseText: '',
+            messages: largeMessages,
+            stopReason: 'end_turn',
+          });
+          await snapshotTrace.close();
+          // The exact wall-clock threshold is intentionally generous for slow
+          // CI. This catches the old O(n²) prefix reserialization without
+          // turning normal host load into a flaky failure.
+          expect(Date.now() - startedAt).toBeLessThan(5_000);
+          const snapshotReader = new DebugTrace(snapshotTraceRoot);
+          const snapshotDetail = await snapshotReader.fetchTurnDebug({
+            sessionId: 's-snapshot-budget',
+            turnId: 'snapshot-budget-turn',
+          });
+          expect(Buffer.byteLength(JSON.stringify(snapshotDetail.loops[0]?.messages || []), 'utf8')).toBeLessThanOrEqual(256 * 1024);
+          await snapshotReader.close();
+        } finally {
+          rmSync(snapshotTraceRoot, { recursive: true, force: true });
+        }
       } finally {
         await boundedTrace.close();
         rmSync(traceRoot, { recursive: true, force: true });
@@ -4463,7 +5394,7 @@ describe('Engine', () => {
   });
 
   describe('language in system prompt', () => {
-    it('should use English system prompt by default', async () => {
+    async function verifyEnglishSystemPrompt() {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'ok' },
         { type: 'stop', stopReason: 'end_turn' },
@@ -4483,9 +5414,11 @@ describe('Engine', () => {
       expect(call.system).toContain('Session Participant');
       expect(call.system).not.toContain('Yeaft — AI');
       expect(call.system).not.toContain('核心原则');
-    });
+    }
 
-    it('should use Chinese system prompt when language is zh', async () => {
+    it('uses English and Chinese system prompts with configured tool guidance', async () => {
+      await verifyEnglishSystemPrompt();
+      mockAdapter = new MockAdapter();
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'ok' },
         { type: 'stop', stopReason: 'end_turn' },
@@ -4508,33 +5441,32 @@ describe('Engine', () => {
       expect(call.system).toContain('核心原则');
       expect(call.system).not.toContain('统一模式');
       expect(call.system).not.toContain('你是一个持续伴随的 AI 伙伴');
-    });
+      mockAdapter = new MockAdapter();
 
-    it('should include configured tools and dependency-aware TodoWrite guidance', async () => {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'ok' },
         { type: 'stop', stopReason: 'end_turn' },
       ]);
 
-      const engine = new Engine({
+      const toolGuidanceEngine = new Engine({
         adapter: mockAdapter,
         trace,
         config: { model: 'test-model', maxOutputTokens: 1024, language: 'zh' },
       });
 
-      engine.registerTool({
+      toolGuidanceEngine.registerTool({
         name: 'search',
         description: 'Search',
         parameters: {},
         execute: async () => 'results',
       });
 
-      for await (const _event of engine.query({ prompt: 'test' })) {
+      for await (const _event of toolGuidanceEngine.query({ prompt: 'test' })) {
         // consume
       }
 
-      const call = mockAdapter.callLog[0];
-      expect(call.system).toContain('可用工具：search');
+      const toolGuidanceCall = mockAdapter.callLog[0];
+      expect(toolGuidanceCall.system).toContain('可用工具：search');
 
       const enSystem = buildSystemPrompt({
         language: 'en',
