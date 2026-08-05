@@ -14,8 +14,8 @@ function harnessHtml() {
   return `<!doctype html>
 <html>
 <body>
-  <script src="/node_modules/vue/dist/vue.global.js"></script>
-  <script>window.VueDemi = window.Vue;</script>
+  <script src="/web/vendor/vue.global.prod.js"></script>
+  <script src="/web/vendor/vue-demi.iife.js"></script>
   <script src="/web/vendor/pinia.iife.prod.js"></script>
   <script>
     Pinia.setActivePinia(Pinia.createPinia());
