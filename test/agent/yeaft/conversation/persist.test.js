@@ -476,6 +476,79 @@ describe('ConversationStore', () => {
       });
     });
 
+    it('keeps a brand-new transcript lineage stable across index loss and old writers', () => {
+      const sessionId = 'session_new_lineage_recovery';
+      store.append({ role: 'user', content: 'brand new question', sessionId });
+      store.append({ role: 'assistant', content: 'brand new answer', sessionId });
+      const conversationDir = join(TEST_DIR, 'sessions', sessionId, 'conversation');
+      const indexPath = join(conversationDir, 'index.json');
+      const lineagePath = join(conversationDir, 'lineage.json');
+      const original = store.getSessionHistoryMetadata(sessionId);
+      const originalLineage = JSON.parse(readFileSync(lineagePath, 'utf8'));
+      expect(originalLineage.anchor).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
+
+      rmSync(indexPath, { force: true });
+      expect(new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId)).toEqual(original);
+
+      writeFileSync(indexPath, '{broken-json');
+      expect(new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId)).toEqual(original);
+
+      const oldIndex = JSON.parse(readFileSync(indexPath, 'utf8'));
+      delete oldIndex.streamId;
+      delete oldIndex.revision;
+      writeFileSync(indexPath, `${JSON.stringify(oldIndex, null, 2)}\n`);
+      expect(new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId)).toEqual(original);
+    });
+
+    it('updates the lineage anchor and revision when the first durable row changes', () => {
+      const sessionId = 'session_anchor_update';
+      const first = store.append({ role: 'user', content: 'before update', sessionId });
+      store.append({ role: 'assistant', content: 'answer', sessionId });
+      const conversationDir = join(TEST_DIR, 'sessions', sessionId, 'conversation');
+      const indexPath = join(conversationDir, 'index.json');
+      const lineagePath = join(conversationDir, 'lineage.json');
+      const before = store.getSessionHistoryMetadata(sessionId);
+      const beforeAnchor = JSON.parse(readFileSync(lineagePath, 'utf8')).anchor;
+
+      expect(store.update(first, { content: 'after update' })).toMatchObject({ content: 'after update' });
+      const after = store.getSessionHistoryMetadata(sessionId);
+      const afterAnchor = JSON.parse(readFileSync(lineagePath, 'utf8')).anchor;
+      expect(after.streamId).toBe(before.streamId);
+      expect(after.revision).toBe(before.revision + 1);
+      expect(afterAnchor).not.toBe(beforeAnchor);
+
+      rmSync(indexPath, { force: true });
+      expect(new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId)).toEqual(after);
+    });
+
+    it('does not reuse lineage after physical Session deletion and same-id recreation', () => {
+      const sessionId = 'session_physical_recreate';
+      const sessionsDir = join(TEST_DIR, 'sessions');
+      const handle = createSession(sessionsDir, {
+        id: sessionId,
+        name: 'Physical recreate',
+        roster: [],
+        defaultVpId: null,
+      });
+      handle.close();
+      store.append({ role: 'user', content: 'old lifetime', sessionId });
+      const before = store.getSessionHistoryMetadata(sessionId);
+
+      expect(deleteSession(TEST_DIR, sessionId, { memoryRoot: join(TEST_DIR, 'memory') }))
+        .toMatchObject({ sessionId, deleted: true });
+      const recreated = createSession(sessionsDir, {
+        id: sessionId,
+        name: 'Physical recreate again',
+        roster: [],
+        defaultVpId: null,
+      });
+      recreated.close();
+      const restarted = new ConversationStore(TEST_DIR);
+      restarted.append({ role: 'user', content: 'new lifetime', sessionId });
+      const after = restarted.getSessionHistoryMetadata(sessionId);
+      expect(after.streamId).not.toBe(before.streamId);
+    });
+
     it('rotates Session history lineage after delete and same-id recreation', () => {
       const sessionId = 'session_recreated_lineage';
       store.append({ role: 'user', content: 'old question', sessionId });

@@ -765,6 +765,8 @@ class SegmentStore {
   append(msg) {
     this.ensure();
     const idx = this.loadIndex();
+    const establishesAnchor = (Number(idx.totalMessages) || 0) === 0
+      && (!Array.isArray(idx.segments) || idx.segments.length === 0);
     let segment = idx.segments[idx.segments.length - 1] || null;
     let active = segment?.file || idx.activeSegment || SEGMENT_FIRST_NAME;
     let activePath = join(this.segmentDir, active);
@@ -804,7 +806,10 @@ class SegmentStore {
         ...msg.foldedMessageIds.filter(id => typeof id === 'string' && id),
       ]));
     }
-    this.#persistCurrentLineage({ revision: idx.revision });
+    this.#persistCurrentLineage({
+      revision: idx.revision,
+      anchor: establishesAnchor ? this.#lineageAnchorForLine(line) : undefined,
+    });
     this.saveIndex();
   }
 
@@ -880,12 +885,16 @@ class SegmentStore {
     if (!next || typeof next !== 'object') return null;
     const updated = { ...next, id: rows[rowIndex].id };
     rows[rowIndex] = updated;
+    const updatesAnchor = rowIndex === 0 && segment.file === idx.segments[0]?.file;
 
     const body = rows.map(row => JSON.stringify(row)).join('\n') + (rows.length > 0 ? '\n' : '');
     writeAtomic(path, body);
     segment.bytes = Buffer.byteLength(body);
     idx.revision = (Number(idx.revision) || 0) + 1;
-    this.#persistCurrentLineage({ revision: idx.revision });
+    this.#persistCurrentLineage({
+      revision: idx.revision,
+      anchor: updatesAnchor ? this.#lineageAnchorForLine(JSON.stringify(updated)) : undefined,
+    });
     this.saveIndex();
     return updated;
   }
@@ -966,10 +975,14 @@ class SegmentStore {
       }
       for (const line of raw.split('\n')) {
         if (!parseJsonLine(line)) continue;
-        return createHash('sha256').update(line.trim()).digest('hex');
+        return this.#lineageAnchorForLine(line);
       }
     }
     return null;
+  }
+
+  #lineageAnchorForLine(line) {
+    return createHash('sha256').update(String(line || '').trim()).digest('hex');
   }
 
   #legacyLineageId(anchor) {
@@ -984,12 +997,12 @@ class SegmentStore {
     const persisted = this.#readLineage();
     const anchor = !persisted || verifyAnchor ? this.#currentLineageAnchor() : persisted.anchor;
     if (!persisted) {
-      const deterministicStreamId = this.#legacyLineageId(anchor);
+      const initialStreamId = anchor ? this.#legacyLineageId(anchor) : randomUUID();
       const indexStreamId = typeof idx?.streamId === 'string' && idx.streamId ? idx.streamId : null;
       // Missing sidecar is a rolling-upgrade boundary. Recompute from the
-      // immutable first row instead of trusting an index UUID that an older
-      // writer can repeatedly discard and a new reader can randomly recreate.
-      const streamId = verifyAnchor ? deterministicStreamId : (indexStreamId || deterministicStreamId);
+      // immutable first row for existing data. A truly empty store starts a
+      // new random lifetime so delete + same-id recreation cannot collide.
+      const streamId = verifyAnchor ? initialStreamId : (indexStreamId || initialStreamId);
       return this.#writeLineage({
         streamId,
         revision: Number.isFinite(Number(idx?.revision)) ? Number(idx.revision) : 0,
@@ -1011,16 +1024,19 @@ class SegmentStore {
     return persisted;
   }
 
-  #persistCurrentLineage({ revision = null } = {}) {
+  #persistCurrentLineage({ revision = null, anchor = undefined } = {}) {
     const current = this.lineage || this.#readLineage() || {
       streamId: this.index?.streamId || this.#legacyLineageId(this.#currentLineageAnchor()),
       revision: Number(this.index?.revision) || 0,
       anchor: this.#currentLineageAnchor(),
     };
     const nextRevision = Number.isFinite(Number(revision)) ? Number(revision) : current.revision;
-    const needsWrite = !this.lineage || current.revision !== nextRevision;
+    const nextAnchor = typeof anchor === 'string' && anchor ? anchor : current.anchor;
+    const needsWrite = !this.lineage
+      || current.revision !== nextRevision
+      || current.anchor !== nextAnchor;
     const next = needsWrite
-      ? this.#writeLineage({ ...current, revision: nextRevision })
+      ? this.#writeLineage({ ...current, revision: nextRevision, anchor: nextAnchor })
       : current;
     this.lineage = next;
     if (this.index) {
