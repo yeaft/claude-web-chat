@@ -15,6 +15,7 @@ import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 import { buildMainlineContextSnapshot } from '../../../../agent/yeaft/work-center/mainline-projection.js';
+import { WorkItemRunner } from '../../../../agent/yeaft/work-center/runner.js';
 
 function workItem(overrides = {}) {
   return {
@@ -298,6 +299,9 @@ describe('Work Center dynamic coordination contract', () => {
       status: 'done', currentActionId: null,
       finalResult: { evidenceRunIds: [claimedAction.run.id] },
     });
+    expect(() => store.db.prepare('UPDATE work_items SET final_result = ? WHERE id = ?')
+      .run(JSON.stringify({ summary: 'rewritten' }), created.id))
+      .toThrow(/WorkItem final result is immutable/);
   });
 
   it('recovers dynamic Runs and resumes cancelled WorkItems through the Coordinator', () => {
@@ -397,6 +401,199 @@ describe('Work Center dynamic coordination contract', () => {
     } finally {
       await service.shutdown();
     }
+  });
+
+  it('runs a real dynamic Action and persists an action-journal execution manifest', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-dynamic-runner-'));
+    let now = 1_000;
+    store = new WorkItemStore(join(tempDir, 'work-center.db'), { now: () => now++ });
+    const controller = new WorkflowController(store);
+    const created = controller.create({
+      ...workItem(), workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const mailbox = store.enqueueCoordinatorMailbox(created.id, 'work_item_created', {}, 'dynamic:create:runner');
+    const claim = store.claimCoordinatorMailbox(created.id, 'coordinator-owner');
+    const turn = store.beginDynamicCoordinatorTurn(mailbox.id, {
+      ownerBootId: 'coordinator-owner', claimEpoch: claim.claim_epoch,
+    });
+    const mutation = prepareDynamicActionMutation({
+      workItem: turn.detail, actions: [], availableVpIds: ['omni'],
+      decision: {
+        workItemType: 'software-change',
+        actions: [{
+          type: 'test', objective: 'Execute a real dynamic WorkItem Runner.',
+          approach: 'Run the Engine with a terminal structured response.',
+          expectedOutcome: 'The dynamic Mainline manifest is persisted.',
+          candidateVpIds: ['omni'], assignmentReason: 'Omni is the test executor.',
+          sourceActionIds: [], workspaceMode: 'read',
+        }],
+      },
+    });
+    store.completeCoordinatorTurn(turn.turnId, {
+      reply: 'Starting the real Runner Action.',
+      decision: { kind: 'create_actions', reason: 'The Action is runnable.', actions: [] },
+      mutation,
+    }, turn.fence);
+    const acquired = store.claimReadyAction('runner-owner', 5_000);
+    const adapter = {
+      async *stream(params) {
+        params.onRequestStart?.();
+        yield { type: 'text_delta', text: JSON.stringify({
+          outcome: 'completed', summary: 'Runner completed.',
+          evidence: ['real dynamic runner evidence'],
+          acceptanceChecks: [
+            { criterion: 'Actions are dynamic', status: 'passed', evidence: 'runner manifest' },
+            { criterion: 'Completion is evidence-backed', status: 'deferred', evidence: 'Coordinator verifies' },
+          ],
+        }) };
+        yield { type: 'stop', stopReason: 'end_turn' };
+      },
+    };
+    const runner = new WorkItemRunner({
+      store,
+      runtimeProvider: async () => ({
+        defaultWorkDir: tempDir,
+        config: { model: 'provider/model', maxOutputTokens: 1_024, projectDocMaxBytes: 0 },
+        adapter,
+      }),
+      registry: {
+        listVps: () => [{ id: 'omni', name: 'Omni', role: 'tester', traits: ['test'] }],
+        getVp: id => id === 'omni'
+          ? { id: 'omni', name: 'Omni', role: 'tester', traits: ['test'] } : null,
+      },
+    });
+    const result = await runner.run({
+      ...acquired, ownerBootId: 'runner-owner', signal: new AbortController().signal,
+    });
+    expect(result).toMatchObject({ outcome: 'completed', summary: 'Runner completed.' });
+    expect(store.getRun(acquired.run.id)?.executionManifest).toMatchObject({
+      schemaVersion: 2, planRevision: 1,
+    });
+  });
+
+  it.each([
+    ['unexpired', 1_001],
+    ['expired', 2_000],
+  ])('requeues an automatic Coordinator wake after a %s pre-dispatch crash', (_lease, reopenAt) => {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-dynamic-coordinator-crash-'));
+    let now = 1_000;
+    const dbPath = join(tempDir, 'work-center.db');
+    store = new WorkItemStore(dbPath, { now: () => now });
+    const controller = new WorkflowController(store);
+    const created = controller.create({
+      ...workItem(), workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const mailbox = store.enqueueCoordinatorMailbox(created.id, 'work_item_created', {}, `dynamic:create:${_lease}`);
+    const claim = store.claimCoordinatorMailbox(created.id, 'coordinator-before-crash', 100);
+    const turn = store.beginDynamicCoordinatorTurn(mailbox.id, {
+      ownerBootId: 'coordinator-before-crash', claimEpoch: claim.claim_epoch,
+    });
+    expect(turn).not.toBeNull();
+    store.close();
+    store = null;
+    now = reopenAt;
+    store = new WorkItemStore(dbPath, { now: () => now });
+    expect(store.getWorkItemDetail(created.id).messages.at(-1)).toMatchObject({
+      role: 'assistant', status: 'failed',
+    });
+    expect(store.listPendingDynamicCoordinatorWakes()).toEqual([
+      expect.objectContaining({ id: mailbox.id, workItemId: created.id }),
+    ]);
+  });
+
+  it('rejects WorkItem completion backed by a canonical Run with no evidence or acceptance checks', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-dynamic-empty-evidence-'));
+    let now = 1_000;
+    store = new WorkItemStore(join(tempDir, 'work-center.db'), { now: () => now++ });
+    const controller = new WorkflowController(store);
+    const created = controller.create({
+      ...workItem(), workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const mailbox = store.enqueueCoordinatorMailbox(created.id, 'work_item_created', {}, 'dynamic:create:empty-evidence');
+    const claim = store.claimCoordinatorMailbox(created.id, 'coordinator-owner');
+    const turn = store.beginDynamicCoordinatorTurn(mailbox.id, {
+      ownerBootId: 'coordinator-owner', claimEpoch: claim.claim_epoch,
+    });
+    const mutation = prepareDynamicActionMutation({
+      workItem: turn.detail, actions: [], availableVpIds: ['linus'],
+      decision: {
+        workItemType: 'software-change',
+        actions: [{
+          type: 'test', objective: 'Create an invalid canonical completion fixture.',
+          approach: 'Persist a completed Run without evidence or acceptance checks.',
+          expectedOutcome: 'The final completion gate rejects the Run.',
+          candidateVpIds: ['linus'], assignmentReason: 'Linus owns the fixture.',
+          sourceActionIds: [], workspaceMode: 'read',
+        }],
+      },
+    });
+    store.completeCoordinatorTurn(turn.turnId, {
+      reply: 'Starting invalid evidence fixture.',
+      decision: { kind: 'create_actions', reason: 'Fixture is runnable.', actions: [] }, mutation,
+    }, turn.fence);
+    const acquired = store.claimReadyAction('runner-owner', 5_000);
+    store.closeRunInput(acquired.run.id, 'runner-owner', acquired.run.leaseEpoch);
+    store.finalizeRun(acquired.run.id, 'runner-owner', acquired.run.leaseEpoch, {
+      outcome: 'completed', summary: 'No proof', evidence: [], acceptanceChecks: [],
+    }, () => { throw new Error('legacy transition must not run'); });
+    const reconciliation = store.listPendingDynamicCoordinatorWakes()[0];
+    const completionClaim = store.claimCoordinatorMailbox(created.id, 'coordinator-owner');
+    const completionTurn = store.beginDynamicCoordinatorTurn(reconciliation.id, {
+      ownerBootId: 'coordinator-owner', claimEpoch: completionClaim.claim_epoch,
+    });
+    expect(() => store.completeCoordinatorTurn(completionTurn.turnId, {
+      reply: 'Claiming completion without proof.',
+      decision: {
+        kind: 'complete', reason: 'The invalid Run claims success.',
+        completion: {
+          summary: 'Invalid completion',
+          acceptanceResults: [
+            { criterion: 'Actions are dynamic', status: 'passed', evidenceRunIds: [acquired.run.id] },
+            { criterion: 'Completion is evidence-backed', status: 'passed', evidenceRunIds: [acquired.run.id] },
+          ],
+          evidenceRunIds: [acquired.run.id], residualRisks: [],
+        },
+      },
+    }, completionTurn.fence)).toThrow(/evidence|acceptance/i);
+  });
+
+  it('enqueues reconciliation when interrupted recovery exhausts a dynamic Action', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-dynamic-terminal-recovery-'));
+    let now = 1_000;
+    store = new WorkItemStore(join(tempDir, 'work-center.db'), { now: () => now });
+    const controller = new WorkflowController(store);
+    const created = controller.create({
+      ...workItem(), workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const mailbox = store.enqueueCoordinatorMailbox(created.id, 'work_item_created', {}, 'dynamic:create:terminal-recovery');
+    const claim = store.claimCoordinatorMailbox(created.id, 'coordinator-owner');
+    const turn = store.beginDynamicCoordinatorTurn(mailbox.id, {
+      ownerBootId: 'coordinator-owner', claimEpoch: claim.claim_epoch,
+    });
+    const mutation = prepareDynamicActionMutation({
+      workItem: turn.detail, actions: [], availableVpIds: ['linus'],
+      decision: {
+        workItemType: 'software-change',
+        actions: [{
+          type: 'implement', objective: 'Exercise terminal interrupted recovery.',
+          approach: 'Expire the only allowed Run attempt.',
+          expectedOutcome: 'The Coordinator receives a reconciliation wake.',
+          candidateVpIds: ['linus'], assignmentReason: 'Linus owns recovery.',
+          sourceActionIds: [], workspaceMode: 'shared', maxAttempts: 1,
+        }],
+      },
+    });
+    store.completeCoordinatorTurn(turn.turnId, {
+      reply: 'Starting terminal recovery fixture.',
+      decision: { kind: 'create_actions', reason: 'Fixture is runnable.', actions: [] }, mutation,
+    }, turn.fence);
+    const acquired = store.claimReadyAction('old-runner', 10);
+    now = 2_000;
+    expect(store.recoverInterruptedRuns('new-runner')).toBe(1);
+    expect(store.getAction(acquired.action.id)).toMatchObject({ status: 'failed' });
+    expect(store.listPendingDynamicCoordinatorWakes()).toEqual([
+      expect.objectContaining({ workItemId: created.id, kind: 'action_settled' }),
+    ]);
   });
 
   it('requires canonical owned Run evidence for every completion criterion', () => {

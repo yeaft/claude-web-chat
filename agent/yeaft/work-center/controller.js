@@ -353,9 +353,7 @@ export class WorkflowController {
       result.outcome = 'failed';
       result.error = 'Work Center replan triage must submit SubmitWorkItemReplan';
     }
-    if (!isDynamicWorkItem(activeWorkItem)) {
-      validateCompletedResult(result, activeAction, activeWorkItem);
-    }
+    validateCompletedResult(result, activeAction, activeWorkItem);
     let validatedGeneratedWorkflow = null;
     if (result.outcome === 'completed'
         && activeAction.type === 'triage'

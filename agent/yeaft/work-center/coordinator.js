@@ -156,7 +156,15 @@ function boundedAction(action, result, stageReferences, compact = false, dynamic
     result: result ? {
       status: truncateUtf8(result.status, 64),
       summary: truncateUtf8(result.summary, compact ? 256 : 768),
-      ...(!compact ? { evidence: boundedEvidence(result.evidence) } : {}),
+      ...(!compact ? {
+        evidence: boundedEvidence(result.evidence),
+        acceptanceChecks: (Array.isArray(result.acceptanceChecks) ? result.acceptanceChecks : [])
+          .slice(0, 24).map(check => ({
+            criterion: truncateUtf8(check?.criterion, 512),
+            status: truncateUtf8(check?.status, 64),
+            evidence: truncateUtf8(check?.evidence, 1_000),
+          })),
+      } : {}),
       waitingReason: truncateUtf8(result.waitingReason, 384) || null,
       error: truncateUtf8(result.error, 384) || null,
       reviewDecision: truncateUtf8(result.reviewDecision, 64) || null,

@@ -396,11 +396,13 @@ describe('Work Center store migration', () => {
     store = new WorkItemStore(dbPath, { now: () => 1_000 });
 
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: '36' });
+      .toEqual({ value: '37' });
     expect(store.db.prepare('PRAGMA table_info(work_items)').all().map(row => row.name))
       .toEqual(expect.arrayContaining(['coordination_mode', 'final_result']));
     expect(store.db.prepare('PRAGMA table_info(actions)').all().map(row => row.name))
       .toContain('source_action_ids');
+    expect(store.db.prepare('PRAGMA table_info(runs)').all().map(row => row.name))
+      .toContain('acceptance_checks');
 
     const controller = new WorkflowController(store);
     const legacy = controller.create({
@@ -418,7 +420,7 @@ describe('Work Center store migration', () => {
     store.close();
     store = new WorkItemStore(dbPath, { now: () => 2_000 });
     expect(store.db.prepare(`SELECT COUNT(*) AS count FROM schema_migrations
-      WHERE name = '36-dynamic-coordination'`).get()).toEqual({ count: 1 });
+      WHERE name IN ('36-dynamic-coordination', '37-run-acceptance-checks')`).get()).toEqual({ count: 2 });
   });
 
   it('migrates legacy prompt stores without re-injecting historical WorkItem messages', async () => {
@@ -487,7 +489,7 @@ describe('Work Center store migration', () => {
           data: expect.objectContaining({ reason: 'schema19_legacy_repair' }),
         }),
       ]));
-      expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value).toBe('36');
+      expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value).toBe('37');
       expect(store.db.prepare('PRAGMA table_info(coordinator_provider_turns)').all()
         .map(column => column.name)).toEqual(expect.arrayContaining(['claim_owner', 'claim_epoch']));
       expect(store.db.prepare('PRAGMA index_list(coordinator_provider_turns)').all()
@@ -1067,7 +1069,7 @@ describe('Work Center store migration', () => {
       snapshotOccurrences: reviewRepairSnapshot.userContext.guidance
         .filter(entry => entry.text === reviewRepairSentinel).length,
     }).toEqual({
-      schemaVersion: '36',
+      schemaVersion: '37',
       generation: reviewRepairParentAction.generation + 1,
       inputIds: reviewRepairSourceEvents.map(event => `legacy-event:${event.id}`),
       attachmentNames: reviewRepairAttachmentNames,
@@ -1791,7 +1793,7 @@ describe('Work Center store migration', () => {
     store = new WorkItemStore(resetInputDbPath, { now: () => 3_000 });
     resetInputController = new WorkflowController(store);
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('36');
+      .toBe('37');
     expect(store.getAction(resetInputAction.id)).toEqual(resetActionBeforeReopen);
     expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
       action_spec_hash, consumed_at, superseded_at FROM pending_action_inputs
@@ -2003,7 +2005,7 @@ describe('Work Center store migration', () => {
     store = new WorkItemStore(replanInputDbPath, { now: () => 3_000 });
     replanInputController = new WorkflowController(store);
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('36');
+      .toBe('37');
     expect(store.getAction(replanInputAction.id)).toEqual(replanOldActionBeforeReopen);
     expect(store.getAction(replannedValidate.id)).toEqual(replanNewActionBeforeReopen);
     expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
@@ -2097,7 +2099,7 @@ describe('Work Center store migration', () => {
 
     store = new WorkItemStore(terminalInputDbPath, { now: () => 3_000 });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('36');
+      .toBe('37');
     expect(store.getWorkItem(terminalInputItem.id).status).toBe('done');
     expect(store.getAction(terminalInputAction.id)).toEqual(terminalActionBeforeReopen);
     expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
@@ -2445,7 +2447,7 @@ describe('Work Center store migration', () => {
 
     store = new WorkItemStore(rollbackDbPath, { now: () => 2_000 });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('36');
+      .toBe('37');
     expect(store.getAction(rollbackClaim.action.id).instruction).not.toContain(LEGACY_INSTRUCTION);
     store.close();
     store = null;
@@ -2489,7 +2491,7 @@ describe('Work Center store migration', () => {
       installLegacyEngineTurnStatusContract(schema31DbPath, { badLedger });
       store = new WorkItemStore(schema31DbPath, { now: () => 2_000 });
       expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-        .toBe('36');
+        .toBe('37');
       expect(store.getEngineTurn(turn.id)).toMatchObject({
         status: 'prepared', inputEntryIds: turn.inputEntryIds,
       });

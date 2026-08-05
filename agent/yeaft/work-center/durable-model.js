@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-export const WORK_CENTER_SCHEMA_VERSION = 36;
+export const WORK_CENTER_SCHEMA_VERSION = 37;
 
 const MIGRATIONS = [
   ['23-conversation-stream', migrateConversationStream],
@@ -17,6 +17,7 @@ const MIGRATIONS = [
   ['34-engine-turn-status-repair', repairEngineTurnStatusContract],
   ['35-coordinator-provider-claims', migrateCoordinatorProviderClaims],
   ['36-dynamic-coordination', migrateDynamicCoordination],
+  ['37-run-acceptance-checks', migrateRunAcceptanceChecks],
 ];
 
 const MIGRATION_ALIASES = new Map([
@@ -497,6 +498,32 @@ function migrateDynamicCoordination(db) {
     WHEN OLD.final_result IS NOT NULL AND NEW.final_result IS NOT OLD.final_result
     BEGIN
       SELECT RAISE(ABORT, 'WorkItem final result is immutable');
+    END;
+  `);
+}
+
+function migrateRunAcceptanceChecks(db) {
+  if (!hasColumn(db, 'runs', 'acceptance_checks')) {
+    db.exec("ALTER TABLE runs ADD COLUMN acceptance_checks TEXT NOT NULL DEFAULT '[]'");
+  }
+  db.exec(`
+    DROP TRIGGER IF EXISTS trg_runs_terminal_identity_immutable;
+    CREATE TRIGGER IF NOT EXISTS trg_runs_terminal_identity_immutable
+    BEFORE UPDATE ON runs
+    WHEN OLD.terminal_status IS NOT NULL AND (
+      NEW.action_id IS NOT OLD.action_id OR NEW.work_item_id IS NOT OLD.work_item_id OR
+      NEW.owner_boot_id IS NOT OLD.owner_boot_id OR NEW.lease_epoch IS NOT OLD.lease_epoch OR
+      NEW.ordinal IS NOT OLD.ordinal OR NEW.started_at IS NOT OLD.started_at OR
+      NEW.status IS NOT OLD.status OR NEW.ended_at IS NOT OLD.ended_at OR
+      NEW.terminal_status IS NOT OLD.terminal_status OR NEW.terminal_at IS NOT OLD.terminal_at OR
+      NEW.response IS NOT OLD.response OR NEW.summary IS NOT OLD.summary OR
+      NEW.evidence IS NOT OLD.evidence OR NEW.acceptance_checks IS NOT OLD.acceptance_checks OR
+      NEW.waiting_reason IS NOT OLD.waiting_reason OR NEW.error IS NOT OLD.error OR
+      NEW.failure_kind IS NOT OLD.failure_kind OR NEW.failure_code IS NOT OLD.failure_code OR
+      NEW.review_decision IS NOT OLD.review_decision OR NEW.contract_patch IS NOT OLD.contract_patch OR
+      NEW.checkpoint IS NOT OLD.checkpoint)
+    BEGIN
+      SELECT RAISE(ABORT, 'terminal Run result is immutable');
     END;
   `);
 }

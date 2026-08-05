@@ -1215,7 +1215,9 @@ export class WorkItemRunner {
         executionManifest: mainline ? {
           schemaVersion: 2,
           ledgerRevision: mainline.contextSnapshot.ledgerRevision,
-          planRevision: mainline.contextSnapshot.graph.planRevision,
+          planRevision: isDynamicWorkItem(workItem)
+            ? mainline.contextSnapshot.actionJournal.revision
+            : mainline.contextSnapshot.graph.planRevision,
           contractRevision: mainline.contextSnapshot.contract.revision,
           actionGeneration: mainline.contextSnapshot.action.generation,
           actionSpecHash: mainline.contextSnapshot.action.specHash,
