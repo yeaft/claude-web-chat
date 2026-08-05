@@ -3358,6 +3358,57 @@ export const useChatStore = defineStore('chat', {
       });
     },
 
+    clearYeaftHistoryMemory({ agentId = null, sessionId = null } = {}) {
+      const targetAgentId = agentId || null;
+      const targetSessionId = sessionId || null;
+      const sessionKey = targetAgentId && targetSessionId
+        ? yeaftHistoryIdentityKey(targetAgentId, targetSessionId)
+        : null;
+      const scopedConversationId = targetAgentId
+        ? this.yeaftConversationIdsByAgent?.[targetAgentId] || null
+        : null;
+      const conversationIds = sessionKey
+        ? new Set([scopedConversationId].filter(Boolean))
+        : new Set(Object.values(this.yeaftConversationIdsByAgent || {}).filter(Boolean));
+      if (!sessionKey && this.yeaftConversationId) conversationIds.add(this.yeaftConversationId);
+      const nextMessagesMap = { ...(this.messagesMap || {}) };
+      for (const conversationId of conversationIds) {
+        if (!Array.isArray(nextMessagesMap[conversationId])) continue;
+        nextMessagesMap[conversationId] = sessionKey
+          ? nextMessagesMap[conversationId].filter(row => (
+            (row?.sessionId ?? row?.groupId ?? null) !== targetSessionId
+          ))
+          : [];
+      }
+      this.messagesMap = nextMessagesMap;
+
+      const clearMapKey = (source) => {
+        if (!sessionKey) return {};
+        const { [sessionKey]: _removed, ...remaining } = source || {};
+        return remaining;
+      };
+      this.yeaftSessionHistoryState = clearMapKey(this.yeaftSessionHistoryState);
+      this.yeaftHistoryCacheState = clearMapKey(this.yeaftHistoryCacheState);
+      this.yeaftMessageWindowState = clearMapKey(this.yeaftMessageWindowState);
+      this._yeaftHistoryBrowserHydrationBySession = clearMapKey(
+        this._yeaftHistoryBrowserHydrationBySession,
+      );
+      this._yeaftHistoryRevealLeases = sessionKey
+        ? Object.fromEntries(Object.entries(this._yeaftHistoryRevealLeases || {})
+          .filter(([, lease]) => lease?.sessionKey !== sessionKey))
+        : {};
+      if (!sessionKey) {
+        this.yeaftHasMoreHistory = false;
+        this.yeaftLoadingMoreHistory = false;
+        this.yeaftOldestLoadedSeq = null;
+      }
+      if (targetSessionId && this.yeaftSessionAgentById?.[targetSessionId] === targetAgentId) {
+        const { [targetSessionId]: _removed, ...remaining } = this.yeaftSessionAgentById;
+        this.yeaftSessionAgentById = remaining;
+      }
+      this.syncActiveYeaftHistoryLoad();
+    },
+
     getYeaftMessageWindowKey(sessionId = null, agentId = null) {
       const targetSessionId = sessionId || this.yeaftActiveSessionFilter || null;
       const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
@@ -5201,13 +5252,18 @@ export const useChatStore = defineStore('chat', {
             const fence = currentYeaftHistoryBrowserFence();
             cacheCleanup = (async () => {
               if (!msg.agentId) throw new Error('Session delete result is missing its Agent owner');
-              if (!fence) return;
-              const removed = await removeYeaftHistoryBrowserCache({
-                fence,
+              if (fence) {
+                const removed = await removeYeaftHistoryBrowserCache({
+                  fence,
+                  agentId: msg.agentId,
+                  sessionId: event.sessionId,
+                });
+                if (!removed) throw new Error('Browser history cache was not removed');
+              }
+              this.clearYeaftHistoryMemory({
                 agentId: msg.agentId,
                 sessionId: event.sessionId,
               });
-              if (!removed) throw new Error('Browser history cache was not removed');
             })();
             // A timed-out or unsolicited result has no caller awaiting the
             // Promise, but its physical cleanup must still run.

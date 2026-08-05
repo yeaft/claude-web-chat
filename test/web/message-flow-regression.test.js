@@ -21,6 +21,7 @@ import { openImagePreview } from '../../web/utils/imagePreview.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
 import enMessages from '../../web/i18n/en.js';
 import zhCNMessages from '../../web/i18n/zh-CN.js';
+import { yeaftHistoryIdentityKey } from '../../web/stores/helpers/yeaft-history-identity.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
 import { migrateYeaftConversationState } from '../../web/stores/helpers/yeaft-conversation-state.js';
 import {
@@ -3207,8 +3208,20 @@ describe('message flow regressions', () => {
         store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-crud-a', 'agent-b': 'conv-crud-b' };
         store.yeaftConversationId = 'conv-crud-b';
         store.activeConversations = ['conv-crud-b'];
-        store.messagesMap = { 'conv-crud-a': [], 'conv-crud-b': [] };
-        store.yeaftSessionHistoryState = {};
+        store.messagesMap = {
+          'conv-crud-a': [
+            { type: 'user', content: 'agent A private', sessionId: 'same', seq: 1 },
+            { type: 'user', content: 'agent A other', sessionId: 'other', seq: 2 },
+          ],
+          'conv-crud-b': [
+            { type: 'user', content: 'agent B private', sessionId: 'same', seq: 1 },
+          ],
+        };
+        const deletedSessionKey = yeaftHistoryIdentityKey('agent-a', 'same');
+        store.yeaftSessionHistoryState = { [deletedSessionKey]: { loaded: true } };
+        store.yeaftHistoryCacheState = { [deletedSessionKey]: { ranges: [[1, 2]] } };
+        store.yeaftMessageWindowState = { [deletedSessionKey]: { visibleTurns: 20 } };
+        store._yeaftHistoryBrowserHydrationBySession = { [deletedSessionKey]: 'stale-token' };
         store._yeaftHistoryLoad = null;
         store.yeaftSessionHydrateRequestId = null;
         store.sendWsMessage = vi.fn(() => true);
@@ -3245,6 +3258,20 @@ describe('message flow regressions', () => {
           (msg.type === 'select_agent' && msg.agentId === 'agent-a')
           || (msg.type === 'yeaft_load_history' && msg.agentId === 'agent-a')
         ))).toEqual([]);
+        if (op === 'delete') {
+          await vi.waitFor(() => {
+            expect(store.messagesMap['conv-crud-a']).toEqual([
+              expect.objectContaining({ content: 'agent A other', sessionId: 'other' }),
+            ]);
+          });
+          expect(store.messagesMap['conv-crud-b']).toEqual([
+            expect.objectContaining({ content: 'agent B private', sessionId: 'same' }),
+          ]);
+          expect(store.yeaftSessionHistoryState[deletedSessionKey]).toBeUndefined();
+          expect(store.yeaftHistoryCacheState[deletedSessionKey]).toBeUndefined();
+          expect(store.yeaftMessageWindowState[deletedSessionKey]).toBeUndefined();
+          expect(store._yeaftHistoryBrowserHydrationBySession[deletedSessionKey]).toBeUndefined();
+        }
         store.pendingAgentSelection = null;
         store.agentSwitching = false;
       }

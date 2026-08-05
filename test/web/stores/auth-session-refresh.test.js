@@ -237,6 +237,31 @@ describe('auth store session restore and refresh', () => {
     expect(globalThis.localStorage.removeItem).not.toHaveBeenCalled();
   });
 
+  it('clears in-memory Yeaft history before reset and direct owner replacement', async () => {
+    globalThis.localStorage = createLocalStorage({ authToken: 'owner-b-token' });
+    globalThis.fetch = vi.fn(async () => jsonResponse({
+      body: { userId: 'owner-b', username: 'owner-b', role: 'pro' },
+    }));
+    const clearYeaftHistoryMemory = vi.fn();
+    globalThis.Pinia = {
+      defineStore: createStoreFactory(),
+      useChatStore: () => ({ clearYeaftHistoryMemory }),
+    };
+    vi.resetModules();
+    const { useAuthStore } = await import('../../../web/stores/auth.js');
+    const auth = useAuthStore();
+    auth.isAuthenticated = true;
+    auth.userId = 'owner-a';
+
+    expect(await auth.restoreSession()).toBe(true);
+    expect(clearYeaftHistoryMemory).toHaveBeenCalledOnce();
+    expect(auth.userId).toBe('owner-b');
+
+    await auth.clearStoredSession();
+    expect(clearYeaftHistoryMemory).toHaveBeenCalledTimes(2);
+    expect(auth.userId).toBe(null);
+  });
+
   it('posts logout but fails closed until browser history is physically cleared', async () => {
     globalThis.localStorage = createLocalStorage({
       'yeaft-work-center-composer-drafts-v1': JSON.stringify({ ownerId: 'user-a', records: {} }),
