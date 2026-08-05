@@ -371,6 +371,75 @@ describe('Yeaft history outline state', () => {
     expect(store.messagesMap['conv-a']).toEqual(before);
   });
 
+  it('retries transient outline index responses before surfacing an error', async () => {
+    const store = primeStore();
+    expect(store.loadYeaftHistoryOutline()).toBe(true);
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    const first = store._sent.at(-1);
+
+    expect(store.handleYeaftHistoryOutline({
+      type: 'yeaft_history_outline',
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: first.requestId,
+      results: [],
+      error: 'index_building',
+    })).toBe(true);
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      requestId: first.requestId,
+      loading: true,
+      retryAttempt: 0,
+      error: null,
+    });
+
+    await vi.advanceTimersByTimeAsync(150);
+    expect(store._sent).toHaveLength(2);
+    const second = store._sent.at(-1);
+    expect(second.requestId).not.toBe(first.requestId);
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      requestId: second.requestId,
+      loading: true,
+      retryAttempt: 1,
+      error: null,
+    });
+
+    expect(store.handleYeaftHistoryOutline({
+      type: 'yeaft_history_outline',
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: second.requestId,
+      results: [{ messageId: 'm42', seq: 42, snippet: 'ready' }],
+      hasMore: false,
+    })).toBe(true);
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      loaded: true,
+      loading: false,
+      error: null,
+      results: [expect.objectContaining({ messageId: 'm42' })],
+    });
+  });
+
+  it('surfaces non-retryable outline failures immediately', () => {
+    const store = primeStore();
+    expect(store.loadYeaftHistoryOutline()).toBe(true);
+    const request = store._sent.at(-1);
+
+    expect(store.handleYeaftHistoryOutline({
+      type: 'yeaft_history_outline',
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: request.requestId,
+      results: [],
+      error: 'index_unavailable',
+    })).toBe(true);
+    expect(store.yeaftHistoryOutlineBySession[yeaftHistoryIdentityKey('agent-a', 'same')]).toMatchObject({
+      loaded: false,
+      loading: false,
+      error: 'index_unavailable',
+    });
+    expect(store._sent).toHaveLength(1);
+  });
+
   it('reuses one bounded history-window request across hover prefetch and click', async () => {
     const store = primeStore();
     const result = indexedHistoryResult();

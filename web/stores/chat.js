@@ -208,6 +208,8 @@ function clearYeaftAgentRuntimeState(state, agentId) {
 // spot — small enough to paint instantly, large enough to give context.
 const YEAFT_RECENT_TURNS = 5;
 const YEAFT_SESSION_INVENTORY_TIMEOUT_MS = 15_000;
+const YEAFT_HISTORY_OUTLINE_RETRY_DELAYS_MS = Object.freeze([150, 300, 600, 1_000]);
+const YEAFT_HISTORY_OUTLINE_RETRYABLE_ERRORS = new Set(['index_building', 'stale_result']);
 const YEAFT_RUNNING_VP_STATES = new Set(['typing', 'thinking', 'retrying', 'streaming', 'tool']);
 const YEAFT_CATALOG_STATUS_FIELDS = Object.freeze([
   'model',
@@ -3361,6 +3363,7 @@ export const useChatStore = defineStore('chat', {
         nextCursor: null,
         totalCount: null,
         loaded: false,
+        retryAttempt: 0,
         error: null,
       };
       const conversationId = resolveYeaftConversationIdForSession(
@@ -3531,6 +3534,7 @@ export const useChatStore = defineStore('chat', {
       force = false,
       targetSessionId = null,
       targetAgentId = null,
+      retryAttempt = 0,
     } = {}) {
       if (this.currentView !== 'yeaft' && !targetSessionId) return false;
       const sessionId = targetSessionId || this.yeaftActiveSessionFilter || null;
@@ -3558,6 +3562,7 @@ export const useChatStore = defineStore('chat', {
         loading: true,
         requestAppend: append,
         refreshPending: false,
+        retryAttempt,
         error: null,
       };
       this.yeaftHistoryOutlineBySession = { ...this.yeaftHistoryOutlineBySession, [key]: nextState };
@@ -3627,6 +3632,34 @@ export const useChatStore = defineStore('chat', {
       const nextTimeouts = { ...this._yeaftHistoryOutlineTimeouts };
       delete nextTimeouts[key];
       this._yeaftHistoryOutlineTimeouts = nextTimeouts;
+      const retryAttempt = Number.isInteger(state.retryAttempt) ? state.retryAttempt : 0;
+      if (YEAFT_HISTORY_OUTLINE_RETRYABLE_ERRORS.has(msg.error)
+        && retryAttempt < YEAFT_HISTORY_OUTLINE_RETRY_DELAYS_MS.length) {
+        const delay = YEAFT_HISTORY_OUTLINE_RETRY_DELAYS_MS[retryAttempt];
+        const nextTimeout = setTimeout(() => {
+          const current = this.yeaftHistoryOutlineBySession[key];
+          if (current?.requestId !== msg.requestId || current.loading !== true) return;
+          const nextRetryTimeouts = { ...this._yeaftHistoryOutlineTimeouts };
+          delete nextRetryTimeouts[key];
+          this._yeaftHistoryOutlineTimeouts = nextRetryTimeouts;
+          this.yeaftHistoryOutlineBySession = {
+            ...this.yeaftHistoryOutlineBySession,
+            [key]: { ...current, requestId: null, loading: false },
+          };
+          this.loadYeaftHistoryOutline({
+            append: state.requestAppend === true,
+            force: true,
+            targetSessionId: msg.sessionId,
+            targetAgentId: msg.agentId,
+            retryAttempt: retryAttempt + 1,
+          });
+        }, delay);
+        this._yeaftHistoryOutlineTimeouts = {
+          ...this._yeaftHistoryOutlineTimeouts,
+          [key]: nextTimeout,
+        };
+        return true;
+      }
       const incoming = Array.isArray(msg.results)
         ? msg.results.map(result => ({ ...result, agentId: msg.agentId, sessionId: msg.sessionId }))
         : [];
