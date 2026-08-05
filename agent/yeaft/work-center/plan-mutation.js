@@ -42,6 +42,45 @@ function planActionFromStage(stage) {
   };
 }
 
+function dependencyAncestors(stageId, stagesById) {
+  const ancestors = new Set();
+  const visit = id => {
+    if (ancestors.has(id)) return;
+    ancestors.add(id);
+    for (const dependencyId of stagesById.get(id)?.dependsOnStageIds || []) visit(dependencyId);
+  };
+  for (const dependencyId of stagesById.get(stageId)?.dependsOnStageIds || []) visit(dependencyId);
+  return ancestors;
+}
+
+function validateReviewRemediationGate(workflowSnapshot, reviewAction, addedIds) {
+  if (reviewAction?.type !== 'review') return;
+  const stages = (workflowSnapshot.stages || []).filter(stage => stage.type !== 'triage');
+  const byId = new Map(stages.map(stage => [stage.id, stage]));
+  const freshReviews = stages.filter(stage => (
+    stage.type === 'review'
+    && addedIds.has(stage.id)
+    && dependencyAncestors(stage.id, byId).has(reviewAction.stageId)
+  ));
+  const gate = stages.find(stage => stage.type === 'deliver')
+    || stages.find(stage => stage.type === 'review'
+      && !stages.some(candidate => (candidate.dependsOnStageIds || []).includes(stage.id)));
+  const gateAncestors = gate ? dependencyAncestors(gate.id, byId) : new Set();
+  const gatedReviews = freshReviews.filter(review => (
+    gate?.id === review.id || gateAncestors.has(review.id)
+  ));
+  const addedWork = stages.filter(stage => (
+    addedIds.has(stage.id) && stage.type !== 'review' && stage.type !== 'deliver'
+  ));
+  const uncovered = addedWork.filter(stage => (
+    !gatedReviews.some(review => dependencyAncestors(review.id, byId).has(stage.id))
+  ));
+  if (addedWork.length === 0 || gatedReviews.length === 0 || uncovered.length > 0) {
+    const suffix = uncovered.length > 0 ? `; uncovered Actions: ${uncovered.map(stage => stage.id).join(', ')}` : '';
+    throw new Error(`Work Center changes_requested additive plan requires remediation and a fresh review covering every added Action before delivery${suffix}`);
+  }
+}
+
 function stableTopologicalActions(actions) {
   const byId = new Map(actions.map((action, index) => [action.id, { action, index }]));
   const incoming = new Map(actions.map(action => [action.id, 0]));
@@ -112,7 +151,9 @@ function validateDependencyPatches(actions, patches, addedIds) {
   return normalized;
 }
 
-export function applyAdditivePlanProposal({ workItem, actions, proposal, availableVpIds = null }) {
+export function applyAdditivePlanProposal({
+  workItem, actions, proposal, availableVpIds = null, reviewAction = null,
+}) {
   if (workItem.workflowSnapshot?.executionMode !== 'graph') {
     throw new Error('Work Center additive planning requires graph execution');
   }
@@ -194,6 +235,7 @@ export function applyAdditivePlanProposal({ workItem, actions, proposal, availab
     availableVpIds,
     maxActions: MAX_WORK_ITEM_ACTIONS,
   });
+  validateReviewRemediationGate(workflowSnapshot, reviewAction, addedIds);
   const addedStages = workflowSnapshot.stages.filter(stage => addedIds.has(stage.id));
   return {
     proposalId,

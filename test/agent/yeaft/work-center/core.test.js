@@ -756,18 +756,20 @@ describe('Work Center core', () => {
         actions: [
           { id: 'left', type: 'research', capability: 'research', objective: 'Inspect left', dependsOnActionIds: [], workspaceMode: 'read' },
           { id: 'right', type: 'research', capability: 'research', objective: 'Inspect right', dependsOnActionIds: [], workspaceMode: 'read' },
-          { id: 'review', type: 'review', capability: 'review', objective: 'Review both', dependsOnActionIds: ['left', 'right'] },
+          { id: 'review', type: 'review', capability: 'review', objective: 'Review both', dependsOnActionIds: ['left', 'right'], changesRequestedActionId: 'left' },
         ],
       },
     }));
 
-    const left = store.claimReadyAction('boot-a', 5_000);
-    const right = store.claimReadyAction('boot-a', 5_000);
-    expect(new Set([left.action.stageId, right.action.stageId])).toEqual(new Set(['left', 'right']));
-    expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
-    controller.submit(left.run.id, 'boot-a', left.run.leaseEpoch, completed('research'));
+    const first = store.claimReadyAction('boot-a', 5_000);
+    const second = store.claimReadyAction('boot-a', 5_000);
+    expect(new Set([first.action.stageId, second.action.stageId])).toEqual(new Set(['left', 'right']));
+    const left = first.action.stageId === 'left' ? first : second;
+    const right = first.action.stageId === 'right' ? first : second;
     expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
     controller.submit(right.run.id, 'boot-a', right.run.leaseEpoch, completed('research'));
+    expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
+    controller.submit(left.run.id, 'boot-a', left.run.leaseEpoch, completed('research'));
     expect(store.claimReadyAction('boot-a', 5_000).action.stageId).toBe('review');
     expect(store.getWorkItem(item.id).status).toBe('running');
   });
@@ -1012,6 +1014,15 @@ describe('Work Center core', () => {
       error: /dependencies contains an empty Action reference/,
     },
     {
+      name: 'review without target dependency',
+      actions: [
+        { id: 'implement fix', type: 'implement', objective: 'Implement the concrete fix', dependsOnActionIds: [] },
+        { id: 'review fix', type: 'review', objective: 'Review the concrete fix', dependsOnActionIds: [], changesRequestedActionId: 'implement fix' },
+        { id: 'deliver', type: 'deliver', objective: 'Deliver the reviewed fix', dependsOnActionIds: ['implement-fix', 'review-fix'] },
+      ],
+      error: /review target.*dependency/i,
+    },
+    {
       name: 'review target',
       actions: [
         { id: 'implement fix', type: 'implement', objective: 'Implement the concrete fix', dependsOnActionIds: [] },
@@ -1124,6 +1135,56 @@ describe('Work Center core', () => {
       }],
     })).rejects.toThrow(/invalid dependency.*internal-action-uuid/i);
     expect(collector.value).toBeNull();
+
+    const reviewTargetEntrypointCases = [
+      {
+        name: 'additive',
+        apply: () => applyAdditivePlanProposal({
+          workItem: additiveItem,
+          actions: [deliverAction],
+          proposal: {
+            proposalId: 'additive-review-without-target-dependency', basePlanRevision: 1,
+            actions: [{
+              id: 'parallel-review', name: 'Parallel review', type: 'review',
+              objective: 'Review the work independently', approach: 'Inspect the completed work',
+              expectedOutcome: 'An explicit review decision is recorded',
+              dependsOnActionIds: [], workspaceMode: 'read', changesRequestedActionId: 'work',
+            }],
+            dependencyPatches: [{
+              actionId: deliverAction.id, addDependsOnActionIds: ['parallel-review'],
+            }],
+          },
+        }),
+      },
+      {
+        name: 'coordinator',
+        apply: () => applyCoordinatorReplan({
+          workItem: {
+            ...additiveItem,
+            workflowSnapshot: {
+              ...additiveItem.workflowSnapshot,
+              planningMode: 'ai',
+            },
+          },
+          actions: [
+            { id: 'internal-work', stageId: 'work', type: 'implement', status: 'ready' },
+            deliverAction,
+          ],
+          proposal: {
+            proposalId: 'coordinator-review-without-target-dependency', basePlanRevision: 1,
+            reason: 'Keep the review concurrent to prove the validator rejects it.',
+            actions: [
+              { id: 'work', name: 'Work', type: 'implement', objective: 'Do work', approach: 'Edit files', expectedOutcome: 'Work complete', dependsOnActionIds: [], workspaceMode: 'shared' },
+              { id: 'parallel-review', name: 'Parallel review', type: 'review', objective: 'Review the work', approach: 'Inspect the work', expectedOutcome: 'Review decision recorded', dependsOnActionIds: [], workspaceMode: 'read', changesRequestedActionId: 'work' },
+              { id: 'deliver', name: 'Deliver', type: 'deliver', objective: 'Deliver', approach: 'Publish', expectedOutcome: 'Published', dependsOnActionIds: ['work', 'parallel-review'], workspaceMode: 'shared' },
+            ],
+          },
+        }),
+      },
+    ];
+    for (const entrypoint of reviewTargetEntrypointCases) {
+      expect(entrypoint.apply, entrypoint.name).toThrow(/review target.*dependency/i);
+    }
 
     const inferredReviewProposal = applyAdditivePlanProposal({
       workItem: additiveItem,
@@ -1452,6 +1513,29 @@ describe('Work Center core', () => {
       },
     });
     const beforeRejectedAddition = store.getWorkItemDetail(largeReplanItem.id);
+    const reviewWithoutTargetDependency = {
+      id: 'replan-review-without-target-dependency', name: 'Parallel replan review', type: 'review',
+      objective: 'Review the retained candidate', approach: 'Inspect the retained result',
+      expectedOutcome: 'A review decision is recorded', capability: 'review', candidateVpIds: ['omni'],
+      assignmentReason: 'Use the available reviewer.', dependsOnActionIds: [], workspaceMode: 'read',
+      changesRequestedActionId: 'candidate-1',
+    };
+    await expect(replanRegistry.execute('SubmitWorkItemReplan', {
+      ...replanInput,
+      proposalId: 'reject-replan-review-without-target-dependency',
+      retain: retain.map(entry => entry.action.type === 'deliver' ? {
+        ...entry,
+        action: {
+          ...entry.action,
+          dependsOnActionIds: [
+            ...entry.action.dependsOnActionIds.filter(id => id !== 'replan-added-8'),
+            reviewWithoutTargetDependency.id,
+          ],
+        },
+      } : entry),
+      add: [...acceptedAdditions.slice(0, 7), reviewWithoutTargetDependency],
+    }, {})).rejects.toThrow(/review target.*dependency/i);
+    expect(replanCollector.value).toBeNull();
     await expect(replanRegistry.execute('SubmitWorkItemReplan', {
       ...replanInput,
       proposalId: 'reject-ninth-replan-addition',
@@ -3350,6 +3434,7 @@ describe('Work Center core', () => {
           calls += 1;
           expect(request.system).toMatch(/smallest reliable graph of 1 to 8 task-specific Actions/i);
           expect(request.system).toMatch(/type integrate must use workspaceMode integrate/i);
+          expect(request.system).toMatch(/review Action must depend directly or transitively/i);
           expect(request.system).toMatch(/omit the property.*never send null or an empty string/i);
           if (calls === 1) {
             return { text: JSON.stringify({

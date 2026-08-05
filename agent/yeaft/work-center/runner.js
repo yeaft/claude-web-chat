@@ -428,6 +428,13 @@ function reviewPlanningRequirements(action) {
   return action?.type === 'review' ? ['reviewDecision'] : [];
 }
 
+function assertReviewPlanningDecision(input, action) {
+  if (action?.type !== 'review') return;
+  if (input?.reviewDecision !== 'changes_requested') {
+    throw new Error('Review planning controls require reviewDecision "changes_requested"');
+  }
+}
+
 function reviewPlanningResult(input, action) {
   return action?.type === 'review' ? { reviewDecision: input.reviewDecision } : {};
 }
@@ -456,7 +463,7 @@ export function createProposeWorkItemActionsTool({
     : '';
   return defineTool({
     name: 'ProposeWorkItemActions',
-    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Use stable stageId values in dependsOnActionIds, changesRequestedActionId, and dependencyPatches[].addDependsOnActionIds. The only internal id field is dependencyPatches[].actionId, which must use the displayed internalActionId of an eligible ready attempt=0 target.${currentIdentity} Existing Actions: ${existing.map(action => `stageId=${action.stageId} (internalActionId=${action.id}, ${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions. This tool validates the complete additive DAG immediately; if validation fails, correct the proposal in the same turn.`,
+    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Use stable stageId values in dependsOnActionIds, changesRequestedActionId, and dependencyPatches[].addDependsOnActionIds. The only internal id field is dependencyPatches[].actionId, which must use the displayed internalActionId of an eligible ready attempt=0 target.${currentIdentity} Existing Actions: ${existing.map(action => `stageId=${action.stageId} (internalActionId=${action.id}, ${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions. A Review submitting changes_requested must add remediation followed by a fresh Review and make delivery depend on that fresh approval gate; otherwise request a replan. This tool validates the complete additive DAG immediately; if validation fails, correct the proposal in the same turn.`,
     parameters: { type: 'object', additionalProperties: false,
       required: [
         'summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'actions',
@@ -472,11 +479,13 @@ export function createProposeWorkItemActionsTool({
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('A WorkItem plan mutation was already submitted for this Run');
+      assertReviewPlanningDecision(input, currentAction);
       applyAdditivePlanProposal({
         workItem,
         actions,
         proposal: input,
         availableVpIds: vpIds,
+        reviewAction: currentAction,
       });
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       collector.value = {
@@ -513,6 +522,7 @@ export function createRequestWorkItemReplanTool({
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('A WorkItem plan mutation was already submitted for this Run');
+      assertReviewPlanningDecision(input, currentAction);
       collector.value = {
         kind: 'replan',
         input: {

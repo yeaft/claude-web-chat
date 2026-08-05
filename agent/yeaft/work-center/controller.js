@@ -380,6 +380,10 @@ export class WorkflowController {
           actions: this.store.getWorkItemDetail(activeWorkItem.id).actions,
           proposal: result.planProposal,
           availableVpIds: this.listAvailableVpIds?.(),
+          reviewAction: activeAction.type === 'review'
+            && result.reviewDecision === 'changes_requested'
+            ? activeAction
+            : null,
         });
       } catch (error) {
         result.outcome = 'failed';
