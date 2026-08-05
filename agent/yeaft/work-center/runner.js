@@ -1307,6 +1307,7 @@ export class WorkItemRunner {
       }
       return accepted;
     };
+    let activeProviderRequest = null;
     const prepareProviderRequest = ({ entries, system, messages, model }) => {
       const durableEntries = entries
         .filter(entry => entry?.durableInputId)
@@ -1318,6 +1319,7 @@ export class WorkItemRunner {
         { requestBody, dispatchCapability: 'unknown' },
       );
       if (!turn) throw new Error('Work Center could not persist the next provider turn');
+      activeProviderRequest = turn;
       return turn;
     };
     const startProviderRequest = turn => {
@@ -1330,10 +1332,12 @@ export class WorkItemRunner {
       if (!this.store.consumeEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch, result)) {
         throw new Error('Work Center provider response lost its EngineTurn fence');
       }
+      if (activeProviderRequest?.id === turn.id) activeProviderRequest = null;
     };
     const failProviderRequest = (turn, error) => {
       if (!turn) return;
       const failure = this.store.failEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch, error);
+      if (activeProviderRequest?.id === turn.id) activeProviderRequest = null;
       if (failure && failure.allowRetry === false) {
         error.retryable = false;
         error.workItemFailureKind = 'provider_dispatch_unknown';
@@ -1376,12 +1380,18 @@ export class WorkItemRunner {
       });
       const iterator = query[Symbol.asyncIterator]();
       let stoppedByEngineEvent = false;
+      let stoppedAfterDispatch = false;
       while (true) {
         const step = await iterator.next();
         if (step.done) break;
         const event = step.value;
         const control = await onEngineEvent?.(event, { iterator, engine, query });
         if (control?.stop === true) {
+          // The durable in-flight turn, not an event label, is the authoritative
+          // dispatch boundary. `user_append` and other pre-request events can
+          // precede turn_start; only an active EngineTurn is unsafe to replay.
+          stoppedAfterDispatch = Boolean(activeProviderRequest);
+          if (stoppedAfterDispatch) engine.abort?.('work_item_consumer_stopped_after_dispatch');
           await iterator.return();
           stoppedByEngineEvent = true;
           break;
@@ -1418,8 +1428,29 @@ export class WorkItemRunner {
       // hazardous side-effect handling, and retry policy still see the failure.
       if (terminalEngineError) throw terminalEngineError;
       if (stoppedByEngineEvent) {
-        const stopped = new Error('Work Center Engine consumer stopped before provider dispatch');
+        const stopped = new Error(stoppedAfterDispatch
+          ? 'Work Center Engine consumer stopped after provider dispatch'
+          : 'Work Center Engine consumer stopped before provider dispatch');
         stopped.name = 'WorkCenterEngineStoppedError';
+        if (stoppedAfterDispatch) {
+          // A visible provider event proves dispatch happened. The Engine's
+          // iterator close cannot safely replay that request, so terminally
+          // fence its durable turn before the watcher sees the failure.
+          const failed = this.store.failEngineTurn?.(
+            activeProviderRequest?.id,
+            ownerBootId,
+            run.leaseEpoch,
+            stopped,
+          );
+          activeProviderRequest = null;
+          stopped.retryable = false;
+          stopped.workItemFailureKind = failed?.status === 'unknown'
+            ? 'provider_dispatch_unknown'
+            : 'system_blocked';
+          stopped.workItemFailureCode = failed?.status === 'unknown'
+            ? 'engine_turn_dispatch_unknown'
+            : 'engine_turn_stop_failed';
+        }
         throw stopped;
       }
     } catch (error) {

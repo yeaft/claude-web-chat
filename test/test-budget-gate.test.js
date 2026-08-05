@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { CORE_TEST_FILES, REVIEWED_TEST_FILES, SANDBOX_TEST_FILES } from '../scripts/test-suite-manifest.mjs';
 import {
   isMainModule,
+  TEST_CASE_LIMIT,
   validateCoreTestFiles,
 } from '../scripts/check-test-budget.mjs';
 

@@ -20,10 +20,8 @@ import {
 } from '../../agent/yeaft/llm/router.js';
 
 describe('normalizeModelEntry', () => {
-  it('keeps bare strings', () => {
+  it('normalizes valid model entries', () => {
     expect(normalizeModelEntry('gpt-5')).toEqual({ id: 'gpt-5' });
-  });
-  it('passes through {id, protocol}', () => {
     expect(normalizeModelEntry({ id: 'claude-sonnet-4', protocol: 'anthropic' }))
       .toEqual({ id: 'claude-sonnet-4', protocol: 'anthropic' });
   });
@@ -36,14 +34,12 @@ describe('normalizeModelEntry', () => {
 });
 
 describe('inferProtocolFromModelId', () => {
-  it('matches the Anthropic family', () => {
+  it('matches supported model protocol families', () => {
     expect(inferProtocolFromModelId('claude-sonnet-4-20250514')).toBe('anthropic');
     expect(inferProtocolFromModelId('claude-opus-4')).toBe('anthropic');
     expect(inferProtocolFromModelId('claude-opus-4-8')).toBe('anthropic');
     expect(inferProtocolFromModelId('claude-opus-4.8')).toBe('anthropic');
     expect(inferProtocolFromModelId('anthropic.claude-3-haiku')).toBe('anthropic');
-  });
-  it('matches the OpenAI Responses family', () => {
     expect(inferProtocolFromModelId('gpt-5')).toBe('openai-responses');
     expect(inferProtocolFromModelId('gpt-4o-mini')).toBe('openai-responses');
     expect(inferProtocolFromModelId('o1-preview')).toBe('openai-responses');
@@ -59,7 +55,7 @@ describe('inferProtocolFromModelId', () => {
 });
 
 describe('AdapterRouter resolution', () => {
-  it('keeps an already-created stream on its captured provider catalog', async () => {
+  it('preserves captured catalogs and resolves stale provider refs', async () => {
     const oldFetch = globalThis.fetch;
     const requests = [];
     globalThis.fetch = async (url, init) => {
@@ -105,17 +101,15 @@ describe('AdapterRouter resolution', () => {
     } finally {
       globalThis.fetch = oldFetch;
     }
-  });
 
-  it('resolves a provider-qualified Claude ref even when split provider catalogs are stale', () => {
-    const r = new AdapterRouter({
+    const staleCatalogRouter = new AdapterRouter({
       providers: [
         { name: 'copilot', baseUrl: 'https://x/', apiKey: 'k', protocol: 'anthropic', models: ['claude-opus-4.7'] },
         { name: 'copilot', baseUrl: 'https://x/', apiKey: 'k', protocol: 'openai-responses', models: ['gpt-5.5'] },
       ],
     });
 
-    expect(r.getProviderForModel('copilot/claude-opus-4.8')?.protocol).toBe('anthropic');
+    expect(staleCatalogRouter.getProviderForModel('copilot/claude-opus-4.8')?.protocol).toBe('anthropic');
   });
 
   it('routes managed GitHub Copilot Claude and GPT refs through their catalog protocols', async () => {
@@ -232,18 +226,16 @@ describe('AdapterRouter resolution', () => {
     }
   });
 
-  it('routes legacy string[] models without breaking', () => {
-    const r = new AdapterRouter({
+  it('supports legacy and inferred mixed-model provider entries', async () => {
+    const legacyRouter = new AdapterRouter({
       providers: [
         { name: 'p1', baseUrl: 'https://x/', apiKey: 'k', protocol: 'openai-responses', models: ['gpt-5'] },
       ],
     });
-    expect(r.getProviderForModel('gpt-5')?.name).toBe('p1');
-    expect(r.listAvailableModels()).toEqual([{ modelId: 'gpt-5', providerName: 'p1' }]);
-  });
+    expect(legacyRouter.getProviderForModel('gpt-5')?.name).toBe('p1');
+    expect(legacyRouter.listAvailableModels()).toEqual([{ modelId: 'gpt-5', providerName: 'p1' }]);
 
-  it('supports a mixed provider with id-inferred protocols', async () => {
-    const r = new AdapterRouter({
+    const inferredRouter = new AdapterRouter({
       providers: [
         {
           name: 'github-copilot',
@@ -255,12 +247,12 @@ describe('AdapterRouter resolution', () => {
       ],
     });
     // Both should resolve to the same provider but two different adapters.
-    expect(r.getProviderForModel('gpt-5')?.name).toBe('github-copilot');
-    expect(r.getProviderForModel('claude-sonnet-4-20250514')?.name).toBe('github-copilot');
+    expect(inferredRouter.getProviderForModel('gpt-5')?.name).toBe('github-copilot');
+    expect(inferredRouter.getProviderForModel('claude-sonnet-4-20250514')?.name).toBe('github-copilot');
   });
 
-  it('honors a per-model protocol override beating the heuristic', () => {
-    const r = new AdapterRouter({
+  it('honors overrides and rejects impossible Claude protocol routes', async () => {
+    const overrideRouter = new AdapterRouter({
       providers: [
         {
           name: 'proxy',
@@ -273,11 +265,9 @@ describe('AdapterRouter resolution', () => {
       ],
     });
     // The lookup succeeds and the provider object is returned.
-    expect(r.getProviderForModel('weird-claude-alias')?.name).toBe('proxy');
-  });
+    expect(overrideRouter.getProviderForModel('weird-claude-alias')?.name).toBe('proxy');
 
-  it('throws when a claude model resolves to a non-anthropic protocol', async () => {
-    const r = new AdapterRouter({
+    const invalidRouter = new AdapterRouter({
       providers: [
         // Provider declares openai-responses but offers a claude-* model with
         // no per-model override — should refuse rather than silently mis-route.
@@ -287,7 +277,7 @@ describe('AdapterRouter resolution', () => {
     });
     await expect(async () => {
       // Trigger #resolveAdapter via the public stream path with a minimal params.
-      const gen = r.stream({ model: 'claude-sonnet-4', messages: [] });
+      const gen = invalidRouter.stream({ model: 'claude-sonnet-4', messages: [] });
       await gen.next();
     }).rejects.toThrow(/Claude models require protocol="anthropic"/);
   });

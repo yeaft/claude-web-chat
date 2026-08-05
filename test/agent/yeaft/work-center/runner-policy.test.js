@@ -50,7 +50,7 @@ describe('Work Center tool policy', () => {
 
 
 
-  it('injects canonical WorkItem memory and never raw evidence rows', () => {
+  it('protects canonical WorkItem memory and attachment-mode tool policy', async () => {
     const yeaftDir = join(workDir, '.yeaft-runtime');
     const scope = 'sessions/session-memory';
     mkdirSync(join(yeaftDir, 'memory', scope), { recursive: true });
@@ -81,9 +81,7 @@ describe('Work Center tool policy', () => {
     expect(requiredTags).toEqual(['canonical-content']);
     expect(block).toContain('CANONICAL_MEMORY_FACT');
     expect(block).not.toContain('RAW_EVIDENCE_SECRET');
-  });
 
-  it('removes Bash from both registry and policy when attachments are present', async () => {
     const attachmentDir = join(outsideDir, 'attachments');
     mkdirSync(attachmentDir);
     const attachmentPath = join(attachmentDir, 'evidence.txt');
@@ -897,7 +895,7 @@ describe('Work Center tool policy', () => {
     }
   };
 
-  it('rejects lexical, patch, and symlink escapes', async () => {
+  it('rejects escapes and pins creation-time workspace identity', async () => {
     verifyRunningQuotedActionInput();
     const registry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
     await expect(registry.execute('FileRead', { file_path: '../secret' }, {}))
@@ -927,13 +925,11 @@ describe('Work Center tool policy', () => {
       patch: '--- a/patch-link.txt\n+++ b/patch-link.txt\n@@ -0,0 +1 @@\n+outside\n',
     }, {})).rejects.toThrow(/symbolic link/);
     expect(existsSync(patchTarget)).toBe(false);
-  });
 
 
 
 
 
-  it('uses the creation-time workspace identity after a symlink is retargeted', () => {
     const projectA = join(workDir, 'project-a');
     const projectB = join(workDir, 'project-b');
     const alias = join(workDir, 'current');
@@ -952,7 +948,7 @@ describe('Work Center tool policy', () => {
 
 
 
-  it('keeps retry continuation and EngineTurn uncommitted when Work Center closes at retry turn_start', async () => {
+  it('keeps retry EngineTurns uncommitted and fences post-dispatch stops', async () => {
     const store = new WorkItemStore(join(workDir, 'retry-turn-start-close.db'));
     const controller = new WorkflowController(store, { listAvailableVpIds: () => ['omni'] });
     const oldFetch = globalThis.fetch;
@@ -1035,6 +1031,42 @@ describe('Work Center tool policy', () => {
         .all(claim.run.id)).toEqual([{ status: 'unknown' }]);
       expect(store.db.prepare(`SELECT status FROM engine_turns WHERE run_id = ?
         AND status IN ('prepared', 'dispatching')`).all(claim.run.id)).toEqual([]);
+
+      const postDispatchItem = controller.create({
+        id: 'post-dispatch-stop',
+        title: 'Stop after provider output',
+        goal: 'Do not retry a dispatch whose response stream was observed',
+        acceptanceCriteria: ['The dispatched run ends terminally'],
+        workflowTemplate: 'software-change',
+        workDir,
+        start: true,
+      });
+      const postDispatchClaim = store.claimReadyAction('post-dispatch-owner', 60_000);
+      let postDispatchFetches = 0;
+      globalThis.fetch = async () => {
+        postDispatchFetches += 1;
+        return new Response(
+          'event: response.output_text.delta\n' +
+          'data: {"type":"response.output_text.delta","delta":"visible dispatched output"}\n\n',
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      };
+      await expect(runner.run({
+        ...postDispatchClaim,
+        ownerBootId: 'post-dispatch-owner',
+        signal: new AbortController().signal,
+        onEngineEvent: event => event.type === 'text_delta' ? { stop: true } : null,
+      })).rejects.toMatchObject({
+        name: 'WorkCenterEngineStoppedError',
+        retryable: false,
+        workItemFailureKind: 'provider_dispatch_unknown',
+      });
+      expect(postDispatchItem.id).toBe('post-dispatch-stop');
+      expect(postDispatchFetches).toBe(1);
+      expect(store.db.prepare('SELECT status FROM engine_turns WHERE run_id = ? ORDER BY ordinal')
+        .all(postDispatchClaim.run.id)).toEqual([{ status: 'unknown' }]);
+      expect(store.getRun(postDispatchClaim.run.id)).toMatchObject({ status: 'dispatch_unknown' });
+      expect(store.getAction(postDispatchClaim.action.id)).toMatchObject({ status: 'failed' });
     } finally {
       globalThis.fetch = oldFetch;
       store.close();

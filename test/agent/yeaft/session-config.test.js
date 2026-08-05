@@ -361,7 +361,7 @@ describe('Yeaft session-scoped model config', () => {
   });
 
 
-  it('uses the user-level Session config for reads, writes, and metadata updates', () => {
+  it('uses canonical Session config storage and clears stale managed overrides', () => {
     {
       const root = makeDir();
       const workDir = tempRoot('yeaft-session-config-workdir-');
@@ -411,25 +411,23 @@ describe('Yeaft session-scoped model config', () => {
       model: 'github-copilot/gpt-new',
       modelSource: 'explicit',
     })).toThrow('unknown config key: modelSource');
-  });
 
 
-  it('removes a stale bare managed override from persisted Session config', () => {
-    const root = makeDir();
+    const staleRoot = makeDir();
     const sessionId = 'session-stale-bare';
-    mkdirSync(join(root, 'sessions', sessionId), { recursive: true });
-    saveSessionConfig(root, sessionId, { model: 'gpt-old' });
+    mkdirSync(join(staleRoot, 'sessions', sessionId), { recursive: true });
+    saveSessionConfig(staleRoot, sessionId, { model: 'gpt-old' });
     const currentConfig = {
       providers: [{ name: 'github-copilot', credentialProvider: 'github-copilot', models: ['gpt-new'] }],
       primaryModel: 'github-copilot/gpt-new',
       availableModels: [{ id: 'gpt-new', ref: 'github-copilot/gpt-new', provider: 'github-copilot' }],
     };
 
-    expect(normalizeSessionConfig(root, sessionId, currentConfig)).toEqual({});
-    expect(loadSessionConfig(root, sessionId)).toEqual({});
+    expect(normalizeSessionConfig(staleRoot, sessionId, currentConfig)).toEqual({});
+    expect(loadSessionConfig(staleRoot, sessionId)).toEqual({});
   });
 
-  it('does not retire cached Session engines during a Session config update', () => {
+  it('refreshes cached engines without losing inherited default effort', () => {
     const root = makeDir();
     const sessionId = 'session-live-config';
     mkdirSync(join(root, 'sessions', sessionId), { recursive: true });
@@ -483,9 +481,8 @@ describe('Yeaft session-scoped model config', () => {
       expect(response.error?.message).toBeTruthy();
       expect(refreshConfig).not.toHaveBeenCalled();
     }
-  });
 
-  it('keeps the Agent default effort when a Session only overrides its model', () => {
+
     const effective = resolveSessionConfig(
       { model: 'agent/default', primaryModel: 'agent/default', modelEffort: 'high' },
       { model: 'provider/other-model' },
