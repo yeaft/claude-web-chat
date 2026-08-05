@@ -684,6 +684,15 @@ export class Engine {
   /** Wire turn id of the active query, used by late async completion rows. */
   #currentQueryTurnId = null;
 
+  /**
+   * Identity-bound hook into the active query's local read-only result cache.
+   * Async task terminal events can arrive while an adapter stream is already
+   * producing tool calls, so they must invalidate reuse immediately rather
+   * than waiting for the next queue-drain boundary.
+   * @type {{ owner: AbortController, invalidate: () => void }|null}
+   */
+  #activeReadOnlyToolReuse = null;
+
   /** @type {Array<{content:string|Array, preview:string}>} */
   #pendingUserMessages = [];
 
@@ -2100,6 +2109,11 @@ export class Engine {
         try { signal.removeEventListener('abort', onExternalAbort); } catch { /* ignore */ }
       }
       this.retireAsyncTasks(abortCtrl.signal.aborted ? 'query_aborted' : 'query_closed');
+      // The closure is local to this query. Do not let a late callback from a
+      // retired run touch a later query's independent read cache.
+      if (this.#activeReadOnlyToolReuse?.owner === abortCtrl) {
+        this.#activeReadOnlyToolReuse = null;
+      }
       // Clear current-run state so engine.isRunning flips back to false
       // and a subsequent query() starts with a clean slate.
       this.#currentAbortCtrl = null;
@@ -2169,6 +2183,14 @@ export class Engine {
     const invalidateReadOnlyToolReuse = () => {
       readOnlyToolResults.clear();
       readOnlyToolReuseDisabled = true;
+    };
+    // Completion callbacks run outside this lexical loop. Publish an
+    // identity-bound hook so an accepted completion can close the reuse window
+    // even after the next provider stream has started.
+    const readOnlyToolReuseOwner = this.#currentAbortCtrl;
+    this.#activeReadOnlyToolReuse = {
+      owner: readOnlyToolReuseOwner,
+      invalidate: invalidateReadOnlyToolReuse,
     };
 
     // Durability boundary: a valid user turn must exist on disk before any
@@ -4629,6 +4651,13 @@ export class Engine {
     // forward and bill for. Production callers (formatTaskResultForVp)
     // always emit a non-empty string today; this guards future refactors.
     if (Array.isArray(content) && content.length === 0) return false;
+    // This is the actual workspace-synchronization boundary. The next
+    // provider stream may already be yielding tool calls, so waiting until a
+    // later queue drain leaves one stale-cache reuse window open.
+    const activeReadOnlyReuse = this.#activeReadOnlyToolReuse;
+    if (activeReadOnlyReuse?.owner === this.#currentAbortCtrl) {
+      activeReadOnlyReuse.invalidate();
+    }
     this.#pendingAsyncTaskIds.delete(taskId);
     const preview = typeof opts.preview === 'string'
       ? opts.preview

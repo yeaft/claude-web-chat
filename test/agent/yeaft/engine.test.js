@@ -3211,6 +3211,88 @@ describe('Engine', () => {
       }
     });
 
+    it('invalidates cached reads when completion arrives after the next provider stream starts', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-post-stream-completion-'));
+      const filePath = join(workDir, 'state.txt');
+      const taskId = 'task-read-cache-post-stream';
+      writeFileSync(filePath, 'before');
+      try {
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-post-stream-completion', name: 'ReadState', input: {} },
+          { type: 'tool_call', id: 'start-async-state-update', name: 'StartAsync', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-post-stream-completion', name: 'ReadState', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'The updated state was read.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 1_000 },
+        });
+        let readExecutions = 0;
+        engine.registerTool({
+          name: 'ReadState',
+          description: 'Read workspace state.',
+          parameters: { type: 'object' },
+          isReadOnly: () => true,
+          cacheWithinQuery: true,
+          execute: async () => {
+            readExecutions += 1;
+            return readFileSync(filePath, 'utf8');
+          },
+        });
+        engine.registerTool({
+          name: 'StartAsync',
+          description: 'Start an asynchronous state update.',
+          parameters: { type: 'object' },
+          // This only registers the detached task; its completion is the
+          // workspace mutation boundary under test.
+          isReadOnly: () => true,
+          execute: async (_input, ctx) => {
+            ctx.registerAsyncTask(taskId);
+            return 'state update started';
+          },
+        });
+
+        const baseStream = mockAdapter.stream.bind(mockAdapter);
+        let streamCalls = 0;
+        let completionAccepted = false;
+        mockAdapter.stream = async function* streamWithCompletionAfterStart(params) {
+          streamCalls += 1;
+          if (streamCalls === 2) {
+            // The Engine already completed its pre-stream task-result drain.
+            // Deliver the completion before this stream yields ReadState so
+            // the tool execution path must observe immediate invalidation.
+            writeFileSync(filePath, 'after');
+            completionAccepted = engine.notifyAsyncTaskCompleted(taskId, 'state updated');
+          }
+          yield* baseStream(params);
+        };
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'read then refresh state', workDir })) events.push(event);
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        expect(completionAccepted).toBe(true);
+        expect(streamCalls).toBe(3);
+        expect(readExecutions).toBe(2);
+        expect(toolEnds.find(event => event.id === 'read-before-post-stream-completion')?.output).toBe('before');
+        expect(toolStarts.find(event => event.id === 'read-after-post-stream-completion')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-post-stream-completion')?.output).toBe('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+      } finally {
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
     it('persists a late completion after T1 folding without restoring a raw tool arc', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-folded-async-completion-'));
       const sessionId = 'session-folded-async-completion';

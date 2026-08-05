@@ -8,6 +8,7 @@ import { getTelemetrySettings, updateTelemetrySettings } from '../../../agent/ye
 import { handleMessage } from '../../../agent/connection/message-router.js';
 import { flushAllAgentPerfTraces } from '../../../agent/yeaft/perf-trace.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { closeConversationHistoryIndexes } from '../../../agent/yeaft/conversation/history-index.js';
 import { estimateTokens } from '../../../agent/yeaft/dream/segment.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
 import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftLoadHistoryOutline, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
@@ -62,10 +63,11 @@ function createProjectSessionArtifact(root, workDir, sessionId = 'session-workdi
 afterEach(async () => {
   flushAllAgentPerfTraces();
   await __testResetVpState();
+  await closeConversationHistoryIndexes();
   ctx.CONFIG = originalConfig;
   __testSetSession(null);
   _resetAgentRegistry();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
 });
 
 describe('Yeaft session-scoped model config', () => {
