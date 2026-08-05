@@ -380,6 +380,10 @@ export class WorkflowController {
           actions: this.store.getWorkItemDetail(activeWorkItem.id).actions,
           proposal: result.planProposal,
           availableVpIds: this.listAvailableVpIds?.(),
+          reviewAction: activeAction.type === 'review'
+            && result.reviewDecision === 'changes_requested'
+            ? activeAction
+            : null,
         });
       } catch (error) {
         result.outcome = 'failed';
@@ -546,7 +550,7 @@ export class WorkflowController {
               eventData: { reason: result.replanRequest.reason },
             };
           }
-          if (action.type === 'review' && result.reviewDecision === 'changes_requested') {
+          if (action.type === 'review' && result.reviewDecision === 'changes_requested' && !planProposal) {
             const targetStage = plannedWorkItem.workflowSnapshot.stages
               .find(stage => stage.id === action.changesRequestedStageId);
             if (!targetStage) throw new Error('Work Center review return target is missing');
