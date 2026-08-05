@@ -3036,19 +3036,16 @@ function resolvePluginCatalogRuntime(workDir = '') {
   };
 }
 
-function loadPluginCatalogMcpConfig(yeaftDir) {
-  // The Plugins catalog is Agent-owned. Read config.json on every request so
-  // MCP CRUD is visible immediately instead of reusing a runtime snapshot.
-  const configured = listMcpServers(yeaftDir);
-  if (!configured || configured.error) {
-    throw new Error(configured?.error || 'Failed to read MCP configuration');
-  }
-  return { servers: configured.servers, skipped: [] };
+function loadPluginCatalogMcpConfig(yeaftDir, workDir) {
+  // The Plugins catalog is Agent-owned. Re-read the raw configuration on every
+  // request so MCP CRUD is visible immediately, while keeping the same
+  // config.json -> mcp.json compatibility fallback as the runtime loader.
+  return loadRuntimeMcpConfig(yeaftDir, undefined, workDir || process.cwd());
 }
 
 /** Test-only: read the MCP catalog source without sending a bridge response. */
-export function __testLoadPluginCatalogMcpConfig(yeaftDir) {
-  return loadPluginCatalogMcpConfig(yeaftDir);
+export function __testLoadPluginCatalogMcpConfig(yeaftDir, workDir) {
+  return loadPluginCatalogMcpConfig(yeaftDir, workDir);
 }
 
 export function handleYeaftPluginCatalog(msg = {}) {
@@ -3057,7 +3054,7 @@ export function handleYeaftPluginCatalog(msg = {}) {
   try {
     const runtime = resolvePluginCatalogRuntime(requestedWorkDir);
     const yeaftDir = ctx.CONFIG?.yeaftDir || session?.yeaftDir || DEFAULT_YEAFT_DIR;
-    runtime.mcpConfig = loadPluginCatalogMcpConfig(yeaftDir);
+    runtime.mcpConfig = loadPluginCatalogMcpConfig(yeaftDir, requestedWorkDir);
     const catalog = buildPluginCatalog(runtime);
     sendToServer({
       type: 'yeaft_plugin_catalog_result',

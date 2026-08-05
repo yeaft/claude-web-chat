@@ -106,6 +106,15 @@ describe('Yeaft session-scoped model config', () => {
     });
     expect(refreshedCatalog.servers.map(server => server.name)).not.toContain('slack');
 
+    writeFileSync(join(root, 'config.json'), `${JSON.stringify({ providers: [] }, null, 2)}\n`);
+    writeFileSync(join(root, 'mcp.json'), `${JSON.stringify({
+      servers: [{ name: 'legacy', command: 'node', args: ['legacy.js'] }],
+    }, null, 2)}\n`);
+    const legacyCatalog = __testLoadPluginCatalogMcpConfig(root);
+    expect(legacyCatalog.servers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'legacy', args: ['legacy.js'] }),
+    ]));
+
   });
 
 

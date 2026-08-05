@@ -546,7 +546,8 @@ export function loadConfig(overrides = {}) {
  * @returns {{ servers: object[], skipped: { name: string, reason: string, source: string }[] }}
  */
 export function loadMCPConfig(yeaftDir, jsonConfig, workDir, options = {}) {
-  const yeaftGlobal = loadGlobalMCPServers(yeaftDir, jsonConfig);
+  const configured = jsonConfig === undefined ? readConfigJson(yeaftDir) : jsonConfig;
+  const yeaftGlobal = loadGlobalMCPServers(yeaftDir, configured);
   const externalUser = loadExternalUserMCPServers();
   const project = workDir
     ? loadProjectMCPServers(workDir, options)
