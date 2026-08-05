@@ -29,7 +29,7 @@ export function isDurableYeaftHistoryRow(row) {
     || (row?.isHistory === true && !row?.clientMessageId);
 }
 
-function rowSeq(row) {
+export function yeaftHistoryRowSeq(row) {
   if (Number.isFinite(row?.seq)) return Number(row.seq);
   const id = persistedMessageId(row);
   const match = id?.match(/^m(\d+)$/);
@@ -45,7 +45,7 @@ function rowBytes(row) {
 
 function unitKey(row) {
   if (row?.historyEntryId) return `entry:${row.historyEntryId}`;
-  const seq = rowSeq(row);
+  const seq = yeaftHistoryRowSeq(row);
   return Number.isFinite(seq) ? `seq:${seq}` : (row?.stableKey || row?.uiKey || row?.id || row?.messageId || 'legacy');
 }
 
@@ -54,7 +54,7 @@ function durableUnits(rows) {
   for (const row of rows) {
     if (!isDurableYeaftHistoryRow(row)) continue;
     const key = unitKey(row);
-    const unit = units.get(key) || { key, rows: [], seq: rowSeq(row), bytes: 0, touchedAt: 0 };
+    const unit = units.get(key) || { key, rows: [], seq: yeaftHistoryRowSeq(row), bytes: 0, touchedAt: 0 };
     unit.rows.push(row);
     unit.bytes += rowBytes(row);
     unit.touchedAt = Math.max(unit.touchedAt, Number(row?._historyCacheTouchedAt) || 0);
@@ -104,7 +104,7 @@ function chooseDurableUnits(units, limits, pinnedKeys = new Set()) {
 }
 
 function compactRanges(rows) {
-  const seqs = Array.from(new Set(rows.map(rowSeq).filter(Number.isFinite))).sort((a, b) => a - b);
+  const seqs = Array.from(new Set(rows.map(yeaftHistoryRowSeq).filter(Number.isFinite))).sort((a, b) => a - b);
   const ranges = [];
   for (const seq of seqs) {
     const current = ranges.at(-1);

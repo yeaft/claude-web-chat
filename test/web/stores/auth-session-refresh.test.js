@@ -257,6 +257,8 @@ describe('auth store session restore and refresh', () => {
       .toHaveBeenCalledWith('yeaft-work-center-composer-drafts-v1');
     expect(globalThis.localStorage.removeItem)
       .toHaveBeenCalledWith('yeaft-work-center-message-outbox-v1');
+    const historyCache = await import('../../../web/stores/helpers/yeaft-history-browser-cache.js');
+    expect(historyCache.currentYeaftHistoryBrowserFence()).toBeNull();
   });
 
   it('loads and unbinds identities for an authenticated cookie-only session', async () => {
@@ -349,6 +351,8 @@ describe('auth store session restore and refresh', () => {
     expect(auth).toMatchObject({
       isAuthenticated: true, token: 'token-a', userId: 'user-a', loginStep: 'authenticated',
     });
+    const historyCache = await import('../../../web/stores/helpers/yeaft-history-browser-cache.js');
+    expect(historyCache.currentYeaftHistoryBrowserFence()).toMatchObject({ ownerId: 'user-a' });
     expect(globalThis.localStorage.getItem('yeaft-work-center-composer-drafts-v1'))
       .toBe(JSON.stringify(ownerARecords));
     const browserState = await import('../../../web/stores/helpers/work-center-browser-state.js');
@@ -365,6 +369,7 @@ describe('auth store session restore and refresh', () => {
     expect(auth).toMatchObject({
       isAuthenticated: true, token: 'token-b', userId: 'user-b', loginStep: 'authenticated',
     });
+    expect(historyCache.currentYeaftHistoryBrowserFence()).toMatchObject({ ownerId: 'user-b' });
     expect(globalThis.localStorage.getItem('yeaft-work-center-composer-drafts-v1')).toBe(null);
     const ownerBFence = browserState.currentWorkCenterBrowserOwner();
     expect(ownerBFence).toMatchObject({ ownerId: 'user-b' });

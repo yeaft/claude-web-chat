@@ -418,7 +418,9 @@ export function handleMessage(store, msg) {
       break;
 
     case 'yeaft_history_window': {
-      if (!store.pendingYeaftHistoryWindow?.(msg)) break;
+      const pendingWindow = store.pendingYeaftHistoryWindow?.(msg);
+      if (!pendingWindow) break;
+      if (pendingWindow.pending?.prefetch === true) msg.prefetch = true;
       const conversationId = msg.error ? null : handleYeaftHistoryWindow(store, msg);
       store.handleYeaftHistoryWindow(msg, conversationId);
       break;

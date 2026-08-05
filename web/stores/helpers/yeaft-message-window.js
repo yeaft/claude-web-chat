@@ -1,4 +1,7 @@
-const DEFAULT_VISIBLE_TURNS = 5;
+// VirtualTranscript already bounds DOM work. Keep every resident message turn
+// visible so Session switches do not hide history that the user already loaded;
+// memory retention remains bounded independently by yeaft-history-cache.js.
+const DEFAULT_VISIBLE_TURNS = Number.POSITIVE_INFINITY;
 const LOAD_STEP_TURNS = 20;
 
 function isNonEmptyUserMessage(msg) {
@@ -78,8 +81,9 @@ export function sliceYeaftMessagesByRecentTurns(messages = [], visibleTurns = DE
 }
 
 function messageMatchesSession(msg, sessionId) {
+  if (!msg || msg._historyWindowPrefetched === true) return false;
   if (!sessionId) return true;
-  return msg && (msg.sessionId ?? msg.groupId) === sessionId;
+  return (msg.sessionId ?? msg.groupId) === sessionId;
 }
 
 export function sliceScopedYeaftMessagesByRecentTurns(messages = [], sessionId = null, visibleTurns = DEFAULT_VISIBLE_TURNS) {

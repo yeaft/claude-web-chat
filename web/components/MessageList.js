@@ -2016,7 +2016,6 @@ export default {
       });
       autoFollowPaused.value = !isAtBottom.value;
       virtualTranscriptRef.value?.setBottomFollowEnabled?.(isAtBottom.value);
-      if (isAtBottom.value) pruneYeaftWindowNearBottom();
       if (userScrollInteractionActive) scheduleUserScrollInteractionEnd();
 
       if (containerRef.value) {
@@ -2027,15 +2026,10 @@ export default {
       }
     };
 
-    const pruneYeaftWindowNearBottom = () => {
-      if (store.currentView === 'yeaft') store.pruneYeaftMessageWindow();
-    };
-
     const scrollToBottom = () => {
       if (containerRef.value) {
         containerRef.value.scrollTop = containerRef.value.scrollHeight;
         resumeAutoFollow();
-        pruneYeaftWindowNearBottom();
       }
     };
 
@@ -2050,7 +2044,6 @@ export default {
 
     const smartScrollToBottom = () => {
       if (!autoFollowPaused.value && isAtBottom.value) {
-        pruneYeaftWindowNearBottom();
         Vue.nextTick(scrollToBottom);
       }
     };

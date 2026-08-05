@@ -6,6 +6,10 @@ import {
   bindWorkCenterBrowserOwner,
   clearWorkCenterBrowserOwner,
 } from './helpers/work-center-browser-state.js';
+import {
+  bindYeaftHistoryBrowserOwner,
+  clearYeaftHistoryBrowserOwner,
+} from './helpers/yeaft-history-browser-cache.js';
 
 const { defineStore } = Pinia;
 
@@ -106,6 +110,7 @@ export const useAuthStore = defineStore('auth', {
           // In skip auth mode, one local browser owner is the complete auth boundary.
           this.userId = 'skip-auth';
           bindWorkCenterBrowserOwner(this.userId);
+          bindYeaftHistoryBrowserOwner(this.userId);
           this.authGeneration += 1;
           this.isAuthenticated = true;
           this.loginStep = 'authenticated';
@@ -166,6 +171,7 @@ export const useAuthStore = defineStore('auth', {
         this.role = data.role || 'pro';
         this.userId = data.userId || null;
         bindWorkCenterBrowserOwner(this.userId);
+        bindYeaftHistoryBrowserOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -249,6 +255,7 @@ export const useAuthStore = defineStore('auth', {
         this.role = data.role || 'pro';
         this.userId = data.userId || null;
         bindWorkCenterBrowserOwner(this.userId);
+        bindYeaftHistoryBrowserOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -306,6 +313,7 @@ export const useAuthStore = defineStore('auth', {
         this.role = data.role || 'pro';
         this.userId = data.userId || null;
         bindWorkCenterBrowserOwner(this.userId);
+        bindYeaftHistoryBrowserOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -363,6 +371,7 @@ export const useAuthStore = defineStore('auth', {
         this.role = data.role || 'pro';
         this.userId = data.userId || null;
         bindWorkCenterBrowserOwner(this.userId);
+        bindYeaftHistoryBrowserOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -405,6 +414,7 @@ export const useAuthStore = defineStore('auth', {
         this.role = data.role || 'pro';
         this.userId = data.userId || null;
         bindWorkCenterBrowserOwner(this.userId);
+        bindYeaftHistoryBrowserOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -571,6 +581,7 @@ export const useAuthStore = defineStore('auth', {
             this.role = data.role || 'pro';
             this.userId = data.userId || null;
             bindWorkCenterBrowserOwner(this.userId);
+            bindYeaftHistoryBrowserOwner(this.userId);
             this.authGeneration += 1;
             this.isAuthenticated = true;
             this.loginStep = 'authenticated';
@@ -673,6 +684,7 @@ export const useAuthStore = defineStore('auth', {
       this.role = role || 'pro';
       this.userId = userId || null;
       bindWorkCenterBrowserOwner(this.userId);
+      bindYeaftHistoryBrowserOwner(this.userId);
       this.authGeneration += 1;
       this.isAuthenticated = true;
       this.loginStep = 'authenticated';
@@ -757,6 +769,7 @@ export const useAuthStore = defineStore('auth', {
         if (profile?.role) this.role = profile.role;
         this.userId = profile?.userId || null;
         bindWorkCenterBrowserOwner(this.userId);
+        bindYeaftHistoryBrowserOwner(this.userId);
         return true;
       } catch (err) {
         console.warn('[Auth] Session refresh failed:', err.message || err);
@@ -888,6 +901,7 @@ export const useAuthStore = defineStore('auth', {
         this.role = profile?.role || 'pro';
         this.userId = profile?.userId || null;
         bindWorkCenterBrowserOwner(this.userId);
+        bindYeaftHistoryBrowserOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -1001,6 +1015,7 @@ export const useAuthStore = defineStore('auth', {
      */
     reset() {
       clearWorkCenterBrowserOwner();
+      clearYeaftHistoryBrowserOwner();
       this.authGeneration += 1;
       this.stopSessionRefresh();
       this.isAuthenticated = false;

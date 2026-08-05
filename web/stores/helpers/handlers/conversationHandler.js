@@ -22,7 +22,7 @@ import {
   yeaftOptimisticMessageIdentity,
   yeaftPersistedMessageIdentity,
 } from '../yeaft-history-identity.js';
-import { pruneYeaftHistoryCache } from '../yeaft-history-cache.js';
+import { isDurableYeaftHistoryRow, pruneYeaftHistoryCache } from '../yeaft-history-cache.js';
 import { commitYeaftHistoryPage } from '../yeaft-history-pagination.js';
 
 /** Filter out empty user messages — tool_result artifacts stored as empty user records in DB */
@@ -203,38 +203,30 @@ function replaceYeaftRecentHistoryRows(existingRows, incomingRows, sessionId) {
   const hasVisibleCachedRows = existingRows.some(row => (
     row && (sessionId == null || rowSessionId(row) === sessionId)
   ));
-  // An empty recent projection is not a safe deletion signal. Background
-  // bootstrap/reconnect reads can transiently return no visible rows while the
-  // browser already has a committed Session window; replacing in that state
-  // makes the pane go blank until the next switch or manual reload. There is no
-  // history-delete operation on this wire, so keep stale rows and let a later
-  // non-empty recent response replace them atomically. A genuinely empty Session
-  // still completes its first load because it has no cached rows to preserve.
+  // An empty projection is not a deletion signal. Keep the committed window.
   if (incomingRows.length === 0 && hasVisibleCachedRows) {
     return { insertedRows: 0, preservedEmpty: true };
   }
 
+  // A recent replay is only a bounded tail snapshot. Durable rows outside that
+  // snapshot are immutable and may have come from explicit older pagination or
+  // the browser cache, so keep them. Non-durable stale bootstrap rows can still
+  // be discarded; live/optimistic rows remain until persistence catches up.
   const newestIncomingTs = incomingRows.reduce((max, row) => Math.max(max, row?.timestamp || 0), 0);
   const preserved = existingRows.filter((row) => {
     if (!row) return false;
     if (sessionId != null && rowSessionId(row) !== sessionId) return true;
+    if (isDurableYeaftHistoryRow(row)) return true;
     if (row.isStreaming) return true;
     if (row.type === 'tool-use' && row.toolName === 'AskUserQuestion'
         && (row.askAnswered || row.askPending || row.askExpired)) return true;
-    // A recent-history reply can race a just-sent optimistic user row. Do not
-    // delete that accepted input merely because the persisted window has not
-    // flushed it yet or the server clock is ahead of the browser clock.
     if (isOptimisticYeaftUserRow(row)) return true;
-    // A manual refresh can race a just-sent local row that is newer than the
-    // persisted recent window. Keep that live tail; the next delta/recent load
-    // will merge it by stable id once the agent has flushed it to disk.
     return newestIncomingTs > 0 && (row.timestamp || 0) > newestIncomingTs;
   });
   existingRows.splice(0, existingRows.length, ...preserved);
-  upsertYeaftHistoryRows(existingRows, incomingRows);
-  return { insertedRows: incomingRows.length, preservedEmpty: false };
+  const insertedRows = upsertYeaftHistoryRows(existingRows, incomingRows);
+  return { insertedRows, preservedEmpty: false };
 }
-
 function isInternalControlHistoryContent(content) {
   if (typeof content !== 'string') return false;
   const text = content.trimStart();
@@ -753,6 +745,7 @@ export function handleYeaftHistoryWindow(store, msg) {
       ? {
           ...message,
           historyEntryId: msg.entryId,
+          ...(msg.prefetch === true ? { _historyWindowPrefetched: true } : {}),
           ...(Number.isFinite(msg.indexGeneration)
             ? { historyIndexGeneration: msg.indexGeneration }
             : {}),
@@ -766,6 +759,9 @@ export function handleYeaftHistoryWindow(store, msg) {
     store.messagesMap[conversationId],
     sessionAgentId,
   );
+  if (msg.prefetch === true) {
+    for (const row of formatted) row._historyWindowPrefetched = true;
+  }
   upsertYeaftHistoryRows(store.messagesMap[conversationId], formatted);
   const activeIdentity = activeYeaftHistoryIdentity(store);
   pruneYeaftHistoryCache(store, {
@@ -1084,8 +1080,8 @@ export function handleYeaftHistoryChunk(store, msg) {
       store.messagesMap[convId].splice(0, 0, ...formatted);
       insertedRows = formatted.length;
       if (typeof store.expandYeaftMessageWindow === 'function') {
-        // These rows were explicitly requested by scrolling upward. Keep them in
-        // the render window; the near-bottom path will prune again later.
+        // These rows were explicitly requested by scrolling upward. Keep the
+        // compatibility window state aligned; its default no longer hides rows.
         const windowSessionId = store.yeaftActiveSessionFilter ? (msgSessionId ?? null) : null;
         store.expandYeaftMessageWindow(windowSessionId, msg.turns || 10, sessionAgentId);
       }
@@ -1103,6 +1099,9 @@ export function handleYeaftHistoryChunk(store, msg) {
     activeAgentId: activeIdentityBeforeCache.agentId,
     activeSessionId: activeIdentityBeforeCache.sessionId,
   });
+  if (typeof store.persistYeaftHistoryBrowserCache === 'function') {
+    void store.persistYeaftHistoryBrowserCache(msgSessionId, sessionAgentId, convId);
+  }
 
   const sessionKey = yeaftHistoryIdentityKey(msg.agentId || null, msgSessionId);
   const cacheState = store.yeaftHistoryCacheState?.[sessionKey] || null;

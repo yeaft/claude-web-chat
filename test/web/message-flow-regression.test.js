@@ -852,9 +852,6 @@ describe('message flow regressions', () => {
     ] });
     expect(sidebar.findAll('.session-item.processing')).toHaveLength(2);
     expect(sidebar.findAll('.processing-dot')).toHaveLength(2);
-    expect(sidebar.findAll('.sidebar-session-syncing')).toHaveLength(1);
-    expect(sidebar.get('.sidebar-session-syncing').attributes('aria-label')).toBe('sidebar.sessions.syncing');
-    await sidebar.setProps({ isSessionSyncing: () => false, sessionSyncRefreshToken: 1 });
     expect(sidebar.findAll('.sidebar-session-syncing')).toHaveLength(0);
     expect(sidebar.findAll('.session-pin-icon')).toHaveLength(1);
     expect(sidebar.findAll('.sidebar-session-meta')).toHaveLength(0);
@@ -1424,12 +1421,12 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarSource).toContain(':project-store="chatStore"');
     expect(yeaftSidebarSource).toContain(':active-route="chatStore.activeSessionRoute"');
     expect(chatPageSource).toContain(':processing-conversations="store.processingConversations"');
-    expect(chatPageSource).toContain(':is-session-syncing="isCatalogSessionSyncing"');
-    expect(chatPageSource).toContain(':session-sync-refresh-token="store.sessionHistorySyncRefreshToken"');
+    expect(chatPageSource).not.toContain(':is-session-syncing=');
+    expect(chatPageSource).not.toContain(':session-sync-refresh-token=');
     expect(chatPageSource).toContain(':agents="store.agents"');
     expect(yeaftSidebarSource).toContain(':is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"');
-    expect(yeaftSidebarSource).toContain(':is-session-syncing="isCatalogSessionSyncing"');
-    expect(yeaftSidebarSource).toContain(':session-sync-refresh-token="chatStore.sessionHistorySyncRefreshToken"');
+    expect(yeaftSidebarSource).not.toContain(':is-session-syncing=');
+    expect(yeaftSidebarSource).not.toContain(':session-sync-refresh-token=');
     expect(yeaftSidebarSource).toContain(':agents="chatStore.agents"');
     expect(chatPageSource).not.toContain("action === 'split'");
     expect(chatPageSource).not.toContain('splitScreen.splitToPanel');

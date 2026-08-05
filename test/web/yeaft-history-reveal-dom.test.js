@@ -213,6 +213,8 @@ async function settleWindow(store, revealWindow = null) {
     anchorSeq: request.anchorSeq,
     messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
   };
+  const pendingWindow = store.pendingYeaftHistoryWindow(response);
+  if (pendingWindow?.pending?.prefetch === true) response.prefetch = true;
   const conversationId = mergeYeaftHistoryWindow(store, response);
   expect(conversationId).toBe('conv-a');
   expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
@@ -285,7 +287,7 @@ async function expectSilentTransportPromotion(wrapper, store) {
   expect(after.element).toBe(beforeElement);
   expect(after.get('.virtual-transcript-item').element).toBe(beforeRow);
   expect(wrapper.find('.loading-more').exists()).toBe(false);
-  expect(store.messages.map(row => row.content)).toEqual(existingRows.slice(-5).map(row => row.content));
+  expect(store.messages.map(row => row.content)).toEqual(existingRows.map(row => row.content));
 
   store.yeaftSessionHistoryState[sessionKey].mode = 'older';
   await Vue.nextTick();
@@ -586,7 +588,9 @@ describe('Yeaft history result rendered reveal', () => {
 
     await option.trigger('mouseenter');
     await settleWindow(store);
-    expect(store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')].visibleTurns).toBe(5);
+    // Resident Session history stays visible, while hover-prefetched search
+    // windows remain cache-only until the user explicitly reveals the result.
+    expect(store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')].visibleTurns).toBeGreaterThan(5);
     expect(wrapper.find('[data-msg-id="m42"]').exists()).toBe(false);
     expect(store._sent.filter(message => message.type === 'yeaft_load_history_window')).toHaveLength(1);
 

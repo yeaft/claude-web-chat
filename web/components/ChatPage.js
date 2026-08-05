@@ -114,8 +114,6 @@ export default {
           :project-store="store"
           :active-route="store.activeSessionRoute"
           :is-session-unread="isCatalogSessionUnread"
-          :is-session-syncing="isCatalogSessionSyncing"
-          :session-sync-refresh-token="store.sessionHistorySyncRefreshToken"
           :processing-conversations="store.processingConversations"
           :is-yeaft-session-processing="store.isYeaftSessionProcessing"
           :agents="store.agents"
@@ -626,12 +624,6 @@ export default {
       if (row?.runtimeProvider !== 'yeaft') return false;
       return this.store.isYeaftSessionUnread(row.routeRef?.sessionId, row.routeRef?.agentId);
     },
-    isCatalogSessionSyncing(row) {
-      return typeof this.store.isSessionHistorySyncing === 'function'
-        ? this.store.isSessionHistorySyncing(row?.routeRef)
-        : false;
-    },
-
     onUnifiedCreate(provider = 'yeaft') {
       this.unifiedSessionCreateProject = null;
       this.unifiedSessionCreateProvider = ['yeaft', 'copilot', 'claude-code'].includes(provider) ? provider : 'yeaft';

@@ -252,7 +252,7 @@ describe('Yeaft history outline state', () => {
     expect(store.yeaftMessageWindowState[keyB].visibleTurns).toBe(17);
     expect(store.finishYeaftHistoryReveal(newerLeaseB)).toBe(true);
     store.pruneYeaftMessageWindow('same', 'agent-b');
-    expect(store.yeaftMessageWindowState[keyB].visibleTurns).toBe(5);
+    expect(store.yeaftMessageWindowState[keyB].visibleTurns).toBe(Number.POSITIVE_INFINITY);
   });
 
   historyScenario('routes same-id background frames only to their owning Agent outline', () => {
