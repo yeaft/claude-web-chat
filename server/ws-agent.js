@@ -4,6 +4,7 @@ import { CONFIG } from './config.js';
 import { verifyAgent } from './auth.js';
 import { encodeKey } from './encryption.js';
 import { agents, pendingAgentConnections } from './context.js';
+import { userDb } from './database.js';
 import {
   parseMessage, broadcastAgentList, clearAgentDirCache
 } from './ws-utils.js';
@@ -31,11 +32,29 @@ export function handleAgentConnection(ws, url) {
   const instanceId = url.searchParams.get('instanceId') || clientAgentId;
   const workDir = url.searchParams.get('workDir') || '';
 
-  // In development mode (SKIP_AUTH), register immediately
+  // In development mode (SKIP_AUTH), register immediately. Local mode still
+  // has one durable browser owner (`dev-user`); without that identity the
+  // Yeaft shadow catalog intentionally skips persistence and a newly-created
+  // Session disappears after the live event. Keep the old ownerless behavior
+  // for generic development servers that do not opt into local mode.
   if (CONFIG.skipAuth) {
     // Dev mode: no owner isolation, use clientAgentId as-is for backward compat
     const capabilities = (url.searchParams.get('capabilities') || '').split(',').filter(Boolean);
-    completeAgentRegistration(ws, clientAgentId, agentName, workDir, null, capabilities, null, null, null, instanceId);
+    const localOwner = process.env.YEAFT_LOCAL_RUN === 'true'
+      ? userDb.getOrCreate('dev-user')
+      : null;
+    completeAgentRegistration(
+      ws,
+      clientAgentId,
+      agentName,
+      workDir,
+      null,
+      capabilities,
+      localOwner?.id || null,
+      localOwner?.username || null,
+      null,
+      instanceId,
+    );
 
     ws.on('message', async (data) => {
       const agent = agents.get(clientAgentId);

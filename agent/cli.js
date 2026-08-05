@@ -65,8 +65,16 @@ if (command === 'doctor') {
   await handleLlmCommand(subArgs);
 } else if (command === 'local') {
   try {
-    const { runLocal } = await import('./local-run.js');
-    await runLocal(subArgs);
+    const localCommand = subArgs[0];
+    if (localCommand === '--help' || localCommand === '-h') {
+      printHelp();
+    } else if (SERVICE_COMMANDS.includes(localCommand)) {
+      const { handleLocalServiceCommand } = await import('./local-service.js');
+      await handleLocalServiceCommand(localCommand, subArgs.slice(1));
+    } else {
+      const { runLocal } = await import('./local-run.js');
+      await runLocal(subArgs);
+    }
   } catch (error) {
     console.error(`Local run failed: ${error.message}`);
     process.exit(1);
@@ -91,6 +99,11 @@ function printHelp() {
   Usage:
     yeaft-agent [options]              Run agent in foreground
     yeaft-agent local [options]        Run local Web UI, server, and agent
+    yeaft-agent local --background      Run local mode in the background
+    yeaft-agent local install [options] Install local mode as a managed service
+    yeaft-agent local uninstall [options] Remove the local managed service
+    yeaft-agent local start|stop|restart|status|logs [options]
+                                      Control the local managed service
     yeaft-agent install [options]      Install as system service
     yeaft-agent uninstall [options]    Remove system service
     yeaft-agent start [options]        Start installed service
@@ -108,6 +121,7 @@ function printHelp() {
     --server <url>      WebSocket server URL (default: ws://localhost:3456)
     --name <name>       Agent name and instance id (default: computer name; invalid chars become -)
     --port <port>       Local server port (local command only; default: 6868)
+    --background, -d    Detach local mode after spawning it (local command only)
     --secret <secret>   Agent secret for authentication
     --work-dir <dir>    Default working directory (default: cwd)
     --yeaft-dir <dir>   Yeaft data directory for this instance
@@ -124,6 +138,8 @@ function printHelp() {
   Examples:
     yeaft-agent local
     yeaft-agent local --name my-worker --port 7000
+    yeaft-agent local --name my-worker --background
+    yeaft-agent local install --name my-worker --port 7000
     yeaft-agent --server wss://your-server.com --name my-worker --secret xxx
     yeaft-agent install --server wss://your-server.com --name my-worker --secret xxx
     yeaft-agent install --server wss://your-server.com --name my-worker-2 --secret xxx

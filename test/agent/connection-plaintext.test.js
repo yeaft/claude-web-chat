@@ -18,7 +18,8 @@ import {
 } from '../../agent/windows-upgrade-runner.js';
 import ctx from '../../agent/context.js';
 import { connect, resetConnectionTransport, sendToServer } from '../../agent/connection/index.js';
-import { parseLocalArgs } from '../../agent/local-run.js';
+import { parseLocalArgs, launchLocalInBackground } from '../../agent/local-run.js';
+import { generateLocalSystemdUnit, parseLocalServiceArgs } from '../../agent/local-service.js';
 import {
   applyAgentIdentityToEnv,
   getDefaultAgentName,
@@ -73,8 +74,41 @@ describe('agent ctx defaults and upgrade contract', () => {
     expect(getInstanceIdFromArgs([], {})).toBe(computerName);
     expect(getInstanceIdFromArgs([], {}, { management: true })).toBe('default');
     expect(getInstanceIdFromArgs([], { YEAFT_AGENT_INSTANCE: 'named' }, { management: true })).toBe('named');
-    expect(parseLocalArgs([], {})).toEqual({ name: computerName, port: 6868 });
-    expect(parseLocalArgs([], { AGENT_NAME: 'env-name' })).toEqual({ name: 'env-name', port: 6868 });
+    expect(parseLocalArgs([], {})).toEqual({ name: computerName, port: 6868, background: false });
+    expect(parseLocalArgs([], { AGENT_NAME: 'env-name' })).toEqual({ name: 'env-name', port: 6868, background: false });
+    expect(parseLocalArgs(['--name', 'local-ui', '--port', '7777', '--background'], {})).toEqual({
+      name: 'local-ui', port: 7777, background: true,
+    });
+    expect(parseLocalArgs(['-d'], { AGENT_NAME: 'local-ui' })).toEqual({
+      name: 'local-ui', port: 6868, background: true,
+    });
+    expect(parseLocalServiceArgs(['--name', 'local-ui', '--port', '7777'], {})).toEqual({
+      name: 'local-ui', port: 7777,
+    });
+    expect(() => parseLocalServiceArgs(['--background'], {})).toThrow('Unknown local service option');
+
+    const detached = { pid: 4321, unref: vi.fn() };
+    const spawnDetached = vi.fn(() => detached);
+    await expect(launchLocalInBackground(['--name', 'local-ui', '--port', '7777', '--background'], {
+      spawn: spawnDetached,
+      cliPath: '/opt/yeaft/cli.js',
+      quiet: true,
+    })).resolves.toEqual({ url: 'http://127.0.0.1:7777', pid: 4321, background: true });
+    expect(spawnDetached).toHaveBeenCalledWith(process.execPath, [
+      '/opt/yeaft/cli.js', 'local', '--name', 'local-ui', '--port', '7777',
+    ], expect.objectContaining({ detached: true, stdio: 'ignore', windowsHide: true }));
+    expect(detached.unref).toHaveBeenCalledTimes(1);
+
+    const localUnit = generateLocalSystemdUnit({ name: 'local-ui', port: 7777 }, {
+      cliPath: '/opt/yeaft/cli.js',
+      workingDirectory: '/workspace/yeaft',
+    });
+    expect(localUnit).toContain('Description=Yeaft Local Web UI (local-ui)');
+    expect(localUnit).toContain('ExecStart=');
+    expect(localUnit).toContain("'/opt/yeaft/cli.js' local --name 'local-ui' --port 7777");
+    expect(localUnit).toContain('WorkingDirectory=/workspace/yeaft');
+    expect(localUnit).toContain('Environment="YEAFT_LOCAL_RUN=true"');
+    expect(localUnit).toContain('WantedBy=default.target');
 
     const env = {};
     expect(applyAgentIdentityToEnv([], env)).toBeNull();

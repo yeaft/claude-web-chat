@@ -12,6 +12,7 @@ npm 包会安装两个职责不同的命令：
 ```text
 yeaft-agent [options]              前台运行 Agent
 yeaft-agent local [options]        运行本机 Web UI、Server 与 Agent
+yeaft-agent local install [options] 安装 local mode 的 managed service
 yeaft-agent install [options]      安装 managed service
 yeaft-agent uninstall [options]    删除 managed service
 yeaft-agent start [options]        启动 managed service
@@ -32,6 +33,7 @@ yeaft-agent --version              显示 package version
 | `--server <url>` | Server WebSocket URL，默认 `ws://localhost:3456` |
 | `--name <name>` | Agent display name 与本机 instance identity |
 | `--port <port>` | Local mode HTTP port，默认 `6868` |
+| `--background`, `-d` | 启动 local mode 后从当前 shell 脱离 |
 | `--secret <secret>` | Agent authentication secret |
 | `--work-dir <dir>` | 默认 execution directory |
 | `--yeaft-dir <dir>` | 当前 Agent instance 的 Yeaft data root |
@@ -47,6 +49,24 @@ yeaft-agent local --name my-worker --port 7000
 ```
 
 Local mode 启动绑定到 `127.0.0.1` 的 no-auth Server 与 Agent。它适合受信任的个人工作站，不应作为公网 listener。
+
+临时后台运行：
+
+```bash
+yeaft-agent local --name my-worker --port 7000 --background
+```
+
+Linux 上可以把同一套 local stack 安装为 user-level systemd service：
+
+```bash
+yeaft-agent local install --name my-worker --port 7000
+yeaft-agent local status --name my-worker
+yeaft-agent local logs --name my-worker
+yeaft-agent local stop --name my-worker
+yeaft-agent local uninstall --name my-worker
+```
+
+service 会在用户登录时启动。若要求机器启动后、尚未登录时也启动，执行一次 `sudo loginctl enable-linger $(whoami)`。它使用同一个 named Agent 的 `~/.yeaft/instances/<name>/` 数据目录，保留正式 Session 与 conversation history。
 
 ### Managed instance
 

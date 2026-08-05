@@ -11,7 +11,11 @@ const DEFAULT_PORT = 6868;
 const LOCAL_HOST = '127.0.0.1';
 
 export function parseLocalArgs(args, env = process.env) {
-  const options = { name: resolveDisplayName(args, env), port: DEFAULT_PORT };
+  const options = {
+    name: resolveDisplayName(args, env),
+    port: DEFAULT_PORT,
+    background: false,
+  };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     const value = args[i + 1];
@@ -24,11 +28,13 @@ export function parseLocalArgs(args, env = process.env) {
       options.port = Number(value);
       if (options.port < 1 || options.port > 65535) throw new Error(`Invalid port: ${value}`);
       i++;
+    } else if (arg === '--background' || arg === '-d') {
+      options.background = true;
     } else {
       throw new Error(`Unknown local option: ${arg}`);
     }
   }
-  validateInstanceId(options.name);
+  options.name = validateInstanceId(options.name);
   return options;
 }
 
@@ -127,8 +133,12 @@ function readAgentList(wsUrl) {
 
 export async function runLocal(args, options = {}) {
   const config = parseLocalArgs(args);
+  if (config.background && options.backgroundHandled !== true) {
+    return launchLocalInBackground(args, options);
+  }
   const paths = options.paths || runtimePaths();
   const dataDir = options.dataDir || join(homedir(), '.yeaft', 'server');
+  const yeaftDir = options.yeaftDir || process.env.YEAFT_DIR || join(homedir(), '.yeaft', 'instances', config.name);
   const url = `http://${LOCAL_HOST}:${config.port}`;
   const children = new Set();
   const signalHandlers = new Map();
@@ -173,6 +183,7 @@ export async function runLocal(args, options = {}) {
         SERVER_DATA_DIR: dataDir,
         PERF_TRACE_DIR: join(dataDir, 'perf-traces'),
         SKIP_AUTH: 'true',
+        YEAFT_LOCAL_RUN: 'true',
         WEB_DIR: paths.webDir,
       },
     });
@@ -189,6 +200,7 @@ export async function runLocal(args, options = {}) {
         AGENT_NAME: config.name,
         YEAFT_AGENT_INSTANCE: config.name,
         AGENT_SECRET: '',
+        YEAFT_DIR: yeaftDir,
         YEAFT_LOCAL_RUN: 'true',
         YEAFT_SKIP_STARTUP_INSTALLS: 'true',
       },
@@ -212,4 +224,30 @@ export async function runLocal(args, options = {}) {
     await stop(1);
     throw error;
   }
+}
+
+function localDaemonArgs(args) {
+  return args.filter(arg => arg !== '--background' && arg !== '-d');
+}
+
+export async function launchLocalInBackground(args, options = {}) {
+  const config = parseLocalArgs(args);
+  const spawnProcess = options.spawn || spawn;
+  const cliPath = options.cliPath || join(dirname(fileURLToPath(import.meta.url)), 'cli.js');
+  const child = spawnProcess(process.execPath, [cliPath, 'local', ...localDaemonArgs(args)], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    env: {
+      ...process.env,
+      YEAFT_LOCAL_RUN_BACKGROUND: 'true',
+    },
+  });
+  child.unref();
+  const url = `http://${LOCAL_HOST}:${config.port}`;
+  const result = { url, pid: child.pid, background: true };
+  if (options.quiet !== true) {
+    console.log(`Yeaft local is starting in the background at ${url} (PID ${child.pid}).`);
+  }
+  return result;
 }

@@ -674,7 +674,14 @@ export async function handleAgentOutput(agentId, agent, msg) {
           }
         }
       }
-      if (catalogChanged) await broadcastSessionCatalog(agent.ownerId);
+      // Nested `session_list_updated` events carry the same authoritative
+      // snapshot as the top-level alias below. Re-project the server-owned
+      // catalog after reconciliation so the unified sidebar updates in both
+      // local no-auth and deployed runtimes. Roster changes are handled by
+      // their own metadata branch above.
+      if ((event?.type === 'session_list_updated' || catalogChanged) && agent.ownerId) {
+        await broadcastSessionCatalog(agent.ownerId);
+      }
       break;
     }
 
