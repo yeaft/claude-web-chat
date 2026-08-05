@@ -39,6 +39,8 @@ const chatStore = Vue.reactive({
   loadYeaftHistoryOutline: vi.fn(),
   yeaftHistorySearchState: { query: '', senderKey: '' },
   searchYeaftHistory: vi.fn(),
+  openYeaftTurnDebug: vi.fn(),
+  closeYeaftDebugPanel: vi.fn(),
 });
 
 beforeAll(async () => {
@@ -77,6 +79,17 @@ beforeEach(() => {
   chatStore.yeaftHistorySearchState = { query: '', senderKey: '' };
   chatStore.loadYeaftHistoryOutline.mockReset();
   chatStore.searchYeaftHistory.mockReset();
+  chatStore.openYeaftTurnDebug.mockReset();
+  chatStore.closeYeaftDebugPanel.mockReset();
+  chatStore.yeaftDebugPanel = {
+    open: false,
+    status: 'idle',
+    requestId: null,
+    agentId: null,
+    sessionId: null,
+    turnId: null,
+    error: null,
+  };
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
@@ -240,5 +253,36 @@ describe('YeaftPage setup', () => {
     } finally {
       Object.defineProperty(globalThis, 'localStorage', originalDescriptor);
     }
+  });
+
+  it('follows the store debug panel state and routes header toggles through the panel actions', () => {
+    const page = YeaftPage.setup();
+    expect(page.debugMode.value).toBe(false);
+
+    // The eyes icon on an AI turn opens the panel via the store; YeaftPage
+    // must render the detail panel as soon as the store opens it.
+    chatStore.yeaftDebugPanel = {
+      open: true,
+      status: 'loading',
+      requestId: 'dbgpanel_1',
+      agentId: 'agent-1',
+      sessionId: 'session-1',
+      turnId: 'turn-abc',
+      error: null,
+    };
+    expect(page.debugMode.value).toBe(true);
+
+    // Header entry closes the panel through the store, not a local ref.
+    page.toggleDebug();
+    expect(chatStore.closeYeaftDebugPanel).toHaveBeenCalled();
+
+    // Re-opening via the header opens an empty panel (no turn scoping).
+    chatStore.yeaftDebugPanel.open = false;
+    page.toggleDebug();
+    expect(chatStore.openYeaftTurnDebug).toHaveBeenCalledWith({});
+    expect(page.debugMode.value).toBe(false);
+
+    chatStore.yeaftDebugPanel.open = true;
+    expect(page.debugMode.value).toBe(true);
   });
 });

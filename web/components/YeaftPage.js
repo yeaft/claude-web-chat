@@ -533,7 +533,12 @@ export default {
     // visible as a "tasks memory / coming soon" placeholder). The right
     // detail panel is only rendered when debugMode is on, so the
     // conversation column gets the full width by default.
-    const debugMode = Vue.ref(false);
+    // Turn-level debug: the detail panel visibility follows the store's
+    // `yeaftDebugPanel.open` so both the header entry and the per-turn
+    // eyes icon can open/close it from anywhere.
+    const debugMode = Vue.computed(() => !!(
+      store.yeaftDebugPanel && store.yeaftDebugPanel.open
+    ));
     const composerMenuOpen = Vue.ref(null);
     const showSettings = Vue.ref(false);
     const showLlmConfig = Vue.ref(false);
@@ -1031,10 +1036,16 @@ export default {
     // button + placeholder are gone, so the helper is removed too.
 
     const toggleDebug = () => {
-      debugMode.value = !debugMode.value;
+      if (debugMode.value) {
+        store.closeYeaftDebugPanel();
+      } else if (typeof store.openYeaftTurnDebug === 'function') {
+        // Header entry: open an empty panel. The eyes icon on AI turns
+        // opens the panel pre-scoped to that exact turn.
+        store.openYeaftTurnDebug({});
+      }
     };
     const closeDebug = () => {
-      debugMode.value = false;
+      store.closeYeaftDebugPanel();
     };
 
     const reloadMessages = () => {
