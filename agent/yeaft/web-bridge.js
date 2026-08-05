@@ -1421,7 +1421,7 @@ function projectVisibleHistoryChunkMessages(messages = []) {
     }));
 }
 
-function emitHistoryChunk({ sessionId, messages, mode = 'older', oldestSeq = null, nextBeforeSeq = null, hasMore = false, latestSeq = null, afterSeq = null, turns = null, pageKind = null, gapStopAtSeq = null, cacheEpoch = null, requestId = null, requestClientId = null, perfTraceId = null }) {
+function emitHistoryChunk({ sessionId, messages, mode = 'older', oldestSeq = null, nextBeforeSeq = null, hasMore = false, latestSeq = null, afterSeq = null, hasMoreAfter = false, streamId = null, revision = null, turns = null, pageKind = null, gapStopAtSeq = null, cacheEpoch = null, requestId = null, requestClientId = null, perfTraceId = null }) {
   const projectedMessages = projectVisibleHistoryChunkMessages(messages);
   // Empty deltas still carry the authoritative safe cursor and clear the
   // browser's syncingAfterSeq fence. Dropping this envelope leaves Session
@@ -1440,6 +1440,9 @@ function emitHistoryChunk({ sessionId, messages, mode = 'older', oldestSeq = nul
     hasMore: !!hasMore,
     latestSeq,
     afterSeq,
+    hasMoreAfter: !!hasMoreAfter,
+    streamId,
+    revision,
     turns,
     ...(pageKind ? { pageKind } : {}),
     ...(Number.isFinite(gapStopAtSeq) ? { gapStopAtSeq } : {}),
@@ -1499,6 +1502,9 @@ function emitLegacyHistoryOutputFrames(replayEntries) {
 }
 
 function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, mode = 'recent', requestId = null, requestClientId = null, perfTraceId = null }) {
+  const historyMetadata = sessionId && typeof store.getSessionHistoryMetadata === 'function'
+    ? store.getSessionHistoryMetadata(sessionId)
+    : null;
   const visiblePage = sessionId
     ? loadVisibleGroupHistoryPage(store, sessionId, limit, beforeSeq)
     : { messages: limit > 0 ? (store.loadRecent?.(limit) || []) : [], oldestSeq: null, hasMore: false };
@@ -1520,6 +1526,8 @@ function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, m
       nextBeforeSeq: visiblePage.nextBeforeSeq,
       hasMore: visiblePage.hasMore,
       latestSeq: Number.isFinite(latestSeq) ? latestSeq : null,
+      streamId: historyMetadata?.streamId || null,
+      revision: historyMetadata?.revision ?? null,
       turns: limit,
       requestId,
       requestClientId,
@@ -6762,7 +6770,20 @@ export async function handleYeaftLoadHistory(msg) {
     // and wants only the messages that arrived after that cursor. Returns
     // mode:'delta' so the frontend can append+dedupe instead of replacing
     // the pane.
-    const afterSeqRaw = (msg && Number.isFinite(msg.afterSeq)) ? msg.afterSeq : null;
+    const deltaLimit = Number.isFinite(msg?.maxRows)
+      ? Math.min(500, Math.max(1, Math.floor(msg.maxRows)))
+      : 100;
+    const deltaMaxBytes = Number.isFinite(msg?.maxBytes)
+      ? Math.min(2 * 1024 * 1024, Math.max(32 * 1024, Math.floor(msg.maxBytes)))
+      : 512 * 1024;
+    const historyMetadata = typeof session.conversationStore.getSessionHistoryMetadata === 'function'
+      ? session.conversationStore.getSessionHistoryMetadata(sessionId)
+      : null;
+    const cacheIdentityMatches = !msg?.streamId || (
+      msg.streamId === historyMetadata?.streamId
+      && Number(msg.revision) === Number(historyMetadata?.revision)
+    );
+    const afterSeqRaw = cacheIdentityMatches && msg && Number.isFinite(msg.afterSeq) ? msg.afterSeq : null;
     const afterMessageId = (msg && typeof msg.afterMessageId === 'string') ? msg.afterMessageId : null;
     let afterSeq = afterSeqRaw;
     if (afterSeq === null && afterMessageId && typeof session.conversationStore.getMessageSeqById === 'function') {
@@ -6770,7 +6791,10 @@ export async function handleYeaftLoadHistory(msg) {
     }
     if (sessionId && afterSeq !== null && typeof session.conversationStore.loadAfterSeqByGroup === 'function') {
       const loadStart = perfNowMs();
-      const delta = session.conversationStore.loadAfterSeqByGroup(sessionId, afterSeq);
+      const delta = session.conversationStore.loadAfterSeqByGroup(sessionId, afterSeq, {
+        limit: deltaLimit,
+        maxBytes: deltaMaxBytes,
+      });
       traceDuration('history.store_load_delta', loadStart, { detail: { count: delta.messages?.length || 0, afterSeq } });
       const emitStart = perfNowMs();
       const projectedMessages = emitHistoryChunk({
@@ -6779,6 +6803,9 @@ export async function handleYeaftLoadHistory(msg) {
         mode: 'delta',
         latestSeq: delta.latestSeq,
         afterSeq,
+        hasMoreAfter: delta.hasMoreAfter,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
         requestId,
         requestClientId,
         perfTraceId,
@@ -6792,6 +6819,9 @@ export async function handleYeaftLoadHistory(msg) {
         requestId,
         latestSeq: delta.latestSeq,
         afterSeq,
+        hasMoreAfter: !!delta.hasMoreAfter,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
       }, { sessionId, requestId, requestClientId, perfTraceId });
       return;
     }
@@ -6832,6 +6862,8 @@ export async function handleYeaftLoadHistory(msg) {
         nextBeforeSeq: visiblePage.nextBeforeSeq,
         hasMore: visiblePage.hasMore,
         latestSeq,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
         turns: limit,
         requestId,
         requestClientId,
@@ -6874,12 +6906,19 @@ export async function handleYeaftLoadHistory(msg) {
       oldestSeq,
       nextBeforeSeq: visiblePage.nextBeforeSeq,
       latestSeq,
+      streamId: historyMetadata?.streamId || null,
+      revision: historyMetadata?.revision ?? null,
     }, { sessionId, requestId, requestClientId, perfTraceId });
   };
 
   if (!session) {
     const yeaftDir = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
-    const afterSeqRaw = (msg && Number.isFinite(msg.afterSeq)) ? msg.afterSeq : null;
+    const deltaLimit = Number.isFinite(msg?.maxRows)
+      ? Math.min(500, Math.max(1, Math.floor(msg.maxRows)))
+      : 100;
+    const deltaMaxBytes = Number.isFinite(msg?.maxBytes)
+      ? Math.min(2 * 1024 * 1024, Math.max(32 * 1024, Math.floor(msg.maxBytes)))
+      : 512 * 1024;
     const afterMessageId = (msg && typeof msg.afterMessageId === 'string') ? msg.afterMessageId : null;
     const limit = (typeof msg.limit === 'number') ? msg.limit : 10;
     ensureYeaftConversationId();
@@ -6902,6 +6941,14 @@ export async function handleYeaftLoadHistory(msg) {
     // window immediately, then finish loadSession below for actual turns.
     const coldStoreStart = perfNowMs();
     const coldStore = new ConversationStore(historyYeaftDir);
+    const historyMetadata = sessionId && typeof coldStore.getSessionHistoryMetadata === 'function'
+      ? coldStore.getSessionHistoryMetadata(sessionId)
+      : null;
+    const cacheIdentityMatches = !msg?.streamId || (
+      msg.streamId === historyMetadata?.streamId
+      && Number(msg.revision) === Number(historyMetadata?.revision)
+    );
+    const afterSeqRaw = cacheIdentityMatches && msg && Number.isFinite(msg.afterSeq) ? msg.afterSeq : null;
     traceDuration('history.cold_store_open', coldStoreStart);
     if (sessionId && (afterSeqRaw !== null || afterMessageId)) {
       let afterSeq = afterSeqRaw;
@@ -6910,8 +6957,11 @@ export async function handleYeaftLoadHistory(msg) {
       }
       const loadStart = perfNowMs();
       const delta = afterSeq !== null && typeof coldStore.loadAfterSeqByGroup === 'function'
-        ? coldStore.loadAfterSeqByGroup(sessionId, afterSeq)
-        : { messages: [], latestSeq: null };
+        ? coldStore.loadAfterSeqByGroup(sessionId, afterSeq, {
+            limit: deltaLimit,
+            maxBytes: deltaMaxBytes,
+          })
+        : { messages: [], latestSeq: null, hasMoreAfter: false };
       traceDuration('history.store_load_delta', loadStart, { detail: { count: delta.messages?.length || 0, afterSeq, cold: true } });
       const emitStart = perfNowMs();
       const projectedMessages = emitHistoryChunk({
@@ -6920,12 +6970,26 @@ export async function handleYeaftLoadHistory(msg) {
         mode: 'delta',
         latestSeq: delta.latestSeq,
         afterSeq,
+        hasMoreAfter: delta.hasMoreAfter,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
         requestId,
         requestClientId,
         perfTraceId,
       });
       traceDuration('history.emit_chunk', emitStart, { detail: { mode: 'delta', count: projectedMessages.length, cold: true } });
-      sendSessionEvent({ type: 'history_loaded', mode: 'delta', count: projectedMessages.length, sessionId, requestId, latestSeq: delta.latestSeq, afterSeq }, { sessionId, requestId, requestClientId, perfTraceId });
+      sendSessionEvent({
+        type: 'history_loaded',
+        mode: 'delta',
+        count: projectedMessages.length,
+        sessionId,
+        requestId,
+        latestSeq: delta.latestSeq,
+        afterSeq,
+        hasMoreAfter: !!delta.hasMoreAfter,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
+      }, { sessionId, requestId, requestClientId, perfTraceId });
     } else if (!metadataOnly) {
       const replayStart = perfNowMs();
       emitVisibleHistoryReplay({ store: coldStore, sessionId, limit, mode: 'recent', requestId, requestClientId, perfTraceId });

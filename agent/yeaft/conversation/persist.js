@@ -18,6 +18,7 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, unlinkSync, statSync, appendFileSync } from 'fs';
+import { randomUUID } from 'node:crypto';
 import { join, basename } from 'path';
 import { isPermissionError } from '../init.js';
 import { writeAtomic } from '../storage/atomic.js';
@@ -98,7 +99,9 @@ function projectAssistantToolsForVisibleHistory(message) {
 
 function emptySegmentIndex() {
   return {
-    version: 1,
+    version: 2,
+    streamId: randomUUID(),
+    revision: 0,
     nextSeq: 1,
     totalMessages: 0,
     lastMessageId: null,
@@ -727,14 +730,25 @@ class SegmentStore {
       }
     }
     const indexWasStale = idx && !this.#indexMatchesDisk(idx);
-    this.index = this.#normalizeIndex(!idx || indexWasStale ? this.#rebuildIndex() : idx);
-    if ((!existsSync(this.indexPath) || indexWasStale) && this.hasData()) this.saveIndex();
+    const normalizedSource = !idx || indexWasStale ? this.#rebuildIndex() : idx;
+    const needsMetadataUpgrade = !normalizedSource?.streamId || !Number.isFinite(Number(normalizedSource?.revision));
+    this.index = this.#normalizeIndex(normalizedSource);
+    if ((!existsSync(this.indexPath) || indexWasStale || needsMetadataUpgrade) && this.hasData()) this.saveIndex();
     return this.index;
   }
 
   saveIndex() {
     this.ensure();
     writeFileSync(this.indexPath, `${JSON.stringify(this.index || emptySegmentIndex(), null, 2)}\n`, { encoding: 'utf8', mode: 0o644 });
+  }
+
+  metadata() {
+    const idx = this.loadIndex();
+    return {
+      streamId: idx.streamId,
+      revision: Number(idx.revision) || 0,
+      headSeq: Math.max(0, (Number(idx.nextSeq) || 1) - 1),
+    };
   }
 
   append(msg) {
@@ -765,6 +779,12 @@ class SegmentStore {
     idx.totalMessages = (idx.totalMessages || 0) + 1;
     idx.lastMessageId = msg.id || null;
     idx.nextSeq = Math.max(Number(idx.nextSeq) || 1, seq + 1);
+    // Ordinary appends are recoverable through afterSeq. Only an append that
+    // invalidates older visible rows (fold reflection/tombstones) advances the
+    // mutation revision and forces the browser to rebuild its snapshot.
+    if (msg._reflection || (Array.isArray(msg.foldedMessageIds) && msg.foldedMessageIds.length > 0)) {
+      idx.revision = (Number(idx.revision) || 0) + 1;
+    }
     if (msg._reflection && Array.isArray(msg.foldedMessageIds)) {
       idx.foldedMessageIds = Array.from(new Set([
         ...(Array.isArray(idx.foldedMessageIds) ? idx.foldedMessageIds : []),
@@ -850,6 +870,7 @@ class SegmentStore {
     const body = rows.map(row => JSON.stringify(row)).join('\n') + (rows.length > 0 ? '\n' : '');
     writeAtomic(path, body);
     segment.bytes = Buffer.byteLength(body);
+    idx.revision = (Number(idx.revision) || 0) + 1;
     this.saveIndex();
     return updated;
   }
@@ -866,6 +887,7 @@ class SegmentStore {
     }
     if (existsSync(this.indexPath)) unlinkSync(this.indexPath);
     this.index = emptySegmentIndex();
+    this.saveIndex();
   }
 
   #indexMatchesDisk(idx) {
@@ -883,6 +905,9 @@ class SegmentStore {
 
   #normalizeIndex(idx) {
     const out = { ...emptySegmentIndex(), ...(idx || {}) };
+    out.version = 2;
+    out.streamId = typeof out.streamId === 'string' && out.streamId ? out.streamId : randomUUID();
+    out.revision = Number.isFinite(Number(out.revision)) ? Math.max(0, Number(out.revision)) : 0;
     out.segments = Array.isArray(out.segments) ? out.segments.filter(s => s && s.file) : [];
     out.segments.sort((a, b) => (Number(a.firstSeq) || 0) - (Number(b.firstSeq) || 0));
     const maxSeq = out.segments.reduce((max, seg) => Math.max(max, Number(seg.lastSeq) || 0), 0);
@@ -1461,6 +1486,18 @@ export class ConversationStore {
   // ─── Read API ───────────────────────────────────────────
 
   /**
+   * Return the durable identity of one Session transcript. `streamId`
+   * changes on clear/recreate; `revision` changes on append/update/fold.
+   * Browser caches use both values to detect non-append mutations before
+   * trusting an `afterSeq` delta cursor.
+   */
+  getSessionHistoryMetadata(sessionId) {
+    if (!sessionId) return null;
+    const store = this.#segmentStoreForConversationDir(this.#sessionConversationDir(sessionId));
+    return store.metadata();
+  }
+
+  /**
    * Load recent hot messages, sliced to the last `turnsLimit` TURNS and
    * sorted chronologically.
    *
@@ -1740,17 +1777,21 @@ export class ConversationStore {
    * without downgrading the client to a cursor-less loaded state. Hidden rows
    * advance the cursor only at pair-safe boundaries; a cursor must never cross
    * an assistant tool call before all of that call's result rows are included.
+   * Both row and byte budgets cut only at those safe boundaries. `hasMoreAfter`
+   * tells the Web client to keep draining long offline gaps without waiting for
+   * another reconnect or Session activation.
    *
    * @param {string} sessionId
    * @param {number|null} afterSeq — exclusive lower bound
-   * @param {{ limit?: number }} [opts]
-   * @returns {{ messages: object[], latestSeq: number|null }}
+   * @param {{ limit?: number, maxBytes?: number }} [opts]
+   * @returns {{ messages: object[], latestSeq: number|null, hasMoreAfter: boolean }}
    */
   loadAfterSeqByGroup(sessionId, afterSeq, opts = {}) {
-    if (!sessionId) return { messages: [], latestSeq: null };
+    if (!sessionId) return { messages: [], latestSeq: null, hasMoreAfter: false };
     const limit = Number.isFinite(opts.limit) && opts.limit > 0 ? opts.limit : 500;
+    const maxBytes = Number.isFinite(opts.maxBytes) && opts.maxBytes > 0 ? opts.maxBytes : Infinity;
     const cutoff = Number.isFinite(afterSeq) && afterSeq >= 0 ? afterSeq : null;
-    if (cutoff === null) return { messages: [], latestSeq: null };
+    if (cutoff === null) return { messages: [], latestSeq: null, hasMoreAfter: false };
     const after = [];
     const pendingToolResultIds = new Set();
     const completedBeforeCursor = new Set();
@@ -1788,8 +1829,14 @@ export class ConversationStore {
       ? Math.max(0, earliestBoundarySeq - 1)
       : cutoff;
     let visibleRows = after.length;
+    let visibleBytes = after.reduce((sum, message) => sum + Buffer.byteLength(JSON.stringify(message)), 0);
+    let stoppedAtBudget = false;
     let extensionRows = 0;
-    for (const m of this.#iterateSessionRows(sessionId, { afterSeq: cutoff, desc: false })) {
+    const deltaRows = this.#iterateSessionRows(sessionId, { afterSeq: cutoff, desc: false });
+    while (true) {
+      const step = deltaRows.next();
+      if (step.done) break;
+      const m = step.value;
       if (!m || m.sessionId !== sessionId) continue;
       const seq = parseSeqFromId(m.id);
       const hidden = !isVisibleConversationRow(m);
@@ -1799,6 +1846,7 @@ export class ConversationStore {
         // messages between an assistant call and that call's result.
         after.push(m);
         visibleRows += 1;
+        visibleBytes += Buffer.byteLength(JSON.stringify(m));
         if (m.role === 'assistant' && Array.isArray(m.toolCalls)) {
           for (const toolCall of m.toolCalls) {
             if (typeof toolCall?.id === 'string' && toolCall.id) pendingToolResultIds.add(toolCall.id);
@@ -1807,11 +1855,19 @@ export class ConversationStore {
           pendingToolResultIds.delete(m.toolCallId);
         }
       }
-      if (pendingToolResultIds.size === 0 && Number.isFinite(seq)) safeCursorSeq = seq;
-      if (visibleRows < limit) continue;
-      if (pendingToolResultIds.size === 0) break;
+      if (pendingToolResultIds.size === 0 && Number.isFinite(seq)) {
+        safeCursorSeq = seq;
+        if (visibleRows >= limit || visibleBytes >= maxBytes) {
+          stoppedAtBudget = true;
+          break;
+        }
+      }
+      if (visibleRows < limit && visibleBytes < maxBytes) continue;
       extensionRows += 1;
-      if (extensionRows >= DELTA_TOOL_PAIR_EXTENSION_CAP) break;
+      if (extensionRows >= DELTA_TOOL_PAIR_EXTENSION_CAP) {
+        stoppedAtBudget = true;
+        break;
+      }
     }
     // If the extension cap stopped inside a malformed arc, return only the
     // prefix covered by the safe cursor. Returning later rows with an earlier
@@ -1823,10 +1879,20 @@ export class ConversationStore {
           return Number.isFinite(seq) && seq <= safeCursorSeq;
         });
     const sliced = pairSanitize(pairSafeRows);
+    let hasMoreAfter = false;
+    if (stoppedAtBudget) {
+      hasMoreAfter = !deltaRows.next().done;
+    } else if (typeof deltaRows.return === 'function') {
+      deltaRows.return();
+    }
     // Never advance past a row the sanitizer had to drop. A malformed or
     // over-cap tool arc must be retried from its assistant call rather than
     // turning the following result into a permanent orphan on the next page.
-    return { messages: projectVisibleSessionMessages(sliced), latestSeq: safeCursorSeq };
+    return {
+      messages: projectVisibleSessionMessages(sliced),
+      latestSeq: safeCursorSeq,
+      hasMoreAfter,
+    };
   }
 
   /**

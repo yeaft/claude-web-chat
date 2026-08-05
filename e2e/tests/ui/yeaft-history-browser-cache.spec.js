@@ -37,7 +37,7 @@ function harnessHtml() {
 
 async function readPhysicalRecords(page) {
   return page.evaluate(async () => {
-    const request = indexedDB.open('yeaft-history-cache', 3);
+    const request = indexedDB.open('yeaft-history-cache', 4);
     const db = await new Promise((resolveOpen, reject) => {
       request.onsuccess = () => resolveOpen(request.result);
       request.onerror = () => reject(request.error);
@@ -156,6 +156,68 @@ test('rejects a stale tab after another tab changes owner', async ({ browser }) 
   }
 });
 
+test('keeps at most the newest 500 complete turns', async ({ page }) => {
+  await page.goto(`${baseUrl}/__history-cache`);
+  await expect.poll(() => page.evaluate(() => (
+    window.__historyCacheError || (window.__historyCacheReady ? 'ready' : null)
+  ))).toBe('ready');
+
+  const retained = await page.evaluate(async () => {
+    const cache = window.__historyCache;
+    await cache.clearYeaftHistoryBrowserOwner();
+    const fence = cache.bindYeaftHistoryBrowserOwner('owner-turn-limit');
+    const rows = [];
+    for (let turn = 1; turn <= 501; turn += 1) {
+      const userSeq = turn * 10;
+      rows.push({
+        id: `m${userSeq}`, messageId: `m${userSeq}`, seq: userSeq,
+        stableKey: `turn-${turn}:user`, type: 'user', content: `question ${turn}`,
+        sessionId: 'session-turn-limit', isHistory: true,
+      });
+      rows.push({
+        id: `m${userSeq + 1}`, messageId: `m${userSeq + 1}`, seq: userSeq + 1,
+        stableKey: `turn-${turn}:vp-a`, type: 'assistant', content: `A ${turn}`,
+        turnId: `turn-${turn}:vp-a`, speakerVpId: 'vp-a',
+        sessionId: 'session-turn-limit', isHistory: true,
+      });
+      rows.push({
+        id: `m${userSeq + 2}`, messageId: `m${userSeq + 2}`, seq: userSeq + 2,
+        stableKey: `turn-${turn}:vp-b`, type: 'assistant', content: `B ${turn}`,
+        turnId: `turn-${turn}:vp-b`, speakerVpId: 'vp-b',
+        sessionId: 'session-turn-limit', isHistory: true,
+      });
+    }
+    const written = await cache.writeYeaftHistoryBrowserCache({
+      fence,
+      agentId: 'agent-turn-limit',
+      sessionId: 'session-turn-limit',
+      rows,
+      limits: {
+        ...cache.YEAFT_HISTORY_BROWSER_CACHE_LIMITS,
+        maxRowsPerSession: 10_000,
+        maxBytesPerSession: 32 * 1024 * 1024,
+      },
+    });
+    const record = await cache.readYeaftHistoryBrowserCache({
+      fence, agentId: 'agent-turn-limit', sessionId: 'session-turn-limit',
+      limits: { ...cache.YEAFT_HISTORY_BROWSER_CACHE_LIMITS, maxAgeMs: Number.MAX_SAFE_INTEGER },
+    });
+    return {
+      written,
+      turnCount: record?.turnCount,
+      first: record?.rows?.[0]?.content,
+      rowCount: record?.rowCount,
+    };
+  });
+
+  expect(retained).toEqual({
+    written: true,
+    turnCount: 500,
+    first: 'question 2',
+    rowCount: 1500,
+  });
+});
+
 test('treats Session removal as complete when IndexedDB is unavailable', async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(globalThis, 'indexedDB', {
@@ -206,6 +268,10 @@ test('persists projections and completes cache lifecycle transactions', async ({
     const fence = cache.bindYeaftHistoryBrowserOwner('owner-a');
     const rows = Vue.reactive([
       {
+        id: 'm0001', messageId: 'm0001', historyEntryId: 'entry-1', stableKey: 'entry-1:user',
+        seq: 1, type: 'user', content: 'question', sessionId: 'session-a', isHistory: true,
+      },
+      {
         id: 'm0002', messageId: 'm0002', historyEntryId: 'entry-2', stableKey: 'entry-2:assistant',
         seq: 2, type: 'assistant', content: 'answer', sessionId: 'session-a', isHistory: true,
       },
@@ -225,8 +291,7 @@ test('persists projections and completes cache lifecycle transactions', async ({
       sessionId: 'session-a',
       rows,
       historyState: { oldestSeq: 2, latestSeq: 2, hasMore: true },
-      // All three rows project one persisted message. Even when the row budget
-      // is smaller, capacity trimming must keep that unit atomically.
+      // One complete turn can exceed the row budget; it must remain atomic.
       limits: { ...cache.YEAFT_HISTORY_BROWSER_CACHE_LIMITS, maxRowsPerSession: 2 },
     });
     const record = await cache.readYeaftHistoryBrowserCache({
@@ -243,8 +308,13 @@ test('persists projections and completes cache lifecycle transactions', async ({
   expect(firstWrite).toEqual({
     proxy: true,
     written: true,
-    rowCount: 3,
-    stableKeys: ['entry-2:assistant', 'entry-2:todos', 'entry-2:tool-summary'],
+    rowCount: 4,
+    stableKeys: [
+      'entry-1:user',
+      'entry-2:assistant',
+      'entry-2:todos',
+      'entry-2:tool-summary',
+    ],
   });
   expect(await readPhysicalRecords(page)).toHaveLength(1);
 
@@ -285,7 +355,7 @@ test('persists projections and completes cache lifecycle transactions', async ({
       sessionId: 'session-c',
       rows: [{ id: 'm0004', messageId: 'm0004', seq: 4, type: 'user', content: 'expired', sessionId: 'session-c', isHistory: true }],
     });
-    const request = indexedDB.open('yeaft-history-cache', 3);
+    const request = indexedDB.open('yeaft-history-cache', 4);
     const db = await new Promise((resolveOpen, reject) => {
       request.onsuccess = () => resolveOpen(request.result);
       request.onerror = () => reject(request.error);

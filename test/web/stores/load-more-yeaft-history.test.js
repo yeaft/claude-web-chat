@@ -145,6 +145,9 @@ function mkStore(overrides = {}) {
     yeaftMessageWindowState: {},
     messagesMap: {},
     persistYeaftHistoryBrowserCache: vi.fn(() => Promise.resolve(true)),
+    continueYeaftHistoryDelta: vi.fn(() => true),
+    clearYeaftHistoryMemory: vi.fn(),
+    removeYeaftHistoryBrowserCache: vi.fn(() => Promise.resolve(true)),
     sendWsMessage(msg) { sent.push(msg); },
     _sent: sent,
     ...overrides,
@@ -305,6 +308,10 @@ describe('Yeaft conversation loading state', () => {
       const ownerA = bindYeaftHistoryBrowserOwner('owner-a');
       const projectedRows = reactive([
         {
+          id: 'm0000', messageId: 'm0000', historyEntryId: 'entry-0', stableKey: 'entry-0:user',
+          seq: 0, type: 'user', content: 'question', sessionId: 'session-a', isHistory: true,
+        },
+        {
           id: 'm0001', messageId: 'm0001', historyEntryId: 'entry-1', stableKey: 'entry-1:assistant',
           seq: 1, type: 'assistant', content: 'persisted', sessionId: 'session-a', isHistory: true,
         },
@@ -327,6 +334,7 @@ describe('Yeaft conversation loading state', () => {
         historyState: { latestSeq: 1, oldestSeq: 1, hasMore: true },
         limits: {
           maxSessionsPerOwner: 12,
+          maxTurnsPerSession: 500,
           maxRowsPerSession: 2,
           maxBytesPerSession: 4 * 1024 * 1024,
           maxAgeMs: 30 * 24 * 60 * 60 * 1000,
@@ -337,8 +345,9 @@ describe('Yeaft conversation loading state', () => {
         fence: ownerA, agentId: 'agent-a', sessionId: 'session-a',
       })).toMatchObject({
         ownerId: 'owner-a', agentId: 'agent-a', sessionId: 'session-a',
-        rowCount: 3, latestSeq: 1, oldestSeq: 1, hasMore: true,
+        rowCount: 4, latestSeq: 1, oldestSeq: 1, hasMore: true,
         rows: [
+          expect.objectContaining({ stableKey: 'entry-0:user' }),
           expect.objectContaining({ stableKey: 'entry-1:assistant' }),
           expect.objectContaining({ stableKey: 'entry-1:todos' }),
           expect.objectContaining({ stableKey: 'entry-1:tool-summary' }),
@@ -387,10 +396,9 @@ describe('Yeaft conversation loading state', () => {
         resolveYeaftSessionAgentId: () => 'agent-1',
         yeaftHistoryLoadError: null,
       });
-      expect(body.indexOf('this.yeaftConversationId = targetConversationId;'))
-        .toBeLessThan(body.indexOf('if (savedState?.loading) return;'));
-      expect(body.indexOf('gs.setActive(next, targetAgentId || null);'))
-        .toBeLessThan(body.indexOf('if (savedState?.loading) return;'));
+      expect(body).not.toContain('if (savedState?.loading) return;');
+      expect(body.indexOf('this.yeaftConversationId = targetConversationId;')).toBeGreaterThan(-1);
+      expect(body.indexOf('gs.setActive(next, targetAgentId || null);')).toBeGreaterThan(-1);
 
       // Cold runtime boot emits the history chunk before session_ready. The
       // chunk already carries the authoritative bridge conversationId, so the
@@ -811,6 +819,86 @@ describe('Yeaft conversation loading state', () => {
     ]);
     expect(store.messagesMap['yeaft-1'].find(row => row.id === 'm0100')?.content).toBe('fresh recent q');
     expect(store.persistYeaftHistoryBrowserCache).toHaveBeenCalledWith('g1', null, 'yeaft-1');
+  });
+
+  it('continues a bounded delta after committing its new cursor', async () => {
+    const store = mkStore({
+      currentAgent: 'agent-1',
+      yeaftActiveSessionFilter: 'g1',
+      messagesMap: { 'yeaft-1': [] },
+      yeaftSessionHistoryState: {
+        [yeaftHistoryIdentityKey('agent-1', 'g1')]: {
+          loaded: true, loading: true, latestSeq: 10, requestId: 'delta-1',
+        },
+      },
+      finishYeaftHistoryLoad(msg, patch) {
+        this.yeaftSessionHistoryState[yeaftHistoryIdentityKey('agent-1', 'g1')] = {
+          ...patch, requestId: null,
+        };
+      },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      agentId: 'agent-1',
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      requestId: 'delta-1',
+      mode: 'delta',
+      afterSeq: 10,
+      latestSeq: 12,
+      hasMoreAfter: true,
+      messages: [{ id: 'm0012', role: 'assistant', content: 'page one', sessionId: 'g1' }],
+    });
+    await Promise.resolve();
+
+    expect(store.continueYeaftHistoryDelta).toHaveBeenCalledWith('g1', 'agent-1', 12);
+  });
+
+  it('replaces stale durable rows on transcript identity mismatch without dropping live rows', async () => {
+    const store = mkStore({
+      currentAgent: 'agent-1',
+      yeaftActiveSessionFilter: 'g1',
+      messagesMap: {
+        'yeaft-1': [
+          { id: 'old', messageId: 'old', seq: 90, stableKey: 'old', type: 'assistant', content: 'stale', sessionId: 'g1', isHistory: true },
+          { id: 'live', type: 'assistant', content: 'streaming', sessionId: 'g1', isStreaming: true },
+        ],
+      },
+      yeaftSessionAgentById: { g1: 'agent-1' },
+      yeaftSessionHistoryState: {
+        [yeaftHistoryIdentityKey('agent-1', 'g1')]: {
+          loaded: true, latestSeq: 90, streamId: 'stream-old', revision: 4,
+        },
+      },
+      clearYeaftHistoryMemory: vi.fn(function ({ agentId, sessionId, preserveLiveRows, preserveSessionOwner }) {
+        this.messagesMap['yeaft-1'] = this.messagesMap['yeaft-1'].filter(row => (
+          row.sessionId !== sessionId || (preserveLiveRows && !isDurableYeaftHistoryRow(row))
+        ));
+        delete this.yeaftSessionHistoryState[yeaftHistoryIdentityKey(agentId, sessionId)];
+        if (!preserveSessionOwner) delete this.yeaftSessionAgentById[sessionId];
+      }),
+    });
+
+    handleYeaftHistoryChunk(store, {
+      agentId: 'agent-1', conversationId: 'yeaft-1', sessionId: 'g1',
+      mode: 'delta', afterSeq: 90, streamId: 'stream-new', revision: 0,
+      latestSeq: 2, hasMoreAfter: false,
+      messages: [
+        { id: 'm0001', role: 'user', content: 'new question', sessionId: 'g1' },
+        { id: 'm0002', role: 'assistant', content: 'new answer', sessionId: 'g1' },
+      ],
+    });
+    await Promise.resolve();
+
+    expect(store.clearYeaftHistoryMemory).toHaveBeenCalledWith({
+      agentId: 'agent-1', sessionId: 'g1', preserveLiveRows: true, preserveSessionOwner: true,
+    });
+    expect(store.removeYeaftHistoryBrowserCache).toHaveBeenCalledWith('agent-1', 'g1');
+    expect(store.messagesMap['yeaft-1'].map(row => row.content)).toEqual([
+      'new question', 'new answer', 'streaming',
+    ]);
+    expect(store.yeaftSessionAgentById.g1).toBe('agent-1');
+    expect(store.continueYeaftHistoryDelta).not.toHaveBeenCalled();
   });
 
   it('keeps optimistic sends visible when a recent history reply races them', () => {

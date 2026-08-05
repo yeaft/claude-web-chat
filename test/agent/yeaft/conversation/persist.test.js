@@ -1437,9 +1437,36 @@ legacy session`, { encoding: 'utf8' });
         }),
       ]);
       expect(firstPage.latestSeq).toBe(store.getMessageSeqById(result.id));
+      expect(firstPage.hasMoreAfter).toBe(true);
 
       const secondPage = store.loadAfterSeqByGroup('grp_delta_ask', firstPage.latestSeq);
       expect(secondPage.messages.map(message => message.id)).toEqual([trailing.id]);
+      expect(secondPage.hasMoreAfter).toBe(false);
+    });
+
+    it('pages a long delta by row and byte budgets without skipping the tail', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_pages' });
+      const rows = store.appendBatch(Array.from({ length: 7 }, (_, index) => ({
+        role: 'assistant',
+        content: `page-${index}-${'x'.repeat(80)}`,
+        sessionId: 'grp_delta_pages',
+      })));
+
+      const seen = [];
+      let afterSeq = store.getMessageSeqById(cursor.id);
+      for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+        const page = store.loadAfterSeqByGroup('grp_delta_pages', afterSeq, {
+          limit: 2,
+          maxBytes: 220,
+        });
+        seen.push(...page.messages.map(message => message.id));
+        expect(page.latestSeq).toBeGreaterThan(afterSeq);
+        afterSeq = page.latestSeq;
+        if (!page.hasMoreAfter) break;
+      }
+
+      expect(seen).toEqual(rows.map(row => row.id));
+      expect(afterSeq).toBe(store.getMessageSeqById(rows.at(-1).id));
     });
 
     it('recovers an AskUser result when the incoming cursor already points at its call', () => {

@@ -1265,6 +1265,10 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
         ...(Number.isFinite(msg.afterSeq) ? { afterSeq: msg.afterSeq } : {}),
         ...(typeof msg.afterMessageId === 'string' ? { afterMessageId: msg.afterMessageId } : {}),
+        ...(Number.isFinite(msg.maxRows) ? { maxRows: msg.maxRows } : {}),
+        ...(Number.isFinite(msg.maxBytes) ? { maxBytes: msg.maxBytes } : {}),
+        ...(typeof msg.streamId === 'string' ? { streamId: msg.streamId } : {}),
+        ...(Number.isFinite(msg.revision) ? { revision: msg.revision } : {}),
         _requestClientId: clientId,
       };
       if (forwarded.perfTraceId) {

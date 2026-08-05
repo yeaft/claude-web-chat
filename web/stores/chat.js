@@ -83,7 +83,11 @@ import {
   hasHiddenScopedYeaftMessageTurns,
   sliceScopedYeaftMessagesByRecentTurns,
 } from './helpers/yeaft-message-window.js';
-import { touchYeaftHistoryCache } from './helpers/yeaft-history-cache.js';
+import {
+  isDurableYeaftHistoryRow,
+  pruneYeaftHistoryCache,
+  touchYeaftHistoryCache,
+} from './helpers/yeaft-history-cache.js';
 import {
   currentYeaftHistoryBrowserFence,
   readYeaftHistoryBrowserCache,
@@ -213,6 +217,8 @@ function clearYeaftAgentRuntimeState(state, agentId) {
 // a session the UI has never seen). User-confirmed: 5 turns is the sweet
 // spot — small enough to paint instantly, large enough to give context.
 const YEAFT_RECENT_TURNS = 5;
+const YEAFT_HISTORY_DELTA_ROWS = 100;
+const YEAFT_HISTORY_DELTA_BYTES = 512 * 1024;
 const YEAFT_SESSION_INVENTORY_TIMEOUT_MS = 15_000;
 const YEAFT_HISTORY_OUTLINE_RETRY_DELAYS_MS = Object.freeze([150, 300, 600, 1_000]);
 const YEAFT_HISTORY_OUTLINE_RETRYABLE_ERRORS = new Set(['index_building', 'stale_result']);
@@ -2878,13 +2884,21 @@ export const useChatStore = defineStore('chat', {
         && !!this.yeaftConversationId
         && Array.isArray(this.messagesMap?.[this.yeaftConversationId])
         && this.messagesMap[this.yeaftConversationId].some(row => row && (row.sessionId ?? row.groupId ?? null) === activeSessionId);
+      let historyHydrationPending = !!this._yeaftHistoryBrowserHydrationBySession?.[sessionKey];
+      if (activeSessionId && targetAgentId && !sessionState?.loaded && !sessionState?.loading
+          && !hasCachedSessionRows && !historyHydrationPending) {
+        historyHydrationPending = true;
+        void this.hydrateYeaftHistoryBrowserCache(activeSessionId, targetAgentId, { revalidate: true });
+      }
       const needHistoryReplay = !!activeSessionId
+        && !historyHydrationPending
         && msgHelpers.shouldReplayYeaftSessionHistory({
           sessionState,
           hasCachedSessionRows,
           force: !!forceHistoryReplay,
         });
       const needHistoryCatchUp = !!activeSessionId
+        && !historyHydrationPending
         && !needHistoryReplay
         && msgHelpers.shouldCatchUpLoadedYeaftSession(sessionState, catchUpHistory);
       if (!needSessionReady && !needHistoryReplay && !needHistoryCatchUp) return false;
@@ -3283,11 +3297,14 @@ export const useChatStore = defineStore('chat', {
       return true;
     },
 
-    hydrateYeaftHistoryBrowserCache(sessionId, agentId = null) {
+    hydrateYeaftHistoryBrowserCache(sessionId, agentId = null, { revalidate = false } = {}) {
       const targetSessionId = sessionId || null;
       const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
       const fence = currentYeaftHistoryBrowserFence();
-      if (!fence || !targetAgentId || !targetSessionId) return Promise.resolve(false);
+      if (!fence || !targetAgentId || !targetSessionId) {
+        if (revalidate) this.revalidateYeaftHistoryBrowserCache(targetSessionId, targetAgentId);
+        return Promise.resolve(false);
+      }
       const sessionKey = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
       const token = `${fence.epoch}:${crypto.randomUUID()}`;
       this._yeaftHistoryBrowserHydrationBySession = {
@@ -3325,19 +3342,131 @@ export const useChatStore = defineStore('chat', {
             loaded: true,
             loading: !!previous.loading,
             latestSeq: latestSeq >= 0 ? latestSeq : null,
+            streamId: record.streamId || null,
+            revision: Number.isFinite(record.revision) ? record.revision : null,
             oldestSeq: Number.isFinite(previous.oldestSeq) ? previous.oldestSeq : record.oldestSeq,
             hasMore: previous.loaded ? !!previous.hasMore : !!record.hasMore,
             count: Math.max(Number(previous.count) || 0, Number(record.rowCount) || 0),
             browserCached: true,
           },
         };
+        pruneYeaftHistoryCache(this, {
+          conversationId,
+          agentId: targetAgentId,
+          sessionId: targetSessionId,
+          incomingRows: record.rows,
+          activeAgentId: targetAgentId,
+          activeSessionId: targetSessionId,
+        });
         this.syncActiveYeaftHistoryLoad();
+        if (revalidate) this.revalidateYeaftHistoryBrowserCache(targetSessionId, targetAgentId);
         return true;
-      }).catch(() => false).finally(() => {
+      }).catch(() => {
+        if (revalidate) this.revalidateYeaftHistoryBrowserCache(targetSessionId, targetAgentId);
+        return false;
+      }).finally(() => {
         if (this._yeaftHistoryBrowserHydrationBySession?.[sessionKey] !== token) return;
         const { [sessionKey]: _finished, ...remaining } = this._yeaftHistoryBrowserHydrationBySession;
         this._yeaftHistoryBrowserHydrationBySession = remaining;
       });
+    },
+
+    revalidateYeaftHistoryBrowserCache(sessionId, agentId = null) {
+      const targetSessionId = sessionId || null;
+      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
+      if (!targetAgentId || !targetSessionId || this.currentView !== 'yeaft') return false;
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
+      const state = this.yeaftSessionHistoryState?.[sessionKey] || null;
+      if (state?.loading) return false;
+      const latestSeq = Number.isFinite(state?.latestSeq) ? state.latestSeq : null;
+      const mode = latestSeq === null ? 'recent' : 'delta';
+      const historyRequest = this.beginYeaftHistoryLoad({
+        agentId: targetAgentId,
+        sessionId: targetSessionId,
+        mode,
+        preserveLoaded: latestSeq !== null,
+        latestSeq,
+      });
+      if (!historyRequest) return false;
+      const payload = {
+        type: 'yeaft_load_history',
+        agentId: targetAgentId,
+        sessionId: targetSessionId,
+        requestId: historyRequest.requestId,
+        ...(latestSeq === null
+          ? { limit: YEAFT_RECENT_TURNS }
+          : {
+              afterSeq: latestSeq,
+              maxRows: YEAFT_HISTORY_DELTA_ROWS,
+              maxBytes: YEAFT_HISTORY_DELTA_BYTES,
+              ...(typeof state?.streamId === 'string' ? { streamId: state.streamId } : {}),
+              ...(Number.isFinite(state?.revision) ? { revision: state.revision } : {}),
+            }),
+      };
+      if (latestSeq !== null) {
+        this.yeaftSessionHistoryState = {
+          ...this.yeaftSessionHistoryState,
+          [sessionKey]: {
+            ...this.yeaftSessionHistoryState[sessionKey],
+            syncingAfterSeq: latestSeq,
+          },
+        };
+      }
+      if (!this.sendWsMessage(payload)) {
+        failYeaftHistoryLoad(this, {
+          agentId: targetAgentId,
+          sessionId: targetSessionId,
+          requestId: historyRequest.requestId,
+          error: 'history_load_send_failed',
+        });
+        return false;
+      }
+      return true;
+    },
+
+    continueYeaftHistoryDelta(sessionId, agentId = null, afterSeq = null) {
+      const targetSessionId = sessionId || null;
+      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
+      if (!targetAgentId || !targetSessionId || !Number.isFinite(afterSeq)) return false;
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
+      const current = this.yeaftSessionHistoryState?.[sessionKey] || null;
+      if (current?.loading) return false;
+      const historyRequest = this.beginYeaftHistoryLoad({
+        agentId: targetAgentId,
+        sessionId: targetSessionId,
+        mode: 'delta',
+        preserveLoaded: true,
+        latestSeq: afterSeq,
+      });
+      if (!historyRequest) return false;
+      this.yeaftSessionHistoryState = {
+        ...this.yeaftSessionHistoryState,
+        [sessionKey]: {
+          ...this.yeaftSessionHistoryState[sessionKey],
+          syncingAfterSeq: afterSeq,
+        },
+      };
+      const payload = {
+        type: 'yeaft_load_history',
+        agentId: targetAgentId,
+        sessionId: targetSessionId,
+        requestId: historyRequest.requestId,
+        afterSeq,
+        maxRows: YEAFT_HISTORY_DELTA_ROWS,
+        maxBytes: YEAFT_HISTORY_DELTA_BYTES,
+        ...(typeof current?.streamId === 'string' ? { streamId: current.streamId } : {}),
+        ...(Number.isFinite(current?.revision) ? { revision: current.revision } : {}),
+      };
+      if (!this.sendWsMessage(payload)) {
+        failYeaftHistoryLoad(this, {
+          agentId: targetAgentId,
+          sessionId: targetSessionId,
+          requestId: historyRequest.requestId,
+          error: 'history_load_send_failed',
+        });
+        return false;
+      }
+      return true;
     },
 
     persistYeaftHistoryBrowserCache(sessionId, agentId = null, conversationId = null) {
@@ -3360,7 +3489,18 @@ export const useChatStore = defineStore('chat', {
       });
     },
 
-    clearYeaftHistoryMemory({ agentId = null, sessionId = null } = {}) {
+    removeYeaftHistoryBrowserCache(agentId, sessionId) {
+      const fence = currentYeaftHistoryBrowserFence();
+      if (!fence || !agentId || !sessionId) return Promise.resolve(true);
+      return removeYeaftHistoryBrowserCache({ fence, agentId, sessionId }).catch(() => false);
+    },
+
+    clearYeaftHistoryMemory({
+      agentId = null,
+      sessionId = null,
+      preserveLiveRows = false,
+      preserveSessionOwner = false,
+    } = {}) {
       const targetAgentId = agentId || null;
       const targetSessionId = sessionId || null;
       const sessionKey = targetAgentId && targetSessionId
@@ -3390,9 +3530,10 @@ export const useChatStore = defineStore('chat', {
       for (const conversationId of conversationIds) {
         if (!Array.isArray(nextMessagesMap[conversationId])) continue;
         nextMessagesMap[conversationId] = sessionKey
-          ? nextMessagesMap[conversationId].filter(row => (
-            (row?.sessionId ?? row?.groupId ?? null) !== targetSessionId
-          ))
+          ? nextMessagesMap[conversationId].filter(row => {
+              if ((row?.sessionId ?? row?.groupId ?? null) !== targetSessionId) return true;
+              return preserveLiveRows && !isDurableYeaftHistoryRow(row);
+            })
           : [];
       }
       this.messagesMap = nextMessagesMap;
@@ -3408,6 +3549,38 @@ export const useChatStore = defineStore('chat', {
       this._yeaftHistoryBrowserHydrationBySession = clearMapKey(
         this._yeaftHistoryBrowserHydrationBySession,
       );
+      this.yeaftHistoryOutlineBySession = clearMapKey(this.yeaftHistoryOutlineBySession);
+      if (sessionKey) {
+        const outlineTimeout = this._yeaftHistoryOutlineTimeouts?.[sessionKey];
+        if (outlineTimeout) clearTimeout(outlineTimeout);
+        this._yeaftHistoryOutlineTimeouts = clearMapKey(this._yeaftHistoryOutlineTimeouts);
+      } else {
+        for (const timeout of Object.values(this._yeaftHistoryOutlineTimeouts || {})) {
+          if (timeout) clearTimeout(timeout);
+        }
+        this._yeaftHistoryOutlineTimeouts = {};
+      }
+      const searchMatches = !sessionKey || (
+        this.yeaftHistorySearchState?.agentId === targetAgentId
+        && this.yeaftHistorySearchState?.sessionId === targetSessionId
+      );
+      if (searchMatches) {
+        if (this._yeaftHistorySearchTimeout) clearTimeout(this._yeaftHistorySearchTimeout);
+        this._yeaftHistorySearchTimeout = null;
+        this.yeaftHistorySearchState = {
+          requestId: null,
+          agentId: null,
+          sessionId: null,
+          query: '',
+          senderKey: '',
+          loading: false,
+          results: [],
+          hasMore: false,
+          nextBeforeSeq: null,
+          nextCursor: null,
+          error: null,
+        };
+      }
       this._yeaftHistoryRevealLeases = sessionKey
         ? Object.fromEntries(Object.entries(this._yeaftHistoryRevealLeases || {})
           .filter(([, lease]) => lease?.sessionKey !== sessionKey))
@@ -3417,7 +3590,8 @@ export const useChatStore = defineStore('chat', {
         this.yeaftLoadingMoreHistory = false;
         this.yeaftOldestLoadedSeq = null;
       }
-      if (targetSessionId && this.yeaftSessionAgentById?.[targetSessionId] === targetAgentId) {
+      if (!preserveSessionOwner && targetSessionId
+          && this.yeaftSessionAgentById?.[targetSessionId] === targetAgentId) {
         const { [targetSessionId]: _removed, ...remaining } = this.yeaftSessionAgentById;
         this.yeaftSessionAgentById = remaining;
       }
@@ -6187,13 +6361,6 @@ export const useChatStore = defineStore('chat', {
         touchYeaftHistoryCache(this, targetAgentId, next);
       }
       const repeatedSelection = !force && next === prev;
-      if (repeatedSelection) {
-        void this.hydrateYeaftHistoryBrowserCache(next, targetAgentId);
-        return;
-      }
-
-      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, next);
-      const savedState = this.yeaftSessionHistoryState[sessionKey] || null;
 
       // Session activation is atomic: commit its owning Agent conversation and
       // both visible pointers before history de-duplication can return early.
@@ -6216,7 +6383,6 @@ export const useChatStore = defineStore('chat', {
         this.yeaftConversationId = targetConversationId;
         if (!this.messagesMap[targetConversationId]) this.messagesMap[targetConversationId] = [];
         if (this.currentView === 'yeaft') this.activeConversations = [targetConversationId];
-        void this.hydrateYeaftHistoryBrowserCache(next, targetAgentId);
       }
       try {
         const gs = window.Pinia?.useSessionsStore?.() || (window.__useSessionsStore && window.__useSessionsStore());
@@ -6226,98 +6392,8 @@ export const useChatStore = defineStore('chat', {
         else localStorage.removeItem('lastViewedYeaftSession');
       } catch (_) {}
       this.syncActiveYeaftHistoryLoad();
+      void this.hydrateYeaftHistoryBrowserCache(next, targetAgentId, { revalidate: true });
 
-      // If a restore/snapshot path forces the current session while an initial
-      // history request is already in flight, keep the UI flags in sync but do
-      // not enqueue a duplicate `yeaft_load_history` for the same session.
-      if (savedState?.loading) return;
-
-      // Always ask the agent — same rationale as enterYeaft. If we have a
-      // cursor for this session, request only what's new since; otherwise
-      // request the initial recent-N window.
-      //
-      // fix-yeaft-session-per-agent: the session may belong to an agent
-      // other than the current one (cross-agent click from the unified
-      // sidebar or from the resume list in SessionCreateModal). Resolve the
-      // session's owning agent (sessions store first, then the per-session
-      // cache, then currentAgent). Without this, `yeaft_load_history` gets
-      // routed to the wrong agent — which has no such session on disk — and
-      // the main pane stays empty while the previously-loaded snapshot for
-      // that other agent silently goes stale.
-      //
-      // The cross-agent callers (YeaftSidebar.onSelectGroup,
-      // SessionCreateModal resume) already `selectAgent(owner)` before calling
-      // here. But other callers reach this seam WITHOUT a preceding
-      // selectAgent (restoreActiveYeaftSessionFromStatuses, the
-      // group_list_updated snapshot handler, YeaftPage.onSelectGroupV2). Since
-      // agent-level ops (global cancelYeaft, MCP / search settings, reset) now
-      // route by `currentAgent`, a stale currentAgent would silently target
-      // the wrong agent after a cross-agent session switch. Make the seam
-      // self-healing: when the resolved owner differs, sync currentAgent the
-      // same synchronous way enterYeaft does (selectAgent kicks off the
-      // round-trip while currentAgent is still old so its same-agent guard
-      // doesn't swallow the frame; the assignment then makes same-tick reads
-      // see the new owner).
-      if (targetAgentId && next) {
-        const latestSeq = Number.isFinite(savedState?.latestSeq) ? savedState.latestSeq : null;
-        const payload = {
-          type: 'yeaft_load_history',
-          agentId: targetAgentId,
-          sessionId: next,
-        };
-        const hasLoadedWindow = !!savedState?.loaded;
-        const shouldReplayRecent = msgHelpers.shouldReplayYeaftSessionHistory({
-          sessionState: savedState,
-          hasCachedSessionRows: false,
-          force,
-        });
-        if (!shouldReplayRecent && latestSeq !== null) {
-          payload.afterSeq = latestSeq;
-        } else {
-          payload.limit = YEAFT_RECENT_TURNS;
-        }
-        if (!shouldReplayRecent && hasLoadedWindow && latestSeq === null) {
-          this.yeaftSessionHistoryState = {
-            ...this.yeaftSessionHistoryState,
-            [sessionKey]: {
-              ...(savedState || { hasMore: false, oldestSeq: null, count: 0 }),
-              loaded: true,
-              loading: false,
-              syncingAfterSeq: null,
-            },
-          };
-          this.syncActiveYeaftHistoryLoad();
-          return;
-        }
-        let historyRequest = null;
-        if (!shouldReplayRecent && hasLoadedWindow) {
-          if (savedState?.syncingAfterSeq === latestSeq) return;
-          historyRequest = this.beginYeaftHistoryLoad({
-            agentId: targetAgentId,
-            sessionId: next,
-            mode: 'delta',
-            preserveLoaded: true,
-            latestSeq,
-          });
-          this.yeaftSessionHistoryState = {
-            ...this.yeaftSessionHistoryState,
-            [sessionKey]: {
-              ...this.yeaftSessionHistoryState[sessionKey],
-              syncingAfterSeq: latestSeq,
-            },
-          };
-        } else {
-          historyRequest = this.beginYeaftHistoryLoad({
-            agentId: targetAgentId,
-            sessionId: next,
-            mode: 'recent',
-            preserveLoaded: false,
-            latestSeq: shouldReplayRecent ? null : latestSeq,
-          });
-        }
-        if (historyRequest) payload.requestId = historyRequest.requestId;
-        this.sendWsMessage(payload);
-      }
     },
     // H2.f.6: setYeaftFeatureReplyThreadId / setYeaftJumpTarget /
     // clearYeaftJumpTarget actions removed.

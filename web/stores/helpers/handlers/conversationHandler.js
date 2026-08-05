@@ -1035,8 +1035,34 @@ export function handleYeaftHistoryChunk(store, msg) {
   }
   if (msg.requestId && typeof store.isCurrentYeaftHistoryResponse === 'function'
       && !store.isCurrentYeaftHistoryResponse(msg)) return;
-  const mode = msg.mode === 'recent' || msg.mode === 'delta' ? msg.mode : 'older';
+  let mode = msg.mode === 'recent' || msg.mode === 'delta' ? msg.mode : 'older';
   const incomingMessages = Array.isArray(msg.messages) ? msg.messages : [];
+
+  const identityAgentId = msg.agentId || (msgSessionId && store.yeaftSessionAgentById?.[msgSessionId]) || null;
+  const identityStateKey = yeaftHistoryIdentityKey(identityAgentId, msgSessionId);
+  const cachedIdentity = store.yeaftSessionHistoryState?.[identityStateKey] || null;
+  const identityMismatch = typeof msg.streamId === 'string'
+    && typeof cachedIdentity?.streamId === 'string'
+    && (msg.streamId !== cachedIdentity.streamId
+      || (Number.isFinite(msg.revision) && Number.isFinite(cachedIdentity.revision)
+        && msg.revision !== cachedIdentity.revision));
+  if (identityMismatch) {
+    // An append cursor is unsafe after clear/recreate, folding, or an older
+    // visible-row update. Replace only durable history while keeping optimistic
+    // and live rows for the active turn.
+    mode = 'recent';
+    if (typeof store.clearYeaftHistoryMemory === 'function') {
+      store.clearYeaftHistoryMemory({
+        agentId: identityAgentId,
+        sessionId: msgSessionId,
+        preserveLiveRows: true,
+        preserveSessionOwner: true,
+      });
+    }
+    if (typeof store.removeYeaftHistoryBrowserCache === 'function') {
+      void store.removeYeaftHistoryBrowserCache(identityAgentId, msgSessionId);
+    }
+  }
 
   if (msg.perfTraceId) {
     recordPerfTrace(store, {
@@ -1120,9 +1146,6 @@ export function handleYeaftHistoryChunk(store, msg) {
     activeAgentId: activeIdentityBeforeCache.agentId,
     activeSessionId: activeIdentityBeforeCache.sessionId,
   });
-  if (typeof store.persistYeaftHistoryBrowserCache === 'function') {
-    void store.persistYeaftHistoryBrowserCache(msgSessionId, sessionAgentId, convId);
-  }
 
   const sessionKey = yeaftHistoryIdentityKey(msg.agentId || null, msgSessionId);
   const cacheState = store.yeaftHistoryCacheState?.[sessionKey] || null;
@@ -1152,9 +1175,14 @@ export function handleYeaftHistoryChunk(store, msg) {
         cacheEpoch: cacheState?.rangeEpoch ?? msg.cacheEpoch ?? 0,
       });
   const nextLatest = (typeof msg.latestSeq === 'number') ? msg.latestSeq : (prevState.latestSeq ?? null);
+  const historyIdentity = {
+    streamId: typeof msg.streamId === 'string' ? msg.streamId : (prevState.streamId ?? null),
+    revision: Number.isFinite(msg.revision) ? msg.revision : (prevState.revision ?? null),
+  };
   const nextState = mode === 'delta'
     ? {
         ...prevState,
+        ...historyIdentity,
         loaded: true,
         loading: false,
         latestSeq: nextLatest,
@@ -1163,6 +1191,7 @@ export function handleYeaftHistoryChunk(store, msg) {
       }
     : {
         ...committedPagination,
+        ...historyIdentity,
         loaded: true,
         loading: false,
         count: cacheState
@@ -1182,6 +1211,22 @@ export function handleYeaftHistoryChunk(store, msg) {
       ...store.yeaftSessionHistoryState,
       [sessionKey]: nextState,
     };
+  }
+  // Commit rows and their authoritative cursors as one browser snapshot. Taking
+  // this snapshot before finishYeaftHistoryLoad persisted the previous latest /
+  // oldest frontier beside the new rows and made cold reloads repeat pages.
+  if (typeof store.persistYeaftHistoryBrowserCache === 'function') {
+    void store.persistYeaftHistoryBrowserCache(msgSessionId, sessionAgentId, convId);
+  }
+  if (mode === 'delta' && msg.hasMoreAfter === true
+      && Number.isFinite(nextState.latestSeq)
+      && nextState.latestSeq > Number(msg.afterSeq ?? -1)
+      && typeof store.continueYeaftHistoryDelta === 'function') {
+    queueMicrotask(() => store.continueYeaftHistoryDelta(
+      msgSessionId,
+      sessionAgentId,
+      nextState.latestSeq,
+    ));
   }
   const activeIdentity = activeYeaftHistoryIdentity(store);
   const activeSessionMatches = activeIdentity.sessionId === (msgSessionId || null);
