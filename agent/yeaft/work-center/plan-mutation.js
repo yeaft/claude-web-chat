@@ -144,12 +144,14 @@ export function applyAdditivePlanProposal({ workItem, actions, proposal, availab
         raw.dependsOnActionIds,
         `Action "${id}" dependencies`,
       ),
-      changesRequestedActionId: hasReturnTarget
-        ? canonicalExplicitActionId(
-          raw.changesRequestedActionId,
-          `Action "${id}" review target`,
-        )
-        : undefined,
+      ...(hasReturnTarget
+        ? {
+            changesRequestedActionId: canonicalExplicitActionId(
+              raw.changesRequestedActionId,
+              `Action "${id}" review target`,
+            ),
+          }
+        : {}),
     };
   });
   const dependencyPatches = validateDependencyPatches(actions, proposal.dependencyPatches, addedIds);
@@ -253,9 +255,14 @@ export function applyCoordinatorReplan({ workItem, actions, proposal, availableV
       ...raw,
       id,
       dependsOnActionIds,
-      changesRequestedActionId: Object.hasOwn(raw, 'changesRequestedActionId')
-        ? canonicalExplicitActionId(raw.changesRequestedActionId, `Coordinator Action "${id}" review target`)
-        : undefined,
+      ...(Object.hasOwn(raw, 'changesRequestedActionId')
+        ? {
+            changesRequestedActionId: canonicalExplicitActionId(
+              raw.changesRequestedActionId,
+              `Coordinator Action "${id}" review target`,
+            ),
+          }
+        : {}),
     };
   });
 
@@ -363,9 +370,14 @@ export function applyReplanMutation({ workItem, action, actions, proposal, avail
       ...raw,
       id,
       dependsOnActionIds: canonicalExplicitActionIds(raw.dependsOnActionIds, `Action "${id}" dependencies`),
-      changesRequestedActionId: Object.hasOwn(raw, 'changesRequestedActionId')
-        ? canonicalExplicitActionId(raw.changesRequestedActionId, `Action "${id}" review target`)
-        : undefined,
+      ...(Object.hasOwn(raw, 'changesRequestedActionId')
+        ? {
+            changesRequestedActionId: canonicalExplicitActionId(
+              raw.changesRequestedActionId,
+              `Action "${id}" review target`,
+            ),
+          }
+        : {}),
     };
   };
   const retainedInputs = retained.map(entry => canonicalFuture(entry.input, entry.action.stageId));

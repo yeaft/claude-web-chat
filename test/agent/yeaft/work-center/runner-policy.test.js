@@ -110,6 +110,272 @@ describe('Work Center tool policy', () => {
     });
   });
 
+  it('requires review decisions on planning control tools and preserves them', async () => {
+    const workItem = { planRevision: 3 };
+    const currentAction = { id: 'review-id', stageId: 'review-security', type: 'review' };
+    const replanCollector = { value: null };
+    const replanTool = createRequestWorkItemReplanTool({
+      workItem,
+      collector: replanCollector,
+      isRunActive: () => true,
+      currentAction,
+    });
+    expect(replanTool.parameters.required).toContain('reviewDecision');
+    expect(replanTool.parameters.properties.reviewDecision.const).toBe('changes_requested');
+    await replanTool.execute({
+      summary: 'The review found blockers.',
+      evidence: ['Security finding at runtime.js:42'],
+      acceptanceChecks: [],
+      proposalId: 'replan-review-findings',
+      basePlanRevision: 3,
+      reason: 'The unfinished topology needs remediation and another review.',
+      reviewDecision: 'changes_requested',
+    });
+    expect(replanCollector.value).toMatchObject({
+      kind: 'replan',
+      input: { reviewDecision: 'changes_requested' },
+    });
+
+    const expansionCollector = { value: null };
+    const expansionTool = createProposeWorkItemActionsTool({
+      vps: [{ id: 'omni', role: 'developer' }],
+      workItem: { planRevision: 3 },
+      actions: [],
+      collector: expansionCollector,
+      isRunActive: () => true,
+      currentAction,
+    });
+    expect(expansionTool.parameters.required).toContain('reviewDecision');
+    expect(expansionTool.parameters.properties.reviewDecision.const).toBe('changes_requested');
+
+    const nonReviewTool = createRequestWorkItemReplanTool({
+      workItem,
+      collector: { value: null },
+      isRunActive: () => true,
+      currentAction: { id: 'implementation-id', stageId: 'implementation', type: 'implement' },
+    });
+    expect(nonReviewTool.parameters.required).not.toContain('reviewDecision');
+    expect(nonReviewTool.parameters.properties).not.toHaveProperty('reviewDecision');
+
+    expect(parseStructuredResult(JSON.stringify({
+      outcome: 'completed',
+      summary: 'Review complete',
+      evidence: ['review evidence'],
+      acceptanceChecks: [],
+    }), 'review')).toMatchObject({
+      outcome: 'failed',
+      error: 'Completed review requires approved or changes_requested',
+    });
+  });
+
+  it('persists review decisions through explicit replan and additive control tools', async () => {
+    const createReviewFixture = id => {
+      const store = new WorkItemStore(join(workDir, `${id}.db`));
+      const controller = new WorkflowController(store, { listAvailableVpIds: () => ['omni'] });
+      const criterion = 'Review findings enter an executable remediation path';
+      const item = controller.create({
+        id,
+        title: 'Route review findings',
+        goal: 'Preserve explicit review decisions and their plan mutations',
+        acceptanceCriteria: [criterion],
+        workflowTemplate: 'ai-planned',
+        workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+        workDir,
+        start: true,
+      });
+      const triage = store.claimReadyAction(`${id}-triage`, 5_000);
+      controller.submit(triage.run.id, `${id}-triage`, triage.run.leaseEpoch, {
+        outcome: 'completed',
+        summary: 'The review graph is planned.',
+        evidence: ['Validated initial review graph'],
+        acceptanceChecks: [{ criterion, status: 'passed', evidence: 'Validated initial review graph' }],
+        plan: {
+          workItemType: 'review-remediation',
+          actions: [
+            {
+              id: 'implementation', name: 'Implement candidate', type: 'implement',
+              objective: 'Implement the candidate change',
+              approach: 'Edit and test the candidate in the shared workspace',
+              expectedOutcome: 'A reviewable candidate exists',
+              dependsOnActionIds: [], workspaceMode: 'shared',
+            },
+            {
+              id: 'review', name: 'Review candidate', type: 'review',
+              objective: 'Review the candidate independently',
+              approach: 'Inspect the diff and verify the acceptance boundary',
+              expectedOutcome: 'An explicit review decision is recorded',
+              dependsOnActionIds: ['implementation'], workspaceMode: 'read',
+              changesRequestedActionId: 'implementation',
+            },
+            {
+              id: 'deliver', name: 'Deliver candidate', type: 'deliver',
+              objective: 'Deliver only an approved candidate',
+              approach: 'Verify the approved evidence and publish the result',
+              expectedOutcome: 'The approved candidate is delivered',
+              dependsOnActionIds: ['review'], workspaceMode: 'shared',
+            },
+          ],
+        },
+      });
+      const implementation = store.claimReadyAction(`${id}-implementation`, 5_000);
+      controller.submit(
+        implementation.run.id,
+        `${id}-implementation`,
+        implementation.run.leaseEpoch,
+        {
+          outcome: 'completed',
+          summary: 'The candidate is ready for review.',
+          evidence: ['candidate commit'],
+          acceptanceChecks: [{ criterion, status: 'deferred', evidence: 'Review remains' }],
+        },
+      );
+      return {
+        store,
+        controller,
+        item,
+        criterion,
+        review: store.claimReadyAction(`${id}-review`, 5_000),
+      };
+    };
+    const createRunner = (fixture, responses) => new WorkItemRunner({
+      store: fixture.store,
+      runtimeProvider: async () => ({
+        defaultWorkDir: workDir,
+        config: { model: 'provider/model', maxOutputTokens: 2_048, projectDocMaxBytes: 0 },
+        adapter: {
+          async *stream(params) {
+            params.onRequestStart?.();
+            for (const event of responses.shift()) yield event;
+          },
+        },
+      }),
+      registry: {
+        listVps: () => [{ id: 'omni', name: 'Omni', role: 'Reviewer', traits: ['review'] }],
+        getVp: () => ({ id: 'omni', name: 'Omni', role: 'Reviewer', traits: ['review'] }),
+      },
+    });
+
+    const replanFixture = createReviewFixture('review-replan-tool');
+    try {
+      const replanRunner = createRunner(replanFixture, [[
+        {
+          type: 'tool_call', id: 'request-replan', name: 'RequestWorkItemReplan', input: {
+            summary: 'The review found blockers that require a replacement topology.',
+            evidence: ['Important finding at runtime.js:42'],
+            acceptanceChecks: [{
+              criterion: replanFixture.criterion,
+              status: 'deferred',
+              evidence: 'Remediation and re-review remain',
+            }],
+            proposalId: 'review-blocker-replan',
+            basePlanRevision: replanFixture.review.workItem.planRevision,
+            reason: 'The existing future topology cannot represent remediation and re-review.',
+            reviewDecision: 'changes_requested',
+          },
+        },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]]);
+      const result = await replanRunner.run({
+        ...replanFixture.review,
+        ownerBootId: 'review-replan-tool-review',
+        signal: new AbortController().signal,
+      });
+      expect(result).toMatchObject({
+        outcome: 'completed',
+        reviewDecision: 'changes_requested',
+        replanRequest: { proposalId: 'review-blocker-replan' },
+      });
+      const detail = replanFixture.controller.submit(
+        replanFixture.review.run.id,
+        'review-replan-tool-review',
+        replanFixture.review.run.leaseEpoch,
+        result,
+      );
+      expect(replanFixture.store.getRun(replanFixture.review.run.id)).toMatchObject({
+        status: 'completed', reviewDecision: 'changes_requested',
+      });
+      expect(detail.actions.find(action => action.id === replanFixture.review.action.id))
+        .toMatchObject({ status: 'completed' });
+      expect(detail.actions.find(action => action.stageId === 'deliver'))
+        .toMatchObject({ status: 'superseded' });
+      expect(detail.actions.find(action => action.stageId.startsWith('replan-')))
+        .toMatchObject({ status: 'ready', type: 'triage' });
+      expect(detail.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'workflow.replan_requested' }),
+      ]));
+      await replanRunner.shutdown();
+    } finally {
+      replanFixture.store.close();
+    }
+
+    const expansionFixture = createReviewFixture('review-expansion-tool');
+    try {
+      const before = expansionFixture.store.getWorkItemDetail(expansionFixture.item.id);
+      const deliver = before.actions.find(action => action.stageId === 'deliver');
+      const expansionRunner = createRunner(expansionFixture, [[
+        {
+          type: 'tool_call', id: 'propose-remediation', name: 'ProposeWorkItemActions', input: {
+            summary: 'The review found a bounded additive remediation.',
+            evidence: ['Important finding at settings.js:84'],
+            acceptanceChecks: [{
+              criterion: expansionFixture.criterion,
+              status: 'deferred',
+              evidence: 'Remediation and delivery remain',
+            }],
+            proposalId: 'review-additive-remediation',
+            basePlanRevision: expansionFixture.review.workItem.planRevision,
+            reviewDecision: 'changes_requested',
+            actions: [{
+              id: 'remediate-review', name: 'Remediate review finding', type: 'implement',
+              objective: 'Fix the bounded review finding',
+              approach: 'Apply the focused fix and add a regression test',
+              expectedOutcome: 'The review finding is resolved with evidence',
+              candidateVpIds: ['omni'], assignmentReason: 'Use the available implementation VP',
+              dependsOnActionIds: ['review'], workspaceMode: 'shared',
+            }],
+            dependencyPatches: [{
+              actionId: deliver.id,
+              addDependsOnActionIds: ['remediate-review'],
+            }],
+          },
+        },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]]);
+      const result = await expansionRunner.run({
+        ...expansionFixture.review,
+        ownerBootId: 'review-expansion-tool-review',
+        signal: new AbortController().signal,
+      });
+      expect(result).toMatchObject({
+        outcome: 'completed',
+        reviewDecision: 'changes_requested',
+        planProposal: { proposalId: 'review-additive-remediation' },
+      });
+      const detail = expansionFixture.controller.submit(
+        expansionFixture.review.run.id,
+        'review-expansion-tool-review',
+        expansionFixture.review.run.leaseEpoch,
+        result,
+      );
+      expect(expansionFixture.store.getRun(expansionFixture.review.run.id)).toMatchObject({
+        status: 'completed', reviewDecision: 'changes_requested',
+      });
+      expect(detail.actions.find(action => action.stageId === 'implementation'))
+        .toMatchObject({ status: 'completed' });
+      expect(detail.actions.find(action => action.stageId === 'remediate-review'))
+        .toMatchObject({ status: 'ready' });
+      expect(detail.actions.find(action => action.stageId === 'deliver').dependsOnStageIds)
+        .toEqual(['review', 'remediate-review']);
+      expect(detail.events.some(event => event.type === 'review.changes_requested')).toBe(false);
+      expect(detail.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'workflow.plan_expanded' }),
+      ]));
+      await expansionRunner.shutdown();
+    } finally {
+      expansionFixture.store.close();
+    }
+  });
+
   it('persists external side effects and excludes Run-local control tools', async () => {
     const transitions = [];
     const recordLifecycle = (name, input) => {
