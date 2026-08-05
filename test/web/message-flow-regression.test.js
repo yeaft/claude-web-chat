@@ -1325,6 +1325,22 @@ describe('message flow regressions', () => {
     expect(chatPage.vm.unifiedSessionCreateProject).toBeNull();
     const alertSpy = vi.fn();
     vi.stubGlobal('alert', alertSpy);
+    let upgradeAckDetail = null;
+    window.addEventListener('agent-upgrade-ack', event => { upgradeAckDetail = event.detail; }, { once: true });
+    handleMessage(parentStore, {
+      type: 'upgrade_agent_ack',
+      agentId: 'agent-a',
+      success: false,
+      reason: 'manual_upgrade_required',
+      version: '1.0.337',
+      minimumVersion: '1.0.342',
+    });
+    expect(upgradeAckDetail).toMatchObject({
+      reason: 'manual_upgrade_required',
+      version: '1.0.337',
+      minimumVersion: '1.0.342',
+    });
+    expect(alertSpy).toHaveBeenLastCalledWith('chat.agent.manualUpgradeRequired');
     parentStore.mutateProject.mockResolvedValueOnce({ ok: false, error: { code: 'timeout' } });
     chatPage.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
     await chatPage.vm.onUnifiedSessionCreated({ id: 'unassigned-session', agentId: 'agent-a' });
@@ -1369,6 +1385,17 @@ describe('message flow regressions', () => {
         },
       },
     });
+    alertSpy.mockClear();
+    window.dispatchEvent(new CustomEvent('agent-upgrade-ack', {
+      detail: {
+        agentId: 'agent-a',
+        success: false,
+        reason: 'manual_upgrade_required',
+        version: '1.0.337',
+        minimumVersion: '1.0.342',
+      },
+    }));
+    expect(alertSpy).toHaveBeenLastCalledWith('chat.agent.manualUpgradeRequired');
     await yeaftSidebar.get('.sidebar-primary-action').trigger('click');
     expect(yeaftSidebar.vm.sessionCreateOpen).toBe(true);
     yeaftSidebar.vm.closeSessionCreate();

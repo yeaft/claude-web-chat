@@ -16,7 +16,7 @@ export const pendingProxyRequests = new Map(); // requestId → { res, timeout, 
 export const proxyWsConnections = new Map(); // proxyWsId → { browserWs, agentId }
 
 // Store pending agent connections (waiting for auth message)
-// tempId -> { ws, agentId, agentName, workDir, timeout }
+// tempId -> { ws, agentId, agentName, instanceId, workDir, skipAgentAuth, connectionGeneration, timeout }
 export const pendingAgentConnections = new Map();
 
 // ★ Phase 3: Server-side message queues

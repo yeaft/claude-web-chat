@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CONFIG } from '../../server/config.js';
-import { agents } from '../../server/context.js';
+import { agents, pendingAgentConnections } from '../../server/context.js';
 import { sessionDb, yeaftProjectDb, yeaftSessionDb, sessionUiMetadataDb } from '../../server/database.js';
 import {
   buildHiddenSessionCatalog,
@@ -12,14 +12,28 @@ import {
 import { handleAgentOutput } from '../../server/handlers/agent-output.js';
 import { handleAgentConversation } from '../../server/handlers/agent-conversation.js';
 import { handleClientConversation } from '../../server/handlers/client-conversation.js';
+import {
+  MIN_SAFE_REMOTE_UPGRADE_VERSION,
+  handleClientMisc,
+  requiresManualUpgradeBridge,
+} from '../../server/handlers/client-misc.js';
 import { routeSessionPin } from '../../server/handlers/session-pin-router.js';
+import { handleAgentConnection } from '../../server/ws-agent.js';
+import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
 
 describe('resolveAgentAccessError', () => {
   const originalSkipAuth = CONFIG.skipAuth;
 
   afterEach(() => {
     CONFIG.skipAuth = originalSkipAuth;
+    for (const agent of agents.values()) {
+      if (agent._syncTimeout) clearTimeout(agent._syncTimeout);
+    }
+    for (const pending of pendingAgentConnections.values()) {
+      if (pending.timeout) clearTimeout(pending.timeout);
+    }
     agents.clear();
+    pendingAgentConnections.clear();
   });
 
   it('classifies Agent access states and rejects foreign Project mutations', async () => {
@@ -411,6 +425,116 @@ describe('resolveAgentAccessError', () => {
     expect(yeaftProjectDb.list(userId)[0].members).toEqual([
       { agentId: 'agent-b', sessionId: `foreign-agent-${suffix}` },
     ]);
+  });
+
+  it('blocks legacy self-updaters before they can take the Agent offline', async () => {
+    expect(MIN_SAFE_REMOTE_UPGRADE_VERSION).toBe('1.0.342');
+    expect(requiresManualUpgradeBridge('1.0.337')).toBe(true);
+    expect(requiresManualUpgradeBridge('1.0.341')).toBe(true);
+    expect(requiresManualUpgradeBridge(null)).toBe(true);
+    expect(requiresManualUpgradeBridge('not-semver')).toBe(true);
+    expect(requiresManualUpgradeBridge('1.0.342')).toBe(false);
+    expect(requiresManualUpgradeBridge('v1.0.350')).toBe(false);
+
+    const client = {
+      encryptOutbound: false,
+      sent: [],
+      ws: {
+        readyState: 1,
+        send(payload) { client.sent.push(JSON.parse(payload)); },
+      },
+    };
+    const legacyCommands = [];
+    agents.set('agent-old', {
+      version: '1.0.337',
+      encryptOutbound: false,
+      ws: { readyState: 1, send(payload) { legacyCommands.push(JSON.parse(payload)); } },
+    });
+
+    await handleClientMisc('client-1', client, {
+      type: 'upgrade_agent',
+      agentId: 'agent-old',
+    }, async () => true);
+
+    expect(legacyCommands).toEqual([]);
+    expect(client.sent.at(-1)).toMatchObject({
+      type: 'upgrade_agent_ack',
+      agentId: 'agent-old',
+      success: false,
+      reason: 'manual_upgrade_required',
+      version: '1.0.337',
+      minimumVersion: '1.0.342',
+    });
+
+    const safeCommands = [];
+    agents.set('agent-safe', {
+      version: '1.0.342',
+      encryptOutbound: false,
+      ws: { readyState: 1, send(payload) { safeCommands.push(JSON.parse(payload)); } },
+    });
+    await handleClientMisc('client-1', client, {
+      type: 'upgrade_agent',
+      agentId: 'agent-safe',
+    }, async () => true);
+    expect(safeCommands).toEqual([{ type: 'upgrade_agent' }]);
+  });
+
+  it('preserves safe self-upgrades through the real SKIP_AUTH registration handshake', async () => {
+    CONFIG.skipAuth = true;
+    const client = {
+      encryptOutbound: false,
+      sent: [],
+      ws: {
+        readyState: WS_OPEN,
+        send(payload) { client.sent.push(JSON.parse(payload)); },
+      },
+    };
+
+    for (const [agentId, version, shouldUpgrade] of [
+      ['skip-old', '1.0.337', false],
+      ['skip-minimum', '1.0.342', true],
+      ['skip-current', '1.0.350', true],
+    ]) {
+      const socket = new MockWebSocket(WS_OPEN);
+      const url = new URL(`ws://localhost/?type=agent&id=${agentId}&name=${agentId}&instanceId=${agentId}&capabilities=plaintext-ok`);
+      expect(url.searchParams.has('version')).toBe(false);
+
+      handleAgentConnection(socket, url);
+      const challenge = socket.getLastMessage();
+      expect(challenge).toMatchObject({ type: 'auth_required' });
+      socket.simulateMessage({
+        type: 'auth',
+        tempId: challenge.tempId,
+        secret: '',
+        capabilities: ['plaintext-ok'],
+        version,
+      });
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      expect(agents.get(agentId)).toMatchObject({
+        version,
+        ownerId: null,
+        encryptOutbound: false,
+      });
+      socket.clearMessages();
+      client.sent.length = 0;
+      await handleClientMisc('client-1', client, {
+        type: 'upgrade_agent',
+        agentId,
+      }, async () => true);
+
+      if (shouldUpgrade) {
+        expect(socket.getSentMessages()).toEqual([{ type: 'upgrade_agent' }]);
+        expect(client.sent).toEqual([]);
+      } else {
+        expect(socket.getSentMessages()).toEqual([]);
+        expect(client.sent.at(-1)).toMatchObject({
+          type: 'upgrade_agent_ack',
+          reason: 'manual_upgrade_required',
+          version,
+        });
+      }
+    }
   });
 
   it('fails closed when legacy Yeaft pin identity is ambiguous', () => {
