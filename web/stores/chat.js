@@ -1470,8 +1470,6 @@ export const useChatStore = defineStore('chat', {
       if (!target) return false;
       this.pluginCenterAgentId = target.id;
       this.pluginCenterOpen = true;
-      this.loadPluginConfig(target.id).catch(() => {});
-      this.loadPluginCatalog(target.id).catch(() => {});
       return true;
     },
     closePluginCenter() {

@@ -692,13 +692,13 @@ describe('message flow regressions', () => {
     });
     expect(workCenterPage.get('.work-center-agent-picker .modern-select-label').text()).toBe('server');
 
+    let resolvePluginConfig;
+    const pendingPluginConfig = new Promise(resolve => { resolvePluginConfig = resolve; });
     const pluginStore = Vue.reactive({
       agents: [{ id: 'agent-a', name: 'Agent A', online: true }],
       currentAgent: 'agent-a',
       pluginCenterAgentId: 'agent-a',
-      pluginConfigByAgent: {
-        'agent-a': { loaded: true, plugins: { tools: ['FileRead'] } },
-      },
+      pluginConfigByAgent: {},
       pluginCatalogByKey: {
         'agent-a:': {
           loading: false,
@@ -710,20 +710,37 @@ describe('message flow regressions', () => {
         },
       },
       pluginCatalogKey: (agentId, workDir = '') => `${agentId}:${workDir}`,
-      loadPluginConfig: vi.fn(() => Promise.resolve()),
+      loadPluginConfig: vi.fn(() => pendingPluginConfig),
       loadPluginCatalog: vi.fn(() => Promise.resolve()),
-      savePluginConfig: vi.fn(() => Promise.resolve({ plugins: {} })),
+      savePluginConfig: vi.fn(plugins => Promise.resolve({ plugins })),
     });
     globalThis.Pinia.useChatStore = () => pluginStore;
     const pluginCenter = mount(PluginCenterPage, {
       global: { mocks: { $t: key => key } },
     });
     await Vue.nextTick();
+    expect(pluginCenter.findAll('input[type="checkbox"]').every(input => input.element.disabled)).toBe(true);
+    expect(pluginCenter.get('.btn-primary').attributes('disabled')).toBeDefined();
+    pluginCenter.vm.toggle('skills', 'skill-a', false);
+    await pluginCenter.vm.save();
+    expect(pluginStore.savePluginConfig).not.toHaveBeenCalled();
+
+    resolvePluginConfig({ plugins: { tools: ['FileRead'] } });
+    await pendingPluginConfig;
+    await Promise.resolve();
+    await Vue.nextTick();
+    expect(pluginCenter.vm.configReady).toBe(true);
+    expect(pluginCenter.vm.selection).toEqual({ tools: ['FileRead'] });
     pluginCenter.vm.toggle('skills', 'skill-a', false);
     expect(pluginCenter.vm.selection).toEqual({
       tools: ['FileRead'],
       skills: ['skill-b'],
     });
+    await pluginCenter.vm.save();
+    expect(pluginStore.savePluginConfig).toHaveBeenCalledWith({
+      tools: ['FileRead'],
+      skills: ['skill-b'],
+    }, 'agent-a');
     expect(pluginCenter.vm.enabledCount).toBe(2);
     pluginCenter.unmount();
 

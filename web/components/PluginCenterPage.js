@@ -6,6 +6,10 @@ export default {
       saving: false,
       error: '',
       selection: null,
+      configLoading: false,
+      configLoadError: '',
+      configLoadedAgentId: null,
+      configLoadGeneration: 0,
     };
   },
   computed: {
@@ -34,6 +38,12 @@ export default {
     loading() {
       return !this.catalogRecord || !!this.catalogRecord.loading;
     },
+    configReady() {
+      return !!this.agentId
+        && this.configLoadedAgentId === this.agentId
+        && !this.configLoading
+        && !this.configLoadError;
+    },
     hasCatalog() {
       return this.catalog.tools.length + this.catalog.skills.length + this.catalog.mcpServers.length > 0;
     },
@@ -53,23 +63,54 @@ export default {
     agentId: {
       immediate: true,
       handler(next) {
-        this.selection = null;
+        ++this.configLoadGeneration;
         this.error = '';
-        if (!next) return;
-        this.store?.loadPluginConfig?.(next).catch(() => {});
+        if (!next) {
+          this.selection = null;
+          this.configLoading = false;
+          this.configLoadError = '';
+          this.configLoadedAgentId = null;
+          return;
+        }
+        this.loadConfig(next);
         this.store?.loadPluginCatalog?.(next).catch(() => {});
-      },
-    },
-    configRecord: {
-      immediate: true,
-      deep: true,
-      handler(record) {
-        if (this.selection || !record?.loaded) return;
-        this.selection = this.copySelection(record.plugins);
       },
     },
   },
   methods: {
+    loadConfig(agentId = this.agentId, generation = ++this.configLoadGeneration) {
+      if (!agentId) return;
+      this.selection = null;
+      this.configLoadedAgentId = null;
+      this.configLoading = false;
+      this.configLoadError = '';
+      if (this.configRecord?.loaded) {
+        this.selection = this.copySelection(this.configRecord.plugins);
+        this.configLoadedAgentId = agentId;
+        return;
+      }
+      const request = this.store?.loadPluginConfig?.(agentId);
+      this.configLoading = true;
+      Promise.resolve(request)
+        .then((record) => {
+          if (generation !== this.configLoadGeneration || agentId !== this.agentId) return;
+          if (record?.error) {
+            this.configLoadError = record.error;
+            return;
+          }
+          this.selection = this.copySelection(record?.plugins);
+          this.configLoadedAgentId = agentId;
+        })
+        .catch((err) => {
+          if (generation !== this.configLoadGeneration || agentId !== this.agentId) return;
+          this.configLoadError = err?.message || String(err);
+        })
+        .finally(() => {
+          if (generation === this.configLoadGeneration && agentId === this.agentId) {
+            this.configLoading = false;
+          }
+        });
+    },
     copySelection(plugins = {}) {
       const copy = {};
       for (const field of ['tools', 'skills', 'mcpServers']) {
@@ -82,6 +123,7 @@ export default {
       return this.selection[field].includes(id);
     },
     toggle(field, id, checked) {
+      if (!this.configReady) return;
       const selection = this.selection || {};
       const current = new Set(Array.isArray(selection[field])
         ? selection[field]
@@ -91,6 +133,7 @@ export default {
       this.selection = { ...selection, [field]: [...current] };
     },
     useAll() {
+      if (!this.configReady) return;
       this.selection = {};
       this.error = '';
     },
@@ -101,7 +144,7 @@ export default {
       if (result?.error) this.error = result.error;
     },
     async save() {
-      if (this.saving || !this.agentId) return;
+      if (this.saving || !this.agentId || !this.configReady) return;
       this.saving = true;
       this.error = '';
       try {
@@ -155,7 +198,7 @@ export default {
                 ? $t('yeaft.plugins.selectedSummary', { count: enabledCount })
                 : $t('yeaft.plugins.allAvailable') }}</p>
             </div>
-            <button type="button" class="btn-secondary" @click="useAll" :disabled="!hasExplicitSelection">
+            <button type="button" class="btn-secondary" @click="useAll" :disabled="!configReady || !hasExplicitSelection">
               {{ $t('yeaft.plugins.useAll') }}
             </button>
           </div>
@@ -165,13 +208,17 @@ export default {
             {{ $t('yeaft.plugins.loadError', { error: catalogRecord.error }) }}
             <button type="button" class="btn-secondary" @click="refresh">{{ $t('yeaft.plugins.retry') }}</button>
           </div>
+          <div v-else-if="configLoadError" class="plugin-center-state is-error">
+            {{ $t('yeaft.plugins.loadError', { error: configLoadError }) }}
+            <button type="button" class="btn-secondary" @click="loadConfig(agentId)">{{ $t('yeaft.plugins.retry') }}</button>
+          </div>
           <div v-else-if="!hasCatalog" class="plugin-center-state">{{ $t('yeaft.plugins.empty') }}</div>
 
           <template v-else>
             <section class="plugin-center-section">
               <h2>{{ $t('yeaft.plugins.tools') }}</h2>
               <label v-for="item in catalog.tools" :key="item.id" class="plugin-center-row">
-                <input type="checkbox" :checked="enabled('tools', item.id)" @change="toggle('tools', item.id, $event.target.checked)">
+                <input type="checkbox" :checked="enabled('tools', item.id)" :disabled="!configReady" @change="toggle('tools', item.id, $event.target.checked)">
                 <span class="plugin-center-copy"><strong>{{ item.label }}</strong></span>
               </label>
             </section>
@@ -179,7 +226,7 @@ export default {
             <section class="plugin-center-section">
               <h2>{{ $t('yeaft.plugins.skills') }}</h2>
               <label v-for="item in catalog.skills" :key="item.id" class="plugin-center-row">
-                <input type="checkbox" :checked="enabled('skills', item.id)" @change="toggle('skills', item.id, $event.target.checked)">
+                <input type="checkbox" :checked="enabled('skills', item.id)" :disabled="!configReady" @change="toggle('skills', item.id, $event.target.checked)">
                 <span class="plugin-center-copy">
                   <strong>{{ item.label }}</strong>
                   <small v-if="item.description">{{ item.description }}</small>
@@ -190,7 +237,7 @@ export default {
             <section class="plugin-center-section">
               <h2>{{ $t('yeaft.plugins.mcpServers') }}</h2>
               <label v-for="item in catalog.mcpServers" :key="item.id" class="plugin-center-row">
-                <input type="checkbox" :checked="enabled('mcpServers', item.id)" @change="toggle('mcpServers', item.id, $event.target.checked)">
+                <input type="checkbox" :checked="enabled('mcpServers', item.id)" :disabled="!configReady" @change="toggle('mcpServers', item.id, $event.target.checked)">
                 <span class="plugin-center-copy">
                   <strong>{{ item.label }}</strong>
                   <small>{{ item.toolCount }} {{ $t('yeaft.plugins.toolsCount') }}</small>
@@ -204,7 +251,7 @@ export default {
       <footer class="plugin-center-footer">
         <span v-if="error" class="plugin-center-error" role="alert">{{ error }}</span>
         <span class="plugin-center-footer-spacer"></span>
-        <button type="button" class="btn-primary" @click="save" :disabled="saving || loading || !agentId">
+        <button type="button" class="btn-primary" @click="save" :disabled="saving || loading || !configReady || !agentId">
           {{ saving ? $t('common.saving') : $t('common.save') }}
         </button>
       </footer>
