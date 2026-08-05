@@ -46,7 +46,7 @@ export default {
     canStop: { type: Boolean, default: true },
     interactiveSpeaker: { type: Boolean, default: true },
   },
-  emits: ['toggle-response-collapse', 'quote'],
+  emits: ['toggle-response-collapse', 'quote', 'open-debug'],
   template: `
     <div class="vp-turn-block"
          :class="{ 'vp-turn-block-streaming': turn.isStreaming }"
@@ -121,6 +121,20 @@ export default {
           @quote="$emit('quote', $event)"
           @toggle-response-collapse="$emit('toggle-response-collapse')"
         />
+        <!-- Turn-level debug entry: an eye icon on every finished AI turn.
+             Clicking it opens the debug panel scoped to exactly this turn
+             (no history browser boot). -->
+        <div v-if="hasDebugEntry" class="vp-turn-block-actions">
+          <button
+            type="button"
+            class="vp-turn-debug-btn"
+            @click.stop="$emit('open-debug')"
+            :title="debugActionTitle"
+            :aria-label="debugActionTitle"
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
         <slot></slot>
       </div>
     </div>
@@ -169,6 +183,16 @@ export default {
       () => !!(props.canStop && props.turn && props.turn.isStreaming && props.turn.turnId)
     );
 
+    const hasDebugEntry = Vue.computed(
+      () => !!(props.turn && props.turn.turnId && !props.turn.isStreaming)
+    );
+
+    const debugActionTitle = Vue.computed(() => {
+      const key = 'yeaft.debugTurnAction';
+      const translated = $t(key);
+      return translated === key ? 'View debug trace for this turn' : translated;
+    });
+
     const startedTimeText = Vue.computed(() => formatSessionMessageDateTime(props.turn.speakerTimestamp));
 
     const startedTimeFullText = Vue.computed(() => {
@@ -210,6 +234,8 @@ export default {
       onStopTurn,
       isTyping,
       showStop,
+      hasDebugEntry,
+      debugActionTitle,
       displayName,
       speakerNameStyle,
       startedTimeText,

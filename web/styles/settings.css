@@ -1554,6 +1554,26 @@
   font-size: 12px;
 }
 
+/* Debug-trace opt-in toggle (per-agent). */
+.llm-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0 2px;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+.llm-toggle-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.llm-toggle-label {
+  user-select: none;
+}
+
 .llm-tab .sp-btn-primary,
 .llm-preset-modal .sp-btn-primary {
   border-color: var(--accent);
