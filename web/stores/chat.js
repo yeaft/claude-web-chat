@@ -84,6 +84,12 @@ import {
   sliceScopedYeaftMessagesByRecentTurns,
 } from './helpers/yeaft-message-window.js';
 import { touchYeaftHistoryCache } from './helpers/yeaft-history-cache.js';
+import {
+  currentYeaftHistoryBrowserFence,
+  readYeaftHistoryBrowserCache,
+  removeYeaftHistoryBrowserCache,
+  writeYeaftHistoryBrowserCache,
+} from './helpers/yeaft-history-browser-cache.js';
 import { planNextYeaftHistoryPage } from './helpers/yeaft-history-pagination.js';
 
 const { defineStore } = Pinia;
@@ -694,7 +700,6 @@ export const useChatStore = defineStore('chat', {
     // Refresh session loading 状态
     refreshingSession: false,       // legacy global fallback for non-split mode
     refreshingSessionMap: {},       // per-conversation: { [convId]: boolean }
-    sessionHistorySyncRefreshToken: 0,
     // 代理端口映射: agentId → [{port, label, enabled}]
     proxyPorts: {},
     // ★ Phase 6: 消息分页状态
@@ -730,14 +735,16 @@ export const useChatStore = defineStore('chat', {
     // compatibility; this map is the source of truth across group switches.
     // Shape: { [groupId || '__all__']: { loaded, hasMore, loading, oldestSeq, count } }
     yeaftSessionHistoryState: {},
-    // Yeaft render window: expose only the newest N turn groups to MessageList
-    // until the user scrolls up. Keys include Agent + Session because different
-    // Agents may own the same Session id. The bounded row cache is tracked
-    // separately from this render budget.
+    // Legacy per-Session reveal budget. The default is now unbounded because
+    // VirtualTranscript already limits DOM work; explicit history navigation may
+    // still record a larger value here without hiding resident rows on switches.
     yeaftMessageWindowState: {},
     // Bounded durable Session ranges keyed by Agent + Session. Optimistic/live
     // rows stay outside the durable budget and are never evicted here.
     yeaftHistoryCacheState: {},
+    // IndexedDB hydration is best-effort and fenced by user + Agent + Session.
+    // Request tokens prevent a late cache read from changing a newer selection.
+    _yeaftHistoryBrowserHydrationBySession: {},
     // De-dupe metadata-only Yeaft bootstrap requests while waiting for the
     // session_ready replay. Group history requests are de-duped separately by
     // yeaftSessionHistoryState[groupId].loading.
@@ -2700,7 +2707,6 @@ export const useChatStore = defineStore('chat', {
     beginYeaftHistoryLoad(options) {
       const request = beginYeaftHistoryLoad(this, options);
       if (!request) return null;
-      this.sessionHistorySyncRefreshToken += 1;
       const { agentId, sessionId } = options || {};
       setTimeout(() => {
         if (failYeaftHistoryLoad(this, {
@@ -2709,16 +2715,13 @@ export const useChatStore = defineStore('chat', {
           requestId: request.requestId,
           error: 'history_load_timeout',
         })) {
-          this.sessionHistorySyncRefreshToken += 1;
           console.warn(`[Yeaft] history load timed out for ${agentId}/${sessionId}`);
         }
       }, YEAFT_HISTORY_LOAD_TIMEOUT_MS);
       return request;
     },
     finishYeaftHistoryLoad(msg, patch = {}, frame = 'chunk') {
-      const finished = finishYeaftHistoryLoad(this, msg, patch, frame);
-      if (finished && frame !== 'completion') this.sessionHistorySyncRefreshToken += 1;
-      return finished;
+      return finishYeaftHistoryLoad(this, msg, patch, frame);
     },
     isCurrentYeaftHistoryResponse(msg) {
       return isCurrentYeaftHistoryResponse(this, msg);
@@ -3280,6 +3283,147 @@ export const useChatStore = defineStore('chat', {
       return true;
     },
 
+    hydrateYeaftHistoryBrowserCache(sessionId, agentId = null) {
+      const targetSessionId = sessionId || null;
+      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
+      const fence = currentYeaftHistoryBrowserFence();
+      if (!fence || !targetAgentId || !targetSessionId) return Promise.resolve(false);
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
+      const token = `${fence.epoch}:${crypto.randomUUID()}`;
+      this._yeaftHistoryBrowserHydrationBySession = {
+        ...(this._yeaftHistoryBrowserHydrationBySession || {}),
+        [sessionKey]: token,
+      };
+      return readYeaftHistoryBrowserCache({
+        fence,
+        agentId: targetAgentId,
+        sessionId: targetSessionId,
+      }).then((record) => {
+        if (!record || this._yeaftHistoryBrowserHydrationBySession?.[sessionKey] !== token) return false;
+        const conversationId = resolveYeaftConversationIdForSession(this, targetSessionId, targetAgentId);
+        if (!conversationId) return false;
+        const existing = this.messagesMap[conversationId] || [];
+        msgHelpers.ensureMessageUiKeys(this, conversationId, record.rows);
+        this.messagesMap[conversationId] = msgHelpers.mergeMessagesByStableId(existing, record.rows)
+          .sort((left, right) => {
+            const leftSeq = Number.isFinite(left?.seq) ? left.seq : null;
+            const rightSeq = Number.isFinite(right?.seq) ? right.seq : null;
+            if (leftSeq !== null && rightSeq !== null && leftSeq !== rightSeq) return leftSeq - rightSeq;
+            if (leftSeq !== null && rightSeq === null) return -1;
+            if (leftSeq === null && rightSeq !== null) return 1;
+            return (left?.timestamp || 0) - (right?.timestamp || 0);
+          });
+        const previous = this.yeaftSessionHistoryState[sessionKey] || {};
+        const latestSeq = Math.max(
+          Number.isFinite(previous.latestSeq) ? previous.latestSeq : -1,
+          Number.isFinite(record.latestSeq) ? record.latestSeq : -1,
+        );
+        this.yeaftSessionHistoryState = {
+          ...this.yeaftSessionHistoryState,
+          [sessionKey]: {
+            ...previous,
+            loaded: true,
+            loading: !!previous.loading,
+            latestSeq: latestSeq >= 0 ? latestSeq : null,
+            oldestSeq: Number.isFinite(previous.oldestSeq) ? previous.oldestSeq : record.oldestSeq,
+            hasMore: previous.loaded ? !!previous.hasMore : !!record.hasMore,
+            count: Math.max(Number(previous.count) || 0, Number(record.rowCount) || 0),
+            browserCached: true,
+          },
+        };
+        this.syncActiveYeaftHistoryLoad();
+        return true;
+      }).catch(() => false).finally(() => {
+        if (this._yeaftHistoryBrowserHydrationBySession?.[sessionKey] !== token) return;
+        const { [sessionKey]: _finished, ...remaining } = this._yeaftHistoryBrowserHydrationBySession;
+        this._yeaftHistoryBrowserHydrationBySession = remaining;
+      });
+    },
+
+    persistYeaftHistoryBrowserCache(sessionId, agentId = null, conversationId = null) {
+      const targetSessionId = sessionId || null;
+      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
+      const fence = currentYeaftHistoryBrowserFence();
+      const targetConversationId = conversationId
+        || resolveYeaftConversationIdForSession(this, targetSessionId, targetAgentId);
+      if (!fence || !targetAgentId || !targetSessionId || !targetConversationId) return Promise.resolve(false);
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
+      const rows = (this.messagesMap[targetConversationId] || []).filter(row => (
+        (row?.sessionId ?? row?.groupId ?? null) === targetSessionId
+      ));
+      return writeYeaftHistoryBrowserCache({
+        fence,
+        agentId: targetAgentId,
+        sessionId: targetSessionId,
+        rows,
+        historyState: this.yeaftSessionHistoryState[sessionKey] || null,
+      });
+    },
+
+    clearYeaftHistoryMemory({ agentId = null, sessionId = null } = {}) {
+      const targetAgentId = agentId || null;
+      const targetSessionId = sessionId || null;
+      const sessionKey = targetAgentId && targetSessionId
+        ? yeaftHistoryIdentityKey(targetAgentId, targetSessionId)
+        : null;
+      const remainingPendingWindows = {};
+      for (const [pendingKey, pending] of Object.entries(this._yeaftHistoryWindowPendingByKey || {})) {
+        const matches = !sessionKey
+          || (pending?.agentId === targetAgentId && pending?.sessionId === targetSessionId);
+        if (!matches) {
+          remainingPendingWindows[pendingKey] = pending;
+          continue;
+        }
+        clearTimeout(pending?.timeout);
+        pending?.resolve?.(false);
+      }
+      this._yeaftHistoryWindowPendingByKey = remainingPendingWindows;
+
+      const scopedConversationId = targetAgentId
+        ? this.yeaftConversationIdsByAgent?.[targetAgentId] || null
+        : null;
+      const conversationIds = sessionKey
+        ? new Set([scopedConversationId].filter(Boolean))
+        : new Set(Object.values(this.yeaftConversationIdsByAgent || {}).filter(Boolean));
+      if (!sessionKey && this.yeaftConversationId) conversationIds.add(this.yeaftConversationId);
+      const nextMessagesMap = { ...(this.messagesMap || {}) };
+      for (const conversationId of conversationIds) {
+        if (!Array.isArray(nextMessagesMap[conversationId])) continue;
+        nextMessagesMap[conversationId] = sessionKey
+          ? nextMessagesMap[conversationId].filter(row => (
+            (row?.sessionId ?? row?.groupId ?? null) !== targetSessionId
+          ))
+          : [];
+      }
+      this.messagesMap = nextMessagesMap;
+
+      const clearMapKey = (source) => {
+        if (!sessionKey) return {};
+        const { [sessionKey]: _removed, ...remaining } = source || {};
+        return remaining;
+      };
+      this.yeaftSessionHistoryState = clearMapKey(this.yeaftSessionHistoryState);
+      this.yeaftHistoryCacheState = clearMapKey(this.yeaftHistoryCacheState);
+      this.yeaftMessageWindowState = clearMapKey(this.yeaftMessageWindowState);
+      this._yeaftHistoryBrowserHydrationBySession = clearMapKey(
+        this._yeaftHistoryBrowserHydrationBySession,
+      );
+      this._yeaftHistoryRevealLeases = sessionKey
+        ? Object.fromEntries(Object.entries(this._yeaftHistoryRevealLeases || {})
+          .filter(([, lease]) => lease?.sessionKey !== sessionKey))
+        : {};
+      if (!sessionKey) {
+        this.yeaftHasMoreHistory = false;
+        this.yeaftLoadingMoreHistory = false;
+        this.yeaftOldestLoadedSeq = null;
+      }
+      if (targetSessionId && this.yeaftSessionAgentById?.[targetSessionId] === targetAgentId) {
+        const { [targetSessionId]: _removed, ...remaining } = this.yeaftSessionAgentById;
+        this.yeaftSessionAgentById = remaining;
+      }
+      this.syncActiveYeaftHistoryLoad();
+    },
+
     getYeaftMessageWindowKey(sessionId = null, agentId = null) {
       const targetSessionId = sessionId || this.yeaftActiveSessionFilter || null;
       const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
@@ -3328,6 +3472,7 @@ export const useChatStore = defineStore('chat', {
         || resolveYeaftConversationIdForSession(this, targetSessionId, targetAgentId);
       if (!targetConversationId || !messageId) return false;
       const scoped = (this.messagesMap[targetConversationId] || []).filter((message) => {
+        if (message?._historyWindowPrefetched === true) return false;
         if (!targetSessionId) return true;
         return (message?.sessionId ?? message?.groupId ?? null) === targetSessionId;
       });
@@ -3335,10 +3480,30 @@ export const useChatStore = defineStore('chat', {
         (message?.id || message?.messageId) === messageId
         || message?.persistedMessageId === messageId
       ));
-      if (targetIndex < 0) return false;
+      let resolvedTargetIndex = targetIndex;
+      if (resolvedTargetIndex < 0) {
+        const prefetched = (this.messagesMap[targetConversationId] || []).find(message => (
+          message?._historyWindowPrefetched === true
+          && (message?.sessionId ?? message?.groupId ?? null) === targetSessionId
+          && ((message?.id || message?.messageId) === messageId || message?.persistedMessageId === messageId)
+        ));
+        if (!prefetched) return false;
+        prefetched._historyWindowPrefetched = false;
+        scoped.push(prefetched);
+        scoped.sort((left, right) => {
+          const leftSeq = Number.isFinite(left?.seq) ? left.seq : null;
+          const rightSeq = Number.isFinite(right?.seq) ? right.seq : null;
+          if (leftSeq !== null && rightSeq !== null && leftSeq !== rightSeq) return leftSeq - rightSeq;
+          if (leftSeq !== null && rightSeq === null) return -1;
+          if (leftSeq === null && rightSeq !== null) return 1;
+          return (left?.timestamp || 0) - (right?.timestamp || 0);
+        });
+        resolvedTargetIndex = scoped.indexOf(prefetched);
+      }
       const spans = buildYeaftMessageTurnSpans(scoped);
-      const targetSpan = spans.findIndex(span => targetIndex >= span.start && targetIndex < span.end);
+      const targetSpan = spans.findIndex(span => resolvedTargetIndex >= span.start && resolvedTargetIndex < span.end);
       if (targetSpan < 0) return false;
+      scoped[resolvedTargetIndex]._historyWindowPrefetched = false;
       const visibleTurns = Math.max(getDefaultYeaftVisibleTurns(), spans.length - targetSpan);
       const sessionKey = this.getYeaftMessageWindowKey(targetSessionId, targetAgentId);
       this.yeaftMessageWindowState = {
@@ -3893,6 +4058,7 @@ export const useChatStore = defineStore('chat', {
           entryStartSeq: Number.isFinite(result.entryStartSeq) ? result.entryStartSeq : null,
           resultId,
           messageId: result.messageId,
+          prefetch: !validateCached,
           resolve: resolvePending,
           timeout,
           promise,
@@ -3903,6 +4069,7 @@ export const useChatStore = defineStore('chat', {
         agentId,
         sessionId,
         requestId,
+        prefetch: !validateCached,
         ...(result.entryId ? { entryId: result.entryId } : {}),
         ...(Number.isFinite(result.indexGeneration) ? { indexGeneration: result.indexGeneration } : {}),
         ...(Number.isFinite(result.entryStartSeq) ? { entryStartSeq: result.entryStartSeq } : {}),
@@ -3989,6 +4156,7 @@ export const useChatStore = defineStore('chat', {
       const match = this.pendingYeaftHistoryWindow(msg);
       if (!match) return false;
       const { pendingKey, pending } = match;
+      if (pending.prefetch === true && msg.prefetch !== true) msg.prefetch = true;
       clearTimeout(pending.timeout);
       const { [pendingKey]: _settled, ...rest } = this._yeaftHistoryWindowPendingByKey;
       this._yeaftHistoryWindowPendingByKey = rest;
@@ -4159,9 +4327,6 @@ export const useChatStore = defineStore('chat', {
           if (!this.messagesMap[conversationId]) {
             this.messagesMap[conversationId] = [];
           }
-          if (this.currentView === 'yeaft' && (msg.data?.type === 'user' || msg.data?.type === 'text_delta')) {
-            this.pruneYeaftMessageWindow(this.yeaftActiveSessionFilter ? (msg.sessionId || null) : null);
-          }
           // Stamp the in-flight SEND-context session so messages land in the
           // originating session regardless of the user's current filter.
           // Inbound envelopes now carry `sessionId` (legacy `groupId` is
@@ -4179,10 +4344,6 @@ export const useChatStore = defineStore('chat', {
           if (msg.threadId) this._currentYeaftThreadId = msg.threadId;
           // (2026-05-13) featureId stamping removed along with the Feature system.
           try {
-            const shouldPruneWindow = this.currentView === 'yeaft'
-              && msgSessionId
-              && (!this.yeaftActiveSessionFilter || msgSessionId === this.yeaftActiveSessionFilter);
-            if (shouldPruneWindow) this.pruneYeaftMessageWindow(this.yeaftActiveSessionFilter ? msgSessionId : null);
             const renderStart = (typeof performance !== 'undefined' && typeof performance.now === 'function') ? performance.now() : Date.now();
             this.handleAssistantOutputFrame(conversationId, msg.data, frameAgentId);
             if (msg.perfTraceId) {
@@ -5141,36 +5302,72 @@ export const useChatStore = defineStore('chat', {
           // and have no envelope context. Keep these two channels in sync
           // if you change the wire-stamping rule.
           if (gs) gs.applyCrudResult(event, msg.agentId || null);
+          let cacheCleanup = Promise.resolve();
+          if (event.ok && event.op === 'delete' && event.sessionId) {
+            const fence = currentYeaftHistoryBrowserFence();
+            cacheCleanup = (async () => {
+              if (!msg.agentId) throw new Error('Session delete result is missing its Agent owner');
+              if (fence) {
+                const removed = await removeYeaftHistoryBrowserCache({
+                  fence,
+                  agentId: msg.agentId,
+                  sessionId: event.sessionId,
+                });
+                if (!removed) throw new Error('Browser history cache was not removed');
+              }
+              this.clearYeaftHistoryMemory({
+                agentId: msg.agentId,
+                sessionId: event.sessionId,
+              });
+            })();
+            // A timed-out or unsolicited result has no caller awaiting the
+            // Promise, but its physical cleanup must still run.
+            void cacheCleanup.catch((error) => {
+              console.error('Session browser history cleanup failed:', error);
+            });
+          }
           const pending = this._sessionCrudPending && this._sessionCrudPending.get(event.requestId);
           if (pending) {
-            this._sessionCrudPending.delete(event.requestId);
-            // fix-yeaft-create-not-opened: the agent's session meta payload
-            // does NOT carry an `agentId` field (the agent doesn't know its
-            // own server-assigned id). The server stamps `msg.agentId` on
-            // the envelope, but if we resolve the promise with the bare
-            // `event.session`, the modal's `created.agentId` is undefined
-            // and the cross-agent `selectAgent(owner)` short-circuits —
-            // leaving `currentAgent` on the wrong agent so the new session
-            // appears to "not open / not show up on the right side".
-            // Stamp the envelope's agentId onto the resolved group payload
-            // so callers see a wire-coherent shape. Agent payload wins if
-            // it ever does start stamping (non-empty values only — an
-            // empty-string agentId is treated as absent).
-            const rawSession = event.session || event.group || null;
-            const sessionWithAgent = (rawSession && msg.agentId && !rawSession.agentId)
-              ? { ...rawSession, agentId: msg.agentId }
-              : rawSession;
-            const resolvedSessionId = event.sessionId || null;
-            const resolvedSessionList = event.sessions || null;
-            pending.resolve({
-              ok: !!event.ok,
-              op: event.op,
-              session: sessionWithAgent,
-              sessionId: resolvedSessionId,
-              sessions: resolvedSessionList,
-              config: event.config || null,
-              error: event.error || null,
-            });
+            const finish = async () => {
+              let cleanupError = null;
+              try {
+                await cacheCleanup;
+              } catch (error) {
+                cleanupError = error;
+              }
+              if (this._sessionCrudPending?.get(event.requestId) !== pending) return;
+              this._sessionCrudPending.delete(event.requestId);
+              // fix-yeaft-create-not-opened: the agent's session meta payload
+              // does NOT carry an `agentId` field (the agent doesn't know its
+              // own server-assigned id). The server stamps `msg.agentId` on
+              // the envelope, but if we resolve the promise with the bare
+              // `event.session`, the modal's `created.agentId` is undefined
+              // and the cross-agent `selectAgent(owner)` short-circuits —
+              // leaving `currentAgent` on the wrong agent so the new session
+              // appears to "not open / not show up on the right side".
+              // Stamp the envelope's agentId onto the resolved group payload
+              // so callers see a wire-coherent shape. Agent payload wins if
+              // it ever does start stamping (non-empty values only — an
+              // empty-string agentId is treated as absent).
+              const rawSession = event.session || event.group || null;
+              const sessionWithAgent = (rawSession && msg.agentId && !rawSession.agentId)
+                ? { ...rawSession, agentId: msg.agentId }
+                : rawSession;
+              const resolvedSessionId = event.sessionId || null;
+              const resolvedSessionList = event.sessions || null;
+              pending.resolve({
+                ok: !!event.ok && !cleanupError,
+                op: event.op,
+                session: sessionWithAgent,
+                sessionId: resolvedSessionId,
+                sessions: resolvedSessionList,
+                config: event.config || null,
+                error: cleanupError
+                  ? { code: 'browser_cache_cleanup_failed', message: cleanupError.message }
+                  : (event.error || null),
+              });
+            };
+            void finish();
           }
           break;
         }
@@ -5989,11 +6186,14 @@ export const useChatStore = defineStore('chat', {
         this.markYeaftSessionRead(next, targetAgentId);
         touchYeaftHistoryCache(this, targetAgentId, next);
       }
-      if (!force && next === prev) return;
+      const repeatedSelection = !force && next === prev;
+      if (repeatedSelection) {
+        void this.hydrateYeaftHistoryBrowserCache(next, targetAgentId);
+        return;
+      }
 
       const sessionKey = yeaftHistoryIdentityKey(targetAgentId, next);
       const savedState = this.yeaftSessionHistoryState[sessionKey] || null;
-      this.pruneYeaftMessageWindow(next);
 
       // Session activation is atomic: commit its owning Agent conversation and
       // both visible pointers before history de-duplication can return early.
@@ -6016,6 +6216,7 @@ export const useChatStore = defineStore('chat', {
         this.yeaftConversationId = targetConversationId;
         if (!this.messagesMap[targetConversationId]) this.messagesMap[targetConversationId] = [];
         if (this.currentView === 'yeaft') this.activeConversations = [targetConversationId];
+        void this.hydrateYeaftHistoryBrowserCache(next, targetAgentId);
       }
       try {
         const gs = window.Pinia?.useSessionsStore?.() || (window.__useSessionsStore && window.__useSessionsStore());
@@ -6769,14 +6970,10 @@ export const useChatStore = defineStore('chat', {
       });
       if (!sent) {
         cancelChatHistoryRequest(this, catalogKey, requestId, 'send_failed');
-        this.sessionHistorySyncRefreshToken += 1;
         return null;
       }
-      this.sessionHistorySyncRefreshToken += 1;
       setTimeout(() => {
-        if (cancelChatHistoryRequest(this, catalogKey, requestId, 'history_load_timeout')) {
-          this.sessionHistorySyncRefreshToken += 1;
-        }
+        cancelChatHistoryRequest(this, catalogKey, requestId, 'history_load_timeout');
       }, 10_000);
       return requestId;
     },
@@ -6797,7 +6994,6 @@ export const useChatStore = defineStore('chat', {
       if (!this.isCurrentChatHistoryResponse(msg)) return false;
       const pending = this.chatHistoryRequests[msg.catalogKey];
       this.chatHistoryRequests[msg.catalogKey] = { ...pending, loading: false };
-      this.sessionHistorySyncRefreshToken += 1;
       return true;
     },
 
@@ -7429,12 +7625,12 @@ export const useChatStore = defineStore('chat', {
         detail: { mode: 'manual-reload', limit: YEAFT_RECENT_TURNS },
       });
       if (!this.sendWsMessage(payload)) {
-        if (failYeaftHistoryLoad(this, {
+        failYeaftHistoryLoad(this, {
           agentId: targetAgentId,
           sessionId,
           requestId: historyRequest.requestId,
           error: 'history_load_send_failed',
-        })) this.sessionHistorySyncRefreshToken += 1;
+        });
         return false;
       }
       return true;
