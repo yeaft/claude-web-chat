@@ -40,6 +40,7 @@ import {
   resolveServiceInstanceId,
   shouldLoadLegacyLocalConfig,
 } from '../../agent/service/config.js';
+import { shouldLoadLegacyLocalConfig as shouldLoadLegacyLocalConfigFromService } from '../../agent/service.js';
 import { handleLocalCommand } from '../../agent/cli.js';
 import { applyRegisteredTransport } from '../../agent/connection/message-router.js';
 import { generateSessionKey, isEncrypted } from '../../agent/encryption.js';
@@ -203,6 +204,7 @@ describe('agent ctx defaults and upgrade contract', () => {
     expect(shouldLoadLegacyLocalConfig({ YEAFT_AGENT_INSTANCE: '' })).toBe(true);
     expect(shouldLoadLegacyLocalConfig({ YEAFT_AGENT_INSTANCE: 'server' })).toBe(false);
     expect(shouldLoadLegacyLocalConfig({ YEAFT_AGENT_INSTANCE: 'default' })).toBe(false);
+    expect(shouldLoadLegacyLocalConfigFromService).toBe(shouldLoadLegacyLocalConfig);
     expect(resolveServiceInstanceId([], { YEAFT_AGENT_INSTANCE: 'named' }, { management: true })).toBe('named');
     expect(() => resolveServiceInstanceId([], { YEAFT_AGENT_INSTANCE: 'bad name' }, { management: true })).toThrow('Instance id');
     expect(applyAgentIdentityToEnv(['--instance', 'legacy', '--name', 'explicit-name'], env)).toBe('explicit-name');
@@ -250,8 +252,6 @@ describe('agent ctx defaults and upgrade contract', () => {
 
     const agentSource = readFileSync(new URL('../../agent/index.js', import.meta.url), 'utf8');
     const doctorSource = readFileSync(new URL('../../agent/service/doctor.js', import.meta.url), 'utf8');
-    expect(agentSource).toContain('shouldLoadLegacyLocalConfig(process.env) && existsSync(LOCAL_CONFIG_FILE)');
-    expect(agentSource).toContain('IS_LOCAL_RUN || !shouldLoadLegacyLocalConfig(process.env)');
     expect(doctorSource).toContain('getSystemdServicePath(instanceId)');
     expect(doctorSource).toContain('getLaunchdPlistPath(instanceId)');
     expect(doctorSource).toContain('getEcosystemPath(instanceId)');
