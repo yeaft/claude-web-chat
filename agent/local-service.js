@@ -5,39 +5,46 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import {
   getConfigDir,
-  getDefaultAgentName,
   getDefaultYeaftDir,
   getNodePath,
-  resolveDisplayName,
+  resolveServiceInstanceId,
+  resolveYeaftDir,
   validateInstanceId,
 } from './service/config.js';
 
 const LOCAL_SERVICE_PREFIX = 'yeaft-local';
 const DEFAULT_PORT = 6868;
 
-export function parseLocalServiceArgs(args, env = process.env) {
-  const options = {
-    name: resolveDisplayName(args, env, getDefaultAgentName()),
+/** Parse local service identity, runtime port, and resolved persistent data root. */
+export function parseLocalServiceArgs(args, env = process.env, options = {}) {
+  const parsed = {
+    name: resolveServiceInstanceId(args, env),
     port: DEFAULT_PORT,
+    yeaftDir: null,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     const value = args[index + 1];
-    if (arg === '--name') {
-      if (!value || value.startsWith('-')) throw new Error('--name requires a value');
+    if (arg === '--name' || arg === '--instance' || arg === '--yeaft-dir') {
+      if (!value || value.startsWith('-')) throw new Error(`${arg} requires a value`);
       index += 1;
     } else if (arg === '--port') {
       if (!value || value.startsWith('-')) throw new Error('--port requires a value');
       if (!/^\d+$/.test(value)) throw new Error(`Invalid port: ${value}`);
-      options.port = Number(value);
-      if (options.port < 1 || options.port > 65535) throw new Error(`Invalid port: ${value}`);
+      parsed.port = Number(value);
+      if (parsed.port < 1 || parsed.port > 65535) throw new Error(`Invalid port: ${value}`);
       index += 1;
     } else {
       throw new Error(`Unknown local service option: ${arg}`);
     }
   }
-  options.name = validateInstanceId(options.name);
-  return options;
+  parsed.name = validateInstanceId(parsed.name);
+  const existing = options.existing || null;
+  const hasExplicitYeaftDir = args.includes('--yeaft-dir') || Boolean(env.YEAFT_DIR);
+  parsed.yeaftDir = hasExplicitYeaftDir
+    ? resolveYeaftDir(args, env, parsed.name)
+    : existing?.yeaftDir || getDefaultYeaftDir(parsed.name);
+  return parsed;
 }
 
 export function getLocalServiceName(name) {
@@ -64,22 +71,28 @@ function systemdEscape(value) {
   return String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"');
 }
 
-function readLocalServiceConfig(name) {
+/** Read the persisted local service settings, including its resolved data root. */
+export function readLocalServiceConfig(name) {
   const path = getLocalServiceConfigPath(name);
   if (!existsSync(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'));
     if (!parsed || typeof parsed !== 'object') return null;
+    const configName = validateInstanceId(parsed.name || name);
     return {
-      name: validateInstanceId(parsed.name || name),
+      name: configName,
       port: Number(parsed.port) || DEFAULT_PORT,
+      yeaftDir: typeof parsed.yeaftDir === 'string' && parsed.yeaftDir
+        ? parsed.yeaftDir
+        : getDefaultYeaftDir(configName),
     };
   } catch {
     return null;
   }
 }
 
-function writeLocalServiceConfig(config) {
+/** Persist the local service settings selected at install time. */
+export function writeLocalServiceConfig(config) {
   const path = getLocalServiceConfigPath(config.name);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
@@ -97,6 +110,7 @@ export function generateLocalSystemdUnit(config, options = {}) {
   const nodePath = getNodePath();
   const cliPath = options.cliPath || join(dirname(fileURLToPath(import.meta.url)), 'cli.js');
   const localDataDir = options.dataDir || join(homedir(), '.yeaft', 'server');
+  const yeaftDir = config.yeaftDir || getDefaultYeaftDir(config.name);
   const logDir = join(getConfigDir(config.name), 'logs');
   const workingDirectory = options.workingDirectory || dirname(cliPath);
   const command = [
@@ -121,7 +135,7 @@ RestartSec=5
 WorkingDirectory=${workingDirectory}
 Environment="YEAFT_LOCAL_RUN=true"
 Environment="YEAFT_AGENT_INSTANCE=${systemdEscape(config.name)}"
-Environment="YEAFT_DIR=${systemdEscape(getDefaultYeaftDir(config.name))}"
+Environment="YEAFT_DIR=${systemdEscape(yeaftDir)}"
 Environment="SERVER_DATA_DIR=${systemdEscape(localDataDir)}"
 StandardOutput=append:${logDir}/out.log
 StandardError=append:${logDir}/error.log
@@ -172,19 +186,22 @@ function controlLinux(command, name) {
 }
 
 export async function handleLocalServiceCommand(command, args = []) {
-  const config = parseLocalServiceArgs(args);
+  const identity = parseLocalServiceArgs(args);
   if (platform() !== 'linux') {
     throw new Error(`Local managed service is currently supported on Linux only (current platform: ${platform()}). Use \`yeaft-agent local --background\` on this platform.`);
   }
   if (command === 'install') {
+    const config = parseLocalServiceArgs(args, process.env, {
+      existing: readLocalServiceConfig(identity.name),
+    });
     writeLocalServiceConfig(config);
     installLinux(config);
     return;
   }
   if (command === 'uninstall') {
-    uninstallLinux(config.name);
+    uninstallLinux(identity.name);
     return;
   }
-  requireLocalServiceConfig(config.name);
+  const config = requireLocalServiceConfig(identity.name);
   controlLinux(command, config.name);
 }

@@ -64,21 +64,7 @@ if (command === 'doctor') {
 } else if (command === 'llm') {
   await handleLlmCommand(subArgs);
 } else if (command === 'local') {
-  try {
-    const localCommand = subArgs[0];
-    if (localCommand === '--help' || localCommand === '-h') {
-      printHelp();
-    } else if (SERVICE_COMMANDS.includes(localCommand)) {
-      const { handleLocalServiceCommand } = await import('./local-service.js');
-      await handleLocalServiceCommand(localCommand, subArgs.slice(1));
-    } else {
-      const { runLocal } = await import('./local-run.js');
-      await runLocal(subArgs);
-    }
-  } catch (error) {
-    console.error(`Local run failed: ${error.message}`);
-    process.exit(1);
-  }
+  await handleLocalCommand(subArgs);
 } else if (command === 'upgrade') {
   await upgrade(subArgs);
 } else if (command === '--version' || command === '-v') {
@@ -90,6 +76,37 @@ if (command === 'doctor') {
 } else {
   // Normal agent startup — parse flags and set env vars
   parseAndStart(args);
+}
+
+/** Dispatch the local foreground and managed-service command family. */
+export async function handleLocalCommand(subArgs, options = {}) {
+  const printHelpFn = options.printHelp || printHelp;
+  const warn = options.warn || console.warn;
+  const loadLocalService = options.loadLocalService || (() => import('./local-service.js'));
+  const loadLocalRun = options.loadLocalRun || (() => import('./local-run.js'));
+  try {
+    const localCommand = subArgs[0];
+    if (localCommand === '--help' || localCommand === '-h') {
+      printHelpFn();
+      return;
+    }
+    warnDeprecatedInstanceArg(subArgs, warn);
+    if (SERVICE_COMMANDS.includes(localCommand)) {
+      const { handleLocalServiceCommand } = await loadLocalService();
+      await handleLocalServiceCommand(localCommand, subArgs.slice(1));
+      return;
+    }
+    const { runLocal } = await loadLocalRun();
+    await runLocal(subArgs);
+  } catch (error) {
+    const message = `Local run failed: ${error.message}`;
+    if (options.onError) {
+      options.onError(message, error);
+      return;
+    }
+    console.error(message);
+    process.exit(1);
+  }
 }
 
 function printHelp() {

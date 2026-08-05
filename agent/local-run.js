@@ -5,22 +5,23 @@ import { createServer } from 'net';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
-import { getDefaultYeaftDir, resolveDisplayName, validateInstanceId } from './service/config.js';
+import { resolveServiceInstanceId, resolveYeaftDir } from './service/config.js';
 
 const DEFAULT_PORT = 6868;
 const LOCAL_HOST = '127.0.0.1';
 
 export function parseLocalArgs(args, env = process.env) {
   const options = {
-    name: resolveDisplayName(args, env),
+    name: resolveServiceInstanceId(args, env),
     port: DEFAULT_PORT,
     background: false,
+    yeaftDir: null,
   };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     const value = args[i + 1];
-    if (arg === '--name') {
-      if (!value || value.startsWith('-')) throw new Error('--name requires a value');
+    if (arg === '--name' || arg === '--instance' || arg === '--yeaft-dir') {
+      if (!value || value.startsWith('-')) throw new Error(`${arg} requires a value`);
       i++;
     } else if (arg === '--port') {
       if (!value || value.startsWith('-')) throw new Error('--port requires a value');
@@ -34,7 +35,7 @@ export function parseLocalArgs(args, env = process.env) {
       throw new Error(`Unknown local option: ${arg}`);
     }
   }
-  options.name = validateInstanceId(options.name);
+  options.yeaftDir = resolveYeaftDir(args, env, options.name);
   return options;
 }
 
@@ -138,7 +139,7 @@ export async function runLocal(args, options = {}) {
   }
   const paths = options.paths || runtimePaths();
   const dataDir = options.dataDir || join(homedir(), '.yeaft', 'server');
-  const yeaftDir = options.yeaftDir || process.env.YEAFT_DIR || getDefaultYeaftDir(config.name);
+  const yeaftDir = options.yeaftDir || config.yeaftDir;
   const url = `http://${LOCAL_HOST}:${config.port}`;
   const children = new Set();
   const signalHandlers = new Map();

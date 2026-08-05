@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,7 +21,13 @@ import {
 import ctx from '../../agent/context.js';
 import { connect, resetConnectionTransport, sendToServer } from '../../agent/connection/index.js';
 import { parseLocalArgs, launchLocalInBackground, runLocal } from '../../agent/local-run.js';
-import { generateLocalSystemdUnit, parseLocalServiceArgs } from '../../agent/local-service.js';
+import {
+  generateLocalSystemdUnit,
+  getLocalServiceConfigPath,
+  parseLocalServiceArgs,
+  readLocalServiceConfig,
+  writeLocalServiceConfig,
+} from '../../agent/local-service.js';
 import {
   applyAgentIdentityToEnv,
   getDefaultAgentName,
@@ -29,9 +35,11 @@ import {
   getInstanceIdFromArgs,
   parseServiceArgs,
   resolveDisplayName,
+  resolveYeaftDir,
   resolveRuntimeIdentity,
   resolveServiceInstanceId,
 } from '../../agent/service/config.js';
+import { handleLocalCommand } from '../../agent/cli.js';
 import { applyRegisteredTransport } from '../../agent/connection/message-router.js';
 import { generateSessionKey, isEncrypted } from '../../agent/encryption.js';
 
@@ -77,18 +85,46 @@ describe('agent ctx defaults and upgrade contract', () => {
     expect(getInstanceIdFromArgs([], {})).toBe(computerName);
     expect(getInstanceIdFromArgs([], {}, { management: true })).toBe('default');
     expect(getInstanceIdFromArgs([], { YEAFT_AGENT_INSTANCE: 'named' }, { management: true })).toBe('named');
-    expect(parseLocalArgs([], {})).toEqual({ name: computerName, port: 6868, background: false });
-    expect(parseLocalArgs([], { AGENT_NAME: 'env-name' })).toEqual({ name: 'env-name', port: 6868, background: false });
+    expect(parseLocalArgs([], {})).toEqual({
+      name: computerName, port: 6868, background: false, yeaftDir: getDefaultYeaftDir(computerName),
+    });
+    expect(parseLocalArgs([], { AGENT_NAME: 'env-name' })).toEqual({
+      name: 'env-name', port: 6868, background: false, yeaftDir: getDefaultYeaftDir('env-name'),
+    });
     expect(parseLocalArgs(['--name', 'local-ui', '--port', '7777', '--background'], {})).toEqual({
-      name: 'local-ui', port: 7777, background: true,
+      name: 'local-ui', port: 7777, background: true, yeaftDir: getDefaultYeaftDir('local-ui'),
     });
     expect(parseLocalArgs(['-d'], { AGENT_NAME: 'local-ui' })).toEqual({
-      name: 'local-ui', port: 6868, background: true,
+      name: 'local-ui', port: 6868, background: true, yeaftDir: getDefaultYeaftDir('local-ui'),
+    });
+    expect(parseLocalArgs(['--instance', 'legacy-local'], {})).toEqual({
+      name: 'legacy-local', port: 6868, background: false, yeaftDir: getDefaultYeaftDir('legacy-local'),
+    });
+    expect(parseLocalArgs(['--instance', 'legacy-local', '--name', 'current-local'], {})).toEqual({
+      name: 'current-local', port: 6868, background: false, yeaftDir: getDefaultYeaftDir('current-local'),
+    });
+    expect(parseLocalArgs(['--yeaft-dir', '/tmp/local-data'], { YEAFT_DIR: '/tmp/env-data' })).toEqual({
+      name: computerName, port: 6868, background: false, yeaftDir: '/tmp/local-data',
     });
     expect(parseLocalServiceArgs(['--name', 'local-ui', '--port', '7777'], {})).toEqual({
-      name: 'local-ui', port: 7777,
+      name: 'local-ui', port: 7777, yeaftDir: getDefaultYeaftDir('local-ui'),
     });
+    expect(parseLocalServiceArgs(['--instance', 'legacy-local'], {})).toEqual({
+      name: 'legacy-local', port: 6868, yeaftDir: getDefaultYeaftDir('legacy-local'),
+    });
+    expect(parseLocalServiceArgs(['--instance', 'legacy-local', '--name', 'current-local'], {})).toEqual({
+      name: 'current-local', port: 6868, yeaftDir: getDefaultYeaftDir('current-local'),
+    });
+    expect(parseLocalServiceArgs(['--yeaft-dir', '/tmp/local-data'], { YEAFT_DIR: '/tmp/env-data' })).toEqual({
+      name: computerName, port: 6868, yeaftDir: '/tmp/local-data',
+    });
+    expect(resolveYeaftDir([], { YEAFT_DIR: '/tmp/env-data' }, 'local-ui')).toBe('/tmp/env-data');
+    expect(resolveYeaftDir(['--yeaft-dir', '/tmp/flag-data'], { YEAFT_DIR: '/tmp/env-data' }, 'local-ui')).toBe('/tmp/flag-data');
     expect(() => parseLocalServiceArgs(['--background'], {})).toThrow('Unknown local service option');
+    expect(() => parseLocalArgs(['--instance'], {})).toThrow('--instance requires a value');
+    expect(() => parseLocalServiceArgs(['--instance'], {})).toThrow('--instance requires a value');
+    expect(() => parseLocalArgs(['--yeaft-dir'], {})).toThrow('--yeaft-dir requires a value');
+    expect(() => parseLocalServiceArgs(['--yeaft-dir'], {})).toThrow('--yeaft-dir requires a value');
 
     const detached = { pid: 4321, unref: vi.fn() };
     const spawnDetached = vi.fn(() => detached);
@@ -106,11 +142,20 @@ describe('agent ctx defaults and upgrade contract', () => {
       cliPath: '/opt/yeaft/cli.js',
       workingDirectory: '/workspace/yeaft',
     });
+    const customRootUnit = generateLocalSystemdUnit({
+      name: 'local-ui', port: 7777, yeaftDir: '/tmp/local-data',
+    }, {
+      cliPath: '/opt/yeaft/cli.js',
+      workingDirectory: '/workspace/yeaft',
+    });
     expect(localUnit).toContain('Description=Yeaft Local Web UI (local-ui)');
     expect(localUnit).toContain('ExecStart=');
     expect(localUnit).toContain("'/opt/yeaft/cli.js' local --name 'local-ui' --port 7777");
     expect(localUnit).toContain('WorkingDirectory=/workspace/yeaft');
     expect(localUnit).toContain('Environment="YEAFT_LOCAL_RUN=true"');
+    expect(localUnit).toContain(`Environment="YEAFT_DIR=${getDefaultYeaftDir('local-ui')}"`);
+    expect(customRootUnit).toContain('Environment="YEAFT_DIR=/tmp/local-data"');
+    expect(customRootUnit).not.toContain(`Environment="YEAFT_DIR=${getDefaultYeaftDir('local-ui')}"`);
     expect(localUnit).toContain('WantedBy=default.target');
 
     const env = {};
@@ -223,7 +268,7 @@ describe('agent ctx defaults and upgrade contract', () => {
 
   });
 
-  it('keeps the default local instance data root stable across foreground and systemd mode', async () => {
+  it('keeps local instance data roots stable across foreground and systemd mode', async () => {
     const probe = createServer();
     await new Promise((resolve, reject) => {
       probe.once('error', reject);
@@ -248,9 +293,14 @@ describe('agent ctx defaults and upgrade contract', () => {
       return child;
     });
     const previousYeaftDir = process.env.YEAFT_DIR;
+    const previousAgentInstance = process.env.YEAFT_AGENT_INSTANCE;
+    const previousAgentName = process.env.AGENT_NAME;
     delete process.env.YEAFT_DIR;
+    delete process.env.YEAFT_AGENT_INSTANCE;
+    delete process.env.AGENT_NAME;
 
     let foreground;
+    let overrideForeground;
     try {
       foreground = await runLocal(['--name', 'default', '--port', String(port)], {
         exit: false,
@@ -265,14 +315,87 @@ describe('agent ctx defaults and upgrade contract', () => {
       });
       const serviceYeaftDir = localUnit.match(/^Environment="YEAFT_DIR=(.+)"$/m)?.[1];
 
-      expect(children).toHaveLength(2);
+      const overrideRoot = '/tmp/yeaft-local-transition';
+      overrideForeground = await runLocal(['--name', 'default', '--port', String(port), '--yeaft-dir', overrideRoot], {
+        exit: false,
+        spawn: spawnLocal,
+        waitForServer: async () => {},
+        waitForAgent: async () => {},
+      });
+      const overrideForegroundYeaftDir = spawnLocal.mock.calls[3][2].env.YEAFT_DIR;
+      const overrideUnit = generateLocalSystemdUnit({
+        name: 'default', port, yeaftDir: parseLocalServiceArgs(['--name', 'default', '--port', String(port), '--yeaft-dir', overrideRoot], {}).yeaftDir,
+      }, {
+        cliPath: '/opt/yeaft/cli.js',
+        workingDirectory: '/workspace/yeaft',
+      });
+      const overrideServiceYeaftDir = overrideUnit.match(/^Environment="YEAFT_DIR=(.+)"$/m)?.[1];
+
+      expect(children).toHaveLength(4);
       expect(foregroundYeaftDir).toBe(getDefaultYeaftDir('default'));
       expect(serviceYeaftDir).toBe(foregroundYeaftDir);
+      expect(overrideForegroundYeaftDir).toBe(overrideRoot);
+      expect(overrideServiceYeaftDir).toBe(overrideForegroundYeaftDir);
     } finally {
+      if (overrideForeground) await overrideForeground.stop();
       if (foreground) await foreground.stop();
       if (previousYeaftDir === undefined) delete process.env.YEAFT_DIR;
       else process.env.YEAFT_DIR = previousYeaftDir;
+      if (previousAgentInstance === undefined) delete process.env.YEAFT_AGENT_INSTANCE;
+      else process.env.YEAFT_AGENT_INSTANCE = previousAgentInstance;
+      if (previousAgentName === undefined) delete process.env.AGENT_NAME;
+      else process.env.AGENT_NAME = previousAgentName;
     }
+  });
+
+  it('persists the resolved local service data-root override across reinstall', () => {
+    const previousHome = process.env.HOME;
+    const temporaryHome = mkdtempSync(join(tmpdir(), 'yeaft-local-service-'));
+    process.env.HOME = temporaryHome;
+    try {
+      const installed = parseLocalServiceArgs(['--name', 'default', '--yeaft-dir', '/tmp/yeaft-persisted-root'], {});
+      writeLocalServiceConfig(installed);
+
+      const configPath = getLocalServiceConfigPath('default');
+      const restored = readLocalServiceConfig('default');
+      const reinstalled = parseLocalServiceArgs(['--name', 'default', '--port', '7777'], {}, { existing: restored });
+      expect(existsSync(configPath)).toBe(true);
+      expect(restored).toEqual(installed);
+      expect(reinstalled).toEqual({
+        name: 'default', port: 7777, yeaftDir: '/tmp/yeaft-persisted-root',
+      });
+      expect(generateLocalSystemdUnit(reinstalled, {
+        cliPath: '/opt/yeaft/cli.js',
+        workingDirectory: '/workspace/yeaft',
+      })).toContain('Environment="YEAFT_DIR=/tmp/yeaft-persisted-root"');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      rmSync(temporaryHome, { recursive: true, force: true });
+    }
+  });
+
+  it('warns once and routes deprecated local --instance through both foreground and install paths', async () => {
+    const warn = vi.fn();
+    const runLocal = vi.fn().mockResolvedValue(undefined);
+    const handleLocalServiceCommand = vi.fn().mockResolvedValue(undefined);
+
+    await handleLocalCommand(['--instance', 'legacy-local'], {
+      warn,
+      loadLocalRun: async () => ({ runLocal }),
+      onError: error => { throw new Error(error); },
+    });
+    await handleLocalCommand(['install', '--instance', 'legacy-local'], {
+      warn,
+      loadLocalService: async () => ({ handleLocalServiceCommand }),
+      onError: error => { throw new Error(error); },
+    });
+
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenNthCalledWith(1, expect.stringContaining('--instance is deprecated'));
+    expect(warn).toHaveBeenNthCalledWith(2, expect.stringContaining('--instance is deprecated'));
+    expect(runLocal).toHaveBeenCalledWith(['--instance', 'legacy-local']);
+    expect(handleLocalServiceCommand).toHaveBeenCalledWith('install', ['--instance', 'legacy-local']);
   });
 
   it('runs the detached Windows updater without shell wrappers and with bounded retries', async () => {
