@@ -5,7 +5,7 @@ import { createServer } from 'net';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
-import { resolveDisplayName, validateInstanceId } from './service/config.js';
+import { getDefaultYeaftDir, resolveDisplayName, validateInstanceId } from './service/config.js';
 
 const DEFAULT_PORT = 6868;
 const LOCAL_HOST = '127.0.0.1';
@@ -138,7 +138,7 @@ export async function runLocal(args, options = {}) {
   }
   const paths = options.paths || runtimePaths();
   const dataDir = options.dataDir || join(homedir(), '.yeaft', 'server');
-  const yeaftDir = options.yeaftDir || process.env.YEAFT_DIR || join(homedir(), '.yeaft', 'instances', config.name);
+  const yeaftDir = options.yeaftDir || process.env.YEAFT_DIR || getDefaultYeaftDir(config.name);
   const url = `http://${LOCAL_HOST}:${config.port}`;
   const children = new Set();
   const signalHandlers = new Map();
@@ -216,7 +216,7 @@ export async function runLocal(args, options = {}) {
     server.once('exit', fail('Local server'));
     agent.once('exit', fail('Local agent'));
 
-    await waitForAgent(`ws://${LOCAL_HOST}:${config.port}`, config.name, agent);
+    await (options.waitForAgent || waitForAgent)(`ws://${LOCAL_HOST}:${config.port}`, config.name, agent);
 
     console.log(`Yeaft local is available at ${url}`);
     return { url, server, agent, stop };

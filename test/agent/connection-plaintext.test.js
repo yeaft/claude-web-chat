@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
@@ -18,11 +20,12 @@ import {
 } from '../../agent/windows-upgrade-runner.js';
 import ctx from '../../agent/context.js';
 import { connect, resetConnectionTransport, sendToServer } from '../../agent/connection/index.js';
-import { parseLocalArgs, launchLocalInBackground } from '../../agent/local-run.js';
+import { parseLocalArgs, launchLocalInBackground, runLocal } from '../../agent/local-run.js';
 import { generateLocalSystemdUnit, parseLocalServiceArgs } from '../../agent/local-service.js';
 import {
   applyAgentIdentityToEnv,
   getDefaultAgentName,
+  getDefaultYeaftDir,
   getInstanceIdFromArgs,
   parseServiceArgs,
   resolveDisplayName,
@@ -218,6 +221,58 @@ describe('agent ctx defaults and upgrade contract', () => {
       'https://pkg.yeaft.com/%40yeaft%2Fwebchat-agent/latest',
     );
 
+  });
+
+  it('keeps the default local instance data root stable across foreground and systemd mode', async () => {
+    const probe = createServer();
+    await new Promise((resolve, reject) => {
+      probe.once('error', reject);
+      probe.listen(0, '127.0.0.1', resolve);
+    });
+    const { port } = probe.address();
+    await new Promise((resolve, reject) => probe.close(error => error ? reject(error) : resolve()));
+
+    const children = [];
+    const spawnLocal = vi.fn(() => {
+      const child = new EventEmitter();
+      child.exitCode = null;
+      child.killed = false;
+      child.kill = () => {
+        if (child.exitCode !== null) return false;
+        child.killed = true;
+        child.exitCode = 0;
+        queueMicrotask(() => child.emit('exit', 0));
+        return true;
+      };
+      children.push(child);
+      return child;
+    });
+    const previousYeaftDir = process.env.YEAFT_DIR;
+    delete process.env.YEAFT_DIR;
+
+    let foreground;
+    try {
+      foreground = await runLocal(['--name', 'default', '--port', String(port)], {
+        exit: false,
+        spawn: spawnLocal,
+        waitForServer: async () => {},
+        waitForAgent: async () => {},
+      });
+      const foregroundYeaftDir = spawnLocal.mock.calls[1][2].env.YEAFT_DIR;
+      const localUnit = generateLocalSystemdUnit({ name: 'default', port }, {
+        cliPath: '/opt/yeaft/cli.js',
+        workingDirectory: '/workspace/yeaft',
+      });
+      const serviceYeaftDir = localUnit.match(/^Environment="YEAFT_DIR=(.+)"$/m)?.[1];
+
+      expect(children).toHaveLength(2);
+      expect(foregroundYeaftDir).toBe(getDefaultYeaftDir('default'));
+      expect(serviceYeaftDir).toBe(foregroundYeaftDir);
+    } finally {
+      if (foreground) await foreground.stop();
+      if (previousYeaftDir === undefined) delete process.env.YEAFT_DIR;
+      else process.env.YEAFT_DIR = previousYeaftDir;
+    }
   });
 
   it('runs the detached Windows updater without shell wrappers and with bounded retries', async () => {
