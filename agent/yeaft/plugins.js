@@ -51,6 +51,32 @@ export function isPluginNameEnabled(plugins, field, name) {
 }
 
 /**
+ * Keep the configured MCP catalog separate from the runtime connection set.
+ * The catalog must retain disabled servers so users can enable them later;
+ * runtimes must receive only the effective allowlisted subset.
+ *
+ * The caller owns the raw configured catalog; this helper never connects it.
+ */
+export function resolveMcpPluginPolicy(mcpConfig, plugins) {
+  const configured = {
+    ...(mcpConfig || {}),
+    servers: Array.isArray(mcpConfig?.servers) ? mcpConfig.servers : [],
+  };
+  if (!Array.isArray(plugins?.mcpServers)) {
+    return { configured, effective: configured };
+  }
+
+  const allowed = new Set(plugins.mcpServers);
+  return {
+    configured,
+    effective: {
+      ...configured,
+      servers: configured.servers.filter(server => allowed.has(server?.name)),
+    },
+  };
+}
+
+/**
  * Live delegating view over a SkillManager. It does not mutate the shared
  * manager because Sessions and project runtimes reuse that manager.
  */

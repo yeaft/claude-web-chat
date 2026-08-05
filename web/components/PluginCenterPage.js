@@ -42,9 +42,11 @@ export default {
     },
     enabledCount() {
       if (!this.hasExplicitSelection) return this.catalog.tools.length + this.catalog.skills.length + this.catalog.mcpServers.length;
-      return (this.selection.tools?.length || 0)
-        + (this.selection.skills?.length || 0)
-        + (this.selection.mcpServers?.length || 0);
+      return ['tools', 'skills', 'mcpServers'].reduce((count, field) => (
+        count + (Array.isArray(this.selection[field])
+          ? this.selection[field].length
+          : this.catalog[field].length)
+      ), 0);
     },
   },
   watch: {
@@ -82,9 +84,7 @@ export default {
     toggle(field, id, checked) {
       if (!this.hasExplicitSelection) {
         this.selection = {
-          tools: this.catalog.tools.map(item => item.id),
-          skills: this.catalog.skills.map(item => item.id),
-          mcpServers: this.catalog.mcpServers.map(item => item.id),
+          [field]: this.catalog[field].map(item => item.id),
         };
       }
       const current = new Set(this.selection[field] || []);

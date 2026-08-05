@@ -29,6 +29,7 @@ import {
 import { createSkillManager } from '../skills.js';
 import { loadMCPConfig } from '../config.js';
 import { MCPManager } from '../mcp.js';
+import { resolveMcpPluginPolicy } from '../plugins.js';
 import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
 import { recallWorkspaceSessionContext } from './workspace-context.js';
 import { applyGeneratedPlan, BUILT_IN_ACTION_TYPES } from './workflow.js';
@@ -376,6 +377,7 @@ export function createSubmitWorkItemPlanTool({
     },
     isConcurrencySafe: () => false,
     isReadOnly: () => false,
+    pluginExempt: true,
   });
 }
 
@@ -434,6 +436,7 @@ export function createProposeWorkItemActionsTool({
       ctx.requestEndTurn?.({ kind: 'work_item_actions_proposed', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId, actionCount: input.actions.length });
     },
+    pluginExempt: true,
   });
 }
 
@@ -455,6 +458,7 @@ export function createRequestWorkItemReplanTool({ workItem, collector, isRunActi
       ctx.requestEndTurn?.({ kind: 'work_item_replan_requested', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId });
     },
+    pluginExempt: true,
   });
 }
 
@@ -509,6 +513,7 @@ export function createSubmitWorkItemReplanTool({ vps, workItem, action, actions,
     },
     isConcurrencySafe: () => false,
     isReadOnly: () => false,
+    pluginExempt: true,
   });
 }
 
@@ -783,11 +788,13 @@ export class WorkItemRunner {
     }));
   }
 
-  async #workspaceRuntime(workspaceDir, executionDir, isRunActive) {
+  // Work Center uses the Agent's MCP allowlist, but keeps its own run tools
+  // outside that user-configurable capability set.
+  async #workspaceRuntime(workspaceDir, executionDir, isRunActive, plugins = {}) {
     if (!this.yeaftDir) return { skillManager: null, mcpManager: null, mcpTools: [] };
     if (this.shuttingDown) throw new Error('Work Center Runner is shutting down');
     if (!isRunActive()) throw new Error('Work Center Run lease is no longer active');
-    const runtimeKey = `${workspaceDir}\0${executionDir}`;
+    const runtimeKey = `${workspaceDir}\0${executionDir}\0${JSON.stringify(plugins?.mcpServers ?? null)}`;
     const cached = this.workspaceRuntimes.get(runtimeKey);
     if (cached) return cached;
     const pending = (async () => {
@@ -795,9 +802,10 @@ export class WorkItemRunner {
         secureWorkspace: true,
       });
       const mcpManager = new MCPManager();
-      const mcpConfig = loadMCPConfig(this.yeaftDir, undefined, workspaceDir, {
+      const rawMcpConfig = loadMCPConfig(this.yeaftDir, undefined, workspaceDir, {
         secureWorkspace: true,
       });
+      const { effective: mcpConfig } = resolveMcpPluginPolicy(rawMcpConfig, plugins);
       const servers = mcpConfig.servers.map(server => ({ ...server, cwd: executionDir }));
       if (!isRunActive()) throw new Error('Work Center Run lease is no longer active');
       if (servers.length > 0) await mcpManager.connectAll(servers);
@@ -976,7 +984,12 @@ export class WorkItemRunner {
       : null;
     const isRunActive = () => !signal.aborted
       && this.store.isActiveRun(run.id, ownerBootId, run.leaseEpoch);
-    const workspaceRuntime = await this.#workspaceRuntime(workspaceDir, workDir, isRunActive);
+    const workspaceRuntime = await this.#workspaceRuntime(
+      workspaceDir,
+      workDir,
+      isRunActive,
+      runtime.config?.plugins,
+    );
     const mcpToolNames = workspaceRuntime.mcpTools.map(tool => tool.name);
     const planCollector = { value: null };
     const mutationCollector = { value: null };

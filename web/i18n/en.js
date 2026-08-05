@@ -14,6 +14,7 @@ export default {
   'common.refresh': 'Refresh',
   'common.open': 'Open',
   'common.save': 'Save',
+  'common.saving': 'Saving...',
   'common.search': 'Search',
   'common.back': 'Back',
   'common.noSubdirectories': 'No subdirectories',

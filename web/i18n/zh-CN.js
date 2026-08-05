@@ -14,6 +14,7 @@ export default {
   'common.refresh': '刷新',
   'common.open': '打开',
   'common.save': '保存',
+  'common.saving': '保存中...',
   'common.search': '搜索',
   'common.back': '返回',
   'common.noSubdirectories': '无子目录',

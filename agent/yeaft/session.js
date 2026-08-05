@@ -22,6 +22,7 @@ import { recordAgentTokenUsage } from '../metrics.js';
 import { ConversationStore, setDefaultRecentTurnsLimit } from './conversation/persist.js';
 import { SkillManager, createSkillManager } from './skills.js';
 import { MCPManager } from './mcp.js';
+import { resolveMcpPluginPolicy } from './plugins.js';
 import { createFullRegistry } from './tools/index.js';
 import { buildMcpFlattenedTools } from './tools/mcp-tools.js';
 import { Engine } from './engine.js';
@@ -413,12 +414,7 @@ export async function loadSession(options = {}) {
 
   // ─── 7. Connect MCP servers ────────────────────────────
   const rawMcpConfig = loadMCPConfig(configDir, undefined, projectTierRoot);
-  const mcpConfig = {
-    ...rawMcpConfig,
-    servers: Array.isArray(config?.plugins?.mcpServers)
-      ? rawMcpConfig.servers.filter(server => config.plugins.mcpServers.includes(server?.name))
-      : rawMcpConfig.servers,
-  };
+  const { effective: mcpConfig } = resolveMcpPluginPolicy(rawMcpConfig, config.plugins);
   const mcpManager = new MCPManager();
   let mcpStatus = { connected: [], failed: [] };
 

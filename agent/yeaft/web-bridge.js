@@ -25,7 +25,7 @@ import { Engine } from './engine.js';
 import { loadSession } from './session.js';
 import { loadConfig, loadMCPConfig } from './config.js';
 import { createSkillManager } from './skills.js';
-import { buildPluginCatalog } from './plugins.js';
+import { buildPluginCatalog, createPluginSkillManager, resolveMcpPluginPolicy } from './plugins.js';
 import { MCPManager } from './mcp.js';
 import { sendToServer } from '../connection/buffer.js';
 import ctx from '../context.js';
@@ -222,7 +222,10 @@ export async function refreshLiveSessionConfig(options = {}) {
   for (const key of Object.keys(currentConfig)) delete currentConfig[key];
   Object.assign(currentConfig, nextConfig);
   liveSession.engine?.refreshConfig?.(currentConfig);
-  if (pluginsChanged) scheduleBaseRuntimeLoad();
+  if (pluginsChanged && session === liveSession) {
+    claimRuntimeOwnership(liveSession);
+    await scheduleBaseRuntimeLoad();
+  }
   for (const { key, engine, config } of vpConfigSnapshots) {
     engine.refreshConfig?.(config);
     vpEngineConfigKeys.set(key, engineConfigKey(config));
@@ -592,17 +595,6 @@ function engineConfigKey(config) {
   });
 }
 
-function filterMcpConfigByPlugins(mcpConfig, plugins) {
-  if (!Array.isArray(plugins?.mcpServers)) return mcpConfig;
-  const allowed = new Set(plugins.mcpServers);
-  return {
-    ...(mcpConfig || {}),
-    servers: Array.isArray(mcpConfig?.servers)
-      ? mcpConfig.servers.filter(server => allowed.has(server?.name))
-      : [],
-  };
-}
-
 function effectiveRuntimeManagers(skillManager, mcpManager, _config = session?.config) {
   // Engine owns the final skill-policy wrapper so refreshConfig() can safely
   // reapply a changed Agent plugin selection without mutating shared managers.
@@ -629,7 +621,7 @@ const RUNNING_THREAD_STATES = new Set(['queued', 'typing', 'thinking', 'retrying
 const vpThreads = new Map();
 /** @type {Map<string, Set<Promise<string|null>>>} */
 const routePromisesByMsgId = new Map();
-/** @type {Map<string, { workDir: string, skillManager: import('./skills.js').SkillManager, mcpManager: import('./mcp.js').MCPManager, mcpStatus: object, mcpConfig: object, status: { skills: number, mcpServers: string[], mcpFailed: object[], mcpSkipped: object[], tools: number } }>} */
+/** @type {Map<string, { workDir: string, skillManager: import('./skills.js').SkillManager, mcpManager: import('./mcp.js').MCPManager, mcpStatus: object, configuredMcpConfig: object, effectiveMcpConfig: object, status: { skills: number, mcpServers: string[], mcpFailed: object[], mcpSkipped: object[], tools: number } }>} */
 const projectRuntimes = new Map();
 /** @type {Map<string, Promise<any>>} */
 const baseRuntimeLoadPromises = new Map();
@@ -2403,9 +2395,11 @@ function loadAndBroadcastYeaftSkillSlashCommands() {
   const configuredWorkDir = typeof ctx.CONFIG?.workDir === 'string' ? ctx.CONFIG.workDir.trim() : '';
   if (configuredWorkDir && configuredWorkDir !== process.cwd()) roots.push(configuredWorkDir);
   const skillManager = createSkillManager(yeaftDir, roots.join(delimiter));
-  broadcastSkillSlashCommands({ skillManager });
+  const config = loadConfig({ dir: yeaftDir });
+  const visibleSkillManager = createPluginSkillManager(skillManager, config.plugins);
+  broadcastSkillSlashCommands({ skillManager: visibleSkillManager });
   return {
-    skills: skillManager.size,
+    skills: visibleSkillManager?.size || 0,
     slashCommands: ctx.slashCommands,
     slashCommandDescriptions: ctx.slashCommandDescriptions,
   };
@@ -2420,7 +2414,10 @@ export function preloadYeaftSkillSlashCommands() {
 }
 
 function broadcastSkillSlashCommands(sessionLike, extraSkillManagers = []) {
-  const managers = [sessionLike?.skillManager, ...extraSkillManagers].filter(Boolean);
+  const plugins = sessionLike?.config?.plugins || session?.config?.plugins || {};
+  const managers = [sessionLike?.skillManager, ...extraSkillManagers]
+    .filter(Boolean)
+    .map(manager => createPluginSkillManager(manager, plugins));
   const { commands: slashCommands, descriptions: slashCommandDescriptions } = buildMergedSkillSlashCommands(managers);
   // Yeaft owns an isolated command catalogue. Reusing ctx's Claude Chat
   // commands made unsupported entries such as /compact and /mcp appear in a
@@ -2531,7 +2528,10 @@ async function loadBaseRuntime(owner = captureRuntimeOwner()) {
   const previousMcpManager = ownerSession.mcpManager;
   const skillManager = createRuntimeSkillManager(yeaftDir, process.cwd());
   const rawMcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, process.cwd());
-  const mcpConfig = filterMcpConfigByPlugins(rawMcpConfig, ownerSession.config?.plugins);
+  const { configured: configuredMcpConfig, effective: effectiveMcpConfig } = resolveMcpPluginPolicy(
+    rawMcpConfig,
+    ownerSession.config?.plugins,
+  );
   const mcpManager = createRuntimeMcpManager();
   let mcpStatus = { connected: [], failed: [] };
   const runtime = {
@@ -2543,13 +2543,14 @@ async function loadBaseRuntime(owner = captureRuntimeOwner()) {
     skillManager,
     mcpManager,
     mcpStatus,
-    mcpConfig,
-    loading: mcpConfig.servers.length > 0,
+    configuredMcpConfig,
+    effectiveMcpConfig,
+    loading: effectiveMcpConfig.servers.length > 0,
     status: {
       skills: skillManager.size,
       mcpServers: [],
       mcpFailed: [],
-      mcpSkipped: mcpConfig.skipped || [],
+      mcpSkipped: effectiveMcpConfig.skipped || [],
       tools: ownerSession.toolRegistry?.size || 0,
     },
   };
@@ -2567,9 +2568,9 @@ async function loadBaseRuntime(owner = captureRuntimeOwner()) {
     hydrateYeaftStatusFromSession(ownerSession, { reason: 'base_runtime_skills', emitEvent: true });
   }
 
-  if (mcpConfig.servers.length > 0) {
+  if (effectiveMcpConfig.servers.length > 0) {
     try {
-      mcpStatus = await mcpManager.connectAll(mcpConfig.servers);
+      mcpStatus = await mcpManager.connectAll(effectiveMcpConfig.servers);
     } catch (err) {
       runtime.loading = false;
       if (ownerSession.skillManager === skillManager) ownerSession.skillManager = previousSkillManager;
@@ -2590,7 +2591,7 @@ async function loadBaseRuntime(owner = captureRuntimeOwner()) {
       ...runtime.status,
       mcpServers: mcpStatus.connected,
       mcpFailed: mcpStatus.failed,
-      mcpSkipped: mcpConfig.skipped || [],
+      mcpSkipped: effectiveMcpConfig.skipped || [],
       tools: ownerSession.toolRegistry?.size || 0,
     };
     ownerSession.mcpManager = mcpManager;
@@ -2651,7 +2652,10 @@ async function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
     : normalizedWorkDir;
   const skillManager = createRuntimeSkillManager(yeaftDir, skillRoots);
   const rawMcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, normalizedWorkDir);
-  const mcpConfig = filterMcpConfigByPlugins(rawMcpConfig, ownerSession.config?.plugins);
+  const { configured: configuredMcpConfig, effective: effectiveMcpConfig } = resolveMcpPluginPolicy(
+    rawMcpConfig,
+    ownerSession.config?.plugins,
+  );
   const mcpManager = createRuntimeMcpManager();
   let mcpStatus = { connected: [], failed: [] };
   const runtime = {
@@ -2661,13 +2665,14 @@ async function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
     skillManager,
     mcpManager,
     mcpStatus,
-    mcpConfig,
-    loading: mcpConfig.servers.length > 0,
+    configuredMcpConfig,
+    effectiveMcpConfig,
+    loading: effectiveMcpConfig.servers.length > 0,
     status: {
       skills: skillManager.size,
       mcpServers: [],
       mcpFailed: [],
-      mcpSkipped: mcpConfig.skipped || [],
+      mcpSkipped: effectiveMcpConfig.skipped || [],
       tools: ownerSession.toolRegistry?.size || 0,
     },
   };
@@ -2679,9 +2684,9 @@ async function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
   // Skill metadata is ready before external MCP startup. Activation is still
   // owner-gated so reset cannot publish this runtime into a replacement session.
   activateProjectRuntime(runtime, owner, { reloadSkills: false });
-  if (mcpConfig.servers.length > 0) {
+  if (effectiveMcpConfig.servers.length > 0) {
     try {
-      mcpStatus = await mcpManager.connectAll(mcpConfig.servers);
+      mcpStatus = await mcpManager.connectAll(effectiveMcpConfig.servers);
     } catch (err) {
       runtime.loading = false;
       await disconnectRuntimeMcpManager(mcpManager);
@@ -2698,7 +2703,7 @@ async function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
       ...runtime.status,
       mcpServers: mcpStatus.connected,
       mcpFailed: mcpStatus.failed,
-      mcpSkipped: mcpConfig.skipped || [],
+      mcpSkipped: effectiveMcpConfig.skipped || [],
       tools: ownerSession.toolRegistry?.size || 0,
     };
     if (activeRuntimeKey === key) activateProjectRuntime(runtime, owner, { reloadSkills: false });
@@ -3011,6 +3016,10 @@ function sendSessionCrudResult(payload) {
   sendSessionEvent({ type: 'session_crud_result', ...next });
 }
 
+function isMcpServerEnabled(name, plugins = session?.config?.plugins) {
+  return !Array.isArray(plugins?.mcpServers) || plugins.mcpServers.includes(name);
+}
+
 function resolvePluginCatalogRuntime(workDir = '') {
   const owner = captureRuntimeOwner();
   const normalizedWorkDir = normalizeSessionWorkDir(workDir);
@@ -3023,7 +3032,7 @@ function resolvePluginCatalogRuntime(workDir = '') {
   return {
     toolRegistry: session?.toolRegistry || null,
     skillManager: active?.skillManager || session?.skillManager || null,
-    mcpConfig: active?.mcpConfig || null,
+    mcpConfig: active?.configuredMcpConfig || null,
     mcpManager: active?.mcpManager || session?.mcpManager || null,
   };
 }
@@ -7073,7 +7082,11 @@ export async function handleYeaftMcpAdd(msg = {}) {
   // `connect(serverConfig)` already disconnects-and-reconnects if a
   // server with the same name was already registered.
   let connectError = null;
-  if (session?.mcpManager) {
+  if (session?.mcpManager && !isMcpServerEnabled(result.server.name)) {
+    try {
+      await session.mcpManager.disconnect(result.server.name);
+    } catch { /* no active connection to retire */ }
+  } else if (session?.mcpManager) {
     try {
       await session.mcpManager.connect(result.server);
     } catch (err) {
@@ -7153,6 +7166,7 @@ export async function handleYeaftMcpReload(msg = {}) {
 
   const listed = listMcpServers(yeaftDir);
   const configured = listed.servers || [];
+  const enabled = configured.filter(server => isMcpServerEnabled(server.name));
 
   // Per-server reload: disconnect + reconnect the named server only.
   // Whole-set reload: disconnect everything, then reconnect from current
@@ -7160,7 +7174,7 @@ export async function handleYeaftMcpReload(msg = {}) {
   const failures = [];
   try {
     if (targetName) {
-      const cfg = configured.find(s => s.name === targetName);
+      const cfg = enabled.find(s => s.name === targetName);
       try { await session.mcpManager.disconnect(targetName); } catch { /* ignore */ }
       if (cfg) {
         try { await session.mcpManager.connect(cfg); }
@@ -7168,7 +7182,7 @@ export async function handleYeaftMcpReload(msg = {}) {
       }
     } else {
       try { await session.mcpManager.disconnectAll(); } catch { /* ignore */ }
-      for (const cfg of configured) {
+      for (const cfg of enabled) {
         try { await session.mcpManager.connect(cfg); }
         catch (err) { failures.push({ name: cfg.name, error: err?.message || String(err) }); }
       }
@@ -7331,7 +7345,8 @@ export const __testHooks = {
       skillManager: runtime?.skillManager || { list: () => [] },
       mcpManager: runtime?.mcpManager || { listTools: () => [], disconnectAll: async () => {} },
       mcpStatus: runtime?.mcpStatus || { connected: [], failed: [] },
-      mcpConfig: runtime?.mcpConfig || { servers: [], skipped: [] },
+      configuredMcpConfig: runtime?.configuredMcpConfig || runtime?.mcpConfig || { servers: [], skipped: [] },
+      effectiveMcpConfig: runtime?.effectiveMcpConfig || runtime?.mcpConfig || { servers: [], skipped: [] },
       status: runtime?.status || { skills: 0, mcpServers: [], mcpFailed: [], mcpSkipped: [], tools: 0 },
     };
     projectRuntimes.set(projectRuntimeKey(normalizedWorkDir), seeded);
