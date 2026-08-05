@@ -4,6 +4,7 @@ import { CONFIG } from './config.js';
 import { verifyAgent } from './auth.js';
 import { encodeKey } from './encryption.js';
 import { agents, pendingAgentConnections } from './context.js';
+import { userDb } from './database.js';
 import {
   parseMessage, broadcastAgentList, clearAgentDirCache
 } from './ws-utils.js';
@@ -114,18 +115,37 @@ export function handleAgentConnection(ws, url) {
 
           const capabilities = Array.isArray(msg.capabilities) ? msg.capabilities : urlCapabilities;
           const agentVersion = msg.version || null;
+          // Local no-auth mode still has one durable browser owner. This makes
+          // the server-side Session catalog persistent without changing generic
+          // development-server behavior, which remains ownerless.
+          const localOwner = skipAgentAuth && process.env.YEAFT_LOCAL_RUN === 'true'
+            ? userDb.getOrCreate('dev-user')
+            : null;
+          const ownerId = localOwner?.id || authResult.userId;
+          const ownerUsername = localOwner?.username || authResult.username;
           // Authenticated Agents use an owner-scoped key. SKIP_AUTH preserves
           // its historical unscoped id while still receiving version metadata.
           resolvedAgentId = skipAgentAuth
             ? clientAgentId
-            : buildAgentMapKey(authResult.userId, pending.instanceId || pending.agentId || pending.agentName);
+            : buildAgentMapKey(ownerId, pending.instanceId || pending.agentId || pending.agentName);
           if (!claimAgentConnection(resolvedAgentId, connectionGeneration)) {
             resolvedAgentId = null;
             pruneAgentConnectionGenerations();
             ws.close(1008, 'Superseded by a newer Agent connection');
             return;
           }
-          completeAgentRegistration(ws, resolvedAgentId, pending.agentName, pending.workDir, authResult.sessionKey, capabilities, authResult.userId, authResult.username, agentVersion, pending.instanceId || pending.agentId || pending.agentName);
+          completeAgentRegistration(
+            ws,
+            resolvedAgentId,
+            pending.agentName,
+            pending.workDir,
+            authResult.sessionKey,
+            capabilities,
+            ownerId,
+            ownerUsername,
+            agentVersion,
+            pending.instanceId || pending.agentId || pending.agentName,
+          );
           pruneAgentConnectionGenerations();
         }
       } catch (e) {

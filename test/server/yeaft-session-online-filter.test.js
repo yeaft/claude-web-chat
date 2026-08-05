@@ -998,6 +998,7 @@ describe('Yeaft Session online Agent filtering', () => {
       },
     });
     getForAgent.mockReturnValue(null);
+    broadcastSessionCatalog.mockClear();
 
     const ownerClient = { authenticated: true, userId: 'user-1', sent: [], ws: { readyState: 1 } };
     webClients.set('owner-client', ownerClient);
@@ -1053,6 +1054,11 @@ describe('Yeaft Session online Agent filtering', () => {
         projects: [{ id: 'server-project', name: 'Server project' }],
       },
     });
+    // The canonical sidebar reads the server-owned catalog, not this live
+    // envelope. A nested agent snapshot must therefore publish the catalog
+    // after its DB reconciliation, exactly like a top-level snapshot does.
+    expect(broadcastSessionCatalog).toHaveBeenCalledTimes(1);
+    expect(broadcastSessionCatalog).toHaveBeenCalledWith('user-1');
 
     const otherTab = { authenticated: true, userId: 'user-1', sent: [], ws: { readyState: 1 } };
     webClients.set('other-tab', otherTab);
@@ -1095,6 +1101,7 @@ describe('Yeaft Session online Agent filtering', () => {
     });
 
     ownerClient.sent = [];
+    broadcastSessionCatalog.mockClear();
     await handleAgentOutput('agent-a', agent, {
       type: 'session_list_updated',
       sessions: [{ id: 'same-id', name: 'Renamed' }],

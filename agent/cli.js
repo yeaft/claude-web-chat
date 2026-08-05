@@ -64,13 +64,7 @@ if (command === 'doctor') {
 } else if (command === 'llm') {
   await handleLlmCommand(subArgs);
 } else if (command === 'local') {
-  try {
-    const { runLocal } = await import('./local-run.js');
-    await runLocal(subArgs);
-  } catch (error) {
-    console.error(`Local run failed: ${error.message}`);
-    process.exit(1);
-  }
+  await handleLocalCommand(subArgs);
 } else if (command === 'upgrade') {
   await upgrade(subArgs);
 } else if (command === '--version' || command === '-v') {
@@ -84,6 +78,37 @@ if (command === 'doctor') {
   parseAndStart(args);
 }
 
+/** Dispatch the local foreground and managed-service command family. */
+export async function handleLocalCommand(subArgs, options = {}) {
+  const printHelpFn = options.printHelp || printHelp;
+  const warn = options.warn || console.warn;
+  const loadLocalService = options.loadLocalService || (() => import('./local-service.js'));
+  const loadLocalRun = options.loadLocalRun || (() => import('./local-run.js'));
+  try {
+    const localCommand = subArgs[0];
+    if (localCommand === '--help' || localCommand === '-h') {
+      printHelpFn();
+      return;
+    }
+    warnDeprecatedInstanceArg(subArgs, warn);
+    if (SERVICE_COMMANDS.includes(localCommand)) {
+      const { handleLocalServiceCommand } = await loadLocalService();
+      await handleLocalServiceCommand(localCommand, subArgs.slice(1));
+      return;
+    }
+    const { runLocal } = await loadLocalRun();
+    await runLocal(subArgs);
+  } catch (error) {
+    const message = `Local run failed: ${error.message}`;
+    if (options.onError) {
+      options.onError(message, error);
+      return;
+    }
+    console.error(message);
+    process.exit(1);
+  }
+}
+
 function printHelp() {
   console.log(`
   ${pkg.name} v${pkg.version}
@@ -91,6 +116,11 @@ function printHelp() {
   Usage:
     yeaft-agent [options]              Run agent in foreground
     yeaft-agent local [options]        Run local Web UI, server, and agent
+    yeaft-agent local --background      Run local mode in the background
+    yeaft-agent local install [options] Install local mode as a managed service
+    yeaft-agent local uninstall [options] Remove the local managed service
+    yeaft-agent local start|stop|restart|status|logs [options]
+                                      Control the local managed service
     yeaft-agent install [options]      Install as system service
     yeaft-agent uninstall [options]    Remove system service
     yeaft-agent start [options]        Start installed service
@@ -108,6 +138,7 @@ function printHelp() {
     --server <url>      WebSocket server URL (default: ws://localhost:3456)
     --name <name>       Agent name and instance id (default: computer name; invalid chars become -)
     --port <port>       Local server port (local command only; default: 6868)
+    --background, -d    Detach local mode after spawning it (local command only)
     --secret <secret>   Agent secret for authentication
     --work-dir <dir>    Default working directory (default: cwd)
     --yeaft-dir <dir>   Yeaft data directory for this instance
@@ -124,6 +155,8 @@ function printHelp() {
   Examples:
     yeaft-agent local
     yeaft-agent local --name my-worker --port 7000
+    yeaft-agent local --name my-worker --background
+    yeaft-agent local install --name my-worker --port 7000
     yeaft-agent --server wss://your-server.com --name my-worker --secret xxx
     yeaft-agent install --server wss://your-server.com --name my-worker --secret xxx
     yeaft-agent install --server wss://your-server.com --name my-worker-2 --secret xxx

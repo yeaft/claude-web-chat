@@ -12,6 +12,7 @@ Do not treat them as aliases. `yeaft-agent` is service/control-plane integration
 ```text
 yeaft-agent [options]              Run Agent in foreground
 yeaft-agent local [options]        Run local Web UI, Server, and Agent
+yeaft-agent local install [options] Install local mode as a managed service
 yeaft-agent install [options]      Install a managed service
 yeaft-agent uninstall [options]    Remove a managed service
 yeaft-agent start [options]        Start a managed service
@@ -32,6 +33,7 @@ yeaft-agent --version              Show package version
 | `--server <url>` | Server WebSocket URL; default `ws://localhost:3456` |
 | `--name <name>` | Agent display name and local instance identity |
 | `--port <port>` | Local mode HTTP port; default `6868` |
+| `--background`, `-d` | Detach local mode after spawning it |
 | `--secret <secret>` | Agent authentication secret |
 | `--work-dir <dir>` | Default execution directory |
 | `--yeaft-dir <dir>` | Yeaft data root for this Agent instance |
