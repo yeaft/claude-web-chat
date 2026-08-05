@@ -18,6 +18,7 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, unlinkSync, statSync, appendFileSync } from 'fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { join, basename } from 'path';
 import { isPermissionError } from '../init.js';
 import { writeAtomic } from '../storage/atomic.js';
@@ -71,6 +72,7 @@ const DELTA_TOOL_PAIR_EXTENSION_CAP = 500;
 
 
 const SEGMENT_INDEX_FILE = 'index.json';
+const SEGMENT_LINEAGE_FILE = 'lineage.json';
 const SEGMENT_DIR = 'segments';
 const SEGMENT_TARGET_BYTES = 1024 * 1024;
 const SEGMENT_FIRST_NAME = '000001.jsonl';
@@ -98,7 +100,9 @@ function projectAssistantToolsForVisibleHistory(message) {
 
 function emptySegmentIndex() {
   return {
-    version: 1,
+    version: 2,
+    streamId: null,
+    revision: 0,
     nextSeq: 1,
     totalMessages: 0,
     lastMessageId: null,
@@ -700,7 +704,9 @@ class SegmentStore {
     this.rootDir = rootDir;
     this.segmentDir = join(rootDir, SEGMENT_DIR);
     this.indexPath = join(rootDir, SEGMENT_INDEX_FILE);
+    this.lineagePath = join(rootDir, SEGMENT_LINEAGE_FILE);
     this.index = null;
+    this.lineage = null;
   }
 
   ensure() {
@@ -727,8 +733,18 @@ class SegmentStore {
       }
     }
     const indexWasStale = idx && !this.#indexMatchesDisk(idx);
-    this.index = this.#normalizeIndex(!idx || indexWasStale ? this.#rebuildIndex() : idx);
-    if ((!existsSync(this.indexPath) || indexWasStale) && this.hasData()) this.saveIndex();
+    const normalizedSource = !idx || indexWasStale ? this.#rebuildIndex() : idx;
+    this.index = this.#normalizeIndex(normalizedSource);
+    this.lineage = this.#resolveLineage(this.index, {
+      verifyAnchor: !idx || !normalizedSource?.streamId,
+    });
+    this.index.streamId = this.lineage.streamId;
+    this.index.revision = this.lineage.revision;
+    const needsMetadataUpgrade = !normalizedSource?.streamId
+      || normalizedSource.streamId !== this.lineage.streamId
+      || !Number.isFinite(Number(normalizedSource?.revision))
+      || Number(normalizedSource.revision) !== this.lineage.revision;
+    if ((!existsSync(this.indexPath) || indexWasStale || needsMetadataUpgrade) && this.hasData()) this.saveIndex();
     return this.index;
   }
 
@@ -737,9 +753,20 @@ class SegmentStore {
     writeFileSync(this.indexPath, `${JSON.stringify(this.index || emptySegmentIndex(), null, 2)}\n`, { encoding: 'utf8', mode: 0o644 });
   }
 
+  metadata() {
+    const idx = this.loadIndex();
+    return {
+      streamId: idx.streamId,
+      revision: Number(idx.revision) || 0,
+      headSeq: Math.max(0, (Number(idx.nextSeq) || 1) - 1),
+    };
+  }
+
   append(msg) {
     this.ensure();
     const idx = this.loadIndex();
+    const establishesAnchor = (Number(idx.totalMessages) || 0) === 0
+      && (!Array.isArray(idx.segments) || idx.segments.length === 0);
     let segment = idx.segments[idx.segments.length - 1] || null;
     let active = segment?.file || idx.activeSegment || SEGMENT_FIRST_NAME;
     let activePath = join(this.segmentDir, active);
@@ -765,12 +792,24 @@ class SegmentStore {
     idx.totalMessages = (idx.totalMessages || 0) + 1;
     idx.lastMessageId = msg.id || null;
     idx.nextSeq = Math.max(Number(idx.nextSeq) || 1, seq + 1);
+    const invalidatesEarlierRows = msg._reflection
+      || (Array.isArray(msg.foldedMessageIds) && msg.foldedMessageIds.length > 0);
+    // Ordinary appends are recoverable through afterSeq. Only an append that
+    // invalidates older visible rows (fold reflection/tombstones) advances the
+    // mutation revision and forces the browser to rebuild its snapshot.
+    if (invalidatesEarlierRows) {
+      idx.revision = (Number(idx.revision) || 0) + 1;
+    }
     if (msg._reflection && Array.isArray(msg.foldedMessageIds)) {
       idx.foldedMessageIds = Array.from(new Set([
         ...(Array.isArray(idx.foldedMessageIds) ? idx.foldedMessageIds : []),
         ...msg.foldedMessageIds.filter(id => typeof id === 'string' && id),
       ]));
     }
+    this.#persistCurrentLineage({
+      revision: idx.revision,
+      anchor: establishesAnchor ? this.#lineageAnchorForLine(line) : undefined,
+    });
     this.saveIndex();
   }
 
@@ -846,10 +885,16 @@ class SegmentStore {
     if (!next || typeof next !== 'object') return null;
     const updated = { ...next, id: rows[rowIndex].id };
     rows[rowIndex] = updated;
+    const updatesAnchor = rowIndex === 0 && segment.file === idx.segments[0]?.file;
 
     const body = rows.map(row => JSON.stringify(row)).join('\n') + (rows.length > 0 ? '\n' : '');
     writeAtomic(path, body);
     segment.bytes = Buffer.byteLength(body);
+    idx.revision = (Number(idx.revision) || 0) + 1;
+    this.#persistCurrentLineage({
+      revision: idx.revision,
+      anchor: updatesAnchor ? this.#lineageAnchorForLine(JSON.stringify(updated)) : undefined,
+    });
     this.saveIndex();
     return updated;
   }
@@ -865,7 +910,10 @@ class SegmentStore {
       }
     }
     if (existsSync(this.indexPath)) unlinkSync(this.indexPath);
-    this.index = emptySegmentIndex();
+    this.lineage = { streamId: randomUUID(), revision: 0, anchor: null };
+    this.#writeLineage(this.lineage);
+    this.index = { ...emptySegmentIndex(), streamId: this.lineage.streamId };
+    this.saveIndex();
   }
 
   #indexMatchesDisk(idx) {
@@ -881,8 +929,128 @@ class SegmentStore {
     });
   }
 
+  #readLineage() {
+    if (!existsSync(this.lineagePath)) return null;
+    try {
+      const parsed = JSON.parse(readFileSync(this.lineagePath, 'utf8') || '{}');
+      if (!parsed || typeof parsed !== 'object'
+          || typeof parsed.streamId !== 'string' || !parsed.streamId
+          || !Number.isFinite(Number(parsed.revision))
+          || (parsed.anchor !== null && typeof parsed.anchor !== 'string')) return null;
+      return {
+        streamId: parsed.streamId,
+        revision: Math.max(0, Number(parsed.revision)),
+        anchor: parsed.anchor,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  #writeLineage(lineage) {
+    this.ensure();
+    const normalized = {
+      version: 1,
+      streamId: lineage.streamId,
+      revision: Math.max(0, Number(lineage.revision) || 0),
+      anchor: typeof lineage.anchor === 'string' ? lineage.anchor : null,
+    };
+    writeAtomic(this.lineagePath, `${JSON.stringify(normalized, null, 2)}\n`);
+    this.lineage = normalized;
+    return normalized;
+  }
+
+  #currentLineageAnchor() {
+    if (!existsSync(this.segmentDir)) return null;
+    const files = readdirSync(this.segmentDir).filter(file => file.endsWith('.jsonl')).sort();
+    for (const file of files) {
+      const path = join(this.segmentDir, file);
+      if (!existsSync(path)) continue;
+      let raw;
+      try {
+        raw = readFileSync(path, 'utf8');
+      } catch (error) {
+        if (isPermissionError(error)) return null;
+        throw error;
+      }
+      for (const line of raw.split('\n')) {
+        if (!parseJsonLine(line)) continue;
+        return this.#lineageAnchorForLine(line);
+      }
+    }
+    return null;
+  }
+
+  #lineageAnchorForLine(line) {
+    return createHash('sha256').update(String(line || '').trim()).digest('hex');
+  }
+
+  #legacyLineageId(anchor) {
+    return `legacy-${createHash('sha256')
+      .update(this.rootDir)
+      .update('\0')
+      .update(anchor || '<empty>')
+      .digest('hex')}`;
+  }
+
+  #resolveLineage(idx, { verifyAnchor = false } = {}) {
+    const persisted = this.#readLineage();
+    const anchor = !persisted || verifyAnchor ? this.#currentLineageAnchor() : persisted.anchor;
+    if (!persisted) {
+      const initialStreamId = anchor ? this.#legacyLineageId(anchor) : randomUUID();
+      const indexStreamId = typeof idx?.streamId === 'string' && idx.streamId ? idx.streamId : null;
+      // Missing sidecar is a rolling-upgrade boundary. Recompute from the
+      // immutable first row for existing data. A truly empty store starts a
+      // new random lifetime so delete + same-id recreation cannot collide.
+      const streamId = verifyAnchor ? initialStreamId : (indexStreamId || initialStreamId);
+      return this.#writeLineage({
+        streamId,
+        revision: Number.isFinite(Number(idx?.revision)) ? Number(idx.revision) : 0,
+        anchor,
+      });
+    }
+    if (persisted.anchor !== anchor) {
+      // A reader/writer that predates lineage.json can still clear, recreate,
+      // or rewrite the first durable row. The anchor detects that mutation
+      // without relying on metadata fields the old index writer discards.
+      return this.#writeLineage({ streamId: randomUUID(), revision: 0, anchor });
+    }
+    const indexRevision = (!idx?.streamId || idx.streamId === persisted.streamId)
+      && Number.isFinite(Number(idx?.revision))
+      ? Math.max(0, Number(idx.revision))
+      : 0;
+    const revision = Math.max(persisted.revision, indexRevision);
+    if (revision !== persisted.revision) return this.#writeLineage({ ...persisted, revision });
+    return persisted;
+  }
+
+  #persistCurrentLineage({ revision = null, anchor = undefined } = {}) {
+    const current = this.lineage || this.#readLineage() || {
+      streamId: this.index?.streamId || this.#legacyLineageId(this.#currentLineageAnchor()),
+      revision: Number(this.index?.revision) || 0,
+      anchor: this.#currentLineageAnchor(),
+    };
+    const nextRevision = Number.isFinite(Number(revision)) ? Number(revision) : current.revision;
+    const nextAnchor = typeof anchor === 'string' && anchor ? anchor : current.anchor;
+    const needsWrite = !this.lineage
+      || current.revision !== nextRevision
+      || current.anchor !== nextAnchor;
+    const next = needsWrite
+      ? this.#writeLineage({ ...current, revision: nextRevision, anchor: nextAnchor })
+      : current;
+    this.lineage = next;
+    if (this.index) {
+      this.index.streamId = next.streamId;
+      this.index.revision = next.revision;
+    }
+    return next;
+  }
+
   #normalizeIndex(idx) {
     const out = { ...emptySegmentIndex(), ...(idx || {}) };
+    out.version = 2;
+    out.streamId = typeof out.streamId === 'string' && out.streamId ? out.streamId : null;
+    out.revision = Number.isFinite(Number(out.revision)) ? Math.max(0, Number(out.revision)) : 0;
     out.segments = Array.isArray(out.segments) ? out.segments.filter(s => s && s.file) : [];
     out.segments.sort((a, b) => (Number(a.firstSeq) || 0) - (Number(b.firstSeq) || 0));
     const maxSeq = out.segments.reduce((max, seg) => Math.max(max, Number(seg.lastSeq) || 0), 0);
@@ -1461,6 +1629,18 @@ export class ConversationStore {
   // ─── Read API ───────────────────────────────────────────
 
   /**
+   * Return the durable identity of one Session transcript. `streamId`
+   * changes on clear/recreate; `revision` changes on append/update/fold.
+   * Browser caches use both values to detect non-append mutations before
+   * trusting an `afterSeq` delta cursor.
+   */
+  getSessionHistoryMetadata(sessionId) {
+    if (!sessionId) return null;
+    const store = this.#segmentStoreForConversationDir(this.#sessionConversationDir(sessionId));
+    return store.metadata();
+  }
+
+  /**
    * Load recent hot messages, sliced to the last `turnsLimit` TURNS and
    * sorted chronologically.
    *
@@ -1740,17 +1920,21 @@ export class ConversationStore {
    * without downgrading the client to a cursor-less loaded state. Hidden rows
    * advance the cursor only at pair-safe boundaries; a cursor must never cross
    * an assistant tool call before all of that call's result rows are included.
+   * Both row and byte budgets cut only at those safe boundaries. `hasMoreAfter`
+   * tells the Web client to keep draining long offline gaps without waiting for
+   * another reconnect or Session activation.
    *
    * @param {string} sessionId
    * @param {number|null} afterSeq — exclusive lower bound
-   * @param {{ limit?: number }} [opts]
-   * @returns {{ messages: object[], latestSeq: number|null }}
+   * @param {{ limit?: number, maxBytes?: number }} [opts]
+   * @returns {{ messages: object[], latestSeq: number|null, hasMoreAfter: boolean }}
    */
   loadAfterSeqByGroup(sessionId, afterSeq, opts = {}) {
-    if (!sessionId) return { messages: [], latestSeq: null };
+    if (!sessionId) return { messages: [], latestSeq: null, hasMoreAfter: false };
     const limit = Number.isFinite(opts.limit) && opts.limit > 0 ? opts.limit : 500;
+    const maxBytes = Number.isFinite(opts.maxBytes) && opts.maxBytes > 0 ? opts.maxBytes : Infinity;
     const cutoff = Number.isFinite(afterSeq) && afterSeq >= 0 ? afterSeq : null;
-    if (cutoff === null) return { messages: [], latestSeq: null };
+    if (cutoff === null) return { messages: [], latestSeq: null, hasMoreAfter: false };
     const after = [];
     const pendingToolResultIds = new Set();
     const completedBeforeCursor = new Set();
@@ -1788,8 +1972,14 @@ export class ConversationStore {
       ? Math.max(0, earliestBoundarySeq - 1)
       : cutoff;
     let visibleRows = after.length;
+    let visibleBytes = after.reduce((sum, message) => sum + Buffer.byteLength(JSON.stringify(message)), 0);
+    let stoppedAtBudget = false;
     let extensionRows = 0;
-    for (const m of this.#iterateSessionRows(sessionId, { afterSeq: cutoff, desc: false })) {
+    const deltaRows = this.#iterateSessionRows(sessionId, { afterSeq: cutoff, desc: false });
+    while (true) {
+      const step = deltaRows.next();
+      if (step.done) break;
+      const m = step.value;
       if (!m || m.sessionId !== sessionId) continue;
       const seq = parseSeqFromId(m.id);
       const hidden = !isVisibleConversationRow(m);
@@ -1799,6 +1989,7 @@ export class ConversationStore {
         // messages between an assistant call and that call's result.
         after.push(m);
         visibleRows += 1;
+        visibleBytes += Buffer.byteLength(JSON.stringify(m));
         if (m.role === 'assistant' && Array.isArray(m.toolCalls)) {
           for (const toolCall of m.toolCalls) {
             if (typeof toolCall?.id === 'string' && toolCall.id) pendingToolResultIds.add(toolCall.id);
@@ -1807,11 +1998,19 @@ export class ConversationStore {
           pendingToolResultIds.delete(m.toolCallId);
         }
       }
-      if (pendingToolResultIds.size === 0 && Number.isFinite(seq)) safeCursorSeq = seq;
-      if (visibleRows < limit) continue;
-      if (pendingToolResultIds.size === 0) break;
+      if (pendingToolResultIds.size === 0 && Number.isFinite(seq)) {
+        safeCursorSeq = seq;
+        if (visibleRows >= limit || visibleBytes >= maxBytes) {
+          stoppedAtBudget = true;
+          break;
+        }
+      }
+      if (visibleRows < limit && visibleBytes < maxBytes) continue;
       extensionRows += 1;
-      if (extensionRows >= DELTA_TOOL_PAIR_EXTENSION_CAP) break;
+      if (extensionRows >= DELTA_TOOL_PAIR_EXTENSION_CAP) {
+        stoppedAtBudget = true;
+        break;
+      }
     }
     // If the extension cap stopped inside a malformed arc, return only the
     // prefix covered by the safe cursor. Returning later rows with an earlier
@@ -1823,10 +2022,20 @@ export class ConversationStore {
           return Number.isFinite(seq) && seq <= safeCursorSeq;
         });
     const sliced = pairSanitize(pairSafeRows);
+    let hasMoreAfter = false;
+    if (stoppedAtBudget) {
+      hasMoreAfter = !deltaRows.next().done;
+    } else if (typeof deltaRows.return === 'function') {
+      deltaRows.return();
+    }
     // Never advance past a row the sanitizer had to drop. A malformed or
     // over-cap tool arc must be retried from its assistant call rather than
     // turning the following result into a permanent orphan on the next page.
-    return { messages: projectVisibleSessionMessages(sliced), latestSeq: safeCursorSeq };
+    return {
+      messages: projectVisibleSessionMessages(sliced),
+      latestSeq: safeCursorSeq,
+      hasMoreAfter,
+    };
   }
 
   /**

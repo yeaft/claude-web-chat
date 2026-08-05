@@ -5,14 +5,15 @@ import {
 } from './yeaft-history-cache.js';
 
 const DATABASE_NAME = 'yeaft-history-cache';
-const DATABASE_VERSION = 3;
+const DATABASE_VERSION = 4;
 const SESSION_STORE = 'sessions';
 const METADATA_STORE = 'metadata';
 const ACTIVE_OWNER_KEY = 'active-owner';
-const CACHE_SCHEMA_VERSION = 2;
+const CACHE_SCHEMA_VERSION = 3;
 
 export const YEAFT_HISTORY_BROWSER_CACHE_LIMITS = Object.freeze({
   maxSessionsPerOwner: 12,
+  maxTurnsPerSession: 500,
   maxRowsPerSession: 600,
   maxBytesPerSession: 4 * 1024 * 1024,
   maxAgeMs: 30 * 24 * 60 * 60 * 1000,
@@ -142,50 +143,57 @@ function rowCacheKey(row) {
 }
 
 function chooseRows(rows, limits) {
-  const units = new Map();
+  const turns = [];
+  let currentTurn = null;
   for (const [index, sourceRow] of (Array.isArray(rows) ? rows : []).entries()) {
     const row = plainHistoryRow(sourceRow);
     if (!isDurableYeaftHistoryRow(row)) continue;
-    const unitKey = yeaftHistoryUnitKey(row);
+    // Browser retention counts one visible user prompt plus every persisted
+    // projection up to the next user prompt as one complete round-trip. Raw
+    // turnId is per VP execution, so it would split multi-VP fan-out.
+    if (row.type === 'user') {
+      currentTurn = { firstIndex: index, entries: [], rowsByKey: new Map() };
+      turns.push(currentTurn);
+    }
+    // Do not persist an assistant/tool prefix whose user boundary has already
+    // been evicted from Pinia. Starting an IndexedDB snapshot mid-turn makes a
+    // cold reload render an orphan response.
+    if (!currentTurn) continue;
     const rowKey = rowCacheKey(row);
-    const unit = units.get(unitKey) || {
-      key: unitKey,
-      seq: yeaftHistoryRowSeq(row),
-      lastIndex: index,
-      rowsByKey: new Map(),
-    };
-    unit.seq = Math.max(unit.seq ?? -1, yeaftHistoryRowSeq(row) ?? -1);
-    unit.lastIndex = Math.max(unit.lastIndex, index);
-    unit.rowsByKey.set(rowKey, { row, index });
-    units.set(unitKey, unit);
+    const existing = currentTurn.rowsByKey.get(rowKey);
+    if (existing) {
+      currentTurn.entries[existing.entryIndex] = { row, index };
+    } else {
+      currentTurn.rowsByKey.set(rowKey, { entryIndex: currentTurn.entries.length });
+      currentTurn.entries.push({ row, index });
+    }
   }
-  const newest = Array.from(units.values()).map(unit => {
-    const entries = Array.from(unit.rowsByKey.values());
-    return {
-      ...unit,
-      entries,
-      rowCount: entries.length,
-      bytes: entries.reduce((sum, entry) => sum + rowBytes(entry.row), 0),
-    };
-  }).sort((left, right) => (
-    (right.seq ?? -1) - (left.seq ?? -1) || right.lastIndex - left.lastIndex
-  ));
-  const selectedUnits = [];
+
+  const newest = turns.slice().reverse().map(turn => ({
+    ...turn,
+    rowCount: turn.entries.length,
+    bytes: turn.entries.reduce((sum, entry) => sum + rowBytes(entry.row), 0),
+  }));
+  const selectedTurns = [];
   let rowCount = 0;
   let bytes = 0;
-  for (const unit of newest) {
-    const exceedsLimit = rowCount + unit.rowCount > limits.maxRowsPerSession
-      || bytes + unit.bytes > limits.maxBytesPerSession;
-    if (selectedUnits.length > 0 && exceedsLimit) break;
-    selectedUnits.push(unit);
-    rowCount += unit.rowCount;
-    bytes += unit.bytes;
+  const maxTurns = Number.isFinite(limits.maxTurnsPerSession)
+    ? Math.max(0, Math.floor(limits.maxTurnsPerSession))
+    : YEAFT_HISTORY_BROWSER_CACHE_LIMITS.maxTurnsPerSession;
+  for (const turn of newest) {
+    const exceedsTurnLimit = selectedTurns.length >= maxTurns;
+    const exceedsCapacity = rowCount + turn.rowCount > limits.maxRowsPerSession
+      || bytes + turn.bytes > limits.maxBytesPerSession;
+    if (exceedsTurnLimit || (selectedTurns.length > 0 && exceedsCapacity)) break;
+    selectedTurns.push(turn);
+    rowCount += turn.rowCount;
+    bytes += turn.bytes;
   }
-  const selected = selectedUnits
-    .flatMap(unit => unit.entries)
+  const selected = selectedTurns
+    .flatMap(turn => turn.entries)
     .sort((left, right) => left.index - right.index)
     .map(entry => entry.row);
-  return { rows: selected, bytes };
+  return { rows: selected, bytes, turns: selectedTurns.length };
 }
 
 async function persistActiveOwner(fence) {
@@ -356,9 +364,12 @@ export async function writeYeaftHistoryBrowserCache({
       agentId: normalizedAgentId,
       sessionId: normalizedSessionId,
       rows: selected.rows,
+      turnCount: selected.turns,
       rowCount: selected.rows.length,
       byteCount: selected.bytes,
       latestSeq: Number.isFinite(historyState?.latestSeq) ? historyState.latestSeq : null,
+      streamId: typeof historyState?.streamId === 'string' ? historyState.streamId : null,
+      revision: Number.isFinite(historyState?.revision) ? historyState.revision : null,
       oldestSeq: Number.isFinite(historyState?.oldestSeq) ? historyState.oldestSeq : null,
       hasMore: !!historyState?.hasMore,
       lastAccessed: now,

@@ -140,7 +140,9 @@ function pruneOneSession(store, { conversationId, agentId, sessionId, incomingRo
     .map(yeaftHistoryUnitKey));
   const units = durableUnits(scoped);
   const selectedUnits = chooseDurableUnits(units, limits, pinnedKeys);
-  const keptScoped = scoped.filter(row => !isDurableYeaftHistoryRow(row) || selectedUnits.has(yeaftHistoryUnitKey(row)));
+  const keptScoped = scoped.filter(row => (
+    !isDurableYeaftHistoryRow(row) || selectedUnits.has(yeaftHistoryUnitKey(row))
+  ));
   const keptSet = new Set(keptScoped);
   store.messagesMap[conversationId] = allRows.filter(row => rowSessionId(row) !== sessionId || keptSet.has(row));
   const summary = summarizeRows(keptScoped);
