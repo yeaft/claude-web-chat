@@ -403,14 +403,17 @@ export function restoreSessionToRegistry(defaultYeaftDir, sessionId, workDir) {
   return importedMeta;
 }
 
-export function resolveSessionYeaftDir(defaultYeaftDir, sessionId) {
+/**
+ * Resolve an already-existing Session owner without bootstrapping or migrating
+ * Session storage. Read-only callers must use this instead of
+ * resolveSessionYeaftDir(): the latter intentionally repairs the manifest for
+ * runtime/CRUD entry points.
+ */
+export function findExistingSessionYeaftDir(defaultYeaftDir, sessionId) {
   if (!defaultYeaftDir || !sessionId) return defaultYeaftDir;
 
-  const manifestReady = hasSessionManifest(defaultYeaftDir);
-  ensureSessionManifestReady(defaultYeaftDir);
   const manifestDir = resolveManifestSessionDir(defaultYeaftDir, sessionId);
   if (manifestDir) return join(manifestDir, '..', '..');
-  if (manifestReady) return defaultYeaftDir;
 
   const registry = readWorkDirRegistry(defaultYeaftDir);
   const workDir = normalizeWorkDir(registry[sessionId]);
@@ -424,6 +427,18 @@ export function resolveSessionYeaftDir(defaultYeaftDir, sessionId) {
   if (existsSync(defaultSessionDir) && loadSessionMeta(defaultSessionDir)) return defaultYeaftDir;
 
   return defaultYeaftDir;
+}
+
+export function resolveSessionYeaftDir(defaultYeaftDir, sessionId) {
+  if (!defaultYeaftDir || !sessionId) return defaultYeaftDir;
+
+  const manifestReady = hasSessionManifest(defaultYeaftDir);
+  ensureSessionManifestReady(defaultYeaftDir);
+  const manifestDir = resolveManifestSessionDir(defaultYeaftDir, sessionId);
+  if (manifestDir) return join(manifestDir, '..', '..');
+  if (manifestReady) return defaultYeaftDir;
+
+  return findExistingSessionYeaftDir(defaultYeaftDir, sessionId);
 }
 
 /** Build a safe group id from a display name (slug + ulid-lite suffix). */

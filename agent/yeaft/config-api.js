@@ -12,7 +12,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { DEFAULT_YEAFT_DIR } from './init.js';
 import { normalizeProviderModels, parseModelRef, serializeModelForPersistence } from './models.js';
-import { normaliseYeaftSection } from './config.js';
+import { normaliseTelemetrySection, normaliseYeaftSection } from './config.js';
 import { isGitHubCopilotProvider, serializeKnownProviderForPersistence } from './llm/known-providers.js';
 
 /**
@@ -290,6 +290,58 @@ export function updateYeaftSettings(update, dir) {
     return { error: `Failed to write config.json: ${e.message}` };
   }
 
+  return merged;
+}
+
+/**
+ * Read the bounded local telemetry settings.
+ *
+ * Raw provider exchanges are kept only for the debug trace and are bounded by
+ * bytes. This endpoint never returns secrets or trace payloads.
+ *
+ * @param {string} [dir]
+ * @returns {object | { error: string }}
+ */
+export function getTelemetrySettings(dir) {
+  const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
+  const configPath = join(root, 'config.json');
+  if (!existsSync(configPath)) return normaliseTelemetrySection(null);
+  try {
+    const json = JSON.parse(readFileSync(configPath, 'utf8'));
+    return normaliseTelemetrySection(json.telemetry);
+  } catch (e) {
+    return { error: `Failed to read config.json: ${e.message}` };
+  }
+}
+
+/**
+ * Update only the telemetry section of config.json.
+ *
+ * @param {object} update
+ * @param {string} [dir]
+ * @returns {object | { error: string }}
+ */
+export function updateTelemetrySettings(update, dir) {
+  if (!update || typeof update !== 'object' || Array.isArray(update)) {
+    return { error: 'update payload required' };
+  }
+  const allowed = new Set(['enabled', 'retentionDays', 'flushIntervalMs', 'maxQueueSize', 'rawExchangeMaxBytes', 'traceTextMaxBytes']);
+  if (Object.keys(update).some(key => !allowed.has(key))) {
+    return { error: 'unknown telemetry setting' };
+  }
+  const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
+  const configPath = join(root, 'config.json');
+  const existing = readConfigJson(configPath);
+  const merged = normaliseTelemetrySection({
+    ...(existing.telemetry && typeof existing.telemetry === 'object' ? existing.telemetry : {}),
+    ...update,
+  });
+  existing.telemetry = merged;
+  try {
+    writeFileSync(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf8');
+  } catch (e) {
+    return { error: `Failed to write config.json: ${e.message}` };
+  }
   return merged;
 }
 

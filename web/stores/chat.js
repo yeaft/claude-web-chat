@@ -831,6 +831,10 @@ export const useChatStore = defineStore('chat', {
     //   { backend, tavilyKeyConfigured, tavilyKeyMasked, disableHtmlFallback,
     //     loaded, error, at }
     searchSettings: null,
+
+    // Local telemetry settings cache. Trace payloads never travel through
+    // this state; only the bounded configuration does.
+    telemetrySettings: null,
     // Last live Tavily /usage probe.
     //   { plan, used, limit, paygoUsed, paygoLimit } | { error }
     tavilyUsage: null,
@@ -6162,6 +6166,32 @@ export const useChatStore = defineStore('chat', {
         ...this.yeaftSubAgentCards,
         [key]: { ...card, expanded: !card.expanded },
       };
+    },
+
+    // ─── Telemetry settings ─────────────────────────────────────
+    loadTelemetrySettings() {
+      if (!this.currentAgent) {
+        this.telemetrySettings = { enabled: true, retentionDays: 3, flushIntervalMs: 1000, maxQueueSize: 5000, rawExchangeMaxBytes: 524288, traceTextMaxBytes: 262144, loaded: true };
+        return Promise.resolve(this.telemetrySettings);
+      }
+      return new Promise((resolve) => {
+        if (!this._telemetryPending) this._telemetryPending = {};
+        this._telemetryPending.load = resolve;
+        this.sendWsMessage({ type: 'get_telemetry_settings', agentId: this.currentAgent });
+      });
+    },
+
+    updateTelemetrySettings(payload) {
+      if (!this.currentAgent) return Promise.resolve({ error: 'no agent' });
+      return new Promise((resolve) => {
+        if (!this._telemetryPending) this._telemetryPending = {};
+        this._telemetryPending.update = resolve;
+        this.sendWsMessage({
+          type: 'update_telemetry_settings',
+          agentId: this.currentAgent,
+          settings: payload || {},
+        });
+      });
     },
 
     // ─── Search settings (Tavily backend + key + on-demand quota) ───

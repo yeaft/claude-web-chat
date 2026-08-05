@@ -7,6 +7,7 @@
 
 import { defineTool } from './types.js';
 import { searchMessages } from '../conversation/search.js';
+import { findExistingSessionYeaftDir } from '../sessions/session-crud.js';
 
 const DEFAULT_RESULT_LIMIT = 10;
 const MAX_SNIPPET_CHARS = 1000;
@@ -137,7 +138,7 @@ export default defineTool({
   description: {
     en: `Search through past conversation history.
 
-Searches message content for all whitespace-separated terms (case-insensitive).
+Searches message content for all whitespace-separated terms (case-insensitive) from persisted Session history.
 Inside a Session, search is limited to that Session plus sibling Sessions in the same Project on this Agent. Tool-result messages are excluded. Useful for finding previous discussions, decisions, or code snippets.
 
 Results are returned newest-first with a bounded matching snippet and source metadata.`,
@@ -171,7 +172,8 @@ Results are returned newest-first with a bounded matching snippet and source met
   isReadOnly: () => true,
   async execute(input, ctx) {
     const { keyword, limit = DEFAULT_RESULT_LIMIT } = input;
-    if (!keyword) return JSON.stringify({ error: 'keyword is required' });
+    const normalizedKeyword = typeof keyword === 'string' ? keyword.trim() : '';
+    if (!normalizedKeyword) return JSON.stringify({ error: 'keyword is required' });
 
     const yeaftDir = ctx?.yeaftDir;
     if (!yeaftDir) {
@@ -179,44 +181,96 @@ Results are returned newest-first with a bounded matching snippet and source met
     }
 
     try {
-      const telemetry = {};
       const projectSessionIds = Array.isArray(ctx?.projectSessionIds)
         ? ctx.projectSessionIds.filter(id => typeof id === 'string' && id.trim()).map(id => id.trim())
         : [];
       const scopedSessionIds = ctx?.sessionId
         ? Array.from(new Set([ctx.sessionId, ...projectSessionIds]))
         : null;
-      const results = searchMessages(yeaftDir, keyword, limit, {
-        telemetry,
-        ...(scopedSessionIds ? { sessionIds: scopedSessionIds } : {}),
+      const telemetry = {};
+      let indexedResults = [];
+
+      if (scopedSessionIds) {
+        // The index manager builds/rebuilds SQLite state and Session location
+        // repair may migrate the manifest. Both are writes, so they cannot run
+        // behind a read-only/cachable tool declaration. Scan only existing
+        // transcript files; normal Session boot and maintenance own indexing.
+        for (const sessionId of scopedSessionIds) {
+          const storeDir = findExistingSessionYeaftDir(yeaftDir, sessionId);
+          const scanTelemetry = {};
+          const messages = searchMessages(storeDir, normalizedKeyword, limit, {
+            telemetry: scanTelemetry,
+            sessionIds: [sessionId],
+          });
+          telemetry.scannedSessions = (telemetry.scannedSessions || 0) + 1;
+          telemetry.scannedFiles = (telemetry.scannedFiles || 0) + (scanTelemetry.scannedFiles || 0);
+          telemetry.scannedMessages = (telemetry.scannedMessages || 0) + (scanTelemetry.scannedMessages || 0);
+          telemetry.scannedBytes = (telemetry.scannedBytes || 0) + (scanTelemetry.scannedBytes || 0);
+          for (const message of messages) {
+            indexedResults.push({
+              messageId: message.id || null,
+              sessionId: message.sessionId || sessionId,
+              role: message.role,
+              content: buildSnippet(message.content || '', normalizedKeyword),
+              mode: message.mode || null,
+              time: message.time || message.timestamp || null,
+              source: message.historySource || 'session-scan',
+              turnId: message.turnId || null,
+              _seq: 0,
+            });
+          }
+        }
+      } else {
+        // CLI and legacy callers without a Session context retain the old
+        // global search path. The indexed path requires an explicit session
+        // because it is intentionally scoped and owner-safe.
+        const legacyResults = searchMessages(yeaftDir, normalizedKeyword, limit, { telemetry });
+        indexedResults = legacyResults.map(msg => ({
+          messageId: msg.id || null,
+          sessionId: msg.sessionId || null,
+          role: msg.role,
+          content: buildSnippet(msg.content, normalizedKeyword),
+          mode: msg.mode,
+          time: msg.time || msg.timestamp || null,
+          source: msg.historySource || null,
+          _seq: 0,
+        }));
+      }
+
+      indexedResults.sort((a, b) => {
+        const time = String(b.time || '').localeCompare(String(a.time || ''));
+        if (time !== 0) return time;
+        return (b._seq || 0) - (a._seq || 0);
       });
+      const results = indexedResults.slice(0, Math.max(1, Math.min(100, Number(limit) || DEFAULT_RESULT_LIMIT)));
       const searchTelemetry = {
         resultCount: results.length,
-        scannedFiles: telemetry.scannedFiles || 0,
-        scannedMessages: telemetry.scannedMessages || 0,
-        scannedBytes: telemetry.scannedBytes || 0,
+        ...(scopedSessionIds
+          ? {
+              scannedSessions: telemetry.scannedSessions || 0,
+              scannedFiles: telemetry.scannedFiles || 0,
+              scannedMessages: telemetry.scannedMessages || 0,
+              scannedBytes: telemetry.scannedBytes || 0,
+            }
+          : {
+              scannedFiles: telemetry.scannedFiles || 0,
+              scannedMessages: telemetry.scannedMessages || 0,
+              scannedBytes: telemetry.scannedBytes || 0,
+            }),
       };
 
       if (results.length === 0) {
         return serializeHistorySearchOutput({
           results: [],
-          message: `No matches found for "${keyword}"`,
+          message: `No matches found for "${normalizedKeyword}"`,
           telemetry: searchTelemetry,
         });
       }
 
       return serializeHistorySearchOutput({
-        results: results.map(msg => ({
-          messageId: msg.id || null,
-          sessionId: msg.sessionId || null,
-          role: msg.role,
-          content: buildSnippet(msg.content, keyword),
-          mode: msg.mode,
-          time: msg.time || msg.timestamp || null,
-          source: msg.historySource || null,
-        })),
+        results: results.map(({ _seq, ...result }) => result),
         totalResults: results.length,
-        keyword,
+        keyword: normalizedKeyword,
         telemetry: searchTelemetry,
       });
     } catch (err) {

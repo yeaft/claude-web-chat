@@ -100,6 +100,7 @@ REPL 上下文在多次调用间保持——一次调用中定义的变量和函
   },
   isConcurrencySafe: () => false,
   isReadOnly: () => true,
+  cacheWithinQuery: false,
   async execute(input, ctx) {
     const { code, reset } = input || {};
 

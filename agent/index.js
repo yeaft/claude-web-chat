@@ -14,6 +14,7 @@ import { getDefaultAgentName, getDefaultYeaftDir, resolveRuntimeIdentity, getCon
 import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
+import { loadConfig as loadYeaftConfig } from './yeaft/config.js';
 import {
   ensureManagedCliTools,
   prepareManagedCliToolEnvironment,
@@ -105,6 +106,7 @@ const CONFIG = {
   agentName: AGENT_NAME,
   workDir: process.env.WORK_DIR || fileConfig.workDir || process.cwd(),
   yeaftDir: YEAFT_DIR,
+  telemetry: loadYeaftConfig({ dir: YEAFT_DIR }).telemetry,
   reconnectInterval: fileConfig.reconnectInterval,
   agentSecret: process.env.AGENT_SECRET || fileConfig.agentSecret,
   // 显式禁用的工具（非 MCP 相关）

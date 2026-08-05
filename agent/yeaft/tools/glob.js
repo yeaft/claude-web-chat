@@ -164,6 +164,7 @@ Guidelines:
   },
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
+  cacheWithinQuery: true,
   async execute(input, ctx) {
     const { pattern, path: searchPath, limit = 500 } = input;
     if (!pattern) return JSON.stringify({ error: 'pattern is required' });

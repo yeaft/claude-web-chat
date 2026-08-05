@@ -18,6 +18,7 @@ import {
   projectVisibleSessionMessages,
 } from '../../../../agent/yeaft/conversation/persist.js';
 import { searchMessages } from '../../../../agent/yeaft/conversation/search.js';
+import historySearch from '../../../../agent/yeaft/tools/history-search.js';
 import { createSession } from '../../../../agent/yeaft/sessions/session-store.js';
 import { archiveSession, deleteSession } from '../../../../agent/yeaft/sessions/session-crud.js';
 import {
@@ -535,6 +536,41 @@ legacy session`, { encoding: 'utf8' });
     });
 
   describe('Session visible history search', () => {
+    it('keeps HistorySearch read-only for unindexed and indexed Session roots', async () => {
+      const root = join(TEST_DIR, 'history-search-root');
+      mkdirSync(root, { recursive: true });
+      const before = () => ({
+        rootEntries: readdirSync(root).sort(),
+        manifest: existsSync(join(root, 'sessions-manifest.json')),
+        sessionMeta: existsSync(join(root, 'sessions', 'session_search', 'session.json')),
+      });
+
+      const emptyBefore = before();
+      const empty = JSON.parse(await historySearch.execute({ keyword: 'nothing' }, {
+        yeaftDir: root,
+        sessionId: 'session_search',
+      }));
+      expect(empty.results).toEqual([]);
+      expect(before()).toEqual(emptyBefore);
+
+      const indexedStore = new ConversationStore(root);
+      indexedStore.append({ role: 'user', content: 'indexed needle result', sessionId: 'session_search' });
+      const markerPath = join(root, 'sessions-manifest.json');
+      writeFileSync(markerPath, JSON.stringify({ version: 1, sessions: [] }, null, 2));
+      const markerBefore = readFileSync(markerPath, 'utf8');
+      const sessionDir = join(root, 'sessions', 'session_search');
+      const sessionFilesBefore = readdirSync(sessionDir, { recursive: true }).sort();
+
+      const found = JSON.parse(await historySearch.execute({ keyword: 'needle' }, {
+        yeaftDir: root,
+        sessionId: 'session_search',
+      }));
+      expect(found.results).toHaveLength(1);
+      expect(found.results[0]).toMatchObject({ content: expect.stringContaining('needle') });
+      expect(readFileSync(markerPath, 'utf8')).toBe(markerBefore);
+      expect(readdirSync(sessionDir, { recursive: true }).sort()).toEqual(sessionFilesBefore);
+    });
+
     it('searches only visible rows in the requested Session, newest first', () => {
       const first = store.append({ role: 'user', content: 'Needle in the first turn', sessionId: 'session_search' });
       store.append({ role: 'assistant', content: 'irrelevant', sessionId: 'session_search' });
@@ -934,7 +970,7 @@ legacy session`, { encoding: 'utf8' });
         speakerVpId: 'linus',
       });
 
-      for (const query of ['中', '中文', '😀', '👨‍💻', 'foo.bar', 'quoted "value"', 'OLD-TOKEN']) {
+      for (const query of ['中', '中文', '😀', '👨‍💻', 'foo.bar', 'quoted "value"', 'OLD-TOKEN', '中文 foo.bar']) {
         const page = await searchConversationIndex(TEST_DIR, sessionId, query, { limit: 10 });
         expect(page.results).toEqual([expect.objectContaining({ messageId: user.id })]);
         expect(page.maxBatchRows).toBeLessThanOrEqual(128);

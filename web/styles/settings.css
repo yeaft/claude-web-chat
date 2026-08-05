@@ -391,6 +391,17 @@
   gap: 8px;
 }
 
+.sp-row-stack {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.sp-input-small {
+  width: 180px;
+  max-width: 180px;
+  margin: 0;
+}
+
 .sp-label {
   font-size: 14px;
   color: var(--text-primary);

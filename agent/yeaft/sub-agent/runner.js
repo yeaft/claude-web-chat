@@ -422,6 +422,10 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
           scenario: 'chat',
           vpPersona,
           sessionId: agent.parentSessionId || deps.parentSessionId || null,
+          // SpawnAgent records the caller-provided cwd on the agent. Thread it
+          // into the child Engine just like a parent query's workDir so child
+          // file tools resolve relative paths in the requested workspace.
+          workDir: agent.cwd,
           projectSessionIds: queuedPrompt.projectSessionIds,
           projectLabel: queuedPrompt.projectLabel,
           projectInstruction: queuedPrompt.projectInstruction,

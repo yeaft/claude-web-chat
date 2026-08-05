@@ -56,6 +56,7 @@ Guidelines:
   },
   isConcurrencySafe: () => false,
   isReadOnly: () => true,
+  cacheWithinQuery: false,
   // This is an intentionally user-driven wait, not a stalled tool call.
   timeoutMs: 0,
   async execute(input, ctx) {

@@ -922,6 +922,7 @@ Guidelines:
   },
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
+  cacheWithinQuery: true,
   async execute(input, ctx) {
     const {
       pattern, path: searchPath, output_mode = 'files_with_matches',
