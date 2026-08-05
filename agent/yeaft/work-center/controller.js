@@ -12,6 +12,7 @@ import {
 import { renderSessionContextSnapshot } from './session-context.js';
 import { normalizeSessionMessageQuote } from '../session-message-quote.js';
 import { normalizeEvidence } from './evidence.js';
+import { isDynamicWorkItem } from './execution-mode.js';
 import { applyAdditivePlanProposal, applyReplanMutation } from './plan-mutation.js';
 import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
 
@@ -129,7 +130,7 @@ export class WorkflowController {
       acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? input.acceptanceCriteria : [],
       attachments: Array.isArray(input.attachments) ? input.attachments : [],
     };
-    let firstAction = input.start !== false ? initialActionFor(draft) : null;
+    let firstAction = input.start !== false && !isDynamicWorkItem(draft) ? initialActionFor(draft) : null;
     if (firstAction) {
       firstAction = {
         ...firstAction,
@@ -301,7 +302,7 @@ export class WorkflowController {
           quote: input.inputEvent?.quote || null,
         });
       }
-      if (Number(workItem.executionSchemaVersion) === 2 && input.inputEvent?.inputId) {
+      if (Number(workItem.executionSchemaVersion) >= 2 && input.inputEvent?.inputId) {
         context.push({
           type: 'input',
           role: 'user',
@@ -337,13 +338,24 @@ export class WorkflowController {
       throw new Error('Run has unconsumed Action input and cannot finish yet');
     }
     const result = normalizeTerminalResult(rawResult, activeAction);
+    if (isDynamicWorkItem(activeWorkItem)) {
+      result.contractPatch = null;
+      result.plan = null;
+      result.planProposal = null;
+      result.replanRequest = null;
+      result.replanMutation = null;
+      result.nextActions = [];
+      result.expandPlan = null;
+    }
     if (result.outcome === 'completed'
         && activeAction.stageId?.startsWith('replan-')
         && !result.replanMutation) {
       result.outcome = 'failed';
       result.error = 'Work Center replan triage must submit SubmitWorkItemReplan';
     }
-    validateCompletedResult(result, activeAction, activeWorkItem);
+    if (!isDynamicWorkItem(activeWorkItem)) {
+      validateCompletedResult(result, activeAction, activeWorkItem);
+    }
     let validatedGeneratedWorkflow = null;
     if (result.outcome === 'completed'
         && activeAction.type === 'triage'

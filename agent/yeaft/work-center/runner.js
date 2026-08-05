@@ -34,6 +34,7 @@ import { MCPManager } from '../mcp.js';
 import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
 import { recallWorkspaceSessionContext } from './workspace-context.js';
 import { applyGeneratedPlan, BUILT_IN_ACTION_TYPES } from './workflow.js';
+import { isDynamicWorkItem, usesMainlineContext } from './execution-mode.js';
 import {
   applyAdditivePlanProposal,
   applyReplanMutation,
@@ -946,7 +947,9 @@ export class WorkItemRunner {
           action: finalizeOwnedIntegration(this.store, action, run, ownerBootId),
         };
       }
-      const dependencies = this.store.listActionDependencies(workItem.id, action.dependsOnStageIds || []);
+      const dependencies = isDynamicWorkItem(workItem)
+        ? this.store.listActionSources(workItem.id, action.sourceActionIds || [])
+        : this.store.listActionDependencies(workItem.id, action.dependsOnStageIds || []);
       if (dependencies.length > 0 && dependencies.every(dependency => (
         dependency.workspaceMode === 'shared' && !dependency.workspace?.isolated
       ))) {
@@ -1021,9 +1024,8 @@ export class WorkItemRunner {
 
   async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader, registerInputWake }) {
     const runtime = await this.runtimeProvider();
-    const currentSettings = workItem?.workflowSnapshot?.planningMode === 'ai' && this.policyProvider
-      ? await this.policyProvider()
-      : null;
+    const currentSettings = ['ai', 'coordinator'].includes(workItem?.workflowSnapshot?.planningMode)
+      && this.policyProvider ? await this.policyProvider() : null;
     const currentModelPolicy = currentSettings?.actionModelPolicies?.[action.type]
       || currentSettings?.actionModelPolicies?.custom
       || currentSettings?.modelPolicy
@@ -1036,15 +1038,16 @@ export class WorkItemRunner {
       ? resolveWorkItemWorkDir({ workspaceKey: action.workspace.path }, runtime.defaultWorkDir)
       : workspaceDir;
     const priorRuns = this.store.listCompletedRuns(workItem.id);
-    const v2Execution = Number(workItem.executionSchemaVersion) === 2;
-    const dependencyContext = v2Execution
-      ? []
-      : this.store.listActionDependencies?.(workItem.id, action.dependsOnStageIds || []) || [];
+    const mainlineExecution = usesMainlineContext(workItem);
+    const dependencyContext = isDynamicWorkItem(workItem)
+      ? this.store.listActionSources?.(workItem.id, action.sourceActionIds || []) || []
+      : mainlineExecution ? []
+        : this.store.listActionDependencies?.(workItem.id, action.dependsOnStageIds || []) || [];
     const dependencyBlock = dependencyContext.length === 0 ? '' : `\n\nCompleted dependency results:\n${dependencyContext.map(dependency => {
       const evidence = dependency.evidence?.length
         ? `\nEvidence: ${dependency.evidence.map(item => item.label).join('; ')}`
         : '';
-      return `### ${dependency.stageId} (${dependency.vpId || 'unknown VP'})\n${dependency.summary || '(no summary)'}${evidence}`;
+      return `### ${isDynamicWorkItem(workItem) ? dependency.id : dependency.stageId} (${dependency.vpId || 'unknown VP'})\n${dependency.summary || '(no summary)'}${evidence}`;
     }).join('\n\n')}`;
     const resumeBlock = renderActionResumeBlock(this.store.getActionResumeContext?.(action.id, run.id));
     const assignment = executionAction.assignmentPolicy
@@ -1084,7 +1087,7 @@ export class WorkItemRunner {
     const attachmentFileById = new Map(attachmentContext.files.map(file => [file.id, file]));
     const fixedPromptSuffix = `${resumeBlock}${attachmentContext.promptBlock}${completionContract(executionAction, workItem)}`;
     const reservedPromptBytes = Buffer.byteLength(fixedPromptSuffix, 'utf8');
-    const mainline = v2Execution
+    const mainline = mainlineExecution
       ? buildMainlineContextSnapshot(
           this.store.getWorkItemDetail(workItem.id),
           executionAction,
@@ -1336,11 +1339,11 @@ export class WorkItemRunner {
       }
     };
     try {
-      const prompt = v2Execution
+      const prompt = mainlineExecution
         ? `${renderMainlineContextSnapshot(mainline.contextSnapshot)}${fixedPromptSuffix}`
         : `${executionAction.instruction}${dependencyBlock}${resumeBlock}${attachmentContext.promptBlock}${workspaceSessionBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
       const promptBytes = Buffer.byteLength(prompt, 'utf8');
-      if (v2Execution && promptBytes > MAINLINE_CONTEXT_HARD_LIMIT_BYTES) {
+      if (mainlineExecution && promptBytes > MAINLINE_CONTEXT_HARD_LIMIT_BYTES) {
         throw new Error(`Work Center Mainline prompt exceeds 64 KiB (${promptBytes} rendered UTF-8 bytes)`);
       }
       const promptParts = attachmentContext.promptParts.length > 0

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-export const WORK_CENTER_SCHEMA_VERSION = 35;
+export const WORK_CENTER_SCHEMA_VERSION = 36;
 
 const MIGRATIONS = [
   ['23-conversation-stream', migrateConversationStream],
@@ -16,6 +16,7 @@ const MIGRATIONS = [
   ['33-coordinator-provider-turns', migrateCoordinatorProviderTurns],
   ['34-engine-turn-status-repair', repairEngineTurnStatusContract],
   ['35-coordinator-provider-claims', migrateCoordinatorProviderClaims],
+  ['36-dynamic-coordination', migrateDynamicCoordination],
 ];
 
 const MIGRATION_ALIASES = new Map([
@@ -475,6 +476,28 @@ function migrateCoordinatorProviderClaims(db) {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_coordinator_provider_turns_claim
       ON coordinator_provider_turns(coordinator_turn_id, claim_owner, claim_epoch, status);
+  `);
+}
+
+function migrateDynamicCoordination(db) {
+  if (!hasColumn(db, 'work_items', 'coordination_mode')) {
+    db.exec("ALTER TABLE work_items ADD COLUMN coordination_mode TEXT NOT NULL DEFAULT 'legacy'");
+  }
+  if (!hasColumn(db, 'work_items', 'final_result')) {
+    db.exec('ALTER TABLE work_items ADD COLUMN final_result TEXT');
+  }
+  if (!hasColumn(db, 'actions', 'source_action_ids')) {
+    db.exec("ALTER TABLE actions ADD COLUMN source_action_ids TEXT NOT NULL DEFAULT '[]'");
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_work_items_dynamic_status
+      ON work_items(coordination_mode, status, updated_at);
+    CREATE TRIGGER IF NOT EXISTS trg_work_item_final_result_immutable
+    BEFORE UPDATE OF final_result ON work_items
+    WHEN OLD.final_result IS NOT NULL AND NEW.final_result IS NOT OLD.final_result
+    BEGIN
+      SELECT RAISE(ABORT, 'WorkItem final result is immutable');
+    END;
   `);
 }
 

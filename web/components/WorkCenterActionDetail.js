@@ -149,7 +149,7 @@ export default {
             <p v-if="action.brief?.approach">{{ action.brief.approach }}</p>
             <dl class="work-center-action-context-list">
               <div v-if="action.brief?.expectedOutcome"><dt>{{ tr('workCenter.actionExpectedOutcome', 'Expected result') }}</dt><dd>{{ action.brief.expectedOutcome }}</dd></div>
-              <div v-if="action.dependsOnStageIds?.length"><dt>{{ tr('workCenter.dependencies', 'Dependencies') }}</dt><dd>{{ action.dependsOnStageIds.join(', ') }}</dd></div>
+              <div v-if="(action.sourceActionIds?.length || action.dependsOnStageIds?.length)"><dt>{{ tr('workCenter.dependencies', 'Source Actions') }}</dt><dd>{{ (action.sourceActionIds?.length ? action.sourceActionIds : action.dependsOnStageIds).join(', ') }}</dd></div>
               <div v-if="action.canonicalResult?.summary"><dt>{{ tr('workCenter.actionResult', 'Latest result') }}</dt><dd>{{ action.canonicalResult.summary }}</dd></div>
             </dl>
           </section>

@@ -1761,7 +1761,7 @@ export default {
           <header class="work-center-modal-header">
             <div>
               <h2 id="work-center-create-title">{{ tr('workCenter.newWorkItem', 'New work item') }}</h2>
-              <p>{{ tr('workCenter.createHint', 'Describe what you need. Triage will turn it into a goal, acceptance criteria, and Actions.') }}</p>
+              <p>{{ tr('workCenter.createHint', 'Describe what you need. The Coordinator will keep creating the next justified Actions until the acceptance criteria are verified.') }}</p>
             </div>
             <button class="modal-close" type="button" @click="closeCreate" :disabled="saving" :aria-label="tr('common.close', 'Close')">×</button>
           </header>
@@ -1769,7 +1769,7 @@ export default {
             <section class="work-center-form-section work-center-requirement-section">
               <label>{{ tr('workCenter.requirement', 'Requirement') }}
                 <textarea v-model="form.requirement" rows="8" required autofocus :placeholder="tr('workCenter.requirementHint', 'Describe the problem, desired outcome, and any constraints in your own words')"></textarea>
-                <small class="work-center-field-help">{{ tr('workCenter.requirementHelp', 'Triage will generate the title, goal, acceptance criteria, type, and execution plan.') }}</small>
+                <small class="work-center-field-help">{{ tr('workCenter.requirementHelp', 'The Coordinator will refine the goal and acceptance criteria, then create Actions dynamically as evidence arrives.') }}</small>
               </label>
             </section>
             <section class="work-center-form-section work-center-create-attachments">
@@ -1812,7 +1812,7 @@ export default {
             </section>
             <section class="work-center-plan-preview">
               <div class="work-center-plan-preview-heading">
-                <div><strong>{{ tr('workCenter.aiPlan', 'AI-planned execution') }}</strong><small>{{ tr('workCenter.aiPlanHelp', 'Triage will choose the task type, Actions, executors, and the smallest reliable flow. Work Center settings control the model and effort.') }}</small></div>
+                <div><strong>{{ tr('workCenter.aiPlan', 'Coordinator-driven execution') }}</strong><small>{{ tr('workCenter.aiPlanHelp', 'The Coordinator chooses the next Actions and executors from current evidence instead of precomputing a workflow graph. Work Center settings control the model and effort.') }}</small></div>
                 <button type="button" class="btn-secondary" @click="settingsOpen = true">{{ tr('workCenter.settings.title', 'Settings') }}</button>
               </div>
             </section>
