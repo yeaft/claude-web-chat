@@ -134,7 +134,10 @@ export function buildPluginCatalog({ toolRegistry, skillManager, mcpConfig, mcpM
 
   const statusByName = new Map((mcpManager?.status?.() || [])
     .map(status => [status.name, status]));
-  const configuredMcpServers = Array.isArray(mcpConfig?.servers) && mcpConfig.servers.length > 0
+  // A configured catalog is authoritative, including an explicit empty array.
+  // Only callers that supplied no catalog at all use live status as a legacy
+  // fallback.
+  const configuredMcpServers = Array.isArray(mcpConfig?.servers)
     ? mcpConfig.servers
     : (mcpManager?.status?.() || []).map(status => ({ name: status.name, command: '' }));
   const mcpServers = configuredMcpServers

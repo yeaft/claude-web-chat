@@ -64,8 +64,6 @@
  * @property {(input?: object) => boolean} [isDestructive] — destructive operation?
  * @property {'json-error-envelope' | null} [errorOutput] — explicit returned-output error contract; null means only thrown errors fail
  * @property {string} [mcpServer] — owning MCP server for flattened MCP tools
- * @property {boolean} [pluginExempt] — internal control-plane tool that must
- *   remain available when Agent plugin allowlists restrict user capabilities
  */
 
 /**
@@ -81,7 +79,6 @@
  *   isDestructive?: (input?: object) => boolean,
  *   errorOutput?: 'json-error-envelope' | null,
  *   mcpServer?: string,
- *   pluginExempt?: boolean,
  *   timeoutMs?: number,
  * }} def
  * @returns {ToolDef}
@@ -97,7 +94,6 @@ export function defineTool({
   isDestructive = () => false,
   errorOutput = 'json-error-envelope',
   mcpServer,
-  pluginExempt = false,
   timeoutMs,
 }) {
   if (!name) throw new Error('Tool must have a name');
@@ -122,7 +118,6 @@ export function defineTool({
   if (typeof mcpServer === 'string' && mcpServer.trim()) {
     def.mcpServer = mcpServer.trim();
   }
-  if (pluginExempt === true) def.pluginExempt = true;
   // Only attach `timeoutMs` when the tool author opts in. Leaving it
   // unset means ToolRegistry.execute uses DEFAULT_TOOL_TIMEOUT_MS — set
   // to <= 0 to disable the per-tool timeout entirely.

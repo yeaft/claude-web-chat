@@ -23,7 +23,7 @@ import { DEFAULT_YEAFT_DIR } from './init.js';
 import { buildDreamOutputSnapshot } from './dream/output-snapshot.js';
 import { Engine } from './engine.js';
 import { loadSession } from './session.js';
-import { loadConfig, loadMCPConfig } from './config.js';
+import { loadAgentMCPConfig, loadConfig, loadMCPConfig } from './config.js';
 import { createSkillManager } from './skills.js';
 import { buildPluginCatalog, createPluginSkillManager, resolveMcpPluginPolicy } from './plugins.js';
 import { MCPManager } from './mcp.js';
@@ -3036,16 +3036,16 @@ function resolvePluginCatalogRuntime(workDir = '') {
   };
 }
 
-function loadPluginCatalogMcpConfig(yeaftDir, workDir) {
-  // The Plugins catalog is Agent-owned. Re-read the raw configuration on every
-  // request so MCP CRUD is visible immediately, while keeping the same
-  // config.json -> mcp.json compatibility fallback as the runtime loader.
-  return loadRuntimeMcpConfig(yeaftDir, undefined, workDir || process.cwd());
+function loadPluginCatalogMcpConfig(yeaftDir) {
+  // The Plugins catalog is Agent-owned. Re-read its raw configuration on every
+  // request so MCP CRUD is visible immediately, while keeping the
+  // config.json -> mcp.json compatibility fallback.
+  return loadAgentMCPConfig(yeaftDir);
 }
 
 /** Test-only: read the MCP catalog source without sending a bridge response. */
-export function __testLoadPluginCatalogMcpConfig(yeaftDir, workDir) {
-  return loadPluginCatalogMcpConfig(yeaftDir, workDir);
+export function __testLoadPluginCatalogMcpConfig(yeaftDir) {
+  return loadPluginCatalogMcpConfig(yeaftDir);
 }
 
 export function handleYeaftPluginCatalog(msg = {}) {
@@ -3054,7 +3054,7 @@ export function handleYeaftPluginCatalog(msg = {}) {
   try {
     const runtime = resolvePluginCatalogRuntime(requestedWorkDir);
     const yeaftDir = ctx.CONFIG?.yeaftDir || session?.yeaftDir || DEFAULT_YEAFT_DIR;
-    runtime.mcpConfig = loadPluginCatalogMcpConfig(yeaftDir, requestedWorkDir);
+    runtime.mcpConfig = loadPluginCatalogMcpConfig(yeaftDir);
     const catalog = buildPluginCatalog(runtime);
     sendToServer({
       type: 'yeaft_plugin_catalog_result',

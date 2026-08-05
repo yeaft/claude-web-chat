@@ -307,7 +307,6 @@ export function normalizePluginToolPolicy(plugins) {
  */
 export function isToolHiddenByPluginPolicy(tool, plugins) {
   if (!tool) return true;
-  if (tool.pluginExempt === true) return false;
   const policy = normalizePluginToolPolicy(plugins);
   if (tool.mcpServer) {
     return policy.mcpServers !== null && !policy.mcpServers.has(tool.mcpServer);

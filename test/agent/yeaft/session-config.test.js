@@ -3,8 +3,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ctx from '../../../agent/context.js';
-import { loadConfig, normalizeLlmRetry } from '../../../agent/yeaft/config.js';
+import { loadConfig, loadMCPConfig, normalizeLlmRetry } from '../../../agent/yeaft/config.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { buildPluginCatalog } from '../../../agent/yeaft/plugins.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
 import { __testGetOrCreateVpEngine, __testHooks, __testLoadPluginCatalogMcpConfig, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
@@ -80,12 +81,15 @@ describe('Yeaft session-scoped model config', () => {
 
     // Simulate an already-loaded runtime whose MCP manager still reflects the
     // pre-CRUD connection set. The catalog must read the saved Agent config.
+    const staleMcpManager = {
+      status: () => [{ name: 'stale-runtime', ready: true, toolCount: 1 }],
+    };
     __testSetSession({
       yeaftDir: root,
       config: { dir: root },
       toolRegistry: null,
       skillManager: null,
-      mcpManager: { status: () => [{ name: 'stale-runtime', ready: true, toolCount: 1 }] },
+      mcpManager: staleMcpManager,
     });
     writeFileSync(join(root, 'config.json'), `${JSON.stringify({
       mcpServers: [
@@ -114,6 +118,15 @@ describe('Yeaft session-scoped model config', () => {
     expect(legacyCatalog.servers).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'legacy', args: ['legacy.js'] }),
     ]));
+
+    writeFileSync(join(root, 'config.json'), `${JSON.stringify({ mcpServers: [] }, null, 2)}\n`);
+    const explicitEmptyCatalog = __testLoadPluginCatalogMcpConfig(root);
+    expect(explicitEmptyCatalog.servers).toEqual([]);
+    expect(loadMCPConfig(root, undefined).servers.map(server => server.name)).not.toContain('legacy');
+    expect(buildPluginCatalog({
+      mcpConfig: explicitEmptyCatalog,
+      mcpManager: staleMcpManager,
+    }).mcpServers).toEqual([]);
 
   });
 

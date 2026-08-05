@@ -546,8 +546,7 @@ export function loadConfig(overrides = {}) {
  * @returns {{ servers: object[], skipped: { name: string, reason: string, source: string }[] }}
  */
 export function loadMCPConfig(yeaftDir, jsonConfig, workDir, options = {}) {
-  const configured = jsonConfig === undefined ? readConfigJson(yeaftDir) : jsonConfig;
-  const yeaftGlobal = loadGlobalMCPServers(yeaftDir, configured);
+  const yeaftGlobal = loadAgentMCPConfig(yeaftDir, jsonConfig);
   const externalUser = loadExternalUserMCPServers();
   const project = workDir
     ? loadProjectMCPServers(workDir, options)
@@ -555,7 +554,7 @@ export function loadMCPConfig(yeaftDir, jsonConfig, workDir, options = {}) {
 
   const servers = [];
   const seen = new Set();
-  for (const tier of [yeaftGlobal, externalUser.servers, project.servers]) {
+  for (const tier of [yeaftGlobal.servers, externalUser.servers, project.servers]) {
     for (const s of tier) {
       if (!s?.name || seen.has(s.name)) continue;
       seen.add(s.name);
@@ -564,6 +563,24 @@ export function loadMCPConfig(yeaftDir, jsonConfig, workDir, options = {}) {
   }
 
   return { servers, skipped: [...externalUser.skipped, ...project.skipped] };
+}
+
+/**
+ * Load only the Agent-owned MCP configuration tier. Plugin Center uses this
+ * catalog source so it reflects current Agent configuration rather than
+ * borrowed user/project MCP sources or a live runtime snapshot.
+ *
+ * An explicitly present `config.json.mcpServers` array is authoritative,
+ * including an empty array. The legacy `mcp.json` fallback applies only when
+ * that field is absent.
+ *
+ * @param {string} yeaftDir
+ * @param {object} [jsonConfig] — Already-parsed config.json (optional, avoids re-read)
+ * @returns {{ servers: object[], skipped: object[] }}
+ */
+export function loadAgentMCPConfig(yeaftDir, jsonConfig) {
+  const configured = jsonConfig === undefined ? readConfigJson(yeaftDir) : jsonConfig;
+  return { servers: loadGlobalMCPServers(yeaftDir, configured), skipped: [] };
 }
 
 /**
@@ -578,10 +595,10 @@ export function loadMCPConfig(yeaftDir, jsonConfig, workDir, options = {}) {
  * @returns {object[]}
  */
 function loadGlobalMCPServers(yeaftDir, jsonConfig) {
-  // Check config.json mcpServers field
+  // An explicitly present config.json array is authoritative, even when it
+  // is empty. Falling back in that case would resurrect removed MCP servers.
   if (jsonConfig && Array.isArray(jsonConfig.mcpServers)) {
-    const valid = jsonConfig.mcpServers.filter(s => s.name && s.command);
-    if (valid.length > 0) return valid;
+    return jsonConfig.mcpServers.filter(s => s.name && s.command);
   }
 
   // Fallback: standalone mcp.json
