@@ -435,6 +435,99 @@ describe('ConversationStore', () => {
       expect(index.nextSeq).toBe(26);
       expect(index.segments).toHaveLength(1);
     });
+
+    it('keeps legacy transcript lineage stable across metadata loss and alternating readers', () => {
+      const sessionId = 'session_legacy_lineage';
+      store.append({ role: 'user', content: 'legacy question', sessionId });
+      store.append({ role: 'assistant', content: 'legacy answer', sessionId });
+      const conversationDir = join(TEST_DIR, 'sessions', sessionId, 'conversation');
+      const indexPath = join(conversationDir, 'index.json');
+      const lineagePath = join(conversationDir, 'lineage.json');
+      const legacyIndex = JSON.parse(readFileSync(indexPath, 'utf8'));
+      delete legacyIndex.streamId;
+      delete legacyIndex.revision;
+      rmSync(lineagePath, { force: true });
+      writeFileSync(indexPath, `${JSON.stringify(legacyIndex, null, 2)}\n`);
+
+      const firstUpgrade = new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId);
+      expect(firstUpgrade).toMatchObject({ streamId: expect.stringMatching(/^legacy-/), revision: 0 });
+
+      // Two new readers can race the first migration. Deleting only the sidecar
+      // simulates both having observed the same legacy state before publication;
+      // the content-derived lineage must still converge.
+      rmSync(lineagePath, { force: true });
+      expect(new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId)).toEqual(firstUpgrade);
+
+      // Simulate an old reader/writer repeatedly dropping unknown index fields.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const oldIndex = JSON.parse(readFileSync(indexPath, 'utf8'));
+        delete oldIndex.streamId;
+        delete oldIndex.revision;
+        writeFileSync(indexPath, `${JSON.stringify(oldIndex, null, 2)}\n`);
+        expect(new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId)).toEqual(firstUpgrade);
+      }
+
+      rmSync(indexPath, { force: true });
+      const rebuilt = new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId);
+      expect(rebuilt).toEqual(firstUpgrade);
+      expect(JSON.parse(readFileSync(lineagePath, 'utf8'))).toMatchObject({
+        streamId: firstUpgrade.streamId,
+        revision: firstUpgrade.revision,
+      });
+    });
+
+    it('rotates Session history lineage after delete and same-id recreation', () => {
+      const sessionId = 'session_recreated_lineage';
+      store.append({ role: 'user', content: 'old question', sessionId });
+      store.append({ role: 'assistant', content: 'old answer', sessionId });
+      const beforeDelete = store.getSessionHistoryMetadata(sessionId);
+
+      expect(store.deleteByGroup(sessionId)).toBe(2);
+      const afterDelete = store.getSessionHistoryMetadata(sessionId);
+      expect(afterDelete.streamId).not.toBe(beforeDelete.streamId);
+      expect(afterDelete).toMatchObject({ revision: 0, headSeq: 0 });
+
+      store.append({ role: 'user', content: 'new question', sessionId });
+      store.append({ role: 'assistant', content: 'new answer', sessionId });
+      const recreated = store.getSessionHistoryMetadata(sessionId);
+      expect(recreated.streamId).toBe(afterDelete.streamId);
+      expect(recreated.streamId).not.toBe(beforeDelete.streamId);
+      expect(recreated.headSeq).toBeGreaterThan(0);
+    });
+
+    it('rotates legacy lineage if an old writer recreates the transcript without lineage metadata', () => {
+      const sessionId = 'session_old_writer_recreate';
+      store.append({
+        role: 'user', content: 'old question', sessionId, time: '2026-01-01T00:00:00.000Z',
+      });
+      const before = store.getSessionHistoryMetadata(sessionId);
+      const conversationDir = join(TEST_DIR, 'sessions', sessionId, 'conversation');
+      const segmentDir = join(conversationDir, 'segments');
+      const indexPath = join(conversationDir, 'index.json');
+      const segmentPath = join(segmentDir, '000001.jsonl');
+      const recreatedRow = {
+        id: 'm0001', seq: 1, role: 'user', content: 'new question', sessionId,
+        time: '2026-01-02T00:00:00.000Z', tokens_est: 3,
+      };
+      const body = `${JSON.stringify(recreatedRow)}\n`;
+      writeFileSync(segmentPath, body);
+      writeFileSync(indexPath, `${JSON.stringify({
+        version: 1,
+        nextSeq: 2,
+        totalMessages: 1,
+        lastMessageId: 'm0001',
+        activeSegment: '000001.jsonl',
+        segments: [{
+          file: '000001.jsonl', firstSeq: 1, lastSeq: 1, count: 1,
+          bytes: Buffer.byteLength(body),
+        }],
+        foldedMessageIds: [],
+      }, null, 2)}\n`);
+
+      const after = new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId);
+      expect(after.streamId).not.toBe(before.streamId);
+      expect(after).toMatchObject({ revision: 0, headSeq: 1 });
+    });
   });
 
   describe('update', () => {

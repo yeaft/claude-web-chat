@@ -18,7 +18,7 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, unlinkSync, statSync, appendFileSync } from 'fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { join, basename } from 'path';
 import { isPermissionError } from '../init.js';
 import { writeAtomic } from '../storage/atomic.js';
@@ -72,6 +72,7 @@ const DELTA_TOOL_PAIR_EXTENSION_CAP = 500;
 
 
 const SEGMENT_INDEX_FILE = 'index.json';
+const SEGMENT_LINEAGE_FILE = 'lineage.json';
 const SEGMENT_DIR = 'segments';
 const SEGMENT_TARGET_BYTES = 1024 * 1024;
 const SEGMENT_FIRST_NAME = '000001.jsonl';
@@ -100,7 +101,7 @@ function projectAssistantToolsForVisibleHistory(message) {
 function emptySegmentIndex() {
   return {
     version: 2,
-    streamId: randomUUID(),
+    streamId: null,
     revision: 0,
     nextSeq: 1,
     totalMessages: 0,
@@ -703,7 +704,9 @@ class SegmentStore {
     this.rootDir = rootDir;
     this.segmentDir = join(rootDir, SEGMENT_DIR);
     this.indexPath = join(rootDir, SEGMENT_INDEX_FILE);
+    this.lineagePath = join(rootDir, SEGMENT_LINEAGE_FILE);
     this.index = null;
+    this.lineage = null;
   }
 
   ensure() {
@@ -731,8 +734,16 @@ class SegmentStore {
     }
     const indexWasStale = idx && !this.#indexMatchesDisk(idx);
     const normalizedSource = !idx || indexWasStale ? this.#rebuildIndex() : idx;
-    const needsMetadataUpgrade = !normalizedSource?.streamId || !Number.isFinite(Number(normalizedSource?.revision));
     this.index = this.#normalizeIndex(normalizedSource);
+    this.lineage = this.#resolveLineage(this.index, {
+      verifyAnchor: !idx || !normalizedSource?.streamId,
+    });
+    this.index.streamId = this.lineage.streamId;
+    this.index.revision = this.lineage.revision;
+    const needsMetadataUpgrade = !normalizedSource?.streamId
+      || normalizedSource.streamId !== this.lineage.streamId
+      || !Number.isFinite(Number(normalizedSource?.revision))
+      || Number(normalizedSource.revision) !== this.lineage.revision;
     if ((!existsSync(this.indexPath) || indexWasStale || needsMetadataUpgrade) && this.hasData()) this.saveIndex();
     return this.index;
   }
@@ -779,10 +790,12 @@ class SegmentStore {
     idx.totalMessages = (idx.totalMessages || 0) + 1;
     idx.lastMessageId = msg.id || null;
     idx.nextSeq = Math.max(Number(idx.nextSeq) || 1, seq + 1);
+    const invalidatesEarlierRows = msg._reflection
+      || (Array.isArray(msg.foldedMessageIds) && msg.foldedMessageIds.length > 0);
     // Ordinary appends are recoverable through afterSeq. Only an append that
     // invalidates older visible rows (fold reflection/tombstones) advances the
     // mutation revision and forces the browser to rebuild its snapshot.
-    if (msg._reflection || (Array.isArray(msg.foldedMessageIds) && msg.foldedMessageIds.length > 0)) {
+    if (invalidatesEarlierRows) {
       idx.revision = (Number(idx.revision) || 0) + 1;
     }
     if (msg._reflection && Array.isArray(msg.foldedMessageIds)) {
@@ -791,6 +804,7 @@ class SegmentStore {
         ...msg.foldedMessageIds.filter(id => typeof id === 'string' && id),
       ]));
     }
+    this.#persistCurrentLineage({ revision: idx.revision });
     this.saveIndex();
   }
 
@@ -871,6 +885,7 @@ class SegmentStore {
     writeAtomic(path, body);
     segment.bytes = Buffer.byteLength(body);
     idx.revision = (Number(idx.revision) || 0) + 1;
+    this.#persistCurrentLineage({ revision: idx.revision });
     this.saveIndex();
     return updated;
   }
@@ -886,7 +901,9 @@ class SegmentStore {
       }
     }
     if (existsSync(this.indexPath)) unlinkSync(this.indexPath);
-    this.index = emptySegmentIndex();
+    this.lineage = { streamId: randomUUID(), revision: 0, anchor: null };
+    this.#writeLineage(this.lineage);
+    this.index = { ...emptySegmentIndex(), streamId: this.lineage.streamId };
     this.saveIndex();
   }
 
@@ -903,10 +920,120 @@ class SegmentStore {
     });
   }
 
+  #readLineage() {
+    if (!existsSync(this.lineagePath)) return null;
+    try {
+      const parsed = JSON.parse(readFileSync(this.lineagePath, 'utf8') || '{}');
+      if (!parsed || typeof parsed !== 'object'
+          || typeof parsed.streamId !== 'string' || !parsed.streamId
+          || !Number.isFinite(Number(parsed.revision))
+          || (parsed.anchor !== null && typeof parsed.anchor !== 'string')) return null;
+      return {
+        streamId: parsed.streamId,
+        revision: Math.max(0, Number(parsed.revision)),
+        anchor: parsed.anchor,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  #writeLineage(lineage) {
+    this.ensure();
+    const normalized = {
+      version: 1,
+      streamId: lineage.streamId,
+      revision: Math.max(0, Number(lineage.revision) || 0),
+      anchor: typeof lineage.anchor === 'string' ? lineage.anchor : null,
+    };
+    writeAtomic(this.lineagePath, `${JSON.stringify(normalized, null, 2)}\n`);
+    this.lineage = normalized;
+    return normalized;
+  }
+
+  #currentLineageAnchor() {
+    if (!existsSync(this.segmentDir)) return null;
+    const files = readdirSync(this.segmentDir).filter(file => file.endsWith('.jsonl')).sort();
+    for (const file of files) {
+      const path = join(this.segmentDir, file);
+      if (!existsSync(path)) continue;
+      let raw;
+      try {
+        raw = readFileSync(path, 'utf8');
+      } catch (error) {
+        if (isPermissionError(error)) return null;
+        throw error;
+      }
+      for (const line of raw.split('\n')) {
+        if (!parseJsonLine(line)) continue;
+        return createHash('sha256').update(line.trim()).digest('hex');
+      }
+    }
+    return null;
+  }
+
+  #legacyLineageId(anchor) {
+    return `legacy-${createHash('sha256')
+      .update(this.rootDir)
+      .update('\0')
+      .update(anchor || '<empty>')
+      .digest('hex')}`;
+  }
+
+  #resolveLineage(idx, { verifyAnchor = false } = {}) {
+    const persisted = this.#readLineage();
+    const anchor = !persisted || verifyAnchor ? this.#currentLineageAnchor() : persisted.anchor;
+    if (!persisted) {
+      const deterministicStreamId = this.#legacyLineageId(anchor);
+      const indexStreamId = typeof idx?.streamId === 'string' && idx.streamId ? idx.streamId : null;
+      // Missing sidecar is a rolling-upgrade boundary. Recompute from the
+      // immutable first row instead of trusting an index UUID that an older
+      // writer can repeatedly discard and a new reader can randomly recreate.
+      const streamId = verifyAnchor ? deterministicStreamId : (indexStreamId || deterministicStreamId);
+      return this.#writeLineage({
+        streamId,
+        revision: Number.isFinite(Number(idx?.revision)) ? Number(idx.revision) : 0,
+        anchor,
+      });
+    }
+    if (persisted.anchor !== anchor) {
+      // A reader/writer that predates lineage.json can still clear, recreate,
+      // or rewrite the first durable row. The anchor detects that mutation
+      // without relying on metadata fields the old index writer discards.
+      return this.#writeLineage({ streamId: randomUUID(), revision: 0, anchor });
+    }
+    const indexRevision = (!idx?.streamId || idx.streamId === persisted.streamId)
+      && Number.isFinite(Number(idx?.revision))
+      ? Math.max(0, Number(idx.revision))
+      : 0;
+    const revision = Math.max(persisted.revision, indexRevision);
+    if (revision !== persisted.revision) return this.#writeLineage({ ...persisted, revision });
+    return persisted;
+  }
+
+  #persistCurrentLineage({ revision = null } = {}) {
+    const current = this.lineage || this.#readLineage() || {
+      streamId: this.index?.streamId || this.#legacyLineageId(this.#currentLineageAnchor()),
+      revision: Number(this.index?.revision) || 0,
+      anchor: this.#currentLineageAnchor(),
+    };
+    const nextRevision = Number.isFinite(Number(revision)) ? Number(revision) : current.revision;
+    const needsWrite = !this.lineage || current.revision !== nextRevision;
+    const next = needsWrite
+      ? this.#writeLineage({ ...current, revision: nextRevision })
+      : current;
+    this.lineage = next;
+    if (this.index) {
+      this.index.streamId = next.streamId;
+      this.index.revision = next.revision;
+    }
+    return next;
+  }
+
   #normalizeIndex(idx) {
     const out = { ...emptySegmentIndex(), ...(idx || {}) };
     out.version = 2;
-    out.streamId = typeof out.streamId === 'string' && out.streamId ? out.streamId : randomUUID();
+    out.streamId = typeof out.streamId === 'string' && out.streamId ? out.streamId : null;
     out.revision = Number.isFinite(Number(out.revision)) ? Math.max(0, Number(out.revision)) : 0;
     out.segments = Array.isArray(out.segments) ? out.segments.filter(s => s && s.file) : [];
     out.segments.sort((a, b) => (Number(a.firstSeq) || 0) - (Number(b.firstSeq) || 0));
