@@ -238,6 +238,7 @@ export default {
                   :response-toggle-label="responseCollapseLabel(block)"
                   @quote="$emit('quote-message', $event)"
                   @toggle-response-collapse="toggleMessageTurnResponse(block)"
+                  @open-debug="onOpenTurnDebug(item)"
                 />
                 <AssistantTurn
                   v-else-if="item.type === 'assistant-turn'"
@@ -330,6 +331,7 @@ export default {
                 :turn="block"
                 :now-ms="nowMs"
                 @quote="$emit('quote-message', $event)"
+                @open-debug="onOpenTurnDebug(block)"
               />
               <AssistantTurn
                 v-else-if="block.type === 'assistant-turn'"
@@ -707,6 +709,14 @@ export default {
     };
     const setAssistantTurnActionsExpanded = (turn, value) => {
       assistantTurnActionStates[turnUiKey(turn)] = !!value;
+    };
+    const onOpenTurnDebug = (turn) => {
+      const turnId = turn && (turn.turnId || turn.id);
+      if (!turnId || typeof store.openYeaftTurnDebug !== 'function') return;
+      store.openYeaftTurnDebug({
+        sessionId: activeYeaftSessionId.value || null,
+        turnId,
+      });
     };
     const setToolExpanded = ({ key, value } = {}) => {
       if (!key) return;
@@ -2215,6 +2225,7 @@ export default {
       turnUiKey,
       assistantTurnActionsExpandedFor,
       setAssistantTurnActionsExpanded,
+      onOpenTurnDebug,
       toolExpandStates,
       setToolExpanded,
       cardsForRow,

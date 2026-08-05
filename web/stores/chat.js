@@ -992,6 +992,20 @@ export const useChatStore = defineStore('chat', {
     yeaftDebugHistoryFetchedAt: 0,
     yeaftDebugHistoryLimit: DEFAULT_YEAFT_DEBUG_HISTORY_LIMIT,
     yeaftDebugHistoryHasMore: false,
+    // Turn-level debug panel (eyes icon entry). The panel no longer boots
+    // into a history browser: clicking the eye on an AI turn opens this
+    // panel and issues a precise `yeaft_fetch_debug_history` detail request
+    // for exactly that turn. `requestId` guards stale responses; the panel
+    // only renders `yeaftDebugTurnsById[yeaftDebugPanel.turnId]`.
+    yeaftDebugPanel: {
+      open: false,
+      status: 'idle', // idle | loading | ready | unavailable | error
+      requestId: null,
+      agentId: null,
+      sessionId: null,
+      turnId: null,
+      error: null,
+    },
     // Debug-panel toolbar state.
     // `yeaftDebugSearch` is sent to the agent as a regex over bounded request
     // summaries so the request log can find traces outside the 5-row window.
@@ -3034,10 +3048,81 @@ export const useChatStore = defineStore('chat', {
         if (this.yeaftDebugHistoryLoading) {
           this.yeaftDebugHistoryLoading = false;
           this.yeaftDebugHistoryError = 'Debug history is unavailable right now. Try again after the agent reconnects.';
+          if (this.yeaftDebugPanel?.status === 'loading') {
+            this.yeaftDebugPanel = {
+              ...this.yeaftDebugPanel,
+              status: 'error',
+              error: this.yeaftDebugHistoryError,
+            };
+          }
         }
         this._yeaftDebugHistoryInFlightKey = null;
         this._fetchYeaftDebugHistoryTimer = null;
       }, 10_000);
+    },
+
+    /**
+     * Turn-level debug entry (eyes icon on an AI turn). Opens the debug
+     * panel and issues a precise detail fetch for exactly this turn — the
+     * panel no longer boots into a history browser. The requestId on the
+     * panel plus messageHandler's `_yeaftDebugHistoryLatestDetailRequestId`
+     * guard guarantee a stale response can never overwrite a newer panel.
+     *
+     * @param {{ sessionId?: string|null, turnId: string }} params
+     */
+    openYeaftTurnDebug({ sessionId = null, turnId = null } = {}) {
+      if (!this.currentAgent) return;
+      const requestId = `dbgpanel_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      // Turn-scoped entries flip to loading until the detail response
+      // arrives; the header entry opens an empty panel (status idle)
+      // so it can show the empty-state hint instead of a spinner.
+      const status = turnId ? 'loading' : 'idle';
+      this.yeaftDebugPanel = {
+        open: true,
+        status,
+        requestId,
+        agentId: this.currentAgent,
+        sessionId: sessionId || null,
+        turnId: turnId || null,
+        error: null,
+      };
+      // Header entry may open an empty panel (no turnId) to show the
+      // empty-state hint; only turn-scoped entries issue a detail fetch.
+      if (!turnId) return;
+      // Detail fetches carry the full request for one turn; the bounded
+      // list limit does not apply (agent returns the complete turn).
+      this.loadYeaftDebugHistory({
+        groupId: sessionId || undefined,
+        limit: 1,
+        dreamLimit: 5,
+        detailTurnId: turnId,
+      });
+    },
+
+    /**
+     * Close the turn-level debug panel and release the single-turn detail
+     * payload so large raw request bodies do not stay resident in the
+     * browser after the panel is dismissed.
+     */
+    closeYeaftDebugPanel() {
+      const panel = this.yeaftDebugPanel || {};
+      const turnId = panel.turnId || null;
+      this.yeaftDebugPanel = {
+        open: false,
+        status: 'idle',
+        requestId: null,
+        agentId: null,
+        sessionId: null,
+        turnId: null,
+        error: null,
+      };
+      if (turnId && this.yeaftDebugTurnsById && this.yeaftDebugTurnsById[turnId]) {
+        const nextTurnsById = { ...this.yeaftDebugTurnsById };
+        delete nextTurnsById[turnId];
+        this.yeaftDebugTurnsById = nextTurnsById;
+        this.yeaftDebugTurnOrder = (this.yeaftDebugTurnOrder || []).filter(id => id !== turnId);
+        this.yeaftDebugLoops = (this.yeaftDebugLoops || []).filter(loop => !loop || loop.turnId !== turnId);
+      }
     },
     /**
      * Resolve the agent that owns a Yeaft session. Public wrapper over the
@@ -6410,6 +6495,17 @@ export const useChatStore = defineStore('chat', {
       // from a previous session doesn't hide all incoming turns.
       this.yeaftDebugSearch = '';
       this.yeaftDebugSessionFilter = null;
+      // Turn-level debug panel: reset to closed on session reset so a
+      // stale turnId from the previous session can never render old data.
+      this.yeaftDebugPanel = {
+        open: false,
+        status: 'idle',
+        requestId: null,
+        agentId: null,
+        sessionId: null,
+        turnId: null,
+        error: null,
+      };
       if (this._yeaftDebugSearchTimer) {
         clearTimeout(this._yeaftDebugSearchTimer);
         this._yeaftDebugSearchTimer = null;
