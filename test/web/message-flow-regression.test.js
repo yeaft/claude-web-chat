@@ -116,6 +116,7 @@ const { default: ChatPage } = await import('../../web/components/ChatPage.js');
 const { default: YeaftSidebar } = await import('../../web/components/YeaftSidebar.js');
 const { default: WorkCenterPage } = await import('../../web/components/WorkCenterPage.js');
 const {
+  __testSortYeaftRowsBySequence,
   handleConversationCreated,
   handleConversationResumed,
   handleSyncMessagesResult,
@@ -5136,6 +5137,54 @@ describe('message flow regressions', () => {
       'new persisted answer',
       'pending send',
     ]);
+
+    // Sorting must be independent of the current array permutation. The three
+    // storage generations previously formed a comparison cycle here.
+    const legacyRow = {
+      id: 'legacy-permutation-row',
+      messageId: 'legacy-permutation-row',
+      type: 'user',
+      content: 'legacy permutation',
+      sessionId: 'visible-session',
+      timestamp: 200,
+      isHistory: true,
+    };
+    const sequencedRow = {
+      id: 'm0003',
+      messageId: 'm0003',
+      seq: 3,
+      type: 'assistant',
+      content: 'sequenced permutation',
+      sessionId: 'visible-session',
+      timestamp: 300,
+      isHistory: true,
+    };
+    const liveRow = {
+      id: 'live-permutation-row',
+      messageId: 'live-permutation-row',
+      clientMessageId: 'live-permutation-row',
+      type: 'user',
+      content: 'live permutation',
+      sessionId: 'visible-session',
+      timestamp: 100,
+    };
+    const permutations = [
+      [legacyRow, sequencedRow, liveRow],
+      [legacyRow, liveRow, sequencedRow],
+      [sequencedRow, legacyRow, liveRow],
+      [sequencedRow, liveRow, legacyRow],
+      [liveRow, legacyRow, sequencedRow],
+      [liveRow, sequencedRow, legacyRow],
+    ];
+    for (const rows of permutations) {
+      const sorted = rows.map(row => ({ ...row }));
+      __testSortYeaftRowsBySequence(sorted);
+      expect(sorted.map(row => row.content)).toEqual([
+        'legacy permutation',
+        'sequenced permutation',
+        'live permutation',
+      ]);
+    }
 
     // Empty history still has a real chunk frame. Completion-first must not
     // strand a first-ever empty Session in loading state or manufacture rows.
