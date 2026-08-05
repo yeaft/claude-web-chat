@@ -3,8 +3,9 @@
  * turn-debug-eyes.test.js — turn-level debug entry.
  *
  * Covers:
- *   1. VpTurnBlock renders an eye button on a finished AI turn and emits
- *      `open-debug` when clicked; streaming turns have no eye button.
+ *   1. VpTurnBlock puts a debug-specific action first in the existing
+ *      hover footer on finished AI turns and emits `open-debug`; streaming
+ *      turns have no debug action.
  *   2. `handleMessage` `yeaft_debug_history` detail responses flip the
  *      turn-level debug panel to ready/error and stale requestIds cannot
  *      overwrite a newer panel selection.
@@ -57,23 +58,44 @@ beforeEach(() => {
   chatStore.cancelVpTurn.mockClear();
 });
 
-describe('VpTurnBlock eyes entry', () => {
-  it('renders the eye button for a finished AI turn', () => {
+describe('VpTurnBlock debug action', () => {
+  it('renders the debug-specific action first in the existing hover footer', () => {
     const wrapper = mount(VpTurnBlock, {
       props: { turn: makeTurn() },
       global: { mocks: { $t: key => key }, provide: { t: key => key } },
     });
-    const btn = wrapper.find('.vp-turn-debug-btn');
+    const footer = wrapper.find('.turn-footer');
+    const actions = footer.findAll('button');
+    const btn = footer.find('.debug-turn-action-btn');
+
+    expect(footer.exists()).toBe(true);
     expect(btn.exists()).toBe(true);
+    expect(actions[0].classes()).toContain('debug-turn-action-btn');
     expect(btn.attributes('aria-label')).toContain('debug trace');
+    expect(btn.find('.debug-turn-action-icon').exists()).toBe(true);
+    expect(wrapper.find('.vp-turn-debug-btn').exists()).toBe(false);
+    expect(wrapper.find('.vp-turn-block-actions').exists()).toBe(false);
   });
 
-  it('does not render the eye button while the turn is streaming', () => {
+  it('does not render the debug action while the turn is streaming', () => {
     const wrapper = mount(VpTurnBlock, {
       props: { turn: makeTurn({ isStreaming: true }) },
       global: { mocks: { $t: key => key }, provide: { t: key => key } },
     });
-    expect(wrapper.find('.vp-turn-debug-btn').exists()).toBe(false);
+    expect(wrapper.find('.debug-turn-action-btn').exists()).toBe(false);
+  });
+
+  it('does not opt a legacy AssistantTurn into the debug action', async () => {
+    const { default: AssistantTurn } = await import('../../web/components/AssistantTurn.js');
+    const wrapper = mount(AssistantTurn, {
+      props: { turn: makeTurn({ speakerVpId: null }) },
+      global: {
+        mocks: { $t: key => key },
+        provide: { t: key => key },
+        stubs: { VpSpeakerHeader: true },
+      },
+    });
+    expect(wrapper.find('.debug-turn-action-btn').exists()).toBe(false);
   });
 
   it('emits open-debug with the turn identity on click', async () => {
@@ -81,7 +103,7 @@ describe('VpTurnBlock eyes entry', () => {
       props: { turn: makeTurn() },
       global: { mocks: { $t: key => key }, provide: { t: key => key } },
     });
-    await wrapper.find('.vp-turn-debug-btn').trigger('click');
+    await wrapper.find('.debug-turn-action-btn').trigger('click');
     expect(wrapper.emitted('open-debug')).toHaveLength(1);
   });
 });

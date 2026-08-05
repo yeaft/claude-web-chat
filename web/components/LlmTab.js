@@ -206,8 +206,8 @@ export default {
         </div>
 
         <!-- Debug traces: per-agent opt-in. Off by default; when enabled the
-             agent collects per-turn debug traces so the eyes icon on AI turns
-             can show the full request/loop/tool timeline. -->
+             agent collects per-turn debug traces so the turn debug action can
+             show the full request/loop/tool timeline. -->
         <div class="sp-group llm-section">
           <div class="llm-section-header">
             <div>

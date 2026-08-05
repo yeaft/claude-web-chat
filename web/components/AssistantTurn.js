@@ -54,9 +54,13 @@ export default {
       default: ''
     },
     sessionActions: { type: Boolean, default: false },
-    quoteAuthor: { type: String, default: '' }
+    quoteAuthor: { type: String, default: '' },
+    // VpTurnBlock opts into the turn-scoped debug action. Keeping this
+    // opt-in preserves the legacy Chat footer unchanged.
+    showDebugAction: { type: Boolean, default: false },
+    debugActionTitle: { type: String, default: '' }
   },
-  emits: ['update-actions-expanded', 'update-tool-expanded', 'toggle-response-collapse', 'quote'],
+  emits: ['update-actions-expanded', 'update-tool-expanded', 'toggle-response-collapse', 'quote', 'open-debug'],
   template: `
     <div class="assistant-turn" ref="turnRef" :class="{ streaming: turn.isStreaming, 'has-vp-speaker': !!turn.speakerVpId }">
       <!-- 0. task-334-ui-b: VP speaker header — only when a speakerVpId is
@@ -193,13 +197,23 @@ export default {
       </div>
 
       <!-- 6. Response footer actions (visible on hover) -->
-      <div class="turn-footer" v-if="(turn.textContent || responseCollapsible || (sessionActions && (turn.todoMsg || turn.toolMsgs?.length || turn.toolSummaryCount))) && !turn.isStreaming">
+      <div class="turn-footer" v-if="(turn.textContent || responseCollapsible || showDebugAction || (sessionActions && (turn.todoMsg || turn.toolMsgs?.length || turn.toolSummaryCount))) && !turn.isStreaming">
         <span
           v-if="turnTime && !turn.speakerVpId"
           class="turn-time"
           :title="turnTimeFull"
           :aria-label="$t('yeaft.message.timeAria', { time: turnTimeFull })"
         >{{ turnTime }}</span>
+        <button
+          v-if="showDebugAction"
+          type="button"
+          class="message-action-btn debug-turn-action-btn"
+          @click="$emit('open-debug')"
+          :title="debugActionTitle"
+          :aria-label="debugActionTitle"
+        >
+          <svg class="debug-turn-action-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 2 1.88 1.88"/><path d="M14.12 3.88 16 2"/><path d="M9 7.13v-1a3 3 0 0 1 6 0v1"/><path d="M12 20a6 6 0 0 0 6-6v-3a6 6 0 0 0-12 0v3a6 6 0 0 0 6 6Z"/><path d="M12 20v-9"/><path d="M8 13H2"/><path d="M18 13h4"/><path d="M8 17H2"/><path d="M18 17h4"/></svg>
+        </button>
         <button v-if="sessionActions" type="button" class="message-action-btn" @click="$emit('quote', assistantQuote)" :title="$t('message.quote')" :aria-label="$t('message.quote')">
           <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>
         </button>
