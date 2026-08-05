@@ -37,6 +37,7 @@ function readLocalLlmConfig(dir) {
     primaryModel: json.primaryModel || null,
     fastModel: json.fastModel || null,
     language: json.language || 'en',
+    debug: json.debug === true,
     needsSetup: providers.length === 0 || providers.every(p => p.apiKey === 'proxy' || p.apiKey === '' || (!p.apiKey && !p.credentialProvider)),
   };
 }
@@ -174,6 +175,9 @@ export function updateLlmConfig(update, dir) {
   if (update.language !== undefined) {
     existing.language = update.language;
   }
+  if (update.debug !== undefined) {
+    existing.debug = update.debug === true;
+  }
 
   // Write back
   try {
@@ -187,6 +191,7 @@ export function updateLlmConfig(update, dir) {
     primaryModel: existing.primaryModel || null,
     fastModel: existing.fastModel || null,
     language: existing.language || 'en',
+    debug: existing.debug === true,
   };
   return {
     ...agentConfig,

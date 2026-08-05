@@ -781,6 +781,37 @@
   outline: none;
 }
 
+/* Turn-level debug entry (eyes icon) under each finished AI turn. */
+.vp-turn-block-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  min-height: 24px;
+  padding: 0 2px;
+}
+.vp-turn-debug-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted, var(--text-secondary));
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+.vp-turn-debug-btn:hover,
+.vp-turn-debug-btn:focus-visible {
+  background: var(--sidebar-hover, var(--bg-input));
+  color: var(--text-primary);
+  outline: none;
+}
+
 /* Body: nested AssistantTurn inherits the main column width — no extra indent. */
 .vp-turn-block-body-expanded {
   margin-top: 2px;

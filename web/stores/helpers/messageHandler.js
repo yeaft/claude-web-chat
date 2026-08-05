@@ -596,6 +596,16 @@ export function handleMessage(store, msg) {
       store.yeaftDebugHistoryLoading = false;
       store.yeaftDebugHistoryError = typeof msg?.error === 'string' ? msg.error : null;
       store.yeaftDebugHistoryFetchedAt = Date.now();
+      // Turn-level debug panel: a detail fetch that matches the panel's
+      // current turn flips status to ready/error. Stale detail responses
+      // were already dropped by the requestId guard above.
+      if (isDetailFetch && store.yeaftDebugPanel && store.yeaftDebugPanel.turnId === msg.detailTurnId) {
+        store.yeaftDebugPanel = {
+          ...store.yeaftDebugPanel,
+          status: store.yeaftDebugHistoryError ? 'error' : 'ready',
+          error: store.yeaftDebugHistoryError,
+        };
+      }
       break;
     }
 
