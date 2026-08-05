@@ -68,7 +68,10 @@ function shellQuote(value) {
 }
 
 function systemdEscape(value) {
-  return String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+  return String(value)
+    .replaceAll('%', '%%')
+    .replaceAll('\\', '\\\\')
+    .replaceAll('"', '\\"');
 }
 
 /** Read the persisted local service settings, including its resolved data root. */

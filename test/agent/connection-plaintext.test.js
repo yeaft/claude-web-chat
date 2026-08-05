@@ -148,6 +148,12 @@ describe('agent ctx defaults and upgrade contract', () => {
       cliPath: '/opt/yeaft/cli.js',
       workingDirectory: '/workspace/yeaft',
     });
+    const percentRootUnit = generateLocalSystemdUnit({
+      name: 'local-ui', port: 7777, yeaftDir: '/tmp/contains%q-root',
+    }, {
+      cliPath: '/opt/yeaft/cli.js',
+      workingDirectory: '/workspace/yeaft',
+    });
     expect(localUnit).toContain('Description=Yeaft Local Web UI (local-ui)');
     expect(localUnit).toContain('ExecStart=');
     expect(localUnit).toContain("'/opt/yeaft/cli.js' local --name 'local-ui' --port 7777");
@@ -156,6 +162,8 @@ describe('agent ctx defaults and upgrade contract', () => {
     expect(localUnit).toContain(`Environment="YEAFT_DIR=${getDefaultYeaftDir('local-ui')}"`);
     expect(customRootUnit).toContain('Environment="YEAFT_DIR=/tmp/local-data"');
     expect(customRootUnit).not.toContain(`Environment="YEAFT_DIR=${getDefaultYeaftDir('local-ui')}"`);
+    expect(percentRootUnit).toContain('Environment="YEAFT_DIR=/tmp/contains%%q-root"');
+    expect(percentRootUnit).not.toContain('Environment="YEAFT_DIR=/tmp/contains%q-root"');
     expect(localUnit).toContain('WantedBy=default.target');
 
     const env = {};
