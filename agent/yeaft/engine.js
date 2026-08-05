@@ -2923,42 +2923,44 @@ export class Engine {
           }
         }
 
-        // Do not durably publish a model-only continuation until every
-        // pre-request await is complete and the fresh provider request is about
-        // to start. Stop at the visible loop boundary must leave no
-        // continuation that the provider never received.
-        if (signal?.aborted) throw new LLMAbortError();
-        if (pendingContinuationForRequest
-            && retryLifecycle.pendingContinuation === pendingContinuationForRequest) {
-          this.#persistConversationMessage(pendingContinuationForRequest, { sessionId: runtimeSessionId });
+        // Capture only the provider route before the visible boundary. The
+        // returned async iterable must not make a request or write durable
+        // state; both the retry continuation and Work Center EngineTurn remain
+        // uncommitted until the consumer resumes this `turn_start`.
+        //
+        // Engine configuration is deliberately captured here, before the yield.
+        // AdapterRouter then freezes only its provider catalog; bridge config
+        // refreshes while `turn_start` is visible cannot alter this request.
+        const capturesProviderRoute = typeof this.#adapter.captureStream === 'function';
+        const captureStream = capturesProviderRoute
+          ? this.#adapter.captureStream.bind(this.#adapter)
+          : this.#adapter.stream.bind(this.#adapter);
+        let continuationCommitted = false;
+        const commitRetryContinuation = () => {
+          if (continuationCommitted
+              || !pendingContinuationForRequest
+              || retryLifecycle.pendingContinuation !== pendingContinuationForRequest) return;
+          const persisted = this.#persistConversationMessage(pendingContinuationForRequest, {
+            sessionId: runtimeSessionId,
+          });
+          if (persisted) pendingContinuationForRequest._persistedMessageId = persisted.id;
           conversationMessages.push(pendingContinuationForRequest);
           retryLifecycle.pendingContinuation = null;
-        }
-
-        activeProviderRequest = typeof prepareProviderRequest === 'function'
-          ? prepareProviderRequest({
+          continuationCommitted = true;
+        };
+        const commitDispatch = () => {
+          if (!activeProviderRequest && typeof prepareProviderRequest === 'function') {
+            activeProviderRequest = prepareProviderRequest({
               turnNumber,
               entries: appendedBeforeStream,
               system: systemPrompt,
               messages: wireMessages.map(mapDebugMessage),
               model: currentModel,
-            }) || null
-          : null;
-
-        // Snapshot task results carried by this exact request. Request start
-        // is not delivery: fetch may remain pending and then be aborted before
-        // the provider processes anything. Ack only after a normal stream end
-        // that included the provider's terminal stop event.
-        const requestAsyncTaskIds = Array.from(this.#pendingAsyncTaskConfirmIds);
-        let sawProviderStop = false;
-        // `turn_start` is consumed by the Web bridge and can synchronously
-        // publish a config/catalog update before this generator resumes.
-        // Capture the complete adapter request before that yield. Router and
-        // UsageAccounting preserve their provider snapshot at this boundary;
-        // their async iterators still defer the network request until below.
-        const captureStream = typeof this.#adapter.captureStream === 'function'
-          ? this.#adapter.captureStream.bind(this.#adapter)
-          : this.#adapter.stream.bind(this.#adapter);
+            }) || null;
+          }
+          startProviderRequest?.(activeProviderRequest);
+          commitRetryContinuation();
+        };
         const providerStream = captureStream({
           model: currentModel,
           system: systemPrompt,
@@ -2970,9 +2972,28 @@ export class Engine {
           signal,
           onRawExchange: captureRawExchange,
           rawExchangeMaxBytes,
-          onRequestStart: () => startProviderRequest?.(activeProviderRequest),
+          onRequestStart: () => {
+            // Native adapters invoke this immediately before fetch(). A retry
+            // continuation and Work Center EngineTurn become durable only when
+            // their request crosses dispatch, never when turn_start is shown.
+            commitDispatch();
+          },
         });
         yield { type: 'turn_start', turnNumber, threadId };
+
+        // Provider iteration begins after the visible boundary. Native adapters
+        // commit in onRequestStart immediately before fetch. Legacy adapters
+        // without route capture commit before their generator can execute so
+        // existing stream() contracts retain their durable retry semantics.
+        if (signal?.aborted) throw new LLMAbortError();
+        if (!capturesProviderRoute) commitDispatch();
+
+        // Snapshot task results carried by this exact request. Request start
+        // is not delivery: fetch may remain pending and then be aborted before
+        // the provider processes anything. Ack only after a normal stream end
+        // that included the provider's terminal stop event.
+        const requestAsyncTaskIds = Array.from(this.#pendingAsyncTaskConfirmIds);
+        let sawProviderStop = false;
         for await (const event of providerStream) {
           // task-325a (abort-stop fix): per-event abort short-circuit.
           // The adapter is expected to throw AbortError when fetch's

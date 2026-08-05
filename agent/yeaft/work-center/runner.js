@@ -1022,7 +1022,7 @@ export class WorkItemRunner {
     }
   }
 
-  async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader, registerInputWake }) {
+  async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader, registerInputWake, onEngineEvent = null }) {
     const runtime = await this.runtimeProvider();
     const currentSettings = ['ai', 'coordinator'].includes(workItem?.workflowSnapshot?.planningMode)
       && this.policyProvider ? await this.policyProvider() : null;
@@ -1351,7 +1351,7 @@ export class WorkItemRunner {
       const promptParts = attachmentContext.promptParts.length > 0
         ? [{ type: 'text', text: prompt }, ...attachmentContext.promptParts]
         : null;
-      for await (const event of engine.query({
+      const query = engine.query({
         prompt,
         promptParts,
         messages: [],
@@ -1373,7 +1373,19 @@ export class WorkItemRunner {
         ),
 
         collabToolPolicy: 'single-vp',
-      })) {
+      });
+      const iterator = query[Symbol.asyncIterator]();
+      let stoppedByEngineEvent = false;
+      while (true) {
+        const step = await iterator.next();
+        if (step.done) break;
+        const event = step.value;
+        const control = await onEngineEvent?.(event, { iterator, engine, query });
+        if (control?.stop === true) {
+          await iterator.return();
+          stoppedByEngineEvent = true;
+          break;
+        }
         if (event?.type === 'loop') {
           loopCount += 1;
           this.store.appendRunLoop?.(run.id, ownerBootId, run.leaseEpoch, {
@@ -1405,6 +1417,11 @@ export class WorkItemRunner {
       // preserve Work Center's historical rejection semantics so Run fencing,
       // hazardous side-effect handling, and retry policy still see the failure.
       if (terminalEngineError) throw terminalEngineError;
+      if (stoppedByEngineEvent) {
+        const stopped = new Error('Work Center Engine consumer stopped before provider dispatch');
+        stopped.name = 'WorkCenterEngineStoppedError';
+        throw stopped;
+      }
     } catch (error) {
       error.workItemExecutionStats = currentProgress();
       throw error;

@@ -730,6 +730,52 @@ describe('Engine', () => {
       expect(adapter.callLog[1]).toMatchObject({ model: 'provider/new', maxTokens: 222 });
     });
 
+    it('captures a provider route without dispatching before turn_start', async () => {
+      const oldFetch = globalThis.fetch;
+      let dispatches = 0;
+      globalThis.fetch = async () => {
+        dispatches += 1;
+        return new Response(
+          'event: response.completed\n' +
+          'data: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{}}}\n\n',
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      };
+
+      try {
+        const router = new AdapterRouter({
+          providers: [{
+            name: 'capture',
+            baseUrl: 'https://capture.example/v1',
+            apiKey: 'capture-key',
+            protocol: 'openai-responses',
+            models: ['capture-model'],
+          }],
+        });
+        const engine = new Engine({
+          adapter: withUsageAccounting(router, () => {}),
+          trace,
+          config: { model: 'capture/capture-model', maxOutputTokens: 111 },
+        });
+        const iterator = engine.query({ prompt: 'capture without dispatch' })[Symbol.asyncIterator]();
+        let sawTurnStart = false;
+        while (true) {
+          const step = await iterator.next();
+          if (step.done) break;
+          if (step.value.type === 'turn_start') {
+            sawTurnStart = true;
+            break;
+          }
+        }
+        expect(sawTurnStart).toBe(true);
+        expect(dispatches).toBe(0);
+        await iterator.return();
+        expect(dispatches).toBe(0);
+      } finally {
+        globalThis.fetch = oldFetch;
+      }
+    });
+
     it('keeps the current provider request snapshot when turn_start re-enters config refresh', async () => {
       const oldFetch = globalThis.fetch;
       const requests = [];
@@ -4766,6 +4812,67 @@ describe('Engine', () => {
       expect(loops[0].response).toBe('Error: bad request body');
       expect(events).toContainEqual(expect.objectContaining({ type: 'turn_end', stopReason: 'error' }));
       expect(events).not.toContainEqual(expect.objectContaining({ type: 'turn_end', stopReason: 'end_turn' }));
+    });
+
+    it('does not persist a retry continuation when the consumer closes at the next turn_start', async () => {
+      const { LLMServerError } = await import('../../../agent/yeaft/llm/adapter.js');
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-retry-turn-start-close-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        let attempts = 0;
+        const engine = new Engine({
+          adapter: {
+            async *stream() {
+              attempts += 1;
+              if (attempts === 1) {
+                yield { type: 'text_delta', text: 'visible partial before retry' };
+                throw new LLMServerError('temporary upstream failure', 503);
+              }
+              yield { type: 'stop', stopReason: 'end_turn' };
+            },
+          },
+          trace,
+          conversationStore,
+          yeaftDir,
+          config: {
+            model: 'test-model',
+            maxOutputTokens: 1024,
+            llmRetry: { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
+          },
+        });
+
+        const iterator = engine.query({
+          prompt: 'hi',
+          sessionId: 'session-retry-turn-start-close',
+          vpTurnId: 'turn-retry-turn-start-close',
+        })[Symbol.asyncIterator]();
+        let secondTurnStart = false;
+        while (true) {
+          const step = await iterator.next();
+          if (step.done) throw new Error('retry ended before its next turn_start');
+          if (step.value.type === 'turn_start' && step.value.turnNumber === 2) {
+            secondTurnStart = true;
+            break;
+          }
+        }
+        expect(secondTurnStart).toBe(true);
+        expect(attempts).toBe(1);
+        await iterator.return();
+
+        expect(attempts).toBe(1);
+        expect(conversationStore.loadRecentBySession('session-retry-turn-start-close', Infinity)).toEqual([
+          expect.objectContaining({ role: 'user', content: 'hi' }),
+          expect.objectContaining({
+            role: 'assistant',
+            content: 'visible partial before retry',
+            incomplete: true,
+            stopReason: 'aborted',
+            turnId: 'turn-retry-turn-start-close',
+          }),
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
     });
 
     it('settles retry persistence for boundary teardown and later textless failure', async () => {
