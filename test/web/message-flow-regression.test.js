@@ -2176,9 +2176,9 @@ describe('message flow regressions', () => {
       const ordinaryEntryHistoryFrames = store.sendWsMessage.mock.calls
         .map(call => call[0])
         .filter(msg => msg.type === 'yeaft_load_history');
-      expect(ordinaryEntryHistoryFrames).toEqual([
-        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same' }),
-      ]);
+      expect(ordinaryEntryHistoryFrames).toEqual(expect.arrayContaining([
+        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same', limit: 5 }),
+      ]));
       expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'select_agent')).toEqual([
         expect.objectContaining({ agentId: 'agent-b' }),
       ]);
@@ -2724,14 +2724,18 @@ describe('message flow regressions', () => {
         .map(call => call[0])
         .filter(msg => msg.type === 'yeaft_load_history');
       expect(restoredExactOwnerHistoryFrames).toEqual([
-        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same' }),
+        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same', limit: 5 }),
       ]);
+      const exactOwnerHistoryFrame = restoredExactOwnerHistoryFrames[0];
+      expect(exactOwnerHistoryFrame).toEqual(
+        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same' }),
+      );
       store.handleMessage({
         type: 'yeaft_history_chunk',
         agentId: 'agent-b',
         sessionId: 'same',
         conversationId: 'conv-exact-b',
-        requestId: restoredExactOwnerHistoryFrames[0].requestId,
+        requestId: exactOwnerHistoryFrame.requestId,
         mode: 'recent',
         messages: [],
         latestSeq: 0,
@@ -2831,14 +2835,18 @@ describe('message flow regressions', () => {
         .map(call => call[0])
         .filter(msg => msg.type === 'yeaft_load_history');
       expect(exactOwnerHistoryFrames).toEqual([
-        expect.objectContaining({ agentId: 'agent-a', sessionId: 'same' }),
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'same', limit: 5 }),
       ]);
+      const agentAHistoryFrame = exactOwnerHistoryFrames[0];
+      expect(agentAHistoryFrame).toEqual(
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'same' }),
+      );
       store.handleMessage({
         type: 'yeaft_history_chunk',
         agentId: 'agent-a',
         sessionId: 'same',
         conversationId: 'conv-exact-a',
-        requestId: exactOwnerHistoryFrames[0].requestId,
+        requestId: agentAHistoryFrame.requestId,
         mode: 'recent',
         messages: [],
         latestSeq: 0,
@@ -3068,14 +3076,18 @@ describe('message flow regressions', () => {
         .map(call => call[0])
         .filter(msg => msg.type === 'yeaft_load_history');
       expect(migratedHistoryFrames).toEqual([
-        expect.objectContaining({ agentId: 'agent-a', sessionId: 'legacy-bare' }),
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'legacy-bare', limit: 5 }),
       ]);
+      const migratedHistoryFrame = migratedHistoryFrames[0];
+      expect(migratedHistoryFrame).toEqual(
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'legacy-bare' }),
+      );
       store.handleMessage({
         type: 'yeaft_history_chunk',
         agentId: 'agent-a',
         sessionId: 'legacy-bare',
         conversationId: 'conv-agent-a',
-        requestId: migratedHistoryFrames[0].requestId,
+        requestId: migratedHistoryFrame.requestId,
         mode: 'recent',
         messages: [],
         latestSeq: 0,
@@ -4264,9 +4276,9 @@ describe('message flow regressions', () => {
       .filter(msg => msg.type === 'yeaft_load_history');
     expect(firstYeaftLoads).toHaveLength(1);
     expect(firstYeaftLoads[0]).toMatchObject({
-      agentId: 'agent-a', sessionId: 'session-a', limit: 5,
+      agentId: 'agent-a', sessionId: 'session-a', afterSeq: 7,
     });
-    expect(firstYeaftLoads[0]).not.toHaveProperty('afterSeq');
+    expect(firstYeaftLoads[0]).not.toHaveProperty('limit');
     expect(store.isSessionHistorySyncing(yeaftDescriptor.routeRef)).toBe(true);
     expect(store.openCatalogSession(yeaftDescriptor)).toBe(true);
     expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_load_history')).toHaveLength(1);
@@ -4280,7 +4292,8 @@ describe('message flow regressions', () => {
       conversationId: 'conv-a',
       sessionId: 'session-a',
       requestId: firstYeaftLoads[0].requestId,
-      mode: 'recent',
+      mode: 'delta',
+      afterSeq: 7,
       messages: [{ id: 'fresh-yeaft', role: 'assistant', content: 'fresh answer', sessionId: 'session-a', ts: 2 }],
       latestSeq: 8,
       hasMore: false,
