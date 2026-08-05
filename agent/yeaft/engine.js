@@ -2763,8 +2763,6 @@ export class Engine {
       // tools/registry.js can never disagree.
       const currentContextWindow = resolveContextWindow(currentModel, requestConfig);
 
-      yield { type: 'turn_start', turnNumber, threadId };
-
       const appendedBeforeStream = this.#drainPendingUserMessages(drainPendingUserMessages);
       if (appendedBeforeStream.length > 0) {
         for (const item of appendedBeforeStream) {
@@ -2953,7 +2951,15 @@ export class Engine {
         // that included the provider's terminal stop event.
         const requestAsyncTaskIds = Array.from(this.#pendingAsyncTaskConfirmIds);
         let sawProviderStop = false;
-        for await (const event of this.#adapter.stream({
+        // `turn_start` is consumed by the Web bridge and can synchronously
+        // publish a config/catalog update before this generator resumes.
+        // Capture the complete adapter request before that yield. Router and
+        // UsageAccounting preserve their provider snapshot at this boundary;
+        // their async iterators still defer the network request until below.
+        const captureStream = typeof this.#adapter.captureStream === 'function'
+          ? this.#adapter.captureStream.bind(this.#adapter)
+          : this.#adapter.stream.bind(this.#adapter);
+        const providerStream = captureStream({
           model: currentModel,
           system: systemPrompt,
           messages: wireMessages,
@@ -2965,7 +2971,9 @@ export class Engine {
           onRawExchange: captureRawExchange,
           rawExchangeMaxBytes,
           onRequestStart: () => startProviderRequest?.(activeProviderRequest),
-        })) {
+        });
+        yield { type: 'turn_start', turnNumber, threadId };
+        for await (const event of providerStream) {
           // task-325a (abort-stop fix): per-event abort short-circuit.
           // The adapter is expected to throw AbortError when fetch's
           // signal fires, but in practice undici/HTTP-2/proxy layers

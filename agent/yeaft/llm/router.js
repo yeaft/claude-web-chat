@@ -618,12 +618,16 @@ export class AdapterRouter extends LLMAdapter {
     err.credentialRefreshable = Boolean(provider?.credentialProvider);
   }
 
-  stream(params) {
+  captureStream(params) {
     // `async *stream()` does not execute until its first `next()`. Capture the
-    // route in this ordinary method so a config save after stream() returns
+    // route in this ordinary method so a config save after capture returns
     // cannot replace the catalog before the request actually dispatches.
     const dispatchSnapshot = this.#captureDispatchSnapshot();
     return this.#streamWithSnapshot(params, dispatchSnapshot);
+  }
+
+  stream(params) {
+    return this.captureStream(params);
   }
 
   async *#streamWithSnapshot(params, dispatchSnapshot) {

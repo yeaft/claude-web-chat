@@ -21,6 +21,8 @@ import { readScope } from '../../../agent/yeaft/memory/segment-store.js';
 import { syncAll } from '../../../agent/yeaft/memory/segment-sync.js';
 import { Engine, buildResidentEntries, selectCanonicalMemoryScopes, selectResidentTopicScopes, selectRelatedSessionIds } from '../../../agent/yeaft/engine.js';
 import { flushAgentPerfTrace } from '../../../agent/yeaft/perf-trace.js';
+import { AdapterRouter } from '../../../agent/yeaft/llm/router.js';
+import { withUsageAccounting } from '../../../agent/yeaft/llm/usage-accounting.js';
 import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
 import { writeContent, writeSummary } from '../../../agent/yeaft/memory/store.js';
@@ -726,6 +728,71 @@ describe('Engine', () => {
       expect(adapter.callLog).toHaveLength(2);
       expect(adapter.callLog[0]).toMatchObject({ model: 'provider/old', maxTokens: 111 });
       expect(adapter.callLog[1]).toMatchObject({ model: 'provider/new', maxTokens: 222 });
+    });
+
+    it('keeps the current provider request snapshot when turn_start re-enters config refresh', async () => {
+      const oldFetch = globalThis.fetch;
+      const requests = [];
+      globalThis.fetch = async (url, init) => {
+        requests.push({ url: String(url), body: JSON.parse(init.body) });
+        return new Response(
+          'event: response.completed\n' +
+          'data: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{}}}\n\n',
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      };
+
+      try {
+        const router = new AdapterRouter({
+          providers: [{
+            name: 'old',
+            baseUrl: 'https://old.example/v1',
+            apiKey: 'old-key',
+            protocol: 'openai-responses',
+            models: ['old-model'],
+          }],
+        });
+        const adapter = withUsageAccounting(router, () => {});
+        let refreshDelivered = false;
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'old/old-model', modelEffort: 'low', maxOutputTokens: 111 },
+        });
+        const iterator = engine.query({ prompt: 'freeze this request', userEffort: 'low' });
+        let sawTurnStart = false;
+        while (true) {
+          const step = await iterator.next();
+          if (step.done) break;
+          if (step.value.type === 'turn_start') {
+            sawTurnStart = true;
+            router.refreshProviders([{
+              name: 'new',
+              baseUrl: 'https://new.example/v1',
+              apiKey: 'new-key',
+              protocol: 'openai-responses',
+              models: ['new-model'],
+            }]);
+            engine.refreshConfig({ model: 'new/new-model', modelEffort: 'high', maxOutputTokens: 222 });
+            refreshDelivered = true;
+            break;
+          }
+        }
+        expect(sawTurnStart).toBe(true);
+        expect(refreshDelivered).toBe(true);
+        for await (const _event of { [Symbol.asyncIterator]: () => iterator }) {
+          // Consume the frozen first request.
+        }
+
+        expect(requests).toEqual([
+          expect.objectContaining({
+            url: 'https://old.example/v1/responses',
+            body: expect.objectContaining({ model: 'old-model', max_output_tokens: 111 }),
+          }),
+        ]);
+      } finally {
+        globalThis.fetch = oldFetch;
+      }
     });
 
     it('refreshes configured effort at tool and retry request boundaries while preserving an explicit override', async () => {

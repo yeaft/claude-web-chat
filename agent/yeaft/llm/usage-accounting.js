@@ -90,11 +90,19 @@ export class UsageAccountingAdapter extends LLMAdapter {
     }
   }
 
-  stream(params) {
-    // Preserve the wrapped adapter's request-creation boundary. In particular,
-    // AdapterRouter captures its provider catalog when stream() is called.
-    const upstreamStream = this.#adapter.stream(this.#requestParams(params));
+  captureStream(params) {
+    // Preserve the wrapped adapter's request-capture boundary. In particular,
+    // AdapterRouter freezes its provider catalog before the stream is iterated.
+    const requestParams = this.#requestParams(params);
+    const capture = typeof this.#adapter.captureStream === 'function'
+      ? this.#adapter.captureStream.bind(this.#adapter)
+      : this.#adapter.stream.bind(this.#adapter);
+    const upstreamStream = capture(requestParams);
     return this.#streamWithAccounting(upstreamStream);
+  }
+
+  stream(params) {
+    return this.captureStream(params);
   }
 
   async *#streamWithAccounting(upstreamStream) {
