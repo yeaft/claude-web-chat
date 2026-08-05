@@ -3070,9 +3070,13 @@ export const useChatStore = defineStore('chat', {
     openYeaftTurnDebug({ sessionId = null, turnId = null } = {}) {
       if (!this.currentAgent) return;
       const requestId = `dbgpanel_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      // Turn-scoped entries flip to loading until the detail response
+      // arrives; the header entry opens an empty panel (status idle)
+      // so it can show the empty-state hint instead of a spinner.
+      const status = turnId ? 'loading' : 'idle';
       this.yeaftDebugPanel = {
         open: true,
-        status: 'idle',
+        status,
         requestId,
         agentId: this.currentAgent,
         sessionId: sessionId || null,

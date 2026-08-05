@@ -47,6 +47,7 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/web/stores/load-more-yeaft-history.test.js',
   'test/web/stores/session-cookie-auth.test.js',
   'test/web/stores/websocket-auth-token-race.test.js',
+  'test/web/stores/yeaft-debug-panel.test.js',
   'test/web/stores/yeaft-history-outline-state.test.js',
   'test/web/virtual-transcript-dom.test.js',
   'test/web/virtual-transcript.test.js',
