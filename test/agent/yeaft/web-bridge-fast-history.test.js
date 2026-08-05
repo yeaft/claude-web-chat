@@ -29,11 +29,17 @@ const {
   handleYeaftLoadHistoryOutline,
   handleYeaftLoadMoreHistory,
   handleYeaftSearchHistory,
+  handleYeaftArchiveSession,
+  handleYeaftRenameSession,
   handleYeaftSessionAddMember,
   handleYeaftSessionRemoveMember,
   handleYeaftSessionSetDefaultVp,
+  handleYeaftUpdateSession,
   __testHandleEngineEvent,
+  __testGetRegisteredThreadIds,
   __testGroupHistory,
+  __testResetVpState,
+  __testSeedAbortController,
   __testSetSession,
   __testHooks,
 } = await import('../../../agent/yeaft/web-bridge.js');
@@ -1197,6 +1203,67 @@ describe('Yeaft load-history first paint', () => {
       }
     } finally {
       __testSetSession(null);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps in-flight VP work alive across Session metadata updates', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-metadata-runtime-'));
+    try {
+      ctx.CONFIG = { yeaftDir: dir };
+      createSession(join(dir, 'sessions'), {
+        id: 'session-live',
+        name: 'Live',
+        announcement: 'before',
+        roster: ['linus'],
+        defaultVpId: 'linus',
+      }).close();
+
+      const cases = [
+        [handleYeaftRenameSession, { sessionId: 'session-live', name: 'Renamed' }],
+        [handleYeaftUpdateSession, {
+          sessionId: 'session-live',
+          patch: { announcement: 'after' },
+        }],
+        [handleYeaftSessionAddMember, { sessionId: 'session-live', vpId: 'martin' }],
+        [handleYeaftSessionSetDefaultVp, { sessionId: 'session-live', vpId: 'martin' }],
+      ];
+
+      for (const [index, [handler, payload]] of cases.entries()) {
+        const ctrl = new AbortController();
+        const threadId = `metadata-${index}`;
+        __testSeedAbortController(threadId, ctrl, 'session-live', 'linus');
+        handler({ ...payload, requestId: `request-${index}` });
+        expect(ctrl.signal.aborted).toBe(false);
+        expect(__testGetRegisteredThreadIds()).toContain(threadId);
+      }
+    } finally {
+      await __testResetVpState();
+      ctx.CONFIG = null;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still aborts in-flight VP work when the Session is archived', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-archive-runtime-'));
+    try {
+      ctx.CONFIG = { yeaftDir: dir };
+      createSession(join(dir, 'sessions'), {
+        id: 'session-archive',
+        name: 'Archive',
+        roster: ['linus'],
+        defaultVpId: 'linus',
+      }).close();
+      const ctrl = new AbortController();
+      __testSeedAbortController('archive-thread', ctrl, 'session-archive', 'linus');
+
+      handleYeaftArchiveSession({ sessionId: 'session-archive', requestId: 'request-archive' });
+
+      expect(ctrl.signal.aborted).toBe(true);
+      expect(__testGetRegisteredThreadIds()).not.toContain('archive-thread');
+    } finally {
+      await __testResetVpState();
+      ctx.CONFIG = null;
       rmSync(dir, { recursive: true, force: true });
     }
   });
