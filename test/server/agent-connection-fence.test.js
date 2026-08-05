@@ -52,14 +52,14 @@ function agentUrl(id = 'agent-1') {
   return new URL(`ws://localhost/?type=agent&id=${id}&name=Agent&instanceId=${id}&capabilities=plaintext-ok`);
 }
 
-function authenticate(socket) {
+function authenticate(socket, { secret = 'owner-secret', version = '1.0.0' } = {}) {
   const challenge = socket.getLastMessage();
   socket.simulateMessage({
     type: 'auth',
     tempId: challenge.tempId,
-    secret: 'owner-secret',
+    secret,
     capabilities: ['plaintext-ok'],
-    version: '1.0.0',
+    version,
   });
 }
 
@@ -75,7 +75,13 @@ beforeEach(() => {
   broadcastAgentList.mockClear();
   clearAgentDirCache.mockClear();
   handleAgentOutput.mockClear();
-  verifyAgent.mockClear();
+  verifyAgent.mockReset();
+  verifyAgent.mockReturnValue({
+    valid: true,
+    sessionKey: null,
+    userId: 'owner-1',
+    username: 'owner',
+  });
   getOrCreateUser.mockClear();
   delete process.env.YEAFT_LOCAL_RUN;
 });
@@ -95,7 +101,11 @@ describe('Agent connection replacement fence', () => {
     const newSocket = new MockWebSocket(WS_OPEN);
 
     handleAgentConnection(oldSocket, agentUrl());
+    authenticate(oldSocket);
+    await settleMessages();
     handleAgentConnection(newSocket, agentUrl());
+    authenticate(newSocket);
+    await settleMessages();
 
     expect(agents.get('agent-1')?.ws).toBe(newSocket);
     expect(oldSocket.readyState).toBe(WS_CLOSED);
@@ -117,10 +127,14 @@ describe('Agent connection replacement fence', () => {
 
     expect(handleAgentOutput).toHaveBeenCalledTimes(1);
     expect(handleAgentOutput.mock.calls[0][1].ws).toBe(newSocket);
+  });
 
+  it('assigns local-run agents to the skip-auth browser owner only when requested', async () => {
     process.env.YEAFT_LOCAL_RUN = 'true';
     const localSocket = new MockWebSocket(WS_OPEN);
     handleAgentConnection(localSocket, agentUrl('local-agent'));
+    authenticate(localSocket);
+    await settleMessages();
     expect(getOrCreateUser).toHaveBeenCalledWith('dev-user');
     expect(agents.get('local-agent')).toMatchObject({
       ownerId: 'local-user-id',
@@ -130,24 +144,81 @@ describe('Agent connection replacement fence', () => {
     delete process.env.YEAFT_LOCAL_RUN;
     const genericSocket = new MockWebSocket(WS_OPEN);
     handleAgentConnection(genericSocket, agentUrl('generic-dev-agent'));
+    authenticate(genericSocket);
+    await settleMessages();
     expect(agents.get('generic-dev-agent')).toMatchObject({
       ownerId: null,
       ownerUsername: null,
     });
   });
 
-  it('does not let an old close delete or rebroadcast over the replacement record', () => {
+  it('does not let an old close delete or rebroadcast over the replacement record', async () => {
     const oldSocket = new MockWebSocket(WS_OPEN);
     const newSocket = new MockWebSocket(WS_OPEN);
 
     handleAgentConnection(oldSocket, agentUrl());
+    authenticate(oldSocket);
+    await settleMessages();
     handleAgentConnection(newSocket, agentUrl());
+    authenticate(newSocket);
+    await settleMessages();
     broadcastAgentList.mockClear();
 
     oldSocket.emit('close', 1000, 'late old close');
 
     expect(agents.get('agent-1')?.ws).toBe(newSocket);
     expect(broadcastAgentList).not.toHaveBeenCalled();
+  });
+
+  it('keeps the newest SKIP_AUTH connection when the older auth arrives last', async () => {
+    const oldSocket = new MockWebSocket(WS_OPEN);
+    const newSocket = new MockWebSocket(WS_OPEN);
+
+    handleAgentConnection(oldSocket, agentUrl());
+    handleAgentConnection(newSocket, agentUrl());
+    authenticate(newSocket, { version: '1.0.350' });
+    await settleMessages();
+
+    expect(agents.get('agent-1')).toMatchObject({
+      ws: newSocket,
+      version: '1.0.350',
+    });
+    broadcastAgentList.mockClear();
+
+    authenticate(oldSocket, { version: '1.0.337' });
+    await settleMessages();
+
+    expect(agents.get('agent-1')).toMatchObject({
+      ws: newSocket,
+      version: '1.0.350',
+    });
+    expect(newSocket.readyState).toBe(WS_OPEN);
+    expect(oldSocket.readyState).toBe(WS_CLOSED);
+    expect(oldSocket.closeCode).toBe(1008);
+    expect(broadcastAgentList).not.toHaveBeenCalled();
+
+    oldSocket.emit('close', 1000, 'late old close');
+    expect(agents.get('agent-1')?.ws).toBe(newSocket);
+    expect(broadcastAgentList).not.toHaveBeenCalled();
+  });
+
+  it('does not revive an older SKIP_AUTH connection after the newest disconnects', async () => {
+    const oldSocket = new MockWebSocket(WS_OPEN);
+    const newSocket = new MockWebSocket(WS_OPEN);
+
+    handleAgentConnection(oldSocket, agentUrl());
+    handleAgentConnection(newSocket, agentUrl());
+    authenticate(newSocket, { version: '1.0.350' });
+    await settleMessages();
+    newSocket.close(1000, 'disconnect before old auth');
+    expect(agents.has('agent-1')).toBe(false);
+
+    authenticate(oldSocket, { version: '1.0.337' });
+    await settleMessages();
+
+    expect(agents.has('agent-1')).toBe(false);
+    expect(oldSocket.readyState).toBe(WS_CLOSED);
+    expect(oldSocket.closeCode).toBe(1008);
   });
 
   it('applies the same replacement fence after authenticated registration', async () => {
@@ -183,5 +254,117 @@ describe('Agent connection replacement fence', () => {
 
     expect(handleAgentOutput).toHaveBeenCalledTimes(1);
     expect(handleAgentOutput.mock.calls[0][1].ws).toBe(newSocket);
+  });
+
+  it('keeps the newest authenticated connection when the older auth arrives last', async () => {
+    CONFIG.skipAuth = false;
+    const oldSocket = new MockWebSocket(WS_OPEN);
+    const newSocket = new MockWebSocket(WS_OPEN);
+
+    handleAgentConnection(oldSocket, agentUrl());
+    handleAgentConnection(newSocket, agentUrl());
+    authenticate(newSocket, { version: '1.0.350' });
+    await settleMessages();
+
+    const scopedAgentId = 'owner-1:agent-1';
+    expect(agents.get(scopedAgentId)).toMatchObject({
+      ws: newSocket,
+      version: '1.0.350',
+    });
+    broadcastAgentList.mockClear();
+
+    authenticate(oldSocket, { version: '1.0.337' });
+    await settleMessages();
+
+    expect(agents.get(scopedAgentId)).toMatchObject({
+      ws: newSocket,
+      version: '1.0.350',
+    });
+    expect(newSocket.readyState).toBe(WS_OPEN);
+    expect(oldSocket.readyState).toBe(WS_CLOSED);
+    expect(oldSocket.closeCode).toBe(1008);
+    expect(broadcastAgentList).not.toHaveBeenCalled();
+
+    oldSocket.emit('close', 1000, 'late old close');
+    expect(agents.get(scopedAgentId)?.ws).toBe(newSocket);
+    expect(broadcastAgentList).not.toHaveBeenCalled();
+  });
+
+  it('does not revive an older authenticated connection after the newest disconnects', async () => {
+    CONFIG.skipAuth = false;
+    const oldSocket = new MockWebSocket(WS_OPEN);
+    const newSocket = new MockWebSocket(WS_OPEN);
+
+    handleAgentConnection(oldSocket, agentUrl());
+    handleAgentConnection(newSocket, agentUrl());
+    authenticate(newSocket, { version: '1.0.350' });
+    await settleMessages();
+    newSocket.close(1000, 'disconnect before old auth');
+
+    const scopedAgentId = 'owner-1:agent-1';
+    expect(agents.has(scopedAgentId)).toBe(false);
+    authenticate(oldSocket, { version: '1.0.337' });
+    await settleMessages();
+
+    expect(agents.has(scopedAgentId)).toBe(false);
+    expect(oldSocket.readyState).toBe(WS_CLOSED);
+    expect(oldSocket.closeCode).toBe(1008);
+  });
+
+  it('does not let a newer invalid auth fence an older valid connection', async () => {
+    CONFIG.skipAuth = false;
+    const oldSocket = new MockWebSocket(WS_OPEN);
+    const invalidNewSocket = new MockWebSocket(WS_OPEN);
+    verifyAgent.mockImplementation(secret => secret === 'invalid-secret'
+      ? { valid: false }
+      : {
+          valid: true,
+          sessionKey: null,
+          userId: 'owner-1',
+          username: 'owner-one',
+        });
+
+    handleAgentConnection(oldSocket, agentUrl());
+    handleAgentConnection(invalidNewSocket, agentUrl());
+    authenticate(invalidNewSocket, { secret: 'invalid-secret', version: '1.0.350' });
+    authenticate(oldSocket, { secret: 'owner-one-secret', version: '1.0.337' });
+    await settleMessages();
+
+    expect(invalidNewSocket.readyState).toBe(WS_CLOSED);
+    expect(invalidNewSocket.closeCode).toBe(1008);
+    expect(agents.get('owner-1:agent-1')).toMatchObject({
+      ws: oldSocket,
+      version: '1.0.337',
+    });
+    expect(oldSocket.readyState).toBe(WS_OPEN);
+  });
+
+  it('does not let another owner claim an authenticated connection generation', async () => {
+    CONFIG.skipAuth = false;
+    const ownerOneSocket = new MockWebSocket(WS_OPEN);
+    const ownerTwoSocket = new MockWebSocket(WS_OPEN);
+    verifyAgent.mockImplementation(secret => ({
+      valid: true,
+      sessionKey: null,
+      userId: secret === 'owner-two-secret' ? 'owner-2' : 'owner-1',
+      username: secret === 'owner-two-secret' ? 'owner-two' : 'owner-one',
+    }));
+
+    handleAgentConnection(ownerOneSocket, agentUrl());
+    handleAgentConnection(ownerTwoSocket, agentUrl());
+    authenticate(ownerTwoSocket, { secret: 'owner-two-secret', version: '1.0.350' });
+    authenticate(ownerOneSocket, { secret: 'owner-one-secret', version: '1.0.337' });
+    await settleMessages();
+
+    expect(agents.get('owner-1:agent-1')).toMatchObject({
+      ws: ownerOneSocket,
+      version: '1.0.337',
+    });
+    expect(agents.get('owner-2:agent-1')).toMatchObject({
+      ws: ownerTwoSocket,
+      version: '1.0.350',
+    });
+    expect(ownerOneSocket.readyState).toBe(WS_OPEN);
+    expect(ownerTwoSocket.readyState).toBe(WS_OPEN);
   });
 });

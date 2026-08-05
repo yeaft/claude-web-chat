@@ -1166,9 +1166,15 @@ export default {
 
     const onComposerMenuFocusout = (event, menu) => {
       const control = event.currentTarget;
-      Vue.nextTick(() => {
+      if (event.relatedTarget) {
+        if (!control?.contains(event.relatedTarget)) closeComposerMenu(menu);
+        return;
+      }
+      // Some browsers omit relatedTarget while moving focus. Wait until the
+      // click/focus sequence completes before deciding that focus left.
+      setTimeout(() => {
         if (!control?.contains(document.activeElement)) closeComposerMenu(menu);
-      });
+      }, 0);
     };
 
     const selectModel = (modelId, effort = null) => {
