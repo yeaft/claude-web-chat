@@ -113,9 +113,25 @@ function sortYeaftRowsBySequence(rows) {
     const aSeq = Number.isFinite(a?.seq) ? a.seq : null;
     const bSeq = Number.isFinite(b?.seq) ? b.seq : null;
     if (aSeq !== null && bSeq !== null && aSeq !== bSeq) return aSeq - bSeq;
-    if (aSeq !== null && bSeq === null) return -1;
-    if (aSeq === null && bSeq !== null) return 1;
-    return (a?.timestamp || 0) - (b?.timestamp || 0);
+
+    // Sequence numbers are authoritative only when both rows have one. Older
+    // persisted formats can lack an m#### id/seq, while rows written after a
+    // refresh already carry one. Treating every sequenced row as older moved
+    // those new rows above legacy history. Live/optimistic rows are the one
+    // exception: a persisted replay always belongs before that unflushed tail.
+    const aLive = a?.isStreaming || isOptimisticYeaftUserRow(a);
+    const bLive = b?.isStreaming || isOptimisticYeaftUserRow(b);
+    if (aSeq !== null && bSeq === null && bLive) return -1;
+    if (aSeq === null && bSeq !== null && aLive) return 1;
+
+    const aTimestamp = Number.isFinite(a?.timestamp) ? a.timestamp : null;
+    const bTimestamp = Number.isFinite(b?.timestamp) ? b.timestamp : null;
+    if (aTimestamp !== null && bTimestamp !== null && aTimestamp !== bTimestamp) {
+      return aTimestamp - bTimestamp;
+    }
+    if (aTimestamp === null && bTimestamp !== null) return -1;
+    if (aTimestamp !== null && bTimestamp === null) return 1;
+    return 0;
   });
 }
 

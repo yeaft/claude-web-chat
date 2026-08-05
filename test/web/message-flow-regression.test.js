@@ -5084,6 +5084,59 @@ describe('message flow regressions', () => {
       expect.objectContaining({ id: 'persisted-row-2', content: 'delta answer' }),
     ]));
 
+    // A refresh can merge persisted rows from different storage generations.
+    // Sequence is comparable only when both rows have it: a newly persisted row
+    // must not jump above older legacy history merely because the legacy row has
+    // no m#### id, and a live optimistic tail must remain last.
+    store.messagesMap[bridgeConversationId] = [{
+      id: optimisticId,
+      messageId: optimisticId,
+      clientMessageId: optimisticId,
+      type: 'user',
+      content: 'pending send',
+      sessionId: 'visible-session',
+      turnId: optimisticId,
+      timestamp: 3_000,
+    }];
+    const mixedGenerationRequest = store.beginYeaftHistoryLoad({
+      agentId: 'agent-a',
+      sessionId: 'visible-session',
+      mode: 'recent',
+      preserveLoaded: false,
+    });
+    store.handleMessage({
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-a',
+      conversationId: bridgeConversationId,
+      sessionId: 'visible-session',
+      requestId: mixedGenerationRequest.requestId,
+      mode: 'recent',
+      messages: [{
+        id: 'legacy-history-row',
+        role: 'user',
+        content: 'legacy history',
+        sessionId: 'visible-session',
+        ts: 1_000,
+      }, {
+        id: 'm0002',
+        seq: 2,
+        role: 'assistant',
+        content: 'new persisted answer',
+        sessionId: 'visible-session',
+        ts: 2_000,
+      }],
+      oldestSeq: 2,
+      latestSeq: 2,
+      hasMore: false,
+    });
+    expect(store.messagesMap[bridgeConversationId]
+      .filter(row => row.sessionId === 'visible-session')
+      .map(row => row.content)).toEqual([
+      'legacy history',
+      'new persisted answer',
+      'pending send',
+    ]);
+
     // Empty history still has a real chunk frame. Completion-first must not
     // strand a first-ever empty Session in loading state or manufacture rows.
     const emptyRequest = store.beginYeaftHistoryLoad({
