@@ -413,12 +413,30 @@ export function createSubmitWorkItemPlanTool({
   });
 }
 
-function terminalPlanningFields() {
+function terminalPlanningFields(options = {}) {
   return {
     summary: { type: 'string', minLength: 1, maxLength: 2_000 },
     evidence: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 1_000 } },
     acceptanceChecks: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['criterion', 'status', 'evidence'], properties: { criterion: { type: 'string' }, status: { type: 'string', enum: ['passed', 'deferred', 'not_applicable'] }, evidence: { type: 'string', minLength: 1, maxLength: 1_000 } } } },
+    ...(options.review === true ? {
+      reviewDecision: { type: 'string', const: 'changes_requested' },
+    } : {}),
   };
+}
+
+function reviewPlanningRequirements(action) {
+  return action?.type === 'review' ? ['reviewDecision'] : [];
+}
+
+function assertReviewPlanningDecision(input, action) {
+  if (action?.type !== 'review') return;
+  if (input?.reviewDecision !== 'changes_requested') {
+    throw new Error('Review planning controls require reviewDecision "changes_requested"');
+  }
+}
+
+function reviewPlanningResult(input, action) {
+  return action?.type === 'review' ? { reviewDecision: input.reviewDecision } : {};
 }
 
 function plannedActionSchema(vpIds, { requireCandidates = true } = {}) {
@@ -445,11 +463,15 @@ export function createProposeWorkItemActionsTool({
     : '';
   return defineTool({
     name: 'ProposeWorkItemActions',
-    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Use stable stageId values in dependsOnActionIds, changesRequestedActionId, and dependencyPatches[].addDependsOnActionIds. The only internal id field is dependencyPatches[].actionId, which must use the displayed internalActionId of an eligible ready attempt=0 target.${currentIdentity} Existing Actions: ${existing.map(action => `stageId=${action.stageId} (internalActionId=${action.id}, ${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions. This tool validates the complete additive DAG immediately; if validation fails, correct the proposal in the same turn.`,
+    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Use stable stageId values in dependsOnActionIds, changesRequestedActionId, and dependencyPatches[].addDependsOnActionIds. The only internal id field is dependencyPatches[].actionId, which must use the displayed internalActionId of an eligible ready attempt=0 target.${currentIdentity} Existing Actions: ${existing.map(action => `stageId=${action.stageId} (internalActionId=${action.id}, ${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions. A Review submitting changes_requested must add remediation followed by a fresh Review and make delivery depend on that fresh approval gate; otherwise request a replan. This tool validates the complete additive DAG immediately; if validation fails, correct the proposal in the same turn.`,
     parameters: { type: 'object', additionalProperties: false,
-      required: ['summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'actions'],
+      required: [
+        'summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'actions',
+        ...reviewPlanningRequirements(currentAction),
+      ],
       properties: {
-        ...terminalPlanningFields(), proposalId: { type: 'string', minLength: 1, maxLength: 128 },
+        ...terminalPlanningFields({ review: currentAction?.type === 'review' }),
+        proposalId: { type: 'string', minLength: 1, maxLength: 128 },
         basePlanRevision: { type: 'integer', const: workItem.planRevision },
         actions: { type: 'array', minItems: 1, maxItems: 8, items: plannedActionSchema(vpIds) },
         dependencyPatches: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false, required: ['actionId', 'addDependsOnActionIds'], properties: { actionId: { type: 'string', enum: existing.filter(action => action.status === 'ready' && action.attempt === 0).map(action => action.id) }, addDependsOnActionIds: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string' } } } } },
@@ -457,14 +479,22 @@ export function createProposeWorkItemActionsTool({
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('A WorkItem plan mutation was already submitted for this Run');
+      assertReviewPlanningDecision(input, currentAction);
       applyAdditivePlanProposal({
         workItem,
         actions,
         proposal: input,
         availableVpIds: vpIds,
+        reviewAction: currentAction,
       });
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
-      collector.value = { kind: 'expand', input: structuredClone(input) };
+      collector.value = {
+        kind: 'expand',
+        input: {
+          ...structuredClone(input),
+          ...reviewPlanningResult(input, currentAction),
+        },
+      };
       ctx.requestEndTurn?.({ kind: 'work_item_actions_proposed', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId, actionCount: input.actions.length });
     },
@@ -472,21 +502,34 @@ export function createProposeWorkItemActionsTool({
   });
 }
 
-export function createRequestWorkItemReplanTool({ workItem, collector, isRunActive }) {
+export function createRequestWorkItemReplanTool({
+  workItem, collector, isRunActive, currentAction = null,
+}) {
   return defineTool({
     name: 'RequestWorkItemReplan',
     description: 'Request an explicit replan barrier when additive Actions are insufficient because the contract or existing future topology must change. The current Action must still complete. Work Center will preserve completed history, fence sibling Runs, supersede only unfinished Actions, and insert a new triage/replan Action. Active integration finalization prevents the barrier.',
     parameters: { type: 'object', additionalProperties: false,
-      required: ['summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'reason'],
+      required: [
+        'summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'reason',
+        ...reviewPlanningRequirements(currentAction),
+      ],
       properties: {
-        ...terminalPlanningFields(), proposalId: { type: 'string', minLength: 1, maxLength: 128 },
+        ...terminalPlanningFields({ review: currentAction?.type === 'review' }),
+        proposalId: { type: 'string', minLength: 1, maxLength: 128 },
         basePlanRevision: { type: 'integer', const: workItem.planRevision },
         reason: { type: 'string', minLength: 1, maxLength: 4_000 },
       } },
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('A WorkItem plan mutation was already submitted for this Run');
-      collector.value = { kind: 'replan', input: structuredClone(input) };
+      assertReviewPlanningDecision(input, currentAction);
+      collector.value = {
+        kind: 'replan',
+        input: {
+          ...structuredClone(input),
+          ...reviewPlanningResult(input, currentAction),
+        },
+      };
       ctx.requestEndTurn?.({ kind: 'work_item_replan_requested', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId });
     },
@@ -1082,7 +1125,12 @@ export class WorkItemRunner {
         actions: this.store.getWorkItemDetail(workItem.id).actions,
         collector: mutationCollector, isRunActive, currentAction: executionAction,
       }));
-      runTools.push(createRequestWorkItemReplanTool({ workItem, collector: mutationCollector, isRunActive }));
+      runTools.push(createRequestWorkItemReplanTool({
+        workItem,
+        collector: mutationCollector,
+        isRunActive,
+        currentAction: executionAction,
+      }));
     }
     const runToolNames = runTools.map(tool => tool.name);
     const toolPolicySnapshot = workItemToolPolicySnapshot(
@@ -1389,6 +1437,7 @@ export class WorkItemRunner {
     } : submittedExpansion ? {
       outcome: 'completed', summary: submittedExpansion.summary,
       evidence: submittedExpansion.evidence, acceptanceChecks: submittedExpansion.acceptanceChecks,
+      ...reviewPlanningResult(submittedExpansion, executionAction),
       planProposal: {
         proposalId: submittedExpansion.proposalId,
         basePlanRevision: submittedExpansion.basePlanRevision,
@@ -1398,6 +1447,7 @@ export class WorkItemRunner {
     } : submittedReplan ? {
       outcome: 'completed', summary: submittedReplan.summary,
       evidence: submittedReplan.evidence, acceptanceChecks: submittedReplan.acceptanceChecks,
+      ...reviewPlanningResult(submittedReplan, executionAction),
       replanRequest: {
         proposalId: submittedReplan.proposalId,
         basePlanRevision: submittedReplan.basePlanRevision,

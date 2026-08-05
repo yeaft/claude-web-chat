@@ -756,18 +756,20 @@ describe('Work Center core', () => {
         actions: [
           { id: 'left', type: 'research', capability: 'research', objective: 'Inspect left', dependsOnActionIds: [], workspaceMode: 'read' },
           { id: 'right', type: 'research', capability: 'research', objective: 'Inspect right', dependsOnActionIds: [], workspaceMode: 'read' },
-          { id: 'review', type: 'review', capability: 'review', objective: 'Review both', dependsOnActionIds: ['left', 'right'] },
+          { id: 'review', type: 'review', capability: 'review', objective: 'Review both', dependsOnActionIds: ['left', 'right'], changesRequestedActionId: 'left' },
         ],
       },
     }));
 
-    const left = store.claimReadyAction('boot-a', 5_000);
-    const right = store.claimReadyAction('boot-a', 5_000);
-    expect(new Set([left.action.stageId, right.action.stageId])).toEqual(new Set(['left', 'right']));
-    expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
-    controller.submit(left.run.id, 'boot-a', left.run.leaseEpoch, completed('research'));
+    const first = store.claimReadyAction('boot-a', 5_000);
+    const second = store.claimReadyAction('boot-a', 5_000);
+    expect(new Set([first.action.stageId, second.action.stageId])).toEqual(new Set(['left', 'right']));
+    const left = first.action.stageId === 'left' ? first : second;
+    const right = first.action.stageId === 'right' ? first : second;
     expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
     controller.submit(right.run.id, 'boot-a', right.run.leaseEpoch, completed('research'));
+    expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
+    controller.submit(left.run.id, 'boot-a', left.run.leaseEpoch, completed('research'));
     expect(store.claimReadyAction('boot-a', 5_000).action.stageId).toBe('review');
     expect(store.getWorkItem(item.id).status).toBe('running');
   });
@@ -1012,6 +1014,15 @@ describe('Work Center core', () => {
       error: /dependencies contains an empty Action reference/,
     },
     {
+      name: 'review without target dependency',
+      actions: [
+        { id: 'implement fix', type: 'implement', objective: 'Implement the concrete fix', dependsOnActionIds: [] },
+        { id: 'review fix', type: 'review', objective: 'Review the concrete fix', dependsOnActionIds: [], changesRequestedActionId: 'implement fix' },
+        { id: 'deliver', type: 'deliver', objective: 'Deliver the reviewed fix', dependsOnActionIds: ['implement-fix', 'review-fix'] },
+      ],
+      error: /review target.*dependency/i,
+    },
+    {
       name: 'review target',
       actions: [
         { id: 'implement fix', type: 'implement', objective: 'Implement the concrete fix', dependsOnActionIds: [] },
@@ -1124,6 +1135,116 @@ describe('Work Center core', () => {
       }],
     })).rejects.toThrow(/invalid dependency.*internal-action-uuid/i);
     expect(collector.value).toBeNull();
+
+    const reviewTargetEntrypointCases = [
+      {
+        name: 'additive',
+        apply: () => applyAdditivePlanProposal({
+          workItem: additiveItem,
+          actions: [deliverAction],
+          proposal: {
+            proposalId: 'additive-review-without-target-dependency', basePlanRevision: 1,
+            actions: [{
+              id: 'parallel-review', name: 'Parallel review', type: 'review',
+              objective: 'Review the work independently', approach: 'Inspect the completed work',
+              expectedOutcome: 'An explicit review decision is recorded',
+              dependsOnActionIds: [], workspaceMode: 'read', changesRequestedActionId: 'work',
+            }],
+            dependencyPatches: [{
+              actionId: deliverAction.id, addDependsOnActionIds: ['parallel-review'],
+            }],
+          },
+        }),
+      },
+      {
+        name: 'coordinator',
+        apply: () => applyCoordinatorReplan({
+          workItem: {
+            ...additiveItem,
+            workflowSnapshot: {
+              ...additiveItem.workflowSnapshot,
+              planningMode: 'ai',
+            },
+          },
+          actions: [
+            { id: 'internal-work', stageId: 'work', type: 'implement', status: 'ready' },
+            deliverAction,
+          ],
+          proposal: {
+            proposalId: 'coordinator-review-without-target-dependency', basePlanRevision: 1,
+            reason: 'Keep the review concurrent to prove the validator rejects it.',
+            actions: [
+              { id: 'work', name: 'Work', type: 'implement', objective: 'Do work', approach: 'Edit files', expectedOutcome: 'Work complete', dependsOnActionIds: [], workspaceMode: 'shared' },
+              { id: 'parallel-review', name: 'Parallel review', type: 'review', objective: 'Review the work', approach: 'Inspect the work', expectedOutcome: 'Review decision recorded', dependsOnActionIds: [], workspaceMode: 'read', changesRequestedActionId: 'work' },
+              { id: 'deliver', name: 'Deliver', type: 'deliver', objective: 'Deliver', approach: 'Publish', expectedOutcome: 'Published', dependsOnActionIds: ['work', 'parallel-review'], workspaceMode: 'shared' },
+            ],
+          },
+        }),
+      },
+    ];
+    for (const entrypoint of reviewTargetEntrypointCases) {
+      expect(entrypoint.apply, entrypoint.name).toThrow(/review target.*dependency/i);
+    }
+
+    const inferredReviewProposal = applyAdditivePlanProposal({
+      workItem: additiveItem,
+      actions: [deliverAction],
+      proposal: {
+        proposalId: 'infer-review-target',
+        basePlanRevision: 1,
+        actions: [
+          {
+            id: 'late-remediation', name: 'Late remediation', type: 'implement',
+            objective: 'Fix the bounded late finding',
+            approach: 'Apply the focused remediation',
+            expectedOutcome: 'The late finding is resolved',
+            dependsOnActionIds: ['work'], workspaceMode: 'shared',
+          },
+          {
+            id: 'late-review', name: 'Late review', type: 'review',
+            objective: 'Review the late remediation independently',
+            approach: 'Inspect the remediation and record a decision',
+            expectedOutcome: 'The remediation has an explicit review decision',
+            dependsOnActionIds: ['late-remediation'], workspaceMode: 'read',
+          },
+        ],
+        dependencyPatches: [{
+          actionId: deliverAction.id,
+          addDependsOnActionIds: ['late-review'],
+        }],
+      },
+    });
+    expect(inferredReviewProposal.workflowSnapshot.stages.find(stage => stage.id === 'late-review'))
+      .toMatchObject({ changesRequestedStageId: 'late-remediation' });
+    expect(() => applyAdditivePlanProposal({
+      workItem: additiveItem,
+      actions: [deliverAction],
+      proposal: {
+        proposalId: 'reject-empty-review-target',
+        basePlanRevision: 1,
+        actions: [
+          {
+            id: 'empty-target-remediation', name: 'Empty target remediation', type: 'implement',
+            objective: 'Fix the empty-target finding',
+            approach: 'Apply the focused remediation',
+            expectedOutcome: 'The empty-target finding is resolved',
+            dependsOnActionIds: ['work'], workspaceMode: 'shared',
+          },
+          {
+            id: 'empty-target-review', name: 'Empty target review', type: 'review',
+            objective: 'Review the empty-target remediation',
+            approach: 'Inspect the remediation and record a decision',
+            expectedOutcome: 'The remediation has an explicit review decision',
+            dependsOnActionIds: ['empty-target-remediation'], workspaceMode: 'read',
+            changesRequestedActionId: '',
+          },
+        ],
+        dependencyPatches: [{
+          actionId: deliverAction.id,
+          addDependsOnActionIds: ['empty-target-review'],
+        }],
+      },
+    })).toThrow(/empty Action reference/);
 
   });
 
@@ -1392,6 +1513,29 @@ describe('Work Center core', () => {
       },
     });
     const beforeRejectedAddition = store.getWorkItemDetail(largeReplanItem.id);
+    const reviewWithoutTargetDependency = {
+      id: 'replan-review-without-target-dependency', name: 'Parallel replan review', type: 'review',
+      objective: 'Review the retained candidate', approach: 'Inspect the retained result',
+      expectedOutcome: 'A review decision is recorded', capability: 'review', candidateVpIds: ['omni'],
+      assignmentReason: 'Use the available reviewer.', dependsOnActionIds: [], workspaceMode: 'read',
+      changesRequestedActionId: 'candidate-1',
+    };
+    await expect(replanRegistry.execute('SubmitWorkItemReplan', {
+      ...replanInput,
+      proposalId: 'reject-replan-review-without-target-dependency',
+      retain: retain.map(entry => entry.action.type === 'deliver' ? {
+        ...entry,
+        action: {
+          ...entry.action,
+          dependsOnActionIds: [
+            ...entry.action.dependsOnActionIds.filter(id => id !== 'replan-added-8'),
+            reviewWithoutTargetDependency.id,
+          ],
+        },
+      } : entry),
+      add: [...acceptedAdditions.slice(0, 7), reviewWithoutTargetDependency],
+    }, {})).rejects.toThrow(/review target.*dependency/i);
+    expect(replanCollector.value).toBeNull();
     await expect(replanRegistry.execute('SubmitWorkItemReplan', {
       ...replanInput,
       proposalId: 'reject-ninth-replan-addition',
@@ -1616,7 +1760,7 @@ describe('Work Center core', () => {
             },
           }) };
         }
-        expect(request.messages[0].content).toMatch(/previous decision was rejected.*complete unfinished Action graph/is);
+        expect(request.messages[0].content).toMatch(/previous decision was rejected.*between 1 and 8 unfinished Actions/is);
         return { text: JSON.stringify({
           reply: 'The graph is already valid, so no plan change is required.',
           decision: {
@@ -1663,7 +1807,7 @@ describe('Work Center core', () => {
     expect(invalid.messages.at(-1)).toMatchObject({
       role: 'assistant', status: 'failed',
       speaker: { id: 'omni', name: 'Omni' },
-      error: 'Work Center Coordinator 未能生成有效回复。你的消息已经保留，请重试。',
+      error: 'Work Center Coordinator 生成的操作方案未通过校验。你的消息已经保留；重试会重新生成方案。',
     });
     expect(invalid.messages.at(-1).error).not.toContain('decision kind is invalid');
 
@@ -3261,6 +3405,106 @@ describe('Work Center core', () => {
       }
     }
   }, 30_000);
+
+  it('publishes the deterministic graph contract and applies a corrected Coordinator replan', async () => {
+    const item = controller.create(createInput({
+      id: 'coordinator-graph-contract',
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const triage = store.claimReadyAction('graph-contract-owner', 5_000);
+    controller.submit(triage.run.id, 'graph-contract-owner', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'coordinator-contract', actions: [
+        { id: 'old-work', type: 'implement', objective: 'Complete the original work', dependsOnActionIds: [], workspaceMode: 'shared' },
+        { id: 'old-deliver', type: 'deliver', objective: 'Deliver the original work', dependsOnActionIds: ['old-work'], workspaceMode: 'shared' },
+      ] },
+    }));
+    const original = store.claimReadyAction('graph-contract-owner', 5_000);
+    controller.submit(original.run.id, 'graph-contract-owner', original.run.leaseEpoch, {
+      outcome: 'failed', error: 'The original scope is invalid', summary: '', evidence: [],
+    });
+    const before = store.getWorkItemDetail(item.id);
+    let calls = 0;
+    const coordinator = new WorkItemCoordinator({
+      store,
+      runtimeProvider: async () => ({
+        config: { primaryModel: 'provider/model', availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }] },
+        adapter: { call: async request => {
+          request.onRequestStart?.();
+          calls += 1;
+          expect(request.system).toMatch(/smallest reliable graph of 1 to 8 task-specific Actions/i);
+          expect(request.system).toMatch(/type integrate must use workspaceMode integrate/i);
+          expect(request.system).toMatch(/review Action must depend directly or transitively/i);
+          expect(request.system).toMatch(/omit the property.*never send null or an empty string/i);
+          if (calls === 1) {
+            return { text: JSON.stringify({
+              reply: 'I will replace the unfinished graph.',
+              decision: {
+                kind: 'replan', reason: 'Exercise deterministic correction', contractPatch: null,
+                guidance: [], actions: [],
+              },
+            }) };
+          }
+          expect(request.messages[0].content)
+            .toMatch(/previous decision was rejected.*between 1 and 8 unfinished Actions/is);
+          return { text: JSON.stringify({
+            reply: 'I replaced the unfinished graph with a valid remediation and review path.',
+            decision: {
+              kind: 'replan', reason: 'The corrected graph respects every deterministic contract',
+              contractPatch: null, guidance: [], actions: [
+                {
+                  id: 'remediate', name: 'Remediate findings', type: 'implement',
+                  objective: 'Fix every verified review finding',
+                  approach: 'Apply the bounded fixes in an isolated workspace',
+                  expectedOutcome: 'The verified findings are resolved', capability: 'implement',
+                  candidateVpIds: [], assignmentReason: '', dependsOnActionIds: [], workspaceMode: 'isolated-write',
+                },
+                {
+                  id: 'integrate-remediation', name: 'Integrate remediation', type: 'integrate',
+                  objective: 'Combine the isolated remediation safely',
+                  approach: 'Integrate the verified remediation commit into the shared candidate',
+                  expectedOutcome: 'One integrated candidate contains the remediation', capability: 'integrate',
+                  candidateVpIds: [], assignmentReason: '', dependsOnActionIds: ['remediate'], workspaceMode: 'integrate',
+                },
+                {
+                  id: 'review-remediation', name: 'Review remediation', type: 'review',
+                  objective: 'Review the integrated result independently',
+                  approach: 'Inspect the final diff and rerun the focused checks',
+                  expectedOutcome: 'An explicit review decision is recorded', capability: 'review',
+                  candidateVpIds: [], assignmentReason: '', dependsOnActionIds: ['integrate-remediation'], workspaceMode: 'read',
+                },
+                {
+                  id: 'deliver-remediation', name: 'Deliver remediation', type: 'deliver',
+                  objective: 'Deliver only the independently reviewed result',
+                  approach: 'Verify the approved head and publish the final evidence',
+                  expectedOutcome: 'The reviewed result is delivered', capability: 'deliver',
+                  candidateVpIds: [], assignmentReason: '', dependsOnActionIds: ['review-remediation'], workspaceMode: 'shared',
+                },
+              ],
+            },
+          }) };
+        } },
+      }),
+      policyProvider: async () => ({ modelPolicy: { mode: 'primary' } }),
+      registry: { listVps: () => [{ id: 'omni', name: 'Omni', role: 'Coordinator', traits: ['triage'] }] },
+    });
+    const turn = coordinator.message(item.id, {
+      text: 'Replace the unfinished graph and omit optional review targets when inference is safe.',
+      revision: before.revision,
+      planRevision: before.planRevision,
+      ledgerRevision: before.ledgerRevision,
+      coordinatorRevision: before.coordinatorRevision,
+    });
+    const replanned = await turn.task;
+    expect(calls).toBe(2);
+    expect(replanned.messages.at(-1)).toMatchObject({
+      status: 'completed', decision: { kind: 'replan' },
+    });
+    expect(replanned.actions.filter(action => action.status === 'ready').map(action => action.stageId))
+      .toEqual(['remediate', 'integrate-remediation', 'review-remediation', 'deliver-remediation']);
+    expect(replanned.workflowSnapshot.stages.find(stage => stage.id === 'review-remediation'))
+      .toMatchObject({ changesRequestedStageId: 'integrate-remediation' });
+  });
 
   it('preserves execution ownership, recovers durable turns, and schedules same-stage replacements', async () => {
     const linear = controller.create(createInput({ id: 'linear-running' }));

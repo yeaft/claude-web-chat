@@ -571,8 +571,8 @@ describe('Yeaft conversation loading state', () => {
       });
       expect(restoringStore.yeaftConversationId).toBe(bridgeConversationId);
       expect(restoringStore.messagesMap[bridgeConversationId].map(row => row.id)).toEqual([
-        'restore-pending',
         'restore-history',
+        'restore-pending',
       ]);
       expect(restoringStore.messagesMap[localConversationId]).toBeUndefined();
     } finally {
@@ -1966,6 +1966,36 @@ describe('Yeaft conversation loading state', () => {
 
     expect(store.messagesMap['yeaft-1'].map(m => m.id)).toEqual(['m0001', 'm0002', 'm0003', 'm0004']);
     expect(store.messagesMap['yeaft-1'].map(m => m.content)).toEqual(['oldest-q', 'oldest-a', 'newer-q', 'newer-a']);
+
+    // A later delta re-sorts the complete cache. It must not undo the older
+    // prepend or move the optimistic tail into persisted history.
+    store.messagesMap['yeaft-1'].push({
+      id: 'optimistic-tail',
+      messageId: 'optimistic-tail',
+      clientMessageId: 'optimistic-tail',
+      type: 'user',
+      content: 'optimistic-tail',
+      sessionId: 'session-A',
+      timestamp: 1,
+    });
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'session-A',
+      mode: 'delta',
+      messages: [
+        { id: 'm0005', role: 'assistant', content: 'delta-a', sessionId: 'session-A', speakerVpId: 'vp-ada' },
+      ],
+      latestSeq: 5,
+      hasMore: false,
+    });
+    expect(store.messagesMap['yeaft-1'].map(m => m.id)).toEqual([
+      'm0001',
+      'm0002',
+      'm0003',
+      'm0004',
+      'm0005',
+      'optimistic-tail',
+    ]);
   });
 
   it('drops reflected/system-like rows even if they arrive with role=user', () => {

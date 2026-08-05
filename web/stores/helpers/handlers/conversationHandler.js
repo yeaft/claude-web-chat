@@ -108,14 +108,34 @@ function normalizeHistoryRowIdentity(row, agentId = null) {
   return row;
 }
 
-function sortYeaftRowsBySequence(rows) {
+function isLiveYeaftHistoryRow(row) {
+  if (!row || row.isHistory === true) return false;
+  if (row.isStreaming || isOptimisticYeaftUserRow(row)) return true;
+  // Recent refresh preserves local rows newer than its persisted window. Those
+  // rows may predate clientMessageId stamping, but they still carry a local
+  // timestamp and no durable seq.
+  return !Number.isFinite(row.seq) && Number.isFinite(row.timestamp);
+}
+
+function yeaftHistorySortKey(row) {
+  const live = isLiveYeaftHistoryRow(row);
+  const seq = Number.isFinite(row?.seq) ? row.seq : null;
+  const timestamp = Number.isFinite(row?.timestamp) ? row.timestamp : 0;
+  // Use one lexicographic key for every row. Persisted rows with timestamps are
+  // chronological across storage generations. When timestamps are absent, the
+  // legacy rank sorts before sequenced storage; the live rank is always last.
+  if (live) return [2, timestamp, seq ?? 0];
+  return [1, timestamp, seq ?? -1];
+}
+
+export function __testSortYeaftRowsBySequence(rows) {
   rows.sort((a, b) => {
-    const aSeq = Number.isFinite(a?.seq) ? a.seq : null;
-    const bSeq = Number.isFinite(b?.seq) ? b.seq : null;
-    if (aSeq !== null && bSeq !== null && aSeq !== bSeq) return aSeq - bSeq;
-    if (aSeq !== null && bSeq === null) return -1;
-    if (aSeq === null && bSeq !== null) return 1;
-    return (a?.timestamp || 0) - (b?.timestamp || 0);
+    const aKey = yeaftHistorySortKey(a);
+    const bKey = yeaftHistorySortKey(b);
+    for (let index = 0; index < aKey.length; index += 1) {
+      if (aKey[index] !== bKey[index]) return aKey[index] - bKey[index];
+    }
+    return 0;
   });
 }
 
@@ -182,7 +202,7 @@ function upsertYeaftHistoryRows(existingRows, incomingRows) {
       inserted += 1;
     }
   }
-  sortYeaftRowsBySequence(existingRows);
+  __testSortYeaftRowsBySequence(existingRows);
   return inserted;
 }
 
@@ -866,6 +886,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
         ...(Array.isArray(m.attachments) && m.attachments.length > 0 ? { attachments: m.attachments } : {}),
         ...(m.quote ? { quote: m.quote } : {}),
         isStreaming: false,
+        isHistory: true,
       });
     } else if (m.role === 'assistant') {
       acceptedHistoryMessages += 1;

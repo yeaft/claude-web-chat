@@ -116,6 +116,7 @@ const { default: ChatPage } = await import('../../web/components/ChatPage.js');
 const { default: YeaftSidebar } = await import('../../web/components/YeaftSidebar.js');
 const { default: WorkCenterPage } = await import('../../web/components/WorkCenterPage.js');
 const {
+  __testSortYeaftRowsBySequence,
   handleConversationCreated,
   handleConversationResumed,
   handleSyncMessagesResult,
@@ -5080,6 +5081,107 @@ describe('message flow regressions', () => {
     expect(store.messagesMap[bridgeConversationId]).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'persisted-row-2', content: 'delta answer' }),
     ]));
+
+    // A refresh can merge persisted rows from different storage generations.
+    // Sequence is comparable only when both rows have it: a newly persisted row
+    // must not jump above older legacy history merely because the legacy row has
+    // no m#### id, and a live optimistic tail must remain last.
+    store.messagesMap[bridgeConversationId] = [{
+      id: optimisticId,
+      messageId: optimisticId,
+      clientMessageId: optimisticId,
+      type: 'user',
+      content: 'pending send',
+      sessionId: 'visible-session',
+      turnId: optimisticId,
+      timestamp: 3_000,
+    }];
+    const mixedGenerationRequest = store.beginYeaftHistoryLoad({
+      agentId: 'agent-a',
+      sessionId: 'visible-session',
+      mode: 'recent',
+      preserveLoaded: false,
+    });
+    store.handleMessage({
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-a',
+      conversationId: bridgeConversationId,
+      sessionId: 'visible-session',
+      requestId: mixedGenerationRequest.requestId,
+      mode: 'recent',
+      messages: [{
+        id: 'legacy-history-row',
+        role: 'user',
+        content: 'legacy history',
+        sessionId: 'visible-session',
+        ts: 1_000,
+      }, {
+        id: 'm0002',
+        seq: 2,
+        role: 'assistant',
+        content: 'new persisted answer',
+        sessionId: 'visible-session',
+        ts: 2_000,
+      }],
+      oldestSeq: 2,
+      latestSeq: 2,
+      hasMore: false,
+    });
+    expect(store.messagesMap[bridgeConversationId]
+      .filter(row => row.sessionId === 'visible-session')
+      .map(row => row.content)).toEqual([
+      'legacy history',
+      'new persisted answer',
+      'pending send',
+    ]);
+
+    // Sorting must be independent of the current array permutation. The three
+    // storage generations previously formed a comparison cycle here.
+    const legacyRow = {
+      id: 'legacy-permutation-row',
+      messageId: 'legacy-permutation-row',
+      type: 'user',
+      content: 'legacy permutation',
+      sessionId: 'visible-session',
+      timestamp: 200,
+      isHistory: true,
+    };
+    const sequencedRow = {
+      id: 'm0003',
+      messageId: 'm0003',
+      seq: 3,
+      type: 'assistant',
+      content: 'sequenced permutation',
+      sessionId: 'visible-session',
+      timestamp: 300,
+      isHistory: true,
+    };
+    const liveRow = {
+      id: 'live-permutation-row',
+      messageId: 'live-permutation-row',
+      clientMessageId: 'live-permutation-row',
+      type: 'user',
+      content: 'live permutation',
+      sessionId: 'visible-session',
+      timestamp: 100,
+    };
+    const permutations = [
+      [legacyRow, sequencedRow, liveRow],
+      [legacyRow, liveRow, sequencedRow],
+      [sequencedRow, legacyRow, liveRow],
+      [sequencedRow, liveRow, legacyRow],
+      [liveRow, legacyRow, sequencedRow],
+      [liveRow, sequencedRow, legacyRow],
+    ];
+    for (const rows of permutations) {
+      const sorted = rows.map(row => ({ ...row }));
+      __testSortYeaftRowsBySequence(sorted);
+      expect(sorted.map(row => row.content)).toEqual([
+        'legacy permutation',
+        'sequenced permutation',
+        'live permutation',
+      ]);
+    }
 
     // Empty history still has a real chunk frame. Completion-first must not
     // strand a first-ever empty Session in loading state or manufacture rows.

@@ -12,6 +12,7 @@ import { normalizeContractPatch } from './completion-contract.js';
 import { applyCoordinatorReplan } from './plan-mutation.js';
 import { buildWorkItemAttachmentContext } from './attachments.js';
 import { sanitizeDiagnosticText } from './debug-projection.js';
+import { generatedActionGraphRules } from './workflow.js';
 
 const COORDINATOR_MAX_REPLY_CHARS = 8_000;
 const COORDINATOR_MAX_INSTRUCTION_CHARS = 8_000;
@@ -181,8 +182,8 @@ Decision rules:
 - answer: use for explanation or status questions. Do not include contractPatch, guidance, or actions.
 - guide_actions: use only when the contract and graph stay valid. guidance must contain one or more {"stageId":"existing unfinished stage id","instruction":"specific next instruction"}. Do not include contractPatch or actions.
 - replan: use when the WorkItem contract or unfinished topology changes. contractPatch may be null or contain title, goal, and/or acceptanceCriteria. actions must be the COMPLETE desired unfinished Action graph after this decision; omit completed Actions. Each Action requires id, name, type, objective, approach, expectedOutcome, capability, candidateVpIds, assignmentReason, dependsOnActionIds, workspaceMode, and may include separateFromActionTypes, changesRequestedActionId, maxAttempts. Dependencies may reference immutable completed stage ids or earlier Actions in this actions array.
+- Replan graph contract: ${generatedActionGraphRules()}
 - request_human: use only during automatic failure recovery, and only when no safe retry, guidance, or replan can be decided without human information. Set question to the exact information or decision required. Do not include contractPatch, guidance, or actions.
-- Every replan must keep exactly one final acceptance gate: normally one deliver Action, or one terminal review when no delivery operation is required. It must be the unique graph sink and transitively depend on all other Actions.
 - Action references are stage ids, never internal database Action ids.
 - Stage ids in the snapshot may be bounded aliases. Echo them exactly; the runtime resolves them to durable identities.
 - Never return destructive cancellation. Tell the user to use the explicit cancel control instead.`;
@@ -313,8 +314,8 @@ function permanentRecoveryDecision(error, language) {
 function coordinatorDecisionError(error, language) {
   const diagnostic = sanitizeDiagnosticText(error?.message || String(error || ''), 2_000);
   const wrapped = new Error(coordinatorLanguage(language) === 'zh'
-    ? 'Work Center Coordinator 未能生成有效回复。你的消息已经保留，请重试。'
-    : 'Work Center Coordinator could not produce a valid response. Your message was preserved; try again.');
+    ? 'Work Center Coordinator 生成的操作方案未通过校验。你的消息已经保留；重试会重新生成方案。'
+    : 'The Work Center Coordinator proposal did not pass validation. Your message was preserved; retry to generate a new proposal.');
   wrapped.coordinatorClassified = true;
   wrapped.coordinatorRetryable = false;
   wrapped.coordinatorPhase = 'decision';
@@ -411,8 +412,11 @@ export function normalizeCoordinatorResponse(value, detail, options = {}) {
     };
   }
   const contractPatch = normalizeContractPatch(source.contractPatch);
-  if (!Array.isArray(source.actions) || source.actions.length < 1 || source.actions.length > 8) {
+  if (!Array.isArray(source.actions)) {
     throw new Error('Work Center Coordinator replan requires the complete unfinished Action graph');
+  }
+  if (source.actions.length < 1 || source.actions.length > 8) {
+    throw new Error('Work Center Coordinator replan requires between 1 and 8 unfinished Actions');
   }
   return {
     reply,

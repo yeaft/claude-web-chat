@@ -20,7 +20,23 @@ yeaft-agent local --name local
 
 浏览器打开 `http://127.0.0.1:6868`。
 
-Local mode 不启用 Web 认证，并且只监听 loopback。它适合受信任的单机体验，不应直接暴露到公网。显式 `--name local` 选择 Agent instance 及其默认 Yeaft 目录 `~/.yeaft/instances/local/`。
+Local mode 不启用 Web 认证，并且只监听 loopback。它适合受信任的单机体验，不应直接暴露到公网。显式 `--name local` 选择 Agent instance 及其默认 Yeaft 目录 `~/.yeaft/instances/local/`。Local mode 创建的正式 Session 会保存到该 instance 目录，并同步到本地 Server 的 sidebar catalog；刷新页面或重启 local stack 后仍可打开原 conversation。
+
+临时放到后台运行：
+
+```bash
+yeaft-agent local --name local --background
+```
+
+Linux 上需要开机自动运行时，安装 user-level systemd service：
+
+```bash
+yeaft-agent local install --name local --port 6868
+yeaft-agent local status --name local
+yeaft-agent local logs --name local
+```
+
+该 service 在用户登录时自动启动。需要机器开机后、用户尚未登录也启动一次时，执行 `sudo loginctl enable-linger $(whoami)`。移除 service 使用 `yeaft-agent local uninstall --name local`。
 
 在另一个 shell 配置同一 instance。`llm` subcommand 不会自动推断 named instance，因此必须传 config path：
 
