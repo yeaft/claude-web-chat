@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isDynamicWorkItem } from './execution-mode.js';
 import {
   currentActionInputEventIds,
   eventMatchesActionGeneration,
@@ -281,6 +282,7 @@ export function buildMainlineProjection(detail) {
   const actions = (Array.isArray(detail.actions) ? detail.actions : []).slice().sort(stableActionOrder);
   const runs = Array.isArray(detail.runs) ? detail.runs : [];
   const activeActions = actions.filter(action => action.status !== 'superseded');
+  const dynamic = isDynamicWorkItem(detail);
   const completedStageIds = new Set(activeActions
     .filter(action => action.status === 'completed')
     .map(action => action.stageId));
@@ -292,10 +294,11 @@ export function buildMainlineProjection(detail) {
     generation: Math.max(1, count(action.generation) || 1),
     specHash: action.specHash || '',
     status: action.status,
-    dependsOnStageIds: [...new Set(action.dependsOnStageIds || [])].sort(),
+    dependsOnStageIds: dynamic ? [] : [...new Set(action.dependsOnStageIds || [])].sort(),
+    sourceActionIds: dynamic ? [...new Set(action.sourceActionIds || [])].sort() : [],
   }));
   const frontier = nodes.filter(node => !CLOSED_ACTION_STATUSES.has(node.status)
-      && node.dependsOnStageIds.every(stageId => completedStageIds.has(stageId)))
+      && (dynamic || node.dependsOnStageIds.every(stageId => completedStageIds.has(stageId))))
     .map(node => node.id);
   const canonicalActionResults = {};
   for (const action of activeActions) {
@@ -321,7 +324,9 @@ export function buildMainlineProjection(detail) {
       goal: detail.goal || '',
       acceptanceCriteria: Array.isArray(detail.acceptanceCriteria) ? detail.acceptanceCriteria : [],
     },
-    graph: { planRevision: count(detail.planRevision), nodes, frontier },
+    ...(dynamic
+      ? { actionJournal: { revision: count(detail.planRevision), entries: nodes, runnableActionIds: frontier } }
+      : { graph: { planRevision: count(detail.planRevision), nodes, frontier } }),
     canonicalActionResults,
     planConflicts: (Array.isArray(detail.planConflicts) ? detail.planConflicts : [])
       .slice()
@@ -343,14 +348,17 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
     throw mainlineContextBlocked(`Mainline fixed prompt content exceeds 64 KiB (${reservedBytes} rendered UTF-8 bytes)`);
   }
   const projection = buildMainlineProjection(detail);
-  const dependencyIds = new Set(action.dependsOnStageIds || []);
-  const actionByStage = new Map((detail.actions || []).filter(candidate => candidate.status !== 'superseded')
-    .map(candidate => [candidate.stageId, candidate]));
-  const dependencies = [...dependencyIds].sort().map(stageId => {
-    const dependency = actionByStage.get(stageId);
-    if (!dependency) return { stageId, actionId: null, result: null };
+  const dynamic = isDynamicWorkItem(detail);
+  const dependencyIds = new Set(dynamic ? action.sourceActionIds || [] : action.dependsOnStageIds || []);
+  const actionByReference = new Map((detail.actions || []).filter(candidate => candidate.status !== 'superseded')
+    .map(candidate => [dynamic ? candidate.id : candidate.stageId, candidate]));
+  const dependencies = [...dependencyIds].sort().map(reference => {
+    const dependency = actionByReference.get(reference);
+    if (!dependency) return dynamic
+      ? { sourceActionId: reference, actionId: null, result: null }
+      : { stageId: reference, actionId: null, result: null };
     return {
-      stageId,
+      ...(dynamic ? { sourceActionId: reference } : { stageId: reference }),
       actionId: dependency.id,
       generation: dependency.generation || 1,
       specHash: dependency.specHash || '',
@@ -377,14 +385,18 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
         policyInstruction: detail.workflowSnapshot?.actionInstructions?.[action.type]
           || detail.workflowSnapshot?.actionInstructions?.custom
           || '',
-        dependsOnStageIds: [...dependencyIds].sort(),
+        ...(dynamic
+          ? { sourceActionIds: [...dependencyIds].sort() }
+          : { dependsOnStageIds: [...dependencyIds].sort() }),
         workspaceMode: action.workspaceMode || 'shared',
         changesRequestedStageId: action.changesRequestedStageId || null,
       },
     },
-    graph: projection.graph,
+    ...(dynamic
+      ? { actionJournal: projection.actionJournal }
+      : { graph: projection.graph }),
     canonicalCompletedResultsIndex: resultIndex,
-    directDependencies: dependencies,
+    ...(dynamic ? { sourceResults: dependencies } : { directDependencies: dependencies }),
     userContext: {
       sessionContext: [],
       workItemMessages: [],

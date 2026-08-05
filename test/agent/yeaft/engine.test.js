@@ -3715,45 +3715,80 @@ describe('Engine', () => {
       writeFileSync(filePath, 'before');
       try {
         const runner = {
-          async run({ action }) {
-            if (action.type === 'triage') {
-              resolveRunnerStarted();
-              await writeReleased;
-              writeFileSync(filePath, 'after');
-              resolveWriteCompleted();
-              return {
-                outcome: 'completed',
-                response: 'Triage wrote the state.',
-                summary: 'State written.',
-                evidence: ['state.txt updated by the Work Item runner'],
-                acceptanceChecks: [{ criterion, status: 'passed', evidence: 'state.txt contains after' }],
-                plan: {
-                  workItemType: 'state-write',
-                  actions: [{
-                    id: 'deliver-state',
-                    name: 'Deliver state update',
-                    type: 'deliver',
-                    objective: 'Confirm the state update is ready to deliver.',
-                    approach: 'Verify state.txt after the Work Item write.',
-                    expectedOutcome: 'state.txt contains after.',
-                    dependsOnActionIds: [],
-                    workspaceMode: 'shared',
-                  }],
-                },
-              };
-            }
+          async run() {
+            resolveRunnerStarted();
+            await writeReleased;
+            writeFileSync(filePath, 'after');
+            resolveWriteCompleted();
             return {
               outcome: 'completed',
-              response: 'State delivered.',
-              summary: 'State delivered.',
-              evidence: ['state.txt contains after'],
+              response: 'Action wrote the state.',
+              summary: 'State written.',
+              evidence: ['state.txt updated by the Work Item runner'],
               acceptanceChecks: [{ criterion, status: 'passed', evidence: 'state.txt contains after' }],
             };
           },
         };
+        let initialActionCreated = false;
+        const coordinator = {
+          ownerBootId: 'coordinator-owner',
+          advance(mailboxId, options = {}) {
+            if (initialActionCreated) return null;
+            initialActionCreated = true;
+            const claim = workCenter.store.claimCoordinatorMailbox(
+              options.workItemId, this.ownerBootId, 60_000,
+            );
+            if (!claim || claim.id !== mailboxId) return null;
+            const started = workCenter.store.beginDynamicCoordinatorTurn(mailboxId, {
+              ownerBootId: this.ownerBootId,
+              claimEpoch: claim.claim_epoch,
+            });
+            if (!started) return null;
+            const actionId = `cache-write-${started.turnId}`;
+            const detail = workCenter.store.completeCoordinatorTurn(started.turnId, {
+              reply: 'Starting the state update Action.',
+              decision: {
+                kind: 'create_actions', reason: 'The Work Item is actionable.',
+                contractPatch: null, guidance: [], actions: [],
+              },
+              mutation: {
+                createdActions: [{
+                  id: actionId,
+                  type: 'implement',
+                  stageId: actionId,
+                  assignmentPolicy: {
+                    mode: 'planned', capability: 'implement', candidateVpIds: ['omni'],
+                    fixedVpId: null, assignmentReason: 'Test executor', separateFromStageTypes: [],
+                  },
+                  modelPolicy: null,
+                  dependsOnStageIds: [],
+                  sourceActionIds: [],
+                  workspaceMode: 'shared',
+                  changesRequestedStageId: null,
+                  requiredRole: '',
+                  brief: {
+                    objective: 'Update state.txt for the cache invalidation test.',
+                    approach: 'Write the requested state after the Coordinator starts this Action.',
+                    expectedOutcome: 'state.txt contains after.',
+                  },
+                  context: [],
+                  maxAttempts: 2,
+                  instruction: 'Update state.txt to after.',
+                }],
+                supersedeActionIds: [],
+                contractPatch: null,
+                workItemType: 'state-write',
+              },
+            }, started.fence);
+            options.onUpdate?.('coordinator.advance_completed', detail);
+            return { detail, task: Promise.resolve(detail) };
+          },
+          shutdown: async () => {},
+        };
         workCenter = new WorkCenterService({
           yeaftDir: join(workDir, '.yeaft-work-center'),
           runner,
+          coordinator,
           pollIntervalMs: 5,
           watcherOptions: { concurrencyProvider: () => 1 },
           settingsReader: () => ({}),
@@ -3831,12 +3866,12 @@ describe('Engine', () => {
         expect(readFileSync(filePath, 'utf8')).toBe('after');
         const deadline = Date.now() + 2_000;
         while (!workCenter.store.getWorkItemDetail(created.workItemId)?.runs.some(run => (
-          run.response === 'Triage wrote the state.' && run.status === 'completed'
+          run.response === 'Action wrote the state.' && run.status === 'completed'
         )) && Date.now() < deadline) {
           await new Promise(resolve => setTimeout(resolve, 10));
         }
         expect(workCenter.store.getWorkItemDetail(created.workItemId)?.runs).toEqual(expect.arrayContaining([
-          expect.objectContaining({ response: 'Triage wrote the state.', status: 'completed' }),
+          expect.objectContaining({ response: 'Action wrote the state.', status: 'completed' }),
         ]));
       } finally {
         releaseWorkItemWrite?.();

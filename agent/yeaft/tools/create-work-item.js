@@ -11,10 +11,10 @@ export default defineTool({
   description: {
     en: `Create a persistent Agent-level Work Center item from the current Session.
 
-Use this when work must continue beyond the current turn, needs role handoffs, review, waiting, retry, or durable tracking. This creates only the goal contract; Work Center triage chooses the task type, Actions, and executors. The current Session is always stamped as the origin and cannot be overridden by model input.`,
+Use this when work must continue beyond the current turn, needs role handoffs, review, waiting, retry, or durable tracking. This creates only the goal contract; the Work Center Coordinator dynamically chooses the next Actions and executors until the acceptance criteria are verified. The current Session is always stamped as the origin and cannot be overridden by model input.`,
     zh: `从当前 Session 创建一个持久化的 Agent 级工作项。
 
-当工作需要跨 turn 继续、需要角色接力、评审、等待、重试或长期跟踪时使用。该工具只创建目标契约，任务类型、Action 和执行者由 Work Center triage 决定，不在当前 turn 内执行。来源 Session 由运行时强制写入，模型输入不能覆盖。`,
+当工作需要跨 turn 继续、需要角色接力、评审、等待、重试或长期跟踪时使用。该工具只创建目标契约；Work Center Coordinator 会动态选择下一批 Action 和执行者，直到验收条件得到验证。来源 Session 由运行时强制写入，模型输入不能覆盖。`,
   },
   parameters: {
     type: 'object',
@@ -42,15 +42,15 @@ Use this when work must continue beyond the current turn, needs role handoffs, r
       },
       start: {
         type: 'boolean',
-        description: { en: 'Start triage immediately (default true)', zh: '是否立即开始 triage（默认 true）' },
+        description: { en: 'Start Coordinator execution immediately (default true)', zh: '是否立即启动 Coordinator 执行（默认 true）' },
       },
     },
     required: ['title', 'goal'],
   },
   isConcurrencySafe: () => false,
   isReadOnly: () => false,
-  // The Work Center watcher can advance from triage into a writable Action
-  // after creation returns. A paused item has no watcher-owned execution.
+  // The persistent Coordinator can create a writable Action after creation
+  // returns. A paused item has no Coordinator- or watcher-owned execution.
   mayMutateWorkspaceAfterReturn: input => input?.start !== false,
   async execute(input, ctx = {}) {
     const sessionId = typeof ctx.sessionId === 'string' ? ctx.sessionId.trim() : '';
@@ -69,9 +69,9 @@ Use this when work must continue beyond the current turn, needs role handoffs, r
       acceptanceCriteria: cleanCriteria(input.acceptanceCriteria),
       workItemType: typeof input.workItemType === 'string' ? input.workItemType.trim() : 'auto',
       workDir: typeof input.workDir === 'string' ? input.workDir.trim() : (ctx.cwd || ''),
-      // The Agent-local Work Center settings choose the default workflow and
-      // freeze its policy snapshot. Tool callers create the contract; they do
-      // not get to smuggle a different dispatch policy into it.
+      // Agent-local Work Center settings freeze the Action-template and model
+      // policy snapshot. Tool callers create the contract; they cannot smuggle
+      // a different dispatch policy into it.
       origin: {
         sessionId,
         messageId: ctx.inboundEnvelope?.msgId || null,

@@ -23,9 +23,12 @@ import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
 import {
   defaultWorkCenterStageInstructions,
   listWorkItemTypeTemplates,
-  resolvePlanningWorkflowSnapshot,
-  resolveWorkflowSnapshot,
 } from './workflow.js';
+import {
+  DYNAMIC_COORDINATION_MODE,
+  DYNAMIC_EXECUTION_SCHEMA_VERSION,
+  resolveDynamicActionPolicySnapshot,
+} from './dynamic-coordination.js';
 
 function requiredString(value, name) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required`);
@@ -122,6 +125,7 @@ export class WorkCenterService {
       ? Number(options.pollIntervalMs)
       : 2_000;
     this.recoveryTimer = null;
+    this.dynamicCoordinatorTasks = new Map();
     this.shuttingDown = false;
     this.watcher = new WorkItemWatcher({
       store: this.store,
@@ -227,14 +231,8 @@ export class WorkCenterService {
       }
       case 'create': {
         const settings = this.settingsReader(this.yeaftDir);
-        const explicitWorkflow = requestContext.trustedProducer === true
-          && typeof payload.workflowTemplate === 'string' && payload.workflowTemplate.trim()
-          ? payload.workflowTemplate.trim()
-          : null;
-        const workflowTemplate = explicitWorkflow || 'ai-planned';
-        const workflowSnapshot = explicitWorkflow
-          ? resolveWorkflowSnapshot(settings, explicitWorkflow, payload.stageOverrides)
-          : resolvePlanningWorkflowSnapshot(settings, payload.workItemType);
+        const workflowTemplate = 'coordinator-driven';
+        const workflowSnapshot = resolveDynamicActionPolicySnapshot(settings, payload.workItemType);
         const runtime = !Object.hasOwn(payload, 'workDir') && !settings.defaultWorkDir
           ? await this.runtimeInfo()
           : null;
@@ -248,6 +246,7 @@ export class WorkCenterService {
             root: this.attachmentRoot,
             workItemId,
           });
+          const shouldStart = payload.start === undefined ? settings.startImmediately : payload.start !== false;
           this.controller.create({
             id: workItemId,
             title: requiredString(payload.title, 'title'),
@@ -257,6 +256,8 @@ export class WorkCenterService {
               : [],
             workflowTemplate,
             workflowSnapshot,
+            coordinationMode: DYNAMIC_COORDINATION_MODE,
+            executionSchemaVersion: DYNAMIC_EXECUTION_SCHEMA_VERSION,
             workDir,
             reuseMemory: payload.reuseMemory !== false,
             origin: payload.origin && typeof payload.origin === 'object'
@@ -274,9 +275,13 @@ export class WorkCenterService {
               ? normalizeSessionContextSnapshot(payload.sessionContext)
               : [],
             attachments,
-            start: payload.start === undefined ? settings.startImmediately : payload.start !== false,
+            start: false,
           });
-          const detail = this.#requiredItem(workItemId);
+          let detail = this.#requiredItem(workItemId);
+          if (shouldStart) {
+            detail = this.controller.start(workItemId);
+            this.#queueDynamicCoordinatorWake(workItemId);
+          }
           this.#emit({ type: 'work_item.created', workItem: detail });
           return detail;
         } catch (error) {
@@ -288,11 +293,17 @@ export class WorkCenterService {
         const id = requiredString(payload.id, 'id');
         const detail = this.controller.update(id, payload.patch || {});
         this.watcher.abortInvalidWorkItemRuns(id);
+        if (detail.coordinationMode === DYNAMIC_COORDINATION_MODE) {
+          this.#queueDynamicCoordinatorWake(id);
+        }
         this.#emit({ type: 'work_item.updated', workItem: detail });
         return detail;
       }
       case 'start': {
         const detail = this.controller.start(requiredString(payload.id, 'id'));
+        if (detail.coordinationMode === DYNAMIC_COORDINATION_MODE) {
+          this.#queueDynamicCoordinatorWake(detail.id);
+        }
         this.#emit({ type: 'work_item.started', workItem: detail });
         return detail;
       }
@@ -307,6 +318,9 @@ export class WorkCenterService {
         const id = requiredString(payload.id, 'id');
         const detail = this.controller.resume(id, { revision: payload.revision });
         this.watcher.abortInvalidWorkItemRuns(id);
+        if (detail.coordinationMode === DYNAMIC_COORDINATION_MODE) {
+          this.#queueDynamicCoordinatorWake(id);
+        }
         this.#emit({ type: 'work_item.resumed', workItem: detail });
         return detail;
       }
@@ -571,6 +585,10 @@ export class WorkCenterService {
 
   #emit(event) {
     try { this.onEvent(event); } catch {}
+    if (event?.workItem?.coordinationMode === DYNAMIC_COORDINATION_MODE) {
+      this.#queueDynamicCoordinatorWake(event.workItem.id);
+      return;
+    }
     if (['run.finished', 'coordinator.turn_completed'].includes(event?.type)) {
       for (const action of event.workItem?.actions || []) {
         if (action.status !== 'failed') continue;
@@ -581,6 +599,56 @@ export class WorkCenterService {
         });
       }
     }
+  }
+
+  #queueDynamicCoordinatorWake(workItemId) {
+    if (this.shuttingDown || !this.coordinator || !workItemId
+        || this.dynamicCoordinatorTasks.has(workItemId)) return;
+    this.dynamicCoordinatorTasks.set(workItemId, null);
+    queueMicrotask(() => {
+      if (this.dynamicCoordinatorTasks.get(workItemId) === null) {
+        this.dynamicCoordinatorTasks.delete(workItemId);
+        this.#drainDynamicCoordinatorWakes(workItemId);
+      }
+    });
+  }
+
+  #scanDynamicCoordinatorWakes() {
+    if (this.shuttingDown || !this.coordinator) return;
+    for (const entry of this.store.listPendingDynamicCoordinatorWakes()) {
+      this.#queueDynamicCoordinatorWake(entry.workItemId);
+    }
+  }
+
+  #drainDynamicCoordinatorWakes(workItemId) {
+    if (this.shuttingDown || !this.coordinator || this.dynamicCoordinatorTasks.has(workItemId)) return null;
+    const entries = this.store.listPendingDynamicCoordinatorWakes()
+      .filter(candidate => candidate.workItemId === workItemId);
+    const entry = entries.find(candidate => candidate.payload?.turnId) || entries[0];
+    if (!entry) return null;
+    const detail = this.store.getWorkItemDetail(workItemId);
+    if (detail?.actions?.some(action => action.status === 'running')) return null;
+    let turn;
+    try {
+      turn = this.coordinator.advance(entry.id, {
+        workItemId,
+        onUpdate: (type, workItem) => this.#emit({ type, workItem }),
+      });
+    } catch (error) {
+      this.#emit({
+        type: 'coordinator.advance_schedule_failed',
+        workItem: this.store.getWorkItemDetail(workItemId),
+        error: error?.message || String(error),
+      });
+      return null;
+    }
+    if (!turn) return null;
+    const task = turn.task.finally(() => {
+      this.dynamicCoordinatorTasks.delete(workItemId);
+    });
+    this.dynamicCoordinatorTasks.set(workItemId, task);
+    task.catch(() => {});
+    return task;
   }
 
   #recoveryKey(entry) {
@@ -621,6 +689,7 @@ export class WorkCenterService {
 
   #scanRecoveries() {
     this.#scanCoordinatorProviderRecoveries();
+    this.#scanDynamicCoordinatorWakes();
     this.#scanFailureRecoveries();
   }
 
@@ -701,8 +770,12 @@ export class WorkCenterService {
     if (this.recoveryTimer) clearInterval(this.recoveryTimer);
     this.recoveryTimer = null;
     await this.coordinator?.shutdown?.();
-    await Promise.allSettled([...this.recoveryTasks.values()]);
+    await Promise.allSettled([
+      ...this.recoveryTasks.values(),
+      ...[...this.dynamicCoordinatorTasks.values()].filter(Boolean),
+    ]);
     this.recoveryTasks.clear();
+    this.dynamicCoordinatorTasks.clear();
     this.recoveryQueue.clear();
     await this.watcher.stop();
     try { await this.watcher.runner?.shutdown?.(); } catch {}

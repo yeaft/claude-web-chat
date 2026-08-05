@@ -9,6 +9,8 @@ import {
 } from '../llm/adapter.js';
 import { resolveWorkItemModel, selectWorkItemVp } from './assignment.js';
 import { normalizeContractPatch } from './completion-contract.js';
+import { prepareDynamicActionMutation } from './dynamic-coordination.js';
+import { isDynamicWorkItem } from './execution-mode.js';
 import { applyCoordinatorReplan } from './plan-mutation.js';
 import { buildWorkItemAttachmentContext } from './attachments.js';
 import { sanitizeDiagnosticText } from './debug-projection.js';
@@ -124,17 +126,25 @@ function coordinatorStageReferences(detail) {
   };
 }
 
-function boundedAction(action, result, stageReferences, compact = false) {
+function boundedAction(action, result, stageReferences, compact = false, dynamic = false) {
   const brief = action?.brief && typeof action.brief === 'object' ? action.brief : null;
   return {
-    stageId: stageReferences.project(action?.stageId),
+    ...(dynamic
+      ? {
+          actionId: truncateUtf8(action?.id, 256),
+          sourceActionIds: (Array.isArray(action?.sourceActionIds) ? action.sourceActionIds : [])
+            .slice(0, 8).map(value => truncateUtf8(value, 256)).filter(Boolean),
+        }
+      : { stageId: stageReferences.project(action?.stageId) }),
     type: truncateUtf8(action?.type, 64),
     status: truncateUtf8(action?.status, 64),
     generation: Math.max(1, Number(action?.generation) || 1),
-    dependencies: (Array.isArray(action?.dependsOnStageIds) ? action.dependsOnStageIds : [])
-      .slice(0, 8)
-      .map(value => stageReferences.project(value))
-      .filter(Boolean),
+    ...(dynamic ? {} : {
+      dependencies: (Array.isArray(action?.dependsOnStageIds) ? action.dependsOnStageIds : [])
+        .slice(0, 8)
+        .map(value => stageReferences.project(value))
+        .filter(Boolean),
+    }),
     workspaceMode: truncateUtf8(action?.workspaceMode, 64),
     ...(!compact && brief ? {
       brief: {
@@ -146,7 +156,15 @@ function boundedAction(action, result, stageReferences, compact = false) {
     result: result ? {
       status: truncateUtf8(result.status, 64),
       summary: truncateUtf8(result.summary, compact ? 256 : 768),
-      ...(!compact ? { evidence: boundedEvidence(result.evidence) } : {}),
+      ...(!compact ? {
+        evidence: boundedEvidence(result.evidence),
+        acceptanceChecks: (Array.isArray(result.acceptanceChecks) ? result.acceptanceChecks : [])
+          .slice(0, 24).map(check => ({
+            criterion: truncateUtf8(check?.criterion, 512),
+            status: truncateUtf8(check?.status, 64),
+            evidence: truncateUtf8(check?.evidence, 1_000),
+          })),
+      } : {}),
       waitingReason: truncateUtf8(result.waitingReason, 384) || null,
       error: truncateUtf8(result.error, 384) || null,
       reviewDecision: truncateUtf8(result.reviewDecision, 64) || null,
@@ -188,11 +206,42 @@ Decision rules:
 - Stage ids in the snapshot may be bounded aliases. Echo them exactly; the runtime resolves them to durable identities.
 - Never return destructive cancellation. Tell the user to use the explicit cancel control instead.`;
 
-function coordinatorSystemPrompt(language) {
+const DYNAMIC_COORDINATOR_SYSTEM_PROMPT = `You are the persistent Work Center Coordinator. You own progress toward one durable WorkItem.
+
+Observe the current contract, Action journal, canonical Run evidence, and conversation. Decide only the next justified step; never predict or emit a complete workflow graph.
+
+Return exactly one JSON object and no surrounding prose:
+{
+  "reply": "natural user-facing response",
+  "decision": {
+    "kind": "answer|create_actions|guide_actions|request_human|complete",
+    "reason": "short audit reason",
+    "question": null,
+    "workItemType": null,
+    "contractPatch": null,
+    "supersedeActionIds": [],
+    "guidance": [],
+    "actions": [],
+    "completion": null
+  }
+}
+
+Rules:
+- answer: explain state only. Never use it for an automatic advance trigger.
+- create_actions: create 1..8 currently runnable Actions. Every Action needs type, objective, approach, expectedOutcome, capability, candidateVpIds, assignmentReason, sourceActionIds, workspaceMode, and optional maxAttempts/separateFromActionTypes. sourceActionIds are context/audit references, never scheduling dependencies. Do not include dependsOnActionIds, dependsOnStageIds, stages, or a graph.
+- guide_actions: target 1..8 unfinished non-running Actions by durable actionId.
+- request_human: only when external information or a user decision is genuinely required.
+- complete: only when every acceptance criterion has canonical completed Run evidence and there are no unfinished Actions. Include summary, ordered acceptanceResults with evidenceRunIds, evidenceRunIds, and residualRisks.
+- Preserve completed Action history. Never claim tests, review, merge, release, or external effects without canonical Run evidence.
+- Action templates are reusable capabilities, not a prescribed workflow. Create the smallest useful Action boundary, not tool-call-sized work.
+- Never return destructive cancellation. The user owns the explicit cancel control.`;
+
+function coordinatorSystemPrompt(language, detail) {
   const userLanguage = coordinatorLanguage(language) === 'zh'
     ? 'Simplified Chinese (zh-CN)'
     : 'English';
-  return `${COORDINATOR_SYSTEM_PROMPT}
+  const base = isDynamicWorkItem(detail) ? DYNAMIC_COORDINATOR_SYSTEM_PROMPT : COORDINATOR_SYSTEM_PROMPT;
+  return `${base}
 
 User-facing language: ${userLanguage}. Write reply and question in that language. Keep JSON property names and decision enum values in English. Never expose deterministic validator errors as the user-facing reply; explain the underlying issue plainly.`;
 }
@@ -327,19 +376,22 @@ function normalizeGuidance(value, detail) {
   if (!Array.isArray(value) || value.length < 1 || value.length > 8) {
     throw new Error('Work Center Coordinator guidance requires between 1 and 8 targets');
   }
-  const activeByStage = new Map((detail.actions || [])
-    .filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status))
-    .map(action => [action.stageId, action]));
+  const dynamic = isDynamicWorkItem(detail);
+  const active = (detail.actions || [])
+    .filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status));
+  const activeByReference = new Map(active.map(action => [dynamic ? action.id : action.stageId, action]));
   const stageReferences = coordinatorStageReferences(detail);
   const seen = new Set();
   return value.map(entry => {
-    const stageId = stageReferences.resolve(entry?.stageId);
-    if (!stageId || seen.has(stageId) || !activeByStage.has(stageId)) {
-      throw new Error(`Work Center Coordinator guidance references an invalid unfinished Action: ${stageId || '(missing)'}`);
+    const reference = dynamic
+      ? (typeof entry?.actionId === 'string' ? entry.actionId.trim() : '')
+      : stageReferences.resolve(entry?.stageId);
+    if (!reference || seen.has(reference) || !activeByReference.has(reference)) {
+      throw new Error(`Work Center Coordinator guidance references an invalid unfinished Action: ${reference || '(missing)'}`);
     }
-    seen.add(stageId);
+    seen.add(reference);
     return {
-      stageId,
+      ...(dynamic ? { actionId: reference } : { stageId: reference }),
       instruction: cleanText(entry?.instruction, COORDINATOR_MAX_INSTRUCTION_CHARS, 'guidance instruction'),
     };
   });
@@ -368,9 +420,14 @@ export function normalizeCoordinatorResponse(value, detail, options = {}) {
   const source = parsed?.decision && typeof parsed.decision === 'object' && !Array.isArray(parsed.decision)
     ? parsed.decision
     : {};
-  const allowedKinds = options.recovery === true
-    ? ['guide_actions', 'replan', 'request_human']
-    : ['answer', 'guide_actions', 'replan'];
+  const dynamic = isDynamicWorkItem(detail);
+  const allowedKinds = dynamic
+    ? (options.automatic === true
+      ? ['create_actions', 'guide_actions', 'request_human', 'complete']
+      : ['answer', 'create_actions', 'guide_actions', 'request_human', 'complete'])
+    : (options.recovery === true
+      ? ['guide_actions', 'replan', 'request_human']
+      : ['answer', 'guide_actions', 'replan']);
   const kind = allowedKinds.includes(source.kind) ? source.kind : '';
   if (!kind) throw new Error('Work Center Coordinator decision kind is invalid');
   const reason = cleanText(source.reason, 2_000, 'decision reason');
@@ -409,6 +466,41 @@ export function normalizeCoordinatorResponse(value, detail, options = {}) {
         guidance: [],
         actions: [],
       },
+    };
+  }
+  if (dynamic && kind === 'complete') {
+    return {
+      reply,
+      decision: {
+        kind,
+        reason,
+        completion: source.completion,
+        contractPatch: null,
+        guidance: [],
+        actions: [],
+      },
+    };
+  }
+  if (dynamic && kind === 'create_actions') {
+    const contractPatch = normalizeContractPatch(source.contractPatch);
+    const decision = {
+      kind,
+      reason,
+      workItemType: source.workItemType,
+      contractPatch,
+      supersedeActionIds: source.supersedeActionIds,
+      guidance: [],
+      actions: source.actions,
+    };
+    return {
+      reply,
+      decision,
+      mutation: prepareDynamicActionMutation({
+        workItem: detail,
+        actions: detail.actions || [],
+        decision,
+        availableVpIds: options.availableVpIds,
+      }),
     };
   }
   const contractPatch = normalizeContractPatch(source.contractPatch);
@@ -496,6 +588,7 @@ function coordinatorSnapshot(detail) {
     throw new Error('WorkItem contract cannot be represented within the Coordinator snapshot budget');
   }
 
+  const dynamic = isDynamicWorkItem(detail);
   const currentActions = (Array.isArray(detail.actions) ? detail.actions : [])
     .filter(action => !['superseded', 'cancelled'].includes(action.status));
   const stageReferences = coordinatorStageReferences(detail);
@@ -510,20 +603,24 @@ function coordinatorSnapshot(detail) {
     canonicalRunByAction.get(action.id),
     stageReferences,
     action.status === 'completed',
+    dynamic,
   ));
   let actions = boundedJsonArray(projectedActions, COORDINATOR_MAX_ACTIONS_BYTES);
-  let includedActionIdentities = new Set(actions.map(action => `${action.stageId}:${action.generation}`));
-  if (unfinished.some(action => !includedActionIdentities.has(`${stageReferences.project(action.stageId)}:${action.generation}`))) {
+  const identity = action => `${dynamic ? action.actionId : action.stageId}:${action.generation}`;
+  const expectedIdentity = action => `${dynamic ? action.id : stageReferences.project(action.stageId)}:${action.generation}`;
+  let includedActionIdentities = new Set(actions.map(identity));
+  if (unfinished.some(action => !includedActionIdentities.has(expectedIdentity(action)))) {
     projectedActions = selected.map(action => boundedAction(
       action,
       canonicalRunByAction.get(action.id),
       stageReferences,
       true,
+      dynamic,
     ));
     actions = boundedJsonArray(projectedActions, COORDINATOR_MAX_ACTIONS_BYTES);
-    includedActionIdentities = new Set(actions.map(action => `${action.stageId}:${action.generation}`));
+    includedActionIdentities = new Set(actions.map(identity));
   }
-  if (unfinished.some(action => !includedActionIdentities.has(`${stageReferences.project(action.stageId)}:${action.generation}`))) {
+  if (unfinished.some(action => !includedActionIdentities.has(expectedIdentity(action)))) {
     throw new Error('Active Actions cannot be represented within the Coordinator snapshot budget');
   }
 
@@ -602,6 +699,34 @@ export class WorkItemCoordinator {
       addedAttachments: Array.isArray(options.addedAttachments) ? options.addedAttachments : [],
       options,
     });
+  }
+
+  advance(mailboxId, options = {}) {
+    if (this.shuttingDown) throw new Error('Work Center Coordinator is shutting down');
+    const claim = this.store.claimCoordinatorMailbox(options.workItemId, this.ownerBootId, this.claimLeaseMs);
+    if (!claim) return null;
+    if (claim.id !== mailboxId) {
+      this.store.releaseCoordinatorMailboxClaim(
+        claim.id, this.ownerBootId, Number(claim.claim_epoch),
+      );
+      return null;
+    }
+    const started = this.store.beginDynamicCoordinatorTurn(mailboxId, {
+      ownerBootId: this.ownerBootId,
+      claimEpoch: Number(claim.claim_epoch),
+    });
+    if (!started) {
+      this.store.releaseCoordinatorMailboxClaim(
+        claim.id, this.ownerBootId, Number(claim.claim_epoch),
+      );
+      return null;
+    }
+    options.onUpdate?.('coordinator.advance_started', started.detail);
+    const trigger = started.detail.messages?.find(message => message.turnId === started.turnId)?.trigger;
+    const text = `Automatic WorkItem advance trigger: ${JSON.stringify(trigger || { kind: claim.kind })}. `
+      + 'Observe the current durable state and choose the next justified Actions, a genuine human request, '
+      + 'or evidence-backed completion. Do not stop merely because the previous Action ended.';
+    return this.#scheduleTurn(started, { text, recovery: false, options });
   }
 
   recover(id, options = {}) {
@@ -746,7 +871,7 @@ export class WorkItemCoordinator {
                 : latestMessage;
               const requestBody = {
                 model: resolved.model,
-                system: coordinatorSystemPrompt(language),
+                system: coordinatorSystemPrompt(language, started.detail),
                 messages: [{ role: 'user', content }],
                 maxTokens: Math.min(
                   resolveMaxOutputTokens(resolved.model, runtime.config),
@@ -799,8 +924,11 @@ export class WorkItemCoordinator {
             }
             normalized = normalizeCoordinatorResponse(result?.text, started.detail, {
               recovery,
+              automatic: started.fence.automatic === true,
               recoveryActionId: started.fence.recovery?.actionId || null,
+              availableVpIds: vps.map(vp => vp.id),
             });
+            mutation = normalized.mutation || null;
             if (normalized.decision.kind === 'replan') {
               finalizedCriteria(started.detail, normalized.decision.contractPatch);
               mutation = applyCoordinatorReplan({
@@ -873,7 +1001,9 @@ export class WorkItemCoordinator {
         attemptCount,
       }, started.fence);
       if (!detail) return this.store.getWorkItemDetail(started.detail.id);
-      options.onUpdate?.(recovery ? 'coordinator.recovery_completed' : 'coordinator.turn_completed', detail);
+      options.onUpdate?.(started.fence.automatic === true
+        ? 'coordinator.advance_completed'
+        : recovery ? 'coordinator.recovery_completed' : 'coordinator.turn_completed', detail);
       return detail;
     } catch (error) {
       if (providerTurn?.status === 'responded') {

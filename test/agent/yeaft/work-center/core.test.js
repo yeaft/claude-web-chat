@@ -173,6 +173,8 @@ describe('Work Center core', () => {
     });
     expect(() => store.db.prepare('UPDATE runs SET response = ? WHERE id = ?')
       .run('late terminal rewrite', first.run.id)).toThrow(/terminal Run result is immutable/);
+    expect(() => store.db.prepare('UPDATE runs SET acceptance_checks = ? WHERE id = ?')
+      .run('[{"criterion":"rewritten"}]', first.run.id)).toThrow(/terminal Run result is immutable/);
     expect(() => store.db.prepare('UPDATE runs SET action_id = ? WHERE id = ?')
       .run('different-action', second.run.id)).toThrow(/Run identity is immutable/);
     const coordinatorDetail = store.getWorkItemDetail(item.id);
