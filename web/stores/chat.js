@@ -3642,12 +3642,21 @@ export const useChatStore = defineStore('chat', {
           const nextRetryTimeouts = { ...this._yeaftHistoryOutlineTimeouts };
           delete nextRetryTimeouts[key];
           this._yeaftHistoryOutlineTimeouts = nextRetryTimeouts;
+          const refreshPending = current.refreshPending === true;
           this.yeaftHistoryOutlineBySession = {
             ...this.yeaftHistoryOutlineBySession,
-            [key]: { ...current, requestId: null, loading: false },
+            [key]: {
+              ...current,
+              requestId: null,
+              loading: false,
+              refreshPending: false,
+            },
           };
           this.loadYeaftHistoryOutline({
-            append: state.requestAppend === true,
+            // A durable mutation during backoff invalidates the old append cursor.
+            // Restart from the newest page instead of letting the retry clear the
+            // pending refresh and leave the outline stale.
+            append: refreshPending ? false : state.requestAppend === true,
             force: true,
             targetSessionId: msg.sessionId,
             targetAgentId: msg.agentId,
