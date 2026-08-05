@@ -25,6 +25,9 @@
 
 import { readFile } from 'node:fs/promises';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { isProxy, reactive } from 'vue';
 
 // `conversationHandler.js` transitively imports `web/stores/auth.js`,
 // which does `const { defineStore } = Pinia;` against a global Pinia
@@ -35,6 +38,13 @@ globalThis.Pinia = globalThis.Pinia || {
 
 const { handleYeaftHistoryChunk } = await import('../../../web/stores/helpers/handlers/conversationHandler.js');
 const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
+const {
+  bindYeaftHistoryBrowserOwner,
+  clearYeaftHistoryBrowserOwner,
+  currentYeaftHistoryBrowserFence,
+  readYeaftHistoryBrowserCache,
+  writeYeaftHistoryBrowserCache,
+} = await import('../../../web/stores/helpers/yeaft-history-browser-cache.js');
 const {
   isDurableYeaftHistoryRow,
   pruneYeaftHistoryCache,
@@ -134,6 +144,7 @@ function mkStore(overrides = {}) {
     yeaftSessionHistoryState: {},
     yeaftMessageWindowState: {},
     messagesMap: {},
+    persistYeaftHistoryBrowserCache: vi.fn(() => Promise.resolve(true)),
     sendWsMessage(msg) { sent.push(msg); },
     _sent: sent,
     ...overrides,
@@ -236,6 +247,131 @@ async function runConsolidatedHistoryScenarios() {
 }
 
 describe('Yeaft conversation loading state', () => {
+  async function verifyBrowserHistoryCache() {
+    class MemoryRequest {
+      constructor(run) {
+        queueMicrotask(() => {
+          try { this.result = run(); this.onsuccess?.(); }
+          catch (error) { this.error = error; this.onerror?.(); }
+        });
+      }
+    }
+    class MemoryTransaction {
+      constructor(stores) {
+        this.stores = stores;
+        this.completed = false;
+        this._oncomplete = null;
+      }
+      set oncomplete(handler) {
+        this._oncomplete = handler;
+        if (this.completed && handler) queueMicrotask(handler);
+      }
+      get oncomplete() { return this._oncomplete; }
+      objectStore(name) {
+        const records = this.stores[name];
+        const request = run => new MemoryRequest(() => {
+          const value = run();
+          queueMicrotask(() => { this.completed = true; this._oncomplete?.(); });
+          return value;
+        });
+        return {
+          get: key => request(() => records.get(key)),
+          getAll: () => request(() => Array.from(records.values())),
+          put: record => request(() => { records.set(record.key, structuredClone(record)); return record.key; }),
+          delete: key => request(() => records.delete(key)),
+          clear: () => request(() => records.clear()),
+        };
+      }
+    }
+    const records = new Map();
+    const metadata = new Map();
+    const stores = { sessions: records, metadata };
+    const previousIndexedDB = globalThis.indexedDB;
+    globalThis.indexedDB = {
+      open() {
+        const request = {};
+        queueMicrotask(() => {
+          request.result = {
+            objectStoreNames: { contains: name => name === 'sessions' || name === 'metadata' },
+            transaction: () => new MemoryTransaction(stores),
+          };
+          request.onsuccess?.();
+        });
+        return request;
+      },
+    };
+    clearYeaftHistoryBrowserOwner();
+    try {
+      const ownerA = bindYeaftHistoryBrowserOwner('owner-a');
+      const projectedRows = reactive([
+        {
+          id: 'm0001', messageId: 'm0001', historyEntryId: 'entry-1', stableKey: 'entry-1:assistant',
+          seq: 1, type: 'assistant', content: 'persisted', sessionId: 'session-a', isHistory: true,
+        },
+        {
+          id: 'm0001-todos', messageId: 'm0001', historyEntryId: 'entry-1', stableKey: 'entry-1:todos',
+          seq: 1, type: 'tool-use', toolName: 'TodoWrite', sessionId: 'session-a', isHistory: true,
+        },
+        {
+          id: 'm0001-summary', messageId: 'm0001', historyEntryId: 'entry-1', stableKey: 'entry-1:tool-summary',
+          seq: 1, type: 'tool-summary', content: 'read files', sessionId: 'session-a', isHistory: true,
+        },
+        { id: 'live', type: 'assistant', content: 'streaming', sessionId: 'session-a', isStreaming: true },
+      ]);
+      expect(isProxy(projectedRows[0])).toBe(true);
+      expect(await writeYeaftHistoryBrowserCache({
+        fence: ownerA,
+        agentId: 'agent-a',
+        sessionId: 'session-a',
+        rows: projectedRows,
+        historyState: { latestSeq: 1, oldestSeq: 1, hasMore: true },
+        limits: {
+          maxSessionsPerOwner: 12,
+          maxRowsPerSession: 2,
+          maxBytesPerSession: 4 * 1024 * 1024,
+          maxAgeMs: 30 * 24 * 60 * 60 * 1000,
+        },
+      })).toBe(true);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(await readYeaftHistoryBrowserCache({
+        fence: ownerA, agentId: 'agent-a', sessionId: 'session-a',
+      })).toMatchObject({
+        ownerId: 'owner-a', agentId: 'agent-a', sessionId: 'session-a',
+        rowCount: 3, latestSeq: 1, oldestSeq: 1, hasMore: true,
+        rows: [
+          expect.objectContaining({ stableKey: 'entry-1:assistant' }),
+          expect.objectContaining({ stableKey: 'entry-1:todos' }),
+          expect.objectContaining({ stableKey: 'entry-1:tool-summary' }),
+        ],
+      });
+      expect(await readYeaftHistoryBrowserCache({
+        fence: ownerA, agentId: 'agent-b', sessionId: 'session-a',
+      })).toBeNull();
+      const persisted = records.get('owner-a\u001fagent-a\u001fsession-a');
+      records.set(persisted.key, {
+        ...persisted,
+        lastAccessed: Date.now() - (31 * 24 * 60 * 60 * 1000),
+      });
+      expect(await readYeaftHistoryBrowserCache({
+        fence: ownerA, agentId: 'agent-a', sessionId: 'session-a',
+      })).toBeNull();
+      expect(records.has(persisted.key)).toBe(false);
+
+      const ownerB = bindYeaftHistoryBrowserOwner('owner-b');
+      expect(await readYeaftHistoryBrowserCache({
+        fence: ownerA, agentId: 'agent-a', sessionId: 'session-a',
+      })).toBeNull();
+      clearYeaftHistoryBrowserOwner();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(currentYeaftHistoryBrowserFence()).toBeNull();
+      expect(Array.from(records.values()).some(record => record.ownerId === ownerB.ownerId)).toBe(false);
+    } finally {
+      clearYeaftHistoryBrowserOwner();
+      if (previousIndexedDB === undefined) delete globalThis.indexedDB;
+      else globalThis.indexedDB = previousIndexedDB;
+    }
+  }
+
   async function verifyLoadingState() {
     const randomUUID = vi.spyOn(globalThis.crypto, 'randomUUID');
     let uuid = 0;
@@ -643,6 +779,38 @@ describe('Yeaft conversation loading state', () => {
       count: 2,
     }));
     expect(store.yeaftLoadingMoreHistory).toBe(false);
+  });
+
+  it('keeps older durable pages when a bounded recent replay refreshes the tail', () => {
+    const store = mkStore({
+      yeaftActiveSessionFilter: 'g1',
+      messagesMap: {
+        'yeaft-1': [
+          { id: 'm0001', messageId: 'm0001', seq: 1, type: 'user', content: 'older q', sessionId: 'g1', isHistory: true, timestamp: 1 },
+          { id: 'm0002', messageId: 'm0002', seq: 2, type: 'assistant', content: 'older a', sessionId: 'g1', isHistory: true, timestamp: 2 },
+          { id: 'm0100', messageId: 'm0100', seq: 100, type: 'user', content: 'cached recent q', sessionId: 'g1', isHistory: true, timestamp: 100 },
+        ],
+      },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      sessionId: 'g1',
+      mode: 'recent',
+      messages: [
+        { id: 'm0100', role: 'user', content: 'fresh recent q', sessionId: 'g1', ts: 100 },
+        { id: 'm0101', role: 'assistant', content: 'fresh recent a', sessionId: 'g1', ts: 101 },
+      ],
+      oldestSeq: 100,
+      latestSeq: 101,
+      hasMore: true,
+    });
+
+    expect(store.messagesMap['yeaft-1'].map(row => row.id)).toEqual([
+      'm0001', 'm0002', 'm0100', 'm0101',
+    ]);
+    expect(store.messagesMap['yeaft-1'].find(row => row.id === 'm0100')?.content).toBe('fresh recent q');
+    expect(store.persistYeaftHistoryBrowserCache).toHaveBeenCalledWith('g1', null, 'yeaft-1');
   });
 
   it('keeps optimistic sends visible when a recent history reply races them', () => {
@@ -1771,6 +1939,9 @@ describe('Yeaft conversation loading state', () => {
 
   it('keeps chronological order and dedupes rows when older session history overlaps cached rows', async () => {
     await runConsolidatedHistoryScenarios();
+    await verifyBrowserHistoryCache();
+    const cacheSource = readFileSync(resolve(import.meta.dirname, '../../../web/stores/helpers/yeaft-history-browser-cache.js'), 'utf8');
+    expect(cacheSource).toContain("const DATABASE_NAME = 'yeaft-history-cache'");
     const store = mkStore({
       yeaftActiveSessionFilter: 'session-A',
       messagesMap: {
@@ -2326,50 +2497,37 @@ describe('Yeaft message render window', () => {
     return rows;
   }
 
-  it('renders only the latest five Yeaft turns while keeping full history cached', () => {
+  it('keeps every resident Yeaft turn visible across Session switches', () => {
     const store = mkStore({
       yeaftActiveSessionFilter: 'session-A',
       messagesMap: { 'yeaft-1': makeTurns(8) },
     });
 
-    const visible = visibleMessages(store);
-
-    expect(store.messagesMap['yeaft-1']).toHaveLength(24);
-    expect(visible.map(m => m.id)).toEqual([
-      'u-4', 'a-4', 'tool-4',
-      'u-5', 'a-5', 'tool-5',
-      'u-6', 'a-6', 'tool-6',
-      'u-7', 'a-7', 'tool-7',
-      'u-8', 'a-8', 'tool-8',
-    ]);
-    expect(hasHiddenYeaftMessages(store)).toBe(true);
-  });
-
-  it('loads older cached turns into the render window without truncating assistant chunks', () => {
-    const store = mkStore({
-      yeaftActiveSessionFilter: 'session-A',
-      messagesMap: { 'yeaft-1': makeTurns(8) },
-    });
-
-    expandYeaftMessageWindow.call(store);
-    const visible = visibleMessages(store);
-
-    expect(visible.map(m => m.id)).toEqual(makeTurns(8).map(m => m.id));
+    expect(visibleMessages(store).map(m => m.id)).toEqual(makeTurns(8).map(m => m.id));
     expect(hasHiddenYeaftMessages(store)).toBe(false);
+
+    // A legacy prune request or returning to the bottom must not hide history
+    // that is still resident; VirtualTranscript already bounds rendered DOM.
+    pruneYeaftMessageWindow.call(store);
+    expect(visibleMessages(store).map(m => m.id)).toEqual(makeTurns(8).map(m => m.id));
+    expect(store.messagesMap['yeaft-1']).toHaveLength(24);
   });
 
-  it('prunes back to the recent five turns when returning to the bottom', () => {
+  it('shows all cached turns again when returning to a previously loaded Session', () => {
     const store = mkStore({
       yeaftActiveSessionFilter: 'session-A',
-      messagesMap: { 'yeaft-1': makeTurns(8) },
+      messagesMap: {
+        'yeaft-1': [
+          ...makeTurns(8, 'session-A'),
+          ...makeTurns(2, 'session-B'),
+        ],
+      },
     });
 
-    expandYeaftMessageWindow.call(store);
-    expect(visibleMessages(store)[0].id).toBe('u-1');
+    store.yeaftActiveSessionFilter = 'session-B';
+    expect(visibleMessages(store).map(m => m.content)).toContain('assistant 2');
+    store.yeaftActiveSessionFilter = 'session-A';
 
-    pruneYeaftMessageWindow.call(store);
-
-    expect(visibleMessages(store)[0].id).toBe('u-4');
-    expect(store.messagesMap['yeaft-1'][0].id).toBe('u-1');
+    expect(visibleMessages(store).map(m => m.id)).toEqual(makeTurns(8).map(m => m.id));
   });
 });

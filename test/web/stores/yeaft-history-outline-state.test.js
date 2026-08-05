@@ -252,7 +252,7 @@ describe('Yeaft history outline state', () => {
     expect(store.yeaftMessageWindowState[keyB].visibleTurns).toBe(17);
     expect(store.finishYeaftHistoryReveal(newerLeaseB)).toBe(true);
     store.pruneYeaftMessageWindow('same', 'agent-b');
-    expect(store.yeaftMessageWindowState[keyB].visibleTurns).toBe(5);
+    expect(store.yeaftMessageWindowState[keyB].visibleTurns).toBe(Number.POSITIVE_INFINITY);
   });
 
   historyScenario('routes same-id background frames only to their owning Agent outline', () => {
@@ -369,6 +369,80 @@ describe('Yeaft history outline state', () => {
 
     await expect(pending).resolves.toBe(false);
     expect(store.messagesMap['conv-a']).toEqual(before);
+  });
+
+  it('revalidates the exact history request immediately before merging rows', async () => {
+    const store = primeStore();
+    store.messagesMap = { 'conv-a': [] };
+    const pending = store.loadYeaftHistoryWindow(indexedHistoryResult());
+    const request = store._sent.at(-1);
+    const response = {
+      type: 'yeaft_history_window',
+      ...indexedHistoryResponse(request),
+      messages: [{ id: 'm42', role: 'assistant', content: 'must not land' }],
+    };
+    const originalPendingWindow = store.pendingYeaftHistoryWindow.bind(store);
+    let checks = 0;
+    store.pendingYeaftHistoryWindow = vi.fn((msg) => {
+      checks += 1;
+      const match = originalPendingWindow(msg);
+      if (checks === 1) store.clearYeaftHistoryMemory();
+      return match;
+    });
+
+    store.handleMessage(response);
+
+    await expect(pending).resolves.toBe(false);
+    expect(store.pendingYeaftHistoryWindow).toHaveBeenCalledTimes(2);
+    expect(store.messagesMap['conv-a']).toEqual([]);
+  });
+
+  it('cancels delayed history windows before owner cleanup or exact Session deletion', async () => {
+    const store = primeStore();
+    store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-a', 'agent-b': 'conv-b' };
+    store.messagesMap = { 'conv-a': [], 'conv-b': [] };
+
+    const ownerPending = store.loadYeaftHistoryWindow(indexedHistoryResult());
+    const ownerRequest = store._sent.at(-1);
+    store.clearYeaftHistoryMemory();
+    await expect(ownerPending).resolves.toBe(false);
+    store.handleMessage({
+      type: 'yeaft_history_window',
+      ...indexedHistoryResponse(ownerRequest),
+      messages: [{ id: 'm42', role: 'assistant', content: 'late owner plaintext' }],
+    });
+    expect(store.messagesMap['conv-a']).toEqual([]);
+
+    const agentAResult = indexedHistoryResult({ agentId: 'agent-a' });
+    const agentBResult = indexedHistoryResult({ agentId: 'agent-b' });
+    const agentAPending = store.loadYeaftHistoryWindow(agentAResult);
+    const agentARequest = store._sent.at(-1);
+    const agentBPending = store.loadYeaftHistoryWindow(agentBResult);
+    const agentBRequest = store._sent.at(-1);
+
+    store.clearYeaftHistoryMemory({ agentId: 'agent-a', sessionId: 'same' });
+    await expect(agentAPending).resolves.toBe(false);
+    expect(store.pendingYeaftHistoryWindow(indexedHistoryResponse(agentARequest))).toBeNull();
+    expect(store.pendingYeaftHistoryWindow(
+      indexedHistoryResponse(agentBRequest, { agentId: 'agent-b' }),
+    )).not.toBeNull();
+
+    store.handleMessage({
+      type: 'yeaft_history_window',
+      ...indexedHistoryResponse(agentARequest),
+      messages: [{ id: 'm42', role: 'assistant', content: 'late deleted plaintext' }],
+    });
+    expect(store.messagesMap['conv-a']).toEqual([]);
+
+    store.handleMessage({
+      type: 'yeaft_history_window',
+      ...indexedHistoryResponse(agentBRequest, { agentId: 'agent-b' }),
+      messages: [{ id: 'm42', role: 'assistant', content: 'live Agent B history' }],
+    });
+    await expect(agentBPending).resolves.toBe(true);
+    expect(store.messagesMap['conv-b']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: 'live Agent B history', sessionId: 'same' }),
+    ]));
   });
 
   it('reuses one bounded history-window request across hover prefetch and click', async () => {
