@@ -428,7 +428,7 @@ describe('Yeaft history result rendered reveal', () => {
     await expectInterleavedVpExecutionBlocks({ isHistory: true });
   });
 
-  it('opens composer model menus only through real click events', async () => {
+  it('keeps composer menus click-driven and opens LLM configuration from the menu item', async () => {
     const store = primeStore();
     store.yeaftModel = 'provider/model-a';
     store.yeaftModelEffort = 'medium';
@@ -464,6 +464,25 @@ describe('Yeaft history result rendered reveal', () => {
     await Vue.nextTick();
     expect(wrapper.get('.yeaft-composer-model-dropdown').isVisible()).toBe(true);
 
+    const configOption = wrapper.get('.yeaft-model-config-option');
+    await modelButton.trigger('focusout', { relatedTarget: configOption.element });
+    await configOption.trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.get('.yeaft-llm-config-overlay').isVisible()).toBe(true);
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
+    await wrapper.get('.yeaft-llm-config-overlay .modal-close').trigger('click');
+    await Vue.nextTick();
+
+    await modelButton.trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.get('.yeaft-composer-model-dropdown').isVisible()).toBe(true);
+    await modelButton.trigger('focusout', { relatedTarget: document.body });
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
+
+    await modelButton.trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.get('.yeaft-composer-model-dropdown').isVisible()).toBe(true);
     await modelChoice.trigger('mouseleave');
     await Vue.nextTick();
     expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(true);
