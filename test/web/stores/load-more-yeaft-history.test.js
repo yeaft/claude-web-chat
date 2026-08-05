@@ -343,6 +343,15 @@ describe('Yeaft conversation loading state', () => {
       expect(await readYeaftHistoryBrowserCache({
         fence: ownerA, agentId: 'agent-b', sessionId: 'session-a',
       })).toBeNull();
+      const persisted = records.get('owner-a\u001fagent-a\u001fsession-a');
+      records.set(persisted.key, {
+        ...persisted,
+        lastAccessed: Date.now() - (31 * 24 * 60 * 60 * 1000),
+      });
+      expect(await readYeaftHistoryBrowserCache({
+        fence: ownerA, agentId: 'agent-a', sessionId: 'session-a',
+      })).toBeNull();
+      expect(records.has(persisted.key)).toBe(false);
 
       const ownerB = bindYeaftHistoryBrowserOwner('owner-b');
       expect(await readYeaftHistoryBrowserCache({

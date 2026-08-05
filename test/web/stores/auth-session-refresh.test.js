@@ -237,14 +237,14 @@ describe('auth store session restore and refresh', () => {
     expect(globalThis.localStorage.removeItem).not.toHaveBeenCalled();
   });
 
-  it('always posts logout and waits for physical browser-history cleanup', async () => {
+  it('posts logout but fails closed until browser history is physically cleared', async () => {
     globalThis.localStorage = createLocalStorage({
       'yeaft-work-center-composer-drafts-v1': JSON.stringify({ ownerId: 'user-a', records: {} }),
       'yeaft-work-center-message-outbox-v1': JSON.stringify({ ownerId: 'user-a', records: {} }),
     });
     globalThis.fetch = vi.fn(async () => jsonResponse());
     let finishCleanup;
-    const historyCleanup = new Promise(resolve => { finishCleanup = resolve; });
+    const historyCleanup = new Promise((resolve, reject) => { finishCleanup = { resolve, reject }; });
     const clearYeaftHistoryBrowserOwner = vi.fn(() => historyCleanup);
     vi.doMock('../../../web/stores/helpers/yeaft-history-browser-cache.js', () => ({
       bindYeaftHistoryBrowserOwner: vi.fn(),
@@ -259,7 +259,7 @@ describe('auth store session restore and refresh', () => {
     await Promise.resolve();
     expect(clearYeaftHistoryBrowserOwner).toHaveBeenCalledOnce();
     expect(completed).toBe(false);
-    finishCleanup(true);
+    finishCleanup.resolve(true);
     await logout;
 
     expect(globalThis.fetch).toHaveBeenCalledWith('/api/auth/logout', {
@@ -273,6 +273,10 @@ describe('auth store session restore and refresh', () => {
     expect(globalThis.localStorage.removeItem)
       .toHaveBeenCalledWith('yeaft-work-center-message-outbox-v1');
     expect(completed).toBe(true);
+
+    const failedCleanup = Promise.reject(new Error('IndexedDB transaction aborted'));
+    vi.mocked(clearYeaftHistoryBrowserOwner).mockReturnValueOnce(failedCleanup);
+    await expect(auth.logout()).rejects.toThrow('IndexedDB transaction aborted');
   });
 
   it('loads and unbinds identities for an authenticated cookie-only session', async () => {
@@ -311,7 +315,7 @@ describe('auth store session restore and refresh', () => {
     globalThis.localStorage = createLocalStorage();
     globalThis.fetch = vi.fn(async () => jsonResponse({ body: { success: true } }));
     let finishCleanup;
-    const historyCleanup = new Promise(resolve => { finishCleanup = resolve; });
+    const historyCleanup = new Promise((resolve, reject) => { finishCleanup = { resolve, reject }; });
     const clearYeaftHistoryBrowserOwner = vi.fn(() => historyCleanup);
     vi.doMock('../../../web/stores/helpers/yeaft-history-browser-cache.js', () => ({
       bindYeaftHistoryBrowserOwner: vi.fn(),
@@ -330,7 +334,7 @@ describe('auth store session restore and refresh', () => {
       expect(clearYeaftHistoryBrowserOwner).toHaveBeenCalledOnce();
     });
     expect(completed).toBe(false);
-    finishCleanup(true);
+    finishCleanup.resolve(true);
     const result = await deleting;
 
     expect(result).toEqual({ success: true });
@@ -341,6 +345,14 @@ describe('auth store session restore and refresh', () => {
     });
     expect(auth.isAuthenticated).toBe(false);
     expect(completed).toBe(true);
+
+    auth.isAuthenticated = true;
+    vi.mocked(clearYeaftHistoryBrowserOwner)
+      .mockRejectedValueOnce(new Error('IndexedDB transaction aborted'));
+    expect(await auth.deleteAccount({ confirm: 'DELETE' })).toEqual({
+      success: false,
+      error: 'IndexedDB transaction aborted',
+    });
   });
 
   it('starts SSO binding for a cookie-only session without putting a token in the URL', async () => {

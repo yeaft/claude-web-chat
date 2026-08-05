@@ -864,7 +864,9 @@ export const useAuthStore = defineStore('auth', {
       if (failedGeneration !== this.authGeneration) return false;
       const activeToken = this.token || localStorage.getItem('authToken') || null;
       if (failedToken !== activeToken) return false;
-      this.clearStoredSession(error);
+      void this.clearStoredSession(error).catch((cleanupError) => {
+        console.error('Browser history cleanup failed:', cleanupError);
+      });
       return false;
     },
 

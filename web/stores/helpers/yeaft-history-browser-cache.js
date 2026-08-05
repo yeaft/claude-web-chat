@@ -19,7 +19,8 @@ export const YEAFT_HISTORY_BROWSER_CACHE_LIMITS = Object.freeze({
 let browserOwnerId = null;
 let browserOwnerEpoch = 0;
 let databasePromise = null;
-let ownerCleanupPromise = Promise.resolve(false);
+let ownerCleanupPromise = Promise.resolve(true);
+let fullCleanupRequired = false;
 
 function normalizeId(value) {
   const normalized = String(value || '').trim();
@@ -169,7 +170,8 @@ function chooseRows(rows, limits) {
 
 async function deleteRecordsWhere(predicate) {
   const db = await openCacheDatabase();
-  if (!db) return false;
+  // No IndexedDB means no durable browser cache exists to clean.
+  if (!db) return true;
   const transaction = db.transaction(SESSION_STORE, 'readwrite');
   const store = transaction.objectStore(SESSION_STORE);
   const records = await requestPromise(store.getAll());
@@ -180,11 +182,21 @@ async function deleteRecordsWhere(predicate) {
   return true;
 }
 
-function queueOwnerCleanup(cleanup) {
-  ownerCleanupPromise = ownerCleanupPromise
-    .catch(() => false)
-    .then(cleanup)
-    .catch(() => false);
+function queueOwnerCleanup(cleanup, { full = false } = {}) {
+  if (full) fullCleanupRequired = true;
+  const waitForPrevious = ownerCleanupPromise.catch(() => {
+    if (!fullCleanupRequired) throw new Error('Browser history owner cleanup failed');
+  });
+  ownerCleanupPromise = waitForPrevious.then(async () => {
+    const runFullCleanup = fullCleanupRequired;
+    const cleaned = await (runFullCleanup ? deleteRecordsWhere(() => true) : cleanup());
+    if (!cleaned) throw new Error('Browser history owner cleanup is unavailable');
+    if (runFullCleanup) fullCleanupRequired = false;
+    return true;
+  });
+  // bind callers do not await cleanup directly; keep the rejected promise as a
+  // read/write fence without leaking an unhandled rejection to the browser.
+  void ownerCleanupPromise.catch(() => {});
   return ownerCleanupPromise;
 }
 
@@ -226,14 +238,19 @@ export function clearYeaftHistoryBrowserOwner() {
   browserOwnerEpoch += 1;
   // Clear all records, including the reload case where the in-memory owner is
   // unknown. Callers may await the returned promise for physical deletion.
-  return queueOwnerCleanup(() => deleteRecordsWhere(() => true));
+  return queueOwnerCleanup(() => deleteRecordsWhere(() => true), { full: true });
 }
 
 export function currentYeaftHistoryBrowserFence() {
   return browserOwnerId ? { ownerId: browserOwnerId, epoch: browserOwnerEpoch } : null;
 }
 
-export async function readYeaftHistoryBrowserCache({ fence, agentId, sessionId } = {}) {
+export async function readYeaftHistoryBrowserCache({
+  fence,
+  agentId,
+  sessionId,
+  limits = YEAFT_HISTORY_BROWSER_CACHE_LIMITS,
+} = {}) {
   const normalizedAgentId = normalizeId(agentId);
   const normalizedSessionId = normalizeId(sessionId);
   if (!isFenceCurrent(fence) || !normalizedAgentId || !normalizedSessionId) return null;
@@ -241,12 +258,15 @@ export async function readYeaftHistoryBrowserCache({ fence, agentId, sessionId }
     await ownerCleanupPromise;
     const db = await openCacheDatabase();
     if (!db || !isFenceCurrent(fence)) return null;
-    const transaction = db.transaction(SESSION_STORE, 'readonly');
-    const record = await requestPromise(transaction.objectStore(SESSION_STORE).get(
-      identityKey(fence.ownerId, normalizedAgentId, normalizedSessionId),
-    ));
+    const key = identityKey(fence.ownerId, normalizedAgentId, normalizedSessionId);
+    const transaction = db.transaction(SESSION_STORE, 'readwrite');
+    const store = transaction.objectStore(SESSION_STORE);
+    const record = await requestPromise(store.get(key));
+    const expiredBefore = Date.now() - limits.maxAgeMs;
+    const expired = !!record && (Number(record.lastAccessed) || 0) < expiredBefore;
+    if (expired) store.delete(key);
     await transactionComplete(transaction);
-    if (!isFenceCurrent(fence) || record?.schemaVersion !== CACHE_SCHEMA_VERSION
+    if (expired || !isFenceCurrent(fence) || record?.schemaVersion !== CACHE_SCHEMA_VERSION
         || record.ownerId !== fence.ownerId || record.agentId !== normalizedAgentId
         || record.sessionId !== normalizedSessionId || !Array.isArray(record.rows)) return null;
     return record;
@@ -301,17 +321,13 @@ export async function removeYeaftHistoryBrowserCache({ fence, agentId, sessionId
   const normalizedAgentId = normalizeId(agentId);
   const normalizedSessionId = normalizeId(sessionId);
   if (!isFenceCurrent(fence) || !normalizedAgentId || !normalizedSessionId) return false;
-  try {
-    await ownerCleanupPromise;
-    const db = await openCacheDatabase();
-    if (!db || !isFenceCurrent(fence)) return false;
-    const transaction = db.transaction(SESSION_STORE, 'readwrite');
-    transaction.objectStore(SESSION_STORE).delete(
-      identityKey(fence.ownerId, normalizedAgentId, normalizedSessionId),
-    );
-    await transactionComplete(transaction);
-    return isFenceCurrent(fence);
-  } catch {
-    return false;
-  }
+  await ownerCleanupPromise;
+  const db = await openCacheDatabase();
+  if (!db || !isFenceCurrent(fence)) return false;
+  const transaction = db.transaction(SESSION_STORE, 'readwrite');
+  transaction.objectStore(SESSION_STORE).delete(
+    identityKey(fence.ownerId, normalizedAgentId, normalizedSessionId),
+  );
+  await transactionComplete(transaction);
+  return isFenceCurrent(fence);
 }

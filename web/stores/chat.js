@@ -5111,44 +5111,67 @@ export const useChatStore = defineStore('chat', {
           // and have no envelope context. Keep these two channels in sync
           // if you change the wire-stamping rule.
           if (gs) gs.applyCrudResult(event, msg.agentId || null);
-          if (event.ok && event.op === 'delete' && event.sessionId && msg.agentId) {
+          let cacheCleanup = Promise.resolve();
+          if (event.ok && event.op === 'delete' && event.sessionId) {
             const fence = currentYeaftHistoryBrowserFence();
-            if (fence) void removeYeaftHistoryBrowserCache({
-              fence,
-              agentId: msg.agentId,
-              sessionId: event.sessionId,
+            cacheCleanup = (async () => {
+              if (!msg.agentId) throw new Error('Session delete result is missing its Agent owner');
+              if (!fence) return;
+              const removed = await removeYeaftHistoryBrowserCache({
+                fence,
+                agentId: msg.agentId,
+                sessionId: event.sessionId,
+              });
+              if (!removed) throw new Error('Browser history cache was not removed');
+            })();
+            // A timed-out or unsolicited result has no caller awaiting the
+            // Promise, but its physical cleanup must still run.
+            void cacheCleanup.catch((error) => {
+              console.error('Session browser history cleanup failed:', error);
             });
           }
           const pending = this._sessionCrudPending && this._sessionCrudPending.get(event.requestId);
           if (pending) {
-            this._sessionCrudPending.delete(event.requestId);
-            // fix-yeaft-create-not-opened: the agent's session meta payload
-            // does NOT carry an `agentId` field (the agent doesn't know its
-            // own server-assigned id). The server stamps `msg.agentId` on
-            // the envelope, but if we resolve the promise with the bare
-            // `event.session`, the modal's `created.agentId` is undefined
-            // and the cross-agent `selectAgent(owner)` short-circuits —
-            // leaving `currentAgent` on the wrong agent so the new session
-            // appears to "not open / not show up on the right side".
-            // Stamp the envelope's agentId onto the resolved group payload
-            // so callers see a wire-coherent shape. Agent payload wins if
-            // it ever does start stamping (non-empty values only — an
-            // empty-string agentId is treated as absent).
-            const rawSession = event.session || event.group || null;
-            const sessionWithAgent = (rawSession && msg.agentId && !rawSession.agentId)
-              ? { ...rawSession, agentId: msg.agentId }
-              : rawSession;
-            const resolvedSessionId = event.sessionId || null;
-            const resolvedSessionList = event.sessions || null;
-            pending.resolve({
-              ok: !!event.ok,
-              op: event.op,
-              session: sessionWithAgent,
-              sessionId: resolvedSessionId,
-              sessions: resolvedSessionList,
-              config: event.config || null,
-              error: event.error || null,
-            });
+            const finish = async () => {
+              let cleanupError = null;
+              try {
+                await cacheCleanup;
+              } catch (error) {
+                cleanupError = error;
+              }
+              if (this._sessionCrudPending?.get(event.requestId) !== pending) return;
+              this._sessionCrudPending.delete(event.requestId);
+              // fix-yeaft-create-not-opened: the agent's session meta payload
+              // does NOT carry an `agentId` field (the agent doesn't know its
+              // own server-assigned id). The server stamps `msg.agentId` on
+              // the envelope, but if we resolve the promise with the bare
+              // `event.session`, the modal's `created.agentId` is undefined
+              // and the cross-agent `selectAgent(owner)` short-circuits —
+              // leaving `currentAgent` on the wrong agent so the new session
+              // appears to "not open / not show up on the right side".
+              // Stamp the envelope's agentId onto the resolved group payload
+              // so callers see a wire-coherent shape. Agent payload wins if
+              // it ever does start stamping (non-empty values only — an
+              // empty-string agentId is treated as absent).
+              const rawSession = event.session || event.group || null;
+              const sessionWithAgent = (rawSession && msg.agentId && !rawSession.agentId)
+                ? { ...rawSession, agentId: msg.agentId }
+                : rawSession;
+              const resolvedSessionId = event.sessionId || null;
+              const resolvedSessionList = event.sessions || null;
+              pending.resolve({
+                ok: !!event.ok && !cleanupError,
+                op: event.op,
+                session: sessionWithAgent,
+                sessionId: resolvedSessionId,
+                sessions: resolvedSessionList,
+                config: event.config || null,
+                error: cleanupError
+                  ? { code: 'browser_cache_cleanup_failed', message: cleanupError.message }
+                  : (event.error || null),
+              });
+            };
+            void finish();
           }
           break;
         }

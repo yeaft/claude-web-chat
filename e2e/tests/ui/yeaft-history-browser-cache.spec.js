@@ -15,9 +15,21 @@ function harnessHtml() {
 <html>
 <body>
   <script src="/node_modules/vue/dist/vue.global.js"></script>
+  <script>window.VueDemi = window.Vue;</script>
+  <script src="/web/vendor/pinia.iife.prod.js"></script>
+  <script>
+    Pinia.setActivePinia(Pinia.createPinia());
+    Pinia.useSessionsStore = () => ({ applyCrudResult() {} });
+  </script>
   <script type="module">
-    window.__historyCache = await import('/web/stores/helpers/yeaft-history-browser-cache.js');
-    window.__historyCacheReady = true;
+    try {
+      window.__historyCache = await import('/web/stores/helpers/yeaft-history-browser-cache.js');
+      const { useChatStore } = await import('/web/stores/chat.js');
+      window.__chatStore = useChatStore();
+      window.__historyCacheReady = true;
+    } catch (error) {
+      window.__historyCacheError = error.stack || error.message;
+    }
   </script>
 </body>
 </html>`;
@@ -77,9 +89,11 @@ test.afterAll(async () => {
   await new Promise(resolveClose => server.close(resolveClose));
 });
 
-test('persists reactive projection rows and removes stale owners after reload', async ({ page }) => {
+test('persists projections and completes cache lifecycle transactions', async ({ page }) => {
   await page.goto(`${baseUrl}/__history-cache`);
-  await page.waitForFunction(() => window.__historyCacheReady === true);
+  await expect.poll(() => page.evaluate(() => (
+    window.__historyCacheError || (window.__historyCacheReady ? 'ready' : null)
+  ))).toBe('ready');
 
   const firstWrite = await page.evaluate(async () => {
     const cache = window.__historyCache;
@@ -155,5 +169,155 @@ test('persists reactive projection rows and removes stale owners after reload', 
     return cache.currentYeaftHistoryBrowserFence();
   });
   expect(removedOnLogout).toBeNull();
+  expect(await readPhysicalRecords(page)).toEqual([]);
+
+  const expiredRead = await page.evaluate(async () => {
+    const cache = window.__historyCache;
+    const fence = cache.bindYeaftHistoryBrowserOwner('owner-c');
+    await cache.writeYeaftHistoryBrowserCache({
+      fence,
+      agentId: 'agent-c',
+      sessionId: 'session-c',
+      rows: [{ id: 'm0004', messageId: 'm0004', seq: 4, type: 'user', content: 'expired', sessionId: 'session-c', isHistory: true }],
+    });
+    const request = indexedDB.open('yeaft-history-cache', 2);
+    const db = await new Promise((resolveOpen, reject) => {
+      request.onsuccess = () => resolveOpen(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = db.transaction('sessions', 'readwrite');
+    const store = transaction.objectStore('sessions');
+    const key = ['owner-c', 'agent-c', 'session-c'].join('\u001f');
+    const recordRequest = store.get(key);
+    const record = await new Promise((resolveRecord, reject) => {
+      recordRequest.onsuccess = () => resolveRecord(recordRequest.result);
+      recordRequest.onerror = () => reject(recordRequest.error);
+    });
+    record.lastAccessed = Date.now() - (31 * 24 * 60 * 60 * 1000);
+    store.put(record);
+    await new Promise((resolveTransaction, reject) => {
+      transaction.oncomplete = resolveTransaction;
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    db.close();
+    return cache.readYeaftHistoryBrowserCache({
+      fence, agentId: 'agent-c', sessionId: 'session-c',
+    });
+  });
+  expect(expiredRead).toBeNull();
+  expect(await readPhysicalRecords(page)).toEqual([]);
+
+  const sessionDeleteOrder = await page.evaluate(async () => {
+    const cache = window.__historyCache;
+    const chat = window.__chatStore;
+    const fence = cache.currentYeaftHistoryBrowserFence();
+    await cache.writeYeaftHistoryBrowserCache({
+      fence,
+      agentId: 'agent-c',
+      sessionId: 'session-delete',
+      rows: [{ id: 'm0005', messageId: 'm0005', seq: 5, type: 'user', content: 'delete me', sessionId: 'session-delete', isHistory: true }],
+    });
+    const order = [];
+    let resolveCrud;
+    const crud = new Promise(resolve => { resolveCrud = resolve; }).then(result => {
+      order.push('crud-resolved');
+      return result;
+    });
+    chat._sessionCrudPending = new Map([['delete-request', { resolve: resolveCrud }]]);
+    chat.handleYeaftOutput({
+      agentId: 'agent-c',
+      event: {
+        type: 'session_crud_result', requestId: 'delete-request', ok: true,
+        op: 'delete', sessionId: 'session-delete',
+      },
+    });
+    order.push('delete-started');
+    const beforeResolve = order.slice();
+    const result = await crud;
+    return { beforeResolve, order, result };
+  });
+  expect(sessionDeleteOrder).toEqual({
+    beforeResolve: ['delete-started'],
+    order: ['delete-started', 'crud-resolved'],
+    result: expect.objectContaining({ ok: true, op: 'delete', sessionId: 'session-delete' }),
+  });
+  expect(await readPhysicalRecords(page)).toEqual([]);
+
+  const cleanupFailure = await page.evaluate(async () => {
+    const cache = window.__historyCache;
+    const fence = cache.currentYeaftHistoryBrowserFence();
+    await cache.writeYeaftHistoryBrowserCache({
+      fence,
+      agentId: 'agent-c',
+      sessionId: 'session-failure',
+      rows: [{ id: 'm0006', messageId: 'm0006', seq: 6, type: 'user', content: 'private', sessionId: 'session-failure', isHistory: true }],
+    });
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (...args) {
+      const transaction = originalTransaction.apply(this, args);
+      if (args[1] === 'readwrite') queueMicrotask(() => transaction.abort());
+      return transaction;
+    };
+    try {
+      await cache.clearYeaftHistoryBrowserOwner();
+      return { rejected: false, message: null };
+    } catch (error) {
+      return { rejected: true, message: error.message };
+    } finally {
+      IDBDatabase.prototype.transaction = originalTransaction;
+    }
+  });
+  expect(cleanupFailure).toMatchObject({ rejected: true });
+  expect(await readPhysicalRecords(page)).toHaveLength(1);
+
+  const failedSessionDelete = await page.evaluate(async () => {
+    const cache = window.__historyCache;
+    const chat = window.__chatStore;
+    await cache.clearYeaftHistoryBrowserOwner();
+    const fence = cache.bindYeaftHistoryBrowserOwner('owner-c');
+    await cache.writeYeaftHistoryBrowserCache({
+      fence,
+      agentId: 'agent-c',
+      sessionId: 'session-delete-failure',
+      rows: [{ id: 'm0007', messageId: 'm0007', seq: 7, type: 'user', content: 'private', sessionId: 'session-delete-failure', isHistory: true }],
+    });
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (...args) {
+      const transaction = originalTransaction.apply(this, args);
+      if (args[1] === 'readwrite') queueMicrotask(() => transaction.abort());
+      return transaction;
+    };
+    try {
+      let resolveCrud;
+      const crud = new Promise(resolve => { resolveCrud = resolve; });
+      chat._sessionCrudPending = new Map([['delete-failure-request', { resolve: resolveCrud }]]);
+      chat.handleYeaftOutput({
+        agentId: 'agent-c',
+        event: {
+          type: 'session_crud_result', requestId: 'delete-failure-request', ok: true,
+          op: 'delete', sessionId: 'session-delete-failure',
+        },
+      });
+      return await crud;
+    } finally {
+      IDBDatabase.prototype.transaction = originalTransaction;
+    }
+  });
+  expect(failedSessionDelete).toMatchObject({
+    ok: false,
+    error: { code: 'browser_cache_cleanup_failed' },
+  });
+  expect(await readPhysicalRecords(page)).toHaveLength(1);
+
+  const recoveredCleanup = await page.evaluate(async () => {
+    const cache = window.__historyCache;
+    await cache.clearYeaftHistoryBrowserOwner();
+    const fence = cache.bindYeaftHistoryBrowserOwner('owner-c');
+    return cache.readYeaftHistoryBrowserCache({
+      fence, agentId: 'agent-c', sessionId: 'session-failure',
+    });
+  });
+  expect(recoveredCleanup).toBeNull();
   expect(await readPhysicalRecords(page)).toEqual([]);
 });
