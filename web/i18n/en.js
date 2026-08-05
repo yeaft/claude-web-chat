@@ -248,7 +248,7 @@ export default {
   'yeaft.debugSearchHint': 'Shows the latest 10 globally by default; search matches request summaries across Sessions.',
   'yeaft.debugTurnAction': 'View debug trace for this turn',
   'yeaft.debugTurnContext': 'Trace',
-  'yeaft.debugPanelEmpty': 'Click the eye icon below an AI turn to view its debug trace.',
+  'yeaft.debugPanelEmpty': 'Hover over an AI turn and click the debug icon to view its trace.',
   'yeaft.dreamDebug.title': 'Dream lifecycle',
   'yeaft.dreamDebug.trigger': 'Trigger',
   'yeaft.dreamDebug.status': 'Status',

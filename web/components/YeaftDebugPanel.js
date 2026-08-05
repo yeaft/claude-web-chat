@@ -121,7 +121,7 @@ export default {
     },
     turns() {
       // Turn-level debug: the panel renders exactly the turn the user
-      // clicked (eyes icon on an AI turn), not a history browser. The
+      // clicked (the debug action on an AI turn), not a history browser. The
       // store keeps `yeaftDebugPanel.turnId`; the turn record arrives via
       // the precise `yeaft_fetch_debug_history` detail round-trip.
       const panel = (this.store && this.store.yeaftDebugPanel) || {};
@@ -961,7 +961,7 @@ export default {
       }
       // Turn-level debug: switching to the request tab does NOT boot a
       // history browser. The panel renders the turn the user clicked via
-      // the eyes icon; with no selection it shows the empty-state hint.
+      // the turn debug action; with no selection it shows the empty-state hint.
     },
     loadRequestHistory() {
       if (!this.store || typeof this.store.loadYeaftDebugHistory !== 'function') return;

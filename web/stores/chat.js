@@ -985,8 +985,8 @@ export const useChatStore = defineStore('chat', {
     yeaftDebugHistoryFetchedAt: 0,
     yeaftDebugHistoryLimit: DEFAULT_YEAFT_DEBUG_HISTORY_LIMIT,
     yeaftDebugHistoryHasMore: false,
-    // Turn-level debug panel (eyes icon entry). The panel no longer boots
-    // into a history browser: clicking the eye on an AI turn opens this
+    // Turn-level debug panel (per-turn action entry). The panel no longer boots
+    // into a history browser: clicking the debug action on an AI turn opens this
     // panel and issues a precise `yeaft_fetch_debug_history` detail request
     // for exactly that turn. `requestId` guards stale responses; the panel
     // only renders `yeaftDebugTurnsById[yeaftDebugPanel.turnId]`.
@@ -3059,7 +3059,7 @@ export const useChatStore = defineStore('chat', {
     },
 
     /**
-     * Turn-level debug entry (eyes icon on an AI turn). Opens the debug
+     * Turn-level debug entry (action in an AI turn footer). Opens the debug
      * panel and issues a precise detail fetch for exactly this turn — the
      * panel no longer boots into a history browser. The requestId on the
      * panel plus messageHandler's `_yeaftDebugHistoryLatestDetailRequestId`
