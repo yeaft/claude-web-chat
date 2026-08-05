@@ -235,7 +235,8 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).not.toMatch(/\.sidebar-primary-action-icon\s*\{[^}]*color:\s*var\(--accent/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-add-button\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading > \.sidebar-project-add-button:disabled\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
-    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading:hover > \.sidebar-project-add-button:not\(:disabled\),[\s\S]*?\.sidebar-section-heading > \.sidebar-project-add-button:not\(:disabled\):hover,[\s\S]*?\.sidebar-section-heading:focus-within > \.sidebar-project-add-button:not\(:disabled\)\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading:hover > \.sidebar-project-add-button:not\(:disabled\),[\s\S]*?\.sidebar-section-heading > \.sidebar-project-add-button:not\(:disabled\):focus-visible\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).not.toContain('.sidebar-section-heading:focus-within > .sidebar-project-add-button');
     expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-add-button:not\(:disabled\), \.sidebar-section-chevron\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     const sectionPaddingTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'padding');
     const sectionMarginTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'margin');
@@ -261,7 +262,8 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading\s*\{[^}]*min-height:\s*38px[^}]*color:\s*var\(--text-muted\)[^}]*font-size:\s*14px[^}]*font-weight:\s*600/);
     expect(yeaftSidebarCss).toMatch(/\.projects-section > \.sidebar-section-heading, \.recents-section > \.sidebar-section-heading\s*\{[^}]*position:\s*sticky[^}]*top:\s*0[^}]*z-index:\s*1[^}]*background:\s*var\(--bg-sidebar\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-recents-create\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
-    expect(yeaftSidebarCss).toMatch(/\.recents-section > \.sidebar-section-heading > \.sidebar-section-toggle:hover ~ \.sidebar-recents-create,[\s\S]*?\.recents-section > \.sidebar-section-heading > \.sidebar-recents-create:hover,[\s\S]*?\.recents-section > \.sidebar-section-heading:focus-within > \.sidebar-recents-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/\.recents-section > \.sidebar-section-heading:hover > \.sidebar-recents-create,[\s\S]*?\.recents-section > \.sidebar-section-heading > \.sidebar-recents-create:focus-visible\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).not.toContain('.sidebar-section-heading:focus-within > .sidebar-recents-create');
     expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-recents-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-menu-info\s*\{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row \.session-actions\s*\{[^}]*position:\s*absolute[^}]*opacity:\s*0[^}]*pointer-events:\s*none[^}]*linear-gradient\(90deg, transparent, var\(--sidebar-hover\) 22px\)/);
@@ -274,7 +276,8 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).not.toContain('.sidebar-session-menu-divider');
     expect(yeaftSidebarCss).toMatch(/\.sidebar-section-toggle\s*\{[^}]*background:\s*transparent/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-section-chevron\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
-    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading:hover \.sidebar-section-chevron,[\s\S]*?\.sidebar-section-heading:focus-within \.sidebar-section-chevron\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading:hover \.sidebar-section-chevron,[\s\S]*?\.sidebar-section-toggle:focus-visible \.sidebar-section-chevron\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).not.toContain('.sidebar-section-heading:focus-within .sidebar-section-chevron');
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-icon\s*\{[^}]*width:\s*var\(--sidebar-project-icon-width\)[^}]*height:\s*var\(--sidebar-project-icon-height\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-count\s*\{[^}]*font-size:\s*var\(--sidebar-project-count-font-size\)[^}]*font-variant-numeric:\s*tabular-nums/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-header\.project-drag-before\s*\{[^}]*var\(--accent-blue\)/);
