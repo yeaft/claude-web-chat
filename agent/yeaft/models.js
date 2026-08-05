@@ -430,13 +430,17 @@ export const OPENAI_MAX_REASONING_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xh
 export const ANTHROPIC_MANUAL_EFFORT_OPTIONS = ['low', 'medium', 'high'];
 export const ANTHROPIC_ADAPTIVE_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'];
 export const ANTHROPIC_ADAPTIVE_MAX_EFFORT_OPTIONS = ['low', 'medium', 'high', 'max'];
-// DeepSeek reasoning models (deepseek-reasoner / deepseek-r1) expose a simple
-// low/medium/high effort scale. DeepSeek's OpenAI-compatible surface accepts a
-// reasoning effort hint; we send it through the standard openai-reasoning
-// `reasoning.effort` path (relay/proxy adapts to DeepSeek's wire format). No
-// `minimal` tier — DeepSeek documents only a high/max effort distinction, so we
-// keep the user-facing scale to the three levels the user expects.
-export const DEEPSEEK_REASONING_EFFORT_OPTIONS = ['low', 'medium', 'high'];
+// DeepSeek reasoning models (deepseek-reasoner / deepseek-r1 / deepseek-v4-pro)
+// expose a graded effort scale. DeepSeek V4 documents "high" and "max" as the
+// effective levels: "xhigh" is mapped to "max" server-side and "low"/"medium"
+// are mapped to "high". There is no "minimal" tier. We keep the full user-facing
+// scale (including xhigh/max) so the UI can select the highest level; the wire
+// path differs by protocol:
+//   - OpenAI-compatible surface → `reasoning.effort` (relay/proxy adapts to
+//     DeepSeek's wire format; xhigh/max pass through and the provider maps them).
+//   - Anthropic-compatible surface → `output_config.effort` (DeepSeek's Anthropic
+//     compatibility table explicitly supports `output_config` effort).
+export const DEEPSEEK_REASONING_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 const VALID_EFFORT_OPTIONS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
