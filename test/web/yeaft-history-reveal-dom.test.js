@@ -428,8 +428,7 @@ describe('Yeaft history result rendered reveal', () => {
     await expectInterleavedVpExecutionBlocks({ isHistory: true });
   });
 
-  it('opens composer model menus through real hover, focus, and touch-style click events', async () => {
-    vi.useFakeTimers();
+  it('opens composer model menus only through real click events', async () => {
     const store = primeStore();
     store.yeaftModel = 'provider/model-a';
     store.yeaftModelEffort = 'medium';
@@ -455,26 +454,21 @@ describe('Yeaft history result rendered reveal', () => {
     const modelButton = wrapper.get('.yeaft-composer-model');
     await modelChoice.trigger('mouseenter');
     await Vue.nextTick();
-    expect(wrapper.get('.yeaft-composer-model-dropdown').isVisible()).toBe(true);
-
-    await modelChoice.trigger('mouseleave');
-    vi.advanceTimersByTime(80);
-    await modelChoice.trigger('mouseenter');
-    vi.advanceTimersByTime(80);
-    await Vue.nextTick();
-    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(true);
-
-    await modelChoice.trigger('mouseleave');
-    vi.advanceTimersByTime(120);
-    await Vue.nextTick();
     expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
 
     await modelButton.trigger('focusin');
     await Vue.nextTick();
-    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(true);
-    modelButton.element.blur();
-    await modelChoice.trigger('focusout', { relatedTarget: document.body });
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
+
+    await modelButton.trigger('click');
     await Vue.nextTick();
+    expect(wrapper.get('.yeaft-composer-model-dropdown').isVisible()).toBe(true);
+
+    await modelChoice.trigger('mouseleave');
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(true);
+
+    await modelButton.trigger('click');
     await Vue.nextTick();
     expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
 

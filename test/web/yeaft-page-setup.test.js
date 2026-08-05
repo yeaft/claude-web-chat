@@ -115,8 +115,11 @@ describe('YeaftPage setup', () => {
     expect(source).toContain('class="yeaft-composer-model"');
     expect(source).toContain('class="yeaft-composer-choice yeaft-composer-effort-choice"');
     expect(source).toContain('class="yeaft-composer-effort"');
-    expect(source).toContain("@mouseenter=\"keepComposerMenuOpen('model')\"");
-    expect(source).toContain("@mouseenter=\"keepComposerMenuOpen('effort')\"");
+    expect(source).toContain("@click.stop=\"toggleComposerMenu('model')\"");
+    expect(source).toContain("@click.stop=\"toggleComposerMenu('effort')\"");
+    expect(source).not.toContain('@mouseenter=');
+    expect(source).not.toContain('@mouseleave=');
+    expect(source).not.toContain('@focusin=');
     expect(source).toContain("$t('yeaft.modelMenu.effort.' + topbarEffort)");
     expect(source).toContain('class="yeaft-model-option-provider"');
     expect(source).toContain('class="yeaft-model-option-ctx"');
@@ -132,10 +135,14 @@ describe('YeaftPage setup', () => {
     expect(mobileTopbar).toMatch(/\.yeaft-topbar-title-group\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;/s);
     expect(mobileTopbar).toMatch(/\.yeaft-topbar-folder\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*2;/s);
 
-    page.keepComposerMenuOpen('model');
+    page.toggleComposerMenu('model');
     expect(page.composerMenuOpen.value).toBe('model');
-    page.keepComposerMenuOpen('effort');
+    page.toggleComposerMenu('model');
+    expect(page.composerMenuOpen.value).toBeNull();
+    page.toggleComposerMenu('effort');
     expect(page.composerMenuOpen.value).toBe('effort');
+    page.toggleComposerMenu('model');
+    expect(page.composerMenuOpen.value).toBe('model');
     page.selectEffort('low');
     expect(chatStore.switchYeaftModel).not.toHaveBeenLastCalledWith('provider/session-model', 'session-1', 'low');
     page.closeComposerMenu();

@@ -358,15 +358,12 @@ export default {
               <div
                 class="yeaft-composer-choice yeaft-composer-model-choice"
                 :class="{ 'is-open': composerMenuOpen === 'model' }"
-                @mouseenter="keepComposerMenuOpen('model')"
-                @mouseleave="scheduleComposerMenuClose('model')"
-                @focusin="keepComposerMenuOpen('model')"
                 @focusout="onComposerMenuFocusout($event, 'model')"
               >
                 <button
                   type="button"
                   class="yeaft-composer-model"
-                  @click.stop="keepComposerMenuOpen('model')"
+                  @click.stop="toggleComposerMenu('model')"
                   :title="$t('yeaft.modelMenu.label')"
                   aria-haspopup="menu"
                   :aria-expanded="composerMenuOpen === 'model' ? 'true' : 'false'"
@@ -408,15 +405,12 @@ export default {
                 v-if="topbarEffortOptions.length"
                 class="yeaft-composer-choice yeaft-composer-effort-choice"
                 :class="{ 'is-open': composerMenuOpen === 'effort' }"
-                @mouseenter="keepComposerMenuOpen('effort')"
-                @mouseleave="scheduleComposerMenuClose('effort')"
-                @focusin="keepComposerMenuOpen('effort')"
                 @focusout="onComposerMenuFocusout($event, 'effort')"
               >
                 <button
                   type="button"
                   class="yeaft-composer-effort"
-                  @click.stop="keepComposerMenuOpen('effort')"
+                  @click.stop="toggleComposerMenu('effort')"
                   :title="$t('yeaft.modelMenu.effort')"
                   aria-haspopup="menu"
                   :aria-expanded="composerMenuOpen === 'effort' ? 'true' : 'false'"
@@ -549,7 +543,6 @@ export default {
     const agentSecretLoading = Vue.ref(false);
     const agentSecretError = Vue.ref('');
     let copiedOnboardingTimer = null;
-    let composerMenuCloseTimer = null;
     const settingsInitialTab = Vue.ref('vp');
     const settingsInitialEditVpId = Vue.ref(null);
     // feat-vp-list-ui-polish: template ref to the embedded ChatInput so we
@@ -957,7 +950,6 @@ export default {
       if (mobileViewportRaf != null) cancelAnimationFrame(mobileViewportRaf);
       if (mobileViewportRecoverTimer) clearTimeout(mobileViewportRecoverTimer);
       if (historySearchTimer) clearTimeout(historySearchTimer);
-      if (composerMenuCloseTimer) clearTimeout(composerMenuCloseTimer);
     });
 
     // Watch for conversationId changes (session_ready migrates local -> agent ID)
@@ -1162,30 +1154,14 @@ export default {
     // here for the old inline debug panel. PR B replaced that panel
     // with <YeaftDebugPanel>; PR C removes the now-orphaned helpers.
 
-    const keepComposerMenuOpen = (menu) => {
+    const toggleComposerMenu = (menu) => {
       if (menu === 'model' && !topbarModelRows.value.length) return;
       if (menu === 'effort' && !topbarEffortOptions.value.length) return;
-      if (composerMenuCloseTimer) {
-        clearTimeout(composerMenuCloseTimer);
-        composerMenuCloseTimer = null;
-      }
-      composerMenuOpen.value = menu;
+      composerMenuOpen.value = composerMenuOpen.value === menu ? null : menu;
     };
 
     const closeComposerMenu = (menu = null) => {
-      if (composerMenuCloseTimer) {
-        clearTimeout(composerMenuCloseTimer);
-        composerMenuCloseTimer = null;
-      }
       if (!menu || composerMenuOpen.value === menu) composerMenuOpen.value = null;
-    };
-
-    const scheduleComposerMenuClose = (menu) => {
-      if (composerMenuCloseTimer) clearTimeout(composerMenuCloseTimer);
-      composerMenuCloseTimer = setTimeout(() => {
-        composerMenuCloseTimer = null;
-        closeComposerMenu(menu);
-      }, 120);
     };
 
     const onComposerMenuFocusout = (event, menu) => {
@@ -1675,9 +1651,8 @@ export default {
       reloadMessages,
       retryConversationInventory,
       reloadPage,
-      keepComposerMenuOpen,
+      toggleComposerMenu,
       closeComposerMenu,
-      scheduleComposerMenuClose,
       onComposerMenuFocusout,
       selectModel,
       selectEffort,
