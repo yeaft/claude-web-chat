@@ -118,23 +118,12 @@ export default {
           :response-toggle-label="responseToggleLabel"
           :session-actions="true"
           :quote-author="displayName"
+          :show-debug-action="hasDebugEntry"
+          :debug-action-title="debugActionTitle"
           @quote="$emit('quote', $event)"
+          @open-debug="$emit('open-debug')"
           @toggle-response-collapse="$emit('toggle-response-collapse')"
         />
-        <!-- Turn-level debug entry: an eye icon on every finished AI turn.
-             Clicking it opens the debug panel scoped to exactly this turn
-             (no history browser boot). -->
-        <div v-if="hasDebugEntry" class="vp-turn-block-actions">
-          <button
-            type="button"
-            class="vp-turn-debug-btn"
-            @click.stop="$emit('open-debug')"
-            :title="debugActionTitle"
-            :aria-label="debugActionTitle"
-          >
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-          </button>
-        </div>
         <slot></slot>
       </div>
     </div>

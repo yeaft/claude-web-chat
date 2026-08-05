@@ -535,7 +535,7 @@ export default {
     // conversation column gets the full width by default.
     // Turn-level debug: the detail panel visibility follows the store's
     // `yeaftDebugPanel.open` so both the header entry and the per-turn
-    // eyes icon can open/close it from anywhere.
+    // turn debug action can open/close it from anywhere.
     const debugMode = Vue.computed(() => !!(
       store.yeaftDebugPanel && store.yeaftDebugPanel.open
     ));
@@ -1039,7 +1039,7 @@ export default {
       if (debugMode.value) {
         store.closeYeaftDebugPanel();
       } else if (typeof store.openYeaftTurnDebug === 'function') {
-        // Header entry: open an empty panel. The eyes icon on AI turns
+        // Header entry: open an empty panel. The debug action on AI turns
         // opens the panel pre-scoped to that exact turn.
         store.openYeaftTurnDebug({});
       }

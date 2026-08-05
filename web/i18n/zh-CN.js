@@ -248,7 +248,7 @@ export default {
   'yeaft.debugSearchHint': '默认显示全局最近 10 条；搜索会跨 Session 匹配请求摘要。',
   'yeaft.debugTurnAction': '查看该轮对话的调试轨迹',
   'yeaft.debugTurnContext': '调试轨迹',
-  'yeaft.debugPanelEmpty': '点击 AI 回复下方的眼睛图标，查看该轮对话的调试轨迹。',
+  'yeaft.debugPanelEmpty': '悬停在 AI 回复上，点击调试图标即可查看该轮对话的调试轨迹。',
   'yeaft.dreamDebug.title': 'Dream 生命周期',
   'yeaft.dreamDebug.trigger': '触发',
   'yeaft.dreamDebug.status': '状态',

@@ -259,7 +259,7 @@ describe('YeaftPage setup', () => {
     const page = YeaftPage.setup();
     expect(page.debugMode.value).toBe(false);
 
-    // The eyes icon on an AI turn opens the panel via the store; YeaftPage
+    // The per-turn debug icon opens the panel via the store; YeaftPage
     // must render the detail panel as soon as the store opens it.
     chatStore.yeaftDebugPanel = {
       open: true,
