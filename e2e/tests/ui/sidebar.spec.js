@@ -145,8 +145,6 @@ test.describe('侧边栏交互', () => {
       };
     });
     expect(hiddenHitTarget.hitsButton).toBe(false);
-    await chatPage.mouse.click(hiddenHitTarget.x, hiddenHitTarget.y);
-    await expect(chatPage.locator('.sidebar-project-create')).toHaveCount(0);
 
     await newProject.focus();
     await expect(newProject).toHaveCSS('opacity', '1');
@@ -156,7 +154,17 @@ test.describe('侧边栏交互', () => {
     await expect(newProject).toHaveCSS('opacity', '0');
     await expect(newProject).toHaveCSS('pointer-events', 'none');
 
-    await projectHeading.locator('.sidebar-section-toggle').hover();
+    const hoverHeadingEdge = async heading => {
+      const box = await heading.boundingBox();
+      expect(box).not.toBeNull();
+      await chatPage.mouse.move(box.x + box.width - 4, box.y + box.height / 2);
+    };
+
+    await projectHeading.locator('.sidebar-section-toggle').click();
+    await chatPage.mouse.move(0, 0);
+    await expect(newProject).toHaveCSS('opacity', '0');
+    await expect(projectHeading.locator('.sidebar-section-chevron')).toHaveCSS('opacity', '0');
+    await hoverHeadingEdge(projectHeading);
     await expect(newProject).toHaveCSS('opacity', '1');
     await expect(newProject).toHaveCSS('pointer-events', 'auto');
     await newProject.click();
@@ -183,10 +191,14 @@ test.describe('侧边栏交互', () => {
       };
     });
     expect(hiddenRecentsHitTarget.hitsButton).toBe(false);
-    await chatPage.mouse.click(hiddenRecentsHitTarget.x, hiddenRecentsHitTarget.y);
-    await expect(chatPage.locator('.yeaft-session-create-modal')).toHaveCount(0);
 
-    await recentsHeading.locator('.sidebar-section-toggle').hover();
+    await recentsHeading.locator('.sidebar-section-toggle').click();
+    await chatPage.mouse.move(0, 0);
+    await expect(recentsCreate).toHaveCSS('opacity', '0');
+    await expect(recentsHeading.locator('.sidebar-section-chevron')).toHaveCSS('opacity', '0');
+    await recentsHeading.locator('.sidebar-section-toggle').click();
+    await chatPage.mouse.move(0, 0);
+    await hoverHeadingEdge(recentsHeading);
     await expect(recentsCreate).toHaveCSS('opacity', '1');
     await expect(recentsCreate).toHaveCSS('pointer-events', 'auto');
     await recentsCreate.click();

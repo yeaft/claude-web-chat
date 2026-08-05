@@ -64,8 +64,7 @@
 .sidebar-project-add-button .sidebar-project-add-icon { width: 16px; height: 16px; }
 .sidebar-section-heading > .sidebar-project-add-button:disabled { opacity: 0; pointer-events: none; }
 .sidebar-section-heading:hover > .sidebar-project-add-button:not(:disabled),
-.sidebar-section-heading > .sidebar-project-add-button:not(:disabled):hover,
-.sidebar-section-heading:focus-within > .sidebar-project-add-button:not(:disabled) { opacity: 1; pointer-events: auto; }
+.sidebar-section-heading > .sidebar-project-add-button:not(:disabled):focus-visible { opacity: 1; pointer-events: auto; }
 .sidebar-section { padding: 0 8px 10px; }
 .sidebar-session-results { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
 .projects-section { flex: 0 0 auto; max-height: 50%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
@@ -78,16 +77,15 @@
 .sidebar-section-toggle:focus-visible { outline: var(--sidebar-focus-ring-width) solid var(--accent-blue); outline-offset: var(--sidebar-focus-ring-offset); }
 .sidebar-section-chevron { width: var(--sidebar-section-chevron-size); height: var(--sidebar-section-chevron-size); flex: 0 0 auto; opacity: 0; pointer-events: none; transition: opacity 0.12s ease, transform 0.15s ease; }
 .sidebar-section-heading:hover .sidebar-section-chevron,
-.sidebar-section-heading:focus-within .sidebar-section-chevron { opacity: 1; pointer-events: auto; }
+.sidebar-section-toggle:focus-visible .sidebar-section-chevron { opacity: 1; pointer-events: auto; }
 @media (pointer: coarse) {
   .sidebar-project-add-button:not(:disabled), .sidebar-section-chevron { opacity: 1; pointer-events: auto; }
 }
 .sidebar-section-chevron.collapsed { transform: rotate(-90deg); }
 .sidebar-section.is-collapsed { flex: 0 0 auto; max-height: none; overflow: visible; padding-bottom: 0; }
 .sidebar-recents-create { opacity: 0; pointer-events: none; transition: opacity 0.12s ease; }
-.recents-section > .sidebar-section-heading > .sidebar-section-toggle:hover ~ .sidebar-recents-create,
-.recents-section > .sidebar-section-heading > .sidebar-recents-create:hover,
-.recents-section > .sidebar-section-heading:focus-within > .sidebar-recents-create { opacity: 1; pointer-events: auto; }
+.recents-section > .sidebar-section-heading:hover > .sidebar-recents-create,
+.recents-section > .sidebar-section-heading > .sidebar-recents-create:focus-visible { opacity: 1; pointer-events: auto; }
 @media (pointer: coarse) {
   .sidebar-recents-create { opacity: 1; pointer-events: auto; }
 }
