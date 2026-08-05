@@ -372,6 +372,9 @@ describe('Work Center tool policy', () => {
           addDependsOnActionIds: ['remediate-review'],
         }],
       };
+      const staleReturnTargetExpansionInput = structuredClone(safeExpansionInput);
+      staleReturnTargetExpansionInput.proposalId = 'review-additive-with-stale-return-target';
+      staleReturnTargetExpansionInput.actions[1].changesRequestedActionId = 'implementation';
       const partiallyReviewedExpansionInput = {
         ...structuredClone(safeExpansionInput),
         proposalId: 'review-additive-with-unreviewed-side-work',
@@ -398,6 +401,10 @@ describe('Work Center tool policy', () => {
         ],
         [
           { type: 'tool_call', id: 'propose-without-reapproval', name: 'ProposeWorkItemActions', input: unsafeExpansionInput },
+          { type: 'stop', stopReason: 'tool_use' },
+        ],
+        [
+          { type: 'tool_call', id: 'propose-with-stale-return-target', name: 'ProposeWorkItemActions', input: staleReturnTargetExpansionInput },
           { type: 'stop', stopReason: 'tool_use' },
         ],
         [

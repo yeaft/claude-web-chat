@@ -60,6 +60,7 @@ function validateReviewRemediationGate(workflowSnapshot, reviewAction, addedIds)
   const freshReviews = stages.filter(stage => (
     stage.type === 'review'
     && addedIds.has(stage.id)
+    && addedIds.has(stage.changesRequestedStageId)
     && dependencyAncestors(stage.id, byId).has(reviewAction.stageId)
   ));
   const gate = stages.find(stage => stage.type === 'deliver')
