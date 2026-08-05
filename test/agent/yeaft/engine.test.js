@@ -1652,10 +1652,11 @@ describe('Engine', () => {
       }
     });
 
-    it('persists assistant rows with the caller-provided VP turn id', async () => {
+    it('persists assistant rows and debug trace with the caller-provided VP turn id', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-vp-turn-id-'));
       try {
         const conversationStore = new ConversationStore(join(yeaftDir, 'conversation'));
+        const debugTrace = new DebugTrace(join(yeaftDir, 'debug-trace.db'));
         mockAdapter.pushResponse([
           { type: 'text_delta', text: 'persisted reply' },
           { type: 'usage', inputTokens: 8, outputTokens: 3 },
@@ -1664,7 +1665,7 @@ describe('Engine', () => {
 
         const engine = new Engine({
           adapter: mockAdapter,
-          trace,
+          trace: debugTrace,
           config: { model: 'test-model', maxOutputTokens: 1024 },
           conversationStore,
           yeaftDir,
@@ -1681,7 +1682,12 @@ describe('Engine', () => {
         })) {
           events.push(event);
         }
+        await debugTrace.flush();
 
+        expect(events).toContainEqual(expect.objectContaining({
+          type: 'turn_open',
+          turnId: 'vp-turn-ui-1',
+        }));
         expect(events.map(e => e.type)).toContain('turn_end');
         const loaded = conversationStore.loadRecentBySession('session-turn-id', 10);
         expect(loaded).toHaveLength(1);
@@ -1694,6 +1700,17 @@ describe('Engine', () => {
           responseKind: 'result',
           stopReason: 'end_turn',
         });
+        const debug = await debugTrace.fetchTurnDebug({
+          sessionId: 'session-turn-id',
+          turnId: loaded[0].turnId,
+        });
+        expect(debug.turns).toEqual([
+          expect.objectContaining({ turnId: 'vp-turn-ui-1', loopCount: 1 }),
+        ]);
+        expect(debug.loops).toEqual([
+          expect.objectContaining({ turnId: 'vp-turn-ui-1', loopNumber: 1, response: 'persisted reply' }),
+        ]);
+        await debugTrace.close();
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });
       }

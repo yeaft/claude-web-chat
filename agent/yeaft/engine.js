@@ -2158,8 +2158,12 @@ export class Engine {
     const executionOrigin = inboundEnvelope?.msg?.meta?.injectedBy === 'route_forward'
       ? 'route_forward'
       : null;
-    const queryTurnId = randomUUID();
-    this.#currentQueryTurnId = vpTurnId || queryTurnId;
+    // The bridge-provided VP turn id is also persisted on assistant messages and
+    // is therefore the identity the UI sends back when opening turn debug. Keep
+    // the engine event/trace id identical; a second random id makes the trace
+    // impossible to retrieve from a rendered assistant turn.
+    const queryTurnId = vpTurnId || randomUUID();
+    this.#currentQueryTurnId = queryTurnId;
     // Bind the live query scope before tools can register async work. The
     // constructor's Session id is only guaranteed for bridge-owned engines;
     // standalone/CLI callers pass it per query.
