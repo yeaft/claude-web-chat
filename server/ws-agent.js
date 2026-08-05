@@ -25,6 +25,28 @@ function buildAgentMapKey(ownerId, agentName) {
   return `${prefix}:${agentName}`;
 }
 
+let nextAgentConnectionGeneration = 0;
+// Keep the latest generation as a tombstone while an older auth may still arrive.
+const latestAgentConnectionGenerations = new Map();
+
+function claimAgentConnection(agentId, generation) {
+  const latestGeneration = latestAgentConnectionGenerations.get(agentId);
+  if (latestGeneration !== undefined && latestGeneration > generation) return false;
+  latestAgentConnectionGenerations.set(agentId, generation);
+  return true;
+}
+
+function pruneAgentConnectionGenerations() {
+  for (const [agentId, generation] of latestAgentConnectionGenerations) {
+    if (agents.has(agentId)) continue;
+    const hasPotentiallyOlderConnection = [...pendingAgentConnections.values()].some(pending => {
+      if (pending.connectionGeneration >= generation) return false;
+      return pending.skipAgentAuth ? pending.agentId === agentId : true;
+    });
+    if (!hasPotentiallyOlderConnection) latestAgentConnectionGenerations.delete(agentId);
+  }
+}
+
 export function handleAgentConnection(ws, url) {
   const clientAgentId = url.searchParams.get('id') || randomUUID();
   const agentName = url.searchParams.get('name') || `Agent-${clientAgentId.slice(0, 8)}`;
@@ -36,6 +58,11 @@ export function handleAgentConnection(ws, url) {
   // SKIP_AUTH only bypasses secret validation and owner scoping.
   const skipAgentAuth = CONFIG.skipAuth;
   const urlCapabilities = (url.searchParams.get('capabilities') || '').split(',').filter(Boolean);
+  const connectionGeneration = ++nextAgentConnectionGeneration;
+
+  // SKIP_AUTH has a complete identity at connect time. Authenticated connections
+  // can only claim an owner-scoped identity after their secret is verified.
+  if (skipAgentAuth) claimAgentConnection(clientAgentId, connectionGeneration);
 
   const tempId = randomUUID();
   // Mutable: will be updated to the owner-scoped key after auth succeeds
@@ -44,6 +71,7 @@ export function handleAgentConnection(ws, url) {
   const authTimeout = setTimeout(() => {
     console.log(`Agent auth timeout: ${agentName}`);
     pendingAgentConnections.delete(tempId);
+    pruneAgentConnectionGenerations();
     ws.close(1008, 'Authentication timeout');
   }, 30000);
 
@@ -53,6 +81,8 @@ export function handleAgentConnection(ws, url) {
     agentName,
     instanceId,
     workDir,
+    skipAgentAuth,
+    connectionGeneration,
     timeout: authTimeout
   });
 
@@ -76,6 +106,7 @@ export function handleAgentConnection(ws, url) {
             ? { valid: true, sessionKey: null, userId: null, username: null }
             : verifyAgent(msg.secret);
           if (!authResult.valid) {
+            pruneAgentConnectionGenerations();
             console.log(`Agent auth failed: ${agentName}`);
             ws.close(1008, 'Invalid agent secret');
             return;
@@ -88,9 +119,17 @@ export function handleAgentConnection(ws, url) {
           resolvedAgentId = skipAgentAuth
             ? clientAgentId
             : buildAgentMapKey(authResult.userId, pending.instanceId || pending.agentId || pending.agentName);
+          if (!claimAgentConnection(resolvedAgentId, connectionGeneration)) {
+            resolvedAgentId = null;
+            pruneAgentConnectionGenerations();
+            ws.close(1008, 'Superseded by a newer Agent connection');
+            return;
+          }
           completeAgentRegistration(ws, resolvedAgentId, pending.agentName, pending.workDir, authResult.sessionKey, capabilities, authResult.userId, authResult.username, agentVersion, pending.instanceId || pending.agentId || pending.agentName);
+          pruneAgentConnectionGenerations();
         }
       } catch (e) {
+        pruneAgentConnectionGenerations();
         console.error('Failed to parse agent auth message:', e.message);
       }
     } else {
@@ -132,6 +171,7 @@ export function handleAgentConnection(ws, url) {
     if (pending) {
       clearTimeout(pending.timeout);
       pendingAgentConnections.delete(tempId);
+      pruneAgentConnectionGenerations();
     }
     // Use resolvedAgentId if auth completed, otherwise nothing to clean
     if (resolvedAgentId) {
@@ -160,6 +200,7 @@ function handleAgentDisconnect(agentId, agentName, ws) {
   }
   // Remove agent entirely — eliminates zombie agents from broadcastAgentList
   agents.delete(agentId);
+  pruneAgentConnectionGenerations();
   console.log(`Agent disconnected: ${agentName}`);
   broadcastAgentList();
 }
