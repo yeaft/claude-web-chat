@@ -3364,6 +3364,19 @@ export const useChatStore = defineStore('chat', {
       const sessionKey = targetAgentId && targetSessionId
         ? yeaftHistoryIdentityKey(targetAgentId, targetSessionId)
         : null;
+      const remainingPendingWindows = {};
+      for (const [pendingKey, pending] of Object.entries(this._yeaftHistoryWindowPendingByKey || {})) {
+        const matches = !sessionKey
+          || (pending?.agentId === targetAgentId && pending?.sessionId === targetSessionId);
+        if (!matches) {
+          remainingPendingWindows[pendingKey] = pending;
+          continue;
+        }
+        clearTimeout(pending?.timeout);
+        pending?.resolve?.(false);
+      }
+      this._yeaftHistoryWindowPendingByKey = remainingPendingWindows;
+
       const scopedConversationId = targetAgentId
         ? this.yeaftConversationIdsByAgent?.[targetAgentId] || null
         : null;

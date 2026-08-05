@@ -9,6 +9,7 @@ import {
 import {
   bindYeaftHistoryBrowserOwner,
   clearYeaftHistoryBrowserOwner,
+  currentYeaftHistoryBrowserFence,
 } from './helpers/yeaft-history-browser-cache.js';
 
 const { defineStore } = Pinia;
@@ -22,9 +23,24 @@ function clearYeaftHistoryMemory() {
   }
 }
 
+function normalizeOwnerId(value) {
+  const normalized = String(value || '').trim();
+  return normalized || null;
+}
+
+function transitionYeaftHistoryOwner(ownerId, transition) {
+  const previousOwnerId = normalizeOwnerId(currentYeaftHistoryBrowserFence()?.ownerId);
+  const nextOwnerId = normalizeOwnerId(ownerId);
+  if (previousOwnerId !== nextOwnerId) clearYeaftHistoryMemory();
+  return transition(nextOwnerId);
+}
+
 function bindYeaftHistoryOwner(ownerId) {
-  clearYeaftHistoryMemory();
-  return bindYeaftHistoryBrowserOwner(ownerId);
+  return transitionYeaftHistoryOwner(ownerId, bindYeaftHistoryBrowserOwner);
+}
+
+function clearYeaftHistoryOwner() {
+  return transitionYeaftHistoryOwner(null, () => clearYeaftHistoryBrowserOwner());
 }
 
 const SESSION_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
@@ -1032,8 +1048,7 @@ export const useAuthStore = defineStore('auth', {
      */
     reset() {
       clearWorkCenterBrowserOwner();
-      clearYeaftHistoryMemory();
-      const historyCleanup = clearYeaftHistoryBrowserOwner();
+      const historyCleanup = clearYeaftHistoryOwner();
       this.authGeneration += 1;
       this.stopSessionRefresh();
       this.isAuthenticated = false;

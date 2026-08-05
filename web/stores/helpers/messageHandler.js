@@ -421,6 +421,10 @@ export function handleMessage(store, msg) {
       const pendingWindow = store.pendingYeaftHistoryWindow?.(msg);
       if (!pendingWindow) break;
       if (pendingWindow.pending?.prefetch === true) msg.prefetch = true;
+      // Re-check the exact pending object immediately before merging. Owner and
+      // Session cleanup replaces the pending map, so a response captured before
+      // that transition cannot write plaintext rows after it.
+      if (store.pendingYeaftHistoryWindow?.(msg)?.pending !== pendingWindow.pending) break;
       const conversationId = msg.error ? null : handleYeaftHistoryWindow(store, msg);
       store.handleYeaftHistoryWindow(msg, conversationId);
       break;

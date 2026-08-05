@@ -139,6 +139,64 @@ describe('auth store session restore and refresh', () => {
     expect(globalThis.localStorage.setItem).toHaveBeenCalledWith('authToken', 'renewed-token');
   });
 
+  it('preserves Yeaft history on same-owner refresh and clears it on owner replacement', async () => {
+    globalThis.localStorage = createLocalStorage({ authToken: 'owner-token' });
+    const profiles = ['owner-a', 'owner-b'];
+    globalThis.fetch = vi.fn(async () => jsonResponse({
+      body: { userId: profiles.shift(), username: 'dev', role: 'pro' },
+    }));
+    const historyState = {
+      messages: [{ sessionId: 'session-a', content: 'private history' }],
+      history: { loaded: true },
+      cache: { ranges: [[1, 2]] },
+      window: { visibleTurns: 40 },
+      hydration: { token: 'hydrate-a' },
+      reveal: { key: 'reveal-a' },
+    };
+    const originalHistoryState = structuredClone(historyState);
+    const clearYeaftHistoryMemory = vi.fn(() => {
+      Object.keys(historyState).forEach(key => { historyState[key] = null; });
+    });
+    let browserOwnerId = 'owner-a';
+    vi.doMock('../../../web/stores/helpers/yeaft-history-browser-cache.js', () => ({
+      bindYeaftHistoryBrowserOwner: vi.fn((ownerId) => {
+        browserOwnerId = ownerId;
+        return ownerId ? { ownerId } : null;
+      }),
+      clearYeaftHistoryBrowserOwner: vi.fn(() => {
+        browserOwnerId = null;
+        return Promise.resolve(true);
+      }),
+      currentYeaftHistoryBrowserFence: () => (browserOwnerId ? { ownerId: browserOwnerId } : null),
+    }));
+    globalThis.Pinia = {
+      defineStore: createStoreFactory(),
+      useChatStore: () => ({ clearYeaftHistoryMemory }),
+    };
+    vi.resetModules();
+    const { useAuthStore } = await import('../../../web/stores/auth.js');
+    const auth = useAuthStore();
+    auth.token = 'owner-token';
+    auth.isAuthenticated = true;
+    auth.userId = 'owner-a';
+
+    expect(await auth.refreshSession()).toBe(true);
+    expect(clearYeaftHistoryMemory).not.toHaveBeenCalled();
+    expect(historyState).toEqual(originalHistoryState);
+
+    expect(await auth.refreshSession()).toBe(true);
+    expect(clearYeaftHistoryMemory).toHaveBeenCalledOnce();
+    expect(historyState).toEqual({
+      messages: null,
+      history: null,
+      cache: null,
+      window: null,
+      hydration: null,
+      reveal: null,
+    });
+    expect(auth.userId).toBe('owner-b');
+  });
+
   it('does not let stale refresh renewals overwrite a newer login token', async () => {
     globalThis.localStorage = createLocalStorage({ authToken: 'old-token' });
     let auth;
@@ -274,7 +332,7 @@ describe('auth store session restore and refresh', () => {
     vi.doMock('../../../web/stores/helpers/yeaft-history-browser-cache.js', () => ({
       bindYeaftHistoryBrowserOwner: vi.fn(),
       clearYeaftHistoryBrowserOwner,
-      currentYeaftHistoryBrowserFence: () => null,
+      currentYeaftHistoryBrowserFence: () => ({ ownerId: 'user-a' }),
     }));
     const auth = await loadAuthStore();
     auth.isAuthenticated = true;
@@ -345,7 +403,7 @@ describe('auth store session restore and refresh', () => {
     vi.doMock('../../../web/stores/helpers/yeaft-history-browser-cache.js', () => ({
       bindYeaftHistoryBrowserOwner: vi.fn(),
       clearYeaftHistoryBrowserOwner,
-      currentYeaftHistoryBrowserFence: () => null,
+      currentYeaftHistoryBrowserFence: () => ({ ownerId: 'user-a' }),
     }));
     const auth = await loadAuthStore();
     auth.isAuthenticated = true;
