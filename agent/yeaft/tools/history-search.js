@@ -6,9 +6,8 @@
  */
 
 import { defineTool } from './types.js';
-import { searchConversationIndex } from '../conversation/history-index.js';
 import { searchMessages } from '../conversation/search.js';
-import { resolveSessionYeaftDir } from '../sessions/session-crud.js';
+import { findExistingSessionYeaftDir } from '../sessions/session-crud.js';
 
 const DEFAULT_RESULT_LIMIT = 10;
 const MAX_SNIPPET_CHARS = 1000;
@@ -139,13 +138,13 @@ export default defineTool({
   description: {
     en: `Search through past conversation history.
 
-Searches message content for all whitespace-separated terms (case-insensitive) using the Session's indexed history when a Session context is available.
+Searches message content for all whitespace-separated terms (case-insensitive) from persisted Session history.
 Inside a Session, search is limited to that Session plus sibling Sessions in the same Project on this Agent. Tool-result messages are excluded. Useful for finding previous discussions, decisions, or code snippets.
 
 Results are returned newest-first with a bounded matching snippet and source metadata.`,
     zh: `搜索历史对话记录。
 
-在已持久化消息的正文中搜索全部空格分隔的关键词（不区分大小写）；有 Session 上下文时使用该 Session 的历史索引。在 Session 内仅搜索当前 Session，以及同一 Agent 上同 Project 的兄弟 Session；排除工具结果消息。用于查找之前的讨论、决策或代码片段。
+在已持久化消息的正文中搜索全部空格分隔的关键词（不区分大小写）。在 Session 内仅搜索当前 Session，以及同一 Agent 上同 Project 的兄弟 Session；排除工具结果消息。用于查找之前的讨论、决策或代码片段。
 
 结果按最新优先返回，包含有界的命中片段和来源信息。`
   },
@@ -192,36 +191,32 @@ Results are returned newest-first with a bounded matching snippet and source met
       let indexedResults = [];
 
       if (scopedSessionIds) {
-        // Conversation history already has a per-Session FTS index. Use it
-        // instead of synchronously opening every markdown/JSONL file for each
-        // HistorySearch call. Each Session keeps its own index and worker, so
-        // project-wide search still respects the owner/session boundary.
-        const indexed = await Promise.all(scopedSessionIds.map(async sessionId => {
-          const storeDir = resolveSessionYeaftDir(yeaftDir, sessionId);
-          const page = await searchConversationIndex(storeDir, sessionId, normalizedKeyword, {
-            limit: Math.min(100, Math.max(1, Number(limit) || DEFAULT_RESULT_LIMIT)),
+        // The index manager builds/rebuilds SQLite state and Session location
+        // repair may migrate the manifest. Both are writes, so they cannot run
+        // behind a read-only/cachable tool declaration. Scan only existing
+        // transcript files; normal Session boot and maintenance own indexing.
+        for (const sessionId of scopedSessionIds) {
+          const storeDir = findExistingSessionYeaftDir(yeaftDir, sessionId);
+          const scanTelemetry = {};
+          const messages = searchMessages(storeDir, normalizedKeyword, limit, {
+            telemetry: scanTelemetry,
+            sessionIds: [sessionId],
           });
-          return { sessionId, page };
-        }));
-        for (const { sessionId, page } of indexed) {
-          const stats = page || {};
-          telemetry.indexedSessions = (telemetry.indexedSessions || 0) + 1;
-          telemetry.indexSourceFiles = (telemetry.indexSourceFiles || 0) + (Number(stats.indexSourceFiles) || 0);
-          telemetry.indexSourceBytes = (telemetry.indexSourceBytes || 0) + (Number(stats.indexSourceBytes) || 0);
-          telemetry.indexEntryCount = (telemetry.indexEntryCount || 0) + (Number(stats.indexEntryCount) || 0);
-          telemetry.candidateRowsRead = (telemetry.candidateRowsRead || 0) + (Number(stats.candidateRowsRead) || 0);
-          telemetry.candidateBytesRead = (telemetry.candidateBytesRead || 0) + (Number(stats.candidateBytesRead) || 0);
-          for (const result of Array.isArray(stats.results) ? stats.results : []) {
+          telemetry.scannedSessions = (telemetry.scannedSessions || 0) + 1;
+          telemetry.scannedFiles = (telemetry.scannedFiles || 0) + (scanTelemetry.scannedFiles || 0);
+          telemetry.scannedMessages = (telemetry.scannedMessages || 0) + (scanTelemetry.scannedMessages || 0);
+          telemetry.scannedBytes = (telemetry.scannedBytes || 0) + (scanTelemetry.scannedBytes || 0);
+          for (const message of messages) {
             indexedResults.push({
-              messageId: result.messageId || null,
-              sessionId: result.sessionId || sessionId,
-              role: result.role,
-              content: buildSnippet(result.snippet || '', normalizedKeyword),
-              mode: null,
-              time: result.timestamp || null,
-              source: 'session-index',
-              turnId: result.turnId || null,
-              _seq: Number(result.seq) || 0,
+              messageId: message.id || null,
+              sessionId: message.sessionId || sessionId,
+              role: message.role,
+              content: buildSnippet(message.content || '', normalizedKeyword),
+              mode: message.mode || null,
+              time: message.time || message.timestamp || null,
+              source: message.historySource || 'session-scan',
+              turnId: message.turnId || null,
+              _seq: 0,
             });
           }
         }
@@ -252,12 +247,10 @@ Results are returned newest-first with a bounded matching snippet and source met
         resultCount: results.length,
         ...(scopedSessionIds
           ? {
-              indexedSessions: telemetry.indexedSessions || 0,
-              indexSourceFiles: telemetry.indexSourceFiles || 0,
-              indexSourceBytes: telemetry.indexSourceBytes || 0,
-              indexEntryCount: telemetry.indexEntryCount || 0,
-              candidateRowsRead: telemetry.candidateRowsRead || 0,
-              candidateBytesRead: telemetry.candidateBytesRead || 0,
+              scannedSessions: telemetry.scannedSessions || 0,
+              scannedFiles: telemetry.scannedFiles || 0,
+              scannedMessages: telemetry.scannedMessages || 0,
+              scannedBytes: telemetry.scannedBytes || 0,
             }
           : {
               scannedFiles: telemetry.scannedFiles || 0,

@@ -5,10 +5,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import ctx from '../../../agent/context.js';
 import { loadConfig, normalizeLlmRetry, normaliseTelemetrySection } from '../../../agent/yeaft/config.js';
 import { getTelemetrySettings, updateTelemetrySettings } from '../../../agent/yeaft/config-api.js';
+import { handleMessage } from '../../../agent/connection/message-router.js';
+import { flushAllAgentPerfTraces } from '../../../agent/yeaft/perf-trace.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { estimateTokens } from '../../../agent/yeaft/dream/segment.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
-import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
+import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftLoadHistoryOutline, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
@@ -57,7 +59,9 @@ function createProjectSessionArtifact(root, workDir, sessionId = 'session-workdi
   return { projectYeaftDir, sessionId };
 }
 
-afterEach(() => {
+afterEach(async () => {
+  flushAllAgentPerfTraces();
+  await __testResetVpState();
   ctx.CONFIG = originalConfig;
   __testSetSession(null);
   _resetAgentRegistry();
@@ -93,6 +97,50 @@ describe('Yeaft session-scoped model config', () => {
     expect(persisted.primaryModel).toBe('proxy/model');
     expect(persisted.debug).toBe(true);
     expect(persisted.telemetry).toMatchObject({ flushIntervalMs: 250 });
+  });
+
+  it('disables bridge traces through the telemetry update message immediately', async () => {
+    const root = makeDir();
+    writeFileSync(join(root, 'config.json'), JSON.stringify({
+      primaryModel: 'session-test/gpt-5',
+      telemetry: { enabled: true, flushIntervalMs: 60_000 },
+    }, null, 2));
+    const previousTransport = {
+      ws: ctx.ws,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+    };
+    const sent = [];
+    ctx.CONFIG = { yeaftDir: root, telemetry: { enabled: true, flushIntervalMs: 60_000 } };
+    ctx.ws = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    ctx.serverEncryptionRequired = false;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
+
+    try {
+      await handleMessage({ type: 'update_telemetry_settings', settings: { enabled: false } });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(ctx.CONFIG.telemetry).toMatchObject({ enabled: false });
+      expect(sent).toContainEqual(expect.objectContaining({
+        type: 'telemetry_settings_updated',
+        enabled: false,
+      }));
+
+      await handleYeaftLoadHistoryOutline({
+        type: 'yeaft_load_history_outline',
+        sessionId: 'session-telemetry-disabled',
+        perfTraceId: 'trace-disabled-bridge',
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      flushAllAgentPerfTraces();
+      expect(existsSync(join(root, 'perf-traces'))).toBe(false);
+    } finally {
+      ctx.ws = previousTransport.ws;
+      ctx.serverEncryptionRequired = previousTransport.serverEncryptionRequired;
+      ctx.outboundSendQueue = previousTransport.outboundSendQueue;
+      ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
+    }
   });
 
   it('keeps model and effort isolated per Session', async () => {

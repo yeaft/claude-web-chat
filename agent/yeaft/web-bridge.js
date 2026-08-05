@@ -192,6 +192,11 @@ export async function refreshLiveSessionConfig(options = {}) {
 
   const configRoot = liveConfigRoot();
   const freshConfig = loadConfig({ dir: configRoot });
+  // All bridge producers reference ctx.CONFIG. Keep it synchronized even
+  // when no live Session is loaded and refresh returns early below.
+  if (ctx.CONFIG && typeof ctx.CONFIG === 'object') {
+    ctx.CONFIG.telemetry = freshConfig.telemetry;
+  }
   const previousDefaultModel = options.previousDefaultModel
     || session?.config?.primaryModel
     || session?.config?.model

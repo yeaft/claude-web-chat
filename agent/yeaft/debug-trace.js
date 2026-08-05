@@ -176,12 +176,26 @@ function safeJsonValue(value, maxBytes = MAX_INLINE_VALUE_BYTES) {
   if (value == null) return value;
   try {
     const json = JSON.stringify(value);
-    if (Buffer.byteLength(json, 'utf8') <= maxBytes) return JSON.parse(json);
-    return {
-      __truncated: true,
-      originalBytes: Buffer.byteLength(json, 'utf8'),
-      maxBytes,
-    };
+    const originalBytes = Buffer.byteLength(json, 'utf8');
+    if (originalBytes <= maxBytes) return JSON.parse(json);
+    // A bounded raw-exchange sentinel already carries the useful preview.
+    // Preserve a re-bounded preview rather than reducing persisted history to
+    // metadata after an outer trace record crosses its storage budget.
+    if (value && typeof value === 'object' && value.__truncated === true
+      && typeof value.preview === 'string') {
+      const previewBudget = Math.max(0, maxBytes - 512);
+      const preview = truncateText(value.preview, previewBudget);
+      return {
+        __truncated: true,
+        ...(value.reason ? { reason: value.reason } : {}),
+        originalBytes: Number.isFinite(Number(value.originalBytes))
+          ? Number(value.originalBytes)
+          : originalBytes,
+        maxBytes,
+        ...(preview ? { preview } : {}),
+      };
+    }
+    return { __truncated: true, originalBytes, maxBytes };
   } catch {
     return null;
   }
@@ -218,8 +232,11 @@ function jsonByteLength(value) {
 }
 
 function rawRequestSentinel(reason, value = null, maxBytes = MAX_RAW_REQUEST_BYTES) {
-  const preview = typeof value === 'string'
-    ? truncateText(value, Math.min(64 * 1024, maxBytes))
+  const previewSource = typeof value === 'string'
+    ? value
+    : (() => { try { return JSON.stringify(value); } catch { return null; } })();
+  const preview = typeof previewSource === 'string'
+    ? truncateText(previewSource, Math.min(64 * 1024, maxBytes))
     : null;
   const originalBytes = value == null ? null : jsonByteLength(value);
   return {
@@ -237,25 +254,6 @@ function boundRawValue(value, reason = 'raw_request_budget') {
   if (cloned == null) return null;
   if (jsonByteLength(cloned) <= MAX_RAW_REQUEST_BYTES) return cloned;
   return rawRequestSentinel(reason, value);
-}
-
-function buildRawRequestBase(value) {
-  if (value == null) return null;
-  if (typeof value === 'string') return truncateText(value, MAX_RAW_REQUEST_BYTES);
-  if (!isPlainObject(value)) return boundRawValue(value);
-  const base = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (key === 'body' && isPlainObject(item)) {
-      const body = {};
-      for (const [bodyKey, bodyValue] of Object.entries(item)) {
-        body[bodyKey] = boundRawValue(bodyValue, `raw_request_body_${bodyKey}_budget`);
-      }
-      base.body = body;
-    } else {
-      base[key] = boundRawValue(item, `raw_request_${key}_budget`);
-    }
-  }
-  return base;
 }
 
 function buildRawMessagesDelta(previousMessages, nextMessages) {
@@ -384,6 +382,11 @@ export function applyRawRequestDelta(previous, delta) {
       const existing = Array.isArray(body[messageKey]) ? body[messageKey] : [];
       const from = Number.isFinite(Number(delta.body.messagesFrom)) ? Number(delta.body.messagesFrom) : existing.length;
       body[messageKey] = existing.slice(0, from).concat(cloneJsonValue(delta.body.messagesAppend) || []);
+    } else if (Object.prototype.hasOwnProperty.call(delta.body, 'messagesAppend')) {
+      // A huge append is represented by a bounded raw-request sentinel, not
+      // an array. Preserve that sentinel rather than silently dropping the
+      // entire request body during hydration.
+      body[messageKey] = cloneJsonValue(delta.body.messagesAppend) ?? delta.body.messagesAppend;
     }
     next.body = body;
   }
@@ -423,23 +426,48 @@ function boundSnapshotValue(value, maxBytes, path = 'messages') {
   if (jsonByteLength(marker) > maxBytes) return null;
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return marker;
   if (typeof value === 'string') return boundedSnapshotString(value, maxBytes, path);
+
+  // Account JSON framing incrementally. The old clone-and-stringify-prefix
+  // loop reserialized the full growing array/object per member and blocked
+  // DebugTrace.endTurn for tens of seconds on a large provider history.
   if (Array.isArray(value)) {
     const out = [];
+    let usedBytes = 2; // []
     for (let index = 0; index < value.length; index += 1) {
-      const candidate = boundSnapshotValue(value[index], maxBytes, `${path}[${index}]`);
-      if (candidate == null || jsonByteLength([...out, candidate]) > maxBytes) break;
+      const separatorBytes = out.length > 0 ? 1 : 0;
+      const remaining = Math.max(0, maxBytes - usedBytes - separatorBytes);
+      const candidate = boundSnapshotValue(value[index], remaining, `${path}[${index}]`);
+      if (candidate == null) break;
+      let encoded;
+      try { encoded = JSON.stringify(candidate); } catch { break; }
+      const candidateBytes = Buffer.byteLength(encoded, 'utf8');
+      if (usedBytes + separatorBytes + candidateBytes > maxBytes) break;
       out.push(candidate);
+      usedBytes += separatorBytes + candidateBytes;
     }
     return out.length > 0 ? out : marker;
   }
   if (typeof value === 'object') {
     const out = {};
+    let usedBytes = 2; // {}
+    let count = 0;
     for (const [key, item] of Object.entries(value)) {
-      const candidate = boundSnapshotValue(item, maxBytes, `${path}.${key}`);
-      if (candidate == null || jsonByteLength({ ...out, [key]: candidate }) > maxBytes) break;
+      let keyJson;
+      try { keyJson = JSON.stringify(key); } catch { break; }
+      const keyBytes = Buffer.byteLength(keyJson, 'utf8');
+      const separatorBytes = count > 0 ? 1 : 0;
+      const remaining = Math.max(0, maxBytes - usedBytes - separatorBytes - keyBytes - 1);
+      const candidate = boundSnapshotValue(item, remaining, `${path}.${key}`);
+      if (candidate == null) break;
+      let encoded;
+      try { encoded = JSON.stringify(candidate); } catch { break; }
+      const candidateBytes = Buffer.byteLength(encoded, 'utf8');
+      if (usedBytes + separatorBytes + keyBytes + 1 + candidateBytes > maxBytes) break;
       out[key] = candidate;
+      usedBytes += separatorBytes + keyBytes + 1 + candidateBytes;
+      count += 1;
     }
-    return Object.keys(out).length > 0 ? out : marker;
+    return count > 0 ? out : marker;
   }
   return marker;
 }
@@ -685,9 +713,13 @@ function summarizeTrace(trace, detailsLoaded = false) {
 function expandTrace(trace) {
   const turnsById = new Map([[trace.requestId || trace.traceId, summarizeTrace(trace, true)]]);
   let snapshot = null;
+  let rawRequest = trace?.baseRequest?.rawRequest ?? null;
   const loops = [];
   for (const loop of Array.isArray(trace?.loops) ? trace.loops : []) {
     snapshot = applyRequestDelta(snapshot || trace.baseRequest || null, loop.requestDelta || {});
+    if (loop?.requestDelta && Object.prototype.hasOwnProperty.call(loop.requestDelta, 'rawRequestDelta')) {
+      rawRequest = reconstructDebugRawRequest(rawRequest, loop.requestDelta);
+    }
     const usage = normalizeUsage(loop?.usage || {});
     loops.push({
       turnId: trace.requestId || trace.traceId,
@@ -703,7 +735,7 @@ function expandTrace(trace) {
       ttfbMs: loop.ttfbMs || null,
       stopReason: loop.stopReason || null,
       at: loop.at || null,
-      rawRequest: loop.rawRequest ?? null,
+      rawRequest,
       rawResponse: loop.rawResponse ?? null,
       requestDelta: loop.requestDelta || {},
       requestBase: trace.baseRequest || null,
@@ -717,8 +749,12 @@ function expandTrace(trace) {
 
 function traceToLegacyRows(trace) {
   let snapshot = null;
+  let rawRequest = trace?.baseRequest?.rawRequest ?? null;
   return (Array.isArray(trace?.loops) ? trace.loops : []).map((loop) => {
     snapshot = applyRequestDelta(snapshot || trace.baseRequest || null, loop.requestDelta || {});
+    if (loop?.requestDelta && Object.prototype.hasOwnProperty.call(loop.requestDelta, 'rawRequestDelta')) {
+      rawRequest = reconstructDebugRawRequest(rawRequest, loop.requestDelta);
+    }
     const u = normalizeUsage(loop?.usage || {});
     return {
       id: loop.turnRowId || loop.loopInstanceId || randomUUID(),
@@ -744,7 +780,7 @@ function traceToLegacyRows(trace) {
       tool_calls_json: JSON.stringify(loop.toolCalls || []),
       usage_json: JSON.stringify(u),
       ttfb_ms: loop.ttfbMs || null,
-      raw_request: loop.rawRequest == null ? null : JSON.stringify(loop.rawRequest),
+      raw_request: rawRequest == null ? null : JSON.stringify(rawRequest),
       raw_response: typeof loop.rawResponse === 'string' ? loop.rawResponse : JSON.stringify(loop.rawResponse ?? null),
       user_prompt: trace.userPrompt || '',
     };
@@ -981,7 +1017,12 @@ export class DebugTrace {
     const loopNumber = ctx.loopNumber || Number(info.turnNumber || 0);
     const snapshot = buildRequestSnapshot({
       ...info,
-      rawRequest: info.rawRequest ?? trace.baseRequest?.rawRequest ?? null,
+      // An explicit null describes this loop: no provider raw request was
+      // captured. Do not inherit a previous loop's body and falsely attribute
+      // it to a transport failure or another uncaptured attempt.
+      rawRequest: Object.prototype.hasOwnProperty.call(info, 'rawRequest')
+        ? info.rawRequest
+        : (trace.baseRequest?.rawRequest ?? null),
     }, this.#textMaxBytes);
     const previousSnapshot = trace._lastSnapshot || this.#reconstructLastSnapshot(trace);
     if (!trace.baseRequest) {
@@ -1013,7 +1054,10 @@ export class DebugTrace {
       rawResponse: typeof info.rawResponse === 'string'
         ? truncateText(info.rawResponse, Math.min(this.#textMaxBytes, MAX_RAW_RESPONSE_BYTES))
         : safeJsonValue(info.rawResponse, Math.min(this.#textMaxBytes, MAX_RAW_RESPONSE_BYTES)),
-      rawRequest: snapshot.rawRequest ?? null,
+      // Raw request is canonical base-plus-delta data. Persisting the full
+      // snapshot on every loop made a 512 KiB request consume N × 512 KiB for
+      // an N-loop trace and kept the same duplication in the hydrated cache.
+      rawRequest: null,
       requestDelta: buildRequestDelta(previousSnapshot, snapshot),
     };
     if (loopIndex >= 0) trace.loops[loopIndex] = loop;

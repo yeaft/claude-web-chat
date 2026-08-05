@@ -459,6 +459,13 @@ export async function handleMessage(msg) {
     case 'update_telemetry_settings': {
       const result = updateTelemetrySettings(msg.settings || msg.config || {}, ctx.CONFIG?.yeaftDir);
       if (!result.error) {
+        // Bridge trace producers use the agent-owned config object directly.
+        // The result is the normalized section that was successfully written,
+        // so apply it before refresh can yield and leave no enabled-by-default
+        // gap for diagnostics emitted outside a loaded Session.
+        if (ctx.CONFIG && typeof ctx.CONFIG === 'object') {
+          ctx.CONFIG.telemetry = { ...result };
+        }
         try {
           await refreshLiveSessionConfig({});
         } catch (error) {

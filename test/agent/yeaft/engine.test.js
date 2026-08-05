@@ -3211,6 +3211,117 @@ describe('Engine', () => {
       }
     });
 
+    it('persists a late completion after T1 folding without restoring a raw tool arc', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-folded-async-completion-'));
+      const sessionId = 'session-folded-async-completion';
+      const vpTurnId = 'vp-turn-folded-async-completion';
+      const taskId = 'task-folded-async-completion';
+      const toolCallId = 'call-folded-async-completion';
+      const completion = 'late task output after the tool arc was folded';
+      const conversationStore = new ConversationStore(yeaftDir);
+      let completionAccepted = false;
+      try {
+        const makeToolCall = index => ({
+          type: 'tool_call',
+          id: index === 0 ? toolCallId : `call-fold-helper-${index}`,
+          name: 'FoldHelper',
+          input: { index },
+        });
+        mockAdapter.pushResponse([
+          ...Array.from({ length: 31 }, (_, index) => makeToolCall(index)),
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        // T1 reflection uses adapter.call(), which is recorded between the
+        // initial tool stream and the continuation stream.
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Waiting for the late task result.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Late result consumed.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: {
+            model: 'test-model',
+            maxOutputTokens: 1024,
+            asyncTaskWaitTimeoutMs: 1_000,
+            // Session reflection is pressure-gated. Make the 31-call batch
+            // exceed the threshold so this covers the durable T1 path.
+            maxContextTokens: 1,
+          },
+          conversationStore,
+          yeaftDir,
+        });
+        engine.registerTool({
+          name: 'FoldHelper',
+          description: 'Produce a foldable tool result.',
+          parameters: { type: 'object' },
+          execute: async (input, ctx) => {
+            if (input.index === 0) ctx.registerAsyncTask(taskId);
+            return `tool output ${input.index}`;
+          },
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'run enough tools to fold then wait for completion',
+          sessionId,
+          vpTurnId,
+        })) {
+          events.push(event);
+          if (event.type === 'async_task_wait_start') {
+            completionAccepted = engine.notifyAsyncTaskCompleted(taskId, completion);
+          }
+        }
+
+        expect(completionAccepted).toBe(true);
+        // stream #1, the synchronous T1 reflector call, stream #2 (which
+        // waits), then stream #3 carrying the continuation note.
+        expect(mockAdapter.callLog).toHaveLength(4);
+        const continuationMessages = mockAdapter.callLog[3].messages;
+        // The provider transcript retains the original folded tool result as
+        // historical context, but the late completion itself must be injected
+        // only as a continuation note rather than a reconstructed raw arc.
+        const lateCompletionTool = continuationMessages.find(message => (
+          message.role === 'tool'
+            && message.toolCallId === toolCallId
+            && String(message.content).includes(completion)
+        ));
+        expect(lateCompletionTool).toBeUndefined();
+        expect(continuationMessages.some(message => (
+          message.role === 'user'
+            && message._asyncTaskCompletion === true
+            && String(message.content).includes(completion)
+        ))).toBe(true);
+        expect(events.find(event => event.type === 'tool_result_update')).toMatchObject({
+          taskId,
+          toolCallId,
+          content: completion,
+        });
+
+        // Completion notes are internal control rows rather than reflections.
+        // Inspect the durable transcript directly; normal history deliberately
+        // hides engine-private control context from user-visible replay.
+        const storedAll = conversationStore.loadAll();
+        const storedCompletion = storedAll.find(message => message.role === 'user'
+            && message.internal === true
+            && message._asyncTaskCompletion === true
+            && String(message.content).includes(completion));
+        expect(storedCompletion).toMatchObject({
+          sessionId,
+          turnId: vpTurnId,
+          userAuthored: false,
+          internal: true,
+        });
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
     it('bounds same-turn async completion content for the model while preserving durable output', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-async-completion-budget-'));
       const sessionId = 'session-async-completion-budget';
@@ -4989,6 +5100,40 @@ describe('Engine', () => {
           await duplicateReader.close();
         } finally {
           rmSync(duplicateRoot, { recursive: true, force: true });
+        }
+
+        const snapshotTraceRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-snapshot-budget-'));
+        const snapshotTrace = new DebugTrace(snapshotTraceRoot);
+        try {
+          const largeMessages = Array.from({ length: 2_000 }, (_, index) => ({
+            role: index % 2 === 0 ? 'user' : 'assistant',
+            content: `message ${index}: ${'x'.repeat(256)}`,
+          }));
+          const startedAt = Date.now();
+          const snapshotTurn = snapshotTrace.startTurn({
+            traceId: 'snapshot-budget-turn',
+            turnNumber: 1,
+            sessionId: 's-snapshot-budget',
+          });
+          snapshotTrace.endTurn(snapshotTurn, {
+            responseText: '',
+            messages: largeMessages,
+            stopReason: 'end_turn',
+          });
+          await snapshotTrace.close();
+          // The exact wall-clock threshold is intentionally generous for slow
+          // CI. This catches the old O(n²) prefix reserialization without
+          // turning normal host load into a flaky failure.
+          expect(Date.now() - startedAt).toBeLessThan(5_000);
+          const snapshotReader = new DebugTrace(snapshotTraceRoot);
+          const snapshotDetail = await snapshotReader.fetchTurnDebug({
+            sessionId: 's-snapshot-budget',
+            turnId: 'snapshot-budget-turn',
+          });
+          expect(Buffer.byteLength(JSON.stringify(snapshotDetail.loops[0]?.messages || []), 'utf8')).toBeLessThanOrEqual(256 * 1024);
+          await snapshotReader.close();
+        } finally {
+          rmSync(snapshotTraceRoot, { recursive: true, force: true });
         }
       } finally {
         await boundedTrace.close();
