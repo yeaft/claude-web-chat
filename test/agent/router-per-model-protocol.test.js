@@ -59,6 +59,54 @@ describe('inferProtocolFromModelId', () => {
 });
 
 describe('AdapterRouter resolution', () => {
+  it('keeps an already-created stream on its captured provider catalog', async () => {
+    const oldFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, init) => {
+      requests.push({ url, body: JSON.parse(init.body) });
+      return new Response(
+        'event: response.completed\n' +
+        'data: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{}}}\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    };
+
+    try {
+      const router = new AdapterRouter({
+        providers: [{
+          name: 'old',
+          baseUrl: 'https://old.example/v1',
+          apiKey: 'old-key',
+          protocol: 'openai-responses',
+          models: ['old-model'],
+        }],
+      });
+      const stream = router.stream({ model: 'old/old-model', messages: [] });
+      router.refreshProviders([{
+        name: 'new',
+        baseUrl: 'https://new.example/v1',
+        apiKey: 'new-key',
+        protocol: 'openai-responses',
+        models: ['new-model'],
+      }]);
+
+      for await (const _event of stream) {
+        // Consume the response.
+      }
+
+      expect(requests).toEqual([
+        expect.objectContaining({
+          url: 'https://old.example/v1/responses',
+          body: expect.objectContaining({ model: 'old-model' }),
+        }),
+      ]);
+      await expect(router.call({ model: 'old/old-model', messages: [] }))
+        .rejects.toThrow('Model "old/old-model" not found');
+    } finally {
+      globalThis.fetch = oldFetch;
+    }
+  });
+
   it('resolves a provider-qualified Claude ref even when split provider catalogs are stale', () => {
     const r = new AdapterRouter({
       providers: [

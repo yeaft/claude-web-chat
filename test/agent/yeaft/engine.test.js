@@ -728,6 +728,106 @@ describe('Engine', () => {
       expect(adapter.callLog[1]).toMatchObject({ model: 'provider/new', maxTokens: 222 });
     });
 
+    it('refreshes configured effort at tool and retry request boundaries while preserving an explicit override', async () => {
+      const { LLMServerError } = await import('../../../agent/yeaft/llm/adapter.js');
+      let engine;
+      let calls = 0;
+      const adapter = {
+        callLog: [],
+        async *stream(params) {
+          this.callLog.push(params);
+          calls += 1;
+          if (calls === 1) {
+            yield { type: 'tool_call', id: 'call_refresh_effort', name: 'refresh_effort', input: {} };
+            yield { type: 'stop', stopReason: 'tool_use' };
+            return;
+          }
+          if (calls === 2) {
+            engine.refreshConfig({
+              model: 'provider/current',
+              modelEffort: 'max',
+              maxOutputTokens: 222,
+              llmRetry: { maxRetries: 1, baseDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 },
+            });
+            throw new LLMServerError('retry after config save', 503);
+          }
+          yield { type: 'text_delta', text: 'done' };
+          yield { type: 'stop', stopReason: 'end_turn' };
+        },
+      };
+      engine = new Engine({
+        adapter,
+        trace,
+        config: {
+          model: 'provider/current',
+          modelEffort: 'low',
+          maxOutputTokens: 111,
+          llmRetry: { maxRetries: 1, baseDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 },
+        },
+      });
+      engine.registerTool({
+        name: 'refresh_effort',
+        description: 'publish a later Session effort',
+        parameters: {},
+        execute: async () => {
+          engine.refreshConfig({
+            model: 'provider/current',
+            modelEffort: 'high',
+            maxOutputTokens: 222,
+            llmRetry: { maxRetries: 1, baseDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 },
+          });
+          return 'published';
+        },
+      });
+
+      for await (const _event of engine.query({ prompt: 'refresh effort while running' })) {
+        // Consume the complete query.
+      }
+
+      expect(adapter.callLog).toHaveLength(3);
+      expect(adapter.callLog.map(call => [call.maxTokens, call.effort])).toEqual([
+        [111, 'low'],
+        [222, 'high'],
+        [222, 'max'],
+      ]);
+
+      const overrideAdapter = new MockAdapter();
+      overrideAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_explicit_effort', name: 'refresh_effort', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      overrideAdapter.pushResponse([
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const overrideEngine = new Engine({
+        adapter: overrideAdapter,
+        trace,
+        config: { model: 'provider/current', modelEffort: 'low', maxOutputTokens: 111 },
+      });
+      overrideEngine.registerTool({
+        name: 'refresh_effort',
+        description: 'publish a later Session effort',
+        parameters: {},
+        execute: async () => {
+          overrideEngine.refreshConfig({ model: 'provider/current', modelEffort: 'max', maxOutputTokens: 222 });
+          return 'published';
+        },
+      });
+
+      for await (const _event of overrideEngine.query({
+        prompt: 'explicit effort must stay fixed',
+        userEffort: 'medium',
+      })) {
+        // Consume the complete query.
+      }
+
+      expect(overrideAdapter.callLog.map(call => [call.maxTokens, call.effort])).toEqual([
+        [111, 'medium'],
+        [222, 'medium'],
+      ]);
+    });
+
   });
 
   describe('perf trace', () => {

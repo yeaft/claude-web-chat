@@ -90,10 +90,17 @@ export class UsageAccountingAdapter extends LLMAdapter {
     }
   }
 
-  async *stream(params) {
+  stream(params) {
+    // Preserve the wrapped adapter's request-creation boundary. In particular,
+    // AdapterRouter captures its provider catalog when stream() is called.
+    const upstreamStream = this.#adapter.stream(this.#requestParams(params));
+    return this.#streamWithAccounting(upstreamStream);
+  }
+
+  async *#streamWithAccounting(upstreamStream) {
     const total = normalizeTokenUsage();
     try {
-      for await (const event of this.#adapter.stream(this.#requestParams(params))) {
+      for await (const event of upstreamStream) {
         if (event?.type === 'usage') addUsage(total, event);
         yield event;
       }

@@ -2045,7 +2045,8 @@ export class Engine {
     // openai-responses.js:#translateUserContent).
 
     // task-327b: `/max` / `/high` / `/medium` / `/low` prefix override.
-    // Explicit caller-supplied userEffort wins over the prefix.
+    // Explicit caller-supplied userEffort wins over the prefix. Session config
+    // is deliberately excluded here because it may refresh between loops.
     // task-327c nit: defensively normalize caller-supplied userEffort BEFORE
     // the merge, so an invalid caller value (e.g. 'ULTRA') does not shadow a
     // valid prompt prefix.
@@ -2055,8 +2056,10 @@ export class Engine {
     const effectivePromptParts = parsedSkill.skillName
       ? stripLeadingSkillCommandFromPromptParts(promptParts, this.#skillManager)
       : promptParts;
-    const configuredEffort = normalizeEffort(this.#config?.modelEffort);
-    const effectiveUserEffort = normalizeEffort(userEffort) || parsed.effort || configuredEffort || null;
+    // Only actual caller input and a prompt prefix are per-query overrides.
+    // Session-configured effort belongs to the live config and is resolved at
+    // each provider-request boundary, just like the live model snapshot.
+    const explicitUserEffort = normalizeEffort(userEffort) || parsed.effort || null;
     const effectiveCollabToolPolicy = collabToolPolicy === COLLAB_TOOL_POLICY.SINGLE_VP || collabToolPolicy === COLLAB_TOOL_POLICY.MULTI_VP
       ? collabToolPolicy
       : null;
@@ -2103,7 +2106,7 @@ export class Engine {
     };
     try {
       this.#currentThreadId = threadId || MAIN_THREAD_ID;
-      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds, projectInstruction, projectLabel, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, prepareProviderRequest, startProviderRequest, finishProviderRequest, failProviderRequest, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName, retryLifecycle });
+      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: explicitUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds, projectInstruction, projectLabel, sessionTopics, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, prepareProviderRequest, startProviderRequest, finishProviderRequest, failProviderRequest, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName, retryLifecycle });
     } finally {
       // Closing the async generator at a visible retry boundary means the
       // continuation never reached a provider. Keep it out of history and
@@ -2653,8 +2656,14 @@ export class Engine {
           currentModel = refreshedPrimaryModel;
           primaryModelAtLastBoundary = refreshedPrimaryModel;
         }
-        retryPolicy = resolveRetryPolicy(this.#config);
       }
+
+      // Take one immutable runtime snapshot before any request-specific work.
+      // A Session save racing preflight must be picked up by the next loop, not
+      // this request. Fallback retries intentionally retain their selected
+      // model, but still use the current policy and configured effort.
+      const requestConfig = { ...this.#config };
+      retryPolicy = resolveRetryPolicy(requestConfig);
 
       // task-324: no hard MAX_TURNS cap. Loop terminates on end_turn,
       // non-retryable error, LLMContextError (after compact retry), or
@@ -2700,9 +2709,6 @@ export class Engine {
         userPrompt: userQuestionPreview,
       });
 
-      // Snapshot request config before any preflight await. A save that races
-      // this loop must affect the following provider request, not this one.
-      const requestConfig = { ...this.#config };
       const startTime = Date.now();
       const requestPerfStart = perfNowMs();
       let firstEventTraced = false;
@@ -2755,7 +2761,7 @@ export class Engine {
       // actually about to call. Single resolver in models.js owns the
       // fallback ladder (registry → config → default) so engine.js and
       // tools/registry.js can never disagree.
-      const currentContextWindow = resolveContextWindow(currentModel, this.#config);
+      const currentContextWindow = resolveContextWindow(currentModel, requestConfig);
 
       yield { type: 'turn_start', turnNumber, threadId };
 
@@ -2797,9 +2803,12 @@ export class Engine {
       }
 
       try {
-        // task-327b: resolve effort per-turn so the long-loop auto-bump
-        // kicks in once toolLoopTurns crosses the threshold.
-        let resolvedEffort = pickEffort({ scenario, toolLoopTurns, userEffort });
+        // Resolve effort per provider request so a saved Session effort takes
+        // effect at the next loop. A caller override or `/effort` prefix stays
+        // fixed for this query and still wins over live Session config.
+        const configuredEffort = normalizeEffort(requestConfig.modelEffort);
+        const requestUserEffort = userEffort || configuredEffort || null;
+        let resolvedEffort = pickEffort({ scenario, toolLoopTurns, userEffort: requestUserEffort });
 
         // DESIGN.md §9.16: thinking-mode precedence chain. When a VP
         // persona is active, the router/continuity bookkeeping has more
@@ -2821,7 +2830,7 @@ export class Engine {
             ? vpPlan.thinking
             : null;
           const resolved = resolveThinking({
-            uiOverride: (userEffort === 'max' || userEffort === 'high') ? userEffort : null,
+            uiOverride: (requestUserEffort === 'max' || requestUserEffort === 'high') ? requestUserEffort : null,
             routerPlan: liveRouterThinking,
             priorPlan: priorPlan && priorPlan.thinking ? priorPlan.thinking : null,
             vpDefault: typeof vpPersona.thinking === 'string' ? vpPersona.thinking : null,
@@ -2951,7 +2960,7 @@ export class Engine {
           tools: toolDefs.length > 0 ? toolDefs : undefined,
           maxTokens: requestConfig.maxOutputTokens || 16384,
           effort: resolvedEffort,
-          effortSource: userEffort ? 'user' : 'auto',
+          effortSource: requestUserEffort ? 'user' : 'auto',
           signal,
           onRawExchange: captureRawExchange,
           rawExchangeMaxBytes,
