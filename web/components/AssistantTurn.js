@@ -62,7 +62,7 @@ export default {
   },
   emits: ['update-actions-expanded', 'update-tool-expanded', 'toggle-response-collapse', 'quote', 'open-debug'],
   template: `
-    <div class="assistant-turn" ref="turnRef" :class="{ streaming: turn.isStreaming, 'has-vp-speaker': !!turn.speakerVpId }">
+    <div class="assistant-turn" ref="turnRef" :class="{ streaming: turn.isStreaming, 'has-vp-speaker': !!turn.speakerVpId, 'has-turn-debug-action': showDebugAction }">
       <!-- 0. task-334-ui-b: VP speaker header — only when a speakerVpId is
            bound AND the upstream consecutive-collapse decided this turn
            should show the attribution. Legacy 1:1 chat turns leave

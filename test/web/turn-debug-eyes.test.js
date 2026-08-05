@@ -10,6 +10,8 @@
  *      turn-level debug panel to ready/error and stale requestIds cannot
  *      overwrite a newer panel selection.
  */
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { mount } from '@vue/test-utils';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import * as Vue from 'vue';
@@ -64,10 +66,12 @@ describe('VpTurnBlock debug action', () => {
       props: { turn: makeTurn() },
       global: { mocks: { $t: key => key }, provide: { t: key => key } },
     });
+    const assistantTurn = wrapper.find('.assistant-turn');
     const footer = wrapper.find('.turn-footer');
     const actions = footer.findAll('button');
     const btn = footer.find('.debug-turn-action-btn');
 
+    expect(assistantTurn.classes()).toContain('has-turn-debug-action');
     expect(footer.exists()).toBe(true);
     expect(btn.exists()).toBe(true);
     expect(actions[0].classes()).toContain('debug-turn-action-btn');
@@ -82,6 +86,7 @@ describe('VpTurnBlock debug action', () => {
       props: { turn: makeTurn({ isStreaming: true }) },
       global: { mocks: { $t: key => key }, provide: { t: key => key } },
     });
+    expect(wrapper.find('.assistant-turn').classes()).not.toContain('has-turn-debug-action');
     expect(wrapper.find('.debug-turn-action-btn').exists()).toBe(false);
   });
 
@@ -95,7 +100,15 @@ describe('VpTurnBlock debug action', () => {
         stubs: { VpSpeakerHeader: true },
       },
     });
+    expect(wrapper.classes()).not.toContain('has-turn-debug-action');
     expect(wrapper.find('.debug-turn-action-btn').exists()).toBe(false);
+  });
+
+  it('limits coarse-pointer visibility to the debug action class', async () => {
+    const css = await readFile(resolve(process.cwd(), 'web/styles/chat-messages.css'), 'utf8');
+    expect(css).toContain('@media (pointer: coarse)');
+    expect(css).toContain('.assistant-turn.has-turn-debug-action .turn-footer');
+    expect(css).not.toContain('@media (pointer: coarse) {\n  .assistant-turn .turn-footer');
   });
 
   it('emits open-debug with the turn identity on click', async () => {

@@ -1505,7 +1505,7 @@
 /* Touch devices have no hover affordance. Keep the same action row visible
    so a turn-scoped debug trace remains reachable by tap. */
 @media (pointer: coarse) {
-  .assistant-turn .turn-footer {
+  .assistant-turn.has-turn-debug-action .turn-footer {
     opacity: 1;
   }
 }
