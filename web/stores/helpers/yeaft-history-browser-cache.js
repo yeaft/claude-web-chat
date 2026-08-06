@@ -142,7 +142,7 @@ function rowCacheKey(row) {
   return `${unit}:projection:${projection}`;
 }
 
-function chooseRows(rows, limits) {
+export function chooseYeaftHistoryBrowserRows(rows, limits = YEAFT_HISTORY_BROWSER_CACHE_LIMITS) {
   const turns = [];
   let currentTurn = null;
   for (const [index, sourceRow] of (Array.isArray(rows) ? rows : []).entries()) {
@@ -342,7 +342,7 @@ export async function writeYeaftHistoryBrowserCache({
   const normalizedAgentId = normalizeId(agentId);
   const normalizedSessionId = normalizeId(sessionId);
   if (!isFenceCurrent(fence) || !normalizedAgentId || !normalizedSessionId) return false;
-  const selected = chooseRows(rows, limits);
+  const selected = chooseYeaftHistoryBrowserRows(rows, limits);
   if (selected.rows.length === 0) return false;
   try {
     await ownerCleanupPromise;

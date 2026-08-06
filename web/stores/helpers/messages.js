@@ -1,6 +1,7 @@
 // Message CRUD and streaming helpers
 
 import { applyLiveToolWindow } from './tool-window.js';
+import { conversationRepositoryFor } from './conversation-repository.js';
 import {
   yeaftOptimisticMessageIdentity,
   yeaftPersistedMessageIdentity,
@@ -293,6 +294,16 @@ export function addMessageToConversation(store, conversationId, msg) {
     store.messagesMap[conversationId] = [];
   }
   ensureMessageUiKey(store, conversationId, newMsg);
+  if (isYeaftConversation(store, conversationId)) {
+    const repository = conversationRepositoryFor(store);
+    const stored = repository.upsertOverlay({
+      conversationId,
+      sessionId: newMsg.sessionId,
+      row: newMsg,
+    });
+    applyLiveToolWindow(store.messagesMap[conversationId]);
+    return stored;
+  }
   const stableId = explicitMessageId(msg);
   if (stableId) {
     const existing = store.messagesMap[conversationId].find(m => explicitMessageId(m) === stableId);
@@ -323,6 +334,21 @@ export function appendToAssistantMessageForConversation(store, conversationId, t
   }
   const msgs = store.messagesMap[conversationId];
   if (mergeAssistantTextByStableId(store, conversationId, opts, text)) return;
+  if (isYeaftConversation(store, conversationId)) {
+    const repository = conversationRepositoryFor(store);
+    const appended = repository.appendOverlayText({
+      conversationId,
+      sessionId: opts.sessionId || store._currentYeaftSessionId || undefined,
+      turnId: opts.turnId || store._currentYeaftTurnId || null,
+      text,
+    });
+    if (appended) {
+      stampSpeakerOnVpMessage(store, conversationId, appended);
+      if (opts.id && !appended.id) appended.id = opts.id;
+      if (opts.id && !appended.messageId) appended.messageId = opts.id;
+      return;
+    }
+  }
 
   // Per-VP turn routing: when a turnId is active, find the streaming
   // message for THAT turn (not just the last message). This prevents

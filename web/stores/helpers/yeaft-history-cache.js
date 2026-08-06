@@ -109,7 +109,8 @@ export function pruneConversationMessageRetention(store, {
   const keptRows = new Set(turns.filter(turn => selected.has(turn)).flatMap(turn => turn.rows));
   const evicted = scopedRows.filter(row => !keptRows.has(row));
   if (evicted.length === 0) return { evictedRows: 0, keptRows: keptRows.size, keptBytes: bytes };
-  store.messagesMap[conversationId] = allRows.filter(row => !matchesScope(row) || keptRows.has(row));
+  const nextRows = allRows.filter(row => !matchesScope(row) || keptRows.has(row));
+  allRows.splice(0, allRows.length, ...nextRows);
 
   const key = yeaftHistoryIdentityKey(agentId, sessionId);
   const previousCache = store.yeaftHistoryCacheState?.[key] || null;
@@ -268,7 +269,8 @@ function pruneOneSession(store, { conversationId, agentId, sessionId, incomingRo
     !isDurableYeaftHistoryRow(row) || selectedUnits.has(yeaftHistoryUnitKey(row))
   ));
   const keptSet = new Set(keptScoped);
-  store.messagesMap[conversationId] = allRows.filter(row => rowSessionId(row) !== sessionId || keptSet.has(row));
+  const nextRows = allRows.filter(row => rowSessionId(row) !== sessionId || keptSet.has(row));
+  allRows.splice(0, allRows.length, ...nextRows);
   const summary = summarizeRows(keptScoped);
   const key = yeaftHistoryIdentityKey(agentId, sessionId);
   const previous = store.yeaftHistoryCacheState?.[key] || null;
@@ -291,9 +293,10 @@ function pruneOneSession(store, { conversationId, agentId, sessionId, incomingRo
 
 function removeDurableSessionRows(store, entry) {
   const rows = store.messagesMap?.[entry.conversationId] || [];
-  store.messagesMap[entry.conversationId] = rows.filter(row => (
+  const nextRows = rows.filter(row => (
     rowSessionId(row) !== entry.sessionId || !isDurableYeaftHistoryRow(row)
   ));
+  rows.splice(0, rows.length, ...nextRows);
 }
 
 function enforceGlobalLimits(store, activeKey, limits) {

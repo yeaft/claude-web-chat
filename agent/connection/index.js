@@ -67,7 +67,17 @@ export function connect(WebSocketImpl = WebSocket) {
         console.log('Received auth challenge, sending credentials...');
         ctx.pendingAuthTempId = msg.tempId;
         // Send authentication via WebSocket (not URL)
-        socket.send(JSON.stringify({
+        const managed = ctx.CONFIG.managedSandboxIdentity;
+        socket.send(JSON.stringify(managed ? {
+          type: 'auth',
+          tempId: msg.tempId,
+          authKind: 'sandbox',
+          credentialId: managed.credentialId,
+          secret: managed.secret,
+          sandboxClaims: managed.claims,
+          capabilities: ctx.agentCapabilities,
+          version: ctx.agentVersion
+        } : {
           type: 'auth',
           tempId: msg.tempId,
           secret: ctx.CONFIG.agentSecret,

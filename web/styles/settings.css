@@ -439,6 +439,12 @@
   color: var(--text-primary);
 }
 
+.sp-text-wrap {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
 .sp-value {
   font-size: 14px;
   color: var(--text-secondary);

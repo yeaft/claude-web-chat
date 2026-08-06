@@ -60,6 +60,24 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/web/turn-debug-eyes.test.js',
 ]);
 
+export const SANDBOX_TEST_FILES = Object.freeze([
+  'test/agent/managed-sandbox-agent-runtime.test.js',
+  'test/agent/managed-sandbox-controller.test.js',
+  'test/agent/managed-sandbox-helper.test.js',
+  'test/agent/managed-sandbox-runtime-executor.test.js',
+  'test/server/sandbox-agent-auth.test.js',
+  'test/server/sandbox-attestation-listener.test.js',
+  'test/server/sandbox-db.test.js',
+  'test/server/sandbox-host-attestation.test.js',
+  'test/server/sandbox-reconciler.test.js',
+  'test/web/sandbox-settings.test.js',
+]);
+
+export const REVIEWED_TEST_FILES = Object.freeze([
+  ...CORE_TEST_FILES,
+  ...SANDBOX_TEST_FILES,
+]);
+
 export function normalizeTestPath(filePath) {
   return String(filePath || '').replaceAll('\\', '/').replace(/^\.\//, '');
 }
