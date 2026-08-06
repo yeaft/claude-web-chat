@@ -24,6 +24,7 @@ import {
 } from '../yeaft-history-identity.js';
 import { isDurableYeaftHistoryRow, pruneYeaftHistoryCache } from '../yeaft-history-cache.js';
 import { commitYeaftHistoryPage } from '../yeaft-history-pagination.js';
+import { conversationRepositoryFor } from '../conversation-repository.js';
 
 /** Filter out empty user messages — tool_result artifacts stored as empty user records in DB */
 function filterEmptyUserMessages(messages) {
@@ -139,73 +140,6 @@ export function __testSortYeaftRowsBySequence(rows) {
   });
 }
 
-function sameAssistantHistoryRow(existing, incoming) {
-  if (!existing || !incoming) return false;
-  if (existing.type !== 'assistant' || incoming.type !== 'assistant') return false;
-  if ((existing.sessionId ?? null) !== (incoming.sessionId ?? null)) return false;
-
-  const existingSpeaker = existing.speakerVpId || existing.vpId || '';
-  const incomingSpeaker = incoming.speakerVpId || incoming.vpId || '';
-  if (existingSpeaker && incomingSpeaker && existingSpeaker !== incomingSpeaker) return false;
-
-  const existingThread = existing.threadId || '';
-  const incomingThread = incoming.threadId || '';
-  if (existingThread && incomingThread && existingThread !== incomingThread) return false;
-
-  const canMergeLiveLocalRow = existing.isStreaming || existing.isHistory !== true;
-  if (!canMergeLiveLocalRow) return false;
-  if (incoming._hasPersistedTurnId !== true) return false;
-
-  const existingTurnId = existing.turnId || '';
-  const incomingTurnId = incoming.turnId || '';
-  if (!existingTurnId || !incomingTurnId || existingTurnId !== incomingTurnId) return false;
-
-  const existingText = typeof existing.content === 'string' ? existing.content : '';
-  const incomingText = typeof incoming.content === 'string' ? incoming.content : '';
-  return !!existingText && !!incomingText && (incomingText.startsWith(existingText) || existingText.startsWith(incomingText));
-}
-
-function upsertYeaftHistoryRows(existingRows, incomingRows) {
-  const indexById = new Map();
-  const userIndexByClientId = new Map();
-  existingRows.forEach((row, index) => {
-    const id = stableHistoryRowId(row);
-    if (id) indexById.set(id, index);
-    if (row?.type === 'user' && row.clientMessageId) userIndexByClientId.set(row.clientMessageId, index);
-  });
-
-  let inserted = 0;
-  for (const row of incomingRows) {
-    const id = stableHistoryRowId(row);
-    let index = id && indexById.has(id) ? indexById.get(id) : null;
-    if (index === null && row?.type === 'user' && row.clientMessageId && userIndexByClientId.has(row.clientMessageId)) {
-      index = userIndexByClientId.get(row.clientMessageId);
-    }
-    if (index === null && row?.type === 'assistant') {
-      index = existingRows.findIndex(existing => sameAssistantHistoryRow(existing, row));
-    }
-    if (index !== null && index >= 0) {
-      const existingId = stableHistoryRowId(existingRows[index]);
-      const existingUiKey = existingRows[index]?.uiKey || null;
-      existingRows[index] = {
-        ...existingRows[index],
-        ...row,
-        ...(existingUiKey ? { uiKey: existingUiKey } : {}),
-      };
-      if (id) indexById.set(id, index);
-      if (existingId && existingId !== id && indexById.get(existingId) === index) indexById.delete(existingId);
-      if (row?.type === 'user' && row.clientMessageId) userIndexByClientId.set(row.clientMessageId, index);
-    } else {
-      if (id) indexById.set(id, existingRows.length);
-      if (row?.type === 'user' && row.clientMessageId) userIndexByClientId.set(row.clientMessageId, existingRows.length);
-      existingRows.push(row);
-      inserted += 1;
-    }
-  }
-  __testSortYeaftRowsBySequence(existingRows);
-  return inserted;
-}
-
 function rowSessionId(row) {
   return row ? (row.sessionId ?? row.groupId ?? null) : null;
 }
@@ -219,7 +153,8 @@ function isOptimisticYeaftUserRow(row) {
   return id === row.clientMessageId;
 }
 
-function replaceYeaftRecentHistoryRows(existingRows, incomingRows, sessionId) {
+function replaceYeaftRecentHistoryRows(repository, conversationId, incomingRows, sessionId) {
+  const existingRows = repository.rows(conversationId);
   const hasVisibleCachedRows = existingRows.some(row => (
     row && (sessionId == null || rowSessionId(row) === sessionId)
   ));
@@ -243,9 +178,15 @@ function replaceYeaftRecentHistoryRows(existingRows, incomingRows, sessionId) {
     if (isOptimisticYeaftUserRow(row)) return true;
     return newestIncomingTs > 0 && (row.timestamp || 0) > newestIncomingTs;
   });
-  existingRows.splice(0, existingRows.length, ...preserved);
-  const insertedRows = upsertYeaftHistoryRows(existingRows, incomingRows);
-  return { insertedRows, preservedEmpty: false };
+  repository.replaceProjection(conversationId, preserved);
+  const result = repository.commitDurable({
+    conversationId,
+    sessionId,
+    rows: incomingRows,
+    mode: 'recent',
+    preserveEmpty: false,
+  });
+  return { insertedRows: result.insertedRows, preservedEmpty: false };
 }
 function isInternalControlHistoryContent(content) {
   if (typeof content !== 'string') return false;
@@ -782,7 +723,12 @@ export function handleYeaftHistoryWindow(store, msg) {
   if (msg.prefetch === true) {
     for (const row of formatted) row._historyWindowPrefetched = true;
   }
-  upsertYeaftHistoryRows(store.messagesMap[conversationId], formatted);
+  conversationRepositoryFor(store).commitDurable({
+    conversationId,
+    sessionId,
+    rows: formatted,
+    mode: 'window',
+  });
   const activeIdentity = activeYeaftHistoryIdentity(store);
   pruneYeaftHistoryCache(store, {
     conversationId,
@@ -1112,28 +1058,31 @@ export function handleYeaftHistoryChunk(store, msg) {
   );
   ensureMessageUiKeys(store, convId, formatted);
 
+  const repository = conversationRepositoryFor(store);
   let insertedRows = 0;
   let preservedEmptyRecent = false;
   if (mode === 'recent') {
     const recentResult = replaceYeaftRecentHistoryRows(
-      store.messagesMap[convId],
+      repository,
+      convId,
       formatted,
       msgSessionId ?? null,
     );
     insertedRows = recentResult.insertedRows;
     preservedEmptyRecent = recentResult.preservedEmpty;
   } else if (formatted.length > 0) {
-    if (mode === 'older') {
-      store.messagesMap[convId].splice(0, 0, ...formatted);
-      insertedRows = formatted.length;
-      if (typeof store.expandYeaftMessageWindow === 'function') {
-        // These rows were explicitly requested by scrolling upward. Keep the
-        // compatibility window state aligned; its default no longer hides rows.
-        const windowSessionId = store.yeaftActiveSessionFilter ? (msgSessionId ?? null) : null;
-        store.expandYeaftMessageWindow(windowSessionId, msg.turns || 10, sessionAgentId);
-      }
-    } else {
-      insertedRows = upsertYeaftHistoryRows(store.messagesMap[convId], formatted);
+    const committed = repository.commitDurable({
+      conversationId: convId,
+      sessionId: msgSessionId ?? null,
+      rows: formatted,
+      mode,
+    });
+    insertedRows = committed.insertedRows;
+    if (mode === 'older' && typeof store.expandYeaftMessageWindow === 'function') {
+      // These rows were explicitly requested by scrolling upward. Keep the
+      // compatibility window state aligned; its default no longer hides rows.
+      const windowSessionId = store.yeaftActiveSessionFilter ? (msgSessionId ?? null) : null;
+      store.expandYeaftMessageWindow(windowSessionId, msg.turns || 10, sessionAgentId);
     }
   }
 
