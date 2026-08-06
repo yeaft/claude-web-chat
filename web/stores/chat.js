@@ -4241,18 +4241,32 @@ export const useChatStore = defineStore('chat', {
       if (!sessionId || !agentId) return Promise.resolve(null);
       const query = useSearch ? (state.query || '') : '';
       const senderKey = useSearch ? (state.senderKey || '') : '';
-      const started = useSearch
-        ? this.searchYeaftHistory(query, { senderKey })
-        : this.loadYeaftHistoryOutline({
+      let requestId = null;
+      let started = false;
+      if (useSearch) {
+        started = this.searchYeaftHistory(query, { senderKey });
+        requestId = this.yeaftHistorySearchState?.requestId || null;
+      } else {
+        const outlineKey = yeaftHistoryIdentityKey(agentId, sessionId);
+        const outlineState = this.yeaftHistoryOutlineBySession?.[outlineKey] || null;
+        // A newest-page outline refresh already in flight is itself a valid
+        // relocation source. Bind this bounded waiter to its exact request
+        // instead of treating the outline loading guard as a permanent miss.
+        if (outlineState?.loading === true
+          && outlineState.requestAppend !== true
+          && outlineState.requestId) {
+          started = true;
+          requestId = outlineState.requestId;
+        } else {
+          started = this.loadYeaftHistoryOutline({
             force: true,
             targetSessionId: sessionId,
             targetAgentId: agentId,
           });
-      if (!started) return Promise.resolve(null);
-      const requestId = useSearch
-        ? this.yeaftHistorySearchState?.requestId || null
-        : this.yeaftHistoryOutlineBySession?.[yeaftHistoryIdentityKey(agentId, sessionId)]?.requestId || null;
-      if (!requestId) return Promise.resolve(null);
+          requestId = this.yeaftHistoryOutlineBySession?.[outlineKey]?.requestId || null;
+        }
+      }
+      if (!started || !requestId) return Promise.resolve(null);
       return new Promise((resolve) => {
         const timeout = setTimeout(() => {
           const current = this._yeaftHistoryResultRefreshByRequestId?.[requestId];
