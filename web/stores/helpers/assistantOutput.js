@@ -438,5 +438,12 @@ export function handleAssistantOutputFrame(store, conversationId, data, frameAge
     // re-checks both gates defensively so it stays safe if invoked
     // from any future call site.
     store.sweepStaleStreamingForConversation(conversationId);
+    // VirtualTranscript bounds mounted DOM, not the Pinia source array. Prune at
+    // the terminal boundary so streaming rows, pending AskUser cards, and
+    // optimistic sends are never evicted mid-turn.
+    store.pruneConversationMessageRetention?.(
+      conversationId,
+      completedYeaftSessionId || null,
+    );
   }
 }

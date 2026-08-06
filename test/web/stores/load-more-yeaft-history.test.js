@@ -47,6 +47,7 @@ const {
 } = await import('../../../web/stores/helpers/yeaft-history-browser-cache.js');
 const {
   isDurableYeaftHistoryRow,
+  pruneConversationMessageRetention,
   pruneYeaftHistoryCache,
   YEAFT_HISTORY_CACHE_LIMITS,
 } = await import('../../../web/stores/helpers/yeaft-history-cache.js');
@@ -1722,6 +1723,132 @@ describe('Yeaft conversation loading state', () => {
       ['session-b', 'm0001'],
     ]);
     expect(new Set(store.messagesMap['yeaft-1'].map(row => row.stableKey)).size).toBe(2);
+  });
+
+  historyScenario('bounds resident live turns while preserving unsafe rows and other Sessions', () => {
+    const conversationId = 'yeaft-live-retention';
+    const targetSessionId = 'session-live';
+    const otherSessionRow = {
+      id: 'other-session',
+      type: 'user',
+      content: 'other Session stays isolated',
+      sessionId: 'session-other',
+    };
+    const rows = [otherSessionRow];
+    for (let turn = 1; turn <= 8; turn += 1) {
+      rows.push(
+        {
+          id: `user-${turn}`,
+          type: 'user',
+          content: `prompt ${turn}`,
+          sessionId: targetSessionId,
+          clientMessageId: `client-${turn}`,
+          dbMessageId: turn,
+        },
+        {
+          id: `assistant-${turn}`,
+          type: 'assistant',
+          content: `response ${turn}`,
+          sessionId: targetSessionId,
+          turnId: `turn-${turn}`,
+          status: 'completed',
+        },
+        {
+          id: `tool-${turn}`,
+          type: 'tool-use',
+          toolName: 'Read',
+          toolResult: `result ${turn}`,
+          hasResult: true,
+          sessionId: targetSessionId,
+          turnId: `turn-${turn}`,
+        },
+      );
+    }
+    rows.push(
+      {
+        id: 'optimistic-user',
+        type: 'user',
+        content: 'pending send',
+        sessionId: targetSessionId,
+        clientMessageId: 'pending-client',
+      },
+      {
+        id: 'streaming-assistant',
+        type: 'assistant',
+        content: 'still streaming',
+        sessionId: targetSessionId,
+        turnId: 'turn-active',
+        status: 'pending',
+        isStreaming: true,
+      },
+      {
+        id: 'pending-ask',
+        type: 'tool-use',
+        toolName: 'AskUserQuestion',
+        askPending: true,
+        hasResult: false,
+        sessionId: targetSessionId,
+        turnId: 'turn-active',
+      },
+    );
+    const store = { messagesMap: { [conversationId]: rows } };
+
+    const result = pruneConversationMessageRetention(store, {
+      conversationId,
+      sessionId: targetSessionId,
+      limits: {
+        maxRowsPerSession: 9,
+        maxBytesPerSession: 100_000,
+        recentRowsFloor: 3,
+      },
+    });
+
+    const kept = store.messagesMap[conversationId];
+    expect(result.evictedRows).toBeGreaterThan(0);
+    expect(kept.filter(row => row.sessionId === targetSessionId)).toHaveLength(9);
+    expect(kept).toContain(otherSessionRow);
+    expect(kept.some(row => row.id === 'optimistic-user')).toBe(true);
+    expect(kept.some(row => row.id === 'streaming-assistant')).toBe(true);
+    expect(kept.some(row => row.id === 'pending-ask')).toBe(true);
+    expect(kept.some(row => row.id === 'user-8')).toBe(true);
+    expect(kept.some(row => row.id === 'assistant-8')).toBe(true);
+    expect(kept.some(row => row.id === 'tool-8')).toBe(true);
+    expect(kept.some(row => row.id === 'user-1')).toBe(false);
+  });
+
+  historyScenario('keeps one oversized newest turn instead of splitting its boundary', () => {
+    const conversationId = 'yeaft-oversized-turn';
+    const sessionId = 'session-large';
+    const rows = [
+      { id: 'old-user', type: 'user', content: 'old', sessionId, dbMessageId: 1 },
+      { id: 'old-assistant', type: 'assistant', content: 'old response', sessionId, status: 'completed' },
+      { id: 'new-user', type: 'user', content: 'new', sessionId, dbMessageId: 2 },
+      ...Array.from({ length: 8 }, (_, index) => ({
+        id: `new-tool-${index}`,
+        type: 'tool-use',
+        toolName: 'Read',
+        toolResult: 'x'.repeat(200),
+        hasResult: true,
+        sessionId,
+        turnId: 'new-turn',
+      })),
+    ];
+    const store = { messagesMap: { [conversationId]: rows } };
+
+    pruneConversationMessageRetention(store, {
+      conversationId,
+      sessionId,
+      limits: {
+        maxRowsPerSession: 4,
+        maxBytesPerSession: 300,
+        recentRowsFloor: 1,
+      },
+    });
+
+    expect(store.messagesMap[conversationId].map(row => row.id)).toEqual([
+      'new-user',
+      ...Array.from({ length: 8 }, (_, index) => `new-tool-${index}`),
+    ]);
   });
 
   historyScenario('bounds durable ranges while preserving optimistic/live tail rows', () => {

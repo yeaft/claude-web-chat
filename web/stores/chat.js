@@ -85,6 +85,7 @@ import {
 } from './helpers/yeaft-message-window.js';
 import {
   isDurableYeaftHistoryRow,
+  pruneConversationMessageRetention,
   pruneYeaftHistoryCache,
   touchYeaftHistoryCache,
 } from './helpers/yeaft-history-cache.js';
@@ -5671,6 +5672,11 @@ export const useChatStore = defineStore('chat', {
               mutated = true;
             }
             if (mutated) this.messagesMap = { ...this.messagesMap, [conv]: rows.slice() };
+            // The provider `result` normally arrives first, but metadata is the
+            // guaranteed terminal boundary for every VP. Re-prune idempotently
+            // here so dropped/reordered data frames cannot leave live rows
+            // resident forever.
+            this.pruneConversationMessageRetention(conv, terminalSessionId);
           }
           break;
         }
@@ -7187,6 +7193,9 @@ export const useChatStore = defineStore('chat', {
     // =====================
     addMessageToConversation(conversationId, msg) {
       return msgHelpers.addMessageToConversation(this, conversationId, msg);
+    },
+    pruneConversationMessageRetention(conversationId, sessionId = null, limits = undefined) {
+      return pruneConversationMessageRetention(this, { conversationId, sessionId, limits });
     },
     appendToAssistantMessageForConversation(conversationId, text, opts) { msgHelpers.appendToAssistantMessageForConversation(this, conversationId, text, opts); },
     finishStreamingForConversation(conversationId, options) { msgHelpers.finishStreamingForConversation(this, conversationId, options); },
