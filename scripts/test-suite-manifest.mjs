@@ -33,6 +33,7 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/server/agent-connection-fence.test.js',
   'test/server/auth-token-uniqueness.test.js',
   'test/server/request-auth.test.js',
+  'test/server/server-image-runtime.test.js',
   'test/server/upload-routes.test.js',
   'test/server/user-routes-agent-secret.test.js',
   'test/server/ws-plaintext-negotiation.test.js',
