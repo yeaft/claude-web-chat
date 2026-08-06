@@ -926,9 +926,12 @@ async function readTraceHeaders(rootDir, sessionId) {
   const requestDirs = await collectRequestDirs(rootDir, sessionId);
   for (const requestDir of requestDirs) {
     const meta = await readJson(requestMetaPath(requestDir));
-    const trace = meta?.requestId ? meta : await readJson(requestFilePath(requestDir));
-    if (!trace?.requestId || !trace?.requestKey) continue;
-    if (sessionId != null && trace.sessionId !== sessionId) continue;
+    const stored = meta?.requestId ? meta : await readJson(requestFilePath(requestDir));
+    if (!stored?.requestId || !stored?.requestKey) continue;
+    if (sessionId != null && stored.sessionId !== sessionId) continue;
+    const trace = meta?.requestId ? { ...meta } : serializableTraceMeta(stored);
+    trace._persistedFormat = meta?.requestId ? 'events' : 'legacy';
+    trace._persistedRequestDir = requestDir;
     traces.push({
       trace,
       file: requestFilePath(requestDir),
@@ -937,6 +940,13 @@ async function readTraceHeaders(rootDir, sessionId) {
     });
   }
   return traces.sort((a, b) => ((a.openedAt || 0) - (b.openedAt || 0)) || String(a.trace.requestKey).localeCompare(String(b.trace.requestKey)));
+}
+
+async function readHeaderDetail(rootDir, header) {
+  const requestDir = header?._persistedRequestDir
+    || requestDirFor(rootDir, header?.sessionId || null, header?.requestKey);
+  const trace = await readRequestDir(requestDir);
+  return sameTraceIdentity(trace, header) ? trace : null;
 }
 
 async function countDirFiles(rootDir) {
@@ -1296,7 +1306,7 @@ export class DebugTrace {
     const tools = [];
     for (const { trace: header } of this.#traceSummaries().slice().reverse()) {
       const trace = this.#requestCache.get(header.requestKey)
-        || await readRequestDir(requestDirFor(this.#rootDir, header.sessionId || null, header.requestKey));
+        || await readHeaderDetail(this.#rootDir, header);
       if (!trace) continue;
       for (const tool of Array.isArray(trace.tools) ? trace.tools : []) {
         const row = traceToolToLegacy(trace, tool);
@@ -1318,7 +1328,7 @@ export class DebugTrace {
     const results = [];
     for (const { trace: header } of this.#traceSummaries().slice().reverse()) {
       const trace = this.#requestCache.get(header.requestKey)
-        || await readRequestDir(requestDirFor(this.#rootDir, header.sessionId || null, header.requestKey));
+        || await readHeaderDetail(this.#rootDir, header);
       if (!trace || !JSON.stringify(trace).toLowerCase().includes(needle)) continue;
       results.push(...traceToLegacyRows(trace));
       if (results.length >= 50) break;
@@ -1344,11 +1354,10 @@ export class DebugTrace {
         toolCount += Number(header.toolCount);
         continue;
       }
-      const counts = await countRequestEvents(requestDirFor(
-        this.#rootDir,
-        header.sessionId || null,
-        header.requestKey,
-      ));
+      const counts = await countRequestEvents(
+        header._persistedRequestDir
+          || requestDirFor(this.#rootDir, header.sessionId || null, header.requestKey),
+      );
       turnCount += counts.loopCount;
       toolCount += counts.toolCount;
     }
