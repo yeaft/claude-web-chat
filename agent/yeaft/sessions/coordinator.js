@@ -74,11 +74,25 @@ export function createCoordinator(group, options = {}) {
     // treat it as "user-like" for dispatch purposes only. Persistence still
     // honours the caller's `role` field so the on-disk record correctly
     // attributes the turn to the sending VP, not to the user.
-    const isRouteForwardInjection = input?.meta?.injectedBy === 'route_forward';
+    const inputMeta = input?.meta && typeof input.meta === 'object' ? input.meta : {};
+    const routingIntent = input?._routingIntent && typeof input._routingIntent === 'object'
+      ? input._routingIntent
+      : null;
+    const isRouteForwardInjection = inputMeta.injectedBy === 'route_forward';
+    const isTaskResultInjection = inputMeta.injectedBy === 'task_result';
     const fromUser = input.from === 'user'
       || input.role === 'user'
-      || isRouteForwardInjection;
-    const mentions = parseMentions(input.text);
+      || isRouteForwardInjection
+      || isTaskResultInjection;
+    const forcedRouteTarget = (isRouteForwardInjection || isTaskResultInjection)
+      && typeof inputMeta.routeTargetVpId === 'string'
+      ? inputMeta.routeTargetVpId.trim()
+      : (isRouteForwardInjection && typeof inputMeta.routeForwardTarget === 'string'
+        ? inputMeta.routeForwardTarget.trim()
+        : '');
+    const mentions = routingIntent
+      ? (routingIntent.broadcast === true ? ['all'] : routingIntent.targetVpIds.slice())
+      : (forcedRouteTarget ? [forcedRouteTarget] : parseMentions(input.text));
 
     // Persist first — audit log / replay works even if dispatch has bugs.
     //
@@ -137,38 +151,49 @@ export function createCoordinator(group, options = {}) {
       };
     }
 
+    const deliverSelected = (vpIds, trigger) => {
+      const dispatched = [];
+      const errors = [];
+      for (const vpId of vpIds) {
+        const outcome = deliver(vpId, makeEnvelope(stored, meta, trigger, ephemeral));
+        if (outcome === false || outcome?.ok === false) {
+          errors.push({ vpId, error: outcome?.error || 'delivery_rejected' });
+        } else {
+          dispatched.push(vpId);
+        }
+      }
+      return { dispatched, errors };
+    };
+
     if (selection.reason === 'broadcast') {
-      const envelope = makeEnvelope(stored, meta, 'broadcast', ephemeral);
-      for (const vpId of selection.dispatched) deliver(vpId, envelope);
+      const delivered = deliverSelected(selection.dispatched, 'broadcast');
       return {
         message: stored,
-        dispatched: selection.dispatched,
+        dispatched: delivered.dispatched,
         fallback: null,
-        errors: selection.errors,
+        errors: [...selection.errors, ...delivered.errors],
         broadcast: true,
         truncatedAtFanOutCap: !!selection.truncatedAtFanOutCap,
       };
     }
 
     if (selection.reason === 'mention') {
-      for (const vpId of selection.dispatched) {
-        deliver(vpId, makeEnvelope(stored, meta, 'mention', ephemeral));
-      }
+      const delivered = deliverSelected(selection.dispatched, 'mention');
       return {
         message: stored,
-        dispatched: selection.dispatched,
+        dispatched: delivered.dispatched,
         fallback: null,
-        errors: selection.errors,
+        errors: [...selection.errors, ...delivered.errors],
       };
     }
 
     if (selection.reason === 'fallback' && selection.fallback) {
-      deliver(selection.fallback, makeEnvelope(stored, meta, 'fallback', ephemeral));
+      const delivered = deliverSelected([selection.fallback], 'fallback');
       return {
         message: stored,
-        dispatched: selection.dispatched,
-        fallback: selection.fallback,
-        errors: selection.errors,
+        dispatched: delivered.dispatched,
+        fallback: delivered.dispatched.includes(selection.fallback) ? selection.fallback : null,
+        errors: [...selection.errors, ...delivered.errors],
       };
     }
 

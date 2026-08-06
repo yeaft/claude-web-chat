@@ -89,6 +89,7 @@ export function createRouter(deps = {}) {
     }
     const meta = coordinator.group.getMeta();
     if (!meta) return { ok: false, error: 'group_not_initialised' };
+    const claimedVpIds = args.inboundEnvelope?._cliTurnContext?.claimedVpIds;
 
     // Roster membership — `all` is reserved broadcast sentinel handled by
     // coordinator; anything else must resolve to a real member so we fail fast
@@ -100,6 +101,9 @@ export function createRouter(deps = {}) {
     }
     if (targetVpId === from) {
       return { ok: false, error: 'self_forward_rejected' };
+    }
+    if (targetVpId !== 'all' && claimedVpIds?.has?.(targetVpId)) {
+      return { ok: false, error: 'target_already_claimed' };
     }
 
     // Build the causedBy chain BEFORE constructing the synthetic user-like
@@ -133,15 +137,11 @@ export function createRouter(deps = {}) {
     // stamp + `synthetic` marker let Coordinator's `selectRespondingVps`
     // still treat this like a routed turn (target VPs need to respond) even
     // though role is now 'assistant'.
-    const injectText = targetVpId === 'all'
-      ? `@all ${text}`
-      : `@${targetVpId} ${text}`;
-
     const report = coordinator.ingest(
       {
         from,                  // real VP id — preserved for provenance
         role: 'assistant',     // VP-authored — persists as assistant turn
-        text: injectText,
+        text,
         taskId: args.taskId ?? null,
         // route_forward is already visible as the source VP's tool action.
         // Persist the synthetic handoff for audit/dispatch, but keep it out
@@ -151,6 +151,7 @@ export function createRouter(deps = {}) {
         meta: {
           synthetic: true,
           injectedBy: 'route_forward',
+          routeForwardTarget: targetVpId,
           senderVpId: from,
           reason: args.reason || null,
           causedBy: chain,
