@@ -123,6 +123,11 @@ function sectionScopes(section) {
   return scopesForLabel(section.parentHeading);
 }
 
+function isCoreSection(section) {
+  return CORE_SECTION_RE.test(section.heading)
+    || (section.parentHeading && CORE_SECTION_RE.test(section.parentHeading));
+}
+
 function renderProjectDocDirectory(omitted, language) {
   if (omitted.length === 0) return '';
   const zh = String(language || '').toLowerCase().startsWith('zh');
@@ -144,7 +149,7 @@ function renderProjectDocDirectory(omitted, language) {
  * unstructured documents stay whole so progressive disclosure never drops
  * instructions from projects that have not adopted section headings.
  *
- * @returns {{ text: string, selectedScopes: Set<string>, availableScopes: Set<string>, scoped: boolean }}
+ * @returns {{ text: string, selectedScopes: Set<string>, availableScopes: Set<string>, scoped: boolean, hasUnscopedOmitted: boolean }}
  */
 export function selectProjectDocContext(text, {
   prompt = '',
@@ -156,11 +161,15 @@ export function selectProjectDocContext(text, {
   const source = typeof text === 'string' ? text.trim() : '';
   const selectedScopes = inferProjectDocScopes({ prompt, messages, pathHints });
   for (const scope of forcedScopes || []) selectedScopes.add(scope);
-  if (!source) return { text: '', selectedScopes, availableScopes: new Set(), scoped: false };
+  if (!source) return {
+    text: '', selectedScopes, availableScopes: new Set(), scoped: false, hasUnscopedOmitted: false,
+  };
 
   const parsed = splitProjectDoc(source);
   if (Buffer.byteLength(source, 'utf8') < PROJECT_DOC_SPLIT_MIN_BYTES || parsed.sections.length < 4) {
-    return { text: source, selectedScopes, availableScopes: new Set(), scoped: false };
+    return {
+      text: source, selectedScopes, availableScopes: new Set(), scoped: false, hasUnscopedOmitted: false,
+    };
   }
 
   const availableScopes = new Set();
@@ -171,11 +180,10 @@ export function selectProjectDocContext(text, {
   const included = [];
   const omitted = [];
   for (const section of parsed.sections) {
-    const label = `${section.parentHeading} ${section.heading}`.trim();
     const scopes = sectionScopes(section);
-    const isCore = CORE_SECTION_RE.test(section.heading)
-      || (section.level === 2 && CORE_SECTION_RE.test(label));
-    const selected = isCore || [...scopes].some(scope => selectedScopes.has(scope));
+    const selected = selectedScopes.has('*')
+      || isCoreSection(section)
+      || [...scopes].some(scope => selectedScopes.has(scope));
     (selected ? included : omitted).push(section);
   }
 
@@ -189,6 +197,7 @@ export function selectProjectDocContext(text, {
     selectedScopes,
     availableScopes,
     scoped: omitted.length > 0,
+    hasUnscopedOmitted: omitted.some(section => sectionScopes(section).size === 0),
   };
 }
 
@@ -197,6 +206,9 @@ export function projectDocPathHintsFromToolCall(toolName, input = {}) {
   const hints = [];
   for (const key of ['file_path', 'path', 'cwd', 'workDir', 'notebook_path', 'output_path']) {
     if (typeof input?.[key] === 'string' && input[key].trim()) hints.push(input[key].trim());
+  }
+  if (toolName === 'Bash' && typeof input?.command === 'string' && input.command.trim()) {
+    hints.push(input.command.trim());
   }
   if (toolName === 'ApplyPatch' && typeof input?.patch === 'string') {
     for (const match of input.patch.matchAll(/^\+\+\+\s+(?:b\/)?(.+)$/gm)) {
@@ -209,13 +221,18 @@ export function projectDocPathHintsFromToolCall(toolName, input = {}) {
 
 export function projectDocWriteScopesNeedingReload(projectDocContext, pathHints) {
   const missing = new Set();
-  if (!projectDocContext?.scoped || !Array.isArray(pathHints) || pathHints.length === 0) return missing;
+  if (!projectDocContext?.scoped) return missing;
   const required = inferProjectDocScopes({ pathHints });
   for (const scope of required) {
     if (projectDocContext.availableScopes.has(scope) && !projectDocContext.selectedScopes.has(scope)) {
       missing.add(scope);
     }
   }
+  if (projectDocContext.hasUnscopedOmitted === true) missing.add('*');
+  if (required.size > 0 || missing.size > 0) return missing;
+  // Arbitrary shell commands cannot be classified by the bounded scope
+  // vocabulary. Fail closed for writes by loading every omitted section.
+  missing.add('*');
   return missing;
 }
 

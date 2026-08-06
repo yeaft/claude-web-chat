@@ -2373,11 +2373,11 @@ export class Engine {
       pathHints: projectDocLoadedPathHints,
       language: this.#config.language || 'en',
     });
-    const activeTaskSnapshots = this.#taskManager
+    let activeTaskSnapshots = this.#taskManager
       && typeof this.#taskManager.listActiveTasks === 'function'
       ? this.#taskManager.listActiveTasks(runtimeSessionId)
       : [];
-    const activeTasks = this.#taskManager
+    let activeTasks = this.#taskManager
       ? this.#taskManager.renderActiveTasksForPrompt(runtimeSessionId, {
           language: this.#config.language || 'en',
         })
@@ -2385,7 +2385,7 @@ export class Engine {
     const registeredToolNames = this.#toolRegistry
       ? this.#toolRegistry.getToolNames()
       : Array.from(this.#tools.keys());
-    const activeToolNames = this.#toolRegistry
+    const resolveCurrentActiveToolNames = () => this.#toolRegistry
       ? resolveActiveToolNames({
           toolNames: registeredToolNames,
           prompt,
@@ -2401,6 +2401,7 @@ export class Engine {
             && this.#config.imageApiUrl.trim().length > 0,
         })
       : null;
+    let activeToolNames = resolveCurrentActiveToolNames();
     let resolvedSkillContent = '';
     let resolvedSkills = [];
     let skillResolutionError = null;
@@ -2645,7 +2646,7 @@ export class Engine {
       };
     }
 
-    const toolDefs = this.#getToolDefs(effectiveCollabToolPolicy, activeToolNames);
+    let toolDefs = this.#getToolDefs(effectiveCollabToolPolicy, activeToolNames);
     let turnNumber = 0;
     let continueTurns = 0; // auto-continue counter
     let toolLoopTurns = 0; // task-327b: tool-use turns for long-loop auto-bump
@@ -2821,6 +2822,22 @@ export class Engine {
           };
         }
       }
+
+      // Tool availability depends on live Session state. A Bash call can start a
+      // background task (or a sub-agent can appear) during the prior loop, so
+      // recompute the schemas and matching guidance before every provider call.
+      activeTaskSnapshots = this.#taskManager
+        && typeof this.#taskManager.listActiveTasks === 'function'
+        ? this.#taskManager.listActiveTasks(runtimeSessionId)
+        : [];
+      activeTasks = this.#taskManager
+        ? this.#taskManager.renderActiveTasksForPrompt(runtimeSessionId, {
+            language: this.#config.language || 'en',
+          })
+        : '';
+      activeToolNames = resolveCurrentActiveToolNames();
+      toolDefs = this.#getToolDefs(effectiveCollabToolPolicy, activeToolNames);
+      systemPrompt = buildCurrentSystemPrompt();
 
       try {
         // task-327b: resolve effort per-turn so the long-loop auto-bump

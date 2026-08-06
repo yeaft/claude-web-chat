@@ -31,6 +31,7 @@ import { runDream } from '../../../agent/yeaft/dream/runner.js';
 import { extractAndWriteMemorySegments } from '../../../agent/yeaft/dream/segment-extract.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
 import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
+import { loadConfig } from '../../../agent/yeaft/config.js';
 import { resolveActiveToolNames } from '../../../agent/yeaft/tools/activation.js';
 import {
   inferProjectDocScopes,
@@ -182,6 +183,21 @@ describe('active tool exposure and scoped prompts', () => {
       prompt: 'Run the task.',
     }).has('SpawnAgent')).toBe(true);
 
+    const ordinaryLanguageCases = [
+      ['What did we decide about authentication?', 'HistorySearch', {}],
+      ['Please have another worker inspect this independently.', 'SpawnAgent', {}],
+      ['Make me a logo for this project.', 'ImageGeneration', { imageGenerationConfigured: true }],
+      ['Track this until it is finished across multiple sessions.', 'CreateWorkItem', {}],
+      ['The server says ENOSPC. Investigate the cause.', 'DiskUsage', {}],
+    ];
+    for (const [request, expectedTool, extra] of ordinaryLanguageCases) {
+      expect(resolveActiveToolNames({
+        toolNames,
+        prompt: request,
+        ...extra,
+      }).has(expectedTool), `${expectedTool} should activate for: ${request}`).toBe(true);
+    }
+
     const withSubAgent = resolveActiveToolNames({
       toolNames,
       prompt: 'continue',
@@ -318,10 +334,146 @@ describe('active tool exposure and scoped prompts', () => {
     expect(concise).toContain('Session Participant');
     expect(concise).toContain('Active Tool Guidance');
     expect(concise).toContain('Read existing files before editing');
+    expect(concise).toContain('do not revert changes you did not make');
+    expect(concise).toContain('Do not amend commits unless the user explicitly asks');
+    expect(concise).toContain('Do not use `git reset --hard` or `git clean -f` without user approval');
     expect(concise).not.toContain('Available tools:');
     expect(concise).not.toContain('For non-trivial multi-step work');
     expect(planned).toContain('For non-trivial multi-step work');
     expect(planned).not.toContain('Available tools: FileRead');
+  });
+
+  it('preserves image generation configuration through the authoritative loader', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-image-config-'));
+    try {
+      writeFileSync(join(dir, 'config.json'), JSON.stringify({
+        primaryModel: 'test-model',
+        imageApiUrl: 'https://images.example.test/generate',
+      }));
+      expect(loadConfig({ dir }).imageApiUrl).toBe('https://images.example.test/generate');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshes task-management schemas after a current-turn background task starts', async () => {
+    const registry = new ToolRegistry();
+    const activeTasks = [];
+    registry.register({
+      name: 'Bash',
+      description: 'Start a shell command.',
+      parameters: { type: 'object', properties: {} },
+      isReadOnly: () => false,
+      execute: async () => {
+        activeTasks.push({ id: 'task_live', kind: 'shell', status: 'running' });
+        return 'Started background task task_live.';
+      },
+    });
+    for (const name of ['ListTasks', 'ReadTaskLog', 'CancelTask']) {
+      registry.register({
+        name,
+        description: `${name} description`,
+        parameters: { type: 'object', properties: {} },
+        isReadOnly: () => true,
+        execute: async () => 'ok',
+      });
+    }
+    const taskManager = {
+      listActiveTasks: () => [...activeTasks],
+      renderActiveTasksForPrompt: () => activeTasks.length > 0 ? 'task_live is running' : '',
+    };
+    mockAdapter.pushResponse([
+      { type: 'tool_call', id: 'start_bg', name: 'Bash', input: { command: 'npm start', background: true } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    mockAdapter.pushResponse([
+      { type: 'text_delta', text: 'The server is running in the background.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const engine = new Engine({
+      adapter: mockAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      taskManager,
+    });
+    for await (const _event of engine.query({ prompt: 'Start the dev server and leave it running.' })) { /* drain */ }
+
+    expect(mockAdapter.callLog[0].tools.map(tool => tool.name)).not.toContain('ListTasks');
+    expect(mockAdapter.callLog[1].tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
+      'ListTasks',
+      'ReadTaskLog',
+      'CancelTask',
+    ]));
+    expect(mockAdapter.callLog[1].system).toContain('task_live is running');
+  });
+
+  it('reloads unclassified and Bash write rules before executing against a large project doc', async () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'yeaft-project-doc-reload-'));
+    const projectDoc = [
+      '# Example Project',
+      'Project preamble.',
+      '## Product Model and Terminology',
+      'CORE_RULE '.repeat(900),
+      '## Naming and Compatibility Rules',
+      'PARENT_CORE_RULE',
+      '### No Version-Suffix Filenames',
+      'CORE_CHILD_RULE',
+      '## Database Migrations',
+      'DATABASE_MIGRATION_RULE',
+      '## Web and Server',
+      'WEB_RULE',
+    ].join('\n');
+    writeFileSync(join(workDir, 'CLAUDE.md'), projectDoc);
+    try {
+      for (const toolCall of [
+        { name: 'FileWrite', input: { file_path: 'db/migrations/002.sql', content: 'ALTER TABLE example;' } },
+        { name: 'Bash', input: { command: 'node scripts/migrate.js' } },
+      ]) {
+        const adapter = new MockAdapter();
+        let executions = 0;
+        const registry = new ToolRegistry();
+        registry.register({
+          name: toolCall.name,
+          description: `${toolCall.name} test tool`,
+          parameters: { type: 'object', properties: {} },
+          isReadOnly: () => false,
+          execute: async () => {
+            executions += 1;
+            return 'executed';
+          },
+        });
+        adapter.pushResponse([
+          { type: 'tool_call', id: `write_${toolCall.name}`, ...toolCall },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'Reviewed the newly loaded rules.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, projectDocMaxBytes: 64 * 1024 },
+          toolRegistry: registry,
+        });
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'Update the deployment state.',
+          workDir,
+        })) events.push(event);
+
+        expect(executions).toBe(0);
+        expect(events.find(event => event.type === 'tool_end')).toMatchObject({
+          isError: true,
+          skipped: true,
+        });
+        expect(adapter.callLog[1].system).toContain('DATABASE_MIGRATION_RULE');
+        expect(adapter.callLog[1].system).toContain('CORE_CHILD_RULE');
+      }
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
   });
 });
 

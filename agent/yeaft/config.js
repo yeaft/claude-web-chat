@@ -351,6 +351,7 @@ function loadLegacyConfig(dir, overrides) {
     proxyUrl: overrides.proxyUrl || env.YEAFT_PROXY_URL || fileConfig.proxyUrl || 'http://localhost:6628',
     baseUrl: overrides.baseUrl || env.YEAFT_BASE_URL || fileConfig.baseUrl || null,
     adapter: overrides.adapter || env.YEAFT_ADAPTER || fileConfig.adapter || null,
+    imageApiUrl: overrides.imageApiUrl || env.YEAFT_IMAGE_API_URL || fileConfig.imageApiUrl || null,
     debug: overrides.debug !== undefined ? overrides.debug
       : env.YEAFT_DEBUG !== undefined ? isTruthy(env.YEAFT_DEBUG)
         : fileConfig.debug !== undefined ? fileConfig.debug : DEFAULTS.debug,
@@ -476,6 +477,7 @@ export function loadConfig(overrides = {}) {
     // General settings
     language: overrides.language || jsonConfig.language || DEFAULTS.language,
     debug: overrides.debug !== undefined ? overrides.debug : (jsonConfig.debug ?? DEFAULTS.debug),
+    imageApiUrl: overrides.imageApiUrl || jsonConfig.imageApiUrl || null,
     dir,
 
     // Token limits. Resolution order:
