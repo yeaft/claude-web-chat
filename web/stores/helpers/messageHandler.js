@@ -556,11 +556,15 @@ export function handleMessage(store, msg) {
         if (!hydrated) continue;
         const key = loopKey(hydrated);
         hydratedKeys.add(key);
-        // If a live loop exists for the same logical row, keep it; it may
-        // carry richer in-flight fields than the persisted snapshot. The
-        // hydrated order still drives the final ordering, so detail fetches
-        // restore long requests chronologically instead of appending gaps.
-        mergedLoops.push(liveByKey.get(key) || hydrated);
+        // Detail fetches are the authoritative full snapshot; merge them over
+        // the live metadata row while preserving any live-only sequencing or
+        // status fields. List fetches remain lightweight and must not replace
+        // a richer live row. Hydrated order drives the final ordering so long
+        // requests are restored chronologically instead of appending gaps.
+        const live = liveByKey.get(key);
+        mergedLoops.push(isDetailFetch
+          ? { ...(live || {}), ...hydrated }
+          : (live || hydrated));
       }
       if (isDetailFetch) {
         for (const live of liveLoops) {

@@ -205,6 +205,132 @@ describe('message flow regressions', () => {
     expect(kept.some(row => row.id === `assistant-${turnCount}`)).toBe(true);
     expect(kept.some(row => row.id === 'user-1')).toBe(false);
   });
+
+  it('drops oversized live debug detail from legacy Agent events', async () => {
+    const { useChatStore } = await import('../../web/stores/chat.js');
+    const store = useChatStore();
+    const large = 'x'.repeat(1024 * 1024);
+    store.yeaftDebugLoops = [];
+    store.yeaftDebugTurnsById = {
+      'turn-legacy-debug': {
+        turnId: 'turn-legacy-debug',
+        sessionId: 'session-debug',
+        tools: [],
+        closedAt: null,
+      },
+    };
+    store.yeaftDebugTurnOrder = ['turn-legacy-debug'];
+
+    store.handleYeaftOutput({
+      agentId: 'agent-debug',
+      conversationId: 'conv-debug',
+      sessionId: 'session-debug',
+      event: {
+        type: 'loop',
+        turnId: 'turn-legacy-debug',
+        loopNumber: 1,
+        model: 'provider/model',
+        systemPrompt: large,
+        messages: [{ role: 'user', content: large }],
+        response: large,
+        toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: large } }],
+        rawRequest: { body: large },
+        rawResponse: large,
+        usage: { totalTokens: 42 },
+      },
+    });
+    store.handleYeaftOutput({
+      agentId: 'agent-debug',
+      conversationId: 'conv-debug',
+      sessionId: 'session-debug',
+      event: {
+        type: 'tool_exec',
+        turnId: 'turn-legacy-debug',
+        loopNumber: 1,
+        callId: 'call-1',
+        name: 'Bash',
+        toolOutput: large,
+      },
+    });
+
+    expect(store.yeaftDebugLoops).toHaveLength(1);
+    expect(store.yeaftDebugLoops[0]).toMatchObject({
+      turnId: 'turn-legacy-debug',
+      loopNumber: 1,
+      model: 'provider/model',
+      usage: { totalTokens: 42 },
+    });
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('systemPrompt');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('messages');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('rawRequest');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('rawResponse');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('response');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('toolCalls');
+    expect(store.yeaftDebugTurnsById['turn-legacy-debug'].tools[0]).not.toHaveProperty('toolOutput');
+    expect(JSON.stringify(store.yeaftDebugLoops).length).toBeLessThan(2048);
+  });
+
+  it('hydrates full persisted debug detail over the same live metadata loop', () => {
+    const turnId = 'turn-debug-detail';
+    const store = {
+      _yeaftDebugHistoryLatestDetailRequestId: 'detail-request',
+      _yeaftDebugHistoryLatestListRequestId: null,
+      _fetchYeaftDebugHistoryTimer: null,
+      _yeaftDebugHistoryInFlightKey: 'session-debug:turn-debug-detail',
+      yeaftDebugTurnsById: {
+        [turnId]: {
+          turnId,
+          sessionId: 'session-debug',
+          closedAt: 123,
+          liveOnlyStatus: 'complete',
+        },
+      },
+      yeaftDebugLoops: [{
+        turnId,
+        loopNumber: 1,
+        model: 'provider/model',
+        usage: { totalTokens: 42 },
+        liveOnlySequence: 9,
+      }],
+      yeaftDebugTurnOrder: [turnId],
+      yeaftDebugHistoryLoading: true,
+    };
+    const fullMessages = [{ role: 'user', content: 'full persisted message' }];
+    const fullRawRequest = { body: { input: 'full persisted request' } };
+
+    handleMessage(store, {
+      type: 'yeaft_debug_history',
+      requestId: 'detail-request',
+      detailTurnId: turnId,
+      turns: [{ turnId, sessionId: 'session-debug', detailsLoaded: true }],
+      loops: [{
+        turnId,
+        loopNumber: 1,
+        model: 'provider/model',
+        systemPrompt: 'full persisted prompt',
+        messages: fullMessages,
+        response: 'full persisted response',
+        toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: 'true' } }],
+        rawRequest: fullRawRequest,
+        rawResponse: { output: 'full persisted raw response' },
+        usage: { totalTokens: 42 },
+      }],
+    });
+
+    expect(store.yeaftDebugHistoryLoading).toBe(false);
+    expect(store.yeaftDebugLoops).toHaveLength(1);
+    expect(store.yeaftDebugLoops[0]).toMatchObject({
+      turnId,
+      loopNumber: 1,
+      liveOnlySequence: 9,
+      systemPrompt: 'full persisted prompt',
+      messages: fullMessages,
+      response: 'full persisted response',
+      rawRequest: fullRawRequest,
+      rawResponse: { output: 'full persisted raw response' },
+    });
+  });
+
   it('keeps same-id streaming updates in one assistant message', () => {
     const store = makeStore();
 

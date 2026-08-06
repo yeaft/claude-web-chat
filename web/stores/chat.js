@@ -4968,13 +4968,15 @@ export const useChatStore = defineStore('chat', {
           if (!event.turnId) break;
           const prev = this.yeaftDebugTurnsById[event.turnId];
           if (!prev) break;
+          // Live events are only a progress index. Full tool output belongs to
+          // the persisted per-Turn trace and is loaded when the debug panel is
+          // opened; retaining legacy Agent payloads here can exhaust the tab.
           const tools = [...(prev.tools || []), {
             loopNumber: event.loopNumber || 0,
             callId: event.callId || null,
             name: event.name || '?',
             durationMs: event.durationMs || 0,
             isError: !!event.isError,
-            toolOutput: event.toolOutput == null ? null : String(event.toolOutput),
           }];
           this.yeaftDebugTurnsById = {
             ...this.yeaftDebugTurnsById,
@@ -4987,14 +4989,15 @@ export const useChatStore = defineStore('chat', {
           // feat-6af5f9f1 PR B: replaces `debug_turn`. Each entry is one
           // LLM call; the parent Turn record lives in yeaftDebugTurnsById
           // under loop.turnId.
+          // Keep the always-on live cache metadata-only. Complete prompts,
+          // messages, responses, tool calls, and raw exchanges are persisted in
+          // DebugTrace and fetched for exactly one Turn when the user opens its
+          // panel. This also protects upgraded web clients from legacy Agents
+          // that still send the former multi-MiB live payload shape.
           this.yeaftDebugLoops.push({
             turnId: event.turnId || null,
             loopNumber: event.loopNumber || 0,
             model: event.model,
-            systemPrompt: event.systemPrompt,
-            messages: event.messages,
-            response: event.response,
-            toolCalls: event.toolCalls,
             usage: event.usage || { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
             latencyMs: event.latencyMs,
             ttfbMs: event.ttfbMs,
@@ -5005,9 +5008,6 @@ export const useChatStore = defineStore('chat', {
             // null for legacy loops missing the field — the panel
             // computes a derived time from turn.openedAt in that case.
             at: typeof event.at === 'number' ? event.at : null,
-            // task-344: raw API request / response payload (redacted server-side).
-            rawRequest: event.rawRequest || null,
-            rawResponse: event.rawResponse || null,
             // Bug 3 carry-over: stamp sessionId so the panel filter narrows
             // by session. Falls back to envelope groupId if engine omitted it.
             sessionId: msg.sessionId || null,
