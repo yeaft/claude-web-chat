@@ -44,11 +44,13 @@ describe('Sandbox Settings contract', () => {
     expect(component).not.toContain("'Idempotency-Key': crypto.randomUUID()");
   });
 
-  it('explains that Sandbox creates a separate managed Agent', () => {
-    expect(en).toContain("'settings.sandbox.description': 'Create a separate, persistent managed Yeaft Agent on a qualified dedicated Sandbox Host.'");
-    expect(zh).toContain("'settings.sandbox.description': '在合格的专用 Sandbox Host 上创建一个独立、持久化的托管 Yeaft Agent。'");
-    expect(en).toContain("'settings.sandbox.unavailable.disabled': 'The server-side managed Sandbox service is not enabled for this deployment. Updating an existing Agent does not enable it.'");
-    expect(zh).toContain("'settings.sandbox.unavailable.disabled': '此部署尚未启用服务器端托管 Sandbox 服务；升级现有 Agent 不会启用它。'");
+  it('explains the simple Server-managed container boundary', () => {
+    expect(en).toContain("'settings.sandbox.description': 'Run a persistent Yeaft Agent in a Docker container managed by this Server.'");
+    expect(zh).toContain("'settings.sandbox.description': '在本 Server 管理的 Docker 容器中运行一个持久化 Yeaft Agent。'");
+    expect(en).toContain('The Server manages only this container’s start, stop, and removal.');
+    expect(zh).toContain('Server 只管理此容器的启动、停止和删除');
+    expect(en).not.toContain('qualified dedicated Sandbox Host');
+    expect(zh).not.toContain('合格的专用 Sandbox Host');
   });
 
   it('uses stable, non-sensitive unavailable messages in both locales', () => {

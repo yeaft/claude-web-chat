@@ -21,7 +21,6 @@ import {
 import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
-import { getManagedSandboxIdentity } from './managed-sandbox/identity-store.js';
 import { SAFE_REMOTE_UPGRADE_CAPABILITY } from './upgrade-command.js';
 import { loadConfig as loadYeaftConfig } from './yeaft/config.js';
 import {
@@ -50,7 +49,6 @@ ctx.pkgName = pkg.name;
 // service instances must stay scoped to their standard per-instance config.
 const LOCAL_CONFIG_FILE = join(process.cwd(), '.claude-agent.json');
 const IS_LOCAL_RUN = process.env.YEAFT_LOCAL_RUN === 'true';
-const MANAGED_SANDBOX_IDENTITY = getManagedSandboxIdentity();
 const DEFAULT_AGENT_NAME = getDefaultAgentName();
 
 // 加载或创建配置
@@ -113,6 +111,10 @@ try {
   console.warn(`[Agent] Could not ensure yeaft dir ${YEAFT_DIR}: ${err?.message || err}`);
 }
 
+const agentSecret = process.env.AGENT_SECRET_FILE
+  ? readFileSync(process.env.AGENT_SECRET_FILE, 'utf8').trim()
+  : (process.env.AGENT_SECRET || fileConfig.agentSecret);
+
 const CONFIG = {
   instanceId: INSTANCE_ID,
   serverUrl: process.env.SERVER_URL || fileConfig.serverUrl,
@@ -121,8 +123,7 @@ const CONFIG = {
   yeaftDir: YEAFT_DIR,
   telemetry: loadYeaftConfig({ dir: YEAFT_DIR }).telemetry,
   reconnectInterval: fileConfig.reconnectInterval,
-  agentSecret: process.env.AGENT_SECRET || fileConfig.agentSecret,
-  managedSandboxIdentity: MANAGED_SANDBOX_IDENTITY,
+  agentSecret,
   // 显式禁用的工具（非 MCP 相关）
   explicitDisallowedTools: (() => {
     const raw = process.env.DISALLOWED_TOOLS || fileConfig.disallowedTools || '';
@@ -159,7 +160,6 @@ async function detectCapabilities() {
   // flip `agent.encryptOutbound = false`, stopping outbound encryption
   // to this peer. Old servers ignore the unknown capability token.
   const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', SAFE_REMOTE_UPGRADE_CAPABILITY, 'work_center', 'work_center_message_v2', 'session_history_search', 'session_history_outline', 'session_history_window_prefetch'];
-  if (MANAGED_SANDBOX_IDENTITY) capabilities.push('managed-sandbox');
   if (process.platform === 'linux') capabilities.push('work_item_attachments');
   const pty = await loadNodePty();
   if (pty) capabilities.push('terminal');

@@ -1316,6 +1316,11 @@ export const stmts = {
   deleteCustomExpertRolesForUser: db.prepare(`
     DELETE FROM custom_expert_roles WHERE user_id = ?
   `),
+  // Remove rows from the retired managed-Sandbox control plane before the user.
+  // Child operations, credentials, and audit rows cascade from sandboxes.
+  deleteLegacySandboxesForUser: db.prepare(`
+    DELETE FROM sandboxes WHERE user_id = ?
+  `),
   // Invitations: keep history but null-out the FK so it doesn't block deletion.
   // (created_by is NOT NULL, so for invitations the user created we just delete them.)
   deleteInvitationsCreatedBy: db.prepare(`
@@ -1323,12 +1328,6 @@ export const stmts = {
   `),
   clearInvitationUsedBy: db.prepare(`
     UPDATE invitations SET used_by = NULL WHERE used_by = ?
-  `),
-  getReservedSandboxForUser: db.prepare(`
-    SELECT id FROM sandboxes WHERE user_id = ? AND reservation_held = 1 LIMIT 1
-  `),
-  deleteReleasedSandboxesForUser: db.prepare(`
-    DELETE FROM sandboxes WHERE user_id = ? AND reservation_held = 0
   `),
   deleteUserById: db.prepare(`
     DELETE FROM users WHERE id = ?

@@ -632,7 +632,9 @@ export default {
   'auth.sessionExpired': '登录已过期，请重新登录。',
 
   // Settings - 托管 Sandbox
-  'settings.sandbox.description': '在合格的专用 Sandbox Host 上创建一个独立、持久化的托管 Yeaft Agent。',
+  'settings.sandbox.description': '在本 Server 管理的 Docker 容器中运行一个持久化 Yeaft Agent。',
+  'settings.sandbox.containerAgent': 'Docker 化 Yeaft Agent',
+  'settings.sandbox.serverManaged': 'Server 只管理此容器的启动、停止和删除；容器内 Agent 仍使用普通 Yeaft 连接。',
   'settings.sandbox.agentName': 'Agent 名称',
   'settings.sandbox.sizeLabel': '规格',
   'settings.sandbox.enable': '启用 Sandbox',
@@ -664,7 +666,7 @@ export default {
   'settings.sandbox.stage.complete': '已完成',
   'settings.sandbox.stage.dispatching': '正在安全分发',
   'settings.sandbox.stage.capacity_rejected': '正在等待容量',
-  'settings.sandbox.unavailable.disabled': '此部署尚未启用服务器端托管 Sandbox 服务；升级现有 Agent 不会启用它。',
+  'settings.sandbox.unavailable.disabled': '容器 Agent 管理尚未启用。请在 Server 设置 SANDBOX_ENABLED=true 和 SANDBOX_SERVER_URL。',
   'settings.sandbox.unavailable.notEntitled': '此账号暂不可使用 Sandbox。',
   'settings.sandbox.unavailable.capacityUnavailable': 'Sandbox 暂时不可用。',
   'settings.sandbox.error.SANDBOX_LOAD_FAILED': '无法加载 Sandbox 状态。请关闭设置后重试。',

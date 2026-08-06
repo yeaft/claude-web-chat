@@ -1,50 +1,6 @@
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import db, { stmts, generateUserId, generateAgentSecret, transaction } from './connection.js';
 
-function deletionRequestDigest() {
-  return createHash('sha256').update(JSON.stringify({ kind: 'remove' })).digest('hex');
-}
-
-function ensureDeletionRemoval(userId, deletionId, now = Date.now()) {
-  const sandbox = db.prepare('SELECT * FROM sandboxes WHERE user_id = ? AND reservation_held = 1').get(userId);
-  if (!sandbox) return null;
-  const baseKey = `account-delete:${deletionId}`;
-  const attempts = db.prepare(`
-    SELECT * FROM sandbox_operations
-    WHERE user_id = ? AND (idempotency_key = ? OR idempotency_key LIKE ?)
-    ORDER BY created_at DESC, rowid DESC
-  `).all(userId, baseKey, `${baseKey}:attempt:%`);
-  const latest = attempts[0];
-  if (latest && latest.status !== 'failed') return latest;
-  const key = attempts.length === 0 ? baseKey : `${baseKey}:attempt:${attempts.length + 1}`;
-  const existing = db.prepare('SELECT * FROM sandbox_operations WHERE user_id = ? AND idempotency_key = ?')
-    .get(userId, key);
-  if (existing) return existing;
-  db.prepare(`
-    UPDATE sandbox_operations SET status = 'failed', error_code = 'ACCOUNT_DELETION_REQUESTED', updated_at = ?
-    WHERE sandbox_id = ? AND status IN ('pending', 'running')
-  `).run(now, sandbox.id);
-  db.prepare('UPDATE sandbox_credentials SET revoked_at = ? WHERE sandbox_id = ? AND revoked_at IS NULL')
-    .run(now, sandbox.id);
-  const host = db.prepare('SELECT epoch FROM sandbox_hosts WHERE id = ?').get(sandbox.host_id);
-  const hostEpoch = host?.epoch || sandbox.host_epoch;
-  const generation = sandbox.generation + 1;
-  db.prepare(`
-    UPDATE sandboxes SET desired_state = 'removed', observed_state = CASE
-      WHEN observed_state = 'removed' THEN observed_state ELSE 'recovery_required' END,
-      generation = ?, host_epoch = ?, last_error_code = NULL, updated_at = ?
-    WHERE id = ? AND reservation_held = 1
-  `).run(generation, hostEpoch, now, sandbox.id);
-  const operationId = `sandbox_op_${randomUUID()}`;
-  db.prepare(`
-    INSERT INTO sandbox_operations (
-      id, sandbox_id, user_id, idempotency_key, request_digest, kind, status,
-      stage, generation, host_epoch, deadline_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, 'remove', 'pending', 'removing', ?, ?, ?, ?, ?)
-  `).run(operationId, sandbox.id, userId, key, deletionRequestDigest(), generation,
-    hostEpoch, now + 10 * 60_000, now, now);
-  return db.prepare('SELECT * FROM sandbox_operations WHERE id = ?').get(operationId);
-}
 
 export const userDb = {
   getOrCreate(username, displayName = null) {
@@ -116,44 +72,17 @@ export const userDb = {
             password_hash = NULL, agent_secret = NULL, totp_secret = NULL, totp_enabled = 0
           WHERE id = ? AND deletion_state = 'active'
         `).run(now, deletionId, userId);
-        if (changed.changes !== 1) {
-          throw new Error('ACCOUNT_DELETION_STATE_CONFLICT');
-        }
+        if (changed.changes !== 1) throw new Error('ACCOUNT_DELETION_STATE_CONFLICT');
       }
-      db.prepare('UPDATE sandbox_entitlements SET enabled = 0, updated_at = ? WHERE user_id = ?')
-        .run(now, userId);
-      const operation = ensureDeletionRemoval(userId, deletionId, now);
-      return { deletionId, status: 'pending', operationId: operation?.id || null };
+      return { deletionId, status: 'pending', operationId: null };
     })();
   },
 
-  reconcilePendingDeletions(now = Date.now()) {
-    const pending = db.prepare("SELECT id, deletion_id FROM users WHERE deletion_state = 'pending'").all();
+  reconcilePendingDeletions() {
+    const pending = db.prepare("SELECT id FROM users WHERE deletion_state = 'pending'").all();
     let finalized = 0;
     for (const user of pending) {
-      if (stmts.getReservedSandboxForUser.get(user.id)) {
-        transaction(() => ensureDeletionRemoval(user.id, user.deletion_id, now))();
-        continue;
-      }
-      const unsettled = db.prepare(`
-        SELECT 1 FROM sandboxes s
-        WHERE s.user_id = ? AND (
-          s.observed_state != 'removed' OR s.removed_at IS NULL
-          OR EXISTS (
-            SELECT 1 FROM sandbox_operations o
-            WHERE o.sandbox_id = s.id AND o.status IN ('pending', 'running')
-          )
-          OR NOT EXISTS (
-            SELECT 1 FROM sandbox_operations o
-            WHERE o.sandbox_id = s.id AND o.kind = 'remove' AND o.status = 'succeeded'
-          )
-          OR EXISTS (
-            SELECT 1 FROM sandbox_credentials c
-            WHERE c.sandbox_id = s.id AND c.revoked_at IS NULL
-          )
-        ) LIMIT 1
-      `).get(user.id);
-      if (!unsettled && this.deleteUser(user.id, { requirePending: true })) finalized++;
+      if (this.deleteUser(user.id, { requirePending: true })) finalized++;
     }
     return finalized;
   },
@@ -255,33 +184,17 @@ export const userDb = {
    * session store from here to keep this layer pure).
    */
   deleteUser(userId, { requirePending = false } = {}) {
-    // Final erasure is allowed only after every Sandbox reservation has settled.
     const run = transaction((id) => {
       const user = stmts.getUserById.get(id);
       if (!user || (requirePending && user.deletion_state !== 'pending')) return false;
-      if (stmts.getReservedSandboxForUser.get(id)) {
-        const error = new Error('SANDBOX_REMOVE_REQUIRED');
-        error.code = 'SANDBOX_REMOVE_REQUIRED';
-        throw error;
-      }
-      if (requirePending) {
-        const unsettled = db.prepare(`
-          SELECT 1 FROM sandboxes s WHERE s.user_id = ? AND (
-            s.observed_state != 'removed' OR s.removed_at IS NULL
-            OR EXISTS (SELECT 1 FROM sandbox_operations o WHERE o.sandbox_id = s.id AND o.status IN ('pending', 'running'))
-            OR NOT EXISTS (SELECT 1 FROM sandbox_operations o WHERE o.sandbox_id = s.id AND o.kind = 'remove' AND o.status = 'succeeded')
-            OR EXISTS (SELECT 1 FROM sandbox_credentials c WHERE c.sandbox_id = s.id AND c.revoked_at IS NULL)
-          ) LIMIT 1
-        `).get(id);
-        if (unsettled) return false;
-      }
-      stmts.deleteReleasedSandboxesForUser.run(id);
+
       stmts.deleteIdentitiesForUser.run(id);
       stmts.deleteUserSessionsByUser.run(id);
       stmts.deleteYeaftSessionsByUserCascade.run(id);
       stmts.deleteUserStats.run(id);
       stmts.deleteDailyStatsForUser.run(id);
       stmts.deleteCustomExpertRolesForUser.run(id);
+      stmts.deleteLegacySandboxesForUser.run(id);
       stmts.deleteInvitationsCreatedBy.run(id);
       stmts.clearInvitationUsedBy.run(id);
       if (requirePending) {
