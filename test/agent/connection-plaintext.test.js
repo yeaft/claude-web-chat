@@ -572,7 +572,12 @@ describe('agent received `registered` flips serverEncryptionRequired', () => {
       expect(ctx.serverEncryptionRequired).toBe(false);
 
       const legacyKey = generateSessionKey();
-      class ConnectSocket extends MockWebSocket {}
+      class ConnectSocket extends MockWebSocket {
+        constructor(url) {
+          super();
+          this.url = url;
+        }
+      }
       ctx.CONFIG = {
         instanceId: 'test-agent',
         agentName: 'Test Agent',
@@ -582,6 +587,13 @@ describe('agent received `registered` flips serverEncryptionRequired', () => {
       };
       ctx.agentCapabilities = [];
       connect(ConnectSocket);
+      expect(new URL(ctx.ws.url).searchParams.get('platform')).toBe(process.platform);
+      ctx.ws.simulateMessage({ type: 'auth_required', tempId: 'platform-test' });
+      expect(ctx.ws.getLastMessage()).toMatchObject({
+        type: 'auth',
+        tempId: 'platform-test',
+        platform: process.platform,
+      });
       applyRegisteredTransport({
         type: 'registered',
         sessionKey: Buffer.from(legacyKey).toString('base64'),

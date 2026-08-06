@@ -25,6 +25,7 @@ export function connect(WebSocketImpl = WebSocket) {
     name: ctx.CONFIG.agentName,
     instanceId,
     workDir: ctx.CONFIG.workDir,
+    platform: process.platform,
     capabilities: ctx.agentCapabilities.join(',')
   });
 
@@ -72,7 +73,8 @@ export function connect(WebSocketImpl = WebSocket) {
           tempId: msg.tempId,
           secret: ctx.CONFIG.agentSecret,
           capabilities: ctx.agentCapabilities,
-          version: ctx.agentVersion
+          version: ctx.agentVersion,
+          platform: process.platform
         }));
         return;
       }

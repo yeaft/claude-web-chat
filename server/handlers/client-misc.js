@@ -8,8 +8,14 @@ import {
 // builds without this capability may still inherit the installed package cwd.
 export const SAFE_REMOTE_UPGRADE_CAPABILITY = 'remote_upgrade_safe';
 
-export function requiresManualUpgradeBridge(capabilities) {
-  return !Array.isArray(capabilities) || !capabilities.includes(SAFE_REMOTE_UPGRADE_CAPABILITY);
+export function requiresManualUpgradeBridge(capabilities, platform = null) {
+  if (Array.isArray(capabilities) && capabilities.includes(SAFE_REMOTE_UPGRADE_CAPABILITY)) return false;
+  const normalizedPlatform = typeof platform === 'string' ? platform.trim().toLowerCase() : '';
+  if (normalizedPlatform) return normalizedPlatform === 'win32';
+  // v1.0.373 predates explicit platform metadata but advertises this Linux-only
+  // capability, so it is safe to distinguish from the affected Windows build.
+  if (Array.isArray(capabilities) && capabilities.includes('work_item_attachments')) return false;
+  return true;
 }
 
 /**
@@ -36,7 +42,7 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       if (!upgradeAgentId) break;
       if (!await checkAgentAccess(upgradeAgentId)) break;
       const upgradeAgent = agents.get(upgradeAgentId);
-      if (requiresManualUpgradeBridge(upgradeAgent?.capabilities)) {
+      if (requiresManualUpgradeBridge(upgradeAgent?.capabilities, upgradeAgent?.platform)) {
         await sendToWebClient(client, {
           type: 'upgrade_agent_ack',
           agentId: upgradeAgentId,
