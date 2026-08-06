@@ -24,7 +24,14 @@ import { buildSystemPrompt, buildWorkerPrompt } from './prompts.js';
 import { getRuntimePlatformInfo } from './runtime-platform.js';
 import { LLMContextError, LLMAbortError, LLMAuthError, LLMRateLimitError, LLMServerError, LLMStreamIdleTimeoutError } from './llm/adapter.js';
 import { runMemoryPreflow, buildRelevantScopes, memoryScopeLabel } from './sessions/pre-flow.js';
-import { readProjectDoc, pickProjectDocFile, DEFAULT_PROJECT_DOC_MAX_BYTES } from './sessions/project-doc.js';
+import {
+  readProjectDoc,
+  pickProjectDocFile,
+  selectProjectDocContext,
+  projectDocPathHintsFromToolCall,
+  projectDocWriteScopesNeedingReload,
+  DEFAULT_PROJECT_DOC_MAX_BYTES,
+} from './sessions/project-doc.js';
 import { partitionMessages } from './compact/partition.js';
 import { runCompact as runCompactOrchestrator } from './compact/orchestrator.js';
 import { evaluateCompactTriggers } from './compact/triggers.js';
@@ -46,6 +53,8 @@ import { attachRouterPlan, extractPriorPlan, stripMetaForWire } from './router/c
 import { resolveThinking } from './router/thinking.js';
 import { approxTokens, computeBudget } from './memory/budget.js';
 import { COLLAB_TOOL_POLICY, isToolErrorOutput, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
+import { resolveActiveToolNames } from './tools/activation.js';
+import { agentBelongsToScope, getAgentRegistry } from './tools/agent.js';
 import { extractDisplayImages, stripDisplayImageData } from './image-assets.js';
 import { acknowledgePendingNotifications, formatNotificationsForPrompt, peekPendingNotifications } from './sub-agent/notifications.js';
 import {
@@ -958,19 +967,22 @@ export class Engine {
   }
 
   /**
-   * Get the list of registered tool definitions (for passing to the adapter).
-   * Prefers ToolRegistry when available, falls back to legacy #tools Map.
+   * Get the active tool definitions for one provider request. The registry keeps
+   * every implementation and compatibility alias loaded; only the active set is
+   * serialized into the request. Legacy standalone engines keep exposing their
+   * explicitly registered tools because they do not use the built-in registry.
    *
-   * task-297: mode-based filtering was removed — all registered tools are
-   * always exposed to the LLM.
-   *
+   * @param {string|null} collabToolPolicy
+   * @param {Set<string>|null} activeToolNames
    * @returns {import('./llm/adapter.js').UnifiedToolDef[]}
    */
-  #getToolDefs(collabToolPolicy = null) {
+  #getToolDefs(collabToolPolicy = null, activeToolNames = null) {
     if (this.#toolRegistry) {
-      return this.#toolRegistry.getToolDefs(this.#config?.language || 'en', { collabToolPolicy });
+      return this.#toolRegistry.getToolDefs(this.#config?.language || 'en', {
+        collabToolPolicy,
+        activeToolNames,
+      });
     }
-    // Legacy path: no mode filtering
     const defs = [];
     for (const [, tool] of this.#tools) {
       defs.push({
@@ -980,6 +992,14 @@ export class Engine {
       });
     }
     return defs;
+  }
+
+  #hasScopedSubAgents({ sessionId, parentVpId, parentThreadId } = {}) {
+    const scope = { sessionId, parentVpId, parentThreadId };
+    for (const agent of getAgentRegistry().values()) {
+      if (agentBelongsToScope(agent, scope)) return true;
+    }
+    return false;
   }
 
   /**
@@ -1196,7 +1216,7 @@ export class Engine {
    * @param {string} [args.explicitSkillName] — leading /skill:<name> command, if present
    * @returns {string}
    */
-  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, projectInstruction, projectLabel, workCenterInstructions, projectDoc, taskCtx, activeTasks, explicitSkillName, resolvedSkillContent = null } = {}) {
+  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, projectInstruction, projectLabel, workCenterInstructions, projectDoc, taskCtx, activeTasks, activeToolNames = null, promptNotices = [], explicitSkillName, resolvedSkillContent = null } = {}) {
     // Skill selection is normally resolved once by #runQuery so the prompt and
     // emitted protocol events describe the exact same skills. Keep the local
     // fallback for internal callers that do not need selection events.
@@ -1210,10 +1230,15 @@ export class Engine {
       }
     }
 
-    // Get tool names from the appropriate source
-    const toolNames = this.#toolRegistry
+    // Use the same active set for the prompt and provider schema. The prompt
+    // only needs these names to select scoped guidance; it does not repeat the
+    // catalogue because the API tool definitions are already authoritative.
+    const registeredToolNames = this.#toolRegistry
       ? this.#toolRegistry.getToolNames()
       : Array.from(this.#tools.keys());
+    const toolNames = activeToolNames instanceof Set
+      ? registeredToolNames.filter(name => activeToolNames.has(name))
+      : registeredToolNames;
 
     return buildWorkerPrompt({
       language: this.#config.language || 'en',
@@ -1230,6 +1255,7 @@ export class Engine {
       runtimePlatform: getRuntimePlatformInfo(),
       taskCtx,
       activeTasks,
+      promptNotices,
       // Worker-shape harness is descriptive metadata for human inspection;
       // production prompts skip it to save tokens. Re-enable via env when
       // diagnosing prompt structure issues.
@@ -2339,12 +2365,42 @@ export class Engine {
       envelope: inboundEnvelope || null,
     };
 
-    const projectDoc = this.#getProjectDocBlock(workDir);
+    const projectDocSource = this.#getProjectDocBlock(workDir);
+    let projectDocLoadedPathHints = [];
+    let projectDocContext = selectProjectDocContext(projectDocSource, {
+      prompt,
+      messages,
+      pathHints: projectDocLoadedPathHints,
+      language: this.#config.language || 'en',
+    });
+    const activeTaskSnapshots = this.#taskManager
+      && typeof this.#taskManager.listActiveTasks === 'function'
+      ? this.#taskManager.listActiveTasks(runtimeSessionId)
+      : [];
     const activeTasks = this.#taskManager
       ? this.#taskManager.renderActiveTasksForPrompt(runtimeSessionId, {
           language: this.#config.language || 'en',
         })
       : '';
+    const registeredToolNames = this.#toolRegistry
+      ? this.#toolRegistry.getToolNames()
+      : Array.from(this.#tools.keys());
+    const activeToolNames = this.#toolRegistry
+      ? resolveActiveToolNames({
+          toolNames: registeredToolNames,
+          prompt,
+          messages,
+          collabToolPolicy: effectiveCollabToolPolicy,
+          activeTasks: activeTaskSnapshots,
+          subAgentToolsActivated: this.#hasScopedSubAgents({
+            sessionId: runtimeSessionId,
+            parentVpId: queryVpId,
+            parentThreadId: runtimeThreadId,
+          }),
+          imageGenerationConfigured: typeof this.#config?.imageApiUrl === 'string'
+            && this.#config.imageApiUrl.trim().length > 0,
+        })
+      : null;
     let resolvedSkillContent = '';
     let resolvedSkills = [];
     let skillResolutionError = null;
@@ -2372,7 +2428,8 @@ export class Engine {
       }
     }
 
-    const systemPrompt = this.#buildSystemPrompt({
+    let promptNotices = [];
+    const buildCurrentSystemPrompt = () => this.#buildSystemPrompt({
       prompt,
       memoryInjection,
       vpPersona,
@@ -2381,11 +2438,14 @@ export class Engine {
       projectInstruction,
       projectLabel,
       workCenterInstructions,
-      projectDoc,
+      projectDoc: projectDocContext.text,
       activeTasks,
+      activeToolNames,
+      promptNotices,
       explicitSkillName,
       resolvedSkillContent,
     });
+    let systemPrompt = buildCurrentSystemPrompt();
 
     // ─── HARD INVARIANT: Compact ≠ Dream (read DESIGN-COMPACT-VS-DREAM.md) ─
     // Compact summary (this block) ONLY lands in the messages array head as
@@ -2585,7 +2645,7 @@ export class Engine {
       };
     }
 
-    const toolDefs = this.#getToolDefs(effectiveCollabToolPolicy);
+    const toolDefs = this.#getToolDefs(effectiveCollabToolPolicy, activeToolNames);
     let turnNumber = 0;
     let continueTurns = 0; // auto-continue counter
     let toolLoopTurns = 0; // task-327b: tool-use turns for long-loop auto-bump
@@ -3908,8 +3968,17 @@ export class Engine {
 
         // Resolve tool: prefer ToolRegistry, fallback to legacy #tools Map
         const hasTool = this.#toolRegistry
-          ? this.#toolRegistry.isAllowed(tc.name, { collabToolPolicy: effectiveCollabToolPolicy })
+          ? this.#toolRegistry.isAllowed(tc.name, {
+              collabToolPolicy: effectiveCollabToolPolicy,
+              activeToolNames,
+            })
           : this.#tools.has(tc.name);
+        const toolProjectDocPathHints = projectDocPathHintsFromToolCall(tc.name, tc.input);
+        const readOnlyTool = hasTool ? isReadOnlyTool(this, tc.name, tc.input) : false;
+        const missingProjectDocScopes = hasTool && !readOnlyTool
+          ? projectDocWriteScopesNeedingReload(projectDocContext, toolProjectDocPathHints)
+          : new Set();
+        const needsProjectDocReload = missingProjectDocScopes.size > 0;
 
         if (skipped) {
           const source = activeToolBatchBarrier.sourceToolName || 'a preceding tool';
@@ -3932,12 +4001,42 @@ export class Engine {
             threadId: this.currentThreadId,
           };
         } else if (!hasTool) {
-          output = `Error: unknown tool "${tc.name}"`;
+          const registered = this.#toolRegistry?.has(tc.name) || this.#tools.has(tc.name);
+          output = registered
+            ? `Error: tool "${tc.name}" is not active for this request`
+            : `Error: unknown tool "${tc.name}"`;
           isError = true;
           yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, threadId: this.currentThreadId };
+        } else if (needsProjectDocReload) {
+          projectDocLoadedPathHints = [...new Set([
+            ...projectDocLoadedPathHints,
+            ...toolProjectDocPathHints,
+          ])];
+          const previouslySelectedProjectDocScopes = new Set(projectDocContext.selectedScopes);
+          projectDocContext = selectProjectDocContext(projectDocSource, {
+            prompt,
+            messages,
+            pathHints: projectDocLoadedPathHints,
+            language: this.#config.language || 'en',
+            forcedScopes: [...previouslySelectedProjectDocScopes, ...missingProjectDocScopes],
+          });
+          const zh = String(this.#config?.language || '').toLowerCase().startsWith('zh');
+          const notice = zh
+            ? `项目规则已针对路径 ${toolProjectDocPathHints.join(', ')} 重新加载。先复核新载入的规则，再重新提交写操作；本次调用未执行。`
+            : `Project rules were reloaded for ${toolProjectDocPathHints.join(', ')}. Review the newly loaded rules before resubmitting the write; this call was not executed.`;
+          promptNotices = [notice];
+          systemPrompt = buildCurrentSystemPrompt();
+          output = notice;
+          isError = true;
+          toolBatchBarrier = {
+            kind: 'project_rules_reloaded',
+            message: notice,
+            sourceToolCallId: tc.id,
+            sourceToolName: tc.name,
+          };
+          yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, skipped: true, threadId: this.currentThreadId };
         } else {
           duplicateKey = `${tc.name}\u001f${argsHashOf(tc.input)}`;
-          const readOnlyTool = isReadOnlyTool(this, tc.name, tc.input);
           cacheableTool = isCacheableTool(this, tc.name, tc.input);
           // The cache is only valid while the workspace has not changed. Clear
           // it before every potential mutation, including a tool that later

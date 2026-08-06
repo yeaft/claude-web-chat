@@ -135,12 +135,10 @@ function extractExactLangSection(content, language) {
 /** Loaded templates — read once at module load time. */
 const RAW_TEMPLATES = {
   base: readTemplate('base.md'),
-  // Phase 8 wire-up: split-out fragments for the persona-as-identity path.
-  // `identityYeaft` ships only when NO VP persona is active. `commonRules`
-  // ships every turn (with persona OR with Yeaft identity) — it carries
-  // output-format, code-editing, search, and frontend rules that are
-  // identity-independent. base.md remains as a back-compat bundle so any
-  // external snapshotter / test that reads the file directly keeps working.
+  core: readTemplate('core.md'),
+  // base.md and the older split fragments remain packaged for external
+  // snapshotters and deployment compatibility. Runtime prompt assembly uses
+  // core.md plus scoped guidance instead of concatenating those full bundles.
   identityYeaft: readTemplate('identity-yeaft.md', { required: false }),
   commonRules: readTemplate('common-rules.md', { required: false }),
   modeUnified: readTemplate('mode-unified.md'),
@@ -195,7 +193,6 @@ const PROMPTS = {
     identity: 'No VP soul is active for this turn. Participate in the current session with grounded, evidence-based answers and preserve the user\'s context.',
     date: (d) => `Date: ${d}`,
     dream: 'You are in dream mode. Reflect on past conversations and consolidate memories.',
-    tools: (names) => `Available tools: ${names}`,
     // DESIGN-PROMPT §3 ④ — current session context block.
     activeScopeHeader: '## Current session context',
     activeScopeSessionIdLabel: 'Session ID',
@@ -215,13 +212,13 @@ const PROMPTS = {
     // AGENTS.md is the cross-tool convention (Codex / OpenAI Codex CLI).
     projectDocHeader: '[Project Doc]',
     projectDocIntro:
-      'The user keeps project-level instructions and context in `CLAUDE.md` or `AGENTS.md` at the session working directory. Treat the content below as authoritative project context — coding conventions, task guidance, workflow rules, etc.',
+      'The text below is the authoritative project context selected for this turn. It contains the stable core plus any task- or path-scoped sections that the runtime loaded on demand.',
+    promptNoticeHeader: '[Runtime Notice]',
   },
   zh: {
     identity: '你正在当前会话中参与协作。保持用户上下文，回答要基于证据；需要工具时使用工具，但不要把自己没有实际执行过的事说成已经执行。',
     date: (d) => `日期：${d}`,
     dream: '你处于梦境模式。回顾过去的对话，整理和巩固记忆。',
-    tools: (names) => `可用工具：${names}`,
     // DESIGN-PROMPT §3 ④ — 当前会话上下文。
     activeScopeHeader: '## 当前会话上下文',
     activeScopeSessionIdLabel: '会话 ID',
@@ -239,7 +236,8 @@ const PROMPTS = {
     // 项目文档块：CLAUDE.md / AGENTS.md（与 Codex 通用命名兼容）。
     projectDocHeader: '[项目文档]',
     projectDocIntro:
-      '用户把项目级的说明和上下文记录在 session 工作目录下的 `CLAUDE.md` 或 `AGENTS.md` 中。下面的内容是权威的项目上下文 —— 编码规范、任务指导、工作流约定等，请遵循它来工作。',
+      '下面是当前 turn 选中的权威项目上下文，包含稳定核心以及 runtime 按任务或路径加载的范围章节。',
+    promptNoticeHeader: '[运行时提示]',
   },
 };
 
@@ -309,6 +307,7 @@ export function normalizePromptLanguage(language) {
  *   projectLabel?: string,
  *   workCenterInstructions?: string,
  *   projectDoc?: string,
+ *   promptNotices?: string[],
  * }} params
  * @returns {string}
  */
@@ -327,6 +326,7 @@ export function buildSystemPrompt({
   projectDoc = '',
   runtimePlatform,
   activeTasks = '',
+  promptNotices = [],
 } = {}) {
   // Normalize app locales like `zh-CN` to prompt dictionary/template keys.
   const effectiveLang = normalizePromptLanguage(language);
@@ -334,24 +334,16 @@ export function buildSystemPrompt({
 
   const parts = [];
 
-  // ─── 1. Core Identity ──────────────────────────────────
-  // Phase 8 wire-up: when a VP persona is active, the persona body REPLACES
-  // the Yeaft identity block (the LLM is that VP, not Yeaft pretending). When
-  // there is no persona, fall back to the legacy Yeaft identity bundle.
+  // ─── 1. Stable Core ────────────────────────────────────
+  // A VP persona supplies the identity layer when present. The compact core
+  // rules stay stable across turns and replace the old full base/common bundle.
   const personaBlock = renderVpPersona(vpPersona, lang, effectiveLang);
-  if (personaBlock) {
-    parts.push(personaBlock);
-    // Common rules (output format, code editing, search, frontend) still
-    // apply to every turn, regardless of which VP is speaking.
-    const commonRules = getTemplate('commonRules', effectiveLang);
-    if (commonRules) parts.push(commonRules);
-  } else {
-    const baseTemplate = getTemplate('base', effectiveLang);
-    if (baseTemplate) {
-      parts.push(baseTemplate);
-    } else {
-      parts.push(lang.identity);
-    }
+  if (personaBlock) parts.push(personaBlock);
+  const coreTemplate = getTemplate('core', effectiveLang);
+  if (coreTemplate) {
+    parts.push(coreTemplate);
+  } else if (!personaBlock) {
+    parts.push(lang.identity);
   }
 
   // ─── 1.4  Project Doc (CLAUDE.md / AGENTS.md from session workDir) ───
@@ -395,6 +387,13 @@ export function buildSystemPrompt({
     parts.push(`${header}\n${intro ? `${intro}\n\n` : ''}${workCenterText}`);
   }
 
+  const notices = Array.isArray(promptNotices)
+    ? promptNotices.map(value => typeof value === 'string' ? value.trim() : '').filter(Boolean)
+    : [];
+  if (notices.length > 0) {
+    parts.push(`${lang.promptNoticeHeader || '[Runtime Notice]'}\n${notices.join('\n')}`);
+  }
+
   // ─── 2. Date Metadata ──────────────────────────────────
   parts.push(lang.date(new Date().toISOString().split('T')[0]));
 
@@ -414,11 +413,10 @@ export function buildSystemPrompt({
   }
 
   if (toolNames.length > 0) {
-    parts.push(lang.tools(toolNames.join(', ')));
-
+    const guidance = renderActiveToolGuidance(toolNames, effectiveLang);
     const toolGuidanceTemplate = getTemplate('toolGuidance', effectiveLang);
-    if (toolGuidanceTemplate) {
-      parts.push(toolGuidanceTemplate);
+    if (guidance && toolGuidanceTemplate) {
+      parts.push(toolGuidanceTemplate.replace('{{guidance}}', guidance));
     }
   }
 
@@ -456,6 +454,54 @@ export function buildSystemPrompt({
 }
 
 // ─── helpers ─────────────────────────────────────────────────────
+
+const TOOL_GUIDANCE_GROUPS = Object.freeze([
+  {
+    tools: ['FileRead', 'FileWrite', 'FileEdit', 'Glob', 'Grep', 'ListDir', 'ApplyPatch', 'NotebookEdit'],
+    en: 'Read existing files before editing. Use dedicated file/search tools instead of shell search or `sed -i`; make small, reviewable edits and batch independent reads.',
+    zh: '编辑前先读现有文件。文件搜索和修改优先使用专用工具，不用 shell 搜索或 `sed -i`；改动保持小而可审查，独立读取应并行发出。',
+  },
+  {
+    tools: ['Bash'],
+    en: 'Use non-interactive, deterministic shell commands, set reasonable timeouts, quote paths with spaces, and do not run destructive operations without authorization.',
+    zh: 'Shell 命令保持非交互、确定性并设置合理 timeout；包含空格的路径要引用，未经授权不要执行破坏性操作。',
+  },
+  {
+    tools: ['StartPlan', 'TodoWrite'],
+    en: 'For non-trivial multi-step work, use `StartPlan` before execution and keep the visible `TodoWrite` checklist current; do not stop after planning unless user input genuinely blocks the first step.',
+    zh: '非平凡多步骤任务在执行前使用 `StartPlan`，并持续更新可见的 `TodoWrite` checklist；只有用户信息确实阻塞第一步时才在规划后停下。',
+  },
+  {
+    tools: ['SpawnAgent', 'PromptAgent', 'WaitAgent', 'CloseAgent', 'ListAgents'],
+    en: 'Delegate only independent, bounded work. Keep ownership in the parent, avoid polling loops, and close sub-agents after collecting their result.',
+    zh: '只委派边界清晰且独立的工作。父级保留任务所有权，不要循环轮询，取得结果后关闭子 Agent。',
+  },
+  {
+    tools: ['ListTasks', 'ReadTaskLog', 'CancelTask'],
+    en: 'Treat background tasks as live execution state, not memory facts. Inspect status or logs before retrying or cancelling work.',
+    zh: '后台任务是实时执行状态，不是记忆事实。重试或取消前先检查状态或日志。',
+  },
+  {
+    tools: ['RouteForward'],
+    en: 'Use `RouteForward` for explicit VP-to-VP handoff; writing an @mention in ordinary text does not dispatch another VP.',
+    zh: '显式 VP 转交必须使用 `RouteForward`；普通文本中的 @mention 不会调度另一个 VP。',
+  },
+  {
+    tools: ['CreateWorkItem'],
+    en: 'Use `CreateWorkItem` only for goals that need durable cross-turn coordination, recovery, review, waiting, or retry.',
+    zh: '只有目标需要跨 turn 持久协调、恢复、评审、等待或重试时才使用 `CreateWorkItem`。',
+  },
+]);
+
+function renderActiveToolGuidance(toolNames, language) {
+  const active = new Set(Array.isArray(toolNames) ? toolNames : []);
+  const lines = [];
+  for (const group of TOOL_GUIDANCE_GROUPS) {
+    if (!group.tools.some(name => active.has(name))) continue;
+    lines.push(`- ${language === 'zh' ? group.zh : group.en}`);
+  }
+  return lines.join('\n');
+}
 
 /**
  * Render the VP identity block when the engine is running on behalf of an

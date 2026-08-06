@@ -31,6 +31,12 @@ import { runDream } from '../../../agent/yeaft/dream/runner.js';
 import { extractAndWriteMemorySegments } from '../../../agent/yeaft/dream/segment-extract.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
 import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
+import { resolveActiveToolNames } from '../../../agent/yeaft/tools/activation.js';
+import {
+  inferProjectDocScopes,
+  projectDocWriteScopesNeedingReload,
+  selectProjectDocContext,
+} from '../../../agent/yeaft/sessions/project-doc.js';
 import todoWriteTool from '../../../agent/yeaft/tools/todo-write.js';
 import startPlanTool from '../../../agent/yeaft/tools/start-plan.js';
 import {
@@ -121,6 +127,203 @@ afterEach(() => {
 });
 
 // ─── Tests ────────────────────────────────────────────────────
+
+describe('active tool exposure and scoped prompts', () => {
+  it('keeps the user-required tools visible and activates other built-ins by condition', () => {
+    const registry = createFullRegistry();
+    const toolNames = registry.getToolNames();
+    const baseline = resolveActiveToolNames({ toolNames, prompt: 'Explain this code.' });
+
+    expect([...baseline]).toEqual(expect.arrayContaining([
+      'WebSearch',
+      'WebFetch',
+      'ViewImage',
+      'EnterWorktree',
+      'ExitWorktree',
+      'StartPlan',
+      'TodoWrite',
+      'FileRead',
+      'FileEdit',
+      'Bash',
+    ]));
+    expect([...baseline]).not.toEqual(expect.arrayContaining([
+      'HistorySearch',
+      'DiskUsage',
+      'SpawnAgent',
+      'ListAgents',
+      'CreateWorkItem',
+      'NotebookEdit',
+      'ImageGeneration',
+      'JsReplReset',
+    ]));
+
+    const contextual = resolveActiveToolNames({
+      toolNames,
+      prompt: 'Search the previous conversation, inspect disk usage, delegate an independent review, edit analysis.ipynb, and create a durable Work Item.',
+      collabToolPolicy: 'multi-vp',
+      activeTasks: [{ id: 'task_1', kind: 'shell' }],
+      imageGenerationConfigured: true,
+    });
+    expect([...contextual]).toEqual(expect.arrayContaining([
+      'HistorySearch',
+      'DiskUsage',
+      'SpawnAgent',
+      'ListAgents',
+      'ListTasks',
+      'ReadTaskLog',
+      'CancelTask',
+      'RouteForward',
+      'CreateWorkItem',
+      'NotebookEdit',
+    ]));
+    expect(contextual.has('ListAgents')).toBe(true);
+    expect(resolveActiveToolNames({
+      toolNames,
+      prompt: 'Run the task.',
+    }).has('SpawnAgent')).toBe(true);
+
+    const withSubAgent = resolveActiveToolNames({
+      toolNames,
+      prompt: 'continue',
+      subAgentToolsActivated: true,
+    });
+    expect([...withSubAgent]).toEqual(expect.arrayContaining([
+      'SpawnAgent',
+      'PromptAgent',
+      'WaitAgent',
+      'CloseAgent',
+      'ListAgents',
+    ]));
+  });
+
+  it('filters provider schemas and fences execution with canonical alias activation', async () => {
+    const registry = createFullRegistry();
+    const baseline = resolveActiveToolNames({
+      toolNames: registry.getToolNames(),
+      prompt: 'Explain this code.',
+    });
+    const defs = registry.getToolDefs('en', { activeToolNames: baseline });
+    const names = defs.map(def => def.name);
+
+    expect(names).toContain('WebSearch');
+    expect(names).toContain('EnterWorktree');
+    expect(names).not.toContain('SpawnAgent');
+    expect(registry.isAllowed('Agent', { activeToolNames: baseline })).toBe(false);
+    expect(registry.has('Agent')).toBe(true);
+    expect(registry.isAllowed('Agent', {
+      activeToolNames: new Set([...baseline, 'SpawnAgent']),
+    })).toBe(true);
+  });
+
+  it('keeps custom tools visible and blocks a hidden built-in hallucination in the Engine', async () => {
+    const registry = new ToolRegistry();
+    let hiddenExecutions = 0;
+    registry.register({
+      name: 'DiskUsage',
+      description: 'Conditionally active disk tool',
+      parameters: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      execute: async () => {
+        hiddenExecutions += 1;
+        return 'should not run';
+      },
+    });
+    registry.register({
+      name: 'CustomHostTool',
+      description: 'Embedding-defined tool',
+      parameters: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      execute: async () => 'custom',
+    });
+
+    mockAdapter.pushResponse([
+      { type: 'tool_call', id: 'hidden', name: 'DiskUsage', input: { path: '.' } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    mockAdapter.pushResponse([
+      { type: 'text_delta', text: 'The tool was inactive.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const engine = new Engine({
+      adapter: mockAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+    });
+    const events = [];
+    for await (const event of engine.query({ prompt: 'Explain this code.' })) events.push(event);
+
+    const firstNames = mockAdapter.callLog[0].tools.map(tool => tool.name);
+    expect(firstNames).toContain('CustomHostTool');
+    expect(firstNames).not.toContain('DiskUsage');
+    expect(hiddenExecutions).toBe(0);
+    expect(events.find(event => event.type === 'tool_end')).toMatchObject({ isError: true });
+    expect(events.find(event => event.type === 'tool_end').output).toContain('not active');
+  });
+
+  it('selects project core and task-scoped sections while preserving a directory', () => {
+    const padding = 'core rule '.repeat(900);
+    const projectDoc = [
+      '# Example Project',
+      '',
+      'Project overview.',
+      '',
+      '## Product Model and Terminology',
+      padding,
+      '',
+      '## Agent Runtime',
+      'AGENT_RUNTIME_RULE',
+      '',
+      '## Web and Server',
+      'WEB_SERVER_RULE',
+      '',
+      '## UI Rules',
+      'UI_RULE',
+      '',
+      '## Worktree Review and Release',
+      'RELEASE_RULE',
+      '',
+      '## Operations and Security',
+      'SECURITY_RULE',
+    ].join('\n');
+
+    const selected = selectProjectDocContext(projectDoc, {
+      prompt: 'Change agent/yeaft/engine.js prompt assembly.',
+      language: 'en',
+    });
+    expect(selected.scoped).toBe(true);
+    expect(selected.text).toContain('AGENT_RUNTIME_RULE');
+    expect(selected.text).toContain('SECURITY_RULE');
+    expect(selected.text).not.toContain('\nWEB_SERVER_RULE\n');
+    expect(selected.text).toContain('Project Rules Available On Demand');
+    expect(selected.text).toContain('- Web and Server');
+
+    const missingWebRules = projectDocWriteScopesNeedingReload(selected, ['web/stores/chat.js']);
+    expect([...missingWebRules]).toContain('web');
+    const reloaded = selectProjectDocContext(projectDoc, {
+      prompt: 'Change agent/yeaft/engine.js prompt assembly.',
+      pathHints: ['web/stores/chat.js'],
+      forcedScopes: missingWebRules,
+      language: 'en',
+    });
+    expect(reloaded.text).toContain('WEB_SERVER_RULE');
+    expect(projectDocWriteScopesNeedingReload(reloaded, ['web/stores/chat.js']).size).toBe(0);
+    expect([...inferProjectDocScopes({ pathHints: ['web/stores/chat.js'] })]).toContain('web');
+  });
+
+  it('uses stable core plus active guidance without repeating the tool catalogue', () => {
+    const concise = buildSystemPrompt({ language: 'en', toolNames: ['WebSearch', 'FileRead'] });
+    const planned = buildSystemPrompt({ language: 'en', toolNames: ['FileRead', 'StartPlan', 'TodoWrite'] });
+
+    expect(concise).toContain('Session Participant');
+    expect(concise).toContain('Active Tool Guidance');
+    expect(concise).toContain('Read existing files before editing');
+    expect(concise).not.toContain('Available tools:');
+    expect(concise).not.toContain('For non-trivial multi-step work');
+    expect(planned).toContain('For non-trivial multi-step work');
+    expect(planned).not.toContain('Available tools: FileRead');
+  });
+});
 
 describe('Engine memory prompt hygiene', () => {
   it('normalizes current and related Session summaries into separate resident sources', () => {
@@ -1465,7 +1668,7 @@ describe('Engine', () => {
         const engine = new Engine({
           adapter,
           trace,
-          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 1000 },
+          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 400 },
           conversationStore,
           yeaftDir,
         });
@@ -1529,7 +1732,7 @@ describe('Engine', () => {
         const engine = new Engine({
           adapter,
           trace,
-          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 1000 },
+          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 400 },
           conversationStore,
           yeaftDir,
         });
@@ -5518,7 +5721,8 @@ describe('Engine', () => {
       }
 
       const toolGuidanceCall = mockAdapter.callLog[0];
-      expect(toolGuidanceCall.system).toContain('可用工具：search');
+      expect(toolGuidanceCall.tools.map(tool => tool.name)).toContain('search');
+      expect(toolGuidanceCall.system).not.toContain('可用工具：search');
 
       const enSystem = buildSystemPrompt({
         language: 'en',
@@ -5547,14 +5751,14 @@ describe('Engine', () => {
       })).toContain('当前 Session 隶属于当前 Project。当前 Project 的统一 instruction 是：');
       expect(buildSystemPrompt({ language: 'en', projectInstruction: '   ' }))
         .not.toContain('[Project Instruction]');
-      expect(enSystem).toContain('Avoid an intermediate `TodoWrite`-only model round');
-      expect(enSystem).toMatch(/mark work completed only after\s+evidence/);
-      expect(enSystem).toContain('A standalone `TodoWrite` remains valid');
+      expect(enSystem).toContain('use `StartPlan` before execution');
+      expect(enSystem).toContain('keep the visible `TodoWrite` checklist current');
+      expect(enSystem).toContain('do not stop after planning');
       expect(zhSystem).toContain('当前 Session 隶属于 Project Yeaft（project-123）。当前 Project 的统一 instruction 是：');
       expect(zhSystem).toContain('发布前执行统一验证。');
-      expect(zhSystem).toContain('不要让中间状态的 `TodoWrite` 单独占一个');
-      expect(zhSystem).toContain('只有已有证据时才能把工作标记为完成');
-      expect(zhSystem).toContain('`TodoWrite` 仍可单独调用');
+      expect(zhSystem).toContain('使用 `StartPlan`');
+      expect(zhSystem).toContain('持续更新可见的 `TodoWrite` checklist');
+      expect(zhSystem).toContain('只有用户信息确实阻塞第一步时才在规划后停下');
 
       expect(todoWriteTool.description.en).toContain('BATCH WITH WORK');
       expect(todoWriteTool.description.en).toContain('same assistant response');
