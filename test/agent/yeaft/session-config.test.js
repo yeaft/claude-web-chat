@@ -371,6 +371,245 @@ describe('Yeaft session-scoped model config', () => {
     }
   });
 
+  it('serializes overlapping MCP add and remove mutations through runtime publication', async () => {
+    const root = makeDir();
+    const configPath = join(root, 'config.json');
+    const previousTransport = {
+      ws: ctx.ws,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+      CONFIG: ctx.CONFIG,
+    };
+    const sent = [];
+    const connected = new Set(['github']);
+    let releaseLinearConnect;
+    const linearConnectStarted = new Promise(resolve => {
+      releaseLinearConnect = () => resolve();
+    });
+    let markLinearConnectStarted;
+    const waitingForLinearConnect = new Promise(resolve => {
+      markLinearConnectStarted = resolve;
+    });
+    const connect = vi.fn(async server => {
+      if (server.name === 'linear') {
+        markLinearConnectStarted();
+        await linearConnectStarted;
+      }
+      connected.add(server.name);
+    });
+    const disconnect = vi.fn(async name => { connected.delete(name); });
+    const replaceMcpTools = vi.fn(() => ({ removed: 0, added: connected.size }));
+    const mcpManager = {
+      get hasServers() { return connected.size > 0; },
+      status: () => [...connected].map(name => ({ name, ready: true, toolCount: 1 })),
+      connect,
+      disconnect,
+    };
+    ctx.CONFIG = { yeaftDir: root };
+    ctx.ws = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    ctx.serverEncryptionRequired = false;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
+    __testSetSession({
+      config: { plugins: {} },
+      mcpManager,
+      toolRegistry: { replaceMcpTools },
+    });
+
+    try {
+      writeFileSync(configPath, JSON.stringify({
+        mcpServers: [{ name: 'github', command: 'node', args: [], env: {} }],
+        plugins: {},
+      }));
+      const add = handleMessage({
+        type: 'yeaft_mcp_add',
+        requestId: 'add-linear',
+        server: { name: 'linear', command: 'node', args: [], env: {} },
+      });
+      await waitingForLinearConnect;
+
+      const remove = handleMessage({
+        type: 'yeaft_mcp_remove',
+        requestId: 'remove-github',
+        name: 'github',
+      });
+      await Promise.resolve();
+      expect(disconnect).not.toHaveBeenCalled();
+      expect(JSON.parse(readFileSync(configPath, 'utf8')).mcpServers.map(server => server.name))
+        .toEqual(['github', 'linear']);
+
+      releaseLinearConnect();
+      await Promise.all([add, remove]);
+      await vi.waitFor(() => expect(sent.some(frame => frame.type === 'yeaft_mcp_remove_result')).toBe(true));
+      await vi.waitFor(() => expect(sent.some(frame => (
+        frame.type === 'yeaft_mcp_updated' && frame.reason === 'remove'
+      ))).toBe(true));
+
+      const persisted = JSON.parse(readFileSync(configPath, 'utf8'));
+      const mutationFrames = sent.filter(frame => (
+        frame.type === 'yeaft_mcp_add_result'
+        || frame.type === 'yeaft_mcp_remove_result'
+        || frame.type === 'yeaft_mcp_updated'
+      ));
+      const finalResult = mutationFrames.at(-2);
+      const finalFrame = mutationFrames.at(-1);
+      const removeResult = sent.find(frame => frame.type === 'yeaft_mcp_remove_result');
+      expect(persisted.mcpServers.map(server => server.name)).toEqual(['linear']);
+      expect([...connected]).toEqual(['linear']);
+      expect(disconnect).toHaveBeenCalledWith('github');
+      expect(finalResult).toBe(removeResult);
+      expect(finalResult).toMatchObject({
+        type: 'yeaft_mcp_remove_result',
+        requestId: 'remove-github',
+        servers: [expect.objectContaining({ name: 'linear' })],
+        runtime: expect.objectContaining({
+          connected: true,
+          perServer: [expect.objectContaining({ name: 'linear', ready: true })],
+        }),
+        error: null,
+      });
+      expect(finalFrame).toMatchObject({
+        type: 'yeaft_mcp_updated',
+        reason: 'remove',
+        servers: [expect.objectContaining({ name: 'linear' })],
+        runtime: expect.objectContaining({
+          connected: true,
+          perServer: [expect.objectContaining({ name: 'linear', ready: true })],
+        }),
+        error: null,
+      });
+      expect(finalFrame.servers.map(server => server.name)).toEqual(['linear']);
+    } finally {
+      releaseLinearConnect?.();
+      ctx.ws = previousTransport.ws;
+      ctx.serverEncryptionRequired = previousTransport.serverEncryptionRequired;
+      ctx.outboundSendQueue = previousTransport.outboundSendQueue;
+      ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
+      ctx.CONFIG = previousTransport.CONFIG;
+    }
+  });
+
+  it('serializes overlapping MCP reload and add mutations without restoring a stale server set', async () => {
+    const root = makeDir();
+    const configPath = join(root, 'config.json');
+    const previousTransport = {
+      ws: ctx.ws,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+      CONFIG: ctx.CONFIG,
+    };
+    const sent = [];
+    const connected = new Set(['github']);
+    let releaseDisconnectAll;
+    const reloadMayContinue = new Promise(resolve => {
+      releaseDisconnectAll = () => resolve();
+    });
+    let markDisconnectAllStarted;
+    const disconnectAllStarted = new Promise(resolve => {
+      markDisconnectAllStarted = resolve;
+    });
+    const disconnectAll = vi.fn(async () => {
+      markDisconnectAllStarted();
+      await reloadMayContinue;
+      connected.clear();
+    });
+    const connect = vi.fn(async server => { connected.add(server.name); });
+    const replaceMcpTools = vi.fn(() => ({ removed: 0, added: connected.size }));
+    const mcpManager = {
+      get hasServers() { return connected.size > 0; },
+      status: () => [...connected].map(name => ({ name, ready: true, toolCount: 1 })),
+      disconnectAll,
+      connect,
+    };
+    ctx.CONFIG = { yeaftDir: root };
+    ctx.ws = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    ctx.serverEncryptionRequired = false;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
+    __testSetSession({
+      config: { plugins: {} },
+      mcpManager,
+      toolRegistry: { replaceMcpTools },
+    });
+
+    try {
+      writeFileSync(configPath, JSON.stringify({
+        mcpServers: [{ name: 'github', command: 'node', args: [], env: {} }],
+        plugins: {},
+      }));
+      const reload = handleMessage({ type: 'yeaft_mcp_reload', requestId: 'reload-before-add' });
+      await disconnectAllStarted;
+
+      const add = handleMessage({
+        type: 'yeaft_mcp_add',
+        requestId: 'add-linear-after-reload',
+        server: { name: 'linear', command: 'node', args: [], env: {} },
+      });
+      await Promise.resolve();
+      expect(connect).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'linear' }));
+      expect(JSON.parse(readFileSync(configPath, 'utf8')).mcpServers.map(server => server.name))
+        .toEqual(['github']);
+
+      releaseDisconnectAll();
+      await Promise.all([reload, add]);
+      await vi.waitFor(() => expect(sent.some(frame => (
+        frame.type === 'yeaft_mcp_updated' && frame.reason === 'add'
+      ))).toBe(true));
+
+      const persisted = JSON.parse(readFileSync(configPath, 'utf8'));
+      const mutationFrames = sent.filter(frame => (
+        frame.type === 'yeaft_mcp_reload_result'
+        || frame.type === 'yeaft_mcp_add_result'
+        || frame.type === 'yeaft_mcp_updated'
+      ));
+      const finalResult = mutationFrames.at(-2);
+      const finalBroadcast = mutationFrames.at(-1);
+      expect(persisted.mcpServers.map(server => server.name)).toEqual(['github', 'linear']);
+      expect([...connected]).toEqual(['github', 'linear']);
+      expect(finalResult).toMatchObject({
+        type: 'yeaft_mcp_add_result',
+        requestId: 'add-linear-after-reload',
+        servers: [
+          expect.objectContaining({ name: 'github' }),
+          expect.objectContaining({ name: 'linear' }),
+        ],
+        runtime: expect.objectContaining({
+          connected: true,
+          perServer: [
+            expect.objectContaining({ name: 'github', ready: true }),
+            expect.objectContaining({ name: 'linear', ready: true }),
+          ],
+        }),
+        error: null,
+      });
+      expect(finalBroadcast).toMatchObject({
+        type: 'yeaft_mcp_updated',
+        reason: 'add',
+        servers: [
+          expect.objectContaining({ name: 'github' }),
+          expect.objectContaining({ name: 'linear' }),
+        ],
+        runtime: expect.objectContaining({
+          connected: true,
+          perServer: [
+            expect.objectContaining({ name: 'github', ready: true }),
+            expect.objectContaining({ name: 'linear', ready: true }),
+          ],
+        }),
+        error: null,
+      });
+    } finally {
+      releaseDisconnectAll?.();
+      ctx.ws = previousTransport.ws;
+      ctx.serverEncryptionRequired = previousTransport.serverEncryptionRequired;
+      ctx.outboundSendQueue = previousTransport.outboundSendQueue;
+      ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
+      ctx.CONFIG = previousTransport.CONFIG;
+    }
+  });
+
   it('keeps the reload snapshot when config becomes invalid during runtime work', async () => {
     const root = makeDir();
     const configPath = join(root, 'config.json');
@@ -419,6 +658,9 @@ describe('Yeaft session-scoped model config', () => {
       await handleMessage({ type: 'yeaft_mcp_reload', requestId: 'reload-snapshot-race' });
       await new Promise(resolve => setImmediate(resolve));
 
+      await vi.waitFor(() => expect(sent.some(frame => (
+        frame.type === 'yeaft_mcp_updated' && frame.reason === 'reload'
+      ))).toBe(true));
       const reloadResult = sent.find(frame => frame.type === 'yeaft_mcp_reload_result');
       const reloadBroadcast = sent.find(frame => frame.type === 'yeaft_mcp_updated' && frame.reason === 'reload');
       expect(disconnectAll).toHaveBeenCalledTimes(1);
@@ -476,8 +718,7 @@ describe('Yeaft session-scoped model config', () => {
 
     try {
       writeFileSync(configPath, JSON.stringify({ plugins: { tools: 'not-an-array' } }));
-      __testHooks.broadcastMcpUpdatedForTest({ reason: 'base-runtime-load' });
-      await new Promise(resolve => setImmediate(resolve));
+      await __testHooks.broadcastMcpUpdatedForTest({ reason: 'base-runtime-load' });
 
       const update = sent.find(frame => frame.type === 'yeaft_mcp_updated');
       expect(update).toMatchObject({

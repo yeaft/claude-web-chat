@@ -169,6 +169,44 @@ describe('message flow regressions', () => {
     expect(store.yeaftMcpError).toContain('Failed to read config.json');
   });
 
+  it('applies the final serialized MCP mutation broadcast to the configured cache', () => {
+    const store = useChatStore();
+    const github = { name: 'github', command: 'node', args: [], env: {} };
+    const linear = { name: 'linear', command: 'node', args: [], env: {} };
+    store.yeaftMcpServers = [github];
+    store.yeaftMcpRuntime = { connected: true, toolCount: 1, perServer: [{ name: 'github', ready: true, toolCount: 1 }] };
+    store.yeaftMcpError = null;
+
+    handleMessage(store, {
+      type: 'yeaft_mcp_updated',
+      reason: 'add',
+      servers: [github, linear],
+      runtime: {
+        connected: true,
+        toolCount: 2,
+        perServer: [
+          { name: 'github', ready: true, toolCount: 1 },
+          { name: 'linear', ready: true, toolCount: 1 },
+        ],
+      },
+      error: null,
+    });
+    handleMessage(store, {
+      type: 'yeaft_mcp_updated',
+      reason: 'remove',
+      servers: [linear],
+      runtime: { connected: true, toolCount: 1, perServer: [{ name: 'linear', ready: true, toolCount: 1 }] },
+      error: null,
+    });
+
+    expect(store.yeaftMcpServers.map(server => server.name)).toEqual(['linear']);
+    expect(store.yeaftMcpRuntime).toMatchObject({
+      connected: true,
+      perServer: [expect.objectContaining({ name: 'linear', ready: true })],
+    });
+    expect(store.yeaftMcpError).toBeNull();
+  });
+
   it('does not refresh Work Center for routine agent inventory broadcasts', () => {
     const store = useChatStore();
     store.workCenterOpen = true;

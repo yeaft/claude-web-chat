@@ -132,6 +132,19 @@ const pendingUserPrompts = new Map();
 /** @type {import('./session.js').Session | null} */
 let session = null;
 
+// MCP config is Agent-local and the live MCP manager is mutable. WebSocket
+// dispatch deliberately allows unrelated frames to overlap, so serialize only
+// add/remove/reload from config mutation through runtime and UI publication.
+// Keep the tail fulfilled after a failure: the caller still receives its error,
+// but a later user mutation must not be permanently blocked behind it.
+let mcpMutationTail = Promise.resolve();
+
+function enqueueMcpMutation(operation) {
+  const queued = mcpMutationTail.then(operation);
+  mcpMutationTail = queued.catch(() => undefined);
+  return queued;
+}
+
 /**
  * Single-flight runtime boot. History replay must not wait for this promise on
  * cold load; message send still awaits it through ensureSessionLoaded().
@@ -2386,6 +2399,8 @@ export async function __testDrainVpDrivers() {
  * a half-aborted controller writing to a now-cleared map.
  */
 export async function __testResetVpState() {
+  await mcpMutationTail.catch(() => undefined);
+  mcpMutationTail = Promise.resolve();
   await shutdownProjectRuntimes();
   for (const ctrl of vpAborts.values()) {
     try { if (!ctrl.signal.aborted) ctrl.abort(); } catch { /* */ }
@@ -2724,7 +2739,7 @@ async function loadBaseRuntime(owner = captureRuntimeOwner()) {
       activateBaseRuntime(owner, { reloadSkills: false });
       hydrateYeaftStatusFromSession(ownerSession, { reason: 'base_runtime_mcp', emitEvent: true });
       if (isCurrentRuntimeOwner(owner)) {
-        try { broadcastMcpUpdated({ reason: 'base-runtime-load' }); } catch { /* best-effort */ }
+        try { void broadcastMcpUpdated({ reason: 'base-runtime-load' }).catch(() => {}); } catch { /* best-effort */ }
       }
     }
   }
@@ -7655,7 +7670,7 @@ function broadcastMcpUpdated({ configuredServers, ...extra } = {}) {
     else servers = listed.servers;
   }
 
-  sendToServer({
+  return sendToServer({
     type: 'yeaft_mcp_updated',
     runtime: mcpRuntimeSnapshot(),
     ...extra,
@@ -7676,11 +7691,11 @@ export function handleYeaftMcpList(msg = {}) {
   });
 }
 
-export async function handleYeaftMcpAdd(msg = {}) {
+async function runYeaftMcpAddMutation(msg = {}) {
   const yeaftDir = ctx.CONFIG?.yeaftDir;
   const result = upsertMcpServer(msg.server || {}, yeaftDir);
   if (result.error) {
-    sendToServer({
+    await sendToServer({
       type: 'yeaft_mcp_add_result',
       requestId: msg.requestId || null,
       servers: [],
@@ -7709,7 +7724,7 @@ export async function handleYeaftMcpAdd(msg = {}) {
 
   const swap = replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
 
-  sendToServer({
+  await sendToServer({
     type: 'yeaft_mcp_add_result',
     requestId: msg.requestId || null,
     servers: result.servers,
@@ -7718,7 +7733,7 @@ export async function handleYeaftMcpAdd(msg = {}) {
     connectError,
     error: null,
   });
-  broadcastMcpUpdated({
+  await broadcastMcpUpdated({
     reason: 'add',
     name: result.server.name,
     connectError,
@@ -7726,12 +7741,16 @@ export async function handleYeaftMcpAdd(msg = {}) {
   });
 }
 
-export async function handleYeaftMcpRemove(msg = {}) {
+export function handleYeaftMcpAdd(msg = {}) {
+  return enqueueMcpMutation(() => runYeaftMcpAddMutation(msg));
+}
+
+async function runYeaftMcpRemoveMutation(msg = {}) {
   const yeaftDir = ctx.CONFIG?.yeaftDir;
   const name = typeof msg.name === 'string' ? msg.name : '';
   const result = removeMcpServer(name, yeaftDir);
   if (result.error) {
-    sendToServer({
+    await sendToServer({
       type: 'yeaft_mcp_remove_result',
       requestId: msg.requestId || null,
       servers: [],
@@ -7751,7 +7770,7 @@ export async function handleYeaftMcpRemove(msg = {}) {
 
   const swap = replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
 
-  sendToServer({
+  await sendToServer({
     type: 'yeaft_mcp_remove_result',
     requestId: msg.requestId || null,
     servers: result.servers,
@@ -7760,14 +7779,18 @@ export async function handleYeaftMcpRemove(msg = {}) {
     swap,
     error: null,
   });
-  broadcastMcpUpdated({
+  await broadcastMcpUpdated({
     reason: 'remove',
     name,
     configuredServers: result.servers,
   });
 }
 
-export async function handleYeaftMcpReload(msg = {}) {
+export function handleYeaftMcpRemove(msg = {}) {
+  return enqueueMcpMutation(() => runYeaftMcpRemoveMutation(msg));
+}
+
+async function runYeaftMcpReloadMutation(msg = {}) {
   const yeaftDir = ctx.CONFIG?.yeaftDir;
   const targetName = typeof msg.name === 'string' && msg.name ? msg.name : null;
   const listed = listMcpServers(yeaftDir);
@@ -7776,7 +7799,7 @@ export async function handleYeaftMcpReload(msg = {}) {
   // In particular, leave an existing MCP runtime and its flattened tools alone
   // until the user repairs config.json.
   if (listed.error) {
-    sendToServer({
+    await sendToServer({
       type: 'yeaft_mcp_reload_result',
       requestId: msg.requestId || null,
       servers: [],
@@ -7789,7 +7812,7 @@ export async function handleYeaftMcpReload(msg = {}) {
   if (!session?.mcpManager) {
     // Session not yet alive — just echo the current config + an empty
     // runtime so the UI knows to wait for session boot.
-    sendToServer({
+    await sendToServer({
       type: 'yeaft_mcp_reload_result',
       requestId: msg.requestId || null,
       servers: listed.servers,
@@ -7827,7 +7850,7 @@ export async function handleYeaftMcpReload(msg = {}) {
 
   const swap = replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
 
-  sendToServer({
+  await sendToServer({
     type: 'yeaft_mcp_reload_result',
     requestId: msg.requestId || null,
     servers: configured,
@@ -7836,12 +7859,16 @@ export async function handleYeaftMcpReload(msg = {}) {
     swap,
     error: null,
   });
-  broadcastMcpUpdated({
+  await broadcastMcpUpdated({
     reason: 'reload',
     name: targetName,
     failures,
     configuredServers: configured,
   });
+}
+
+export function handleYeaftMcpReload(msg = {}) {
+  return enqueueMcpMutation(() => runYeaftMcpReloadMutation(msg));
 }
 
 export const __testHooks = {
