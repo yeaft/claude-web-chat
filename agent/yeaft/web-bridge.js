@@ -7751,23 +7751,36 @@ export async function handleYeaftMcpRemove(msg = {}) {
 export async function handleYeaftMcpReload(msg = {}) {
   const yeaftDir = ctx.CONFIG?.yeaftDir;
   const targetName = typeof msg.name === 'string' && msg.name ? msg.name : null;
+  const listed = listMcpServers(yeaftDir);
+
+  // Do not turn a failed strict config read into an empty successful reload.
+  // In particular, leave an existing MCP runtime and its flattened tools alone
+  // until the user repairs config.json.
+  if (listed.error) {
+    sendToServer({
+      type: 'yeaft_mcp_reload_result',
+      requestId: msg.requestId || null,
+      servers: [],
+      runtime: mcpRuntimeSnapshot(),
+      error: listed.error,
+    });
+    return;
+  }
 
   if (!session?.mcpManager) {
     // Session not yet alive — just echo the current config + an empty
     // runtime so the UI knows to wait for session boot.
-    const listed = listMcpServers(yeaftDir);
     sendToServer({
       type: 'yeaft_mcp_reload_result',
       requestId: msg.requestId || null,
-      servers: listed.servers || [],
+      servers: listed.servers,
       runtime: mcpRuntimeSnapshot(),
       error: null,
     });
     return;
   }
 
-  const listed = listMcpServers(yeaftDir);
-  const configured = listed.servers || [];
+  const configured = listed.servers;
   const enabled = configured.filter(server => isMcpServerEnabled(server.name));
 
   // Per-server reload: disconnect + reconnect the named server only.

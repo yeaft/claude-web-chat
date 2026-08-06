@@ -294,6 +294,83 @@ describe('Yeaft session-scoped model config', () => {
     }
   });
 
+  it('rejects MCP reload before touching a live runtime when config is invalid', async () => {
+    const root = makeDir();
+    const configPath = join(root, 'config.json');
+    const previousTransport = {
+      ws: ctx.ws,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+      CONFIG: ctx.CONFIG,
+    };
+    const sent = [];
+    const disconnectAll = vi.fn(async () => {});
+    const disconnect = vi.fn(async () => {});
+    const connect = vi.fn(async () => {});
+    const replaceMcpTools = vi.fn(() => ({ removed: 0, added: 0 }));
+    const mcpManager = {
+      hasServers: true,
+      status: () => [{ name: 'github', ready: true, toolCount: 1 }],
+      disconnectAll,
+      disconnect,
+      connect,
+    };
+    ctx.CONFIG = { yeaftDir: root };
+    ctx.ws = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    ctx.serverEncryptionRequired = false;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
+    __testSetSession({
+      config: { plugins: {} },
+      mcpManager,
+      toolRegistry: { replaceMcpTools },
+    });
+
+    try {
+      for (const [requestId, invalidConfig] of [
+        ['reload-malformed', '{"plugins":{"tools":["FileRead"]}'],
+        ['reload-invalid-plugins', JSON.stringify({ plugins: { tools: 'not-an-array' } })],
+      ]) {
+        sent.length = 0;
+        disconnectAll.mockClear();
+        disconnect.mockClear();
+        connect.mockClear();
+        replaceMcpTools.mockClear();
+        writeFileSync(configPath, invalidConfig);
+
+        await handleMessage({ type: 'yeaft_mcp_reload', requestId });
+        await new Promise(resolve => setImmediate(resolve));
+
+        expect(sent).toContainEqual(expect.objectContaining({
+          type: 'yeaft_mcp_reload_result',
+          requestId,
+          servers: [],
+          error: expect.stringContaining('Failed to read config.json'),
+        }));
+        expect(sent).not.toContainEqual(expect.objectContaining({
+          type: 'yeaft_mcp_updated',
+          reason: 'reload',
+        }));
+        expect(disconnectAll).not.toHaveBeenCalled();
+        expect(disconnect).not.toHaveBeenCalled();
+        expect(connect).not.toHaveBeenCalled();
+        expect(replaceMcpTools).not.toHaveBeenCalled();
+        expect(readFileSync(configPath, 'utf8')).toBe(invalidConfig);
+        expect(loadConfig({ dir: root })).toMatchObject({
+          plugins: { tools: [], skills: [], mcpServers: [] },
+          pluginConfigError: expect.any(String),
+        });
+      }
+    } finally {
+      ctx.ws = previousTransport.ws;
+      ctx.serverEncryptionRequired = previousTransport.serverEncryptionRequired;
+      ctx.outboundSendQueue = previousTransport.outboundSendQueue;
+      ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
+      ctx.CONFIG = previousTransport.CONFIG;
+    }
+  });
+
   it('rejects feature flag writes that would overwrite an invalid Agent config', () => {
     const root = makeDir();
     const configPath = join(root, 'config.json');
