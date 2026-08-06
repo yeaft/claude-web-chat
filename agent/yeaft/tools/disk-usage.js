@@ -4,12 +4,18 @@ import { basename, join, relative, resolve } from 'node:path';
 import { defineTool } from './types.js';
 import { managedCliToolReady, resolveManagedCliCommand } from '../managed-cli.js';
 import { runProcess } from './process-runner.js';
-import { isAbortError, throwIfAborted, waitForAbortable } from './search-paths.js';
+import {
+  isAbortError,
+  SearchBackendLimitError,
+  throwIfAborted,
+  waitForAbortable,
+} from './search-paths.js';
 
 const FALLBACK_CONCURRENCY = 16;
 const MAX_LIMIT = 200;
 const MAX_DEPTH = 10;
 const MAX_OUTPUT_BYTES = 512 * 1024;
+const DUST_RESULT_ROWS = MAX_LIMIT;
 
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes}B`;
@@ -40,10 +46,16 @@ function flattenDustTree(root, baseDir, depth, limit) {
   return [total, ...rows.slice(0, Math.max(0, limit - 1))].filter(Boolean);
 }
 
-async function runDust(command, baseDir, { depth, limit, signal }) {
-  const result = await runProcess(command, [
+export async function runDust(
+  command,
+  baseDir,
+  { depth, limit, signal },
+  processRunner = runProcess,
+) {
+  const result = await processRunner(command, [
     '--output-json',
     '--depth', String(depth),
+    '--number-of-lines', String(DUST_RESULT_ROWS),
     '--apparent-size',
     '--only-dir',
     '--no-progress',
@@ -56,8 +68,10 @@ async function runDust(command, baseDir, { depth, limit, signal }) {
     maxBytes: MAX_OUTPUT_BYTES,
     env: { ...process.env, NO_COLOR: '1' },
   });
-  if (result.timedOut) throw new Error('dust timed out');
-  if (result.truncated) throw new Error('dust output exceeded the tool limit');
+  if (result.timedOut) throw new SearchBackendLimitError('dust timed out');
+  if (result.truncated) {
+    throw new SearchBackendLimitError('dust output exceeded the tool limit');
+  }
   if (result.code !== 0) throw new Error(result.stderr.trim() || `dust exited with code ${result.code}`);
   return flattenDustTree(JSON.parse(result.stdout), baseDir, depth, limit);
 }
@@ -229,7 +243,7 @@ symlink is scanned like dust; descendant symlinks are not followed.`,
         try {
           rows = await runDust(dustCommand, baseDir, { depth, limit, signal: ctx?.signal });
         } catch (error) {
-          if (isAbortError(error)) throw error;
+          if (isAbortError(error) || error instanceof SearchBackendLimitError) throw error;
           rows = null;
         }
       }

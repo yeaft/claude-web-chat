@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { messageDb, yeaftProjectDb, yeaftSessionDb } from '../database.js';
+import { messageDb, sessionUiMetadataDb, yeaftProjectDb, yeaftSessionDb } from '../database.js';
 import { transaction } from '../db/connection.js';
 import { broadcastAgentList, broadcastSessionCatalog, forwardToClients, sendToAgent, sendToWebClient } from '../ws-utils.js';
 import { webClients, previewFiles } from '../context.js';
@@ -95,6 +95,11 @@ function syncYeaftSessionMetadata(agentId, agent, event) {
   try {
     yeaftSessionDb.deleteForAgent(ownerId, agentId, sessionId);
     yeaftProjectDb.removeSession(ownerId, agentId, sessionId);
+    sessionUiMetadataDb.deleteForRoute(ownerId, {
+      runtimeProvider: 'yeaft',
+      agentId,
+      sessionId,
+    });
   } catch (e) {
     console.warn('[Server] Yeaft Session metadata cleanup failed:', e?.message || e);
   }
@@ -669,7 +674,14 @@ export async function handleAgentOutput(agentId, agent, msg) {
           }
         }
       }
-      if (catalogChanged) await broadcastSessionCatalog(agent.ownerId);
+      // Nested `session_list_updated` events carry the same authoritative
+      // snapshot as the top-level alias below. Re-project the server-owned
+      // catalog after reconciliation so the unified sidebar updates in both
+      // local no-auth and deployed runtimes. Roster changes are handled by
+      // their own metadata branch above.
+      if ((event?.type === 'session_list_updated' || catalogChanged) && agent.ownerId) {
+        await broadcastSessionCatalog(agent.ownerId);
+      }
       break;
     }
 
@@ -684,7 +696,9 @@ export async function handleAgentOutput(agentId, agent, msg) {
           results: Array.isArray(msg.results) ? msg.results : [],
           hasMore: !!msg.hasMore,
           nextBeforeSeq: msg.nextBeforeSeq ?? null,
+          nextCursor: msg.nextCursor && typeof msg.nextCursor === 'object' ? msg.nextCursor : null,
           totalCount: Number.isFinite(msg.totalCount) ? msg.totalCount : null,
+          ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
           ...(msg.error ? { error: msg.error } : {}),
         });
       }
@@ -704,6 +718,8 @@ export async function handleAgentOutput(agentId, agent, msg) {
           results: Array.isArray(msg.results) ? msg.results : [],
           hasMore: !!msg.hasMore,
           nextBeforeSeq: msg.nextBeforeSeq ?? null,
+          nextCursor: msg.nextCursor && typeof msg.nextCursor === 'object' ? msg.nextCursor : null,
+          ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
           ...(msg.error ? { error: msg.error } : {}),
         });
       }
@@ -723,11 +739,18 @@ export async function handleAgentOutput(agentId, agent, msg) {
           requestId: msg.requestId ?? null,
           conversationId: msg.conversationId ?? null,
           sessionId: msg.sessionId ?? null,
+          entryId: msg.entryId ?? null,
+          indexGeneration: msg.indexGeneration ?? null,
+          entryStartSeq: msg.entryStartSeq ?? null,
+          entryEndSeq: msg.entryEndSeq ?? null,
+          sourceMessageIds: Array.isArray(msg.sourceMessageIds) ? msg.sourceMessageIds : [],
           anchorMessageId: msg.anchorMessageId ?? null,
           anchorSeq: msg.anchorSeq ?? null,
           messages,
           oldestSeq: msg.oldestSeq ?? null,
           hasMoreBefore: !!msg.hasMoreBefore,
+          rowCount: Number.isFinite(msg.rowCount) ? msg.rowCount : messages.length,
+          byteCount: Number.isFinite(msg.byteCount) ? msg.byteCount : null,
           ...(msg.error ? { error: msg.error } : {}),
         });
       }
@@ -776,10 +799,17 @@ export async function handleAgentOutput(agentId, agent, msg) {
             messages,
             mode: msg.mode || 'older',
             oldestSeq: msg.oldestSeq ?? null,
+            nextBeforeSeq: msg.nextBeforeSeq ?? msg.oldestSeq ?? null,
             hasMore: !!msg.hasMore,
             latestSeq: msg.latestSeq ?? null,
             afterSeq: msg.afterSeq ?? null,
+            hasMoreAfter: !!msg.hasMoreAfter,
+            streamId: msg.streamId ?? null,
+            revision: msg.revision ?? null,
             turns: msg.turns ?? null,
+            pageKind: msg.pageKind === 'gap' ? 'gap' : (msg.pageKind || null),
+            gapStopAtSeq: msg.gapStopAtSeq ?? null,
+            cacheEpoch: msg.cacheEpoch ?? null,
           });
           if (msg.perfTraceId) {
             recordPerfTraceEvent({

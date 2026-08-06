@@ -29,23 +29,18 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 
 /** Max timeout in ms (10 minutes). */
 const MAX_TIMEOUT_MS = 600_000;
-/**
- * ToolRegistry must not preempt Bash's own process timeout. Bash terminates
- * the process tree and waits for close before returning exit 124; the grace
- * covers TERM/KILL escalation and the bounded close-confirmation window.
- */
-const REGISTRY_TIMEOUT_MS = MAX_TIMEOUT_MS + 15_000;
 const LINUX_NAMESPACE_HELPER = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '..',
   'linux-process-namespace.js',
 );
+const RUN_PROCESS_OVERRIDE = Symbol('runProcessOverride');
 
 /**
  * Run a command in a child process.
- * @returns {Promise<{ stdout: string, stderr: string, exitCode: number, timedOut: boolean }>}
+ * @returns {Promise<{ stdout: string, stderr: string, exitCode: number, timedOut: boolean, terminationError: string | null }>}
  */
-function runCommand(command, { cwd, timeout, signal, runtimePlatform }) {
+function runCommand(command, { cwd, timeout, signal, runtimePlatform, runProcessImpl = runProcess }) {
   const platform = runtimePlatform || getRuntimePlatformInfo();
   const env = { ...process.env, TERM: 'dumb', FORCE_COLOR: '0' };
   const baseInvocation = buildShellInvocation(command, { runtimePlatform: platform });
@@ -76,7 +71,7 @@ function runCommand(command, { cwd, timeout, signal, runtimePlatform }) {
       systemdControl: null,
     };
   }
-  return runProcess(invocation.command, invocation.args, {
+  return runProcessImpl(invocation.command, invocation.args, {
     cwd,
     env,
     signal,
@@ -91,10 +86,11 @@ function runCommand(command, { cwd, timeout, signal, runtimePlatform }) {
     stderr: result.stderr,
     exitCode: result.code,
     timedOut: result.timedOut,
+    terminationError: result.terminationError || null,
   }));
 }
 
-export default defineTool({
+const bashTool = defineTool({
   name: 'Bash',
   description: {
     en: `Execute a shell command and return its output.
@@ -111,6 +107,7 @@ Guidelines:
 - Use absolute paths when possible
 - Avoid interactive commands (no stdin support)
 - Use background=true for long-running or persistent tasks that should survive across turns
+- Foreground timeout and cleanup status is returned to you; decide whether to inspect, retry, stop, or use a background task
 - stderr is captured separately and included in the result`,
     zh: `执行 Shell 命令并返回输出。
 
@@ -123,6 +120,7 @@ Guidelines:
 - 尽量使用绝对路径
 - 避免交互式命令（不支持 stdin）
 - 长时间或需要跨 turn 持续存在的任务使用 background=true
+- 前台命令的超时和清理状态会返回给你；由你决定检查、重试、停止或改用后台任务
 - stderr 单独捕获并包含在结果中`
   },
   parameters: {
@@ -167,9 +165,16 @@ Guidelines:
     required: ['command'],
   },
   errorOutput: null,
-  timeoutMs: REGISTRY_TIMEOUT_MS,
+  // Foreground Bash owns a bounded timeout and process-tree cleanup state
+  // machine. A second ToolRegistry timer can preempt that cleanup and turn an
+  // owned exit 124 into a fatal orphan, so it must stay disabled for this tool.
+  timeoutMs: 0,
   isConcurrencySafe: () => false,
   isReadOnly: () => false,
+  // A detached shell task can write after this tool has returned. Once one is
+  // launched, same-query filesystem reads must execute instead of reusing a
+  // snapshot captured before the task's eventual mutation.
+  mayMutateWorkspaceAfterReturn: input => input?.background === true,
   isDestructive: (input) => {
     if (!input?.command) return false;
     const cmd = input.command.toLowerCase();
@@ -224,6 +229,7 @@ Guidelines:
         timeout,
         signal: ctx?.signal,
         runtimePlatform,
+        runProcessImpl: ctx?.[RUN_PROCESS_OVERRIDE] || runProcess,
       });
 
       // Format output similar to Claude Code
@@ -231,6 +237,24 @@ Guidelines:
       if (result.stdout) parts.push(result.stdout);
       if (result.stderr) parts.push(`STDERR:\n${result.stderr}`);
       if (result.timedOut) parts.push(`\n(Command timed out after ${timeout}ms)`);
+      if (result.terminationError) {
+        parts.push([
+          `WARNING: ${result.terminationError}`,
+          'The command timed out, but process-tree termination could not be confirmed. The command may still be running.',
+          'Decide whether to inspect or stop it, retry, or use background=true.',
+        ].join('\n'));
+      }
+      if (result.timedOut) {
+        ctx?.requestToolBatchBarrier?.({
+          kind: 'owned_timeout',
+          message: [
+            result.terminationError
+              ? 'The foreground Bash command timed out and process-tree termination could not be confirmed.'
+              : 'The foreground Bash command timed out.',
+            'Return this result to the model before executing another tool call from the same batch.',
+          ].join(' '),
+        });
+      }
 
       const output = parts.join('\n');
       if (result.exitCode !== 0) {
@@ -243,3 +267,14 @@ Guidelines:
     }
   },
 });
+
+export function createBashTool({ runProcessImpl = runProcess } = {}) {
+  return {
+    ...bashTool,
+    execute(input, ctx) {
+      return bashTool.execute(input, { ...ctx, [RUN_PROCESS_OVERRIDE]: runProcessImpl });
+    },
+  };
+}
+
+export default bashTool;

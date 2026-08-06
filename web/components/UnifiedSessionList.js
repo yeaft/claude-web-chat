@@ -3,9 +3,20 @@ function timestampValue(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function sortRows(rows) {
+function hasCompleteSortRanks(rows) {
+  if (rows.length === 0) return false;
+  const ranks = rows.map(row => row?.sortRank);
+  return ranks.every(Number.isFinite) && new Set(ranks).size === rows.length;
+}
+
+function sortRows(rows, ranked = hasCompleteSortRanks(rows)) {
   return [...rows].sort((left, right) => {
     if (!!left.pinned !== !!right.pinned) return left.pinned ? -1 : 1;
+    if (ranked) {
+      const leftRank = Number.isFinite(left.sortRank) ? left.sortRank : Number.MAX_SAFE_INTEGER;
+      const rightRank = Number.isFinite(right.sortRank) ? right.sortRank : Number.MAX_SAFE_INTEGER;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+    }
     const metadataDelta = timestampValue(right.metadataUpdatedAt || right.createdAt)
       - timestampValue(left.metadataUpdatedAt || left.createdAt);
     if (metadataDelta !== 0) return metadataDelta;
@@ -15,6 +26,68 @@ function sortRows(rows) {
 
 function projectIdentityKey(project) {
   return project?.id || '';
+}
+
+const SIDEBAR_SECTION_COLLAPSE_KEY = 'yeaft-sidebar-section-collapse';
+
+function readCollapsedSections() {
+  try {
+    if (typeof localStorage === 'undefined') return { projects: false, recents: false };
+    const parsed = JSON.parse(localStorage.getItem(SIDEBAR_SECTION_COLLAPSE_KEY) || '{}');
+    return {
+      projects: parsed?.projects === true,
+      recents: parsed?.recents === true,
+    };
+  } catch {
+    return { projects: false, recents: false };
+  }
+}
+
+function writeCollapsedSections(value) {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(SIDEBAR_SECTION_COLLAPSE_KEY, JSON.stringify({
+        projects: value?.projects === true,
+        recents: value?.recents === true,
+      }));
+    }
+  } catch { /* browser storage is best-effort UI state */ }
+}
+
+export function reorderProjectRows(rows, movedId, targetId, position = 'before') {
+  const ordered = Array.isArray(rows) ? [...rows] : [];
+  const fromIndex = ordered.findIndex(row => projectIdentityKey(row) === movedId);
+  if (fromIndex < 0) return null;
+  const [moved] = ordered.splice(fromIndex, 1);
+  const targetIndex = ordered.findIndex(row => projectIdentityKey(row) === targetId);
+  if (targetIndex < 0) return null;
+  ordered.splice(targetIndex + (position === 'after' ? 1 : 0), 0, moved);
+  return ordered;
+}
+
+function catalogOrderChanged(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return true;
+  return left.some((row, index) => row?.catalogKey !== right[index]?.catalogKey);
+}
+
+/**
+ * Move one catalog row before/after another row, or append it to the catalog.
+ * The complete catalog is preserved so hidden/offline Sessions keep a stable
+ * rank when a visible row is dragged.
+ */
+export function reorderSessionCatalogRows(rows, movedKey, targetKey = null, position = 'before') {
+  const ordered = Array.isArray(rows) ? [...rows] : [];
+  const fromIndex = ordered.findIndex(row => row?.catalogKey === movedKey);
+  if (fromIndex < 0) return null;
+  const [moved] = ordered.splice(fromIndex, 1);
+  if (position === 'append') {
+    ordered.push(moved);
+    return ordered;
+  }
+  const targetIndex = ordered.findIndex(row => row?.catalogKey === targetKey);
+  if (targetIndex < 0) return null;
+  ordered.splice(targetIndex + (position === 'after' ? 1 : 0), 0, moved);
+  return ordered;
 }
 
 export function calculateFloatingMenuPosition(triggerRect, menuSize, viewport = {}) {
@@ -45,11 +118,40 @@ export function calculateFloatingMenuPosition(triggerRect, menuSize, viewport = 
   return { top, left, width, maxHeight, placement: placeAbove ? 'above' : 'below' };
 }
 
+export function calculateFloatingSubmenuPosition(parentRect, menuSize, viewport = {}) {
+  const gap = 4;
+  const padding = 8;
+  const viewportWidth = Math.max(0, Number(viewport.width) || 0);
+  const viewportHeight = Math.max(0, Number(viewport.height) || 0);
+  const width = Math.min(
+    Math.max(160, Number(menuSize?.width) || 0),
+    Math.max(0, viewportWidth - padding * 2),
+  );
+  const desiredHeight = Math.max(0, Number(menuSize?.height) || 0);
+  const maxHeight = Math.min(desiredHeight, Math.max(0, viewportHeight - padding * 2));
+  const roomRight = Math.max(0, viewportWidth - parentRect.right - gap - padding);
+  const roomLeft = Math.max(0, parentRect.left - gap - padding);
+  const placeLeft = roomRight < width && roomLeft > roomRight;
+  const naturalLeft = placeLeft
+    ? parentRect.left - gap - width
+    : parentRect.right + gap;
+  const left = Math.min(
+    Math.max(padding, naturalLeft),
+    Math.max(padding, viewportWidth - padding - width),
+  );
+  const top = Math.min(
+    Math.max(padding, parentRect.top),
+    Math.max(padding, viewportHeight - padding - maxHeight),
+  );
+  return { top, left, width, maxHeight, placement: placeLeft ? 'left' : 'right' };
+}
+
 export default {
   name: 'UnifiedSessionList',
-  emits: ['select', 'create', 'action', 'project-action', 'close-work-center'],
+  emits: ['select', 'create', 'create-in-project', 'action', 'project-action', 'close-work-center'],
   props: {
     sessions: { type: Array, default: () => [] },
+    projectStore: { type: Object, default: null },
     projects: { type: Array, default: () => [] },
     activeRoute: { type: Object, default: null },
     isSessionUnread: { type: Function, default: null },
@@ -61,10 +163,18 @@ export default {
   data() {
     return {
       collapsedProjects: {},
+      collapsedSections: readCollapsedSections(),
       openMenuKey: null,
       openProjectMenuKey: null,
+      suppressedActionsKey: null,
       draggedRow: null,
       dragTargetProjectId: null,
+      dragTargetRowKey: null,
+      dragTargetPosition: null,
+      draggedProjectId: null,
+      dragTargetProjectRowId: null,
+      dragTargetProjectPosition: null,
+      dragOperationPending: false,
       projectCreateOpen: false,
       projectCreateName: '',
       projectCreateSubmitting: false,
@@ -75,6 +185,8 @@ export default {
       floatingMenu: null,
       floatingMenuStyle: {},
       floatingMenuTrigger: null,
+      projectSubmenuOpen: false,
+      projectSubmenuStyle: {},
     };
   },
   mounted() {
@@ -90,11 +202,15 @@ export default {
     window.removeEventListener('scroll', this.positionFloatingMenu, true);
   },
   computed: {
-    projectStore() {
+    resolvedProjectStore() {
+      if (this.projectStore) return this.projectStore;
       try { return window.Pinia?.useChatStore?.() || null; } catch { return null; }
     },
+    hasCompleteCatalogOrder() {
+      return hasCompleteSortRanks(this.sessions);
+    },
     projectRows() {
-      const projects = this.projects.length > 0 ? this.projects : (this.projectStore?.sessionProjects || []);
+      const projects = this.projects.length > 0 ? this.projects : (this.resolvedProjectStore?.sessionProjects || []);
       return [...projects].sort((a, b) => (
         (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER)
       ));
@@ -128,7 +244,7 @@ export default {
     rowsByProject() {
       const out = new Map();
       for (const [id, rows] of this.projectSessionRows) {
-        out.set(id, sortRows(rows.filter(row => this.isRowOnline(row))));
+        out.set(id, sortRows(rows.filter(row => this.isRowOnline(row)), this.hasCompleteCatalogOrder));
       }
       return out;
     },
@@ -140,7 +256,7 @@ export default {
           if (this.projectBySessionKey.has(key)) return false;
         }
         return true;
-      }));
+      }), this.hasCompleteCatalogOrder);
     },
   },
   methods: {
@@ -150,9 +266,11 @@ export default {
       this.floatingMenu = null;
       this.floatingMenuStyle = {};
       this.floatingMenuTrigger = null;
+      this.projectSubmenuOpen = false;
+      this.projectSubmenuStyle = {};
     },
     closeMenusFromDocument(event) {
-      if (event?.target?.closest?.('.session-menu, .session-dots-btn')) return;
+      if (event?.target?.closest?.('.session-menu, .session-submenu, .session-dots-btn')) return;
       this.closeMenus();
     },
     closeMenusFromKeyboard(event) {
@@ -160,6 +278,9 @@ export default {
       this.closeMenus();
       this.cancelProjectCreate();
       if (this.projectInstructionOpen) this.closeProjectInstruction();
+    },
+    restoreRowActions(row) {
+      if (this.suppressedActionsKey === row?.catalogKey) this.suppressedActionsKey = null;
     },
     toggleProjectMenu(project, event) {
       const key = projectIdentityKey(project);
@@ -185,7 +306,6 @@ export default {
         row,
         inProject: inProject === true,
         currentProject: this.projectBySessionKey.get(`${row.routeRef?.agentId}\u001f${row.routeRef?.sessionId}`) || null,
-        page: 'actions',
       };
       this.floatingMenuTrigger = event?.currentTarget || null;
       this.$nextTick(this.positionFloatingMenu);
@@ -210,6 +330,7 @@ export default {
         width: `${position.width}px`,
         maxHeight: `${position.maxHeight}px`,
       };
+      if (this.projectSubmenuOpen) this.$nextTick(this.positionProjectSubmenu);
     },
     isActive(row) {
       const route = row?.routeRef;
@@ -267,13 +388,42 @@ export default {
     },
     openProjectMoveList() {
       if (!this.floatingMenu || this.floatingMenu.kind !== 'session') return;
-      this.floatingMenu = { ...this.floatingMenu, page: 'projects' };
-      this.$nextTick(this.positionFloatingMenu);
+      this.projectSubmenuOpen = true;
+      this.$nextTick(this.positionProjectSubmenu);
     },
     closeProjectMoveList() {
-      if (!this.floatingMenu || this.floatingMenu.kind !== 'session') return;
-      this.floatingMenu = { ...this.floatingMenu, page: 'actions' };
-      this.$nextTick(this.positionFloatingMenu);
+      this.projectSubmenuOpen = false;
+      this.projectSubmenuStyle = {};
+    },
+    positionProjectSubmenu() {
+      const parentMenu = this.$refs.floatingMenu;
+      const submenu = this.$refs.projectSubmenu;
+      if (!this.projectSubmenuOpen || !parentMenu || !submenu) return;
+      const position = calculateFloatingSubmenuPosition(parentMenu.getBoundingClientRect(), {
+        width: submenu.scrollWidth || submenu.offsetWidth || 160,
+        height: submenu.scrollHeight || submenu.offsetHeight || 0,
+      }, {
+        width: document.documentElement.clientWidth || window.innerWidth,
+        height: document.documentElement.clientHeight || window.innerHeight,
+      });
+      this.projectSubmenuStyle = {
+        top: `${position.top}px`,
+        left: `${position.left}px`,
+        width: `${position.width}px`,
+        maxHeight: `${position.maxHeight}px`,
+      };
+    },
+    isSectionCollapsed(section) {
+      return this.collapsedSections?.[section] === true;
+    },
+    toggleSection(section) {
+      if (section !== 'projects' && section !== 'recents') return;
+      this.collapsedSections = {
+        ...this.collapsedSections,
+        [section]: !this.isSectionCollapsed(section),
+      };
+      writeCollapsedSections(this.collapsedSections);
+      this.closeMenus();
     },
     isProjectCollapsed(project) {
       return this.collapsedProjects[projectIdentityKey(project)] === true;
@@ -299,7 +449,17 @@ export default {
       if (this.workCenterOpen) this.$emit('close-work-center');
       this.$emit('create');
     },
-    selectRow(row) {
+    createSessionInProject(project) {
+      if (!this.canEditProject(project)) return;
+      this.closeMenus();
+      if (this.workCenterOpen) this.$emit('close-work-center');
+      this.$emit('create-in-project', { project });
+    },
+    selectRow(row, event, options = {}) {
+      if (options.suppressActions === true) {
+        this.suppressedActionsKey = row?.catalogKey || null;
+        event?.currentTarget?.blur?.();
+      }
       this.closeMenus();
       if (this.workCenterOpen) this.$emit('close-work-center');
       this.$emit('select', row);
@@ -307,7 +467,7 @@ export default {
     selectRowFromKeyboard(row, event) {
       if (event?.target !== event?.currentTarget) return;
       event.preventDefault();
-      this.selectRow(row);
+      this.selectRow(row, event);
     },
     runAction(action, row) {
       this.closeMenus();
@@ -321,13 +481,20 @@ export default {
       const normalizedAction = action === 'delete' ? 'remove' : action;
       this.$emit('action', { action: normalizedAction, row });
     },
+    dispatchSessionAction(payload) {
+      if (payload?.action === 'reorder' && this.resolvedProjectStore?.reorderCatalogSessions) {
+        return this.resolvedProjectStore.reorderCatalogSessions(payload.sessions);
+      }
+      this.$emit('action', payload);
+      return true;
+    },
     dispatchProjectAction(payload) {
       if (payload?.action === 'move-session'
           && !this.canMoveRowToProject(payload?.row, payload?.project || null)) return false;
       this.$emit('project-action', payload);
-      const store = this.projectStore;
+      const store = this.resolvedProjectStore;
       if (!store?.mutateProject) return true;
-      const { action, project, row, name, agentId: explicitAgentId } = payload;
+      const { action, project, row, name, catalogOrder, agentId: explicitAgentId } = payload;
       const agentId = explicitAgentId || row?.routeRef?.agentId || null;
       if (action === 'create') return store.mutateProject('create', { name }, agentId);
       const projectId = project?.legacyProjectId || project?.id;
@@ -339,16 +506,31 @@ export default {
         }, project?.legacyAgentId || agentId);
       }
       if (action === 'delete') return store.mutateProject('delete', { projectId }, project?.legacyAgentId || agentId);
+      if (action === 'reorder-projects') {
+        return store.mutateProject('reorder', {
+          projectIds: (payload.projects || []).map(item => item.id),
+        });
+      }
       if (action === 'move-session' && row?.routeRef?.sessionId) {
         return store.mutateProject('move_session', {
           sessionId: row.routeRef.sessionId,
           projectId: project?.legacyProjectId || project?.id || null,
+          ...(Array.isArray(catalogOrder) ? {
+            catalogOrder: catalogOrder.map(item => ({
+              catalogKey: item.catalogKey,
+              routeRef: item.routeRef,
+            })),
+          } : {}),
         }, agentId);
       }
       return false;
     },
     createProject() {
       if (this.projectCreateSubmitting) return;
+      if (this.isSectionCollapsed('projects')) {
+        this.collapsedSections = { ...this.collapsedSections, projects: false };
+        writeCollapsedSections(this.collapsedSections);
+      }
       this.projectCreateOpen = true;
       this.projectCreateName = '';
       this.$nextTick(() => this.$refs.projectCreateInput?.focus?.());
@@ -420,65 +602,286 @@ export default {
         this.projectInstructionSubmitting = false;
       }
     },
-    moveRow(row, project = null) {
+    moveRow(row, project = null, catalogOrder = null) {
       this.closeMenus();
       if (!this.canMoveRowToProject(row, project)) return false;
-      return this.dispatchProjectAction({ action: 'move-session', row, project });
+      return this.dispatchProjectAction({ action: 'move-session', row, project, catalogOrder });
+    },
+    projectForRow(row) {
+      if (row?.runtimeProvider !== 'yeaft') return null;
+      const key = `${row.routeRef?.agentId}\u001f${row.routeRef?.sessionId}`;
+      return this.projectBySessionKey.get(key) || null;
+    },
+    canDragProject(project) {
+      return !!project?.id
+        && !project.legacyProjectId
+        && this.projectRows.length > 1
+        && this.projectRows.every(row => row?.id && !row.legacyProjectId)
+        && !this.dragOperationPending;
+    },
+    startProjectDrag(project, event) {
+      if (!this.canDragProject(project)) return;
+      this.closeMenus();
+      this.finishDrag();
+      this.draggedProjectId = projectIdentityKey(project);
+      if (event?.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', `project:${this.draggedProjectId}`);
+      }
+    },
+    dragOverProjectRow(project, event) {
+      const targetId = projectIdentityKey(project);
+      if (!this.draggedProjectId || targetId === this.draggedProjectId || !this.canDragProject(project)) return;
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      if (event?.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      this.dragTargetProjectRowId = targetId;
+      this.dragTargetProjectPosition = this.dragPositionForEvent(event);
+    },
+    dragLeaveProjectRow(project, event) {
+      if (this.dragTargetProjectRowId !== projectIdentityKey(project)) return;
+      const next = event?.relatedTarget;
+      if (next && event?.currentTarget?.contains?.(next)) return;
+      this.dragTargetProjectRowId = null;
+      this.dragTargetProjectPosition = null;
+    },
+    async dropProjectRow(project, event) {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      const movedId = this.draggedProjectId;
+      const targetId = projectIdentityKey(project);
+      const position = this.dragTargetProjectRowId === targetId
+        ? this.dragTargetProjectPosition
+        : this.dragPositionForEvent(event);
+      this.finishProjectDrag();
+      if (!movedId || !targetId || movedId === targetId || !position) return false;
+      const nextProjects = reorderProjectRows(this.projectRows, movedId, targetId, position);
+      if (!nextProjects) return false;
+      this.dragOperationPending = true;
+      try {
+        const result = await this.dispatchProjectAction({
+          action: 'reorder-projects',
+          projects: nextProjects,
+        });
+        return result !== false && result?.ok !== false;
+      } finally {
+        this.dragOperationPending = false;
+      }
+    },
+    finishProjectDrag() {
+      this.draggedProjectId = null;
+      this.dragTargetProjectRowId = null;
+      this.dragTargetProjectPosition = null;
+    },
+    canDragRow(row, project = null) {
+      if (this.dragOperationPending || !this.canEditRow(row)) return false;
+      if (!project) return true;
+      if (row?.runtimeProvider !== 'yeaft') return false;
+      const sameProject = projectIdentityKey(this.projectForRow(row)) === projectIdentityKey(project);
+      return sameProject || this.canMoveRowToProject(row, project);
+    },
+    canDropRow(row, project = null) {
+      if (!row || this.dragOperationPending || !this.canEditRow(row)) return false;
+      if (!project) return row.runtimeProvider === 'yeaft' || !this.projectForRow(row);
+      if (row.runtimeProvider !== 'yeaft') return false;
+      const sameProject = projectIdentityKey(this.projectForRow(row)) === projectIdentityKey(project);
+      return sameProject ? this.canEditRow(row) : this.canMoveRowToProject(row, project);
     },
     startDrag(row, event) {
-      if (row.runtimeProvider !== 'yeaft' || !this.canEditRow(row)) return;
+      if (!this.canDragRow(row, this.projectForRow(row))) return;
+      this.closeMenus();
+      this.finishProjectDrag();
       this.draggedRow = row;
-      event.dataTransfer.effectAllowed = 'move';
-      event.dataTransfer.setData('text/plain', row.catalogKey);
+      this.dragTargetProjectId = null;
+      this.dragTargetRowKey = null;
+      this.dragTargetPosition = null;
+      if (event?.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', row.catalogKey);
+      }
     },
-    dragOverProject(project, event) {
-      if (!this.canMoveRowToProject(this.draggedRow, project)) {
-        this.dragTargetProjectId = null;
+    dragPositionForEvent(event) {
+      const rect = event?.currentTarget?.getBoundingClientRect?.();
+      if (!rect || !Number.isFinite(event?.clientY)) return 'before';
+      return event.clientY > rect.top + rect.height / 2 ? 'after' : 'before';
+    },
+    dragOverRow(row, project, event) {
+      const moved = this.draggedRow;
+      if (!this.canDropRow(moved, project)
+          || moved.catalogKey === row?.catalogKey
+          || !!moved.pinned !== !!row?.pinned) return;
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      if (event?.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      this.dragTargetProjectId = null;
+      this.dragTargetRowKey = row.catalogKey;
+      this.dragTargetPosition = this.dragPositionForEvent(event);
+    },
+    dragLeaveRow(row, event) {
+      if (this.dragTargetRowKey !== row?.catalogKey) return;
+      const next = event?.relatedTarget;
+      if (next && event?.currentTarget?.contains?.(next)) return;
+      this.dragTargetRowKey = null;
+      this.dragTargetPosition = null;
+    },
+    async dropOnRow(row, project, event) {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      const moved = this.draggedRow;
+      const position = this.dragTargetRowKey === row?.catalogKey
+        ? this.dragTargetPosition
+        : this.dragPositionForEvent(event);
+      this.finishDrag();
+      if (!this.canDropRow(moved, project) || !position) return false;
+      return this.applySessionDrop(moved, project, row, position);
+    },
+    dragOverProjectHeader(project, event) {
+      if (this.draggedProjectId) {
+        this.dragOverProjectRow(project, event);
         return;
       }
-      event.preventDefault();
-      event.dataTransfer.dropEffect = 'move';
-      this.dragTargetProjectId = projectIdentityKey(project);
+      this.dragOverProject(project, event);
     },
-    dropOnProject(project, event) {
-      event.preventDefault();
-      if (this.canMoveRowToProject(this.draggedRow, project)) this.moveRow(this.draggedRow, project);
+    clearProjectHeaderDragTarget(project, event) {
+      if (this.draggedProjectId) {
+        this.dragLeaveProjectRow(project, event);
+        return;
+      }
+      this.clearGroupDragTarget(projectIdentityKey(project), event);
+    },
+    dropOnProjectHeader(project, event) {
+      if (this.draggedProjectId) return this.dropProjectRow(project, event);
+      return this.dropOnProject(project, event);
+    },
+    dragOverProject(project, event) {
+      if (!this.canDropRow(this.draggedRow, project)) {
+        this.clearDragTarget();
+        return;
+      }
+      event?.preventDefault?.();
+      if (event?.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      this.dragTargetProjectId = projectIdentityKey(project);
+      this.dragTargetRowKey = null;
+      this.dragTargetPosition = null;
+    },
+    async dropOnProject(project, event) {
+      event?.preventDefault?.();
+      const moved = this.draggedRow;
       this.finishDrag();
+      if (!this.canDropRow(moved, project)) return false;
+      return this.applySessionDropAtEnd(moved, project);
     },
     dragOverRecents(event) {
-      if (!this.draggedRow) return;
-      event.preventDefault();
+      if (!this.canDropRow(this.draggedRow, null)) {
+        this.clearDragTarget();
+        return;
+      }
+      event?.preventDefault?.();
+      if (event?.dataTransfer) event.dataTransfer.dropEffect = 'move';
       this.dragTargetProjectId = '__recents__';
+      this.dragTargetRowKey = null;
+      this.dragTargetPosition = null;
     },
-    dropOnRecents(event) {
-      event.preventDefault();
-      if (this.draggedRow) this.moveRow(this.draggedRow, null);
+    async dropOnRecents(event) {
+      event?.preventDefault?.();
+      const moved = this.draggedRow;
       this.finishDrag();
+      if (!this.canDropRow(moved, null)) return false;
+      return this.applySessionDropAtEnd(moved, null);
+    },
+    clearGroupDragTarget(key, event) {
+      if (this.dragTargetProjectId !== key) return;
+      const next = event?.relatedTarget;
+      if (next && event?.currentTarget?.contains?.(next)) return;
+      this.dragTargetProjectId = null;
+    },
+    clearDragTarget() {
+      this.dragTargetProjectId = null;
+      this.dragTargetRowKey = null;
+      this.dragTargetPosition = null;
     },
     finishDrag() {
       this.draggedRow = null;
-      this.dragTargetProjectId = null;
+      this.clearDragTarget();
+    },
+    finishAllDrag() {
+      this.finishDrag();
+      this.finishProjectDrag();
+    },
+    rowsForProject(project = null) {
+      return project
+        ? (this.rowsByProject.get(projectIdentityKey(project)) || [])
+        : this.recentRows;
+    },
+    async applySessionDropAtEnd(moved, project = null) {
+      const targetRows = this.rowsForProject(project)
+        .filter(row => row.catalogKey !== moved?.catalogKey);
+      const target = targetRows.at(-1) || null;
+      return this.applySessionDrop(moved, project, target, target ? 'after' : 'append');
+    },
+    async applySessionDrop(moved, project, target, position) {
+      if (!moved?.catalogKey || !this.canDropRow(moved, project)) return false;
+      const currentOrder = sortRows(this.sessions);
+      const nextOrder = reorderSessionCatalogRows(
+        currentOrder,
+        moved.catalogKey,
+        target?.catalogKey || null,
+        position,
+      );
+      if (!nextOrder) return false;
+
+      const sourceProject = this.projectForRow(moved);
+      const membershipChanged = projectIdentityKey(sourceProject) !== projectIdentityKey(project);
+      const orderChanged = catalogOrderChanged(currentOrder, nextOrder);
+      if (!membershipChanged && !orderChanged) return false;
+
+      this.dragOperationPending = true;
+      try {
+        if (membershipChanged) {
+          const result = await this.moveRow(moved, project, nextOrder);
+          return result !== false && result?.ok !== false;
+        }
+        if (orderChanged) {
+          const accepted = await this.dispatchSessionAction({
+            action: 'reorder',
+            row: moved,
+            sessions: nextOrder,
+          });
+          return accepted !== false;
+        }
+        return true;
+      } finally {
+        this.dragOperationPending = false;
+      }
     },
   },
   template: `
     <nav class="sidebar-navigation" :aria-label="$t('sidebar.surface.sessions')">
       <div class="sidebar-primary-actions">
-        <button type="button" class="sidebar-primary-action" @click="createSession">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 4h16v13H7l-3 3V4zm2 2v9.17L6.17 15H18V6H6zm5 2h2v2h2v2h-2v2h-2v-2H9v-2h2V8z"/></svg>
+        <button type="button" class="sidebar-primary-action" @click="createSession" :title="$t('sidebar.sessions.newChat')" :aria-label="$t('sidebar.sessions.newChat')">
+          <svg class="sidebar-primary-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path class="sidebar-primary-action-frame" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+            <path class="sidebar-primary-action-pen" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852Z"/>
+          </svg>
           <span>{{ $t('sidebar.sessions.newChat') }}</span>
         </button>
       </div>
 
       <div class="sidebar-session-results">
-        <section class="sidebar-section projects-section">
+        <section class="sidebar-section projects-section" :class="{ 'is-collapsed': isSectionCollapsed('projects') }">
           <div class="sidebar-section-heading">
-            <span>{{ $t('sidebar.projects.title') }}</span>
-            <button type="button" class="sidebar-tool-button" @click="createProject" :disabled="projectCreateOpen" :title="$t('sidebar.projects.new')" :aria-label="$t('sidebar.projects.new')">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"/></svg>
+            <button type="button" class="sidebar-section-toggle" @click="toggleSection('projects')" :aria-expanded="String(!isSectionCollapsed('projects'))">
+              <span>{{ $t('sidebar.projects.title') }}</span>
+              <svg class="sidebar-section-chevron" :class="{ collapsed: isSectionCollapsed('projects') }" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m8 10 4 4 4-4"/></svg>
+            </button>
+            <button type="button" class="sidebar-tool-button sidebar-project-add-button" @click="createProject" :disabled="projectCreateOpen" :title="$t('sidebar.projects.new')" :aria-label="$t('sidebar.projects.new')">
+              <svg class="sidebar-project-add-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path class="sidebar-project-add-mark" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14"/>
+              </svg>
             </button>
           </div>
 
-          <form v-if="projectCreateOpen" class="sidebar-project-create" @submit.prevent="submitProjectCreate" @keydown.escape.stop.prevent="cancelProjectCreate">
+          <form v-if="projectCreateOpen && !isSectionCollapsed('projects')" class="sidebar-project-create" @submit.prevent="submitProjectCreate" @keydown.escape.stop.prevent="cancelProjectCreate">
             <svg class="sidebar-project-create-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 6h7l2 2h9v10H3V6zm2 2v8h14v-6h-8l-2-2H5z"/></svg>
             <input
               ref="projectCreateInput"
@@ -496,21 +899,27 @@ export default {
             </button>
           </form>
 
-          <div v-if="projectRows.length === 0 && !projectCreateOpen" class="sidebar-section-empty">{{ $t('sidebar.projects.empty') }}</div>
-          <div v-for="project in projectRows" :key="projectKey(project)" class="sidebar-project">
+          <div v-if="!isSectionCollapsed('projects') && projectRows.length === 0 && !projectCreateOpen" class="sidebar-section-empty">{{ $t('sidebar.projects.empty') }}</div>
+          <div v-for="project in (isSectionCollapsed('projects') ? [] : projectRows)" :key="projectKey(project)" class="sidebar-project">
             <div
               class="sidebar-project-header"
-              :class="{ 'drag-over': dragTargetProjectId === projectKey(project) }"
-              @dragover="dragOverProject(project, $event)"
-              @dragleave="dragTargetProjectId = null"
-              @drop="dropOnProject(project, $event)"
+              :class="{ 'drag-over': !draggedProjectId && dragTargetProjectId === projectKey(project), dragging: draggedProjectId === projectKey(project), 'project-drag-before': dragTargetProjectRowId === projectKey(project) && dragTargetProjectPosition === 'before', 'project-drag-after': dragTargetProjectRowId === projectKey(project) && dragTargetProjectPosition === 'after' }"
+              :draggable="canDragProject(project)"
+              @dragstart="startProjectDrag(project, $event)"
+              @dragover="dragOverProjectHeader(project, $event)"
+              @dragleave="clearProjectHeaderDragTarget(project, $event)"
+              @drop="dropOnProjectHeader(project, $event)"
+              @dragend="finishAllDrag"
             >
-              <button type="button" class="sidebar-project-toggle" @click="toggleProject(project)">
-                <svg class="sidebar-project-chevron" :class="{ collapsed: isProjectCollapsed(project) }" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m7 10 5 5 5-5H7z"/></svg>
-                <svg class="sidebar-project-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 6h7l2 2h9v10H3V6zm2 2v8h14v-6h-8l-2-2H5z"/></svg>
-                <span>{{ project.name }}</span>
-                <span v-if="isProjectUnread(project)" class="sidebar-session-unread sidebar-project-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
+              <button type="button" class="sidebar-project-toggle" @click="toggleProject(project)" :aria-expanded="String(!isProjectCollapsed(project))">
+                <svg v-if="isProjectCollapsed(project)" class="sidebar-project-icon sidebar-project-icon-closed" viewBox="0 0 20 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M2.5 7.5a2 2 0 0 1 2-2h4l1.8 2H15.5a2 2 0 0 1 2 2V18h-15z"/></svg>
+                <svg v-else class="sidebar-project-icon sidebar-project-icon-open" viewBox="0 0 20 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M2.5 9V7a2 2 0 0 1 2-2h4l1.8 2h5.2a2 2 0 0 1 2 2v1M3.5 10h15l-2 8h-15z"/></svg>
+                <span class="sidebar-project-name">{{ project.name }}</span>
                 <span class="sidebar-project-count">{{ (rowsByProject.get(projectKey(project)) || []).length }}</span>
+                <span v-if="isProjectUnread(project)" class="sidebar-session-unread sidebar-project-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
+              </button>
+              <button v-if="canEditProject(project)" type="button" class="sidebar-project-session-create" @click.stop="createSessionInProject(project)" :title="$t('sidebar.projects.newSession', { name: project.name })" :aria-label="$t('sidebar.projects.newSession', { name: project.name })">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
               </button>
               <button v-if="canEditProject(project)" type="button" class="session-dots-btn" :class="{ 'menu-open': openProjectMenuKey === projectKey(project) }" @click.stop="toggleProjectMenu(project, $event)" :aria-label="$t('sidebar.projects.menu')">
                 <svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
@@ -521,13 +930,17 @@ export default {
                 v-for="row in rowsByProject.get(projectKey(project)) || []"
                 :key="row.catalogKey"
                 class="session-item sidebar-session-row"
-                :class="{ active: isActive(row), processing: isProcessing(row) }"
-                :draggable="row.runtimeProvider === 'yeaft' && canEditRow(row)"
+                :class="{ active: isActive(row), processing: isProcessing(row), dragging: draggedRow?.catalogKey === row.catalogKey, 'drag-before': dragTargetRowKey === row.catalogKey && dragTargetPosition === 'before', 'drag-after': dragTargetRowKey === row.catalogKey && dragTargetPosition === 'after', 'actions-suppressed': suppressedActionsKey === row.catalogKey }"
+                :draggable="canDragRow(row, project)"
                 role="button"
                 tabindex="0"
                 @dragstart="startDrag(row, $event)"
+                @dragover="dragOverRow(row, project, $event)"
+                @dragleave="dragLeaveRow(row, $event)"
+                @drop="dropOnRow(row, project, $event)"
                 @dragend="finishDrag"
-                @click="selectRow(row)"
+                @pointerleave="restoreRowActions(row)"
+                @click="selectRow(row, $event, { suppressActions: true })"
                 @keydown.enter="selectRowFromKeyboard(row, $event)"
                 @keydown.space="selectRowFromKeyboard(row, $event)"
               >
@@ -539,8 +952,14 @@ export default {
                     <span v-if="isUnread(row)" class="sidebar-session-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
                   </span>
                 </span>
-                <span v-if="canEditRow(row)" class="session-actions">
-                  <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="toggleSessionMenu(row, true, $event)" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
+                <span v-if="canEditRow(row)" class="session-actions" :class="{ 'menu-open': openMenuKey === row.catalogKey }">
+                  <button type="button" class="session-quick-action" @click.stop="runAction('pin', row)" :title="row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin')" :aria-label="row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin')">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
+                  </button>
+                  <button type="button" class="session-quick-action" @click.stop="runAction('delete', row)" :title="$t('sidebar.sessions.remove')" :aria-label="$t('sidebar.sessions.remove')">
+                    <svg class="session-remove-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg>
+                  </button>
+                  <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="toggleSessionMenu(row, true, $event)" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
                 </span>
               </div>
               <div v-if="(rowsByProject.get(projectKey(project)) || []).length === 0" class="sidebar-section-empty">{{ $t('sidebar.projects.noSessions') }}</div>
@@ -548,19 +967,34 @@ export default {
           </div>
         </section>
 
-        <section class="sidebar-section recents-section" :class="{ 'drag-over': dragTargetProjectId === '__recents__' }" @dragover="dragOverRecents" @dragleave="dragTargetProjectId = null" @drop="dropOnRecents">
-          <div class="sidebar-section-heading"><span>{{ $t('sidebar.recents.title') }}</span></div>
+        <section class="sidebar-section recents-section" :class="{ 'drag-over': dragTargetProjectId === '__recents__', 'is-collapsed': isSectionCollapsed('recents') }" @dragover="dragOverRecents" @dragleave="clearGroupDragTarget('__recents__', $event)" @drop="dropOnRecents">
+          <div class="sidebar-section-heading">
+            <button type="button" class="sidebar-section-toggle" @click="toggleSection('recents')" :aria-expanded="String(!isSectionCollapsed('recents'))">
+              <span>{{ $t('sidebar.recents.title') }}</span>
+              <svg class="sidebar-section-chevron" :class="{ collapsed: isSectionCollapsed('recents') }" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m8 10 4 4 4-4"/></svg>
+            </button>
+            <button type="button" class="sidebar-tool-button sidebar-recents-create" @click="createSession" :title="$t('sidebar.sessions.newChat')" :aria-label="$t('sidebar.sessions.newChat')">
+              <svg class="sidebar-recents-create-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path class="sidebar-recents-create-frame" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path class="sidebar-recents-create-pen" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852Z"/>
+              </svg>
+            </button>
+          </div>
           <div
-            v-for="row in recentRows"
+            v-for="row in (isSectionCollapsed('recents') ? [] : recentRows)"
             :key="row.catalogKey"
             class="session-item sidebar-session-row"
-            :class="{ active: isActive(row), processing: isProcessing(row) }"
-            :draggable="row.runtimeProvider === 'yeaft' && canEditRow(row)"
+            :class="{ active: isActive(row), processing: isProcessing(row), dragging: draggedRow?.catalogKey === row.catalogKey, 'drag-before': dragTargetRowKey === row.catalogKey && dragTargetPosition === 'before', 'drag-after': dragTargetRowKey === row.catalogKey && dragTargetPosition === 'after', 'actions-suppressed': suppressedActionsKey === row.catalogKey }"
+            :draggable="canDragRow(row)"
             role="button"
             tabindex="0"
             @dragstart="startDrag(row, $event)"
+            @dragover="dragOverRow(row, null, $event)"
+            @dragleave="dragLeaveRow(row, $event)"
+            @drop="dropOnRow(row, null, $event)"
             @dragend="finishDrag"
-            @click="selectRow(row)"
+            @pointerleave="restoreRowActions(row)"
+            @click="selectRow(row, $event, { suppressActions: true })"
             @keydown.enter="selectRowFromKeyboard(row, $event)"
             @keydown.space="selectRowFromKeyboard(row, $event)"
           >
@@ -572,11 +1006,17 @@ export default {
                 <span v-if="isUnread(row)" class="sidebar-session-unread" :aria-label="$t('sidebar.sessions.unread')"></span>
               </span>
             </span>
-            <span v-if="canEditRow(row)" class="session-actions">
-              <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="toggleSessionMenu(row, false, $event)" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
+            <span v-if="canEditRow(row)" class="session-actions" :class="{ 'menu-open': openMenuKey === row.catalogKey }">
+              <button type="button" class="session-quick-action" @click.stop="runAction('pin', row)" :title="row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin')" :aria-label="row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin')">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
+              </button>
+              <button type="button" class="session-quick-action" @click.stop="runAction('delete', row)" :title="$t('sidebar.sessions.remove')" :aria-label="$t('sidebar.sessions.remove')">
+                <svg class="session-remove-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg>
+              </button>
+              <button type="button" class="session-dots-btn" :class="{ 'menu-open': openMenuKey === row.catalogKey }" @click.stop="toggleSessionMenu(row, false, $event)" :aria-label="$t('sidebar.sessions.menu')"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
             </span>
           </div>
-          <div v-if="recentRows.length === 0" class="sidebar-section-empty">{{ $t('sidebar.recents.empty') }}</div>
+          <div v-if="!isSectionCollapsed('recents') && recentRows.length === 0" class="sidebar-section-empty">{{ $t('sidebar.recents.empty') }}</div>
         </section>
       </div>
 
@@ -587,28 +1027,25 @@ export default {
             <button class="session-menu-item" @click.stop="renameProject(floatingMenu.project)">{{ $t('sidebar.projects.rename') }}</button>
             <button class="session-menu-item danger" @click.stop="deleteProject(floatingMenu.project)">{{ $t('sidebar.projects.delete') }}</button>
           </template>
-          <template v-else-if="floatingMenu.page === 'projects'">
-            <button class="session-menu-item session-menu-back" @click.stop="closeProjectMoveList">{{ $t('sidebar.projects.moveBack') }}</button>
-            <button v-for="project in projectMoveTargets(floatingMenu.row, floatingMenu.currentProject)" :key="project.id" class="session-menu-item" @click.stop="moveRow(floatingMenu.row, project)">{{ project.name }}</button>
-            <div v-if="projectMoveTargets(floatingMenu.row, floatingMenu.currentProject).length === 0" class="session-menu-empty">{{ $t('sidebar.projects.moveEmpty') }}</div>
-          </template>
           <template v-else>
-            <button class="session-menu-item" @click.stop="runAction('pin', floatingMenu.row)">{{ floatingMenu.row.pinned ? $t('chat.sidebar.unpin') : $t('chat.sidebar.pin') }}</button>
             <button class="session-menu-item" @click.stop="runAction('rename', floatingMenu.row)">{{ $t('chat.sidebar.renameConv') }}</button>
             <template v-if="floatingMenu.row.runtimeProvider === 'yeaft'">
               <button class="session-menu-item" @click.stop="runAction('settings', floatingMenu.row)">{{ $t('yeaft.session.openSettings') }}</button>
               <button v-if="floatingMenu.inProject" class="session-menu-item" @click.stop="moveRow(floatingMenu.row, null)">{{ $t('sidebar.projects.remove') }}</button>
-              <button class="session-menu-item session-menu-parent" @click.stop="openProjectMoveList">
+              <button class="session-menu-item session-menu-parent" :class="{ active: projectSubmenuOpen }" aria-haspopup="menu" :aria-expanded="projectSubmenuOpen ? 'true' : 'false'" @click.stop="projectSubmenuOpen ? closeProjectMoveList() : openProjectMoveList()">
                 <span>{{ $t('sidebar.projects.moveMenu') }}</span>
                 <span aria-hidden="true">&rsaquo;</span>
               </button>
             </template>
-            <button class="session-menu-item danger" @click.stop="runAction('delete', floatingMenu.row)">{{ $t('common.delete') }}</button>
             <div class="sidebar-session-menu-info">
               <strong :title="agentLabel(floatingMenu.row)">{{ agentLabel(floatingMenu.row) }}</strong>
               <strong>{{ providerLabel(floatingMenu.row) }}</strong>
             </div>
           </template>
+        </div>
+        <div v-if="projectSubmenuOpen && floatingMenu?.kind === 'session'" ref="projectSubmenu" class="session-menu session-menu-floating session-submenu" :style="projectSubmenuStyle" role="menu">
+          <button v-for="project in projectMoveTargets(floatingMenu.row, floatingMenu.currentProject)" :key="project.id" class="session-menu-item" @click.stop="moveRow(floatingMenu.row, project)">{{ project.name }}</button>
+          <div v-if="projectMoveTargets(floatingMenu.row, floatingMenu.currentProject).length === 0" class="session-menu-empty">{{ $t('sidebar.projects.moveEmpty') }}</div>
         </div>
       </Teleport>
 

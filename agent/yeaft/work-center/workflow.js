@@ -1,3 +1,4 @@
+import { sessionMessageQuotePrompt } from '../session-message-quote.js';
 import { renderSessionContextSnapshot } from './session-context.js';
 
 export const BUILT_IN_ACTION_TYPES = Object.freeze([
@@ -22,6 +23,7 @@ const MODEL_MODES = new Set(['inherit', 'primary', 'fast', 'specific']);
 const MODEL_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const WORKSPACE_MODES = new Set(['shared', 'read', 'isolated-write', 'integrate']);
 const HIGH_EFFORT_ACTION_TYPES = new Set(['triage', 'research', 'design', 'diagnose', 'review']);
+const ACTION_CONTEXT_QUOTE_MAX_BYTES = 8 * 1024;
 
 const DEFAULT_STAGE_INSTRUCTIONS = Object.freeze({
   triage: 'Turn the request into an executable contract. Inspect relevant repository facts before deciding the flow. Classify the WorkItem, identify constraints, risks, dependencies, and missing acceptance criteria, then plan only the Actions needed for this task. Do not implement. If the goal or acceptance criteria must change, submit a contractPatch and explain why.',
@@ -360,6 +362,23 @@ export function listWorkItemTypeTemplates(settings) {
   }));
 }
 
+export const MAX_INITIAL_PLAN_ACTIONS = 8;
+export const MAX_WORK_ITEM_ACTIONS = 64;
+
+export function generatedActionGraphRules(options = {}) {
+  const maxActions = Math.min(
+    Math.max(Number(options.maxActions) || MAX_INITIAL_PLAN_ACTIONS, 1),
+    MAX_WORK_ITEM_ACTIONS,
+  );
+  const concurrency = Number.isInteger(Number(options.maxConcurrentActions))
+    ? Math.min(Math.max(Number(options.maxConcurrentActions), 1), 12)
+    : null;
+  const concurrencyRule = concurrency
+    ? ` The scheduler can run up to ${concurrency} Actions concurrently.`
+    : '';
+  return `Always submit the smallest reliable graph of 1 to ${maxActions} task-specific Actions; never omit Actions or copy template brief text. Every graph must end in exactly one final acceptance gate: normally one deliver Action, or one terminal review when no delivery operation is required. The final gate must be the unique graph sink and every other Action must be its transitive dependency, so final acceptance cannot run before required evidence.${concurrencyRule} Before submitting, compare each pair of Actions and add a dependency only when one consumes a concrete result or side effect of the other; ordering by narrative, phase name, or list position is not a dependency. Split independent analysis, verification, and repository changes into sibling Actions so the scheduler can use concurrency. Use workspaceMode read only for Actions guaranteed not to mutate files, Git state, services, or external systems; use isolated-write for independent Git changes, integrate for an integrate Action that combines isolated-write dependencies, and shared for serial side effects. An Action with type integrate must use workspaceMode integrate, and type integrate is only valid when combining isolated-write Actions. If any Action uses isolated-write, add exactly one Action with type integrate and workspaceMode integrate; it must depend directly on every isolated-write Action, and all later Actions must consume those writes through the integration Action. Non-Git or dirty workspaces are serialized automatically; do not fake parallelism by marking a mutating Action as read. Every review Action must depend directly or transitively on the editable non-review, non-deliver Action it reviews, so the scheduler cannot claim the Review before that result exists. Set changesRequestedActionId to a non-empty dependency ancestor Action id, or omit the property to use the nearest eligible dependency ancestor; never send null or an empty string. Every generated Action must state objective, approach, expectedOutcome, capability, dependencies, and workspaceMode. The objective, approach, and expectedOutcome must be specific to this WorkItem and that Action: describe the concrete work, the repository-aware execution method, and the verifiable result that will guide the executor. Generic Action-type boilerplate is invalid. Add only Actions required by this task. Do not copy a generic workflow.`;
+}
+
 export function resolvePlanningWorkflowSnapshot(settings, requestedWorkItemType = null) {
   const normalized = normalizeWorkCenterSettings(settings);
   const requestedType = typeof requestedWorkItemType === 'string'
@@ -377,7 +396,9 @@ export function resolvePlanningWorkflowSnapshot(settings, requestedWorkItemType 
   const typeInstruction = requestedType
     ? `The user explicitly selected workItemType "${requestedType}". Keep that exact type.`
     : 'Infer one specific workItemType from the contract.';
-  const triageInstruction = `${normalized.actionInstructions.triage}\n\n${typeInstruction}\nReference workflow catalog:\n${catalog || '(none)'}\nUse the catalog only to understand established task categories and sequencing patterns. Always submit the smallest reliable graph of 1 to 8 task-specific Actions; never omit Actions or copy template brief text. Every graph must end in exactly one final acceptance gate: normally one deliver Action, or one terminal review when no delivery operation is required. The final gate must be the unique graph sink and every other Action must be its transitive dependency, so final acceptance cannot run before required evidence. The scheduler can run up to ${normalized.maxConcurrentActions} Actions concurrently. Before submitting, compare each pair of Actions and add a dependency only when one consumes a concrete result or side effect of the other; ordering by narrative, phase name, or list position is not a dependency. Split independent analysis, verification, and repository changes into sibling Actions so the scheduler can use that concurrency. Use workspaceMode read only for Actions guaranteed not to mutate files, Git state, services, or external systems; use isolated-write for independent Git changes, integrate for an integrate Action that combines isolated-write dependencies, and shared for serial side effects. If any Action uses isolated-write, add exactly one Action with type integrate and workspaceMode integrate; it must depend directly on every isolated-write Action, and all later Actions must depend on the integration result rather than an isolated-write Action. Non-Git or dirty workspaces are serialized automatically; do not fake parallelism by marking a mutating Action as read. Every generated Action must state objective, approach, expectedOutcome, capability, dependencies, and workspaceMode. The objective, approach, and expectedOutcome must be specific to this WorkItem and that Action: describe the concrete work, the repository-aware execution method, and the verifiable result that will guide the executor. Generic Action-type boilerplate is invalid. Add only Actions required by this task. Do not copy a generic workflow.`;
+  const triageInstruction = `${normalized.actionInstructions.triage}\n\n${typeInstruction}\nReference workflow catalog:\n${catalog || '(none)'}\nUse the catalog only to understand established task categories and sequencing patterns. ${generatedActionGraphRules({
+    maxConcurrentActions: normalized.maxConcurrentActions,
+  })}`;
   return normalizeWorkflowDefinition({
     id: 'ai-planned',
     name: 'AI planned',
@@ -463,9 +484,6 @@ export function validateGeneratedCompletionGate(stages) {
     throw new Error(`AI-planned final acceptance gate "${gate.id}" does not cover Actions: ${uncovered.join(', ')}`);
   }
 }
-
-export const MAX_INITIAL_PLAN_ACTIONS = 8;
-export const MAX_WORK_ITEM_ACTIONS = 64;
 
 export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
   const source = workflowFrom(workItem);
@@ -580,23 +598,42 @@ export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
     }
     return stage;
   });
+  const generatedById = new Map(generated.map(stage => [stage.id, stage]));
+  const dependencyAncestors = stage => {
+    const ancestors = new Set();
+    const visit = stageId => {
+      if (ancestors.has(stageId)) return;
+      ancestors.add(stageId);
+      for (const dependencyId of generatedById.get(stageId)?.dependsOnStageIds || []) visit(dependencyId);
+    };
+    for (const dependencyId of stage.dependsOnStageIds) visit(dependencyId);
+    return ancestors;
+  };
   for (const [index, stage] of generated.entries()) {
     if (stage.type !== 'review') continue;
+    const ancestors = dependencyAncestors(stage);
     const candidates = generated.slice(0, index)
-      .filter(candidate => candidate.type !== 'review' && candidate.type !== 'deliver');
+      .filter(candidate => (
+        candidate.type !== 'review'
+        && candidate.type !== 'deliver'
+        && ancestors.has(candidate.id)
+      ));
     if (Object.prototype.hasOwnProperty.call(stage, 'changesRequestedStageId')) {
-      const requested = candidates.find(candidate => candidate.id === stage.changesRequestedStageId);
-      if (!requested) {
+      const requested = generatedById.get(stage.changesRequestedStageId);
+      if (!requested || requested.type === 'review' || requested.type === 'deliver') {
         throw new Error(`AI-planned review Action "${stage.id}" points to an invalid return Action`);
+      }
+      if (!ancestors.has(requested.id)) {
+        throw new Error(`AI-planned review Action "${stage.id}" review target "${requested.id}" must be a dependency ancestor`);
       }
       stage.changesRequestedStageId = requested.id;
     } else {
       stage.changesRequestedStageId = candidates.at(-1)?.id || '';
     }
     if (!stage.changesRequestedStageId) {
-      throw new Error(`AI-planned review Action "${stage.id}" requires an earlier editable Action`);
+      throw new Error(`AI-planned review Action "${stage.id}" requires an editable dependency ancestor`);
     }
-    const returnTarget = candidates.find(candidate => candidate.id === stage.changesRequestedStageId);
+    const returnTarget = generatedById.get(stage.changesRequestedStageId);
     stage.assignmentPolicy = {
       ...stage.assignmentPolicy,
       separateFromStageTypes: uniqueStrings([
@@ -716,8 +753,11 @@ function renderContext(context = []) {
     const decision = entry.reviewDecision ? `\nReview decision: ${entry.reviewDecision}` : '';
     const waitingReason = entry.waitingReason ? `\nWaiting reason: ${entry.waitingReason}` : '';
     const answer = entry.answer ? `\nUser answer: ${entry.answer}` : '';
+    const quote = entry.quote
+      ? sessionMessageQuotePrompt(entry.quote, { maxBytes: ACTION_CONTEXT_QUOTE_MAX_BYTES })
+      : '';
     const source = entry.sourceTitle ? ` from ${entry.sourceTitle}` : '';
-    return `### ${entry.type}${source} (${entry.vpId || entry.role || 'unknown VP'})\n${entry.summary || '(no summary)'}${decision}${waitingReason}${answer}${evidence}`;
+    return `### ${entry.type}${source} (${entry.vpId || entry.role || 'unknown VP'})\n${entry.summary || '(no summary)'}${decision}${waitingReason}${answer}${quote}${evidence}`;
   });
   return `\n\nReusable Work Center context and prior Action results:\n${blocks.join('\n\n')}`;
 }

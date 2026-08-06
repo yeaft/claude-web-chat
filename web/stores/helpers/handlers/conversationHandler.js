@@ -12,16 +12,28 @@ import {
 import { isRetiredYeaftConversation } from '../yeaft-conversation-generation.js';
 import { clearSessionLoading } from '../session.js';
 import { sameUserMessage } from '../dedup.js';
-import { maxDbMessageId } from '../messages.js';
+import { ensureMessageUiKeys, maxDbMessageId } from '../messages.js';
 import { summarizeHistoricalToolMessages } from '../tool-window.js';
 import { t } from '../../../utils/i18n.js';
 import { recordPerfTrace, measureNextPaint } from '../perfTrace.js';
 import { activeYeaftHistoryIdentity } from '../yeaft-history-load.js';
-import { yeaftHistoryIdentityKey } from '../yeaft-history-identity.js';
+import {
+  yeaftHistoryIdentityKey,
+  yeaftOptimisticMessageIdentity,
+  yeaftPersistedMessageIdentity,
+} from '../yeaft-history-identity.js';
+import { isDurableYeaftHistoryRow, pruneYeaftHistoryCache } from '../yeaft-history-cache.js';
+import { commitYeaftHistoryPage } from '../yeaft-history-pagination.js';
 
 /** Filter out empty user messages — tool_result artifacts stored as empty user records in DB */
 function filterEmptyUserMessages(messages) {
   return messages.filter(m => !(m.type === 'user' && (!m.content || !m.content.trim())));
+}
+
+function parsePersistedHistorySeq(messageId) {
+  const match = typeof messageId === 'string' ? messageId.match(/^m(\d+)$/) : null;
+  const seq = match ? Number(match[1]) : null;
+  return Number.isFinite(seq) ? seq : null;
 }
 
 function normalizeHistoryTimestamp(m) {
@@ -80,11 +92,51 @@ function resolveHistorySpeakerVpId(m, groupId) {
 }
 
 function stableHistoryRowId(row) {
-  return row && (row.messageId || row.id) ? (row.messageId || row.id) : null;
+  return row?.stableKey || (row && (row.messageId || row.id) ? (row.messageId || row.id) : null);
 }
 
-function sortYeaftRowsByTimestamp(rows) {
-  rows.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+function normalizeHistoryRowIdentity(row, agentId = null) {
+  if (!row || row.stableKey) return row;
+  const sessionId = rowSessionId(row);
+  const messageId = row.messageId || row.id || null;
+  const clientMessageId = row.type === 'user' ? row.clientMessageId || null : null;
+  row.stableKey = clientMessageId && messageId === clientMessageId
+    ? yeaftOptimisticMessageIdentity(agentId, sessionId, clientMessageId)
+    : yeaftPersistedMessageIdentity(agentId, sessionId, messageId);
+  if (!Number.isFinite(row.seq)) row.seq = parsePersistedHistorySeq(messageId);
+  if (!row.uiKey) row.uiKey = row.stableKey || null;
+  return row;
+}
+
+function isLiveYeaftHistoryRow(row) {
+  if (!row || row.isHistory === true) return false;
+  if (row.isStreaming || isOptimisticYeaftUserRow(row)) return true;
+  // Recent refresh preserves local rows newer than its persisted window. Those
+  // rows may predate clientMessageId stamping, but they still carry a local
+  // timestamp and no durable seq.
+  return !Number.isFinite(row.seq) && Number.isFinite(row.timestamp);
+}
+
+function yeaftHistorySortKey(row) {
+  const live = isLiveYeaftHistoryRow(row);
+  const seq = Number.isFinite(row?.seq) ? row.seq : null;
+  const timestamp = Number.isFinite(row?.timestamp) ? row.timestamp : 0;
+  // Use one lexicographic key for every row. Persisted rows with timestamps are
+  // chronological across storage generations. When timestamps are absent, the
+  // legacy rank sorts before sequenced storage; the live rank is always last.
+  if (live) return [2, timestamp, seq ?? 0];
+  return [1, timestamp, seq ?? -1];
+}
+
+export function __testSortYeaftRowsBySequence(rows) {
+  rows.sort((a, b) => {
+    const aKey = yeaftHistorySortKey(a);
+    const bKey = yeaftHistorySortKey(b);
+    for (let index = 0; index < aKey.length; index += 1) {
+      if (aKey[index] !== bKey[index]) return aKey[index] - bKey[index];
+    }
+    return 0;
+  });
 }
 
 function sameAssistantHistoryRow(existing, incoming) {
@@ -134,7 +186,12 @@ function upsertYeaftHistoryRows(existingRows, incomingRows) {
     }
     if (index !== null && index >= 0) {
       const existingId = stableHistoryRowId(existingRows[index]);
-      existingRows[index] = { ...existingRows[index], ...row };
+      const existingUiKey = existingRows[index]?.uiKey || null;
+      existingRows[index] = {
+        ...existingRows[index],
+        ...row,
+        ...(existingUiKey ? { uiKey: existingUiKey } : {}),
+      };
       if (id) indexById.set(id, index);
       if (existingId && existingId !== id && indexById.get(existingId) === index) indexById.delete(existingId);
       if (row?.type === 'user' && row.clientMessageId) userIndexByClientId.set(row.clientMessageId, index);
@@ -145,7 +202,7 @@ function upsertYeaftHistoryRows(existingRows, incomingRows) {
       inserted += 1;
     }
   }
-  sortYeaftRowsByTimestamp(existingRows);
+  __testSortYeaftRowsBySequence(existingRows);
   return inserted;
 }
 
@@ -155,7 +212,7 @@ function rowSessionId(row) {
 
 function isOptimisticYeaftUserRow(row) {
   if (!row || row.type !== 'user' || !row.clientMessageId) return false;
-  const id = stableHistoryRowId(row);
+  const id = row.messageId || row.id || null;
   // sendYeaftSessionMessage creates the local row with id/messageId equal to
   // clientMessageId. Once persisted history echoes it back, id/messageId become
   // the durable message id while clientMessageId remains only a dedup key.
@@ -166,38 +223,30 @@ function replaceYeaftRecentHistoryRows(existingRows, incomingRows, sessionId) {
   const hasVisibleCachedRows = existingRows.some(row => (
     row && (sessionId == null || rowSessionId(row) === sessionId)
   ));
-  // An empty recent projection is not a safe deletion signal. Background
-  // bootstrap/reconnect reads can transiently return no visible rows while the
-  // browser already has a committed Session window; replacing in that state
-  // makes the pane go blank until the next switch or manual reload. There is no
-  // history-delete operation on this wire, so keep stale rows and let a later
-  // non-empty recent response replace them atomically. A genuinely empty Session
-  // still completes its first load because it has no cached rows to preserve.
+  // An empty projection is not a deletion signal. Keep the committed window.
   if (incomingRows.length === 0 && hasVisibleCachedRows) {
     return { insertedRows: 0, preservedEmpty: true };
   }
 
+  // A recent replay is only a bounded tail snapshot. Durable rows outside that
+  // snapshot are immutable and may have come from explicit older pagination or
+  // the browser cache, so keep them. Non-durable stale bootstrap rows can still
+  // be discarded; live/optimistic rows remain until persistence catches up.
   const newestIncomingTs = incomingRows.reduce((max, row) => Math.max(max, row?.timestamp || 0), 0);
   const preserved = existingRows.filter((row) => {
     if (!row) return false;
     if (sessionId != null && rowSessionId(row) !== sessionId) return true;
+    if (isDurableYeaftHistoryRow(row)) return true;
     if (row.isStreaming) return true;
     if (row.type === 'tool-use' && row.toolName === 'AskUserQuestion'
         && (row.askAnswered || row.askPending || row.askExpired)) return true;
-    // A recent-history reply can race a just-sent optimistic user row. Do not
-    // delete that accepted input merely because the persisted window has not
-    // flushed it yet or the server clock is ahead of the browser clock.
     if (isOptimisticYeaftUserRow(row)) return true;
-    // A manual refresh can race a just-sent local row that is newer than the
-    // persisted recent window. Keep that live tail; the next delta/recent load
-    // will merge it by stable id once the agent has flushed it to disk.
     return newestIncomingTs > 0 && (row.timestamp || 0) > newestIncomingTs;
   });
   existingRows.splice(0, existingRows.length, ...preserved);
-  upsertYeaftHistoryRows(existingRows, incomingRows);
-  return { insertedRows: incomingRows.length, preservedEmpty: false };
+  const insertedRows = upsertYeaftHistoryRows(existingRows, incomingRows);
+  return { insertedRows, preservedEmpty: false };
 }
-
 function isInternalControlHistoryContent(content) {
   if (typeof content !== 'string') return false;
   const text = content.trimStart();
@@ -704,8 +753,45 @@ export function handleYeaftHistoryWindow(store, msg) {
   if (!conversationId || !sessionId || !Array.isArray(msg.messages)) return null;
   if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
 
-  const { formatted } = formatYeaftHistoryMessages(msg.messages, sessionId, 'window', store.messagesMap[conversationId]);
+  const sourceMessageIds = new Set(Array.isArray(msg.sourceMessageIds) ? msg.sourceMessageIds : []);
+  for (const row of store.messagesMap[conversationId]) {
+    const persistedId = row?.persistedMessageId || row?.messageId || row?.id || null;
+    if (!msg.entryId || !sourceMessageIds.has(persistedId)) continue;
+    row.historyEntryId = msg.entryId;
+    if (Number.isFinite(msg.indexGeneration)) row.historyIndexGeneration = msg.indexGeneration;
+  }
+  const windowMessages = msg.messages.map(message => (
+    msg.entryId && sourceMessageIds.has(message?.id)
+      ? {
+          ...message,
+          historyEntryId: msg.entryId,
+          ...(msg.prefetch === true ? { _historyWindowPrefetched: true } : {}),
+          ...(Number.isFinite(msg.indexGeneration)
+            ? { historyIndexGeneration: msg.indexGeneration }
+            : {}),
+        }
+      : message
+  ));
+  const { formatted } = formatYeaftHistoryMessages(
+    windowMessages,
+    sessionId,
+    'window',
+    store.messagesMap[conversationId],
+    sessionAgentId,
+  );
+  if (msg.prefetch === true) {
+    for (const row of formatted) row._historyWindowPrefetched = true;
+  }
   upsertYeaftHistoryRows(store.messagesMap[conversationId], formatted);
+  const activeIdentity = activeYeaftHistoryIdentity(store);
+  pruneYeaftHistoryCache(store, {
+    conversationId,
+    agentId: sessionAgentId,
+    sessionId,
+    incomingRows: formatted,
+    activeAgentId: activeIdentity.agentId,
+    activeSessionId: activeIdentity.sessionId,
+  });
   return conversationId;
 }
 
@@ -753,12 +839,10 @@ function existingAskUserRow(existingRows, scope) {
     && (row.threadId || 'main') === (scope.threadId || 'main')) || null;
 }
 
-function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existingRows) {
-  const existingIds = new Set(
-    (existingRows || [])
-      .map(m => m && (m.messageId || m.id))
-      .filter(Boolean)
-  );
+function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existingRows, agentId = null) {
+  const existingIds = new Set((existingRows || [])
+    .map(row => stableHistoryRowId(normalizeHistoryRowIdentity(row, agentId)))
+    .filter(Boolean));
   const seenIds = new Set();
   const formatted = [];
   let acceptedHistoryMessages = 0;
@@ -768,15 +852,31 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
     if (isInternalControlHistoryContent(m.content)) continue;
     const stableId = m.id || m.messageId || null;
     const clientMessageId = m.clientMessageId || null;
-    if (stableId && seenIds.has(stableId)) continue;
-    if (stableId && mode !== 'recent' && existingIds.has(stableId)) continue;
-    if (stableId) seenIds.add(stableId);
+    const rowSessionId = m.sessionId ?? m.groupId ?? msgSessionId ?? null;
+    const durableKey = yeaftPersistedMessageIdentity(agentId, rowSessionId, stableId);
+    const uiKey = clientMessageId
+      ? yeaftOptimisticMessageIdentity(agentId, rowSessionId, clientMessageId)
+      : durableKey;
+    const historyEntryMeta = m.historyEntryId
+      ? {
+          historyEntryId: m.historyEntryId,
+          ...(Number.isFinite(m.historyIndexGeneration)
+            ? { historyIndexGeneration: m.historyIndexGeneration }
+            : {}),
+        }
+      : {};
+    if (durableKey && seenIds.has(durableKey)) continue;
+    if (durableKey && mode !== 'recent' && existingIds.has(durableKey)) continue;
+    if (durableKey) seenIds.add(durableKey);
     if (m.role === 'user') {
       acceptedHistoryMessages += 1;
       const messageId = stableId || m.messageId || m.turnId || null;
-      const rowSessionId = m.sessionId ?? m.groupId ?? msgSessionId ?? null;
       formatted.push({
         ...(stableId ? { id: stableId, messageId: stableId } : {}),
+        ...(durableKey ? { stableKey: durableKey } : {}),
+        ...(uiKey ? { uiKey } : {}),
+        ...historyEntryMeta,
+        seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
         type: 'user',
         content: m.content,
         timestamp: normalizeHistoryTimestamp(m),
@@ -786,26 +886,36 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
         ...(Array.isArray(m.attachments) && m.attachments.length > 0 ? { attachments: m.attachments } : {}),
         ...(m.quote ? { quote: m.quote } : {}),
         isStreaming: false,
+        isHistory: true,
       });
     } else if (m.role === 'assistant') {
       acceptedHistoryMessages += 1;
       const messageId = stableId || m.messageId || m.turnId || null;
-      const rowSessionId = m.sessionId ?? m.groupId ?? msgSessionId ?? null;
       const speakerVpId = resolveHistorySpeakerVpId(m, rowSessionId);
       const timestamp = normalizeHistoryTimestamp(m);
       const hasPersistedTurnId = !!m.turnId;
       const turnId = m.turnId || messageId;
       const assistantContent = typeof m.content === 'string' ? m.content : (m.content || '');
       const todos = Array.isArray(m.todos) ? m.todos : latestTodoSnapshot(m.toolCalls);
+      const executionOriginMeta = m.executionOrigin === 'route_forward'
+        ? { executionOrigin: 'route_forward' }
+        : {};
       if (typeof assistantContent !== 'string' || assistantContent.trim()) {
         formatted.push({
           ...(stableId ? { id: stableId, messageId: stableId } : {}),
+          ...(durableKey ? { stableKey: durableKey } : {}),
+          ...(uiKey ? { uiKey } : {}),
+          ...historyEntryMeta,
+          seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
+          ...(m.entryId ? { entryId: m.entryId } : {}),
+          ...(Array.isArray(m.sourceMessageIds) ? { sourceMessageIds: m.sourceMessageIds } : {}),
           type: 'assistant',
           content: assistantContent,
           timestamp,
           sessionId: rowSessionId,
           turnId,
           _hasPersistedTurnId: hasPersistedTurnId,
+          ...executionOriginMeta,
           ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
           ...(m.responseKind === 'progress' || m.responseKind === 'result' ? { responseKind: m.responseKind } : {}),
           ...(m.incomplete === true ? { incomplete: true } : {}),
@@ -817,12 +927,16 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
       if (Array.isArray(todos) && todos.length > 0) {
         formatted.push({
           ...(stableId ? { id: `${stableId}:todos`, messageId: `${stableId}:todos` } : {}),
+          ...(durableKey ? { stableKey: `${durableKey}:todos` } : {}),
+          ...historyEntryMeta,
+          seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
           type: 'tool-use',
           toolName: 'TodoWrite',
           toolInput: { todos },
           timestamp,
           sessionId: rowSessionId,
           turnId,
+          ...executionOriginMeta,
           ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
           isStreaming: false,
           isHistory: true,
@@ -834,7 +948,11 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
         formatted.push({
           id: `${stableId || messageId || turnId}:image:${image.assetId}`,
           messageId: `${stableId || messageId || turnId}:image:${image.assetId}`,
+          ...(durableKey ? { stableKey: `${durableKey}:image:${image.assetId}` } : {}),
+          ...historyEntryMeta,
+          seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
           type: 'chat-image', ...image, timestamp, sessionId: rowSessionId, turnId,
+          ...executionOriginMeta,
           ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
           isStreaming: false, isHistory: true,
         });
@@ -857,17 +975,22 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
         };
         const existing = existingAskUserRow(existingRows, scope);
         if (existing) {
+          Object.assign(existing, historyEntryMeta);
           applyAskUserHistoryResult(existing, result, questions);
           continue;
         }
         const askRow = applyAskUserHistoryResult({
           id: `${stableId || messageId || turnId}:ask:${result.toolCallId}`,
           messageId: `${stableId || messageId || turnId}:ask:${result.toolCallId}`,
+          ...(durableKey ? { stableKey: `${durableKey}:ask:${result.toolCallId}` } : {}),
+          ...historyEntryMeta,
+          seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
           type: 'tool-use',
           timestamp,
           sessionId: rowSessionId,
           turnId,
           threadId: scope.threadId,
+          ...executionOriginMeta,
           ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
           isStreaming: false,
         }, result, questions);
@@ -878,6 +1001,9 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
       if (toolSummaryCount > 0) {
         formatted.push({
           ...(stableId ? { id: `${stableId}:tool-summary`, messageId: `${stableId}:tool-summary`, persistedMessageId: stableId } : {}),
+          ...(durableKey ? { stableKey: `${durableKey}:tool-summary` } : {}),
+          ...historyEntryMeta,
+          seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
           type: 'tool-summary',
           count: toolSummaryCount,
           omittedCount: toolSummaryCount,
@@ -885,6 +1011,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           timestamp,
           sessionId: rowSessionId,
           turnId,
+          ...executionOriginMeta,
           ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
           isStreaming: false,
           isHistory: true,
@@ -908,8 +1035,34 @@ export function handleYeaftHistoryChunk(store, msg) {
   }
   if (msg.requestId && typeof store.isCurrentYeaftHistoryResponse === 'function'
       && !store.isCurrentYeaftHistoryResponse(msg)) return;
-  const mode = msg.mode === 'recent' || msg.mode === 'delta' ? msg.mode : 'older';
+  let mode = msg.mode === 'recent' || msg.mode === 'delta' ? msg.mode : 'older';
   const incomingMessages = Array.isArray(msg.messages) ? msg.messages : [];
+
+  const identityAgentId = msg.agentId || (msgSessionId && store.yeaftSessionAgentById?.[msgSessionId]) || null;
+  const identityStateKey = yeaftHistoryIdentityKey(identityAgentId, msgSessionId);
+  const cachedIdentity = store.yeaftSessionHistoryState?.[identityStateKey] || null;
+  const identityMismatch = typeof msg.streamId === 'string'
+    && typeof cachedIdentity?.streamId === 'string'
+    && (msg.streamId !== cachedIdentity.streamId
+      || (Number.isFinite(msg.revision) && Number.isFinite(cachedIdentity.revision)
+        && msg.revision !== cachedIdentity.revision));
+  if (identityMismatch) {
+    // An append cursor is unsafe after clear/recreate, folding, or an older
+    // visible-row update. Replace only durable history while keeping optimistic
+    // and live rows for the active turn.
+    mode = 'recent';
+    if (typeof store.clearYeaftHistoryMemory === 'function') {
+      store.clearYeaftHistoryMemory({
+        agentId: identityAgentId,
+        sessionId: msgSessionId,
+        preserveLiveRows: true,
+        preserveSessionOwner: true,
+      });
+    }
+    if (typeof store.removeYeaftHistoryBrowserCache === 'function') {
+      void store.removeYeaftHistoryBrowserCache(identityAgentId, msgSessionId);
+    }
+  }
 
   if (msg.perfTraceId) {
     recordPerfTrace(store, {
@@ -950,7 +1103,14 @@ export function handleYeaftHistoryChunk(store, msg) {
   // only user / assistant text rows. Reflection, internal, and system-only
   // records may be persisted as role=user, but they are not user-authored UI
   // messages and must never be prepended as user bubbles.
-  const { formatted, acceptedHistoryMessages } = formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, store.messagesMap[convId]);
+  const { formatted, acceptedHistoryMessages } = formatYeaftHistoryMessages(
+    incomingMessages,
+    msgSessionId,
+    mode,
+    store.messagesMap[convId],
+    sessionAgentId,
+  );
+  ensureMessageUiKeys(store, convId, formatted);
 
   let insertedRows = 0;
   let preservedEmptyRecent = false;
@@ -967,22 +1127,62 @@ export function handleYeaftHistoryChunk(store, msg) {
       store.messagesMap[convId].splice(0, 0, ...formatted);
       insertedRows = formatted.length;
       if (typeof store.expandYeaftMessageWindow === 'function') {
-        // These rows were explicitly requested by scrolling upward. Keep them in
-        // the render window; the near-bottom path will prune again later.
+        // These rows were explicitly requested by scrolling upward. Keep the
+        // compatibility window state aligned; its default no longer hides rows.
         const windowSessionId = store.yeaftActiveSessionFilter ? (msgSessionId ?? null) : null;
-        store.expandYeaftMessageWindow(windowSessionId, msg.turns || 10);
+        store.expandYeaftMessageWindow(windowSessionId, msg.turns || 10, sessionAgentId);
       }
     } else {
       insertedRows = upsertYeaftHistoryRows(store.messagesMap[convId], formatted);
     }
   }
 
+  const activeIdentityBeforeCache = activeYeaftHistoryIdentity(store);
+  pruneYeaftHistoryCache(store, {
+    conversationId: convId,
+    agentId: sessionAgentId,
+    sessionId: msgSessionId,
+    incomingRows: formatted,
+    activeAgentId: activeIdentityBeforeCache.agentId,
+    activeSessionId: activeIdentityBeforeCache.sessionId,
+  });
+
   const sessionKey = yeaftHistoryIdentityKey(msg.agentId || null, msgSessionId);
+  const cacheState = store.yeaftHistoryCacheState?.[sessionKey] || null;
   const prevState = store.yeaftSessionHistoryState?.[sessionKey] || {};
+  const preservedFrontier = Number.isFinite(prevState.serverOldestFetchedSeq)
+    ? prevState.serverOldestFetchedSeq
+    : (Number.isFinite(prevState.oldestSeq) ? prevState.oldestSeq : null);
+  const responseFrontier = Number.isFinite(msg.nextBeforeSeq)
+    ? msg.nextBeforeSeq
+    : (Number.isFinite(msg.oldestSeq)
+      ? msg.oldestSeq
+      : (preservedEmptyRecent ? preservedFrontier : null));
+  const responseHasMore = preservedEmptyRecent
+    && !Number.isFinite(msg.nextBeforeSeq)
+    && !Number.isFinite(msg.oldestSeq)
+    ? (prevState.serverHasMore ?? prevState.hasMore ?? false)
+    : msg.hasMore;
+  const committedPagination = mode === 'delta'
+    ? prevState
+    : commitYeaftHistoryPage(prevState, {
+        mode,
+        oldestSeq: responseFrontier,
+        hasMore: responseHasMore,
+        ranges: cacheState?.ranges || [],
+        pageKind: msg.pageKind,
+        stopAtSeq: msg.gapStopAtSeq,
+        cacheEpoch: cacheState?.rangeEpoch ?? msg.cacheEpoch ?? 0,
+      });
   const nextLatest = (typeof msg.latestSeq === 'number') ? msg.latestSeq : (prevState.latestSeq ?? null);
+  const historyIdentity = {
+    streamId: typeof msg.streamId === 'string' ? msg.streamId : (prevState.streamId ?? null),
+    revision: Number.isFinite(msg.revision) ? msg.revision : (prevState.revision ?? null),
+  };
   const nextState = mode === 'delta'
     ? {
         ...prevState,
+        ...historyIdentity,
         loaded: true,
         loading: false,
         latestSeq: nextLatest,
@@ -990,16 +1190,15 @@ export function handleYeaftHistoryChunk(store, msg) {
         count: (prevState.count || 0) + insertedRows,
       }
     : {
-        ...(preservedEmptyRecent ? prevState : {}),
+        ...committedPagination,
+        ...historyIdentity,
         loaded: true,
         loading: false,
-        hasMore: preservedEmptyRecent ? !!prevState.hasMore : !!msg.hasMore,
-        oldestSeq: preservedEmptyRecent
-          ? (Number.isFinite(prevState.oldestSeq) ? prevState.oldestSeq : store.yeaftOldestLoadedSeq)
-          : ((typeof msg.oldestSeq === 'number') ? msg.oldestSeq : store.yeaftOldestLoadedSeq),
-        count: mode === 'older'
-          ? (prevState.count || 0) + insertedRows
-          : (preservedEmptyRecent ? (prevState.count || 0) : acceptedHistoryMessages),
+        count: cacheState
+          ? cacheState.rowCount
+          : (mode === 'older'
+            ? (prevState.count || 0) + insertedRows
+            : (preservedEmptyRecent ? (prevState.count || 0) : acceptedHistoryMessages)),
         latestSeq: preservedEmptyRecent && !Number.isFinite(msg.latestSeq)
           ? (prevState.latestSeq ?? null)
           : nextLatest,
@@ -1012,6 +1211,22 @@ export function handleYeaftHistoryChunk(store, msg) {
       ...store.yeaftSessionHistoryState,
       [sessionKey]: nextState,
     };
+  }
+  // Commit rows and their authoritative cursors as one browser snapshot. Taking
+  // this snapshot before finishYeaftHistoryLoad persisted the previous latest /
+  // oldest frontier beside the new rows and made cold reloads repeat pages.
+  if (typeof store.persistYeaftHistoryBrowserCache === 'function') {
+    void store.persistYeaftHistoryBrowserCache(msgSessionId, sessionAgentId, convId);
+  }
+  if (mode === 'delta' && msg.hasMoreAfter === true
+      && Number.isFinite(nextState.latestSeq)
+      && nextState.latestSeq > Number(msg.afterSeq ?? -1)
+      && typeof store.continueYeaftHistoryDelta === 'function') {
+    queueMicrotask(() => store.continueYeaftHistoryDelta(
+      msgSessionId,
+      sessionAgentId,
+      nextState.latestSeq,
+    ));
   }
   const activeIdentity = activeYeaftHistoryIdentity(store);
   const activeSessionMatches = activeIdentity.sessionId === (msgSessionId || null);
@@ -1044,9 +1259,11 @@ export function handleYeaftHistoryChunk(store, msg) {
   }
   if (isActiveHistoryChunk) {
     store.yeaftHasMoreHistory = nextState.hasMore;
-    if (typeof msg.oldestSeq === 'number') {
-      store.yeaftOldestLoadedSeq = msg.oldestSeq;
-    }
+    store.yeaftOldestLoadedSeq = Number.isFinite(nextState.serverOldestFetchedSeq)
+      ? nextState.serverOldestFetchedSeq
+      : (Number.isFinite(nextState.oldestSeq)
+        ? nextState.oldestSeq
+        : store.yeaftOldestLoadedSeq);
     store.yeaftLoadingMoreHistory = false;
   } else if (store.yeaftLoadingMoreHistory) {
     const activeState = store.yeaftSessionHistoryState?.[activeIdentity.sessionKey]

@@ -20,6 +20,7 @@ import {
   redactRawRequest,
   safeHeaders,
   SseLineBuffer,
+  createBoundedTextAccumulator,
   toWellFormedJson,
 } from './adapter.js';
 import {
@@ -242,7 +243,7 @@ export class AnthropicAdapter extends LLMAdapter {
    * @param {{ model: string, system: string, messages: import('./adapter.js').UnifiedMessage[], tools?: import('./adapter.js').UnifiedToolDef[], maxTokens?: number, effort?: 'low'|'medium'|'high'|'xhigh'|'max', effortSource?: 'user'|'auto', effortContext?: object, signal?: AbortSignal, onRawExchange?: ({rawRequest, rawResponse}) => void }} params
    * @returns {AsyncGenerator<import('./adapter.js').StreamEvent>}
    */
-  async *stream({ model, system, messages, tools, maxTokens = 16384, effort, effortSource, effortContext, signal, onRawExchange, onRequestStart }) {
+  async *stream({ model, system, messages, tools, maxTokens = 16384, effort, effortSource, effortContext, signal, onRawExchange, rawExchangeMaxBytes = 512 * 1024, onRequestStart }) {
     if (signal?.aborted) throw new LLMAbortError();
 
     const body = {
@@ -323,11 +324,10 @@ export class AnthropicAdapter extends LLMAdapter {
     // signature → next turn 400s identically).
     /** @type {Map<number, { kind: string, [k: string]: any }>} */
     const blockByIndex = new Map();
-    // Accumulate raw SSE body verbatim for the debug panel. No truncation:
-    // see `redactRawRequest` in adapter.js for the verbatim-design rationale.
-    // Push-then-join keeps allocation bounded for multi-MiB payloads (avoids
-    // O(n²) string concat).
-    const rawSseBodyChunks = [];
+    // Keep raw SSE chunks only until the engine receives the bounded exchange
+    // callback. The engine owns the configured byte budget; the adapter avoids
+    // quadratic string concatenation by storing chunks separately.
+    const rawSseBody = createBoundedTextAccumulator(rawExchangeMaxBytes);
     const responseHeaders = safeHeaders(response);
     const responseStatus = response.status;
     let sawStop = false;
@@ -344,7 +344,7 @@ export class AnthropicAdapter extends LLMAdapter {
         if (done) break;
 
         const chunkText = decoder.decode(value, { stream: true });
-        rawSseBodyChunks.push(chunkText);
+        rawSseBody.push(chunkText);
         const lines = sseLines.push(chunkText);
 
         for (const line of lines) {
@@ -515,8 +515,11 @@ export class AnthropicAdapter extends LLMAdapter {
             rawResponse: {
               status: responseStatus,
               headers: responseHeaders,
-              body: rawSseBodyChunks.join(''),
+              body: rawSseBody.text(),
               format: 'sse',
+              truncated: rawSseBody.truncated,
+              originalBytes: rawSseBody.totalBytes,
+              maxBytes: rawSseBody.maxBytes,
             },
           });
         } catch { /* ignore */ }

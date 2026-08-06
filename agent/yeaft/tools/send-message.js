@@ -62,6 +62,9 @@ SpawnAgent -> (PromptAgent <-> WaitAgent)+ -> CloseAgent -> 最终回复给用�
   },
   isConcurrencySafe: () => false,
   isReadOnly: () => false,
+  // Queueing a prompt can resume an existing writable child after this
+  // orchestration call returns, so parent filesystem snapshots are stale-risk.
+  mayMutateWorkspaceAfterReturn: () => true,
   async execute(input, ctx) {
     // NB: next_steps is the FIRST envelope field — the registry's
     // model-context tail truncation would eat it if it lived at the end.
@@ -114,6 +117,7 @@ SpawnAgent -> (PromptAgent <-> WaitAgent)+ -> CloseAgent -> 最终回复给用�
     // driver out of its idle wait and starts a new turn.
     enqueueSubAgentPrompt(agent, message, {
       projectSessionIds: ctx?.parentEngineDeps?.projectSessionIds,
+      projectLabel: ctx?.parentEngineDeps?.projectLabel,
       projectInstruction: ctx?.parentEngineDeps?.projectInstruction,
     });
     agent.messages.push({

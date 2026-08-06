@@ -24,6 +24,8 @@ const FILES = {
   extractTopic: 'extract-topic.md',
   // H2.e — per-scope summary compression
   summarizeScope: 'summarize-scope.md',
+  consolidateTopics: 'consolidate-topics.md',
+  mergeTopics: 'merge-topics.md',
 };
 
 /**
@@ -64,8 +66,8 @@ export function normalizePromptLanguage(language) {
 
 function languageDirective(language) {
   return normalizePromptLanguage(language) === 'zh'
-    ? '语言要求：请用中文生成所有自然语言内容，尤其是 memory_md 和 summary_md；工具名、scope、JSON key、schema 字段、代码标识符和枚举值必须保持英文。严格按要求输出 JSON 时，不要翻译 JSON key。'
-    : 'Language requirement: write all natural-language memory content in English. Keep tool names, scopes, JSON keys, schema fields, code identifiers, and enum values in English. When strict JSON is required, do not rename JSON keys.';
+    ? '语言要求：请用中文生成所有自然语言内容，尤其是 content_md 和 summary_md；工具名、scope、JSON key、schema 字段、代码标识符和枚举值必须保持英文。严格按要求输出 JSON 时，不要翻译 JSON key。'
+    : 'Language requirement: write all natural-language memory content in English, especially content_md and summary_md. Keep tool names, scopes, JSON keys, schema fields, code identifiers, and enum values in English. When strict JSON is required, do not rename JSON keys.';
 }
 
 function load(name) {

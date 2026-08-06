@@ -3,11 +3,15 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ctx from '../../../agent/context.js';
-import { loadConfig, normalizeLlmRetry } from '../../../agent/yeaft/config.js';
+import { loadConfig, normalizeLlmRetry, normaliseTelemetrySection } from '../../../agent/yeaft/config.js';
+import { getTelemetrySettings, updateTelemetrySettings } from '../../../agent/yeaft/config-api.js';
+import { handleMessage } from '../../../agent/connection/message-router.js';
+import { flushAllAgentPerfTraces } from '../../../agent/yeaft/perf-trace.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { closeConversationHistoryIndexes } from '../../../agent/yeaft/conversation/history-index.js';
 import { estimateTokens } from '../../../agent/yeaft/dream/segment.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
-import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftSubAgentPrompt, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
+import { __testGetOrCreateVpEngine, __testHooks, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftLoadHistoryOutline, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
@@ -19,6 +23,7 @@ import {
   moveSessionToProject,
   removeSessionFromProjects,
   renameProject,
+  reorderProjects,
   sharedSessionIdsForProject,
   updateProjectInstruction,
 } from '../../../agent/yeaft/projects/store.js';
@@ -55,14 +60,91 @@ function createProjectSessionArtifact(root, workDir, sessionId = 'session-workdi
   return { projectYeaftDir, sessionId };
 }
 
-afterEach(() => {
+afterEach(async () => {
+  flushAllAgentPerfTraces();
+  await __testResetVpState();
+  await closeConversationHistoryIndexes();
   ctx.CONFIG = originalConfig;
   __testSetSession(null);
   _resetAgentRegistry();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
 });
 
 describe('Yeaft session-scoped model config', () => {
+  it('normalizes and persists bounded telemetry settings without touching other config', () => {
+    expect(normaliseTelemetrySection({
+      enabled: false,
+      retentionDays: 0,
+      flushIntervalMs: 99_999,
+      maxQueueSize: 1,
+      rawExchangeMaxBytes: 99 * 1024 * 1024,
+      traceTextMaxBytes: -1,
+      ignored: true,
+    })).toEqual({
+      enabled: false,
+      retentionDays: 1,
+      flushIntervalMs: 60_000,
+      maxQueueSize: 100,
+      rawExchangeMaxBytes: 4 * 1024 * 1024,
+      traceTextMaxBytes: 0,
+    });
+    const root = makeDir();
+    writeFileSync(join(root, 'config.json'), JSON.stringify({ primaryModel: 'proxy/model', debug: true }));
+    expect(updateTelemetrySettings({ flushIntervalMs: 250, rawExchangeMaxBytes: 65_536 }, root)).toMatchObject({
+      flushIntervalMs: 250,
+      rawExchangeMaxBytes: 65_536,
+    });
+    expect(getTelemetrySettings(root)).toMatchObject({ flushIntervalMs: 250, rawExchangeMaxBytes: 65_536 });
+    const persisted = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+    expect(persisted.primaryModel).toBe('proxy/model');
+    expect(persisted.debug).toBe(true);
+    expect(persisted.telemetry).toMatchObject({ flushIntervalMs: 250 });
+  });
+
+  it('disables bridge traces through the telemetry update message immediately', async () => {
+    const root = makeDir();
+    writeFileSync(join(root, 'config.json'), JSON.stringify({
+      primaryModel: 'session-test/gpt-5',
+      telemetry: { enabled: true, flushIntervalMs: 60_000 },
+    }, null, 2));
+    const previousTransport = {
+      ws: ctx.ws,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+    };
+    const sent = [];
+    ctx.CONFIG = { yeaftDir: root, telemetry: { enabled: true, flushIntervalMs: 60_000 } };
+    ctx.ws = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    ctx.serverEncryptionRequired = false;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
+
+    try {
+      await handleMessage({ type: 'update_telemetry_settings', settings: { enabled: false } });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(ctx.CONFIG.telemetry).toMatchObject({ enabled: false });
+      expect(sent).toContainEqual(expect.objectContaining({
+        type: 'telemetry_settings_updated',
+        enabled: false,
+      }));
+
+      await handleYeaftLoadHistoryOutline({
+        type: 'yeaft_load_history_outline',
+        sessionId: 'session-telemetry-disabled',
+        perfTraceId: 'trace-disabled-bridge',
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      flushAllAgentPerfTraces();
+      expect(existsSync(join(root, 'perf-traces'))).toBe(false);
+    } finally {
+      ctx.ws = previousTransport.ws;
+      ctx.serverEncryptionRequired = previousTransport.serverEncryptionRequired;
+      ctx.outboundSendQueue = previousTransport.outboundSendQueue;
+      ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
+    }
+  });
+
   it('keeps model and effort isolated per Session', async () => {
     expect(normalizeLlmRetry(null, null)).toMatchObject({
       maxRetries: 3,
@@ -93,6 +175,13 @@ describe('Yeaft session-scoped model config', () => {
 
     const alpha = createProject(root, 'Alpha');
     const beta = createProject(root, 'Beta');
+    expect(reorderProjects(root, [beta.id, alpha.id]).map(project => project.id))
+      .toEqual([beta.id, alpha.id]);
+    expect(loadProjects(root).map(project => project.id)).toEqual([beta.id, alpha.id]);
+    expect(() => reorderProjects(root, [alpha.id])).toThrow('Complete Project order is required');
+    expect(() => reorderProjects(root, [alpha.id, alpha.id])).toThrow('Complete Project order is required');
+    expect(loadProjects(root).map(project => project.id)).toEqual([beta.id, alpha.id]);
+    reorderProjects(root, [alpha.id, beta.id]);
     moveSessionToProject(root, 'session-a', alpha.id);
     moveSessionToProject(root, 'session-b', alpha.id);
     moveSessionToProject(root, 'session-a', beta.id);
@@ -176,6 +265,7 @@ describe('Yeaft session-scoped model config', () => {
     expect(bridgeAgent.pendingPrompts[0]).toEqual({
       prompt: 'use current Project context',
       projectSessionIds: ['session-b'],
+      projectLabel: `Beta (${beta.id})`,
       projectInstruction: 'Use the shared release checklist.',
     });
     __testHooks.handleProjectContextSyncForTest({
@@ -190,8 +280,43 @@ describe('Yeaft session-scoped model config', () => {
     expect(bridgeAgent.pendingPrompts[1]).toEqual({
       prompt: 'clear Project context',
       projectSessionIds: [],
+      projectLabel: '',
       projectInstruction: '',
     });
+
+    const abortController = new AbortController();
+    bridgeAgent.status = 'running';
+    bridgeAgent.abortController = abortController;
+    const completedTask = {
+      id: 'task-project',
+      sessionId: 'session-a',
+      kind: 'sub_agent',
+      status: 'cancelled',
+      ownerVpId: 'vp-project',
+      runtime: { subAgentId: bridgeAgent.id },
+      source: { threadId: 'main' },
+    };
+    const completeTask = vi.fn(() => completedTask);
+    __testSetSession({
+      taskManager: {
+        getTask: () => ({ ...completedTask, status: 'running' }),
+        completeTask,
+        cancelTask: vi.fn(),
+      },
+    });
+    handleYeaftTaskCancel({
+      sessionId: 'session-a',
+      taskId: 'task-project',
+      clientRequestId: 'stop-project-agent',
+    });
+    expect(abortController.signal.aborted).toBe(true);
+    expect(abortController.signal.reason).toBe('stopped_by_user');
+    expect(bridgeAgent.status).toBe('closed');
+    expect(completeTask).toHaveBeenCalledWith('session-a', 'task-project', { status: 'cancelled' });
+    expect(ctx.messageBuffer.some(frame => frame.event?.type === 'yeaft_task_cancel_result'
+      && frame.event.success === true
+      && frame.event.task?.status === 'cancelled')).toBe(true);
+
     expect(__testHooks.buildProjectSharedBlock({
       projectId: beta.id,
       projectName: 'Beta',
@@ -279,14 +404,10 @@ describe('Yeaft session-scoped model config', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
 
-
-  it('rejects client-supplied model provenance', () => {
-    const root = makeDir();
-    mkdirSync(join(root, 'sessions', 'session-provenance'), { recursive: true });
-
-    expect(() => saveSessionConfig(root, 'session-provenance', {
+    const provenanceRoot = makeDir();
+    mkdirSync(join(provenanceRoot, 'sessions', 'session-provenance'), { recursive: true });
+    expect(() => saveSessionConfig(provenanceRoot, 'session-provenance', {
       model: 'github-copilot/gpt-new',
       modelSource: 'explicit',
     })).toThrow('unknown config key: modelSource');
@@ -364,6 +485,54 @@ describe('Yeaft session-scoped model config', () => {
     expect(loadSessionConfig(root, sessionId)).toEqual({});
   });
 
+
+  it('flushes lifecycle telemetry through a Session config dir', async () => {
+    const root = makeDir();
+    const originalFetch = global.fetch;
+    let session = null;
+    writeFileSync(join(root, 'config.json'), JSON.stringify({
+      providers: [{
+        name: 'session-test',
+        baseUrl: 'https://session-test.invalid/v1',
+        apiKey: 'test-key',
+        protocol: 'openai-responses',
+        models: ['gpt-5'],
+      }],
+      primaryModel: 'session-test/gpt-5',
+      telemetry: { flushIntervalMs: 60_000 },
+    }, null, 2));
+
+    try {
+      global.fetch = async () => new Response([
+        'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}',
+        '',
+      ].join('\n'), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      session = await loadSession({ dir: root, skipMCP: true, skipSkills: true });
+      expect(session.config.dir).toBe(root);
+      expect(session.config.yeaftDir).toBeUndefined();
+
+      for await (const _event of session.engine.query({
+        prompt: 'trace this lifecycle',
+        sessionId: 'session-perf-trace',
+        inboundEnvelope: { _perfTraceId: 'session-config-dir-trace' },
+      })) { /* consume */ }
+      await session.shutdown();
+      session = null;
+
+      const day = new Date().toISOString().slice(0, 10);
+      const tracePath = join(root, 'perf-traces', `${day}.jsonl`);
+      expect(existsSync(tracePath)).toBe(true);
+      const rows = readFileSync(tracePath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(rows.filter(row => row.traceId === 'session-config-dir-trace').map(row => row.phase)).toEqual(expect.arrayContaining([
+        'llm.request_start',
+        'llm.first_event',
+        'llm.request_complete',
+      ]));
+    } finally {
+      global.fetch = originalFetch;
+      await session?.shutdown?.();
+    }
+  });
 
   it('seeds stock VPs before loading the user-level runtime', async () => {
     const seedRoot = makeDir();

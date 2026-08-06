@@ -164,7 +164,7 @@ provider 的 `apiKey` 和 `credentialProvider` **二选一**：
 
 ## 配置示例
 
-`~/.yeaft/config.json`：
+所选 Agent instance 解析出的 `config.json`（default instance 是 `~/.yeaft/config.json`）：
 
 ```json
 {
@@ -218,7 +218,7 @@ VP 级 / group 级 / user 级累计在 `web/stores/chat.js` 的 store state 里�
 
 ## 热 reload 配置
 
-Agent 在每个 turn 开始时重新读取 `~/.yeaft/config.json`，所以 **model 和 provider 的改动通常不需要重启** — 改完文件，下一次 `engine.query()` 就会用新 config，并为新的 (provider, model) 组合 lazy-build 对应 adapter。
+Agent 在每个 turn 开始时重新读取其 resolved instance `config.json`，所以 **model 和 provider 的改动通常不需要重启**。下一次 `engine.query()` 会读取正确的 instance file，并为新的 (provider, model) 组合 lazy-build adapter。
 
 需要**重启** Agent 才生效的改动（这些是启动时一次性读的，不是 per-turn 读的）：`language`、`debug`、全局 `maxContextTokens` / `messageTokenBudget`。
 
@@ -233,7 +233,7 @@ Web 端 Debug 面板的每个 turn 详情可以**导出 raw request**（headers 
 ## 常见问题
 
 **"No LLM adapter configured"**
-- `~/.yeaft/config.json` 不存在或 `providers: []`
+- 所选 Agent instance 解析出的 `config.json` 不存在或含 `providers: []`
 - 加一个 provider 即可
 
 **"The chat-completions adapter was removed in Phase 7"**

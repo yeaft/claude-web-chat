@@ -610,7 +610,7 @@ export class AdapterRouter extends LLMAdapter {
       const filtered = filterEffortForModel({ ...params, model: resolved.modelId }, resolved);
       const sanitized = sanitizeMessagesForWire(filtered);
       try {
-        yield* resolved.adapter.stream({ ...sanitized, model: resolved.modelId, effortContext });
+        yield* resolved.adapter.stream({ ...sanitized, model: resolved.modelId, effortContext, rawExchangeMaxBytes: params.rawExchangeMaxBytes });
         return;
       } catch (err) {
         this.#annotateAuthError(err, provider, params.model);

@@ -10,12 +10,19 @@ import {
   finishStreamingForConversation,
   maxDbMessageId,
 } from '../../web/stores/helpers/messages.js';
+import { YEAFT_HISTORY_CACHE_LIMITS } from '../../web/stores/helpers/yeaft-history-cache.js';
 import {
   calculateFloatingMenuPosition,
+  calculateFloatingSubmenuPosition,
   default as UnifiedSessionList,
+  reorderProjectRows,
+  reorderSessionCatalogRows,
 } from '../../web/components/UnifiedSessionList.js';
+import { openImagePreview } from '../../web/utils/imagePreview.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
-import WorkCenterPage from '../../web/components/WorkCenterPage.js';
+import enMessages from '../../web/i18n/en.js';
+import zhCNMessages from '../../web/i18n/zh-CN.js';
+import { yeaftHistoryIdentityKey } from '../../web/stores/helpers/yeaft-history-identity.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
 import { migrateYeaftConversationState } from '../../web/stores/helpers/yeaft-conversation-state.js';
 import {
@@ -102,12 +109,16 @@ globalThis.Pinia = {
   useSessionsStore: () => runtimeSessionsStore,
 };
 const { useChatStore } = await import('../../web/stores/chat.js');
+const { default: AssistantTurn } = await import('../../web/components/AssistantTurn.js');
+const { default: MessageItem } = await import('../../web/components/MessageItem.js');
 const { useSessionsStore } = await import('../../web/stores/sessions.js');
 const { useVpStore } = await import('../../web/stores/vp.js');
 const { default: SessionCreateModal } = await import('../../web/components/SessionCreateModal.js');
 const { default: ChatPage } = await import('../../web/components/ChatPage.js');
 const { default: YeaftSidebar } = await import('../../web/components/YeaftSidebar.js');
+const { default: WorkCenterPage } = await import('../../web/components/WorkCenterPage.js');
 const {
+  __testSortYeaftRowsBySequence,
   handleConversationCreated,
   handleConversationResumed,
   handleSyncMessagesResult,
@@ -136,6 +147,64 @@ function makeStore() {
 }
 
 describe('message flow regressions', () => {
+  it('prunes completed Yeaft resident turns at terminal metadata boundaries', async () => {
+    const { useChatStore } = await import('../../web/stores/chat.js');
+    const store = useChatStore();
+    const conversationId = 'yeaft-memory-bound';
+    const sessionId = 'session-memory-bound';
+    store.currentView = 'yeaft';
+    store.currentAgent = 'agent-memory';
+    store.yeaftAgentId = 'agent-memory';
+    store.yeaftConversationId = conversationId;
+    store.yeaftConversationIdsByAgent = { 'agent-memory': conversationId };
+    store.yeaftActiveSessionFilter = sessionId;
+    store.messagesMap = { [conversationId]: [] };
+    store.activeVpTurns = {};
+    store.stoppingVpTurnIds = {};
+    store.vpStatuses = {};
+    store.yeaftProcessingSessions = {};
+
+    const turnCount = Math.ceil(YEAFT_HISTORY_CACHE_LIMITS.maxRowsPerSession / 2) + 20;
+    for (let index = 1; index <= turnCount; index += 1) {
+      store.messagesMap[conversationId].push(
+        {
+          id: `user-${index}`,
+          dbMessageId: index,
+          type: 'user',
+          content: `prompt ${index}`,
+          sessionId,
+          clientMessageId: `client-${index}`,
+        },
+        {
+          id: `assistant-${index}`,
+          type: 'assistant',
+          content: `response ${index}`,
+          sessionId,
+          turnId: `turn-${index}`,
+          status: index === turnCount ? 'pending' : 'completed',
+          isStreaming: false,
+        },
+      );
+    }
+
+    store.handleYeaftOutput({
+      agentId: 'agent-memory',
+      conversationId,
+      event: {
+        type: 'vp_turn_end',
+        sessionId,
+        vpId: 'omni',
+        turnId: `turn-${turnCount}`,
+        reason: 'end_turn',
+      },
+    });
+
+    const kept = store.messagesMap[conversationId];
+    expect(kept.length).toBeLessThanOrEqual(YEAFT_HISTORY_CACHE_LIMITS.maxRowsPerSession);
+    expect(kept.some(row => row.id === `user-${turnCount}`)).toBe(true);
+    expect(kept.some(row => row.id === `assistant-${turnCount}`)).toBe(true);
+    expect(kept.some(row => row.id === 'user-1')).toBe(false);
+  });
   it('keeps same-id streaming updates in one assistant message', () => {
     const store = makeStore();
 
@@ -200,6 +269,7 @@ describe('message flow regressions', () => {
     const chatPageSource = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatPage.js'), 'utf8');
     const yeaftSidebarSource = readFileSync(resolve(import.meta.dirname, '../../web/components/YeaftSidebar.js'), 'utf8');
     const vpAvatarSource = readFileSync(resolve(import.meta.dirname, '../../web/components/VpAvatar.js'), 'utf8');
+    const chatMessagesCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/chat-messages.css'), 'utf8');
     const vpCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/yeaft-vp.css'), 'utf8');
     const sidebarCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/sidebar.css'), 'utf8');
     const chatInputCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/chat-input.css'), 'utf8');
@@ -219,6 +289,16 @@ describe('message flow regressions', () => {
     expect(yeaftCss).toMatch(/\.yeaft-session-input > \.input-wrapper\.chat-composer,[\s\S]*?\.yeaft-page \.expert-chips-bar\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*var\(--session-content-width\)/);
     expect(variables).not.toContain('--yeaft-composer-max-width');
     expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-actions\s*\{[^}]*padding:\s*6px 8px 4px/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-action\s*\{[^}]*min-height:\s*34px[^}]*border:\s*0[^}]*background:\s*transparent[^}]*font:\s*inherit[^}]*font-size:\s*14px/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-action:hover,[^{]*\{[^}]*background:\s*var\(--sidebar-hover\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-action:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-primary-action-icon\s*\{[^}]*color:\s*var\(--text-secondary\)/);
+    expect(yeaftSidebarCss).not.toMatch(/\.sidebar-primary-action-icon\s*\{[^}]*color:\s*var\(--accent/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-project-add-button\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading > \.sidebar-project-add-button:disabled\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading:hover > \.sidebar-project-add-button:not\(:disabled\),[\s\S]*?\.sidebar-section-heading > \.sidebar-project-add-button:not\(:disabled\):focus-visible\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).not.toContain('.sidebar-section-heading:focus-within > .sidebar-project-add-button');
+    expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-add-button:not\(:disabled\), \.sidebar-section-chevron\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     const sectionPaddingTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'padding');
     const sectionMarginTopValues = sidebarSectionTopValues(yeaftSidebarCss, 'margin');
     expect(sectionPaddingTopValues.length).toBeGreaterThan(0);
@@ -230,17 +310,43 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\s*\{[^}]*background:\s*transparent/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-title-text\s*\{[^}]*flex:\s*1[^}]*text-overflow:\s*ellipsis/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-unread\s*\{[^}]*background:\s*var\(--success\)/);
-    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\[draggable="true"\][^}]*\{[^}]*cursor:\s*default/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\[role="button"\]\s*\{[^}]*cursor:\s*default/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\[draggable="true"\]\s*\{[^}]*user-select:\s*none/);
+    expect(yeaftSidebarCss).not.toMatch(/\.sidebar-session-row\[draggable="true"\](?::active)?\s*\{[^}]*cursor:\s*grab(?:bing)?/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\.drag-before\s*\{[^}]*box-shadow:\s*inset 0 2px 0 var\(--accent-blue\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\.drag-after\s*\{[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent-blue\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-create\s*\{[^}]*background:\s*var\(--bg-input-wrapper\)/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-results\s*\{[^}]*display:\s*flex[^}]*overflow:\s*hidden/);
     expect(yeaftSidebarCss).toMatch(/\.projects-section\s*\{[^}]*flex:\s*0 0 auto[^}]*max-height:\s*50%[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/);
     expect(yeaftSidebarCss).toMatch(/\.recents-section\s*\{[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/);
     expect(yeaftSidebarCss).not.toMatch(/\.projects-section, \.recents-section\s*\{[^}]*flex:\s*1 1 50%/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading\s*\{[^}]*min-height:\s*38px[^}]*color:\s*var\(--text-muted\)[^}]*font-size:\s*14px[^}]*font-weight:\s*600/);
     expect(yeaftSidebarCss).toMatch(/\.projects-section > \.sidebar-section-heading, \.recents-section > \.sidebar-section-heading\s*\{[^}]*position:\s*sticky[^}]*top:\s*0[^}]*z-index:\s*1[^}]*background:\s*var\(--bg-sidebar\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-recents-create\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
+    expect(yeaftSidebarCss).toMatch(/\.recents-section > \.sidebar-section-heading:hover > \.sidebar-recents-create,[\s\S]*?\.recents-section > \.sidebar-section-heading > \.sidebar-recents-create:focus-visible\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).not.toContain('.sidebar-section-heading:focus-within > .sidebar-recents-create');
+    expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-recents-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-session-menu-info\s*\{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row \.session-actions\s*\{[^}]*position:\s*absolute[^}]*opacity:\s*0[^}]*pointer-events:\s*none[^}]*linear-gradient\(90deg, transparent, var\(--sidebar-hover\) 22px\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row:hover \.session-actions,[\s\S]*?\.sidebar-session-row \.session-actions:focus-within,[\s\S]*?\.sidebar-session-row \.session-actions\.menu-open\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).not.toContain('.sidebar-session-row:focus-within .session-actions');
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-session-row\.actions-suppressed \.session-actions\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
+    expect(yeaftSidebarCss).not.toMatch(/\.yeaft-sidebar \.session-dots-btn\s*\{[^}]*opacity:\s*1/);
     expect(yeaftSidebarCss).toMatch(/\.sidebar-project-header > \.session-dots-btn:focus-visible\s*\{[^}]*opacity:\s*1/);
-    expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)\s*\{\s*\.sidebar-project-header > \.session-dots-btn\s*\{[^}]*opacity:\s*1/);
+    expect(yeaftSidebarCss).toMatch(/@media \(pointer:\s*coarse\)[\s\S]*?\.sidebar-project-header > \.sidebar-project-session-create\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto[\s\S]*?\.sidebar-project-header > \.session-dots-btn\s*\{[^}]*opacity:\s*1/);
     expect(yeaftSidebarCss).not.toContain('.sidebar-session-menu-divider');
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-toggle\s*\{[^}]*background:\s*transparent/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-chevron\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-section-heading:hover \.sidebar-section-chevron,[\s\S]*?\.sidebar-section-toggle:focus-visible \.sidebar-section-chevron\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/);
+    expect(yeaftSidebarCss).not.toContain('.sidebar-section-heading:focus-within .sidebar-section-chevron');
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-project-icon\s*\{[^}]*width:\s*var\(--sidebar-project-icon-width\)[^}]*height:\s*var\(--sidebar-project-icon-height\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-project-count\s*\{[^}]*font-size:\s*var\(--sidebar-project-count-font-size\)[^}]*font-variant-numeric:\s*tabular-nums/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-project-header\.project-drag-before\s*\{[^}]*var\(--accent-blue\)/);
+    expect(yeaftSidebarCss).toMatch(/\.sidebar-project-header\.project-drag-after\s*\{[^}]*var\(--accent-blue\)/);
+    expect(chatMessagesCss).toMatch(/\.image-preview-navigation\s*\{[^}]*background:\s*var\(--bg-main\)/);
+    expect(chatMessagesCss).toMatch(/\.image-preview-position\s*\{[^}]*color:\s*var\(--text-primary\)/);
+    expect(lightThemeVariables).toContain('--image-preview-control-size: 44px');
+    expect(darkThemeVariables).toContain('--image-preview-control-size: 44px');
     expect(vpAvatarSource).not.toContain('/assets/avatars/');
     expect(vpAvatarSource).not.toContain('<img');
     expect(vpCss).not.toContain('.vp-avatar-img');
@@ -256,6 +362,143 @@ describe('message flow regressions', () => {
     expect(() => normalizeChatRuntimeProvider('unknown')).toThrow(/Unknown Chat runtime provider/);
     expect(() => chatCatalogKey('')).toThrow(/conversationId/);
 
+    const orderFixture = ['a', 'b', 'c', 'd'].map((catalogKey, sortRank) => ({ catalogKey, sortRank }));
+    expect(reorderSessionCatalogRows(orderFixture, 'd', 'b', 'before').map(row => row.catalogKey))
+      .toEqual(['a', 'd', 'b', 'c']);
+    expect(reorderSessionCatalogRows(orderFixture, 'a', 'c', 'after').map(row => row.catalogKey))
+      .toEqual(['b', 'c', 'a', 'd']);
+    expect(reorderSessionCatalogRows(orderFixture, 'b', null, 'append').map(row => row.catalogKey))
+      .toEqual(['a', 'c', 'd', 'b']);
+    expect(reorderSessionCatalogRows(orderFixture, 'missing', 'b', 'before')).toBeNull();
+    expect(reorderSessionCatalogRows(orderFixture, 'b', 'missing', 'before')).toBeNull();
+    const projectOrderFixture = ['project-a', 'project-b', 'project-c']
+      .map((id, sortOrder) => ({ id, sortOrder }));
+    expect(reorderProjectRows(projectOrderFixture, 'project-c', 'project-a', 'before').map(row => row.id))
+      .toEqual(['project-c', 'project-a', 'project-b']);
+    expect(reorderProjectRows(projectOrderFixture, 'project-a', 'project-c', 'after').map(row => row.id))
+      .toEqual(['project-b', 'project-c', 'project-a']);
+    expect(reorderProjectRows(projectOrderFixture, 'missing', 'project-a', 'before')).toBeNull();
+    expect(UnifiedSessionList.computed.hasCompleteCatalogOrder.call({
+      sessions: [{ sortRank: 0 }, { sortRank: 0 }],
+    })).toBe(false);
+
+    const previewTrigger = document.createElement('button');
+    document.body.appendChild(previewTrigger);
+    const previewOverlay = openImagePreview('/preview-a.png', {
+      alt: 'First preview',
+      closeLabel: 'Close preview',
+      previousLabel: 'Previous preview',
+      nextLabel: 'Next preview',
+      positionLabel: (current, total) => `${current} / ${total}`,
+      gallery: [
+        { src: '/preview-a.png', alt: 'First preview' },
+        { src: '/preview-b.png', alt: 'Second preview' },
+        { src: '/preview-c.png', alt: 'Third preview' },
+      ],
+      initialIndex: 0,
+      trigger: previewTrigger,
+    });
+    expect(previewOverlay.querySelector('.image-preview-img').getAttribute('src')).toBe('/preview-a.png');
+    expect(previewOverlay.querySelector('.image-preview-position').textContent).toBe('1 / 3');
+    previewOverlay.querySelector('.image-preview-next').click();
+    expect(previewOverlay.querySelector('.image-preview-img').getAttribute('src')).toBe('/preview-b.png');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    expect(previewOverlay.querySelector('.image-preview-img').getAttribute('src')).toBe('/preview-a.png');
+    previewOverlay.querySelector('.image-preview-previous').click();
+    expect(previewOverlay.querySelector('.image-preview-img').getAttribute('src')).toBe('/preview-c.png');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    previewOverlay.dispatchEvent(new Event('transitionend'));
+    expect(document.body.querySelector('.image-preview-overlay')).toBeNull();
+    expect(document.activeElement).toBe(previewTrigger);
+    previewTrigger.remove();
+
+    const previousImagePreviewStore = globalThis.Pinia.useChatStore;
+    const previousGlobalVue = globalThis.Vue;
+    globalThis.Pinia.useChatStore = useChatStore;
+    globalThis.Vue = Vue;
+    const userImageMessage = mount(MessageItem, {
+      attachTo: document.body,
+      props: {
+        message: {
+          type: 'user',
+          attachments: [
+            { isImage: true, preview: '/user-a.png', name: 'User A' },
+            { isImage: true, preview: '/user-b.png', name: 'User B' },
+            { isImage: false, name: 'notes.txt', mimeType: 'text/plain' },
+          ],
+        },
+      },
+      global: { mocks: { $t: key => key }, provide: { t: key => key } },
+    });
+    await userImageMessage.get('.attachments-badge').trigger('click');
+    await userImageMessage.findAll('.user-attachment-item.is-image')[1].trigger('click');
+    expect(document.body.querySelector('.image-preview-img').getAttribute('src')).toBe('/user-b.png');
+    expect(document.body.querySelector('.image-preview-position').textContent).toBe('message.imagePosition');
+    document.body.querySelector('.image-preview-close').click();
+    document.body.querySelector('.image-preview-overlay').dispatchEvent(new Event('transitionend'));
+    userImageMessage.unmount();
+
+    const externalImage = {
+      id: 'work-center-image', isImage: true, preview: '/work-center-image.png', name: 'Work Center image',
+    };
+    const externalFile = {
+      id: 'work-center-file', isImage: false, name: 'work-center.txt', mimeType: 'text/plain',
+    };
+    const workCenterMessage = mount(MessageItem, {
+      attachTo: document.body,
+      props: {
+        externalAttachmentOpen: true,
+        message: { type: 'user', attachments: [externalImage, externalFile] },
+      },
+      global: { mocks: { $t: key => key }, provide: { t: key => key } },
+    });
+    await workCenterMessage.get('.attachments-badge').trigger('click');
+    const externalAttachmentButtons = workCenterMessage.findAll('.user-attachment-item');
+    await externalAttachmentButtons[0].trigger('click');
+    await externalAttachmentButtons[1].trigger('click');
+    expect(workCenterMessage.emitted('open-attachment')).toEqual([
+      [expect.objectContaining({
+        attachment: expect.objectContaining({ id: externalImage.id }),
+        trigger: externalAttachmentButtons[0].element,
+      })],
+      [expect.objectContaining({
+        attachment: expect.objectContaining({ id: externalFile.id }),
+        trigger: externalAttachmentButtons[1].element,
+      })],
+    ]);
+    expect(document.body.querySelector('.image-preview-overlay')).toBeNull();
+    workCenterMessage.unmount();
+
+    const assistantImages = mount(AssistantTurn, {
+      attachTo: document.body,
+      props: {
+        turn: {
+          imageMsgs: [
+            { id: 'assistant-a', src: '/assistant-a.png', filename: 'Assistant A' },
+            { id: 'assistant-b', src: '/assistant-b.png', filename: 'Assistant B' },
+          ],
+          textContent: '',
+          toolMsgs: [],
+        },
+      },
+      global: { mocks: { $t: key => key }, provide: { t: key => key } },
+    });
+    await assistantImages.findAll('.turn-image-item')[0].trigger('click');
+    document.body.querySelector('.image-preview-next').click();
+    expect(document.body.querySelector('.image-preview-img').getAttribute('src')).toBe('/assistant-b.png');
+    document.body.querySelector('.image-preview-close').click();
+    document.body.querySelector('.image-preview-overlay').dispatchEvent(new Event('transitionend'));
+    assistantImages.unmount();
+    if (previousImagePreviewStore) globalThis.Pinia.useChatStore = previousImagePreviewStore;
+    else delete globalThis.Pinia.useChatStore;
+    if (previousGlobalVue) globalThis.Vue = previousGlobalVue;
+    else delete globalThis.Vue;
+
+    localStorage.removeItem('yeaft-sidebar-section-collapse');
+    const projectStore = {
+      mutateProject: vi.fn(() => Promise.resolve({ ok: true })),
+      reorderCatalogSessions: vi.fn(() => true),
+    };
     const catalogRows = [
       {
         catalogKey: 'yeaft:user_1770305719:server-instance:pinned',
@@ -305,6 +548,7 @@ describe('message flow regressions', () => {
         activeRoute: { runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: 'visible' },
         processingConversations: { visible: true },
         isYeaftSessionProcessing: (sessionId, agentId) => sessionId === 'pinned' && agentId === 'user_1770305719:server-instance',
+        isSessionSyncing: row => row.catalogKey === 'chat:visible',
         isSessionUnread: row => row.catalogKey === 'chat:visible' || row.catalogKey.endsWith(':pinned'),
         workCenterOpen: true,
         agents: [
@@ -327,23 +571,74 @@ describe('message flow regressions', () => {
       global: { mocks: { $t: key => key } },
     });
     expect(sidebar.findAll('.sidebar-primary-actions')).toHaveLength(1);
+    const createSessionButton = sidebar.get('.sidebar-primary-action');
+    const createProjectButton = sidebar.get('.sidebar-project-add-button');
+    expect(createSessionButton.text()).toBe('sidebar.sessions.newChat');
+    expect(createSessionButton.attributes('aria-label')).toBe('sidebar.sessions.newChat');
+    expect(createSessionButton.attributes('title')).toBe('sidebar.sessions.newChat');
+    expect(createSessionButton.find('.sidebar-primary-action-icon').exists()).toBe(true);
+    expect(createSessionButton.get('.sidebar-primary-action-frame').attributes('d')).toBe('M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7');
+    expect(createSessionButton.get('.sidebar-primary-action-pen').attributes('d')).toBe('M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852Z');
+    expect(createSessionButton.get('.sidebar-primary-action-frame').attributes('d')).not.toBe(createProjectButton.get('svg path').attributes('d'));
+    expect(createProjectButton.attributes('aria-label')).toBe('sidebar.projects.new');
+    expect(createProjectButton.attributes('title')).toBe('sidebar.projects.new');
+    expect(createProjectButton.find('.sidebar-project-add-icon').exists()).toBe(true);
+    expect(createProjectButton.get('.sidebar-project-add-mark').attributes('d')).toBe('M12 5v14M5 12h14');
+    expect(enMessages['sidebar.sessions.newChat']).toBe('New chat');
+    expect(zhCNMessages['sidebar.sessions.newChat']).toBe('新建聊天');
+    expect(enMessages['sidebar.projects.newSession']).toBe('New Session in {name}');
+    expect(zhCNMessages['sidebar.projects.newSession']).toBe('在{name}中创建 Session');
+    expect(enMessages['sidebar.projects.assignFailed']).toContain('{message}');
+    expect(zhCNMessages['sidebar.projects.assignFailed']).toContain('{message}');
     expect(sidebar.get('.sidebar-navigation').element.children[0].classList).toContain('sidebar-primary-actions');
     expect(sidebar.get('.sidebar-navigation').element.children[1].classList).toContain('sidebar-session-results');
     expect(sidebar.get('.sidebar-session-results').element.children[0].classList).toContain('projects-section');
     expect(sidebar.get('.sidebar-session-results').element.children[1].classList).toContain('recents-section');
     expect(sidebar.find('input[type="search"]').exists()).toBe(false);
-    expect(sidebar.findAll('.sidebar-tool-button')).toHaveLength(1);
+    expect(sidebar.findAll('.sidebar-tool-button')).toHaveLength(2);
+    const recentsCreate = sidebar.get('.recents-section .sidebar-recents-create');
+    expect(recentsCreate.attributes('title')).toBe('sidebar.sessions.newChat');
+    expect(recentsCreate.attributes('aria-label')).toBe('sidebar.sessions.newChat');
+    expect(recentsCreate.get('.sidebar-recents-create-frame').attributes('d')).toBe(createSessionButton.get('.sidebar-primary-action-frame').attributes('d'));
+    expect(recentsCreate.get('.sidebar-recents-create-pen').attributes('d')).toBe(createSessionButton.get('.sidebar-primary-action-pen').attributes('d'));
     expect(sidebar.findAll('.sidebar-section')).toHaveLength(2);
+    const sectionToggles = sidebar.findAll('.sidebar-section-toggle');
+    expect(sectionToggles).toHaveLength(2);
+    expect(sectionToggles.map(button => button.attributes('aria-expanded'))).toEqual(['true', 'true']);
+    expect(sectionToggles.every(button => (
+      button.get('span').element.compareDocumentPosition(button.get('.sidebar-section-chevron').element)
+      & Node.DOCUMENT_POSITION_FOLLOWING
+    ))).toBe(true);
+    await sectionToggles[0].trigger('click');
+    expect(sidebar.get('.projects-section').classes()).toContain('is-collapsed');
+    expect(sidebar.findAll('.sidebar-project')).toHaveLength(0);
+    expect(JSON.parse(localStorage.getItem('yeaft-sidebar-section-collapse'))).toMatchObject({ projects: true });
+    await sectionToggles[0].trigger('click');
     expect(sidebar.findAll('.session-item')).toHaveLength(0);
     await sidebar.setProps({ sessions: catalogRows });
     expect(sidebar.findAll('.session-item')).toHaveLength(3);
     expect(sidebar.findAll('.session-item').some(item => item.text().includes('Offline'))).toBe(false);
     expect(sidebar.findAll('.sidebar-project')).toHaveLength(2);
+    expect(sidebar.findAll('.sidebar-project-icon-open')).toHaveLength(2);
+    expect(sidebar.findAll('.sidebar-project-icon-closed')).toHaveLength(0);
+    expect(sidebar.findAll('.sidebar-project-icon-open').every(icon => icon.attributes('viewBox') === '0 0 20 24')).toBe(true);
     expect(sidebar.findAll('.sidebar-project-unread')).toHaveLength(1);
     expect(Object.fromEntries(sidebar.findAll('.sidebar-project').map(item => [
       item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
       item.get('.sidebar-project-count').text(),
     ]))).toEqual({ 'Shared project': '1', 'Empty project': '0' });
+    expect(sidebar.findAll('.sidebar-project').every(item => (
+      item.get('.sidebar-project-name').element.compareDocumentPosition(item.get('.sidebar-project-count').element)
+      & Node.DOCUMENT_POSITION_FOLLOWING
+    ))).toBe(true);
+    expect(sidebar.findAll('.sidebar-project-header .sidebar-project-session-create')).toHaveLength(2);
+    const projectCreateSessionButton = sidebar.findAll('.sidebar-project-header .sidebar-project-session-create')[0];
+    expect(projectCreateSessionButton.attributes('aria-label')).toBe('sidebar.projects.newSession');
+    await projectCreateSessionButton.trigger('click');
+    expect(sidebar.emitted('create-in-project').at(-1)[0]).toEqual({
+      project: sidebar.props('projects')[0],
+    });
+    expect(sidebar.emitted('close-work-center')).toHaveLength(1);
     expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(2);
     const projectMenuButton = sidebar.findAll('.sidebar-project-header .session-dots-btn')[0];
     expect(projectMenuButton.attributes('aria-label')).toBe('sidebar.projects.menu');
@@ -408,10 +703,13 @@ describe('message flow regressions', () => {
       instruction: 'Updated Project rule.',
     });
     expect(document.body.querySelector('.project-instruction-modal')).toBeNull();
+    sidebar.vm.dispatchProjectAction = UnifiedSessionList.methods.dispatchProjectAction.bind(sidebar.vm);
 
     const projectToggles = sidebar.findAll('.sidebar-project-toggle');
     await projectToggles[0].trigger('click');
     expect(sidebar.findAll('.sidebar-project-sessions')).toHaveLength(1);
+    expect(sidebar.findAll('.sidebar-project-icon-open')).toHaveLength(1);
+    expect(sidebar.findAll('.sidebar-project-icon-closed')).toHaveLength(1);
     expect(sidebar.findAll('.sidebar-project-unread')).toHaveLength(1);
     expect(Object.fromEntries(sidebar.findAll('.sidebar-project').map(item => [
       item.get('.sidebar-project-toggle').text().replace(/\d+$/, ''),
@@ -422,8 +720,200 @@ describe('message flow regressions', () => {
     expect(sidebar.text()).toContain('Visible');
     expect(sidebar.text()).toContain('Pinned');
     expect(sidebar.findAll('.session-item').map(item => item.get('.sidebar-session-title-text').text())).toEqual(['Pinned', 'Visible 2', 'Visible']);
+    await sectionToggles[1].trigger('click');
+    expect(sidebar.get('.recents-section').classes()).toContain('is-collapsed');
+    expect(sidebar.findAll('.recents-section .session-item')).toHaveLength(0);
+    expect(JSON.parse(localStorage.getItem('yeaft-sidebar-section-collapse'))).toMatchObject({ recents: true });
+    await sectionToggles[1].trigger('click');
+    const visibleRow = sidebar.findAll('.recents-section .session-item')
+      .find(item => item.text().includes('Visible') && !item.text().includes('Visible 2'));
+    const visibleTwoRow = sidebar.findAll('.recents-section .session-item')
+      .find(item => item.text().includes('Visible 2'));
+    const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() };
+    await visibleRow.trigger('dragstart', { dataTransfer });
+    expect(dataTransfer.effectAllowed).toBe('move');
+    Object.defineProperty(visibleTwoRow.element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 100, bottom: 134, height: 34 }),
+    });
+    await visibleTwoRow.trigger('dragover', { dataTransfer, clientY: 101 });
+    expect(visibleTwoRow.classes()).toContain('drag-before');
+    await visibleTwoRow.trigger('drop', { dataTransfer, clientY: 101 });
+    expect(sidebar.emitted('action').at(-1)[0]).toMatchObject({
+      action: 'reorder',
+      row: { catalogKey: 'chat:visible' },
+    });
+    expect(sidebar.emitted('action').at(-1)[0].sessions.map(row => row.catalogKey)).toEqual([
+      'yeaft:user_1770305719:server-instance:pinned',
+      'chat:visible',
+      'chat:visible-2',
+      'chat:offline',
+    ]);
+    const rejectedProjectDrag = { effectAllowed: '', setData: vi.fn() };
+    sidebar.vm.startDrag(catalogRows[2], { dataTransfer: rejectedProjectDrag });
+    expect(sidebar.vm.draggedRow?.catalogKey).toBe('chat:visible');
+    const rejectedProjectDrop = { preventDefault: vi.fn(), stopPropagation: vi.fn(), dataTransfer: rejectedProjectDrag };
+    sidebar.vm.dragOverRow(catalogRows[0], sidebar.props('projects')[0], rejectedProjectDrop);
+    expect(rejectedProjectDrop.preventDefault).not.toHaveBeenCalled();
+    sidebar.vm.finishDrag();
+
+    projectStore.mutateProject.mockClear();
+    await sidebar.setProps({ projectStore });
+    const projectHeaders = sidebar.findAll('.sidebar-project-header');
+    expect(projectHeaders.map(header => header.attributes('draggable'))).toEqual(['true', 'true']);
+    const projectDataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() };
+    await projectHeaders[1].trigger('dragstart', { dataTransfer: projectDataTransfer });
+    expect(projectDataTransfer.effectAllowed).toBe('move');
+    Object.defineProperty(projectHeaders[0].element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 100, bottom: 134, height: 34 }),
+    });
+    await projectHeaders[0].trigger('dragover', { dataTransfer: projectDataTransfer, clientY: 101 });
+    expect(projectHeaders[0].classes()).toContain('project-drag-before');
+    await projectHeaders[0].trigger('drop', { dataTransfer: projectDataTransfer, clientY: 101 });
+    await Promise.resolve();
+    expect(projectStore.mutateProject).toHaveBeenLastCalledWith('reorder', {
+      projectIds: ['project-empty', 'project-shared'],
+    });
+    await sidebar.setProps({ projectStore: null });
+
+    const projectDragRows = [
+      {
+        catalogKey: 'yeaft:user_1770305719:server-instance:project-first',
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'user_1770305719:server-instance', sessionId: 'project-first' },
+        title: 'Project first',
+        pinned: false,
+        availability: 'online',
+        sortRank: 0,
+      },
+      {
+        catalogKey: 'yeaft:user_1770305719:server-instance:project-second',
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'user_1770305719:server-instance', sessionId: 'project-second' },
+        title: 'Project second',
+        pinned: false,
+        availability: 'online',
+        sortRank: 1,
+      },
+      {
+        catalogKey: 'yeaft:user_1770305719:server-instance:recent-yeaft',
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId: 'user_1770305719:server-instance', sessionId: 'recent-yeaft' },
+        title: 'Recent Yeaft',
+        pinned: false,
+        availability: 'online',
+        sortRank: 2,
+      },
+    ];
+    await sidebar.setProps({
+      sessions: projectDragRows,
+      projects: [{
+        id: 'project-shared',
+        name: 'Shared project',
+        members: [
+          { agentId: 'user_1770305719:server-instance', sessionId: 'project-first' },
+          { agentId: 'user_1770305719:server-instance', sessionId: 'project-second' },
+        ],
+      }],
+    });
+    const projectFirst = sidebar.findAll('.sidebar-project-sessions .session-item')
+      .find(item => item.text().includes('Project first'));
+    const projectSecond = sidebar.findAll('.sidebar-project-sessions .session-item')
+      .find(item => item.text().includes('Project second'));
+    await projectSecond.trigger('dragstart', { dataTransfer });
+    Object.defineProperty(projectFirst.element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 100, bottom: 134, height: 34 }),
+    });
+    await projectFirst.trigger('dragover', { dataTransfer, clientY: 101 });
+    await projectFirst.trigger('drop', { dataTransfer, clientY: 101 });
+    expect(sidebar.emitted('action').at(-1)[0].sessions.map(row => row.catalogKey)).toEqual([
+      'yeaft:user_1770305719:server-instance:project-second',
+      'yeaft:user_1770305719:server-instance:project-first',
+      'yeaft:user_1770305719:server-instance:recent-yeaft',
+    ]);
+
+    const legacyProject = {
+      id: 'user_1770305719:server-instance\u001flegacy-project',
+      legacyProjectId: 'legacy-project',
+      legacyAgentId: 'user_1770305719:server-instance',
+      name: 'Legacy project',
+      members: [
+        { agentId: 'user_1770305719:server-instance', sessionId: 'project-first' },
+        { agentId: 'user_1770305719:server-instance', sessionId: 'project-second' },
+      ],
+    };
+    await sidebar.setProps({ projects: [legacyProject] });
+    expect(sidebar.vm.canDragProject(legacyProject)).toBe(false);
+    expect(sidebar.find('.sidebar-project-header').attributes('draggable')).toBe('false');
+    expect(sidebar.vm.canDragRow(projectDragRows[0], legacyProject)).toBe(true);
+    expect(sidebar.vm.canDropRow(projectDragRows[0], legacyProject)).toBe(true);
+
+    projectStore.mutateProject.mockClear();
+    projectStore.reorderCatalogSessions.mockClear();
+    await sidebar.setProps({
+      sessions: projectDragRows.map(row => ({ ...row })),
+      projects: [{
+        id: 'project-shared',
+        name: 'Shared project',
+        members: [
+          { agentId: 'user_1770305719:server-instance', sessionId: 'project-first' },
+          { agentId: 'user_1770305719:server-instance', sessionId: 'project-second' },
+        ],
+      }],
+      projectStore,
+    });
+    expect(sidebar.vm.resolvedProjectStore.mutateProject).toBe(projectStore.mutateProject);
+    expect(sidebar.vm.dragOperationPending).toBe(false);
+    const recentYeaft = sidebar.get('.recents-section .session-item');
+    const currentProjectSecond = sidebar.findAll('.sidebar-project-sessions .session-item')
+      .find(item => item.text().includes('Project second'));
+    Object.defineProperty(currentProjectSecond.element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 100, bottom: 134, height: 34 }),
+    });
+    await recentYeaft.trigger('dragstart', { dataTransfer });
+    expect(sidebar.vm.draggedRow?.catalogKey).toBe('yeaft:user_1770305719:server-instance:recent-yeaft');
+    await currentProjectSecond.trigger('dragover', { dataTransfer, clientY: 101 });
+    expect(sidebar.vm.dragTargetRowKey).toBe('yeaft:user_1770305719:server-instance:project-second');
+    await currentProjectSecond.trigger('drop', { dataTransfer, clientY: 101 });
+    expect(projectStore.mutateProject).toHaveBeenLastCalledWith('move_session', {
+      sessionId: 'recent-yeaft',
+      projectId: 'project-shared',
+      catalogOrder: [
+        expect.objectContaining({ catalogKey: 'yeaft:user_1770305719:server-instance:project-first' }),
+        expect.objectContaining({ catalogKey: 'yeaft:user_1770305719:server-instance:recent-yeaft' }),
+        expect.objectContaining({ catalogKey: 'yeaft:user_1770305719:server-instance:project-second' }),
+      ],
+    }, 'user_1770305719:server-instance');
+    expect(projectStore.reorderCatalogSessions).not.toHaveBeenCalled();
+
+    projectStore.mutateProject.mockResolvedValueOnce({ ok: false });
+    const currentProjectFirst = sidebar.findAll('.sidebar-project-sessions .session-item')
+      .find(item => item.text().includes('Project first'));
+    await currentProjectFirst.trigger('dragstart', { dataTransfer });
+    await sidebar.get('.recents-section').trigger('drop', { dataTransfer });
+    expect(projectStore.mutateProject).toHaveBeenLastCalledWith('move_session', {
+      sessionId: 'project-first',
+      projectId: null,
+      catalogOrder: expect.any(Array),
+    }, 'user_1770305719:server-instance');
+    expect(projectStore.reorderCatalogSessions).not.toHaveBeenCalled();
+    await sidebar.setProps({ projectStore: null, sessions: catalogRows, projects: [
+      {
+        id: 'project-shared',
+        name: 'Shared project',
+        members: [
+          { agentId: 'user_1770305719:server-instance', sessionId: 'pinned' },
+          { agentId: 'agent-b', sessionId: 'offline' },
+        ],
+      },
+      { id: 'project-empty', name: 'Empty project', members: [] },
+    ] });
     expect(sidebar.findAll('.session-item.processing')).toHaveLength(2);
     expect(sidebar.findAll('.processing-dot')).toHaveLength(2);
+    expect(sidebar.findAll('.sidebar-session-syncing')).toHaveLength(0);
     expect(sidebar.findAll('.session-pin-icon')).toHaveLength(1);
     expect(sidebar.findAll('.sidebar-session-meta')).toHaveLength(0);
     expect(sidebar.findAll('.sidebar-session-unread')).toHaveLength(3);
@@ -446,7 +936,46 @@ describe('message flow regressions', () => {
     expect(sidebar.text()).not.toContain('user_1770305719');
     expect(sidebar.findAll('.sidebar-project-header .session-dots-btn')).toHaveLength(2);
     expect(sidebar.findAll('.session-item .session-dots-btn')).toHaveLength(3);
+    expect(sidebar.findAll('.session-item .session-quick-action')).toHaveLength(6);
+    expect(sidebar.findAll('.session-remove-icon')).toHaveLength(3);
+    expect(sidebar.findAll('.session-remove-icon path').every(path => path.attributes('d').includes('m3 0-1 13'))).toBe(true);
     expect(sidebar.get('.sidebar-session-results').attributes('class')).toContain('sidebar-session-results');
+    const pinnedQuickActions = firstRow.findAll('.session-quick-action');
+    expect(pinnedQuickActions.map(button => button.attributes('aria-label'))).toEqual([
+      'chat.sidebar.unpin',
+      'sidebar.sessions.remove',
+    ]);
+    const selectCountBeforeQuickActions = sidebar.emitted('select')?.length || 0;
+    firstRow.element.focus();
+    expect(document.activeElement).toBe(firstRow.element);
+    await firstRow.trigger('click');
+    expect(document.activeElement).not.toBe(firstRow.element);
+    expect(firstRow.classes()).toContain('actions-suppressed');
+    expect(sidebar.emitted('select')).toHaveLength(selectCountBeforeQuickActions + 1);
+    await firstRow.trigger('pointerleave');
+    expect(firstRow.classes()).not.toContain('actions-suppressed');
+    firstRow.element.focus();
+    await firstRow.trigger('keydown', { key: 'Enter' });
+    expect(firstRow.classes()).not.toContain('actions-suppressed');
+    expect(document.activeElement).toBe(firstRow.element);
+    await firstRow.trigger('keydown', { key: ' ' });
+    expect(firstRow.classes()).not.toContain('actions-suppressed');
+    expect(document.activeElement).toBe(firstRow.element);
+    pinnedQuickActions[0].element.focus();
+    expect(document.activeElement).toBe(pinnedQuickActions[0].element);
+    const selectCountAfterRowClick = sidebar.emitted('select').length;
+    await pinnedQuickActions[0].trigger('click');
+    expect(sidebar.emitted('select')?.length || 0).toBe(selectCountAfterRowClick);
+    expect(sidebar.emitted('action').at(-1)[0]).toMatchObject({
+      action: 'pin',
+      row: { catalogKey: 'yeaft:user_1770305719:server-instance:pinned' },
+    });
+    await pinnedQuickActions[1].trigger('click');
+    expect(sidebar.emitted('select')?.length || 0).toBe(selectCountAfterRowClick);
+    expect(sidebar.emitted('action').at(-1)[0]).toMatchObject({
+      action: 'remove',
+      row: { catalogKey: 'yeaft:user_1770305719:server-instance:pinned' },
+    });
     const selectCountBeforeSettingsKeyboard = sidebar.emitted('select')?.length || 0;
     const pinnedSettingsButton = firstRow.get('.session-dots-btn');
     await pinnedSettingsButton.trigger('keydown', { key: 'Enter' });
@@ -475,18 +1004,27 @@ describe('message flow regressions', () => {
     const mainMenuLabels = [...document.body.querySelectorAll('.session-menu-item')]
       .map(item => item.textContent);
     expect(mainMenuLabels.some(label => label.includes('sidebar.projects.moveMenu'))).toBe(true);
+    expect(mainMenuLabels).not.toContain('chat.sidebar.unpin');
+    expect(mainMenuLabels).not.toContain('common.delete');
     expect(mainMenuLabels).not.toContain('Shared project');
     expect(mainMenuLabels).not.toContain('Empty project');
     const moveMenuAction = [...document.body.querySelectorAll('.session-menu-item')]
       .find(item => item.textContent.includes('sidebar.projects.moveMenu'));
     moveMenuAction.click();
     await Vue.nextTick();
-    const projectMenuLabels = [...document.body.querySelectorAll('.session-menu-item')]
+    expect(document.body.querySelectorAll('.session-menu-floating')).toHaveLength(2);
+    expect(document.body.querySelector('.session-menu-parent').getAttribute('aria-expanded')).toBe('true');
+    expect(document.body.querySelector('.sidebar-session-menu-info')).toBe(runtimeFooter);
+    const projectMenuLabels = [...document.body.querySelectorAll('.session-submenu .session-menu-item')]
       .map(item => item.textContent);
     expect(projectMenuLabels).toContain('Empty project');
     expect(projectMenuLabels).not.toContain('Shared project');
-    document.body.querySelector('.session-menu-back').click();
+    expect([...document.body.querySelectorAll('.session-menu-floating:not(.session-submenu) .session-menu-item')]
+      .map(item => item.textContent)).toContain('yeaft.session.openSettings');
+    moveMenuAction.click();
     await Vue.nextTick();
+    expect(document.body.querySelector('.session-submenu')).toBeNull();
+    expect(document.body.querySelector('.session-menu-parent').getAttribute('aria-expanded')).toBe('false');
     const settingsAction = [...document.body.querySelectorAll('.session-menu-item')]
       .find(item => item.textContent === 'yeaft.session.openSettings');
     expect(settingsAction).toBeTruthy();
@@ -502,9 +1040,13 @@ describe('message flow regressions', () => {
       expect.stringContaining('Visible 2'),
       expect.stringContaining('Visible'),
     ]);
-    await sidebar.get('.sidebar-primary-action').trigger('click');
+    await recentsCreate.trigger('click');
     expect(sidebar.emitted('close-work-center').at(-1)).toEqual([]);
     expect(sidebar.emitted('create').at(-1)).toEqual([]);
+    const createCountAfterRecents = sidebar.emitted('create').length;
+    await sidebar.get('.sidebar-primary-action').trigger('click');
+    expect(sidebar.emitted('close-work-center').at(-1)).toEqual([]);
+    expect(sidebar.emitted('create')).toHaveLength(createCountAfterRecents + 1);
     const offlineRow = sidebar.findAll('.session-item').find(item => item.text().includes('Offline'));
     expect(offlineRow).toBeUndefined();
     await sidebar.setProps({
@@ -551,10 +1093,14 @@ describe('message flow regressions', () => {
     expect(UnifiedSessionList.template).toContain(':key="row.catalogKey"');
     expect(UnifiedSessionList.emits).toContain('project-action');
     expect(UnifiedSessionList.template).toContain('sidebar-project-header');
-    expect(UnifiedSessionList.template).toContain("runAction('pin', floatingMenu.row)");
+    expect(UnifiedSessionList.template).toContain("runAction('pin', row)");
+    expect(UnifiedSessionList.template).toContain("runAction('delete', row)");
+    expect(UnifiedSessionList.template).not.toContain("runAction('pin', floatingMenu.row)");
+    expect(UnifiedSessionList.template).not.toContain("runAction('delete', floatingMenu.row)");
     expect(UnifiedSessionList.template).toContain("runAction('settings', floatingMenu.row)");
     expect(UnifiedSessionList.template).toContain("moveRow(floatingMenu.row, project)");
-    expect(UnifiedSessionList.template).toContain("floatingMenu.page === 'projects'");
+    expect(UnifiedSessionList.template).toContain('session-submenu');
+    expect(UnifiedSessionList.template).not.toContain("floatingMenu.page === 'projects'");
     expect(UnifiedSessionList.template).toContain('sidebar.projects.moveMenu');
     expect(UnifiedSessionList.template).toContain('project-instruction-modal');
     expect(UnifiedSessionList.template).toContain('sidebar-primary-actions');
@@ -582,11 +1128,22 @@ describe('message flow regressions', () => {
     );
     expect(leftCollisionMenu.left).toBe(8);
     expect(leftCollisionMenu.width).toBe(184);
+    expect(calculateFloatingSubmenuPosition(
+      { top: 120, bottom: 260, left: 300, right: 480 },
+      { width: 180, height: 160 },
+      { width: 900, height: 700 },
+    )).toEqual({ top: 120, left: 484, width: 180, maxHeight: 160, placement: 'right' });
+    expect(calculateFloatingSubmenuPosition(
+      { top: 620, bottom: 760, left: 700, right: 880 },
+      { width: 180, height: 160 },
+      { width: 900, height: 700 },
+    )).toEqual({ top: 532, left: 516, width: 180, maxHeight: 160, placement: 'left' });
     const documentAdd = vi.spyOn(document, 'addEventListener');
     const documentRemove = vi.spyOn(document, 'removeEventListener');
     const windowAdd = vi.spyOn(window, 'addEventListener');
     const windowRemove = vi.spyOn(window, 'removeEventListener');
     sidebar.unmount();
+    localStorage.setItem('yeaft-sidebar-section-collapse', JSON.stringify({ projects: true, recents: false }));
     const lifecycleSidebar = mount(UnifiedSessionList, {
       attachTo: document.body,
       props: { sessions: catalogRows, agents: [{ id: 'agent-a', online: true }] },
@@ -596,6 +1153,8 @@ describe('message flow regressions', () => {
     expect(documentAdd).toHaveBeenCalledWith('keydown', expect.any(Function));
     expect(windowAdd).toHaveBeenCalledWith('resize', expect.any(Function));
     expect(windowAdd).toHaveBeenCalledWith('scroll', expect.any(Function), true);
+    expect(lifecycleSidebar.findAll('.sidebar-section-toggle').map(button => button.attributes('aria-expanded')))
+      .toEqual(['false', 'true']);
     await lifecycleSidebar.find('.session-dots-btn').trigger('click');
     expect(document.body.querySelector('.session-menu-floating')).not.toBeNull();
     expect(lifecycleSidebar.find('.session-menu').exists()).toBe(false);
@@ -603,6 +1162,7 @@ describe('message flow regressions', () => {
     await Vue.nextTick();
     expect(document.body.querySelector('.session-menu-floating')).toBeNull();
     lifecycleSidebar.unmount();
+    localStorage.removeItem('yeaft-sidebar-section-collapse');
     expect(documentRemove).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
     expect(documentRemove).toHaveBeenCalledWith('keydown', expect.any(Function));
     expect(windowRemove).toHaveBeenCalledWith('resize', expect.any(Function));
@@ -739,6 +1299,9 @@ describe('message flow regressions', () => {
       global: { mocks: { $t: key => key } },
     });
     expect(fallbackWorkCenter.get('.sidebar-work-center-trigger').attributes('disabled')).toBeDefined();
+    expect(fallbackWorkCenter.get('.sidebar-work-center-icon path').attributes('d'))
+      .toBe('M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z');
+    expect(component).toContain('M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z');
     await fallbackWorkCenter.get('.sidebar-work-center-trigger').trigger('click');
     expect(fallbackWorkCenter.emitted('open')).toBeUndefined();
     fallbackWorkCenter.unmount();
@@ -761,6 +1324,9 @@ describe('message flow regressions', () => {
       agents: [{ id: 'agent-a', name: 'Agent A', online: true, capabilities: ['work_center'] }],
       workCenterOpen: false,
       workCenterAgentId: 'stale-agent',
+      sessionProjects: [{ id: 'project-shared', name: 'Shared project', members: [] }],
+      mutateProject: vi.fn(() => Promise.resolve({ ok: true })),
+      currentAgent: 'agent-a',
       currentView: 'chat',
       activeConversationId: 'visible',
       conversations: [],
@@ -772,6 +1338,9 @@ describe('message flow regressions', () => {
       enterWorkCenter: vi.fn(),
       leaveWorkCenter: vi.fn(),
       openCatalogSession: vi.fn(),
+      hideCatalogSession: vi.fn(),
+      isSessionPinned: vi.fn(() => false),
+      getConversationTitle: vi.fn(() => 'Legacy chat'),
       enterYeaft: vi.fn(),
       leaveYeaft: vi.fn(),
     });
@@ -803,6 +1372,50 @@ describe('message flow regressions', () => {
     await chatPage.get('.sidebar-primary-action').trigger('click');
     expect(chatPage.vm.unifiedSessionCreateOpen).toBe(true);
     expect(chatPage.vm.unifiedSessionCreateProvider).toBe('yeaft');
+    chatPage.vm.closeUnifiedSessionCreate();
+    chatPage.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
+    expect(chatPage.vm.unifiedSessionCreateProject).toBe(parentStore.sessionProjects[0]);
+    await chatPage.vm.onUnifiedSessionCreated({ id: 'created-session', agentId: 'agent-a' });
+    expect(parentStore.mutateProject).toHaveBeenCalledWith('move_session', {
+      sessionId: 'created-session',
+      projectId: 'project-shared',
+    }, 'agent-a');
+    expect(chatPage.vm.unifiedSessionCreateProject).toBeNull();
+    const alertSpy = vi.fn();
+    vi.stubGlobal('alert', alertSpy);
+    let upgradeAckDetail = null;
+    window.addEventListener('agent-upgrade-ack', event => { upgradeAckDetail = event.detail; }, { once: true });
+    handleMessage(parentStore, {
+      type: 'upgrade_agent_ack',
+      agentId: 'agent-a',
+      success: false,
+      reason: 'manual_upgrade_required',
+      version: '1.0.337',
+      minimumVersion: '1.0.342',
+    });
+    expect(upgradeAckDetail).toMatchObject({
+      reason: 'manual_upgrade_required',
+      version: '1.0.337',
+      minimumVersion: '1.0.342',
+    });
+    expect(alertSpy).toHaveBeenLastCalledWith('chat.agent.manualUpgradeRequired');
+    parentStore.mutateProject.mockResolvedValueOnce({ ok: false, error: { code: 'timeout' } });
+    chatPage.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
+    await chatPage.vm.onUnifiedSessionCreated({ id: 'unassigned-session', agentId: 'agent-a' });
+    expect(alertSpy).toHaveBeenLastCalledWith('sidebar.projects.assignFailed');
+    chatPage.vm.hideSessionFromSidebar({
+      id: 'legacy-chat',
+      provider: 'copilot',
+      agentId: 'agent-a',
+      workDir: '/repo',
+      agentName: 'Agent A',
+      agentOnline: true,
+    });
+    expect(parentStore.hideCatalogSession).toHaveBeenCalledWith(expect.objectContaining({
+      catalogKey: 'chat:legacy-chat',
+      runtimeProvider: 'copilot',
+      routeRef: { runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: 'legacy-chat' },
+    }));
     await chatPage.get('.sidebar-work-center-header-btn').trigger('click');
     expect(parentStore.enterWorkCenter).toHaveBeenCalledWith('agent-a');
     chatPage.unmount();
@@ -814,6 +1427,10 @@ describe('message flow regressions', () => {
       sessionId: 'pinned',
     };
     parentStore.openUnifiedChatCreate = false;
+    parentStore.currentAgent = 'user_1770305719:server-instance';
+    parentStore.sessionCatalog = [];
+    parentStore.hiddenSessionCatalog = [];
+    parentStore.hideCatalogSession.mockClear();
     const yeaftSidebar = mount(YeaftSidebar, {
       global: {
         mocks: { $t: key => key },
@@ -826,25 +1443,78 @@ describe('message flow regressions', () => {
         },
       },
     });
+    alertSpy.mockClear();
+    window.dispatchEvent(new CustomEvent('agent-upgrade-ack', {
+      detail: {
+        agentId: 'agent-a',
+        success: false,
+        reason: 'manual_upgrade_required',
+        version: '1.0.337',
+        minimumVersion: '1.0.342',
+      },
+    }));
+    expect(alertSpy).toHaveBeenLastCalledWith('chat.agent.manualUpgradeRequired');
     await yeaftSidebar.get('.sidebar-primary-action').trigger('click');
     expect(yeaftSidebar.vm.sessionCreateOpen).toBe(true);
+    yeaftSidebar.vm.closeSessionCreate();
+    yeaftSidebar.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
+    expect(yeaftSidebar.vm.sessionCreateProject).toBe(parentStore.sessionProjects[0]);
+    await yeaftSidebar.vm.onSessionCreated({ id: 'created-from-yeaft', agentId: 'agent-a' });
+    expect(parentStore.mutateProject).toHaveBeenLastCalledWith('move_session', {
+      sessionId: 'created-from-yeaft',
+      projectId: 'project-shared',
+    }, 'agent-a');
+    expect(yeaftSidebar.vm.sessionCreateProject).toBeNull();
+    parentStore.mutateProject.mockResolvedValueOnce({ ok: false, error: { message: 'denied' } });
+    yeaftSidebar.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
+    await yeaftSidebar.vm.onSessionCreated({ id: 'unassigned-from-yeaft', agentId: 'agent-a' });
+    expect(alertSpy).toHaveBeenLastCalledWith('sidebar.projects.assignFailed');
+    vi.unstubAllGlobals();
+    yeaftSidebar.vm.onRemoveFromList({
+      id: 'legacy-yeaft',
+      name: 'Legacy Yeaft',
+      agentId: 'user_1770305719:server-instance',
+      workDir: '/repo',
+    });
+    expect(parentStore.hideCatalogSession).toHaveBeenCalledWith(expect.objectContaining({
+      catalogKey: 'yeaft:user_1770305719:server-instance:legacy-yeaft',
+      runtimeProvider: 'yeaft',
+      routeRef: {
+        runtimeProvider: 'yeaft',
+        agentId: 'user_1770305719:server-instance',
+        sessionId: 'legacy-yeaft',
+      },
+    }));
     yeaftSidebar.unmount();
     globalThis.fetch = originalFetch;
     delete globalThis.Pinia.useChatStore;
     storeFactories.clear();
 
     expect(chatPageSource).toContain('@create="onUnifiedCreate"');
+    expect(chatPageSource).toContain('@create-in-project="onUnifiedCreateInProject"');
     expect(chatPageSource).not.toContain('</template>\n      </main>');
     expect(chatPageSource).toContain('sidebar-work-center-header-btn');
     expect(yeaftSidebarSource).toContain(':is-session-unread="isCatalogSessionUnread"');
     expect(chatPageSource).toContain('@action="onUnifiedSessionAction"');
+    expect(yeaftSidebarSource).toContain('@action="onUnifiedSessionAction"');
     expect(yeaftSidebarSource).toContain('@create="onUnifiedCreate"');
+    expect(yeaftSidebarSource).toContain('@create-in-project="onUnifiedCreateInProject"');
     expect(yeaftSidebarSource).toContain('sidebar-work-center-header-btn');
+    const workItemIconPath = 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z';
+    expect(component).toContain(workItemIconPath);
+    expect(chatPageSource).toContain(workItemIconPath);
+    expect(yeaftSidebarSource).toContain(workItemIconPath);
+    expect(chatPageSource).toContain(':project-store="store"');
     expect(chatPageSource).toContain(':active-route="store.activeSessionRoute"');
+    expect(yeaftSidebarSource).toContain(':project-store="chatStore"');
     expect(yeaftSidebarSource).toContain(':active-route="chatStore.activeSessionRoute"');
     expect(chatPageSource).toContain(':processing-conversations="store.processingConversations"');
+    expect(chatPageSource).not.toContain(':is-session-syncing=');
+    expect(chatPageSource).not.toContain(':session-sync-refresh-token=');
     expect(chatPageSource).toContain(':agents="store.agents"');
     expect(yeaftSidebarSource).toContain(':is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"');
+    expect(yeaftSidebarSource).not.toContain(':is-session-syncing=');
+    expect(yeaftSidebarSource).not.toContain(':session-sync-refresh-token=');
     expect(yeaftSidebarSource).toContain(':agents="chatStore.agents"');
     expect(chatPageSource).not.toContain("action === 'split'");
     expect(chatPageSource).not.toContain('splitScreen.splitToPanel');
@@ -854,6 +1524,7 @@ describe('message flow regressions', () => {
     expect(websocket).toContain('store.sessionCatalog = [];');
     expect(chatStoreSource).toContain("this.setActiveSessionFilter(sessionId, { agentId, force: true });");
     expect(chatStoreSource).toContain('requestChatHistory(conversationId');
+    expect(readFileSync(resolve(import.meta.dirname, '../../web/components/ChatHeader.js'), 'utf8')).not.toContain('store.messagesMap[effectiveConvId.value] = []');
     expect(chatStoreSource).toContain("type: 'set_session_ui_metadata'");
     expect(chatStoreSource).toContain("type: 'reorder_session_catalog'");
     expect((chatStoreSource.match(/type: 'sync_messages'/g) || [])).toHaveLength(1);
@@ -869,6 +1540,137 @@ describe('message flow regressions', () => {
     expect(finishCatalogMutation(catalogStore, { requestId: 'pin-1', ok: false })).toBe(true);
     expect(catalogStore.sessionCatalog).toEqual(previousCatalog);
     expect(catalogStore.sessionCatalogMutationRequests).toEqual({});
+
+    const persistedYeaftOrder = vi.fn(() => []);
+    const previousSessionsStoreForOrder = globalThis.Pinia.useSessionsStore;
+    globalThis.Pinia.useSessionsStore = () => ({ reorderSessionsGlobally: persistedYeaftOrder });
+    const reorderStore = useChatStore();
+    reorderStore.sessionCatalog = orderFixture.map((row, index) => ({
+      ...row,
+      catalogKey: index === 1 ? 'chat:b' : `yeaft:agent-a:${row.catalogKey}`,
+      runtimeProvider: index === 1 ? 'copilot' : 'yeaft',
+      routeRef: {
+        runtimeProvider: index === 1 ? 'copilot' : 'yeaft',
+        agentId: 'agent-a',
+        sessionId: row.catalogKey,
+      },
+    }));
+    reorderStore.sessionCatalogMutationRequests = {};
+    reorderStore.sendWsMessage = vi.fn(() => true);
+    expect(reorderStore.reorderCatalogSessions(reorderStore.sessionCatalog)).toBe(true);
+    expect(persistedYeaftOrder).not.toHaveBeenCalled();
+    const reorderRequest = reorderStore.sendWsMessage.mock.calls.at(-1)[0];
+    expect(reorderRequest).toEqual(expect.objectContaining({
+      type: 'reorder_session_catalog',
+      sessions: expect.arrayContaining([
+        expect.objectContaining({ catalogKey: 'chat:b', sortRank: 1 }),
+      ]),
+    }));
+    expect(reorderStore.finishSessionCatalogMutation({
+      type: 'session_catalog_reorder_result',
+      requestId: reorderRequest.requestId,
+      ok: true,
+    })).toBe(true);
+    expect(persistedYeaftOrder).toHaveBeenCalledWith([
+      'agent-a\u001fa',
+      'agent-a\u001fc',
+      'agent-a\u001fd',
+    ]);
+    persistedYeaftOrder.mockClear();
+    expect(reorderStore.finishSessionCatalogMutation({
+      type: 'session_catalog_reorder_result',
+      requestId: reorderRequest.requestId,
+      ok: false,
+    })).toBe(false);
+    expect(persistedYeaftOrder).not.toHaveBeenCalled();
+
+    const atomicOrder = [
+      reorderStore.sessionCatalog[3],
+      reorderStore.sessionCatalog[0],
+      reorderStore.sessionCatalog[1],
+      reorderStore.sessionCatalog[2],
+    ].map(row => ({ catalogKey: row.catalogKey, routeRef: row.routeRef }));
+    reorderStore.sessionProjects = [{
+      id: 'project-old',
+      members: [{ agentId: 'agent-a', sessionId: 'a' }],
+    }];
+    reorderStore.projectMutationRequests = {};
+    reorderStore.sendWsMessage = vi.fn(() => true);
+    const rejectedMove = reorderStore.mutateProject('move_session', {
+      sessionId: 'a',
+      projectId: 'project-new',
+      catalogOrder: atomicOrder,
+    }, 'agent-a');
+    const rejectedRequest = reorderStore.sendWsMessage.mock.calls.at(-1)[0];
+    expect(reorderStore.sessionCatalog.map(row => row.catalogKey)).toEqual([
+      'yeaft:agent-a:a',
+      'chat:b',
+      'yeaft:agent-a:c',
+      'yeaft:agent-a:d',
+    ]);
+    expect(reorderStore.finishProjectMutation({
+      requestId: rejectedRequest.requestId,
+      ok: false,
+      projects: [{ id: 'project-new', members: [{ agentId: 'agent-a', sessionId: 'a' }] }],
+    })).toBe(true);
+    await expect(rejectedMove).resolves.toMatchObject({ ok: false });
+    expect(reorderStore.sessionProjects).toEqual([{
+      id: 'project-old',
+      members: [{ agentId: 'agent-a', sessionId: 'a' }],
+    }]);
+    expect(persistedYeaftOrder).not.toHaveBeenCalled();
+
+    const acceptedMove = reorderStore.mutateProject('move_session', {
+      sessionId: 'a',
+      projectId: 'project-new',
+      catalogOrder: atomicOrder,
+    }, 'agent-a');
+    const acceptedRequest = reorderStore.sendWsMessage.mock.calls.at(-1)[0];
+    expect(acceptedRequest).toMatchObject({
+      type: 'yeaft_project_mutation',
+      op: 'move_session',
+      targetAgentId: 'agent-a',
+      catalogOrder: atomicOrder,
+    });
+    expect(reorderStore.finishProjectMutation({
+      requestId: acceptedRequest.requestId,
+      ok: true,
+      projects: [{ id: 'project-new', members: [{ agentId: 'agent-a', sessionId: 'a' }] }],
+    })).toBe(true);
+    await expect(acceptedMove).resolves.toMatchObject({ ok: true });
+    expect(reorderStore.sessionCatalog.map(row => row.catalogKey)).toEqual([
+      'yeaft:agent-a:d',
+      'yeaft:agent-a:a',
+      'chat:b',
+      'yeaft:agent-a:c',
+    ]);
+    expect(reorderStore.sessionProjects).toEqual([{
+      id: 'project-new',
+      members: [{ agentId: 'agent-a', sessionId: 'a' }],
+    }]);
+    expect(persistedYeaftOrder).toHaveBeenLastCalledWith([
+      'agent-a\u001fd',
+      'agent-a\u001fa',
+      'agent-a\u001fc',
+    ]);
+
+    persistedYeaftOrder.mockClear();
+    const catalogAfterAcceptedMove = reorderStore.sessionCatalog.map(row => ({ ...row }));
+    const projectsAfterAcceptedMove = reorderStore.sessionProjects.map(project => ({
+      ...project,
+      members: project.members.map(member => ({ ...member })),
+    }));
+    reorderStore.sendWsMessage = vi.fn(() => false);
+    await expect(reorderStore.mutateProject('move_session', {
+      sessionId: 'a',
+      projectId: null,
+      catalogOrder: atomicOrder,
+    }, 'agent-a')).resolves.toMatchObject({ ok: false, error: { code: 'send_failed' } });
+    expect(reorderStore.sessionCatalog).toEqual(catalogAfterAcceptedMove);
+    expect(reorderStore.sessionProjects).toEqual(projectsAfterAcceptedMove);
+    expect(reorderStore.projectMutationRequests).toEqual({});
+    expect(persistedYeaftOrder).not.toHaveBeenCalled();
+    globalThis.Pinia.useSessionsStore = previousSessionsStoreForOrder;
 
     const historyStore = {
       messagesMap: { a: [], b: [] },
@@ -942,6 +1744,10 @@ describe('message flow regressions', () => {
     expect(component).not.toContain('if (isStopVisible.value || !canSend.value) return;');
     expect(workCenter).toContain('@change="onWorkItemMessageAttachmentInput"');
     expect(workCenter).toContain("import ModernSelect from './ModernSelect.js'");
+    expect(workCenter).toContain('class="work-center-composer-target"');
+    expect(workCenter).toContain('menu-class="work-center-composer-target-menu yeaft-model-dropdown"');
+    expect(workCenter).toContain('@update:model-value="composerTargetValue = $event"');
+    expect(workCenter).not.toContain('<select v-model="composerTargetValue"');
     expect(workCenter).toContain(':options="workCenterAgentOptions"');
     expect(workCenter).toContain('@update:model-value="selectWorkCenterAgent"');
     expect(workCenter).not.toContain('<label class="work-center-agent-picker">');
@@ -1010,6 +1816,18 @@ describe('message flow regressions', () => {
     const workCenterAgentListRule = workCenterCss.match(/\.work-center-agent-menu \.modern-select-list\s*\{([^}]*)\}/s)?.[1] || '';
     expect(workCenterAgentListRule).not.toMatch(/(^|[;\s])height\s*:/);
     expect(workCenterCss).toMatch(/\.work-center-agent-menu \.modern-select-option\s*\{[^}]*min-height:\s*32px;[^}]*box-sizing:\s*border-box;/s);
+    const agentList = agentMenu.querySelector('.modern-select-list');
+    Object.defineProperty(agentList, 'scrollHeight', { configurable: true, value: 260 });
+    Object.defineProperty(agentMenu, 'scrollHeight', { configurable: true, value: 48 });
+    window.dispatchEvent(new Event('scroll'));
+    await Vue.nextTick();
+    const stableMenuHeight = agentMenu.style.maxHeight;
+    expect(stableMenuHeight).not.toBe('48px');
+    for (let index = 0; index < 6; index += 1) {
+      agentList.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await Vue.nextTick();
+      expect(agentMenu.style.maxHeight).toBe(stableMenuHeight);
+    }
     agentMenu.querySelectorAll('.modern-select-option')[1].click();
     await Vue.nextTick();
     expect(workCenterStore.enterWorkCenter).toHaveBeenCalledWith('agent-b');
@@ -1017,24 +1835,60 @@ describe('message flow regressions', () => {
     delete globalThis.Vue;
     delete globalThis.Pinia.useChatStore;
     expect(workCenter).toContain('workItemMessageAttachments.length > 0');
-    expect(workCenter).toContain('work-center-detail-close');
+    expect(workCenter).toContain('class="work-center-breadcrumb-button"');
     expect(workCenter).not.toContain('class="work-center-action-content-summary"');
-    expect(workCenterCss).toContain('grid-template-columns: minmax(0, 1fr) minmax(400px, 1fr);');
-    expect(workCenterCss).toMatch(/\.work-center-detail-close\s*\{[\s\S]*?position: absolute;[\s\S]*?right: 16px;/);
-    expect(workCenterCss).toMatch(/\.work-center-action-description\s*\{[\s\S]*?white-space: nowrap;/);
+    expect(workCenter).toContain("contentPanelOpen: false");
+    expect(workCenter).toContain("v-if=\"contentPanelOpen\"");
+    expect(workCenter).toContain("if (this.contentPanelOpen) url.searchParams.set('workContent'");
+    expect(workCenter).toContain('work-center-conversation-topbar');
+    expect(workCenter).toContain('work-center-work-item-overview');
+    expect(workCenter).toContain('work-center-conversation-column');
+    expect(workCenter).toContain('work-center-composer-column');
+    expect(workCenterCss).toMatch(/\.work-center-detail-layout\s*\{[^}]*display:\s*flex;[^}]*overflow:\s*hidden;/s);
+    expect(workCenterCss).toMatch(/\.work-center-content-pane\s*\{[^}]*width:\s*var\(--work-center-actions-pane-width\);[^}]*flex:\s*0 0 var\(--work-center-actions-pane-width\);/s);
+    expect(workCenterCss).toMatch(/\.work-center-conversation-scroll\s*\{[^}]*overflow-y:\s*auto;[^}]*overflow-x:\s*hidden;/s);
+    expect(workCenterCss).toMatch(/\.work-center-conversation-composer\s*\{[^}]*padding:\s*8px 0 calc\(14px \+ env\(safe-area-inset-bottom, 0px\)\);/s);
+    expect(workCenterCss).toMatch(/\.work-center-item-message-input \.work-center-composer-target \.modern-select-trigger\s*\{[^}]*height:\s*var\(--chat-composer-control-size\);[^}]*border-radius:\s*var\(--chat-composer-radius\);[^}]*background:\s*transparent;/s);
+    expect(workCenterCss).toMatch(/\.work-center-composer-target-menu\.modern-select-menu\s*\{[^}]*box-shadow:\s*var\(--modal-shadow\);/s);
+    expect(workCenterCss).toMatch(/\.work-center-conversation-column,[\s\S]*?\.work-center-composer-column\s*\{[^}]*max-width:\s*var\(--work-center-conversation-column-width\);/s);
+    expect(workCenterCss).not.toMatch(/\.work-center-work-item-overview\s*\{[^}]*overflow-y:/s);
+    expect(workCenterCss).not.toContain('.work-center-triage-summary');
+    expect(workCenterCss).toMatch(/@container work-center \(max-width:\s*1024px\)\s*\{[\s\S]*?\.work-center-detail-layout\.content-open \.work-center-conversation-pane\s*\{[^}]*display:\s*none;/s);
+    expect(workCenterCss).not.toContain('@container work-center (max-width: 700px)');
+    expect(workCenterCss).toMatch(/\.work-center-detail-heading\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 2fr\) minmax\(0, 1fr\);/s);
+    expect(workCenterCss).toMatch(/\.work-center-action-description,[\s\S]*?white-space:\s*nowrap;/);
     expect(workCenter).not.toContain('coordinatorRequestedSelectedActionInput');
     expect(workCenter).not.toContain("next?.routedTo === 'coordinator'");
     expect(workCenter).not.toContain("[...(this.selected.messages || [])].reverse().some");
     expect(workCenter).not.toContain("message.recovery?.actionId === this.selectedAction.id");
     expect(workCenter).toContain(":class=\"{ 'showing-detail': narrowPane !== 'items' }\"");
-    expect(workCenterCss).toMatch(/\.work-center-shell\.showing-detail\s*\{[\s\S]*?padding-top: 10px;/);
-    expect(workCenterCss).toMatch(/\.work-center-detail-heading\s*\{[\s\S]*?padding: 10px 56px 12px 24px;/);
-    expect(workCenterCss).toMatch(/\.work-center-action-detail-header,[\s\S]*?\.work-center-action-detail-scroll\s*\{[\s\S]*?width: 100%;/);
+    expect(workCenterCss).toMatch(/\.work-center-shell\.showing-detail\s*\{[\s\S]*?padding: 0;/);
+    expect(workCenterCss).toMatch(/\.work-center-detail-heading\s*\{[\s\S]*?min-height: 40px;[\s\S]*?padding: 4px 16px;/);
+    expect(workCenter).toContain('workItemMessageSpeaker(message)');
+    expect(workCenter).toContain('workCenter.messageSpeakerRole');
+    expect(workCenter).not.toContain("tr('workCenter.assistant', 'Yeaft')");
+    expect(workCenter).not.toContain('class="work-center-detail-controls"');
+    expect(workCenter).not.toContain('target-action');
+    expect(workCenter).not.toContain('get_action_requests');
+    expect(workCenter).not.toContain('get_action_request');
+    expect(workCenter).not.toContain('work-center-action-view-switch');
+    expect(workCenter).not.toContain('work-center-action-execution');
     expect(workCenterCss).not.toContain('width: min(100%, 1120px);');
-    expect(variables).toContain('--work-center-conversation-column-width: 1200px;');
-    expect(variables).toContain('--work-center-conversation-gutter: clamp(20px, 3vw, 40px);');
-    expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-detail-layout\s*\{[\s\S]*?display: block;/);
-    expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-mobile-pane-tabs\s*\{[\s\S]*?display: grid;/);
+    expect(variables).toContain('--work-center-conversation-column-width: var(--session-content-width);');
+    expect(variables).toContain('--work-center-conversation-gutter: 16px;');
+    expect(variables).toContain('--work-center-actions-pane-width: 400px;');
+    expect(workCenter).toContain("import UserTurnBlock from './UserTurnBlock.js'");
+    expect(workCenter).toContain("import VpTurnBlock from './VpTurnBlock.js'");
+    expect(workCenter).toContain(':display-name-override="block.speakerName"');
+    expect(workCenter).toContain('@edit-as-new="editWorkItemMessageAsNew"');
+    expect(workCenter).not.toContain('<article v-for="message in selected.messages"');
+    const modernSelect = readFileSync(resolve(import.meta.dirname, '../../web/components/ModernSelect.js'), 'utf8');
+    expect(modernSelect).toContain('const desiredHeight = Math.min(list.scrollHeight + chromeHeight, 304);');
+    expect(modernSelect).not.toContain('Math.min(menu.scrollHeight, 304)');
+    expect(variables).not.toContain('--work-center-triage-max-height');
+    expect(variables).not.toContain('--work-center-conversation-min-height');
+    expect(workCenterCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.work-center-detail-layout\.content-open \.work-center-conversation-pane\s*\{[\s\S]*?display: none;/);
+    expect(workCenterCss).not.toMatch(/\.work-center-mobile-pane-tabs\s*\{[\s\S]*?display: grid;/);
 
     const turnBlock = readFileSync(resolve(import.meta.dirname, '../../web/components/VpTurnBlock.js'), 'utf8');
     const chatStore = readFileSync(resolve(import.meta.dirname, '../../web/stores/chat.js'), 'utf8');
@@ -1048,6 +1902,8 @@ describe('message flow regressions', () => {
     expect(chatStore).toContain('const frameTurnKey = msg.turnId ? yeaftTurnStateKey(this, msg.agentId || null, msg.turnId)');
     expect(chatStore).toContain('retryRecoveryMode: _retryRecoveryMode');
     expect(chatStore).toContain("'thinking', 'retrying', 'streaming'");
+    const timelinePane = readFileSync(resolve(import.meta.dirname, '../../web/components/VpTimelinePane.js'), 'utf8');
+    expect(timelinePane).toContain("task.kind === 'sub_agent' && !!task.runtime?.subAgentId");
     expect(turnBlock).toContain('turn.isStreaming && retryText');
     expect(turnBlock).toContain("'yeaft.vp.turnBlock.retryingContinue'");
     expect(en).toContain("'yeaft.vp.turnBlock.retryingRequest': 'Response stalled;");
@@ -1064,11 +1920,13 @@ describe('message flow regressions', () => {
     expect(store.hydrateWorkCenterBrowserState()).toBe(true);
     expect(store.saveWorkCenterComposerDraft('agent-a', 'work-item-owner', {
       text: 'owner A private draft',
+      quote: { id: 'assistant-1', role: 'assistant', author: 'Omni', content: 'Original answer' },
       target: { kind: 'coordinator' },
     })).toBe(true);
     const ownerAEnvelope = store.prepareWorkCenterMessageEnvelope({
       agentId: 'agent-a', workItemId: 'work-item-owner',
       target: { kind: 'coordinator' }, text: 'owner A durable outbox',
+      quote: { id: 'assistant-1', role: 'assistant', author: 'Omni', content: 'Original answer' },
       attachments: [{ fileId: 'old-file', name: 'old.txt', mimeType: 'text/plain', size: 3 }],
       revision: 1, planRevision: 2, ledgerRevision: 3, coordinatorRevision: 4,
     });
@@ -1086,6 +1944,7 @@ describe('message flow regressions', () => {
       clientMessageId: ownerAEnvelope.clientMessageId,
       target: ownerAEnvelope.target,
       text: ownerAEnvelope.text,
+      quote: ownerAEnvelope.quote,
       revision: 1,
       planRevision: 2,
       ledgerRevision: 3,
@@ -1097,9 +1956,9 @@ describe('message flow regressions', () => {
     store._workCenterBrowserFence = null;
     expect(store.hydrateWorkCenterBrowserState()).toBe(true);
     expect(store.loadWorkCenterComposerDraft('agent-a', 'work-item-owner'))
-      .toMatchObject({ text: 'owner A private draft' });
+      .toMatchObject({ text: 'owner A private draft', quote: { content: 'Original answer' } });
     expect(store.loadWorkCenterMessageEnvelope('agent-a', 'work-item-owner'))
-      .toMatchObject({ clientMessageId: ownerAEnvelope.clientMessageId });
+      .toMatchObject({ clientMessageId: ownerAEnvelope.clientMessageId, quote: { content: 'Original answer' } });
 
     bindWorkCenterBrowserOwner('owner-b');
     expect(store.workCenterComposerDrafts).toEqual({});
@@ -1192,6 +2051,26 @@ describe('message flow regressions', () => {
     });
     expect(staleTimeoutState.yeaftSessionHydrateError).toBe('session_inventory_timeout');
     vi.useRealTimers();
+
+    const staleDebugDetailStore = {
+      _yeaftDebugHistoryLatestDetailRequestId: 'detail-current',
+      _yeaftDebugHistoryLatestListRequestId: null,
+      _fetchYeaftDebugHistoryTimer: 'pending',
+      _yeaftDebugHistoryInFlightKey: 'session-a:turn-a',
+      yeaftDebugTurnsById: { current: { turnId: 'current' } },
+      yeaftDebugLoops: [],
+      yeaftDebugTurnOrder: ['current'],
+      yeaftDebugHistoryLoading: true,
+    };
+    handleMessage(staleDebugDetailStore, {
+      type: 'yeaft_debug_history', detailTurnId: 'turn-old', turns: [{ turnId: 'stale' }], loops: [],
+    });
+    expect(staleDebugDetailStore.yeaftDebugTurnOrder).toEqual(['current']);
+    expect(staleDebugDetailStore._fetchYeaftDebugHistoryTimer).toBe('pending');
+    handleMessage(staleDebugDetailStore, {
+      type: 'yeaft_debug_history', requestId: 'detail-old', detailTurnId: 'turn-old', turns: [{ turnId: 'stale' }], loops: [],
+    });
+    expect(staleDebugDetailStore.yeaftDebugTurnOrder).toEqual(['current']);
 
     const hydrateSessions = {
       live: [],
@@ -1356,9 +2235,9 @@ describe('message flow regressions', () => {
       const ordinaryEntryHistoryFrames = store.sendWsMessage.mock.calls
         .map(call => call[0])
         .filter(msg => msg.type === 'yeaft_load_history');
-      expect(ordinaryEntryHistoryFrames).toEqual([
-        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same' }),
-      ]);
+      expect(ordinaryEntryHistoryFrames).toEqual(expect.arrayContaining([
+        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same', limit: 5 }),
+      ]));
       expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'select_agent')).toEqual([
         expect.objectContaining({ agentId: 'agent-b' }),
       ]);
@@ -1904,14 +2783,18 @@ describe('message flow regressions', () => {
         .map(call => call[0])
         .filter(msg => msg.type === 'yeaft_load_history');
       expect(restoredExactOwnerHistoryFrames).toEqual([
-        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same' }),
+        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same', limit: 5 }),
       ]);
+      const exactOwnerHistoryFrame = restoredExactOwnerHistoryFrames[0];
+      expect(exactOwnerHistoryFrame).toEqual(
+        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same' }),
+      );
       store.handleMessage({
         type: 'yeaft_history_chunk',
         agentId: 'agent-b',
         sessionId: 'same',
         conversationId: 'conv-exact-b',
-        requestId: restoredExactOwnerHistoryFrames[0].requestId,
+        requestId: exactOwnerHistoryFrame.requestId,
         mode: 'recent',
         messages: [],
         latestSeq: 0,
@@ -2011,14 +2894,18 @@ describe('message flow regressions', () => {
         .map(call => call[0])
         .filter(msg => msg.type === 'yeaft_load_history');
       expect(exactOwnerHistoryFrames).toEqual([
-        expect.objectContaining({ agentId: 'agent-a', sessionId: 'same' }),
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'same', limit: 5 }),
       ]);
+      const agentAHistoryFrame = exactOwnerHistoryFrames[0];
+      expect(agentAHistoryFrame).toEqual(
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'same' }),
+      );
       store.handleMessage({
         type: 'yeaft_history_chunk',
         agentId: 'agent-a',
         sessionId: 'same',
         conversationId: 'conv-exact-a',
-        requestId: exactOwnerHistoryFrames[0].requestId,
+        requestId: agentAHistoryFrame.requestId,
         mode: 'recent',
         messages: [],
         latestSeq: 0,
@@ -2248,14 +3135,18 @@ describe('message flow regressions', () => {
         .map(call => call[0])
         .filter(msg => msg.type === 'yeaft_load_history');
       expect(migratedHistoryFrames).toEqual([
-        expect.objectContaining({ agentId: 'agent-a', sessionId: 'legacy-bare' }),
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'legacy-bare', limit: 5 }),
       ]);
+      const migratedHistoryFrame = migratedHistoryFrames[0];
+      expect(migratedHistoryFrame).toEqual(
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'legacy-bare' }),
+      );
       store.handleMessage({
         type: 'yeaft_history_chunk',
         agentId: 'agent-a',
         sessionId: 'legacy-bare',
         conversationId: 'conv-agent-a',
-        requestId: migratedHistoryFrames[0].requestId,
+        requestId: migratedHistoryFrame.requestId,
         mode: 'recent',
         messages: [],
         latestSeq: 0,
@@ -2388,8 +3279,20 @@ describe('message flow regressions', () => {
         store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-crud-a', 'agent-b': 'conv-crud-b' };
         store.yeaftConversationId = 'conv-crud-b';
         store.activeConversations = ['conv-crud-b'];
-        store.messagesMap = { 'conv-crud-a': [], 'conv-crud-b': [] };
-        store.yeaftSessionHistoryState = {};
+        store.messagesMap = {
+          'conv-crud-a': [
+            { type: 'user', content: 'agent A private', sessionId: 'same', seq: 1 },
+            { type: 'user', content: 'agent A other', sessionId: 'other', seq: 2 },
+          ],
+          'conv-crud-b': [
+            { type: 'user', content: 'agent B private', sessionId: 'same', seq: 1 },
+          ],
+        };
+        const deletedSessionKey = yeaftHistoryIdentityKey('agent-a', 'same');
+        store.yeaftSessionHistoryState = { [deletedSessionKey]: { loaded: true } };
+        store.yeaftHistoryCacheState = { [deletedSessionKey]: { ranges: [[1, 2]] } };
+        store.yeaftMessageWindowState = { [deletedSessionKey]: { visibleTurns: 20 } };
+        store._yeaftHistoryBrowserHydrationBySession = { [deletedSessionKey]: 'stale-token' };
         store._yeaftHistoryLoad = null;
         store.yeaftSessionHydrateRequestId = null;
         store.sendWsMessage = vi.fn(() => true);
@@ -2426,6 +3329,20 @@ describe('message flow regressions', () => {
           (msg.type === 'select_agent' && msg.agentId === 'agent-a')
           || (msg.type === 'yeaft_load_history' && msg.agentId === 'agent-a')
         ))).toEqual([]);
+        if (op === 'delete') {
+          await vi.waitFor(() => {
+            expect(store.messagesMap['conv-crud-a']).toEqual([
+              expect.objectContaining({ content: 'agent A other', sessionId: 'other' }),
+            ]);
+          });
+          expect(store.messagesMap['conv-crud-b']).toEqual([
+            expect.objectContaining({ content: 'agent B private', sessionId: 'same' }),
+          ]);
+          expect(store.yeaftSessionHistoryState[deletedSessionKey]).toBeUndefined();
+          expect(store.yeaftHistoryCacheState[deletedSessionKey]).toBeUndefined();
+          expect(store.yeaftMessageWindowState[deletedSessionKey]).toBeUndefined();
+          expect(store._yeaftHistoryBrowserHydrationBySession[deletedSessionKey]).toBeUndefined();
+        }
         store.pendingAgentSelection = null;
         store.agentSwitching = false;
       }
@@ -2765,18 +3682,58 @@ describe('message flow regressions', () => {
       conversationId: 'conv-b',
       event: { type: 'vp_turn_start', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a' },
     });
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: { type: 'vp_status_changed', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a', state: 'streaming' },
+    });
     expect(Object.values(store.activeVpTurns).filter(row => row.turnId === 'turn-a')).toHaveLength(2);
+    expect(store.vpStatuses['agent-a::shared::omni']?.state).toBe('streaming');
     store.handleYeaftOutput({
       agentId: 'agent-a',
       conversationId: 'conv-a',
       event: { type: 'vp_turn_end', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a', reason: 'end_turn' },
     });
     await Vue.nextTick();
+    expect(store.vpStatuses['agent-a::shared::omni']).toEqual(expect.objectContaining({
+      state: 'idle',
+      turnId: null,
+    }));
     expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(false);
     expect(store.isYeaftSessionProcessing('shared', 'agent-b')).toBe(true);
     expect(wrapper.findAll('.processing-dot')).toHaveLength(1);
     expect(wrapper.findAll('.session-item')[0].classes()).not.toContain('processing');
     expect(wrapper.findAll('.session-item')[1].classes()).toContain('processing');
+
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: { type: 'vp_turn_start', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a-1' },
+    });
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: { type: 'vp_turn_start', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a-2' },
+    });
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: { type: 'vp_status_changed', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a-2', state: 'streaming' },
+    });
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: { type: 'vp_turn_end', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a-1', reason: 'end_turn' },
+    });
+    expect(store.vpStatuses['agent-a::shared::omni']?.state).toBe('streaming');
+    expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(true);
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      event: { type: 'vp_turn_end', sessionId: 'shared', vpId: 'omni', turnId: 'turn-a-2', reason: 'end_turn' },
+    });
+    expect(store.vpStatuses['agent-a::shared::omni']?.state).toBe('idle');
+    expect(store.isYeaftSessionProcessing('shared', 'agent-a')).toBe(false);
 
     store.activeVpTurns = {};
     store.yeaftProcessingSessions = {};
@@ -3241,6 +4198,66 @@ describe('message flow regressions', () => {
       expect.objectContaining({ agentId: 'agent-b', sessionId: 'grp_default' }),
     ]);
 
+    // Sidebar removal is logical: it only hides the exact catalog row and
+    // sends metadata, never the Agent archive/delete command. Re-adding from
+    // the create modal reverses the same metadata and opens the preserved
+    // Session identity.
+    const hiddenRow = {
+      catalogKey: 'yeaft:agent-b:grp_default',
+      runtimeProvider: 'yeaft',
+      routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-b', sessionId: 'grp_default' },
+      title: 'Restored default',
+      workDir: '/repo-b',
+      availability: 'online',
+      pinned: false,
+    };
+    exactChatStore.sessionCatalog = [hiddenRow];
+    exactChatStore.hiddenSessionCatalog = [];
+    exactChatStore.sessionCatalogMutationRequests = {};
+    exactChatStore.sendWsMessage = vi.fn(() => true);
+    expect(exactChatStore.hideCatalogSession(hiddenRow)).toBe(true);
+    expect(exactChatStore.sessionCatalog).toEqual([]);
+    expect(exactChatStore.hiddenSessionCatalog).toEqual([
+      expect.objectContaining({ catalogKey: hiddenRow.catalogKey, hidden: true }),
+    ]);
+    const hideRequest = exactChatStore.sendWsMessage.mock.calls.at(-1)[0];
+    expect(hideRequest).toEqual(expect.objectContaining({
+      type: 'set_session_ui_metadata',
+      catalogKey: hiddenRow.catalogKey,
+      routeRef: hiddenRow.routeRef,
+      hidden: true,
+    }));
+    expect(exactChatStore.sendWsMessage.mock.calls.map(call => call[0].type)).not.toContain('yeaft_archive_session');
+    exactChatStore.finishSessionCatalogMutation({
+      type: 'session_ui_metadata_updated',
+      requestId: hideRequest.requestId,
+      ok: true,
+      catalogKey: hiddenRow.catalogKey,
+      hidden: true,
+      pinned: false,
+      sortRank: null,
+    });
+    await Vue.nextTick();
+    expect(exactModal.vm.hiddenSessions).toEqual([
+      expect.objectContaining({ catalogKey: hiddenRow.catalogKey }),
+    ]);
+
+    exactChatStore.sendWsMessage.mockClear();
+    await exactModal.vm.restoreHiddenSession(exactModal.vm.hiddenSessions[0]);
+    expect(exactChatStore.sessionCatalog).toEqual([
+      expect.objectContaining({ catalogKey: hiddenRow.catalogKey, hidden: false }),
+    ]);
+    expect(exactChatStore.hiddenSessionCatalog).toEqual([]);
+    const unhideRequest = exactChatStore.sendWsMessage.mock.calls.find(call => (
+      call[0].type === 'set_session_ui_metadata'
+    ))?.[0];
+    expect(unhideRequest).toEqual(expect.objectContaining({
+      catalogKey: hiddenRow.catalogKey,
+      routeRef: hiddenRow.routeRef,
+      hidden: false,
+    }));
+    expect(exactChatStore.sendWsMessage.mock.calls.map(call => call[0].type)).not.toContain('yeaft_archive_session');
+
     exactChatStore.sendWsMessage.mockClear();
     exactChatStore.sendYeaftSessionMessage({ groupId: 'grp_default', text: 'route only to B' });
     expect(exactChatStore.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_session_send')).toEqual([
@@ -3270,6 +4287,143 @@ describe('message flow regressions', () => {
     window.Pinia = originalWindowPinia;
 
     wrapper.unmount();
+  });
+
+  it('refreshes repeated catalog clicks without clearing cached Session messages', () => {
+    storeFactories.clear();
+    runtimeSessionsStore.sessionList = [
+      { id: 'session-a', agentId: 'agent-a' },
+      { id: 'chat-a', agentId: 'agent-a' },
+    ];
+    runtimeSessionsStore.sessions = {
+      'agent-a\u001fsession-a': { id: 'session-a', agentId: 'agent-a' },
+    };
+    runtimeSessionsStore.setActive('session-a', 'agent-a');
+
+    const store = useChatStore();
+    store.sendWsMessage = vi.fn(() => true);
+    store.loadOpenedYeaftSessionsForConnectedAgents = vi.fn();
+    store.currentView = 'yeaft';
+    store.currentAgent = 'agent-a';
+    store.currentAgentInfo = { id: 'agent-a' };
+    store.agents = [{ id: 'agent-a', online: true }];
+    store.yeaftActiveSessionFilter = 'session-a';
+    store.yeaftSessionAgentById = { 'session-a': 'agent-a' };
+    store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-a' };
+    store.yeaftConversationId = 'conv-a';
+    store.activeConversations = ['conv-a'];
+    const cachedYeaftRow = {
+      id: 'cached-yeaft', type: 'assistant', content: 'cached answer', sessionId: 'session-a', timestamp: 1,
+    };
+    store.messagesMap = { 'conv-a': [cachedYeaftRow] };
+    store.yeaftSessionHistoryState = {
+      'agent-a\u001fsession-a': {
+        loaded: true, loading: false, latestSeq: 7, hasMore: false, count: 1,
+      },
+    };
+
+    const yeaftDescriptor = {
+      catalogKey: 'yeaft:agent-a:session-a',
+      routeRef: { runtimeProvider: 'yeaft', agentId: 'agent-a', sessionId: 'session-a' },
+    };
+    expect(store.openCatalogSession(yeaftDescriptor)).toBe(true);
+    expect(store.messagesMap['conv-a']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'cached-yeaft', content: 'cached answer' }),
+    ]));
+    const firstYeaftLoads = store.sendWsMessage.mock.calls
+      .map(call => call[0])
+      .filter(msg => msg.type === 'yeaft_load_history');
+    expect(firstYeaftLoads).toHaveLength(1);
+    expect(firstYeaftLoads[0]).toMatchObject({
+      agentId: 'agent-a', sessionId: 'session-a', afterSeq: 7,
+    });
+    expect(firstYeaftLoads[0]).not.toHaveProperty('limit');
+    expect(store.isSessionHistorySyncing(yeaftDescriptor.routeRef)).toBe(true);
+    expect(store.openCatalogSession(yeaftDescriptor)).toBe(true);
+    expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_load_history')).toHaveLength(1);
+    expect(store.messagesMap['conv-a']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'cached-yeaft', content: 'cached answer' }),
+    ]));
+
+    store.handleMessage({
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-a',
+      conversationId: 'conv-a',
+      sessionId: 'session-a',
+      requestId: firstYeaftLoads[0].requestId,
+      mode: 'delta',
+      afterSeq: 7,
+      messages: [{ id: 'fresh-yeaft', role: 'assistant', content: 'fresh answer', sessionId: 'session-a', ts: 2 }],
+      latestSeq: 8,
+      hasMore: false,
+    });
+    expect(store.isSessionHistorySyncing(yeaftDescriptor.routeRef)).toBe(false);
+    expect(store.messagesMap['conv-a']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'fresh-yeaft', content: 'fresh answer' }),
+    ]));
+
+    store.conversations = [{ id: 'chat-a', agentId: 'agent-a', type: 'chat', workDir: '/repo-a' }];
+    store.currentView = 'chat';
+    store._yeaftTransitionActive = false;
+    store._savedActiveConversations = null;
+    store._savedChatIdentity = null;
+    store.panels = [];
+    store.activePanelId = null;
+    store.activeConversations = ['chat-a'];
+    const cachedChatRow = {
+      id: 'cached-chat', type: 'assistant', content: 'cached chat', dbMessageId: 12,
+    };
+    store.messagesMap['chat-a'] = [cachedChatRow];
+    store.chatHistoryRequests = {};
+    store.sendWsMessage.mockClear();
+    const chatDescriptor = {
+      catalogKey: 'chat:chat-a',
+      routeRef: { runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: 'chat-a' },
+    };
+    expect(store.openCatalogSession(chatDescriptor)).toBe(true);
+    expect(store.messagesMap['chat-a']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'cached-chat', content: 'cached chat', dbMessageId: 12 }),
+    ]));
+    expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'sync_messages')).toEqual([
+      expect.objectContaining({ conversationId: 'chat-a', afterMessageId: 12 }),
+    ]);
+    expect(store.isSessionHistorySyncing(chatDescriptor.routeRef)).toBe(true);
+    store.openCatalogSession(chatDescriptor);
+    expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'sync_messages')).toHaveLength(1);
+
+    store.sendWsMessage = vi.fn(() => false);
+    store.chatHistoryRequests = {};
+    expect(store.syncChatConversationHistory('chat-a')).toBeNull();
+    expect(store.isSessionHistorySyncing(chatDescriptor.routeRef)).toBe(false);
+  });
+
+  it('keeps split-pane cached messages visible while repeated clicks synchronize once', () => {
+    storeFactories.clear();
+    const store = useChatStore();
+    store.sendWsMessage = vi.fn(() => true);
+    store.currentView = 'chat';
+    store.currentAgent = 'agent-a';
+    store.conversations = [{ id: 'chat-a', agentId: 'agent-a', type: 'chat', workDir: '/repo-a' }];
+    store.panels = [
+      { id: 'panel-a', conversationId: 'chat-a' },
+      { id: 'panel-b', conversationId: null },
+    ];
+    store.activePanelId = 'panel-a';
+    store.activeConversations = ['chat-a'];
+    const cachedRow = { id: 'split-cache', type: 'assistant', content: 'cached split', dbMessageId: 21 };
+    store.messagesMap = { 'chat-a': [cachedRow] };
+    store.chatHistoryRequests = {};
+
+    store.setPanelConversation('panel-a', 'chat-a', { refresh: true });
+    store.setPanelConversation('panel-a', 'chat-a', { refresh: true });
+
+    expect(store.messagesMap['chat-a']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'split-cache', content: 'cached split', dbMessageId: 21 }),
+    ]));
+    expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'sync_messages')).toEqual([
+      expect.objectContaining({ conversationId: 'chat-a', afterMessageId: 21 }),
+    ]);
+    expect(store.isSessionHistorySyncing({ runtimeProvider: 'copilot', sessionId: 'chat-a' })).toBe(true);
   });
 
   it('opens an exact cross-Agent Session without loading the previous Agent and migrates the full runtime state', () => {
@@ -3401,6 +4555,16 @@ describe('message flow regressions', () => {
     expect(store.yeaftActiveTasksBySession['agent-b\u001fsession-b']['task-b']).toEqual(expect.objectContaining({
       agentId: 'agent-b', status: 'running',
     }));
+    store.handleYeaftOutput({
+      agentId: 'agent-b',
+      sessionId: 'session-b',
+      event: {
+        type: 'yeaft_task_event',
+        event: 'completed',
+        task: { id: 'task-b', sessionId: 'session-b', kind: 'sub_agent', status: 'succeeded' },
+      },
+    });
+    expect(store.yeaftActiveTasksBySession['agent-b\u001fsession-b']).toBeUndefined();
   });
 
   it('keeps background Yeaft output routed while promoting the visible local conversation', () => {
@@ -4017,6 +5181,107 @@ describe('message flow regressions', () => {
       expect.objectContaining({ id: 'persisted-row-2', content: 'delta answer' }),
     ]));
 
+    // A refresh can merge persisted rows from different storage generations.
+    // Sequence is comparable only when both rows have it: a newly persisted row
+    // must not jump above older legacy history merely because the legacy row has
+    // no m#### id, and a live optimistic tail must remain last.
+    store.messagesMap[bridgeConversationId] = [{
+      id: optimisticId,
+      messageId: optimisticId,
+      clientMessageId: optimisticId,
+      type: 'user',
+      content: 'pending send',
+      sessionId: 'visible-session',
+      turnId: optimisticId,
+      timestamp: 3_000,
+    }];
+    const mixedGenerationRequest = store.beginYeaftHistoryLoad({
+      agentId: 'agent-a',
+      sessionId: 'visible-session',
+      mode: 'recent',
+      preserveLoaded: false,
+    });
+    store.handleMessage({
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-a',
+      conversationId: bridgeConversationId,
+      sessionId: 'visible-session',
+      requestId: mixedGenerationRequest.requestId,
+      mode: 'recent',
+      messages: [{
+        id: 'legacy-history-row',
+        role: 'user',
+        content: 'legacy history',
+        sessionId: 'visible-session',
+        ts: 1_000,
+      }, {
+        id: 'm0002',
+        seq: 2,
+        role: 'assistant',
+        content: 'new persisted answer',
+        sessionId: 'visible-session',
+        ts: 2_000,
+      }],
+      oldestSeq: 2,
+      latestSeq: 2,
+      hasMore: false,
+    });
+    expect(store.messagesMap[bridgeConversationId]
+      .filter(row => row.sessionId === 'visible-session')
+      .map(row => row.content)).toEqual([
+      'legacy history',
+      'new persisted answer',
+      'pending send',
+    ]);
+
+    // Sorting must be independent of the current array permutation. The three
+    // storage generations previously formed a comparison cycle here.
+    const legacyRow = {
+      id: 'legacy-permutation-row',
+      messageId: 'legacy-permutation-row',
+      type: 'user',
+      content: 'legacy permutation',
+      sessionId: 'visible-session',
+      timestamp: 200,
+      isHistory: true,
+    };
+    const sequencedRow = {
+      id: 'm0003',
+      messageId: 'm0003',
+      seq: 3,
+      type: 'assistant',
+      content: 'sequenced permutation',
+      sessionId: 'visible-session',
+      timestamp: 300,
+      isHistory: true,
+    };
+    const liveRow = {
+      id: 'live-permutation-row',
+      messageId: 'live-permutation-row',
+      clientMessageId: 'live-permutation-row',
+      type: 'user',
+      content: 'live permutation',
+      sessionId: 'visible-session',
+      timestamp: 100,
+    };
+    const permutations = [
+      [legacyRow, sequencedRow, liveRow],
+      [legacyRow, liveRow, sequencedRow],
+      [sequencedRow, legacyRow, liveRow],
+      [sequencedRow, liveRow, legacyRow],
+      [liveRow, legacyRow, sequencedRow],
+      [liveRow, sequencedRow, legacyRow],
+    ];
+    for (const rows of permutations) {
+      const sorted = rows.map(row => ({ ...row }));
+      __testSortYeaftRowsBySequence(sorted);
+      expect(sorted.map(row => row.content)).toEqual([
+        'legacy permutation',
+        'sequenced permutation',
+        'live permutation',
+      ]);
+    }
+
     // Empty history still has a real chunk frame. Completion-first must not
     // strand a first-ever empty Session in loading state or manufacture rows.
     const emptyRequest = store.beginYeaftHistoryLoad({
@@ -4265,6 +5530,25 @@ describe('message flow regressions', () => {
       turnId: 'turn-2',
       speakerVpId: 'vp-2',
     });
+
+    const firstSibling = { type: 'user', content: 'identical legacy sibling' };
+    const secondSibling = { type: 'user', content: 'identical legacy sibling' };
+    const firstRow = addMessageToConversation(routedStore, 'conv-2', firstSibling);
+    const secondRow = addMessageToConversation(routedStore, 'conv-2', secondSibling);
+    expect(firstRow.uiKey).toMatch(/^legacy:conv-2:/);
+    expect(secondRow.uiKey).toMatch(/^legacy:conv-2:/);
+    expect(firstRow.uiKey).not.toBe(secondRow.uiKey);
+    const stableSiblingKeys = [firstRow.uiKey, secondRow.uiKey];
+    routedStore.messagesMap['conv-2'].unshift({
+      type: 'user', content: 'older legacy row', uiKey: 'legacy:conv-2:older',
+    });
+    expect(routedStore.messagesMap['conv-2'].slice(-2).map(row => row.uiKey))
+      .toEqual(stableSiblingKeys);
+    routedStore._messageUiKeySequence = 0;
+    const restoredSibling = addMessageToConversation(routedStore, 'conv-2', {
+      type: 'user', content: 'post-restore legacy sibling',
+    });
+    expect(stableSiblingKeys).not.toContain(restoredSibling.uiKey);
   });
 
   it('counts Yeaft assistant turns and keeps declared long phases alive', () => {

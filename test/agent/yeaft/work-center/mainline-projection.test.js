@@ -143,6 +143,193 @@ describe('Mainline projection', () => {
     ]);
     expect(JSON.stringify(snapshot)).not.toContain('Input for the superseded generation');
     expect(JSON.stringify(snapshot)).not.toContain('Legacy input without a generation');
+
+    const newestFirst = buildMainlineContextSnapshot(detail({
+      actions: [action],
+      events: [
+        {
+          id: 8, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+          data: { inputId: 'older-large', text: '旧'.repeat(8_000) },
+        },
+        {
+          id: 9, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+          data: { inputId: 'latest-correction', text: 'LATEST UTF8 CORRECTION' },
+        },
+      ],
+    }), { ...action, context: [] }).contextSnapshot;
+    expect(JSON.stringify(newestFirst)).toContain('LATEST UTF8 CORRECTION');
+    expect(JSON.stringify(newestFirst)).not.toContain('旧旧旧');
+
+    const duplicateInputAction = {
+      ...action,
+      context: [
+        {
+          type: 'input', role: 'user', inputId: 'duplicate-input',
+          summary: 'OLDER DUPLICATE INPUT', attachments: [], evidence: [],
+          quote: { role: 'assistant', content: 'OLDER INPUT QUOTE' },
+        },
+        {
+          type: 'input', role: 'user', inputId: 'duplicate-input',
+          summary: 'LATEST DUPLICATE INPUT', attachments: [], evidence: [],
+        },
+      ],
+    };
+    const duplicateInputSnapshot = buildMainlineContextSnapshot(detail({
+      actions: [duplicateInputAction],
+      events: [],
+      sessionContext: [{ role: 'user', content: 'DUPLICATE INPUT SESSION CONTEXT' }],
+    }), duplicateInputAction).contextSnapshot;
+    const olderDuplicateInput = duplicateInputSnapshot.userContext.guidance
+      .find(value => value.text === 'OLDER DUPLICATE INPUT');
+    const latestDuplicateInput = duplicateInputSnapshot.userContext.guidance
+      .find(value => value.text === 'LATEST DUPLICATE INPUT');
+
+    expect(olderDuplicateInput).toMatchObject({
+      inputId: 'duplicate-input',
+      quotedContext: expect.stringContaining('OLDER INPUT QUOTE'),
+    });
+    expect(latestDuplicateInput).not.toHaveProperty('quotedContext');
+    expect(duplicateInputSnapshot.userContext.sessionContext)
+      .toEqual([{ role: 'user', vpId: null, text: 'DUPLICATE INPUT SESSION CONTEXT' }]);
+    expect(duplicateInputSnapshot.userContext).toMatchObject({ includedCount: 3, omittedCount: 0 });
+
+    const duplicateEventAction = { ...action, context: [] };
+    const duplicateEventSnapshot = buildMainlineContextSnapshot(detail({
+      actions: [duplicateEventAction],
+      events: [
+        {
+          id: 10, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+          data: { text: 'OLDER EVENT INPUT', quote: { role: 'assistant', content: 'OLDER EVENT QUOTE' } },
+        },
+        {
+          id: 10, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+          data: { text: 'LATEST EVENT INPUT' },
+        },
+      ],
+      sessionContext: [{ role: 'user', content: 'DUPLICATE EVENT SESSION CONTEXT' }],
+    }), duplicateEventAction).contextSnapshot;
+    const olderDuplicateEvent = duplicateEventSnapshot.userContext.guidance
+      .find(value => value.text === 'OLDER EVENT INPUT');
+    const latestDuplicateEvent = duplicateEventSnapshot.userContext.guidance
+      .find(value => value.text === 'LATEST EVENT INPUT');
+
+    expect(olderDuplicateEvent).toMatchObject({
+      eventId: 10,
+      quotedContext: expect.stringContaining('OLDER EVENT QUOTE'),
+    });
+    expect(latestDuplicateEvent).not.toHaveProperty('quotedContext');
+    expect(duplicateEventSnapshot.userContext.sessionContext)
+      .toEqual([{ role: 'user', vpId: null, text: 'DUPLICATE EVENT SESSION CONTEXT' }]);
+    expect(duplicateEventSnapshot.userContext).toMatchObject({ includedCount: 3, omittedCount: 0 });
+
+    const ambiguousAction = {
+      ...action,
+      context: [
+        {
+          type: 'input', role: 'user', inputId: 'ambiguous-input',
+          summary: 'AMBIGUOUS SAME TEXT', attachments: [], evidence: [],
+        },
+        {
+          type: 'input', role: 'user', inputId: 'ambiguous-input',
+          summary: 'AMBIGUOUS SAME TEXT', attachments: [], evidence: [],
+        },
+      ],
+    };
+    const ambiguousSnapshot = buildMainlineContextSnapshot(detail({
+      actions: [ambiguousAction],
+      events: [
+        {
+          id: 11, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+          data: {
+            inputId: 'ambiguous-input', text: 'AMBIGUOUS SAME TEXT',
+            quote: { role: 'assistant', content: 'DO NOT BORROW QUOTE ONE' },
+            attachments: [{ id: 'ambiguous-attachment-one' }],
+          },
+        },
+        {
+          id: 12, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+          data: {
+            inputId: 'ambiguous-input', text: 'AMBIGUOUS SAME TEXT',
+            quote: { role: 'assistant', content: 'DO NOT BORROW QUOTE TWO' },
+            attachments: [{ id: 'ambiguous-attachment-two' }],
+          },
+        },
+      ],
+    }), ambiguousAction).contextSnapshot;
+
+    expect(ambiguousSnapshot.userContext.guidance).toHaveLength(2);
+    expect(ambiguousSnapshot.userContext.guidance.every(value => (
+      value.eventId == null
+      && value.attachments.length === 0
+      && !Object.hasOwn(value, 'quotedContext')
+    ))).toBe(true);
+    expect(JSON.stringify(ambiguousSnapshot)).not.toContain('DO NOT BORROW');
+    expect(JSON.stringify(ambiguousSnapshot)).not.toContain('ambiguous-attachment');
+    expect(ambiguousSnapshot.userContext).toMatchObject({ includedCount: 2, omittedCount: 0 });
+
+    const missingIdentitySnapshot = buildMainlineContextSnapshot(detail({
+      actions: [duplicateEventAction],
+      events: [{
+        id: null, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+        data: {
+          text: 'UNIDENTIFIED INPUT',
+          quote: { role: 'assistant', content: 'OMIT THIS QUOTE' },
+          attachments: [{ id: 'omit-this-attachment' }],
+        },
+      }],
+      sessionContext: [{ role: 'user', content: 'MISSING IDENTITY SESSION CONTEXT' }],
+    }), duplicateEventAction).contextSnapshot;
+    const unidentifiedInput = missingIdentitySnapshot.userContext.guidance
+      .find(value => value.text === 'UNIDENTIFIED INPUT');
+
+    expect(unidentifiedInput).toBeDefined();
+    expect(unidentifiedInput).toMatchObject({ attachments: [] });
+    expect(unidentifiedInput).not.toHaveProperty('quotedContext');
+    expect(JSON.stringify(missingIdentitySnapshot)).not.toContain('omit-this-attachment');
+    expect(missingIdentitySnapshot.userContext.sessionContext)
+      .toEqual([{ role: 'user', vpId: null, text: 'MISSING IDENTITY SESSION CONTEXT' }]);
+    expect(missingIdentitySnapshot.userContext).toMatchObject({ includedCount: 2, omittedCount: 0 });
+
+    const budgetAction = {
+      ...action,
+      context: [
+        {
+          type: 'input', role: 'user', inputId: 'budget-duplicate',
+          summary: `DROP LARGE DUPLICATE ${'旧'.repeat(8_000)}`, attachments: [], evidence: [],
+        },
+        {
+          type: 'input', role: 'user', inputId: 'budget-duplicate',
+          summary: 'KEEP QUOTED DUPLICATE', attachments: [], evidence: [],
+          quote: { role: 'assistant', content: 'KEEP THIS QUOTE ASSOCIATION' },
+        },
+        {
+          type: 'input', role: 'user', inputId: 'budget-duplicate',
+          summary: 'KEEP LATEST DUPLICATE', attachments: [], evidence: [],
+        },
+      ],
+    };
+    const budgetBuilt = buildMainlineContextSnapshot(detail({
+      actions: [budgetAction],
+      events: [],
+      sessionContext: [{ role: 'user', content: 'KEEP BUDGET SESSION CONTEXT' }],
+    }), budgetAction);
+    const budgetGuidance = budgetBuilt.contextSnapshot.userContext.guidance;
+    const quotedBudgetInput = budgetGuidance.find(value => value.text === 'KEEP QUOTED DUPLICATE');
+    const latestBudgetInput = budgetGuidance.find(value => value.text === 'KEEP LATEST DUPLICATE');
+
+    expect(JSON.stringify(budgetBuilt.contextSnapshot)).not.toContain('DROP LARGE DUPLICATE');
+    expect(quotedBudgetInput).toMatchObject({
+      inputId: 'budget-duplicate',
+      quotedContext: expect.stringContaining('KEEP THIS QUOTE ASSOCIATION'),
+    });
+    expect(latestBudgetInput).not.toHaveProperty('quotedContext');
+    expect(budgetBuilt.contextSnapshot.userContext.sessionContext)
+      .toEqual([{ role: 'user', vpId: null, text: 'KEEP BUDGET SESSION CONTEXT' }]);
+    expect(budgetBuilt.contextSnapshot.userContext).toMatchObject({ includedCount: 3, omittedCount: 1 });
+    expect(budgetBuilt.contextSnapshot.userContext.includedCount
+      + budgetBuilt.contextSnapshot.userContext.omittedCount).toBe(4);
+    expect(budgetGuidance.every(value => Object.getOwnPropertySymbols(value).length === 0)).toBe(true);
+    expect(budgetBuilt.budget.bytes).toBeLessThanOrEqual(MAINLINE_CONTEXT_HARD_LIMIT_BYTES);
   });
 
   it('reserves final prompt wrapper bytes inside the 64 KiB hard limit', () => {

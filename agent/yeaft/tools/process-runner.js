@@ -102,6 +102,7 @@ function killProcessTree(proc, signalName, platform, spawnProcessSync, systemdSc
  * @param {string} command
  * @param {string[]} args
  * @param {{ cwd?: string, signal?: AbortSignal, timeoutMs?: number, maxBytes?: number, env?: NodeJS.ProcessEnv, preserveCarriageReturns?: boolean, killGraceMs?: number, forceSettleMs?: number, requireExitConfirmation?: boolean, systemdScope?: { unit: string, systemctlPath: string, env?: NodeJS.ProcessEnv } | null, onSettled?: (() => void) | null, platform?: NodeJS.Platform, spawnProcess?: typeof spawn, spawnProcessSync?: typeof spawnSync }} [options]
+ * @returns {Promise<{ code: number, stdout: string, stderr: string, truncated: boolean, timedOut: boolean, terminationError?: string }>}
  */
 export function runProcess(command, args, options = {}) {
   if (options.signal?.aborted) {
@@ -188,21 +189,30 @@ export function runProcess(command, args, options = {}) {
       if (settled) return;
       settled = true;
       cleanup();
-      if (error) {
-        reject(error);
-        return;
-      }
-      if (aborted) {
-        reject(abortError(options.signal));
-        return;
-      }
-      resolve({
+      const result = {
         code: timedOut ? 124 : (code ?? 1),
         stdout: decode(stdout, stdoutTruncated, options.preserveCarriageReturns),
         stderr: decode(stderr, stderrTruncated),
         truncated,
         timedOut,
-      });
+      };
+      if (aborted) {
+        reject(abortError(options.signal));
+        return;
+      }
+      if (error) {
+        // A command timeout is an owned, bounded outcome. Failure to observe
+        // the final child close is important context for the caller, but it
+        // must not turn the timeout into an infrastructure exception that
+        // prevents the model from deciding what to do next.
+        if (timedOut && error instanceof ProcessTerminationError) {
+          resolve({ ...result, terminationError: error.message });
+          return;
+        }
+        reject(error);
+        return;
+      }
+      resolve(result);
     };
     const terminationConfirmed = () => {
       if (!options.requireExitConfirmation) return directClosed;
@@ -334,6 +344,10 @@ export function runProcess(command, args, options = {}) {
 
     if (Number.isFinite(options.timeoutMs) && options.timeoutMs > 0) {
       timer = setTimeout(() => {
+        // Preserve the first stop reason. Output overflow and Abort may have
+        // already started termination; a later deadline must not relabel that
+        // cleanup failure as a recoverable command timeout.
+        if (settled || stopRequested) return;
         timedOut = true;
         stop();
       }, options.timeoutMs);

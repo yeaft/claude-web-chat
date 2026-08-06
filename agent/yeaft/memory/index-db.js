@@ -1,8 +1,8 @@
 /**
  * memory/index-db.js — DESIGN-H2-AMS §4. SQLite + FTS5 segment index.
  *
- * Source of truth: on-disk `~/.yeaft/memory/<scope>/memory.md` files.
- * SQLite is a derived index — rebuildable from disk at any time.
+ * Sources of truth: on-disk evidence memory.md and canonical content.md.
+ * SQLite is a derived scope-selection index, rebuildable from disk at any time.
  *
  * Schema is created idempotently; opening an older DB without the
  * required tables triggers a fresh CREATE. A version PRAGMA guards
@@ -89,7 +89,7 @@ export function openSegmentIndex(dbPath) {
     db.prepare('INSERT INTO schema_meta(key,value) VALUES(?,?)')
       .run('schema_version', String(SCHEMA_VERSION));
   } else if (cur.value !== String(SCHEMA_VERSION)) {
-    // For now, simple drop-and-recreate. v2 may add migrations.
+    // The index is derived state, so schema changes use drop-and-recreate.
     db.exec('DROP TABLE IF EXISTS memory_fts');
     db.exec('DROP TABLE IF EXISTS memory_segments');
     db.exec('DELETE FROM schema_meta');
@@ -119,6 +119,7 @@ export function openSegmentIndex(dbPath) {
  * @property {string}        query        FTS5 MATCH expression
  * @property {string[]=}     scopeFilter  if set, restrict to these scopes
  * @property {number=}       limit        default 50
+ * @property {string=}       requiredTag  restrict rows to a derived record tag
  */
 
 /**
@@ -203,6 +204,8 @@ function makeHandle(db) {
         ? Math.min(500, Math.floor(opts.limit)) : 50;
       const scopeFilter = Array.isArray(opts.scopeFilter) && opts.scopeFilter.length > 0
         ? opts.scopeFilter : null;
+      const requiredTag = typeof opts.requiredTag === 'string' && opts.requiredTag.trim()
+        ? opts.requiredTag.trim() : null;
 
       // Build the SQL dynamically — scope IN (...) needs N placeholders.
       let sql = `
@@ -214,6 +217,10 @@ function makeHandle(db) {
       if (scopeFilter) {
         sql += ` AND s.scope IN (${scopeFilter.map(() => '?').join(',')})`;
         params.push(...scopeFilter);
+      }
+      if (requiredTag) {
+        sql += " AND EXISTS (SELECT 1 FROM json_each(s.tags) WHERE json_each.value = ?)";
+        params.push(requiredTag);
       }
       sql += ` ORDER BY rank LIMIT ?`;
       params.push(limit);

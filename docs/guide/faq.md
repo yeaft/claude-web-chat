@@ -61,7 +61,7 @@ Copilot CLI runs in `--acp` mode and asks for permission per session before it c
 
 ### Can I pick a non-Claude/non-GPT model in Copilot Mode?
 
-Only what Copilot CLI exposes — that's currently Claude family (Sonnet 4 / 4.5) and GPT family (4.1 / 5 etc.). If you need a different vendor, use Yeaft Code Agent and add the provider to `~/.yeaft/config.json`.
+Only what Copilot CLI exposes. If you need another vendor, use Yeaft Code Agent and add the provider to the selected Agent instance's resolved `config.json`.
 
 ### Copilot says "not authenticated" but I'm logged into VS Code Copilot
 
@@ -71,7 +71,7 @@ The CLI uses a separate OAuth token from the IDE plugin. Run `copilot auth login
 
 ### "No LLM provider configured" when sending a message
 
-Edit `~/.yeaft/config.json` on the agent machine and add at least one provider entry — see [Yeaft Engine Config](./yeaft-config.md) for the schema. Pick a `primaryModel` that exists in one of your `providers[].models` lists.
+Edit the selected Agent instance's resolved `config.json` and add at least one provider entry — see [Yeaft Engine Config](./yeaft-config.md) for paths and schema. Pick a `primaryModel` that exists in one of your `providers[].models` lists.
 
 ### VP doesn't seem to remember what I said last session
 
@@ -85,13 +85,13 @@ Mention each VP explicitly: `@designer @dev please review this layout`. Mentions
 
 ### How do I check what's in a VP's memory?
 
-The memory segments live in `~/.yeaft/memory/<scope>/memory.md` on the agent machine (one `memory.md` per scope, containing multiple segments). Each file is plain markdown you can read directly.
+The memory segments live at `<resolvedYeaftDir>/memory/<scope>/memory.md` on the Agent machine (one `memory.md` per scope, containing multiple segments). The default instance resolves this to `~/.yeaft/memory/...`; named `<name>` resolves it to `~/.yeaft/instances/<name>/memory/...`; an explicit `YEAFT_DIR` / `--yeaft-dir` uses that custom root. Each file is plain markdown you can read directly.
 
 ## Yeaft Engine Config
 
-### Where does `~/.yeaft/config.json` live?
+### Where does the Yeaft `config.json` live?
 
-On the agent machine — not on the server. It's the file the Yeaft engine reads when the agent starts up.
+On the Agent machine, not the Server. The default service instance uses `~/.yeaft/config.json`; named `<name>` uses `~/.yeaft/instances/<name>/config.json` unless its Yeaft directory is overridden. `yeaft-agent llm` needs an explicit `--config` for named/custom instances.
 
 ### Can I have both Claude and GPT models behind one provider?
 
@@ -114,13 +114,14 @@ See [Yeaft Engine Config → Per-Model Protocol](./yeaft-config.md#protocol-reso
 
 ### Hot reload — do I need to restart the agent after editing `config.json`?
 
-The agent re-reads the config on the next turn, so model and provider changes typically take effect without a restart. Changes to language / debug / global limits may require a restart.
+The Agent re-reads its resolved instance config on the next turn, so model/provider changes typically take effect without a restart. Language, debug, and global-limit changes may require one.
 
 ## Agent Auto-Upgrade
 
 ```bash
-# Manual upgrade
-yeaft-agent upgrade
+# Upgrade the package; Unix named services must then be restarted explicitly
+yeaft-agent upgrade --name worker-a
+yeaft-agent restart --name worker-a
 
 # Check at startup
 yeaft-agent --auto-upgrade --server wss://...

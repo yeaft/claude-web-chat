@@ -7,7 +7,7 @@
  * engine relies on (`LLMRateLimitError.retryAfterMs`, `LLMServerError`),
  * so the engine's retry loop has the metadata it needs.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AnthropicAdapter } from '../../../agent/yeaft/llm/anthropic.js';
 import { OpenAIResponsesAdapter } from '../../../agent/yeaft/llm/openai-responses.js';
 import {
@@ -16,7 +16,9 @@ import {
   LLMAuthError,
   LLMContextError,
   LLMStreamIdleTimeoutError,
+  createBoundedTextAccumulator,
 } from '../../../agent/yeaft/llm/adapter.js';
+import { boundRawExchange, truncateUtf8Text } from '../../../agent/yeaft/perf-trace.js';
 
 const originalFetch = global.fetch;
 
@@ -114,6 +116,79 @@ function failedResponsesStreamResponse() {
     }),
   };
 }
+
+describe('bounded raw SSE capture', () => {
+  it('bounds one oversized chunk with a constant number of byte-length scans', () => {
+    const limit = 512 * 1024;
+    const chunk = 'x'.repeat(768 * 1024);
+    const byteLength = vi.spyOn(Buffer, 'byteLength');
+    try {
+      const accumulator = createBoundedTextAccumulator(limit);
+      accumulator.push(chunk);
+
+      expect(byteLength).toHaveBeenCalledTimes(1);
+      expect(accumulator.totalBytes).toBe(chunk.length);
+      expect(accumulator.text()).toBe('x'.repeat(limit));
+      expect(accumulator.truncated).toBe(true);
+    } finally {
+      byteLength.mockRestore();
+    }
+  });
+
+  it('respects UTF-8 budgets without splitting a Unicode code point', () => {
+    const accumulator = createBoundedTextAccumulator(5);
+    accumulator.push('a😀b');
+
+    expect(accumulator.text()).toBe('a😀');
+    expect(Buffer.byteLength(accumulator.text(), 'utf8')).toBe(5);
+    expect(accumulator.text().isWellFormed()).toBe(true);
+    expect(accumulator.totalBytes).toBe(6);
+    expect(accumulator.truncated).toBe(true);
+
+    const zero = createBoundedTextAccumulator(0);
+    zero.push('😀');
+    expect(zero.text()).toBe('');
+    expect(zero.totalBytes).toBe(4);
+    expect(zero.truncated).toBe(true);
+  });
+});
+
+describe('bounded raw debug exchange capture', () => {
+  it('keeps raw request and response previews within budget and Unicode-safe', () => {
+    const limit = 64 * 1024;
+    const mixedPayload = `${'😀'.repeat(8_000)}${'x'.repeat(320 * 1024)}`;
+    const request = boundRawExchange({ body: mixedPayload }, limit);
+    const response = boundRawExchange({ status: 200, body: mixedPayload }, limit);
+
+    expect(truncateUtf8Text('😀', 3)).toEqual({ value: '', truncated: true, originalBytes: 4 });
+    for (const exchange of [request, response]) {
+      expect(exchange).toMatchObject({ __truncated: true, maxBytes: limit });
+      expect(exchange.originalBytes).toBeGreaterThan(limit);
+      expect(exchange.preview).toContain('😀');
+      expect(exchange.preview).toContain('x');
+      expect(exchange.preview.isWellFormed()).toBe(true);
+      expect(Buffer.byteLength(exchange.preview, 'utf8')).toBeLessThanOrEqual(limit);
+    }
+
+    expect(boundRawExchange({ body: '😀' }, 0)).toEqual({ __truncated: true, maxBytes: 0 });
+  });
+
+  it('does not rescan a large mixed raw exchange for each truncated code unit', () => {
+    const byteLength = vi.spyOn(Buffer, 'byteLength');
+    let exchange;
+    try {
+      exchange = boundRawExchange({
+        body: `${'😀'.repeat(8_000)}${'x'.repeat(320 * 1024)}`,
+      }, 64 * 1024);
+      expect(byteLength).toHaveBeenCalledTimes(1);
+    } finally {
+      byteLength.mockRestore();
+    }
+
+    expect(exchange.preview.isWellFormed()).toBe(true);
+    expect(Buffer.byteLength(exchange.preview, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+  });
+});
 
 describe('AnthropicAdapter error classification', () => {
   afterEach(() => {

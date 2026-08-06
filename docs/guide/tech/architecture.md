@@ -1,136 +1,162 @@
 # Architecture Overview
 
-Yeaft is a **three-layer architecture** multi-provider AI collaboration platform:
+Yeaft is a three-layer system. The browser is the control surface, the Server authenticates and relays, and each Agent owns code execution plus native Yeaft runtime data.
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│                       Web Client (Vue 3)                        │
-│             Shared MessageList pipeline (backend-agnostic)      │
-└──────────────────────────────┬─────────────────────────────────┘
-                               │ WebSocket (encrypted)
-                               ↓
-┌────────────────────────────────────────────────────────────────┐
-│                     Server (Express + ws)                       │
-│  - Dumb relay: routes by conversationId / agentId               │
-│  - Auth (JWT + TOTP + email)                                    │
-│  - End-to-end encryption (TweetNaCl)                            │
-│  - SQLite session / user / invite codes                         │
-└──────────────────────────────┬─────────────────────────────────┘
-                               │ WebSocket (encrypted)
-                               ↓
-┌────────────────────────────────────────────────────────────────┐
-│                          Agent (Node.js)                        │
-│  ┌─────────────────────┐  ┌──────────────────────────────────┐ │
-│  │  Provider abstraction │  │  Yeaft engine (standalone AI)    │ │
-│  │  ─ claude-code        │  │  ─ engine.js query loop          │ │
-│  │  ─ copilot (ACP)      │  │  ─ H2-AMS memory                 │ │
-│  │                       │  │  ─ multi-provider LLM router     │ │
-│  │  spawn external CLI    │  │  ─ 30+ tools                     │ │
-│  └─────────────────────┘  └──────────────────────────────────┘ │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  └─────────────────────────────────────────────────────────┘  │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  Workbench: terminal / git / files / port-proxy           │  │
-│  └─────────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────┘
+```text
+Browser (Vue 3 + Pinia)
+        │ HTTP + authenticated WebSocket relay (WSS in production)
+        ▼
+Server (Express + ws + SQLite)
+        │ owner-checked relay and browser-facing catalog
+        ▼
+Agent (Node.js on the code machine)
+        ├── Claude Code CLI provider
+        ├── GitHub Copilot CLI provider (ACP)
+        ├── Native Yeaft engine
+        │   ├── Session + 1..N VP orchestration
+        │   ├── Anthropic / OpenAI Responses adapters
+        │   ├── 33 built-in tools + Skills + MCP
+        │   ├── H2-AMS memory + Dream maintenance
+        │   ├── Projects and scoped sibling-Session recall
+        │   └── Work Center (WorkItem → Action → Run)
+        └── Workbench (terminal, Git, files, port proxy)
 ```
 
-## Key Layers
+## Ownership boundaries
 
-### Provider Abstraction (`agent/providers/`)
-- Interface `ChatProvider` (`base.js`) — `start / sendInput / abort / listSessions / loadHistory`
-- Two implementations: `claude-code` (spawns Claude CLI), `copilot` (spawns `copilot --acp`)
-- All providers **translate their output** to the same `claude_output` envelope — frontend has zero branching
-- Details: [Provider System](./providers.md)
+| Layer | Owns | Does not own |
+| --- | --- | --- |
+| **Browser** | Current UI state, unified catalog projection, locale/theme, drafts | Code execution or authoritative Agent runtime data |
+| **Server** | User/auth records, invitation/admin data, browser-facing conversation catalog metadata, WebSocket routing | Native Session transcripts, Agent memory, provider credentials, or Work Center execution |
+| **Agent** | CLI subprocesses, native provider calls, tools, Session history, memory, background tasks, Projects' Agent-side context, Work Center SQLite, workbench access | Server user accounts or cross-owner data |
 
-### Yeaft Engine (`agent/yeaft/`)
-- Self-contained AI orchestrator — does **not** depend on any external CLI
-- Own query loop, memory system (H2-AMS), multi-provider LLM router, tool system
-- Pushes messages via the `yeaft_output` wire type (payload shaped like claude_output for rendering reuse)
-- Details: [Yeaft Engine](./yeaft-engine.md)
+A Session `workDir` is an execution and project-asset context. Native Session data and Work Center state remain under the Agent's Yeaft data root.
 
-### Wire Protocol
-- WebSocket envelope uses `type` field to identify message kinds
-- `claude_output` is a **protocol name**, not a vendor name — all chat output flows through it
-- Details: [WebSocket Protocol](./wire-protocol.md)
+## Runtime paths
 
-## Project Structure
+### Claude Code
 
-```
-claude-web-chat/
-├── server/                  # Central WebSocket hub
-│   ├── index.js             # Entry point
-│   ├── handlers/            # Message handlers (agent↔client routing)
-│   ├── api.js               # REST endpoints (auth, sessions, users)
-│   ├── proxy.js             # Port proxy forwarding
-│   ├── database.js          # SQLite storage
-│   └── auth.js              # JWT + TOTP + email verification
-├── agent/                   # Worker machine agent
-│   ├── cli.js               # CLI entry (yeaft-agent command)
-│   ├── index.js             # Startup + capability detection
-│   ├── connection/          # WebSocket connection, auth, message routing
-│   ├── providers/           # Provider abstraction + claude-code/copilot impls
-│   │   ├── base.js          # ChatProvider interface
-│   │   ├── claude-code.js   # Claude CLI driver
-│   │   ├── copilot.js       # Copilot CLI driver (ACP)
-│   │   └── acp-client.js    # ACP JSON-RPC client
-│   ├── yeaft/               # Yeaft's own engine
-│   │   ├── engine.js        # Main query loop
-│   │   ├── memory/          # H2-AMS memory
-│   │   ├── llm/             # LLM adapters (anthropic / openai-responses)
-│   │   ├── sessions/        # Session orchestration (multi-VP fan-out)
-│   │   ├── tools/           # 30+ built-in tools
-│   │   └── ...
-│   ├── claude.js            # Legacy Claude Chat path (kept)
-│   ├── conversation.js      # Chat session lifecycle
-│   ├── sdk/                 # Claude CLI stream-json SDK
-│   ├── terminal.js          # PTY terminal (node-pty)
-│   └── workbench/           # Git + file operations
-├── web/                     # Vue 3 frontend
-│   ├── app.js               # Vue app entry
-│   ├── build.js             # esbuild production build
-│   ├── stores/              # Pinia state stores
-│   ├── styles/              # CSS (dark / light theme)
-│   ├── i18n/                # en / zh-CN translations
-│   └── vendor/              # Third-party libs (local, no CDN)
-├── test/                    # Vitest unit & integration tests
-├── e2e/                     # Playwright E2E
-├── docs/                    # VitePress site (this one)
-├── Dockerfile               # Multi-stage production build
-└── LICENSE                  # MIT
+```text
+Web send_message
+  → Server relay
+  → Agent ChatProvider
+  → Claude Code CLI stream-json process
+  → normalized claude_output events
+  → shared Web message renderer
 ```
 
-## Data Flow
+One provider process owns each CLI conversation. Claude Code remains authoritative for its commands and resume behavior.
 
-### Claude Code / Copilot Mode
-```
-Web → ws "send_message" → Server → ws agent
-  → provider.sendInput()
-  → CLI subprocess
-  → event stream (stream-json / ACP) → translated to claude_output envelope
-  → ws "claude_output" → Server → ws Web → MessageList render
-```
+### GitHub Copilot
 
-### Yeaft Code Agent
-```
-Web → ws "yeaft_session_send" → Server → ws agent
-  → handleYeaftSessionSend() → coordinator.ingest()
-  → Promise.all(runVpTurn × selected VPs)
-  → Engine.query() → tool exec → LLM stream → engine events
-  → web-bridge.js normalizes events for the shared MessageList renderer
-  → ws "yeaft_output" → Server → ws Web → handleYeaftOutput → MessageList
+```text
+Web send_message / permission response
+  → Server relay
+  → Agent Copilot ChatProvider
+  → copilot --acp JSON-RPC process
+  → normalized claude_output events
+  → shared Web message renderer
 ```
 
-**Compatibility naming:** `yeaft_session_send` is the current product-level send channel. Older wire aliases such as `yeaft_session_chat` and `unify_group_chat`, older payload fields such as `groupId`, and renderer internals such as `claude_output` / `handleClaudeOutput` still exist for compatibility. They are not new domain terminology and should not be used as names for new APIs unless the code is explicitly handling legacy compatibility.
+ACP permission prompts and the live Copilot model catalog remain provider-specific.
 
-## CI/CD
+### Native Yeaft Session
 
-Built-in GitHub Actions:
-- **CI** (`ci.yml`): Node 24 tests + frontend build (`workflow_dispatch` manual)
-- **Release** (`release.yml`): push `release-*` tag → auto-publish npm package + Docker image + GitHub Release
+```text
+Web yeaft_session_send
+  → Server owner-checked relay
+  → Agent Session coordinator
+  → resolve default/@mentioned VPs
+  → run VP turns independently
+  → Engine query/tool loop
+  → yeaft_output events
+  → shared Web message renderer
+```
 
-## What's Next
+`yeaft_session_send` is the current send channel. Historical aliases and `claude_output`-shaped rendering payloads remain for wire/storage compatibility; they are not current domain terminology.
 
-- Want to add a new provider → [Provider System](./providers.md)
-- Want to read the Yeaft engine → [Yeaft Engine](./yeaft-engine.md)
-- Want the full wire-type list → [WebSocket Protocol](./wire-protocol.md)
+### Work Center
+
+```text
+Browser WorkItem request
+  → Server relay
+  → Agent Work Center store/controller
+  → triage and validated Action graph
+  → watcher claims ready Actions
+  → runner reuses native Engine
+  → fenced Run result + evidence
+  → controller advances dependents/final gate
+```
+
+Work Center is Agent-level. A source Session is an origin/link, not its storage owner. The Coordinator conversation has no side-effect tools; Action Runs receive task-specific tools and workspace policies.
+
+## Native engine query loop
+
+For each VP turn the engine:
+
+1. resolves Session, VP, Project, project-doc, memory, and pending sub-agent context;
+2. builds a prompt and compacted history within token budgets;
+3. streams from the selected Anthropic Messages or OpenAI Responses adapter;
+4. executes allowed tools and folds long tool arcs;
+5. persists raw events, messages, usage, and traces;
+6. adjusts H2-AMS, triggers Dream/compact when required, and reports stop/result events.
+
+Context errors can force compact/retry; configured fallback models handle eligible provider failures. Background jobs and child agents use persistent Session-scoped task records.
+
+## Main source layout
+
+```text
+server/                     Express/ws relay, auth, catalog, SQLite, port proxy
+agent/
+  providers/                Claude Code and Copilot CLI ChatProvider adapters
+  connection/               Agent WebSocket and message routing
+  yeaft/
+    engine.js               Native query/tool loop
+    sessions/               Session roster, store, coordinator, pre-flow
+    projects/               Agent-side Project context store
+    llm/                    Anthropic/OpenAI Responses adapters and routing
+    memory/                 H2-AMS, FTS index, summaries, segments
+    tools/                  33 built-in tools
+    work-center/            WorkItem/Action/Run store, planner, watcher, runner
+    sub-agent/              Child-agent execution and notifications
+    tasks/                  Background shell task persistence
+  workbench/                Terminal, Git, files, and related services
+web/                        Vue 3 Options API + Pinia + static CSS/i18n
+server/                     Express/ws control plane
+test/                       Vitest unit and integration tests
+e2e/                        Playwright browser tests
+docs/                       Bilingual VitePress documentation
+```
+
+## Project and memory flow
+
+The Server catalog gives the browser one Agent-aware view of native and CLI conversations. Project membership is synchronized to Agents. Before a native turn, the current Agent can resolve same-Agent sibling Sessions in the Project and include their source-labelled, read-only scopes in H2-AMS recall.
+
+This is not transcript merging. User, VP, Session, Project-related Session, WorkItem, and legacy compatibility scopes keep explicit ownership and ACL rules.
+
+## Security-relevant paths
+
+- Browser/Server auth supports JWT, optional TOTP/email verification, and configurable SSO providers.
+- Current Web and Agent peers negotiate plaintext JSON payloads after authentication; production confidentiality depends on HTTPS/WSS transport security.
+- TweetNaCl payload encryption is retained only as a compatibility fallback when a legacy peer does not negotiate plaintext.
+- The Server enforces owner routing for Agent and WebSocket traffic.
+- Provider credentials, raw tool output, project files, debug traces, and native runtime storage stay on the Agent unless explicitly returned to the browser.
+- `SKIP_AUTH` and local mode are development/trusted-workstation paths, not public deployment settings.
+
+## Build and release
+
+- `npm test` runs the core Vitest manifest.
+- `npm run test:e2e` runs Playwright.
+- `npm run release:guard` imports Server/Agent modules and performs a Server startup smoke test.
+- `npm run build` creates production Web assets.
+- `npm run docs:build` builds the bilingual VitePress site.
+- A `v1.0.*` tag triggers the development release workflow; `release-v1.0.*` is the explicit production release tag. Release workflows validate that the tag points to current `main` before publishing npm/Docker artifacts.
+
+## Related reference
+
+- [CLI provider system](./providers.md)
+- [Native Yeaft engine](./yeaft-engine.md)
+- [H2-AMS memory](./yeaft-memory.md)
+- [Native LLM layer](./yeaft-llm.md)
+- [WebSocket protocol](./wire-protocol.md)
+- [Work Center user contract](../user/work-center.md)

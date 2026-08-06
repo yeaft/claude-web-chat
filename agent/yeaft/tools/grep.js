@@ -18,6 +18,7 @@ import {
   SEARCH_SKIP_GLOBS,
   isAbortError,
   isSkippedSearchDirectory,
+  SearchBackendLimitError,
   throwIfAborted,
   waitForAbortable,
 } from './search-paths.js';
@@ -348,7 +349,6 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
     if (options.after) args.push('-A', String(options.after));
     if (options.context || options.before || options.after) args.push('--no-context-separator');
     if (options.multiline) args.push('-U', '--multiline-dotall');
-    args.push('--sort', 'path');
     args.push('--', pattern);
     if (searchTarget) args.push(searchTarget);
 
@@ -517,7 +517,12 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn, c
   });
 }
 
-async function listRipgrepCandidatePaths(command, searchPath, options) {
+export async function listRipgrepCandidatePaths(
+  command,
+  searchPath,
+  options,
+  processRunner = runProcess,
+) {
   throwIfAborted(options.signal);
   const searchStat = await lstat(searchPath);
   const baseDir = searchStat.isDirectory() ? searchPath : dirname(searchPath);
@@ -532,8 +537,8 @@ async function listRipgrepCandidatePaths(command, searchPath, options) {
   ];
   if (options.fixedStrings) args.push('-F');
   for (const skipGlob of SEARCH_SKIP_GLOBS) args.push('--glob', skipGlob);
-  args.push('--sort', 'path', '--', options.pattern, target);
-  const result = await runProcess(command, args, {
+  args.push('--max-filesize', String(MAX_TEXT_FILE_BYTES), '--', options.pattern, target);
+  const result = await processRunner(command, args, {
     cwd: baseDir,
     env: createRipgrepEnv(),
     signal: options.signal,
@@ -541,8 +546,10 @@ async function listRipgrepCandidatePaths(command, searchPath, options) {
     maxBytes: MAX_CANDIDATE_BYTES,
     preserveCarriageReturns: true,
   });
-  if (result.timedOut) throw new Error('rg timed out');
-  if (result.truncated) throw new Error('rg candidate output exceeded the tool limit');
+  if (result.timedOut) throw new SearchBackendLimitError('rg timed out');
+  if (result.truncated) {
+    throw new SearchBackendLimitError('rg candidate output exceeded the tool limit');
+  }
   if (result.code !== 0 && result.code !== 1) {
     throw new Error(result.stderr.trim() || `rg exited with code ${result.code}`);
   }
@@ -761,7 +768,23 @@ export async function nodeGrep(pattern, searchPath, options) {
   }
 
   throwIfAborted(options.signal);
-  if (rootStat.isDirectory()) await searchDir(searchPath);
+  if (candidatePaths) {
+    const orderedCandidates = [...candidatePaths]
+      .sort((left, right) => compareSearchPaths(
+        relative(searchBase, left).replace(/\\/g, '/'),
+        relative(searchBase, right).replace(/\\/g, '/'),
+      ));
+    for (let index = 0; index < orderedCandidates.length && !stopped; index += FALLBACK_CONCURRENCY) {
+      throwIfAborted(options.signal);
+      const batches = await Promise.all(
+        orderedCandidates.slice(index, index + FALLBACK_CONCURRENCY).map(collectFileRecords),
+      );
+      for (const batch of batches) {
+        addFileRecords(batch);
+        if (stopped) break;
+      }
+    }
+  } else if (rootStat.isDirectory()) await searchDir(searchPath);
   else addFileRecords(await collectFileRecords(searchPath));
   const result = output.toString();
   return options.structured
@@ -899,6 +922,7 @@ Guidelines:
   },
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
+  cacheWithinQuery: true,
   async execute(input, ctx) {
     const {
       pattern, path: searchPath, output_mode = 'files_with_matches',
@@ -960,7 +984,7 @@ Guidelines:
           });
           result = await nodeGrep(pattern, absPath, { ...options, candidatePaths });
         } catch (error) {
-          if (isAbortError(error)) throw error;
+          if (isAbortError(error) || error instanceof SearchBackendLimitError) throw error;
           result = await nodeGrep(pattern, absPath, options);
         }
       } else {

@@ -9,6 +9,7 @@ vi.mock('../../server/ws-utils.js', () => ({
   sendToWebClient,
   forwardToAgent,
   broadcastAgentList: vi.fn(),
+  buildSessionCatalog: vi.fn(() => []),
   verifyConversationOwnership: vi.fn(() => true),
   verifyAgentOwnership: vi.fn(() => true),
 }));
@@ -47,10 +48,20 @@ afterEach(() => {
   client.sent = [];
 });
 
+const consolidatedHistoryScenarios = [];
+function historyScenario(name, run) { consolidatedHistoryScenarios.push({ name, run }); }
+async function runConsolidatedHistoryScenarios() {
+  for (const scenario of consolidatedHistoryScenarios) {
+    try { await scenario.run(); }
+    catch (error) { error.message = `[${scenario.name}] ${error.message}`; throw error; }
+  }
+}
+
 describe('Yeaft Session history search relay', () => {
 
 
   it('requires explicit compound identity and targets the requesting client', async () => {
+    await runConsolidatedHistoryScenarios();
     await handleClientConversation('client-1', client, {
       type: 'yeaft_search_history',
       agentId: 'agent-1',
@@ -59,6 +70,7 @@ describe('Yeaft Session history search relay', () => {
       query: 'needle',
       senderKey: 'vp:linus',
       beforeSeq: 42,
+      perfTraceId: 'pt-search',
     }, allow);
 
     expect(getForAgent).toHaveBeenCalledWith('owner-1', 'agent-1', 'sess-1');
@@ -69,6 +81,7 @@ describe('Yeaft Session history search relay', () => {
       query: 'needle',
       senderKey: 'vp:linus',
       beforeSeq: 42,
+      perfTraceId: 'pt-search',
       _requestClientId: 'client-1',
     }));
 
@@ -84,6 +97,29 @@ describe('Yeaft Session history search relay', () => {
       type: 'yeaft_load_history',
       sessionId: 'sess-1',
       requestId: 'history-1',
+      _requestClientId: 'client-1',
+    }));
+
+    forwardToAgent.mockClear();
+    await handleClientConversation('client-1', client, {
+      type: 'yeaft_load_more_history',
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      requestId: 'gap-1',
+      beforeSeq: 901,
+      pageKind: 'gap',
+      gapStopAtSeq: 501,
+      cacheEpoch: 7,
+      turns: 20,
+    }, allow);
+    expect(forwardToAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({
+      type: 'yeaft_load_more_history',
+      sessionId: 'sess-1',
+      requestId: 'gap-1',
+      beforeSeq: 901,
+      pageKind: 'gap',
+      gapStopAtSeq: 501,
+      cacheEpoch: 7,
       _requestClientId: 'client-1',
     }));
 
@@ -127,6 +163,31 @@ describe('Yeaft Session history search relay', () => {
         projectInstruction: '',
         sessionIds: [],
       },
+    }));
+  });
+
+  historyScenario('keeps outline total counting opt-in while forwarding its trace identity', async () => {
+    await handleClientConversation('client-1', client, {
+      type: 'yeaft_load_history_outline',
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      requestId: 'outline-default',
+      perfTraceId: 'pt-outline-default',
+    }, allow);
+    expect(forwardToAgent).toHaveBeenLastCalledWith('agent-1', expect.objectContaining({
+      includeTotal: false,
+      perfTraceId: 'pt-outline-default',
+    }));
+
+    await handleClientConversation('client-1', client, {
+      type: 'yeaft_load_history_outline',
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      requestId: 'outline-counted',
+      includeTotal: true,
+    }, allow);
+    expect(forwardToAgent).toHaveBeenLastCalledWith('agent-1', expect.objectContaining({
+      includeTotal: true,
     }));
   });
 

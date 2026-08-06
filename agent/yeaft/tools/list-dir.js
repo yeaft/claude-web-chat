@@ -52,6 +52,7 @@ This is better than using Bash with 'ls' because it provides structured output.`
   },
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
+  cacheWithinQuery: true,
   async execute(input, ctx) {
     const { path: dirPath, show_hidden = true } = input;
 

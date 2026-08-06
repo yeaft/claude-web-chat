@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { beforeEach } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { searchConversationIndex } from '../../../agent/yeaft/conversation/history-index.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -25,18 +26,35 @@ const ctx = (await import('../../../agent/context.js')).default;
 const { ConversationStore } = await import('../../../agent/yeaft/conversation/persist.js');
 const {
   handleYeaftLoadHistory,
+  handleYeaftLoadHistoryOutline,
   handleYeaftLoadMoreHistory,
+  handleYeaftSearchHistory,
+  handleYeaftArchiveSession,
+  handleYeaftRenameSession,
   handleYeaftSessionAddMember,
   handleYeaftSessionRemoveMember,
   handleYeaftSessionSetDefaultVp,
+  handleYeaftUpdateSession,
   __testHandleEngineEvent,
+  __testGetRegisteredThreadIds,
   __testGroupHistory,
+  __testResetVpState,
+  __testSeedAbortController,
   __testSetSession,
   __testHooks,
 } = await import('../../../agent/yeaft/web-bridge.js');
 
 function flushMicrotasks() {
   return new Promise(resolve => setImmediate(resolve));
+}
+
+const consolidatedHistoryScenarios = [];
+function historyScenario(name, run) { consolidatedHistoryScenarios.push({ name, run }); }
+async function runConsolidatedHistoryScenarios() {
+  for (const scenario of consolidatedHistoryScenarios) {
+    try { await scenario.run(); }
+    catch (error) { error.message = `[${scenario.name}] ${error.message}`; throw error; }
+  }
 }
 
 describe('Yeaft load-history first paint', () => {
@@ -429,7 +447,95 @@ describe('Yeaft load-history first paint', () => {
     expect(projected[0].toolSummaryCount).toBeUndefined();
   });
 
+  historyScenario('keeps outline totals opt-in and traces bounded outline/search scans', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-history-scan-trace-'));
+    try {
+      ctx.CONFIG = { yeaftDir: dir };
+      const store = new ConversationStore(dir);
+      store.appendBatch([
+        { role: 'user', content: 'first needle', sessionId: 'session-trace' },
+        { role: 'assistant', content: 'first answer', sessionId: 'session-trace', speakerVpId: 'vp-linus' },
+        { role: 'user', content: 'second question', sessionId: 'session-trace' },
+        { role: 'assistant', content: 'second needle', sessionId: 'session-trace', speakerVpId: 'vp-linus' },
+      ]);
+
+      await handleYeaftLoadHistoryOutline({
+        type: 'yeaft_load_history_outline',
+        sessionId: 'session-trace',
+        requestId: 'outline-default',
+        perfTraceId: 'pt-outline-default',
+        limit: 2,
+      });
+      expect(sent.find(message => message.requestId === 'outline-default')).toMatchObject({
+        type: 'yeaft_history_outline',
+        totalCount: null,
+        error: 'index_building',
+        perfTraceId: 'pt-outline-default',
+      });
+      await searchConversationIndex(dir, 'session-trace', 'needle');
+      await handleYeaftLoadHistoryOutline({
+        type: 'yeaft_load_history_outline',
+        sessionId: 'session-trace',
+        requestId: 'outline-counted',
+        perfTraceId: 'pt-outline-counted',
+        includeTotal: true,
+        limit: 2,
+      });
+      await handleYeaftSearchHistory({
+        type: 'yeaft_search_history',
+        sessionId: 'session-trace',
+        requestId: 'search-traced',
+        perfTraceId: 'pt-search',
+        query: 'needle',
+        limit: 2,
+      });
+      await flushMicrotasks();
+      const { flushAllAgentPerfTraces } = await import('../../../agent/yeaft/perf-trace.js');
+      flushAllAgentPerfTraces();
+
+      expect(sent.find(message => message.requestId === 'outline-counted')).toMatchObject({
+        type: 'yeaft_history_outline', totalCount: 4,
+      });
+      expect(sent.find(message => message.requestId === 'search-traced')).toMatchObject({
+        type: 'yeaft_history_search_result', perfTraceId: 'pt-search',
+        results: expect.arrayContaining([expect.objectContaining({ snippet: expect.stringContaining('needle') })]),
+      });
+
+      const day = new Date().toISOString().slice(0, 10);
+      const traces = readFileSync(join(dir, 'perf-traces', `${day}.jsonl`), 'utf8')
+        .trim()
+        .split('\n')
+        .map(line => JSON.parse(line));
+      const outlineScan = traces.find(row => row.traceId === 'pt-outline-counted' && row.phase === 'history_outline.store_scan');
+      const searchScan = traces.find(row => row.traceId === 'pt-search' && row.phase === 'history_search.store_scan');
+      expect(outlineScan).toMatchObject({
+        detail: {
+          includeTotal: true,
+          resultCount: 2,
+          indexGeneration: expect.any(Number),
+          indexFallback: false,
+        },
+      });
+      expect(searchScan).toMatchObject({
+        detail: {
+          queryLength: 6,
+          resultCount: 2,
+          indexGeneration: expect.any(Number),
+          indexFallback: false,
+        },
+      });
+      expect(JSON.stringify(traces)).not.toContain('first needle');
+      expect(traces).toEqual(expect.arrayContaining([
+        expect.objectContaining({ traceId: 'pt-outline-counted', phase: 'history_outline.event_loop_delay' }),
+        expect.objectContaining({ traceId: 'pt-search', phase: 'history_search.event_loop_delay' }),
+      ]));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('loads older pages from persisted history before runtime boot resolves', async () => {
+    await runConsolidatedHistoryScenarios();
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-fast-older-history-'));
     try {
       ctx.CONFIG = { yeaftDir: dir };
@@ -526,6 +632,59 @@ describe('Yeaft load-history first paint', () => {
         sessionId: 'session-fast',
         event: { type: 'session_ready' },
       });
+
+      const hiddenSessionId = 'session-hidden-continuation';
+      store.appendBatch([
+        { role: 'user', content: 'reachable old question', sessionId: hiddenSessionId },
+        { role: 'assistant', content: 'reachable old answer', sessionId: hiddenSessionId },
+        ...Array.from({ length: 300 }, (_, index) => ({
+          role: 'user', content: `hidden ${index}`, sessionId: hiddenSessionId, internal: true,
+        })),
+      ]);
+      sent.length = 0;
+      await handleYeaftLoadHistory({
+        sessionId: hiddenSessionId,
+        limit: 1,
+        requestId: 'hidden-recent',
+      });
+      const hiddenRecent = sent.find(message => (
+        message.type === 'yeaft_history_chunk' && message.requestId === 'hidden-recent'
+      ));
+      const hiddenDone = sent.find(message => message.event?.requestId === 'hidden-recent');
+      expect(hiddenRecent).toMatchObject({
+        mode: 'recent', messages: [], oldestSeq: null, hasMore: true,
+        nextBeforeSeq: expect.any(Number),
+      });
+      expect(hiddenDone.event).toMatchObject({
+        type: 'history_loaded', mode: 'recent', oldestSeq: null, hasMore: true,
+        nextBeforeSeq: hiddenRecent.nextBeforeSeq,
+      });
+
+      let beforeSeq = hiddenRecent.nextBeforeSeq;
+      let visibleMessages = [];
+      const cursors = [];
+      for (let attempt = 0; attempt < 4 && visibleMessages.length === 0; attempt += 1) {
+        cursors.push(beforeSeq);
+        const requestId = `hidden-older-${attempt}`;
+        await handleYeaftLoadMoreHistory({
+          sessionId: hiddenSessionId,
+          requestId,
+          beforeSeq,
+          pageKind: 'server',
+          cacheEpoch: 0,
+          turns: 20,
+        });
+        const page = sent.find(message => (
+          message.type === 'yeaft_history_chunk' && message.requestId === requestId
+        ));
+        visibleMessages = page.messages;
+        beforeSeq = page.nextBeforeSeq;
+      }
+      expect(new Set(cursors).size).toBe(cursors.length);
+      expect(cursors.every((cursor, index) => index === 0 || cursor < cursors[index - 1])).toBe(true);
+      expect(visibleMessages.map(message => message.content)).toEqual([
+        'reachable old question', 'reachable old answer',
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1044,6 +1203,67 @@ describe('Yeaft load-history first paint', () => {
       }
     } finally {
       __testSetSession(null);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps in-flight VP work alive across Session metadata updates', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-metadata-runtime-'));
+    try {
+      ctx.CONFIG = { yeaftDir: dir };
+      createSession(join(dir, 'sessions'), {
+        id: 'session-live',
+        name: 'Live',
+        announcement: 'before',
+        roster: ['linus'],
+        defaultVpId: 'linus',
+      }).close();
+
+      const cases = [
+        [handleYeaftRenameSession, { sessionId: 'session-live', name: 'Renamed' }],
+        [handleYeaftUpdateSession, {
+          sessionId: 'session-live',
+          patch: { announcement: 'after' },
+        }],
+        [handleYeaftSessionAddMember, { sessionId: 'session-live', vpId: 'martin' }],
+        [handleYeaftSessionSetDefaultVp, { sessionId: 'session-live', vpId: 'martin' }],
+      ];
+
+      for (const [index, [handler, payload]] of cases.entries()) {
+        const ctrl = new AbortController();
+        const threadId = `metadata-${index}`;
+        __testSeedAbortController(threadId, ctrl, 'session-live', 'linus');
+        handler({ ...payload, requestId: `request-${index}` });
+        expect(ctrl.signal.aborted).toBe(false);
+        expect(__testGetRegisteredThreadIds()).toContain(threadId);
+      }
+    } finally {
+      await __testResetVpState();
+      ctx.CONFIG = null;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still aborts in-flight VP work when the Session is archived', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-archive-runtime-'));
+    try {
+      ctx.CONFIG = { yeaftDir: dir };
+      createSession(join(dir, 'sessions'), {
+        id: 'session-archive',
+        name: 'Archive',
+        roster: ['linus'],
+        defaultVpId: 'linus',
+      }).close();
+      const ctrl = new AbortController();
+      __testSeedAbortController('archive-thread', ctrl, 'session-archive', 'linus');
+
+      handleYeaftArchiveSession({ sessionId: 'session-archive', requestId: 'request-archive' });
+
+      expect(ctrl.signal.aborted).toBe(true);
+      expect(__testGetRegisteredThreadIds()).not.toContain('archive-thread');
+    } finally {
+      await __testResetVpState();
+      ctx.CONFIG = null;
       rmSync(dir, { recursive: true, force: true });
     }
   });

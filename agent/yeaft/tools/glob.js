@@ -12,9 +12,11 @@ import { resolve, join, relative } from 'path';
 import { managedCliToolReady, resolveManagedCliCommand } from '../managed-cli.js';
 import { runProcess } from './process-runner.js';
 import {
+  createFdPathRegex,
   createSearchPathMatcher,
   isAbortError,
   isSkippedSearchDirectory,
+  SearchBackendLimitError,
   SEARCH_SKIP_DIRS,
   throwIfAborted,
   waitForAbortable,
@@ -68,9 +70,16 @@ async function* walkDir(dir, baseDir, signal, maxDepth = 10, depth = 0) {
   }
 }
 
-async function listFilesWithFd(fdCommand, baseDir, signal) {
+export async function listFilesWithFd(
+  fdCommand,
+  baseDir,
+  pattern,
+  signal,
+  processRunner = runProcess,
+) {
   const args = [
-    '.', baseDir,
+    '--full-path',
+    '--case-sensitive',
     '--type', 'file',
     '--type', 'symlink',
     '--hidden',
@@ -81,15 +90,18 @@ async function listFilesWithFd(fdCommand, baseDir, signal) {
   ];
   for (const skipped of SEARCH_SKIP_DIRS) args.push('--exclude', skipped);
   args.push('--exclude', '.yeaft/worktrees', '--exclude', '**/.yeaft/worktrees/**');
-  const result = await runProcess(fdCommand, args, {
+  args.push('--', createFdPathRegex(pattern), '.');
+  const result = await processRunner(fdCommand, args, {
     cwd: baseDir,
     signal,
     timeoutMs: 120_000,
     maxBytes: 16 * 1024 * 1024,
     preserveCarriageReturns: true,
   });
-  if (result.timedOut) throw new Error('fd timed out');
-  if (result.truncated) throw new Error('fd output exceeded the tool limit');
+  if (result.timedOut) throw new SearchBackendLimitError('fd timed out');
+  if (result.truncated) {
+    throw new SearchBackendLimitError('fd output exceeded the tool limit');
+  }
   if (result.code !== 0) {
     throw new Error(result.stderr.trim() || `fd exited with code ${result.code}`);
   }
@@ -152,6 +164,7 @@ Guidelines:
   },
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
+  cacheWithinQuery: true,
   async execute(input, ctx) {
     const { pattern, path: searchPath, limit = 500 } = input;
     if (!pattern) return JSON.stringify({ error: 'pattern is required' });
@@ -176,10 +189,10 @@ Guidelines:
       }
       if (fdCommand) {
         try {
-          paths = (await listFilesWithFd(fdCommand, baseDir, ctx?.signal))
+          paths = (await listFilesWithFd(fdCommand, baseDir, pattern, ctx?.signal))
             .filter(path => matchGlob(pattern, path));
         } catch (error) {
-          if (isAbortError(error)) throw error;
+          if (isAbortError(error) || error instanceof SearchBackendLimitError) throw error;
           paths = null;
         }
       }

@@ -1,10 +1,10 @@
 /**
- * memory/ams-registry.js — session-keyed AMS lifecycle.
+ * memory/ams-registry.js — Session + VP keyed AMS lifecycle.
  *
- * The Active Memory Set is conceptually session-scoped, with `sessionId`
- * as the unit. A deactivated session can be reactivated later and should
- * resume with the AMS state it had on disconnect (the onDemand segments
- * it had pulled in, the recent LRU touches, whether `adjust` already ran).
+ * A Session can run multiple VPs concurrently. Each VP needs an isolated
+ * prompt snapshot because `ownVpId` is part of the memory ACL. Historical
+ * onDemand/recent ids stay in the version-1 payload for disk compatibility,
+ * but prompt state is rebuilt from query-selected canonical content each turn.
  *
  * Persistence is identity-only:
  *
@@ -18,10 +18,8 @@
  *     "savedAt": "2026-04-29T..."
  *   }
  *
- * Bodies are NOT serialised — they're re-hydrated from the SegmentIndex
- * on load, so a body edited by Dream after save still surfaces correctly
- * the next time the session is opened. Resident layer is derived state
- * (rebuilt every turn from `<scope>/summary.md`) — never persisted.
+ * Bodies are never serialised. Resident is derived state rebuilt every turn
+ * from selected content.md files and is never persisted.
  *
  * For the single-VP Yeaft path (no session id supplied), the registry uses
  * the literal key `"default"` so there's still a stable home for AMS state.
@@ -47,11 +45,12 @@ export const DEFAULT_SESSION_KEY = 'default';
  * @typedef {object} AmsCacheEntry
  * @property {ActiveMemorySet} ams
  * @property {string|null}     ownVpId
+ * @property {string}          sessionKey
  * @property {boolean}         adjustRanThisSession
  */
 
 /**
- * Group-keyed in-memory cache + disk persistence for AMS instances.
+ * Session + VP keyed in-memory cache with Session-level disk compatibility.
  *
  * Lifecycle:
  *   - getOrCreate(sessionId, {ownVpId}) — returns the cached AMS or loads
@@ -75,7 +74,7 @@ export class AmsRegistry {
   }
 
   /**
-   * Resolve the on-disk path for a group's ams.json.
+   * Resolve the on-disk path for a Session's ams.json.
    *
    * `sessionId` is trusted: `nextSessionId()` (sessions/ids.js) emits ids matching
    * `grp_[a-z0-9_-]+_[0-9A-HJKMNP-TV-Z]{8}` (slug + 8-char crockford suffix),
@@ -103,7 +102,7 @@ export class AmsRegistry {
   }
 
   /**
-   * Get the AMS for a group, creating it on first access.
+   * Get the AMS for a Session, creating it on first access.
    * Loads persisted state from disk if any; on cold start returns an
    * empty AMS keyed to the supplied ownVpId.
    *
@@ -112,50 +111,55 @@ export class AmsRegistry {
    * @returns {ActiveMemorySet}
    */
   getOrCreate(sessionId, opts = {}) {
-    const key = sessionId || DEFAULT_SESSION_KEY;
+    const sessionKey = sessionId || DEFAULT_SESSION_KEY;
+    const ownVpId = opts.ownVpId || null;
+    const key = this._cacheKey(sessionKey, ownVpId);
     const cached = this._cache.get(key);
     if (cached) return cached.ams;
 
-    const ownVpId = opts.ownVpId || null;
     const budget = this._budget();
     const ams = new ActiveMemorySet({ ownVpId, budget });
-    const entry = { ams, ownVpId, adjustRanThisSession: false };
-    // Best-effort hydrate from disk — populates ams + entry flags.
-    this._hydrate(key, entry);
+    const entry = { ams, ownVpId, adjustRanThisSession: false, sessionKey };
+    // Best-effort hydrate Session-level compatibility metadata only.
+    this._hydrate(sessionKey, entry);
     this._cache.set(key, entry);
     return ams;
   }
 
+  _cacheKey(sessionId, ownVpId) {
+    return `${sessionId || DEFAULT_SESSION_KEY}\u0000${ownVpId || ''}`;
+  }
+
   /**
    * Read the persisted-and-rehydrated `adjustRanThisSession` flag for a
-   * group. Engine consults this on first AMS access so a reactivated group
-   * doesn't re-run `runAdjust` on its first turn back online.
+   * Session. Kept only for version-1 payload compatibility.
    *
    * @param {string|null|undefined} sessionId
    * @returns {boolean}
    */
   adjustRanThisSession(sessionId) {
-    const key = sessionId || DEFAULT_SESSION_KEY;
-    return this._cache.get(key)?.adjustRanThisSession === true;
+    const sessionKey = sessionId || DEFAULT_SESSION_KEY;
+    return [...this._cache.values()].some(entry => (
+      entry.sessionKey === sessionKey && entry.adjustRanThisSession === true
+    ));
   }
 
   /**
    * Update the cached `adjustRanThisSession` flag (does not persist on its
-   * own — call `persist()` to flush). Engine flips this true after
-   * `runAdjust` actually ran.
+   * own — call `persist()` to flush). Kept for old callers and payloads.
    *
    * @param {string|null|undefined} sessionId
    * @param {boolean} value
    */
   setAdjustRanThisSession(sessionId, value) {
-    const key = sessionId || DEFAULT_SESSION_KEY;
-    const entry = this._cache.get(key);
-    if (entry) entry.adjustRanThisSession = Boolean(value);
+    const sessionKey = sessionId || DEFAULT_SESSION_KEY;
+    for (const entry of this._cache.values()) {
+      if (entry.sessionKey === sessionKey) entry.adjustRanThisSession = Boolean(value);
+    }
   }
 
   /**
-   * Mark a group's AMS as dirty so the next persist() actually writes.
-   * The engine calls this after `runAdjust` mutates membership.
+   * Mark a Session's AMS metadata as dirty so the next persist() writes.
    *
    * @param {string|null|undefined} sessionId
    */
@@ -164,7 +168,7 @@ export class AmsRegistry {
   }
 
   /**
-   * Persist a single group's AMS to disk. No-op when the cached entry
+   * Persist a single Session's AMS metadata to disk. No-op when the cached entry
    * is missing or hasn't been marked dirty.
    *
    * `opts.adjustRanThisSession`, when supplied, also updates the cached
@@ -177,7 +181,7 @@ export class AmsRegistry {
    */
   persist(sessionId, opts = {}) {
     const key = sessionId || DEFAULT_SESSION_KEY;
-    const entry = this._cache.get(key);
+    const entry = [...this._cache.values()].find(item => item.sessionKey === key);
     if (!entry) return false;
     if (!opts.force && !this._dirty.has(key)) return false;
 
@@ -222,48 +226,25 @@ export class AmsRegistry {
   }
 
   /**
-   * Best-effort hydrate: read ams.json, re-resolve segment ids via the
-   * SegmentIndex (skipping ids that no longer exist), populate AMS, and
-   * restore the persisted `adjustRanThisSession` flag onto the cache entry.
-   * Silent on every error — a corrupt or missing file is the cold-start
-   * case, indistinguishable from "first use of this group".
+   * Best-effort hydrate of version-1 metadata. Persisted segment ids are
+   * intentionally ignored because Engine rebuilds prompt state from selected
+   * canonical content on every query. Silent on every error; corrupt or
+   * missing metadata is equivalent to a cold start.
    *
    * @private
    * @param {string} key
    * @param {AmsCacheEntry} entry
    */
-  _hydrate(key, entry) {
+  _hydrate(key, _entry) {
     const path = this.amsPath(key);
     if (!existsSync(path)) return;
     let payload;
     try { payload = JSON.parse(readFileSync(path, 'utf8') || '{}'); }
     catch { return; }
     if (!payload || typeof payload !== 'object') return;
-
-    if (payload.adjustRanThisSession === true) {
-      entry.adjustRanThisSession = true;
-    }
-
-    if (!this.memoryIndex) return;
-
-    const onDemandIds = Array.isArray(payload.onDemandIds) ? payload.onDemandIds : [];
-    const recentIds   = Array.isArray(payload.recentIds)   ? payload.recentIds   : [];
-
-    const onDemandSegs = [];
-    for (const id of onDemandIds) {
-      try {
-        const seg = this.memoryIndex.get(id);
-        if (seg) onDemandSegs.push(seg);
-      } catch { /* skip unresolvable */ }
-    }
-    if (onDemandSegs.length > 0) entry.ams.setOnDemand(onDemandSegs);
-
-    for (const id of recentIds) {
-      try {
-        const seg = this.memoryIndex.get(id);
-        if (seg) entry.ams.touchRecent(seg);
-      } catch { /* skip */ }
-    }
+    // Segment ids in older snapshots are evidence-only now. Engine rebuilds
+    // query-selected canonical content every turn, so hydrating these ids would
+    // reintroduce raw segment bodies into prompt state.
   }
 }
 

@@ -70,7 +70,7 @@ export default {
           <div class="sidebar-header-actions">
             <SidebarModeToggle v-if="!chatStore || !chatStore.sessionCatalogLoaded" view="yeaft" @flip="onModeFlip" />
             <button class="sidebar-icon-btn sidebar-work-center-header-btn" :class="{ active: chatStore && chatStore.workCenterOpen }" :disabled="workCenterAgents.length === 0" :title="tr('workCenter.title', 'Work Center')" :aria-label="tr('workCenter.title', 'Work Center')" @click="onOpenWorkCenter()">
-              <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>
+              <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path fill="currentColor" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z"/></svg>
             </button>
             <button class="sidebar-icon-btn" :title="tr('chat.sidebar.collapse', 'Collapse')" @click="$emit('toggle-sidebar')">
               <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 18h13v-2H3v2zm0-5h10v-2H3v2zm0-7v2h13V6H3zm18 9.59L17.42 12 21 8.41 19.59 7l-5 5 5 5L21 15.59z"/></svg>
@@ -85,6 +85,7 @@ export default {
       <UnifiedSessionList
         v-if="chatStore && chatStore.sessionCatalogLoaded"
         :sessions="chatStore.sessionCatalog"
+        :project-store="chatStore"
         :active-route="chatStore.activeSessionRoute"
         :is-session-unread="isCatalogSessionUnread"
         :processing-conversations="chatStore.processingConversations"
@@ -93,6 +94,7 @@ export default {
         :work-center-open="chatStore.workCenterOpen"
         @select="chatStore.openCatalogSession"
         @create="onUnifiedCreate"
+        @create-in-project="onUnifiedCreateInProject"
         @close-work-center="chatStore.leaveWorkCenter"
         @action="onUnifiedSessionAction"
       />
@@ -168,7 +170,7 @@ export default {
                       {{ $t('yeaft.session.openSettings') }}
                     </button>
                     <button type="button" role="menuitem" class="session-menu-item" @click="onRemoveFromList(s.raw)">
-                      {{ $t('yeaft.session.removeFromList') }}
+                      {{ $t('sidebar.sessions.remove') }}
                     </button>
                   </div>
                 </div>
@@ -193,7 +195,8 @@ export default {
            new-conversation modal. -->
       <SessionCreateModal
         v-if="sessionCreateOpen"
-        @close="sessionCreateOpen = false"
+        :initial-agent-id="sessionCreateProject?.legacyAgentId || null"
+        @close="closeSessionCreate"
         @created="onSessionCreated"
       />
 
@@ -225,6 +228,7 @@ export default {
       // both "create new" and "restore from disk" — the standalone
       // sessionRestoreOpen flag + SessionRestoreModal are gone.
       sessionCreateOpen: false,
+      sessionCreateProject: null,
       // task-yeaft-group-editor: per-row action menu only — the rename
       // and delete modals have been folded into the unified
       // SessionSettingsModal owned by YeaftPage.
@@ -260,7 +264,7 @@ export default {
       this.openGroupSettings({ id: pending.sessionId, agentId: pending.agentId }, pending.section || 'session');
     }
     this._agentUpgradeAckHandler = (e) => {
-      const { agentId, success, error, alreadyLatest, version, reason, currentNode, requiredNode } = e.detail || {};
+      const { agentId, success, error, alreadyLatest, version, reason, currentNode, requiredNode, minimumVersion } = e.detail || {};
       if (!agentId) return;
       if (!success) {
         delete this.upgradingAgents[agentId];
@@ -271,7 +275,14 @@ export default {
             version: version || '',
           }));
         } else {
-          alert(`Agent upgrade failed: ${error || 'Unknown error'}`);
+          if (reason === 'manual_upgrade_required') {
+            alert(this.$t('chat.agent.manualUpgradeRequired', {
+              version: version || '?',
+              minimum: minimumVersion || '?',
+            }));
+          } else {
+            alert(`Agent upgrade failed: ${error || 'Unknown error'}`);
+          }
         }
       } else if (alreadyLatest) {
         delete this.upgradingAgents[agentId];
@@ -333,7 +344,7 @@ export default {
     },
     // Phase 4: chat container removed. Session list is just sessions now.
     sessionList() {
-      return buildYeaftSidebarSessionList({
+      const rows = buildYeaftSidebarSessionList({
         sessions: this.sessionsStore?.sessionList || [],
         activeSessionId: this.activeSessionId,
         activeSessionKey: this.activeSessionKey,
@@ -342,6 +353,11 @@ export default {
           ? this.onlineAgents.map(agent => agent.id)
           : undefined,
       });
+      const hidden = new Set((this.chatStore?.hiddenSessionCatalog || [])
+        .filter(row => row?.runtimeProvider === 'yeaft')
+        .map(row => `${row.routeRef?.agentId || ''}\u001f${row.routeRef?.sessionId || ''}`));
+      const currentAgentId = this.chatStore?.currentAgent || '';
+      return rows.filter(row => !hidden.has(`${row.raw?.agentId || currentAgentId}\u001f${row.id || ''}`));
     },
     chatStore() {
       // Needed for `sessionCrudRequest` and the Yeaft session pin menu.
@@ -458,8 +474,20 @@ export default {
     // "Restore from disk" panel, so onOpenSessionRestore +
     // onSessionRestored are gone (folded into SessionCreateModal's own
     // `created` flow).
-    onOpenSessionCreate() { this.sessionCreateOpen = true; },
+    onOpenSessionCreate() {
+      this.sessionCreateProject = null;
+      this.sessionCreateOpen = true;
+    },
     onUnifiedCreate() { this.onOpenSessionCreate(); },
+    onUnifiedCreateInProject({ project } = {}) {
+      if (!project?.id) return;
+      this.sessionCreateProject = project;
+      this.sessionCreateOpen = true;
+    },
+    closeSessionCreate() {
+      this.sessionCreateOpen = false;
+      this.sessionCreateProject = null;
+    },
     onUnifiedSessionAction({ action, row, title, sessions } = {}) {
       if (!row?.routeRef) return;
       const s = this.chatStore || this.store;
@@ -472,17 +500,24 @@ export default {
         s?.toggleCatalogSessionPin?.(row);
       } else if (runtimeProvider === 'yeaft' && action === 'settings') {
         this.openGroupSettings({ id: sessionId, agentId }, 'session');
-      } else if (runtimeProvider === 'yeaft' && action === 'remove') {
-        this.onRemoveFromList({ id: sessionId, agentId });
       } else if (action === 'remove') {
-        if (confirm(this.$t('chat.delete.confirm'))) {
-          s?.leaveYeaft?.();
-          s?.closeSession?.(sessionId, agentId);
-        }
+        s?.hideCatalogSession?.(row);
       }
     },
-    onSessionCreated(_group) {
-      // groups store auto-activates via applyCrudResult; modal closes itself.
+    async onSessionCreated(session) {
+      const project = this.sessionCreateProject;
+      this.closeSessionCreate();
+      if (!project || !session?.id) return;
+      const store = this.chatStore || this.store;
+      const agentId = session.agentId || project.legacyAgentId || store?.currentAgent || null;
+      const result = await store?.mutateProject?.('move_session', {
+        sessionId: session.id,
+        projectId: project.legacyProjectId || project.id,
+      }, agentId);
+      if (!result?.ok) {
+        const message = result?.error?.message || result?.error?.code || 'unknown';
+        alert(this.$t('sidebar.projects.assignFailed', { name: project.name, message }));
+      }
     },
     onSelectGroup(g) {
       if (!g || !g.id) return;
@@ -618,15 +653,26 @@ export default {
         });
       }
     },
-    // "Remove from list" — soft-archive only. Server marks
-    // is_archived=1 in yeaft_sessions; the agent's on-disk session is
-    // untouched. Real delete (DELETE FROM yeaft_sessions + on-disk
-    // cleanup) lives in SessionSettingsModal's danger zone.
+    // "Remove from list" only hides the Session from this user's sidebar.
+    // It intentionally does not call the Agent archive/delete APIs: the
+    // on-disk Session and its messages must stay available for re-adding.
     onRemoveFromList(g) {
       this.groupMenu = { open: false, groupId: null };
       if (!g || !g.id) return;
-      const fn = this.chatStore && this.chatStore.sessionCrudRequest;
-      if (typeof fn === 'function') fn.call(this.chatStore, 'archive', { sessionId: g.id }, { agentId: g.agentId || null });
+      const agentId = g.agentId || this.chatStore?.currentAgent || null;
+      if (!agentId || typeof this.chatStore?.hideCatalogSession !== 'function') return;
+      const catalogKey = `yeaft:${agentId}:${g.id}`;
+      const row = this.chatStore.sessionCatalog?.find(item => item.catalogKey === catalogKey) || {
+        catalogKey,
+        runtimeProvider: 'yeaft',
+        routeRef: { runtimeProvider: 'yeaft', agentId, sessionId: g.id },
+        title: g.name || g.id,
+        workDir: g.workDir || '',
+        agentName: this.sessionAgentName(g),
+        availability: this.onlineAgents.some(agent => agent.id === agentId) ? 'online' : 'offline',
+        pinned: !!g.pinned,
+      };
+      this.chatStore.hideCatalogSession(row);
     },
     groupDisplayName(g) {
       if (!g) return '';

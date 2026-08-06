@@ -1,35 +1,32 @@
 /**
  * memory/budget.js — DESIGN-PROMPT §3 ③ Memory.
  *
- * Memory budget = `min(100_000, modelMaxContext * 0.20)`.
+ * Prompt-facing memory budget = `min(6_000, modelMaxContext * 0.05)`.
+ * Memory is supporting context, not a second transcript. A small hard ceiling
+ * prevents large-context models from turning weakly related memory into tens of
+ * thousands of prompt tokens.
  *
- * Then split across the three AMS layers (resident / recent / onDemand)
- * with a configurable ratio. The defaults are tuned per DESIGN-PROMPT §3
- * (Resident gets the largest share because UserProfile + CoreMemory
- * collapse into Resident now):
- *
- *   resident   60%   →  24k of a 40k pool (Layer-A summaries +
- *                                          UserProfile + CoreMemory pinned)
- *   recent     15%   →  6k                (LRU of recently-used segments)
- *   onDemand   25%   →  10k               (this turn's FTS recall)
+ * Canonical content is packed into Resident. Recent and OnDemand retain zero
+ * prompt budget because their segment bodies are evidence, not user-facing
+ * memory. FTS still ranks those segments to select the relevant content scopes.
  *
  * Concrete budgets for common models:
- *   200K context → 40K total (20% × 200K)
- *   1M  context → 100K total (capped)
- *   128K context → 25.6K total
+ *   200K context → 6K total (hard cap)
+ *   128K context → 6K total (hard cap)
+ *    64K context → 3.2K total
  *
  * Token counting here is approximate (chars / 4) — accurate enough for
  * budget enforcement. The engine has a real tokenizer for prompt
  * assembly; budget here is a guard rail, not the source of truth.
  */
 
-export const ABSOLUTE_CAP = 100_000;
-export const MODEL_FRACTION = 0.20;
+export const ABSOLUTE_CAP = 6_000;
+export const MODEL_FRACTION = 0.05;
 
 export const DEFAULT_RATIO = {
-  resident: 0.60,
-  recent:   0.15,
-  onDemand: 0.25,
+  resident: 1,
+  recent:   0,
+  onDemand: 0,
 };
 
 /**

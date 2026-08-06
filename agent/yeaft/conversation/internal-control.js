@@ -11,6 +11,7 @@ export function isInternalControlContent(content) {
   if (typeof content !== 'string') return false;
   const text = content.trimStart();
   return text.startsWith('<task-result ')
+    || text.startsWith('[system note] Async task completion for ')
     || /^\[system note\] You have called \S+ with the same arguments \d+ times\./.test(text);
 }
 

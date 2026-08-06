@@ -286,19 +286,13 @@ export function handleMessage(store, msg) {
       store.applySessionCatalogSnapshot(
         msg.catalog,
         msg.projectsAuthoritative === true ? msg.projects : null,
+        msg.hiddenCatalog,
       );
       break;
 
-    case 'session_ui_metadata_updated': {
-      if (!store.finishSessionCatalogMutation?.(msg)) break;
-      if (msg.ok !== true) break;
-      const row = store.sessionCatalog.find(item => item.catalogKey === msg.catalogKey);
-      if (row) {
-        row.pinned = msg.pinned === true;
-        row.sortRank = Number.isFinite(msg.sortRank) ? msg.sortRank : null;
-      }
+    case 'session_ui_metadata_updated':
+      store.finishSessionCatalogMutation?.(msg);
       break;
-    }
 
     case 'session_catalog_reorder_result':
       store.finishSessionCatalogMutation?.(msg);
@@ -424,7 +418,14 @@ export function handleMessage(store, msg) {
       break;
 
     case 'yeaft_history_window': {
-      const conversationId = handleYeaftHistoryWindow(store, msg);
+      const pendingWindow = store.pendingYeaftHistoryWindow?.(msg);
+      if (!pendingWindow) break;
+      if (pendingWindow.pending?.prefetch === true) msg.prefetch = true;
+      // Re-check the exact pending object immediately before merging. Owner and
+      // Session cleanup replaces the pending map, so a response captured before
+      // that transition cannot write plaintext rows after it.
+      if (store.pendingYeaftHistoryWindow?.(msg)?.pending !== pendingWindow.pending) break;
+      const conversationId = msg.error ? null : handleYeaftHistoryWindow(store, msg);
       store.handleYeaftHistoryWindow(msg, conversationId);
       break;
     }
@@ -477,9 +478,11 @@ export function handleMessage(store, msg) {
     case 'yeaft_debug_history': {
       const requestId = typeof msg?.requestId === 'string' ? msg.requestId : '';
       const isDetailFetch = typeof msg?.detailTurnId === 'string' && msg.detailTurnId;
-      if (requestId && !isDetailFetch && requestId !== store._yeaftDebugHistoryLatestListRequestId) {
-        break;
-      }
+      const expectedRequestId = isDetailFetch
+        ? store._yeaftDebugHistoryLatestDetailRequestId
+        : store._yeaftDebugHistoryLatestListRequestId;
+      if (expectedRequestId && requestId !== expectedRequestId) break;
+      if (!expectedRequestId && requestId) break;
       if (store._fetchYeaftDebugHistoryTimer) {
         clearTimeout(store._fetchYeaftDebugHistoryTimer);
         store._fetchYeaftDebugHistoryTimer = null;
@@ -599,6 +602,16 @@ export function handleMessage(store, msg) {
       store.yeaftDebugHistoryLoading = false;
       store.yeaftDebugHistoryError = typeof msg?.error === 'string' ? msg.error : null;
       store.yeaftDebugHistoryFetchedAt = Date.now();
+      // Turn-level debug panel: a detail fetch that matches the panel's
+      // current turn flips status to ready/error. Stale detail responses
+      // were already dropped by the requestId guard above.
+      if (isDetailFetch && store.yeaftDebugPanel && store.yeaftDebugPanel.turnId === msg.detailTurnId) {
+        store.yeaftDebugPanel = {
+          ...store.yeaftDebugPanel,
+          status: store.yeaftDebugHistoryError ? 'error' : 'ready',
+          error: store.yeaftDebugHistoryError,
+        };
+      }
       break;
     }
 
@@ -952,7 +965,7 @@ export function handleMessage(store, msg) {
 
     case 'upgrade_agent_ack':
       console.log(`[Agent] Upgrade ${msg.success ? 'succeeded' : 'failed'} for agent: ${msg.agentId}`, msg.error || '');
-      window.dispatchEvent(new CustomEvent('agent-upgrade-ack', { detail: { agentId: msg.agentId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode } }));
+      window.dispatchEvent(new CustomEvent('agent-upgrade-ack', { detail: { agentId: msg.agentId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode, minimumVersion: msg.minimumVersion } }));
       break;
 
     // Workbench messages - forward to components
@@ -1060,6 +1073,31 @@ export function handleMessage(store, msg) {
         };
       }
       break;
+
+    // Local telemetry settings. Only bounded config is returned; raw trace
+    // payloads remain agent-local.
+    case 'telemetry_settings':
+    case 'telemetry_settings_updated': {
+      const record = {
+        enabled: msg.enabled !== false,
+        retentionDays: msg.retentionDays ?? 3,
+        flushIntervalMs: msg.flushIntervalMs ?? 1000,
+        maxQueueSize: msg.maxQueueSize ?? 5000,
+        rawExchangeMaxBytes: msg.rawExchangeMaxBytes ?? 524288,
+        traceTextMaxBytes: msg.traceTextMaxBytes ?? 262144,
+        error: msg.error || null,
+        loaded: true,
+        at: Date.now(),
+      };
+      store.telemetrySettings = record;
+      const pending = store._telemetryPending;
+      const key = msg.type === 'telemetry_settings' ? 'load' : 'update';
+      if (pending && pending[key]) {
+        pending[key](record);
+        delete pending[key];
+      }
+      break;
+    }
 
     // Search settings — Search tab in YeaftSettings. The store's
     // `loadSearchSettings` / `updateSearchSettings` register one-shot

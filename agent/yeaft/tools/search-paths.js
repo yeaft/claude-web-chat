@@ -34,7 +34,7 @@ function expandBraces(pattern) {
   ));
 }
 
-function globToRegExp(pattern) {
+function globToRegExpSource(pattern, separator = '/') {
   let source = '';
   for (let index = 0; index < pattern.length; index += 1) {
     const char = pattern[index];
@@ -42,19 +42,33 @@ function globToRegExp(pattern) {
       index += 1;
       if (pattern[index + 1] === '/') {
         index += 1;
-        source += '(?:.*/)?';
+        source += `(?:[\\s\\S]*${separator})?`;
       } else {
-        source += '.*';
+        source += '[\\s\\S]*';
       }
     } else if (char === '*') {
-      source += '[^/]*';
+      source += separator === '/' ? '[^/]*' : '[^\\\\/]*';
     } else if (char === '?') {
-      source += '[^/]';
+      source += separator === '/' ? '[^/]' : '[^\\\\/]';
+    } else if (char === '/') {
+      source += separator;
     } else {
       source += char.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
     }
   }
-  return new RegExp(`^${source}$`);
+  return source;
+}
+
+function globToRegExp(pattern) {
+  return new RegExp(`^${globToRegExpSource(pattern)}$`);
+}
+
+/** Compile the public glob dialect for fd --full-path on POSIX and Windows. */
+export function createFdPathRegex(glob) {
+  const normalizedGlob = String(glob || '').replace(/\\/g, '/');
+  const alternatives = expandBraces(normalizedGlob || '**/*')
+    .map(pattern => globToRegExpSource(pattern, '[\\\\/]'));
+  return `(?:^|[\\\\/])(?:${alternatives.join('|')})$`;
 }
 
 export function createSearchPathMatcher({ glob, type } = {}) {
@@ -105,4 +119,11 @@ export function waitForAbortable(promise, signal) {
       error => { cleanup(); reject(error); },
     );
   });
+}
+
+export class SearchBackendLimitError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'SearchBackendLimitError';
+  }
 }

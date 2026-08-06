@@ -268,6 +268,25 @@ export default {
                   </div>
                 </div>
                 <div class="sp-row">
+                  <div class="sp-row-left">
+                    <span class="sp-label">{{ $t('settings.general.telemetry') }}</span>
+                    <span class="sp-desc">{{ $t('settings.general.telemetryDesc') }}</span>
+                  </div>
+                  <button class="sp-btn sp-btn-muted" @click="toggleTelemetry" :disabled="telemetrySaving">
+                    {{ telemetryEnabled ? $t('settings.general.telemetryOn') : $t('settings.general.telemetryOff') }}
+                  </button>
+                </div>
+                <div v-if="telemetrySettings" class="sp-row sp-row-stack">
+                  <div class="sp-row-left">
+                    <span class="sp-label">{{ $t('settings.general.telemetryRawLimit') }}</span>
+                    <span class="sp-desc">{{ formatBytes(telemetrySettings.rawExchangeMaxBytes) }}</span>
+                  </div>
+                  <div class="sp-actions-row">
+                    <input class="sp-input sp-input-small" type="number" min="0" max="4194304" step="65536" v-model.number="telemetryDraft.rawExchangeMaxBytes">
+                    <button class="sp-btn sp-btn-muted" @click="saveTelemetry" :disabled="telemetrySaving">{{ $t('common.save') }}</button>
+                  </div>
+                </div>
+                <div class="sp-row">
                   <span class="sp-label">{{ $t('files.officePreviewMode') }}</span>
                   <div class="sp-custom-select" :class="{ open: openDropdown === 'officePreview' }" v-click-outside="() => closeDropdown('officePreview')">
                     <button class="sp-custom-select-trigger" @click="toggleDropdown('officePreview')">
@@ -418,21 +437,29 @@ export default {
                  standalone YeaftSettings modal — everything Yeaft-scoped
                  lives behind this single nav entry. -->
             <div v-show="activeTab === 'yeaft'" class="settings-pane settings-pane-yeaft">
-              <div class="sp-subtab-bar">
+              <div class="sp-subtab-bar" role="tablist" :aria-label="$t('settings.tabs.yeaft')">
                 <button v-for="st in yeaftSubTabs" :key="st.key"
                   class="sp-subtab"
+                  type="button"
+                  role="tab"
+                  :id="'yeaft-settings-tab-' + st.key"
+                  :aria-controls="'yeaft-settings-panel-' + st.key"
+                  :aria-selected="yeaftSubTab === st.key"
                   :class="{ active: yeaftSubTab === st.key }"
                   @click="yeaftSubTab = st.key">
                   {{ st.label }}
                 </button>
               </div>
-              <div v-show="yeaftSubTab === 'vp'" class="sp-subpane">
+              <div v-show="yeaftSubTab === 'vp'" id="yeaft-settings-panel-vp" class="sp-subpane"
+                role="tabpanel" aria-labelledby="yeaft-settings-tab-vp">
                 <VpCrudPanel :initial-edit-vp-id="initialEditVpId" />
               </div>
-              <div v-show="yeaftSubTab === 'search'" class="sp-subpane">
+              <div v-show="yeaftSubTab === 'search'" id="yeaft-settings-panel-search" class="sp-subpane"
+                role="tabpanel" aria-labelledby="yeaft-settings-tab-search">
                 <SearchSettingsTab @message="onLlmMessage" />
               </div>
-              <div v-show="yeaftSubTab === 'mcp'" class="sp-subpane">
+              <div v-show="yeaftSubTab === 'mcp'" id="yeaft-settings-panel-mcp" class="sp-subpane"
+                role="tabpanel" aria-labelledby="yeaft-settings-tab-mcp">
                 <McpTab @message="onLlmMessage" />
               </div>
             </div>
@@ -528,6 +555,15 @@ export default {
       selectedLocale: chatStore.locale,
       openDropdown: null,
       officePreviewMode: localStorage.getItem('officePreviewMode') || 'local',
+      telemetryDraft: {
+        enabled: true,
+        retentionDays: 3,
+        flushIntervalMs: 1000,
+        maxQueueSize: 5000,
+        rawExchangeMaxBytes: 524288,
+        traceTextMaxBytes: 262144,
+      },
+      telemetrySaving: false,
       ssoBoundMessage: '',
       ssoConflictMessage: '',
       qrDataUrl: '',
@@ -582,6 +618,12 @@ export default {
     currentTabLabel() {
       const tab = this.visibleTabs.find(t => t.key === this.activeTab);
       return tab?.label || '';
+    },
+    telemetrySettings() {
+      return this.chatStore.telemetrySettings;
+    },
+    telemetryEnabled() {
+      return this.telemetryDraft.enabled !== false;
     },
     themeOptions() {
       return [
@@ -681,6 +723,7 @@ export default {
   mounted() {
     if (this.visible) {
       this.applyInitialEntryPoint();
+      this.loadTelemetry();
       return this.loadData();
     }
     return undefined;
@@ -692,6 +735,7 @@ export default {
     visible(val) {
       if (val) {
         this.applyInitialEntryPoint();
+        this.loadTelemetry();
         this.loadData();
         if (this.activeTab === 'sandbox') this.loadSandbox();
       } else {
@@ -834,6 +878,33 @@ export default {
     trackOverlayPointerDown,
     trackOverlayPointerUp,
     clearOverlayPointerGesture,
+
+    async loadTelemetry() {
+      const settings = await this.chatStore.loadTelemetrySettings();
+      if (settings && !settings.error) this.telemetryDraft = { ...this.telemetryDraft, ...settings };
+    },
+
+    async saveTelemetry() {
+      this.telemetrySaving = true;
+      try {
+        const settings = await this.chatStore.updateTelemetrySettings(this.telemetryDraft);
+        if (settings && !settings.error) this.telemetryDraft = { ...this.telemetryDraft, ...settings };
+      } finally {
+        this.telemetrySaving = false;
+      }
+    },
+
+    async toggleTelemetry() {
+      this.telemetryDraft = { ...this.telemetryDraft, enabled: !this.telemetryEnabled };
+      await this.saveTelemetry();
+    },
+
+    formatBytes(value) {
+      const bytes = Number(value);
+      if (!Number.isFinite(bytes) || bytes < 1024) return `${Math.max(0, bytes || 0)} B`;
+      if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    },
 
     onSettingsOverlayClick(event) {
       if (shouldDismissFromOverlayClick(event)) this.$emit('close');

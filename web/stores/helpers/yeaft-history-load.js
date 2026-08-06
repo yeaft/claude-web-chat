@@ -76,6 +76,10 @@ export function beginYeaftHistoryLoad(store, {
     if (!previous.loaded) {
       next.hasMore = false;
       next.oldestSeq = null;
+      next.serverOldestFetchedSeq = null;
+      next.serverHasMore = false;
+      next.gapQueue = [];
+      next.requestedBeforeSeqs = [];
       next.count = 0;
     }
   }
@@ -163,7 +167,9 @@ export function syncActiveYeaftHistoryLoad(store) {
   store.yeaftLoadingMoreHistory = !!state?.loading;
   store.yeaftHistoryLoadError = state?.error || null;
   store.yeaftHasMoreHistory = !!state?.hasMore;
-  store.yeaftOldestLoadedSeq = Number.isFinite(state?.oldestSeq) ? state.oldestSeq : null;
+  store.yeaftOldestLoadedSeq = Number.isFinite(state?.serverOldestFetchedSeq)
+    ? state.serverOldestFetchedSeq
+    : (Number.isFinite(state?.oldestSeq) ? state.oldestSeq : null);
   return state;
 }
 

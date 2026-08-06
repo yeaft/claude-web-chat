@@ -11,7 +11,7 @@ import {
 import { agents, pendingFiles, trackUserTurn, webClients } from '../context.js';
 import {
   sendToWebClient, forwardToAgent,
-  broadcastAgentList, broadcastSessionCatalog,
+  broadcastAgentList, broadcastSessionCatalog, buildSessionCatalog, buildHiddenSessionCatalog,
   verifyConversationOwnership, verifyAgentOwnership
 } from '../ws-utils.js';
 import { routeSessionPin } from './session-pin-router.js';
@@ -98,6 +98,85 @@ function persistSessionPin(userId, routeRef, pinned) {
     pinned,
     sortRank: current?.sortRank ?? null,
   }]);
+}
+
+function catalogMetadataUpdates(rows) {
+  const seen = new Set();
+  const updates = [];
+  for (const row of rows) {
+    const routeRef = row?.routeRef;
+    if (!row?.catalogKey || seen.has(row.catalogKey)
+        || !routeRef?.runtimeProvider || !routeRef?.agentId || !routeRef?.sessionId) return null;
+    seen.add(row.catalogKey);
+    updates.push({
+      catalogKey: row.catalogKey,
+      runtimeProvider: routeRef.runtimeProvider,
+      agentId: routeRef.agentId,
+      sessionId: routeRef.sessionId,
+      pinned: row.pinned === true,
+      hidden: row.hidden === true,
+      sortRank: updates.length,
+    });
+  }
+  return updates;
+}
+
+function catalogOrderUpdates(client, items) {
+  if (!client?.userId || !Array.isArray(items) || items.length === 0) return null;
+  const canonical = buildSessionCatalog(client.userId, client.role);
+  const hidden = buildHiddenSessionCatalog(client.userId, client.role);
+  if (canonical.length !== items.length) return null;
+  const canonicalByKey = new Map(canonical.map(row => [row.catalogKey, row]));
+  if (canonicalByKey.size !== canonical.length) return null;
+
+  const seen = new Set();
+  const orderedVisible = [];
+  for (const item of items) {
+    const row = canonicalByKey.get(item?.catalogKey);
+    const routeRef = item?.routeRef;
+    if (!row || seen.has(item.catalogKey)
+        || routeRef?.runtimeProvider !== row.routeRef?.runtimeProvider
+        || routeRef?.agentId !== row.routeRef?.agentId
+        || routeRef?.sessionId !== row.routeRef?.sessionId) return null;
+    seen.add(item.catalogKey);
+    orderedVisible.push(row);
+  }
+  if (seen.size !== canonical.length) return null;
+
+  // Hidden rows are deliberately absent from a drag payload, but their stale
+  // ranks must not collide with the newly ordered visible catalog when they
+  // are restored. Normalize both sets in the same transaction, preserving the
+  // visible order chosen by the client and the current hidden-row order.
+  return catalogMetadataUpdates([...orderedVisible, ...hidden]);
+}
+
+function catalogVisibilityUpdates(client, row, hidden) {
+  if (!client?.userId || !row?.catalogKey || !row?.routeRef) return null;
+  const visible = buildSessionCatalog(client.userId, client.role);
+  const hiddenRows = buildHiddenSessionCatalog(client.userId, client.role);
+  const visibleByKey = new Map(visible.map(item => [item.catalogKey, item]));
+  const hiddenByKey = new Map(hiddenRows.map(item => [item.catalogKey, item]));
+  if (visibleByKey.size !== visible.length || hiddenByKey.size !== hiddenRows.length) return null;
+
+  if (hidden) {
+    const visibleRow = visibleByKey.get(row.catalogKey);
+    if (!visibleRow || hiddenByKey.has(row.catalogKey)) return null;
+    return catalogMetadataUpdates([
+      ...visible.filter(item => item.catalogKey !== row.catalogKey),
+      { ...visibleRow, hidden: true },
+      ...hiddenRows,
+    ]);
+  }
+
+  const hiddenRow = hiddenByKey.get(row.catalogKey);
+  if (!hiddenRow || visibleByKey.has(row.catalogKey)) return null;
+
+  // The UI adds a restored Session after the visible list. Keep that policy on
+  // the server and also normalize any still-hidden rows, so no stale rank can
+  // collide with this restored row during a later refresh or restore.
+  const restored = { ...hiddenRow, hidden: false };
+  const remainingHidden = hiddenRows.filter(item => item.catalogKey !== restored.catalogKey);
+  return catalogMetadataUpdates([...visible, restored, ...remainingHidden]);
 }
 
 export function groupOnlineYeaftSessions(rows, agentRegistry = agents) {
@@ -443,6 +522,11 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
 
       try {
         sessionDb.setActive(msg.conversationId, false);
+        sessionUiMetadataDb.deleteForRoute(client.userId, {
+          runtimeProvider: persisted?.provider || 'claude-code',
+          agentId: deleteAgentId,
+          sessionId: msg.conversationId,
+        });
         const deleteAgent = agents.get(deleteAgentId);
         deleteAgent?.conversations.delete(msg.conversationId);
         await broadcastAgentList();
@@ -522,43 +606,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
 
     case 'reorder_session_catalog': {
       if (!client.userId || !Array.isArray(msg.sessions)) break;
-      const updates = [];
-      for (const [index, item] of msg.sessions.entries()) {
-        const routeRef = item?.routeRef;
-        if (!item?.catalogKey || !routeRef?.runtimeProvider) { updates.length = 0; break; }
-        const { runtimeProvider, agentId, sessionId } = routeRef;
-        let expectedCatalogKey = null;
-        if (runtimeProvider === 'yeaft') {
-          if (!agentId || !sessionId || !yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) {
-            updates.length = 0;
-            break;
-          }
-          expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
-        } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
-          if (!agentId || !sessionId
-            || (!CONFIG.skipAuth && !verifyConversationOwnership(sessionId, client.userId, client.role))) {
-            updates.length = 0;
-            break;
-          }
-          const row = sessionDb.get(sessionId);
-          if (!row || row.agent_id !== agentId || (row.provider || 'claude-code') !== runtimeProvider) {
-            updates.length = 0;
-            break;
-          }
-          expectedCatalogKey = chatCatalogKey(sessionId);
-        }
-        if (expectedCatalogKey !== item.catalogKey) { updates.length = 0; break; }
-        updates.push({
-          catalogKey: expectedCatalogKey,
-          runtimeProvider,
-          agentId,
-          sessionId,
-          pinned: item.pinned === true,
-          sortRank: index,
-        });
-      }
+      const updates = catalogOrderUpdates(client, msg.sessions);
       let persisted = false;
-      if (updates.length === msg.sessions.length && updates.length > 0) {
+      if (updates) {
         try {
           persisted = sessionUiMetadataDb.applyBatch(client.userId, updates);
           if (persisted) await broadcastSessionCatalog(client.userId);
@@ -579,31 +629,67 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (!client.userId || !msg.catalogKey || !msg.routeRef?.runtimeProvider) break;
       const { runtimeProvider, agentId, sessionId } = msg.routeRef;
       let expectedCatalogKey = null;
+      let sessionRow = null;
       if (runtimeProvider === 'yeaft') {
-        if (agentId && sessionId && yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)) {
-          expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
-        }
+        sessionRow = agentId && sessionId
+          ? yeaftSessionDb.getForAgent(client.userId, agentId, sessionId)
+          : null;
+        if (sessionRow) expectedCatalogKey = yeaftCatalogKey(agentId, sessionId);
       } else if (runtimeProvider === 'claude-code' || runtimeProvider === 'copilot') {
-        const row = sessionId ? sessionDb.get(sessionId) : null;
+        sessionRow = sessionId ? sessionDb.get(sessionId) : null;
         if (agentId && sessionId
           && (CONFIG.skipAuth || verifyConversationOwnership(sessionId, client.userId, client.role))
-          && row?.agent_id === agentId
-          && (row.provider || 'claude-code') === runtimeProvider) {
+          && sessionRow?.agent_id === agentId
+          && (sessionRow.provider || 'claude-code') === runtimeProvider) {
           expectedCatalogKey = chatCatalogKey(sessionId);
         }
       }
       const authorized = expectedCatalogKey === msg.catalogKey;
+      let currentMetadata = null;
+      if (authorized) {
+        try {
+          currentMetadata = sessionUiMetadataDb.get(client.userId, expectedCatalogKey);
+        } catch (e) {
+          console.warn('[Server] Session metadata read failed:', e?.message || e);
+        }
+      }
+      const persistedPinned = runtimeProvider === 'yeaft'
+        ? (sessionRow?.pinned === true || sessionRow?.isPinned === true)
+        : sessionRow?.is_pinned === 1;
+      const nextPinned = typeof msg.pinned === 'boolean'
+        ? msg.pinned
+        : (currentMetadata?.pinned ?? !!persistedPinned);
+      const hasHidden = typeof msg.hidden === 'boolean';
+      const nextHidden = hasHidden
+        ? msg.hidden
+        : currentMetadata?.hidden === true;
+      const nextSortRank = Number.isFinite(msg.sortRank)
+        ? msg.sortRank
+        : (currentMetadata?.sortRank ?? null);
+      const hasSortRank = Object.prototype.hasOwnProperty.call(msg, 'sortRank');
       let persisted = false;
       if (authorized) {
         try {
-          persisted = sessionUiMetadataDb.applyBatch(client.userId, [{
-            catalogKey: expectedCatalogKey,
-            runtimeProvider,
-            agentId,
-            sessionId,
-            pinned: msg.pinned === true,
-            sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
-          }]);
+          // Only an explicit hidden mutation changes catalog membership. A
+          // pinned-only first update has no metadata row yet, so comparing an
+          // implicit undefined state to false would incorrectly treat it as a
+          // restore and reject the valid visible route.
+          const visibilityChanged = hasHidden && (currentMetadata?.hidden === true) !== nextHidden;
+          const updates = visibilityChanged
+            ? catalogVisibilityUpdates(client, {
+              catalogKey: expectedCatalogKey,
+              routeRef: { runtimeProvider, agentId, sessionId },
+            }, nextHidden)
+            : [{
+              catalogKey: expectedCatalogKey,
+              runtimeProvider,
+              agentId,
+              sessionId,
+              pinned: nextPinned,
+              hidden: nextHidden,
+              ...(hasSortRank ? { sortRank: nextSortRank } : {}),
+            }];
+          persisted = updates ? sessionUiMetadataDb.applyBatch(client.userId, updates) : false;
           if (persisted) await broadcastSessionCatalog(client.userId);
         } catch (e) {
           console.warn('[Server] Session metadata update failed:', e?.message || e);
@@ -616,8 +702,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         catalogKey: msg.catalogKey,
         routeRef: msg.routeRef,
         ...(persisted ? {
-          pinned: msg.pinned === true,
-          sortRank: Number.isFinite(msg.sortRank) ? msg.sortRank : null,
+          pinned: nextPinned,
+          hidden: nextHidden,
+          sortRank: nextSortRank,
         } : { error: 'Permission denied or stale Session route' }),
       });
       break;
@@ -1178,6 +1265,10 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
         ...(Number.isFinite(msg.afterSeq) ? { afterSeq: msg.afterSeq } : {}),
         ...(typeof msg.afterMessageId === 'string' ? { afterMessageId: msg.afterMessageId } : {}),
+        ...(Number.isFinite(msg.maxRows) ? { maxRows: msg.maxRows } : {}),
+        ...(Number.isFinite(msg.maxBytes) ? { maxBytes: msg.maxBytes } : {}),
+        ...(typeof msg.streamId === 'string' ? { streamId: msg.streamId } : {}),
+        ...(Number.isFinite(msg.revision) ? { revision: msg.revision } : {}),
         _requestClientId: clientId,
       };
       if (forwarded.perfTraceId) {
@@ -1209,7 +1300,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
         limit: typeof msg.limit === 'number' ? msg.limit : 50,
         beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
-        includeTotal: msg.includeTotal !== false,
+        ...(msg.cursor && typeof msg.cursor === 'object' ? { cursor: msg.cursor } : {}),
+        includeTotal: msg.includeTotal === true,
+        ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
         _requestClientId: clientId,
       });
       break;
@@ -1229,6 +1322,8 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         senderKey: typeof msg.senderKey === 'string' ? msg.senderKey.slice(0, 103) : '',
         limit: typeof msg.limit === 'number' ? msg.limit : 20,
         beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
+        ...(msg.cursor && typeof msg.cursor === 'object' ? { cursor: msg.cursor } : {}),
+        ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
         _requestClientId: clientId,
       });
       break;
@@ -1244,10 +1339,15 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         type: 'yeaft_load_history_window',
         sessionId: windowSessionId,
         requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+        entryId: typeof msg.entryId === 'string' ? msg.entryId : null,
+        indexGeneration: typeof msg.indexGeneration === 'number' ? msg.indexGeneration : null,
+        entryStartSeq: typeof msg.entryStartSeq === 'number' ? msg.entryStartSeq : null,
         anchorMessageId: typeof msg.anchorMessageId === 'string' ? msg.anchorMessageId : null,
         anchorSeq: typeof msg.anchorSeq === 'number' ? msg.anchorSeq : null,
         beforeTurns: typeof msg.beforeTurns === 'number' ? msg.beforeTurns : 3,
         afterTurns: typeof msg.afterTurns === 'number' ? msg.afterTurns : 3,
+        maxRows: typeof msg.maxRows === 'number' ? msg.maxRows : 200,
+        maxBytes: typeof msg.maxBytes === 'number' ? msg.maxBytes : 512 * 1024,
         _requestClientId: clientId,
       });
       break;
@@ -1263,6 +1363,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         sessionId: msg.sessionId || null,
         requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
         beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
+        pageKind: msg.pageKind === 'gap' ? 'gap' : 'server',
+        gapStopAtSeq: typeof msg.gapStopAtSeq === 'number' ? msg.gapStopAtSeq : null,
+        cacheEpoch: typeof msg.cacheEpoch === 'number' ? msg.cacheEpoch : 0,
         turns: typeof msg.turns === 'number' ? msg.turns : 20,
         ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
         _requestClientId: clientId,
@@ -1329,6 +1432,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         else if (op === 'update_instruction') {
           result = yeaftProjectDb.updateInstruction(client.userId, msg.projectId, msg.instruction);
         } else if (op === 'delete') result = yeaftProjectDb.delete(client.userId, msg.projectId);
+        else if (op === 'reorder') result = yeaftProjectDb.reorder(client.userId, msg.projectIds);
         else if (op === 'move_session') {
           const agentId = msg.targetAgentId || msg.agentId;
           const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId.trim() : '';
@@ -1340,10 +1444,19 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
             error.code = 'session_archived';
             throw error;
           }
+          const catalogUpdates = msg.catalogOrder === undefined
+            ? null
+            : catalogOrderUpdates(client, msg.catalogOrder);
+          if (msg.catalogOrder !== undefined && !catalogUpdates) {
+            const error = new Error('Complete canonical catalog order is required');
+            error.code = 'invalid_catalog_order';
+            throw error;
+          }
           result = yeaftProjectDb.moveSession(client.userId, {
             agentId,
             sessionId,
             projectId: msg.projectId || null,
+            catalogUpdates,
           });
         } else {
           throw new Error('Unknown Project operation');

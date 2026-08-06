@@ -31,12 +31,12 @@ const BROWSER_FILE_FIELDS = Object.freeze({
   ],
   post_work_item_message: [
     'id', 'clientMessageId', 'text', 'target', 'revision', 'planRevision', 'ledgerRevision',
-    'coordinatorRevision', 'files',
+    'coordinatorRevision', 'quote', 'files',
   ],
   work_item_message: [
-    'id', 'text', 'revision', 'planRevision', 'ledgerRevision', 'coordinatorRevision', 'files',
+    'id', 'text', 'revision', 'planRevision', 'ledgerRevision', 'coordinatorRevision', 'quote', 'files',
   ],
-  action_input: ['id', 'text', 'actionId', 'revision', 'generation', 'files'],
+  action_input: ['id', 'text', 'actionId', 'revision', 'generation', 'quote', 'files'],
   retry_action: ['id', 'actionId', 'revision', 'generation'],
   resume: ['id', 'revision'],
   delete: ['id', 'revision'],
@@ -115,12 +115,14 @@ async function createDefaultService() {
       }
       return {
         ...runtime,
+        yeaftDir: requireYeaftDir(),
         defaultWorkDir: ctx.CONFIG?.workDir || process.cwd(),
       };
     },
     policyProvider: async () => readWorkCenterSettings(yeaftDir),
     attachmentRoot: join(yeaftDir, 'work-center', 'attachments'),
     yeaftDir,
+    debug: ctx.CONFIG?.debug === true,
     actionWorktreeRoot: join(yeaftDir, 'work-center', 'worktrees'),
     registry: defaultRegistry,
     store: null,

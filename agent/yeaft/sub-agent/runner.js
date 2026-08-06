@@ -125,6 +125,7 @@ export function isRestrictedToolName(name) {
  *   parentVpId?: string,
  *   parentSessionId?: string|null,
  *   projectSessionIds?: string[],
+ *   projectLabel?: string,
  *   projectInstruction?: string,
  *   parentThreadId?: string|null,
  *   parentVpPersona?: object,
@@ -325,6 +326,9 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
         projectSessionIds: Array.isArray(deps.projectSessionIds)
           ? deps.projectSessionIds.slice()
           : [],
+        projectLabel: typeof deps.projectLabel === 'string'
+          ? deps.projectLabel
+          : '',
         projectInstruction: typeof deps.projectInstruction === 'string'
           ? deps.projectInstruction
           : '',
@@ -336,6 +340,9 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
       projectSessionIds: Array.isArray(entry.projectSessionIds)
         ? entry.projectSessionIds.slice()
         : [],
+      projectLabel: typeof entry.projectLabel === 'string'
+        ? entry.projectLabel
+        : '',
       projectInstruction: typeof entry.projectInstruction === 'string'
         ? entry.projectInstruction
         : '',
@@ -346,7 +353,16 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
     // Seed: mission becomes the first user prompt.
     if (!agent.pendingPrompts) agent.pendingPrompts = [];
     if (agent.mission && !agent.__missionSeeded) {
-      agent.pendingPrompts.push(agent.mission);
+      agent.pendingPrompts.push({
+        prompt: agent.mission,
+        projectSessionIds: Array.isArray(deps.projectSessionIds)
+          ? deps.projectSessionIds.slice()
+          : [],
+        projectLabel: typeof deps.projectLabel === 'string' ? deps.projectLabel : '',
+        projectInstruction: typeof deps.projectInstruction === 'string'
+          ? deps.projectInstruction
+          : '',
+      });
       agent.__missionSeeded = true;
     }
 
@@ -406,7 +422,12 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
           scenario: 'chat',
           vpPersona,
           sessionId: agent.parentSessionId || deps.parentSessionId || null,
+          // SpawnAgent records the caller-provided cwd on the agent. Thread it
+          // into the child Engine just like a parent query's workDir so child
+          // file tools resolve relative paths in the requested workspace.
+          workDir: agent.cwd,
           projectSessionIds: queuedPrompt.projectSessionIds,
+          projectLabel: queuedPrompt.projectLabel,
           projectInstruction: queuedPrompt.projectInstruction,
         });
         for await (const evt of stream) {

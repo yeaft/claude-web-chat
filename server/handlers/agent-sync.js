@@ -356,6 +356,20 @@ export async function handleAgentSync(agentId, agent, msg) {
       break;
     }
 
+    // Local telemetry settings relay. Only bounded config is forwarded;
+    // trace payloads stay on the Agent.
+    case 'telemetry_settings':
+    case 'telemetry_settings_updated':
+      for (const [, client] of webClients) {
+        if (client.authenticated && (CONFIG.skipAuth ||
+          (agent.ownerId && client.userId === agent.ownerId) ||
+          (!agent.ownerId && client.role === 'admin')
+        )) {
+          await sendToWebClient(client, { ...msg, agentId });
+        }
+      }
+      break;
+
     // Search settings + Tavily usage relays. We pass the whole msg
     // through (minus agentId, which we set ourselves) — the payload
     // shapes differ per type and the front-end already filters on

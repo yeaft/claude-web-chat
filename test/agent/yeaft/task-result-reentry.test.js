@@ -188,7 +188,179 @@ describe('task result re-entry', () => {
     tempDir = null;
   });
 
-  it('detaches persistent shell tasks while preserving explicit model result delivery', async () => {
+  async function verifyShellTaskTitleSafety() {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-task-prompt-shell-'));
+    const taskManager = new TaskManager({ yeaftDir: tempDir });
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(bashTool);
+    const adapter = new RecordingAdapter([[
+      { type: 'text_delta', text: 'The background command is still running.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]]);
+    const sessionId = 'session-shell-safe-label';
+    const command = 'node -e "setTimeout(() => {}, 30000)"';
+    const taskTitle = 'Run echo explicit-shell-secret';
+
+    await toolRegistry.execute('Bash', {
+      command,
+      cwd: tempDir,
+      background: true,
+      taskTitle,
+    }, {
+      cwd: tempDir,
+      sessionId,
+      currentVpId: 'vp-owner',
+      threadId: 'main',
+      taskManager,
+    });
+
+    const task = taskManager.listActiveTasks(sessionId)[0];
+    expect(task.title).toBe(taskTitle);
+    const engine = new Engine({
+      adapter,
+      trace: new NullTrace(),
+      config: { model: 'test-model', maxOutputTokens: 1024, _readOnly: true, language: 'en' },
+      toolRegistry,
+      yeaftDir: tempDir,
+      taskManager,
+      sessionId,
+      vpId: 'vp-owner',
+    });
+    await collectEngineEvents(engine, {
+      prompt: 'Report the background task status.',
+      messages: [],
+      sessionId,
+      senderVpId: 'vp-owner',
+      threadId: 'main',
+    });
+
+    expect(adapter.streamCalls).toHaveLength(1);
+    const system = adapter.streamCalls[0].system;
+    expect(system).toContain('- background command (background command, running)');
+    expect(system).not.toContain('echo');
+    expect(system).not.toContain('explicit-shell-secret');
+    expect(system).not.toContain(command);
+
+    const cancelled = taskManager.cancelTask(sessionId, task.id);
+    expect(cancelled.ok).toBe(true);
+    const deadline = Date.now() + 2000;
+    while (taskManager.getTask(sessionId, task.id)?.status === 'running' && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(taskManager.getTask(sessionId, task.id)?.status).toBe('cancelled');
+  }
+
+  async function verifySpawnAgentMissionSafety() {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-task-prompt-agent-'));
+    const taskManager = new TaskManager({ yeaftDir: tempDir });
+    const childAdapter = {
+      streamCalls: [],
+      async *stream(params) {
+        this.streamCalls.push(params);
+        while (!params.signal?.aborted) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+      },
+      async call() { return { text: 'ok', usage: {} }; },
+    };
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(agentTool);
+    const sessionId = 'session-agent-safe-label';
+    const missions = [
+      ['path-reviewer', 'Inspect path=/private/events.jsonl'],
+      ['make-reviewer', 'Please run make deploy TOKEN=make-secret'],
+      ['markdown-reviewer', 'Inspect [log](/private/markdown/events.jsonl)'],
+      ['windows-reviewer', String.raw`Inspect C:\Program Files\Yeaft\events.jsonl`],
+      ['log-reviewer', '2026-08-03T08:00:00Z INFO worker token=log-secret'],
+    ];
+    const spawnedAgents = [];
+    for (const [name, mission] of missions) {
+      const spawned = JSON.parse(await toolRegistry.execute('SpawnAgent', {
+        name,
+        mission,
+      }, {
+        cwd: tempDir,
+        sessionId,
+        senderVpId: 'vp-owner',
+        threadId: 'main',
+        taskManager,
+        parentEngineDeps: {
+          adapter: childAdapter,
+          trace: new NullTrace(),
+          config: { model: 'test-model', maxOutputTokens: 1024, _readOnly: true, language: 'en' },
+          parentToolRegistry: toolRegistry,
+          yeaftDir: tempDir,
+          subAgentLogDir: join(tempDir, 'sub-agent-logs'),
+          parentSessionId: sessionId,
+          parentVpId: 'vp-owner',
+          parentThreadId: 'main',
+          taskManager,
+          idleAbandonMs: 10_000,
+        },
+      }));
+      expect(spawned.success).toBe(true);
+      expect(taskManager.getTask(sessionId, spawned.taskId)).toMatchObject({
+        kind: 'sub_agent',
+        title: mission,
+        runtime: { name },
+      });
+      spawnedAgents.push(spawned);
+    }
+
+    const parentAdapter = new RecordingAdapter([[
+      { type: 'text_delta', text: 'The delegated task is running.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]]);
+    const engine = new Engine({
+      adapter: parentAdapter,
+      trace: new NullTrace(),
+      config: { model: 'test-model', maxOutputTokens: 1024, _readOnly: true, language: 'en' },
+      toolRegistry,
+      yeaftDir: tempDir,
+      taskManager,
+      sessionId,
+      vpId: 'vp-owner',
+    });
+    await collectEngineEvents(engine, {
+      prompt: 'Report the delegated task status.',
+      messages: [],
+      sessionId,
+      senderVpId: 'vp-owner',
+      threadId: 'main',
+    });
+
+    expect(parentAdapter.streamCalls).toHaveLength(1);
+    const system = parentAdapter.streamCalls[0].system;
+    for (const [name] of missions) {
+      expect(system).toContain(`- sub-agent ${name} (sub-agent, running)`);
+    }
+    for (const [, mission] of missions) expect(system).not.toContain(mission);
+    expect(system).not.toContain('make-secret');
+    expect(system).not.toContain('/private');
+    expect(system).not.toContain(String.raw`C:\Program Files`);
+    expect(system).not.toContain('log-secret');
+
+    for (const { agentId } of spawnedAgents) {
+      const agent = getAgentRegistry().get(agentId);
+      agent?.abortController?.abort('test complete');
+      if (agent) agent.status = 'closed';
+    }
+    const deadline = Date.now() + 1000;
+    while (spawnedAgents.some(({ agentId }) => getAgentRegistry().get(agentId)?.__driverStarted)
+      && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(spawnedAgents.some(({ agentId }) => getAgentRegistry().get(agentId)?.__driverStarted)).toBe(false);
+  }
+
+  it('keeps prompt labels safe while preserving persistent task result delivery', async () => {
+    await verifyShellTaskTitleSafety();
+    rmSync(tempDir, { recursive: true, force: true });
+    tempDir = null;
+    await verifySpawnAgentMissionSafety();
+    rmSync(tempDir, { recursive: true, force: true });
+    tempDir = null;
+
     tempDir = mkdtempSync(join(tmpdir(), 'yeaft-task-reentry-'));
     const adapter = new RecordingAdapter([
       [
@@ -234,7 +406,7 @@ describe('task result re-entry', () => {
     const persisted = [];
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(bashTool);
-    expect(bashTool.timeoutMs).toBeGreaterThan(600_000);
+    expect(bashTool.timeoutMs).toBe(0);
     const sessionLike = {
       adapter,
       trace: new NullTrace(),
@@ -589,16 +761,11 @@ describe('task result re-entry', () => {
     chatStore.sendWsMessage = vi.fn();
     for (const frame of restartFrames) chatStore.handleYeaftOutput(frame);
 
-    const visibleRestartTasks = chatStore.yeaftActiveTasksBySession[restartTaskKey] || {};
-    expect(Object.keys(visibleRestartTasks).sort()).toEqual(restartTaskIds.slice().sort());
-    for (const taskId of restartTaskIds) {
-      expect(visibleRestartTasks[taskId]).toMatchObject({ id: taskId, status: 'orphaned' });
-    }
-    expect(visibleRestartTasks).not.toHaveProperty('stale_running');
+    expect(chatStore.yeaftActiveTasksBySession[restartTaskKey]).toBeUndefined();
 
     const readyFrame = restartFrames[readyIndex];
     chatStore.handleYeaftOutput(readyFrame);
-    expect(chatStore.yeaftActiveTasksBySession[restartTaskKey]).toEqual(visibleRestartTasks);
+    expect(chatStore.yeaftActiveTasksBySession[restartTaskKey]).toBeUndefined();
 
     expect(adapter.streamCalls).toHaveLength(7);
     const restartRescueWire = JSON.stringify(adapter.streamCalls.slice(5).map(call => call.messages));
@@ -613,7 +780,7 @@ describe('task result re-entry', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     await drainVpDriversWithin();
     expect(ctx.messageBuffer).toHaveLength(bufferedAfterFirstInstall);
-    expect(chatStore.yeaftActiveTasksBySession[restartTaskKey]).toEqual(visibleRestartTasks);
+    expect(chatStore.yeaftActiveTasksBySession[restartTaskKey]).toBeUndefined();
     expect(adapter.streamCalls).toHaveLength(7);
     expect(persisted.filter(row => row.internal === true)).toHaveLength(4);
   });
@@ -765,13 +932,17 @@ describe('task result re-entry', () => {
     ));
     // A rescue row is the durable transcript for the same provider request,
     // not a second model delivery. Exactly once means exactly one provider
-    // input containing this taskId; defer-first additionally persists one
-    // internal rescue row.
+    // input containing this taskId; a wait that actually deferred additionally
+    // persists one internal rescue row. A zero-delay completion can still cross
+    // the wait deadline under load, so assert the observed boundary rather than
+    // inferring it from the configured child delay.
     expect(providerDeliveries).toHaveLength(1);
-    expect(rescueRows).toHaveLength(completionDelayMs > 0 ? 1 : 0);
     const waitEnd = events.filter(event => event.type === 'async_task_wait_end');
     expect(waitEnd).toHaveLength(1);
-    expect(waitEnd[0]).toMatchObject(completionDelayMs > 0
+    const waitTimedOut = waitEnd[0].timedOut === true;
+    if (completionDelayMs > 0) expect(waitTimedOut).toBe(true);
+    expect(rescueRows).toHaveLength(waitTimedOut ? 1 : 0);
+    expect(waitEnd[0]).toMatchObject(waitTimedOut
       ? { timedOut: true, deferredTaskIds: [taskId] }
       : { timedOut: false, deferredTaskIds: [] });
       expect(terminalEvents.filter(event => event.task.id === taskId)).toHaveLength(1);

@@ -10,7 +10,9 @@ import {
   RUN_OUTCOMES,
 } from './workflow.js';
 import { renderSessionContextSnapshot } from './session-context.js';
+import { normalizeSessionMessageQuote } from '../session-message-quote.js';
 import { normalizeEvidence } from './evidence.js';
+import { isDynamicWorkItem } from './execution-mode.js';
 import { applyAdditivePlanProposal, applyReplanMutation } from './plan-mutation.js';
 import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
 
@@ -128,7 +130,7 @@ export class WorkflowController {
       acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? input.acceptanceCriteria : [],
       attachments: Array.isArray(input.attachments) ? input.attachments : [],
     };
-    let firstAction = input.start !== false ? initialActionFor(draft) : null;
+    let firstAction = input.start !== false && !isDynamicWorkItem(draft) ? initialActionFor(draft) : null;
     if (firstAction) {
       firstAction = {
         ...firstAction,
@@ -230,6 +232,7 @@ export class WorkflowController {
     const existingClientMessage = this.store.hasActionInputClientMessage(id, input.actionId, input.clientMessageId);
     if (existingClientMessage) return this.store.getWorkItemDetail(id);
     const text = typeof input.text === 'string' ? input.text.trim().slice(0, 8_000) : '';
+    const quote = normalizeSessionMessageQuote(input.quote);
     const addedAttachmentCount = Math.max(0, Number(input.addedAttachmentCount) || 0);
     if (!text && addedAttachmentCount === 0) throw new Error('Action input or attachments are required');
     const workItem = this.store.getWorkItem(id);
@@ -255,7 +258,7 @@ export class WorkflowController {
         actionId: input.actionId,
         generation: expectedGeneration,
         revision: input.revision,
-      }, input.attachments, input.addedAttachments, input.clientMessageId);
+      }, input.attachments, input.addedAttachments, input.clientMessageId, quote);
     }
     if (!['waiting', 'failed'].includes(targetAction.status)) {
       throw new Error(`Action in ${targetAction.status} cannot accept input`);
@@ -270,6 +273,7 @@ export class WorkflowController {
         clientMessageId: input.clientMessageId || null,
         targetActionId: input.actionId,
         text: text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`,
+        quote,
         attachments: input.addedAttachments,
       },
     });
@@ -295,14 +299,16 @@ export class WorkflowController {
           answer: answer || (addedAttachmentCount > 0
             ? `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`
             : null),
+          quote: input.inputEvent?.quote || null,
         });
       }
-      if (Number(workItem.executionSchemaVersion) === 2 && input.inputEvent?.inputId) {
+      if (Number(workItem.executionSchemaVersion) >= 2 && input.inputEvent?.inputId) {
         context.push({
           type: 'input',
           role: 'user',
           inputId: input.inputEvent.inputId,
           summary: input.inputEvent.text || '',
+          quote: input.inputEvent.quote || null,
           attachments: Array.isArray(input.inputEvent.attachments) ? input.inputEvent.attachments : [],
           evidence: [],
         });
@@ -332,6 +338,15 @@ export class WorkflowController {
       throw new Error('Run has unconsumed Action input and cannot finish yet');
     }
     const result = normalizeTerminalResult(rawResult, activeAction);
+    if (isDynamicWorkItem(activeWorkItem)) {
+      result.contractPatch = null;
+      result.plan = null;
+      result.planProposal = null;
+      result.replanRequest = null;
+      result.replanMutation = null;
+      result.nextActions = [];
+      result.expandPlan = null;
+    }
     if (result.outcome === 'completed'
         && activeAction.stageId?.startsWith('replan-')
         && !result.replanMutation) {
@@ -375,6 +390,10 @@ export class WorkflowController {
           actions: this.store.getWorkItemDetail(activeWorkItem.id).actions,
           proposal: result.planProposal,
           availableVpIds: this.listAvailableVpIds?.(),
+          reviewAction: activeAction.type === 'review'
+            && result.reviewDecision === 'changes_requested'
+            ? activeAction
+            : null,
         });
       } catch (error) {
         result.outcome = 'failed';
@@ -541,7 +560,7 @@ export class WorkflowController {
               eventData: { reason: result.replanRequest.reason },
             };
           }
-          if (action.type === 'review' && result.reviewDecision === 'changes_requested') {
+          if (action.type === 'review' && result.reviewDecision === 'changes_requested' && !planProposal) {
             const targetStage = plannedWorkItem.workflowSnapshot.stages
               .find(stage => stage.id === action.changesRequestedStageId);
             if (!targetStage) throw new Error('Work Center review return target is missing');

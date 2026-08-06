@@ -41,6 +41,31 @@ describe('Yeaft message history sender filter', () => {
     expect(wrapper.get('[role="option"]').text()).toContain('filtered');
     expect(wrapper.get('[role="option"]').text()).not.toContain('outline');
 
+    await wrapper.setProps({
+      searchState: {
+        query: '中', senderKey: '',
+        results: [{ messageId: 'm3', role: 'user', snippet: 'single CJK' }],
+        loading: false, hasMore: false, error: null,
+      },
+    });
+    expect(wrapper.get('[role="option"]').text()).toContain('single CJK');
+    expect(wrapper.text()).not.toContain('yeaft.outline.minChars');
+    await wrapper.setProps({
+      searchState: {
+        query: '😀', senderKey: '',
+        results: [{ messageId: 'm4', role: 'user', snippet: 'single emoji' }],
+        loading: false, hasMore: false, error: null,
+      },
+    });
+    expect(wrapper.get('[role="option"]').text()).toContain('single emoji');
+    await wrapper.setProps({
+      searchState: {
+        query: '', senderKey: 'vp:linus',
+        results: [{ messageId: 'm2', role: 'assistant', speakerVpId: 'linus', snippet: 'filtered' }],
+        loading: false, hasMore: false, error: null,
+      },
+    });
+
     Object.defineProperty(document.documentElement, 'clientWidth', { configurable: true, value: 400 });
     Object.defineProperty(document.documentElement, 'clientHeight', { configurable: true, value: 180 });
     senderTrigger.element.getBoundingClientRect = () => ({

@@ -1,21 +1,21 @@
 /**
  * debug-trace.js — file-backed debug trace for Yeaft
  *
- * Stores bounded request traces on disk without SQLite. Each request owns one
- * compact JSON file under the session's debug folder:
- *   <yeaftDir>/sessions/<sessionId>/debug/requests/<requestKey>/trace.json
+ * Stores bounded request traces on disk without SQLite. New requests use a
+ * small `meta.json` plus append-only `events.jsonl` under:
+ *   <yeaftDir>/sessions/<sessionId>/debug/requests/<requestKey>/
  *
- * The file keeps one base request snapshot plus per-loop deltas. This avoids
- * 100-200 tiny loop files and avoids repeating the whole cumulative message
- * array for every loop. Debug history remains best-effort: failures are logged
- * and dropped, never allowed to stop the agent.
+ * Loop requests remain base-plus-delta records, so cumulative messages are not
+ * repeated. Legacy `trace.json` requests stay readable. Debug history is
+ * best-effort: failures are logged and never allowed to stop the agent.
  */
 
 import { promises as fsp } from 'fs';
 import { basename, dirname, extname, join } from 'path';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
+import { truncateUtf8Text } from './perf-trace.js';
 
-const TRACE_VERSION = 2;
+const TRACE_VERSION = 3;
 const REQUEST_RETENTION = 10;
 const MAX_HISTORY_LIMIT = 5;
 const MAX_DREAM_EVENTS = 100;
@@ -23,18 +23,42 @@ const MAX_TEXT_BYTES = 1024 * 1024;
 const MAX_TOOL_INPUT = 10 * 1024;
 const MAX_INLINE_VALUE_BYTES = 1024 * 1024;
 const MAX_RAW_REQUEST_BYTES = 2 * 1024 * 1024;
-const TRACE_FLUSH_INTERVAL_MS = 5_000;
-const TRACE_FLUSH_DIRTY_LOOPS = 10;
+// Raw provider responses are diagnostic duplicates of the normalized response,
+// tool calls, usage and request delta already stored on each loop. Keeping up
+// to 1 MiB per loop made long tool turns produce 100+ MiB trace files. Every
+// buffered flush then JSON.stringify()'d and rewrote that entire file on the
+// agent's single event loop, so several active Sessions appeared deadlocked.
+// A 64 KiB prefix is enough to inspect provider envelopes without letting
+// always-on diagnostics dominate runtime latency.
+const MAX_RAW_RESPONSE_BYTES = 64 * 1024;
+const TRACE_APPEND_BATCH_MS = 100;
+const EVENT_FLUSH_INTERVAL_MS = 30_000;
 const MAX_SEARCH_PATTERN_CHARS = 300;
+const DEFAULT_TRACE_TEXT_MAX_BYTES = 256 * 1024;
 
 function isPlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeTextMaxBytes(value, fallback = DEFAULT_TRACE_TEXT_MAX_BYTES) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(4 * 1024 * 1024, Math.max(0, Math.floor(parsed)));
 }
 
 function safeDirComponent(value, fallback = 'unknown') {
   const raw = String(value || '').trim();
   if (!raw) return fallback;
   return raw.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 120) || fallback;
+}
+
+function storageDirComponent(value, fallback = 'unknown') {
+  const raw = String(value || '').trim();
+  if (!raw) return fallback;
+  if (/^[a-zA-Z0-9._-]+$/.test(raw) && Buffer.byteLength(raw, 'utf8') <= 200) return raw;
+  const prefix = raw.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80) || fallback;
+  const digest = createHash('sha256').update(raw).digest('hex');
+  return `${prefix}-${digest}`;
 }
 
 function fileTraceRoot(inputPath) {
@@ -133,10 +157,13 @@ function traceMatchesRegex(trace, regex) {
 function truncateText(value, maxBytes = MAX_TEXT_BYTES) {
   if (value == null) return value ?? null;
   const str = String(value);
-  if (Buffer.byteLength(str, 'utf8') <= maxBytes) return str;
-  let out = str.slice(0, maxBytes);
-  while (Buffer.byteLength(out, 'utf8') > maxBytes && out.length > 0) out = out.slice(0, -1);
-  return `${out}\n... [truncated to ${maxBytes} bytes]`;
+  const budget = Math.max(0, Number(maxBytes) || 0);
+  if (Buffer.byteLength(str, 'utf8') <= budget) return str;
+  if (budget <= 0) return '';
+  const marker = `\n... [truncated to ${budget} bytes]`;
+  const markerBytes = Buffer.byteLength(marker, 'utf8');
+  if (markerBytes >= budget) return truncateUtf8Text(str, budget).value;
+  return `${truncateUtf8Text(str, budget - markerBytes).value}${marker}`;
 }
 
 function cloneJsonValue(value) {
@@ -149,12 +176,26 @@ function safeJsonValue(value, maxBytes = MAX_INLINE_VALUE_BYTES) {
   if (value == null) return value;
   try {
     const json = JSON.stringify(value);
-    if (Buffer.byteLength(json, 'utf8') <= maxBytes) return JSON.parse(json);
-    return {
-      __truncated: true,
-      originalBytes: Buffer.byteLength(json, 'utf8'),
-      maxBytes,
-    };
+    const originalBytes = Buffer.byteLength(json, 'utf8');
+    if (originalBytes <= maxBytes) return JSON.parse(json);
+    // A bounded raw-exchange sentinel already carries the useful preview.
+    // Preserve a re-bounded preview rather than reducing persisted history to
+    // metadata after an outer trace record crosses its storage budget.
+    if (value && typeof value === 'object' && value.__truncated === true
+      && typeof value.preview === 'string') {
+      const previewBudget = Math.max(0, maxBytes - 512);
+      const preview = truncateText(value.preview, previewBudget);
+      return {
+        __truncated: true,
+        ...(value.reason ? { reason: value.reason } : {}),
+        originalBytes: Number.isFinite(Number(value.originalBytes))
+          ? Number(value.originalBytes)
+          : originalBytes,
+        maxBytes,
+        ...(preview ? { preview } : {}),
+      };
+    }
+    return { __truncated: true, originalBytes, maxBytes };
   } catch {
     return null;
   }
@@ -191,8 +232,11 @@ function jsonByteLength(value) {
 }
 
 function rawRequestSentinel(reason, value = null, maxBytes = MAX_RAW_REQUEST_BYTES) {
-  const preview = typeof value === 'string'
-    ? truncateText(value, Math.min(64 * 1024, maxBytes))
+  const previewSource = typeof value === 'string'
+    ? value
+    : (() => { try { return JSON.stringify(value); } catch { return null; } })();
+  const preview = typeof previewSource === 'string'
+    ? truncateText(previewSource, Math.min(64 * 1024, maxBytes))
     : null;
   const originalBytes = value == null ? null : jsonByteLength(value);
   return {
@@ -210,25 +254,6 @@ function boundRawValue(value, reason = 'raw_request_budget') {
   if (cloned == null) return null;
   if (jsonByteLength(cloned) <= MAX_RAW_REQUEST_BYTES) return cloned;
   return rawRequestSentinel(reason, value);
-}
-
-function buildRawRequestBase(value) {
-  if (value == null) return null;
-  if (typeof value === 'string') return truncateText(value, MAX_RAW_REQUEST_BYTES);
-  if (!isPlainObject(value)) return boundRawValue(value);
-  const base = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (key === 'body' && isPlainObject(item)) {
-      const body = {};
-      for (const [bodyKey, bodyValue] of Object.entries(item)) {
-        body[bodyKey] = boundRawValue(bodyValue, `raw_request_body_${bodyKey}_budget`);
-      }
-      base.body = body;
-    } else {
-      base[key] = boundRawValue(item, `raw_request_${key}_budget`);
-    }
-  }
-  return base;
 }
 
 function buildRawMessagesDelta(previousMessages, nextMessages) {
@@ -357,6 +382,11 @@ export function applyRawRequestDelta(previous, delta) {
       const existing = Array.isArray(body[messageKey]) ? body[messageKey] : [];
       const from = Number.isFinite(Number(delta.body.messagesFrom)) ? Number(delta.body.messagesFrom) : existing.length;
       body[messageKey] = existing.slice(0, from).concat(cloneJsonValue(delta.body.messagesAppend) || []);
+    } else if (Object.prototype.hasOwnProperty.call(delta.body, 'messagesAppend')) {
+      // A huge append is represented by a bounded raw-request sentinel, not
+      // an array. Preserve that sentinel rather than silently dropping the
+      // entire request body during hydration.
+      body[messageKey] = cloneJsonValue(delta.body.messagesAppend) ?? delta.body.messagesAppend;
     }
     next.body = body;
   }
@@ -373,10 +403,82 @@ function messagesPrefixLength(prevMessages, nextMessages) {
   return i;
 }
 
-function buildRequestSnapshot(info = {}) {
+function snapshotTruncation(path, maxBytes, originalBytes) {
+  return { __truncated: true, path, maxBytes, originalBytes };
+}
+
+function boundedSnapshotString(value, maxBytes, path) {
+  const originalBytes = Buffer.byteLength(value, 'utf8');
+  if (originalBytes <= maxBytes) return value;
+  const marker = snapshotTruncation(path, maxBytes, originalBytes);
+  if (jsonByteLength(marker) > maxBytes) return null;
+  const markerText = `\n... [truncated to ${maxBytes} bytes]`;
+  const markerBytes = Buffer.byteLength(markerText, 'utf8');
+  if (markerBytes >= maxBytes) return marker;
+  return truncateUtf8Text(value, maxBytes - markerBytes).value + markerText;
+}
+
+function boundSnapshotValue(value, maxBytes, path = 'messages') {
+  if (maxBytes <= 0) return null;
+  const sourceBytes = jsonByteLength(value);
+  if (sourceBytes <= maxBytes) return cloneJsonValue(value);
+  const marker = snapshotTruncation(path, maxBytes, sourceBytes);
+  if (jsonByteLength(marker) > maxBytes) return null;
+  if (value == null || typeof value === 'number' || typeof value === 'boolean') return marker;
+  if (typeof value === 'string') return boundedSnapshotString(value, maxBytes, path);
+
+  // Account JSON framing incrementally. The old clone-and-stringify-prefix
+  // loop reserialized the full growing array/object per member and blocked
+  // DebugTrace.endTurn for tens of seconds on a large provider history.
+  if (Array.isArray(value)) {
+    const out = [];
+    let usedBytes = 2; // []
+    for (let index = 0; index < value.length; index += 1) {
+      const separatorBytes = out.length > 0 ? 1 : 0;
+      const remaining = Math.max(0, maxBytes - usedBytes - separatorBytes);
+      const candidate = boundSnapshotValue(value[index], remaining, `${path}[${index}]`);
+      if (candidate == null) break;
+      let encoded;
+      try { encoded = JSON.stringify(candidate); } catch { break; }
+      const candidateBytes = Buffer.byteLength(encoded, 'utf8');
+      if (usedBytes + separatorBytes + candidateBytes > maxBytes) break;
+      out.push(candidate);
+      usedBytes += separatorBytes + candidateBytes;
+    }
+    return out.length > 0 ? out : marker;
+  }
+  if (typeof value === 'object') {
+    const out = {};
+    let usedBytes = 2; // {}
+    let count = 0;
+    for (const [key, item] of Object.entries(value)) {
+      let keyJson;
+      try { keyJson = JSON.stringify(key); } catch { break; }
+      const keyBytes = Buffer.byteLength(keyJson, 'utf8');
+      const separatorBytes = count > 0 ? 1 : 0;
+      const remaining = Math.max(0, maxBytes - usedBytes - separatorBytes - keyBytes - 1);
+      const candidate = boundSnapshotValue(item, remaining, `${path}.${key}`);
+      if (candidate == null) break;
+      let encoded;
+      try { encoded = JSON.stringify(candidate); } catch { break; }
+      const candidateBytes = Buffer.byteLength(encoded, 'utf8');
+      if (usedBytes + separatorBytes + keyBytes + 1 + candidateBytes > maxBytes) break;
+      out[key] = candidate;
+      usedBytes += separatorBytes + keyBytes + 1 + candidateBytes;
+      count += 1;
+    }
+    return count > 0 ? out : marker;
+  }
+  return marker;
+}
+
+function buildRequestSnapshot(info = {}, textMaxBytes = DEFAULT_TRACE_TEXT_MAX_BYTES) {
+  const messageBudget = normalizeTextMaxBytes(textMaxBytes);
   return {
-    systemPrompt: truncateText(info.systemPrompt || '', MAX_TEXT_BYTES),
-    messages: Array.isArray(info.messages) ? cloneJsonValue(info.messages) : [],
+    systemPrompt: truncateText(info.systemPrompt || '', messageBudget),
+    messages: Array.isArray(info.messages)
+      ? boundSnapshotValue(info.messages, messageBudget, 'messages')
+      : [],
     rawRequest: info.rawRequest ?? null,
   };
 }
@@ -422,7 +524,7 @@ function applyRequestDelta(previous, delta = {}) {
     const nextBase = {
       systemPrompt: delta.systemPrompt || '',
       messages: Array.isArray(delta.messages) ? delta.messages : [],
-      rawRequest: null,
+      rawRequest: Object.prototype.hasOwnProperty.call(delta, 'rawRequest') ? delta.rawRequest : null,
     };
     if (Object.prototype.hasOwnProperty.call(delta, 'rawRequestDelta')) {
       nextBase.rawRequest = applyRawRequestDelta(null, delta.rawRequestDelta);
@@ -448,16 +550,125 @@ export function reconstructDebugRawRequest(baseRawRequest, requestDelta) {
 }
 
 function sessionRequestsDir(rootDir, sessionId) {
+  if (sessionId) return join(rootDir, 'sessions', storageDirComponent(sessionId, 'session'), 'debug', 'requests');
+  return join(rootDir, 'debug', 'requests');
+}
+
+function legacySessionRequestsDir(rootDir, sessionId) {
   if (sessionId) return join(rootDir, 'sessions', safeDirComponent(sessionId), 'debug', 'requests');
   return join(rootDir, 'debug', 'requests');
+}
+
+function sessionRequestDirs(rootDir, sessionId) {
+  const current = sessionRequestsDir(rootDir, sessionId);
+  const legacy = legacySessionRequestsDir(rootDir, sessionId);
+  return current === legacy ? [current] : [current, legacy];
 }
 
 function requestFilePath(requestDir) {
   return join(requestDir, 'trace.json');
 }
 
+function requestMetaPath(requestDir) {
+  return join(requestDir, 'meta.json');
+}
+
+function requestEventsPath(requestDir) {
+  return join(requestDir, 'events.jsonl');
+}
+
+function requestDirFor(rootDir, sessionId, requestKey) {
+  return join(sessionRequestsDir(rootDir, sessionId), storageDirComponent(requestKey, 'request'));
+}
+
 function tracePathFor(rootDir, sessionId, requestKey) {
-  return requestFilePath(join(sessionRequestsDir(rootDir, sessionId), safeDirComponent(requestKey, 'request')));
+  return requestFilePath(requestDirFor(rootDir, sessionId, requestKey));
+}
+
+function turnLocatorName(turnId) {
+  const raw = String(turnId || 'turn');
+  const digest = createHash('sha256').update(raw).digest('hex').slice(0, 16);
+  return `${safeDirComponent(raw, 'turn')}-${digest}.json`;
+}
+
+function turnLocatorPath(rootDir, sessionId, turnId) {
+  return join(sessionRequestsDir(rootDir, sessionId), '..', 'turns', turnLocatorName(turnId));
+}
+
+function serializableTraceMeta(trace) {
+  const meta = { ...trace };
+  delete meta._lastSnapshot;
+  delete meta._persistedFormat;
+  delete meta._persistedRequestDir;
+  delete meta.baseRequest;
+  delete meta.loops;
+  delete meta.tools;
+  return meta;
+}
+
+function traceMatchesIdentity(trace, sessionId, turnId) {
+  return !!trace
+    && trace.sessionId === sessionId
+    && (trace.requestId === turnId || trace.traceId === turnId);
+}
+
+async function prepareJsonlAppend(filePath) {
+  let text;
+  try { text = await fsp.readFile(filePath, 'utf8'); }
+  catch { return; }
+  if (!text || text.endsWith('\n')) return;
+  const lastNewline = text.lastIndexOf('\n');
+  const tail = text.slice(lastNewline + 1);
+  try {
+    JSON.parse(tail);
+    await fsp.appendFile(filePath, '\n', 'utf8');
+  } catch {
+    const validPrefix = lastNewline >= 0 ? text.slice(0, lastNewline + 1) : '';
+    await fsp.truncate(filePath, Buffer.byteLength(validPrefix, 'utf8'));
+  }
+}
+
+async function readJsonLines(filePath) {
+  let text;
+  try { text = await fsp.readFile(filePath, 'utf8'); }
+  catch { return []; }
+  const records = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try { records.push(JSON.parse(line)); }
+    catch { /* A process can leave one torn final append; prior records remain valid. */ }
+  }
+  return records;
+}
+
+async function readRequestDir(requestDir) {
+  const meta = await readJson(requestMetaPath(requestDir));
+  if (!meta?.requestId) {
+    const legacy = await readJson(requestFilePath(requestDir));
+    return legacy ? { ...legacy, _persistedFormat: 'legacy', _persistedRequestDir: requestDir } : null;
+  }
+  const trace = { ...meta, _persistedFormat: 'events', _persistedRequestDir: requestDir, baseRequest: meta.legacyBaseRequest || null, loops: [], tools: [] };
+  delete trace.legacyBaseRequest;
+  const loopById = new Map();
+  const toolById = new Map();
+  for (const event of await readJsonLines(requestEventsPath(requestDir))) {
+    const record = event?.record;
+    if (event?.type === 'loop' && record) {
+      const key = record.turnRowId || record.loopInstanceId || `${record.loopNumber || 0}`;
+      loopById.set(key, record);
+    } else if (event?.type === 'tool' && record) {
+      const key = record.id || `${record.turnRowId || ''}:${record.toolCallId || ''}`;
+      toolById.set(key, record);
+    }
+  }
+  trace.loops = Array.from(loopById.values()).sort((a, b) => (a.loopNumber || 0) - (b.loopNumber || 0) || String(a.turnRowId || '').localeCompare(String(b.turnRowId || '')));
+  trace.tools = Array.from(toolById.values()).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  if (trace.loops.length > 0) {
+    const last = trace.loops.at(-1);
+    trace.closedAt = meta.closedAt || last.at || null;
+    trace.updatedAt = Math.max(Number(meta.updatedAt || 0), Number(last.at || 0));
+  }
+  return trace;
 }
 
 function summarizeTrace(trace, detailsLoaded = false) {
@@ -502,9 +713,13 @@ function summarizeTrace(trace, detailsLoaded = false) {
 function expandTrace(trace) {
   const turnsById = new Map([[trace.requestId || trace.traceId, summarizeTrace(trace, true)]]);
   let snapshot = null;
+  let rawRequest = trace?.baseRequest?.rawRequest ?? null;
   const loops = [];
   for (const loop of Array.isArray(trace?.loops) ? trace.loops : []) {
     snapshot = applyRequestDelta(snapshot || trace.baseRequest || null, loop.requestDelta || {});
+    if (loop?.requestDelta && Object.prototype.hasOwnProperty.call(loop.requestDelta, 'rawRequestDelta')) {
+      rawRequest = reconstructDebugRawRequest(rawRequest, loop.requestDelta);
+    }
     const usage = normalizeUsage(loop?.usage || {});
     loops.push({
       turnId: trace.requestId || trace.traceId,
@@ -520,7 +735,7 @@ function expandTrace(trace) {
       ttfbMs: loop.ttfbMs || null,
       stopReason: loop.stopReason || null,
       at: loop.at || null,
-      rawRequest: null,
+      rawRequest,
       rawResponse: loop.rawResponse ?? null,
       requestDelta: loop.requestDelta || {},
       requestBase: trace.baseRequest || null,
@@ -534,8 +749,12 @@ function expandTrace(trace) {
 
 function traceToLegacyRows(trace) {
   let snapshot = null;
+  let rawRequest = trace?.baseRequest?.rawRequest ?? null;
   return (Array.isArray(trace?.loops) ? trace.loops : []).map((loop) => {
     snapshot = applyRequestDelta(snapshot || trace.baseRequest || null, loop.requestDelta || {});
+    if (loop?.requestDelta && Object.prototype.hasOwnProperty.call(loop.requestDelta, 'rawRequestDelta')) {
+      rawRequest = reconstructDebugRawRequest(rawRequest, loop.requestDelta);
+    }
     const u = normalizeUsage(loop?.usage || {});
     return {
       id: loop.turnRowId || loop.loopInstanceId || randomUUID(),
@@ -561,7 +780,7 @@ function traceToLegacyRows(trace) {
       tool_calls_json: JSON.stringify(loop.toolCalls || []),
       usage_json: JSON.stringify(u),
       ttfb_ms: loop.ttfbMs || null,
-      raw_request: null,
+      raw_request: rawRequest == null ? null : JSON.stringify(rawRequest),
       raw_response: typeof loop.rawResponse === 'string' ? loop.rawResponse : JSON.stringify(loop.rawResponse ?? null),
       user_prompt: trace.userPrompt || '',
     };
@@ -587,21 +806,18 @@ async function readdirSafe(dir) {
   catch { return []; }
 }
 
-async function collectTraceFiles(rootDir, sessionId = null) {
-  const files = [];
+async function collectRequestDirs(rootDir, sessionId = null) {
+  const dirs = [];
   const addFromRequestsDir = async (requestsDir) => {
     for (const entry of await readdirSafe(requestsDir)) {
-      if (!entry.isDirectory()) continue;
-      const file = requestFilePath(join(requestsDir, entry.name));
-      try {
-        await fsp.access(file);
-        files.push(file);
-      } catch { /* trace.json not yet written for this request dir */ }
+      if (entry.isDirectory()) dirs.push(join(requestsDir, entry.name));
     }
   };
   if (sessionId) {
-    await addFromRequestsDir(sessionRequestsDir(rootDir, sessionId));
-    return files;
+    for (const requestsDir of sessionRequestDirs(rootDir, sessionId)) {
+      await addFromRequestsDir(requestsDir);
+    }
+    return dirs;
   }
   await addFromRequestsDir(sessionRequestsDir(rootDir, null));
   const sessionsRoot = join(rootDir, 'sessions');
@@ -609,18 +825,69 @@ async function collectTraceFiles(rootDir, sessionId = null) {
     if (!entry.isDirectory()) continue;
     await addFromRequestsDir(join(sessionsRoot, entry.name, 'debug', 'requests'));
   }
-  return files;
+  return dirs;
 }
 
 async function readTraceSummaries(rootDir, sessionId = null) {
   const traces = [];
-  for (const file of await collectTraceFiles(rootDir, sessionId)) {
-    const trace = await readJson(file);
+  for (const requestDir of await collectRequestDirs(rootDir, sessionId)) {
+    const trace = await readRequestDir(requestDir);
     if (!trace || !trace.requestId) continue;
-    traces.push({ trace, file, openedAt: Number(trace.openedAt || 0) });
+    if (sessionId && trace.sessionId !== sessionId) continue;
+    const file = requestFilePath(requestDir);
+    traces.push({ trace, file, requestDir, openedAt: Number(trace.openedAt || 0) });
   }
   traces.sort((a, b) => ((a.openedAt || 0) - (b.openedAt || 0)) || String(a.trace?.requestKey || a.file).localeCompare(String(b.trace?.requestKey || b.file)));
   return traces;
+}
+
+async function readTraceIdentity(requestDir) {
+  const meta = await readJson(requestMetaPath(requestDir));
+  if (meta?.requestId) return meta;
+  return readJson(requestFilePath(requestDir));
+}
+
+function sameTraceIdentity(trace, expected) {
+  return !!trace && !!expected
+    && trace.sessionId === expected.sessionId
+    && trace.requestKey === expected.requestKey
+    && trace.requestId === expected.requestId;
+}
+
+async function removeRequestDirIfIdentityMatches(requestDir, expected) {
+  const identity = await readTraceIdentity(requestDir);
+  if (!sameTraceIdentity(identity, expected)) return false;
+  try {
+    await fsp.rm(requestDir, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readTraceHeaders(rootDir, sessionId) {
+  const traces = [];
+  const requestDirs = sessionId == null
+    ? await (async () => {
+      const dirs = [];
+      for (const entry of await readdirSafe(sessionRequestsDir(rootDir, null))) {
+        if (entry.isDirectory()) dirs.push(join(sessionRequestsDir(rootDir, null), entry.name));
+      }
+      return dirs;
+    })()
+    : await collectRequestDirs(rootDir, sessionId);
+  for (const requestDir of requestDirs) {
+    const meta = await readJson(requestMetaPath(requestDir));
+    const trace = meta?.requestId ? meta : await readJson(requestFilePath(requestDir));
+    if (!trace?.requestId || !trace?.requestKey || trace.sessionId !== sessionId) continue;
+    traces.push({
+      trace,
+      file: requestFilePath(requestDir),
+      requestDir,
+      openedAt: Number(trace.openedAt || 0),
+    });
+  }
+  return traces.sort((a, b) => ((a.openedAt || 0) - (b.openedAt || 0)) || String(a.trace.requestKey).localeCompare(String(b.trace.requestKey)));
 }
 
 async function countDirFiles(rootDir) {
@@ -647,10 +914,16 @@ export class DebugTrace {
   #turnIndex = new Map();
   /** @type {Map<string, object>} */
   #requestCache = new Map();
-  /** @type {Map<string, { trace: object, dirtyLoops: number, firstDirtyAt: number }>} */
-  #pendingWrites = new Map();
+  /** @type {Array<{ trace: object, type: 'loop'|'tool', record: object, initialize: boolean, writeMeta: boolean }>} */
+  #pendingWrites = [];
+  /** @type {Set<string>} */
+  #initializedRequestKeys = new Set();
+  /** @type {Set<string>} */
+  #reconciledRetentionSessions = new Set();
+  /** @type {Map<string, Map<string, { trace: object, requestDirs: Set<string>, openedAt: number }>>} */
+  #retentionIndex = new Map();
   /** @type {NodeJS.Timeout|null} */
-  #flushTimer = null;
+  #appendTimer = null;
   /** @type {number} */
   #sequence = 0;
   /**
@@ -685,21 +958,34 @@ export class DebugTrace {
    * @type {Promise<void>}
    */
   #flushChain = Promise.resolve();
+  /** @type {number} */
+  #textMaxBytes = DEFAULT_TRACE_TEXT_MAX_BYTES;
+  /** @type {boolean} */
+  #acceptingWrites = true;
 
   /**
    * @param {string} tracePath — Back-compatible path. If it looks like a DB
    * file, traces are stored in a sibling `debug/` directory.
    */
-  constructor(tracePath) {
+  constructor(tracePath, options = {}) {
     const rootDir = fileTraceRoot(tracePath);
     if (!rootDir) throw new Error('DebugTrace requires a storage path');
     this.#rootDir = rootDir;
+    this.#textMaxBytes = normalizeTextMaxBytes(options?.textMaxBytes);
     // Best-effort, fire-and-forget: atomicWriteText re-ensures the request
     // subdir before every write, so a missed mkdir here is harmless.
     ensureDir(rootDir).catch(() => {});
   }
 
+  refreshConfig(config = {}) {
+    const nextValue = config && typeof config === 'object'
+      ? config.traceTextMaxBytes
+      : config;
+    this.#textMaxBytes = normalizeTextMaxBytes(nextValue, this.#textMaxBytes);
+  }
+
   startTurn({ traceId, messageId = null, mode = null, turnNumber = null, sessionId = null, vpId = null, threadId = null, userPrompt = null } = {}) {
+    if (!this.#acceptingWrites) return 'null';
     const turnRowId = randomUUID();
     const now = Date.now();
     const request = this.#getOrCreateRequest({
@@ -729,13 +1015,21 @@ export class DebugTrace {
     const trace = this.#loadRequest(ctx.sessionId, ctx.requestKey);
     if (!trace) return;
     const loopNumber = ctx.loopNumber || Number(info.turnNumber || 0);
-    const snapshot = buildRequestSnapshot(info);
+    const snapshot = buildRequestSnapshot({
+      ...info,
+      // An explicit null describes this loop: no provider raw request was
+      // captured. Do not inherit a previous loop's body and falsely attribute
+      // it to a transport failure or another uncaptured attempt.
+      rawRequest: Object.prototype.hasOwnProperty.call(info, 'rawRequest')
+        ? info.rawRequest
+        : (trace.baseRequest?.rawRequest ?? null),
+    }, this.#textMaxBytes);
     const previousSnapshot = trace._lastSnapshot || this.#reconstructLastSnapshot(trace);
     if (!trace.baseRequest) {
       trace.baseRequest = {
         systemPrompt: snapshot.systemPrompt,
         messages: Array.isArray(snapshot.messages) ? cloneJsonValue(snapshot.messages) : [],
-        rawRequest: null,
+        rawRequest: snapshot.rawRequest ?? null,
       };
     }
     const loopIndex = (trace.loops || []).findIndex(l => l.turnRowId === turnId);
@@ -745,7 +1039,7 @@ export class DebugTrace {
       loopNumber,
       startedAt: trace.openedAt || Date.now(),
       model: info.model || null,
-      response: truncateText(info.responseText || '', MAX_TEXT_BYTES),
+      response: truncateText(info.responseText || '', this.#textMaxBytes),
       toolCalls: cloneJsonValue(Array.isArray(info.toolCalls) ? info.toolCalls : []),
       usage: normalizeUsage(info.usage || {}, {
         inputTokens: info.inputTokens || 0,
@@ -758,8 +1052,12 @@ export class DebugTrace {
       stopReason: info.stopReason || null,
       at: Date.now(),
       rawResponse: typeof info.rawResponse === 'string'
-        ? truncateText(info.rawResponse, MAX_TEXT_BYTES)
-        : safeJsonValue(info.rawResponse),
+        ? truncateText(info.rawResponse, Math.min(this.#textMaxBytes, MAX_RAW_RESPONSE_BYTES))
+        : safeJsonValue(info.rawResponse, Math.min(this.#textMaxBytes, MAX_RAW_RESPONSE_BYTES)),
+      // Raw request is canonical base-plus-delta data. Persisting the full
+      // snapshot on every loop made a 512 KiB request consume N × 512 KiB for
+      // an N-loop trace and kept the same duplication in the hydrated cache.
+      rawRequest: null,
       requestDelta: buildRequestDelta(previousSnapshot, snapshot),
     };
     if (loopIndex >= 0) trace.loops[loopIndex] = loop;
@@ -769,7 +1067,7 @@ export class DebugTrace {
     trace.updatedAt = loop.at;
     trace.active = info.stopReason ? !['end_turn', 'error', 'aborted'].includes(String(info.stopReason)) : false;
     trace._lastSnapshot = snapshot;
-    this.#markDirty(trace, { dirtyLoops: 1, force: !trace.active });
+    this.#appendTraceRecord(trace, 'loop', loop, { writeMeta: !trace.active });
   }
 
   logTool(turnId, { toolName, toolCallId = null, toolInput = null, toolOutput = null, durationMs = null, isError = false } = {}) {
@@ -779,25 +1077,27 @@ export class DebugTrace {
     const trace = this.#loadRequest(ctx.sessionId, ctx.requestKey);
     if (!trace) return id;
     if (!Array.isArray(trace.tools)) trace.tools = [];
-    trace.tools.push({
+    const tool = {
       id,
       turnRowId: turnId,
       loopNumber: ctx.loopNumber || 0,
       toolName: toolName || '?',
       toolCallId,
       toolInput: truncateText(toolInput == null ? null : String(toolInput), MAX_TOOL_INPUT),
-      toolOutput: truncateText(toolOutput == null ? null : String(toolOutput), MAX_TEXT_BYTES),
+      toolOutput: truncateText(toolOutput == null ? null : String(toolOutput), this.#textMaxBytes),
       durationMs: Number(durationMs || 0),
       isError: !!isError,
       createdAt: Date.now(),
-    });
-    trace.updatedAt = Date.now();
-    this.#markDirty(trace, { dirtyLoops: 0, force: !trace.active });
+    };
+    trace.tools.push(tool);
+    trace.updatedAt = tool.createdAt;
+    this.#appendTraceRecord(trace, 'tool', tool, { writeMeta: false });
     return id;
   }
 
   logEvent({ traceId, eventType, eventData = null } = {}) {
     const id = randomUUID();
+    if (!this.#acceptingWrites) return id;
     // In-memory authoritative ring; persisted async (fire-and-forget). The
     // dream/event sink runs on the engine hot path, so it must not block on a
     // synchronous read-modify-write of events.json.
@@ -850,11 +1150,54 @@ export class DebugTrace {
       .flatMap(({ trace }) => traceToLegacyRows(trace));
   }
 
+  async fetchTurnDebug({ sessionId, turnId, dreamLimit = 0 } = {}) {
+    const requestedSessionId = typeof sessionId === 'string' && sessionId ? sessionId : null;
+    const requestedTurnId = typeof turnId === 'string' && turnId ? turnId : null;
+    if (!requestedSessionId || !requestedTurnId) {
+      return { loops: [], turns: [], dreamEvents: [], detailTurnId: requestedTurnId };
+    }
+    await this.#drainWrites();
+
+    let trace = Array.from(this.#requestCache.values()).find(item => (
+      item?.sessionId === requestedSessionId
+      && (item.requestId === requestedTurnId || item.traceId === requestedTurnId)
+    )) || null;
+    if (!trace) {
+      const locator = await readJson(turnLocatorPath(this.#rootDir, requestedSessionId, requestedTurnId));
+      if (locator?.requestKey && locator.sessionId === requestedSessionId && locator.requestId === requestedTurnId) {
+        const located = await readRequestDir(requestDirFor(this.#rootDir, requestedSessionId, locator.requestKey));
+        if (traceMatchesIdentity(located, requestedSessionId, requestedTurnId)) {
+          trace = located;
+          this.#requestCache.set(trace.requestKey, trace);
+        }
+      }
+    }
+    if (!trace) {
+      // Legacy v2 traces have no locator. Scan only as a compatibility fallback;
+      // every v3 trace takes the direct sessionId + turnId path above.
+      for (const item of await readTraceSummaries(this.#rootDir, requestedSessionId)) {
+        if (traceMatchesIdentity(item.trace, requestedSessionId, requestedTurnId)) {
+          trace = item.trace;
+          this.#requestCache.set(trace.requestKey, trace);
+          break;
+        }
+      }
+    }
+    const dreamEvents = this.#readDreamEvents({ sessionId: requestedSessionId, dreamLimit });
+    if (!trace) return { loops: [], turns: [], dreamEvents, detailTurnId: requestedTurnId };
+    const expanded = expandTrace(trace);
+    return { ...expanded, dreamEvents, detailTurnId: requestedTurnId };
+  }
+
   async fetchRecentDebugHistory({ limit = MAX_HISTORY_LIMIT, dreamLimit = 5, sessionId = null, threadId = null, indexOnly = false, detailTurnId = null, search = '' } = {}) {
+    const requestedDetailTurnId = typeof detailTurnId === 'string' && detailTurnId ? detailTurnId : null;
+    if (requestedDetailTurnId && sessionId) {
+      const detail = await this.fetchTurnDebug({ sessionId, turnId: requestedDetailTurnId, dreamLimit });
+      return { ...detail, hasMore: false, limit: detail.loops.length, indexOnly: false };
+    }
     await this.#ensureHydrated();
     await this.#drainWrites();
     const lim = Math.max(1, Math.min(MAX_HISTORY_LIMIT, Number(limit) || MAX_HISTORY_LIMIT));
-    const requestedDetailTurnId = typeof detailTurnId === 'string' && detailTurnId ? detailTurnId : null;
     const searchRegex = requestedDetailTurnId ? null : compileTraceSearchRegex(search);
     const traces = this.#traceSummaries(sessionId)
       .filter(({ trace }) => !threadId || trace.threadId === threadId)
@@ -945,20 +1288,25 @@ export class DebugTrace {
   }
 
   async purge() {
+    this.#acceptingWrites = false;
     await this.#drainWrites();
     try { await fsp.rm(this.#rootDir, { recursive: true, force: true }); }
     catch { /* ignore */ }
     await ensureDir(this.#rootDir);
     this.#turnIndex.clear();
     this.#requestCache.clear();
+    this.#initializedRequestKeys.clear();
+    this.#reconciledRetentionSessions.clear();
+    this.#retentionIndex.clear();
     this.#events = [];
     this.#hydrated = false;
     this.#hydratePromise = null;
     this.#eventsHydrated = false;
+    this.#acceptingWrites = true;
   }
 
   async close() {
-    // #drainWrites() flushes pending writes itself; no separate #flushPending().
+    this.#acceptingWrites = false;
     await this.#drainWrites();
   }
 
@@ -1006,7 +1354,7 @@ export class DebugTrace {
       sessionId: normalizedSessionId,
       vpId: vpId || null,
       threadId: threadId || null,
-      userPrompt: truncateText(userPrompt || '', MAX_TEXT_BYTES),
+      userPrompt: truncateText(userPrompt || '', this.#textMaxBytes),
       openedAt: now,
       closedAt: null,
       updatedAt: now,
@@ -1096,47 +1444,32 @@ export class DebugTrace {
     this.#events = [...older, ...this.#events].slice(-MAX_DREAM_EVENTS);
   }
 
-  #traceWriteKey(trace) {
-    return `${trace.sessionId || ''}::${trace.requestKey}`;
-  }
-
   #traceFile(trace) {
     return tracePathFor(this.#rootDir, trace.sessionId || null, trace.requestKey);
   }
 
-  #serializableTrace(trace) {
-    const toWrite = { ...trace };
-    delete toWrite._lastSnapshot;
-    return toWrite;
-  }
-
-  #markDirty(trace, { dirtyLoops = 0, force = false } = {}) {
-    if (!trace?.requestKey) return;
-    const key = this.#traceWriteKey(trace);
-    const existing = this.#pendingWrites.get(key);
-    const now = Date.now();
-    const item = existing || { trace, dirtyLoops: 0, firstDirtyAt: now };
-    item.trace = trace;
-    item.dirtyLoops += Math.max(0, Number(dirtyLoops) || 0);
-    this.#pendingWrites.set(key, item);
+  #appendTraceRecord(trace, type, record, { writeMeta = false } = {}) {
+    if (!this.#acceptingWrites || !trace?.requestKey || !record) return;
     this.#requestCache.set(trace.requestKey, trace);
-
-    if (force || item.dirtyLoops >= TRACE_FLUSH_DIRTY_LOOPS) {
+    const initialize = !this.#initializedRequestKeys.has(trace.requestKey);
+    if (initialize) this.#initializedRequestKeys.add(trace.requestKey);
+    this.#pendingWrites.push({
+      trace,
+      type,
+      record: cloneJsonValue(record),
+      initialize,
+      writeMeta: !!writeMeta,
+    });
+    if (writeMeta) {
       this.#flushPending();
       return;
     }
-    this.#scheduleFlushTimer(now);
-  }
-
-  #scheduleFlushTimer(now = Date.now()) {
-    if (this.#flushTimer || this.#pendingWrites.size === 0) return;
-    const oldestDirtyAt = Math.min(...Array.from(this.#pendingWrites.values()).map(item => item.firstDirtyAt || now));
-    const dueIn = Math.max(0, TRACE_FLUSH_INTERVAL_MS - (now - oldestDirtyAt));
-    this.#flushTimer = setTimeout(() => {
-      this.#flushTimer = null;
+    if (this.#appendTimer) return;
+    this.#appendTimer = setTimeout(() => {
+      this.#appendTimer = null;
       this.#flushPending();
-    }, dueIn);
-    if (typeof this.#flushTimer.unref === 'function') this.#flushTimer.unref();
+    }, TRACE_APPEND_BATCH_MS);
+    if (typeof this.#appendTimer.unref === 'function') this.#appendTimer.unref();
   }
 
   #scheduleEventFlush() {
@@ -1145,43 +1478,73 @@ export class DebugTrace {
     this.#eventFlushTimer = setTimeout(() => {
       this.#eventFlushTimer = null;
       this.#flushEvents();
-    }, TRACE_FLUSH_INTERVAL_MS);
+    }, EVENT_FLUSH_INTERVAL_MS);
     if (typeof this.#eventFlushTimer.unref === 'function') this.#eventFlushTimer.unref();
   }
 
-  /**
-   * Drain pending trace writes synchronously-from-the-caller's-view: snapshot
-   * each dirty trace to a JSON STRING now (so later in-place mutation of the
-   * live `loops` array can't tear the payload), then chain the async writes
-   * onto #flushChain. Returns nothing; callers that need durability await
-   * #drainWrites().
-   */
+  /** Queue append-only loop/tool records onto the single-writer chain. */
   #flushPending() {
-    if (this.#flushTimer) {
-      clearTimeout(this.#flushTimer);
-      this.#flushTimer = null;
+    if (this.#appendTimer) {
+      clearTimeout(this.#appendTimer);
+      this.#appendTimer = null;
     }
-    const entries = Array.from(this.#pendingWrites.values());
+    const entries = this.#pendingWrites.splice(0);
     if (entries.length === 0) {
       this.#flushEvents();
       return;
     }
-    this.#pendingWrites.clear();
-    // Capture point-in-time payloads synchronously (so later in-place mutation
-    // of the live `loops` array can't tear a payload), but remember each
-    // request key: a prune chained ahead of this write may evict the request
-    // before the write runs, and we must NOT resurrect a pruned trace on disk.
-    const jobs = entries.map(({ trace }) => ({
-      requestKey: trace.requestKey,
-      file: this.#traceFile(trace),
-      text: JSON.stringify(this.#serializableTrace(trace)),
-    }));
     this.#chain(async () => {
-      for (const { requestKey, file, text } of jobs) {
-        // Skip if an earlier chained prune already evicted this request.
-        if (!this.#requestCache.has(requestKey)) continue;
-        try { await atomicWriteText(file, text); }
-        catch (err) { console.warn('[Yeaft] debug trace write failed:', err?.message || err); }
+      const batches = new Map();
+      for (const entry of entries) {
+        if (!this.#requestCache.has(entry.trace.requestKey)) continue;
+        const requestDir = requestDirFor(this.#rootDir, entry.trace.sessionId || null, entry.trace.requestKey);
+        const batch = batches.get(requestDir) || { trace: entry.trace, initialize: false, writeMeta: false, lines: [] };
+        batch.trace = entry.trace;
+        batch.initialize ||= entry.initialize;
+        batch.writeMeta ||= entry.writeMeta;
+        batch.lines.push(`${JSON.stringify({ type: entry.type, record: entry.record })}\n`);
+        batches.set(requestDir, batch);
+      }
+      for (const [requestDir, batch] of batches) {
+        const { trace, initialize, writeMeta } = batch;
+        const lines = [...batch.lines];
+        const legacyRequestDir = trace._persistedFormat === 'legacy'
+          ? trace._persistedRequestDir || null
+          : null;
+        try {
+          const metaPath = requestMetaPath(requestDir);
+          if (initialize) {
+            const meta = serializableTraceMeta(trace);
+            if (legacyRequestDir) {
+              meta.legacyBaseRequest = cloneJsonValue(trace.baseRequest);
+              const legacyLines = [];
+              for (const loop of Array.isArray(trace.loops) ? trace.loops : []) {
+                legacyLines.push(`${JSON.stringify({ type: 'loop', record: loop })}\n`);
+              }
+              for (const tool of Array.isArray(trace.tools) ? trace.tools : []) {
+                legacyLines.push(`${JSON.stringify({ type: 'tool', record: tool })}\n`);
+              }
+              lines.unshift(...legacyLines);
+            }
+            await atomicWriteText(metaPath, JSON.stringify(meta));
+            await atomicWriteText(
+              turnLocatorPath(this.#rootDir, trace.sessionId || null, trace.requestId),
+              JSON.stringify({ requestKey: trace.requestKey, requestId: trace.requestId, sessionId: trace.sessionId || null })
+            );
+          }
+          await ensureDir(requestDir);
+          const eventPath = requestEventsPath(requestDir);
+          if (initialize) await prepareJsonlAppend(eventPath);
+          await fsp.appendFile(eventPath, lines.join(''), 'utf8');
+          if (writeMeta) await atomicWriteText(metaPath, JSON.stringify(serializableTraceMeta(trace)));
+          trace._persistedFormat = 'events';
+          trace._persistedRequestDir = requestDir;
+          if (legacyRequestDir && legacyRequestDir !== requestDir) {
+            await removeRequestDirIfIdentityMatches(legacyRequestDir, trace);
+          }
+        } catch (err) {
+          console.warn('[Yeaft] debug trace append failed:', err?.message || err);
+        }
       }
       try { await this.#pruneAll(REQUEST_RETENTION); }
       catch (err) { console.warn('[Yeaft] debug trace prune failed:', err?.message || err); }
@@ -1273,24 +1636,73 @@ export class DebugTrace {
   }
 
   async #pruneAll(keep) {
-    // Cache-only enumeration; rm the pruned request dirs async. No disk scan.
-    const sessions = new Set([null]);
+    const sessions = new Set();
     for (const trace of this.#requestCache.values()) sessions.add(trace.sessionId || null);
-    for (const sid of sessions) await this.#pruneSession(sid, keep);
+    for (const sessionId of sessions) await this.#pruneSession(sessionId, keep);
   }
 
   async #pruneSession(sessionId, keep = REQUEST_RETENTION) {
-    const traces = this.#traceSummaries(sessionId);
+    const sessionKey = sessionId || '';
+    let index = this.#retentionIndex.get(sessionKey);
+    if (!this.#reconciledRetentionSessions.has(sessionKey)) {
+      index = new Map();
+      for (const item of await readTraceHeaders(this.#rootDir, sessionId)) {
+        const existing = index.get(item.trace.requestKey);
+        if (existing) {
+          existing.requestDirs.add(item.requestDir);
+          const currentDir = requestDirFor(this.#rootDir, sessionId, item.trace.requestKey);
+          if (item.requestDir === currentDir || existing.trace?._persistedFormat === 'legacy') {
+            existing.trace = item.trace;
+          }
+          existing.openedAt = Math.min(existing.openedAt, item.openedAt);
+        } else {
+          index.set(item.trace.requestKey, {
+            trace: item.trace,
+            requestDirs: new Set([item.requestDir]),
+            openedAt: item.openedAt,
+          });
+        }
+      }
+      this.#retentionIndex.set(sessionKey, index);
+      this.#reconciledRetentionSessions.add(sessionKey);
+    }
+    for (const trace of this.#requestCache.values()) {
+      if ((trace.sessionId || null) !== sessionId) continue;
+      const requestDir = requestDirFor(this.#rootDir, sessionId, trace.requestKey);
+      const existing = index.get(trace.requestKey);
+      index.set(trace.requestKey, {
+        trace,
+        requestDirs: new Set([...(existing?.requestDirs || []), requestDir]),
+        openedAt: Math.min(Number(trace.openedAt || 0), existing?.openedAt ?? Infinity),
+      });
+    }
+    const traces = Array.from(index.values()).sort((a, b) => (
+      (a.openedAt || 0) - (b.openedAt || 0)
+      || String(a.trace.requestKey).localeCompare(String(b.trace.requestKey))
+    ));
     const activeCutoff = Date.now() - 6 * 60 * 60 * 1000;
     const protectedItems = traces.filter(item => item.trace?.active && Number(item.trace?.updatedAt || 0) >= activeCutoff);
     const pruneCandidates = traces.filter(item => !protectedItems.includes(item));
     const stale = pruneCandidates.slice(0, Math.max(0, traces.length - protectedItems.length - keep));
     for (const item of stale) {
-      // Drop from cache first so subsequent queries never resurface it, even
-      // if the async rm is still in flight or fails.
       this.#requestCache.delete(item.trace.requestKey);
-      try { await fsp.rm(dirname(item.file), { recursive: true, force: true }); }
-      catch { /* ignore */ }
+      this.#initializedRequestKeys.delete(item.trace.requestKey);
+      index.delete(item.trace.requestKey);
+      for (const requestDir of item.requestDirs) {
+        await removeRequestDirIfIdentityMatches(requestDir, item.trace);
+      }
+      const locatorPaths = new Set(sessionRequestDirs(this.#rootDir, sessionId).map(requestsDir => (
+        join(requestsDir, '..', 'turns', turnLocatorName(item.trace.requestId))
+      )));
+      for (const locatorPath of locatorPaths) {
+        const locator = await readJson(locatorPath);
+        if (locator?.sessionId === sessionId
+          && locator.requestId === item.trace.requestId
+          && locator.requestKey === item.trace.requestKey) {
+          try { await fsp.rm(locatorPath, { force: true }); }
+          catch { /* ignore */ }
+        }
+      }
     }
   }
 
@@ -1322,12 +1734,14 @@ export class NullTrace {
   async compact() { return { before: 0, after: 0 }; }
   async purge() {}
   async close() {}
+  refreshConfig() {}
   async flush() {}
+  async fetchTurnDebug() { return { loops: [], turns: [], dreamEvents: [] }; }
   async fetchRecentDebugHistory() { return { loops: [], turns: [], dreamEvents: [] }; }
 }
 
-export function createTrace({ enabled, dbPath, dirPath }) {
+export function createTrace({ enabled, dbPath, dirPath, textMaxBytes }) {
   const path = dirPath || dbPath;
   if (!enabled || !path) return new NullTrace();
-  return new DebugTrace(path);
+  return new DebugTrace(path, { textMaxBytes });
 }

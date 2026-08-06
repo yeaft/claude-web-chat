@@ -86,6 +86,7 @@ import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { defineTool } from '../../../agent/yeaft/tools/types.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { TaskManager } from '../../../agent/yeaft/tasks/manager.js';
+import { writeContent } from '../../../agent/yeaft/memory/store.js';
 
 // -------------------------------------------------------------------------
 // Shared scripted adapter + helpers
@@ -372,10 +373,42 @@ describe('wait-agent envelope shape', () => {
     const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yeaft-project-context-runner-'));
     const adapter = new TextAdapter('done');
     const scopeFilters = [];
+    const memoryRoot = path.join(logDir, 'memory');
+    await writeContent(
+      { kind: 'session', id: 'old-sibling' },
+      'Old sibling experience should be visible only on the initial sub-agent turn.',
+      { root: memoryRoot },
+    );
+    await writeContent(
+      { kind: 'session', id: 'new-sibling' },
+      'New sibling experience should replace the old Project context.',
+      { root: memoryRoot },
+    );
+    await writeContent(
+      { kind: 'session', id: 'session-live' },
+      'Sub-agent recall must survive the single AMS render outlet.',
+      { root: memoryRoot },
+    );
     const memoryIndex = {
       search({ scopeFilter }) {
         scopeFilters.push([...scopeFilter]);
-        return [];
+        if (!scopeFilter.includes('sessions/session-live')) return [];
+        const scopes = [
+          'sessions/session-live',
+          ...['sessions/old-sibling', 'sessions/new-sibling']
+            .filter(scope => scopeFilter.includes(scope)),
+        ];
+        return scopes.map((scope, index) => ({
+          id: `canonical-${index}`,
+          scope,
+          kind: 'context',
+          tags: ['canonical-content', 'project'],
+          sourceMessages: [],
+          body: 'Canonical content selector only.',
+          rank: -1 - index,
+          createdAt: '2026-08-01T00:00:00.000Z',
+          updatedAt: '2026-08-01T00:00:00.000Z',
+        }));
       },
     };
     const agent = {
@@ -414,6 +447,7 @@ describe('wait-agent envelope shape', () => {
         parentThreadId: 'main',
         projectSessionIds: ['old-sibling'],
         projectInstruction: 'OLD PROJECT INSTRUCTION MUST DISAPPEAR',
+        yeaftDir: logDir,
         subAgentLogDir: logDir,
         idleAbandonMs: 10_000,
       }));
@@ -421,6 +455,8 @@ describe('wait-agent envelope shape', () => {
       expect(agent.status).toBe(STATUS.IDLE);
       expect(adapter.streamCalls).toHaveLength(1);
       expect(adapter.streamCalls[0].system).toContain('OLD PROJECT INSTRUCTION MUST DISAPPEAR');
+      expect(adapter.streamCalls[0].system).toContain('Old sibling experience should be visible');
+      expect(adapter.streamCalls[0].system).toContain('Sub-agent recall must survive the single AMS render outlet.');
       expect(scopeFilters[0]).toContain('sessions/old-sibling');
 
       const updated = JSON.parse(await sendMessage.execute({
@@ -438,6 +474,8 @@ describe('wait-agent envelope shape', () => {
       expect(agent.status).toBe(STATUS.IDLE);
       expect(adapter.streamCalls).toHaveLength(2);
       expect(adapter.streamCalls[1].system).toContain('NEW PROJECT INSTRUCTION');
+      expect(adapter.streamCalls[1].system).toContain('New sibling experience should replace the old Project context.');
+      expect(adapter.streamCalls[1].system).not.toContain('Old sibling experience should be visible');
       expect(adapter.streamCalls[1].system).not.toContain('OLD PROJECT INSTRUCTION MUST DISAPPEAR');
       expect(scopeFilters[1]).toContain('sessions/new-sibling');
       expect(scopeFilters[1]).not.toContain('sessions/old-sibling');
@@ -458,6 +496,8 @@ describe('wait-agent envelope shape', () => {
       expect(adapter.streamCalls).toHaveLength(3);
       expect(adapter.streamCalls[2].system).not.toContain('OLD PROJECT INSTRUCTION MUST DISAPPEAR');
       expect(adapter.streamCalls[2].system).not.toContain('NEW PROJECT INSTRUCTION');
+      expect(adapter.streamCalls[2].system).not.toContain('Old sibling experience should be visible');
+      expect(adapter.streamCalls[2].system).not.toContain('New sibling experience should replace');
       expect(scopeFilters[2]).not.toContain('sessions/old-sibling');
       expect(scopeFilters[2]).not.toContain('sessions/new-sibling');
     } finally {

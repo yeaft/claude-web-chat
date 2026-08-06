@@ -1,5 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -9,6 +18,17 @@ import {
   projectVisibleSessionMessages,
 } from '../../../../agent/yeaft/conversation/persist.js';
 import { searchMessages } from '../../../../agent/yeaft/conversation/search.js';
+import historySearch from '../../../../agent/yeaft/tools/history-search.js';
+import { createSession } from '../../../../agent/yeaft/sessions/session-store.js';
+import { archiveSession, deleteSession } from '../../../../agent/yeaft/sessions/session-crud.js';
+import {
+  __historyIndexForTest,
+  closeConversationHistoryIndexes,
+  loadConversationOutlineFromIndex,
+  readConversationIndexWindow,
+  searchConversationIndex,
+  validateConversationIndexAnchor,
+} from '../../../../agent/yeaft/conversation/history-index.js';
 
 const TEST_DIR = join(tmpdir(), `yeaft-test-conv-${Date.now()}`);
 
@@ -16,7 +36,8 @@ beforeEach(() => {
   mkdirSync(TEST_DIR, { recursive: true });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await closeConversationHistoryIndexes();
   if (existsSync(TEST_DIR)) {
     rmSync(TEST_DIR, { recursive: true, force: true });
   }
@@ -26,6 +47,15 @@ afterEach(() => {
 
 
 // ─── parseMessage ────────────────────────────────────────────
+
+const consolidatedHistoryScenarios = [];
+function historyScenario(name, run) { consolidatedHistoryScenarios.push({ name, run }); }
+async function runConsolidatedHistoryScenarios() {
+  for (const scenario of consolidatedHistoryScenarios) {
+    try { await scenario.run(); }
+    catch (error) { error.message = `[${scenario.name}] ${error.message}`; throw error; }
+  }
+}
 
 describe('parseMessage', () => {
   it('should parse frontmatter and body', () => {
@@ -405,6 +435,172 @@ describe('ConversationStore', () => {
       expect(index.nextSeq).toBe(26);
       expect(index.segments).toHaveLength(1);
     });
+
+    it('keeps legacy transcript lineage stable across metadata loss and alternating readers', () => {
+      const sessionId = 'session_legacy_lineage';
+      store.append({ role: 'user', content: 'legacy question', sessionId });
+      store.append({ role: 'assistant', content: 'legacy answer', sessionId });
+      const conversationDir = join(TEST_DIR, 'sessions', sessionId, 'conversation');
+      const indexPath = join(conversationDir, 'index.json');
+      const lineagePath = join(conversationDir, 'lineage.json');
+      const legacyIndex = JSON.parse(readFileSync(indexPath, 'utf8'));
+      delete legacyIndex.streamId;
+      delete legacyIndex.revision;
+      rmSync(lineagePath, { force: true });
+      writeFileSync(indexPath, `${JSON.stringify(legacyIndex, null, 2)}\n`);
+
+      const firstUpgrade = new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId);
+      expect(firstUpgrade).toMatchObject({ streamId: expect.stringMatching(/^legacy-/), revision: 0 });
+
+      // Two new readers can race the first migration. Deleting only the sidecar
+      // simulates both having observed the same legacy state before publication;
+      // the content-derived lineage must still converge.
+      rmSync(lineagePath, { force: true });
+      expect(new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId)).toEqual(firstUpgrade);
+
+      // Simulate an old reader/writer repeatedly dropping unknown index fields.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const oldIndex = JSON.parse(readFileSync(indexPath, 'utf8'));
+        delete oldIndex.streamId;
+        delete oldIndex.revision;
+        writeFileSync(indexPath, `${JSON.stringify(oldIndex, null, 2)}\n`);
+        expect(new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId)).toEqual(firstUpgrade);
+      }
+
+      rmSync(indexPath, { force: true });
+      const rebuilt = new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId);
+      expect(rebuilt).toEqual(firstUpgrade);
+      expect(JSON.parse(readFileSync(lineagePath, 'utf8'))).toMatchObject({
+        streamId: firstUpgrade.streamId,
+        revision: firstUpgrade.revision,
+      });
+    });
+
+    it('keeps a brand-new transcript lineage stable across index loss and old writers', () => {
+      const sessionId = 'session_new_lineage_recovery';
+      store.append({ role: 'user', content: 'brand new question', sessionId });
+      store.append({ role: 'assistant', content: 'brand new answer', sessionId });
+      const conversationDir = join(TEST_DIR, 'sessions', sessionId, 'conversation');
+      const indexPath = join(conversationDir, 'index.json');
+      const lineagePath = join(conversationDir, 'lineage.json');
+      const original = store.getSessionHistoryMetadata(sessionId);
+      const originalLineage = JSON.parse(readFileSync(lineagePath, 'utf8'));
+      expect(originalLineage.anchor).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
+
+      rmSync(indexPath, { force: true });
+      expect(new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId)).toEqual(original);
+
+      writeFileSync(indexPath, '{broken-json');
+      expect(new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId)).toEqual(original);
+
+      const oldIndex = JSON.parse(readFileSync(indexPath, 'utf8'));
+      delete oldIndex.streamId;
+      delete oldIndex.revision;
+      writeFileSync(indexPath, `${JSON.stringify(oldIndex, null, 2)}\n`);
+      expect(new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId)).toEqual(original);
+    });
+
+    it('updates the lineage anchor and revision when the first durable row changes', () => {
+      const sessionId = 'session_anchor_update';
+      const first = store.append({ role: 'user', content: 'before update', sessionId });
+      store.append({ role: 'assistant', content: 'answer', sessionId });
+      const conversationDir = join(TEST_DIR, 'sessions', sessionId, 'conversation');
+      const indexPath = join(conversationDir, 'index.json');
+      const lineagePath = join(conversationDir, 'lineage.json');
+      const before = store.getSessionHistoryMetadata(sessionId);
+      const beforeAnchor = JSON.parse(readFileSync(lineagePath, 'utf8')).anchor;
+
+      expect(store.update(first, { content: 'after update' })).toMatchObject({ content: 'after update' });
+      const after = store.getSessionHistoryMetadata(sessionId);
+      const afterAnchor = JSON.parse(readFileSync(lineagePath, 'utf8')).anchor;
+      expect(after.streamId).toBe(before.streamId);
+      expect(after.revision).toBe(before.revision + 1);
+      expect(afterAnchor).not.toBe(beforeAnchor);
+
+      rmSync(indexPath, { force: true });
+      expect(new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId)).toEqual(after);
+    });
+
+    it('does not reuse lineage after physical Session deletion and same-id recreation', () => {
+      const sessionId = 'session_physical_recreate';
+      const sessionsDir = join(TEST_DIR, 'sessions');
+      const handle = createSession(sessionsDir, {
+        id: sessionId,
+        name: 'Physical recreate',
+        roster: [],
+        defaultVpId: null,
+      });
+      handle.close();
+      store.append({ role: 'user', content: 'old lifetime', sessionId });
+      const before = store.getSessionHistoryMetadata(sessionId);
+
+      expect(deleteSession(TEST_DIR, sessionId, { memoryRoot: join(TEST_DIR, 'memory') }))
+        .toMatchObject({ sessionId, deleted: true });
+      const recreated = createSession(sessionsDir, {
+        id: sessionId,
+        name: 'Physical recreate again',
+        roster: [],
+        defaultVpId: null,
+      });
+      recreated.close();
+      const restarted = new ConversationStore(TEST_DIR);
+      restarted.append({ role: 'user', content: 'new lifetime', sessionId });
+      const after = restarted.getSessionHistoryMetadata(sessionId);
+      expect(after.streamId).not.toBe(before.streamId);
+    });
+
+    it('rotates Session history lineage after delete and same-id recreation', () => {
+      const sessionId = 'session_recreated_lineage';
+      store.append({ role: 'user', content: 'old question', sessionId });
+      store.append({ role: 'assistant', content: 'old answer', sessionId });
+      const beforeDelete = store.getSessionHistoryMetadata(sessionId);
+
+      expect(store.deleteByGroup(sessionId)).toBe(2);
+      const afterDelete = store.getSessionHistoryMetadata(sessionId);
+      expect(afterDelete.streamId).not.toBe(beforeDelete.streamId);
+      expect(afterDelete).toMatchObject({ revision: 0, headSeq: 0 });
+
+      store.append({ role: 'user', content: 'new question', sessionId });
+      store.append({ role: 'assistant', content: 'new answer', sessionId });
+      const recreated = store.getSessionHistoryMetadata(sessionId);
+      expect(recreated.streamId).toBe(afterDelete.streamId);
+      expect(recreated.streamId).not.toBe(beforeDelete.streamId);
+      expect(recreated.headSeq).toBeGreaterThan(0);
+    });
+
+    it('rotates legacy lineage if an old writer recreates the transcript without lineage metadata', () => {
+      const sessionId = 'session_old_writer_recreate';
+      store.append({
+        role: 'user', content: 'old question', sessionId, time: '2026-01-01T00:00:00.000Z',
+      });
+      const before = store.getSessionHistoryMetadata(sessionId);
+      const conversationDir = join(TEST_DIR, 'sessions', sessionId, 'conversation');
+      const segmentDir = join(conversationDir, 'segments');
+      const indexPath = join(conversationDir, 'index.json');
+      const segmentPath = join(segmentDir, '000001.jsonl');
+      const recreatedRow = {
+        id: 'm0001', seq: 1, role: 'user', content: 'new question', sessionId,
+        time: '2026-01-02T00:00:00.000Z', tokens_est: 3,
+      };
+      const body = `${JSON.stringify(recreatedRow)}\n`;
+      writeFileSync(segmentPath, body);
+      writeFileSync(indexPath, `${JSON.stringify({
+        version: 1,
+        nextSeq: 2,
+        totalMessages: 1,
+        lastMessageId: 'm0001',
+        activeSegment: '000001.jsonl',
+        segments: [{
+          file: '000001.jsonl', firstSeq: 1, lastSeq: 1, count: 1,
+          bytes: Buffer.byteLength(body),
+        }],
+        foldedMessageIds: [],
+      }, null, 2)}\n`);
+
+      const after = new ConversationStore(TEST_DIR).getSessionHistoryMetadata(sessionId);
+      expect(after.streamId).not.toBe(before.streamId);
+      expect(after).toMatchObject({ revision: 0, headSeq: 1 });
+    });
   });
 
   describe('update', () => {
@@ -506,6 +702,41 @@ legacy session`, { encoding: 'utf8' });
     });
 
   describe('Session visible history search', () => {
+    it('keeps HistorySearch read-only for unindexed and indexed Session roots', async () => {
+      const root = join(TEST_DIR, 'history-search-root');
+      mkdirSync(root, { recursive: true });
+      const before = () => ({
+        rootEntries: readdirSync(root).sort(),
+        manifest: existsSync(join(root, 'sessions-manifest.json')),
+        sessionMeta: existsSync(join(root, 'sessions', 'session_search', 'session.json')),
+      });
+
+      const emptyBefore = before();
+      const empty = JSON.parse(await historySearch.execute({ keyword: 'nothing' }, {
+        yeaftDir: root,
+        sessionId: 'session_search',
+      }));
+      expect(empty.results).toEqual([]);
+      expect(before()).toEqual(emptyBefore);
+
+      const indexedStore = new ConversationStore(root);
+      indexedStore.append({ role: 'user', content: 'indexed needle result', sessionId: 'session_search' });
+      const markerPath = join(root, 'sessions-manifest.json');
+      writeFileSync(markerPath, JSON.stringify({ version: 1, sessions: [] }, null, 2));
+      const markerBefore = readFileSync(markerPath, 'utf8');
+      const sessionDir = join(root, 'sessions', 'session_search');
+      const sessionFilesBefore = readdirSync(sessionDir, { recursive: true }).sort();
+
+      const found = JSON.parse(await historySearch.execute({ keyword: 'needle' }, {
+        yeaftDir: root,
+        sessionId: 'session_search',
+      }));
+      expect(found.results).toHaveLength(1);
+      expect(found.results[0]).toMatchObject({ content: expect.stringContaining('needle') });
+      expect(readFileSync(markerPath, 'utf8')).toBe(markerBefore);
+      expect(readdirSync(sessionDir, { recursive: true }).sort()).toEqual(sessionFilesBefore);
+    });
+
     it('searches only visible rows in the requested Session, newest first', () => {
       const first = store.append({ role: 'user', content: 'Needle in the first turn', sessionId: 'session_search' });
       store.append({ role: 'assistant', content: 'irrelevant', sessionId: 'session_search' });
@@ -593,6 +824,82 @@ legacy session`, { encoding: 'utf8' });
       expect(page.results[0].snippet).toContain('Needle before tool');
     });
 
+    historyScenario('keeps one canonical entry across interleaved VP rows with a stable identity', () => {
+      store.append({ role: 'user', content: 'compare answers', sessionId: 'session_interleaved_entry' });
+      const linusFirst = store.append({
+        role: 'assistant', content: 'Linus needle first', sessionId: 'session_interleaved_entry',
+        turnId: 'turn-shared', speakerVpId: 'linus',
+      });
+      const martin = store.append({
+        role: 'assistant', content: 'Martin needle', sessionId: 'session_interleaved_entry',
+        turnId: 'turn-shared', speakerVpId: 'martin',
+      });
+
+      const beforeTail = store.searchVisibleBySession('session_interleaved_entry', 'needle', { limit: 20 });
+      const linusEntryBefore = beforeTail.results.find(result => result.speakerVpId === 'linus');
+      expect(linusEntryBefore).toMatchObject({
+        messageId: linusFirst.id,
+        sourceMessageIds: [linusFirst.id],
+        entryStartSeq: store.getMessageSeqById(linusFirst.id),
+      });
+
+      const linusFinal = store.append({
+        role: 'assistant', content: 'Linus needle final', sessionId: 'session_interleaved_entry',
+        turnId: 'turn-shared', speakerVpId: 'linus',
+      });
+      const page = store.searchVisibleBySession('session_interleaved_entry', 'needle', { limit: 20 });
+      const linusEntries = page.results.filter(result => result.speakerVpId === 'linus');
+      const martinEntries = page.results.filter(result => result.speakerVpId === 'martin');
+
+      expect(linusEntries).toHaveLength(1);
+      expect(martinEntries).toHaveLength(1);
+      expect(linusEntries[0]).toMatchObject({
+        entryId: linusEntryBefore.entryId,
+        messageId: linusFinal.id,
+        sourceMessageIds: [linusFirst.id, linusFinal.id],
+        snippet: expect.stringContaining('Linus needle first'),
+      });
+      expect(martinEntries[0]).toMatchObject({
+        messageId: martin.id,
+        sourceMessageIds: [martin.id],
+      });
+      expect(linusEntries[0].entryId).not.toBe(martinEntries[0].entryId);
+    });
+
+    historyScenario('does not merge a reused assistant turn id across visible user boundaries', () => {
+      store.append({ role: 'user', content: 'first question', sessionId: 'session_reused_turn' });
+      const first = store.append({
+        role: 'assistant', content: 'first needle', sessionId: 'session_reused_turn',
+        turnId: 'reused-turn', speakerVpId: 'linus',
+      });
+      store.append({ role: 'user', content: 'second question', sessionId: 'session_reused_turn' });
+      const second = store.append({
+        role: 'assistant', content: 'second needle', sessionId: 'session_reused_turn',
+        turnId: 'reused-turn', speakerVpId: 'linus',
+      });
+
+      const results = store.searchVisibleBySession('session_reused_turn', 'needle').results;
+      expect(results).toHaveLength(2);
+      expect(results.map(result => result.messageId)).toEqual([second.id, first.id]);
+      expect(new Set(results.map(result => result.entryId)).size).toBe(2);
+    });
+
+    historyScenario('preserves literal substring semantics for CJK, emoji, punctuation, and case', () => {
+      const row = store.append({
+        role: 'user',
+        content: '前缀中文后缀 😀 rocket foo.bar QUOTED "Value"',
+        sessionId: 'session_literal_search',
+      });
+
+      for (const query of ['中文', '😀', 'foo.bar', 'quoted "value"', 'QUOTED']) {
+        expect(store.searchVisibleBySession('session_literal_search', query).results)
+          .toEqual([expect.objectContaining({ messageId: row.id })]);
+      }
+      expect(store.searchVisibleBySession('session_literal_search', '文后').results)
+        .toEqual([expect.objectContaining({ messageId: row.id })]);
+      expect(store.searchVisibleBySession('session_literal_search', 'fooXbar').results).toEqual([]);
+    });
+
     it('pages search results on response boundaries', () => {
       for (let i = 0; i < 3; i += 1) {
         store.append({ role: 'user', content: `question ${i}`, sessionId: 'session_search_pages' });
@@ -632,14 +939,16 @@ legacy session`, { encoding: 'utf8' });
       const latest = store.append({ role: 'assistant', content: 'second answer', sessionId: 'session_outline' });
 
       const firstPage = store.loadVisibleOutlineBySession('session_outline', { limit: 2 });
+      const countedPage = store.loadVisibleOutlineBySession('session_outline', { limit: 2, includeTotal: true });
       const olderPage = store.loadVisibleOutlineBySession('session_outline', {
-        limit: 2, beforeSeq: firstPage.nextBeforeSeq, includeTotal: false,
+        limit: 2, beforeSeq: firstPage.nextBeforeSeq,
       });
 
       expect(firstPage.results.map(result => result.messageId)).toEqual([
         expect.any(String), latest.id,
       ]);
-      expect(firstPage).toMatchObject({ hasMore: true, totalCount: 4 });
+      expect(firstPage).toMatchObject({ hasMore: true, totalCount: null });
+      expect(countedPage.totalCount).toBe(4);
       expect([...firstPage.results, ...olderPage.results].map(result => result.snippet))
         .not.toContain('engine reflection');
       expect(olderPage.results.map(result => result.messageId)).toContain(first.id);
@@ -669,7 +978,7 @@ legacy session`, { encoding: 'utf8' });
         turnId: 'assistant-turn', speakerVpId: 'maker',
       });
 
-      const page = store.loadVisibleOutlineBySession('session_outline_tools', { limit: 50 });
+      const page = store.loadVisibleOutlineBySession('session_outline_tools', { limit: 50, includeTotal: true });
 
       expect(page).toMatchObject({ totalCount: 2, hasMore: false, nextBeforeSeq: null });
       expect(page.results).toEqual([
@@ -691,7 +1000,7 @@ legacy session`, { encoding: 'utf8' });
         speakerVpId: 'maker', toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: 'true' } }],
       });
 
-      const page = store.loadVisibleOutlineBySession('session_outline_tool_only', { limit: 50 });
+      const page = store.loadVisibleOutlineBySession('session_outline_tool_only', { limit: 50, includeTotal: true });
 
       expect(page.totalCount).toBe(2);
       expect(page.results[1]).toMatchObject({
@@ -745,7 +1054,8 @@ legacy session`, { encoding: 'utf8' });
       ]);
     });
 
-    it('supports an exclusive seq cursor and bounded anchor window', () => {
+    it('supports an exclusive seq cursor and bounded anchor window', async () => {
+      await runConsolidatedHistoryScenarios();
       const ids = [];
       for (let i = 0; i < 5; i += 1) {
         ids.push(store.append({ role: 'user', content: `searchable turn ${i}`, sessionId: 'session_window' }));
@@ -769,7 +1079,7 @@ legacy session`, { encoding: 'utf8' });
       expect(window.messages.some(message => message.id === anchor.id)).toBe(true);
       expect(window.messages.every(message => message.sessionId === 'session_window')).toBe(true);
       expect(window.messages.length).toBeLessThan(10);
-    });
+    }, 60_000);
 
     it('restores AskUser answers inside a bounded search window', () => {
       store.append({ role: 'user', content: 'searchable AskUser turn', sessionId: 'session_window_ask' });
@@ -810,6 +1120,354 @@ legacy session`, { encoding: 'utf8' });
   });
 
 
+
+  historyScenario('preserves literal search semantics and rebuilds after same-seq mutations', async () => {
+      const sessionId = 'session_index_mutations';
+      const user = store.append({
+        role: 'user',
+        content: '前缀中文后缀 😀 👨‍💻 foo.bar quoted "Value" old-token',
+        sessionId,
+      });
+      const assistant = store.append({
+        role: 'assistant',
+        content: 'assistant needle',
+        sessionId,
+        turnId: 'turn-index',
+        speakerVpId: 'linus',
+      });
+
+      for (const query of ['中', '中文', '😀', '👨‍💻', 'foo.bar', 'quoted "value"', 'OLD-TOKEN', '中文 foo.bar']) {
+        const page = await searchConversationIndex(TEST_DIR, sessionId, query, { limit: 10 });
+        expect(page.results).toEqual([expect.objectContaining({ messageId: user.id })]);
+        expect(page.maxBatchRows).toBeLessThanOrEqual(128);
+        expect(page.maxBatchBytes).toBeLessThanOrEqual(2 * 1024 * 1024 + 1024);
+      }
+      const databaseDir = join(TEST_DIR, 'conversation-index', 'databases');
+      const databaseName = readdirSync(databaseDir).find(name => name.endsWith('.sqlite'));
+      expect(statSync(join(databaseDir, databaseName)).size).toBeLessThan(2 * 1024 * 1024);
+      const first = await searchConversationIndex(TEST_DIR, sessionId, 'assistant needle', { limit: 10 });
+      expect(first.results).toHaveLength(1);
+      const firstGeneration = first.indexGeneration;
+      const entryId = first.results[0].entryId;
+
+      store.update(assistant, { content: 'assistant updated-token' });
+      expect(await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+        indexGeneration: firstGeneration,
+        entryId,
+        entryStartSeq: first.results[0].entryStartSeq,
+        anchorMessageId: first.results[0].messageId,
+        anchorSeq: first.results[0].seq,
+      })).toMatchObject({ ok: false, code: 'stale_result' });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'assistant needle')).results).toEqual([]);
+      const updated = await searchConversationIndex(TEST_DIR, sessionId, 'updated-token');
+      expect(updated.indexGeneration).toBeGreaterThan(firstGeneration);
+      expect(updated.results).toEqual([expect.objectContaining({ entryId })]);
+
+      const hiddenInternal = store.append({
+        role: 'user', content: 'hide internal token', sessionId, userAuthored: true,
+      });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hide internal token')).results)
+        .toHaveLength(1);
+      store.update(hiddenInternal, { internal: true });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hide internal token')).results)
+        .toEqual([]);
+
+      const hiddenModel = store.append({
+        role: 'user', content: 'hide model token', sessionId, userAuthored: true,
+      });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hide model token')).results)
+        .toHaveLength(1);
+      store.update(hiddenModel, { userAuthored: false });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hide model token')).results)
+        .toEqual([]);
+
+      const revealed = store.append({
+        role: 'user', content: 'hidden then visible', sessionId, userAuthored: false,
+      });
+      store.update(revealed, { userAuthored: true });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'hidden then visible')).results)
+        .toHaveLength(1);
+
+      store.moveToCold(user.id);
+      expect((await searchConversationIndex(TEST_DIR, sessionId, '中文')).results)
+        .toEqual([expect.objectContaining({ messageId: user.id })]);
+
+      store.foldMessages([assistant], {
+        role: 'user',
+        content: 'fold replacement',
+        sessionId,
+        _reflection: true,
+        internal: true,
+      });
+      expect(await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+        indexGeneration: updated.indexGeneration,
+        entryId: updated.results[0].entryId,
+        entryStartSeq: updated.results[0].entryStartSeq,
+        anchorMessageId: updated.results[0].messageId,
+        anchorSeq: updated.results[0].seq,
+      })).toMatchObject({ ok: false, code: 'stale_result' });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'updated-token')).results).toEqual([]);
+
+      store.deleteByGroup(sessionId);
+      await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+        indexGeneration: updated.indexGeneration,
+        entryId: updated.results[0].entryId,
+        entryStartSeq: updated.results[0].entryStartSeq,
+        anchorMessageId: updated.results[0].messageId,
+        anchorSeq: updated.results[0].seq,
+      });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, '中文')).results).toEqual([]);
+    });
+
+    historyScenario('pages interleaved VP entries with an opaque cursor and no gaps', async () => {
+      const sessionId = 'session_index_cursor';
+      const user = store.append({ role: 'user', content: 'cursor question', sessionId });
+      const linusFirst = store.append({
+        role: 'assistant', content: 'linus first', sessionId,
+        turnId: 'turn-cursor', speakerVpId: 'linus',
+      });
+      const martin = store.append({
+        role: 'assistant', content: 'martin response', sessionId,
+        turnId: 'turn-cursor', speakerVpId: 'martin',
+      });
+      const linusFinal = store.append({
+        role: 'assistant', content: 'linus final', sessionId,
+        turnId: 'turn-cursor', speakerVpId: 'linus',
+      });
+
+      const pages = [];
+      let cursor = null;
+      do {
+        const page = await loadConversationOutlineFromIndex(TEST_DIR, sessionId, {
+          limit: 1,
+          ...(cursor ? { cursor } : {}),
+        });
+        pages.push(...page.results);
+        cursor = page.nextCursor;
+      } while (cursor);
+
+      expect(pages).toHaveLength(3);
+      expect(new Set(pages.map(result => result.entryId)).size).toBe(3);
+      expect(pages.find(result => result.speakerVpId === 'linus')).toMatchObject({
+        sourceMessageIds: [linusFirst.id, linusFinal.id],
+      });
+      expect(pages.find(result => result.speakerVpId === 'martin')).toMatchObject({
+        sourceMessageIds: [martin.id],
+      });
+      expect(pages.find(result => result.role === 'user')).toMatchObject({ messageId: user.id });
+    });
+
+    historyScenario('keeps an oversized canonical anchor entry complete under byte caps', () => {
+      const sessionId = 'session_index_large_anchor';
+      store.append({ role: 'user', content: 'large anchor question', sessionId });
+      const first = store.append({
+        role: 'assistant', content: 'x'.repeat(40_000), sessionId,
+        turnId: 'turn-large', speakerVpId: 'linus',
+      });
+      const second = store.append({
+        role: 'assistant', content: 'y'.repeat(40_000), sessionId,
+        turnId: 'turn-large', speakerVpId: 'linus',
+      });
+      const entry = store.loadCanonicalVisibleEntriesBySession(sessionId)
+        .find(candidate => candidate.speakerVpId === 'linus');
+      const window = store.loadVisibleWindowBySession(sessionId, entry.anchorSeq, {
+        entryStartSeq: entry.entryStartSeq,
+        entryEndSeq: entry.entryEndSeq,
+        sourceMessageIds: entry.sourceMessageIds,
+        beforeTurns: 1,
+        afterTurns: 1,
+        maxRows: 10,
+        maxBytes: 32 * 1024,
+      });
+
+      expect(window.messages.map(message => message.id)).toEqual(expect.arrayContaining([first.id, second.id]));
+      expect(window.byteCount).toBeGreaterThan(32 * 1024);
+      expect(window.rowCount).toBeLessThanOrEqual(10);
+    });
+
+    historyScenario('reconciles a source write that lands during the initial rebuild', async () => {
+      const buildingSessionId = 'session_index_building';
+      store.append({ role: 'user', content: 'build me', sessionId: buildingSessionId });
+      const rejectedAt = performance.now();
+      await expect(searchConversationIndex(TEST_DIR, buildingSessionId, 'build me', {
+        _waitForBuild: false,
+      })).rejects.toMatchObject({ code: 'index_building' });
+      expect(performance.now() - rejectedAt).toBeLessThan(250);
+      expect((await searchConversationIndex(TEST_DIR, buildingSessionId, 'build me')).results)
+        .toHaveLength(1);
+
+      const sessionId = 'session_index_concurrent';
+      for (let index = 0; index < 200; index += 1) {
+        store.append({ role: 'user', content: `seed ${index}`, sessionId });
+      }
+      const initial = searchConversationIndex(TEST_DIR, sessionId, 'seed 199');
+      store.append({ role: 'user', content: 'concurrent needle', sessionId });
+      await initial;
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'concurrent needle')).results)
+        .toEqual([expect.objectContaining({ snippet: expect.stringContaining('concurrent needle') })]);
+
+      const managerSessions = Array.from(
+        { length: __historyIndexForTest.maxManagers + 4 },
+        (_, index) => `session_index_manager_${index}`,
+      );
+      for (const [index, managerSessionId] of managerSessions.entries()) {
+        store.append({ role: 'user', content: `manager needle ${index}`, sessionId: managerSessionId });
+        expect((await searchConversationIndex(
+          TEST_DIR,
+          managerSessionId,
+          `manager needle ${index}`,
+        )).results).toHaveLength(1);
+        expect(__historyIndexForTest.managers.size)
+          .toBeLessThanOrEqual(__historyIndexForTest.maxManagers);
+      }
+      const firstManagerKey = `${TEST_DIR}\u001fsession_index_manager_0`;
+      expect(__historyIndexForTest.managers.has(firstManagerKey)).toBe(false);
+      expect((await searchConversationIndex(
+        TEST_DIR,
+        'session_index_manager_0',
+        'manager needle 0',
+      )).results).toHaveLength(1);
+      expect(__historyIndexForTest.managers.size)
+        .toBeLessThanOrEqual(__historyIndexForTest.maxManagers);
+    });
+
+    historyScenario('reconciles a crash-gap source rewrite without a mutation marker', async () => {
+      const sessionId = 'session_index_crash_gap';
+      store.append({ role: 'user', content: 'before crash', sessionId });
+      await searchConversationIndex(TEST_DIR, sessionId, 'before crash');
+
+      const segmentPath = join(TEST_DIR, 'sessions', sessionId, 'conversation', 'segments', '000001.jsonl');
+      const original = readFileSync(segmentPath, 'utf8');
+      writeFileSync(segmentPath, original.replace('before crash', 'after crash!'), 'utf8');
+
+      const after = await searchConversationIndex(TEST_DIR, sessionId, 'after crash!');
+      expect(after.results)
+        .toEqual([expect.objectContaining({ snippet: expect.stringContaining('after crash!') })]);
+      expect(after.indexGeneration).toBeGreaterThan(1);
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'before crash')).results).toEqual([]);
+
+      const outlineSessionId = 'session_index_outline_reconcile';
+      store.append({ role: 'user', content: 'old-token', sessionId: outlineSessionId });
+      const initialOutline = await loadConversationOutlineFromIndex(TEST_DIR, outlineSessionId, {
+        limit: 10,
+      });
+      await closeConversationHistoryIndexes({ releaseMutationState: false });
+      const outlinePath = join(
+        TEST_DIR, 'sessions', outlineSessionId, 'conversation', 'segments', '000001.jsonl',
+      );
+      const outlineOriginal = readFileSync(outlinePath, 'utf8');
+      writeFileSync(outlinePath, outlineOriginal.replace('old-token', 'new-token'), 'utf8');
+      const staleOutline = await loadConversationOutlineFromIndex(TEST_DIR, outlineSessionId, {
+        limit: 10,
+      });
+      expect(staleOutline.indexGeneration).toBe(initialOutline.indexGeneration);
+      expect(staleOutline.results[0].snippet).toContain('old-token');
+      let reconciledOutline = staleOutline;
+      for (let attempt = 0; attempt < 100
+        && reconciledOutline.indexGeneration === initialOutline.indexGeneration; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+        reconciledOutline = await loadConversationOutlineFromIndex(TEST_DIR, outlineSessionId, {
+          limit: 10,
+        });
+      }
+      expect(reconciledOutline.indexGeneration).toBeGreaterThan(initialOutline.indexGeneration);
+      expect(reconciledOutline.results[0].snippet).toContain('new-token');
+    });
+
+    historyScenario('invalidates the live scope when Session CRUD archives or deletes the directory', async () => {
+      const sessionId = 'session_index_lifecycle';
+      const handle = createSession(join(TEST_DIR, 'sessions'), {
+        id: sessionId,
+        name: 'Indexed lifecycle',
+        roster: [],
+        defaultVpId: null,
+      });
+      handle.close();
+      store.append({ role: 'user', content: 'lifecycle needle', sessionId });
+      const indexed = await searchConversationIndex(TEST_DIR, sessionId, 'lifecycle needle');
+      expect(indexed.results).toHaveLength(1);
+
+      rmSync(join(TEST_DIR, 'sessions', sessionId), { recursive: true, force: true });
+      expect(archiveSession(TEST_DIR, sessionId)).toMatchObject({ alreadyGone: true });
+      expect(await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+        indexGeneration: indexed.indexGeneration,
+        entryId: indexed.results[0].entryId,
+        entryStartSeq: indexed.results[0].entryStartSeq,
+        anchorMessageId: indexed.results[0].messageId,
+        anchorSeq: indexed.results[0].seq,
+      })).toMatchObject({ ok: false, code: 'stale_result' });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'lifecycle needle')).results).toEqual([]);
+
+      expect(deleteSession(TEST_DIR, sessionId, { memoryRoot: join(TEST_DIR, 'memory') }))
+        .toMatchObject({ sessionId, alreadyGone: true, legacyCleanedUp: 0 });
+      expect(deleteSession(TEST_DIR, sessionId, { memoryRoot: join(TEST_DIR, 'memory') }))
+        .toMatchObject({ sessionId, alreadyGone: true });
+      expect((await searchConversationIndex(TEST_DIR, sessionId, 'lifecycle needle')).results).toEqual([]);
+    });
+
+    historyScenario('rejects a stale versioned entry locator after the source entry changes', async () => {
+      const raceAnchorMutation = async (kind, mutate) => {
+        const sessionId = `session_index_anchor_${kind}`;
+        store.append({ role: 'user', content: `anchor question ${kind}`, sessionId });
+        const assistant = store.append({
+          role: 'assistant',
+          content: `anchor needle ${kind}`,
+          sessionId,
+          turnId: `turn-anchor-${kind}`,
+          speakerVpId: 'linus',
+        });
+        const page = await searchConversationIndex(TEST_DIR, sessionId, `anchor needle ${kind}`);
+        const result = page.results[0];
+        expect(await validateConversationIndexAnchor(TEST_DIR, sessionId, {
+          indexGeneration: result.indexGeneration,
+          entryId: result.entryId,
+          entryStartSeq: result.entryStartSeq,
+          anchorMessageId: result.messageId,
+          anchorSeq: result.seq,
+        })).toMatchObject({ ok: true });
+
+        const barrierBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
+        const barrier = new Int32Array(barrierBuffer);
+        const reading = readConversationIndexWindow(TEST_DIR, sessionId, {
+          indexGeneration: result.indexGeneration,
+          entryId: result.entryId,
+          entryStartSeq: result.entryStartSeq,
+          anchorMessageId: result.messageId,
+          anchorSeq: result.seq,
+          beforeTurns: 1,
+          afterTurns: 1,
+          _testBarrier: barrierBuffer,
+        });
+        while (Atomics.load(barrier, 0) === 0) {
+          await new Promise(resolve => setTimeout(resolve, 1));
+        }
+        await mutate({ sessionId, assistant });
+        Atomics.store(barrier, 1, 1);
+        Atomics.notify(barrier, 1);
+        await expect(reading).rejects.toMatchObject({ code: 'stale_result' });
+      };
+
+      await raceAnchorMutation('update', ({ assistant }) => {
+        store.update(assistant, { content: 'anchor changed during read' });
+      });
+      await raceAnchorMutation('fold', ({ sessionId, assistant }) => {
+        store.foldMessages([assistant], {
+          role: 'user', content: 'fold replacement', sessionId, _reflection: true, internal: true,
+        });
+      });
+      await raceAnchorMutation('delete', ({ sessionId }) => {
+        store.deleteByGroup(sessionId);
+      });
+      await raceAnchorMutation('rewrite', ({ sessionId }) => {
+        const segmentPath = join(
+          TEST_DIR, 'sessions', sessionId, 'conversation', 'segments', '000001.jsonl',
+        );
+        const original = readFileSync(segmentPath, 'utf8');
+        const rewritten = original.replace('anchor needle rewrite', 'anchor change rewrite');
+        expect(Buffer.byteLength(rewritten)).toBe(Buffer.byteLength(original));
+        writeFileSync(segmentPath, rewritten, 'utf8');
+      });
+    });
 
   describe('loadRecent', () => {
 
@@ -945,9 +1603,36 @@ legacy session`, { encoding: 'utf8' });
         }),
       ]);
       expect(firstPage.latestSeq).toBe(store.getMessageSeqById(result.id));
+      expect(firstPage.hasMoreAfter).toBe(true);
 
       const secondPage = store.loadAfterSeqByGroup('grp_delta_ask', firstPage.latestSeq);
       expect(secondPage.messages.map(message => message.id)).toEqual([trailing.id]);
+      expect(secondPage.hasMoreAfter).toBe(false);
+    });
+
+    it('pages a long delta by row and byte budgets without skipping the tail', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_pages' });
+      const rows = store.appendBatch(Array.from({ length: 7 }, (_, index) => ({
+        role: 'assistant',
+        content: `page-${index}-${'x'.repeat(80)}`,
+        sessionId: 'grp_delta_pages',
+      })));
+
+      const seen = [];
+      let afterSeq = store.getMessageSeqById(cursor.id);
+      for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+        const page = store.loadAfterSeqByGroup('grp_delta_pages', afterSeq, {
+          limit: 2,
+          maxBytes: 220,
+        });
+        seen.push(...page.messages.map(message => message.id));
+        expect(page.latestSeq).toBeGreaterThan(afterSeq);
+        afterSeq = page.latestSeq;
+        if (!page.hasMoreAfter) break;
+      }
+
+      expect(seen).toEqual(rows.map(row => row.id));
+      expect(afterSeq).toBe(store.getMessageSeqById(rows.at(-1).id));
     });
 
     it('recovers an AskUser result when the incoming cursor already points at its call', () => {
@@ -1419,11 +2104,23 @@ legacy session`, { encoding: 'utf8' });
         readCounts.count += 1;
         return original.call(store, ...args);
       };
-      const page = store.loadVisibleBySession('grp_a', null, 1);
+      let page = store.loadVisibleBySession('grp_a', null, 1);
 
       expect(page.messages).toEqual([]);
       expect(page.hasMore).toBe(true);
+      expect(page.nextBeforeSeq).toEqual(expect.any(Number));
       expect(readCounts.count).toBeLessThan(80);
+
+      const cursors = [];
+      while (page.messages.length === 0 && page.hasMore) {
+        const cursor = page.nextBeforeSeq;
+        expect(cursor).toEqual(expect.any(Number));
+        cursors.push(cursor);
+        page = store.loadVisibleBySession('grp_a', cursor, 1);
+      }
+      expect(new Set(cursors).size).toBe(cursors.length);
+      expect(cursors.every((cursor, index) => index === 0 || cursor < cursors[index - 1])).toBe(true);
+      expect(page.messages.map(message => message.content)).toEqual(['old q', 'old a']);
 
       readCounts.count = 0;
       const engineRows = store.loadRecentBySession('grp_a', 1);
@@ -1745,6 +2442,8 @@ legacy session`, { encoding: 'utf8' });
         mode: 'work',
         model: 'claude-sonnet-4-20250514',
         turnNumber: 2,
+        turnId: 'turn-route-forward',
+        executionOrigin: 'route_forward',
         responseKind: 'result',
         stopReason: 'end_turn',
       });
@@ -1755,6 +2454,8 @@ legacy session`, { encoding: 'utf8' });
       expect(loaded[0].mode).toBe('work');
       expect(loaded[0].model).toBe('claude-sonnet-4-20250514');
       expect(loaded[0].turnNumber).toBe(2);
+      expect(loaded[0].turnId).toBe('turn-route-forward');
+      expect(loaded[0].executionOrigin).toBe('route_forward');
       expect(loaded[0].responseKind).toBe('result');
       expect(loaded[0].stopReason).toBe('end_turn');
     });

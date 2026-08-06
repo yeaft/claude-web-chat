@@ -42,8 +42,11 @@ export default {
     responseCollapsible: { type: Boolean, default: false },
     responseCollapsed: { type: Boolean, default: false },
     responseToggleLabel: { type: String, default: '' },
+    displayNameOverride: { type: String, default: '' },
+    canStop: { type: Boolean, default: true },
+    interactiveSpeaker: { type: Boolean, default: true },
   },
-  emits: ['toggle-response-collapse', 'quote'],
+  emits: ['toggle-response-collapse', 'quote', 'open-debug'],
   template: `
     <div class="vp-turn-block"
          :class="{ 'vp-turn-block-streaming': turn.isStreaming }"
@@ -57,6 +60,7 @@ export default {
           <span
             v-if="displayName"
             class="vp-turn-block-name"
+            :class="{ 'is-static': !interactiveSpeaker }"
             :style="speakerNameStyle"
           >{{ displayName }}</span>
           <span
@@ -114,9 +118,13 @@ export default {
           :response-toggle-label="responseToggleLabel"
           :session-actions="true"
           :quote-author="displayName"
+          :show-debug-action="hasDebugEntry"
+          :debug-action-title="debugActionTitle"
           @quote="$emit('quote', $event)"
+          @open-debug="$emit('open-debug')"
           @toggle-response-collapse="$emit('toggle-response-collapse')"
         />
+        <slot></slot>
       </div>
     </div>
   `,
@@ -127,6 +135,7 @@ export default {
     const $t = (inst && inst.appContext.config.globalProperties.$t) || ((key) => key);
 
     const displayName = Vue.computed(() => {
+      if (props.displayNameOverride) return props.displayNameOverride;
       const vpId = props.turn && props.turn.speakerVpId;
       if (!vpId) return '';
       // vpLabel lives on the VP store (same as VpAvatar / VpBadge); calling
@@ -160,8 +169,18 @@ export default {
     });
 
     const showStop = Vue.computed(
-      () => !!(props.turn && props.turn.isStreaming && props.turn.turnId)
+      () => !!(props.canStop && props.turn && props.turn.isStreaming && props.turn.turnId)
     );
+
+    const hasDebugEntry = Vue.computed(
+      () => !!(props.turn && props.turn.turnId && !props.turn.isStreaming)
+    );
+
+    const debugActionTitle = Vue.computed(() => {
+      const key = 'yeaft.debugTurnAction';
+      const translated = $t(key);
+      return translated === key ? 'View debug trace for this turn' : translated;
+    });
 
     const startedTimeText = Vue.computed(() => formatSessionMessageDateTime(props.turn.speakerTimestamp));
 
@@ -204,6 +223,8 @@ export default {
       onStopTurn,
       isTyping,
       showStop,
+      hasDebugEntry,
+      debugActionTitle,
       displayName,
       speakerNameStyle,
       startedTimeText,

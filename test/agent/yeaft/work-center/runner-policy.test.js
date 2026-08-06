@@ -24,6 +24,8 @@ import {
   createSubmitWorkItemReplanTool,
   createWorkItemToolRegistry,
   parseStructuredResult,
+  recallWorkItemMemory,
+  renderPendingActionInput,
   workItemToolPolicySnapshot,
   resolveWorkItemWorkDir,
   WorkItemRunner,
@@ -46,6 +48,39 @@ describe('Work Center tool policy', () => {
 
 
 
+
+  it('injects canonical WorkItem memory and never raw evidence rows', () => {
+    const yeaftDir = join(workDir, '.yeaft-runtime');
+    const scope = 'sessions/session-memory';
+    mkdirSync(join(yeaftDir, 'memory', scope), { recursive: true });
+    writeFileSync(join(yeaftDir, 'memory', scope, 'content.md'), 'CANONICAL_MEMORY_FACT\n');
+    writeFileSync(join(yeaftDir, 'memory', scope, 'memory.md'), 'RAW_EVIDENCE_SECRET\n');
+    const requiredTags = [];
+    const memoryIndex = {
+      search({ requiredTag }) {
+        requiredTags.push(requiredTag);
+        return [{
+          id: 'canonical-selector', scope, kind: 'context', tags: ['canonical-content'],
+          sourceMessages: [], body: 'RAW_EVIDENCE_SECRET', rank: -1,
+          createdAt: '2026-08-04T00:00:00.000Z', updatedAt: '2026-08-04T00:00:00.000Z',
+        }];
+      },
+    };
+    const block = recallWorkItemMemory(
+      { memoryIndex, yeaftDir },
+      {
+        goal: 'Use canonical memory fact',
+        origin: { sessionId: 'session-memory', trustedSession: true },
+        linkedSessionIds: ['session-memory'],
+        reuseMemory: true,
+      },
+      { instruction: 'Use canonical memory fact', expectedOutcome: 'Fact retained', type: 'implement' },
+      { id: 'omni' },
+    );
+    expect(requiredTags).toEqual(['canonical-content']);
+    expect(block).toContain('CANONICAL_MEMORY_FACT');
+    expect(block).not.toContain('RAW_EVIDENCE_SECRET');
+  });
 
   it('removes Bash from both registry and policy when attachments are present', async () => {
     const attachmentDir = join(outsideDir, 'attachments');
@@ -73,6 +108,378 @@ describe('Work Center tool policy', () => {
       allowedToolNames: expect.arrayContaining(['Bash']),
       shell: { enabled: true },
     });
+  });
+
+  it('requires review decisions on planning control tools and preserves them', async () => {
+    const workItem = { planRevision: 3 };
+    const currentAction = { id: 'review-id', stageId: 'review-security', type: 'review' };
+    const replanCollector = { value: null };
+    const replanTool = createRequestWorkItemReplanTool({
+      workItem,
+      collector: replanCollector,
+      isRunActive: () => true,
+      currentAction,
+    });
+    expect(replanTool.parameters.required).toContain('reviewDecision');
+    expect(replanTool.parameters.properties.reviewDecision.const).toBe('changes_requested');
+    const replanInput = {
+      summary: 'The review found blockers.',
+      evidence: ['Security finding at runtime.js:42'],
+      acceptanceChecks: [],
+      proposalId: 'replan-review-findings',
+      basePlanRevision: 3,
+      reason: 'The unfinished topology needs remediation and another review.',
+    };
+    await expect(replanTool.execute(replanInput))
+      .rejects.toThrow(/reviewDecision.*changes_requested/);
+    await expect(replanTool.execute({ ...replanInput, reviewDecision: 'approved' }))
+      .rejects.toThrow(/reviewDecision.*changes_requested/);
+    expect(replanCollector.value).toBeNull();
+    await replanTool.execute({ ...replanInput, reviewDecision: 'changes_requested' });
+    expect(replanCollector.value).toMatchObject({
+      kind: 'replan',
+      input: { reviewDecision: 'changes_requested' },
+    });
+
+    const expansionCollector = { value: null };
+    const expansionTool = createProposeWorkItemActionsTool({
+      vps: [{ id: 'omni', role: 'developer' }],
+      workItem: { planRevision: 3 },
+      actions: [],
+      collector: expansionCollector,
+      isRunActive: () => true,
+      currentAction,
+    });
+    expect(expansionTool.parameters.required).toContain('reviewDecision');
+    expect(expansionTool.parameters.properties.reviewDecision.const).toBe('changes_requested');
+
+    const nonReviewTool = createRequestWorkItemReplanTool({
+      workItem,
+      collector: { value: null },
+      isRunActive: () => true,
+      currentAction: { id: 'implementation-id', stageId: 'implementation', type: 'implement' },
+    });
+    expect(nonReviewTool.parameters.required).not.toContain('reviewDecision');
+    expect(nonReviewTool.parameters.properties).not.toHaveProperty('reviewDecision');
+
+    expect(parseStructuredResult(JSON.stringify({
+      outcome: 'completed',
+      summary: 'Review complete',
+      evidence: ['review evidence'],
+      acceptanceChecks: [],
+    }), 'review')).toMatchObject({
+      outcome: 'failed',
+      error: 'Completed review requires approved or changes_requested',
+    });
+  });
+
+  it('persists review decisions through explicit replan and additive control tools', async () => {
+    const createReviewFixture = id => {
+      const store = new WorkItemStore(join(workDir, `${id}.db`));
+      const controller = new WorkflowController(store, { listAvailableVpIds: () => ['omni'] });
+      const criterion = 'Review findings enter an executable remediation path';
+      const item = controller.create({
+        id,
+        title: 'Route review findings',
+        goal: 'Preserve explicit review decisions and their plan mutations',
+        acceptanceCriteria: [criterion],
+        workflowTemplate: 'ai-planned',
+        workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+        workDir,
+        start: true,
+      });
+      const triage = store.claimReadyAction(`${id}-triage`, 5_000);
+      controller.submit(triage.run.id, `${id}-triage`, triage.run.leaseEpoch, {
+        outcome: 'completed',
+        summary: 'The review graph is planned.',
+        evidence: ['Validated initial review graph'],
+        acceptanceChecks: [{ criterion, status: 'passed', evidence: 'Validated initial review graph' }],
+        plan: {
+          workItemType: 'review-remediation',
+          actions: [
+            {
+              id: 'implementation', name: 'Implement candidate', type: 'implement',
+              objective: 'Implement the candidate change',
+              approach: 'Edit and test the candidate in the shared workspace',
+              expectedOutcome: 'A reviewable candidate exists',
+              dependsOnActionIds: [], workspaceMode: 'shared',
+            },
+            {
+              id: 'review', name: 'Review candidate', type: 'review',
+              objective: 'Review the candidate independently',
+              approach: 'Inspect the diff and verify the acceptance boundary',
+              expectedOutcome: 'An explicit review decision is recorded',
+              dependsOnActionIds: ['implementation'], workspaceMode: 'read',
+              changesRequestedActionId: 'implementation',
+            },
+            {
+              id: 'deliver', name: 'Deliver candidate', type: 'deliver',
+              objective: 'Deliver only an approved candidate',
+              approach: 'Verify the approved evidence and publish the result',
+              expectedOutcome: 'The approved candidate is delivered',
+              dependsOnActionIds: ['review'], workspaceMode: 'shared',
+            },
+          ],
+        },
+      });
+      const implementation = store.claimReadyAction(`${id}-implementation`, 5_000);
+      controller.submit(
+        implementation.run.id,
+        `${id}-implementation`,
+        implementation.run.leaseEpoch,
+        {
+          outcome: 'completed',
+          summary: 'The candidate is ready for review.',
+          evidence: ['candidate commit'],
+          acceptanceChecks: [{ criterion, status: 'deferred', evidence: 'Review remains' }],
+        },
+      );
+      return {
+        store,
+        controller,
+        item,
+        criterion,
+        review: store.claimReadyAction(`${id}-review`, 5_000),
+      };
+    };
+    const createRunner = (fixture, responses) => new WorkItemRunner({
+      store: fixture.store,
+      runtimeProvider: async () => ({
+        defaultWorkDir: workDir,
+        config: { model: 'provider/model', maxOutputTokens: 2_048, projectDocMaxBytes: 0 },
+        adapter: {
+          async *stream(params) {
+            params.onRequestStart?.();
+            for (const event of responses.shift()) yield event;
+          },
+        },
+      }),
+      registry: {
+        listVps: () => [{ id: 'omni', name: 'Omni', role: 'Reviewer', traits: ['review'] }],
+        getVp: () => ({ id: 'omni', name: 'Omni', role: 'Reviewer', traits: ['review'] }),
+      },
+    });
+
+    const replanFixture = createReviewFixture('review-replan-tool');
+    try {
+      const reviewReplanInput = {
+        summary: 'The review found blockers that require a replacement topology.',
+        evidence: ['Important finding at runtime.js:42'],
+        acceptanceChecks: [{
+          criterion: replanFixture.criterion,
+          status: 'deferred',
+          evidence: 'Remediation and re-review remain',
+        }],
+        proposalId: 'review-blocker-replan',
+        basePlanRevision: replanFixture.review.workItem.planRevision,
+        reason: 'The existing future topology cannot represent remediation and re-review.',
+        reviewDecision: 'changes_requested',
+      };
+      const invalidReviewReplanInput = structuredClone(reviewReplanInput);
+      delete invalidReviewReplanInput.reviewDecision;
+      const replanResponses = [
+        [
+          { type: 'tool_call', id: 'request-replan-missing-decision', name: 'RequestWorkItemReplan', input: invalidReviewReplanInput },
+          { type: 'stop', stopReason: 'tool_use' },
+        ],
+        [
+          { type: 'tool_call', id: 'request-replan-corrected', name: 'RequestWorkItemReplan', input: reviewReplanInput },
+          { type: 'stop', stopReason: 'tool_use' },
+        ],
+      ];
+      const replanRunner = createRunner(replanFixture, replanResponses);
+      const result = await replanRunner.run({
+        ...replanFixture.review,
+        ownerBootId: 'review-replan-tool-review',
+        signal: new AbortController().signal,
+      });
+      expect(replanResponses).toHaveLength(0);
+      expect(result).toMatchObject({
+        outcome: 'completed',
+        reviewDecision: 'changes_requested',
+        replanRequest: { proposalId: 'review-blocker-replan' },
+      });
+      const detail = replanFixture.controller.submit(
+        replanFixture.review.run.id,
+        'review-replan-tool-review',
+        replanFixture.review.run.leaseEpoch,
+        result,
+      );
+      expect(replanFixture.store.getRun(replanFixture.review.run.id)).toMatchObject({
+        status: 'completed', reviewDecision: 'changes_requested',
+      });
+      expect(detail.actions.find(action => action.id === replanFixture.review.action.id))
+        .toMatchObject({ status: 'completed' });
+      expect(detail.actions.find(action => action.stageId === 'deliver'))
+        .toMatchObject({ status: 'superseded' });
+      expect(detail.actions.find(action => action.stageId.startsWith('replan-')))
+        .toMatchObject({ status: 'ready', type: 'triage' });
+      expect(detail.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'workflow.replan_requested' }),
+      ]));
+      await replanRunner.shutdown();
+    } finally {
+      replanFixture.store.close();
+    }
+
+    const expansionFixture = createReviewFixture('review-expansion-tool');
+    try {
+      const before = expansionFixture.store.getWorkItemDetail(expansionFixture.item.id);
+      const deliver = before.actions.find(action => action.stageId === 'deliver');
+      const safeExpansionInput = {
+        summary: 'The review found a bounded additive remediation.',
+        evidence: ['Important finding at settings.js:84'],
+        acceptanceChecks: [{
+          criterion: expansionFixture.criterion,
+          status: 'deferred',
+          evidence: 'Remediation and re-review remain',
+        }],
+        proposalId: 'review-additive-remediation',
+        basePlanRevision: expansionFixture.review.workItem.planRevision,
+        reviewDecision: 'changes_requested',
+        actions: [
+          {
+            id: 'remediate-review', name: 'Remediate review finding', type: 'implement',
+            objective: 'Fix the bounded review finding',
+            approach: 'Apply the focused fix and add a regression test',
+            expectedOutcome: 'The review finding is resolved with evidence',
+            candidateVpIds: ['omni'], assignmentReason: 'Use the available implementation VP',
+            dependsOnActionIds: ['review'], workspaceMode: 'shared',
+          },
+          {
+            id: 'review-remediation', name: 'Review remediation', type: 'review',
+            objective: 'Review the remediated candidate independently',
+            approach: 'Inspect the focused fix and verify the regression evidence',
+            expectedOutcome: 'The remediated candidate has a fresh review decision',
+            candidateVpIds: ['omni'], assignmentReason: 'Use the available review VP',
+            dependsOnActionIds: ['remediate-review'], workspaceMode: 'read',
+            changesRequestedActionId: 'remediate-review',
+          },
+        ],
+        dependencyPatches: [{
+          actionId: deliver.id,
+          addDependsOnActionIds: ['review-remediation'],
+        }],
+      };
+      const missingDecisionExpansionInput = structuredClone(safeExpansionInput);
+      delete missingDecisionExpansionInput.reviewDecision;
+      const unsafeExpansionInput = {
+        ...structuredClone(safeExpansionInput),
+        proposalId: 'review-additive-without-reapproval',
+        actions: [structuredClone(safeExpansionInput.actions[0])],
+        dependencyPatches: [{
+          actionId: deliver.id,
+          addDependsOnActionIds: ['remediate-review'],
+        }],
+      };
+      const staleReturnTargetExpansionInput = structuredClone(safeExpansionInput);
+      staleReturnTargetExpansionInput.proposalId = 'review-additive-with-stale-return-target';
+      staleReturnTargetExpansionInput.actions[1].changesRequestedActionId = 'implementation';
+      const partiallyReviewedExpansionInput = {
+        ...structuredClone(safeExpansionInput),
+        proposalId: 'review-additive-with-unreviewed-side-work',
+        actions: [
+          ...structuredClone(safeExpansionInput.actions),
+          {
+            id: 'unreviewed-side-work', name: 'Unreviewed side work', type: 'implement',
+            objective: 'Apply a second bounded change',
+            approach: 'Edit the independent side path',
+            expectedOutcome: 'The side path is changed',
+            candidateVpIds: ['omni'], assignmentReason: 'Use the available implementation VP',
+            dependsOnActionIds: ['review'], workspaceMode: 'shared',
+          },
+        ],
+        dependencyPatches: [{
+          actionId: deliver.id,
+          addDependsOnActionIds: ['review-remediation', 'unreviewed-side-work'],
+        }],
+      };
+      const expansionResponses = [
+        [
+          { type: 'tool_call', id: 'propose-missing-decision', name: 'ProposeWorkItemActions', input: missingDecisionExpansionInput },
+          { type: 'stop', stopReason: 'tool_use' },
+        ],
+        [
+          { type: 'tool_call', id: 'propose-without-reapproval', name: 'ProposeWorkItemActions', input: unsafeExpansionInput },
+          { type: 'stop', stopReason: 'tool_use' },
+        ],
+        [
+          { type: 'tool_call', id: 'propose-with-stale-return-target', name: 'ProposeWorkItemActions', input: staleReturnTargetExpansionInput },
+          { type: 'stop', stopReason: 'tool_use' },
+        ],
+        [
+          { type: 'tool_call', id: 'propose-with-unreviewed-side-work', name: 'ProposeWorkItemActions', input: partiallyReviewedExpansionInput },
+          { type: 'stop', stopReason: 'tool_use' },
+        ],
+        [
+          { type: 'tool_call', id: 'propose-corrected-remediation', name: 'ProposeWorkItemActions', input: safeExpansionInput },
+          { type: 'stop', stopReason: 'tool_use' },
+        ],
+      ];
+      const expansionRunner = createRunner(expansionFixture, expansionResponses);
+      const result = await expansionRunner.run({
+        ...expansionFixture.review,
+        ownerBootId: 'review-expansion-tool-review',
+        signal: new AbortController().signal,
+      });
+      expect(expansionResponses).toHaveLength(0);
+      expect(result).toMatchObject({
+        outcome: 'completed',
+        reviewDecision: 'changes_requested',
+        planProposal: { proposalId: 'review-additive-remediation' },
+      });
+      const detail = expansionFixture.controller.submit(
+        expansionFixture.review.run.id,
+        'review-expansion-tool-review',
+        expansionFixture.review.run.leaseEpoch,
+        result,
+      );
+      expect(expansionFixture.store.getRun(expansionFixture.review.run.id)).toMatchObject({
+        status: 'completed', reviewDecision: 'changes_requested',
+      });
+      expect(detail.actions.find(action => action.stageId === 'implementation'))
+        .toMatchObject({ status: 'completed' });
+      expect(detail.actions.find(action => action.stageId === 'remediate-review'))
+        .toMatchObject({ status: 'ready' });
+      expect(detail.actions.find(action => action.stageId === 'deliver').dependsOnStageIds)
+        .toEqual(['review', 'review-remediation']);
+      expect(detail.events.some(event => event.type === 'review.changes_requested')).toBe(false);
+      expect(detail.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'workflow.plan_expanded' }),
+      ]));
+      const remediation = expansionFixture.store.claimReadyAction('review-expansion-remediation', 5_000);
+      expect(remediation.action.stageId).toBe('remediate-review');
+      expansionFixture.controller.submit(
+        remediation.run.id,
+        'review-expansion-remediation',
+        remediation.run.leaseEpoch,
+        {
+          outcome: 'completed', summary: 'The finding is remediated.', evidence: ['remediation commit'],
+          acceptanceChecks: [{
+            criterion: expansionFixture.criterion, status: 'deferred', evidence: 'Fresh review remains',
+          }],
+        },
+      );
+      const reReview = expansionFixture.store.claimReadyAction('review-expansion-rereview', 5_000);
+      expect(reReview.action.stageId).toBe('review-remediation');
+      expect(expansionFixture.store.claimReadyAction('deliver-before-rereview', 5_000)).toBeNull();
+      expansionFixture.controller.submit(
+        reReview.run.id,
+        'review-expansion-rereview',
+        reReview.run.leaseEpoch,
+        {
+          outcome: 'completed', reviewDecision: 'approved', summary: 'The remediation is approved.',
+          evidence: ['independent review'], acceptanceChecks: [{
+            criterion: expansionFixture.criterion, status: 'passed', evidence: 'Fresh approval recorded',
+          }],
+        },
+      );
+      expect(expansionFixture.store.claimReadyAction('review-expansion-deliver', 5_000)?.action.stageId)
+        .toBe('deliver');
+      await expansionRunner.shutdown();
+    } finally {
+      expansionFixture.store.close();
+    }
   });
 
   it('persists external side effects and excludes Run-local control tools', async () => {
@@ -446,7 +853,51 @@ describe('Work Center tool policy', () => {
     }, {})).rejects.toThrow(/background Bash/);
   });
 
+  const verifyRunningQuotedActionInput = () => {
+    const store = new WorkItemStore(join(workDir, 'running-quote.db'), { now: () => 1_000 });
+    const controller = new WorkflowController(store);
+    try {
+      const item = controller.create({
+        id: 'running-quoted-input',
+        title: 'Use a live correction',
+        goal: 'Deliver the latest user correction to the active executor',
+        acceptanceCriteria: ['The correction reaches the active executor'],
+        workflowTemplate: 'software-change',
+        workDir,
+        start: true,
+      });
+      const claim = store.claimReadyAction('running-quote-owner', 60_000);
+      controller.input(item.id, {
+        text: 'LATEST RUNNING CORRECTION',
+        actionId: claim.action.id,
+        generation: claim.action.generation,
+        revision: store.getWorkItem(item.id).revision,
+        clientMessageId: 'running-large-quote',
+        quote: { role: 'assistant', author: 'Reviewer', content: 'Q'.repeat(20_000) },
+      });
+
+      const pending = store.listPendingActionInputs(
+        claim.action.id,
+        claim.run.id,
+        'running-quote-owner',
+        claim.run.leaseEpoch,
+      );
+      const rendered = renderPendingActionInput(pending[0]);
+
+      expect(pending).toHaveLength(1);
+      expect(rendered).toContain('LATEST RUNNING CORRECTION');
+      expect(rendered).toContain('<quoted-message untrusted-reference="true">');
+      expect(rendered).toContain('[quoted message truncated to fit the execution context budget]');
+      expect(Buffer.byteLength(rendered, 'utf8')).toBeLessThanOrEqual(
+        Buffer.byteLength('LATEST RUNNING CORRECTION\n\n', 'utf8') + (8 * 1024),
+      );
+    } finally {
+      store.close();
+    }
+  };
+
   it('rejects lexical, patch, and symlink escapes', async () => {
+    verifyRunningQuotedActionInput();
     const registry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
     await expect(registry.execute('FileRead', { file_path: '../secret' }, {}))
       .rejects.toThrow(/escapes/);
@@ -460,10 +911,7 @@ describe('Work Center tool policy', () => {
     await expect(registry.execute('FileWrite', {
       file_path: join(safe, 'link', 'escaped.txt'), content: 'nope',
     }, {})).rejects.toThrow(/escapes/);
-  });
 
-  it('rejects dangling symlink targets before FileWrite or ApplyPatch can create external files', async () => {
-    const registry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
     const writeTarget = join(outsideDir, 'write-target.txt');
     const patchTarget = join(outsideDir, 'patch-target.txt');
     symlinkSync(writeTarget, join(workDir, 'write-link.txt'));

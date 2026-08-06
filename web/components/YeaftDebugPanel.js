@@ -64,6 +64,17 @@ export default {
     };
   },
   watch: {
+    // Turn-level debug: when the detail round-trip lands for the clicked
+    // turn (or the panel switches to a new turn), auto-expand it so the
+    // user immediately sees the trace instead of a collapsed header.
+    turns(now, prev) {
+      const turn = now && now[0];
+      if (!turn || !turn.turnId) return;
+      const prevId = prev && prev[0] && prev[0].turnId;
+      if (prevId === turn.turnId && this.expandedTurns[turn.turnId]) return;
+      this.expandedTurns = { ...this.expandedTurns, [turn.turnId]: true };
+      this.ensureRequestDetailLoaded(turn.turnId);
+    },
     // PR C: when search becomes active, auto-expand all matching turns
     // and their first loop so the user sees content immediately. When
     // cleared, restore the snapshot.
@@ -100,20 +111,6 @@ export default {
         this.expandedTurns = turnsOpen;
       }
     },
-    // feat-always-on-trajectory-store: watch the active agent. The mount-time
-    // hydration silently no-ops when the panel is opened before the
-    // agent socket finishes connecting (loadYeaftDebugHistory bails on
-    // !this.currentAgent). Without this watcher the panel stays empty
-    // for that whole session because mounted() never runs again.
-    //
-    // Condition is `now && now !== prev` (not just `now && !prev`) so an
-    // agent A → agent B switch also re-fetches; otherwise the panel would
-    // keep showing agent A's trajectory after the user switches.
-    'store.currentAgent'(now, prev) {
-      if (now && now !== prev && this.store && typeof this.store.loadYeaftDebugHistory === 'function') {
-        this.store.loadYeaftDebugHistory({ limit: INITIAL_REQUEST_HISTORY_LIMIT, dreamLimit: 5, indexOnly: true });
-      }
-    },
   },
   computed: {
     store() {
@@ -123,8 +120,28 @@ export default {
       return window.Pinia?.useSessionsStore?.() || null;
     },
     turns() {
-      const turns = (this.store && this.store.yeaftDebugTurnsForActiveSession) || [];
-      return turns.map((turn) => this.decorateTurnTokenBreakdowns(turn));
+      // Turn-level debug: the panel renders exactly the turn the user
+      // clicked (the debug action on an AI turn), not a history browser. The
+      // store keeps `yeaftDebugPanel.turnId`; the turn record arrives via
+      // the precise `yeaft_fetch_debug_history` detail round-trip.
+      const panel = (this.store && this.store.yeaftDebugPanel) || {};
+      const turn = panel.turnId
+        ? (this.store && this.store.yeaftDebugTurnsById && this.store.yeaftDebugTurnsById[panel.turnId])
+        : null;
+      if (!turn) return [];
+      return [this.decorateTurnTokenBreakdowns(turn)];
+    },
+    currentTurnId() {
+      return (this.store && this.store.yeaftDebugPanel && this.store.yeaftDebugPanel.turnId) || '';
+    },
+    currentTurnSessionId() {
+      return (this.store && this.store.yeaftDebugPanel && this.store.yeaftDebugPanel.sessionId) || '';
+    },
+    panelStatus() {
+      return (this.store && this.store.yeaftDebugPanel && this.store.yeaftDebugPanel.status) || 'idle';
+    },
+    panelLoading() {
+      return this.panelStatus === 'loading';
     },
     // feat-6af5f9f1 PR C: toolbar bindings.
     searchQuery: {
@@ -303,15 +320,6 @@ export default {
         evt.request || evt.response || evt.rawRequest || evt.rawResponse || evt.systemPrompt || this.dreamLoopUserContent(evt)
       ));
     },
-  },
-  mounted() {
-    // Hydrate from the agent's persistent file-backed trace as soon as the
-    // panel is mounted. The request log intentionally starts with the newest
-    // 5 requests across all Sessions; regex search asks the agent to find older
-    // matching requests, but the returned list is still capped at 5 rows.
-    if (this.store && typeof this.store.loadYeaftDebugHistory === 'function') {
-      this.store.loadYeaftDebugHistory({ limit: INITIAL_REQUEST_HISTORY_LIMIT, dreamLimit: 5, indexOnly: true });
-    }
   },
   methods: {
     debugSessionId(turn) {
@@ -951,9 +959,9 @@ export default {
       if (this.activeTab === 'toolStats' && !this.toolStats && !this.toolStatsLoading) {
         this.refreshToolStats();
       }
-      if (this.activeTab === 'requests' && this.turns.length === 0 && !this.requestHistoryLoading) {
-        this.loadRequestHistory();
-      }
+      // Turn-level debug: switching to the request tab does NOT boot a
+      // history browser. The panel renders the turn the user clicked via
+      // the turn debug action; with no selection it shows the empty-state hint.
     },
     loadRequestHistory() {
       if (!this.store || typeof this.store.loadYeaftDebugHistory !== 'function') return;
@@ -1379,21 +1387,12 @@ export default {
       </div>
 
       <div v-else-if="activeTab === 'requests' && turns.length > 0" class="yeaft-debug-turns">
-        <div class="yeaft-debug-toolbar yeaft-debug-request-toolbar">
-          <input
-            v-model="searchQuery"
-            type="search"
-            class="yeaft-debug-search"
-            :placeholder="$t('yeaft.debugSearchPlaceholder')"
-          />
-          <span class="yeaft-debug-search-hint">{{ $t('yeaft.debugSearchHint') }}</span>
+        <div class="yeaft-debug-turn-context">
+          <span class="yeaft-debug-turn-context-label">{{ $t('yeaft.debugTurnContext') }}</span>
+          <code class="yeaft-debug-turn-context-id" :title="currentTurnId">{{ currentTurnId }}</code>
+          <code v-if="currentTurnSessionId" class="yeaft-debug-turn-context-session" :title="currentTurnSessionId">{{ currentTurnSessionId }}</code>
         </div>
         <div v-if="requestHistoryError" class="yeaft-debug-error">{{ requestHistoryError }}</div>
-        <div class="yeaft-debug-history-bar" v-if="requestHistoryLoading || turns.length > 0">
-          <span class="yeaft-debug-history-meta">
-            {{ requestHistoryLoading ? $t('yeaft.debugHistoryLoading') : $t('yeaft.debugHistoryLoaded', { count: turns.length }) }}
-          </span>
-        </div>
         <div v-for="turn in turns" :key="turn.turnId" class="yeaft-debug-turn">
           <!-- Turn header -->
           <div class="yeaft-debug-turn-header" :class="{ expanded: expandedTurns[turn.turnId] }" @click="toggleTurn(turn.turnId)">
@@ -1588,23 +1587,9 @@ export default {
 
       <div class="yeaft-debug-empty" :class="{ 'yeaft-debug-empty-requests': activeTab === 'requests' }" v-else>
         <template v-if="activeTab === 'requests'">
-          <div class="yeaft-debug-toolbar yeaft-debug-request-toolbar">
-            <input
-              v-model="searchQuery"
-              type="search"
-              class="yeaft-debug-search"
-              :placeholder="$t('yeaft.debugSearchPlaceholder')"
-            />
-            <span class="yeaft-debug-search-hint">{{ $t('yeaft.debugSearchHint') }}</span>
-          </div>
           <div v-if="requestHistoryError" class="yeaft-debug-error">{{ requestHistoryError }}</div>
-          <button
-            v-if="!requestHistoryLoading"
-            type="button"
-            class="yeaft-debug-show-btn small"
-            @click="loadRequestHistory()"
-          >{{ $t('yeaft.debugHistoryLoad') }}</button>
-          <span v-else>{{ $t('yeaft.debugHistoryLoading') }}</span>
+          <span v-if="panelLoading">{{ $t('yeaft.debugHistoryLoading') }}</span>
+          <span v-else>{{ $t('yeaft.debugPanelEmpty') }}</span>
         </template>
         <span v-else>{{ requestHistoryLoading ? $t('yeaft.debugHistoryLoading') : $t('yeaft.noDebugData') }}</span>
       </div>

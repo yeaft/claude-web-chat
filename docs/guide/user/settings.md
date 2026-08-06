@@ -68,7 +68,7 @@ Expose Agent-machine local services through your browser (e.g. `localhost:3000` 
 
 If your Agent has the Yeaft engine enabled, you also see a **Yeaft / LLM** tab:
 
-- **Config file path** — shows `~/.yeaft/config.json` location
+- **Config file path** — shows the selected Agent instance's resolved `config.json` location
 - **Providers list** — currently configured providers / models / protocols
 - **Test connection** — pick a model and ping; confirms endpoint + auth works
 - **Reload** — make the Agent re-read the config file (no Agent restart needed after edits)

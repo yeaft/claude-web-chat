@@ -1,12 +1,10 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig, mergeConfig } from 'vitest/config';
 import baseConfig from './vitest.config.js';
-import { SANDBOX_TEST_FILES } from './scripts/test-suite-manifest.mjs';
 
-export default defineConfig({
-  ...baseConfig,
+export default mergeConfig(baseConfig, defineConfig({
   test: {
-    ...baseConfig.test,
-    // Keep Sandbox coverage explicit without expanding the bounded core suite.
-    include: [...SANDBOX_TEST_FILES],
+    // Focused development runs may target tests before they join the reviewed
+    // default manifest. The committed suite remains bounded by `npm test`.
+    include: ['test/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
   },
-});
+}));

@@ -9,6 +9,33 @@ import {
   finalizeTurnResponseSegments,
   markTurnResponseKinds,
 } from '../../web/utils/turn-response.js';
+import {
+  messageVpOwner,
+  orderYeaftVpTurnMessagesByExecution,
+  shouldCloseYeaftVpTurn,
+} from '../../web/stores/helpers/yeaft-turn-boundary.js';
+
+function groupYeaftHistoryRows(messages) {
+  const turns = [];
+  let currentTurn = null;
+  for (const msg of orderYeaftVpTurnMessagesByExecution(messages)) {
+    if (currentTurn && shouldCloseYeaftVpTurn(currentTurn, msg)) {
+      turns.push(currentTurn);
+      currentTurn = null;
+    }
+    if (!currentTurn) {
+      currentTurn = {
+        speakerVpId: messageVpOwner(msg),
+        turnId: msg.turnId,
+        isHistory: msg.isHistory === true,
+        messages: [],
+      };
+    }
+    currentTurn.messages.push(msg);
+  }
+  if (currentTurn) turns.push(currentTurn);
+  return turns;
+}
 
 describe('Session message quote UI wiring', () => {
   afterEach(() => {
@@ -18,14 +45,15 @@ describe('Session message quote UI wiring', () => {
     vi.unstubAllGlobals();
   });
 
-  it('keeps the attachment badge last and separates turn progress from the final Markdown result', async () => {
+  it('keeps user attachments inside the bubble and separates turn progress from the final Markdown result', async () => {
     const user = readFileSync(resolve(process.cwd(), 'web/components/MessageItem.js'), 'utf8');
-    const footerStart = user.indexOf('class="message-user-footer"');
-    const footerEnd = user.indexOf('<!-- Expanded attachments preview -->');
-    const footer = user.slice(footerStart, footerEnd);
+    const bubbleStart = user.indexOf('class="message-user-block"');
+    const attachmentsEnd = user.indexOf('<!-- Expanded attachments preview -->');
+    const bubbleBeforeAttachments = user.slice(bubbleStart, attachmentsEnd);
 
-    expect(footer).toContain('class="attachments-badge"');
-    expect(footer.indexOf("$emit('edit-as-new')")).toBeLessThan(footer.indexOf('class="attachments-badge"'));
+    expect(bubbleBeforeAttachments).toContain('class="attachments-badge"');
+    expect(bubbleBeforeAttachments).not.toContain('class="message-action-btn"');
+    expect(user.indexOf('class="message-user-actions"')).toBeGreaterThan(user.indexOf('class="user-attachments"'));
     expect(user).not.toContain('class="user-attachments-indicator"');
 
     globalThis.Vue = Vue;
@@ -57,6 +85,38 @@ describe('Session message quote UI wiring', () => {
     const errored = [{ type: 'assistant', content: 'Partial before error', sessionId: 's1', speakerVpId: 'linus', turnId: 't4' }];
     markTurnResponseKinds(errored, { sessionId: 's1', vpId: 'linus', turnId: 't4', reason: 'errored' });
     expect(errored[0].responseKind).toBe('progress');
+
+    const legacyHistoryTurns = groupYeaftHistoryRows([
+      { id: 'partial-a', type: 'assistant', speakerVpId: 'linus', turnId: 'runtime-a', isHistory: true },
+      { id: 'partial-b', type: 'assistant', speakerVpId: 'linus', turnId: 'runtime-b', isHistory: true },
+      { id: 'result-c', type: 'assistant', speakerVpId: 'linus', turnId: 'runtime-c', isHistory: true },
+    ]);
+    expect(legacyHistoryTurns).toHaveLength(1);
+    expect(legacyHistoryTurns[0].messages.map(message => message.id))
+      .toEqual(['partial-a', 'partial-b', 'result-c']);
+
+    const routeForwardTurns = groupYeaftHistoryRows([
+      ...legacyHistoryTurns[0].messages,
+      {
+        id: 'handoff-d',
+        type: 'assistant',
+        speakerVpId: 'linus',
+        turnId: 'runtime-d',
+        executionOrigin: 'route_forward',
+        isHistory: true,
+      },
+      {
+        id: 'handoff-tool',
+        type: 'tool-summary',
+        speakerVpId: 'linus',
+        turnId: 'runtime-d',
+        executionOrigin: 'route_forward',
+        isHistory: true,
+      },
+    ]);
+    expect(routeForwardTurns).toHaveLength(2);
+    expect(routeForwardTurns[1].messages.map(message => message.id))
+      .toEqual(['handoff-d', 'handoff-tool']);
 
     const turn = {
       id: 'turn-row', turnId: 't1', textContent: '', textSegments: [], toolMsgs: [], toolSummaryCount: 0,
@@ -219,10 +279,16 @@ describe('Session message quote UI wiring', () => {
     expect(user).toContain('class="message-user-meta-separator"');
     expect(user.indexOf('class="message-user-meta"')).toBeLessThan(blockStart);
     expect(userBlock).toContain('class="message-content"');
-    expect(userBlock).toContain('class="message-user-footer"');
+    expect(userBlock).toContain('class="message-user-attachments"');
     expect(userBlock).toContain('class="user-attachments"');
     expect(sidebarCss).toMatch(/\.message-user-block\s*\{[\s\S]*?background: var\(--bg-user-msg-subtle\);/);
     expect(sidebarCss).toMatch(/\.message-user-meta\s*\{[\s\S]*?justify-content: flex-end;/);
+    expect(sidebarCss).toMatch(/\.message-user-actions\s*\{[^}]*opacity:\s*0;/);
+    expect(sidebarCss).toMatch(/\.message\.user:hover \.message-user-actions,[\s\S]*?\.message\.user:focus-within \.message-user-actions\s*\{[^}]*opacity:\s*1;/);
+    expect(messagesCss).toMatch(/\.turn-footer\s*\{[^}]*opacity:\s*0;/);
+    expect(messagesCss).toMatch(/\.assistant-turn:hover \.turn-footer,[\s\S]*?\.assistant-turn:focus-within \.turn-footer[\s\S]*?opacity:\s*1;/);
+    expect(readFileSync(resolve(process.cwd(), 'web/styles/yeaft.css'), 'utf8'))
+      .not.toMatch(/\.yeaft-page \.turn-footer\s*\{[^}]*opacity:\s*1;/);
     expect(messagesCss).toMatch(/\.message\.user\s*\{[\s\S]*?align-items: stretch;/);
 
     globalThis.Vue = Vue;
@@ -230,7 +296,12 @@ describe('Session message quote UI wiring', () => {
     const { default: MessageItem } = await import('../../web/components/MessageItem.js');
     const wrapper = mount(MessageItem, {
       props: {
-        message: { type: 'user', content: 'Check this again', timestamp: Date.UTC(2026, 6, 28, 8, 15) },
+        message: {
+          type: 'user',
+          content: 'Check this again',
+          timestamp: Date.UTC(2026, 6, 28, 8, 15),
+          attachments: [{ name: 'layout.png', mimeType: 'image/png', isImage: true, preview: 'data:image/png;base64,AA==' }],
+        },
         sessionActions: true,
       },
       global: {
@@ -249,11 +320,67 @@ describe('Session message quote UI wiring', () => {
     expect(wrapper.get('.message-user-meta-separator').text()).toBe('·');
     expect(wrapper.get('.message-user-meta .message-time').text()).not.toBe('');
     expect(wrapper.get('.message-user-block .message-content').text()).toBe('Check this again');
-    expect(wrapper.findAll('.message-user-block .message-action-btn')).toHaveLength(2);
+    expect(wrapper.findAll('.message-user-block .message-action-btn')).toHaveLength(0);
+    const userActions = wrapper.findAll('.message-user-actions .message-action-btn');
+    expect(userActions).toHaveLength(2);
+    expect(userActions.map(action => action.text())).toEqual(['', '']);
+    expect(userActions.map(action => action.attributes('title'))).toEqual(['Quote', 'Edit']);
+    expect(userActions.map(action => action.attributes('aria-label'))).toEqual(['Quote', 'Edit']);
+    expect(wrapper.get('.message-user-block .attachments-badge').text()).toContain('message.imageCount');
+    expect(wrapper.find('.message-user-actions .attachments-badge').exists()).toBe(false);
     expect(wrapper.get('.message-user-meta').element.compareDocumentPosition(
       wrapper.get('.message-user-block').element,
     ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(wrapper.get('.message-user-block').element.compareDocumentPosition(
+      wrapper.get('.message-user-actions').element,
+    ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     wrapper.unmount();
+
+    globalThis.Pinia.useChatStore = () => ({ answerUserQuestion: vi.fn(), cancelVpTurn: vi.fn() });
+    const { default: AssistantTurn } = await import('../../web/components/AssistantTurn.js');
+    const assistant = mount(AssistantTurn, {
+      props: {
+        turn: {
+          id: 'assistant-actions',
+          textContent: 'Done',
+          textSegments: [{ key: 'result', content: 'Done', kind: 'result', isStreaming: false }],
+          toolMsgs: [],
+          toolSummaryCount: 0,
+          imageMsgs: [],
+          todoMsg: null,
+          askMsg: null,
+          isStreaming: false,
+        },
+        sessionActions: true,
+        responseCollapsible: true,
+        responseToggleLabel: 'Collapse response',
+      },
+      global: {
+        mocks: {
+          $t: key => ({
+            'message.quote': 'Quote',
+            'message.screenshot': 'Screenshot',
+            'message.screenshotting': 'Taking screenshot...',
+            'message.exportMd': 'Export MD',
+            'message.copyAll': 'Copy all',
+            'message.copied': 'Copied',
+            'message.assistant': 'Assistant',
+          }[key] || key),
+        },
+        provide: { t: key => key === 'message.assistant' ? 'Assistant' : key },
+        stubs: { ToolLine: true, AskCard: true, VpSpeakerHeader: true },
+      },
+    });
+    const assistantActions = assistant.findAll('.turn-footer button');
+    expect(assistantActions).toHaveLength(5);
+    expect(assistantActions.map(action => action.text())).toEqual(['', '', '', '', '']);
+    expect(assistantActions.map(action => action.attributes('title'))).toEqual([
+      'Quote', 'Screenshot', 'Export MD', 'Copy all', 'Collapse response',
+    ]);
+    expect(assistantActions.map(action => action.attributes('aria-label'))).toEqual([
+      'Quote', 'Screenshot', 'Export MD', 'Copy all', 'Collapse response',
+    ]);
+    assistant.unmount();
 
     const chatStore = Vue.reactive({
       activeConversationId: 'conversation-1',
@@ -300,7 +427,8 @@ describe('Session message quote UI wiring', () => {
     const inputWrapper = mount(ChatInput, {
       props: { showStop: true, workItemFn: vi.fn() },
       slots: {
-        'actions-start': '<button class="composer-model-slot" type="button">Model</button>',
+        'actions-start': '<button class="composer-start-slot" type="button">Start</button>',
+        'actions-end-before': '<button class="composer-model-slot" type="button">Model</button>',
       },
       global: {
         mocks: { $t: key => key },
@@ -321,14 +449,20 @@ describe('Session message quote UI wiring', () => {
     expect(textarea.element.compareDocumentPosition(actionRow.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(startActions.findAll('.attach-btn')).toHaveLength(1);
     expect(startActions.findAll('.work-item-draft-btn')).toHaveLength(1);
-    expect(startActions.findAll('.composer-model-slot')).toHaveLength(1);
+    expect(startActions.findAll('.composer-start-slot')).toHaveLength(1);
+    expect(startActions.findAll('.composer-model-slot')).toHaveLength(0);
     expect(startActions.get('.attach-btn').element.compareDocumentPosition(
       startActions.get('.work-item-draft-btn').element,
     ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(startActions.get('.work-item-draft-btn').element.compareDocumentPosition(
-      startActions.get('.composer-model-slot').element,
+      startActions.get('.composer-start-slot').element,
     ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(endActions.findAll('.composer-model-slot')).toHaveLength(1);
+    expect(endActions.get('.composer-model-slot').element.compareDocumentPosition(endActions.get('.stop-btn').element)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(endActions.findAll('.send-btn')).toHaveLength(2);
+    expect(endActions.get('.stop-btn').element.compareDocumentPosition(endActions.findAll('.send-btn')[1].element)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect([...composer.element.children].filter(child => child.matches('.attach-btn, .work-item-draft-btn, .send-btn'))).toHaveLength(0);
     expect(observeComposer).toHaveBeenCalledWith(composer.get('.textarea-wrapper').element);
 
@@ -366,7 +500,8 @@ describe('Session message quote UI wiring', () => {
     expect(inputWrapper.get('.chat-composer-actions-start .btw-input-tag').text()).toBe('BTW');
     expect(inputWrapper.find('.chat-composer-actions-start .attach-btn').exists()).toBe(false);
     expect(inputWrapper.find('.chat-composer-actions-start .work-item-draft-btn').exists()).toBe(false);
-    expect(inputWrapper.find('.chat-composer-actions-start .composer-model-slot').exists()).toBe(true);
+    expect(inputWrapper.find('.chat-composer-actions-start .composer-start-slot').exists()).toBe(true);
+    expect(inputWrapper.find('.chat-composer-actions-end .composer-model-slot').exists()).toBe(true);
     expect(inputWrapper.findAll('.chat-composer-actions-end .send-btn')).toHaveLength(2);
 
     const inputCss = readFileSync(resolve(process.cwd(), 'web/styles/chat-input.css'), 'utf8');
@@ -381,18 +516,19 @@ describe('Session message quote UI wiring', () => {
     const darkThemeTokens = variablesCss.slice(darkThemeStart);
     const composerTokens = [
       '--chat-composer-gap: 8px;',
-      '--chat-composer-control-gap: 4px;',
+      '--chat-composer-control-gap: 8px;',
       '--chat-composer-padding: 12px;',
       '--chat-composer-radius: 18px;',
       '--chat-composer-focus-ring-width: 2px;',
       '--chat-composer-textarea-min-height: 4.5em;',
       '--chat-composer-textarea-mobile-height: 3em;',
       '--chat-composer-control-size: 32px;',
-      '--yeaft-composer-model-max-width: 220px;',
-      '--yeaft-composer-model-mobile-max-width: 38vw;',
+      '--yeaft-composer-model-max-width: 260px;',
+      '--yeaft-composer-model-mobile-max-width: 46vw;',
       '--yeaft-composer-model-font-size: 12px;',
       '--yeaft-composer-model-border-width: 1px;',
-      '--yeaft-model-menu-width: 320px;',
+      '--yeaft-model-menu-width: 280px;',
+      '--yeaft-effort-menu-width: 180px;',
       '--yeaft-model-menu-max-height: 72dvh;',
       '--yeaft-model-menu-layer: 1300;',
       '--yeaft-header-folder-max-width: 280px;',
@@ -414,7 +550,9 @@ describe('Session message quote UI wiring', () => {
     expect(workCenterComposer.matches(sessionComposerSelector)).toBe(false);
     expect(workCenterSource).toContain('class="work-center-item-message-input"');
     expect(workCenterSource).not.toContain(':rows="3"');
-    expect(workCenterCss).toMatch(/\.work-center-item-message-input\s*\{[^}]*width:\s*min\(100%,\s*920px\);[^}]*max-width:\s*none;/);
+    expect(workCenterCss).toMatch(/\.work-center-item-message-input\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none;/);
+    expect(workCenterCss).toMatch(/\.work-center-conversation-column,[\s\S]*?\.work-center-composer-column\s*\{[^}]*max-width:\s*var\(--work-center-conversation-column-width\);/);
+    expect(workCenterCss).toMatch(/\.work-center-conversation-composer\s*\{[^}]*env\(safe-area-inset-bottom, 0px\)/);
 
     expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*flex-direction:\s*column/);
     expect(inputCss).toMatch(/\.input-wrapper\.chat-composer\s*\{[^}]*gap:\s*var\(--chat-composer-gap\)/);
@@ -432,15 +570,20 @@ describe('Session message quote UI wiring', () => {
     expect(inputCss).toMatch(/\.chat-composer-actions\s*\{[^}]*justify-content:\s*space-between/);
     expect(inputCss).toMatch(/\.chat-composer-actions\s*\{[^}]*gap:\s*var\(--chat-composer-gap\)/);
     expect(inputCss).toMatch(/\.chat-composer-actions-start,[\s\S]*?gap:\s*var\(--chat-composer-control-gap\)/);
-    expect(inputCss).toMatch(/\.chat-composer \.send-btn\s*\{[^}]*width:\s*var\(--chat-composer-control-size\)/);
-    expect(inputCss).toMatch(/\.chat-composer \.send-btn\s*\{[^}]*height:\s*var\(--chat-composer-control-size\)/);
+    expect(inputCss).toMatch(/\.chat-composer \.(?:attach-btn|send-btn),[\s\S]*?\.chat-composer \.send-btn\s*\{[^}]*width:\s*var\(--chat-composer-control-size\)/);
+    expect(inputCss).toMatch(/\.chat-composer \.(?:attach-btn|send-btn),[\s\S]*?\.chat-composer \.send-btn\s*\{[^}]*height:\s*var\(--chat-composer-control-size\)/);
+    expect(inputCss).toMatch(/\.send-btn\s*\{[^}]*background:\s*var\(--accent\);[^}]*color:\s*var\(--accent-fg\)/);
+    expect(inputCss).toMatch(/\.send-btn\.stop-btn\s*\{[^}]*background:\s*var\(--accent\);[^}]*color:\s*var\(--accent-fg\)/);
+    expect(messageComposerSource).toContain('d="m7 12 5-5 5 5M12 7v10"');
+    expect(messageComposerSource).toContain('<rect x="7" y="7" width="10" height="10" rx="1.5"/>');
     expect(yeaftCss).toMatch(/\.yeaft-session-input > \.input-wrapper\.chat-composer,[\s\S]*?\.yeaft-page \.expert-chips-bar\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*var\(--session-content-width\)/);
     expect(yeaftCss).not.toContain('--yeaft-composer-max-width');
     expect(yeaftCss).not.toMatch(/\.yeaft-page \.input-wrapper(?:\.chat-composer)?\s*\{/);
     expect(yeaftCss).toMatch(/\.yeaft-topbar-folder-path\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*direction:\s*rtl;/);
-    expect(yeaftCss).toMatch(/\.yeaft-page \.chat-composer-actions-start\s*\{[^}]*position:\s*relative/);
-    expect(yeaftCss).toMatch(/\.yeaft-composer-model-control\s*\{[^}]*position:\s*static/);
-    expect(yeaftCss).toMatch(/\.yeaft-composer-model-dropdown\s*\{[^}]*bottom:\s*calc\(100% \+ var\(--chat-composer-gap\)\)[^}]*max-height:\s*var\(--yeaft-model-menu-max-height\)/);
+    expect(yeaftCss).toMatch(/\.yeaft-composer-model-controls\s*\{[^}]*display:\s*flex;[^}]*gap:\s*var\(--sidebar-section-toggle-gap\)/);
+    expect(yeaftCss).toMatch(/\.yeaft-composer-choice\s*\{[^}]*position:\s*relative/);
+    expect(yeaftCss).toMatch(/\.yeaft-composer-model,[\s\S]*?\.yeaft-composer-effort\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent/);
+    expect(yeaftCss).toMatch(/\.yeaft-composer-model-dropdown,[\s\S]*?\.yeaft-composer-effort-dropdown\s*\{[^}]*right:\s*0;[^}]*bottom:\s*calc\(100% \+ var\(--chat-composer-gap\)\)[^}]*max-height:\s*var\(--yeaft-model-menu-max-height\)/);
     expect(yeaftCss).toMatch(/@media \(max-width:\s*768px\)[\s\S]*?\.yeaft-topbar\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto;/);
     expect(yeaftCss).toMatch(/\.yeaft-topbar-context\s*\{[^}]*grid-column:\s*2;[^}]*display:\s*grid;/);
     expect(yeaftCss).toMatch(/\.yeaft-topbar-folder\s*\{[^}]*grid-row:\s*2;[^}]*width:\s*100%;[^}]*max-width:\s*100%;/);

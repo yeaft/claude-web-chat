@@ -45,6 +45,11 @@
  *   the supplied reason as `detail`. `reason` may be a structured object
  *   `{kind, ...}` so downstream observers (web-bridge) can render UI hints
  *   (e.g. "↪ 已转交给 @vp-b") without re-parsing strings.
+ * @property {(reason?: string|object) => void} [requestToolBatchBarrier]
+ *   — stop executing the remaining calls in the current assistant tool batch
+ *   while still pairing each call with an explicit skipped tool result. The
+ *   engine then returns those results to the provider before accepting another
+ *   plan. Used when a completed tool result invalidates the rest of the batch.
  * @property {string} [senderVpId] — id of the VP whose turn is currently
  *   running. Used by `route_forward` to stamp the forwarded message and
  *   by the loop guard to key per-sender throttling.
@@ -63,6 +68,8 @@
  * @property {(input: object, ctx?: ToolContext) => Promise<string>} execute — execution function
  * @property {(input?: object) => boolean} [isConcurrencySafe] — can run in parallel?
  * @property {(input?: object) => boolean} [isReadOnly] — read-only operation?
+ * @property {boolean | ((input?: object) => boolean)} [cacheWithinQuery] — explicitly safe to reuse for identical calls in one query
+ * @property {boolean | ((input?: object) => boolean)} [mayMutateWorkspaceAfterReturn] — may keep changing the workspace after execute() resolves; disables same-query read reuse
  * @property {(input?: object) => boolean} [isDestructive] — destructive operation?
  * @property {'json-error-envelope' | null} [errorOutput] — explicit returned-output error contract; null means only thrown errors fail
  * @property {'external' | 'run'} [sideEffectScope] — whether mutations escape the current Run collector
@@ -78,6 +85,8 @@
  *   execute: (input: object, ctx?: ToolContext) => Promise<string>,
  *   isConcurrencySafe?: (input?: object) => boolean,
  *   isReadOnly?: (input?: object) => boolean,
+ *   cacheWithinQuery?: boolean | ((input?: object) => boolean),
+ *   mayMutateWorkspaceAfterReturn?: boolean | ((input?: object) => boolean),
  *   isDestructive?: (input?: object) => boolean,
  *   errorOutput?: 'json-error-envelope' | null,
  *   sideEffectScope?: 'external' | 'run',
@@ -93,6 +102,8 @@ export function defineTool({
   execute,
   isConcurrencySafe = () => false,
   isReadOnly = () => false,
+  cacheWithinQuery = false,
+  mayMutateWorkspaceAfterReturn = false,
   isDestructive = () => false,
   errorOutput = 'json-error-envelope',
   sideEffectScope = 'external',
@@ -108,6 +119,8 @@ export function defineTool({
     execute,
     isConcurrencySafe,
     isReadOnly,
+    cacheWithinQuery,
+    mayMutateWorkspaceAfterReturn,
     isDestructive,
     errorOutput,
     sideEffectScope,
