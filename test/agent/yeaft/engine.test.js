@@ -5088,10 +5088,23 @@ describe('Engine', () => {
         expect(lstatSync(eventFile).size).toBeLessThan(8 * 1024 * 1024);
 
         const reopened = new DebugTrace(traceRoot);
+        const reopenedStats = await reopened.stats();
+        expect(reopenedStats.turnCount).toBeGreaterThanOrEqual(100);
         const detail = await reopened.fetchTurnDebug({ sessionId: 's-long', turnId: 'long-tool-turn' });
         expect(detail.turns).toHaveLength(1);
         expect(detail.loops).toHaveLength(100);
         expect(detail.loops.at(-1)?.loopNumber).toBe(100);
+
+        // Aggregate queries must not pin every full request payload in memory.
+        // After stats(), detail still comes from disk rather than a process-life
+        // cache populated by a global hydrate.
+        writeFileSync(eventFile, '', 'utf8');
+        const detailAfterDiskChange = await reopened.fetchTurnDebug({
+          sessionId: 's-long',
+          turnId: 'long-tool-turn',
+        });
+        expect(detailAfterDiskChange.loops).toEqual([]);
+        writeFileSync(eventFile, savedEvents, 'utf8');
         await reopened.close();
 
         appendFileSync(eventFile, '{"type":"loop"', 'utf8');

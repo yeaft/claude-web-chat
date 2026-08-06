@@ -10,9 +10,10 @@
  * best-effort: failures are logged and never allowed to stop the agent.
  */
 
-import { promises as fsp } from 'fs';
+import { createReadStream, promises as fsp } from 'fs';
 import { basename, dirname, extname, join } from 'path';
 import { createHash, randomUUID } from 'crypto';
+import { createInterface } from 'readline';
 import { truncateUtf8Text } from './perf-trace.js';
 
 const TRACE_VERSION = 3;
@@ -619,6 +620,7 @@ function serializableTraceMeta(trace) {
   const meta = {
     ...trace,
     loopCount: loops.length,
+    toolCount: tools.length,
     ...usage,
     loopModels: [...new Set(loops.map(loop => loop?.model).filter(Boolean))],
     stopReasons: [...new Set(loops.map(loop => loop?.stopReason).filter(Boolean))],
@@ -666,6 +668,33 @@ async function readJsonLines(filePath) {
     catch { /* A process can leave one torn final append; prior records remain valid. */ }
   }
   return records;
+}
+
+async function countRequestEvents(requestDir) {
+  const meta = await readJson(requestMetaPath(requestDir));
+  if (!meta?.requestId) {
+    const legacy = await readJson(requestFilePath(requestDir));
+    return {
+      loopCount: Array.isArray(legacy?.loops) ? legacy.loops.length : 0,
+      toolCount: Array.isArray(legacy?.tools) ? legacy.tools.length : 0,
+    };
+  }
+  let loopCount = 0;
+  let toolCount = 0;
+  const stream = createReadStream(requestEventsPath(requestDir), { encoding: 'utf8' });
+  stream.on('error', () => {});
+  try {
+    const lines = createInterface({ input: stream, crlfDelay: Infinity });
+    for await (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        if (event?.type === 'loop' && event.record) loopCount += 1;
+        else if (event?.type === 'tool' && event.record) toolCount += 1;
+      } catch { /* Ignore one torn final append. */ }
+    }
+  } catch { /* Missing/unreadable event file counts as empty. */ }
+  return { loopCount, toolCount };
 }
 
 async function readRequestDir(requestDir) {
@@ -894,19 +923,12 @@ async function removeRequestDirIfIdentityMatches(requestDir, expected) {
 
 async function readTraceHeaders(rootDir, sessionId) {
   const traces = [];
-  const requestDirs = sessionId == null
-    ? await (async () => {
-      const dirs = [];
-      for (const entry of await readdirSafe(sessionRequestsDir(rootDir, null))) {
-        if (entry.isDirectory()) dirs.push(join(sessionRequestsDir(rootDir, null), entry.name));
-      }
-      return dirs;
-    })()
-    : await collectRequestDirs(rootDir, sessionId);
+  const requestDirs = await collectRequestDirs(rootDir, sessionId);
   for (const requestDir of requestDirs) {
     const meta = await readJson(requestMetaPath(requestDir));
     const trace = meta?.requestId ? meta : await readJson(requestFilePath(requestDir));
-    if (!trace?.requestId || !trace?.requestKey || trace.sessionId !== sessionId) continue;
+    if (!trace?.requestId || !trace?.requestKey) continue;
+    if (sessionId != null && trace.sessionId !== sessionId) continue;
     traces.push({
       trace,
       file: requestFilePath(requestDir),
@@ -947,6 +969,8 @@ export class DebugTrace {
   #initializedRequestKeys = new Set();
   /** @type {Set<string>} */
   #reconciledRetentionSessions = new Set();
+  /** @type {Map<string, object>} Lightweight persisted metadata by request key. */
+  #diskHeaders = new Map();
   /** @type {Map<string, Map<string, { trace: object, requestDirs: Set<string>, openedAt: number }>>} */
   #retentionIndex = new Map();
   /** @type {NodeJS.Timeout|null} */
@@ -971,9 +995,9 @@ export class DebugTrace {
   /** @type {NodeJS.Timeout|null} */
   #eventFlushTimer = null;
   /**
-   * One-time hydrate guard. Reads/maintenance load every on-disk trace into
-   * #requestCache exactly once; afterwards every query is served from memory
-   * with zero disk reads. The write path never hydrates — it only appends.
+   * One-time metadata hydrate guard. Reads/maintenance keep only bounded
+   * request headers resident. Full loop/tool payloads are loaded for one
+   * selected request at a time and are never installed in #requestCache.
    * @type {boolean}
    */
   #hydrated = false;
@@ -1270,16 +1294,20 @@ export class DebugTrace {
     await this.#ensureHydrated();
     await this.#drainWrites();
     const tools = [];
-    for (const { trace } of this.#traceSummaries()) {
+    for (const { trace: header } of this.#traceSummaries().slice().reverse()) {
+      const trace = this.#requestCache.get(header.requestKey)
+        || await readRequestDir(requestDirFor(this.#rootDir, header.sessionId || null, header.requestKey));
+      if (!trace) continue;
       for (const tool of Array.isArray(trace.tools) ? trace.tools : []) {
         const row = traceToolToLegacy(trace, tool);
         if (name && row.tool_name !== name) continue;
         if (since && row.created_at < since) continue;
         tools.push(row);
       }
+      tools.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+      if (tools.length > 100) tools.length = 100;
     }
-    tools.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
-    return tools.slice(0, 100);
+    return tools;
   }
 
   async search(keyword) {
@@ -1287,19 +1315,43 @@ export class DebugTrace {
     await this.#drainWrites();
     const needle = String(keyword || '').toLowerCase();
     if (!needle) return [];
-    return this.#traceSummaries()
-      .filter(({ trace }) => JSON.stringify(trace).toLowerCase().includes(needle))
-      .slice(-50)
-      .reverse()
-      .flatMap(({ trace }) => traceToLegacyRows(trace));
+    const results = [];
+    for (const { trace: header } of this.#traceSummaries().slice().reverse()) {
+      const trace = this.#requestCache.get(header.requestKey)
+        || await readRequestDir(requestDirFor(this.#rootDir, header.sessionId || null, header.requestKey));
+      if (!trace || !JSON.stringify(trace).toLowerCase().includes(needle)) continue;
+      results.push(...traceToLegacyRows(trace));
+      if (results.length >= 50) break;
+    }
+    return results.slice(0, 50);
   }
 
   async stats() {
     await this.#ensureHydrated();
     await this.#drainWrites();
     const traces = this.#traceSummaries().map(({ trace }) => trace);
-    const turnCount = traces.reduce((n, trace) => n + (Array.isArray(trace.loops) ? trace.loops.length : 0), 0);
-    const toolCount = traces.reduce((n, trace) => n + (Array.isArray(trace.tools) ? trace.tools.length : 0), 0);
+    let turnCount = 0;
+    let toolCount = 0;
+    for (const header of traces) {
+      const live = this.#requestCache.get(header.requestKey);
+      if (live) {
+        turnCount += Array.isArray(live.loops) ? live.loops.length : Number(live.loopCount || 0);
+        toolCount += Array.isArray(live.tools) ? live.tools.length : Number(live.toolCount || 0);
+        continue;
+      }
+      if (Number.isFinite(Number(header.loopCount)) && Number.isFinite(Number(header.toolCount))) {
+        turnCount += Number(header.loopCount);
+        toolCount += Number(header.toolCount);
+        continue;
+      }
+      const counts = await countRequestEvents(requestDirFor(
+        this.#rootDir,
+        header.sessionId || null,
+        header.requestKey,
+      ));
+      turnCount += counts.loopCount;
+      toolCount += counts.toolCount;
+    }
     const eventCount = this.#events.length;
     const { bytes } = await countDirFiles(this.#rootDir);
     return { turnCount, toolCount, eventCount, dbSizeBytes: bytes, fileSizeBytes: bytes, requestCount: traces.length };
@@ -1331,6 +1383,7 @@ export class DebugTrace {
     await ensureDir(this.#rootDir);
     this.#turnIndex.clear();
     this.#requestCache.clear();
+    this.#diskHeaders.clear();
     this.#initializedRequestKeys.clear();
     this.#reconciledRetentionSessions.clear();
     this.#retentionIndex.clear();
@@ -1429,11 +1482,10 @@ export class DebugTrace {
   }
 
   #traceSummaries(sessionId = null) {
-    // Cache-only: #ensureHydrated() has already merged every on-disk trace
-    // into #requestCache exactly once, so we never touch disk here. This is
-    // what turns the old O(N^2) per-query rescan into an in-memory filter.
+    const merged = new Map(this.#diskHeaders);
+    for (const trace of this.#requestCache.values()) merged.set(trace.requestKey, trace);
     const out = [];
-    for (const trace of this.#requestCache.values()) {
+    for (const trace of merged.values()) {
       if (sessionId && trace.sessionId !== sessionId) continue;
       if (!trace?.requestId || !trace?.requestKey) continue;
       out.push({
@@ -1446,34 +1498,24 @@ export class DebugTrace {
   }
 
   /**
-   * Load every on-disk trace into #requestCache exactly once. Live entries
-   * (created by this process) always win over their disk copy — a flush may
-   * be mid-flight, and the in-memory trace is the newer truth. Idempotent and
-   * concurrency-safe: overlapping callers await the same promise.
-   *
-   * Footprint trade-off (deliberate): this pins every session's full trace
-   * payload (systemPrompt + cumulative messages + rawRequest, each already
-   * byte-bounded) in #requestCache for the instance's lifetime — O(retention ×
-   * total sessions) memory instead of the old O(N²) per-query CPU rescan that
-   * stalled the event loop. Retention (10/session) and the byte caps keep it
-   * bounded, and the web path uses a single module-level instance. Follow-up if
-   * footprint ever bites: hydrate per queried sessionId, or keep only a
-   * lightweight summary resident and lazy-load full payloads on detailTurnId.
+   * Load lightweight persisted metadata once. Active requests stay in
+   * #requestCache; completed payloads remain on disk and are lazy-loaded only
+   * for detail/search/tool queries. This prevents retained debug history from
+   * expanding into a process-lifetime multi-gigabyte object graph.
    */
   async #ensureHydrated() {
     if (this.#hydrated) return;
     if (this.#hydratePromise) return this.#hydratePromise;
     this.#hydratePromise = (async () => {
-      const [summaries, storedEvents] = await Promise.all([
-        readTraceSummaries(this.#rootDir),
+      const [headers, storedEvents] = await Promise.all([
+        readTraceHeaders(this.#rootDir, null),
         readJson(join(this.#rootDir, 'events.json')),
       ]);
-      for (const { trace } of summaries) {
-        if (!trace?.requestKey) continue;
-        // Never clobber a live in-memory trace with its older disk snapshot.
-        if (!this.#requestCache.has(trace.requestKey)) {
-          this.#requestCache.set(trace.requestKey, trace);
-        }
+      for (const { trace } of headers) {
+        if (!trace?.requestKey || this.#requestCache.has(trace.requestKey)) continue;
+        this.#diskHeaders.set(trace.requestKey, trace.active
+          ? { ...trace, active: false, interrupted: true }
+          : trace);
       }
       if (Array.isArray(storedEvents)) this.#mergeStoredEvents(storedEvents);
       this.#hydrated = true;
@@ -1592,13 +1634,23 @@ export class DebugTrace {
           const eventPath = requestEventsPath(requestDir);
           if (initialize) await prepareJsonlAppend(eventPath);
           await fsp.appendFile(eventPath, lines.join(''), 'utf8');
-          if (writeMeta) await atomicWriteText(metaPath, JSON.stringify(serializableTraceMeta(trace)));
+          if (writeMeta) {
+            const meta = serializableTraceMeta(trace);
+            await atomicWriteText(metaPath, JSON.stringify(meta));
+            this.#diskHeaders.set(trace.requestKey, meta);
+          }
           trace._persistedFormat = 'events';
           trace._persistedRequestDir = requestDir;
           if (legacyRequestDir && legacyRequestDir !== requestDir) {
             await removeRequestDirIfIdentityMatches(legacyRequestDir, trace);
           }
-          if (evictAfterWrite) this.#requestCache.delete(trace.requestKey);
+          if (evictAfterWrite) {
+            this.#requestCache.delete(trace.requestKey);
+            this.#initializedRequestKeys.delete(trace.requestKey);
+            for (const [turnId, ctx] of this.#turnIndex) {
+              if (ctx.requestKey === trace.requestKey) this.#turnIndex.delete(turnId);
+            }
+          }
         } catch (err) {
           console.warn('[Yeaft] debug trace append failed:', err?.message || err);
         }
@@ -1694,6 +1746,7 @@ export class DebugTrace {
 
   async #pruneAll(keep) {
     const sessions = new Set();
+    for (const trace of this.#diskHeaders.values()) sessions.add(trace.sessionId || null);
     for (const trace of this.#requestCache.values()) sessions.add(trace.sessionId || null);
     for (const sessionId of sessions) await this.#pruneSession(sessionId, keep);
   }
@@ -1743,6 +1796,7 @@ export class DebugTrace {
     const stale = pruneCandidates.slice(0, Math.max(0, traces.length - protectedItems.length - keep));
     for (const item of stale) {
       this.#requestCache.delete(item.trace.requestKey);
+      this.#diskHeaders.delete(item.trace.requestKey);
       this.#initializedRequestKeys.delete(item.trace.requestKey);
       index.delete(item.trace.requestKey);
       for (const requestDir of item.requestDirs) {
