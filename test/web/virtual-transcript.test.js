@@ -184,12 +184,12 @@ describe('virtual transcript range calculation', () => {
     expect(resolveTranscriptBottomFollow({ following: false, atBottom: true, userScroll: true })).toBe(true);
     expect(resolveTranscriptBottomFollow({ following: true, atBottom: false, userScroll: true })).toBe(false);
 
-    // A small upward move can remain inside the near-bottom threshold. User
-    // direction still owns the viewport, so live messages must not resume follow.
-    expect(resolveTranscriptUserFollow({ following: true, atBottom: true, direction: -12 })).toBe(false);
-    expect(resolveTranscriptUserFollow({ following: false, atBottom: true, resumeBoundaryReached: false, direction: 12 })).toBe(false);
-    expect(resolveTranscriptUserFollow({ following: false, atBottom: true, resumeBoundaryReached: true, direction: 12 })).toBe(true);
-    expect(resolveTranscriptUserFollow({ following: false, atBottom: true, resumeBoundaryReached: true, direction: 0 })).toBe(false);
+    // A user scroll can remain inside the near-bottom threshold. User intent
+    // still owns the viewport, so live messages must not resume follow.
+    expect(resolveTranscriptUserFollow({ following: true, atBottom: true, userScroll: true })).toBe(false);
+    expect(resolveTranscriptUserFollow({ following: true, atBottom: false, userScroll: true })).toBe(false);
+    expect(resolveTranscriptUserFollow({ following: false, atBottom: true, userScroll: true })).toBe(false);
+    expect(resolveTranscriptUserFollow({ following: true, atBottom: true, userScroll: false })).toBe(true);
     expect(shouldFollowTranscriptBottom({ scrollTop: 890, scrollHeight: 1000, clientHeight: 80, threshold: 80 })).toBe(true);
     expect(shouldFollowTranscriptBottom({ scrollTop: 890, scrollHeight: 1000, clientHeight: 80, threshold: 2 })).toBe(false);
   });
@@ -246,7 +246,7 @@ describe('virtual transcript range calculation', () => {
     expect(resolveTranscriptBottomFollow({ following: false, atBottom: true, userScroll: keyQualified })).toBe(false);
   });
 
-  it('resumes paused following when scrollbar drag or transcript End reaches bottom', () => {
+  it('keeps following paused even when a scrollbar drag or transcript End reaches bottom', () => {
     const scroller = {
       clientWidth: 780,
       offsetWidth: 800,
@@ -256,8 +256,8 @@ describe('virtual transcript range calculation', () => {
     const pointerQualified = isTranscriptScrollbarPointer({ button: 0, clientX: 790, clientY: 300 }, scroller);
     const keyQualified = shouldMarkTranscriptKeyScroll({ key: 'End', target: scroller }, scroller, { body: {} });
 
-    expect(resolveTranscriptUserFollow({ following: false, atBottom: true, resumeBoundaryReached: true, direction: pointerQualified ? 1 : 0 })).toBe(true);
-    expect(resolveTranscriptUserFollow({ following: false, atBottom: true, resumeBoundaryReached: true, direction: keyQualified ? 1 : 0 })).toBe(true);
+    expect(resolveTranscriptUserFollow({ following: true, atBottom: true, userScroll: pointerQualified })).toBe(false);
+    expect(resolveTranscriptUserFollow({ following: true, atBottom: true, userScroll: keyQualified })).toBe(false);
   });
 
   it('keeps the current anchor stable when measured heights above the window change', () => {
