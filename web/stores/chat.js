@@ -783,11 +783,10 @@ export const useChatStore = defineStore('chat', {
     _yeaftHistoryRevealLeases: {},
     _yeaftHistoryRevealSequence: 0,
     // One-shot marker: set true by the websocket onclose handler on a real
-    // disconnect, consumed by handleAgentList to run a single Yeaft history
-    // catch-up after the socket comes back. Without this gate the catch-up
-    // would re-fire on every routine agent_list broadcast (status flips,
-    // turn_completed, latency pings) and spin yeaft_load_history /
-    // yeaft_vp_subscribe into an unbounded loop.
+    // disconnect, consumed by handleAgentList to run bounded Yeaft history and
+    // visible Work Center catch-up after the socket comes back. Without this
+    // gate those requests would re-fire on every routine agent_list broadcast
+    // (status flips, turn_completed, latency pings).
     _yeaftReconnectCatchUpPending: false,
     // Agents whose opened Yeaft sessions have been listed during the current
     // Yeaft page visit. Used by agent_list to catch agents that become online
