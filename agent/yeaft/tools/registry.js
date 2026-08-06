@@ -48,7 +48,7 @@ function isLocalizedTextObject(value) {
   return ['en', 'zh', 'zh-CN', 'en-US', 'default'].some(key => typeof value[key] === 'string' || typeof value[key] === 'function');
 }
 
-function localizeVisibleText(value, language, toolName) {
+export function localizeVisibleText(value, language, toolName) {
   const lang = normalizeLanguage(language);
   if (typeof value === 'function') return localizeVisibleText(value(lang), lang, toolName);
   if (isLocalizedTextObject(value)) {

@@ -32,7 +32,11 @@ import { extractAndWriteMemorySegments } from '../../../agent/yeaft/dream/segmen
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
 import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
 import { loadConfig } from '../../../agent/yeaft/config.js';
-import { resolveActiveToolNames } from '../../../agent/yeaft/tools/activation.js';
+import {
+  CONDITIONAL_BUILTIN_TOOL_NAMES,
+  resolveActiveToolNames,
+} from '../../../agent/yeaft/tools/activation.js';
+import { discoverToolCapabilities } from '../../../agent/yeaft/tools/discover-tools.js';
 import {
   inferProjectDocScopes,
   projectDocWriteScopesNeedingReload,
@@ -210,6 +214,98 @@ describe('active tool exposure and scoped prompts', () => {
       'CloseAgent',
       'ListAgents',
     ]));
+  });
+
+  it('discovers conditional and flattened MCP capabilities without phrase enumeration', async () => {
+    const registry = createFullRegistry();
+    const mcpManager = {
+      listTools: () => [{
+        name: 'github__list_issues',
+        server: 'github',
+        description: 'Find and list GitHub issues, including issues assigned to the current user.',
+        inputSchema: {
+          type: 'object',
+          properties: { assignee: { type: 'string' } },
+        },
+      }],
+      callTool: async () => ({ content: [{ type: 'text', text: '[]' }] }),
+    };
+    registry.registerAll(buildMcpFlattenedTools(mcpManager));
+    const toolNames = registry.getToolNames();
+    const paraphrases = [
+      ['Look back and remind me how we handled authentication.', 'HistorySearch'],
+      ['Get a second opinion on this change.', 'SpawnAgent'],
+      ['Produce a banner for the landing page.', 'ImageGeneration'],
+      ['Keep monitoring this over the next few days.', 'CreateWorkItem'],
+      ['Why can’t this machine create any more files?', 'DiskUsage'],
+    ];
+    for (const [prompt, expectedTool] of paraphrases) {
+      const active = resolveActiveToolNames({
+        toolNames,
+        prompt,
+        imageGenerationConfigured: true,
+      });
+      expect(active.has(expectedTool), `${expectedTool} starts hidden for: ${prompt}`).toBe(false);
+      expect(active.has('DiscoverTools')).toBe(true);
+      expect([...CONDITIONAL_BUILTIN_TOOL_NAMES].includes(expectedTool)).toBe(true);
+      const candidates = registry.getAllTools()
+        .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name))
+        .map(tool => ({
+          name: tool.name,
+          description: typeof tool.description === 'object' ? tool.description.en : tool.description,
+          parameters: tool.parameters,
+        }));
+      const matches = discoverToolCapabilities({ query: prompt, candidates });
+      expect(matches.map(tool => tool.name), `discovery matches for: ${prompt}`).toContain(expectedTool);
+    }
+
+    mockAdapter.pushResponse([
+      {
+        type: 'tool_call',
+        id: 'discover_github',
+        name: 'DiscoverTools',
+        input: { query: 'Find issues assigned to me in GitHub.' },
+      },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    mockAdapter.pushResponse([
+      {
+        type: 'tool_call',
+        id: 'call_github',
+        name: 'mcp__github__list_issues',
+        input: { assignee: '@me' },
+      },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    mockAdapter.pushResponse([
+      { type: 'text_delta', text: 'No matching issues.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const engine = new Engine({
+      adapter: mockAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      mcpManager,
+    });
+    const events = [];
+    for await (const event of engine.query({
+      prompt: 'Find issues assigned to me in GitHub.',
+    })) events.push(event);
+
+    expect(mockAdapter.callLog[0].tools.map(tool => tool.name)).toContain('DiscoverTools');
+    expect(mockAdapter.callLog[0].tools.map(tool => tool.name)).not.toContain('mcp__github__list_issues');
+    const discoveryEvent = events.find(event => event.type === 'tool_end' && event.name === 'DiscoverTools');
+    expect(discoveryEvent).toMatchObject({ isError: false });
+    const discoveryResult = JSON.parse(discoveryEvent.output);
+    expect(discoveryResult.tools[0].name).toBe('mcp__github__list_issues');
+    expect(discoveryResult.tools.length).toBeLessThanOrEqual(24);
+    expect(discoveryResult.tools.every(tool => !Object.hasOwn(tool, 'parameters'))).toBe(true);
+    expect(mockAdapter.callLog[1].tools.map(tool => tool.name)).toContain('mcp__github__list_issues');
+    expect(events.find(event => event.type === 'tool_end' && event.name === 'mcp__github__list_issues')).toMatchObject({
+      output: '[]',
+      isError: false,
+    });
   });
 
   it('filters provider schemas and fences execution with canonical alias activation', async () => {

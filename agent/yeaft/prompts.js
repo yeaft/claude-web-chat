@@ -457,6 +457,11 @@ export function buildSystemPrompt({
 
 const TOOL_GUIDANCE_GROUPS = Object.freeze([
   {
+    tools: ['DiscoverTools'],
+    en: 'If the visible tools do not clearly cover the request, use `DiscoverTools` with the user goal before concluding that a capability is unavailable.',
+    zh: '如果可见工具不能明确覆盖请求，应先按用户目标调用 `DiscoverTools`，再判断某项能力不可用。',
+  },
+  {
     tools: ['FileRead', 'FileWrite', 'FileEdit', 'Glob', 'Grep', 'ListDir', 'ApplyPatch', 'NotebookEdit'],
     en: 'Read existing files before editing. Use dedicated file/search tools instead of shell search or `sed -i`; make small, reviewable edits and batch independent reads.',
     zh: '编辑前先读现有文件。文件搜索和修改优先使用专用工具，不用 shell 搜索或 `sed -i`；改动保持小而可审查，独立读取应并行发出。',

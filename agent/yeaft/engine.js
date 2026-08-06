@@ -52,8 +52,9 @@ import { countTurns } from './turn-utils.js';
 import { attachRouterPlan, extractPriorPlan, stripMetaForWire } from './router/continuity.js';
 import { resolveThinking } from './router/thinking.js';
 import { approxTokens, computeBudget } from './memory/budget.js';
-import { COLLAB_TOOL_POLICY, isToolErrorOutput, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
-import { resolveActiveToolNames } from './tools/activation.js';
+import { COLLAB_TOOL_POLICY, isToolErrorOutput, localizeVisibleText, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
+import { CONDITIONAL_BUILTIN_TOOL_NAMES, resolveActiveToolNames } from './tools/activation.js';
+import { discoverToolCapabilities } from './tools/discover-tools.js';
 import { agentBelongsToScope, getAgentRegistry } from './tools/agent.js';
 import { extractDisplayImages, stripDisplayImageData } from './image-assets.js';
 import { acknowledgePendingNotifications, formatNotificationsForPrompt, peekPendingNotifications } from './sub-agent/notifications.js';
@@ -1362,6 +1363,7 @@ export class Engine {
       conversationStore: this.#conversationStore,
       adapter: this.#adapter,
       config: this.#config,
+      discoverTools: vpCtx?.discoverTools,
       taskManager: this.#taskManager,
       sessionId: vpCtx?.sessionId || this.#sessionId || null,
       projectSessionIds: Array.isArray(vpCtx?.projectSessionIds)
@@ -2401,6 +2403,12 @@ export class Engine {
             && this.#config.imageApiUrl.trim().length > 0,
         })
       : null;
+    const discoveredToolNames = new Set();
+    const applyDiscoveredTools = (names) => {
+      for (const name of names) {
+        if (registeredToolNames.includes(name)) discoveredToolNames.add(name);
+      }
+    };
     let activeToolNames = resolveCurrentActiveToolNames();
     let resolvedSkillContent = '';
     let resolvedSkills = [];
@@ -2836,6 +2844,7 @@ export class Engine {
           })
         : '';
       activeToolNames = resolveCurrentActiveToolNames();
+      for (const name of discoveredToolNames) activeToolNames?.add(name);
       toolDefs = this.#getToolDefs(effectiveCollabToolPolicy, activeToolNames);
       systemPrompt = buildCurrentSystemPrompt();
 
@@ -3890,6 +3899,28 @@ export class Engine {
         setCurrentTodos,
         askUser,
         workDir,
+        discoverTools: ({ query, maxResults } = {}) => {
+          if (!this.#toolRegistry) return { query: String(query || ''), tools: [], activated: 0 };
+          const language = this.#config.language || 'en';
+          const candidates = this.#toolRegistry.getAllTools()
+            .filter(tool => !activeToolNames?.has(tool.name))
+            .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name) || tool.name.startsWith('mcp__'))
+            .map(tool => ({
+              name: tool.name,
+              description: localizeVisibleText(tool.description, language, tool.name),
+              parameters: tool.parameters,
+            }));
+          const tools = discoverToolCapabilities({ query, candidates, language, maxResults });
+          applyDiscoveredTools(tools.map(tool => tool.name));
+          return {
+            query: String(query || ''),
+            tools,
+            activated: tools.length,
+            message: tools.length > 0
+              ? 'Matching tool schemas will be available on the next model loop.'
+              : 'No hidden registered tools matched this query.',
+          };
+        },
         currentToolCall: () => currentToolCallForAsyncTask ? { ...currentToolCallForAsyncTask } : null,
         requestEndTurn: (reason) => {
           // First call wins — preserve the kind/reason of the first tool

@@ -10,6 +10,7 @@ export const ALWAYS_VISIBLE_TOOL_NAMES = Object.freeze([
   'EnterWorktree',
   'ExitWorktree',
   'AskUser',
+  'DiscoverTools',
   'WebSearch',
   'WebFetch',
   'Bash',
@@ -37,7 +38,7 @@ export const SUB_AGENT_MANAGEMENT_TOOL_NAMES = Object.freeze([
   'ListAgents',
 ]);
 
-const CONDITIONAL_BUILTIN_TOOL_NAMES = new Set([
+export const CONDITIONAL_BUILTIN_TOOL_NAMES = new Set([
   'HistorySearch',
   'DiskUsage',
   'ApplyPatch',
