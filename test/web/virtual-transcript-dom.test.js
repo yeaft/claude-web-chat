@@ -152,6 +152,29 @@ describe('VirtualTranscript DOM windowing', () => {
     wrapper.unmount();
   });
 
+  it('preserves the visible content anchor when background history prepends rows', async () => {
+    const scroller = createScroller({ viewportHeight: 300, scrollHeight: 100000 });
+    scroller.scrollTop = 2500;
+    const wrapper = mount(VirtualTranscript, {
+      props: {
+        items: turns(100),
+        estimateHeight: () => 100,
+        itemGap: 0,
+        overscan: 1,
+      },
+      slots: { default: ({ item }) => Vue.h('div', { 'data-turn-id': item.id }, item.id) },
+      attachTo: scroller,
+    });
+    await flushAnimationFrame(3);
+    wrapper.vm.setBottomFollowEnabled(false);
+
+    await wrapper.setProps({ items: [...turns(20, 'older'), ...turns(100)] });
+    await flushAnimationFrame(3);
+
+    expect(scroller.scrollTop).toBe(4500);
+    wrapper.unmount();
+  });
+
   it('fences stale bottom work and keeps a targeted child row aligned after block resize', async () => {
     const scroller = createScroller({ viewportHeight: 300, scrollHeight: 10000 });
     scroller.scrollTop = 9700;

@@ -335,7 +335,7 @@ describe('message flow regressions', () => {
     store.vpStatuses = {};
     store.yeaftProcessingSessions = {};
 
-    const turnCount = Math.ceil(YEAFT_HISTORY_CACHE_LIMITS.maxRowsPerSession / 2) + 20;
+    const turnCount = YEAFT_HISTORY_CACHE_LIMITS.maxTurnsPerSession + 20;
     for (let index = 1; index <= turnCount; index += 1) {
       store.messagesMap[conversationId].push(
         {
@@ -371,10 +371,65 @@ describe('message flow regressions', () => {
     });
 
     const kept = store.messagesMap[conversationId];
-    expect(kept.length).toBeLessThanOrEqual(YEAFT_HISTORY_CACHE_LIMITS.maxRowsPerSession);
+    expect(kept.length).toBeLessThanOrEqual(YEAFT_HISTORY_CACHE_LIMITS.maxTurnsPerSession * 2);
     expect(kept.some(row => row.id === `user-${turnCount}`)).toBe(true);
     expect(kept.some(row => row.id === `assistant-${turnCount}`)).toBe(true);
     expect(kept.some(row => row.id === 'user-1')).toBe(false);
+  });
+
+  it('schedules one idle background page and de-duplicates the Session timer', async () => {
+    const store = useChatStore();
+    const sessionId = 'session-prefetch';
+    const agentId = 'agent-prefetch';
+    const conversationId = 'yeaft-prefetch';
+    const sessionKey = yeaftHistoryIdentityKey(agentId, sessionId);
+    store.currentView = 'yeaft';
+    store.currentAgent = agentId;
+    store.yeaftConversationId = conversationId;
+    store.yeaftConversationIdsByAgent = { [agentId]: conversationId };
+    store.yeaftSessionAgentById = { [sessionId]: agentId };
+    store.yeaftActiveSessionFilter = sessionId;
+    store.messagesMap = {
+      [conversationId]: [
+        { id: 'm0100', messageId: 'm0100', seq: 100, type: 'user', content: 'q', sessionId, isHistory: true },
+        { id: 'm0101', messageId: 'm0101', seq: 101, type: 'assistant', content: 'a', sessionId, isHistory: true },
+      ],
+    };
+    store.yeaftHistoryCacheState = {
+      [sessionKey]: { ranges: [{ startSeq: 100, endSeq: 101 }], rangeEpoch: 1 },
+    };
+    store.yeaftSessionHistoryState = {
+      [sessionKey]: {
+        loaded: true, loading: false, hasMore: true, serverHasMore: true,
+        oldestSeq: 100, serverOldestFetchedSeq: 100, latestSeq: 101,
+      },
+    };
+    const idleCallbacks = [];
+    vi.stubGlobal('requestIdleCallback', callback => {
+      idleCallbacks.push(callback);
+      return idleCallbacks.length;
+    });
+    const sent = [];
+    store.sendWsMessage = message => { sent.push(message); return true; };
+
+    expect(store.scheduleYeaftHistoryPrefetch(sessionId, agentId)).toBe(true);
+    expect(store.scheduleYeaftHistoryPrefetch(sessionId, agentId)).toBe(false);
+    expect(idleCallbacks).toHaveLength(1);
+    idleCallbacks[0]();
+
+    expect(sent).toEqual([expect.objectContaining({
+      type: 'yeaft_load_more_history',
+      agentId,
+      sessionId,
+      beforeSeq: 100,
+      turns: 50,
+    })]);
+    expect(store.yeaftSessionHistoryState[sessionKey]).toMatchObject({
+      loading: true,
+      mode: 'prefetch',
+      background: true,
+    });
+    vi.unstubAllGlobals();
   });
 
   it('drops oversized live debug detail from legacy Agent events', async () => {

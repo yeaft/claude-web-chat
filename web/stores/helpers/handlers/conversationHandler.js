@@ -22,7 +22,12 @@ import {
   yeaftOptimisticMessageIdentity,
   yeaftPersistedMessageIdentity,
 } from '../yeaft-history-identity.js';
-import { isDurableYeaftHistoryRow, pruneYeaftHistoryCache } from '../yeaft-history-cache.js';
+import {
+  countResidentYeaftHistoryTurns,
+  isDurableYeaftHistoryRow,
+  pruneYeaftHistoryCache,
+  YEAFT_HISTORY_MAX_TURNS,
+} from '../yeaft-history-cache.js';
 import { commitYeaftHistoryPage } from '../yeaft-history-pagination.js';
 import { conversationRepositoryFor } from '../conversation-repository.js';
 
@@ -1128,7 +1133,7 @@ export function handleYeaftHistoryChunk(store, msg) {
     streamId: typeof msg.streamId === 'string' ? msg.streamId : (prevState.streamId ?? null),
     revision: Number.isFinite(msg.revision) ? msg.revision : (prevState.revision ?? null),
   };
-  const nextState = mode === 'delta'
+  let nextState = mode === 'delta'
     ? {
         ...prevState,
         ...historyIdentity,
@@ -1153,6 +1158,16 @@ export function handleYeaftHistoryChunk(store, msg) {
           : nextLatest,
         syncingAfterSeq: null,
       };
+  const residentTurnCount = countResidentYeaftHistoryTurns(store, convId, msgSessionId);
+  if (residentTurnCount >= YEAFT_HISTORY_MAX_TURNS && nextState.hasMore) {
+    // 500 turns is the user-visible Session ceiling. Keep the server frontier in
+    // metadata for diagnostics, but expose no extra pagination work past it.
+    nextState = {
+      ...nextState,
+      hasMore: false,
+      retentionLimitReached: true,
+    };
+  }
   if (msg.requestId && typeof store.finishYeaftHistoryLoad === 'function') {
     store.finishYeaftHistoryLoad(msg, nextState, 'chunk');
   } else if (store.yeaftSessionHistoryState) {
@@ -1176,6 +1191,16 @@ export function handleYeaftHistoryChunk(store, msg) {
       sessionAgentId,
       nextState.latestSeq,
     ));
+  } else if (mode !== 'delta'
+      && nextState.hasMore
+      && msgSessionId
+      && sessionAgentId
+      && residentTurnCount < YEAFT_HISTORY_MAX_TURNS
+      && typeof store.scheduleYeaftHistoryPrefetch === 'function') {
+    // The authoritative chunk commit retired the one-per-Session request fence.
+    // Schedule—not recurse into—the next page so rendering and IndexedDB persist
+    // get a chance to settle between bounded 50-turn transfers.
+    store.scheduleYeaftHistoryPrefetch(msgSessionId, sessionAgentId);
   }
   const activeIdentity = activeYeaftHistoryIdentity(store);
   const activeSessionMatches = activeIdentity.sessionId === (msgSessionId || null);
